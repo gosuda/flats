@@ -285,7 +285,7 @@ func TestRenameRedirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, _, h := get(t, e.priv.URL("old-name")+"/about?x=1")
-	if code != http.StatusPermanentRedirect || h.Get("Location") != e.priv.URL("new-name")+"/about?x=1" {
+	if code != http.StatusTemporaryRedirect || h.Get("Location") != e.priv.URL("new-name")+"/about?x=1" {
 		t.Fatalf("redirect: %d %q", code, h.Get("Location"))
 	}
 	if _, body, _ := get(t, e.priv.URL("new-name")+"/about"); body != "about" {
@@ -396,5 +396,49 @@ func TestPageViewsCountHTMLRequests(t *testing.T) {
 	pv, err := e.svc.PageViews(ctx, "counted", 7)
 	if err != nil || len(pv) != 1 || pv[0].Count != 3 {
 		t.Fatalf("page views %+v %v", pv, err)
+	}
+}
+
+func TestSecondRestoreUndoesFirst(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	dbPath := filepath.Join(e.dataDir, "flats", "epoch", "data", "db.sqlite")
+	exec := func(q string) {
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() string {
+		db, _ := sql.Open("sqlite", dbPath)
+		defer db.Close()
+		var v string
+		db.QueryRow(`SELECT group_concat(v) FROM t`).Scan(&v)
+		return v
+	}
+	e.svc.SaveVersion(ctx, "epoch", files("index.html", "v1"), core.SaveMeta{}, core.ViaAPI)
+	e.svc.Deploy(ctx, "epoch", 1, core.ViaAPI)
+	os.MkdirAll(filepath.Dir(dbPath), 0o700)
+	exec(`CREATE TABLE t (v TEXT)`)
+	exec(`INSERT INTO t VALUES ('a')`)
+	e.svc.SaveVersion(ctx, "epoch", files("index.html", "v2"), core.SaveMeta{}, core.ViaAPI)
+	e.svc.Deploy(ctx, "epoch", 2, core.ViaAPI) // snapshot before-v2 = [a]
+	exec(`INSERT INTO t VALUES ('b')`)         // live data [a,b]
+	if _, err := e.svc.RollbackWithData(ctx, "epoch", 1, true, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != "a" {
+		t.Fatalf("first restore: %q", got)
+	}
+	// Rolling forward to v2 with restore_data undoes the restore.
+	if _, err := e.svc.RollbackWithData(ctx, "epoch", 2, true, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got != "a,b" {
+		t.Fatalf("second restore should bring back the data replaced by the first, got %q", got)
 	}
 }

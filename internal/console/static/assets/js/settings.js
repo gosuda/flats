@@ -13,6 +13,8 @@ const FIELDS = [
   { key: 'preview_ttl_seconds', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
   { key: 'redirect_days', label: 'Redirect after a slug rename', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect to the new ones.' },
+  { key: 'events_keep', label: 'Log events kept per flat', unit: 'events', factor: 1, step: 1, min: 1, help: 'Older events are deleted.' },
+  { key: 'portal_max_relays', label: 'Active Portal relays', unit: 'relays', factor: 1, step: 1, min: 1, help: 'How many discovered relays a public flat uses at once. Applies after `flats serve` restarts.' },
 ];
 
 const NET_NAMES = { tsnet: 'Tailscale', tailscale: 'Tailscale', portal: 'Portal', local: 'Local (loopback, no Tailscale)', 'local-public': 'Local public stand-in' };
@@ -153,13 +155,19 @@ function limitsForm(settings, defaults, reload) {
   const relaysInitial = (settings.portal_relays || '').split(',').map((s) => s.trim()).filter(Boolean).join('\n');
   const relays = h('textarea', { id: relaysId, rows: '3', spellcheck: 'false', class: 'mono', 'aria-describedby': relaysId + '-help', placeholder: 'https://relay.example.com' });
   relays.value = relaysInitial;
+  const discoverId = 'set-portal_discovery';
+  const discoverInitial = String(settings.portal_discovery ?? 'true') !== 'false';
+  const discover = h('input', { id: discoverId, type: 'checkbox', checked: discoverInitial, 'aria-describedby': discoverId + '-help' });
   const save = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Save limits' });
   const result = h('p', { class: 'muted small', role: 'status' });
   const form = h('form', { class: 'form-grid' },
     fields,
     h('div', { class: 'field field-wide' },
       h('label', { for: relaysId, text: 'Portal relays' }), relays,
-      h('span', { class: 'hint', id: relaysId + '-help', text: 'One relay per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays).' })),
+      h('span', { class: 'hint', id: relaysId + '-help', text: 'One relay per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays). Applies after `flats serve` restarts.' })),
+    h('div', { class: 'field field-wide field-check' },
+      discover, h('label', { for: discoverId, text: 'Discover Portal relays' }),
+      h('span', { class: 'hint', id: discoverId + '-help', text: 'Find further relays automatically (Portal’s default). Applies after `flats serve` restarts.' })),
     h('div', { class: 'field field-wide actions' }, result, save));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -176,11 +184,13 @@ function limitsForm(settings, defaults, reload) {
     }
     const relayList = relays.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
     if (relayList.join('\n') !== relaysInitial) out.portal_relays = relayList.join(',');
+    if (discover.checked !== discoverInitial) out.portal_discovery = String(discover.checked);
     if (!Object.keys(out).length) { result.textContent = 'Nothing changed.'; return; }
     busy(save, async () => {
       try {
-        await api.saveSettings(out);
-        toast('Settings saved.', 'success');
+        const res = await api.saveSettings(out);
+        const later = (res && res.restart_required) || [];
+        toast(later.length ? `Settings saved. ${res.note || 'Restart flats serve to apply ' + later.join(', ') + '.'}` : 'Settings saved.', later.length ? 'info' : 'success');
         reload();
       } catch (err) {
         result.textContent = '';

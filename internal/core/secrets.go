@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -57,13 +56,13 @@ type SecretInfo struct {
 // may call it; the change applies on the next deploy.
 func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, via Via) error {
 	if via != ViaConsole && via != ViaCLI {
-		return errors.New("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")
+		return forbiddenf("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")
 	}
 	if !secretName.MatchString(name) {
-		return fmt.Errorf("secret name %q must match [A-Z_][A-Z0-9_]*", name)
+		return invalidf("secret name %q must match [A-Z_][A-Z0-9_]* (at most 64 characters)", name)
 	}
 	if len(value) > 64<<10 {
-		return errors.New("secret value is larger than 64 KiB")
+		return invalidf("secret value is larger than 64 KiB")
 	}
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return err
@@ -87,7 +86,7 @@ func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, v
 // DeleteSecret removes a secret.
 func (s *Service) DeleteSecret(ctx context.Context, slugName, name string, via Via) error {
 	if via != ViaConsole && via != ViaCLI {
-		return errors.New("only the operator can delete secrets")
+		return forbiddenf("only the operator can delete secrets")
 	}
 	if err := s.st.DeleteSecret(ctx, slugName, name); err != nil {
 		return err

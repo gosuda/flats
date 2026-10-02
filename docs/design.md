@@ -22,7 +22,8 @@ flats serve                     (one long-running process, launchd-managed on ma
 ```
 
 Data directory (default `~/Library/Application Support/Flats`, override with
-`--data` or `FLATS_DATA`):
+`--data` or `FLATS_DATA`; a relative path is made absolute at startup, since
+workers run with `/` as their working directory):
 
 ```
 flats.db                        metadata
@@ -96,7 +97,14 @@ portal/<slug>.json              Portal identity (keeps the public hostname stabl
   shows the conflict). `public-unlisted` sets `LeaseMetadata.Hide`; the change
   reaches relay listings at the next lease renewal (up to ~90 s). Relays: the
   Portal CLI default (discovery, up to 3 active relays) unless
-  `portal_relays` lists explicit relays. Discovery-only startup can take about
+  `portal_relays` (or the `--relays` flag, which wins) lists explicit relays.
+  `portal_discovery=false` uses only the explicit relays (ignored when there
+  are none) and `portal_max_relays` caps the relays discovery adds (0 = the
+  Portal default, 3). These three settings are read when `flats serve`
+  starts; the settings API reports them in `apply_on_restart` and returns
+  `restart_required` when a change needs a restart. A stored value that is
+  invalid is logged and ignored at startup, so it cannot stop the server.
+  Discovery-only startup can take about
   a minute; the API returns the public URL once a relay is ready. Unlisted is
   never described as access control; every API response that returns a public
   URL carries the notice. Identity headers are stripped on this path.
@@ -125,7 +133,9 @@ Flats polls each node's `Self.KeyExpiry` and `BackendState` every 5 minutes.
 Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
 `<data>/secret.key`. Only the console and the local CLI (`flats secret set`,
 loopback only) can set or delete values; APIs and MCP return names and update
-times only. Values reach a server flat only as environment variables of its
+times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
+loopback listener, so this stops MCP and remote API clients, not a process
+with a shell on the Flats host (see Approvals). Values reach a server flat only as environment variables of its
 worker at start, so a change applies on the next deploy.
 
 ## Approvals
@@ -136,12 +146,39 @@ listed) or delete a flat. Those requests create a pending approval and return
 immediately. The operator decides in the console; console actions apply
 directly after a confirm dialog.
 
-Limitation: there are no accounts, so the server cannot cryptographically
-tell the operator's browser from an agent on the same tailnet. Console
-mutations require `Sec-Fetch-Site: same-origin` and `X-Flats-Console: 1`,
-which browsers send and agent tools do not, and MCP/CLI/API expose no approve
-operation. This stops honest agents and accidents, not a malicious process on
-the operator's machine.
+There are no accounts, so operator authority rests on where a request comes
+from and what it carries. Enforced:
+
+* MCP, the CLI and `/api` have no approve, reject or settings operation, and
+  their visibility and delete calls only create approvals.
+* Every request to the management server (loopback listener and console
+  node) must name the server in `Host`: `127.0.0.1`, `localhost` or `[::1]`
+  with the listen port, or the console node's tailnet names (configured host,
+  MagicDNS name and its first label, ports 80/443). Any `Origin` must be one
+  of those too. This defeats DNS rebinding and cross-site requests.
+* `/console/api` requires `X-Flats-Console: 1` and refuses requests carrying
+  `X-Flats-Client` (the CLI and other clients identify themselves with it).
+  Mutations also need `Sec-Fetch-Site: same-origin` and an `Origin` equal to
+  the requested host, which the console page sends and cross-origin pages
+  cannot.
+* On the console node, the approver's tailnet login (from `WhoIs`, which the
+  node sets after dropping client-sent `Tailscale-User-*` headers) is
+  returned as `decided_by` and recorded in the flat's approval event (an
+  approved delete removes the flat with its events, so only the response
+  carries it). Decisions on the loopback listener are recorded without an
+  identity.
+
+Not enforced: all of the console checks are request headers. A process that
+can send arbitrary HTTP from one of the operator's devices (for example an
+agent with a shell on the Flats host, or on a device the tailnet ACL lets
+reach the console node) can imitate the console page and approve or act
+directly, and a process that can read the Flats data directory can read the
+database and secret key. Approvals therefore hold against agents that only
+use MCP, the CLI or the API, and against web pages, not against arbitrary
+code running as the operator. Mitigations: write Tailscale ACLs so that only
+the operator's browser devices can reach the console node (tag or name it in
+the ACL), and run untrusted agents under another OS user or on another
+machine, so they reach Flats only through MCP or the API.
 
 ## Server flats (handler ABI)
 
@@ -181,7 +218,18 @@ export default {
 ## HTTP API
 
 All JSON. Errors: `{"error": "...", "problems": [{"path","message","fix"}], "health": {...}}`.
-Agent surface (`/api`, `via` = `api`, or `cli` with `X-Flats-Client: cli`):
+Status codes come from typed errors: 400 invalid input, 403 not allowed from
+this surface, 404 not found, 409 conflict, not deployed or a feature disabled
+on this host, 415 missing client header (below), 422 bundle validation or a
+failed deploy health check, 500 server fault.
+Agent surface (`/api`, `via` = `api`, or `cli` with `X-Flats-Client: cli`).
+Browser requests with `Sec-Fetch-Site: cross-site` or `same-site`, or with an
+`Origin` other than the requested host, are refused (403). Requests other than
+GET/HEAD must send `Content-Type: application/json`, an archive type
+(`application/gzip`, `application/x-tar`, `application/zip`,
+`application/octet-stream`) or an `X-Flats-Client` header (415 otherwise), so
+a web page cannot send them without a CORS preflight, which Flats never
+answers:
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -211,7 +259,9 @@ Agent surface (`/api`, `via` = `api`, or `cli` with `X-Flats-Client: cli`):
 Console surface (`/console/api`, `via` = `console`, guarded as above): the same
 reads plus `POST /console/api/approvals/{id}/{approve|reject}`, deploy,
 rollback, visibility, rename, delete, preview, secrets, `GET/PUT settings`,
-`GET system`.
+`GET system`. Approve/reject return the approval plus `decided_by` (tailnet
+login, console node only). `GET settings` lists `apply_on_restart`; `PUT
+settings` returns `restart_required` with the changed keys among them.
 
 MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 `create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`

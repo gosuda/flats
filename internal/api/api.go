@@ -16,6 +16,7 @@ import (
 
 	"github.com/oesni/flats/internal/bundle"
 	"github.com/oesni/flats/internal/core"
+	"github.com/oesni/flats/internal/slug"
 	"github.com/oesni/flats/internal/store"
 )
 
@@ -40,13 +41,19 @@ func (s *Server) Handler() http.Handler {
 			mux.HandleFunc(method+" "+prefix+path, func(w http.ResponseWriter, r *http.Request) {
 				via := core.ViaAPI
 				if console {
-					if !consoleRequest(r) {
-						writeErr(w, http.StatusForbidden, errors.New("console endpoints only accept requests from the Flats web console"))
+					if err := consoleRequest(r); err != nil {
+						writeErr(w, http.StatusForbidden, err)
 						return
 					}
 					via = core.ViaConsole
-				} else if r.Header.Get("X-Flats-Client") == "cli" {
-					via = core.ViaCLI
+				} else {
+					if code, err := agentRequest(r); err != nil {
+						writeErr(w, code, err)
+						return
+					}
+					if r.Header.Get("X-Flats-Client") == "cli" {
+						via = core.ViaCLI
+					}
 				}
 				fn(w, r, via)
 			})
@@ -88,17 +95,6 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// consoleRequest accepts only same-origin browser requests from the console.
-func consoleRequest(r *http.Request) bool {
-	if r.Header.Get("X-Flats-Console") != "1" {
-		return false
-	}
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return true
-	}
-	return r.Header.Get("Sec-Fetch-Site") == "same-origin"
-}
-
 // --- helpers ---
 
 // ErrorBody is the JSON error shape.
@@ -130,13 +126,18 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, body)
 }
 
-// statusOf maps errors to HTTP codes.
+// statusOf maps errors to HTTP codes: typed errors first, then a small
+// fallback for messages of errors that are not typed yet.
 func statusOf(err error) int {
 	var de *core.DeployError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed):
+	case errors.Is(err, core.ErrInvalid), errors.Is(err, slug.ErrInvalid):
+		return http.StatusBadRequest
+	case errors.Is(err, core.ErrForbidden):
+		return http.StatusForbidden
+	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable):
 		return http.StatusConflict
 	case errors.As(err, &de):
 		return http.StatusUnprocessableEntity
@@ -144,11 +145,14 @@ func statusOf(err error) int {
 	if _, ok := bundle.IsValidation(err); ok {
 		return http.StatusUnprocessableEntity
 	}
+	// Fallback for core errors that do not wrap a sentinel yet.
 	msg := err.Error()
-	if strings.Contains(msg, "invalid slug") || strings.Contains(msg, "unknown visibility") || strings.Contains(msg, "must ") || strings.Contains(msg, "already exists") {
+	switch {
+	case strings.HasPrefix(msg, "invalid slug"), strings.HasPrefix(msg, "unknown visibility"), strings.Contains(msg, " must "):
 		return http.StatusBadRequest
-	}
-	if strings.Contains(msg, "operator") || strings.Contains(msg, "not from the console") {
+	case strings.Contains(msg, "already exists"):
+		return http.StatusConflict
+	case strings.Contains(msg, "by the operator"), strings.Contains(msg, "only the operator"), strings.Contains(msg, "not from the console"):
 		return http.StatusForbidden
 	}
 	return http.StatusInternalServerError
@@ -578,17 +582,43 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, _ core.Vi
 	writeJSON(w, 200, map[string]any{"approvals": as})
 }
 
+// decision is an approval as returned by approve/reject, with the tailnet
+// login of the operator who decided when the request came through the
+// console node (empty on the loopback listener, which has no identity).
+type decision struct {
+	store.Approval
+	DecidedBy string `json:"decided_by,omitempty"`
+}
+
 func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Request, via core.Via) {
 	return func(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		a, err := s.Svc.Decide(r.Context(), r.PathValue("id"), approve)
+		who := approverOf(r.Context())
+		decided := err == nil || (a.Status == "failed" && !errors.Is(err, core.ErrConflict))
+		// A deleted flat's events are gone with it, so an approved delete
+		// reports its approver only in the response.
+		if a.ID != "" && decided && !(a.Action == "delete" && a.Status == "approved") {
+			src := "tailnet user " + who
+			if who == "" {
+				src = "the console on the loopback listener (no tailnet identity)"
+			}
+			s.Svc.Event(r.Context(), a.Flat, "info", "approval",
+				fmt.Sprintf("approval %s (%s) %s by %s", a.ID, a.Action, a.Status, src),
+				map[string]string{"approval": a.ID, "status": a.Status, "decided_by": who})
+		}
+		out := decision{Approval: a, DecidedBy: who}
 		if err != nil {
-			code := statusOf(err)
-			writeJSON(w, code, map[string]any{"error": err.Error(), "approval": a})
+			writeJSON(w, statusOf(err), map[string]any{"error": err.Error(), "approval": out})
 			return
 		}
-		writeJSON(w, 200, a)
+		writeJSON(w, 200, out)
 	}
 }
+
+// restartKeys are settings `flats serve` reads only at startup.
+var restartKeys = []string{core.SetPortalRelays, core.SetPortalDiscover, core.SetPortalMaxRelay}
+
+const restartNote = "portal relay settings apply after `flats serve` restarts; a --relays flag overrides portal_relays"
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	st, err := s.Svc.Settings(r.Context())
@@ -596,7 +626,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request, _ core.Via)
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"settings": st, "defaults": core.Defaults})
+	writeJSON(w, 200, map[string]any{"settings": st, "defaults": core.Defaults, "apply_on_restart": restartKeys, "note": restartNote})
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -605,12 +635,29 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, _ core.Via)
 		writeErr(w, 400, err)
 		return
 	}
-	st, err := s.Svc.UpdateSettings(r.Context(), in)
+	before, err := s.Svc.Settings(r.Context())
 	if err != nil {
-		writeErr(w, 400, err)
+		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"settings": st})
+	st, err := s.Svc.UpdateSettings(r.Context(), in)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	// restart_required lists the changed settings that take effect only
+	// after a restart, so the console can say so instead of "saved".
+	restart := []string{}
+	for _, k := range restartKeys {
+		if _, ok := in[k]; ok && st[k] != before[k] {
+			restart = append(restart, k)
+		}
+	}
+	out := map[string]any{"settings": st, "restart_required": restart}
+	if len(restart) > 0 {
+		out["note"] = restartNote
+	}
+	writeJSON(w, 200, out)
 }
 
 var _ = time.Second

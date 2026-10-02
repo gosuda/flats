@@ -44,7 +44,7 @@ go build -o flats ./cmd/flats          # CGO_ENABLED=0 works
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--data` | `~/Library/Application Support/Flats` on macOS, `~/.config/Flats` on Linux (`$FLATS_DATA`) | data directory |
+| `--data` | `~/Library/Application Support/Flats` on macOS, `~/.config/Flats` on Linux (`$FLATS_DATA`) | data directory (a relative path is resolved against the current directory) |
 | `--listen` | `127.0.0.1:7878` | loopback address for the CLI, local agents and the console |
 | `--network` | `tailscale` | `local` serves flats at `http://<flat>.localhost:7879` without Tailscale (development) |
 | `--authkey-file` | | file with a reusable, untagged Tailscale auth key (or `TS_AUTHKEY`; otherwise each node prints a login URL) |
@@ -81,10 +81,11 @@ Codex and Cursor.
 flats deploy ./dist --flat my-blog       # save + deploy (records git SHA/dirty)
 flats deploy ./dist --flat my-blog --save-only
 flats preview my-blog                    # preview the newest version
-flats rollback my-blog [--to 3]
+flats rollback my-blog [--to 3]          # code only; --restore-data also replaces the database
 flats visibility my-blog public-unlisted # waits for your approval in the console
 flats logs my-blog --follow
-flats secret set my-blog API_KEY         # value from stdin; operator only
+flats secret set my-blog API_KEY         # value from stdin; operator only; applies on the next deploy
+flats deploy --flat my-blog --version 3  # redeploy the live version to apply secrets now
 flats list | info | versions | rename | delete | approvals | status
 ```
 
@@ -94,6 +95,14 @@ flats list | info | versions | rename | delete | approvals | status
 { "name": "My blog", "kind": "static", "entry": "index.html", "spa": false,
   "not_found": "404.html", "health": "/", "screenshot": "screenshot.png" }
 ```
+
+`health` is a URL path such as `/healthz` (percent-encode spaces). Every
+problem in an upload is reported at once, each with a fix.
+
+Static files with a content hash in their name (`app.3f9a1c2b.js`,
+`index-BqZ2x8Ka.css`) are cached by browsers for a year. Everything else is
+revalidated on every visit with an ETag, so a deploy or rollback reaches
+returning visitors immediately.
 
 ## Server flats
 
@@ -126,19 +135,37 @@ All are configurable in the console's system settings.
 | Preview expiry | 24 h after the last visit |
 | Rate limit | 50 requests/s per flat |
 | Rename redirect | 7 days |
+| Portal relays | Portal default relays with discovery, up to 3 active (`portal_relays`, `portal_discovery`, `portal_max_relays`; applied when `flats serve` restarts; `--relays` overrides the relay list) |
 
 ## Security model
 
 - The management API, MCP endpoint and console listen only on loopback and on
-  the tailnet console node; they are never exposed through Portal.
+  the tailnet console node; they are never exposed through Portal. They answer
+  only to their own host names (`127.0.0.1`, `localhost`, `[::1]` with the
+  listen port, and the console node's tailnet names), so a web page that
+  points its DNS name at them (DNS rebinding) is refused, as is any browser
+  request whose `Origin` is another site.
+- The agent API (`/api`) refuses cross-site browser requests. Requests that
+  change something must send `Content-Type: application/json`, an archive
+  type for uploads, or an `X-Flats-Client` header, which a web page cannot
+  send to another origin without a CORS preflight that Flats never grants.
 - There are no accounts. Who can open a private flat is decided by your
   tailnet membership and ACLs. Restrict which devices can reach the console
-  node with Tailscale ACLs: any device that reaches it can operate Flats.
-- Approvals stop agents from going public or deleting flats by themselves.
-  They are not a defense against a malicious process on your own machine (see
+  node with Tailscale ACLs, ideally to your own browser devices: any device
+  that reaches it can operate Flats. Approvals made on the console node record
+  your tailnet login.
+- What approvals enforce: agents using MCP, the CLI or the agent API cannot
+  approve their own requests, go public or delete a flat; those calls only
+  create a pending approval. What they do not enforce: a program that can
+  send arbitrary HTTP from one of your devices (for example an agent with a
+  shell on the Flats host, imitating the console's browser headers) or that
+  can read the Flats data directory can act as you. Run agents you do not
+  trust under another user or on another machine (see "Approvals" in
   `docs/design.md`).
 - Secrets are encrypted at rest (AES-256-GCM, key in the data directory) and
-  never returned by any API.
+  never returned by any API. The console and `flats secret set` on the Flats
+  host can set them; an agent with a shell on that host can run the same
+  command.
 - Portal does not pass visitor IP addresses, so page views are request
   counts and rate limits are per flat.
 

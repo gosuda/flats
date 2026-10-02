@@ -420,6 +420,7 @@ func TestLogsFollow(t *testing.T) {
 	defer cancel()
 	var mu sync.Mutex
 	var queries []string
+	api.handle("GET /api/flats/blog", 200, `{"slug": "blog"}`)
 	api.routes["GET /api/flats/blog/logs"] = func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		mu.Lock()
 		queries = append(queries, r.URL.RawQuery)
@@ -619,5 +620,84 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 func TestUnlistedNoticeMatchesCore(t *testing.T) {
 	if unlistedNotice != core.UnlistedNotice {
 		t.Fatalf("cli notice drifted from core:\n%q\n%q", unlistedNotice, core.UnlistedNotice)
+	}
+}
+
+func TestPublicURLsAlwaysCarryTheNotice(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	unlisted := `{"slug": "blog", "visibility": "public-unlisted", "live_version": 1, "private_url": "https://blog.ts",
+	              "public_url": "https://blog.portal.example", "public_notice": "` + core.UnlistedNotice + `", "versions": 1}`
+	// An older server may send a public URL without a notice.
+	bare := `{"slug": "shop", "visibility": "public-listed", "live_version": 1, "private_url": "https://shop.ts",
+	          "public_url": "https://shop.portal.example", "versions": 1}`
+	private := `{"slug": "notes", "visibility": "private", "private_url": "https://notes.ts", "versions": 0}`
+	api.handle("GET /api/flats", 200, `{"flats": [`+unlisted+`,`+bare+`,`+private+`]}`)
+	api.handle("GET /api/flats/shop", 200, bare)
+	api.handle("POST /api/flats/shop/deploy", 200, `{"flat": `+bare+`, "version": 1, "health": {"path": "/", "status": 200, "ok": true}}`)
+	api.handle("POST /api/flats/shop/visibility", 200, `{"status": "done", "flat": `+bare+`}`)
+	api.handle("GET /api/status", 200, `{"ok": true, "system": {"public": {"kind": "portal", "enabled": true,
+	   "hosts": [{"host": "blog", "url": "https://blog.portal.example", "state": "ready"}]}}}`)
+
+	r := run(t, srv.URL, "", "list")
+	if r.code != 0 || !strings.Contains(r.stdout, "https://blog.portal.example (*)") ||
+		!strings.Contains(r.stdout, "blog: "+core.UnlistedNotice) || !strings.Contains(r.stdout, "shop: "+publicURLNotice) ||
+		strings.Contains(r.stdout, "notes:") {
+		t.Errorf("list must annotate every public URL:\n%s", r.stdout)
+	}
+	for _, args := range [][]string{{"info", "shop"}, {"deploy", "--flat", "shop", "--version", "1"}, {"visibility", "shop", "public-listed"}} {
+		r := run(t, srv.URL, "", args...)
+		if r.code != 0 || !strings.Contains(r.stdout, "https://shop.portal.example") || !strings.Contains(r.stdout, publicURLNotice) {
+			t.Errorf("%v must print the notice with the public URL: %d\n%s%s", args, r.code, r.stdout, r.stderr)
+		}
+	}
+	r = runEnv(t, Env{GOOS: "linux"}, srv.URL, "status")
+	if r.code != 0 || !strings.Contains(r.stdout, "https://blog.portal.example") || !strings.Contains(r.stdout, publicURLNotice) {
+		t.Errorf("status must print the notice with public hosts:\n%s", r.stdout)
+	}
+}
+
+func TestUnknownFlatIsAnError(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	// Older servers answer the events and versions lists of a missing flat
+	// with empty 200s; the CLI must still fail.
+	api.handle("GET /api/flats/nope/logs", 200, `{"events": null}`)
+	api.handle("GET /api/flats/nope/versions", 200, `{"versions": null}`)
+	for _, args := range [][]string{{"logs", "nope"}, {"logs", "nope", "--follow"}, {"logs", "nope", "--json"}, {"versions", "nope"}, {"versions", "nope", "--json"}, {"info", "nope"}} {
+		r := run(t, srv.URL, "", args...)
+		msg := r.stderr + r.stdout
+		if r.code != ExitError || !strings.Contains(msg, `flat \"nope\" not found`) && !strings.Contains(msg, `flat "nope" not found`) {
+			t.Errorf("%v: want exit 1 with a not-found message, got %d\n%s", args, r.code, msg)
+		}
+	}
+
+	// A flat deleted while following its logs ends the follow with an error.
+	api.handle("GET /api/flats/gone", 200, `{"slug": "gone"}`)
+	var mu sync.Mutex
+	calls := 0
+	api.routes["GET /api/flats/gone/logs"] = func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			io.WriteString(w, `{"events": [{"id": 1, "time": "2026-10-03T00:00:00Z", "level": "info", "kind": "deploy", "message": "v1 live"}]}`)
+			return
+		}
+		w.WriteHeader(404)
+		io.WriteString(w, `{"error": "flat \"gone\": not found"}`)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out, errb bytes.Buffer
+	env := Env{Stdout: &out, Stderr: &errb, PollInterval: 5 * time.Millisecond,
+		Getenv: func(k string) string {
+			if k == "FLATS_URL" {
+				return srv.URL
+			}
+			return ""
+		}}
+	code := Run(ctx, []string{"logs", "gone", "-f"}, env)
+	if ctx.Err() != nil || code != ExitError || !strings.Contains(errb.String(), "no longer exists") || !strings.Contains(out.String(), "v1 live") {
+		t.Fatalf("follow must stop on 404: exit %d, ctx %v\n%s%s", code, ctx.Err(), out.String(), errb.String())
 	}
 }

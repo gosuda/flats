@@ -1,6 +1,6 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
 
-import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials } from './dom.js';
+import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials, publicNoticeOf } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading, extLink, busy } from './ui.js';
 import { publishLatest, previewLatest, rollbackPrevious, deleteFlat } from './actions.js';
@@ -114,7 +114,7 @@ export function mount(main, _params, ctx) {
     } else {
       actions.appendChild(extLink(f.private_url, icon('external', `Open ${f.name || f.slug} (private URL)`), 'icon-btn'));
       if (f.public_url) {
-        actions.appendChild(extLink(f.public_url, icon('globe', `Open ${f.name || f.slug} (public URL)`), 'icon-btn'));
+        actions.appendChild(extLink(f.public_url, icon('globe', `Open ${f.name || f.slug} (public URL: anyone with it can open the flat)`), 'icon-btn'));
       }
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
@@ -127,7 +127,8 @@ export function mount(main, _params, ctx) {
       thumb(f),
       h('div', { class: 'flat-main' },
         h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
-        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
+        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`),
+        f.public_url ? h('p', { class: 'notice-text small', text: publicNoticeOf(f) }) : null),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
   }

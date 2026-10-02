@@ -2,7 +2,7 @@
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
 
-import { h, dateTime, VISIBILITY, noticeFor } from './dom.js';
+import { h, dateTime, VISIBILITY, noticeFor, publicNoticeOf } from './dom.js';
 import { api, newestVersion } from './api.js';
 import { confirmDialog, infoDialog, errorPanel, healthBlock, toast, extLink } from './ui.js';
 
@@ -51,7 +51,35 @@ function deployDone(res) {
     res.previous ? h('p', { class: 'muted', text: `Previously live: version ${res.previous}.` }) : null,
     f.private_url ? h('p', null, 'Private URL: ', extLink(f.private_url)) : null,
     f.public_url ? h('p', null, 'Public URL: ', extLink(f.public_url)) : null,
+    f.public_url ? h('p', { class: 'notice-text', text: publicNoticeOf(f) }) : null,
   ];
+}
+
+// redeployLive restarts the live version so it picks up changed secrets
+// (a worker reads them only when it starts).
+export async function redeployLive(flat) {
+  const n = flat.live_version;
+  if (!n) return false;
+  const server = !flat.live || flat.live.kind === 'server';
+  const ok = await confirmDialog({
+    title: `Redeploy version ${n}?`,
+    body: [
+      h('p', { text: `${label(flat)} restarts version ${n} with its current secrets.` }),
+      h('p', { class: 'muted', text: server
+        ? 'The health check runs first; if it fails, the running instance keeps serving. Data is kept as it is.'
+        : 'This is a static flat: secrets are not used, so it keeps serving the same files.' }),
+    ],
+    confirmLabel: 'Redeploy',
+  });
+  if (!ok) return false;
+  try {
+    const res = await api.deploy(flat.slug, n);
+    await infoDialog(`Version ${res.version} was redeployed`, deployDone(res));
+    return true;
+  } catch (err) {
+    await report('Redeploy failed', err);
+    return false;
+  }
 }
 
 // publishLatest deploys the newest saved version.

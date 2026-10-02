@@ -1242,7 +1242,9 @@ export default {
 		t.Fatalf("forwarded https scheme lost: %s", out.URL)
 	}
 	r2 := f.get(t, "/x")
-	var out2 struct{ UUID string `json:"uuid"` }
+	var out2 struct {
+		UUID string `json:"uuid"`
+	}
 	json.Unmarshal([]byte(r2.body), &out2)
 	if out2.UUID == out.UUID {
 		t.Fatal("randomUUID repeated")

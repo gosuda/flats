@@ -30,13 +30,17 @@ Flats host; use MCP `save_version` with inline files otherwise.
    On failure the response lists `problems` with a `fix` for each, or the
    failed health check. The previous live version keeps serving; fix and
    upload again rather than retrying blindly.
-5. **Report** the URL, version number and health result to the user.
+5. **Report** the URL, version number and health result to the user. When a
+   response has a `public_url`, always repeat its `public_notice` with it.
 
 To let the user review before going live: save only, then `open_preview`
 (`flats preview my-blog`) and share the preview URL. Previews close on the
 next deploy or after 24 hours without visits.
 
-Rollback: `flats rollback my-blog` (previous version) or `--to N`.
+Rollback: `flats rollback my-blog` (previous version) or `--to N`. It restores
+code only. `--restore-data` (MCP `restore_data: true`) replaces a server flat's
+database with the snapshot taken before the current deploy, so writes since
+then stop being live: ask the user before using it.
 
 ## Manifest (`flats.json`, optional, at the build root)
 
@@ -47,7 +51,8 @@ Rollback: `flats rollback my-blog` (previous version) or `--to N`.
 
 `spa: true` serves the entry for unknown routes (client-side routers).
 `screenshot` becomes the thumbnail in the operator's console; include one when
-you can capture it. Unknown fields are rejected.
+you can capture it. `health` must be a URL path such as `/healthz`. Unknown
+fields are rejected; every problem comes back at once with a fix.
 
 ## Server flats
 
@@ -87,4 +92,7 @@ less public applies immediately.
 
 You can list secret names (`list_secrets`, `flats secret ls`) but never set or
 read values. Ask the user to set them in the Flats console or with
-`flats secret set <flat> NAME` on the Flats host, then redeploy.
+`flats secret set <flat> NAME` on the Flats host. Secrets apply when a version
+starts: redeploy the live version (`flats deploy --flat <flat> --version <live>`
+or MCP `deploy`), or ask the user to click **Redeploy (apply secrets)** in the
+console.

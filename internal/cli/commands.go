@@ -212,10 +212,37 @@ func printURLs(w io.Writer, f flatView) {
 	}
 	if f.PublicURL != "" {
 		fmt.Fprintf(w, "  public:  %s\n", f.PublicURL)
+		fmt.Fprintf(w, "  note: %s\n", publicNotice(f))
 	}
+}
+
+// publicURLNotice is shown with a public URL when the server sent no
+// notice of its own (it always should; this keeps the warning unconditional).
+const publicURLNotice = "Anyone with a public URL can open it. Unlisted only hides a flat from Portal relay listings; it is NOT access control."
+
+// publicNotice returns what to print next to f's public URL.
+func publicNotice(f flatView) string {
 	if f.PublicNotice != "" {
-		fmt.Fprintf(w, "  note: %s\n", f.PublicNotice)
+		return f.PublicNotice
 	}
+	return publicURLNotice
+}
+
+// flatErr turns a 404 from a flat-scoped request into a clear error, so a
+// mistyped slug never looks like an empty result.
+func flatErr(slug string, err error) error {
+	var ae *apiError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		return fmt.Errorf("flat %q not found; run `flats list` to see your flats", slug)
+	}
+	return err
+}
+
+// requireFlat fails unless slug names an existing flat.
+func (a *app) requireFlat(c *client, slug string) (flatView, error) {
+	var f flatView
+	_, err := c.call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(slug), nil, nil, &f)
+	return f, flatErr(slug, err)
 }
 
 // --- read commands ---
@@ -242,14 +269,25 @@ func (a *app) list(args []string) error {
 	}
 	tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "SLUG\tVISIBILITY\tLIVE\tVERSIONS\tURL")
+	var notes []string
 	for _, f := range out.Flats {
 		u := f.PrivateURL
 		if f.PublicURL != "" {
-			u = f.PublicURL
+			u = f.PublicURL + " (*)"
+			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", f.Slug, f.Visibility, liveLabel(f.LiveVersion), f.Versions, u)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if len(notes) > 0 {
+		fmt.Fprintln(a.out, "(*) public URL:")
+		for _, n := range notes {
+			fmt.Fprintln(a.out, n)
+		}
+	}
+	return nil
 }
 
 func (a *app) info(args []string) error {
@@ -261,7 +299,7 @@ func (a *app) info(args []string) error {
 	var f flatView
 	resp, err := a.client().call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(pos[0]), nil, nil, &f)
 	if err != nil {
-		return err
+		return flatErr(pos[0], err)
 	}
 	if a.jsonOut {
 		a.emitRaw(resp)
@@ -290,20 +328,20 @@ func (a *app) versions(args []string) error {
 		return err
 	}
 	c := a.client()
+	f, err := a.requireFlat(c, pos[0])
+	if err != nil {
+		return err
+	}
 	var out struct {
 		Versions []version `json:"versions"`
 	}
 	resp, err := c.call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(pos[0])+"/versions", nil, nil, &out)
 	if err != nil {
-		return err
+		return flatErr(pos[0], err)
 	}
 	if a.jsonOut {
 		a.emitRaw(resp)
 		return nil
-	}
-	var f flatView
-	if _, err := c.call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(pos[0]), nil, nil, &f); err != nil {
-		return err
 	}
 	if len(out.Versions) == 0 {
 		fmt.Fprintln(a.out, "No versions saved yet.")
@@ -333,7 +371,7 @@ func (a *app) versions(args []string) error {
 func (a *app) rollback(args []string) error {
 	fs := a.flags("rollback")
 	to := fs.Int("to", 0, "version to make live (default: the one live before the current)")
-	restore := fs.Bool("restore-data", false, "also restore the database snapshot taken before the current version was deployed")
+	restore := fs.Bool("restore-data", false, "also REPLACE the current database with the snapshot taken before the current version was deployed (the current database is backed up first)")
 	pos, err := a.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -368,7 +406,7 @@ func (a *app) preview(args []string) error {
 			Versions []version `json:"versions"`
 		}
 		if _, err := c.call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(slug)+"/versions", nil, nil, &out); err != nil {
-			return err
+			return flatErr(slug, err)
 		}
 		for _, v := range out.Versions {
 			if v.Number > *n {
@@ -450,17 +488,21 @@ func (a *app) action(resp response, res actionResult, requested string) error {
 		if pending {
 			fmt.Fprintf(a.out, "Approval needed: %s\n", res.ApprovalURL)
 		}
+		notice := res.Notice
 		if res.Flat != nil {
 			fmt.Fprintf(a.out, "%s is %s\n", res.Flat.Slug, res.Flat.Visibility)
 			if res.Flat.PublicURL != "" {
 				fmt.Fprintf(a.out, "  public: %s\n", res.Flat.PublicURL)
+				if notice == "" {
+					notice = publicNotice(*res.Flat)
+				}
 			}
 		}
-		switch {
-		case res.Notice != "":
-			fmt.Fprintln(a.out, res.Notice)
-		case pending && requested == "public-unlisted":
-			fmt.Fprintln(a.out, unlistedNotice)
+		if notice == "" && pending && requested == "public-unlisted" {
+			notice = unlistedNotice
+		}
+		if notice != "" {
+			fmt.Fprintln(a.out, notice)
 		}
 	}
 	if pending {
@@ -509,7 +551,13 @@ func (a *app) logs(args []string) error {
 		return usagef("--limit must be between 1 and 1000")
 	}
 	c := a.client()
-	path := "/api/flats/" + pathEscape(pos[0]) + "/logs"
+	slug := pos[0]
+	// The events endpoint may answer an unknown slug with an empty list;
+	// check first so a typo is an error, not silence.
+	if _, err := a.requireFlat(c, slug); err != nil {
+		return err
+	}
+	path := "/api/flats/" + pathEscape(slug) + "/logs"
 	q := url.Values{"limit": {strconv.Itoa(*limit)}}
 	if *kind != "" {
 		q.Set("kind", *kind)
@@ -519,7 +567,7 @@ func (a *app) logs(args []string) error {
 	}
 	resp, err := c.call(a.ctx, http.MethodGet, path, q, nil, &out)
 	if err != nil {
-		return err
+		return flatErr(slug, err)
 	}
 	if a.jsonOut && !*follow {
 		a.emitRaw(resp)
@@ -561,6 +609,10 @@ func (a *app) logs(args []string) error {
 		if _, err := c.call(a.ctx, http.MethodGet, path, q, nil, &out); err != nil {
 			if a.ctx.Err() != nil {
 				return nil
+			}
+			var ae *apiError
+			if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+				return fmt.Errorf("flat %q no longer exists (deleted or renamed); stopped following its logs", slug)
 			}
 			return err
 		}

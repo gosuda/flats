@@ -40,6 +40,10 @@ type Config struct {
 	// Relays lists explicit relays. Empty means the Portal CLI default:
 	// discovery over the bootstrap relays only.
 	Relays []string
+	// Discovery lets Portal add discovered bootstrap relays next to the
+	// explicit ones, like the Portal CLI's --discovery (its default is on).
+	// With discovery off, at least one explicit relay is required.
+	Discovery bool
 	// MaxActiveRelays caps the relays discovery adds (default 3).
 	MaxActiveRelays int
 	// Logf receives SDK warnings and relay state changes. Nil discards them.
@@ -55,10 +59,15 @@ type exposure interface {
 	WaitReady(ctx context.Context) ([]sdk.RelayStatus, error)
 }
 
+// exposeFunc creates an exposure; maxActive <= 0 turns discovery off.
 type exposeFunc func(ctx context.Context, id types.Identity, relays []string, maxActive int, meta types.LeaseMetadata) (exposure, error)
 
 func sdkExpose(ctx context.Context, id types.Identity, relays []string, maxActive int, meta types.LeaseMetadata) (exposure, error) {
-	e, err := sdk.Expose(ctx, id, relays, sdk.WithDiscovery(maxActive), sdk.WithMetadata(meta))
+	opts := []sdk.Option{sdk.WithMetadata(meta)}
+	if maxActive > 0 {
+		opts = append(opts, sdk.WithDiscovery(maxActive))
+	}
+	e, err := sdk.Expose(ctx, id, relays, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,18 +137,12 @@ func New(cfg Config) (*Net, error) {
 	if cfg.MaxActiveRelays <= 0 {
 		cfg.MaxActiveRelays = DefaultMaxActiveRelays
 	}
-	var relays []string
-	for _, r := range cfg.Relays {
-		if strings.TrimSpace(r) == "" {
-			continue
-		}
-		u, err := utils.NormalizeRelayURL(r)
-		if err != nil {
-			return nil, fmt.Errorf("portal: relay %q: %w", r, err)
-		}
-		if !slices.Contains(relays, u) {
-			relays = append(relays, u)
-		}
+	relays, err := NormalizeRelays(cfg.Relays)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Discovery && len(relays) == 0 {
+		return nil, errors.New("portal: relay discovery is off and no relays are configured")
 	}
 	logf := cfg.Logf
 	if logf == nil {
@@ -158,6 +161,25 @@ func New(cfg Config) (*Net, error) {
 		entries: map[string]*entry{},
 		locks:   map[string]*sync.Mutex{},
 	}, nil
+}
+
+// NormalizeRelays validates relay URLs the way the Portal CLI does and
+// returns them normalized and deduplicated; blank entries are skipped.
+func NormalizeRelays(in []string) ([]string, error) {
+	var relays []string
+	for _, r := range in {
+		if strings.TrimSpace(r) == "" {
+			continue
+		}
+		u, err := utils.NormalizeRelayURL(r)
+		if err != nil {
+			return nil, fmt.Errorf("portal: relay %q: %w", r, err)
+		}
+		if !slices.Contains(relays, u) {
+			relays = append(relays, u)
+		}
+	}
+	return relays, nil
 }
 
 func (n *Net) slugLock(slug string) *sync.Mutex {
@@ -235,7 +257,11 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	}
 	// The exposure outlives the request that asked for it, so it hangs off
 	// n.ctx rather than ctx.
-	exp, err := n.expose(n.ctx, id, slices.Clone(n.relays), n.cfg.MaxActiveRelays, metadata(slug, hidden))
+	maxActive := 0 // discovery off
+	if n.cfg.Discovery {
+		maxActive = n.cfg.MaxActiveRelays
+	}
+	exp, err := n.expose(n.ctx, id, slices.Clone(n.relays), maxActive, metadata(slug, hidden))
 	if err != nil {
 		return "", fmt.Errorf("portal: expose %s: %w", slug, err)
 	}
@@ -567,14 +593,17 @@ func describeFailure(s sdk.RelayStatus) string {
 // Status reports one host per served slug.
 func (n *Net) Status() core.NetStatus {
 	ns := core.NetStatus{Kind: "portal", Enabled: true, Hosts: []core.HostInfo{}}
-	if len(n.relays) == 0 {
+	hosts := make([]string, len(n.relays))
+	for i, r := range n.relays {
+		hosts[i] = relayHost(r)
+	}
+	switch {
+	case len(n.relays) == 0:
 		ns.Detail = fmt.Sprintf("relays: Portal defaults (discovery, up to %d active)", n.cfg.MaxActiveRelays)
-	} else {
-		hosts := make([]string, len(n.relays))
-		for i, r := range n.relays {
-			hosts[i] = relayHost(r)
-		}
+	case n.cfg.Discovery:
 		ns.Detail = fmt.Sprintf("relays: %s plus discovery (up to %d more)", strings.Join(hosts, ", "), n.cfg.MaxActiveRelays)
+	default:
+		ns.Detail = fmt.Sprintf("relays: %s only (discovery off)", strings.Join(hosts, ", "))
 	}
 
 	n.mu.RLock()

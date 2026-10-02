@@ -1,10 +1,10 @@
 // Flat page: addresses, visibility, versions, previews, logs, secrets,
 // usage, rename and delete.
 
-import { h, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY } from './dom.js';
+import { h, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
-import { deployVersion, previewVersion, deleteFlat, setVisibility } from './actions.js';
+import { deployVersion, previewVersion, deleteFlat, setVisibility, redeployLive } from './actions.js';
 import { thumb } from './list.js';
 
 const LOG_POLL_MS = 5000;
@@ -58,6 +58,7 @@ export function mount(main, [slug], ctx) {
     if (ok) {
       loadVersions();
       loadPreviews();
+      loadSecrets();
       loadUsage();
       logs.poll();
     }
@@ -81,7 +82,7 @@ export function mount(main, [slug], ctx) {
     if (flat.public_url) {
       add('Public URL', h('div', null,
         flat.live_version ? extLink(flat.public_url) : h('code', { text: flat.public_url }),
-        flat.public_notice ? h('p', { class: 'notice-text', text: flat.public_notice }) : null));
+        h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
     add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : 'Not published');
     add('Created', dateTime(flat.created_at));
@@ -171,7 +172,9 @@ export function mount(main, [slug], ctx) {
       const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', disabled: v.pruned, 'aria-label': `Preview version ${v.number}` });
       prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
       actions.appendChild(prev);
-      if (v.number !== live) {
+      if (v.number === live) {
+        actions.appendChild(redeployButton());
+      } else {
         const back = live && v.number < live;
         const btn = h('button', {
           type: 'button', class: 'btn btn-small' + (back ? '' : ' btn-primary'), disabled: v.pruned,
@@ -198,6 +201,16 @@ export function mount(main, [slug], ctx) {
         h('caption', { class: 'sr-only', text: 'Saved versions, newest first' }),
         h('thead', null, h('tr', null, ['Version', 'Created', 'Hash', 'Git', 'Message', 'Size', 'Actions'].map((t) => h('th', { scope: 'col', text: t })))),
         h('tbody', null, rows))));
+  }
+
+  // redeployButton restarts the live version, e.g. after a secret changed.
+  function redeployButton() {
+    const btn = h('button', {
+      type: 'button', class: 'btn btn-small', text: 'Redeploy (apply secrets)',
+      'aria-label': `Redeploy live version ${flat.live_version} to apply secrets`,
+    });
+    btn.addEventListener('click', () => busy(btn, async () => { if (await redeployLive(flat)) refresh(); }));
+    return btn;
   }
 
   // --- previews ---
@@ -268,7 +281,7 @@ export function mount(main, [slug], ctx) {
       busy(save, async () => {
         try {
           await api.putSecret(slug, name.value, value.value);
-          toast(`Secret ${name.value} saved. Redeploy to apply it.`, 'success');
+          toast(`Secret ${name.value} saved. It applies after Redeploy (apply secrets).`, 'success');
           loadSecrets();
           logs.poll();
         } catch (err) {
@@ -286,7 +299,7 @@ export function mount(main, [slug], ctx) {
         del.addEventListener('click', () => busy(del, async () => {
           const ok = await confirmDialog({
             title: `Delete secret ${s.name}?`,
-            body: 'The running version keeps its current environment until the next deploy.',
+            body: 'The running version keeps its current environment until it is redeployed (Redeploy (apply secrets) on the live version).',
             confirmLabel: 'Delete', danger: true,
           });
           if (!ok) return;
@@ -298,9 +311,14 @@ export function mount(main, [slug], ctx) {
           h('div', { class: 'cell-actions' }, replace, del));
       }))
       : h('p', { class: 'muted', text: 'No secrets.' });
+    const apply = flat.live_version
+      ? h('div', { class: 'inline-form' },
+        h('span', { class: 'muted', text: `Changes apply when the flat restarts: redeploy the live version ${flat.live_version} to use them now.` }),
+        redeployButton())
+      : h('p', { class: 'muted', text: 'Secrets apply when a version is deployed.' });
     fill(secretsSlot,
       h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server flats read them as environment variables.' }),
-      items, form);
+      items, form, apply);
   }
 
   // --- usage ---
@@ -366,7 +384,7 @@ export function mount(main, [slug], ctx) {
       btn);
   }
 
-  refresh().then((ok) => { if (ok) { loadSecrets(); logs.start(); } });
+  refresh().then((ok) => { if (ok) logs.start(); });
   return () => { for (const t of timers) clearInterval(t); logs.stop(); };
 }
 

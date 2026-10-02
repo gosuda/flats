@@ -5,6 +5,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,4 +139,86 @@ func TestFromDirSkipsLinksAndJunk(t *testing.T) {
 	if err != nil || len(files) != 1 {
 		t.Fatalf("FromDir: %v %+v", err, files)
 	}
+}
+
+func TestHealthPathValidation(t *testing.T) {
+	for _, h := range []string{"/ x", "/a b", "/%zz", "/\x01", "//evil.example/x", "http://x/", "health", "/a#b", "/é"} {
+		_, err := ParseManifest([]File{{Path: "index.html"}, {Path: "flats.json", Data: []byte(`{"health":` + jsonString(h) + `}`)}})
+		v, ok := IsValidation(err)
+		if !ok || len(v.Problems) != 1 || !strings.Contains(v.Problems[0].Message, "health") || v.Problems[0].Fix == "" {
+			t.Errorf("health %q: want one health problem with a fix, got %v", h, err)
+		}
+	}
+	for _, h := range []string{"/", "/healthz", "/api/health?deep=1", "/a%20b"} {
+		m, err := ParseManifest([]File{{Path: "index.html"}, {Path: "flats.json", Data: []byte(`{"health":` + jsonString(h) + `}`)}})
+		if err != nil || m.Health != h {
+			t.Errorf("health %q must be accepted: %v", h, err)
+		}
+		// Every accepted path must form a valid request (the deploy builds one).
+		if _, err := http.NewRequest(http.MethodGet, "http://flat"+h, nil); err != nil {
+			t.Errorf("health %q: %v", h, err)
+		}
+	}
+}
+
+func TestManifestErrorsAreSpecificAndComplete(t *testing.T) {
+	problems := func(manifest string, extra ...File) []Problem {
+		t.Helper()
+		files := append([]File{{Path: "flats.json", Data: []byte(manifest)}}, extra...)
+		_, err := ParseManifest(files)
+		v, ok := IsValidation(err)
+		if !ok {
+			t.Fatalf("%s: want a validation error, got %v", manifest, err)
+		}
+		return v.Problems
+	}
+	has := func(ps []Problem, msg, fix string) bool {
+		for _, p := range ps {
+			if strings.Contains(p.Message, msg) && strings.Contains(p.Fix, fix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A type error names the field and the expected type, and the missing
+	// index.html is still reported in the same response.
+	ps := problems(`{"spa":"yes","name":5}`)
+	if !has(ps, `"spa" must be a boolean, not a string`, "true or false") ||
+		!has(ps, `"name" must be a string, not a number`, "double quotes") ||
+		!has(ps, "no index.html", "index.html") || len(ps) != 3 {
+		t.Fatalf("type errors: %+v", ps)
+	}
+
+	// A syntax error gives the position.
+	ps = problems("{\n  \"kind\": \"static\",\n}")
+	if !has(ps, "invalid JSON at byte", "syntax") || !strings.Contains(ps[0].Message, "line 3") || len(ps) != 2 {
+		t.Fatalf("syntax error: %+v", ps)
+	}
+
+	// An unknown field lists the allowed fields; other problems still show.
+	ps = problems(`{"bogus":1,"Health":"/","health":"x"}`, File{Path: "index.html"})
+	if !has(ps, `unknown field "bogus"`, "name, kind, entry, spa, not_found, health, screenshot") ||
+		!has(ps, `unknown field "Health"`, `rename it to "health"`) ||
+		!has(ps, `health "x"`, "/healthz") || len(ps) != 3 {
+		t.Fatalf("unknown fields: %+v", ps)
+	}
+
+	// A non-object manifest says so.
+	ps = problems(`["kind"]`, File{Path: "index.html"})
+	if !has(ps, "must be a JSON object, not a JSON array", "braces") {
+		t.Fatalf("array manifest: %+v", ps)
+	}
+
+	// An unreadable kind does not produce a spurious static-site error for a
+	// server bundle.
+	ps = problems(`{"kind":1}`, File{Path: "server.js"})
+	if len(ps) != 1 || !has(ps, `"kind" must be a string`, `"kind": "static"`) {
+		t.Fatalf("bad kind: %+v", ps)
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

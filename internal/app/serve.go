@@ -9,9 +9,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,15 +46,20 @@ type Options struct {
 	Runtime     bool
 }
 
-// DefaultDataDir returns $FLATS_DATA or ~/Library/Application Support/Flats.
+// DefaultDataDir returns $FLATS_DATA or ~/Library/Application Support/Flats,
+// as an absolute path.
 func DefaultDataDir() string {
-	if d := os.Getenv("FLATS_DATA"); d != "" {
-		return d
+	d := os.Getenv("FLATS_DATA")
+	if d == "" {
+		d = ".flats"
+		if c, err := os.UserConfigDir(); err == nil {
+			d = filepath.Join(c, "Flats")
+		}
 	}
-	if d, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(d, "Flats")
+	if abs, err := filepath.Abs(d); err == nil {
+		return abs
 	}
-	return ".flats"
+	return d
 }
 
 // ParseServeFlags parses `flats serve` arguments.
@@ -81,6 +89,13 @@ func ParseServeFlags(args []string) (Options, error) {
 	if o.Network != "tailscale" && o.Network != "local" {
 		return o, fmt.Errorf("--network must be tailscale or local")
 	}
+	// Server-flat workers run with "/" as their working directory, so a
+	// relative data directory would point somewhere else for them.
+	abs, err := filepath.Abs(o.DataDir)
+	if err != nil {
+		return o, fmt.Errorf("--data: %w", err)
+	}
+	o.DataDir = abs
 	return o, nil
 }
 
@@ -162,13 +177,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		h.Private = n
 	}
 	if o.Portal {
-		relays := o.Relays
-		if len(relays) == 0 {
-			if v, err := st.GetSetting(ctx, core.SetPortalRelays, ""); err == nil && v != "" {
-				relays = strings.Split(v, ",")
-			}
-		}
-		p, err := portal.New(portal.Config{Dir: filepath.Join(o.DataDir, "portal"), Relays: relays, Logf: logf})
+		p, err := portal.New(portalConfig(ctx, st, o, logf))
 		if err != nil {
 			return nil, fmt.Errorf("portal: %w", err)
 		}
@@ -208,19 +217,97 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	} else {
 		h.console = "http://" + h.ln.Addr().String()
 	}
-	h.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 15 * time.Second}
+	h.srv = &http.Server{Handler: loopbackGuard(h.ln.Addr(), mux), ReadHeaderTimeout: 15 * time.Second}
 	go func() {
 		if err := h.srv.Serve(h.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logf("management server: %v", err)
 		}
 	}()
 	if o.Network == "tailscale" {
-		if _, err := h.Private.Serve(ctx, o.ConsoleHost, mux, false); err != nil {
+		// The tsnet identity middleware sets Tailscale-User-Login from WhoIs
+		// on this node, so console decisions here record who made them.
+		node := &api.HostGuard{Hosts: h.consoleNames, Ports: []string{"", "80", "443"}, Next: api.TailnetIdentity(mux)}
+		if _, err := h.Private.Serve(ctx, o.ConsoleHost, node, false); err != nil {
 			logf("console node %s: %v", o.ConsoleHost, err)
 		}
 	}
 	ok = true
 	return h, nil
+}
+
+// portalConfig builds the Portal configuration from flags and settings. Bad
+// stored settings are logged and ignored, so a typo saved in the console
+// cannot keep `flats serve` (and every flat) from starting.
+func portalConfig(ctx context.Context, st *store.Store, o Options, logf func(string, ...any)) portal.Config {
+	get := func(key string) string {
+		v, err := st.GetSetting(ctx, key, core.Defaults[key])
+		if err != nil {
+			logf("setting %s: %v; using the default", key, err)
+			return core.Defaults[key]
+		}
+		return strings.TrimSpace(v)
+	}
+	cfg := portal.Config{Dir: filepath.Join(o.DataDir, "portal"), Relays: o.Relays, Discovery: true, Logf: logf}
+	if len(cfg.Relays) == 0 {
+		if v := get(core.SetPortalRelays); v != "" {
+			relays, err := portal.NormalizeRelays(strings.Split(v, ","))
+			if err != nil {
+				logf("setting %s=%q ignored: %v; using the Portal default relays", core.SetPortalRelays, v, err)
+			} else {
+				cfg.Relays = relays
+			}
+		}
+	}
+	if v := get(core.SetPortalDiscover); v != "" {
+		on, err := strconv.ParseBool(v)
+		switch {
+		case err != nil:
+			logf("setting %s=%q ignored: want true or false", core.SetPortalDiscover, v)
+		case !on && len(cfg.Relays) == 0:
+			logf("setting %s=false ignored: no relays are configured, so discovery stays on", core.SetPortalDiscover)
+		default:
+			cfg.Discovery = on
+		}
+	}
+	if v := get(core.SetPortalMaxRelay); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			logf("setting %s=%q ignored: want a non-negative integer", core.SetPortalMaxRelay, v)
+		} else {
+			cfg.MaxActiveRelays = n // 0 keeps the Portal default
+		}
+	}
+	return cfg
+}
+
+// loopbackGuard accepts only the loopback names of the bound address as
+// Host (and Origin): 127.0.0.1, localhost and ::1 with its port, plus the
+// listen IP itself when it is a specific address.
+func loopbackGuard(addr net.Addr, next http.Handler) http.Handler {
+	host, port, _ := net.SplitHostPort(addr.String())
+	hosts := []string{"127.0.0.1", "localhost", "::1"}
+	if ip := net.ParseIP(host); ip != nil && !ip.IsUnspecified() && !slices.Contains(hosts, ip.String()) {
+		hosts = append(hosts, ip.String())
+	}
+	ports := []string{port}
+	if port == "80" {
+		ports = append(ports, "")
+	}
+	return &api.HostGuard{Hosts: func() []string { return hosts }, Ports: ports, Next: next}
+}
+
+// consoleNames are the tailnet names of the console node: the configured
+// host, and its MagicDNS name and first label once the node knows them
+// (control may have renamed a duplicate to e.g. flats-1).
+func (h *Host) consoleNames() []string {
+	names := []string{h.Opts.ConsoleHost}
+	if u, err := url.Parse(h.Private.URL(h.Opts.ConsoleHost)); err == nil {
+		if fqdn := u.Hostname(); fqdn != "" && !strings.Contains(fqdn, "<") {
+			short, _, _ := strings.Cut(fqdn, ".")
+			names = append(names, fqdn, short)
+		}
+	}
+	return names
 }
 
 // SystemStatus is returned by /api/status and the console settings page.

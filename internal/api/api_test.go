@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,11 @@ func setup(t *testing.T) (*httptest.Server, *core.Service) {
 	return srv, svc
 }
 
+// consoleHdr is what the console page's fetch sends on a mutation.
+func consoleHdr(srv *httptest.Server) map[string]string {
+	return map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin", "Origin": srv.URL, "Content-Type": "application/json"}
+}
+
 func archive(files map[string]string) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -54,7 +60,15 @@ func archive(files map[string]string) []byte {
 func req(t *testing.T, method, url string, body io.Reader, hdr map[string]string) (int, map[string]any) {
 	t.Helper()
 	r, _ := http.NewRequest(method, url, body)
+	if !strings.Contains(url, "/console/api/") {
+		// Agent API mutations need a client header (CSRF protection).
+		r.Header.Set("X-Flats-Client", "test")
+	}
 	for k, v := range hdr {
+		if v == "" {
+			r.Header.Del(k)
+			continue
+		}
 		r.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(r)
@@ -107,7 +121,7 @@ func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 	if code, _ := req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, map[string]string{"X-Flats-Console": "1"}); code != 403 {
 		t.Fatalf("console approve without Sec-Fetch-Site = %d", code)
 	}
-	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin"})
+	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(srv))
 	if code != 200 || out["status"] != "approved" {
 		t.Fatalf("console approve: %d %v", code, out)
 	}
@@ -116,7 +130,7 @@ func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 		t.Fatalf("after approval: %v", out)
 	}
 	// Agents cannot create flats from the console.
-	if code, _ := req(t, "POST", srv.URL+"/console/api/flats", strings.NewReader(`{"slug":"abc"}`), map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin"}); code != 405 && code != 404 {
+	if code, _ := req(t, "POST", srv.URL+"/console/api/flats", strings.NewReader(`{"slug":"abc"}`), consoleHdr(srv)); code != 405 && code != 404 {
 		t.Fatalf("console create = %d", code)
 	}
 }
@@ -142,5 +156,184 @@ func TestSecretsOperatorOnlyAndNeverReturned(t *testing.T) {
 	resp.Body.Close()
 	if strings.Contains(string(b), "s3cr3t") {
 		t.Fatal("secret value leaked into logs")
+	}
+}
+
+// A web page in the operator's browser must not drive the agent API: it can
+// only send "simple" requests (text/plain, no custom headers) without a
+// preflight, and the browser marks them with Sec-Fetch-Site and Origin.
+func TestAgentAPIRefusesCrossSiteRequests(t *testing.T) {
+	srv, _ := setup(t)
+	if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "legit"})), nil); code != 201 {
+		t.Fatalf("setup upload: %d %v", code, out)
+	}
+	deface := func() io.Reader { return bytes.NewReader(archive(map[string]string{"index.html": "defaced"})) }
+	noClient := map[string]string{"X-Flats-Client": "", "Content-Type": "text/plain"}
+	cases := []struct {
+		name string
+		hdr  map[string]string
+		want int
+	}{
+		{"cross-site", map[string]string{"X-Flats-Client": "", "Content-Type": "text/plain", "Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, 403},
+		{"same-site flat page", map[string]string{"X-Flats-Client": "", "Content-Type": "text/plain", "Sec-Fetch-Site": "same-site"}, 403},
+		{"foreign origin, old browser", map[string]string{"X-Flats-Client": "", "Content-Type": "text/plain", "Origin": "https://evil.example"}, 403},
+		{"simple request without client header", noClient, 415},
+		{"form post", map[string]string{"X-Flats-Client": "", "Content-Type": "application/x-www-form-urlencoded"}, 415},
+	}
+	for _, c := range cases {
+		if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", deface(), c.hdr); code != c.want {
+			t.Errorf("%s: upload = %d %v, want %d", c.name, code, out, c.want)
+		}
+	}
+	if code, _ := req(t, "POST", srv.URL+"/api/flats/site/rename", strings.NewReader(`{"slug":"pwned"}`), noClient); code != 415 {
+		t.Errorf("text/plain rename = %d", code)
+	}
+	if code, _ := req(t, "POST", srv.URL+"/api/flats", strings.NewReader(`{"slug":"spam"}`), noClient); code != 415 {
+		t.Errorf("text/plain create = %d", code)
+	}
+	if code, out := req(t, "GET", srv.URL+"/api/flats/site", nil, nil); code != 200 || out["slug"] != "site" {
+		t.Fatalf("flat changed by a refused request: %d %v", code, out)
+	}
+	if code, out := req(t, "GET", srv.URL+"/api/flats/site/versions", nil, map[string]string{"Sec-Fetch-Site": "same-site"}); code != 403 {
+		t.Errorf("same-site read = %d %v", code, out)
+	}
+
+	// Real clients: an archive or JSON Content-Type works without a client
+	// header, and the same-origin console origin is fine.
+	if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions", deface(), map[string]string{"X-Flats-Client": "", "Content-Type": "application/gzip"}); code != 201 {
+		t.Errorf("archive upload without client header = %d %v", code, out)
+	}
+	if code, out := req(t, "POST", srv.URL+"/api/flats", strings.NewReader(`{"slug":"other"}`), map[string]string{"X-Flats-Client": "", "Content-Type": "application/json; charset=utf-8", "Origin": srv.URL}); code != 201 {
+		t.Errorf("JSON create = %d %v", code, out)
+	}
+	if code, out := req(t, "DELETE", srv.URL+"/api/flats/other?reason=x", nil, map[string]string{"X-Flats-Client": "cli"}); code != 202 {
+		t.Errorf("CLI delete request = %d %v", code, out)
+	}
+}
+
+// The console API refuses requests that identify as the CLI or another
+// client, and mutations without a same-origin browser Origin.
+func TestConsoleRefusesClientsAndForeignOrigins(t *testing.T) {
+	srv, _ := setup(t)
+	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	_, out := req(t, "DELETE", srv.URL+"/api/flats/site?reason=x", nil, nil)
+	id := out["approval"].(map[string]any)["id"].(string)
+	approve := srv.URL + "/console/api/approvals/" + id + "/approve"
+	with := func(k, v string) map[string]string {
+		h := consoleHdr(srv)
+		h[k] = v
+		return h
+	}
+	for name, h := range map[string]map[string]string{
+		"cli header":     with("X-Flats-Client", "cli"),
+		"any client":     with("X-Flats-Client", "agent"),
+		"no origin":      with("Origin", ""),
+		"foreign origin": with("Origin", "http://attacker.example:7878"),
+		"no fetch site":  with("Sec-Fetch-Site", ""),
+	} {
+		if code, out := req(t, "POST", approve, nil, h); code != 403 {
+			t.Errorf("%s: approve = %d %v", name, code, out)
+		}
+	}
+	if code, _ := req(t, "GET", srv.URL+"/console/api/settings", nil, map[string]string{"X-Flats-Console": "1", "X-Flats-Client": "cli"}); code != 403 {
+		t.Errorf("console read with client header = %d", code)
+	}
+	if code, out := req(t, "GET", srv.URL+"/api/approvals/"+id, nil, nil); code != 200 || out["status"] != "pending" {
+		t.Fatalf("approval decided by a refused request: %d %v", code, out)
+	}
+}
+
+// Decisions made through the console node carry the WhoIs login that the
+// tsnet middleware set; the loopback listener has none.
+func TestDecisionRecordsTailnetLogin(t *testing.T) {
+	srv, svc := setup(t)
+	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc}).Handler()))
+	t.Cleanup(tail.Close)
+	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	pending := func() string {
+		_, out := req(t, "POST", srv.URL+"/api/flats/site/visibility", strings.NewReader(`{"visibility":"public-listed"}`), nil)
+		return out["approval"].(map[string]any)["id"].(string)
+	}
+
+	id := pending()
+	h := consoleHdr(tail)
+	h["Tailscale-User-Login"] = "=?utf-8?q?j=C3=BCrgen@example.com?="
+	code, out := req(t, "POST", tail.URL+"/console/api/approvals/"+id+"/reject", nil, h)
+	if code != 200 || out["decided_by"] != "jürgen@example.com" || out["status"] != "rejected" {
+		t.Fatalf("reject via console node: %d %v", code, out)
+	}
+	_, logs := req(t, "GET", srv.URL+"/api/flats/site/logs?kind=approval", nil, nil)
+	b, _ := json.Marshal(logs)
+	if !strings.Contains(string(b), "tailnet user jürgen@example.com") || !strings.Contains(string(b), id) {
+		t.Fatalf("approval event lacks the approver: %s", b)
+	}
+
+	id = pending()
+	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(srv))
+	if code != 200 || out["decided_by"] != nil {
+		t.Fatalf("loopback approve: %d %v", code, out)
+	}
+}
+
+func TestSettingsReportRestartRequired(t *testing.T) {
+	srv, _ := setup(t)
+	code, out := req(t, "GET", srv.URL+"/console/api/settings", nil, map[string]string{"X-Flats-Console": "1"})
+	if code != 200 || !strings.Contains(fmt.Sprint(out["apply_on_restart"]), "portal_relays") {
+		t.Fatalf("get settings: %d %v", code, out)
+	}
+	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"portal_relays":"https://relay.example"}`), consoleHdr(srv))
+	if code != 200 || fmt.Sprint(out["restart_required"]) != "[portal_relays]" || out["note"] == nil {
+		t.Fatalf("relay change: %d %v", code, out)
+	}
+	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"keep_versions":"5","portal_relays":"https://relay.example"}`), consoleHdr(srv))
+	if code != 200 || fmt.Sprint(out["restart_required"]) != "[]" {
+		t.Fatalf("unchanged relays: %d %v", code, out)
+	}
+}
+
+func TestHostGuard(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	loop := &api.HostGuard{Hosts: func() []string { return []string{"127.0.0.1", "localhost", "::1"} }, Ports: []string{"7878"}, Next: next}
+	tailnet := "flats.tail1234.ts.net"
+	node := &api.HostGuard{Hosts: func() []string { return []string{"flats", tailnet} }, Ports: []string{"", "80", "443"}, Next: next}
+	cases := []struct {
+		g            *api.HostGuard
+		method, host string
+		origin       string
+		want         int
+	}{
+		{loop, "GET", "127.0.0.1:7878", "", 204},
+		{loop, "GET", "localhost:7878", "", 204},
+		{loop, "GET", "LOCALHOST:7878", "", 204},
+		{loop, "GET", "[::1]:7878", "", 204},
+		{loop, "POST", "127.0.0.1:7878", "http://localhost:7878", 204},
+		{loop, "GET", "attacker.example:7878", "", 403}, // DNS rebinding
+		{loop, "POST", "attacker.example:7878", "http://attacker.example:7878", 403},
+		{loop, "GET", "127.0.0.1:7879", "", 403},
+		{loop, "GET", "127.0.0.1", "", 403},
+		{loop, "GET", "", "", 403},
+		{loop, "POST", "127.0.0.1:7878", "https://evil.example", 403},
+		{loop, "POST", "127.0.0.1:7878", "null", 403},
+		{loop, "GET", "127.0.0.1:7878", "https://evil.example", 403},
+		{node, "GET", tailnet, "", 204},
+		{node, "GET", tailnet + ".", "", 204},
+		{node, "GET", "flats", "", 204},
+		{node, "GET", "flats:80", "", 204},
+		{node, "POST", tailnet, "https://" + tailnet, 204},
+		{node, "POST", tailnet, "https://blog.tail1234.ts.net", 403},
+		{node, "GET", "rebind.evil.example", "", 403},
+		{node, "GET", "100.64.0.1", "", 403},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, "/console/api/approvals", nil)
+		r.Host = c.host
+		if c.origin != "" {
+			r.Header.Set("Origin", c.origin)
+		}
+		w := httptest.NewRecorder()
+		c.g.ServeHTTP(w, r)
+		if w.Code != c.want {
+			t.Errorf("%s Host=%q Origin=%q: %d %s, want %d", c.method, c.host, c.origin, w.Code, w.Body, c.want)
+		}
 	}
 }

@@ -185,7 +185,7 @@ func ready(relay, public string) sdk.RelayStatus {
 
 func TestIdentityPersistedAndReused(t *testing.T) {
 	dir := t.TempDir()
-	n, ff := newTestNet(t, Config{Dir: dir})
+	n, ff := newTestNet(t, Config{Dir: dir, Discovery: true})
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestIdentityPersistedAndReused(t *testing.T) {
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	n2, ff2 := newTestNet(t, Config{Dir: dir})
+	n2, ff2 := newTestNet(t, Config{Dir: dir, Discovery: true})
 	if _, err := n2.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestIdentityPersistedAndReused(t *testing.T) {
 }
 
 func TestServeRejectsBadSlug(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	for _, s := range []string{"", "../x", "a/b", ".hidden"} {
 		if _, err := n.Serve(t.Context(), s, hello("x"), false); err == nil {
 			t.Errorf("Serve(%q) succeeded", s)
@@ -250,7 +250,7 @@ func TestServeRejectsBadSlug(t *testing.T) {
 }
 
 func TestConfigPlumbing(t *testing.T) {
-	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day/", "", "s-h.day", "https://kakashit.org"}})
+	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day/", "", "s-h.day", "https://kakashit.org"}, Discovery: true})
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), true); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestConfigPlumbing(t *testing.T) {
 		t.Fatalf("initial metadata = %+v", m)
 	}
 
-	n2, ff2 := newTestNet(t, Config{MaxActiveRelays: 7})
+	n2, ff2 := newTestNet(t, Config{MaxActiveRelays: 7, Discovery: true})
 	if _, err := n2.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -284,8 +284,26 @@ func TestConfigPlumbing(t *testing.T) {
 	}
 }
 
+// With discovery off, an exposure uses only the explicit relays: the SDK gets
+// no WithDiscovery option (maxActive 0), whatever MaxActiveRelays says.
+func TestDiscoveryOff(t *testing.T) {
+	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day"}, MaxActiveRelays: 5})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	if f := ff.last(t); f.max != 0 || !slices.Equal(f.relays, []string{"https://s-h.day"}) {
+		t.Fatalf("relays=%v max=%d, want only the explicit relay without discovery", f.relays, f.max)
+	}
+	if d := n.Status().Detail; !strings.Contains(d, "discovery off") || strings.Contains(d, "more") {
+		t.Fatalf("detail = %q", d)
+	}
+	if _, err := New(Config{Dir: t.TempDir()}); err == nil {
+		t.Fatal("discovery off without relays accepted")
+	}
+}
+
 func TestServeServesHandlerAndStripsIdentity(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "proto=%s login=%q", r.Header.Get("X-Forwarded-Proto"), r.Header.Get("Tailscale-User-Login"))
 	})
@@ -327,7 +345,7 @@ func get(t *testing.T, req *http.Request) string {
 }
 
 func TestSetHidden(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	if err := n.SetHidden("blog", true); err == nil {
 		t.Fatal("SetHidden on unknown slug succeeded")
 	}
@@ -364,7 +382,7 @@ func TestSetHidden(t *testing.T) {
 }
 
 func TestStatusBookkeeping(t *testing.T) {
-	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day"}})
+	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day"}, Discovery: true})
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +452,7 @@ func TestStatusBookkeeping(t *testing.T) {
 }
 
 func TestStatusRuntimeFailureIsStarting(t *testing.T) {
-	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day"}})
+	n, ff := newTestNet(t, Config{Relays: []string{"https://s-h.day"}, Discovery: true})
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +475,7 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 func TestWaitReady(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	if _, err := n.WaitReady(t.Context(), "blog"); err == nil {
 		t.Fatal("WaitReady on unknown slug succeeded")
 	}
@@ -480,7 +498,7 @@ func TestWaitReady(t *testing.T) {
 }
 
 func TestStopIdempotentAndClose(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	if err := n.Stop("nope"); err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +553,7 @@ func TestStopIdempotentAndClose(t *testing.T) {
 }
 
 func TestServeDoesNotBindRequestContext(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	ctx, cancel := context.WithCancel(t.Context())
 	if _, err := n.Serve(ctx, "blog", hello("alive"), false); err != nil {
 		t.Fatal(err)
@@ -580,7 +598,7 @@ func TestSDKLogBridge(t *testing.T) {
 // Stop must let an in-flight public request finish before it unregisters
 // the exposure (closing it drops the relay route).
 func TestStopDrainsBeforeUnregister(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
@@ -639,7 +657,7 @@ func TestStopDrainsBeforeUnregister(t *testing.T) {
 // A Serve that is creating its exposure while Close runs must not leave a
 // live entry behind.
 func TestServeRacingClose(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	ff.onExpose = func() {
 		if err := n.Close(); err != nil {
 			t.Error(err)
@@ -658,7 +676,7 @@ func TestServeRacingClose(t *testing.T) {
 
 // SetHidden waits on the SDK's reconcile lock; Status must not wait with it.
 func TestSetHiddenDoesNotBlockStatus(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +711,7 @@ func TestSetHiddenDoesNotBlockStatus(t *testing.T) {
 // With discovery only, URL() keeps the relay it returned first while that
 // relay stays ready, even when a relay that sorts earlier becomes ready.
 func TestURLStaysOnPrimary(t *testing.T) {
-	n, ff := newTestNet(t, Config{})
+	n, ff := newTestNet(t, Config{Discovery: true})
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
 		t.Fatal(err)
 	}

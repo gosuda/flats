@@ -218,6 +218,9 @@ func (a *app) status(args []string) error {
 				}
 				fmt.Fprintf(w, "  %s: %s\n", k, indentJSON(body[k], "  "))
 			}
+			if hasPublicHosts(body["system"]) {
+				fmt.Fprintf(w, "  note: the public hosts above serve public flats. %s\n", publicURLNotice)
+			}
 		}
 	}
 	if ld != nil {
@@ -244,6 +247,27 @@ func (a *app) status(args []string) error {
 		return serr
 	}
 	return nil
+}
+
+// hasPublicHosts reports whether a status "system" object lists public
+// (Portal) hosts with URLs.
+func hasPublicHosts(raw json.RawMessage) bool {
+	var sys struct {
+		Public *struct {
+			Hosts []struct {
+				URL string `json:"url"`
+			} `json:"hosts"`
+		} `json:"public"`
+	}
+	if json.Unmarshal(raw, &sys) != nil || sys.Public == nil {
+		return false
+	}
+	for _, h := range sys.Public.Hosts {
+		if h.URL != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func indentJSON(raw json.RawMessage, prefix string) string {

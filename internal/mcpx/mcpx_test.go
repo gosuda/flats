@@ -539,3 +539,29 @@ func TestLogsLimit(t *testing.T) {
 		t.Fatalf("paging: %+v", logs)
 	}
 }
+
+func TestRollbackIsMarkedDestructive(t *testing.T) {
+	e := newEnv(t)
+	res, err := e.local.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name != "rollback" {
+			continue
+		}
+		a := tool.Annotations
+		if a == nil || a.DestructiveHint == nil || !*a.DestructiveHint || a.IdempotentHint {
+			t.Fatalf("rollback must be destructive and not idempotent: %+v", a)
+		}
+		if !strings.Contains(tool.Description, "REPLACES the flat's current database") || !strings.Contains(tool.Description, "backed up") {
+			t.Errorf("description must say what restore_data does: %s", tool.Description)
+		}
+		schema, _ := json.Marshal(tool.InputSchema)
+		if !strings.Contains(string(schema), "replace the current database with the snapshot") || !strings.Contains(string(schema), "backing the current database up") {
+			t.Errorf("restore_data schema must explain the replacement: %s", schema)
+		}
+		return
+	}
+	t.Fatal("no rollback tool")
+}

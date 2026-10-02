@@ -32,7 +32,7 @@ func TestE2E(t *testing.T) {
 			t.Logf(f, a...)
 		}
 	}
-	n, err := New(Config{Dir: t.TempDir(), Relays: []string{"https://s-h.day"}, Logf: logf})
+	n, err := New(Config{Dir: t.TempDir(), Relays: []string{"https://s-h.day"}, Discovery: true, Logf: logf})
 	if err != nil {
 		t.Fatal(err)
 	}

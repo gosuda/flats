@@ -3,9 +3,13 @@ package core
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/gosuda/portal-tunnel/v2/utils"
 )
 
 // Setting keys and defaults (all configurable in system settings).
@@ -87,29 +91,27 @@ func (s *Service) Settings(ctx context.Context) (map[string]string, error) {
 }
 
 // UpdateSettings validates and stores settings. Only the console calls it.
+// Nothing is stored unless every value is valid. The Portal settings are
+// read when `flats serve` starts.
 func (s *Service) UpdateSettings(ctx context.Context, in map[string]string) (map[string]string, error) {
+	clean := make(map[string]string, len(in))
 	for k, v := range in {
 		if _, ok := Defaults[k]; !ok {
-			return nil, fmt.Errorf("unknown setting %q", k)
+			return nil, invalidf("unknown setting %q", k)
 		}
-		if k == SetPortalRelays {
-			continue
+		norm, err := normalizeSetting(k, strings.TrimSpace(v))
+		if err != nil {
+			return nil, invalid(err)
 		}
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n < 0 {
-			return nil, fmt.Errorf("setting %s must be a non-negative integer", k)
-		}
-		if (k == SetUploadMaxBytes || k == SetPreviewTTL || k == SetRateLimit) && n == 0 {
-			return nil, fmt.Errorf("setting %s must be positive", k)
-		}
+		clean[k] = norm
 	}
-	for k, v := range in {
+	for k, v := range clean {
 		if err := s.st.SetSetting(ctx, k, v); err != nil {
 			return nil, err
 		}
 		s.settings.Store(k, v)
 	}
-	if _, ok := in[SetRateLimit]; ok {
+	if _, ok := clean[SetRateLimit]; ok {
 		s.mu.Lock()
 		for _, lf := range s.live {
 			lf.limiter.setRate(s.rateLimit())
@@ -117,6 +119,44 @@ func (s *Service) UpdateSettings(ctx context.Context, in map[string]string) (map
 		s.mu.Unlock()
 	}
 	return s.Settings(ctx)
+}
+
+// normalizeSetting validates one setting value and returns the form to store.
+func normalizeSetting(k, v string) (string, error) {
+	switch k {
+	case SetPortalRelays:
+		var relays []string
+		for part := range strings.SplitSeq(v, ",") {
+			if part = strings.TrimSpace(part); part == "" {
+				continue
+			}
+			u, err := utils.NormalizeRelayURL(part)
+			if err != nil {
+				return "", fmt.Errorf("setting %s: relay %q: %v (use https://host[:port], or leave it empty for Portal defaults)", k, part, err)
+			}
+			if !slices.Contains(relays, u) {
+				relays = append(relays, u)
+			}
+		}
+		return strings.Join(relays, ","), nil
+	case SetPortalDiscover:
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return "", fmt.Errorf("setting %s must be true or false", k)
+		}
+		return strconv.FormatBool(b), nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		return "", fmt.Errorf("setting %s must be a non-negative integer", k)
+	}
+	switch k {
+	case SetUploadMaxBytes, SetPreviewTTL, SetRateLimit, SetPortalMaxRelay, SetEventsKeep:
+		if n == 0 {
+			return "", fmt.Errorf("setting %s must be positive", k)
+		}
+	}
+	return strconv.FormatInt(n, 10), nil
 }
 
 // limiter is a token bucket (rate per second, burst 2x rate).

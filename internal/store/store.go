@@ -16,6 +16,9 @@ import (
 // ErrNotFound is returned when a row does not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrExists is returned when a flat slug is already taken.
+var ErrExists = errors.New("already exists")
+
 // Visibility of a flat.
 type Visibility string
 
@@ -90,7 +93,7 @@ type Approval struct {
 	Flat        string          `json:"flat"`
 	Action      string          `json:"action"` // set_visibility | delete
 	Params      json.RawMessage `json:"params"`
-	Status      string          `json:"status"` // pending | approved | rejected | failed
+	Status      string          `json:"status"` // pending | applying | approved | rejected | failed
 	Via         string          `json:"via"`    // mcp | cli | api
 	Reason      string          `json:"reason,omitempty"`
 	Result      string          `json:"result,omitempty"`
@@ -186,6 +189,11 @@ CREATE TABLE IF NOT EXISTS pageviews (
   count INTEGER NOT NULL,
   PRIMARY KEY (flat, day)
 );
+CREATE TABLE IF NOT EXISTS redirects (
+  old TEXT PRIMARY KEY,
+  flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+  until INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS secrets (
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
   name TEXT NOT NULL,
@@ -208,7 +216,30 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate %s: %w", path, err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate %s: %w", path, err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrate upgrades data written by older versions (tracked in user_version).
+func migrate(db *sql.DB) error {
+	var ver int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
+		return err
+	}
+	if ver < 1 {
+		// Before the redirects table only the latest rename was kept, on the
+		// flat row. A slug that a flat uses again is no longer a redirect.
+		if _, err := db.Exec(`INSERT OR IGNORE INTO redirects(old,flat,until)
+			SELECT old_slug, slug, old_slug_until FROM flats
+			WHERE old_slug IS NOT NULL AND old_slug_until IS NOT NULL AND old_slug NOT IN (SELECT slug FROM flats)`); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec(`PRAGMA user_version = 1`)
+	return err
 }
 
 // Close closes the database.
@@ -226,7 +257,7 @@ func (s *Store) CreateFlat(ctx context.Context, f Flat) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
 		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt))
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
-		return fmt.Errorf("flat %q already exists", f.Slug)
+		return fmt.Errorf("flat %q %w", f.Slug, ErrExists)
 	}
 	return err
 }
@@ -262,13 +293,13 @@ func (s *Store) GetFlat(ctx context.Context, slug string) (Flat, error) {
 }
 
 // FlatByOldSlug returns the flat that was renamed away from old, if the
-// redirect window is still open.
+// redirect window is still open. Redirects follow later renames.
 func (s *Store) FlatByOldSlug(ctx context.Context, old string, now time.Time) (Flat, error) {
-	f, err := scanFlat(s.db.QueryRowContext(ctx, `SELECT `+flatCols+` FROM flats WHERE old_slug=? AND old_slug_until>?`, old, unix(now)))
-	if errors.Is(err, sql.ErrNoRows) {
-		return f, fmt.Errorf("old slug %q: %w", old, ErrNotFound)
+	r, err := s.RedirectFor(ctx, old, now)
+	if err != nil {
+		return Flat{}, err
 	}
-	return f, err
+	return s.GetFlat(ctx, r.Flat)
 }
 
 // ListFlats returns all flats ordered by most recently updated.
@@ -308,22 +339,36 @@ func (s *Store) Touch(ctx context.Context, slug string, now time.Time) error {
 	return err
 }
 
-// RenameFlat changes a slug and records the old one for redirects until till.
+// RenameFlat changes a slug. When till is not zero, the old slug is recorded
+// as a redirect to the flat until till. Earlier redirects follow the flat;
+// a redirect from the new slug itself is dropped.
 func (s *Store) RenameFlat(ctx context.Context, from, to string, till, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE flats SET slug=?, old_slug=?, old_slug_until=?, updated_at=? WHERE slug=?`, to, from, unix(till), unix(now), from)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM redirects WHERE old=?`, to); err != nil {
+		return err
+	}
+	q, args := `UPDATE flats SET slug=?, updated_at=? WHERE slug=?`, []any{to, unix(now), from}
+	if !till.IsZero() {
+		q, args = `UPDATE flats SET slug=?, old_slug=?, old_slug_until=?, updated_at=? WHERE slug=?`, []any{to, from, unix(till), unix(now), from}
+	}
+	res, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			return fmt.Errorf("flat %q already exists", to)
+			return fmt.Errorf("flat %q %w", to, ErrExists)
 		}
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("flat %q: %w", from, ErrNotFound)
+	}
+	if !till.IsZero() {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO redirects(old,flat,until) VALUES(?,?,?) ON CONFLICT(old) DO UPDATE SET flat=excluded.flat, until=excluded.until`, from, to, unix(till)); err != nil {
+			return err
+		}
 	}
 	for _, q := range []string{`UPDATE events SET flat=? WHERE flat=?`, `UPDATE approvals SET flat=? WHERE flat=?`, `UPDATE pageviews SET flat=? WHERE flat=?`} {
 		if _, err := tx.ExecContext(ctx, q, to, from); err != nil {
@@ -353,6 +398,53 @@ func (s *Store) DeleteFlat(ctx context.Context, slug string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// --- redirects ---
+
+// Redirect sends an old slug to the flat that now owns its addresses.
+type Redirect struct {
+	Old   string    `json:"old"`
+	Flat  string    `json:"flat"`
+	Until time.Time `json:"until"`
+}
+
+// RedirectFor returns the open redirect from old.
+func (s *Store) RedirectFor(ctx context.Context, old string, now time.Time) (Redirect, error) {
+	r := Redirect{Old: old}
+	var until int64
+	err := s.db.QueryRowContext(ctx, `SELECT flat,until FROM redirects WHERE old=? AND until>?`, old, unix(now)).Scan(&r.Flat, &until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, fmt.Errorf("redirect from %q: %w", old, ErrNotFound)
+	}
+	r.Until = fromUnix(until)
+	return r, err
+}
+
+// ActiveRedirects returns every redirect whose window is still open.
+func (s *Store) ActiveRedirects(ctx context.Context, now time.Time) ([]Redirect, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT old,flat,until FROM redirects WHERE until>? ORDER BY old`, unix(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Redirect
+	for rows.Next() {
+		var r Redirect
+		var until int64
+		if err := rows.Scan(&r.Old, &r.Flat, &until); err != nil {
+			return nil, err
+		}
+		r.Until = fromUnix(until)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteExpiredRedirects removes redirects whose window has closed.
+func (s *Store) DeleteExpiredRedirects(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM redirects WHERE until<=?`, unix(now))
+	return err
 }
 
 // --- versions ---
@@ -526,10 +618,35 @@ func (s *Store) ListEvents(ctx context.Context, flat, kind string, after int64, 
 	return out, rows.Err()
 }
 
-// PruneEvents keeps the newest keep events per flat.
-func (s *Store) PruneEvents(ctx context.Context, flat string, keep int) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE flat=? AND id NOT IN (SELECT id FROM events WHERE flat=? ORDER BY id DESC LIMIT ?)`, flat, flat, keep)
-	return err
+// PruneEvents keeps the newest keep events of flat and returns how many
+// were deleted.
+func (s *Store) PruneEvents(ctx context.Context, flat string, keep int) (int64, error) {
+	if keep < 0 {
+		keep = 0
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE flat=? AND id <= (SELECT id FROM events WHERE flat=? ORDER BY id DESC LIMIT 1 OFFSET ?)`, flat, flat, keep)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// EventFlats returns every flat name that has events.
+func (s *Store) EventFlats(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT flat FROM events`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
 
 // --- approvals ---
@@ -599,12 +716,34 @@ func (s *Store) ListApprovals(ctx context.Context, status string) ([]Approval, e
 // DecideApproval moves a pending approval to a final status. It fails if the
 // approval is no longer pending.
 func (s *Store) DecideApproval(ctx context.Context, id, status, result string, now time.Time) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET status=?, result=?, decided_at=? WHERE id=? AND status='pending'`, status, result, unix(now), id)
+	return s.moveApproval(ctx, id, "pending", status, result, now)
+}
+
+// ClaimApproval moves a pending approval to "applying", so exactly one
+// decision can act on it. It fails if the approval is no longer pending.
+func (s *Store) ClaimApproval(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET status='applying' WHERE id=? AND status='pending'`, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("approval %q is not pending", id)
+	}
+	return nil
+}
+
+// FinishApproval records the outcome of a claimed approval.
+func (s *Store) FinishApproval(ctx context.Context, id, status, result string, now time.Time) error {
+	return s.moveApproval(ctx, id, "applying", status, result, now)
+}
+
+func (s *Store) moveApproval(ctx context.Context, id, from, status, result string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET status=?, result=?, decided_at=? WHERE id=? AND status=?`, status, result, unix(now), id, from)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("approval %q is not %s", id, from)
 	}
 	return nil
 }
@@ -642,6 +781,18 @@ func (s *Store) ListPreviews(ctx context.Context, flat string) ([]Preview, error
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// GetPreview returns one preview.
+func (s *Store) GetPreview(ctx context.Context, host string) (Preview, error) {
+	var p Preview
+	var c, l int64
+	err := s.db.QueryRowContext(ctx, `SELECT host,flat,version,created_at,last_access FROM previews WHERE host=?`, host).Scan(&p.Host, &p.Flat, &p.Version, &c, &l)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, fmt.Errorf("preview %q: %w", host, ErrNotFound)
+	}
+	p.CreatedAt, p.LastAccess = fromUnix(c), fromUnix(l)
+	return p, err
 }
 
 // TouchPreview updates last access.

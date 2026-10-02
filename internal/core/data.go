@@ -1,39 +1,75 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/oesni/flats/internal/store"
 )
 
-// checkReserved rejects slugs that collide with system host names or with an
-// open preview host.
-func (s *Service) checkReserved(slugName string) error {
+// checkReserved rejects slugs that collide with system host names, an open
+// preview host or a rename redirect. A redirect that points at owner (the
+// flat being renamed) does not count: a flat may take its old slug back.
+func (s *Service) checkReserved(ctx context.Context, slugName, owner string) error {
 	for _, r := range s.cfg.Reserved {
 		if slugName == r {
-			return fmt.Errorf("invalid slug: %q is reserved for the Flats console", slugName)
+			return invalidf("invalid slug: %q is reserved for the Flats console", slugName)
 		}
 	}
 	s.mu.Lock()
 	_, isPreview := s.prevs[slugName]
-	_, isRedirect := s.redir[slugName]
+	r := s.redir[slugName]
 	s.mu.Unlock()
-	if isPreview || isRedirect {
-		return fmt.Errorf("invalid slug: %q is currently used by a preview or redirect", slugName)
+	if isPreview {
+		return invalidf("invalid slug: %q is currently used by a preview", slugName)
+	}
+	if r != nil && r.cur != owner {
+		return invalidf("invalid slug: %q is currently used by a redirect to %q", slugName, r.cur)
+	}
+	// Redirects are kept in the database even when none is being served
+	// (e.g. after a failed restart), so a new flat can never be shadowed by
+	// a redirect that comes back later.
+	if red, err := s.st.RedirectFor(ctx, slugName, s.now()); err == nil && red.Flat != owner {
+		return invalidf("invalid slug: %q redirects to %q until %s", slugName, red.Flat, red.Until.Format("2006-01-02 15:04 MST"))
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
 	}
 	return nil
 }
 
-// snapshotData copies a flat's data directory for a preview. SQLite databases
-// are copied with VACUUM INTO so a live writer (WAL mode) cannot leave the
-// copy inconsistent; other files are copied as-is.
+// dbName is the server-flat database inside a data directory.
+const dbName = "db.sqlite"
+
+// snapshotData copies a flat's data directory for a preview. The database is
+// copied with VACUUM INTO so a live writer (WAL mode) cannot leave the copy
+// inconsistent; other files, including user files that merely look like
+// databases, are copied as they are.
 func snapshotData(src, dst string) error {
+	if err := snapshotFiles(src, dst); err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(src, dbName)); err != nil {
+		return nil
+	}
+	return vacuumInto(filepath.Join(src, dbName), filepath.Join(dst, dbName))
+}
+
+// snapshotFiles copies a data directory without its database.
+func snapshotFiles(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return err
 	}
+	db := filepath.Join(src, dbName)
 	return filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -48,17 +84,28 @@ func snapshotData(src, dst string) error {
 			return os.MkdirAll(target, 0o700)
 		case !info.Mode().IsRegular():
 			return nil
-		case strings.HasSuffix(p, "-wal") || strings.HasSuffix(p, "-shm") || strings.HasSuffix(p, "-journal"):
-			return nil // folded into the VACUUM INTO copy
-		case strings.HasSuffix(p, ".sqlite") || strings.HasSuffix(p, ".db"):
-			return vacuumInto(p, target)
+		case p == db || p == db+"-wal" || p == db+"-shm" || p == db+"-journal":
+			return nil
 		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o600)
+		return copyFile(p, target)
 	})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func vacuumInto(src, dst string) error {
@@ -73,17 +120,94 @@ func vacuumInto(src, dst string) error {
 	return nil
 }
 
-// keepSnapshots bounds pre-deploy database snapshots per flat.
+// installDB replaces the flat's database with a copy of src ("" removes it).
+// The caller makes sure nothing has the database open.
+func (s *Service) installDB(slugName, src string) error {
+	dataDir := s.dataDirOf(slugName)
+	db := filepath.Join(dataDir, dbName)
+	if src != "" {
+		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+			return err
+		}
+		if err := copyFile(src, db+".restore"); err != nil {
+			os.Remove(db + ".restore")
+			return err
+		}
+	}
+	// The old WAL belongs to the old database; it must not be replayed into
+	// the new one.
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err := os.Remove(db + suffix); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if src == "" {
+		if err := os.Remove(db); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.Rename(db+".restore", db)
+}
+
+// keepSnapshots bounds database snapshots per flat.
 const keepSnapshots = 10
+
+// Snapshot names are <kind>-<unix ms>.sqlite, with kind before-v<n> (taken
+// before version n was deployed, or before a restore made it live),
+// before-redeploy-v<n>, before-restore (older releases) or failed-v<n> (the
+// data from just before a server deploy that failed its health check).
+var snapshotRE = regexp.MustCompile(`^(?:before-(?:v\d+|redeploy-v\d+|restore)|failed-v\d+)-(\d+)\.sqlite$`)
+
+// keepFailedSnapshots bounds failed-v* snapshots separately.
+const keepFailedSnapshots = 3
+
+// markFailedSnapshot renames a pre-deploy snapshot after its deploy failed
+// and returns the new name.
+func (s *Service) markFailedSnapshot(slugName, snap string, n int) string {
+	ms := snapshotTime(snap)
+	name := fmt.Sprintf("failed-v%d-%d.sqlite", n, ms)
+	dir := s.snapshotDir(slugName)
+	if err := os.Rename(filepath.Join(dir, snap), filepath.Join(dir, name)); err != nil {
+		return snap
+	}
+	s.pruneSnapshots(slugName, name)
+	return name
+}
+
+func validSnapshotName(name string) bool { return snapshotRE.MatchString(name) }
+
+func snapshotTime(name string) int64 {
+	m := snapshotRE.FindStringSubmatch(name)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.ParseInt(m[1], 10, 64)
+	return n
+}
 
 func (s *Service) snapshotDir(slugName string) string {
 	return filepath.Join(s.flatDir(slugName), "snapshots")
 }
 
-// snapshotDB copies the flat's database before version n goes live. It
-// returns "" when the flat has no database.
-func (s *Service) snapshotDB(slugName string, n int) (string, error) {
-	db := filepath.Join(s.dataDirOf(slugName), "db.sqlite")
+// snapshotDB copies the flat's database before version n is deployed while
+// live is live. It returns "" when the flat has no database.
+func (s *Service) snapshotDB(slugName string, n, live int) (string, error) {
+	kind := fmt.Sprintf("before-v%d", n)
+	if n == live {
+		// Restarting the live version is not "before version n went live":
+		// keep restore_data pointed at the snapshot from the real deploy.
+		kind = fmt.Sprintf("before-redeploy-v%d", n)
+	}
+	keep, _ := s.liveSnapshot(slugName, live)
+	return s.snapshotAs(slugName, kind, keep)
+}
+
+// snapshotAs copies the flat's database to a new snapshot named after kind
+// and prunes old snapshots, never removing protect. It returns "" when the
+// flat has no database.
+func (s *Service) snapshotAs(slugName, kind, protect string) (string, error) {
+	db := filepath.Join(s.dataDirOf(slugName), dbName)
 	if _, err := os.Stat(db); err != nil {
 		return "", nil
 	}
@@ -91,101 +215,73 @@ func (s *Service) snapshotDB(slugName string, n int) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("before-v%d-%d.sqlite", n, s.now().UnixMilli())
+	ms := s.now().UnixMilli()
+	name := fmt.Sprintf("%s-%d.sqlite", kind, ms)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, name)); os.IsNotExist(err) {
+			break
+		}
+		ms++
+		name = fmt.Sprintf("%s-%d.sqlite", kind, ms)
+	}
 	if err := vacuumInto(db, filepath.Join(dir, name)); err != nil {
 		return "", err
 	}
-	s.pruneSnapshots(dir)
+	s.pruneSnapshots(slugName, name, protect)
 	return name, nil
 }
 
-func (s *Service) pruneSnapshots(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) <= keepSnapshots {
+func (s *Service) pruneSnapshots(slugName string, protect ...string) {
+	snaps, err := s.Snapshots(slugName) // newest first
+	if err != nil {
 		return
 	}
-	// Names embed the time, but sort by mod time to be safe.
-	type ent struct {
-		name string
-		mod  int64
-	}
-	var es []ent
-	for _, e := range entries {
-		if info, err := e.Info(); err == nil {
-			es = append(es, ent{e.Name(), info.ModTime().UnixNano()})
+	regular, failed := 0, 0
+	for _, name := range snaps {
+		limit, count := keepSnapshots, &regular
+		if strings.HasPrefix(name, "failed-") {
+			limit, count = keepFailedSnapshots, &failed
 		}
-	}
-	for i := 0; i < len(es); i++ {
-		for j := i + 1; j < len(es); j++ {
-			if es[j].mod < es[i].mod {
-				es[i], es[j] = es[j], es[i]
-			}
+		*count++
+		if *count > limit && !slices.Contains(protect, name) {
+			os.Remove(filepath.Join(s.snapshotDir(slugName), name))
 		}
-	}
-	for _, e := range es[:len(es)-keepSnapshots] {
-		os.Remove(filepath.Join(dir, e.name))
 	}
 }
 
-// Snapshots lists pre-deploy database snapshots, newest first.
+// Snapshots lists database snapshots, newest first.
 func (s *Service) Snapshots(slugName string) ([]string, error) {
 	entries, err := os.ReadDir(s.snapshotDir(slugName))
 	if os.IsNotExist(err) {
-		return nil, nil
+		return []string{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var out []string
-	for i := len(entries) - 1; i >= 0; i-- {
-		out = append(out, entries[i].Name())
+	out := []string{}
+	for _, e := range entries {
+		if validSnapshotName(e.Name()) {
+			out = append(out, e.Name())
+		}
 	}
+	slices.SortFunc(out, func(a, b string) int {
+		return cmp.Or(cmp.Compare(snapshotTime(b), snapshotTime(a)), strings.Compare(b, a))
+	})
 	return out, nil
 }
 
-// restoreSnapshot puts back the database snapshot taken before version live
-// was deployed. The running instance is stopped first so nothing writes to
-// the database while it is replaced (the flat answers 503 until the
-// rollback deploy finishes).
-func (s *Service) restoreSnapshot(ctx context.Context, slugName string, live int) error {
+// liveSnapshot returns the newest snapshot taken before version live was
+// deployed: the one rollback with restore_data puts back.
+func (s *Service) liveSnapshot(slugName string, live int) (string, error) {
 	prefix := fmt.Sprintf("before-v%d-", live)
 	snaps, err := s.Snapshots(slugName)
 	if err != nil {
-		return err
+		return "", err
 	}
-	var pick string
-	for _, n := range snaps { // newest first
+	for _, n := range snaps {
 		if strings.HasPrefix(n, prefix) {
-			pick = n
-			break
+			return n, nil
 		}
 	}
-	if pick == "" {
-		return fmt.Errorf("%w: no database snapshot was taken before version %d was deployed", ErrConflict, live)
-	}
-	lf := s.state(slugName)
-	if d := lf.cur.Swap(nil); d != nil && d.inst != nil {
-		d.inst.Stop()
-	}
-	dataDir := s.dataDirOf(slugName)
-	db := filepath.Join(dataDir, "db.sqlite")
-	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		os.Remove(db + suffix)
-	}
-	data, err := os.ReadFile(filepath.Join(s.snapshotDir(slugName), pick))
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return err
-	}
-	tmp := db + ".restore"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, db); err != nil {
-		return err
-	}
-	s.Event(ctx, slugName, "warn", "snapshot", "restored database snapshot "+pick, nil)
-	return nil
+	return "", fmt.Errorf("%w: no database snapshot was taken before version %d was deployed", ErrConflict, live)
 }

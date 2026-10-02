@@ -115,7 +115,7 @@ Workflow
 1. save_version uploads the build output (what a browser needs: index.html, JS, CSS, images). Saving never changes what is live. Use encoding "utf8" for text and "base64" for binary files (images, fonts, wasm). A missing flat is created on first save. Pass deploy=true to save and deploy in one call.
 2. deploy makes a saved version live after a health check: GET the manifest "health" path (default "/") must answer 2xx/3xx within 15s. If it fails, the previous live version keeps serving; read the health result, fix the build and save again.
 3. open_preview serves any saved version at a temporary private URL without touching live. Previews close on the next deploy of the flat or after 24h unused.
-4. rollback redeploys an earlier version (default: the one live before the current one). get_logs shows deploys, health checks and runtime output.
+4. rollback redeploys an earlier version (default: the one live before the current one). It restores code only; restore_data=true replaces a server flat's current database with the pre-deploy snapshot (the current one is backed up first), so ask the user before using it. get_logs shows deploys, health checks and runtime output.
 
 Exposure
 - Flats start private: only the operator's tailnet can open the private URL.

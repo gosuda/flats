@@ -42,8 +42,12 @@ func register(s *mcp.Server, t *tools) {
 		Description: "List saved versions, newest first, with the live one marked."}, t.listVersions)
 	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
 		Description: "Make a saved version live after a health check. On failure the previous live version keeps serving."}, t.deploy)
-	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: write,
-		Description: "Redeploy an earlier version (default: the version live before the current one)."}, t.rollback)
+	// rollback can replace the flat's database (restore_data), so clients
+	// must treat it as destructive and ask before running it.
+	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
+		Description: "Redeploy an earlier version (default: the version live before the current one). " +
+			"Code only by default; restore_data=true also REPLACES the flat's current database with the snapshot taken before the current version was deployed. " +
+			"Writes made since then (including users' data) are no longer live; the current database is backed up first, but only the operator can bring it back."}, t.rollback)
 	mcp.AddTool(s, &mcp.Tool{Name: "open_preview", Annotations: write,
 		Description: "Serve a saved version at a temporary private URL without changing live."}, t.openPreview)
 	mcp.AddTool(s, &mcp.Tool{Name: "set_visibility", Annotations: write,
@@ -482,7 +486,7 @@ type DeployIn struct {
 type RollbackIn struct {
 	Slug        string `json:"slug" jsonschema:"flat slug"`
 	Version     int    `json:"version,omitempty" jsonschema:"version to go back to (default: the one live before the current one)"`
-	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"also restore the database snapshot taken before the current version was deployed (server flats); default false keeps data as it is"`
+	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"server flats: replace the current database with the snapshot taken before the current version was deployed, after backing the current database up; writes since that deploy stop being live. Default false keeps data as it is. Ask the user first."`
 }
 
 func (t *tools) deployErr(ctx context.Context, slug string, err error) error {

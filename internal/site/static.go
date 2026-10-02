@@ -2,7 +2,10 @@
 package site
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,7 +23,13 @@ type Static struct {
 	Entry    string // index document, e.g. index.html
 	SPA      bool   // serve Entry for unknown paths without an extension
 	NotFound string // optional 404 page
-	ModTime  time.Time
+	// ModTime is the version's creation time. It is not sent as
+	// Last-Modified: after a rollback an older version becomes current, and
+	// a browser's newer If-Modified-Since would wrongly get a 304. Responses
+	// are validated with content ETags instead.
+	ModTime time.Time
+
+	etags sync.Map // file path -> strong ETag; version files never change
 }
 
 func init() {
@@ -93,13 +103,36 @@ func (s *Static) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	if strings.HasPrefix(rel, "assets/") || strings.Contains(path.Base(rel), ".") && hashedName(path.Base(rel)) {
+	// Only content-hashed names may be cached forever: any other file can
+	// change on the next deploy or rollback, so browsers must revalidate it.
+	if hashedName(st.Name()) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "no-cache")
 	}
+	if tag, err := s.etag(f); err == nil {
+		w.Header().Set("ETag", tag)
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, st.Name(), s.ModTime, f)
+	http.ServeContent(w, r, st.Name(), time.Time{}, f)
+}
+
+// etag returns a strong ETag derived from the file's content, so it changes
+// exactly when a deploy or rollback changes the bytes served at a path.
+func (s *Static) etag(f *os.File) (string, error) {
+	if v, ok := s.etags.Load(f.Name()); ok {
+		return v.(string), nil
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	tag := `"` + hex.EncodeToString(h.Sum(nil)[:16]) + `"`
+	s.etags.Store(f.Name(), tag)
+	return tag, nil
 }
 
 func (s *Static) notFound(w http.ResponseWriter, r *http.Request) {
@@ -127,37 +160,48 @@ func queryOf(r *http.Request) string {
 	return "?" + r.URL.RawQuery
 }
 
-// hashedName reports whether a file name looks content-hashed
-// (e.g. app.3f9a1c2b.js or index-BqZ2x8Ka.css).
+// hashedName reports whether a file name looks content-hashed, as bundlers
+// emit them: app.3f9a1c2b.js (hex), index-BqZ2x8Ka.css (mixed case) or
+// chunk-5JQ4ZQ2N.js (upper case). The hash part must mix letters and digits
+// and be hex or contain an upper-case letter, so dated names such as
+// photo-20240101.jpg or words such as icon-background1.png don't qualify.
+// A miss only costs a revalidation; a false hit would pin a stale file.
 func hashedName(name string) bool {
-	base := strings.TrimSuffix(name, path.Ext(name))
+	ext := path.Ext(name)
+	if ext == "" {
+		return false
+	}
+	base := strings.TrimSuffix(name, ext)
 	for _, sep := range []string{".", "-"} {
-		if i := strings.LastIndex(base, sep); i >= 0 {
-			h := base[i+1:]
-			if len(h) >= 8 && len(h) <= 32 && isAlnum(h) && hasDigit(h) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isAlnum(s string) bool {
-	for _, c := range s {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
-			return false
-		}
-	}
-	return true
-}
-
-func hasDigit(s string) bool {
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
+		if i := strings.LastIndex(base, sep); i >= 0 && hashLike(base[i+1:]) {
 			return true
 		}
 	}
 	return false
+}
+
+func hashLike(h string) bool {
+	if len(h) < 8 || len(h) > 64 {
+		return false
+	}
+	var digit, letter, upper, nonHex bool
+	for _, c := range h {
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'a' && c <= 'f':
+			letter = true
+		case c >= 'a' && c <= 'z':
+			letter, nonHex = true, true
+		case c == '_':
+			nonHex = true
+		case c >= 'A' && c <= 'Z':
+			letter, upper, nonHex = true, true, true
+		default:
+			return false
+		}
+	}
+	return digit && letter && (!nonHex || upper)
 }
 
 // ErrNoEntry is returned by Check when the entry document is missing.

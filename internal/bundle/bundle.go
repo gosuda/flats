@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -352,7 +353,8 @@ func stripCommonRoot(files []File) []File {
 	return out
 }
 
-// ParseManifest reads and validates flats.json (or derives defaults).
+// ParseManifest reads and validates flats.json (or derives defaults). It
+// reports every problem it finds, not just the first one.
 func ParseManifest(files []File) (Manifest, error) {
 	index := map[string]bool{}
 	for _, f := range files {
@@ -360,15 +362,21 @@ func ParseManifest(files []File) (Manifest, error) {
 	}
 	var m Manifest
 	var verr ValidationError
+	// bad holds the fields (or "*" for the whole manifest) that could not be
+	// decoded, so their dependent checks don't report follow-on noise.
+	bad := map[string]bool{}
 	for _, f := range files {
-		if f.Path != ManifestName {
-			continue
+		if f.Path == ManifestName {
+			decodeManifest(f.Data, &m, &verr, bad)
 		}
-		dec := json.NewDecoder(bytes.NewReader(f.Data))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&m); err != nil {
-			verr.add(ManifestName, "invalid manifest: "+err.Error(), `use only the fields name, kind, entry, spa, not_found, health, screenshot, e.g. {"kind":"static","entry":"index.html"}`)
-			return m, &verr
+	}
+	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
+		// Guess the kind so the entry checks below stay useful.
+		for _, cand := range serverEntries {
+			if index[cand] {
+				m.Kind = "server"
+				break
+			}
 		}
 	}
 	if m.Kind == "" {
@@ -381,7 +389,7 @@ func ParseManifest(files []File) (Manifest, error) {
 		}
 	case "server":
 		if m.Entry == "" {
-			for _, cand := range []string{"server.js", "index.js", "main.wasm", "server.wasm"} {
+			for _, cand := range serverEntries {
 				if index[cand] {
 					m.Entry = cand
 					break
@@ -389,7 +397,9 @@ func ParseManifest(files []File) (Manifest, error) {
 			}
 		}
 		if m.Entry == "" {
-			verr.add(ManifestName, "server flat has no entry", `set "entry" to the handler script (e.g. "server.js") or Wasm module`)
+			if !bad["entry"] {
+				verr.add(ManifestName, "server flat has no entry", `set "entry" to the handler script (e.g. "server.js") or Wasm module`)
+			}
 		} else if !strings.HasSuffix(m.Entry, ".js") && !strings.HasSuffix(m.Entry, ".mjs") && !strings.HasSuffix(m.Entry, ".wasm") {
 			verr.add(m.Entry, "server entry must be a .js, .mjs or .wasm file", "point entry at the JavaScript handler or the compiled Wasm module")
 		}
@@ -399,8 +409,8 @@ func ParseManifest(files []File) (Manifest, error) {
 	if m.Health == "" {
 		m.Health = "/"
 	}
-	if !strings.HasPrefix(m.Health, "/") {
-		verr.add(ManifestName, "health must be an absolute URL path", `e.g. "health": "/"`)
+	if msg, fix := checkHealth(m.Health); msg != "" {
+		verr.add(ManifestName, msg, fix)
 	}
 	check := func(field, p string) {
 		if p == "" {
@@ -416,8 +426,10 @@ func ParseManifest(files []File) (Manifest, error) {
 		}
 	}
 	if m.Kind == "static" && m.Entry == "index.html" && !index["index.html"] {
-		verr.add("index.html", "static flat has no index.html at the root",
-			`make sure the archive root is the build output directory (it must contain index.html), or set "entry" in flats.json`)
+		if !bad["entry"] {
+			verr.add("index.html", "static flat has no index.html at the root",
+				`make sure the archive root is the build output directory (it must contain index.html), or set "entry" in flats.json`)
+		}
 	} else if m.Entry != "" {
 		check("entry", m.Entry)
 	}
@@ -427,6 +439,157 @@ func ParseManifest(files []File) (Manifest, error) {
 		return m, &verr
 	}
 	return m, nil
+}
+
+// serverEntries are the default server entries, in order of preference.
+var serverEntries = []string{"server.js", "index.js", "main.wasm", "server.wasm"}
+
+// manifestFields lists the manifest fields in documentation order.
+var manifestFields = []string{"name", "kind", "entry", "spa", "not_found", "health", "screenshot"}
+
+const manifestExample = `{"kind":"static","entry":"index.html"}`
+
+// decodeManifest decodes flats.json field by field, so that one bad field
+// does not hide the others. Every problem gets a fix specific to its cause.
+func decodeManifest(data []byte, m *Manifest, verr *ValidationError, bad map[string]bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		bad["*"] = true
+		var se *json.SyntaxError
+		var te *json.UnmarshalTypeError
+		switch {
+		case errors.As(err, &se):
+			line, col := lineCol(data, se.Offset)
+			verr.add(ManifestName, fmt.Sprintf("invalid JSON at byte %d (line %d, column %d): %v", se.Offset, line, col, se),
+				"fix the JSON syntax at that position (check for missing quotes, commas or braces and trailing commas), e.g. "+manifestExample)
+		case errors.As(err, &te):
+			verr.add(ManifestName, "manifest must be a JSON object, not a JSON "+te.Value, "wrap the settings in braces, e.g. "+manifestExample)
+		default:
+			verr.add(ManifestName, "invalid manifest: "+err.Error(), "write the manifest as a JSON object, e.g. "+manifestExample)
+		}
+		return
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		var dst any
+		switch k {
+		case "name":
+			dst = &m.Name
+		case "kind":
+			dst = &m.Kind
+		case "entry":
+			dst = &m.Entry
+		case "spa":
+			dst = &m.SPA
+		case "not_found":
+			dst = &m.NotFound
+		case "health":
+			dst = &m.Health
+		case "screenshot":
+			dst = &m.Screenshot
+		default:
+			fix := "remove it; the allowed fields are " + strings.Join(manifestFields, ", ")
+			for _, f := range manifestFields {
+				if strings.EqualFold(strings.ReplaceAll(k, "-", "_"), f) {
+					fix = fmt.Sprintf("rename it to %q (field names are lowercase); the allowed fields are %s", f, strings.Join(manifestFields, ", "))
+				}
+			}
+			verr.add(ManifestName, fmt.Sprintf("unknown field %q", k), fix)
+			continue
+		}
+		if err := json.Unmarshal(raw[k], dst); err != nil {
+			bad[k] = true
+			if k == "spa" {
+				verr.add(ManifestName, fmt.Sprintf("field \"spa\" must be a boolean, not %s", jsonKind(raw[k])), `use true or false without quotes, e.g. "spa": true`)
+			} else {
+				verr.add(ManifestName, fmt.Sprintf("field %q must be a string, not %s", k, jsonKind(raw[k])), fmt.Sprintf("put the value in double quotes, e.g. %q: %q", k, fieldExample(k)))
+			}
+		}
+	}
+}
+
+func fieldExample(field string) string {
+	switch field {
+	case "name":
+		return "My blog"
+	case "kind":
+		return "static"
+	case "entry":
+		return "index.html"
+	case "not_found":
+		return "404.html"
+	case "health":
+		return "/"
+	case "screenshot":
+		return "screenshot.png"
+	}
+	return ""
+}
+
+// jsonKind names the JSON type of a raw value for error messages.
+func jsonKind(v json.RawMessage) string {
+	t := bytes.TrimSpace(v)
+	if len(t) == 0 {
+		return "an empty value"
+	}
+	switch t[0] {
+	case '"':
+		return "a string"
+	case '{':
+		return "an object"
+	case '[':
+		return "an array"
+	case 't', 'f':
+		return "a boolean"
+	case 'n':
+		return "null"
+	}
+	return "a number"
+}
+
+// lineCol converts a byte offset into 1-based line and column numbers.
+func lineCol(data []byte, off int64) (line, col int) {
+	// json.SyntaxError.Offset counts the offending byte too.
+	if off > 0 {
+		off--
+	}
+	if off > int64(len(data)) {
+		off = int64(len(data))
+	}
+	before := data[:off]
+	line = bytes.Count(before, []byte("\n")) + 1
+	col = int(off) - bytes.LastIndexByte(before, '\n')
+	return line, col
+}
+
+// checkHealth validates the health-check path. It must be an origin-form
+// request target ("/path?query"): no scheme, host, fragment, spaces or
+// control characters, so the deploy can always build the request.
+func checkHealth(p string) (msg, fix string) {
+	const fixPath = `use an absolute URL path such as "/" or "/healthz"`
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") {
+		return fmt.Sprintf("health %q must be a URL path starting with a single /, without a scheme or host", p), fixPath
+	}
+	for _, r := range p {
+		if r <= ' ' || r >= 0x7f {
+			return fmt.Sprintf("health %q contains a space, control or non-ASCII character", p), fixPath + `; percent-encode other characters (a space is "%20")`
+		}
+	}
+	if strings.Contains(p, "#") {
+		return fmt.Sprintf("health %q contains a fragment (#)", p), fixPath + `; remove the "#..." part`
+	}
+	u, err := url.ParseRequestURI(p)
+	if err != nil {
+		return fmt.Sprintf("health %q is not a valid URL path: %v", p, errors.Unwrap(err)), fixPath + `; write a literal % as "%25"`
+	}
+	if u.Scheme != "" || u.Host != "" {
+		return fmt.Sprintf("health %q must not include a scheme or host", p), fixPath
+	}
+	return "", ""
 }
 
 // Hash returns the content hash of a file list.

@@ -128,6 +128,16 @@ export function noticeFor(vis) {
   return '';
 }
 
+// PUBLIC_URL_NOTICE covers a public URL that came without a notice.
+export const PUBLIC_URL_NOTICE = 'Anyone with the public URL can open it. Unlisted only hides a flat from Portal relay listings; it is NOT access control.';
+
+// publicNoticeOf returns the warning to show next to a flat's public URL
+// ('' when it has none). Every public URL in the console carries one.
+export function publicNoticeOf(f) {
+  if (!f || !f.public_url) return '';
+  return f.public_notice || noticeFor(f.visibility) || PUBLIC_URL_NOTICE;
+}
+
 export function visibilityBadge(vis) {
   const v = VISIBILITY[vis] || { label: vis, icon: 'lock' };
   return h('span', { class: 'vis vis-' + vis }, icon(v.icon), h('span', { text: v.label }));
