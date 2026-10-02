@@ -11,19 +11,21 @@ import (
 	"time"
 
 	"github.com/oesni/flats/internal/launchd"
+	"github.com/oesni/flats/internal/systemd"
 )
 
-// DefaultDataDir returns the data directory: FLATS_DATA, else
-// ~/Library/Application Support/Flats.
+// DefaultDataDir returns the data directory: FLATS_DATA, else the user
+// config directory + Flats (~/Library/Application Support/Flats on macOS,
+// $XDG_CONFIG_HOME/Flats or ~/.config/Flats on Linux), matching `flats serve`.
 func DefaultDataDir(getenv func(string) string) (string, error) {
 	if d := getenv("FLATS_DATA"); d != "" {
 		return d, nil
 	}
-	home, err := os.UserHomeDir()
+	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "Library", "Application Support", "Flats"), nil
+	return filepath.Join(dir, "Flats"), nil
 }
 
 func (a *app) launchdOpts() launchd.Options {
@@ -31,10 +33,11 @@ func (a *app) launchdOpts() launchd.Options {
 }
 
 func (a *app) requireMacOS() error {
-	if a.goos() != "darwin" {
-		return errors.New("install/uninstall use launchd and work on macOS only; elsewhere run `flats serve` under your service manager (e.g. a systemd user unit)")
+	switch a.goos() {
+	case "darwin", "linux":
+		return nil
 	}
-	return nil
+	return errors.New("install/uninstall support macOS (launchd) and Linux (systemd user units); elsewhere run `flats serve` under your service manager")
 }
 
 func (a *app) install(args []string) error {
@@ -67,6 +70,26 @@ func (a *app) install(args []string) error {
 	}
 	serveArgs = append(serveArgs, extra...)
 
+	if a.goos() == "linux" {
+		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: extra, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
+		if err != nil {
+			return err
+		}
+		up := a.waitForServer()
+		if a.jsonOut {
+			a.writeJSON(map[string]any{"unit": path, "url": a.url, "running": up})
+			return nil
+		}
+		fmt.Fprintf(a.out, "Installed systemd user service %s (%s)\n", systemd.Unit, path)
+		fmt.Fprintln(a.out, "  logs:   journalctl --user -u flats.service")
+		fmt.Fprintln(a.out, "  To keep Flats running while you are logged out: loginctl enable-linger $USER")
+		if up {
+			fmt.Fprintf(a.out, "Flats is running at %s\n", a.url)
+		} else {
+			fmt.Fprintf(a.out, "The service is installed but %s is not answering yet; check `systemctl --user status flats`.\n", a.url)
+		}
+		return nil
+	}
 	opts := a.launchdOpts()
 	opts.Executable = *exe
 	opts.DataDir = dataDir
@@ -126,6 +149,18 @@ func (a *app) uninstall(args []string) error {
 	}
 	if err := a.requireMacOS(); err != nil {
 		return err
+	}
+	if a.goos() == "linux" {
+		removed, err := systemd.Uninstall(a.ctx, systemd.Options{Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
+		if err != nil {
+			return err
+		}
+		if removed {
+			fmt.Fprintf(a.out, "Removed systemd user service %s. Your flats and data are kept.\n", systemd.Unit)
+		} else {
+			fmt.Fprintln(a.out, "The systemd user service was not installed.")
+		}
+		return nil
 	}
 	removed, err := launchd.Uninstall(a.ctx, a.launchdOpts())
 	if err != nil {

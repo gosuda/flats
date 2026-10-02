@@ -6,7 +6,9 @@ MCP, a CLI or an HTTP API, and you manage them in a web console that only your
 tailnet can reach. Private flats are served over Tailscale; public flats go
 out through [Portal](https://github.com/gosuda/portal-tunnel).
 
-Everything ships as one CGO-free Go binary. macOS (Apple Silicon) first.
+Everything ships as one CGO-free Go binary. macOS (Apple Silicon) first;
+Linux builds (amd64, arm64) compile and install as a systemd user service,
+but have not yet been run end to end on a Linux host.
 
 ## What you get
 
@@ -34,14 +36,15 @@ Everything ships as one CGO-free Go binary. macOS (Apple Silicon) first.
 ```sh
 go build -o flats ./cmd/flats          # CGO_ENABLED=0 works
 ./flats serve                           # foreground
-./flats install                         # or: run at login with launchd (macOS)
+./flats install                         # or: run in the background (launchd on macOS,
+                                        # a systemd user service on Linux)
 ```
 
 `flats serve` options:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--data` | `~/Library/Application Support/Flats` (`$FLATS_DATA`) | data directory |
+| `--data` | `~/Library/Application Support/Flats` on macOS, `~/.config/Flats` on Linux (`$FLATS_DATA`) | data directory |
 | `--listen` | `127.0.0.1:7878` | loopback address for the CLI, local agents and the console |
 | `--network` | `tailscale` | `local` serves flats at `http://<flat>.localhost:7879` without Tailscale (development) |
 | `--authkey-file` | | file with a reusable, untagged Tailscale auth key (or `TS_AUTHKEY`; otherwise each node prints a login URL) |

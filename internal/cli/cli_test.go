@@ -596,8 +596,23 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 	}
 
 	env.GOOS = "linux"
-	if r := runEnv(t, env, srv.URL, "install"); r.code != ExitError || !strings.Contains(r.stderr, "macOS only") {
-		t.Errorf("linux install: %d %s", r.code, r.stderr)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	fl.calls = nil
+	if r := runEnv(t, env, srv.URL, "install", "--data", filepath.Join(env.Home, "data")); r.code != 0 || !strings.Contains(r.stdout, "systemd user service") {
+		t.Errorf("linux install: %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	if len(fl.calls) == 0 || fl.calls[0][0] != "systemctl" {
+		t.Errorf("linux install should use systemctl, calls %v", fl.calls)
+	}
+	if _, err := os.Stat(filepath.Join(env.Home, ".config/systemd/user/flats.service")); err != nil {
+		t.Errorf("unit not written: %v", err)
+	}
+	if r := runEnv(t, env, srv.URL, "uninstall"); r.code != 0 || !strings.Contains(r.stdout, "Removed systemd user service") {
+		t.Errorf("linux uninstall: %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	env.GOOS = "windows"
+	if r := runEnv(t, env, srv.URL, "install"); r.code != ExitError || !strings.Contains(r.stderr, "systemd") {
+		t.Errorf("windows install: %d %s", r.code, r.stderr)
 	}
 }
 
