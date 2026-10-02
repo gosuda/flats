@@ -15,7 +15,7 @@ fail() { echo "FAIL: $*"; FAIL=1; }
 cleanup() { [ -n "${PID:-}" ] && kill "$PID" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT
 
-CGO_ENABLED=0 go build -C "$ROOT" -o "$WORK/flats" ./cmd/flats || exit 1
+if [ -n "${FLATS_BIN:-}" ]; then cp "$FLATS_BIN" "$WORK/flats"; else CGO_ENABLED=0 go build -C "$ROOT" -o "$WORK/flats" ./cmd/flats || exit 1; fi
 FLATS_PARENT_SECRET=parent-only-value "$WORK/flats" serve --data "$WORK/data" --listen "127.0.0.1:$PORT" --network local \
   --local-addr "127.0.0.1:$LPORT" --portal=false >"$WORK/serve.log" 2>&1 &
 PID=$!

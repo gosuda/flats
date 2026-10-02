@@ -59,7 +59,7 @@ SQLite growth is reported against the disk quota, not hard-capped.
 | Pre-deploy DB snapshot | **PASS** | `TestPreDeploySnapshotAndDataRollback`, server-flat gate |
 | Request-count page views | **PASS** (HTML documents only; visitor IPs are not available through Portal) | `TestPageViewsCountHTMLRequests` |
 | Thumbnails: agent screenshot, else favicon, else initials | **PASS** | `TestThumbnailFallsBackToFavicon`, console |
-| Linux | **PARTIAL**: linux/amd64 and linux/arm64 build CGO-free and vet clean; `flats install` writes and starts a systemd user unit (tested with a fake systemctl). Not yet run on a real Linux host. | `GOOS=linux go build`, `internal/systemd` tests |
+| Linux | **PASS**: linux/amd64 and linux/arm64 build CGO-free. On Linux 6.6 aarch64 (Debian 12 containers, non-root user): all 16 package test binaries pass; the server-flat gate passes; `flats install` installs a real systemd user service (systemd 252, lingering user) that comes back after `kill -9` and after a container reboot with the flat served; `flats uninstall` removes it. | cross-compiled `go test -c` binaries and `scripts/server-flat-gate.sh` (`FLATS_BIN`) in containers, run with Rancher Desktop |
 
 ## Final review (2026-10-03)
 
