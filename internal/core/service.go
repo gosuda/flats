@@ -333,7 +333,7 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	}
 	switch {
 	case f.Visibility.Public() && s.cfg.Public == nil:
-		return errors.New("public exposure is disabled on this host (Portal is off)")
+		return errors.New("public exposure is disabled on this host (start `flats serve` with --portal=true)")
 	case f.Visibility.Public() && !lf.publicServed:
 		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), f.Visibility == store.PublicUnlisted); err != nil {
 			return fmt.Errorf("public exposure: %w", err)
@@ -811,7 +811,7 @@ func (s *Service) SetVisibility(ctx context.Context, slugName string, vis store.
 		return ActionResult{}, err
 	}
 	if vis.Public() && s.cfg.Public == nil {
-		return ActionResult{}, errors.New("public exposure is disabled on this host (enable Portal in system settings)")
+		return ActionResult{}, errors.New("public exposure is disabled on this host (start `flats serve` with --portal=true)")
 	}
 	if f.Visibility == vis {
 		fv := s.view(ctx, f)

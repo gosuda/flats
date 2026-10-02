@@ -51,17 +51,17 @@ for a in "${AGENTS[@]}"; do
     printf '{"mcpServers":{"flats":{"type":"http","url":"%s/mcp"}}}' "$BASE" >"$dir/mcp.json"
     (cd "$dir" && timeout 600 claude -p "$(prompt "$slug" "$dir/site")" --mcp-config "$dir/mcp.json" --strict-mcp-config \
       --allowedTools "mcp__flats__save_version,mcp__flats__deploy,mcp__flats__get_flat,mcp__flats__list_flats,Read,Glob,LS" \
-      >"$WORK/$a.out" 2>&1)
+      </dev/null >"$WORK/$a.out" 2>&1)
     ;;
   codex)
     (cd "$dir" && timeout 600 codex exec --skip-git-repo-check -s read-only \
-      -c "mcp_servers.flats.url=\"$BASE/mcp\"" "$(prompt "$slug" "$dir/site")" >"$WORK/$a.out" 2>&1)
+      -c "mcp_servers.flats.url=\"$BASE/mcp\"" -c 'mcp_servers.flats.default_tools_approval_mode="approve"' "$(prompt "$slug" "$dir/site")" </dev/null >"$WORK/$a.out" 2>&1)
     ;;
   cursor)
     mkdir -p "$dir/.cursor"
     printf '{"mcpServers":{"flats":{"url":"%s/mcp"}}}' "$BASE" >"$dir/.cursor/mcp.json"
     (cd "$dir" && timeout 600 cursor-agent -p --trust --approve-mcps --workspace "$dir" \
-      "$(prompt "$slug" "$dir/site")" >"$WORK/$a.out" 2>&1)
+      "$(prompt "$slug" "$dir/site")" </dev/null >"$WORK/$a.out" 2>&1)
     ;;
   esac
   rc=$?

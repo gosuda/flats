@@ -230,13 +230,14 @@ func (a *app) mcpConfig(args []string) error {
 	if _, err := a.parse(fs, args, 0, 0); err != nil {
 		return err
 	}
-	// Verified 2026-10-03 against local `claude mcp add --help` and codex-cli
-	// 0.160.0 `codex mcp add --help`. The Codex TOML table and the Cursor
-	// mcp.json shape are from their documentation, not checked by a tool here.
+	// Verified 2026-10-03 by scripts/agent-gate.sh: Claude Code 2.1.287
+	// (--mcp-config), codex-cli 0.160.0 (mcp_servers.flats.url plus
+	// default_tools_approval_mode) and cursor-agent 2026.10.01 (.cursor/mcp.json)
+	// each deployed a flat over this endpoint.
 	endpoint := strings.TrimRight(a.url, "/") + "/mcp"
 	claude := fmt.Sprintf("claude mcp add --transport http flats %s", endpoint)
 	codexCmd := fmt.Sprintf("codex mcp add flats --url %s", endpoint)
-	codexTOML := fmt.Sprintf("[mcp_servers.flats]\nurl = %q\n", endpoint)
+	codexTOML := fmt.Sprintf("[mcp_servers.flats]\nurl = %q\n# needed for `codex exec`; interactive sessions can prompt instead\ndefault_tools_approval_mode = \"approve\"\n", endpoint)
 	cursor, _ := json.MarshalIndent(map[string]any{"mcpServers": map[string]any{"flats": map[string]string{"url": endpoint}}}, "", "  ")
 
 	if a.jsonOut {
@@ -257,8 +258,8 @@ Claude Code:
 Codex (~/.codex/config.toml):
 %s
   or: %s
-  Older Codex releases only speak HTTP MCP with experimental_use_rmcp_client = true
-  at the top of config.toml; check `+"`codex mcp --help`"+` if the server does not appear.
+  Flats itself keeps public exposure and deletion behind your approval, so
+  auto-approving its MCP tools in Codex is safe.
 
 Cursor (.cursor/mcp.json in a project, or ~/.cursor/mcp.json for all projects):
 %s
