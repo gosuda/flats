@@ -12,19 +12,30 @@ async function report(title, err) {
   await infoDialog(title, errorPanel(err, title));
 }
 
+// restoreBox is the opt-in "restore data" checkbox shown on rollbacks.
+function restoreBox(flat) {
+  const id = 'restore-' + flat.slug;
+  const input = h('input', { type: 'checkbox', id });
+  const row = h('div', { class: 'field field-check' }, input,
+    h('label', { for: id, text: `Also restore the database as it was before version ${flat.live_version} was deployed (server flats only)` }));
+  return { input, row };
+}
+
 export async function deployVersion(flat, n, kind = 'deploy') {
   const rollback = kind === 'rollback';
+  const box = rollback ? restoreBox(flat) : null;
   const ok = await confirmDialog({
     title: rollback ? `Roll back to version ${n}?` : `Deploy version ${n}?`,
     body: [
       h('p', { text: `${label(flat)} will serve version ${n}` + (flat.live_version ? ` instead of version ${flat.live_version}.` : '.') }),
-      h('p', { class: 'muted', text: 'The health check runs first; if it fails, the current live version keeps serving. Data is not rolled back.' }),
+      h('p', { class: 'muted', text: 'The health check runs first; if it fails, the current live version keeps serving. Data is not rolled back unless you ask for it.' }),
+      box ? box.row : null,
     ],
     confirmLabel: rollback ? 'Roll back' : 'Deploy',
   });
   if (!ok) return false;
   try {
-    const res = rollback ? await api.rollback(flat.slug, n) : await api.deploy(flat.slug, n);
+    const res = rollback ? await api.rollback(flat.slug, n, box.input.checked) : await api.deploy(flat.slug, n);
     await infoDialog(`Version ${res.version} is live`, deployDone(res));
     return true;
   } catch (err) {
@@ -55,17 +66,19 @@ export async function publishLatest(flat) {
 }
 
 export async function rollbackPrevious(flat) {
+  const box = restoreBox(flat);
   const ok = await confirmDialog({
     title: 'Roll back to the previous version?',
     body: [
       h('p', { text: `${label(flat)} will serve the version that was live before version ${flat.live_version}.` }),
-      h('p', { class: 'muted', text: 'The health check runs first. Only code is rolled back; data stays as it is.' }),
+      h('p', { class: 'muted', text: 'The health check runs first. Only code is rolled back unless you also restore the data.' }),
+      box.row,
     ],
     confirmLabel: 'Roll back',
   });
   if (!ok) return false;
   try {
-    const res = await api.rollback(flat.slug, 0);
+    const res = await api.rollback(flat.slug, 0, box.input.checked);
     toast(`Rolled back: version ${res.version} is live.`, 'success');
     return true;
   } catch (err) {

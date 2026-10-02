@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 		h("PUT /flats/{slug}/secrets/{name}", s.putSecret)
 		h("DELETE /flats/{slug}/secrets/{name}", s.deleteSecret)
 		h("GET /flats/{slug}/stats", s.stats)
+		h("GET /flats/{slug}/snapshots", s.snapshots)
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
@@ -346,12 +347,15 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request, via core.Via) {
 }
 
 func (s *Server) rollback(w http.ResponseWriter, r *http.Request, via core.Via) {
-	n, err := versionBody(r)
-	if err != nil {
+	var in struct {
+		Version     int  `json:"version"`
+		RestoreData bool `json:"restore_data"`
+	}
+	if err := decode(r, &in); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	res, err := s.Svc.Rollback(r.Context(), r.PathValue("slug"), n, via)
+	res, err := s.Svc.RollbackWithData(r.Context(), r.PathValue("slug"), in.Version, in.RestoreData, via)
 	if err != nil {
 		fail(w, err)
 		return
@@ -541,6 +545,19 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"page_views": pv, "note": "request counts of HTML pages; Portal does not pass visitor IPs, so unique visitors are not counted"})
+}
+
+func (s *Server) snapshots(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	if _, err := s.Svc.GetFlat(r.Context(), r.PathValue("slug")); err != nil {
+		fail(w, err)
+		return
+	}
+	snaps, err := s.Svc.Snapshots(r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"snapshots": snaps, "note": "taken automatically before each deploy of a flat with a database; rollback with restore_data puts back the one taken before the current version"})
 }
 
 func (s *Server) getApproval(w http.ResponseWriter, r *http.Request, _ core.Via) {

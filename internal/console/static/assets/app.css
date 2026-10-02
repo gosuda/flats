@@ -156,6 +156,8 @@ label { font-weight: 500; }
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .field input { width: 100%; }
 .field-wide { grid-column: 1 / -1; }
+.field-check { flex-direction: row; align-items: flex-start; gap: 8px; }
+.field-check input { width: auto; margin-top: 3px; }
 .field-end { justify-content: flex-end; align-items: flex-start; }
 .hint { color: var(--muted); font-size: 13px; }
 .with-unit { display: flex; align-items: center; gap: 8px; }

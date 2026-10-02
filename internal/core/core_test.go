@@ -2,9 +2,11 @@ package core_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,13 +16,15 @@ import (
 	"github.com/oesni/flats/internal/core"
 	"github.com/oesni/flats/internal/expose/local"
 	"github.com/oesni/flats/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 type env struct {
-	svc  *core.Service
-	priv *local.Net
-	pub  *local.Public
-	st   *store.Store
+	dataDir string
+	svc     *core.Service
+	priv    *local.Net
+	pub     *local.Public
+	st      *store.Store
 }
 
 func newEnv(t *testing.T) *env {
@@ -46,7 +50,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { svc.Close(); priv.Close(); pubNet.Close(); st.Close() })
-	return &env{svc: svc, priv: priv, pub: pub, st: st}
+	return &env{dataDir: dir, svc: svc, priv: priv, pub: pub, st: st}
 }
 
 func files(kv ...string) []bundle.File {
@@ -316,5 +320,46 @@ func TestDeployErrorWhenNothingLive(t *testing.T) {
 	_, err := e.svc.Deploy(ctx, "fresh", 1, core.ViaAPI)
 	if err == nil || !strings.Contains(err.Error(), "nothing was live") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestPreDeploySnapshotAndDataRollback(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.svc.SaveVersion(ctx, "datum", files("index.html", "v1"), core.SaveMeta{}, core.ViaAPI)
+	e.svc.Deploy(ctx, "datum", 1, core.ViaAPI)
+	// Simulate a server flat's database.
+	dbPath := filepath.Join(e.dataDir, "flats", "datum", "data", "db.sqlite")
+	os.MkdirAll(filepath.Dir(dbPath), 0o700)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Exec(`CREATE TABLE t (v TEXT)`)
+	db.Exec(`INSERT INTO t VALUES ('before')`)
+	db.Close()
+	e.svc.SaveVersion(ctx, "datum", files("index.html", "v2"), core.SaveMeta{}, core.ViaAPI)
+	if _, err := e.svc.Deploy(ctx, "datum", 2, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	snaps, _ := e.svc.Snapshots("datum")
+	if len(snaps) != 1 || !strings.HasPrefix(snaps[0], "before-v2-") {
+		t.Fatalf("snapshots %v", snaps)
+	}
+	db, _ = sql.Open("sqlite", dbPath)
+	db.Exec(`UPDATE t SET v='after'`)
+	db.Close()
+	if _, err := e.svc.RollbackWithData(ctx, "datum", 0, true, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	db, _ = sql.Open("sqlite", dbPath)
+	var v string
+	db.QueryRow(`SELECT v FROM t`).Scan(&v)
+	db.Close()
+	if v != "before" {
+		t.Fatalf("data not restored: %q", v)
+	}
+	if _, body, _ := get(t, e.priv.URL("datum")); body != "v1" {
+		t.Fatalf("code not rolled back: %q", body)
 	}
 }

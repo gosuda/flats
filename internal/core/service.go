@@ -713,6 +713,11 @@ func (s *Service) deploy(ctx context.Context, slugName string, n int, kind strin
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Health: h}
 	}
 	prev := f.LiveVersion
+	if snap, err := s.snapshotDB(slugName, n); err != nil {
+		s.Event(ctx, slugName, "warn", "snapshot", "could not snapshot the database before deploy: "+err.Error(), nil)
+	} else if snap != "" {
+		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
+	}
 	if err := s.st.SetLive(ctx, slugName, n, prev, kind, s.now()); err != nil {
 		if d.inst != nil {
 			d.inst.Stop()
@@ -738,6 +743,12 @@ func (s *Service) deploy(ctx context.Context, slugName string, n int, kind strin
 // Rollback redeploys an earlier version. to=0 picks the version that was
 // live before the current one.
 func (s *Service) Rollback(ctx context.Context, slugName string, to int, via Via) (DeployResult, error) {
+	return s.RollbackWithData(ctx, slugName, to, false, via)
+}
+
+// RollbackWithData is Rollback that can also restore the database snapshot
+// taken just before the current live version was deployed (server flats).
+func (s *Service) RollbackWithData(ctx context.Context, slugName string, to int, restoreData bool, via Via) (DeployResult, error) {
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return DeployResult{}, err
@@ -763,7 +774,22 @@ func (s *Service) Rollback(ctx context.Context, slugName string, to int, via Via
 	if to == f.LiveVersion {
 		return DeployResult{}, fmt.Errorf("%w: version %d is already live", ErrConflict, to)
 	}
-	return s.deploy(ctx, slugName, to, "rollback", via)
+	if !restoreData {
+		return s.deploy(ctx, slugName, to, "rollback", via)
+	}
+	if err := s.restoreSnapshot(ctx, slugName, f.LiveVersion); err != nil {
+		return DeployResult{}, err
+	}
+	res, err := s.deploy(ctx, slugName, to, "rollback", via)
+	if err != nil {
+		// The old instance was stopped for the restore: bring it back.
+		if v, gerr := s.st.GetVersion(ctx, slugName, f.LiveVersion); gerr == nil {
+			if d, berr := s.build(ctx, slugName, v, s.dataDirOf(slugName)); berr == nil {
+				s.state(slugName).cur.Store(d)
+			}
+		}
+	}
+	return res, err
 }
 
 // Deployments returns the deploy history.

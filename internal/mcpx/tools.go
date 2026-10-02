@@ -480,8 +480,9 @@ type DeployIn struct {
 
 // RollbackIn rolls back.
 type RollbackIn struct {
-	Slug    string `json:"slug" jsonschema:"flat slug"`
-	Version int    `json:"version,omitempty" jsonschema:"version to go back to (default: the one live before the current one)"`
+	Slug        string `json:"slug" jsonschema:"flat slug"`
+	Version     int    `json:"version,omitempty" jsonschema:"version to go back to (default: the one live before the current one)"`
+	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"also restore the database snapshot taken before the current version was deployed (server flats); default false keeps data as it is"`
 }
 
 func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
@@ -519,7 +520,7 @@ func (t *tools) rollback(ctx context.Context, _ *mcp.CallToolRequest, in Rollbac
 	if in.Version < 0 {
 		return nil, DeployInfo{}, toolErr(errors.New("version must not be negative"), "omit version to roll back to the previous live version")
 	}
-	res, err := t.svc.Rollback(ctx, in.Slug, in.Version, core.ViaMCP)
+	res, err := t.svc.RollbackWithData(ctx, in.Slug, in.Version, in.RestoreData, core.ViaMCP)
 	if err != nil {
 		return nil, DeployInfo{}, t.deployErr(ctx, in.Slug, err)
 	}

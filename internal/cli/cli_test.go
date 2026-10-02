@@ -356,11 +356,15 @@ func TestRollbackAndPreview(t *testing.T) {
 	if r := run(t, srv.URL, "", "rollback", "blog", "--to", "2"); r.code != 0 || !strings.Contains(r.stdout, "Version 2 is live (was 4).") {
 		t.Fatalf("rollback: %d %s %s", r.code, r.stdout, r.stderr)
 	}
-	if b := string(api.last("POST /api/flats/blog/rollback").body); b != `{"version":2}` {
+	if b := string(api.last("POST /api/flats/blog/rollback").body); b != `{"restore_data":false,"version":2}` {
 		t.Errorf("rollback body = %s", b)
 	}
-	if run(t, srv.URL, "", "rollback", "blog"); string(api.last("POST /api/flats/blog/rollback").body) != `{"version":0}` {
+	if run(t, srv.URL, "", "rollback", "blog"); string(api.last("POST /api/flats/blog/rollback").body) != `{"restore_data":false,"version":0}` {
 		t.Errorf("default rollback body = %s", api.last("POST /api/flats/blog/rollback").body)
+	}
+
+	if run(t, srv.URL, "", "rollback", "blog", "--restore-data"); string(api.last("POST /api/flats/blog/rollback").body) != `{"restore_data":true,"version":0}` {
+		t.Errorf("restore-data rollback body = %s", api.last("POST /api/flats/blog/rollback").body)
 	}
 
 	api.handle("GET /api/flats/blog/versions", 200, `{"versions": [{"number": 3}, {"number": 9}, {"number": 5}]}`)

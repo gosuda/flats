@@ -83,7 +83,7 @@ func init() {
 		{"list", "list flats", "list", (*app).list},
 		{"info", "show one flat", "info <slug>", (*app).info},
 		{"versions", "list saved versions", "versions <slug>", (*app).versions},
-		{"rollback", "make an earlier version live", "rollback <slug> [--to n]", (*app).rollback},
+		{"rollback", "make an earlier version live", "rollback <slug> [--to n] [--restore-data]", (*app).rollback},
 		{"preview", "open a private preview of a version", "preview <slug> [--version n]", (*app).preview},
 		{"visibility", "change who can open a flat", "visibility <slug> private|public-listed|public-unlisted [--reason r]", (*app).visibility},
 		{"rename", "change a flat's slug", "rename <slug> <new-slug>", (*app).rename},

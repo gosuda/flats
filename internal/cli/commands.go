@@ -333,6 +333,7 @@ func (a *app) versions(args []string) error {
 func (a *app) rollback(args []string) error {
 	fs := a.flags("rollback")
 	to := fs.Int("to", 0, "version to make live (default: the one live before the current)")
+	restore := fs.Bool("restore-data", false, "also restore the database snapshot taken before the current version was deployed")
 	pos, err := a.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -341,7 +342,7 @@ func (a *app) rollback(args []string) error {
 		return usagef("--to must be a positive version number")
 	}
 	var res deployResult
-	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/rollback", nil, map[string]int{"version": *to}, &res)
+	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/rollback", nil, map[string]any{"version": *to, "restore_data": *restore}, &res)
 	if err != nil {
 		return err
 	}
