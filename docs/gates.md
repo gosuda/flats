@@ -60,3 +60,22 @@ SQLite growth is reported against the disk quota, not hard-capped.
 | Request-count page views | **PASS** (HTML documents only; visitor IPs are not available through Portal) | `TestPageViewsCountHTMLRequests` |
 | Thumbnails: agent screenshot, else favicon, else initials | **PASS** | `TestThumbnailFallsBackToFavicon`, console |
 | Linux | **PARTIAL**: linux/amd64 and linux/arm64 build CGO-free and vet clean; `flats install` writes and starts a systemd user unit (tested with a fake systemctl). Not yet run on a real Linux host. | `GOOS=linux go build`, `internal/systemd` tests |
+
+## Final review (2026-10-03)
+
+A four-lens adversarial review (security, correctness, spec compliance,
+interfaces; every finding checked by two independent verifiers) confirmed 37
+findings. All were addressed; independent re-verification confirmed 32 fixed
+and the rest either fixed later in this session (snapshot eviction, repeated
+restore_data, over-redaction of short values, wording) or documented because
+they cannot be enforced without accounts:
+
+- an agent that can send arbitrary HTTP from the operator's own devices can
+  imitate the console's browser headers and approve its own request;
+- `flats secret set` on the Flats host is available to any process running
+  as the operator.
+
+After the fixes: `go test ./...` and `-race` on core/api/app/mcpx/store pass;
+the MVP gate (10 MB upload→live 28 ms, rollback 2 ms), the server-flat gate
+and the three-agent gate (Claude Code 18 s, Codex 60 s, Cursor 31 s) pass
+again.
