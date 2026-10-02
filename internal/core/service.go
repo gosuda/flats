@@ -84,12 +84,12 @@ type Service struct {
 	logf  func(string, ...any)
 	locks sync.Map // slug -> *sync.Mutex
 
-	mu    sync.Mutex
-	live  map[string]*liveFlat // slug -> state
-	prevs map[string]*preview  // host -> preview
-	redir map[string]string    // old slug -> new slug (rename redirects being served)
-	stop  chan struct{}
-	wg    sync.WaitGroup
+	mu        sync.Mutex
+	live      map[string]*liveFlat // slug -> state
+	prevs     map[string]*preview  // host -> preview
+	redir     map[string]string    // old slug -> new slug (rename redirects being served)
+	stop      chan struct{}
+	wg        sync.WaitGroup
 	secretKey []byte
 	settings  sync.Map // setting key -> value cache
 }

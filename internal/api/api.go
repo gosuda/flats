@@ -102,9 +102,9 @@ func consoleRequest(r *http.Request) bool {
 
 // ErrorBody is the JSON error shape.
 type ErrorBody struct {
-	Error    string               `json:"error"`
-	Problems []bundle.Problem     `json:"problems,omitempty"`
-	Health   *core.HealthResult   `json:"health,omitempty"`
+	Error    string             `json:"error"`
+	Problems []bundle.Problem   `json:"problems,omitempty"`
+	Health   *core.HealthResult `json:"health,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

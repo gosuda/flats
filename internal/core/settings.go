@@ -30,7 +30,6 @@ var Defaults = map[string]string{
 	SetRedirectDays:   "7",
 }
 
-
 func (s *Service) setting(key string) string {
 	if v, ok := s.settings.Load(key); ok {
 		return v.(string)
