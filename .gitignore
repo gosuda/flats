@@ -1,0 +1,12 @@
+# Build output
+/flats
+/bin/
+/dist/
+*.test
+*.out
+
+# Local runtime state
+/.runtime/
+
+# OS
+.DS_Store
