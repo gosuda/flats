@@ -1,0 +1,8 @@
+{
+  "name": "flats",
+  "owner": { "name": "oesni" },
+  "metadata": { "description": "Flats agent workflows.", "version": "0.1.0" },
+  "plugins": [
+    { "name": "flats", "source": "./plugins/flats", "description": "Deploy sites to your Flats host." }
+  ]
+}
