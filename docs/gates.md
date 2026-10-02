@@ -16,8 +16,13 @@ available.
 | wazero + qjs HTTP handler | PASS after forking qjs (v0.0.6 fails on wazero 1.12; see `internal/qjs/NOTICE`) | `internal/runtime` tests |
 | **Gate**: 3 flats private and public at once, memory recorded | **PASS**: 3 flats served on the local network and publicly at `https://<flat>.s-h.day` at the same time; RSS 32 MB → 51 MB (≈6 MB per public exposure). Making them private stopped the public URLs. | `flats serve --network local --relays https://s-h.day` |
 
-Not yet verified on the operator's real tailnet (needs an auth key): ACME
-certificates, node removal on logout, re-login URL after key expiry.
+Against the real Tailscale control server without an auth key: the console
+node and a per-flat node both reach `needs-login` and the system status (and
+console) shows each node's real `https://login.tailscale.com/a/...` URL; no
+node joined the tailnet. Still to verify on the operator's tailnet (needs a
+reusable untagged auth key; one command: `scripts/tailnet-gate.sh <keyfile>`):
+real ACME certificates, per-flat HTTPS reachability, identity headers from a
+real peer, ephemeral preview removal and node removal on delete.
 
 ## Phase 1 — MVP
 
