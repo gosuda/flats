@@ -165,11 +165,16 @@ export default {
 * `env` holds secrets/env vars plus `env.DB` (`query(sql, ...params)` →
   rows, `exec(sql, ...params)` → `{changes, last_insert_id}`) backed by
   `data/db.sqlite`, and `env.FILES` (`get(key)`, `put(key, data)`,
-  `delete(key)`, `list(prefix)`) backed by `data/files/`.
+  `delete(key)`, `list(prefix)`) backed by `data/files/`, and
+  `crypto.getRandomValues` / `crypto.randomUUID` backed by the host CSPRNG.
 * WebSocket: `export default { websocket: { open(ws), message(ws, data), close(ws) } }`
   for requests with `Upgrade: websocket`; `ws.send(text)`.
-* Limits per request: 64 MB memory, 10 s CPU time; the worker restarts after a
-  fatal error. JS has no file system or network access except through `env`.
+* Limits per request: 64 MiB wasm memory and 10 s wall-clock time (sleeps,
+  timers and database waits count); a runtime that hits a limit is discarded
+  and replaced. ATTACH, VACUUM INTO and extension loading are blocked;
+  env.FILES is capped at 1 GiB. Database growth is not capped by SQLite; the
+  per-flat disk quota refuses new uploads and the console reports flats over
+  quota. JS has no file system or network access except through `env`.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing the response JSON on stdout, with the same env and data dir.
 

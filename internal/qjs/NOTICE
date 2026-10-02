@@ -1,0 +1,50 @@
+This directory is a fork of github.com/fastschema/qjs v0.0.6
+(https://github.com/fastschema/qjs), Copyright (c) 2025 Nguyen Ngoc Phuong and
+Contributors, used under the MIT License (see LICENSE in this directory).
+qjs.wasm and qjswasm/ are unchanged from v0.0.6. The upstream *_test.go files
+were not copied (they need testify); fork_test.go covers the changes below.
+
+Changes made for Flats (search for "FORK (flats)"):
+
+1. runtime.go: wazero >= 1.12 binds function type IDs to one runtime's store,
+   so upstream (which compiled qjs.wasm once in a throwaway runtime and
+   instantiated it in every new runtime) fails with "signature mismatch" on
+   wazero v1.12.0. Every Runtime now compiles qjs.wasm inside its own wazero
+   runtime, through a process-wide shared wazero.CompilationCache (or a
+   per-directory file cache when Option.CacheDir is set), so only the first
+   compile per configuration is slow.
+2. runtime.go: the wazero RuntimeConfig is built per New. CloseOnContextDone
+   is therefore a per-runtime setting; upstream cached the config of the first
+   New in the process, so a first runtime without CloseOnContextDone silently
+   disabled timeouts for every later one.
+3. options.go/runtime.go: new Option.MemoryLimitPages caps the wasm linear
+   memory (64 KiB pages; 0 means DefaultMemoryLimitPages = 1024 = 64 MiB).
+   QuickJS's own MemoryLimit does not bound every allocation.
+4. options.go/runtime.go: Option.CWD (default os.Getwd(), mounted read-write
+   at "/") was replaced by Option.ReadOnlyDir: no file system at all by
+   default, or one host directory mounted read-only at "/".
+5. options.go: Stdout/Stderr default to io.Discard instead of the host
+   process's os.Stdout/os.Stderr.
+6. runtime.go: Close also closes the per-runtime wazero runtime.
+7. stack.go (new) + runtime.go: qjs.wasm's 64 KiB C stack sits directly above
+   its static data and QuickJS's stack check is compiled out under WASI, so
+   ~250 levels of JS recursion silently corrupted the runtime. The module
+   bytes are patched in memory to export the only global (__stack_pointer,
+   verified to be the single mutable i32 global), and each Runtime moves its
+   stack into a dedicated malloc'd block (Option.StackSize, default 1 MiB)
+   whose bottom 64 KiB is a canary; Runtime.StackIntact reports whether a call
+   reached it. qjs.wasm itself is not modified on disk.
+8. runtime.go: guest sleeps (WASI poll_oneoff clock waits behind os.sleep,
+   os.setTimeout and the std event loop) use a context-aware sleep that
+   returns when Option.Context is done. Upstream used wazero's host sleep,
+   which ignores the context, so os.sleep(3600000) blocked a call for an hour
+   regardless of CloseOnContextDone.
+9. runtime.go: WASI random_get reads crypto/rand instead of wazero's default
+   fixed-seed source, which returns the same bytes in every runtime.
+
+Usage note (unchanged upstream behaviour): every wasm call passes the
+Runtime's *Context (which embeds a context.Context) to wazero, and with
+CloseOnContextDone wazero reads ctx.Done() from a per-call goroutine that may
+outlive the call. Assigning Runtime.Context().Context between calls is
+therefore a data race; pass a stable Option.Context whose Done/Err delegate to
+an atomically swapped per-request context instead (internal/runtime does).

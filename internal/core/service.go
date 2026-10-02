@@ -86,14 +86,15 @@ type Service struct {
 	logf  func(string, ...any)
 	locks sync.Map // slug -> *sync.Mutex
 
-	mu        sync.Mutex
-	live      map[string]*liveFlat // slug -> state
-	prevs     map[string]*preview  // host -> preview
-	redir     map[string]string    // old slug -> new slug (rename redirects being served)
-	stop      chan struct{}
-	wg        sync.WaitGroup
-	secretKey []byte
-	settings  sync.Map // setting key -> value cache
+	mu          sync.Mutex
+	live        map[string]*liveFlat // slug -> state
+	prevs       map[string]*preview  // host -> preview
+	redir       map[string]string    // old slug -> new slug (rename redirects being served)
+	quotaWarned map[string]time.Time
+	stop        chan struct{}
+	wg          sync.WaitGroup
+	secretKey   []byte
+	settings    sync.Map // setting key -> value cache
 }
 
 type liveFlat struct {
@@ -132,7 +133,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		cfg.ConsoleURL = func() string { return "" }
 	}
 	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf,
-		live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]string{}, stop: make(chan struct{})}
+		live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]string{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "flats"), 0o700); err != nil {
 		return nil, err
 	}
@@ -1144,6 +1145,32 @@ func (s *Service) Sweep(ctx context.Context) {
 	}
 	for slugName, lf := range live {
 		s.flushViews(ctx, slugName, lf)
+	}
+	s.checkQuotas(ctx, live, now)
+}
+
+// checkQuotas warns (at most daily) about flats whose data grew past the
+// disk quota. Uploads over quota are refused outright; database and file
+// growth from a running server flat can only be reported.
+func (s *Service) checkQuotas(ctx context.Context, live map[string]*liveFlat, now time.Time) {
+	quota := s.diskQuota()
+	if quota <= 0 {
+		return
+	}
+	for slugName := range live {
+		used := dirSize(s.flatDir(slugName))
+		if used <= quota {
+			continue
+		}
+		s.mu.Lock()
+		last := s.quotaWarned[slugName]
+		if now.Sub(last) < 24*time.Hour {
+			s.mu.Unlock()
+			continue
+		}
+		s.quotaWarned[slugName] = now
+		s.mu.Unlock()
+		s.Event(ctx, slugName, "error", "quota", fmt.Sprintf("flat uses %d bytes, over its %d-byte disk quota; new uploads are refused until data or old versions are removed", used, quota), nil)
 	}
 }
 

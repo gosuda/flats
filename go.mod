@@ -3,10 +3,11 @@ module github.com/oesni/flats
 go 1.27.1
 
 require (
-	github.com/fastschema/qjs v0.0.6
 	github.com/gosuda/portal-tunnel/v2 v2.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	github.com/rs/zerolog v1.34.0
 	github.com/tetratelabs/wazero v1.12.0
+	golang.org/x/term v0.46.0
 	modernc.org/sqlite v1.60.1
 	tailscale.com v1.104.0
 )
@@ -16,6 +17,8 @@ require (
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e // indirect
 	github.com/axiomhq/hyperloglog v0.2.6 // indirect
+	github.com/benbjohnson/immutable v0.4.3 // indirect
+	github.com/bradfitz/reco v0.0.0-20260929154613-b883fbd17e3f // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/creachadair/msync v0.10.1 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca // indirect
@@ -50,7 +53,6 @@ require (
 	github.com/pires/go-proxyproto v0.15.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/safchain/ethtool v0.7.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
@@ -71,7 +73,6 @@ require (
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
