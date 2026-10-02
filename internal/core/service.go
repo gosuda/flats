@@ -397,6 +397,16 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 				break
 			}
 		}
+		// Fall back to the live version's favicon (the console shows initials
+		// when there is neither).
+		if v.Thumbnail == "" && v.Live != nil {
+			for _, name := range []string{"favicon.svg", "favicon.png", "apple-touch-icon.png", "favicon.ico"} {
+				if _, err := os.Stat(filepath.Join(s.versionDir(f.Slug, f.LiveVersion), name)); err == nil {
+					v.Thumbnail = fmt.Sprintf("/api/flats/%s/versions/%d/files/%s", f.Slug, f.LiveVersion, name)
+					break
+				}
+			}
+		}
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))
 	return v

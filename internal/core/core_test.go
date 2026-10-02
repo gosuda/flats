@@ -363,3 +363,23 @@ func TestPreDeploySnapshotAndDataRollback(t *testing.T) {
 		t.Fatalf("code not rolled back: %q", body)
 	}
 }
+
+func TestThumbnailFallsBackToFavicon(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.svc.SaveVersion(ctx, "icon-site", files("index.html", "x", "favicon.svg", "<svg/>"), core.SaveMeta{}, core.ViaAPI)
+	fv, _ := e.svc.GetFlat(ctx, "icon-site")
+	if fv.Thumbnail != "" {
+		t.Fatalf("no live version yet, want no thumbnail, got %q", fv.Thumbnail)
+	}
+	e.svc.Deploy(ctx, "icon-site", 1, core.ViaAPI)
+	fv, _ = e.svc.GetFlat(ctx, "icon-site")
+	if !strings.HasSuffix(fv.Thumbnail, "/versions/1/files/favicon.svg") {
+		t.Fatalf("favicon fallback: %q", fv.Thumbnail)
+	}
+	e.svc.SaveVersion(ctx, "icon-site", files("index.html", "x", "shot.png", "png", "flats.json", `{"screenshot":"shot.png"}`), core.SaveMeta{}, core.ViaAPI)
+	fv, _ = e.svc.GetFlat(ctx, "icon-site")
+	if !strings.HasSuffix(fv.Thumbnail, "/versions/2/files/shot.png") {
+		t.Fatalf("screenshot should win: %q", fv.Thumbnail)
+	}
+}
