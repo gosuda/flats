@@ -32,3 +32,31 @@ certificates, node removal on logout, re-login URL after key expiry.
 | Cursor deploys after one setup | **PASS** (32 s) | cursor-agent 2026.10.01, `.cursor/mcp.json` |
 | launchd install and recovery | **PASS**: installed, `kill -9` → launchd restarted the server after its ~10 s throttle, the flat was restored and served; uninstalled cleanly | manual run with a temporary data dir |
 | Reboot recovery | Covered by the same restore path (state is rebuilt from SQLite at start); a real reboot was not performed | |
+
+## Phase 2 — server flats
+
+| Check | Result | How |
+|---|---|---|
+| JS flat with SQLite deploys, keeps data across versions | **PASS** | `scripts/server-flat-gate.sh` (real binary, worker processes) |
+| Rollback restores code, keeps data | **PASS** | same |
+| Rollback with `--restore-data` restores the pre-deploy DB snapshot | **PASS** | same; `TestPreDeploySnapshotAndDataRollback` |
+| Secrets: operator-set, visible to the flat, never in logs/API | **PASS** | same; `TestSecretsOperatorOnlyAndNeverReturned` |
+| Sandbox: host files, parent env/credentials, network, ATTACH / VACUUM INTO, FILES traversal | **PASS**: all blocked; JS has no `fetch`/sockets, so the management API is unreachable | same; `internal/runtime` `TestSandbox`, `TestSQLiteHardening`, `TestVersionSymlinkRefused` |
+| Timeouts / memory | infinite loop → 504 after 10 s and the worker keeps serving; memory bomb → 500 in ~0.9 s and recovers; sleeps/timers are bounded | `internal/runtime` tests |
+| WebSocket through the parent proxy; WASI `.wasm` handler | **PASS** | `TestWebSocketEcho`, `TestWebSocketSlowClient`, `TestWASIHandler` |
+| Latency | JS cold start 139 ms (warm compile cache); request p50 0.37 ms, with DB 0.6-0.8 ms; WASI p50 4.4 ms | `TestLatencyAndConcurrency` |
+| Retention, disk quota, skills, console search/grid | **PASS** | core/api/console tests; `claude plugin validate .` |
+
+Known limits (documented in `docs/design.md`): no OS-level sandbox around the
+worker (isolation is wasm plus the host API); the 10 s limit is wall clock;
+SQLite growth is reported against the disk quota, not hard-capped.
+
+## Phase 3 — polish
+
+| Check | Result | How |
+|---|---|---|
+| Slug rename with 7-day redirect (path and query kept) | **PASS** | `TestRenameRedirect`, `internal/store` tests |
+| Pre-deploy DB snapshot | **PASS** | `TestPreDeploySnapshotAndDataRollback`, server-flat gate |
+| Request-count page views | **PASS** (HTML documents only; visitor IPs are not available through Portal) | `TestPageViewsCountHTMLRequests` |
+| Thumbnails: agent screenshot, else favicon, else initials | **PASS** | `TestThumbnailFallsBackToFavicon`, console |
+| Linux | **PARTIAL**: linux/amd64 and linux/arm64 build CGO-free and vet clean; `flats install` writes and starts a systemd user unit (tested with a fake systemctl). Not yet run on a real Linux host. | `GOOS=linux go build`, `internal/systemd` tests |

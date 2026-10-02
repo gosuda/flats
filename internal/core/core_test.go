@@ -383,3 +383,18 @@ func TestThumbnailFallsBackToFavicon(t *testing.T) {
 		t.Fatalf("screenshot should win: %q", fv.Thumbnail)
 	}
 }
+
+func TestPageViewsCountHTMLRequests(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.svc.SaveVersion(ctx, "counted", files("index.html", "x", "app.js", "js"), core.SaveMeta{}, core.ViaAPI)
+	e.svc.Deploy(ctx, "counted", 1, core.ViaAPI)
+	for i := 0; i < 3; i++ {
+		get(t, e.priv.URL("counted")+"/")
+	}
+	get(t, e.priv.URL("counted")+"/app.js") // assets are not page views
+	pv, err := e.svc.PageViews(ctx, "counted", 7)
+	if err != nil || len(pv) != 1 || pv[0].Count != 3 {
+		t.Fatalf("page views %+v %v", pv, err)
+	}
+}
