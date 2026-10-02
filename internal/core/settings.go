@@ -17,6 +17,9 @@ const (
 	SetRateLimit      = "rate_limit_rps"
 	SetPortalRelays   = "portal_relays" // comma-separated; empty = Portal defaults
 	SetRedirectDays   = "redirect_days"
+	SetPortalDiscover = "portal_discovery"  // "true" (Portal CLI default) or "false"
+	SetPortalMaxRelay = "portal_max_relays" // active relays chosen by discovery (default 3)
+	SetEventsKeep     = "events_keep"       // log events kept per flat
 )
 
 // Defaults are the factory settings.
@@ -28,6 +31,9 @@ var Defaults = map[string]string{
 	SetRateLimit:      "50",
 	SetPortalRelays:   "",
 	SetRedirectDays:   "7",
+	SetPortalDiscover: "true",
+	SetPortalMaxRelay: "3",
+	SetEventsKeep:     "5000",
 }
 
 func (s *Service) setting(key string) string {

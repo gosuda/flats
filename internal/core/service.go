@@ -40,6 +40,12 @@ const (
 var (
 	ErrNotDeployed = errors.New("flat has no live version yet")
 	ErrConflict    = errors.New("conflict")
+	// ErrInvalid marks bad input (HTTP 400).
+	ErrInvalid = errors.New("invalid request")
+	// ErrForbidden marks actions the caller's surface may not perform (HTTP 403).
+	ErrForbidden = errors.New("forbidden")
+	// ErrUnavailable marks features disabled on this host (HTTP 409).
+	ErrUnavailable = errors.New("unavailable on this host")
 )
 
 // Runtime starts server flats (nil disables kind "server").
