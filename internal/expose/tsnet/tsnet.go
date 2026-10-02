@@ -1,0 +1,739 @@
+// Package tsnet serves flats on the operator's tailnet. Every host (flat,
+// preview or the console) gets its own tsnet node, so each one has its own
+// MagicDNS name, TLS certificate and browser origin.
+package tsnet
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"log"
+	"mime"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
+
+	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/envknob"
+	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/ipn/store/mem"
+	ts "tailscale.com/tsnet"
+
+	"github.com/oesni/flats/internal/core"
+)
+
+// Config configures a Net.
+type Config struct {
+	// Dir is the base state directory; each node keeps its state in Dir/<host>.
+	Dir string
+	// AuthKey is a reusable, untagged auth key for new nodes. It may be empty,
+	// in which case each new node waits for an interactive login.
+	AuthKey string
+	// ControlURL overrides the coordination server (tests).
+	ControlURL string
+	// Logf receives operational messages. Nil discards them.
+	Logf func(string, ...any)
+}
+
+const (
+	// HTTPSUnavailable is the host detail when the tailnet cannot issue
+	// certificates and the node serves plain HTTP instead.
+	HTTPSUnavailable = "HTTPS certificates are not enabled in this tailnet; serving plain HTTP inside the tailnet"
+
+	keyExpiringWindow = 14 * 24 * time.Hour
+	defaultPoll       = 5 * time.Minute
+	logoutTimeout     = 10 * time.Second
+	certWarmTimeout   = 2 * time.Minute
+)
+
+// Host states reported in core.HostInfo.State.
+const (
+	StateStarting    = "starting"
+	StateReady       = "ready"
+	StateNeedsLogin  = "needs-login"
+	StateKeyExpiring = "key-expiring"
+	StateError       = "error"
+)
+
+var hostRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// Net implements core.PrivateNet with one tsnet.Server per host.
+type Net struct {
+	cfg  Config
+	logf func(string, ...any)
+
+	// Test hooks: pollEvery overrides the status poll interval, getCert
+	// replaces the LocalAPI (ACME) certificate source and warmCert replaces
+	// the certificate fetch done when a node starts serving HTTPS.
+	pollEvery time.Duration
+	getCert   func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	warmCert  func(ctx context.Context, domain string) error
+
+	mu       sync.Mutex
+	nodes    map[string]*node
+	stopping map[string]chan struct{} // host -> closed when its teardown finishes
+	suffix   string                   // MagicDNS suffix, once any node learns it
+	plain    bool                     // some node found HTTPS unavailable
+	closed   bool
+	changed  chan struct{} // closed and replaced on every state change
+}
+
+type node struct {
+	host      string
+	ephemeral bool
+	dir       string
+	handler   atomic.Pointer[http.Handler]
+	ctx       context.Context
+	cancel    context.CancelFunc
+	started   chan struct{} // closed once srv.Start has returned (Close is then safe)
+	done      chan struct{} // closed when the lifecycle goroutine returns
+	prev      chan struct{} // teardown of the previous node with this host, or nil
+	srv       *ts.Server
+	stopErr   error // set by the retiring goroutine before it closes its done channel
+
+	// Guarded by Net.mu.
+	backend   string // ipn.State string
+	authURL   string
+	keyExpiry *time.Time
+	dnsName   string // FQDN without trailing dot
+	serving   bool
+	plain     bool
+	err       error
+	loginKick bool // StartLoginInteractive already requested in this needs-login episode
+	wasUp     bool // reached Running at least once (later NeedsLogin means re-auth)
+	https     []*http.Server
+}
+
+// New creates a Net. Nodes start on the first Serve of their host.
+func New(cfg Config) (*Net, error) {
+	if cfg.Dir == "" {
+		return nil, errors.New("tsnet: Config.Dir is required")
+	}
+	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
+		return nil, err
+	}
+	// Never upload node logs to log.tailscale.com.
+	envknob.SetNoLogsNoSupport()
+	logf := cfg.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return &Net{
+		cfg:      cfg,
+		logf:     logf,
+		nodes:    map[string]*node{},
+		stopping: map[string]chan struct{}{},
+		changed:  make(chan struct{}),
+	}, nil
+}
+
+// notifyLocked wakes WaitReady callers. n.mu must be held.
+func (n *Net) notifyLocked() {
+	close(n.changed)
+	n.changed = make(chan struct{})
+}
+
+// Serve implements core.PrivateNet. It returns immediately; the node comes up
+// in the background and Status reports its progress. Serving a host that is
+// already served swaps its handler without restarting the node.
+func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bool) (string, error) {
+	if !hostRE.MatchString(host) {
+		return "", fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	}
+	if h == nil {
+		return "", errors.New("tsnet: nil handler")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return "", errors.New("tsnet: network is closed")
+	}
+	if nd, ok := n.nodes[host]; ok {
+		nd.handler.Store(&h)
+		if nd.err == nil {
+			return n.urlLocked(host), nil
+		}
+		// The node failed (start, Up or listen) and serving again is how a
+		// caller retries. Shut it down without logging out, so a persistent
+		// node keeps its identity, and start a fresh one after that.
+		n.retireLocked(nd, false)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	nd := &node{
+		host:      host,
+		ephemeral: ephemeral,
+		dir:       filepath.Join(n.cfg.Dir, host),
+		ctx:       ctx,
+		cancel:    cancel,
+		started:   make(chan struct{}),
+		done:      make(chan struct{}),
+		prev:      n.stopping[host],
+		backend:   ipn.NoState.String(),
+	}
+	nd.handler.Store(&h)
+	n.nodes[host] = nd
+	n.notifyLocked()
+	go n.run(nd)
+	return n.urlLocked(host), nil
+}
+
+// run owns one node's lifecycle until its context is cancelled.
+func (n *Net) run(nd *node) {
+	defer close(nd.done)
+	if nd.prev != nil {
+		// A previous node with this host is still tearing down (and may be
+		// deleting the state directory); start fresh after it.
+		select {
+		case <-nd.prev:
+		case <-nd.ctx.Done():
+			close(nd.started)
+			return
+		}
+	}
+	srv := &ts.Server{
+		Dir:        nd.dir,
+		Hostname:   nd.host,
+		AuthKey:    n.cfg.AuthKey,
+		ControlURL: n.cfg.ControlURL,
+		Ephemeral:  nd.ephemeral,
+		UserLogf:   n.userLogf(nd),
+	}
+	if nd.ephemeral {
+		srv.Store = new(mem.Store)
+	}
+	nd.srv = srv
+	err := os.MkdirAll(nd.dir, 0o700)
+	if err == nil {
+		err = srv.Start()
+	}
+	close(nd.started)
+	if err != nil {
+		n.setErr(nd, fmt.Errorf("start node: %w", err))
+		return
+	}
+	lc, err := srv.LocalClient()
+	if err != nil {
+		n.setErr(nd, err)
+		return
+	}
+	go n.watchBus(nd, lc)
+
+	st, err := srv.Up(nd.ctx)
+	if err != nil {
+		if nd.ctx.Err() == nil {
+			n.setErr(nd, err)
+		}
+		return
+	}
+	n.applyStatus(nd, st)
+	if err := n.listen(nd, srv, lc, st); err != nil {
+		if nd.ctx.Err() == nil {
+			n.setErr(nd, err)
+		}
+		return
+	}
+	n.poll(nd, lc)
+}
+
+// listen serves the handler with HTTPS on :443 (and a redirect on :80) when
+// the tailnet issues certificates, else plain HTTP on :80.
+func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.Status) error {
+	app := n.identity(nd, lc.WhoIs)
+	useTLS := st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSEnabled && len(st.CertDomains) > 0
+	var servers []*http.Server
+	start := func(ln net.Listener, h http.Handler) {
+		hs := &http.Server{
+			Handler:           h,
+			ReadHeaderTimeout: 10 * time.Second, // also bounds the TLS handshake
+			IdleTimeout:       2 * time.Minute,
+			ErrorLog:          log.New(logWriter{n.logf, nd.host}, "", 0),
+		}
+		servers = append(servers, hs)
+		go hs.Serve(ln)
+	}
+	if useTLS {
+		getCert := n.getCert
+		if getCert == nil {
+			getCert = lc.GetCertificate
+		}
+		ln443, err := srv.Listen("tcp", ":443")
+		if err != nil {
+			return err
+		}
+		ln80, err := srv.Listen("tcp", ":80")
+		if err != nil {
+			ln443.Close()
+			return err
+		}
+		canonical := st.CertDomains[0]
+		start(tls.NewListener(ln443, &tls.Config{GetCertificate: getCert, NextProtos: []string{"h2", "http/1.1"}}), app)
+		start(ln80, httpsRedirect(canonical))
+		// Issuing a certificate can take longer than the handshake timeout,
+		// which would fail the first visit; fetch it now instead.
+		go n.warm(nd, lc, canonical)
+	} else {
+		ln80, err := srv.Listen("tcp", ":80")
+		if err != nil {
+			return err
+		}
+		start(ln80, app)
+	}
+	n.mu.Lock()
+	nd.https = servers
+	nd.serving = true
+	nd.plain = !useTLS
+	if !useTLS {
+		n.plain = true
+	}
+	n.notifyLocked()
+	n.mu.Unlock()
+	if !useTLS {
+		n.logf("tsnet %s: %s", nd.host, HTTPSUnavailable)
+	}
+	return nil
+}
+
+// httpsRedirect sends plain HTTP requests to the same path on https://host.
+// 307 keeps the method and is not cached, so turning HTTPS off later does not
+// leave browsers stuck on a dead redirect.
+func httpsRedirect(host string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uri := r.URL.RequestURI()
+		if !strings.HasPrefix(uri, "/") {
+			// Opaque or asterisk forms ("http:@evil.example", "*") would
+			// otherwise be glued onto the host and change the target origin.
+			uri = "/"
+		}
+		http.Redirect(w, r, "https://"+host+uri, http.StatusTemporaryRedirect)
+	})
+}
+
+// warm fetches the node's certificate in the background and logs failures.
+func (n *Net) warm(nd *node, lc *local.Client, domain string) {
+	ctx, cancel := context.WithTimeout(nd.ctx, certWarmTimeout)
+	defer cancel()
+	fetch := n.warmCert
+	if fetch == nil {
+		fetch = func(ctx context.Context, d string) error {
+			_, _, err := lc.CertPair(ctx, d)
+			return err
+		}
+	}
+	if err := fetch(ctx, domain); err != nil && nd.ctx.Err() == nil {
+		n.logf("tsnet %s: certificate for %s: %v", nd.host, domain, err)
+	}
+}
+
+type logWriter struct {
+	logf func(string, ...any)
+	host string
+}
+
+func (w logWriter) Write(p []byte) (int, error) {
+	w.logf("tsnet %s: %s", w.host, strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+type whoIsFunc func(ctx context.Context, remoteAddr string) (*apitype.WhoIsResponse, error)
+
+// isIdentityHeader reports whether a request header name could be read as a
+// Tailscale-User-* identity header, ignoring case and treating "_" as "-"
+// (CGI-style servers and some proxies fold the two together).
+func isIdentityHeader(name string) bool {
+	const prefix = "tailscale-user-"
+	return len(name) >= len(prefix) && strings.EqualFold(strings.ReplaceAll(name[:len(prefix)], "_", "-"), prefix)
+}
+
+// identity strips client-sent Tailscale-User-* headers and sets the
+// caller's login and display name from WhoIs, unless the peer is tagged.
+func (n *Net) identity(nd *node, whoIs whoIsFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k := range r.Header {
+			if isIdentityHeader(k) {
+				delete(r.Header, k)
+			}
+		}
+		if who, err := whoIs(r.Context(), r.RemoteAddr); err == nil && who.Node != nil && !who.Node.IsTagged() && who.UserProfile != nil {
+			r.Header.Set("Tailscale-User-Login", headerValue(who.UserProfile.LoginName))
+			r.Header.Set("Tailscale-User-Name", headerValue(who.UserProfile.DisplayName))
+		}
+		(*nd.handler.Load()).ServeHTTP(w, r)
+	})
+}
+
+// headerValue matches tailscale serve: ASCII as is, other UTF-8 as RFC 2047
+// Q-encoding, invalid UTF-8 dropped.
+func headerValue(v string) string {
+	if !utf8.ValidString(v) {
+		return ""
+	}
+	return mime.QEncoding.Encode("utf-8", v)
+}
+
+// userLogf captures the auth URL tsnet prints while a node needs login.
+func (n *Net) userLogf(nd *node) func(string, ...any) {
+	return func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		if _, url, ok := strings.Cut(msg, "go to: "); ok {
+			url = strings.TrimSpace(url)
+			n.mu.Lock()
+			if nd.authURL != url {
+				nd.authURL = url
+				n.notifyLocked()
+			}
+			n.mu.Unlock()
+		}
+		n.logf("tsnet %s: %s", nd.host, msg)
+	}
+}
+
+// watchBus follows backend state and login URLs on the IPN bus.
+func (n *Net) watchBus(nd *node, lc *local.Client) {
+	w, err := lc.WatchIPNBus(nd.ctx, ipn.NotifyInitialState)
+	if err != nil {
+		return
+	}
+	defer w.Close()
+	for {
+		msg, err := w.Next()
+		if err != nil {
+			return
+		}
+		if msg.BrowseToURL != nil && *msg.BrowseToURL != "" {
+			n.mu.Lock()
+			nd.authURL = *msg.BrowseToURL
+			n.notifyLocked()
+			n.mu.Unlock()
+		}
+		if msg.State != nil {
+			n.mu.Lock()
+			nd.backend = msg.State.String()
+			if *msg.State == ipn.Running {
+				nd.authURL = ""
+				nd.loginKick = false
+				nd.wasUp = true
+			}
+			n.notifyLocked()
+			n.mu.Unlock()
+			n.refresh(nd, lc)
+		}
+	}
+}
+
+// poll refreshes key expiry and backend state until the node stops.
+func (n *Net) poll(nd *node, lc *local.Client) {
+	every := n.pollEvery
+	if every <= 0 {
+		every = defaultPoll
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-nd.ctx.Done():
+			return
+		case <-t.C:
+			n.refresh(nd, lc)
+		}
+	}
+}
+
+// refresh reads StatusWithoutPeers. When a node that was running needs login
+// again (expired key) and control has not handed out a URL, it asks for an
+// interactive login once so the console can show one. New nodes are left
+// alone: control already returns a URL for them, and an extra interactive
+// login could race an auth-key login.
+func (n *Net) refresh(nd *node, lc *local.Client) {
+	ctx, cancel := context.WithTimeout(nd.ctx, 10*time.Second)
+	defer cancel()
+	st, err := lc.StatusWithoutPeers(ctx)
+	if err != nil {
+		return
+	}
+	n.applyStatus(nd, st)
+	n.mu.Lock()
+	kick := nd.wasUp && nd.backend == ipn.NeedsLogin.String() && nd.authURL == "" && !nd.loginKick
+	if kick {
+		nd.loginKick = true
+	}
+	n.mu.Unlock()
+	if kick {
+		if err := lc.StartLoginInteractive(ctx); err != nil {
+			n.logf("tsnet %s: start login: %v", nd.host, err)
+		}
+	}
+}
+
+func (n *Net) applyStatus(nd *node, st *ipnstate.Status) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if st.BackendState != "" {
+		nd.backend = st.BackendState
+	}
+	if st.AuthURL != "" {
+		nd.authURL = st.AuthURL
+	}
+	if st.Self != nil {
+		nd.keyExpiry = st.Self.KeyExpiry
+		if name := strings.TrimSuffix(st.Self.DNSName, "."); name != "" {
+			nd.dnsName = name
+		}
+	}
+	if s := strings.TrimSuffix(st.MagicDNSSuffix, "."); s != "" {
+		n.suffix = s
+	}
+	n.notifyLocked()
+}
+
+func (n *Net) setErr(nd *node, err error) {
+	n.logf("tsnet %s: %v", nd.host, err)
+	n.mu.Lock()
+	nd.err = err
+	n.notifyLocked()
+	n.mu.Unlock()
+}
+
+// Stop implements core.PrivateNet: it logs the node out (removing it from the
+// tailnet), shuts it down and deletes its state. Unknown hosts are a no-op.
+func (n *Net) Stop(host string) error {
+	n.mu.Lock()
+	nd, ok := n.nodes[host]
+	if !ok {
+		n.mu.Unlock()
+		return nil
+	}
+	done := n.retireLocked(nd, true)
+	n.mu.Unlock()
+	<-done
+	return nd.stopErr
+}
+
+// retireLocked removes nd from the served set and tears it down in the
+// background. The returned channel is closed when the teardown has finished;
+// a later node with the same host waits for it before starting. n.mu must be
+// held.
+func (n *Net) retireLocked(nd *node, logout bool) chan struct{} {
+	delete(n.nodes, nd.host)
+	done := make(chan struct{})
+	n.stopping[nd.host] = done
+	n.notifyLocked()
+	go func() {
+		nd.stopErr = n.teardown(nd, logout) // read only after done is closed
+		n.mu.Lock()
+		if n.stopping[nd.host] == done {
+			delete(n.stopping, nd.host)
+		}
+		n.mu.Unlock()
+		close(done)
+	}()
+	return done
+}
+
+// teardown stops a node. With logout it also removes the node from the
+// tailnet and deletes its state directory.
+func (n *Net) teardown(nd *node, logout bool) error {
+	// Cancelling first unblocks a node still waiting for its predecessor or
+	// for login; the LocalAPI used for Logout does not depend on nd.ctx.
+	nd.cancel()
+	<-nd.started
+	var errs []error
+	if nd.srv != nil {
+		if logout {
+			if lc, err := nd.srv.LocalClient(); err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+				if err := lc.Logout(ctx); err != nil {
+					// The node stays in the admin console until removed there
+					// (ephemeral nodes are collected by control anyway).
+					n.logf("tsnet %s: logout: %v", nd.host, err)
+				}
+				cancel()
+			}
+		}
+		n.mu.Lock()
+		servers := nd.https
+		n.mu.Unlock()
+		for _, hs := range servers {
+			hs.Close()
+		}
+		if err := nd.srv.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	<-nd.done
+	if nd.prev != nil {
+		// A node cancelled while waiting for its predecessor never started;
+		// keep teardowns of one host in order so the predecessor cannot
+		// delete a directory that a later node is already using.
+		<-nd.prev
+	}
+	if logout || nd.ephemeral {
+		if err := os.RemoveAll(nd.dir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Close implements core.PrivateNet. Persistent nodes are shut down but not
+// logged out, so they come back with the same identity after a restart.
+// Ephemeral nodes (previews) cannot come back: they are logged out, so they
+// leave the tailnet now instead of lingering offline, and their directories
+// are removed.
+func (n *Net) Close() error {
+	n.mu.Lock()
+	if n.closed {
+		n.mu.Unlock()
+		return nil
+	}
+	n.closed = true
+	nodes := make([]*node, 0, len(n.nodes))
+	for _, nd := range n.nodes {
+		nodes = append(nodes, nd)
+	}
+	n.nodes = map[string]*node{}
+	pending := make([]chan struct{}, 0, len(n.stopping))
+	for _, ch := range n.stopping {
+		pending = append(pending, ch)
+	}
+	n.notifyLocked()
+	n.mu.Unlock()
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(nodes))
+	for i, nd := range nodes {
+		wg.Go(func() { errs[i] = n.teardown(nd, nd.ephemeral) })
+	}
+	wg.Wait()
+	for _, ch := range pending {
+		<-ch
+	}
+	return errors.Join(errs...)
+}
+
+// URL implements core.PrivateNet. Before any node has learned the tailnet's
+// MagicDNS suffix it returns a placeholder https://<host>.<tailnet>.ts.net.
+func (n *Net) URL(host string) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.urlLocked(host)
+}
+
+func (n *Net) urlLocked(host string) string {
+	scheme := "https"
+	name := ""
+	plain := n.plain // best guess until the node itself is serving
+	if nd, ok := n.nodes[host]; ok {
+		name = nd.dnsName // control may have renamed a duplicate (host-1)
+		if nd.serving {
+			plain = nd.plain
+		}
+	}
+	if plain {
+		scheme = "http"
+	}
+	if name == "" {
+		suffix := n.suffix
+		if suffix == "" {
+			suffix = "<tailnet>.ts.net"
+		}
+		name = host + "." + suffix
+	}
+	return scheme + "://" + name
+}
+
+// Tailnet returns the MagicDNS suffix (e.g. "tail1234.ts.net") once a node
+// has learned it, else "".
+func (n *Net) Tailnet() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.suffix
+}
+
+// Status implements core.PrivateNet.
+func (n *Net) Status() core.NetStatus {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	st := core.NetStatus{Kind: "tailscale", Enabled: !n.closed}
+	if n.suffix != "" {
+		st.Detail = "tailnet " + n.suffix
+	}
+	now := time.Now()
+	for _, nd := range n.nodes {
+		st.Hosts = append(st.Hosts, n.hostInfoLocked(nd, now))
+	}
+	sort.Slice(st.Hosts, func(i, j int) bool { return st.Hosts[i].Host < st.Hosts[j].Host })
+	return st
+}
+
+func (n *Net) hostInfoLocked(nd *node, now time.Time) core.HostInfo {
+	hi := core.HostInfo{Host: nd.host, URL: n.urlLocked(nd.host), Ephemeral: nd.ephemeral, State: StateStarting}
+	if nd.keyExpiry != nil {
+		hi.KeyExpiry = nd.keyExpiry.UTC().Format(time.RFC3339)
+	}
+	switch {
+	case nd.err != nil:
+		hi.State, hi.Detail = StateError, nd.err.Error()
+	case nd.backend == ipn.NeedsLogin.String():
+		hi.State = StateNeedsLogin
+		if nd.authURL != "" {
+			hi.Detail = nd.authURL
+		} else if nd.keyExpiry != nil && nd.keyExpiry.Before(now) {
+			hi.Detail = "node key expired; re-authenticate, or disable key expiry for this machine in the Tailscale admin console"
+		} else {
+			hi.Detail = "waiting for a login URL from the coordination server"
+		}
+	case nd.backend == ipn.NeedsMachineAuth.String():
+		hi.State, hi.Detail = StateNeedsLogin, "waiting for device approval in the Tailscale admin console"
+	case nd.serving && nd.backend == ipn.Running.String():
+		hi.State = StateReady
+		if nd.keyExpiry != nil && nd.keyExpiry.Sub(now) < keyExpiringWindow {
+			hi.State = StateKeyExpiring
+			hi.Detail = "node key expires " + nd.keyExpiry.UTC().Format(time.RFC3339) + "; re-authenticate or disable key expiry in the Tailscale admin console"
+		} else if nd.plain {
+			hi.Detail = HTTPSUnavailable
+		}
+	}
+	return hi
+}
+
+// WaitReady blocks until host is serving (ready or key-expiring), its node
+// fails, or ctx ends.
+func (n *Net) WaitReady(ctx context.Context, host string) error {
+	for {
+		n.mu.Lock()
+		nd, ok := n.nodes[host]
+		var hi core.HostInfo
+		if ok {
+			hi = n.hostInfoLocked(nd, time.Now())
+		}
+		ch := n.changed
+		n.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("tsnet: %s is not served", host)
+		}
+		switch hi.State {
+		case StateReady, StateKeyExpiring:
+			return nil
+		case StateError:
+			return fmt.Errorf("tsnet: %s: %s", host, hi.Detail)
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return fmt.Errorf("tsnet: %s is %s: %w", host, hi.State, ctx.Err())
+		}
+	}
+}
+
+var _ core.PrivateNet = (*Net)(nil)

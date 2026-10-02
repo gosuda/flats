@@ -166,7 +166,15 @@ func (c *collector) addFile(name string, r io.Reader, mode fs.FileMode) error {
 // skipName drops OS metadata files that are never part of a site.
 func skipName(p string) bool {
 	base := path.Base(p)
-	return base == ".DS_Store" || strings.HasPrefix(base, "._") || strings.HasPrefix(p, "__MACOSX/") || p == ".git" || strings.HasPrefix(p, ".git/")
+	if base == ".DS_Store" || strings.HasPrefix(base, "._") {
+		return true
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".git" || seg == "node_modules" || seg == "__MACOSX" {
+			return true
+		}
+	}
+	return false
 }
 
 // FromArchive reads a tar, tar.gz or zip archive.

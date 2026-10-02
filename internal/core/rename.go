@@ -39,16 +39,12 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	lf := s.live[from]
 	delete(s.live, from)
 	s.mu.Unlock()
+	// Keep the old nodes/exposures: serveRedirect swaps their handlers to
+	// redirects, so the old addresses keep resolving without a new login.
 	wasPublic, wasPrivate := false, false
 	if lf != nil {
-		if lf.publicServed && s.cfg.Public != nil {
-			_ = s.cfg.Public.Stop(from)
-			wasPublic = true
-		}
-		if lf.privateServed {
-			_ = s.cfg.Private.Stop(from)
-			wasPrivate = true
-		}
+		wasPublic = lf.publicServed && s.cfg.Public != nil
+		wasPrivate = lf.privateServed
 	}
 	till := s.now().Add(s.redirectWindow())
 	if err := os.Rename(s.flatDir(from), s.flatDir(to)); err != nil && !os.IsNotExist(err) {

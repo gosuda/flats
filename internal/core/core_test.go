@@ -288,3 +288,33 @@ func TestRenameRedirect(t *testing.T) {
 		t.Fatalf("new name serves %q", body)
 	}
 }
+
+func TestApprovedDeleteClosesOtherApprovals(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.svc.SaveVersion(ctx, "multi", files("index.html", "x"), core.SaveMeta{}, core.ViaMCP)
+	e.svc.Deploy(ctx, "multi", 1, core.ViaMCP)
+	vis, _ := e.svc.SetVisibility(ctx, "multi", store.PublicListed, core.ViaMCP, "")
+	if vis.Notice != core.ListedNotice {
+		t.Fatalf("pending visibility must carry the notice: %+v", vis)
+	}
+	del, _ := e.svc.Delete(ctx, "multi", core.ViaMCP, "")
+	a, err := e.svc.Decide(ctx, del.Approval.ID, true)
+	if err != nil || a.Status != "approved" {
+		t.Fatalf("approve delete: %v %+v", err, a)
+	}
+	other, _ := e.svc.GetApproval(ctx, vis.Approval.ID)
+	if other.Status != "failed" {
+		t.Fatalf("stale approval should close, got %s", other.Status)
+	}
+}
+
+func TestDeployErrorWhenNothingLive(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.svc.SaveVersion(ctx, "fresh", files("index.html", "x", "flats.json", `{"health":"/nope"}`), core.SaveMeta{}, core.ViaAPI)
+	_, err := e.svc.Deploy(ctx, "fresh", 1, core.ViaAPI)
+	if err == nil || !strings.Contains(err.Error(), "nothing was live") {
+		t.Fatalf("got %v", err)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -624,16 +625,21 @@ type DeployResult struct {
 
 // DeployError carries the failed health check.
 type DeployError struct {
-	Version int
-	Health  HealthResult
-	Cause   error
+	Version  int
+	Previous int // live version when the deploy started (0 = none)
+	Health   HealthResult
+	Cause    error
 }
 
 func (e *DeployError) Error() string {
-	if e.Cause != nil {
-		return fmt.Sprintf("deploy of version %d failed: %v (the previous live version keeps serving)", e.Version, e.Cause)
+	tail := "(the previous live version keeps serving)"
+	if e.Previous == 0 {
+		tail = "(nothing was live before, so the flat is still not deployed)"
 	}
-	return fmt.Sprintf("deploy of version %d failed its health check: GET %s returned %d %s (the previous live version keeps serving)", e.Version, e.Health.Path, e.Health.Status, e.Health.Error)
+	if e.Cause != nil {
+		return fmt.Sprintf("deploy of version %d failed: %v %s", e.Version, e.Cause, tail)
+	}
+	return fmt.Sprintf("deploy of version %d failed its health check: GET %s returned %d %s %s", e.Version, e.Health.Path, e.Health.Status, e.Health.Error, tail)
 }
 
 func healthCheck(h http.Handler, p string) HealthResult {
@@ -693,7 +699,7 @@ func (s *Service) deploy(ctx context.Context, slugName string, n int, kind strin
 	d, err := s.build(ctx, slugName, v, s.dataDirOf(slugName))
 	if err != nil {
 		s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("%s of version %d failed to start: %v", kind, n, err), nil)
-		return DeployResult{}, &DeployError{Version: n, Cause: err}
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err}
 	}
 	var m bundle.Manifest
 	_ = json.Unmarshal(v.Manifest, &m)
@@ -704,7 +710,7 @@ func (s *Service) deploy(ctx context.Context, slugName string, n int, kind strin
 		if d.inst != nil {
 			d.inst.Stop()
 		}
-		return DeployResult{}, &DeployError{Version: n, Health: h}
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Health: h}
 	}
 	prev := f.LiveVersion
 	if err := s.st.SetLive(ctx, slugName, n, prev, kind, s.now()); err != nil {
@@ -783,10 +789,15 @@ func (s *Service) requestApproval(ctx context.Context, slugName, action string, 
 	if err := s.st.InsertApproval(ctx, a); err != nil {
 		return ActionResult{}, err
 	}
-	url := s.cfg.ConsoleURL() + "/approvals/" + a.ID
+	url := s.ApprovalURL(a.ID)
 	s.Event(ctx, slugName, "warn", "approval", fmt.Sprintf("%s requested via %s; waiting for the operator: %s", action, via, url), params)
 	return ActionResult{Status: "pending_approval", Approval: &a, ApprovalURL: url,
 		Message: "This action needs the operator's approval. Share the approval link with them; nothing changes until they approve it in the web console."}, nil
+}
+
+// ApprovalURL is the console address where the operator decides approval id.
+func (s *Service) ApprovalURL(id string) string {
+	return strings.TrimSuffix(s.cfg.ConsoleURL(), "/") + "/approvals/" + id
 }
 
 // SetVisibility changes who can open a flat. Requests that widen exposure from
@@ -807,7 +818,13 @@ func (s *Service) SetVisibility(ctx context.Context, slugName string, vis store.
 		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility unchanged"}, nil
 	}
 	if via != ViaConsole && vis.Rank() > f.Visibility.Rank() {
-		return s.requestApproval(ctx, slugName, "set_visibility", map[string]string{"visibility": string(vis), "from": string(f.Visibility)}, via, reason)
+		res, err := s.requestApproval(ctx, slugName, "set_visibility", map[string]string{"visibility": string(vis), "from": string(f.Visibility)}, via, reason)
+		if vis == store.PublicUnlisted {
+			res.Notice = UnlistedNotice
+		} else {
+			res.Notice = ListedNotice
+		}
+		return res, err
 	}
 	return s.applyVisibility(ctx, slugName, vis, via)
 }
@@ -845,10 +862,10 @@ func (s *Service) Delete(ctx context.Context, slugName string, via Via, reason s
 	if via != ViaConsole {
 		return s.requestApproval(ctx, slugName, "delete", map[string]string{"slug": slugName}, via, reason)
 	}
-	return s.applyDelete(ctx, slugName, via)
+	return s.applyDelete(ctx, slugName, via, "")
 }
 
-func (s *Service) applyDelete(ctx context.Context, slugName string, via Via) (ActionResult, error) {
+func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
 	s.dropPreviews(ctx, slugName)
@@ -869,6 +886,13 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via) (Ac
 	}
 	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
 		return ActionResult{}, err
+	}
+	if pend, err := s.st.ListApprovals(ctx, "pending"); err == nil {
+		for _, a := range pend {
+			if a.Flat == slugName && a.ID != exceptApproval {
+				_ = s.st.DecideApproval(ctx, a.ID, "failed", "the flat was deleted", s.now())
+			}
+		}
 	}
 	if err := os.RemoveAll(s.flatDir(slugName)); err != nil {
 		return ActionResult{}, err
@@ -910,7 +934,7 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		_ = json.Unmarshal(a.Params, &p)
 		res, err = s.applyVisibility(ctx, a.Flat, store.Visibility(p.Visibility), ViaConsole)
 	case "delete":
-		res, err = s.applyDelete(ctx, a.Flat, ViaConsole)
+		res, err = s.applyDelete(ctx, a.Flat, ViaConsole, a.ID)
 	default:
 		err = fmt.Errorf("unknown action %q", a.Action)
 	}
