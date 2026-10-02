@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -72,8 +71,10 @@ type Config struct {
 	Public     PublicNet // nil disables public flats
 	Runtime    Runtime   // nil disables server flats
 	ConsoleURL func() string
-	Now        func() time.Time
-	Logf       func(format string, args ...any)
+	// Reserved are host names flats may not use (e.g. the console host).
+	Reserved []string
+	Now      func() time.Time
+	Logf     func(format string, args ...any)
 }
 
 // Service is the Flats core.
@@ -428,6 +429,9 @@ func (s *Service) CreateFlat(ctx context.Context, slugName, name string, via Via
 		return FlatView{}, errors.New("flats are created by agents (MCP, CLI or API), not from the console")
 	}
 	if err := slug.Validate(slugName); err != nil {
+		return FlatView{}, err
+	}
+	if err := s.checkReserved(slugName); err != nil {
 		return FlatView{}, err
 	}
 	if name == "" {
@@ -950,7 +954,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	host := slug.PreviewHost(slugName)
 	dataDir := filepath.Join(s.flatDir(slugName), "previews", host)
 	if v.Kind == "server" {
-		if err := copyDir(s.dataDirOf(slugName), dataDir); err != nil {
+		if err := snapshotData(s.dataDirOf(slugName), dataDir); err != nil {
 			return PreviewView{}, fmt.Errorf("copy live data for preview: %w", err)
 		}
 	}
@@ -1132,41 +1136,4 @@ func isWithin(dir, p string) bool {
 
 func startsWithDotDot(rel string) bool {
 	return len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)
-}
-
-func copyDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0o700); err != nil {
-		return err
-	}
-	return filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o700)
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o600)
-	})
-}
-
-// sortedKeys is a small helper for deterministic output.
-func sortedKeys(m map[string]string) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	return ks
 }

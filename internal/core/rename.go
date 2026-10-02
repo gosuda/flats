@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/oesni/flats/internal/slug"
-	"github.com/oesni/flats/internal/store"
 )
 
 // RenameSlug changes a flat's slug (and therefore its addresses). The old
@@ -16,6 +15,9 @@ import (
 // configured redirect window (7 days by default).
 func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (FlatView, error) {
 	if err := slug.Validate(to); err != nil {
+		return FlatView{}, err
+	}
+	if err := s.checkReserved(to); err != nil {
 		return FlatView{}, err
 	}
 	if from == to {
@@ -59,18 +61,20 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	// Move the in-memory state under the new name; the live handler closes
 	// over the state object, so rebuild handlers bound to the new slug.
 	if lf != nil {
-		s.mu.Lock()
 		nl := &liveFlat{limiter: lf.limiter}
 		if d := lf.cur.Load(); d != nil {
-			nd := *d
-			// Static handlers reference the version directory, which moved.
-			if d.inst == nil {
-				if rebuilt, err := s.build(ctx, to, d.version, s.dataDirOf(to)); err == nil {
-					nd = *rebuilt
+			// Handlers reference the flat directory, which moved: rebuild.
+			if rebuilt, err := s.build(ctx, to, d.version, s.dataDirOf(to)); err == nil {
+				nl.cur.Store(rebuilt)
+				if d.inst != nil {
+					d.inst.Stop()
 				}
+			} else {
+				s.Event(ctx, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)
+				nl.cur.Store(d)
 			}
-			nl.cur.Store(&nd)
 		}
+		s.mu.Lock()
 		s.live[to] = nl
 		s.mu.Unlock()
 	}
@@ -136,5 +140,3 @@ func (s *Service) Redirects() map[string]string {
 	}
 	return out
 }
-
-var _ = store.Private
