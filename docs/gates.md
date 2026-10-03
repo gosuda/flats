@@ -19,10 +19,46 @@ available.
 Against the real Tailscale control server without an auth key: the console
 node and a per-flat node both reach `needs-login` and the system status (and
 console) shows each node's real `https://login.tailscale.com/a/...` URL; no
-node joined the tailnet. Still to verify on the operator's tailnet (needs a
-reusable untagged auth key; one command: `scripts/tailnet-gate.sh <keyfile>`):
-real ACME certificates, per-flat HTTPS reachability, identity headers from a
-real peer, ephemeral preview removal and node removal on delete.
+node joined the tailnet.
+
+### Real tailnet (`scripts/tailnet-gate.sh <keyfile>`, 2026-10-03)
+
+**PASS** twice on the operator's tailnet (macOS, Tailscale 1.102 client on
+the same Mac, reusable untagged auth key), the last run at commit `6771a6c`:
+
+| Check | Result |
+|---|---|
+| 3 flats + console node, each its own node with a real certificate | ready after 40-41 s; issuer Let's Encrypt; RSS 69 MB with 4 nodes |
+| New host reports `starting` until it has its certificate | PASS |
+| Preview `<slug>-<8>` (ephemeral node) | ready after 40 s, served the candidate; deploy closed it in under 1 s and the node logged out |
+| Delete | the flat's node logged out of the tailnet |
+| Management API on a flat host | 404 |
+| Identity headers from a real peer (server flat echoing them) | `Tailscale-User-Login` is the peer's real login, `-Name` set, a spoofed `Tailscale-User-Profile-Pic` removed |
+
+Earlier runs failed and found four product bugs, fixed in `c188497` and
+`6771a6c`:
+
+1. **Certificates stopped after ~10 new hosts.** Each node registered its
+   own Let's Encrypt account; Let's Encrypt answered "too many new
+   registrations (10) from this IP address in the last 3h0m0s". All nodes
+   now share one account key.
+2. **"ready" before HTTPS worked**, and the certificate prewarm gave up
+   after 2 minutes without retrying. Hosts are now `starting` until a
+   certificate is obtained, and the fetch retries with backoff.
+3. **The server froze.** A forked child wedged in Network.framework's
+   atfork handler (golang/go#56784, seen with `sample`); the parent held
+   `syscall.ForkLock`, which darwin socket creation also takes, so
+   certificate requests never returned and one deploy waited 10 minutes for
+   its preview to close. The fork was tailscale's LocalAPI client running
+   `lsof` on every request; Flats now gives it in-process credentials so it
+   never forks, and `internal/forkwatch` kills any child stuck before exec
+   for over 10 s.
+4. **Unbounded Stop.** Stop and Close now wait at most 30 s.
+
+Notes: the gate reuses a cached Let's Encrypt account
+(`~/.cache/flats-gate/`) so repeated runs do not hit the registration limit.
+Logged-out nodes stay listed as expired in the admin console until
+Tailscale removes them or the operator does.
 
 ## Phase 1 — MVP
 

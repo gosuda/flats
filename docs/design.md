@@ -130,6 +130,20 @@ portal/<slug>.json              Portal identity (keeps the public hostname stabl
   for a preview to close) is removed from the served set and finishes in the
   background, so deploys and deletes never block on it. `Close` at shutdown
   is bounded the same way.
+* **One ACME account.** tailscaled keeps a node's Let's Encrypt account key
+  in `<node dir>/certs`; Flats gives every node the same key
+  (`tsnet/acme-account.key.pem`, adopted from an existing node the first
+  time), because Let's Encrypt allows only 10 new accounts per IP address
+  in 3 hours.
+* **macOS fork safety.** A fork in this multi-threaded process can wedge the
+  child in Network.framework's atfork handler (golang/go#56784); the parent
+  then holds `syscall.ForkLock`, which darwin socket creation also needs,
+  and the process loses its networking. tailscale's LocalAPI client forked
+  `lsof` on every request to find the GUI app's token; Flats sets fixed
+  in-process credentials so it never does (the in-process LocalAPI needs no
+  token), and `internal/forkwatch` kills a child that stays between fork and
+  exec for over 10 s (no `P_EXEC` flag), which releases the lock. Worker
+  starts are the only forks left.
 * **Measured cost** (spike, testcontrol, darwin/arm64): first node ≈14 MB RSS,
   each further node ≈4.2 MB RSS, ≈1 MB live heap and ≈94 goroutines; `Up`
   ≈0.33 s.
