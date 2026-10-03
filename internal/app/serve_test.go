@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Server-flat workers run in "/", so a relative --data or FLATS_DATA must be

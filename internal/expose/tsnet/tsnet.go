@@ -35,7 +35,7 @@ import (
 	"tailscale.com/ipn/store/mem"
 	ts "tailscale.com/tsnet"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // Config configures a Net.
@@ -727,6 +727,7 @@ func (n *Net) teardown(nd *node, logout bool) error {
 					// The node stays in the admin console until removed there
 					// (ephemeral nodes are collected by control anyway).
 					n.logf("tsnet %s: logout: %v", nd.host, err)
+					errs = append(errs, fmt.Errorf("tsnet %s logout: %w", nd.host, err))
 				}
 				cancel()
 			}
@@ -735,10 +736,12 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		servers := nd.https
 		n.mu.Unlock()
 		for _, hs := range servers {
-			hs.Close()
+			if err := hs.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+				errs = append(errs, fmt.Errorf("tsnet %s HTTP close: %w", nd.host, err))
+			}
 		}
-		if err := nd.srv.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			errs = append(errs, err)
+		if err := nd.srv.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("tsnet %s backend close: %w", nd.host, err))
 		}
 	}
 	<-nd.done
@@ -798,7 +801,7 @@ func (n *Net) Close() error {
 	case <-time.After(stopWait):
 		// Shutting down must finish; a node stuck in its backend is left to
 		// the process exit (an ephemeral one is then removed by control).
-		return fmt.Errorf("tsnet: nodes still shutting down after %s", stopWait)
+		return fmt.Errorf("tsnet: nodes still shutting down after %s: %w", stopWait, context.DeadlineExceeded)
 	}
 	return errors.Join(errs...)
 }

@@ -22,7 +22,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // Manager starts server flats as "flats worker" child processes. It

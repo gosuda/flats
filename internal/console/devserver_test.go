@@ -17,11 +17,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/oesni/flats/internal/api"
-	"github.com/oesni/flats/internal/bundle"
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/expose/local"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/api"
+	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 )
 
 type devSystem struct{ priv, pub core.NetStatus }

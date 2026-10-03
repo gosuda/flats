@@ -81,6 +81,14 @@ npm packages that need Node, no file system or network. Use `env.DB`
 secrets as `env.NAME`. Data survives deploys and rollbacks. Bundle your code
 into one ES module.
 
+A `.wasm` server is a fresh WASI preview1 command per HTTP request. Read
+`{method, url, headers, body}` JSON from stdin and write `{status, headers,
+body}` JSON to stdout. Configured variables and injected secrets are available
+as environment variables; clocks and CSPRNG are enabled. WASI has no SQLite
+or persistent FILES host ABI, filesystem mounts, outbound network or WebSocket
+API. Choose JavaScript when the app needs `env.DB`, `env.FILES`, Web Crypto
+or WebSocket callbacks; WASI does not share those JS host objects.
+
 ## Visibility and approvals — never decide this for the user
 
 - `private` (default): tailnet only.

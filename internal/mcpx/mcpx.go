@@ -13,8 +13,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/slug"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/slug"
 )
 
 // Options configures the MCP handler.

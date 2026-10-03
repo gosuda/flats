@@ -7,10 +7,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"time"
 
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Secrets are encrypted with AES-256-GCM under a host key stored in
@@ -32,9 +33,31 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
+	// Publish a complete, synced key without replacing a concurrent winner.
+	// O_EXCL on the final file alone would expose an empty/partial key to readers.
+	f, err := os.CreateTemp(filepath.Dir(path), ".secret-key-*")
+	if err != nil {
 		return nil, err
 	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(key); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(f.Name(), path); err != nil {
+		if os.IsExist(err) {
+			return loadOrCreateKey(path)
+		}
+		return nil, fmt.Errorf("publish secret key: %w", err)
+	}
+
 	return key, nil
 }
 

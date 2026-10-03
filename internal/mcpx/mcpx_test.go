@@ -18,9 +18,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/expose/local"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 )
 
 type env struct {

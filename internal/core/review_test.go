@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/expose/local"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // fakeRuntime runs server flats in-process. Each test sets start to decide

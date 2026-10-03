@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // checkReserved rejects slugs that collide with system host names, an open

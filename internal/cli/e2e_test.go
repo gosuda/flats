@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oesni/flats/internal/api"
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/expose/local"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/api"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // TestAgainstRealAPI runs the CLI against the real API server and core, with

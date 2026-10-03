@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oesni/flats/internal/launchd"
+	"github.com/gosuda/flats/internal/launchd"
 )
 
 // Serve runs the server (`flats serve`). It is wired by the server package;
@@ -29,7 +29,7 @@ var Serve func(args []string) error
 var Worker func(args []string) error
 
 // Version is the release version, set with
-// -ldflags "-X github.com/oesni/flats/internal/cli.Version=v1.2.3".
+// -ldflags "-X github.com/gosuda/flats/internal/cli.Version=v1.2.3".
 var Version = "dev"
 
 // Exit codes.

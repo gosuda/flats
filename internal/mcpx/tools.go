@@ -13,9 +13,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/oesni/flats/internal/bundle"
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/store"
 )
 
 const maxFiles = bundle.MaxFiles

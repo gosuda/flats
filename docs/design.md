@@ -9,7 +9,7 @@ that every surface shares.
 ## Process layout
 
 ```
-flats serve                     (one long-running process, launchd-managed on macOS)
+flats serve                     (one long-running process; launchd on macOS, systemd on Linux)
 ├── core.Service                flats, versions, deploys, previews, approvals (internal/core)
 ├── store                       SQLite metadata  <data>/flats.db (modernc.org/sqlite, WAL)
 ├── private network             one tsnet node per flat, per preview, plus "flats" for the console
@@ -26,6 +26,7 @@ Data directory (default `~/Library/Application Support/Flats`, override with
 workers run with `/` as their working directory):
 
 ```
+flats.lock                      lifetime exclusive advisory lock (never unlink while hosts run)
 flats.db                        metadata
 secret.key                      32-byte AES-256-GCM key for flat secrets (0600)
 flats/<slug>/versions/<n>/      immutable version files (read-only, 0444)
@@ -34,6 +35,29 @@ flats/<slug>/previews/<host>/   preview copy of data/ (removed with the preview)
 tsnet/<host>/                   tsnet node state (one directory per node)
 portal/<slug>.json              Portal identity (keeps the public hostname stable)
 ```
+
+The host acquires `<data>/flats.lock` immediately after creating the directory,
+before opening SQLite, restoring flats or initializing runtime/network state.
+The advisory lock uses the persistent file inode; do not remove or replace it.
+Successful shutdown and process exit release it, and failed startup cleans up
+before releasing it. `secret.key` is generated into a private synced temporary
+file and atomically linked into place without replacing a concurrent winner;
+readers see either no key or all 32 bytes.
+
+Shutdown drains the management server (5s; force-close on failure), stops core
+workers, closes public then private networks, closes SQLite and releases the
+lock. Failures are joined with component names and returned to the caller;
+`flats serve` reports them as command errors. Host and Portal Close are
+idempotent, including concurrent calls. Portal has one outer 30s network bound
+and a 30s per-exposure bound spanning HTTP/watch drain, SDK close and listener
+pump; SDK close is attempted even if drain times out. Tailscale already bounds
+Stop/Close at 30s. Expected listener closure/context cancellation is ignored;
+other errors and exceeded deadlines are reported. A stuck third-party call
+cannot be forcibly stopped in Go: cleanup may finish later, or only at process
+exit. On any shutdown deadline, the host retains its directory lock until
+process exit to prevent another host from racing background state cleanup.
+These bounds cover the network implementations, not arbitrary worker/store
+failures or an injected implementation that ignores the network contract.
 
 ## Model and flows
 
@@ -254,7 +278,30 @@ export default {
   per-flat disk quota refuses new uploads and the console reports flats over
   quota. JS has no file system or network access except through `env`.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
-  and writing the response JSON on stdout, with the same env and data dir.
+  and writing response JSON on stdout. Each request creates a fresh instance.
+  Environment includes only the flat's configured variables and injected
+  secrets, never the host process environment. Clocks, cancellable sleeps and
+  CSPRNG are available. There are no preopened directories, filesystem/network
+  mounts, SQLite/FILES host imports or WebSocket connection API. The worker's
+  host-side data directory is **not** mounted into the WASI guest.
+
+| Capability | JavaScript (`.js` / `.mjs`) | WASI preview1 (`.wasm`) |
+|---|---|---|
+| Request/response | Worker-style `fetch(request, env)` | JSON stdin/stdout; fresh command instance per request |
+| SQLite | `env.DB.query` / `exec` | Unavailable |
+| Persistent files | `env.FILES.get` / `put` / `delete` / `list` | Unavailable |
+| WebSocket | `websocket.open` / `message` / `close`, `ws.send` | Unavailable; Upgrade remains an ordinary HTTP request |
+| Outbound network | Unavailable (no `fetch` or sockets) | Unavailable |
+| Filesystem | Read-only bundled modules; no arbitrary host filesystem; persistence via DB/FILES | No mounts or preopened directories |
+| Secrets/configuration | `env.NAME` | Selected environment variables |
+| Clocks/randomness | timers, `Date`, Web Crypto CSPRNG | WASI clocks, cancellable sleeps and CSPRNG |
+
+WASI request JSON is `{method, url, headers, body}` (body is a string or null).
+Response JSON is `{status, headers, body}` (body is a string); binary
+responses put base64 text in `body` and set `body_base64: true`. Stderr is forwarded as flat log lines.
+These are executable contracts in `internal/runtime` tests, including rejected
+JS host imports, absent filesystem/network access, selected environment,
+clocks/randomness, and no WebSocket negotiation.
 
 ## HTTP API
 

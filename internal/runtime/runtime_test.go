@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 const testWorkerEnv = "FLATS_TEST_WORKER"
@@ -42,7 +42,11 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	if cacheRoot != "" {
+		os.RemoveAll(cacheRoot)
+	}
+	os.Exit(code)
 }
 
 var (
@@ -56,10 +60,14 @@ func newManager(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A persistent DataDir shares the wazero compilation cache across tests
-	// and runs (only the cache and sockets live there).
+	// A disposable, process-private DataDir shares the compilation cache
+	// across tests without touching another test run or operator state.
 	cacheOnce.Do(func() {
-		cacheRoot = filepath.Join(os.TempDir(), fmt.Sprintf("flats-runtime-test-%d", os.Getuid()))
+		var err error
+		cacheRoot, err = os.MkdirTemp("/tmp", "flats-runtime-test-")
+		if err != nil {
+			t.Fatal(err)
+		}
 	})
 	return &Manager{DataDir: cacheRoot, Exe: exe, Env: []string{testWorkerEnv + "=1"}, Logf: t.Logf}
 }
@@ -828,6 +836,8 @@ func TestWASIHandler(t *testing.T) {
 
 import (
 	"encoding/json"
+ "crypto/rand"
+ "net"
 	"fmt"
 	"os"
 	"time"
@@ -836,6 +846,7 @@ import (
 func main() {
 	var req struct {
 		Method string            ` + "`json:\"method\"`" + `
+ Headers map[string]string ` + "`json:\"headers\"`" + `
 		URL    string            ` + "`json:\"url\"`" + `
 		Body   *string           ` + "`json:\"body\"`" + `
 	}
@@ -851,11 +862,17 @@ func main() {
 		time.Sleep(time.Hour)
 	}
 	_, ferr := os.ReadFile("/etc/passwd")
+ _, dbErr := os.ReadFile(req.Headers["x-probe-db"])
+ _, filesErr := os.ReadFile(req.Headers["x-probe-file"])
+ conn, netErr := net.DialTimeout("tcp", os.Getenv("PROBE_ADDR"), time.Second)
+ if conn != nil { conn.Close() }
+ var random [16]byte
+ _, randomErr := rand.Read(random[:])
 	fmt.Fprintln(os.Stderr, "guest log line")
 	json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"status":  200,
 		"headers": map[string]string{"content-type": "text/plain", "x-guest": "wasi"},
-		"body":    fmt.Sprintf("wasi %s %s greeting=%s home=%q fs=%v", req.Method, req.URL, os.Getenv("GREETING"), os.Getenv("HOME"), ferr != nil),
+		"body":    fmt.Sprintf("wasi %s %s greeting=%s home=%q fs=%v db=%v files=%v net=%v random=%v clock=%v abi=%q", req.Method, req.URL, os.Getenv("GREETING"), os.Getenv("HOME"), ferr != nil, dbErr != nil, filesErr != nil, netErr != nil, randomErr == nil && random != [16]byte{}, time.Now().Unix() > 0, os.Getenv("DB") + os.Getenv("FILES")),
 	})
 }
 `,
@@ -865,17 +882,45 @@ func main() {
 	cmd.Dir = src
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm", "CGO_ENABLED=0", "GOFLAGS=")
 	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("cannot build a wasip1 guest: %v\n%s", err, b)
+		t.Fatalf("cannot build a wasip1 guest: %v\n%s", err, b)
 	}
 	wasm, _ := os.ReadFile(out)
 	m := newManager(t)
+	probeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer probeServer.Close()
+	probeAddr := strings.TrimPrefix(probeServer.URL, "http://")
+	control, err := net.DialTimeout("tcp", probeAddr, time.Second)
+	if err != nil {
+		t.Fatalf("parent cannot reach network fixture: %v", err)
+	}
+	control.Close()
 	t0 := time.Now()
-	f := mustStart(t, m, "wasi", map[string]string{"handler.wasm": string(wasm)}, "handler.wasm", map[string]string{"GREETING": "hi"})
+	f := mustStart(t, m, "wasi", map[string]string{"handler.wasm": string(wasm)}, "handler.wasm", map[string]string{"GREETING": "hi", "PROBE_ADDR": probeAddr})
 	t.Logf("WASI cold start (incl. compile of %d KiB): %v", len(wasm)>>10, time.Since(t0).Round(time.Millisecond))
-	r := f.get(t, "/x?y=1")
+	// Actual worker data exists and is readable by the parent before the
+	// capability probe: absence in the guest cannot mean a missing fixture.
+	dbPath := filepath.Join(f.dataDir, "db.sqlite")
+	filePath := filepath.Join(f.dataDir, "files", "probe")
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dbPath, filePath} {
+		if err := os.WriteFile(path, []byte("parent-visible fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if b, err := os.ReadFile(path); err != nil || string(b) != "parent-visible fixture" {
+			t.Fatalf("bad fixture: %v", err)
+		}
+	}
+	r := f.do(t, "GET", "/x?y=1", "", "X-Probe-DB", dbPath, "X-Probe-File", filePath)
 	if r.status != 200 || r.header.Get("X-Guest") != "wasi" || !strings.HasPrefix(r.body, "wasi GET http://") ||
-		!strings.Contains(r.body, "/x?y=1 greeting=hi home=\"\" fs=true") {
+		!strings.Contains(r.body, "/x?y=1 greeting=hi home=\"\" fs=true db=true files=true net=true random=true clock=true abi=\"\"") {
 		t.Fatalf("wasi = %d %q %v; logs:\n%s", r.status, r.body, r.header, f.logs)
+	}
+	// WASI handles an Upgrade request as ordinary HTTP; there is no JS
+	// WebSocket callback/connection API for a command module.
+	if r := f.do(t, "GET", "/", "", "Connection", "Upgrade", "Upgrade", "websocket", "Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version", "13"); r.status != 200 {
+		t.Fatalf("WASI upgrade negotiated unexpectedly: %d", r.status)
 	}
 	f.logs.waitFor(t, "guest log line")
 	lat := measure(t, f, "/x", 50)

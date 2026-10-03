@@ -31,9 +31,10 @@ type dataStore struct {
 	db     *sql.DB
 	dbErr  error
 
-	filesMu   sync.Mutex
-	files     *os.Root
-	filesUsed atomic.Int64 // -1 until computed
+	filesWriteMu sync.Mutex // serializes quota checks, mutations and accounting
+	filesMu      sync.Mutex
+	files        *os.Root
+	filesUsed    atomic.Int64 // -1 until computed
 }
 
 func newDataStore(dir string) *dataStore {
@@ -345,6 +346,8 @@ func (d *dataStore) usage(r *os.Root) int64 {
 }
 
 func (d *dataStore) filePut(key, data string) error {
+	d.filesWriteMu.Lock()
+	defer d.filesWriteMu.Unlock()
 	if err := checkKey(key); err != nil {
 		return err
 	}
@@ -383,6 +386,8 @@ func (d *dataStore) filePut(key, data string) error {
 }
 
 func (d *dataStore) fileDelete(key string) (bool, error) {
+	d.filesWriteMu.Lock()
+	defer d.filesWriteMu.Unlock()
 	if err := checkKey(key); err != nil {
 		return false, err
 	}

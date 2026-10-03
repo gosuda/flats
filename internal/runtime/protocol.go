@@ -1,8 +1,13 @@
 // Package runtime runs server flats. The parent (Manager) starts one
 // "flats worker" child process per running version instance and proxies HTTP
 // to it over a Unix socket; the child (WorkerMain) runs the flat's JavaScript
-// in QuickJS on wazero, or a WASI preview1 module, with no file system or
-// network access except through env.DB and env.FILES.
+// in QuickJS on wazero (JS: env.DB, env.FILES, Web Crypto and WebSocket
+// callbacks) or runs a fresh WASI preview1 command per request (request JSON
+// on stdin, response JSON on stdout, selected environment including secrets,
+// clocks and CSPRNG). WASI has no DB/FILES host ABI or WebSocket API. Neither
+// engine receives host process environment or outbound network access. JS
+// loads read-only bundled modules and persists only through its host ABI;
+// WASI receives no filesystem mounts.
 package runtime
 
 import (
