@@ -1,6 +1,6 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
 
-import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials, publicNoticeOf } from './dom.js';
+import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading, extLink, busy } from './ui.js';
 import { publishLatest } from './actions.js';
@@ -127,8 +127,7 @@ export function mount(main, _params, ctx) {
       thumb(f),
       h('div', { class: 'flat-main' },
         extLink(f.public_url || f.private_url, f.name || f.slug, 'flat-name'),
-        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`),
-        f.public_url ? h('p', { class: 'notice-text small', text: publicNoticeOf(f) }) : null),
+        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
   }

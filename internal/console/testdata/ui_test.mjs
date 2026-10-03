@@ -125,7 +125,7 @@ assert.equal(publicNoticeOf(shop), LISTED_NOTICE);
 assert.equal(publicNoticeOf({ public_url: 'https://x.example' }), PUBLIC_URL_NOTICE);
 assert.equal(publicNoticeOf(notes), '');
 
-// The list shows the notice next to every public URL, and only there.
+// List rows show visibility badges without repeated public-access banners.
 const ctx = { setTitle() {}, alive: () => true, navigate() {} };
 const list = await import('./list.js');
 const listMain = new Element('main');
@@ -133,10 +133,9 @@ const stopList = list.mount(listMain, [], ctx);
 await tick();
 const rows = all(listMain, (e) => e.tagName === 'LI' && e.className === 'flat');
 assert.equal(rows.length, 3);
-for (const [row, want] of [[rows[0], UNLISTED], [rows[1], LISTED_NOTICE]]) {
-  assert.ok(row.textContent.includes(want), 'public row lacks its notice: ' + row.textContent);
+for (const row of rows) {
+  assert.equal(all(row, (e) => e.className.includes('notice-text')).length, 0);
 }
-assert.ok(!rows[2].textContent.includes('anyone'), 'private row must not carry a public notice');
 for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
  const name = all(row, (e) => e.tagName === 'A' && e.className === 'flat-name')[0];
  assert.equal(name.getAttribute('href'), new URL(site.public_url || site.private_url).href);
