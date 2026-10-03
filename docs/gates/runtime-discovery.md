@@ -192,3 +192,79 @@ independent review of that base delta and final issue-9 source acceptance were
 still pending when this revalidation was recorded. These results complete local
 integration and final-binary restart validation, with final acceptance remaining
 subject to those independent reviews.
+
+## Corrected-reference authoring and final-contract revalidation
+
+The reference corrections describe existing behavior: host filename limits and
+I/O errors, filesystem-dependent case/Unicode identity, compound DB JSON encoding,
+list cutoff order, preview settings, WASI secrets and absent platform globals.
+The historical identities and outcomes above remain unchanged.
+
+A second fresh Claude Code 2.1.288 client (`claude-opus-5-5`) authored
+`notebook-final` using the same ordinary notebook request (with the new slug)
+and MCP-only restrictions above. The host already held the original test app;
+there was no prepared app or source checkout in the new client directory.
+The client read documentation version 1 through `get_runtime_reference`.
+
+| Item | Corrected-reference authoring run |
+|---|---|
+| Binary source commit | `a0dde30239b755e56a15c4ba80ed7fad1df465a3` |
+| Binary source tree | `c853d01bb0b300bbe431275d93cb863dbe80f763` |
+| Native binary SHA256 | `e6612222e5e8a5e20a56e235d4acfa7db45f0be23e065174929b84253bfca40b` |
+| Read reference SHA256 | `86196d7454698ca554083d6330a24b42c254fbeb1961b8d906fc8ec06ca2e960` |
+| Returned private URL | `http://notebook-final.localhost:61664` |
+
+This was **not a first-pass success**. The authored v1 attachment PUT wrote data
+then returned HTTP 500 because the app used unsupported `TextEncoder`. An
+ordinary v2 redeploy ran prematurely before successful seed verification; that
+operator sequencing error and its transcript were retained separately. The
+operator then supplied only the observed HTTP failure and asked the client to
+investigate host diagnostics/public documentation and repair its own app.
+No API hints, replacement code or operator app edits were supplied. The client
+read logs and deployed its repair as v3; independent seed verification passed.
+
+An ordinary request for the distinct heading “Notebook revision final” produced
+v4; independent persistence verification passed. A subsequent complete v5
+candidate deliberately returned health HTTP 503 without startup/health storage
+mutations. Deployment was rejected, v5 remained saved, and the same URL retained
+v4, its byte-identical homepage, exact SQLite note and Unicode FILES attachment.
+Independent failed-deploy retention verification passed. All five CLI phases
+(author, premature redeploy, repair, final redeploy, failure) exited 0. Native
+and source tools, skills and slash commands were absent; the three builtin
+plugins were disclosed, with zero spawned subagents. These are tool-surface
+restrictions, not OS isolation. The repair feedback is an explicit intervention.
+
+The operator subsequently restarted the same retained data with the final
+contract binary, separately from that fresh-client run:
+
+| Item | Final contract binary |
+|---|---|
+| Authorized base | `313ef2557d28350cb91a0daff719aca5bf6813c9` |
+| Binary source commit | `f57c70f7362d39b195b7db14b58b4f55b781a8ff` |
+| Binary source tree | `b4540d1c7994151ab9f1fc43d85c1c133827c32d` |
+| Native binary SHA256 | `d90c6d74fd5e4f4354133b16098954e3f3bb2796399370dd2e9e3d895397d74c` |
+| Served reference SHA256 | `ed795e74b20061a0bb73127ed54e1c76ee1d0d8f0765a945096824693718b78d` |
+| Documentation version | `1` |
+
+Build metadata records the source commit above, `vcs.modified=false`, Go 1.27.1,
+`CGO_ENABLED=0`, darwin/arm64. Full tests, vet, core/API/app/MCP/runtime/store/
+expose/docs races, static/API/CLI/console checks, module tidy with no diff, module
+verification, native and Linux amd64/arm64 cross-builds, and the real-binary
+server gate passed on that source. Section-scoped documentation checks and
+executable filename, case/normalization, JSON, list and absent-global tests
+passed; deliberate documentation mutations were rejected by the checks.
+
+After verifying and stopping only the prior owned test process, the operator
+confirmed exit and restarted the exact hashed binary on the same data/ports.
+MCP text matched the final reference hash. Independent persistence and retained
+failure checks passed for both apps: original `notebook-gate` live v2/saved v3
+at `http://notebook-gate.localhost:61664`, and new `notebook-final` live v4/rejected
+v5 at its URL above. Both kept their exact pages, SQLite notes and Unicode files.
+Those restart checks performed no new failed deployment or fresh authoring on
+the final reference. The new authoring run remains bound to its earlier hash.
+
+The coordinator classifies unchanged static product plus executed static/API/MCP
+tests and historical three-client evidence as continued static gates; no new
+three-client prepared-static script run is claimed. This evidence-only appendix
+follows the final binary source and does not identify a rebuilt binary. Exact
+final-head independent review remains required before acceptance.
