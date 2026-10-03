@@ -171,3 +171,17 @@ func (s *Server) operatorLogout(w http.ResponseWriter, r *http.Request) {
 		Status string `json:"status"`
 	}{Status: "operator_signed_out"})
 }
+
+// DecisionIdentity is the nonsecret audit identity for a validated operator
+// proof. Tailnet login is supplemental audit context from trusted middleware,
+// never the source of authority. Local sessions share the configured operator
+// credential and therefore identify a role, not an individually verified human.
+func (a *OperatorAuthority) DecisionIdentity(ctx context.Context) string {
+	if a.ValidateDecision(ctx) != nil {
+		return ""
+	}
+	if login := approverOf(ctx); login != "" {
+		return login
+	}
+	return "local operator"
+}

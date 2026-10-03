@@ -21,7 +21,13 @@ import (
 )
 
 func setup(t *testing.T) (*httptest.Server, *core.Service) {
+	srv, svc, _ := setupWithAuthority(t)
+	return srv, svc
+}
+
+func setupWithAuthority(t *testing.T) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
 	t.Helper()
+	authority := operatorAuthority(t)
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "f.db"))
 	if err != nil {
@@ -29,14 +35,14 @@ func setup(t *testing.T) (*httptest.Server, *core.Service) {
 	}
 	priv, _ := local.Listen("127.0.0.1:0")
 	pubNet, _ := local.Listen("127.0.0.1:0")
-	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
+	svc, err := core.New(context.Background(), core.Config{ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
 		ConsoleURL: func() string { return "http://console" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer((&api.Server{Svc: svc, Operator: operatorAuthority(t)}).Handler())
+	srv := httptest.NewServer((&api.Server{Svc: svc, Operator: authority}).Handler())
 	t.Cleanup(func() { srv.Close(); svc.Close(); priv.Close(); pubNet.Close(); st.Close() })
-	return srv, svc
+	return srv, svc, authority
 }
 
 const operatorTestCredential = "independent-fixture-credential-32-bytes"
@@ -115,7 +121,7 @@ func TestUploadValidationAndDeploy(t *testing.T) {
 		t.Fatalf("want 422 with problems, got %d %v", code, out)
 	}
 	code, out = req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1&git_sha=abc&git_dirty=true", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
-	if code != 201 || out["deploy"] == nil {
+	if code != 202 || out["status"] != "pending_approval" || out["deploy"] == nil {
 		t.Fatalf("upload+deploy: %d %v", code, out)
 	}
 	v := out["version"].(map[string]any)
@@ -132,9 +138,31 @@ func TestUploadValidationAndDeploy(t *testing.T) {
 	}
 }
 
+func saveAndPublish(t *testing.T, srv *httptest.Server, slug, content string) {
+	t.Helper()
+	code, out := req(t, "POST", srv.URL+"/api/flats/"+slug+"/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": content})), nil)
+	if code != 202 || out["status"] != "pending_approval" {
+		t.Fatalf("publish request: %d %v", code, out)
+	}
+	approveRequest(t, srv, out)
+}
+
+func approveRequest(t *testing.T, srv *httptest.Server, pending map[string]any) map[string]any {
+	t.Helper()
+	id := pending["approval"].(map[string]any)["id"].(string)
+	code, out := req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
+	if code != 200 || out["status"] != "approved" {
+		t.Fatalf("authorized decision: %d %v", code, out)
+	}
+	return out
+}
+
 func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 	srv, _ := setup(t)
-	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	saveAndPublish(t, srv, "site", "ok")
+	if code, out := req(t, "POST", srv.URL+"/console/api/flats/site/providers", strings.NewReader(`{"provider":"portal","permitted":true}`), consoleHdr(t, srv)); code != 200 {
+		t.Fatalf("operator provider grant: %d %v", code, out)
+	}
 	code, out := req(t, "POST", srv.URL+"/api/flats/site/visibility", strings.NewReader(`{"visibility":"public-listed","reason":"launch"}`), nil)
 	if code != 202 || out["status"] != "pending_approval" || !strings.HasPrefix(out["approval_url"].(string), "http://console/approvals/") {
 		t.Fatalf("pending approval: %d %v", code, out)
@@ -153,7 +181,7 @@ func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 		t.Fatalf("console approve: %d %v", code, out)
 	}
 	code, out = req(t, "GET", srv.URL+"/api/flats/site", nil, nil)
-	if code != 200 || out["visibility"] != "public-listed" || out["public_notice"] != core.ListedNotice {
+	if code != 200 || out["visibility"] != "public" || out["public_notice"] != core.PublicAccessNotice {
 		t.Fatalf("after approval: %v", out)
 	}
 	// Agents cannot create flats from the console.
@@ -191,7 +219,7 @@ func TestSecretsOperatorOnlyAndNeverReturned(t *testing.T) {
 // preflight, and the browser marks them with Sec-Fetch-Site and Origin.
 func TestAgentAPIRefusesCrossSiteRequests(t *testing.T) {
 	srv, _ := setup(t)
-	if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "legit"})), nil); code != 201 {
+	if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "legit"})), nil); code != 202 {
 		t.Fatalf("setup upload: %d %v", code, out)
 	}
 	deface := func() io.Reader { return bytes.NewReader(archive(map[string]string{"index.html": "defaced"})) }
@@ -273,12 +301,12 @@ func TestConsoleRefusesClientsAndForeignOrigins(t *testing.T) {
 // Decisions made through the console node carry the WhoIs login that the
 // tsnet middleware set; the loopback listener has none.
 func TestDecisionRecordsTailnetLogin(t *testing.T) {
-	srv, svc := setup(t)
-	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc, Operator: operatorAuthority(t)}).Handler()))
+	srv, svc, authority := setupWithAuthority(t)
+	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc, Operator: authority}).Handler()))
 	t.Cleanup(tail.Close)
 	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	pending := func() string {
-		_, out := req(t, "POST", srv.URL+"/api/flats/site/visibility", strings.NewReader(`{"visibility":"public-listed"}`), nil)
+		_, out := req(t, "DELETE", srv.URL+"/api/flats/site", nil, nil)
 		return out["approval"].(map[string]any)["id"].(string)
 	}
 

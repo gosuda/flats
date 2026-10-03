@@ -71,6 +71,7 @@ func TestOperatorRoutesFailClosedAgainstForgedBrowserHeaders(t *testing.T) {
 		for _, route := range []struct{ method, path string }{
 			{"POST", "/console/api/approvals/apr-test/approve"},
 			{"POST", "/console/api/approvals/apr-test/reject"},
+			{"POST", "/console/api/flats/test/providers"},
 			{"PUT", "/console/api/settings"},
 			{"DELETE", "/console/api/flats/test"},
 		} {
@@ -101,6 +102,9 @@ func TestOperatorAuthorityCannotBeSelfGranted(t *testing.T) {
 			t.Fatal("GET issued authority")
 		}
 	}
+	if s.Operator.DecisionIdentity(context.Background()) != "" {
+		t.Fatal("agent context acquired operator audit identity")
+	}
 	if err := s.Operator.ValidateDecision(context.Background()); err == nil {
 		t.Fatal("agent context acquired decision authority")
 	}
@@ -114,6 +118,9 @@ func TestOperatorSessionBoundRevokedExpiredAndRestarted(t *testing.T) {
 	w := httptest.NewRecorder()
 	if !s.requireOperator(w, r) || s.Operator.ValidateDecision(r.Context()) != nil {
 		t.Fatalf("legitimate session was refused: %s", w.Body)
+	}
+	if s.Operator.DecisionIdentity(r.Context()) != "local operator" {
+		t.Fatal("valid operator audit role absent")
 	}
 	other := testAuthority(t)
 	if other.ValidateDecision(r.Context()) == nil {

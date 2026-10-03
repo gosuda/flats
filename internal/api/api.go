@@ -67,6 +67,11 @@ func (s *Server) Handler() http.Handler {
 		h("GET /status", s.status)
 		h("GET /flats", s.listFlats)
 		h("GET /flats/{slug}", s.getFlat)
+		h("GET /flats/{slug}/draft", s.getDraft)
+		h("POST /flats/{slug}/draft", s.saveVersion)
+		h("PUT /flats/{slug}/draft", s.saveVersion)
+		h("POST /flats/{slug}/publish", s.publish)
+		h("POST /flats/{slug}/providers", s.providers)
 		h("GET /flats/{slug}/versions", s.listVersions)
 		h("GET /flats/{slug}/versions/{n}", s.getVersion)
 		h("GET /flats/{slug}/versions/{n}/files/{path...}", s.versionFile)
@@ -88,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
+			h("POST /flats/{slug}/versions", s.saveVersion)
 			h("POST /approvals/{id}/approve", s.decide(true))
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
@@ -122,6 +128,16 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, err error) {
 	body := ErrorBody{Error: err.Error()}
+	switch {
+	case errors.Is(err, core.ErrConflict):
+		body.Category = "conflict"
+	case errors.Is(err, core.ErrForbidden):
+		body.Category = "forbidden"
+	case errors.Is(err, store.ErrNotFound):
+		body.Category = "not_found"
+	case errors.Is(err, core.ErrInvalid):
+		body.Category = "invalid"
+	}
 	if v, ok := bundle.IsValidation(err); ok {
 		body.Problems = v.Problems
 	}
@@ -165,7 +181,14 @@ func statusOf(err error) int {
 	return http.StatusInternalServerError
 }
 
-func fail(w http.ResponseWriter, err error) { writeErr(w, statusOf(err), err) }
+func fail(w http.ResponseWriter, err error) {
+	var pending *core.PendingApproval
+	if errors.As(err, &pending) {
+		writeJSON(w, http.StatusAccepted, pending.ActionResult)
+		return
+	}
+	writeErr(w, statusOf(err), err)
+}
 
 func decode(r *http.Request, v any) error {
 	if r.Body == nil {
@@ -228,7 +251,13 @@ func (s *Server) getFlat(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, f)
+	writeJSON(w, 200, FlatResponse{FlatView: f, Draft: f.Draft})
+}
+
+// FlatResponse makes the absence of a Draft explicit for console consumers.
+type FlatResponse struct {
+	core.FlatView
+	Draft *store.Draft `json:"draft"`
 }
 
 func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via) {
@@ -248,38 +277,115 @@ func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, 201, f)
 }
 
+// SaveResponse keeps the archive-upload compatibility object and the current
+// Draft separate. A pending request is never represented as a live version.
+type SaveResponse struct {
+	Version store.Version      `json:"version"`
+	Draft   store.Draft        `json:"draft"`
+	Deploy  *core.ActionResult `json:"deploy,omitempty"`
+	core.ActionResult
+}
+
 func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
-	slugName := r.PathValue("slug")
-	lim := bundle.Limits{MaxBytes: s.Svc.UploadLimit()}
-	files, err := bundle.FromArchive(r.Body, lim)
-	if err != nil {
-		fail(w, err)
-		return
-	}
 	q := r.URL.Query()
 	dirty, _ := strconv.ParseBool(q.Get("git_dirty"))
 	meta := core.SaveMeta{GitSHA: q.Get("git_sha"), GitDirty: dirty, Message: q.Get("message")}
-	v, err := s.Svc.SaveVersion(r.Context(), slugName, files, meta, via)
+	if values, present := q["expected_revision"]; present {
+		if len(values) != 1 {
+			writeErr(w, 400, errors.New("expected_revision must be a single nonnegative integer"))
+			return
+		}
+		n, err := strconv.Atoi(values[0])
+		if err != nil || n < 0 {
+			writeErr(w, 400, errors.New("expected_revision must be a nonnegative integer"))
+			return
+		}
+		meta.ExpectedRevision, meta.CheckRevision = n, true
+	}
+	files, err := bundle.FromArchive(r.Body, bundle.Limits{MaxBytes: s.Svc.UploadLimit()})
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	out := map[string]any{"version": v}
+	v, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	out := SaveResponse{Version: v, Draft: draft}
 	if deploy, _ := strconv.ParseBool(q.Get("deploy")); deploy {
-		res, err := s.Svc.Deploy(r.Context(), slugName, v.Number, via)
+		res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), v.Revision, v.Hash, via)
 		if err != nil {
-			body := ErrorBody{Error: err.Error()}
-			var de *core.DeployError
-			if errors.As(err, &de) && de.Cause == nil {
-				h := de.Health
-				body.Health = &h
-			}
-			writeJSON(w, statusOf(err), map[string]any{"version": v, "deploy_error": body})
+			writeJSON(w, statusOf(err), struct {
+				SaveResponse
+				DeployError ErrorBody `json:"deploy_error"`
+			}{out, ErrorBody{Error: err.Error()}})
 			return
 		}
-		out["deploy"] = res
+		out.ActionResult, out.Deploy = res, &res
+		writeJSON(w, http.StatusAccepted, out)
+		return
 	}
-	writeJSON(w, 201, out)
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) getDraft(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, draft)
+}
+
+// PublishRequest freezes the selected current revision and optional content
+// hash. Revision zero selects current, and cannot substitute a stale revision.
+type PublishRequest struct {
+	Revision int    `json:"revision"`
+	Hash     string `json:"hash,omitempty"`
+}
+
+func (s *Server) publish(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in PublishRequest
+	if err := decode(r, &in); err != nil || in.Revision < 0 {
+		writeErr(w, 400, errors.New("publish body requires a nonnegative revision and optional hash"))
+		return
+	}
+	res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), in.Revision, in.Hash, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, res)
+}
+
+// ProviderPermissionRequest grants usage only; it never publishes or changes
+// visibility. Core independently validates the operator proof.
+type ProviderPermissionRequest struct {
+	Provider  string `json:"provider"`
+	Permitted bool   `json:"permitted"`
+}
+
+func (s *Server) providers(w http.ResponseWriter, r *http.Request, via core.Via) {
+	if via != core.ViaConsole {
+		operatorError(w, "operator_required", "provider permissions require a separately authorized operator")
+		return
+	}
+	var in ProviderPermissionRequest
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := s.Svc.SetProviderPermission(r.Context(), r.PathValue("slug"), in.Provider, in.Permitted, via); err != nil {
+		fail(w, err)
+		return
+	}
+	s.getFlat(w, r, via)
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -287,6 +393,9 @@ func (s *Server) listVersions(w http.ResponseWriter, r *http.Request, _ core.Via
 	if err != nil {
 		fail(w, err)
 		return
+	}
+	if vs == nil {
+		vs = []store.Version{}
 	}
 	writeJSON(w, 200, map[string]any{"versions": vs})
 }
@@ -345,8 +454,8 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request, via core.Via) {
 		writeErr(w, 400, err)
 		return
 	}
-	if n <= 0 {
-		writeErr(w, 400, errors.New(`body must be {"version": <n>} with the saved version to deploy`))
+	if n < 0 {
+		writeErr(w, 400, errors.New(`body must be {"version": <n>}; 0 requests publish of the current Draft`))
 		return
 	}
 	res, err := s.Svc.Deploy(r.Context(), r.PathValue("slug"), n, via)
@@ -383,13 +492,22 @@ func (s *Server) deployments(w http.ResponseWriter, r *http.Request, _ core.Via)
 	writeJSON(w, 200, map[string]any{"deployments": ds})
 }
 
+type PreviewRequest struct {
+	Target  string `json:"target,omitempty"`
+	Version int    `json:"version"`
+}
+
 func (s *Server) openPreview(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	n, err := versionBody(r)
-	if err != nil || n <= 0 {
-		writeErr(w, 400, errors.New(`body must be {"version": <n>}`))
+	var in PreviewRequest
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
-	p, err := s.Svc.OpenPreview(r.Context(), r.PathValue("slug"), n)
+	if in.Version < 0 || (in.Target != "" && in.Target != "draft" && in.Target != "version") || (in.Target == "draft" && in.Version != 0) || (in.Target == "version" && in.Version == 0) {
+		writeErr(w, 400, errors.New("preview target must be draft with version 0, or a published positive version"))
+		return
+	}
+	p, err := s.Svc.OpenPreview(r.Context(), r.PathValue("slug"), in.Version)
 	if err != nil {
 		fail(w, err)
 		return
