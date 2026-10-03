@@ -603,9 +603,9 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		}
 		if owned.portal {
 			if m.portal == nil {
-				errs = append(errs, fmt.Errorf("portal %s: %w", host, ErrNotConfigured))
+				errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
 			} else if err := m.portal.Stop(host); err != nil {
-				errs = append(errs, fmt.Errorf("portal %s: %w", host, err))
+				errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, err))
 			} else {
 				m.forgetRoutes(slug, host, Portal)
 			}
@@ -624,11 +624,11 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		funnelStopped := !owned.funnel
 		if owned.funnel {
 			if m.ts == nil {
-				errs = append(errs, fmt.Errorf("funnel %s: %w", host, ErrNotConfigured))
+				errs = append(errs, fmt.Errorf("%w: funnel %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
 			} else if err := m.ts.StopFunnel(host); err != nil {
-				errs = append(errs, fmt.Errorf("funnel %s: %w", host, err))
+				errs = append(errs, fmt.Errorf("%w: funnel %s: %w", core.ErrPublicStopUnconfirmed, host, err))
 			} else if state := m.ts.FunnelState(host); state.State == stateReady || state.State == stateStarting {
-				errs = append(errs, fmt.Errorf("funnel %s teardown remains %s", host, state.State))
+				errs = append(errs, fmt.Errorf("%w: funnel %s teardown remains %s", core.ErrPublicStopUnconfirmed, host, state.State))
 			} else {
 				funnelStopped = true
 			}

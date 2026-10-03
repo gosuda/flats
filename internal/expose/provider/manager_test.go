@@ -436,6 +436,27 @@ func TestStopSlugRetiresFunnelOnlyNodeAndRetainsFailures(t *testing.T) {
 	}
 }
 
+func TestStopSlugClassifiesUnconfirmedFunnelListener(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Funnel}})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	if _, err := m.ServeExposure(ctx, ExposureRequest{
+		Slug: "still-public", Host: "still-public", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("still-public"), Permitted: []ID{Funnel},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tail.stopErr = errors.New("Funnel listener stop not confirmed")
+	err := m.StopSlug(ctx, "still-public")
+	if !errors.Is(err, core.ErrPublicStopUnconfirmed) {
+		t.Fatalf("unconfirmed Funnel listener lost its safety category: %v", err)
+	}
+	if tracked, routeErr := m.HasProviderRoute(ctx, "still-public", Funnel); routeErr != nil || !tracked {
+		t.Fatalf("unconfirmed Funnel listener was forgotten: tracked=%v err=%v", tracked, routeErr)
+	}
+}
+
 type fakePortal struct {
 	*local.Public
 	serve int
