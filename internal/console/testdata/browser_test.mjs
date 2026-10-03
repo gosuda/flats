@@ -112,7 +112,8 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Publish the next version after v1', exact: true }).count(), 0);
   const missing = await agent('POST', '/flats/rendered/visibility', { visibility: 'public' });
   await page.goto(base + '/approvals/' + missing.approval.id);
-  await page.getByText('This flat is public: anyone on the internet can open it.', { exact: false }).waitFor();
+  await page.getByText('If approved, this flat becomes Public: anyone on the internet can open it.', { exact: false }).waitFor();
+  assert.equal((await agent('GET', '/flats/rendered')).visibility, 'private');
   await both('provider-missing-pending');
   assert.equal((await agent('GET', '/approvals/' + missing.approval.id)).status, 'pending');
   await page.getByRole('button', { name: 'Approve…', exact: true }).click();

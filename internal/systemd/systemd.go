@@ -90,7 +90,6 @@ func Render(opts Options) (string, error) {
 	for _, a := range opts.Args {
 		words = append(words, quote(a))
 	}
-
 	var b strings.Builder
 	b.WriteString("[Unit]\nDescription=Flats: self-hosted sites for coding agents\nAfter=network-online.target\nWants=network-online.target\n\n")
 	b.WriteString("[Service]\nType=simple\n")

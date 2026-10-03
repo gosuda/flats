@@ -1046,9 +1046,7 @@ func (s *Service) openDraftPreviewLocked(ctx context.Context, slugName string) (
 	s.prevs[host] = p
 	s.mu.Unlock()
 	s.Event(ctx, slugName, "info", "preview", fmt.Sprintf("preview of draft revision %d at %s", rev.Revision, url), nil)
-	pv := PreviewView{Preview: rec, URL: url, ExpiresAt: now.Add(s.previewTTL())}
-	pv.State, pv.Detail = s.hostState(host)
-	return pv, nil
+	return s.previewView(ctx, rec), nil
 }
 
 func (s *Service) servePreview(ctx context.Context, slugName, host string, h http.Handler) (string, error) {

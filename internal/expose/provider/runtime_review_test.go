@@ -504,6 +504,11 @@ func TestPrivateTailscaleRevokeClosesOnlyOwnedRoutes(t *testing.T) {
 	if get(t, f.local.URL("moved")) != "v2" || get(t, f.local.URL(preview.Host)) != "v2" || get(t, f.tail.URL("other")) != "other" {
 		t.Fatal("revocation affected Local or another flat")
 	}
+	previews, err := f.svc.ListPreviews(t.Context(), "moved")
+	if err != nil || len(previews) != 1 || previews[0].URL != f.local.URL(preview.Host) || previews[0].State != "ready" {
+		t.Fatalf("revocation advertised dead preview %+v %v", previews, err)
+	}
+
 	// Later activation must not recreate revoked tailnet access.
 	r, err = f.svc.Publish(t.Context(), "moved", 0, "", core.ViaAPI)
 	if err != nil {

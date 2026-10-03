@@ -1454,6 +1454,36 @@ func (s *Service) hostState(host string) (string, string) {
 	return "", ""
 }
 
+// previewView selects a currently registered Private route. After a per-flat
+// Tailscale revocation, a surviving Local preview must not advertise a dead URL.
+func (s *Service) previewView(ctx context.Context, p store.Preview) PreviewView {
+	pv := PreviewView{Preview: p, URL: s.cfg.Private.URL(p.Host), ExpiresAt: p.LastAccess.Add(s.previewTTL())}
+	pv.State, pv.Detail = s.hostState(p.Host)
+	if observer, ok := s.cfg.Lifecycle.(LifecycleObserver); ok {
+		pv.URL, pv.State, pv.Detail = "", "unavailable", "route not reported"
+		providers, err := s.st.PermittedProviders(ctx, p.Flat)
+		if err != nil {
+			return pv
+		}
+		res, err := observer.ExposureStatus(ctx, p.Flat)
+		if err != nil {
+			return pv
+		}
+		for _, ep := range res.Endpoints {
+			if ep.Host != p.Host || ep.Audience != AudienceDraft || !ep.Configured || !ep.Permitted || ep.URL == "" || !slices.Contains(providers, string(ep.Provider)) {
+				continue
+			}
+			if ep.Provider != ProviderLocal && ep.Provider != ProviderTailscale {
+				continue
+			}
+			if pv.URL == "" || ep.Provider == ProviderTailscale {
+				pv.URL, pv.State, pv.Detail = ep.URL, ep.State, ep.Detail
+			}
+		}
+	}
+	return pv
+}
+
 // maxPreviews bounds open previews per flat: each runs its own node and,
 // for server flats, holds a copy of the data.
 const maxPreviews = 5
@@ -1525,9 +1555,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	s.prevs[host] = p
 	s.mu.Unlock()
 	s.Event(ctx, slugName, "info", "preview", fmt.Sprintf("preview of version %d at %s", n, url), nil)
-	pv := PreviewView{Preview: rec, URL: url, ExpiresAt: now.Add(s.previewTTL())}
-	pv.State, pv.Detail = s.hostState(host)
-	return pv, nil
+	return s.previewView(ctx, rec), nil
 }
 
 // ListPreviews returns open previews of a flat.
@@ -1546,9 +1574,7 @@ func (s *Service) ListPreviews(ctx context.Context, slugName string) ([]PreviewV
 			p.LastAccess = time.UnixMilli(lp.last.Load()).UTC()
 		}
 		s.mu.Unlock()
-		pv := PreviewView{Preview: p, URL: s.cfg.Private.URL(p.Host), ExpiresAt: p.LastAccess.Add(s.previewTTL())}
-		pv.State, pv.Detail = s.hostState(p.Host)
-		out = append(out, pv)
+		out = append(out, s.previewView(ctx, p))
 	}
 	return out, nil
 }

@@ -718,7 +718,7 @@ func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
 			if err := os.WriteFile(exe, []byte("x"), 0755); err != nil {
 				t.Fatal(err)
 			}
-			for _, args := range [][]string{{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"--operator-credential-file"}} {
+			for _, args := range [][]string{{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"-operator-credential-file", "relative"}, {"--operator-credential-file"}} {
 				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
 				if r.code == 0 || len(fl.calls) != 0 || !strings.Contains(r.stderr, "absolute path") {
 					t.Fatalf("invalid path installed: %+v calls=%v", r, fl.calls)
