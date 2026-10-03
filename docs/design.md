@@ -50,7 +50,11 @@ lock. Failures are joined with component names and returned to the caller;
 `flats serve` reports them as command errors. Host and Portal Close are
 idempotent, including concurrent calls. Portal has one outer 30s network bound
 and a 30s per-exposure bound spanning HTTP/watch drain, SDK close and listener
-pump; SDK close is attempted even if drain times out. Tailscale already bounds
+pump. Normal Portal shutdown drains HTTP and explicitly closes exposures before
+cancelling their SDK parent context, so unregister errors reach the caller.
+The outer bound also covers admitted Serve/Stop/SetHidden operations; cancellation
+at the deadline unblocks context-aware SDK work. SDK close is attempted even if
+drain times out. Tailscale already bounds
 Stop/Close at 30s. Expected listener closure/context cancellation is ignored;
 other errors and exceeded deadlines are reported. A stuck third-party call
 cannot be forcibly stopped in Go: cleanup may finish later, or only at process

@@ -683,9 +683,22 @@ func TestServeRacingClose(t *testing.T) {
 	closed := make(chan error, 1)
 	ff.onExpose = func() {
 		go func() { closed <- n.Close() }()
-		// Close cancels the network after marking it closed, then waits for
-		// admitted Serve operations to finish their late-exposure cleanup.
-		<-n.ctx.Done()
+		// Let Close mark the network closed while creation is in progress.
+		// The exposure parent stays alive for this Serve's explicit cleanup.
+		deadline := time.After(time.Second)
+		for {
+			n.mu.RLock()
+			closing := n.closed
+			n.mu.RUnlock()
+			if closing {
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("Close did not mark the network closed")
+			case <-time.After(time.Millisecond):
+			}
+		}
 	}
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err == nil {
 		t.Fatal("Serve succeeded although Close ran during it")

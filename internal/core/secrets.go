@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,12 +22,9 @@ import (
 var secretName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
 func loadOrCreateKey(path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		if len(b) != 32 {
-			return nil, fmt.Errorf("%s: secret key must be 32 bytes", path)
-		}
+	if b, err := readSecretKey(path); err == nil {
 		return b, nil
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	key := make([]byte, 32)
@@ -53,12 +51,32 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	}
 	if err := os.Link(f.Name(), path); err != nil {
 		if os.IsExist(err) {
-			return loadOrCreateKey(path)
+			// A winner must now be readable. EEXIST can also mean a dangling
+			// symlink; never recurse or create more unpublished temporary keys.
+			return readSecretKey(path)
 		}
 		return nil, fmt.Errorf("publish secret key: %w", err)
 	}
 
 	return key, nil
+}
+
+func readSecretKey(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("read secret key %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: secret key must be a regular file", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read secret key %s: %w", path, err)
+	}
+	if len(b) != 32 {
+		return nil, fmt.Errorf("%s: secret key must be 32 bytes", path)
+	}
+	return b, nil
 }
 
 func (s *Service) aead() (cipher.AEAD, error) {

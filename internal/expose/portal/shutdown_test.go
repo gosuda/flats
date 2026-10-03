@@ -96,32 +96,86 @@ func TestPortalStopEntryBounded(t *testing.T) {
 }
 
 func TestPortalCloseBoundedWithSlugLock(t *testing.T) {
-	for _, operation := range []string{"Serve", "Stop"} {
+	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, exp := shutdownEntry(t, "busy")
+	close(e.done)
+	n.entries[e.slug] = e
+	lock := n.slugLock(e.slug)
+	lock.Lock()
+	start := time.Now()
+	err = n.Close()
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("Close = %v after %s", err, time.Since(start))
+	}
+	if err2 := n.Close(); err2 != err {
+		t.Fatalf("idempotent Close = %v, want %v", err2, err)
+	}
+	lock.Unlock()
+	awaitShutdown(t, exp.finished)
+	awaitShutdown(t, e.ln.pumped)
+	lock.Lock()
+	lock.Unlock()
+}
+
+type blockedMetadataExposure struct {
+	exposure
+	entered, release chan struct{}
+}
+
+func (e *blockedMetadataExposure) UpdateMetadata(meta types.LeaseMetadata) error {
+	close(e.entered)
+	<-e.release
+	return e.exposure.UpdateMetadata(meta)
+}
+
+func TestPortalCloseBoundedWithAdmittedMetadata(t *testing.T) {
+	for _, operation := range []string{"Serve", "SetHidden"} {
 		t.Run(operation, func(t *testing.T) {
-			n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 30 * time.Millisecond})
-			if err != nil {
+			n, ff := newTestNet(t, Config{Discovery: true, ShutdownTimeout: 40 * time.Millisecond})
+			entered, release := make(chan struct{}), make(chan struct{})
+			n.expose = func(ctx context.Context, id types.Identity, relays []string, max int, meta types.LeaseMetadata) (exposure, error) {
+				exp, err := ff.expose(ctx, id, relays, max, meta)
+				return &blockedMetadataExposure{exposure: exp, entered: entered, release: release}, err
+			}
+			if _, err := n.Serve(t.Context(), "busy", http.NotFoundHandler(), false); err != nil {
 				t.Fatal(err)
 			}
-			e, exp := shutdownEntry(t, "busy")
-			close(e.done)
-			n.entries[e.slug] = e
-			// Both Serve and Stop hold this lock while SDK work is in progress.
-			lock := n.slugLock(e.slug)
-			lock.Lock()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if operation == "Serve" {
+					n.Serve(context.Background(), "busy", http.NotFoundHandler(), true)
+				} else {
+					n.SetHidden("busy", true)
+				}
+			}()
+			awaitShutdown(t, entered)
 			start := time.Now()
-			err = n.Close()
+			err := n.Close()
+			close(release)
+			awaitShutdown(t, done)
+			n.ops.Wait()
+			lock := n.slugLock("busy")
+			lock.Lock()
+			lock.Unlock()
+			// Close's background stop can still be queued for the slug lock.
+			deadline := time.After(time.Second)
+			for ff.last(t).closeCount() == 0 {
+				select {
+				case <-deadline:
+					t.Fatal("background stop did not finish")
+				case <-time.After(time.Millisecond):
+				}
+			}
 			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
 				t.Fatalf("Close = %v after %s", err, time.Since(start))
 			}
-			if err2 := n.Close(); err2 != err {
-				t.Fatalf("idempotent Close = %v, want %v", err2, err)
+			if n.ctx.Err() == nil {
+				t.Fatal("deadline did not cancel SDK context")
 			}
-			lock.Unlock()
-			awaitShutdown(t, exp.finished)
-			awaitShutdown(t, e.ln.pumped)
-			// Observe the background Stop completing before the test exits.
-			lock.Lock()
-			lock.Unlock()
 		})
 	}
 }
@@ -192,4 +246,37 @@ func TestPortalCloseObservesAlreadyRemovedStop(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(stopErr, context.DeadlineExceeded) {
 		t.Fatalf("lost concurrent Stop failure: Close=%v Stop=%v", err, stopErr)
 	}
+}
+
+func TestPortalCloseDeadlineCancelsUnpublishedServe(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 40 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	n.expose = func(ctx context.Context, id types.Identity, relays []string, max int, meta types.LeaseMetadata) (exposure, error) {
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	served := make(chan error, 1)
+	go func() {
+		_, err := n.Serve(context.Background(), "creating", http.NotFoundHandler(), false)
+		served <- err
+	}()
+	awaitShutdown(t, entered)
+	start := time.Now()
+	err = n.Close()
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("Close = %v after %s", err, time.Since(start))
+	}
+	select {
+	case err := <-served:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Serve = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("creation context was not cancelled at deadline")
+	}
+	n.ops.Wait()
 }
