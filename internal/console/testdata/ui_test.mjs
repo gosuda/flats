@@ -133,7 +133,7 @@ globalThis.fetch = async (url, opts) => {
   return { ok: status < 400, status, json: async () => body };
 };
 
-const { publicNoticeOf, PUBLIC_URL_NOTICE, LISTED_NOTICE } = await import('./dom.js');
+const { publicNoticeOf, PUBLIC_URL_NOTICE, LISTED_NOTICE, pendingNoticeFor } = await import('./dom.js');
 assert.equal(publicNoticeOf(blog), UNLISTED);
 assert.equal(publicNoticeOf(shop), LISTED_NOTICE);
 assert.equal(publicNoticeOf({ public_url: 'https://x.example' }), PUBLIC_URL_NOTICE);
@@ -222,7 +222,7 @@ assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
 assert.equal(all(dbMain, (e) => e.tagName === 'A' && e.textContent === 'Manage versions and rollback')[0].getAttribute('href'), '/flats/blog#history');
 for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
-const { connectionDetail, statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
+const { connectionDetail, statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion, endpointAudienceLabel, endpointConnectionLabel, providerRemovalCopy } = await import('./lifecycle.js');
 assert.equal(statusLine(blog).startsWith('Published · v2 · Public'), true, statusLine(blog));
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Published · v2'), true);
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Unpublished'), false);
@@ -445,12 +445,18 @@ for (const [id, action, params, expected] of [
     assert.equal(badge.textContent, 'Public');
     const globe = (await import('./dom.js')).visibilityBadge('public');
     assert.equal(badge.childNodes[0].childNodes[0].getAttribute('d'), globe.childNodes[0].childNodes[0].getAttribute('d'));
+    assert.ok(main.textContent.includes(pendingNoticeFor('public')));
+    assert.equal(main.textContent.includes('This flat is public:'), false);
   }
   if (params.snapshot) assert.ok(main.textContent.includes('snapshot-sha256') && main.textContent.includes('before-v2.sqlite'));
   byText(main, 'Approve…')[0].dispatch('click');
   await tick();
   const dlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
   assert.ok(dlg.textContent.includes(expected));
+  if (id === 'public') {
+    assert.ok(dlg.textContent.includes(pendingNoticeFor('public')));
+    assert.equal(dlg.textContent.includes('This flat is public:'), false);
+  }
   if (['public', 'restore', 'data'].includes(id)) assert.equal(byText(dlg, 'Approve')[0].className, 'btn btn-danger');
   dlg.close('cancel');
   await tick();
@@ -475,7 +481,8 @@ assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/reject/app
 
 // Provider-missing requests remain pending and disclose permission policy before decision.
 routes['GET /console/api/flats/blog'] = { ...blog, providers: ['local'], endpoints: [], connection_state: 'unavailable' };
-routes['GET /console/api/approvals/missing'] = { id: 'missing', flat: 'blog', action: 'set_visibility', status: 'pending', via: 'mcp', params: { visibility: 'public', providers: 'local' } };
+const rawPolicyHash = 'raw-policy-sha256-must-stay-hidden';
+routes['GET /console/api/approvals/missing'] = { id: 'missing', flat: 'blog', action: 'set_visibility', status: 'pending', via: 'mcp', params: { visibility: 'public', providers: `local,portal\n${rawPolicyHash}` } };
 const missingMain = new Element('main');
 approvalMount(missingMain, ['missing'], ctx);
 await tick();
@@ -484,6 +491,15 @@ assert.equal(byText(missingMain, 'Approve…').length, 1);
 
 assert.ok(missingMain.textContent.includes('If approved, this flat becomes Public:'));
 assert.equal(missingMain.textContent.includes('This flat is public:'), false);
+assert.ok(missingMain.textContent.includes('Provider permissions at requestlocal, portal'));
+assert.equal(missingMain.textContent.includes(rawPolicyHash), false);
+assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'preview-v1', state: 'ready' }, [{ host: 'preview-v1', target: 'version', version: 1 }]), 'v1 preview (Private)');
+assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'preview-draft', state: 'ready' }, [{ host: 'preview-draft', target: 'draft', version: 0 }]), 'Draft preview (Private)');
+assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'closed', state: 'unavailable', detail: 'route stopped' }, []), 'Stopped preview route');
+assert.equal(endpointConnectionLabel({ state: 'unavailable', detail: 'route stopped' }), 'Stopped');
+assert.ok(providerRemovalCopy({ visibility: 'public' }, 'tailscale').includes('Private Tailscale') && providerRemovalCopy({ visibility: 'public' }, 'tailscale').includes('Funnel route stays up'));
+assert.ok(providerRemovalCopy({ visibility: 'private' }, 'portal').includes('removes permission'));
+assert.equal(providerRemovalCopy({ visibility: 'private' }, 'portal').includes('changing this flat to Private'), false);
 for (const state of ['starting', 'error']) {
   assert.equal(connectionDetail({ slug: 'blog', visibility: 'public', connection_state: state,
     endpoints: [

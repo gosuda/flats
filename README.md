@@ -58,7 +58,7 @@ The deploy command saves Draft and returns a pending publish request (exit code 
 
 The default network is Local and Portal is off. For private tailnet hosting, explicitly select `flats serve --network tailscale --operator-credential-stdin`; this records the host Tailscale grant. Unlock the console and allow Tailscale separately for each flat in Access. Enable MagicDNS and HTTPS certificates in your tailnet, then follow the node login links in the console, or supply a reusable, untagged Tailscale auth key with `--authkey-file`. Flats embeds tsnet; permitted flat and preview routes, and the console in Tailscale mode, use separate nodes. Tailnet ACLs decide which devices can reach those origins. Code and data stay on your machine.
 
-Removing a flat’s Tailscale permission stops only its Tailscale current, preview and redirect routes before saving the revocation; Local stays available. An unconfirmed stop keeps permission allowed so the operator can retry. Public providers still require an approved change to Private before revocation.
+Removing a flat’s Tailscale permission stops its Private Tailscale current, preview and redirect routes before saving the revocation; Local stays available, and a separately permitted Public Tailscale Funnel route stays up. An unconfirmed stop keeps permission allowed so the operator can retry. A currently Public flat must complete an approved change to Private before its Public provider can be revoked.
 
 Visibility is Private or Public, independently of publication and connection state. Private routes use Local or permitted Tailscale with existing tailnet ACLs; Public routes use explicitly permitted Portal or Tailscale Funnel. Configuration alone never publishes a version or changes visibility. Public requires a published version and an approved transition with a registered, configured and permitted public route. A route may still be Connecting after approval; open its link only after it reports ready. Legacy listed/unlisted inputs map to Public. Relay availability and Tailscale connectivity are external dependencies.
 
@@ -70,7 +70,7 @@ flats install -- --operator-credential-file /absolute/operator/path/credential
 flats serve --operator-credential-file /absolute/operator/path/credential
 ```
 
-Supply the path only; never put the credential value in argv, environment or logs. Stdin and file sources cannot be combined. Restart/update reads the file again and invalidates old console sessions. `flats install` runs the host at login using launchd on macOS or a systemd user service on Linux; `flats uninstall` removes the service and keeps data. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS), overridable with `--data` or `FLATS_DATA`.
+Supply the path only; never put the credential value in argv, environment or logs. Stdin and file sources cannot be combined. `--operator-credential-stdin` is foreground-only; `flats install` rejects it in every flag form before writing service configuration. Restart/update reads the file again and invalidates old console sessions. `flats install` runs the host at login using launchd on macOS or a systemd user service on Linux; `flats uninstall` removes the service and keeps data. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS), overridable with `--data` or `FLATS_DATA`.
 
 ## Upgrading an existing host
 

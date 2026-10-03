@@ -235,7 +235,7 @@ export function mount(main, [slug], ctx, settings = false) {
       addresses: h('ul', { class: 'plain-list' },
         h('li', null, openControl(current, current.version ? `Open current version v${current.version}` : 'Open current version')),
         h('li', null, openControl(draft, 'Open draft (private)'))),
-    });
+    }, previews);
   }
 
   function providerRow(p) {
@@ -644,4 +644,3 @@ function eventRow(e) {
     h('span', { class: 'log-msg', text: e.message }),
     data);
 }
-

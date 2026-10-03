@@ -135,7 +135,9 @@ current Draft and positive versions select already published content. Default
 `preview` opens current Draft; positive `--version` previews published content.
 Publish, activation, rollback and both visibility directions return exit 3 while
 pending in text and JSON modes, with approval URL/status and read-only poll
-instructions. `approvals` only reads; no approve/decide/reject/operator/provider
+instructions. A pending Private-to-Public response says that internet access will
+begin only after approval succeeds; it never describes the flat as already Public.
+`approvals` only reads; no approve/decide/reject/operator/provider
 commands are added. Operator startup credential input belongs to app/server
 integration (`--operator-credential-stdin`), not an approval command or agent
 credential lookup. Unconfigured authority disables decisions rather than falling
@@ -151,6 +153,12 @@ never imports an authenticated console context. Every listed tool is behaviorall
 censused with a pending approval, checking its unchanged status and current served
 bytes/version/visibility/provider policy. Publication requests include positive
 controls through a separate authenticated HTTP operator.
+
+MCP server instructions describe Private URLs as Local loopback or explicitly
+permitted Tailscale routes. Pending visibility notices use future tense. Approval
+reads distinguish a request waiting for an operator decision from an approved
+request whose operation is still applying. Approval action metadata uses
+`activate` for serving an existing published version.
 
 ## Verification limits
 
@@ -182,7 +190,7 @@ application checks those prerequisites. Same visibility remains unchanged HTTP
 
 ## Operator provisioning
 
-Foreground startup accepts `flats serve --operator-credential-stdin` (hidden terminal input or bounded pipe). Unattended startup accepts `--operator-credential-file /absolute/operator/path/credential`; `flats install -- --operator-credential-file /absolute/operator/path/credential` persists that path in launchd/systemd service arguments. The file must be regular, nonsymlink, owned by the effective service user, exact mode 0600, with one 32–4096-byte credential and an optional terminal newline. Missing, multiline, oversized, insecure or ambiguous sources fail before serving. Keep the file outside data and host-upload directories and outside agent filesystem access. Mode 0600 alone does not isolate same-user agents. The operator then uses **Unlock decisions** and separately approves each candidate. Credentials are cleared from retained Host options and never exposed through reads/tools.
+Foreground startup accepts `flats serve --operator-credential-stdin` (hidden terminal input or bounded pipe). Unattended startup accepts `--operator-credential-file /absolute/operator/path/credential`; `flats install -- --operator-credential-file /absolute/operator/path/credential` persists that path in launchd/systemd service arguments. Install rejects `--operator-credential-stdin` in every accepted flag spelling and value form before writing service configuration, including when a credential file is also supplied. The file must be regular, nonsymlink, owned by the effective service user, exact mode 0600, with one 32–4096-byte credential and an optional terminal newline. Missing, multiline, oversized, insecure or ambiguous sources fail before serving. Keep the file outside data and host-upload directories and outside agent filesystem access. Mode 0600 alone does not isolate same-user agents. The operator then uses **Unlock decisions** and separately approves each candidate. Credentials are cleared from retained Host options and never exposed through reads/tools.
 
 Local is default; Portal is off. Legacy schema 5 records eligible pre-lifecycle flats. On hosts with historical tsnet state, explicit `--network tailscale` (or a stored explicit Tailscale backend/grant) preserves only those flats’ Private Tailscale opt-in once, honoring explicit denials. Explicit `--network local` consumes that choice as Local-only; an ambiguous historical-default startup refuses before constructing backends. With neither historical tsnet state nor a persisted Tailscale choice, the first upgrade consumes eligibility as Local-only; a later host grant cannot opt those flats in. Neither choice grants Funnel or Portal. See README upgrade instructions.
 

@@ -110,7 +110,7 @@ func loopbackAddr(addr string) bool {
 }
 
 func instructions(uploadLimit int64) string {
-	return fmt.Sprintf(`Flats hosts websites ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a private URL on the operator's tailnet.
+	return fmt.Sprintf(`Flats hosts websites ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a Private URL through Local loopback or explicitly permitted Tailscale.
 
 Runtime reference
 Before authoring a server app, read resource flats://docs/runtime-api/v1 (resources/read), or call the read-only get_runtime_reference tool with {}. It contains the complete versioned FILES/DB, handler/response, encoding, persistence, secrets and limits contract; no installed skill or source checkout is needed. FILES methods and DB methods are synchronous.

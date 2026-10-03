@@ -70,6 +70,10 @@ func (a *app) install(args []string) error {
 	}
 	// Validate the documented serve-argument passthrough before service writes.
 	for i, arg := range extra {
+		if arg == "--operator-credential-stdin" || arg == "-operator-credential-stdin" ||
+			strings.HasPrefix(arg, "--operator-credential-stdin=") || strings.HasPrefix(arg, "-operator-credential-stdin=") {
+			return errors.New("--operator-credential-stdin cannot be used by an installed service; use --operator-credential-file with an absolute path")
+		}
 		var path string
 		if arg == "--operator-credential-file" || arg == "-operator-credential-file" {
 			if i+1 >= len(extra) {

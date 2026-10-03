@@ -1,6 +1,6 @@
 // Approval page: what an agent asked for and the operator's decision.
 
-import { h, clear, dateTime, timeEl, VISIBILITY, visibilityBadge, noticeFor } from './dom.js';
+import { h, clear, dateTime, timeEl, VISIBILITY, visibilityBadge, noticeFor, pendingNoticeFor } from './dom.js';
 import { api } from './api.js';
 import { impactText, failureMessage, failureCode } from './lifecycle.js';
 import { confirmDialog, errorPanel, loading, toast, busy } from './ui.js';
@@ -12,6 +12,11 @@ function params(a) {
 }
 
 const visLabel = (v) => (VISIBILITY[v] ? VISIBILITY[v].label : v);
+
+export function providerPolicyLabel(value) {
+  const raw = Array.isArray(value) ? value.join(',') : String(value || '').split('\n', 1)[0];
+  return raw.split(',').map((part) => part.trim()).filter(Boolean).join(', ') || 'local';
+}
 
 // describeApproval is a one-line summary for lists.
 export function describeApproval(a) {
@@ -91,7 +96,7 @@ export function mount(main, [id], ctx) {
     if (p.hash) rows.push(['Candidate hash', h('code', { text: String(p.hash) })]);
     if (p.base_version || p.expected_live) rows.push(['Current version at request', `v${p.base_version || p.expected_live}`]);
     if (p.version) rows.push(['Published version', `v${p.version} (no new number)`]);
-    if (p.providers !== undefined) rows.push(['Provider policy at request', Array.isArray(p.providers) ? (p.providers.join(', ') || 'local') : String(p.providers)]);
+    if (p.providers !== undefined) rows.push(['Provider permissions at request', providerPolicyLabel(p.providers)]);
     if (p.restore_data || a.action === 'restore_data') {
       rows.push(['Restore live data', 'Yes — replaces live data after a backup']);
       rows.push(['Snapshot', h('code', { text: p.snapshot || 'Snapshot identity not reported' })]);
@@ -106,7 +111,7 @@ export function mount(main, [id], ctx) {
     body.appendChild(h('dl', { class: 'facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)])));
 
     const notice = a.action === 'set_visibility' ? noticeFor(p.visibility || p.to) : '';
-    if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice.replace('This flat is public:', 'If approved, this flat becomes Public:') }));
+    if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: pendingNoticeFor(p.visibility || p.to) }));
     if (a.action === 'delete' && a.status === 'pending') {
       body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, secrets and logs.' }));
     }
@@ -137,7 +142,7 @@ export function mount(main, [id], ctx) {
   async function decide(a, yes, flat) {
     const risk = yes ? approvalRisk(a, flat) : '';
     const p = params(a);
-    const notice = yes && a.action === 'set_visibility' ? noticeFor(p.visibility || p.to) : '';
+    const notice = yes && a.action === 'set_visibility' ? pendingNoticeFor(p.visibility || p.to) : '';
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [

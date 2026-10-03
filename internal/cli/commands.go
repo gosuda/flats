@@ -530,13 +530,35 @@ func (a *app) delete(args []string) error {
 }
 
 // unlistedNotice mirrors core.UnlistedNotice (a test keeps them equal). The
-// server attaches it to applied changes; the CLI also shows it when a
-// request for unlisted exposure is still waiting for approval.
+// server attaches it after an unlisted Public change takes effect; pending
+// requests use conditional wording instead.
 const unlistedNotice = "Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone with the URL can open it."
+
+const pendingPublicNotice = "If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public."
+
+func publicVisibility(v string) bool {
+	return v == "public" || v == "public-listed" || v == "public-unlisted"
+}
+
+func responseWithNotice(resp response, notice string) response {
+	var body map[string]any
+	if json.Unmarshal(resp.Body, &body) != nil {
+		return resp
+	}
+	body["notice"] = notice
+	if raw, err := json.Marshal(body); err == nil {
+		resp.Body = raw
+	}
+	return resp
+}
 
 // action prints a result that may be waiting for approval (exit 3).
 func (a *app) action(resp response, res actionResult, requested string) error {
 	pending := res.Status == "pending_approval"
+	if pending && publicVisibility(requested) {
+		res.Notice = pendingPublicNotice
+		resp = responseWithNotice(resp, res.Notice)
+	}
 	if a.jsonOut {
 		a.emitRaw(resp)
 	} else {
@@ -558,9 +580,6 @@ func (a *app) action(resp response, res actionResult, requested string) error {
 					notice = publicNotice(*res.Flat)
 				}
 			}
-		}
-		if notice == "" && pending && requested == "public-unlisted" {
-			notice = unlistedNotice
 		}
 		if notice != "" {
 			fmt.Fprintln(a.out, notice)

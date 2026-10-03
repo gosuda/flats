@@ -658,7 +658,7 @@ type ActionOut struct {
 	ApprovalURL string       `json:"approval_url,omitempty" jsonschema:"console link for the operator; give it to the user verbatim"`
 	Visibility  string       `json:"visibility,omitempty" jsonschema:"visibility now in effect"`
 	PublicURL   string       `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
-	Notice      string       `json:"notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
+	Notice      string       `json:"notice,omitempty" jsonschema:"access consequence to repeat to the user; pending notices describe what approval would do"`
 }
 
 func actionOut(r core.ActionResult) ActionOut {
@@ -700,6 +700,15 @@ func noticeFor(v store.Visibility) string {
 	return ""
 }
 
+const pendingPublicNotice = "If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public."
+
+func pendingNoticeFor(v store.Visibility) string {
+	if v.Canonical() == store.Public {
+		return pendingPublicNotice
+	}
+	return ""
+}
+
 func (t *tools) setVisibility(ctx context.Context, _ *mcp.CallToolRequest, in VisibilityIn) (*mcp.CallToolResult, ActionOut, error) {
 	vis := store.Visibility(in.Visibility).Canonical()
 	res, err := t.svc.SetVisibility(ctx, in.Slug, vis, core.ViaMCP, in.Reason)
@@ -711,8 +720,10 @@ func (t *tools) setVisibility(ctx context.Context, _ *mcp.CallToolRequest, in Vi
 		return nil, ActionOut{}, toolErr(err, hint)
 	}
 	out := actionOut(res)
-	if out.Notice == "" {
-		out.Notice = noticeFor(vis) // pending requests: what the requested visibility will mean
+	if out.Status == "pending_approval" {
+		out.Notice = pendingNoticeFor(vis)
+	} else if out.Notice == "" {
+		out.Notice = noticeFor(vis)
 	}
 	return result(actionText(out), out), out, nil
 }
@@ -739,7 +750,7 @@ type ApprovalOut struct {
 	ResultData   *core.ApprovalExecution `json:"result_data,omitempty"`
 	ID           string                  `json:"id" jsonschema:"approval id"`
 	Flat         string                  `json:"flat" jsonschema:"flat slug"`
-	Action       string                  `json:"action" jsonschema:"publish, deploy, rollback, set_visibility, restore_data or delete"`
+	Action       string                  `json:"action" jsonschema:"publish, activate, rollback, set_visibility, restore_data or delete"`
 	Params       map[string]any          `json:"params,omitempty" jsonschema:"requested change"`
 	Status       string                  `json:"status" jsonschema:"pending, applying, approved, rejected or failed"`
 	Reason       string                  `json:"reason,omitempty" jsonschema:"reason given with the request"`
@@ -759,8 +770,10 @@ func (t *tools) getApproval(ctx context.Context, _ *mcp.CallToolRequest, in Appr
 	}
 	out := approvalOut(a)
 	text := fmt.Sprintf("Approval %s (%s on %s): %s.", a.ID, a.Action, a.Flat, a.Status)
-	if a.Status == "pending" || a.Status == "applying" {
+	if a.Status == "pending" {
 		text += " Waiting for the operator to decide in the Flats console."
+	} else if a.Status == "applying" {
+		text += " The operator approved it; the operation is still applying."
 	}
 	if a.Result != "" {
 		text += " Result: " + a.Result

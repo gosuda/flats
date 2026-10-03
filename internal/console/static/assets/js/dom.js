@@ -132,6 +132,15 @@ export function noticeFor(vis) {
   return '';
 }
 
+// Pending requests describe a future state. The canonical notices above are
+// reserved for flats that are already Public.
+export function pendingNoticeFor(vis) {
+  if (vis === 'public') return 'If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public.';
+  if (vis === 'public-unlisted') return 'If approved, this flat becomes Public. Unlisted only hides it from Portal relay listings; it is NOT access control: anyone with the URL can open it.';
+  if (vis === 'public-listed') return 'If approved, this flat becomes Public: anyone can open it, and it appears in Portal relay listings.';
+  return '';
+}
+
 // PUBLIC_URL_NOTICE covers a public URL that came without a notice.
 export const PUBLIC_URL_NOTICE = 'Anyone with the public URL can open it. Unlisted only hides a flat from Portal relay listings; it is NOT access control.';
 

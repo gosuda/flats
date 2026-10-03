@@ -29,6 +29,7 @@ type env struct {
 	operatorCookie      *http.Cookie
 	localURL, remoteURL string
 	svc                 *core.Service
+	st                  *store.Store
 	priv                *local.Net
 	pub                 *local.Public
 	local               *mcp.ClientSession // connects from loopback
@@ -78,7 +79,7 @@ func newEnv(t *testing.T) *env {
 		pubNet.Close()
 		st.Close()
 	})
-	return &env{management: management, localURL: localSrv.URL + "/mcp", remoteURL: remoteSrv.URL, svc: svc, priv: priv, pub: pub,
+	return &env{management: management, localURL: localSrv.URL + "/mcp", remoteURL: remoteSrv.URL, svc: svc, st: st, priv: priv, pub: pub,
 		local: connect(t, localSrv.URL+"/mcp"), remote: connect(t, remoteSrv.URL)}
 }
 
@@ -157,7 +158,7 @@ func TestListTools(t *testing.T) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
 	ins := e.local.InitializeResult().Instructions
-	for _, s := range []string{"approval_url", "NOT access control", "flats.json", "save_version_from_dir"} {
+	for _, s := range []string{"approval_url", "NOT access control", "flats.json", "save_version_from_dir", "Local loopback or explicitly permitted Tailscale"} {
 		if !strings.Contains(ins, s) {
 			t.Errorf("instructions do not mention %q", s)
 		}
@@ -328,7 +329,7 @@ func TestSetVisibilityNeedsApproval(t *testing.T) {
 	}
 	var out ActionOut
 	text, failed := call(t, e.local, "set_visibility", map[string]any{"slug": "demo", "visibility": "public-unlisted", "reason": "show a friend"}, &out)
-	if failed || out.Status != "pending_approval" || out.ApprovalID == "" || out.Notice != core.PublicAccessNotice || !strings.Contains(text, out.ApprovalURL) {
+	if failed || out.Status != "pending_approval" || out.ApprovalID == "" || out.Notice != pendingPublicNotice || !strings.Contains(text, out.ApprovalURL) || strings.Contains(text, "This flat is public:") {
 		t.Fatalf("public pending: %s %+v", text, out)
 	}
 	f, _ := e.svc.GetFlat(context.Background(), "demo")

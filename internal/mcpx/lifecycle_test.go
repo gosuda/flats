@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -164,6 +165,23 @@ func TestMCPVisibilityWithoutProviderRemainsPending(t *testing.T) {
 	}
 	if _, body := get(t, f.PrivateURL); string(body) != "VERSION-2" {
 		t.Fatalf("changed current: %q", body)
+	}
+}
+
+func TestMCPApplyingApprovalIsNotDescribedAsWaitingForDecision(t *testing.T) {
+	e := newEnv(t)
+	var saved SaveOut
+	call(t, e.local, "save_draft", map[string]any{"slug": "applying", "files": []any{file("index.html", "one", "")}, "deploy": true}, &saved)
+	if saved.Deploy == nil || saved.Deploy.ApprovalID == "" {
+		t.Fatal("missing pending approval")
+	}
+	if err := e.st.ClaimApprovalAuthorized(t.Context(), saved.Deploy.ApprovalID, "operator fixture", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var approval ApprovalOut
+	text, failed := call(t, e.local, "get_approval", map[string]any{"id": saved.Deploy.ApprovalID}, &approval)
+	if failed || approval.Status != "applying" || !strings.Contains(text, "operation is still applying") || strings.Contains(text, "Waiting for the operator") {
+		t.Fatalf("applying copy: %s %+v", text, approval)
 	}
 }
 

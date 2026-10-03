@@ -7,6 +7,8 @@ import (
 
 const pendingLifecycle = `{"status":"pending_approval","approval":{"id":"apr-control","status":"pending","action":"publish"},"approval_url":"http://console.test/approvals/apr-control","message":"Waiting for an explicit operator decision; current version keeps serving."}`
 
+const pendingPublicLifecycle = `{"status":"pending_approval","approval":{"id":"apr-control","status":"pending","action":"set_visibility"},"approval_url":"http://console.test/approvals/apr-control","message":"Waiting for an explicit operator decision; current version keeps serving.","notice":"This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public."}`
+
 func TestLifecyclePendingExitAcrossCLI(t *testing.T) {
 	for _, jsonMode := range []bool{false, true} {
 		for _, operation := range []string{"upload", "publish", "deploy", "rollback", "public", "private"} {
@@ -29,7 +31,11 @@ func TestLifecyclePendingExitAcrossCLI(t *testing.T) {
 					f.handle("POST /api/flats/demo/rollback", 202, pendingLifecycle)
 					args = []string{"rollback", "demo", "--restore-data"}
 				default:
-					f.handle("POST /api/flats/demo/visibility", 202, pendingLifecycle)
+					body := pendingLifecycle
+					if operation == "public" {
+						body = pendingPublicLifecycle
+					}
+					f.handle("POST /api/flats/demo/visibility", 202, body)
 					args = []string{"visibility", "demo", operation}
 				}
 				if jsonMode {
@@ -41,6 +47,9 @@ func TestLifecyclePendingExitAcrossCLI(t *testing.T) {
 				}
 				if strings.Contains(r.stdout, " is live") {
 					t.Fatal("pending request claimed activation")
+				}
+				if operation == "public" && (!strings.Contains(r.stdout, pendingPublicNotice) || strings.Contains(r.stdout, "This flat is public:")) {
+					t.Fatalf("pending Public request used present-tense notice: %s", r.stdout)
 				}
 				for _, request := range f.reqs {
 					if strings.HasPrefix(request.path, "/console/") {

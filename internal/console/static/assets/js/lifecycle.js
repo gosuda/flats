@@ -55,6 +55,23 @@ export function connectionLabel(state) {
   }
 }
 
+export function endpointStopped(endpoint) {
+  return endpoint?.state === 'unavailable' && /route stopped/i.test(endpoint?.detail || '');
+}
+
+export function endpointConnectionLabel(endpoint) {
+  return endpointStopped(endpoint) ? 'Stopped' : connectionLabel(endpoint?.state);
+}
+
+export function endpointAudienceLabel(endpoint, previews = []) {
+  if (endpoint?.audience === 'current') return 'Current version';
+  if (endpointStopped(endpoint)) return 'Stopped preview route';
+  const preview = previews.find((item) => item.host === endpoint?.host);
+  if (preview?.target === 'draft' || (preview && preview.version === 0)) return 'Draft preview (Private)';
+  if (preview?.target === 'version' || preview?.version > 0) return `v${preview.version} preview (Private)`;
+  return 'Private preview';
+}
+
 export function isOpenable(state) {
   return OPEN_STATES.has(state);
 }
@@ -233,7 +250,7 @@ async function settle(kind, created, flat) {
     announce(title);
     return { created, decision, stale };
   }
-  const version = decision?.live_version || flat.live_version;
+  const version = flat.live_version;
   const msg = status === 'approved'
     ? `Approval ${decision.id || ''} completed. The current published version stays in place until you reload it.`
     : 'The approval finished.';
@@ -298,6 +315,16 @@ export function visibilitySettled(flat, requested, outcome) {
   return { ok: true, text: `Access is ${visibilityWord(flat?.visibility)}.` };
 }
 
+export function providerRemovalCopy(flat, provider, desc = providerById(provider)) {
+  if (provider === 'tailscale') {
+    return 'This stops this flat’s Private Tailscale current, preview and redirect routes before removing permission. Local stays available, and a Public Tailscale Funnel route stays up. Permission stays allowed if stopping cannot be confirmed.';
+  }
+  if (flat?.visibility === 'public') {
+    return `Approve changing this flat to Private to stop its Public routes before removing permission for ${desc?.label || provider}.`;
+  }
+  return `This removes permission for ${desc?.label || provider}. If a provider route is still stopping, permission stays allowed so you can retry.`;
+}
+
 export async function saveProvider(flat, provider, permitted) {
   const desc = providerById(provider);
   if (!desc) return null;
@@ -310,9 +337,7 @@ export async function saveProvider(flat, provider, permitted) {
     body: [
       h('p', { text: permitted
         ? `This allows ${desc.label} for this flat. ${desc.audience}`
-        : provider === 'tailscale'
-          ? 'This stops this flat’s Tailscale current, preview and redirect routes before removing permission. Local stays available. Permission stays allowed if stopping cannot be confirmed.'
-          : `Public routes must first be stopped by an approved change to Private before removing permission for ${desc.label}.` }),
+        : providerRemovalCopy(flat, provider, desc) }),
       h('p', { text: 'Provider permission does not publish a version and does not change Private or Public.' }),
       h('p', { class: 'muted', text: 'A connected provider is not the same as a published or reachable flat. A failure does not switch this flat to another provider.' }),
     ],
@@ -507,7 +532,7 @@ export function draftEditor(flat, onUploaded) {
   return { editor, status: () => status.text };
 }
 
-export function renderAccess(flat, controls) {
+export function renderAccess(flat, controls, previews = []) {
   const state = connectionState(flat);
   return h('div', { class: 'access-panel', id: 'access' },
     h('section', { class: 'card', 'aria-labelledby': 'access-range-title' },
@@ -525,10 +550,10 @@ export function renderAccess(flat, controls) {
       Array.isArray(flat.endpoints) && flat.endpoints.length ? h('ul', { class: 'plain-list' }, flat.endpoints.map((ep) =>
         h('li', { class: 'plain-row' },
           h('div', null,
-            h('strong', { text: `${providerLabel(ep.provider)} · ${ep.audience === 'draft' ? 'Draft (Private)' : 'Current version'}` }),
-            h('p', { class: 'muted small', text: `${ep.configured ? 'Configured' : 'Needs setup'} · ${ep.permitted ? 'Route permitted' : 'Route not permitted'} · ${connectionLabel(ep.state)}` }),
+            h('strong', { text: `${providerLabel(ep.provider)} · ${endpointAudienceLabel(ep, previews)}` }),
+            h('p', { class: 'muted small', text: `${ep.configured ? 'Configured' : 'Needs setup'} · ${ep.permitted ? 'Route permitted' : 'Route not permitted'} · ${endpointConnectionLabel(ep)}` }),
             ep.detail ? h('p', { class: 'muted small', text: ep.detail }) : null,
-            openControl({url:ep.url, ready:ep.ready, state:ep.state}, `Open ${providerLabel(ep.provider)} ${ep.audience === 'draft' ? 'draft' : 'current version'}`)))) ) : null,
+            openControl({url:ep.url, ready:ep.ready, state:ep.state}, `Open ${providerLabel(ep.provider)} ${endpointAudienceLabel(ep, previews).toLowerCase()}`)))) ) : null,
       controls.addresses));
 }
 

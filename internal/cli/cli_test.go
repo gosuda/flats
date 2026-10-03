@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -284,8 +285,8 @@ func TestVisibilityPendingApproval(t *testing.T) {
 	if !strings.Contains(r.stdout, "Approval needed: https://flats.tail.ts.net/approvals/apr-1") {
 		t.Errorf("stdout: %s", r.stdout)
 	}
-	if !strings.Contains(r.stdout, core.UnlistedNotice+"\n") {
-		t.Errorf("unlisted notice not printed verbatim:\n%s", r.stdout)
+	if !strings.Contains(r.stdout, pendingPublicNotice+"\n") || strings.Contains(r.stdout, "This flat is public:") {
+		t.Errorf("pending Public notice is not future tense:\n%s", r.stdout)
 	}
 	var body map[string]string
 	_ = json.Unmarshal(api.last("POST /api/flats/blog/visibility").body, &body)
@@ -294,7 +295,8 @@ func TestVisibilityPendingApproval(t *testing.T) {
 	}
 
 	r = run(t, srv.URL, "", "--json", "visibility", "blog", "public-unlisted")
-	if r.code != ExitPending || !strings.Contains(r.stdout, `"approval_url"`) {
+	if r.code != ExitPending || !strings.Contains(r.stdout, `"approval_url"`) ||
+		!strings.Contains(r.stdout, pendingPublicNotice) || strings.Contains(r.stdout, "This flat is public:") {
 		t.Errorf("json: %d %s", r.code, r.stdout)
 	}
 }
@@ -718,9 +720,19 @@ func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
 			if err := os.WriteFile(exe, []byte("x"), 0755); err != nil {
 				t.Fatal(err)
 			}
-			for _, args := range [][]string{{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"-operator-credential-file", "relative"}, {"--operator-credential-file"}} {
+			for _, args := range [][]string{
+				{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"-operator-credential-file", "relative"}, {"--operator-credential-file"},
+				{"--operator-credential-stdin"}, {"-operator-credential-stdin"}, {"--operator-credential-stdin=true"}, {"-operator-credential-stdin=false"},
+				{"--operator-credential-file", credential, "--operator-credential-stdin"},
+			} {
 				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
-				if r.code == 0 || len(fl.calls) != 0 || !strings.Contains(r.stderr, "absolute path") {
+				want := "absolute path"
+				if slices.ContainsFunc(args, func(arg string) bool {
+					return strings.HasPrefix(arg, "--operator-credential-stdin") || strings.HasPrefix(arg, "-operator-credential-stdin")
+				}) {
+					want = "cannot be used by an installed service"
+				}
+				if r.code == 0 || len(fl.calls) != 0 || !strings.Contains(r.stderr, want) {
 					t.Fatalf("invalid path installed: %+v calls=%v", r, fl.calls)
 				}
 			}
