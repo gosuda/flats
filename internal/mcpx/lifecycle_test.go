@@ -120,3 +120,28 @@ func TestMCPConflictPreservesContentAndCannotDecideOrGrant(t *testing.T) {
 		t.Fatalf("authorized positive result DTO: %+v", a)
 	}
 }
+
+func TestMCPDeployZeroRequestsCurrentDraftAndNoVersionBeforeDecision(t *testing.T) {
+	e := newEnv(t)
+	var saved SaveOut
+	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "zero", "expected_revision": 0, "files": []any{file("index.html", "ZERO-DRAFT", "")}}, &saved); failed {
+		t.Fatal(text)
+	}
+	var pending DeployInfo
+	text, failed := call(t, e.local, "deploy", map[string]any{"slug": "zero", "version": 0}, &pending)
+	if failed || pending.Status != "pending_approval" || pending.ApprovalID == "" || pending.Approval == nil || pending.Approval.Action != "publish" || strings.Contains(text, " is live") {
+		t.Fatalf("Draft deploy pending: %s %+v", text, pending)
+	}
+	f, _ := e.svc.GetFlat(context.Background(), "zero")
+	if f.LiveVersion != 0 || f.Versions != 0 {
+		t.Fatalf("premature vN: %+v", f)
+	}
+	e.approve(t, pending.ApprovalID)
+	f, _ = e.svc.GetFlat(context.Background(), "zero")
+	if f.LiveVersion != 1 || f.Versions != 1 {
+		t.Fatalf("approved v1: %+v", f)
+	}
+	if _, body := get(t, f.PrivateURL); string(body) != "ZERO-DRAFT" {
+		t.Fatalf("published bytes: %q", body)
+	}
+}

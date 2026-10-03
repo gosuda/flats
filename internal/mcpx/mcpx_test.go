@@ -264,7 +264,7 @@ func TestValidationErrorsHaveFixes(t *testing.T) {
 	}
 	call(t, e.local, "create_flat", map[string]any{"slug": "empty"}, nil)
 	text, isErr = call(t, e.local, "rollback", map[string]any{"slug": "empty"}, nil)
-	if !isErr || !strings.Contains(text, "deploy a saved version first") {
+	if !isErr || !strings.Contains(text, "request publish of a Draft") || !strings.Contains(text, "operator approval") {
 		t.Fatalf("rollback of an undeployed flat: %s", text)
 	}
 	text, isErr = call(t, e.local, "get_flat", map[string]any{"slug": "nope"}, nil)

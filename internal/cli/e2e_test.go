@@ -182,10 +182,22 @@ func TestAgainstRealAPI(t *testing.T) {
 	if r := run(t, srv.URL, "", "preview", "demo", "--version", "2"); r.code != 0 || !strings.Contains(r.stdout, "version 2") {
 		t.Fatalf("published preview: %+v", r)
 	}
+	if r := run(t, srv.URL, "", "--json", "publish", "demo", "--revision", "3"); r.code != ExitPending || !strings.Contains(r.stdout, `"pending_approval"`) {
+		t.Fatalf("explicit publish: %+v", r)
+	}
+	assertState(1, "private", "<h1>v1</h1>")
+	approvePending()
+	assertState(3, "private", "DRAFT-3")
+	if r := run(t, srv.URL, "", "deploy", "--flat", "demo", "--version", "2"); r.code != ExitPending {
+		t.Fatalf("existing activation: %+v", r)
+	}
+	assertState(3, "private", "DRAFT-3")
+	approvePending()
+	assertState(2, "private", "<h1>v2</h1>")
 	if r := run(t, srv.URL, "", "delete", "demo"); r.code != ExitPending {
 		t.Fatalf("delete: %+v", r)
 	}
-	assertState(1, "private", "<h1>v1</h1>")
+	assertState(2, "private", "<h1>v2</h1>")
 	if r := run(t, srv.URL, "", "rename", "demo", "demo2"); r.code != 0 || !strings.Contains(r.stdout, "Renamed demo to demo2") {
 		t.Fatalf("rename: %+v", r)
 	}
