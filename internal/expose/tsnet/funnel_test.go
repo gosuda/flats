@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/store/mem"
 	ts "tailscale.com/tsnet"
 	"tailscale.com/types/logger"
@@ -66,6 +67,9 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if on, err := funnelAllowOn(ctx, lc); err != nil || !on {
+		t.Fatalf("ListenFunnel without FunnelOnly AllowFunnel=%v err=%v, want the entry set before the listener error", on, err)
+	}
 	if err := clearAllowFunnel(ctx, lc); err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +81,44 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 	if got := fetchBody(t, tailClient, "https://flat."+testDomain+"/"); len(got) < len("private") || got == "public" {
 		t.Fatalf("private route after rejected ListenFunnel = %q", got)
 	}
+	// FunnelOnly setup that persists AllowFunnel and then fails to return a
+	// listener must drop that entry. The hook reproduces the pinned order
+	// (SetServeConfig, then a listen error with no cleanup listener).
+	n.listenFunnel = func(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error) {
+		lc, err := srv.LocalClient()
+		if err != nil {
+			return nil, err
+		}
+		sc, err := lc.GetServeConfig(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		if sc == nil {
+			sc = &ipn.ServeConfig{}
+		}
+		hp := ipn.HostPort("flat." + testDomain + ":443")
+		if sc.AllowFunnel == nil {
+			sc.AllowFunnel = map[ipn.HostPort]bool{}
+		}
+		sc.AllowFunnel[hp] = true
+		if err := lc.SetServeConfig(context.Background(), sc); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("listener already open for tcp, :443")
+	}
+	if _, err := n.ServeFunnel(ctx, "flat", public); err == nil {
+		t.Fatal("FunnelOnly setup failure was ignored")
+	}
+	if got := n.FunnelStatus("flat"); got.State != FunnelError {
+		t.Fatalf("failed FunnelOnly state = %+v", got)
+	}
+	if err := funnelAllowCleared(ctx, lc); err != nil {
+		t.Fatal(err)
+	}
+	if got := fetchBody(t, tailClient, "https://flat."+testDomain+"/"); len(got) < len("private") || got == "public" {
+		t.Fatalf("private route after failed FunnelOnly setup = %q", got)
+	}
+	n.listenFunnel = nil
 	if _, err := n.ServeFunnel(ctx, "flat", public); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +184,9 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 	if _, err := n.ServeFunnel(ctx, "flat", public); err == nil {
 		t.Fatal("funnel setup failure was ignored")
 	}
+	if got := n.FunnelStatus("flat"); got.State != FunnelError {
+		t.Fatalf("post-listen funnel failure state = %+v", got)
+	}
 	if err := funnelAllowCleared(ctx, lc); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +210,19 @@ func fetchBody(t *testing.T, c *http.Client, url string) string {
 		t.Fatalf("%s: %d %s", url, res.StatusCode, b)
 	}
 	return string(b)
+}
+
+func funnelAllowOn(ctx context.Context, lc *local.Client) (bool, error) {
+	sc, err := lc.GetServeConfig(ctx)
+	if err != nil || sc == nil {
+		return false, err
+	}
+	for _, on := range sc.AllowFunnel {
+		if on {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func clearAllowFunnel(ctx context.Context, lc *local.Client) error {

@@ -9,7 +9,8 @@ owned elsewhere and are not wired to `ServeExposure` on this branch.
 
 - Verified `origin/main` and the branch start: `29edc2a6e13e27867603a23ff5b1b5a8d1b84df0`.
 - The brief's observed `313ef2557d28350cb91a0daff719aca5bf6813c9` is a child of that commit and was not the live tip after fetch.
-- Candidate HEAD is the commit that adds this file. The worker result repeats `git rev-parse HEAD`.
+- Grant and Funnel listener commit: `e906e929b8312cdf28d5df15e04bd344573db6b0`.
+- The follow-up commit on that parent rolls back an `AllowFunnel` entry when Funnel setup fails, and is the candidate HEAD. The worker result repeats `git rev-parse HEAD`.
 
 ## Contract
 
@@ -113,9 +114,13 @@ listeners share port 443 and stay independent. Ingress is dispatched with
 
 `StopFunnel` closes that listener. `cleanupListener.Close` deletes the
 `AllowFunnel` entry. It does not log the node out and it does not close the
-private listener. If Funnel created the node and then fails, `Stop` rolls the
-new node back. If private HTTP already owned the node, the failure leaves that
-node up and closes only the Funnel listener. Funnel stays `starting` until the
+private listener. If the entry is still set after that close, `StopFunnel`
+returns an error so the caller reports the stop as unconfirmed. If Funnel
+created the node and then fails, `Stop` rolls the new node back. If private
+HTTP already owned the node, the failure leaves that node up and closes only
+the Funnel listener. A failed `ListenFunnel` that introduced `AllowFunnel`
+and then returned no listener is cleared the same way; an entry that was
+already present is left alone. Funnel stays `starting` until the
 certificate fetch succeeds, unless a test certificate source is installed, in
 which case it is `ready` immediately. Funnel strips `Tailscale-User-*` headers
 and does not set identity.
@@ -145,14 +150,27 @@ go test -race ./internal/app ./internal/expose/portal ./internal/expose/provider
 
 `app` 4.756s, `portal` 3.187s, `provider` 3.525s.
 
+```text
+go test ./internal/expose/tsnet/ ./internal/expose/provider/ -count=1 -timeout 180s
+```
+
+After the AllowFunnel rollback: `tsnet` 7.375s, `provider` 0.711s. Exit 0.
+
 `TestServeFunnelRoutesIngressAndLeavesPrivate` uses the existing testcontrol
-harness, not a live tailnet. It serves private HTTPS first, asserts that
-`ListenFunnel` without `FunnelOnly` collides on `:443`, clears the `AllowFunnel`
-leak that collision leaves behind, then opens Funnel with `FunnelOnly`.
-Ingress through PeerAPI `/v0/ingress` receives the public handler. A tailnet
-client still receives the private handler. `StopFunnel` clears `AllowFunnel`
-and ingress fails while private HTTPS still serves. A later Funnel setup
-failure does not replace the private route.
+harness, not a live tailnet. It serves private HTTPS first. `ListenFunnel`
+without `FunnelOnly` returns an error containing `listener already open` and
+leaves `AllowFunnel` set; the test asserts that entry, then clears it so the
+later stop assertion belongs to our listener. A FunnelOnly attempt that
+writes `AllowFunnel` and then returns that same listen error is rolled back:
+state is `error`, `AllowFunnel` is clear, and private HTTPS still serves.
+The successful `FunnelOnly` listener then shares `:443` with the private
+listener. Ingress through PeerAPI `/v0/ingress` receives the public handler.
+A tailnet client still receives the private handler. `StopFunnel` clears
+`AllowFunnel` and ingress fails while private HTTPS still serves. A later
+failure after the listener exists closes it, leaves state `error`, clears
+`AllowFunnel`, and does not replace the private route. The verbose run of
+this test passed in 1.15s, with certificate SNI `flat.tail-scale.ts.net`
+twice.
 
 Provider tests cover historical directories, the rejected `funnel` alias, a
 grant that does not serve, draft and private requests that do not call public

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"time"
 
+	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	ts "tailscale.com/tsnet"
 )
 
@@ -81,19 +83,23 @@ func (n *Net) ServeFunnel(ctx context.Context, host string, h http.Handler) (str
 
 	// FunnelOnly registers only the funnel listen key. ListenFunnel without it
 	// uses listen-on-both and refuses :443 when the private tailnet listener
-	// already holds that port (pinned tsnet registerListener). The two keys
-	// share the port number and stay separate listeners.
+	// already holds that port (pinned tsnet registerListener). That refusal
+	// can still persist AllowFunnel, because SetServeConfig runs before
+	// listen. The two keys share the port number and stay separate listeners.
 	opts := []ts.FunnelOption{ts.FunnelOnly()}
 	if n.getCert != nil {
 		opts = append(opts, ts.FunnelTLSConfig(&tls.Config{GetCertificate: n.getCert}))
 	}
+	priorAllow, _ := n.allowFunnelSet(nd)
 	ln, err := n.openFunnel(nd.srv, opts)
 	if err != nil {
+		err = n.undoNewAllowFunnel(nd, priorAllow, err)
 		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, err))
 	}
 	if n.afterFunnelListen != nil {
 		if err := n.afterFunnelListen(); err != nil {
 			ln.Close()
+			err = n.undoNewAllowFunnel(nd, priorAllow, err)
 			return fail(fmt.Errorf("tsnet: funnel %s: %w", host, err))
 		}
 	}
@@ -141,7 +147,19 @@ func (n *Net) StopFunnel(host string) error {
 	nd.funnelDetail = "Funnel route closed; private tailnet access was not removed"
 	n.notifyLocked()
 	n.mu.Unlock()
-	return closeFunnel(hs, ln)
+	// A confirmed close must not leave the internet route in the node config.
+	// An entry that is still present is an error, so the caller reports the
+	// stop as unconfirmed instead of claiming the route is gone.
+	err := errors.Join(closeFunnel(hs, ln), n.clearAllowFunnel(nd))
+	if err != nil {
+		return err
+	}
+	if on, err := n.allowFunnelSet(nd); err != nil {
+		return err
+	} else if on {
+		return errors.New("tsnet: funnel AllowFunnel entry is still set")
+	}
+	return nil
 }
 
 // FunnelStatus reports the internet route. Hosts with no Funnel listener
@@ -180,6 +198,68 @@ func (n *Net) beginFunnel(host string, h http.Handler) (nd *node, created bool, 
 	n.notifyLocked()
 	go n.run(nd)
 	return nd, true, nil
+}
+
+// undoNewAllowFunnel drops an AllowFunnel entry this attempt introduced.
+// An entry that was already set belongs to an existing route and is left up.
+func (n *Net) undoNewAllowFunnel(nd *node, prior bool, cause error) error {
+	if prior {
+		return cause
+	}
+	if err := n.clearAllowFunnel(nd); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
+func (n *Net) funnelHostPort(nd *node) (ipn.HostPort, *local.Client, error) {
+	n.mu.Lock()
+	domain := nd.dnsName
+	srv := nd.srv
+	n.mu.Unlock()
+	if srv == nil {
+		return "", nil, errors.New("tsnet: funnel node is not running")
+	}
+	if domains := srv.CertDomains(); len(domains) > 0 {
+		domain = domains[0]
+	}
+	if domain == "" {
+		return "", nil, errors.New("tsnet: funnel has no HTTPS name")
+	}
+	lc, err := srv.LocalClient()
+	if err != nil {
+		return "", nil, err
+	}
+	return ipn.HostPort(domain + ":443"), lc, nil
+}
+
+func (n *Net) allowFunnelSet(nd *node) (bool, error) {
+	hp, lc, err := n.funnelHostPort(nd)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sc, err := lc.GetServeConfig(ctx)
+	if err != nil || sc == nil {
+		return false, err
+	}
+	return sc.AllowFunnel[hp], nil
+}
+
+func (n *Net) clearAllowFunnel(nd *node) error {
+	hp, lc, err := n.funnelHostPort(nd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sc, err := lc.GetServeConfig(ctx)
+	if err != nil || sc == nil || !sc.AllowFunnel[hp] {
+		return err
+	}
+	delete(sc.AllowFunnel, hp)
+	return lc.SetServeConfig(ctx, sc)
 }
 
 func (n *Net) openFunnel(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error) {
