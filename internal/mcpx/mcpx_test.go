@@ -141,7 +141,7 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_flat", "get_logs", "list_flats",
+	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_flat", "get_logs", "get_runtime_reference", "list_flats",
 		"list_secrets", "list_versions", "open_preview", "rollback", "save_version", "save_version_from_dir", "set_visibility"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {

@@ -251,6 +251,10 @@ machine, so they reach Flats only through MCP or the API.
 
 ## Server flats (handler ABI)
 
+The authoritative [runtime API v1 reference](runtime-api-v1.md) is embedded
+in the binary and discoverable as MCP resource `flats://docs/runtime-api/v1`
+or read-only tool `get_runtime_reference`. It requires no skill/source access.
+
 A server flat runs in a `flats worker` child process (one per running
 version, previews included). The parent proxies HTTP to the worker over a
 Unix socket; the worker gets the version directory, its data directory and

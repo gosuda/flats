@@ -73,11 +73,38 @@ Deploy that directory with the same `flats deploy` command. JavaScript runs in Q
 
 A `.wasm` server is a WASI preview1 command instantiated afresh per request: request JSON on stdin, response JSON on stdout, selected environment/secrets, clocks and randomness. It has **no SQLite/FILES host ABI, filesystem mounts, outbound network or WebSocket API**. See the [capability table and response format](docs/design.md#server-flats-handler-abi).
 
-Data survives deploys and ordinary rollbacks. `flats rollback hello` restores code; `--restore-data` also restores the pre-deploy data snapshot. Preview data is isolated from live data.
+Data survives deploys and ordinary rollbacks. `flats rollback hello` restores code; `--restore-data` restores only the pre-deploy database snapshot; FILES remains current. Preview data is isolated from live data.
 
 ## Agent integration
 
-Run `flats mcp-config` for Claude Code, Codex and Cursor setup. Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
+Run `flats mcp-config` for Claude Code, Codex and Cursor setup. For a host
+on a custom management port, use `flats mcp-config --url http://127.0.0.1:17878`.
+For example:
+
+```sh
+claude mcp add --transport http flats http://127.0.0.1:7878/mcp
+codex mcp add flats --url http://127.0.0.1:7878/mcp
+```
+
+Cursor project `.cursor/mcp.json`:
+
+```json
+{"mcpServers":{"flats":{"url":"http://127.0.0.1:7878/mcp"}}}
+```
+
+Restart/reconnect your client, list tools, then read resource
+`flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.
+The [runtime API v1 reference](docs/runtime-api-v1.md) is embedded in the host
+and available through MCP without an installed skill or source checkout. It
+contains complete synchronous FILES/DB signatures, text/binary semantics,
+limits, handler examples and approvals. For a minimal MCP static walkthrough,
+call `save_version` with `{"slug":"hello","files":[{"path":"index.html",
+"content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}`. For a server,
+include the `flats.json` and `server.js` shown above in the same complete inline
+file list. Fetch the returned URL and check `get_flat`/`get_logs`; a successful
+save alone does not establish a live site.
+
+Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
 
 ## Security and operations
 

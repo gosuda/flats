@@ -318,7 +318,10 @@ Codex (~/.codex/config.toml):
 %s
   or: %s
   Flats itself keeps public exposure and deletion behind your approval, so
-  auto-approving its MCP tools in Codex is safe.
+  client auto-approval does not bypass those Flats approvals; tools can still
+  deploy code and mutate data. Use only with trusted agents.
+  Discover runtime APIs: read flats://docs/runtime-api/v1 or call
+  get_runtime_reference with {} (no installed skill required).
 
 Cursor (.cursor/mcp.json in a project, or ~/.cursor/mcp.json for all projects):
 %s
