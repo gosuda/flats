@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
@@ -177,6 +178,82 @@ func TestManagerServeFunnelReturnsWhileControlIsUnavailable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := m.StopSlug(ctx, "offline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagerStopSlugRetiresFunnelOnlyIdentityBeforeRecreate(t *testing.T) {
+	control := startManagerControl(t)
+	dir := t.TempDir()
+	tailnet, err := tsnet.New(tsnet.Config{
+		Dir: filepath.Join(dir, "tsnet"), ControlURL: control.HTTPTestServer.URL, Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loopback.Close()
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, Options{Local: loopback, Tailscale: TSNet{tailnet}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	serve := func() {
+		t.Helper()
+		if _, err := m.ServeExposure(ctx, ExposureRequest{
+			Slug: "recreated", Host: "recreated", Visibility: "public", Audience: AudienceCurrent,
+			Handler: text("public"), Permitted: []ID{Funnel},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitState := func(wantNodes int) []byte {
+		t.Helper()
+		statePath := filepath.Join(dir, "tsnet", "recreated", "tailscaled.state")
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			state, readErr := os.ReadFile(statePath)
+			if readErr == nil && len(state) > 0 && control.NumNodes() >= wantNodes {
+				return state
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("Funnel-only identity did not persist: nodes=%d", control.NumNodes())
+		return nil
+	}
+
+	serve()
+	before := waitState(1)
+	nodesBefore := control.NumNodes()
+	if err := m.StopSlug(ctx, "recreated"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tsnet", "recreated")); !os.IsNotExist(err) {
+		t.Fatalf("confirmed Funnel-only retirement retained state: %v", err)
+	}
+	if tracked, err := m.HasProviderRoute(ctx, "recreated", Funnel); err != nil || tracked {
+		t.Fatalf("confirmed Funnel-only retirement stayed registered: tracked=%v err=%v", tracked, err)
+	}
+
+	serve()
+	after := waitState(nodesBefore + 1)
+	if bytes.Equal(before, after) {
+		t.Fatal("recreated slug inherited the deleted Funnel-only identity")
+	}
+	if err := m.StopSlug(ctx, "recreated"); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Close(); err != nil {
