@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/provider"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -55,6 +56,47 @@ func TestStartDoesNotInferGrantsFromOldDirectories(t *testing.T) {
 	}
 	if !h.Providers.File().Migration.HistoricalTSNet {
 		t.Fatalf("migration = %+v", h.Providers.File().Migration)
+	}
+}
+
+func TestExplicitPortalFalseKeepsGrantAndDoesNotStart(t *testing.T) {
+	dir := t.TempDir()
+	start := func(portal, set bool) *Host {
+		t.Helper()
+		h, err := Start(context.Background(), Options{
+			DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0",
+			ConsoleHost: "flats", Portal: portal, PortalSet: set,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	h := start(true, true)
+	if h.Public == nil || h.portalNet == nil || !h.Providers.File().Allows(provider.Portal) {
+		t.Fatalf("portal grant did not start portal: public=%v net=%v file=%+v", h.Public != nil, h.portalNet != nil, h.Providers.File())
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h = start(false, true)
+	if h.Public != nil || h.portalNet != nil {
+		t.Fatal("explicit --portal=false started portal")
+	}
+	if !h.Providers.File().Allows(provider.Portal) {
+		t.Fatal("explicit --portal=false revoked the stored grant")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h = start(false, false)
+	if h.Public == nil || h.portalNet == nil || !h.Providers.File().Allows(provider.Portal) {
+		t.Fatal("omitted --portal ignored the stored portal grant")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

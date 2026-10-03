@@ -7,10 +7,11 @@ owned elsewhere and are not wired to `ServeExposure` on this branch.
 
 ## Revisions
 
-- Verified `origin/main` and the branch start: `29edc2a6e13e27867603a23ff5b1b5a8d1b84df0`.
-- The brief's observed `313ef2557d28350cb91a0daff719aca5bf6813c9` is a child of that commit and was not the live tip after fetch.
+- `git cat-file -p 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0` shows one parent, `313ef2557d28350cb91a0daff719aca5bf6813c9`. `29edc2a6` is the child. `313ef255` is the parent. `git merge-base --is-ancestor 313ef2557d28350cb91a0daff719aca5bf6813c9 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0` exits 0, and the reverse exits 1.
+- This branch started at the child `29edc2a6e13e27867603a23ff5b1b5a8d1b84df0`.
 - Grant and Funnel listener commit: `e906e929b8312cdf28d5df15e04bd344573db6b0`.
-- The follow-up commit on that parent rolls back an `AllowFunnel` entry when Funnel setup fails, and is the candidate HEAD. The worker result repeats `git rev-parse HEAD`.
+- AllowFunnel rollback: `992e39afdf57c8dfbd154352b20d8c5cbdcd79bf`.
+- The commit that corrects this ancestry note and `--portal=false` is the candidate HEAD when it is the branch tip. The worker result repeats `git rev-parse HEAD`.
 
 ## Contract
 
@@ -67,12 +68,18 @@ Defaults changed so a process does not opt in by omission:
 `--network tailscale` grants `tailscale` only and sets `private_backend`. It
 does not grant Funnel. `--network local`, when the flag is present, sets
 `private_backend` to `local` and does not revoke other grants. `--portal`
-grants `portal`. `--portal=false` does not revoke a stored portal grant and
-does not attach the legacy public network. `--relays` does not grant portal.
+grants `portal` and starts it. `--relays` does not grant portal.
+
+`--portal=false` keeps a portal grant that is already stored and does not
+start Portal for this process. The legacy public network stays unset and the
+manager receives no portal backend, so this process cannot publish through
+Portal. The next start that omits `--portal` uses the stored grant and starts
+Portal again. Omitting `--portal` never creates a grant by itself.
 
 On a later start, if `--network` is omitted, `private_backend` is `tailscale`,
 and that grant exists, the legacy private path is tsnet again. A backend is
-constructed only for a granted provider. Local is always constructed.
+constructed only for a granted provider that this process is allowed to start.
+Local is always constructed.
 
 `scripts/tailnet-gate.sh` already passes `--network tailscale --portal=false`
 on a fresh data directory, so those explicit flags still grant tailscale and
@@ -90,13 +97,15 @@ backends. It does not serve a flat.
 A non-nil backend is not permission. Tests inject fakes through these
 interfaces. There is no permit-skipping constructor.
 
-`*provider.Manager` does not implement `core.PrivateNet` or `core.PublicNet`.
-`internal/expose` already imports `internal/core`, so core must not import this
-package. `ExposureRequest`, `ExposureResult`, and `PublicStopResult` match the
-core contract field layout. This branch's core does not yet export those types
-or a lifecycle field on `core.Config`, so `app.Host.Providers` holds the
-manager directly. Legacy `Config.Private` and `Config.Public` stay in place
-for the core that is on this branch.
+This is not core integration. `*provider.Manager` does not implement an
+exported `LifecycleNet`, and this branch does not assign one through a
+dedicated `core.Config` field. The request types in this package are a local
+stand-in with the same field layout. `Config.Private` and `Config.Public`
+remain the legacy nets for the core that is on this branch; that arrangement
+is not the finished adapter. The finished adapter implements the exact
+exported core `LifecycleNet` through a dedicated config field, and core does
+not import `internal/expose`. No core SHA is ready to adopt. `internal/expose`
+already imports `internal/core`, so the import must stay in that direction.
 
 ## Funnel
 
@@ -176,8 +185,11 @@ Provider tests cover historical directories, the rejected `funnel` alias, a
 grant that does not serve, draft and private requests that do not call public
 backends, a Funnel failure that does not call Portal, and a public stop that
 leaves local HTTP up and reports Funnel unconfirmed when `StopFunnel` fails.
-App tests cover default flags and a data directory whose old tsnet and portal
-files do not construct those backends.
+App tests cover default flags, a data directory whose old tsnet and portal
+files do not construct those backends, and `TestExplicitPortalFalseKeepsGrantAndDoesNotStart`:
+`--portal` stores the grant and starts Portal, `--portal=false` leaves that
+grant stored and starts nothing, and a later start that omits the flag starts
+Portal from the stored grant. That test passed in 0.03s (`go test ./internal/app/ -count=1 -run TestExplicitPortalFalseKeepsGrantAndDoesNotStart -timeout 60s`, exit 0).
 
 Not run, because this task does not authorize live publication or a new
 tailnet node: `FLATS_PORTAL_E2E`, `scripts/tailnet-gate.sh`, and any command
@@ -186,15 +198,17 @@ flag parsing lives in `internal/app`.
 
 ## Limitations
 
-- Core on this branch cannot call `ServeExposure` yet. Until root adopts the
-  exported core types, already-public flats on a granted Portal still use the
-  legacy `Config.Public` path. New publication must go through `ServeExposure`
-  and a per-flat permit list. The manager itself never starts an unlisted
-  provider.
+- Core integration is pending. This branch has no exported `LifecycleNet` to
+  implement and no core SHA to adopt. `Host.Providers` and the legacy
+  `Config.Private` / `Config.Public` fields are not that adapter. When a flat
+  is already public and this process started Portal, the core on this branch
+  still publishes through `Config.Public`. That is the old path, not
+  `ServeExposure`.
 - Portal SDK end-to-end publication was not repeated. The manager calls
   `PortalNet`; policy tests use a loopback double for call counts.
 - Owner-only authentication is deferred. Private access remains the tailnet ACL.
-- A restart that omits `--portal` will not attach Portal unless a previous
-  explicit grant exists, and `--portal=false` still withholds the legacy public
-  attachment. Operators who relied on the old default must pass `--portal` or
-  `--permit portal`.
+- A restart that omits `--portal` starts Portal only when a grant is already
+  stored. `--portal=false` does not delete that grant and does not start
+  Portal for that process. Operators who relied on the old default must pass
+  `--portal` or `--permit portal` once; after the grant is stored, omitting
+  the flag starts Portal again.

@@ -220,7 +220,10 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		h.tsNet = n
 	}
-	if grants.Allows(provider.Portal) {
+	// An explicit --portal=false keeps a stored grant and does not start Portal
+	// for this process. Omitting the flag uses a grant that is already stored.
+	usePortal := grants.Allows(provider.Portal) && !(o.PortalSet && !o.Portal)
+	if usePortal {
 		p, err := portal.New(portalConfig(ctx, st, o, logf))
 		if err != nil {
 			return nil, fmt.Errorf("portal: %w", err)
@@ -245,7 +248,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	} else {
 		h.Private = loop
 	}
-	if h.portalNet != nil && !(o.PortalSet && !o.Portal) {
+	if usePortal {
 		h.Public = h.portalNet
 	}
 	var rt core.Runtime
