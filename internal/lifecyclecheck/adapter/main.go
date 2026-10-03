@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ type faults struct {
 	mu                                               sync.Mutex
 	stop, serve                                      bool
 	portalStop, funnelStop, portalServe, funnelServe bool
+	async, ready                                     bool
 	calls                                            map[string]int
 }
 
@@ -68,12 +70,43 @@ func (p *publicNet) Serve(ctx context.Context, slug string, handler http.Handler
 	if fail {
 		return "", errors.New("deterministic provider connection failure")
 	}
-	return p.Public.Serve(ctx, slug, handler, hidden)
+	url, err := p.Public.Serve(ctx, slug, handler, hidden)
+	p.faults.mu.Lock()
+	connecting := p.faults.async && !p.faults.ready
+	p.faults.mu.Unlock()
+	if connecting {
+		url = ""
+	}
+	return url, err
+}
+
+func (p *publicNet) Status() core.NetStatus {
+	st := p.Public.Status()
+	p.faults.mu.Lock()
+	connecting := p.faults.async && !p.faults.ready
+	p.faults.mu.Unlock()
+	if connecting {
+		for i := range st.Hosts {
+			st.Hosts[i].State = "starting"
+			st.Hosts[i].URL = ""
+		}
+	}
+	return st
+}
+func (p *publicNet) URL(host string) string {
+	p.faults.mu.Lock()
+	connecting := p.faults.async && !p.faults.ready
+	p.faults.mu.Unlock()
+	if connecting {
+		return ""
+	}
+	return p.Public.URL(host)
 }
 
 // tailnet doubles only the backend: policy remains in provider.Manager.
 type tailnet struct {
 	*local.Net
+	public *local.Net
 	faults *faults
 	mu     sync.Mutex
 	funnel map[string]string
@@ -87,7 +120,7 @@ func (t *tailnet) ServeFunnel(ctx context.Context, host string, handler http.Han
 	if fail {
 		return "", errors.New("deterministic provider connection failure")
 	}
-	url, err := t.Net.Serve(ctx, "funnel-"+host, handler, false)
+	url, err := t.public.Serve(ctx, "funnel-"+host, handler, false)
 	if err == nil {
 		t.mu.Lock()
 		t.funnel[host] = url
@@ -104,7 +137,7 @@ func (t *tailnet) StopFunnel(host string) error {
 	if fail {
 		return errors.New("deterministic public teardown failure: route remains reachable")
 	}
-	if err := t.Net.Stop("funnel-" + host); err != nil {
+	if err := t.public.Stop("funnel-" + host); err != nil {
 		return err
 	}
 	t.mu.Lock()
@@ -117,9 +150,32 @@ func (t *tailnet) FunnelState(host string) core.ExposureEndpoint {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if url := t.funnel[host]; url != "" {
+		t.faults.mu.Lock()
+		connecting := t.faults.async && !t.faults.ready
+		t.faults.mu.Unlock()
+		if connecting {
+			return core.ExposureEndpoint{Provider: core.ProviderFunnel, State: "starting"}
+		}
 		return core.ExposureEndpoint{Provider: core.ProviderFunnel, URL: url, State: "ready"}
 	}
 	return core.ExposureEndpoint{Provider: core.ProviderFunnel, State: "unavailable"}
+}
+
+// Private Tailscale has a distinct listener and namespace from Local. Tests
+// can therefore detect incorrect backend selection and DTO URLs.
+func (t *tailnet) Serve(ctx context.Context, host string, h http.Handler, ephemeral bool) (string, error) {
+	t.faults.called("tailscale_serve")
+	return t.Net.Serve(ctx, "tailnet-"+host, h, ephemeral)
+}
+func (t *tailnet) URL(host string) string { return t.Net.URL("tailnet-" + host) }
+func (t *tailnet) Stop(host string) error { return t.Net.Stop("tailnet-" + host) }
+func (t *tailnet) Status() core.NetStatus {
+	st := t.Net.Status()
+	st.Kind = "tailscale"
+	for i := range st.Hosts {
+		st.Hosts[i].Host = strings.TrimPrefix(st.Hosts[i].Host, "tailnet-")
+	}
+	return st
 }
 
 // managerSystem exposes concrete host configuration and endpoint DTOs even in
@@ -183,14 +239,22 @@ func serve(args []string) error {
 	defer private.Close()
 	fault := &faults{calls: map[string]int{}}
 	public := &publicNet{Public: local.NewPublic(private), faults: fault}
-	ts := &tailnet{Net: private, faults: fault, funnel: map[string]string{}}
-	manager, err := provider.New(*data, provider.Options{Local: private, Tailscale: ts, Portal: public})
+	tailPrivate, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	defer tailPrivate.Close()
+	ts := &tailnet{Net: tailPrivate, public: private, faults: fault, funnel: map[string]string{}}
+	manager, err := provider.New(*data, provider.Options{Local: private, Tailscale: ts, Portal: public, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+		return st.ProviderPermitted(ctx, slug, string(id))
+	}})
 	if err != nil {
 		return err
 	}
 	defer manager.Close()
 	// Public is deliberately nil: the legacy adapter must never satisfy this lane.
-	cfg := core.Config{DataDir: *data, Store: st, Private: private, Lifecycle: manager,
+	var clockOffset atomic.Int64
+	cfg := core.Config{Now: func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())).UTC() }, DataDir: *data, Store: st, Private: private, Lifecycle: manager,
 		Runtime: &runtime.Manager{DataDir: *data}, Reserved: []string{"flats"}, Logf: log.Printf,
 		ConsoleURL: func() string { return "http://" + *listen }}
 	if authority != nil {
@@ -233,6 +297,11 @@ func serve(args []string) error {
 		defer fault.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]any{"calls": fault.calls, "host_permission": manager.File().Permitted})
 	})
+	mux.HandleFunc("POST /__gate/expire-redirects", func(w http.ResponseWriter, r *http.Request) {
+		clockOffset.Add(int64(8 * 24 * time.Hour))
+		svc.Sweep(r.Context())
+		w.Write([]byte(`{"ok":true}`))
+	})
 	mux.Handle("/api/", apiServer.Handler())
 	mux.Handle("/console/api/", apiServer.Handler())
 	mux.Handle("/mcp", mcpx.Handler(svc, mcpx.Options{}))
@@ -241,6 +310,8 @@ func serve(args []string) error {
 	// alter product state and is deliberately absent from the real binary.
 	mux.HandleFunc("POST /__gate/fault", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
+			Async       bool `json:"async"`
+			Ready       bool `json:"ready"`
 			Stop        bool `json:"stop"`
 			Serve       bool `json:"serve"`
 			PortalStop  bool `json:"portal_stop"`
@@ -253,6 +324,7 @@ func serve(args []string) error {
 			return
 		}
 		fault.mu.Lock()
+		fault.async, fault.ready = in.Async, in.Ready
 		fault.stop, fault.serve = in.Stop, in.Serve
 		fault.portalStop, fault.funnelStop = in.PortalStop, in.FunnelStop
 		fault.portalServe, fault.funnelServe = in.PortalServe, in.FunnelServe

@@ -31,23 +31,17 @@ REQUIRED_LANES = {"actual-binary-local", "production-provider-manager"}
 
 
 def failed(row, category):
-    patterns = {
-        "draft-drift": r"(?:draft|revision|hash|candidate).*(?:changed|stale|mismatch)|stale.*(?:draft|revision|candidate)",
-        "policy-drift": r"(?:provider|policy|permission).*(?:changed|stale|mismatch)|stale.*(?:provider|policy)",
-        "live-drift": r"(?:live|current|base).*(?:changed|stale|mismatch)|stale.*(?:live|current|base)",
-        "visibility-drift": r"visibility.*(?:changed|stale|mismatch)|stale.*visibility",
-        "not-permitted": r"(?:no|not|without|absent|missing|unpermitted).*permit|permission|no.*public.*provider|permit.*before.*public",
-        "unavailable": r"unavailable|not configured|disabled|not available",
-        "health": r"503|not healthy",
-        "module-init": r"GATE-MODULE-INITIALIZATION-FAILURE",
-        "teardown": r"unconfirmed|teardown|(?:stop|block|clos).*(?:fail|confirm)",
-        "serve": r"deterministic provider connection failure",
+    codes = {
+        "draft-drift": "stale_approval", "policy-drift": "stale_approval",
+        "live-drift": "stale_approval", "visibility-drift": "stale_approval",
+        "not-permitted": "provider_not_permitted", "unavailable": "provider_unavailable",
+        "health": "health_check_failed", "module-init": "runtime_start_failed",
+        "teardown": "public_stop_unconfirmed", "serve": "provider_not_ready",
     }
     require(row.get("status") == "failed", f"{category}: approval did not fail: {row}")
     dto = execution(row)
     require(dto.get('status') == 'failed' and dto.get('failure_code'), f"missing typed failure DTO: {row}")
-    cause = json.dumps({"result": row.get("result"), "failure_code": dto['failure_code']})
-    require(re.search(patterns[category], cause, re.I), f"{category}: unrelated failure cause: {row}")
+    require(dto['failure_code'] == codes[category], f"{category}: unrelated failure code: {row}")
     return row
 
 
@@ -157,6 +151,7 @@ class Host:
         self.serial = 0
         self.mcp_session = None
         self.operator = operator
+        self.operator_file = False
         self.credential = None
         self.phase = None
         self.phase_marker = None
@@ -177,7 +172,14 @@ class Host:
         argv = [self.binary, "serve", "--data", str(self.data), "--listen", f"127.0.0.1:{ports[0]}",
                 "--network", "local", "--local-addr", f"127.0.0.1:{ports[1]}", "--portal=false"]
         if self.operator:
-            argv.append("--operator-credential-stdin")
+            self.credential = secrets.token_urlsafe(40)
+            if self.operator_file:
+                credential_path = self.work / 'operator-controlled-credential'
+                credential_path.write_text(self.credential + '\n')
+                credential_path.chmod(0o600)
+                argv.extend(['--operator-credential-file', str(credential_path)])
+            else:
+                argv.append("--operator-credential-stdin")
         for sock in reservations:
             sock.close()
         env = os.environ.copy()
@@ -190,12 +192,12 @@ class Host:
             env['FLATS_TEST_PHASE'] = self.phase
             env['FLATS_TEST_PHASE_MARKER'] = str(self.phase_marker)
         self.log = open(self.work / "serve.log", "ab")
-        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE if self.operator else subprocess.DEVNULL,
+        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE if self.operator and not self.operator_file else subprocess.DEVNULL,
                                      stdout=self.log, stderr=self.log, env=env)
         if self.operator:
-            self.credential = secrets.token_urlsafe(40)
-            self.proc.stdin.write((self.credential + "\n").encode())
-            self.proc.stdin.close()
+            if not self.operator_file:
+                self.proc.stdin.write((self.credential + "\n").encode())
+                self.proc.stdin.close()
             self.cookies.clear()
         self.trace.append({"argv": argv, "kind": "start"})
         until = time.monotonic() + 30
@@ -469,6 +471,7 @@ def api_pending(h):
 
 
 def approval_boundary(h):
+    h.activate("boundary", static("BOUNDARY-EARLIER"))
     h.activate("boundary", static("BOUNDARY-CURRENT-V1"))
     h.save("boundary", static("BOUNDARY-CANDIDATE"))
     pending = h.publish("boundary")
@@ -500,12 +503,29 @@ def approval_boundary(h):
         args = {key: inputs[key] for key in schema.get("properties", {}) if key in inputs}
         unknown = set(schema.get("required", [])) - set(args)
         require(not unknown, f"behavioral census lacks valid inputs for {tool['name']}: {unknown}")
+        if tool['name'] == 'create_flat':
+            args['slug'] = 'boundary-created'
+        if tool['name'] == 'rollback':
+            args['version'] = 1
         result = h.rpc("tools/call", {"name": tool["name"], "arguments": args})
+        require(not result.get('isError'), f"MCP census tool failed rather than exercised: {tool['name']}: {result}")
+        if tool['name'] in {'deploy', 'publish', 'rollback', 'delete_flat'}:
+            payload = result.get('structuredContent')
+            if not payload:
+                for item in result.get('content', []):
+                    try: payload = json.loads(item.get('text', ''))
+                    except (ValueError, TypeError): continue
+            requested = h.approval(payload)
+            require(h.ok('GET', f'/api/approvals/{requested}')['status'] == 'pending',
+                    f"MCP {tool['name']} did not request a real pending approval")
+        if tool['name'] == 'create_flat':
+            require(h.flat('boundary-created')['publication'] == 'unpublished' and h.versions('boundary-created') == [],
+                    'MCP create did not create an unpublished flat')
         require(h.ok("GET", f"/api/approvals/{pending}")["status"] == "pending",
                 f"MCP tool decided existing approval: {tool['name']}")
         current = h.flat("boundary")
-        require(current["live_version"] == 1 and current["visibility"] == "private"
-                and provider_ids(current) == {"local"} and len(h.versions("boundary")) == 1
+        require(current["live_version"] == 2 and current["visibility"] == "private"
+                and provider_ids(current) == {"local"} and len(h.versions("boundary")) == 2
                 and "BOUNDARY-CURRENT-V1" in h.traffic("boundary"),
                 f"MCP tool changed approved current/policy/history: {tool['name']}")
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
@@ -527,14 +547,17 @@ def approval_boundary(h):
             'rejection did not persist validated actor/time')
     require(not rejected.get('result_data'), 'rejection synthesized an execution receipt')
     after_rejection = h.flat('boundary')
-    require(after_rejection['live_version'] == 2 and after_rejection['visibility'] == 'private'
+    require(after_rejection['live_version'] == 3 and after_rejection['visibility'] == 'private'
             and provider_ids(after_rejection) == {'local'}
-            and 'BOUNDARY-CANDIDATE' in h.traffic('boundary') and len(h.versions('boundary')) == 2,
+            and 'BOUNDARY-CANDIDATE' in h.traffic('boundary') and len(h.versions('boundary')) == 3,
             'rejection changed current/policy or allocated a version')
+    retained_cookie = '; '.join(c.name + '=' + c.value for c in h.cookies)
+    require(retained_cookie, 'session positive control had no retained cookie')
     h.ok('DELETE', '/console/api/operator/session', console=True)
     h.save('boundary', static('REVOKED-SESSION-CANDIDATE'))
     next_pending = h.publish('boundary')
-    require(h.request('POST', f'/console/api/approvals/{next_pending}/approve', {}, console=True)[0] == 403,
+    require(h.request('POST', f'/console/api/approvals/{next_pending}/approve', {}, console=True,
+                      authorized=False, headers={'Cookie': retained_cookie})[0] == 403,
             'revoked operator session still decides')
     h.authorize()
     h.trace.append({"kind": "human-approval-known-risk", "mcp_census": census,
@@ -847,6 +870,117 @@ def provider_matrix(h):
     require("MANAGER-MATRIX" in h.traffic("matrix"), "Manager lost Private route")
 
 
+def noninteractive_operator_file(h):
+    h.stop()
+    h.operator_file = True
+    h.start()
+    h.activate('operator-file', static('NONINTERACTIVE-APPROVED'))
+    require('NONINTERACTIVE-APPROVED' in h.traffic('operator-file'), 'file-provisioned operator could not publish')
+    h.stop()
+    h.start()
+    require('NONINTERACTIVE-APPROVED' in h.traffic('operator-file'), 'service-style restart lost current content')
+    h.activate('operator-file', static('NONINTERACTIVE-UPDATED'))
+    require('NONINTERACTIVE-UPDATED' in h.traffic('operator-file'), 'file-provisioned restarted operator could not approve update')
+
+
+def async_ready_public(h):
+    h.ok('POST', '/__gate/host-permission', {'permitted': ['portal', 'tailscale-funnel']})
+    for provider, host_prefix in [('portal', 'pub-'), ('tailscale-funnel', 'funnel-')]:
+        slug = 'async-' + provider
+        h.activate(slug, static('ASYNC-CURRENT-' + provider))
+        h.ok('POST', f'/console/api/flats/{slug}/providers', {'provider': provider, 'permitted': True}, console=True)
+        h.ok('POST', '/__gate/fault', {'async': True})
+        before = h.ok('GET', '/__gate/state')['calls'].copy()
+        pending = h.approval(h.ok('POST', f'/api/flats/{slug}/visibility', {'visibility': 'public'}, status=202))
+        require(h.flat(slug)['visibility'] == 'private' and h.request('GET', '/', local_host=host_prefix + slug)[0] == 404,
+                'Public opened before approval')
+        require(h.decide(pending)['status'] == 'approved', 'async provider cannot commit approved Public')
+        connecting = h.flat(slug)
+        endpoint = next(ep for ep in connecting['endpoints'] if ep['provider'] == provider and ep['audience'] == 'current')
+        require(connecting['visibility'] == 'public' and connecting['connection_state'] == 'starting'
+                and endpoint['state'] == 'starting' and endpoint['ready'] is False, 'connecting status claims readiness')
+        opened = h.ok('GET', '/__gate/state')['calls'].copy()
+        for _ in range(3):
+            require(h.decide(pending)['status'] == 'approved', 'repeat approved decision failed')
+            same = h.ok('POST', f'/api/flats/{slug}/visibility', {'visibility': 'public'})
+            require(same['status'] == 'done', 'unchanged policy spawned retry')
+        require(h.ok('GET', '/__gate/state')['calls'] == opened, 'retries reopened/stopped asynchronously connecting route')
+        counter = 'portal_serve' if provider == 'portal' else 'funnel_serve'
+        stop_counter = 'portal_stop' if provider == 'portal' else 'funnel_stop'
+        require(opened.get(counter, 0) == before.get(counter, 0) + 1 and opened.get(stop_counter, 0) == before.get(stop_counter, 0),
+                'Public preparation looped open/stop')
+        h.ok('POST', '/__gate/fault', {'async': True, 'ready': True})
+        ready = h.flat(slug)
+        require(ready['connection_state'] == 'ready' and ready['public_url'], 'asynchronous readiness did not converge')
+        require('ASYNC-CURRENT-' + provider in h.traffic(host_prefix + slug), 'ready route did not serve current bytes')
+        h.ok('POST', '/__gate/fault', {})
+
+
+def private_tailscale(h):
+    h.ok('POST', '/__gate/host-permission', {'permitted': ['tailscale']})
+    h.activate('tail-private', static('LOCAL-ONLY'))
+    before = h.flat('tail-private')
+    require('tailnet-' not in before['private_url'] and before['private_state'] == 'ready', 'unserved Tailscale advertised')
+    h.ok('POST', '/console/api/flats/tail-private/providers', {'provider': 'tailscale', 'permitted': True}, console=True)
+    h.activate('tail-private', static('TAILNET-CURRENT'))
+    current = h.flat('tail-private')
+    endpoint = next(ep for ep in current['endpoints'] if ep['provider'] == 'tailscale' and ep['audience'] == 'current')
+    require(current['private_url'] == endpoint['url'] and current['private_state'] == 'ready' and endpoint['ready']
+            and endpoint['url'] != before['private_url'], 'Private Tailscale selection/DTO incorrect')
+    parsed = urllib.parse.urlparse(endpoint['url'])
+    req = urllib.request.Request(f'http://127.0.0.1:{parsed.port}/', headers={'Host': parsed.netloc})
+    with h.opener.open(req, timeout=10) as response:
+        require(response.code == 200 and 'TAILNET-CURRENT' in response.read().decode(), 'distinct Tailscale listener not serving')
+    require('TAILNET-CURRENT' in h.traffic('tail-private'), 'independent Local route lost')
+    require(h.request('GET', '/', local_host='tailnet-tail-private')[0] == 404, 'Tailscale double shared Local listener')
+    preview = h.ok('POST', '/api/flats/tail-private/previews', {'target': 'draft'}, status=201)
+    draft_endpoint = next(ep for ep in h.flat('tail-private')['endpoints'] if ep['provider'] == 'tailscale' and ep['audience'] == 'draft' and ep['host'] == preview['host'])
+    require('tailnet-' in draft_endpoint['url'] and draft_endpoint['ready'], 'Draft Private Tailscale route missing')
+    state = h.ok('GET', '/__gate/state')['calls']
+    require(state.get('tailscale_serve', 0) > 0 and state.get('funnel_serve', 0) == state.get('portal_serve', 0) == 0,
+            'Private Tailscale granted or opened Public provider')
+    code, body = h.request('POST', '/console/api/flats/tail-private/providers', {'provider': 'tailscale', 'permitted': False}, console=True)
+    require(code == 409 and body['category'] == 'provider_in_use' and 'tailscale' in provider_ids(h.flat('tail-private')),
+            'in-use Private provider revocation did not preserve prior permission')
+
+
+def provider_revocation_teardown(h):
+    h.ok('POST', '/__gate/host-permission', {'permitted': ['portal', 'tailscale-funnel']})
+    for provider, prefix in [('portal', 'pub-'), ('tailscale-funnel', 'funnel-')]:
+        slug = 'cleanup-' + provider
+        h.activate(slug, static('CLEANUP-CURRENT'))
+        h.ok('POST', f'/console/api/flats/{slug}/providers', {'provider': provider, 'permitted': True}, console=True)
+        def visibility(name, value):
+            pending = h.approval(h.ok('POST', f'/api/flats/{name}/visibility', {'visibility': value}, status=202))
+            require(h.decide(pending)['status'] == 'approved', 'cleanup visibility approval failed')
+        visibility(slug, 'public')
+        code, body = h.request('POST', f'/console/api/flats/{slug}/providers', {'provider': provider, 'permitted': False}, console=True)
+        unchanged = h.flat(slug)
+        require(code == 409 and body['category'] == 'provider_in_use' and provider in provider_ids(unchanged)
+                and unchanged['visibility'] == 'public' and 'CLEANUP-CURRENT' in h.traffic(prefix + slug),
+                'revocation removed permission under a live route or reported false policy')
+        require(any(ep['provider'] == provider and ep['permitted'] and ep['ready'] for ep in unchanged['endpoints']),
+                'refused revocation misreported permission/readiness')
+        visibility(slug, 'private')
+        h.ok('POST', f'/console/api/flats/{slug}/providers', {'provider': provider, 'permitted': False}, console=True)
+        require(provider not in provider_ids(h.flat(slug)) and h.request('GET', '/', local_host=prefix + slug)[0] == 404,
+                'successful idle revocation left route serving')
+        h.ok('POST', f'/console/api/flats/{slug}/providers', {'provider': provider, 'permitted': True}, console=True)
+        visibility(slug, 'public')
+        moved = slug + '-moved'
+        h.ok('POST', f'/api/flats/{slug}/rename', {'slug': moved})
+        require('CLEANUP-CURRENT' in h.traffic(prefix + moved), 'renamed public route missing')
+        # The test-only clock advances expiry; actual core Sweep owns teardown.
+        h.ok('POST', '/__gate/expire-redirects', {})
+        require(h.request('GET', '/', local_host=prefix + slug)[0] == 404 and h.request('GET', '/', local_host=slug)[0] == 404,
+                'expired rename redirects stayed registered')
+        pending = h.approval(h.ok('DELETE', f'/api/flats/{moved}', status=202))
+        require(h.decide(pending)['status'] == 'approved', 'public delete approval failed')
+        require(h.request('GET', '/', local_host=prefix + moved)[0] == 404 and h.request('GET', '/', local_host=moved)[0] == 404,
+                'Manager-owned Public or Private route survived delete')
+        h.trace.append({'kind': 'provider-revocation-and-teardown', 'provider': provider, 'refusal_category': body['category']})
+
+
 from populations import (mixed_migration, seed_mixed, restore_success, runtime_initialization,
                          probe_runtime, current_live_drift, visibility_drift)
 
@@ -856,6 +990,7 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("frozen-revision-policy", drift), ("cli-console-pending", cli_pending),
                ("mcp-pending", mcp_pending), ("api-upload-deploy-pending", api_pending),
                ("approval-boundary-census", approval_boundary),
+               ("noninteractive-operator-credential-file", noninteractive_operator_file),
                ("production-fault-hooks-absent", production_hooks_absent),
                ("provider-permission-failure", provider_failure), ("runtime-health-rollback-data", runtime_data),
                ("historical-migration", migration),
@@ -868,6 +1003,9 @@ ADAPTER_CASES = [("visibility-all-surfaces-teardown", visibility_transitions),
                  ("partial-provider-failures", partial_provider_failures),
                  ("frozen-visibility", visibility_drift),
                  ("provider-host-flat-permission-matrix", provider_matrix),
+                 ("async-public-readiness", async_ready_public),
+                 ("private-tailscale-distinct-provider", private_tailscale),
+                 ("provider-revocation-rename-delete-expiry", provider_revocation_teardown),
                  ("restart-claimed-approval", resume_claimed)]
 
 

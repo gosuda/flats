@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run from any directory. Never uses the operator's data or provider identity.
 set -euo pipefail
+# Gate backends are disposable loopback doubles; discard live-provider inputs.
+unset FLATS_PORTAL_E2E TS_AUTHKEY TS_AUTH_KEY FLATS_URL
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/flats-lifecycle-gate.XXXXXX")
 if [[ -n ${FLATS_BIN:-} ]]; then

@@ -118,7 +118,7 @@ def mixed_migration(h):
         legacy_public = h.flat('legacy-public')
         require(legacy_public['live_version'] == 1 and legacy_public['publication'] == 'published',
                 'legacy Public identity lost')
-        require(legacy_public['visibility'] in ('private', 'public'), 'legacy visibility not normalized')
+        require(legacy_public['visibility'] == 'public', 'legacy visibility not normalized')
         require(h.request('GET', '/', local_host='pub-legacy-public')[0] == 404,
                 'migration opened ungranted legacy Public provider')
         visibility_row = h.ok('GET', '/api/approvals/' + seed['visibility_pending']['id'])
@@ -169,9 +169,10 @@ def mixed_migration(h):
     require(h.decide(rollback)['status'] == 'approved', 'rollback to migrated v2 failed')
     require(h.traffic('mixed') == restored_live, 'migrated rollback changed restored data')
     # Decide legacy pending references after the preservation observations.
+    from gate import execution
     visibility_row = h.ok('GET', '/api/approvals/' + seed['visibility_pending']['id'])
     decision = h.decide(visibility_row['id'])
-    require(decision['status'] == 'failed' and decision.get('result'), 'ungranted historical visibility silently executed')
+    require(decision['status'] == 'failed' and execution(decision)['failure_code'] == 'stale_approval' and 'legacy visibility approval lacks frozen access policy' in decision.get('result', ''), 'historical visibility failure cause incorrect')
     pending_row = h.ok('GET', '/api/approvals/' + seed['pending']['id'])
     decision = h.decide(pending_row['id'])
     require(decision['status'] in ('approved', 'failed'), 'historical delete decision did not settle')
