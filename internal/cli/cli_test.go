@@ -368,12 +368,12 @@ func TestRollbackAndPreview(t *testing.T) {
 	}
 
 	api.handle("GET /api/flats/blog/versions", 200, `{"versions": [{"number": 3}, {"number": 9}, {"number": 5}]}`)
-	api.handle("POST /api/flats/blog/previews", 201, `{"host": "blog-ab12cd34", "version": 9, "url": "https://blog-ab12cd34.tail.ts.net", "expires_at": "2026-10-04T10:00:00Z"}`)
+	api.handle("POST /api/flats/blog/previews", 201, `{"host": "blog-ab12cd34", "version": 0, "target":"draft", "revision":3, "url": "https://blog-ab12cd34.tail.ts.net", "expires_at": "2026-10-04T10:00:00Z"}`)
 	r := run(t, srv.URL, "", "preview", "blog")
 	if r.code != 0 || !strings.Contains(r.stdout, "https://blog-ab12cd34.tail.ts.net") {
 		t.Fatalf("preview: %d %s %s", r.code, r.stdout, r.stderr)
 	}
-	if b := string(api.last("POST /api/flats/blog/previews").body); b != `{"version":9}` {
+	if b := string(api.last("POST /api/flats/blog/previews").body); b != `{"version":0}` {
 		t.Errorf("preview body = %s", b)
 	}
 }

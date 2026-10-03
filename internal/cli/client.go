@@ -128,6 +128,9 @@ func pathEscape(s string) string { return url.PathEscape(s) }
 // --- API shapes (mirrors of internal/core and internal/store JSON) ---
 
 type version struct {
+	Published  bool            `json:"published"`
+	Role       string          `json:"role,omitempty"`
+	Revision   int             `json:"revision,omitempty"`
 	Flat       string          `json:"flat"`
 	Number     int             `json:"number"`
 	Hash       string          `json:"hash"`
@@ -144,22 +147,27 @@ type version struct {
 }
 
 type flatView struct {
-	Slug          string     `json:"slug"`
-	Name          string     `json:"name"`
-	Visibility    string     `json:"visibility"`
-	LiveVersion   int        `json:"live_version"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	OldSlug       string     `json:"old_slug,omitempty"`
-	OldSlugTill   *time.Time `json:"old_slug_until,omitempty"`
-	PrivateURL    string     `json:"private_url"`
-	PrivateState  string     `json:"private_state,omitempty"`
-	PrivateDetail string     `json:"private_detail,omitempty"`
-	PublicURL     string     `json:"public_url,omitempty"`
-	PublicNotice  string     `json:"public_notice,omitempty"`
-	Live          *version   `json:"live,omitempty"`
-	Versions      int        `json:"versions"`
-	DiskBytes     int64      `json:"disk_bytes"`
+	Publication     string         `json:"publication"`
+	Draft           *draftView     `json:"draft"`
+	Providers       []string       `json:"providers"`
+	ConnectionState string         `json:"connection_state,omitempty"`
+	Endpoints       []endpointView `json:"endpoints"`
+	Slug            string         `json:"slug"`
+	Name            string         `json:"name"`
+	Visibility      string         `json:"visibility"`
+	LiveVersion     int            `json:"live_version"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	OldSlug         string         `json:"old_slug,omitempty"`
+	OldSlugTill     *time.Time     `json:"old_slug_until,omitempty"`
+	PrivateURL      string         `json:"private_url"`
+	PrivateState    string         `json:"private_state,omitempty"`
+	PrivateDetail   string         `json:"private_detail,omitempty"`
+	PublicURL       string         `json:"public_url,omitempty"`
+	PublicNotice    string         `json:"public_notice,omitempty"`
+	Live            *version       `json:"live,omitempty"`
+	Versions        int            `json:"versions"`
+	DiskBytes       int64          `json:"disk_bytes"`
 }
 
 type health struct {
@@ -172,11 +180,15 @@ type health struct {
 }
 
 type deployResult struct {
-	Flat     flatView `json:"flat"`
-	Version  int      `json:"version"`
-	Previous int      `json:"previous"`
-	Health   health   `json:"health"`
-	Millis   int64    `json:"millis"`
+	Status      string    `json:"status"`
+	Approval    *approval `json:"approval,omitempty"`
+	ApprovalURL string    `json:"approval_url,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	Flat        flatView  `json:"flat"`
+	Version     int       `json:"version"`
+	Previous    int       `json:"previous"`
+	Health      health    `json:"health"`
+	Millis      int64     `json:"millis"`
 }
 
 type problem struct {
@@ -186,22 +198,26 @@ type problem struct {
 }
 
 type errorBody struct {
+	Category string    `json:"category,omitempty"`
 	Error    string    `json:"error"`
 	Problems []problem `json:"problems,omitempty"`
 	Health   *health   `json:"health,omitempty"`
 }
 
 type approval struct {
-	ID          string          `json:"id"`
-	Flat        string          `json:"flat"`
-	Action      string          `json:"action"`
-	Params      json.RawMessage `json:"params"`
-	Status      string          `json:"status"`
-	Via         string          `json:"via"`
-	Reason      string          `json:"reason,omitempty"`
-	Result      string          `json:"result,omitempty"`
-	RequestedAt time.Time       `json:"requested_at"`
-	DecidedAt   *time.Time      `json:"decided_at,omitempty"`
+	DecidedBy    string           `json:"decided_by,omitempty"`
+	AuthorizedAt *time.Time       `json:"authorized_at,omitempty"`
+	ResultData   *executionResult `json:"result_data,omitempty"`
+	ID           string           `json:"id"`
+	Flat         string           `json:"flat"`
+	Action       string           `json:"action"`
+	Params       json.RawMessage  `json:"params"`
+	Status       string           `json:"status"`
+	Via          string           `json:"via"`
+	Reason       string           `json:"reason,omitempty"`
+	Result       string           `json:"result,omitempty"`
+	RequestedAt  time.Time        `json:"requested_at"`
+	DecidedAt    *time.Time       `json:"decided_at,omitempty"`
 }
 
 type actionResult struct {
@@ -229,6 +245,8 @@ type secretInfo struct {
 }
 
 type previewView struct {
+	Target     string    `json:"target"`
+	Revision   int       `json:"revision,omitempty"`
 	Host       string    `json:"host"`
 	Flat       string    `json:"flat"`
 	Version    int       `json:"version"`
@@ -238,4 +256,34 @@ type previewView struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 	State      string    `json:"state,omitempty"`
 	Detail     string    `json:"detail,omitempty"`
+}
+
+type draftView struct {
+	Flat        string    `json:"flat"`
+	Revision    int       `json:"revision"`
+	Hash        string    `json:"hash"`
+	BaseVersion int       `json:"base_version"`
+	Dirty       bool      `json:"dirty"`
+	Files       int       `json:"files"`
+	Size        int64     `json:"size"`
+	Kind        string    `json:"kind"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+type endpointView struct {
+	Provider   string `json:"provider"`
+	URL        string `json:"url,omitempty"`
+	State      string `json:"state"`
+	Detail     string `json:"detail,omitempty"`
+	Configured bool   `json:"configured"`
+	Permitted  bool   `json:"permitted"`
+	Ready      bool   `json:"ready"`
+	Audience   string `json:"audience,omitempty"`
+	Host       string `json:"host,omitempty"`
+}
+type executionResult struct {
+	Status      string `json:"status"`
+	FailureCode string `json:"failure_code,omitempty"`
+	DataImpact  string `json:"data_impact"`
+	HealthData  string `json:"health_data"`
+	LiveData    string `json:"live_data"`
 }

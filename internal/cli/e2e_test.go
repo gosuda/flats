@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +16,8 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-// TestAgainstRealAPI runs the CLI against the real API server and core, with
-// the loopback network standing in for Tailscale and Portal.
+// TestAgainstRealAPI runs CLI against actual core/API using disposable Local
+// listeners. Explicit operator sessions are separate from the CLI capability.
 func TestAgainstRealAPI(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
@@ -31,88 +32,164 @@ func TestAgainstRealAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := core.New(context.Background(), core.Config{DataDir: filepath.Join(dir, "data"), Store: st, Private: priv,
-		Public: local.NewPublic(pubNet), ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
+	const credential = "separate-cli-test-operator-credential-32-bytes"
+	authority, err := api.NewOperatorAuthority(credential)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer((&api.Server{Svc: svc}).Handler())
+	svc, err := core.New(context.Background(), core.Config{DataDir: filepath.Join(dir, "data"), Store: st, Private: priv, Public: local.NewPublic(pubNet), ConsoleURL: func() string { return "http://console.test" }, ValidateOperatorDecision: authority.ValidateDecision, OperatorIdentity: authority.DecisionIdentity, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer((&api.Server{Svc: svc, Operator: authority}).Handler())
 	t.Cleanup(func() { srv.Close(); svc.Close(); priv.Close(); pubNet.Close(); st.Close() })
-
+	var cookie *http.Cookie
+	operatorCall := func(path, body string) map[string]any {
+		t.Helper()
+		request, _ := http.NewRequest("POST", srv.URL+"/console/api"+path, strings.NewReader(body))
+		request.Header.Set("X-Flats-Console", "1")
+		request.Header.Set("Origin", srv.URL)
+		request.Header.Set("Sec-Fetch-Site", "same-origin")
+		request.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			request.AddCookie(cookie)
+		}
+		resp, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("operator %s: %d %v", path, resp.StatusCode, out)
+		}
+		if path == "/operator/session" {
+			cookie = resp.Cookies()[0]
+		}
+		return out
+	}
+	operatorCall("/operator/session", `{"credential":"`+credential+`"}`)
+	approvePending := func() {
+		t.Helper()
+		as, err := svc.ListApprovals(context.Background(), "pending")
+		if err != nil || len(as) != 1 {
+			t.Fatalf("pending request: %v %v", as, err)
+		}
+		out := operatorCall("/approvals/"+as[0].ID+"/approve", "")
+		if out["status"] != "approved" {
+			t.Fatalf("decision: %v", out)
+		}
+	}
+	assertState := func(version int, visibility, content string) {
+		t.Helper()
+		f, err := svc.GetFlat(context.Background(), "demo")
+		if err != nil || f.LiveVersion != version || string(f.Visibility) != visibility {
+			t.Fatalf("state: %+v %v", f, err)
+		}
+		if version > 0 {
+			resp, err := http.Get(f.PrivateURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil || resp.StatusCode != 200 || string(b) != content {
+				t.Fatalf("traffic: %d %q %v", resp.StatusCode, b, err)
+			}
+		}
+	}
 	site := t.TempDir()
 	writeTree(t, site, map[string]string{"index.html": "<h1>v1</h1>", "about.html": "about", ".DS_Store": "x"})
-
 	r := run(t, srv.URL, "", "deploy", site, "--flat", "demo", "--message", "first")
-	if r.code != 0 {
-		t.Fatalf("deploy: %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	if r.code != ExitPending || !strings.Contains(r.stdout, "pending_approval") || strings.Contains(r.stdout, " is live") {
+		t.Fatalf("first pending: %+v", r)
 	}
-	if !strings.Contains(r.stdout, "Saved version 1 of demo: 2 files") || !strings.Contains(r.stdout, "Version 1 is live.") {
-		t.Fatalf("deploy output:\n%s", r.stdout)
+	assertState(0, "private", "")
+	vs, _ := svc.ListVersions(context.Background(), "demo")
+	if len(vs) != 0 {
+		t.Fatal("CLI save allocated vN")
 	}
-	// The flat really serves the upload.
-	f, err := svc.GetFlat(context.Background(), "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := http.Get(f.PrivateURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if string(body) != "<h1>v1</h1>" {
-		t.Fatalf("served %q from %s", body, f.PrivateURL)
-	}
-
+	approvePending()
+	assertState(1, "private", "<h1>v1</h1>")
 	writeTree(t, site, map[string]string{"index.html": "<h1>v2</h1>"})
-	if r := run(t, srv.URL, "", "deploy", site, "--flat", "demo"); r.code != 0 || !strings.Contains(r.stdout, "Version 2 is live (was 1).") {
-		t.Fatalf("second deploy: %d %s %s", r.code, r.stdout, r.stderr)
+	if r := run(t, srv.URL, "", "deploy", site, "--flat", "demo", "--expected-revision", "1"); r.code != ExitPending {
+		t.Fatalf("second pending: %+v", r)
 	}
+	assertState(1, "private", "<h1>v1</h1>")
+	approvePending()
+	assertState(2, "private", "<h1>v2</h1>")
 	if r := run(t, srv.URL, "", "versions", "demo"); r.code != 0 || !strings.Contains(r.stdout, "first") {
-		t.Fatalf("versions: %s %s", r.stdout, r.stderr)
+		t.Fatalf("history: %+v", r)
 	}
-	if r := run(t, srv.URL, "", "rollback", "demo"); r.code != 0 || !strings.Contains(r.stdout, "Version 1 is live (was 2).") {
-		t.Fatalf("rollback: %d %s %s", r.code, r.stdout, r.stderr)
+	writeTree(t, site, map[string]string{"index.html": "DRAFT-3"})
+	if r := run(t, srv.URL, "", "draft", "demo", site, "--expected-revision", "2"); r.code != 0 || !strings.Contains(r.stdout, "Private Draft revision 3") {
+		t.Fatalf("Draft save: %+v", r)
 	}
-
-	// Validation errors come back with their fixes and exit 1.
+	assertState(2, "private", "<h1>v2</h1>")
+	if r := run(t, srv.URL, "", "draft", "demo", site, "--expected-revision", "2"); r.code != ExitError || !strings.Contains(r.stderr, "revision") {
+		t.Fatalf("stale save: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "draft", "demo"); r.code != 0 || !strings.Contains(r.stdout, "revision 3") {
+		t.Fatalf("Draft read: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "rollback", "demo"); r.code != ExitPending {
+		t.Fatalf("rollback pending: %+v", r)
+	}
+	assertState(2, "private", "<h1>v2</h1>")
+	approvePending()
+	assertState(1, "private", "<h1>v1</h1>")
 	bad := t.TempDir()
-	writeTree(t, bad, map[string]string{"flats.json": `{"knd": "static"}`, "index.html": "x"})
-	r = run(t, srv.URL, "", "deploy", bad, "--flat", "demo")
-	if r.code != ExitError || !strings.Contains(r.stderr, "fix:") {
-		t.Fatalf("invalid manifest: %d\n%s", r.code, r.stderr)
+	writeTree(t, bad, map[string]string{"flats.json": `{"knd":"static"}`, "index.html": "x"})
+	if r := run(t, srv.URL, "", "deploy", bad, "--flat", "demo"); r.code != ExitError || !strings.Contains(r.stderr, "fix:") {
+		t.Fatalf("validation: %+v", r)
 	}
-
-	// Widening exposure from the CLI waits for the operator.
-	r = run(t, srv.URL, "", "visibility", "demo", "public-unlisted", "--reason", "demo day")
-	if r.code != ExitPending || !strings.Contains(r.stdout, "http://console.test/approvals/apr-") || !strings.Contains(r.stdout, core.UnlistedNotice) {
-		t.Fatalf("visibility: %d %s %s", r.code, r.stdout, r.stderr)
+	operatorCall("/flats/demo/providers", `{"provider":"portal","permitted":true}`)
+	if r := run(t, srv.URL, "", "visibility", "demo", "public-unlisted", "--reason", "demo day"); r.code != ExitPending || !strings.Contains(r.stdout, "http://console.test/approvals/apr-") {
+		t.Fatalf("public pending: %+v", r)
 	}
-	if r := run(t, srv.URL, "", "approvals", "--status", "pending"); r.code != 0 || !strings.Contains(r.stdout, "set_visibility public-unlisted") {
-		t.Fatalf("approvals: %s %s", r.stdout, r.stderr)
+	assertState(1, "private", "<h1>v1</h1>")
+	before, _ := svc.ListApprovals(context.Background(), "pending")
+	if r := run(t, srv.URL, "", "approvals", "--status", "pending"); r.code != 0 || !strings.Contains(r.stdout, "set_visibility public") {
+		t.Fatalf("approval read: %+v", r)
 	}
-	if r := run(t, srv.URL, "", "delete", "demo"); r.code != ExitPending {
-		t.Fatalf("delete: %d %s", r.code, r.stderr)
+	after, _ := svc.ListApprovals(context.Background(), "pending")
+	if len(before) != len(after) || after[0].Status != "pending" {
+		t.Fatal("CLI approval read changed status")
 	}
-
-	// The test server is on loopback, so the CLI may set secrets.
+	approvePending()
+	assertState(1, "public", "<h1>v1</h1>")
+	if r := run(t, srv.URL, "", "visibility", "demo", "private"); r.code != ExitPending {
+		t.Fatalf("private pending: %+v", r)
+	}
+	assertState(1, "public", "<h1>v1</h1>")
+	approvePending()
+	assertState(1, "private", "<h1>v1</h1>")
 	if r := run(t, srv.URL, "hunter2\n", "secret", "set", "demo", "API_KEY"); r.code != 0 {
-		t.Fatalf("secret set: %d %s", r.code, r.stderr)
+		t.Fatalf("secret set: %+v", r)
 	}
 	if r := run(t, srv.URL, "", "secret", "ls", "demo"); !strings.Contains(r.stdout, "API_KEY") || strings.Contains(r.stdout, "hunter2") {
-		t.Fatalf("secret ls: %s", r.stdout)
+		t.Fatalf("secret read: %+v", r)
 	}
-
 	if r := run(t, srv.URL, "", "logs", "demo", "--kind", "deploy"); r.code != 0 || !strings.Contains(r.stdout, "rollback: version 1 is live") {
-		t.Fatalf("logs: %s %s", r.stdout, r.stderr)
+		t.Fatalf("logs: %+v", r)
 	}
-	if r := run(t, srv.URL, "", "preview", "demo"); r.code != 0 || !strings.Contains(r.stdout, "Preview of demo version 2") {
-		t.Fatalf("preview: %d %s %s", r.code, r.stdout, r.stderr)
+	if r := run(t, srv.URL, "", "preview", "demo"); r.code != 0 || !strings.Contains(r.stdout, "Private Draft revision 3") {
+		t.Fatalf("Draft preview: %+v", r)
 	}
+	if r := run(t, srv.URL, "", "preview", "demo", "--version", "2"); r.code != 0 || !strings.Contains(r.stdout, "version 2") {
+		t.Fatalf("published preview: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "delete", "demo"); r.code != ExitPending {
+		t.Fatalf("delete: %+v", r)
+	}
+	assertState(1, "private", "<h1>v1</h1>")
 	if r := run(t, srv.URL, "", "rename", "demo", "demo2"); r.code != 0 || !strings.Contains(r.stdout, "Renamed demo to demo2") {
-		t.Fatalf("rename: %d %s %s", r.code, r.stdout, r.stderr)
+		t.Fatalf("rename: %+v", r)
 	}
 	if r := run(t, srv.URL, "", "list"); r.code != 0 || !strings.Contains(r.stdout, "demo2") {
-		t.Fatalf("list: %s %s", r.stdout, r.stderr)
+		t.Fatalf("list: %+v", r)
 	}
 }

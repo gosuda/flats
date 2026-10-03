@@ -79,13 +79,15 @@ var commands []*command
 
 func init() {
 	commands = []*command{
-		{"deploy", "upload a build and make it live", "deploy <dir|archive> --flat <slug> [--save-only] [--message m]\n       flats deploy --flat <slug> --version <n>", (*app).deploy},
+		{"draft", "read or save a Private Draft", "draft <slug> [<dir|archive>] [--expected-revision n] [--message m]", (*app).draft},
+		{"publish", "request operator approval to publish Draft", "publish <slug> [--revision n] [--hash hash]", (*app).publish},
+		{"deploy", "save Draft and request publish approval", "deploy <dir|archive> --flat <slug> [--save-only] [--message m]\n       flats deploy --flat <slug> --version <n>", (*app).deploy},
 		{"list", "list flats", "list", (*app).list},
 		{"info", "show one flat", "info <slug>", (*app).info},
-		{"versions", "list saved versions", "versions <slug>", (*app).versions},
-		{"rollback", "make an earlier version live", "rollback <slug> [--to n] [--restore-data]", (*app).rollback},
+		{"versions", "list published versions", "versions <slug>", (*app).versions},
+		{"rollback", "request approval to activate an earlier version", "rollback <slug> [--to n] [--restore-data]", (*app).rollback},
 		{"preview", "open a private preview of a version", "preview <slug> [--version n]", (*app).preview},
-		{"visibility", "change who can open a flat", "visibility <slug> private|public-listed|public-unlisted [--reason r]", (*app).visibility},
+		{"visibility", "change who can open a flat", "visibility <slug> private|public [--reason r]", (*app).visibility},
 		{"rename", "change a flat's slug", "rename <slug> <new-slug>", (*app).rename},
 		{"delete", "request deletion of a flat", "delete <slug> [--reason r]", (*app).delete},
 		{"logs", "show a flat's events", "logs <slug> [--follow] [--kind k] [--limit n]", (*app).logs},

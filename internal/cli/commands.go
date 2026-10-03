@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,9 +24,10 @@ import (
 func (a *app) deploy(args []string) error {
 	fs := a.flags("deploy")
 	slug := fs.String("flat", "", "flat slug (created on first deploy)")
-	saveOnly := fs.Bool("save-only", false, "save the version without deploying it")
-	message := fs.String("message", "", "note stored with the version")
-	n := fs.Int("version", 0, "deploy an already saved version instead of uploading")
+	saveOnly := fs.Bool("save-only", false, "save the Private Draft without requesting publish approval")
+	message := fs.String("message", "", "note stored with the Draft")
+	n := fs.Int("version", 0, "request activation of a published version; 0 requests current Draft publication")
+	expected := fs.Int("expected-revision", -1, "save only if current Draft revision matches (0 means no Draft)")
 	pos, err := a.parse(fs, args, 0, 1)
 	if err != nil {
 		return err
@@ -33,19 +35,28 @@ func (a *app) deploy(args []string) error {
 	if *slug == "" {
 		return usagef("--flat is required")
 	}
-	if *n > 0 {
+	versionSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "version" {
+			versionSet = true
+		}
+	})
+	if *n < 0 || *expected < -1 {
+		return usagef("version and expected-revision must be nonnegative")
+	}
+	if versionSet {
 		if len(pos) > 0 || *saveOnly || *message != "" {
-			return usagef("--version deploys a saved version; do not pass a directory, --save-only or --message")
+			return usagef("--version requests activation of published content; do not pass a directory, --save-only or --message")
 		}
 		return a.deployExisting(*slug, *n)
 	}
 	if len(pos) == 0 {
 		return usagef("missing build directory")
 	}
-	return a.upload(pos[0], *slug, *message, !*saveOnly)
+	return a.upload(pos[0], *slug, *message, !*saveOnly, *expected, false)
 }
 
-func (a *app) upload(src, slug, message string, deploy bool) error {
+func (a *app) upload(src, slug, message string, deploy bool, expected int, draftRoute bool) error {
 	start := time.Now()
 	c := a.client()
 
@@ -101,11 +112,18 @@ func (a *app) upload(src, slug, message string, deploy bool) error {
 	if message != "" {
 		q.Set("message", message)
 	}
+	if expected >= 0 {
+		q.Set("expected_revision", strconv.Itoa(expected))
+	}
 	if deploy {
 		q.Set("deploy", "1")
 	}
 	sent := time.Now()
-	resp, err := c.do(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(slug)+"/versions", q, bytes.NewReader(body), ctype)
+	suffix := "/versions"
+	if draftRoute {
+		suffix = "/draft"
+	}
+	resp, err := c.do(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(slug)+suffix, q, bytes.NewReader(body), ctype)
 	if err != nil {
 		return err
 	}
@@ -116,6 +134,7 @@ func (a *app) upload(src, slug, message string, deploy bool) error {
 		Version     *version      `json:"version"`
 		Deploy      *deployResult `json:"deploy"`
 		DeployError *errorBody    `json:"deploy_error"`
+		actionResult
 	}
 	_ = json.Unmarshal(resp.Body, &out)
 	if resp.Status >= 300 && out.DeployError == nil {
@@ -123,6 +142,16 @@ func (a *app) upload(src, slug, message string, deploy bool) error {
 			return exitCode(ExitError)
 		}
 		return newAPIError(resp)
+	}
+	pending := out.actionResult
+	if out.Deploy != nil && out.Deploy.Status == "pending_approval" {
+		pending = out.Deploy.pendingAction()
+	}
+	if pending.Status == "pending_approval" {
+		if a.jsonOut {
+			return exitCode(ExitPending)
+		}
+		return a.action(resp, pending, "")
 	}
 	if a.jsonOut {
 		if out.DeployError != nil {
@@ -133,7 +162,11 @@ func (a *app) upload(src, slug, message string, deploy bool) error {
 
 	w := a.out
 	if v := out.Version; v != nil {
-		fmt.Fprintf(w, "Saved version %d of %s: %d files, %s%s\n", v.Number, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty))
+		if v.Number == 0 && v.Role == "draft" {
+			fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s\n", v.Revision, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty))
+		} else {
+			fmt.Fprintf(w, "Saved version %d of %s: %d files, %s%s\n", v.Number, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty))
+		}
 	}
 	if info.IsDir() && ps.Skipped > 0 {
 		fmt.Fprintf(w, "  skipped %d entries (.git, node_modules, .DS_Store, ...)\n", ps.Skipped)
@@ -150,6 +183,8 @@ func (a *app) upload(src, slug, message string, deploy bool) error {
 	}
 	if d := out.Deploy; d != nil {
 		printDeploy(w, *d)
+	} else if out.Version != nil && out.Version.Number == 0 {
+		fmt.Fprintf(w, "Current version is unchanged. Request approval with `flats publish %s`, or preview with `flats preview %s`.\n", slug, slug)
 	} else if out.Version != nil {
 		fmt.Fprintf(w, "Not deployed (--save-only). Deploy it with `flats deploy --flat %s --version %d`, or preview it with `flats preview %s --version %d`.\n",
 			slug, out.Version.Number, slug, out.Version.Number)
@@ -168,6 +203,9 @@ func (a *app) deployExisting(slug string, n int) error {
 	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(slug)+"/deploy", nil, map[string]int{"version": n}, &res)
 	if err != nil {
 		return err
+	}
+	if res.Status == "pending_approval" {
+		return a.action(resp, res.pendingAction(), "")
 	}
 	if a.jsonOut {
 		a.emitRaw(resp)
@@ -319,7 +357,17 @@ func (a *app) info(args []string) error {
 	}
 	w := a.out
 	fmt.Fprintf(w, "%s (%s)\n", f.Slug, f.Name)
+	fmt.Fprintf(w, "  publication: %s\n", f.Publication)
 	fmt.Fprintf(w, "  visibility: %s\n", f.Visibility)
+	if f.Draft != nil {
+		fmt.Fprintf(w, "  Draft:      revision %d (base v%d), dirty=%t\n", f.Draft.Revision, f.Draft.BaseVersion, f.Draft.Dirty)
+	}
+	if f.ConnectionState != "" {
+		fmt.Fprintf(w, "  connection: %s\n", f.ConnectionState)
+	}
+	for _, endpoint := range f.Endpoints {
+		fmt.Fprintf(w, "  provider:   %s configured=%t permitted=%t ready=%t state=%s audience=%s %s\n", endpoint.Provider, endpoint.Configured, endpoint.Permitted, endpoint.Ready, endpoint.State, endpoint.Audience, endpoint.URL)
+	}
 	if lv := f.Live; lv != nil {
 		fmt.Fprintf(w, "  live:       version %d, %s, %d files, %s%s\n", lv.Number, lv.Kind, lv.Files, humanBytes(lv.Size), gitLabel(lv.GitSHA, lv.GitDirty))
 	} else {
@@ -356,7 +404,7 @@ func (a *app) versions(args []string) error {
 		return nil
 	}
 	if len(out.Versions) == 0 {
-		fmt.Fprintln(a.out, "No versions saved yet.")
+		fmt.Fprintln(a.out, "No published versions yet.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
@@ -383,7 +431,7 @@ func (a *app) versions(args []string) error {
 func (a *app) rollback(args []string) error {
 	fs := a.flags("rollback")
 	to := fs.Int("to", 0, "version to make live (default: the one live before the current)")
-	restore := fs.Bool("restore-data", false, "also REPLACE the current database with the snapshot taken before the current version was deployed (the current database is backed up first)")
+	restore := fs.Bool("restore-data", false, "request approval to restore the pre-current-version data snapshot; new snapshots restore DB and FILES, legacy DB-only snapshots preserve current FILES (current data is backed up first)")
 	pos, err := a.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -396,6 +444,9 @@ func (a *app) rollback(args []string) error {
 	if err != nil {
 		return err
 	}
+	if res.Status == "pending_approval" {
+		return a.action(resp, res.pendingAction(), "")
+	}
 	if a.jsonOut {
 		a.emitRaw(resp)
 		return nil
@@ -406,28 +457,15 @@ func (a *app) rollback(args []string) error {
 
 func (a *app) preview(args []string) error {
 	fs := a.flags("preview")
-	n := fs.Int("version", 0, "version to preview (default: newest)")
+	n := fs.Int("version", 0, "published version to preview (default 0: current Private Draft)")
 	pos, err := a.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
 	}
 	c := a.client()
 	slug := pos[0]
-	if *n <= 0 {
-		var out struct {
-			Versions []version `json:"versions"`
-		}
-		if _, err := c.call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(slug)+"/versions", nil, nil, &out); err != nil {
-			return flatErr(slug, err)
-		}
-		for _, v := range out.Versions {
-			if v.Number > *n {
-				*n = v.Number
-			}
-		}
-		if *n == 0 {
-			return fmt.Errorf("%s has no saved versions; save one with `flats deploy <dir> --flat %s --save-only`", slug, slug)
-		}
+	if *n < 0 {
+		return usagef("--version must be nonnegative; 0 previews Draft")
 	}
 	var p previewView
 	resp, err := c.call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(slug)+"/previews", nil, map[string]int{"version": *n}, &p)
@@ -438,9 +476,13 @@ func (a *app) preview(args []string) error {
 		a.emitRaw(resp)
 		return nil
 	}
-	fmt.Fprintf(a.out, "Preview of %s version %d: %s\n", slug, p.Version, p.URL)
+	if p.Target == "draft" || p.Version == 0 {
+		fmt.Fprintf(a.out, "Preview of %s Private Draft revision %d: %s\n", slug, p.Revision, p.URL)
+	} else {
+		fmt.Fprintf(a.out, "Preview of %s version %d: %s\n", slug, p.Version, p.URL)
+	}
 	printPending(a.out, p.State, p.Detail)
-	fmt.Fprintf(a.out, "  private to your tailnet; closes on the next deploy or after 24h without visits (now: %s)\n", p.ExpiresAt.Local().Format(timeFmt))
+	fmt.Fprintf(a.out, "  Private via loopback or existing tailnet ACL; closes on the next deploy or after 24h without visits (now: %s)\n", p.ExpiresAt.Local().Format(timeFmt))
 	return nil
 }
 
@@ -452,9 +494,9 @@ func (a *app) visibility(args []string) error {
 		return err
 	}
 	switch pos[1] {
-	case "private", "public-listed", "public-unlisted":
+	case "private", "public", "public-listed", "public-unlisted":
 	default:
-		return usagef("visibility must be private, public-listed or public-unlisted")
+		return usagef("visibility must be private or public (legacy listed/unlisted values are accepted)")
 	}
 	var res actionResult
 	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/visibility", nil,
@@ -499,7 +541,10 @@ func (a *app) action(resp response, res actionResult, requested string) error {
 			fmt.Fprintln(a.out, res.Message)
 		}
 		if pending {
-			fmt.Fprintf(a.out, "Approval needed: %s\n", res.ApprovalURL)
+			fmt.Fprintf(a.out, "Status: pending_approval\nApproval needed: %s\n", res.ApprovalURL)
+			if res.Approval != nil {
+				fmt.Fprintf(a.out, "Approval %s is waiting for the operator; check with `flats approvals`.\n", res.Approval.ID)
+			}
 		}
 		notice := res.Notice
 		if res.Flat != nil {
@@ -786,9 +831,9 @@ func (a *app) approvals(args []string) error {
 	fmt.Fprintln(tw, "ID\tFLAT\tACTION\tSTATUS\tVIA\tREQUESTED\tREASON")
 	for _, ap := range out.Approvals {
 		action := ap.Action
-		var p map[string]string
-		if json.Unmarshal(ap.Params, &p) == nil && p["visibility"] != "" {
-			action += " " + p["visibility"]
+		var p map[string]any
+		if json.Unmarshal(ap.Params, &p) == nil && p["visibility"] != nil {
+			action += " " + fmt.Sprint(p["visibility"])
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ap.ID, ap.Flat, action, ap.Status, ap.Via, ap.RequestedAt.Local().Format(timeFmt), oneLine(ap.Reason))
 	}
@@ -857,4 +902,54 @@ func roundDur(d time.Duration) time.Duration {
 		return d.Round(time.Millisecond)
 	}
 	return d.Round(10 * time.Millisecond)
+}
+
+func (d deployResult) pendingAction() actionResult {
+	return actionResult{Status: d.Status, Approval: d.Approval, ApprovalURL: d.ApprovalURL, Message: d.Message}
+}
+
+func (a *app) publish(args []string) error {
+	fs := a.flags("publish")
+	revision := fs.Int("revision", 0, "current Draft revision to freeze; 0 selects current")
+	hash := fs.String("hash", "", "expected Draft content hash")
+	pos, err := a.parse(fs, args, 1, 1)
+	if err != nil {
+		return err
+	}
+	if *revision < 0 {
+		return usagef("revision must be nonnegative")
+	}
+	var res actionResult
+	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/publish", nil, map[string]any{"revision": *revision, "hash": *hash}, &res)
+	if err != nil {
+		return err
+	}
+	return a.action(resp, res, "")
+}
+
+func (a *app) draft(args []string) error {
+	fs := a.flags("draft")
+	expected := fs.Int("expected-revision", -1, "save only if current Draft revision matches; 0 means no Draft")
+	message := fs.String("message", "", "note for the Draft save")
+	pos, err := a.parse(fs, args, 1, 2)
+	if err != nil {
+		return err
+	}
+	if *expected < -1 {
+		return usagef("expected-revision must be nonnegative")
+	}
+	if len(pos) == 2 {
+		return a.upload(pos[1], pos[0], *message, false, *expected, true)
+	}
+	var d draftView
+	resp, err := a.client().call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(pos[0])+"/draft", nil, nil, &d)
+	if err != nil {
+		return err
+	}
+	if a.jsonOut {
+		a.emitRaw(resp)
+		return nil
+	}
+	fmt.Fprintf(a.out, "%s Private Draft revision %d (base v%d), %d files, %s; hash %s\n", pos[0], d.Revision, d.BaseVersion, d.Files, humanBytes(d.Size), d.Hash)
+	return nil
 }
