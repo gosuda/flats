@@ -49,6 +49,9 @@ type Config struct {
 	ControlURL string
 	// Logf receives operational messages. Nil discards them.
 	Logf func(string, ...any)
+	// GetCertificate overrides the Tailscale certificate source. It is used by
+	// disposable testcontrol environments, which do not run ACME.
+	GetCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 }
 
 const (
@@ -99,12 +102,13 @@ type Net struct {
 	// listenFunnel, when set, replaces Server.ListenFunnel. afterFunnelListen
 	// runs after a listener exists; a non-nil error closes that listener
 	// (which drops the AllowFunnel entry ListenFunnel added) and fails the call.
-	pollEvery         time.Duration
-	getCert           func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-	warmCert          func(ctx context.Context, domain string) error
-	listenFunnel      func(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error)
-	afterFunnelListen func() error
-	logoutNode        func(context.Context, *node) error
+	pollEvery           time.Duration
+	getCert             func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	warmCert            func(ctx context.Context, domain string) error
+	listenFunnel        func(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error)
+	afterFunnelListen   func() error
+	beforePrivateListen func()
+	logoutNode          func(context.Context, *node) error
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
@@ -123,6 +127,7 @@ type retirement struct {
 	host      string
 	ephemeral bool
 	store     ipn.StateStore
+	persisted bool // discovered from tailscaled.state without a live node
 	attempt   *retirementAttempt
 }
 
@@ -197,6 +202,7 @@ func New(cfg Config) (*Net, error) {
 	return &Net{
 		cfg:           cfg,
 		logf:          logf,
+		getCert:       cfg.GetCertificate,
 		nodes:         map[string]*node{},
 		stopping:      map[string]chan struct{}{},
 		retiring:      map[string]*retirement{},
@@ -398,6 +404,9 @@ func (n *Net) ensurePrivate(nd *node) {
 // listen serves the handler with HTTPS on :443 (and a redirect on :80) when
 // the tailnet issues certificates, else plain HTTP on :80.
 func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.Status) error {
+	if n.beforePrivateListen != nil {
+		n.beforePrivateListen()
+	}
 	nd.privateMu.Lock()
 	defer nd.privateMu.Unlock()
 	n.mu.Lock()
@@ -858,6 +867,34 @@ func (n *Net) stop(host string, privateOnly bool) error {
 			return err
 		}
 		nd := n.nodes[host]
+		if nd == nil && !privateOnly {
+			if prior := n.stopping[host]; prior != nil {
+				n.mu.Unlock()
+				select {
+				case <-prior:
+					continue
+				case <-time.After(stopWait):
+					return fmt.Errorf("tsnet: %s prior teardown is still unconfirmed", host)
+				}
+			}
+			if n.closed {
+				n.mu.Unlock()
+				return errors.New("tsnet: network is closed")
+			}
+			hasState, err := persistedNodeState(filepath.Join(n.cfg.Dir, host))
+			if err != nil {
+				n.mu.Unlock()
+				return fmt.Errorf("tsnet: inspect %s persisted state: %w", host, err)
+			}
+			if hasState {
+				pending := &retirement{host: host, persisted: true}
+				attempt := n.scheduleRetirementLocked(pending, func() error { return n.retryLogout(pending) })
+				n.retiring[host] = pending
+				n.notifyLocked()
+				n.mu.Unlock()
+				return n.waitRetirement(host, pending, attempt)
+			}
+		}
 		n.mu.Unlock()
 		if nd == nil {
 			return nil
@@ -957,6 +994,11 @@ func (n *Net) retryLogout(pending *retirement) error {
 	snapshot, err := readStateSnapshot(dir)
 	if err != nil {
 		return fmt.Errorf("tsnet %s logout retry snapshot: %w", pending.host, err)
+	}
+	if pending.persisted && !snapshot.exists {
+		// The deterministic host candidate has no identity. Do not start a
+		// backend: that could mint a new node while trying to retire nothing.
+		return os.RemoveAll(dir)
 	}
 
 	srv := &ts.Server{
@@ -1078,8 +1120,6 @@ func (n *Net) teardown(nd *node, logout bool) error {
 	// Cancelling first unblocks a node still waiting for its predecessor or
 	// for login; the LocalAPI used for Logout does not depend on nd.ctx.
 	nd.cancel()
-	nd.privateMu.Lock()
-	defer nd.privateMu.Unlock()
 	<-nd.started
 	waited := false
 	if !nd.backendStarted {
@@ -1093,6 +1133,10 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		waited = true
 	}
 	var errs []error
+	// Wait for an in-progress private listener setup to publish all of its
+	// servers, then close that complete set. Release privateMu before waiting
+	// for run: run itself may need this mutex before it observes cancellation.
+	nd.privateMu.Lock()
 	nd.funnelMu.Lock()
 	if nd.srv != nil {
 		n.mu.Lock()
@@ -1116,6 +1160,7 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		}
 	}
 	nd.funnelMu.Unlock()
+	nd.privateMu.Unlock()
 	logoutOK := !logout
 	var snapshot stateSnapshot
 	var restoreState bool

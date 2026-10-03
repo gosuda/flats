@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/gosuda/flats/internal/core"
@@ -355,6 +356,8 @@ type fakeTail struct {
 	funnelErr                 error
 	stopErr                   error
 	tailStopErr               error
+	tailStopErrByHost         map[string]error
+	stopHosts                 []string
 	stopped                   bool
 }
 
@@ -365,7 +368,14 @@ func (f *fakeTail) Serve(context.Context, string, http.Handler, bool) (string, e
 	}
 	return "https://notes.example.ts.net", nil
 }
-func (f *fakeTail) Stop(string) error { f.stop++; return f.tailStopErr }
+func (f *fakeTail) Stop(host string) error {
+	f.stop++
+	f.stopHosts = append(f.stopHosts, host)
+	if err := f.tailStopErrByHost[host]; err != nil {
+		return err
+	}
+	return f.tailStopErr
+}
 func (f *fakeTail) URL(string) string { return "https://notes.example.ts.net" }
 func (f *fakeTail) Status() core.NetStatus {
 	return core.NetStatus{Kind: "tailscale", Enabled: true, Hosts: []core.HostInfo{{
@@ -433,6 +443,97 @@ func TestStopSlugRetiresFunnelOnlyNodeAndRetainsFailures(t *testing.T) {
 	}
 	if tail.funnelStops != 2 || tail.stop != 2 {
 		t.Fatalf("retry calls: StopFunnel=%d Stop=%d", tail.funnelStops, tail.stop)
+	}
+}
+
+func TestStopSlugKeepsLocalRouteUntilNodeRetirementIsConfirmed(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Funnel}})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	res, err := m.ServeExposure(ctx, ExposureRequest{
+		Slug: "failure-atomic", Host: "failure-atomic", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("still-private"), Permitted: []ID{Funnel},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localURL := endpointURL(res, Local)
+	tail.tailStopErr = errors.New("logout unavailable")
+	if err := m.StopSlug(ctx, "failure-atomic"); err == nil {
+		t.Fatal("StopSlug accepted an unconfirmed node retirement")
+	}
+	if got := get(t, localURL); got != "still-private" {
+		t.Fatalf("failed retirement removed Local route: %q", got)
+	}
+	for _, id := range []ID{Local, Funnel} {
+		if tracked, err := m.HasProviderRoute(ctx, "failure-atomic", id); err != nil || !tracked {
+			t.Fatalf("failed retirement forgot %s: tracked=%v err=%v", id, tracked, err)
+		}
+	}
+
+	tail.tailStopErr = nil
+	if err := m.StopSlug(ctx, "failure-atomic"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []ID{Local, Funnel} {
+		if tracked, err := m.HasProviderRoute(ctx, "failure-atomic", id); err != nil || tracked {
+			t.Fatalf("confirmed retirement retained %s: tracked=%v err=%v", id, tracked, err)
+		}
+	}
+	resHTTP, err := http.Get(localURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resHTTP.Body.Close()
+	if resHTTP.StatusCode != http.StatusNotFound {
+		t.Fatalf("confirmed retirement left Local route: %d", resHTTP.StatusCode)
+	}
+}
+
+func TestStopSlugChecksAllNodesBeforeStoppingAnyLocalRoute(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	urls := map[string]string{}
+	for _, tc := range []struct {
+		host     string
+		audience Audience
+	}{
+		{host: "multi-a", audience: AudienceCurrent},
+		{host: "multi-b", audience: AudienceDraft},
+	} {
+		res, err := m.ServeExposure(ctx, ExposureRequest{
+			Slug: "multi", Host: tc.host, Visibility: "private", Audience: tc.audience,
+			Handler: text(tc.host), Ephemeral: tc.audience == AudienceDraft,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		urls[tc.host] = endpointURL(res, Local)
+	}
+	tail.tailStopErrByHost = map[string]error{"multi-b": errors.New("second node logout unavailable")}
+	if err := m.StopSlug(ctx, "multi"); err == nil {
+		t.Fatal("StopSlug accepted one failed node candidate")
+	}
+	for host, routeURL := range urls {
+		if got := get(t, routeURL); got != host {
+			t.Fatalf("node phase failure removed Local %s: %q", host, got)
+		}
+	}
+	wantHosts := []string{"multi", "multi-a", "multi-b"}
+	if !slices.Equal(tail.stopHosts, wantHosts) {
+		t.Fatalf("node retirement order = %v, want %v", tail.stopHosts, wantHosts)
+	}
+
+	tail.tailStopErrByHost = nil
+	tail.stopHosts = nil
+	if err := m.StopSlug(ctx, "multi"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(tail.stopHosts, wantHosts) {
+		t.Fatalf("retry node retirement order = %v, want %v", tail.stopHosts, wantHosts)
 	}
 }
 

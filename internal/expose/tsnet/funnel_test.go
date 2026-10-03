@@ -236,6 +236,26 @@ func waitFunnelState(t *testing.T, n *Net, host string, want string) FunnelRepor
 	}
 }
 
+func TestFunnelStatusUsesHostAuthenticationStateWhileOpening(t *testing.T) {
+	n := &Net{cfg: Config{AuthKey: "test-auth-key"}, nodes: map[string]*node{}, funnelReports: map[string]FunnelReport{}}
+	nd := &node{
+		host: "auth-state", backend: ipn.NeedsLogin.String(), funnelOpening: true,
+		funnelState: FunnelStarting, funnelDetail: "joining the tailnet before Funnel can listen",
+	}
+	n.nodes[nd.host] = nd
+	if got := n.FunnelStatus(nd.host); got.State != StateStarting || !strings.Contains(got.Detail, "auth key") {
+		t.Fatalf("auth-key join = %+v, want starting", got)
+	}
+	nd.wasUp = true
+	if got := n.FunnelStatus(nd.host); got.State != StateNeedsLogin {
+		t.Fatalf("expired-key join = %+v, want needs-login", got)
+	}
+	nd.backend = ipn.NeedsMachineAuth.String()
+	if got := n.FunnelStatus(nd.host); got.State != StateNeedsLogin || !strings.Contains(got.Detail, "approval") {
+		t.Fatalf("machine approval = %+v, want needs-login approval detail", got)
+	}
+}
+
 func fetchBody(t *testing.T, c *http.Client, url string) string {
 	t.Helper()
 	res, err := c.Get(url)

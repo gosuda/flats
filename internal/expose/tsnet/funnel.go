@@ -271,7 +271,7 @@ func (n *Net) FunnelStatus(host string) FunnelReport {
 	}
 	if nd.funnelOpening && (nd.backend == ipn.NeedsLogin.String() || nd.backend == ipn.NeedsMachineAuth.String()) {
 		hi := n.hostInfoLocked(nd, time.Now())
-		report.State, report.Detail = FunnelError, hi.Detail
+		report.State, report.Detail = hi.State, hi.Detail
 	}
 	return report
 }

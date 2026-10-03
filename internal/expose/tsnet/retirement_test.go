@@ -232,6 +232,121 @@ func TestExpiredKeyRetirementRetriesWithoutReachingRunning(t *testing.T) {
 	}
 }
 
+func TestStopRetiresPersistedOnlyFunnelIdentityAfterRestart(t *testing.T) {
+	control := startControl(t, true)
+	u, err := url.Parse(control.HTTPTestServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := startControlProxy(t, u.Host)
+	dir := t.TempDir()
+	getCert, _ := testCA(t)
+	newNet := func() *Net {
+		n, err := New(Config{
+			Dir: dir, ControlURL: "http://" + proxy.ln.Addr().String(),
+			GetCertificate: getCert, Logf: t.Logf,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	first := newNet()
+	if _, err := first.ServeFunnel(ctx, "persisted-only", http.NotFoundHandler()); err != nil {
+		t.Fatal(err)
+	}
+	waitFunnelState(t, first, "persisted-only", FunnelReady)
+	before := stableNodeID(t, first, "persisted-only")
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "persisted-only", "tailscaled.state")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("graceful restart discarded the persisted identity: %v", err)
+	}
+
+	restarted := newNet()
+	proxy.pause()
+	if err := restarted.Stop("persisted-only"); err == nil {
+		t.Fatal("persisted-only retirement succeeded while control was unavailable")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("failed persisted-only retirement discarded the retry identity: %v", err)
+	}
+	if _, err := restarted.ServeFunnel(ctx, "persisted-only", http.NotFoundHandler()); err == nil {
+		t.Fatal("failed persisted-only retirement allowed Funnel to reopen")
+	}
+	proxy.resume()
+	if err := restarted.Stop("persisted-only"); err != nil {
+		t.Fatalf("persisted-only retirement retry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "persisted-only")); !os.IsNotExist(err) {
+		t.Fatalf("confirmed persisted-only retirement retained state: %v", err)
+	}
+
+	if _, err := restarted.ServeFunnel(ctx, "persisted-only", http.NotFoundHandler()); err != nil {
+		t.Fatal(err)
+	}
+	waitFunnelState(t, restarted, "persisted-only", FunnelReady)
+	if after := stableNodeID(t, restarted, "persisted-only"); after == before {
+		t.Fatalf("recreated slug reused retired identity %q", after)
+	}
+	if err := restarted.Stop("persisted-only"); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseDoesNotDeadlockWithPrivateListenCancellation(t *testing.T) {
+	control := startControl(t, false)
+	n, err := New(Config{Dir: t.TempDir(), ControlURL: control.HTTPTestServer.URL, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	n.beforePrivateListen = func() {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+	if _, err := n.Serve(t.Context(), "close-listen-race", echo("race"), false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("private listen did not reach the forced interleaving")
+	}
+	n.mu.Lock()
+	nd := n.nodes["close-listen-race"]
+	n.mu.Unlock()
+	if nd == nil {
+		t.Fatal("node disappeared before close")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- n.Close() }()
+	select {
+	case <-nd.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not cancel the node")
+	}
+	close(release)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close deadlocked with private listener setup")
+	}
+}
+
 func TestNeverStartedNodeWithoutStateRetiresConfirmed(t *testing.T) {
 	n, err := New(Config{Dir: t.TempDir()})
 	if err != nil {

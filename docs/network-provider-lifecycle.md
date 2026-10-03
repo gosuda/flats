@@ -39,7 +39,10 @@ routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later
 call can retry. Unconfirmed means the caller must not treat the flat as
 private. This does not remove an allowed private tailnet ACL, and it does not
-implement owner-only authentication.
+implement owner-only authentication. When the stopped Funnel route has no
+Private Tailscale sibling, its now-unused node identity is retired before the
+Funnel stop is confirmed. This prevents Public-to-Private transitions from
+leaving a Funnel-only identity behind.
 
 Connection states used here are `starting`, `ready`, `error`, `stopped`, and
 `unavailable`. A node that is on the tailnet without private HTTP is `idle`
@@ -98,7 +101,7 @@ backends. It does not serve a flat.
 A non-nil backend is not permission. Tests inject fakes through these
 interfaces. There is no permit-skipping constructor.
 
-Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry. `StopSlug` is the authoritative delete/redirect-expiry operation: it closes Funnel first, then retires the shared tailnet node even when the slug had no Private Tailscale route. A failed listener or node retirement keeps that registration for the next call; sibling slug routes are untouched.
+Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. A Funnel node waiting for login or device approval remains a registered, permitted route in `needs-login`; it is not reported as an absent provider permission. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry. `StopSlug` is the authoritative delete/redirect-expiry operation. It includes the exact slug as a deterministic tsnet identity candidate even when no Funnel or Tailscale route remains in memory, then stops every Funnel listener and confirms every candidate node retirement before it stops Portal or Local. A public or node failure therefore leaves Local reachable and keeps route records for retry; sibling slug routes are untouched.
 
 Legacy schema 5 eligibility is consumed once by an explicit Private Tailscale/Local upgrade choice. An ambiguous historical-default host refuses before networking; the choice never authorizes Public providers. See README for operator credential-file/install and upgrade commands.
 
@@ -159,7 +162,11 @@ control client. It does not require `Server.Up`: expired and unapproved keys
 can be retired from `NeedsLogin`, `NeedsMachineAuth`, or the post-start state.
 The last state observed while Running is restored after a failed logout so a
 later same-process attempt still has the identity needed for the control-plane
-logout. A successor cancelled before its backend starts is confirmed retired
+logout. Full `Stop` also checks the deterministic host state directory when no
+node is running. If `tailscaled.state` exists after a restart, it installs the
+same fail-closed retirement ledger and uses a fresh backend to confirm logout;
+if no identity state exists, it returns without starting a backend that could
+mint a node accidentally. A successor cancelled before its backend starts is confirmed retired
 when its predecessor has finished and no `tailscaled.state` remains. State is
 deleted only after confirmation. `Net.Close` waits for all in-flight retirement attempts,
 closes every remaining backend, and reports any retained failure.

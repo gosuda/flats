@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -529,6 +530,17 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 			res.Unconfirmed = append(res.Unconfirmed, Funnel)
 		} else if st := m.ts.FunnelState(funnelHost); st.State == stateReady || st.State == stateStarting {
 			res.Unconfirmed = append(res.Unconfirmed, Funnel)
+		} else if !m.hasRoute(slug, funnelHost, Tailscale) {
+			// A Funnel-only node has no Private tailnet route to preserve after
+			// Public -> Private. Retire it now so a later permission revocation,
+			// delete, or restart cannot orphan its identity.
+			if err := m.ts.Stop(funnelHost); err != nil {
+				res.Unconfirmed = append(res.Unconfirmed, Funnel)
+			} else {
+				m.take(slug, Funnel, true)
+				m.pruneState(slug, Funnel)
+				res.Stopped = append(res.Stopped, Funnel)
+			}
 		} else {
 			m.take(slug, Funnel, true)
 			m.pruneState(slug, Funnel)
@@ -555,6 +567,17 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 	return res, nil
 }
 
+func (m *Manager) hasRoute(slug, host string, id ID) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.routes {
+		if r.slug == slug && r.host == host && r.provider == id {
+			return true
+		}
+	}
+	return false
+}
+
 // StopSlug authoritatively retires every registered route and tailnet node
 // owned by slug. It is the delete/redirect-expiry operation: unlike
 // StopPublicRoutes it retires Funnel-only nodes after their public listener is
@@ -577,6 +600,10 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		local, tailscale, funnel, portal bool
 	}
 	byHost := make(map[string]*hostRoutes)
+	// Current and redirect tsnet identities use the exact lifecycle slug as
+	// their host. Include it even when a prior visibility transition or a
+	// restart pruned every Funnel/Tailscale route record.
+	byHost[slug] = new(hostRoutes)
 	for _, r := range routes {
 		h := byHost[r.host]
 		if h == nil {
@@ -594,34 +621,22 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			h.portal = true
 		}
 	}
+	hosts := make([]string, 0, len(byHost))
+	for host := range byHost {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
 
+	// Funnel listeners must be confirmed down before their shared node is
+	// retired. Do this for every host before removing any registration or
+	// Private Local route.
 	var errs []error
-	for host, owned := range byHost {
+	for _, host := range hosts {
+		owned := byHost[host]
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
 		}
-		if owned.portal {
-			if m.portal == nil {
-				errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
-			} else if err := m.portal.Stop(host); err != nil {
-				errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, err))
-			} else {
-				m.forgetRoutes(slug, host, Portal)
-			}
-		}
-		if owned.local {
-			if err := m.local.Stop(host); err != nil {
-				errs = append(errs, fmt.Errorf("local %s: %w", host, err))
-			} else {
-				m.forgetRoutes(slug, host, Local)
-			}
-		}
-
-		// A Funnel listener must be confirmed closed before its shared node is
-		// logged out. Keep its route registration until node retirement also
-		// succeeds, even though the listener itself is already down.
-		funnelStopped := !owned.funnel
 		if owned.funnel {
 			if m.ts == nil {
 				errs = append(errs, fmt.Errorf("%w: funnel %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
@@ -629,18 +644,64 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 				errs = append(errs, fmt.Errorf("%w: funnel %s: %w", core.ErrPublicStopUnconfirmed, host, err))
 			} else if state := m.ts.FunnelState(host); state.State == stateReady || state.State == stateStarting {
 				errs = append(errs, fmt.Errorf("%w: funnel %s teardown remains %s", core.ErrPublicStopUnconfirmed, host, state.State))
-			} else {
-				funnelStopped = true
 			}
 		}
-		if (owned.tailscale || owned.funnel) && funnelStopped {
-			if m.ts == nil {
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	// Retire every deterministic identity candidate, including persisted-only
+	// state and tracked preview/alias hosts. Complete the whole node phase
+	// before touching Local so a failed destructive operation leaves the flat
+	// or redirect reachable for retry.
+	for _, host := range hosts {
+		owned := byHost[host]
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if m.ts == nil {
+			if owned.tailscale || owned.funnel {
 				errs = append(errs, fmt.Errorf("tailscale %s: %w", host, ErrNotConfigured))
-			} else if err := m.ts.Stop(host); err != nil {
-				errs = append(errs, fmt.Errorf("tailscale %s: %w", host, err))
-			} else {
-				m.forgetRoutes(slug, host, Tailscale, Funnel)
 			}
+			continue
+		}
+		if err := m.ts.Stop(host); err != nil {
+			errs = append(errs, fmt.Errorf("tailscale %s: %w", host, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	for _, host := range hosts {
+		owned := byHost[host]
+		if !owned.portal {
+			continue
+		}
+		if m.portal == nil {
+			errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
+		} else if err := m.portal.Stop(host); err != nil {
+			errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	for _, host := range hosts {
+		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal)
+	}
+	for _, host := range hosts {
+		owned := byHost[host]
+		if !owned.local {
+			continue
+		}
+		if err := m.local.Stop(host); err != nil {
+			errs = append(errs, fmt.Errorf("local %s: %w", host, err))
+		} else {
+			m.forgetRoutes(slug, host, Local)
 		}
 	}
 	return errors.Join(errs...)

@@ -3,14 +3,22 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"errors"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +37,14 @@ import (
 )
 
 func startManagerControl(t *testing.T) *testcontrol.Server {
+	return startManagerControlMode(t, false)
+}
+
+func startHTTPSManagerControl(t *testing.T) *testcontrol.Server {
+	return startManagerControlMode(t, true)
+}
+
+func startManagerControlMode(t *testing.T, https bool) *testcontrol.Server {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("starts a disposable tailnet; skipped in -short mode")
@@ -54,10 +70,50 @@ func startManagerControl(t *testing.T) *testcontrol.Server {
 		}}},
 	}}
 	control := &testcontrol.Server{DERPMap: derpMap, MagicDNSDomain: "tail-scale.ts.net", Logf: logger.Discard}
+	if https {
+		control.DNSConfig = &tailcfg.DNSConfig{Proxied: true}
+	}
 	control.HTTPTestServer = httptest.NewUnstartedServer(control)
 	control.HTTPTestServer.Start()
 	t.Cleanup(control.HTTPTestServer.Close)
 	return control
+}
+
+func managerTestCertificate(t *testing.T) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "provider test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "*.tail-scale.ts.net"},
+		DNSNames:  []string{"*.tail-scale.ts.net"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, ca, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &tls.Certificate{Certificate: [][]byte{leafDER}, PrivateKey: leafKey}
+	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return cert, nil }
 }
 
 type managerControlProxy struct {
@@ -189,10 +245,11 @@ func TestManagerServeFunnelReturnsWhileControlIsUnavailable(t *testing.T) {
 }
 
 func TestManagerStopSlugRetiresFunnelOnlyIdentityBeforeRecreate(t *testing.T) {
-	control := startManagerControl(t)
+	control := startHTTPSManagerControl(t)
 	dir := t.TempDir()
 	tailnet, err := tsnet.New(tsnet.Config{
-		Dir: filepath.Join(dir, "tsnet"), ControlURL: control.HTTPTestServer.URL, Logf: t.Logf,
+		Dir: filepath.Join(dir, "tsnet"), ControlURL: control.HTTPTestServer.URL,
+		GetCertificate: managerTestCertificate(t), Logf: t.Logf,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -226,12 +283,17 @@ func TestManagerStopSlugRetiresFunnelOnlyIdentityBeforeRecreate(t *testing.T) {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
 			state, readErr := os.ReadFile(statePath)
-			if readErr == nil && len(state) > 0 && control.NumNodes() >= wantNodes {
+			status, statusErr := m.ExposureStatus(ctx, "recreated")
+			ready := false
+			for _, ep := range status.Endpoints {
+				ready = ready || ep.Provider == Funnel && ep.State == stateReady
+			}
+			if readErr == nil && len(state) > 0 && control.NumNodes() >= wantNodes && statusErr == nil && ready {
 				return state
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		t.Fatalf("Funnel-only identity did not persist: nodes=%d", control.NumNodes())
+		t.Fatalf("Funnel-only identity never became ready: nodes=%d", control.NumNodes())
 		return nil
 	}
 
@@ -262,6 +324,166 @@ func TestManagerStopSlugRetiresFunnelOnlyIdentityBeforeRecreate(t *testing.T) {
 	if err := tailnet.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestManagerPublicToPrivateRetiresFunnelOnlyIdentity(t *testing.T) {
+	control := startHTTPSManagerControl(t)
+	dir := t.TempDir()
+	tsDir := filepath.Join(dir, "tsnet")
+	tailnet, err := tsnet.New(tsnet.Config{
+		Dir: tsDir, ControlURL: control.HTTPTestServer.URL,
+		GetCertificate: managerTestCertificate(t), Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loopback.Close()
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, Options{Local: loopback, Tailscale: TSNet{tailnet}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	serve := func(body string) (ExposureResult, []byte) {
+		t.Helper()
+		res, err := m.ServeExposure(ctx, ExposureRequest{
+			Slug: "public-private", Host: "public-private", Visibility: "public", Audience: AudienceCurrent,
+			Handler: text(body), Permitted: []ID{Funnel},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitManagerFunnelState(t, ctx, m, "public-private", stateReady)
+		state, err := os.ReadFile(filepath.Join(tsDir, "public-private", "tailscaled.state"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res, state
+	}
+
+	res, before := serve("private-stays-live")
+	localURL := endpointURL(res, Local)
+	stopped, err := m.StopPublicRoutes(ctx, "public-private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stopped.Unconfirmed) != 0 || len(stopped.Stopped) != 1 || stopped.Stopped[0] != Funnel {
+		t.Fatalf("public stop = %+v", stopped)
+	}
+	if got := get(t, localURL); got != "private-stays-live" {
+		t.Fatalf("Public -> Private removed Local: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(tsDir, "public-private")); !os.IsNotExist(err) {
+		t.Fatalf("Public -> Private retained Funnel-only identity: %v", err)
+	}
+	if err := m.StopSlug(ctx, "public-private"); err != nil {
+		t.Fatal(err)
+	}
+	_, after := serve("recreated")
+	if bytes.Equal(before, after) {
+		t.Fatal("recreated slug reused the pre-transition Funnel identity")
+	}
+	if err := m.StopSlug(ctx, "public-private"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagerFunnelNeedsMachineAuthIsNotPermissionFailure(t *testing.T) {
+	control := startHTTPSManagerControl(t)
+	control.RequireMachineAuth = true
+	dir := t.TempDir()
+	tailnet, err := tsnet.New(tsnet.Config{
+		Dir: filepath.Join(dir, "tsnet"), ControlURL: control.HTTPTestServer.URL,
+		GetCertificate: managerTestCertificate(t), Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loopback.Close()
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, Options{Local: loopback, Tailscale: TSNet{tailnet}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	_, serveErr := m.ServeExposure(ctx, ExposureRequest{
+		Slug: "needs-approval", Host: "needs-approval", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("approval"), Permitted: []ID{Funnel},
+	})
+	if errors.Is(serveErr, ErrProviderNotPermitted) {
+		t.Fatalf("machine approval was classified as missing permission: %v", serveErr)
+	}
+	var ep ExposureEndpoint
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := m.ExposureStatus(ctx, "needs-approval")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, candidate := range status.Endpoints {
+			if candidate.Provider == Funnel {
+				ep = candidate
+			}
+		}
+		if ep.State == "needs-login" && strings.Contains(ep.Detail, "approval") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ep.State != "needs-login" || !strings.Contains(ep.Detail, "approval") {
+		t.Fatalf("machine approval detail = %+v", ep)
+	}
+	if tracked, err := m.HasProviderRoute(ctx, "needs-approval", Funnel); err != nil || !tracked {
+		t.Fatalf("needs-login Funnel route was not tracked: tracked=%v err=%v", tracked, err)
+	}
+	if err := m.StopSlug(ctx, "needs-approval"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitManagerFunnelState(t *testing.T, ctx context.Context, m *Manager, slug, want string) ExposureEndpoint {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := m.ExposureStatus(ctx, slug)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ep := range status.Endpoints {
+			if ep.Provider == Funnel && ep.State == want {
+				return ep
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("Funnel %q did not reach state %q", slug, want)
+	return ExposureEndpoint{}
 }
 
 // StopExposure is shared by delete, preview close and redirect expiry. A
