@@ -1380,7 +1380,7 @@ func (s *Service) providerNotInUse(ctx context.Context, slug string, id Provider
 				return fmt.Errorf("%w: cannot confirm %s routes are stopped: %v", ErrProviderInUse, id, err)
 			}
 			if active {
-				return fmt.Errorf("%w: %s on %s; approve Private and close previews before revoking permission", ErrProviderInUse, id, name)
+				return fmt.Errorf("%w: %s on %s; stop this provider's routes before revoking permission", ErrProviderInUse, id, name)
 			}
 		}
 		return nil

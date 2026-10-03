@@ -448,13 +448,14 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 		lf.publicServed = false
 	}
 	if wantPublic {
-		ready := false
+		opened := false
+		publicURL := s.cfg.Public.URL(f.Slug)
 		for _, host := range s.cfg.Public.Status().Hosts {
-			if (host.Host == f.Slug || host.URL == s.cfg.Public.URL(f.Slug)) && (host.State == "ready" || host.State == "starting" || host.State == "key-expiring") {
-				ready = true
+			if (host.Host == f.Slug || (publicURL != "" && host.URL == publicURL)) && (host.State == "ready" || host.State == "starting" || host.State == "key-expiring") {
+				opened = true
 			}
 		}
-		if !ready {
+		if !opened {
 			return fmt.Errorf("%w: no legacy public route opened", ErrProviderNotReady)
 		}
 	}
@@ -509,6 +510,13 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	if f.Visibility.Canonical().Public() && s.cfg.Public != nil {
 		if ok, _ := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal); ok {
 			v.PublicURL = s.cfg.Public.URL(f.Slug)
+			v.ConnectionState = "unavailable"
+			for _, host := range s.cfg.Public.Status().Hosts {
+				if host.Host == f.Slug || (v.PublicURL != "" && host.URL == v.PublicURL) {
+					v.ConnectionState = host.State
+					break
+				}
+			}
 			v.PublicNotice = PublicAccessNotice
 		}
 	}

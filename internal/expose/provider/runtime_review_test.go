@@ -101,6 +101,10 @@ type reviewFixture struct {
 
 func reviewerService(t *testing.T, id ID) reviewFixture {
 	t.Helper()
+	return reviewerServiceMode(t, id, false)
+}
+func reviewerServiceMode(t *testing.T, id ID, legacy bool) reviewFixture {
+	t.Helper()
 	listen := func() *local.Net {
 		n, e := local.Listen("127.0.0.1:0")
 		if e != nil {
@@ -125,7 +129,13 @@ func reviewerService(t *testing.T, id ID) reviewFixture {
 	}
 	clock := &atomic.Int64{}
 	clock.Store(time.Now().UnixNano())
-	svc, err := core.New(t.Context(), core.Config{Now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, DataDir: dir, Store: st, Private: tail, Lifecycle: m, ConsoleURL: func() string { return "http://console" }, ValidateOperatorDecision: func(context.Context) error { return nil }, Logf: t.Logf})
+	var lifecycle core.LifecycleNet = m
+	var public core.PublicNet
+	if legacy {
+		lifecycle = nil
+		public = p
+	}
+	svc, err := core.New(t.Context(), core.Config{Public: public, Now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, DataDir: dir, Store: st, Private: tail, Lifecycle: lifecycle, ConsoleURL: func() string { return "http://console" }, ValidateOperatorDecision: func(context.Context) error { return nil }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,5 +408,19 @@ func TestRedirectExpiryRetriesUnconfirmedProviderStop(t *testing.T) {
 	}
 	if _, ok := f.svc.Redirects()["site"]; ok {
 		t.Fatal("successful expiry retained alias")
+	}
+}
+
+func TestLegacyPortalCommitsHonestConnectingState(t *testing.T) {
+	f := reviewerServiceMode(t, Portal, true)
+	publicReview(t, f)
+	v, _ := f.svc.GetFlat(t.Context(), "site")
+	if v.Visibility != store.Public || v.ConnectionState != "starting" || v.PublicURL != "" || f.public.stops != 0 {
+		t.Fatalf("legacy async state %+v stops=%d", v, f.public.stops)
+	}
+	f.public.advance()
+	v, _ = f.svc.GetFlat(t.Context(), "site")
+	if v.ConnectionState != "ready" || get(t, v.PublicURL) != "v1" {
+		t.Fatalf("legacy readiness %+v", v)
 	}
 }
