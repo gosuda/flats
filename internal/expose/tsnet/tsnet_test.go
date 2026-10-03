@@ -701,11 +701,11 @@ func TestTeardownWaitsForPredecessor(t *testing.T) {
 	}
 	prev := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	nd := &node{host: "h", dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel,
+	nd := &node{host: "h", ephemeral: true, dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel,
 		started: make(chan struct{}), done: make(chan struct{}), prev: prev}
 	go n.run(nd) // waits for prev, returns on cancel without starting
 	ret := make(chan error, 1)
-	go func() { ret <- n.teardown(nd, true) }()
+	go func() { ret <- n.teardown(nd, false) }()
 	select {
 	case err := <-ret:
 		t.Fatalf("teardown returned before its predecessor finished: %v", err)
@@ -794,6 +794,7 @@ func TestStopIsBounded(t *testing.T) {
 	stuck := make(chan struct{}) // the lifecycle goroutine never returns
 	nd := &node{host: "h", dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel, started: started, done: stuck}
 	n.nodes["h"] = nd
+	n.logoutNode = func(context.Context, *node) error { return nil }
 	start := time.Now()
 	if err := n.Stop("h"); err == nil || !strings.Contains(err.Error(), "background") {
 		t.Errorf("Stop of a stuck node = %v", err)
@@ -900,6 +901,7 @@ func TestStopPrivateRetainsUnconfirmedRetirement(t *testing.T) {
 	close(started)
 	nd := &node{host: "held", dir: filepath.Join(n.cfg.Dir, "held"), ctx: ctx, cancel: cancel, started: started, done: runDone}
 	n.nodes["held"] = nd
+	n.logoutNode = func(context.Context, *node) error { return nil }
 	// The retiring backend's lifecycle is held, proving a second attempt cannot
 	// turn absence from n.nodes into a successful stop.
 	if err := n.StopPrivate("held"); err == nil {
@@ -910,9 +912,9 @@ func TestStopPrivateRetainsUnconfirmedRetirement(t *testing.T) {
 	}
 	close(runDone)
 	n.mu.Lock()
-	pending := n.privateStopping["held"]
+	pending := n.retiring["held"]
 	n.mu.Unlock()
-	<-pending.done
+	<-pending.attempt.done
 	if err := n.StopPrivate("held"); err != nil {
 		t.Fatal("confirmed stop did not settle", err)
 	}
@@ -979,7 +981,7 @@ func TestStopPrivateRetriesTerminalLogoutFailure(t *testing.T) {
 		t.Fatalf("confirmed retry kept retired state: %v", err)
 	}
 	n.mu.Lock()
-	_, pending := n.privateStopping[host]
+	_, pending := n.retiring[host]
 	_, active := n.nodes[host]
 	n.mu.Unlock()
 	if pending || active {

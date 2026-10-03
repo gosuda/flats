@@ -108,19 +108,26 @@ type Net struct {
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
-	mu              sync.Mutex
-	nodes           map[string]*node
-	stopping        map[string]chan struct{}     // host -> closed when its teardown finishes
-	privateStopping map[string]privateRetirement // preserves unconfirmed Private stops across retries
-	suffix          string                       // MagicDNS suffix, once any node learns it
-	plain           bool                         // some node found HTTPS unavailable
-	closed          bool
-	changed         chan struct{} // closed and replaced on every state change
+	mu       sync.Mutex
+	nodes    map[string]*node
+	stopping map[string]chan struct{} // host -> closed when any teardown attempt finishes
+	retiring map[string]*retirement   // logout retirements, including terminal failures
+	suffix   string                   // MagicDNS suffix, once any node learns it
+	plain    bool                     // some node found HTTPS unavailable
+	closed   bool
+	changed  chan struct{} // closed and replaced on every state change
 }
 
-type privateRetirement struct {
-	node *node
+type retirement struct {
+	host      string
+	ephemeral bool
+	store     ipn.StateStore
+	attempt   *retirementAttempt
+}
+
+type retirementAttempt struct {
 	done chan struct{}
+	err  error // written before done closes
 }
 
 type node struct {
@@ -136,7 +143,7 @@ type node struct {
 	prev      chan struct{} // teardown of the previous node with this host, or nil
 	srv       *ts.Server
 	stopErr   error // set by the retiring goroutine before it closes its done channel
-	loggedOut bool  // set after control confirms logout; later retries skip that step
+	store     ipn.StateStore
 
 	// Guarded by Net.mu.
 	backend       string // ipn.State string
@@ -182,12 +189,12 @@ func New(cfg Config) (*Net, error) {
 		logf = func(string, ...any) {}
 	}
 	return &Net{
-		cfg:             cfg,
-		logf:            logf,
-		nodes:           map[string]*node{},
-		stopping:        map[string]chan struct{}{},
-		privateStopping: map[string]privateRetirement{},
-		changed:         make(chan struct{}),
+		cfg:      cfg,
+		logf:     logf,
+		nodes:    map[string]*node{},
+		stopping: map[string]chan struct{}{},
+		retiring: map[string]*retirement{},
+		changed:  make(chan struct{}),
 	}, nil
 }
 
@@ -212,13 +219,13 @@ func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bo
 	if n.closed {
 		return "", errors.New("tsnet: network is closed")
 	}
-	if pending, ok := n.privateStopping[host]; ok {
+	if pending, ok := n.retiring[host]; ok {
 		select {
-		case <-pending.done:
-			if pending.node.stopErr != nil {
-				return "", fmt.Errorf("tsnet: %s Private teardown failed; retry the provider removal before serving it again: %w", host, pending.node.stopErr)
+		case <-pending.attempt.done:
+			if pending.attempt.err != nil {
+				return "", fmt.Errorf("tsnet: %s teardown failed; retry the removal before serving it again: %w", host, pending.attempt.err)
 			}
-			delete(n.privateStopping, host)
+			delete(n.retiring, host)
 		default:
 			return "", fmt.Errorf("tsnet: %s Private teardown is still unconfirmed", host)
 		}
@@ -248,7 +255,7 @@ func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bo
 // newNode builds a node that is not yet in the served set. n.mu must be held.
 func (n *Net) newNode(host string, ephemeral, private bool) *node {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &node{
+	nd := &node{
 		host:      host,
 		ephemeral: ephemeral,
 		private:   private,
@@ -261,6 +268,10 @@ func (n *Net) newNode(host string, ephemeral, private bool) *node {
 		prev:      n.stopping[host],
 		backend:   ipn.NoState.String(),
 	}
+	if ephemeral {
+		nd.store = new(mem.Store)
+	}
+	return nd
 }
 
 // signalBoot wakes ServeFunnel. The first call wins; ok is recorded only then.
@@ -297,9 +308,7 @@ func (n *Net) run(nd *node) {
 		ControlURL: n.cfg.ControlURL,
 		Ephemeral:  nd.ephemeral,
 		UserLogf:   n.userLogf(nd),
-	}
-	if nd.ephemeral {
-		srv.Store = new(mem.Store)
+		Store:      nd.store,
 	}
 	nd.srv = srv
 	err := os.MkdirAll(nd.dir, 0o700)
@@ -788,91 +797,104 @@ func (n *Net) setErr(nd *node, err error) {
 // StopPrivate closes only tailnet HTTP when Funnel shares the node. Without
 // a Funnel request it retires the node normally, including isolated previews.
 func (n *Net) StopPrivate(host string) error {
-	n.mu.Lock()
-	if pending, ok := n.privateStopping[host]; ok {
-		scheduled := false
-		select {
-		case <-pending.done:
-			if pending.node.stopErr == nil {
-				delete(n.privateStopping, host)
-				n.mu.Unlock()
-				// A caller may have recreated this host while retirement was pending.
-				return n.StopPrivate(host)
-			}
-			if n.closed {
-				err := pending.node.stopErr
-				n.mu.Unlock()
-				return err
-			}
-			// A completed but failed teardown keeps its server and state. Re-arm
-			// it so an operator retry performs real work in this process.
-			pending.node.stopErr = nil
-			pending.done = n.retireLocked(pending.node, true)
-			n.privateStopping[host] = pending
-			scheduled = true
-		default:
-		}
-		n.mu.Unlock()
-		err := n.waitPrivateStop(host, pending)
-		if err != nil && !scheduled {
-			select {
-			case <-pending.done:
-				// This caller arrived while the previous attempt was still
-				// running. If it has now failed terminally, this retry owns the
-				// next real attempt instead of merely replaying the old error.
-				return n.StopPrivate(host)
-			default:
-			}
-		}
-		return err
-	}
-	nd := n.nodes[host]
-	n.mu.Unlock()
-	if nd == nil {
-		return nil
-	}
-	nd.privateMu.Lock()
-	n.mu.Lock()
-	nd.private = false
-	nd.handler.Store(nil)
-	if nd.funnelH.Load() == nil {
-		pending := privateRetirement{node: nd, done: n.retireLocked(nd, true)}
-		if n.privateStopping == nil {
-			n.privateStopping = map[string]privateRetirement{}
-		}
-		n.privateStopping[host] = pending
-		n.mu.Unlock()
-		nd.privateMu.Unlock()
-		return n.waitPrivateStop(host, pending)
-	}
-	servers := nd.https
-	n.mu.Unlock()
-	var errs []error
-	for _, hs := range servers {
-		if err := hs.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
-			errs = append(errs, err)
-		}
-	}
-	err := errors.Join(errs...)
-	n.mu.Lock()
-	if err == nil {
-		nd.https = nil
-		nd.serving, nd.listenStarted = false, false
-	}
-	n.notifyLocked()
-	n.mu.Unlock()
-	nd.privateMu.Unlock()
-	return err
+	return n.stop(host, true)
 }
 
-func (n *Net) waitPrivateStop(host string, pending privateRetirement) error {
-	select {
-	case <-pending.done:
+// Stop implements core.PrivateNet: it logs the node out, closes it and deletes
+// its state. Failed retirements stay tracked, and each later Stop creates a
+// fresh backend from the retained state before retrying logout.
+func (n *Net) Stop(host string) error {
+	return n.stop(host, false)
+}
+
+func (n *Net) stop(host string, privateOnly bool) error {
+	for {
 		n.mu.Lock()
-		err := pending.node.stopErr
+		if pending := n.retiring[host]; pending != nil {
+			attempt := pending.attempt
+			scheduled := false
+			select {
+			case <-attempt.done:
+				if attempt.err == nil {
+					delete(n.retiring, host)
+					n.mu.Unlock()
+					continue
+				}
+				if n.closed {
+					err := attempt.err
+					n.mu.Unlock()
+					return err
+				}
+				attempt = n.retryRetirementLocked(pending)
+				scheduled = true
+			default:
+			}
+			n.mu.Unlock()
+			err := n.waitRetirement(host, pending, attempt)
+			if err != nil && !scheduled {
+				select {
+				case <-attempt.done:
+					// This call arrived while the prior attempt was running. It is
+					// the operator's retry, so let it own the next real attempt.
+					continue
+				default:
+				}
+			}
+			return err
+		}
+		nd := n.nodes[host]
+		n.mu.Unlock()
+		if nd == nil {
+			return nil
+		}
+
+		// Serialize listener setup and every kind of retirement, then re-check
+		// identity. A concurrent preview/delete path may have retired nd while
+		// this goroutine waited for privateMu.
+		nd.privateMu.Lock()
+		n.mu.Lock()
+		if n.nodes[host] != nd {
+			n.mu.Unlock()
+			nd.privateMu.Unlock()
+			continue
+		}
+		nd.private = false
+		nd.handler.Store(nil)
+		if privateOnly && nd.funnelH.Load() != nil {
+			servers := append([]*http.Server(nil), nd.https...)
+			n.mu.Unlock()
+			var errs []error
+			for _, hs := range servers {
+				if err := hs.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+					errs = append(errs, err)
+				}
+			}
+			err := errors.Join(errs...)
+			n.mu.Lock()
+			if err == nil && n.nodes[host] == nd {
+				nd.https = nil
+				nd.serving, nd.listenStarted = false, false
+			}
+			n.notifyLocked()
+			n.mu.Unlock()
+			nd.privateMu.Unlock()
+			return err
+		}
+		pending, attempt := n.beginRetirementLocked(nd)
+		n.mu.Unlock()
+		nd.privateMu.Unlock()
+		return n.waitRetirement(host, pending, attempt)
+	}
+}
+
+func (n *Net) waitRetirement(host string, pending *retirement, attempt *retirementAttempt) error {
+	select {
+	case <-attempt.done:
+		n.mu.Lock()
+		err := attempt.err
 		if err == nil {
-			if current, ok := n.privateStopping[host]; ok && current.done == pending.done {
-				delete(n.privateStopping, host)
+			if current := n.retiring[host]; current == pending && current.attempt == attempt {
+				delete(n.retiring, host)
 			}
 		}
 		n.mu.Unlock()
@@ -881,31 +903,94 @@ func (n *Net) waitPrivateStop(host string, pending privateRetirement) error {
 		}
 		return nil
 	case <-time.After(stopWait):
-		return fmt.Errorf("tsnet: %s Private teardown is still unconfirmed", host)
+		return fmt.Errorf("tsnet: %s background teardown is still unconfirmed", host)
 	}
 }
 
-// Stop implements core.PrivateNet: it logs the node out (removing it from the
-// tailnet), shuts it down and deletes its state. Unknown hosts are a no-op.
-func (n *Net) Stop(host string) error {
-	n.mu.Lock()
-	nd, ok := n.nodes[host]
-	if !ok {
+func (n *Net) beginRetirementLocked(nd *node) (*retirement, *retirementAttempt) {
+	delete(n.nodes, nd.host)
+	pending := &retirement{host: nd.host, ephemeral: nd.ephemeral, store: nd.store}
+	attempt := n.scheduleRetirementLocked(pending, func() error { return n.teardown(nd, true) })
+	n.retiring[nd.host] = pending
+	n.notifyLocked()
+	return pending, attempt
+}
+
+func (n *Net) retryRetirementLocked(pending *retirement) *retirementAttempt {
+	return n.scheduleRetirementLocked(pending, func() error { return n.retryLogout(pending) })
+}
+
+// retryLogout starts a new backend over the retained state. Tailscale clears
+// the running backend's node key before its logout request reaches control, so
+// calling Logout on that same backend again cannot retry the request. A fresh
+// backend reloads the still-persisted key and can complete the revocation.
+func (n *Net) retryLogout(pending *retirement) error {
+	dir := filepath.Join(n.cfg.Dir, pending.host)
+	if n.logoutNode != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+		defer cancel()
+		nd := &node{host: pending.host, ephemeral: pending.ephemeral, dir: dir, store: pending.store}
+		if err := n.logoutNode(ctx, nd); err != nil {
+			return fmt.Errorf("tsnet %s logout retry: %w", pending.host, err)
+		}
+		return os.RemoveAll(dir)
+	}
+
+	srv := &ts.Server{
+		Dir:        dir,
+		Hostname:   pending.host,
+		ControlURL: n.cfg.ControlURL,
+		Ephemeral:  pending.ephemeral,
+		Store:      pending.store,
+		UserLogf: func(format string, args ...any) {
+			n.logf("tsnet %s logout retry: %s", pending.host, fmt.Sprintf(format, args...))
+		},
+	}
+	if err := srv.Start(); err != nil {
+		startErr := fmt.Errorf("tsnet %s logout retry start: %w", pending.host, err)
+		if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && !errors.Is(closeErr, context.Canceled) {
+			startErr = errors.Join(startErr, fmt.Errorf("tsnet %s logout retry backend close: %w", pending.host, closeErr))
+		}
+		return startErr
+	}
+	var retryErr error
+	ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+	if _, err := srv.Up(ctx); err != nil {
+		retryErr = fmt.Errorf("tsnet %s logout retry connect: %w", pending.host, err)
+	} else if lc, err := srv.LocalClient(); err != nil {
+		retryErr = fmt.Errorf("tsnet %s logout retry client: %w", pending.host, err)
+	} else {
+		cancel()
+		ctx, cancel = context.WithTimeout(context.Background(), logoutTimeout)
+		if err := lc.Logout(ctx); err != nil {
+			retryErr = fmt.Errorf("tsnet %s logout retry: %w", pending.host, err)
+		}
+	}
+	cancel()
+	if err := srv.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+		retryErr = errors.Join(retryErr, fmt.Errorf("tsnet %s logout retry backend close: %w", pending.host, err))
+	}
+	if retryErr == nil {
+		retryErr = os.RemoveAll(dir)
+	}
+	return retryErr
+}
+
+func (n *Net) scheduleRetirementLocked(pending *retirement, run func() error) *retirementAttempt {
+	attempt := &retirementAttempt{done: make(chan struct{})}
+	pending.attempt = attempt
+	n.stopping[pending.host] = attempt.done
+	n.notifyLocked()
+	go func() {
+		attempt.err = run()
+		n.mu.Lock()
+		if n.stopping[pending.host] == attempt.done {
+			delete(n.stopping, pending.host)
+		}
 		n.mu.Unlock()
-		return nil
-	}
-	done := n.retireLocked(nd, true)
-	n.mu.Unlock()
-	select {
-	case <-done:
-		return nd.stopErr
-	case <-time.After(stopWait):
-		// The node is gone from the served set; do not let a tailscale
-		// backend that hangs (seen once on a real tailnet) block the deploy
-		// or delete that called Stop. The teardown keeps running.
-		n.logf("tsnet %s: still shutting down after %s; continuing in the background", host, stopWait)
-		return fmt.Errorf("tsnet: %s is still shutting down in the background", host)
-	}
+		close(attempt.done)
+	}()
+	return attempt
 }
 
 // retireLocked removes nd from the served set and tears it down in the
@@ -958,18 +1043,23 @@ func (n *Net) teardown(nd *node, logout bool) error {
 			}
 		}
 	}
-	if logout && !nd.loggedOut && (nd.srv != nil || n.logoutNode != nil) {
-		ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
-		err := n.logout(ctx, nd)
-		cancel()
-		if err != nil {
-			// Private HTTP is already closed, so access fails closed. Keep the
-			// backend and state alive so a later StopPrivate can retry logout.
-			n.logf("tsnet %s: logout: %v", nd.host, err)
-			<-nd.done
-			return errors.Join(append(errs, fmt.Errorf("tsnet %s logout: %w", nd.host, err))...)
+	logoutOK := !logout
+	if logout {
+		if nd.srv == nil && n.logoutNode == nil {
+			errs = append(errs, fmt.Errorf("tsnet %s logout: backend did not start", nd.host))
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+			err := n.logout(ctx, nd)
+			cancel()
+			if err != nil {
+				// Access already fails closed. Keep the state, but close this backend:
+				// its in-memory key is consumed and only a fresh backend can retry.
+				n.logf("tsnet %s: logout: %v", nd.host, err)
+				errs = append(errs, fmt.Errorf("tsnet %s logout: %w", nd.host, err))
+			} else {
+				logoutOK = true
+			}
 		}
-		nd.loggedOut = true
 	}
 	if nd.srv != nil {
 		if err := nd.srv.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
@@ -983,7 +1073,7 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		// delete a directory that a later node is already using.
 		<-nd.prev
 	}
-	if logout || nd.ephemeral {
+	if logoutOK && (logout || nd.ephemeral) {
 		if err := os.RemoveAll(nd.dir); err != nil {
 			errs = append(errs, err)
 		}
@@ -1026,9 +1116,9 @@ func (n *Net) Close() error {
 	for _, ch := range n.stopping {
 		pending = append(pending, ch)
 	}
-	privatePending := make([]privateRetirement, 0, len(n.privateStopping))
-	for _, retirement := range n.privateStopping {
-		privatePending = append(privatePending, retirement)
+	retirements := make([]*retirement, 0, len(n.retiring))
+	for _, retirement := range n.retiring {
+		retirements = append(retirements, retirement)
 	}
 	n.notifyLocked()
 	n.mu.Unlock()
@@ -1045,18 +1135,10 @@ func (n *Net) Close() error {
 			<-ch
 		}
 		var cleanupErrs []error
-		for _, retirement := range privatePending {
-			<-retirement.done
-			if retirement.node.stopErr != nil {
-				// Persistent nodes use the graceful path here, retaining identity.
-				// Ephemeral nodes retry logout because they cannot be restored, then
-				// force a local close if control is still unavailable.
-				err := n.teardown(retirement.node, retirement.node.ephemeral)
-				if err != nil && retirement.node.ephemeral {
-					err = errors.Join(err, n.teardown(retirement.node, false))
-				}
-				cleanupErrs = append(cleanupErrs, err)
-			}
+		for _, retirement := range retirements {
+			attempt := retirement.attempt
+			<-attempt.done
+			cleanupErrs = append(cleanupErrs, attempt.err)
 		}
 		all <- cleanupErrs
 	}()

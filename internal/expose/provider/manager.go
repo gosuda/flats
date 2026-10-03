@@ -110,7 +110,12 @@ type Manager struct {
 
 	mu     sync.Mutex
 	routes map[string]*route
-	states map[string][]ExposureEndpoint
+	states map[string][]observedEndpoint
+}
+
+type observedEndpoint struct {
+	endpoint   ExposureEndpoint
+	registered bool
 }
 
 type route struct {
@@ -140,7 +145,7 @@ func New(dir string, opts Options) (*Manager, error) {
 		configuration: opts.Configuration,
 		permission:    opts.Permission,
 		routes:        map[string]*route{},
-		states:        map[string][]ExposureEndpoint{},
+		states:        map[string][]observedEndpoint{},
 	}, nil
 }
 
@@ -226,7 +231,12 @@ func (m *Manager) observe(req ExposureRequest, res *ExposureResult) {
 		ep.Audience, ep.Host = req.Audience, requestHost(req)
 	}
 	m.mu.Lock()
-	m.states[stateKey(req.Slug, req.Audience, requestHost(req))] = slices.Clone(res.Endpoints)
+	observed := make([]observedEndpoint, len(res.Endpoints))
+	for i, ep := range res.Endpoints {
+		_, registered := m.routes[key(req.Slug, req.Audience, ep.Provider, requestHost(req))]
+		observed[i] = observedEndpoint{endpoint: ep, registered: registered}
+	}
+	m.states[stateKey(req.Slug, req.Audience, requestHost(req))] = observed
 	m.mu.Unlock()
 }
 
@@ -262,14 +272,15 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 		return ExposureResult{}, err
 	}
 	m.mu.Lock()
-	var endpoints []ExposureEndpoint
+	var observedEndpoints []observedEndpoint
 	for k, observed := range m.states {
 		if strings.HasPrefix(k, slug+"\x00") {
-			endpoints = append(endpoints, observed...)
+			observedEndpoints = append(observedEndpoints, observed...)
 		}
 	}
-	slices.SortFunc(endpoints, func(a, b ExposureEndpoint) int {
-		return strings.Compare(string(a.Audience)+"\x00"+a.Host+"\x00"+string(a.Provider), string(b.Audience)+"\x00"+b.Host+"\x00"+string(b.Provider))
+	slices.SortFunc(observedEndpoints, func(a, b observedEndpoint) int {
+		ae, be := a.endpoint, b.endpoint
+		return strings.Compare(string(ae.Audience)+"\x00"+ae.Host+"\x00"+string(ae.Provider), string(be.Audience)+"\x00"+be.Host+"\x00"+string(be.Provider))
 	})
 	routes := make(map[string]route)
 	for k, r := range m.routes {
@@ -278,7 +289,9 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 		}
 	}
 	m.mu.Unlock()
-	for i, ep := range endpoints {
+	endpoints := make([]ExposureEndpoint, len(observedEndpoints))
+	for i, observed := range observedEndpoints {
+		ep := observed.endpoint
 		if r, ok := routes[key(slug, ep.Audience, ep.Provider, ep.Host)]; ok {
 			var fresh ExposureEndpoint
 			switch ep.Provider {
@@ -292,7 +305,7 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 				fresh = fromStatus(Portal, m.portal.Status(), r.host, m.portal.URL(r.host))
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
-		} else {
+		} else if observed.registered {
 			ep.URL, ep.State, ep.Detail = "", stateStopped, "route stopped"
 		}
 		permitted := ep.Permitted
@@ -649,7 +662,7 @@ var _ core.LifecyclePreviewNet = (*Manager)(nil)
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.routes = map[string]*route{}
-	m.states = map[string][]ExposureEndpoint{}
+	m.states = map[string][]observedEndpoint{}
 	m.mu.Unlock()
 	return nil
 }
@@ -665,9 +678,9 @@ func (m *Manager) pruneState(slug string, id ID) {
 			continue
 		}
 		filtered := endpoints[:0]
-		for _, ep := range endpoints {
-			if ep.Provider != id {
-				filtered = append(filtered, ep)
+		for _, observed := range endpoints {
+			if observed.endpoint.Provider != id {
+				filtered = append(filtered, observed)
 			}
 		}
 		if len(filtered) == 0 {
@@ -682,9 +695,9 @@ func (m *Manager) pruneStateLocked(slug string, audience Audience, host string, 
 	k := stateKey(slug, audience, host)
 	endpoints := m.states[k]
 	filtered := endpoints[:0]
-	for _, ep := range endpoints {
-		if ep.Provider != id {
-			filtered = append(filtered, ep)
+	for _, observed := range endpoints {
+		if observed.endpoint.Provider != id {
+			filtered = append(filtered, observed)
 		}
 	}
 	if len(filtered) == 0 {

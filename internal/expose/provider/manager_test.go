@@ -351,6 +351,7 @@ func get(t *testing.T, url string) string {
 type fakeTail struct {
 	serve, funnel             int
 	stop, funnelStops, closes int
+	serveErr                  error
 	funnelErr                 error
 	stopErr                   error
 	stopped                   bool
@@ -358,6 +359,9 @@ type fakeTail struct {
 
 func (f *fakeTail) Serve(context.Context, string, http.Handler, bool) (string, error) {
 	f.serve++
+	if f.serveErr != nil {
+		return "", f.serveErr
+	}
 	return "https://notes.example.ts.net", nil
 }
 func (f *fakeTail) Stop(string) error { f.stop++; return nil }
@@ -487,6 +491,73 @@ func TestExposureStatusRecomputesCurrentPermission(t *testing.T) {
 			t.Fatalf("stopped route was retained: %+v", ep)
 		}
 	}
+}
+
+func TestExposureStatusPreservesNeverRegisteredFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, detail string
+		configure           func(*Manager)
+		wantErr             error
+	}{
+		{"unconfigured", stateUnavailable, "tailscale is permitted but not configured", func(m *Manager) { m.ts = nil }, ErrNotConfigured},
+		{"failed-open", stateError, "control refused", func(m *Manager) { m.ts.(*fakeTail).serveErr = errors.New("control refused") }, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Tailscale}})
+			defer ln.Close()
+			defer m.Close()
+			tc.configure(m)
+			_, serveErr := m.ServeExposure(t.Context(), ExposureRequest{
+				Slug: "refused", Visibility: "private", Audience: AudienceCurrent,
+				Handler: text("private"), Permitted: []ID{Tailscale},
+			})
+			if serveErr == nil || (tc.wantErr != nil && !errors.Is(serveErr, tc.wantErr)) {
+				t.Fatalf("ServeExposure error = %v, want %v", serveErr, tc.wantErr)
+			}
+			status, err := m.ExposureStatus(t.Context(), "refused")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ep := range status.Endpoints {
+				if ep.Provider != Tailscale {
+					continue
+				}
+				if ep.State != tc.state || ep.Detail != tc.detail {
+					t.Fatalf("never-registered failure was rewritten as a stopped route: %+v", ep)
+				}
+				return
+			}
+			t.Fatal("missing refused tailscale endpoint")
+		})
+	}
+}
+
+func TestExposureStatusMarksFormerRegistrationStopped(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Tailscale}})
+	defer ln.Close()
+	defer m.Close()
+	if _, err := m.ServeExposure(t.Context(), ExposureRequest{
+		Slug: "former", Visibility: "private", Audience: AudienceCurrent,
+		Handler: text("private"), Permitted: []ID{Tailscale},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.take("former", Tailscale, true); !ok {
+		t.Fatal("missing registered tailscale route")
+	}
+	status, err := m.ExposureStatus(t.Context(), "former")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range status.Endpoints {
+		if ep.Provider == Tailscale {
+			if ep.State != stateStopped || ep.Detail != "route stopped" {
+				t.Fatalf("former registration status = %+v", ep)
+			}
+			return
+		}
+	}
+	t.Fatal("missing former tailscale endpoint")
 }
 
 func TestManagerCloseForgetsRoutesWithoutDestructiveBackendStops(t *testing.T) {
