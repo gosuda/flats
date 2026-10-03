@@ -63,6 +63,7 @@ func (c *serverCache) get() *mcp.Server {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
 			&mcp.ServerOptions{Instructions: instructions(limit)})
 		register(srv, &tools{svc: c.svc})
+		registerReference(srv, c.version, limit)
 		c.srv, c.limit = srv, limit
 	}
 	return c.srv
@@ -111,6 +112,9 @@ func loopbackAddr(addr string) bool {
 func instructions(uploadLimit int64) string {
 	return fmt.Sprintf(`Flats hosts websites ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a private URL on the operator's tailnet.
 
+Runtime reference
+Before authoring a server app, read resource flats://docs/runtime-api/v1 (resources/read), or call the read-only get_runtime_reference tool with {}. It contains the complete versioned FILES/DB, handler/response, encoding, persistence, secrets and limits contract; no installed skill or source checkout is needed. FILES methods and DB methods are synchronous.
+
 Workflow
 1. save_version uploads the build output (what a browser needs: index.html, JS, CSS, images). Saving never changes what is live. Use encoding "utf8" for text and "base64" for binary files (images, fonts, wasm). A missing flat is created on first save. Pass deploy=true to save and deploy in one call.
 2. deploy makes a saved version live after a health check: GET the manifest "health" path (default "/") must answer 2xx/3xx within 15s. If it fails, the previous live version keeps serving; read the health result, fix the build and save again.
@@ -118,13 +122,13 @@ Workflow
 4. rollback redeploys an earlier version (default: the one live before the current one). It restores code only; restore_data=true replaces a server flat's current database with the pre-deploy snapshot (the current one is backed up first), so ask the user before using it. get_logs shows deploys, health checks and runtime output.
 
 Exposure
-- Flats start private: only the operator's tailnet can open the private URL.
+- Flats start private: only the operator's tailnet can open the private URL in Tailscale mode; local mode uses loopback .localhost origins.
 - Making a flat public (set_visibility public-unlisted or public-listed) and delete_flat need the operator's approval. The call returns status "pending_approval" and an approval_url: give that URL to the user exactly as returned. Nothing changes until they approve it in the Flats console; poll get_approval. Making a flat private again applies immediately.
 - public-unlisted is NOT access control. It only hides the flat from Portal relay listings; anyone with the URL can open it. Never describe it as private or protected.
 
 flats.json (optional, at the bundle root; unknown fields are rejected)
   name, kind ("static" default or "server"), entry (static default index.html; server default server.js, index.js, main.wasm or server.wasm), spa (serve the entry for unknown paths), not_found (e.g. "404.html", served with status 404), health (default "/"), screenshot (thumbnail path).
-Server flats: export default { async fetch(request, env) { return new Response("hi") } }. env.DB is SQLite (query/exec), env.FILES is a key-value file store, secrets arrive as env values. Only the operator sets secret values; list_secrets shows names.
+Server flats: export default { async fetch(request, env) { return new Response("hi") } }. env.DB is SQLite (query/exec), env.FILES is a per-flat local-disk string key-value store (not S3), secrets arrive as env values. Only the operator sets secret values; list_secrets shows names.
 
 Limits: %d bytes total (uncompressed) per upload (operator-configurable), %d files, no symlinks or paths outside the root. A single wrapping directory such as dist/ is stripped; .git and .DS_Store are skipped (save_version_from_dir also skips node_modules). Do not upload sources or node_modules. Every validation problem comes with a fix hint.
 For large builds on the Flats host itself, call save_version_from_dir with an absolute directory path, or run the CLI: flats deploy <dir>.`, slug.MinLen, slug.MaxLen, uploadLimit, maxFiles)

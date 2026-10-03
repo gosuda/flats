@@ -204,8 +204,9 @@ Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
 loopback only) can set or delete values; APIs and MCP return names and update
 times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
-with a shell on the Flats host (see Approvals). Values reach a server flat only as environment variables of its
-worker at start, so a change applies on the next deploy.
+with a shell on the Flats host (see Approvals). Values reach JavaScript as
+`env.NAME` and WASI as environment variables at worker start, so a change
+applies on the next deploy.
 
 ## Approvals
 
@@ -251,10 +252,14 @@ machine, so they reach Flats only through MCP or the API.
 
 ## Server flats (handler ABI)
 
+The authoritative [runtime API v1 reference](runtime-api-v1.md) is embedded
+in the binary and discoverable as MCP resource `flats://docs/runtime-api/v1`
+or read-only tool `get_runtime_reference`. It requires no skill/source access.
+
 A server flat runs in a `flats worker` child process (one per running
 version, previews included). The parent proxies HTTP to the worker over a
 Unix socket; the worker gets the version directory, its data directory and
-its environment, and nothing else from the parent.
+its flat's secrets, and nothing else from the parent.
 
 JavaScript (QuickJS via qjs on wazero), modelled on `wasi:http`/Workers:
 
@@ -268,7 +273,7 @@ export default {
 }
 ```
 
-* `env` holds secrets/env vars plus `env.DB` (`query(sql, ...params)` →
+* `env` holds the flat's secrets plus `env.DB` (`query(sql, ...params)` →
   rows, `exec(sql, ...params)` → `{changes, last_insert_id}`) backed by
   `data/db.sqlite`, and `env.FILES` (`get(key)`, `put(key, data)`,
   `delete(key)`, `list(prefix)`) backed by `data/files/`, and
@@ -283,9 +288,9 @@ export default {
   quota. JS has no file system or network access except through `env`.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing response JSON on stdout. Each request creates a fresh instance.
-  Environment includes only the flat's configured variables and injected
-  secrets, never the host process environment. Clocks, cancellable sleeps and
-  CSPRNG are available. There are no preopened directories, filesystem/network
+  Environment includes only the flat's secrets, with no separate variable
+  configuration or inherited host process environment. Clocks, cancellable
+  sleeps and CSPRNG are available. There are no preopened directories, filesystem/network
   mounts, SQLite/FILES host imports or WebSocket connection API. The worker's
   host-side data directory is **not** mounted into the WASI guest.
 
@@ -297,14 +302,14 @@ export default {
 | WebSocket | `websocket.open` / `message` / `close`, `ws.send` | Unavailable; Upgrade remains an ordinary HTTP request |
 | Outbound network | Unavailable (no `fetch` or sockets) | Unavailable |
 | Filesystem | Read-only bundled modules; no arbitrary host filesystem; persistence via DB/FILES | No mounts or preopened directories |
-| Secrets/configuration | `env.NAME` | Selected environment variables |
+| Secrets | `env.NAME` | Only the flat's secrets as environment variables |
 | Clocks/randomness | timers, `Date`, Web Crypto CSPRNG | WASI clocks, cancellable sleeps and CSPRNG |
 
 WASI request JSON is `{method, url, headers, body}` (body is a string or null).
 Response JSON is `{status, headers, body}` (body is a string); binary
 responses put base64 text in `body` and set `body_base64: true`. Stderr is forwarded as flat log lines.
 These are executable contracts in `internal/runtime` tests, including rejected
-JS host imports, absent filesystem/network access, selected environment,
+JS host imports, absent filesystem/network access, secrets-only environment,
 clocks/randomness, and no WebSocket negotiation.
 
 ## HTTP API

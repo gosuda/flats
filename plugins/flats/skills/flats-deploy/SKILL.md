@@ -8,12 +8,23 @@ description: Deploy a website or small web app the user built to their own Flats
 Flats hosts each site as a *flat* on the operator's own machine. Every upload
 becomes an immutable **version**; **deploying** a version makes it live after a
 health check, and **rollback** redeploys an earlier one. New flats are
-**private**: only devices on the operator's Tailscale network can open them.
+**private**: only devices on the operator's Tailscale network can open them
+in Tailscale mode; local trial mode uses loopback .localhost origins.
 
 You can use either the MCP tools (server `flats`, endpoint
 `http://127.0.0.1:7878/mcp` on the Flats host, or `https://flats.<tailnet>.ts.net/mcp`)
 or the `flats` CLI. Prefer the CLI when the build output is on disk on the
 Flats host; use MCP `save_version` with inline files otherwise.
+
+## Runtime API discovery
+
+Before authoring a server app, read MCP resource `flats://docs/runtime-api/v1`
+or call the read-only `get_runtime_reference` tool with `{}`. The complete
+[runtime API v1 reference](../../../../docs/runtime-api-v1.md) ships in the host;
+MCP clients do not need this skill installed. It defines synchronous FILES/DB
+methods, arguments, returns, missing keys, text/binary encoding, errors,
+limits, persistence, request/response helpers and secrets. FILES is a per-flat
+local-disk string store, not S3. Use application base64 text for binary storage.
 
 ## Workflow
 
@@ -78,13 +89,16 @@ export default {
 The handler runs in a sandbox (QuickJS on WebAssembly): no Node.js APIs, no
 npm packages that need Node, no file system or network. Use `env.DB`
 (SQLite: `query`, `exec`), `env.FILES` (`get`, `put`, `delete`, `list`) and
-secrets as `env.NAME`. Data survives deploys and rollbacks. Bundle your code
-into one ES module.
+secrets as `env.NAME`. Live DB/FILES data survives redeploys and ordinary code rollbacks.
+Previews use isolated copies. Failed candidates can still write storage during
+startup/health; keep those paths free of destructive mutations. Bundle dependencies for the sandbox; uploaded relative ES module imports
+are supported. Server handlers must serve their own UI/assets.
 
 A `.wasm` server is a fresh WASI preview1 command per HTTP request. Read
 `{method, url, headers, body}` JSON from stdin and write `{status, headers,
-body}` JSON to stdout. Configured variables and injected secrets are available
-as environment variables; clocks and CSPRNG are enabled. WASI has no SQLite
+body}` JSON to stdout. Only the flat's secrets are injected as environment
+variables; there is no separate variable configuration or inherited host
+environment. Clocks and CSPRNG are enabled. WASI has no SQLite
 or persistent FILES host ABI, filesystem mounts, outbound network or WebSocket
 API. Choose JavaScript when the app needs `env.DB`, `env.FILES`, Web Crypto
 or WebSocket callbacks; WASI does not share those JS host objects.

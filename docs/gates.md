@@ -151,3 +151,53 @@ After the fixes: `go test ./...` and `-race` on core/api/app/mcpx/store pass;
 the MVP gate (10 MB upload→live 28 ms, rollback 2 ms), the server-flat gate
 and the three-agent gate (Claude Code 18 s, Codex 60 s, Cursor 31 s) pass
 again.
+
+## Runtime API discovery and unfamiliar-agent gate (issue 9)
+
+The host embeds [runtime API v1](runtime-api-v1.md), discoverable from MCP
+initialization through `flats://docs/runtime-api/v1` or the read-only
+`get_runtime_reference` tool. Protocol tests verify both discovery paths from
+loopback and remote clients, matching resource/tool content, version identity,
+read-only behavior and current upload limits. Runtime tests execute the published
+JS and binary-encoding snippets. These are automated contract tests, **not
+end-to-end unfamiliar-agent usability evidence**.
+
+The historical three-client static gate above supplies prepared HTML. Keep it
+as a static deployment regression; it does not establish source-free authoring.
+A genuine runtime authoring gate **passed on the pre-integration candidate**;
+see the [sanitized run evidence](gates/runtime-discovery.md). Accepted-base
+integration and final-binary revalidation remain separate gates. Reproduce the
+authoring check with these steps:
+
+1. Start a disposable local host with runtime enabled, Portal disabled, fresh
+   synthetic data and free management/site ports. Supply only README host/MCP
+   setup and an ordinary small app request. No prepared application files,
+   implementation excerpts or private API hints.
+2. Enforce lack of source access. One supported route is a fresh Claude client
+   outside the checkout with `--tools '' --restricted --strict-mcp-config
+   --disable-slash-commands --setting-sources ''`, only the Flats MCP config,
+   and `--disallowedTools mcp__flats__save_version_from_dir`. Without native
+   shell/file/browser/skill tools or host-directory uploads, the client can
+   author inline files through save_version and discover APIs through MCP.
+   Verify the effective tool inventory and injected context; allowlisting
+   permissions alone or a promise not to read source is insufficient. Another
+   route is a disposable container with no source mount. Never give an isolated
+   test client an orchestration preamble that requires restoring shell access.
+3. Have the client author/deploy a private app using all four FILES operations
+   and DB query/exec. Independently fetch the **returned** URL, exercise write/
+   read/list/delete and structured-data behavior, and retain HTTP observations.
+4. Seed random data, ask that client to change and redeploy the app, then verify
+   both DB and FILES data persist at the returned URL. Ask it to deploy a
+   deliberately unhealthy candidate with side-effect-free startup/health;
+   confirm the MCP failure, saved candidate, failed health log and unchanged
+   prior live version, URL behavior and stored data.
+5. Record client/version/model, host commit/tree/binary hash, documentation
+   version and text hash, effective isolation/tool restrictions, supplied inputs,
+   transcript, authored-file hashes, URLs/HTTP results and every intervention.
+   Keep private local logs/credentials out of the public repository. Label
+   failed or manually repaired attempts honestly. Cleanup only owned PIDs/data.
+
+Only a real run with this provenance can satisfy issue 9 acceptance. Passing
+runtime tests, prepared-app scripts, a planned command or an unexecuted harness
+cannot substitute for that evidence. Static client/service/tailnet gates remain
+separate and keep their original scope.
