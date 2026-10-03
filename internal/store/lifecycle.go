@@ -463,6 +463,20 @@ func (s *Store) ClaimApprovalAuthorized(ctx context.Context, id, actor string, n
 	return nil
 }
 
+// RejectApprovalAuthorized atomically finishes a pending rejection with its
+// validated operator audit. It cannot overwrite a claimed or decided approval.
+func (s *Store) RejectApprovalAuthorized(ctx context.Context, id, actor, result string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET status='rejected',result=?,decided_by=?,authorized_at=?,decided_at=? WHERE id=? AND status='pending'`, result, actor, unix(now), unix(now), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return errors.New("approval no longer pending")
+	}
+	return nil
+}
+
 // CommitVisibility records policy and an execution receipt in one transaction.
 func (s *Store) CommitVisibility(ctx context.Context, f Flat, from Visibility, approval string, data json.RawMessage) error {
 	tx, err := s.db.BeginTx(ctx, nil)

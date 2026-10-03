@@ -1362,6 +1362,13 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		}
 		return cur, fmt.Errorf("%w: approval is already %s", ErrConflict, cur.Status)
 	}
+	actor := "validated operator"
+	if a.Status == "pending" && s.cfg.OperatorIdentity != nil {
+		actor = s.cfg.OperatorIdentity(ctx)
+		if actor == "" {
+			return a, forbiddenf("operator identity missing")
+		}
+	}
 	if !approve {
 		if a.Status == "rejected" {
 			return a, nil
@@ -1369,7 +1376,7 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		if a.Status != "pending" {
 			return lost(nil)
 		}
-		if err := s.st.DecideApproval(ctx, id, "rejected", "rejected by the operator", s.now()); err != nil {
+		if err := s.st.RejectApprovalAuthorized(ctx, id, actor, "rejected by the operator", s.now()); err != nil {
 			return lost(err)
 		}
 		s.Event(ctx, a.Flat, "info", "approval", a.Action+" rejected by the operator", nil)
@@ -1381,13 +1388,6 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 	case "applying":
 		return lost(nil)
 	case "pending":
-		actor := "validated operator"
-		if s.cfg.OperatorIdentity != nil {
-			actor = s.cfg.OperatorIdentity(ctx)
-			if actor == "" {
-				return a, forbiddenf("operator identity missing")
-			}
-		}
 		if err := s.st.ClaimApprovalAuthorized(ctx, id, actor, s.now()); err != nil {
 			return lost(err)
 		}

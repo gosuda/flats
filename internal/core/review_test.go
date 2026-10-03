@@ -657,7 +657,10 @@ func TestApproveRejectRace(t *testing.T) {
 		if (errs[0] == nil) == (errs[1] == nil) {
 			t.Fatalf("round %d: want exactly one decision, got %v / %v", i, errs[0], errs[1])
 		}
-		a, _ := e.svc.GetApproval(ctx, r.Approval.ID)
+		a, err := e.svc.GetApproval(ctx, r.Approval.ID)
+		if err != nil || a.DecidedBy == "" || a.AuthorizedAt == nil || a.DecidedAt == nil {
+			t.Fatalf("round %d: decision audit missing: %+v %v", i, a, err)
+		}
 		_, public := e.pub.Hidden("race")
 		if (a.Status == "approved") != public {
 			t.Fatalf("round %d: approval %s but public=%v", i, a.Status, public)
@@ -717,8 +720,12 @@ func TestErrorKinds(t *testing.T) {
 	svc.SaveVersion(ctx, "nopub", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI)
 	publish(t, svc, "nopub")
 	permitPortal(t, svc, "nopub")
-	if _, err := svc.SetVisibility(ctx, "nopub", store.PublicListed, core.ViaConsole, ""); !errors.Is(err, core.ErrUnavailable) {
-		t.Errorf("public disabled: %v", err)
+	r, err := svc.SetVisibility(ctx, "nopub", store.PublicListed, core.ViaConsole, "")
+	if err != nil || r.Status != "pending_approval" || r.Approval == nil {
+		t.Fatalf("public disabled request must wait for approval: %+v %v", r, err)
+	}
+	if a, err := svc.Decide(ctx, r.Approval.ID, true); !errors.Is(err, core.ErrUnavailable) || a.Status != "failed" {
+		t.Errorf("public disabled apply: %+v %v", a, err)
 	}
 }
 

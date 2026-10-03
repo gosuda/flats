@@ -272,9 +272,6 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		if f.LiveVersion == 0 && n == 0 {
 			return ActionResult{}, fmt.Errorf("%w: publish a version before making this flat public", ErrConflict)
 		}
-		if err := s.publicAvailable(ctx, slugName); err != nil {
-			return ActionResult{}, err
-		}
 	}
 	providers, err := s.providerKey(ctx, slugName)
 	if err != nil {

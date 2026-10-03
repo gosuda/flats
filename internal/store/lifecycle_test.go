@@ -109,3 +109,74 @@ func TestLifecycleCommitPublicationIsAtomic(t *testing.T) {
 		t.Fatalf("duplicates %v %v", vs, hist)
 	}
 }
+
+func TestLifecycleAuthorizedRejectClaimRacePersistsWinner(t *testing.T) {
+	for _, order := range []string{"reject_first", "claim_first", "concurrent"} {
+		t.Run(order, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.sqlite")
+			s, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { s.Close() }()
+			ctx := t.Context()
+			now := time.Now().Truncate(time.Millisecond)
+			if err := s.CreateFlat(ctx, Flat{Slug: "race", Name: "race", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.InsertApproval(ctx, Approval{ID: "decision", Flat: "race", Action: "delete", Params: json.RawMessage(`{}`), Status: "pending", RequestedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			claimTime := now.Add(time.Second)
+			reject := func() error { return s.RejectApprovalAuthorized(ctx, "decision", "reject-operator", "rejected", now) }
+			claim := func() error { return s.ClaimApprovalAuthorized(ctx, "decision", "approve-operator", claimTime) }
+			var rejected, claimed error
+			switch order {
+			case "reject_first":
+				rejected = reject()
+				claimed = claim()
+			case "claim_first":
+				claimed = claim()
+				rejected = reject()
+			case "concurrent":
+				start := make(chan struct{})
+				done := make(chan error, 1)
+				go func() { <-start; done <- reject() }()
+				close(start)
+				claimed = claim()
+				rejected = <-done
+			}
+			if (rejected == nil) == (claimed == nil) {
+				t.Fatalf("want exactly one winner: %v / %v", rejected, claimed)
+			}
+			actor, status, at := "reject-operator", "rejected", now
+			if claimed == nil {
+				actor, status, at = "approve-operator", "applying", claimTime
+			}
+			// Neither a late same decision nor opposite claim may overwrite persisted audit.
+			if err := s.RejectApprovalAuthorized(ctx, "decision", "late-operator", "late", now.Add(2*time.Second)); err == nil {
+				t.Fatal("late reject won")
+			}
+			if err := s.ClaimApprovalAuthorized(ctx, "decision", "late-operator", now.Add(2*time.Second)); err == nil {
+				t.Fatal("late claim won")
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := s.GetApproval(ctx, "decision")
+			if err != nil || a.Status != status || a.DecidedBy != actor || a.AuthorizedAt == nil || !a.AuthorizedAt.Equal(at) {
+				t.Fatalf("durable winner: %+v %v", a, err)
+			}
+			if rejected == nil && (a.DecidedAt == nil || !a.DecidedAt.Equal(at) || a.Result != "rejected") {
+				t.Fatalf("rejection final audit: %+v", a)
+			}
+			if claimed == nil && a.DecidedAt != nil {
+				t.Fatal("losing reject finalized claimed approval")
+			}
+		})
+	}
+}
