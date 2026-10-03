@@ -79,7 +79,7 @@ def seed_mixed(h):
 
 
 def mixed_migration(h):
-    _, _, require, _, _ = helpers()
+    _, _, require, _, static = helpers()
     seed = seed_mixed(h)
     h.start()
     expected = {v['number']: v['hash'] for v in seed['versions'] if v['number'] in (2, 3)}
@@ -282,7 +282,9 @@ def runtime_initialization(h):
                     'module_scope_data_isolation': 'unproven' if before['topEnv'] == 'undefined' else 'observed'})
     # Compare impact reporting against live data immediately after successful
     # start and BEFORE the first serving request (health ran on the trial copy).
-    h.save('startup', startup_server())
+    candidate = startup_server()
+    candidate['server.js'] += '\n// DISTINCT-RECOVERY-CANDIDATE\n'
+    h.save('startup', candidate)
     a = h.publish('startup')
     dbpaths = list((h.data / 'flats/startup/data').glob('db.sqlite'))
     require(len(dbpaths) == 1, 'missing runtime data oracle')

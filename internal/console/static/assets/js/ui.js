@@ -3,12 +3,15 @@
 
 import { h, clear, icon } from './dom.js';
 
+const restoreAfterBusy = new WeakSet();
+
 // confirmDialog opens a modal <dialog> and resolves true when confirmed.
 // opts: title, body (string | Node | array), confirmLabel, danger,
 // requireText (the user must type this exactly to enable the confirm button).
 export function confirmDialog(opts) {
   return new Promise((resolve) => {
-    const previous = document.activeElement;
+    const active = document.activeElement;
+    const previous = active && active !== document.body ? active : document.querySelector('[aria-busy="true"]');
     const titleId = 'dlg-title-' + Math.random().toString(36).slice(2);
     const confirmBtn = h('button', {
       type: 'submit', value: 'ok',
@@ -38,7 +41,10 @@ export function confirmDialog(opts) {
       const ok = dlg.returnValue === 'ok';
       dlg.remove();
       resolve(ok);
-      if (previous && typeof previous.focus === 'function') previous.focus();
+      if (previous && typeof previous.focus === 'function') {
+        if (previous.disabled) restoreAfterBusy.add(previous);
+        else previous.focus();
+      }
     });
     document.body.appendChild(dlg);
     dlg.showModal();
@@ -218,5 +224,9 @@ export async function busy(btn, fn) {
   try { return await fn(); } finally {
     btn.disabled = was;
     btn.removeAttribute('aria-busy');
+    if (restoreAfterBusy.has(btn)) {
+      restoreAfterBusy.delete(btn);
+      if (!btn.disabled && btn.isConnected !== false) btn.focus();
+    }
   }
 }

@@ -524,14 +524,22 @@ def approval_boundary(h):
                     "response": response})
 
 
+def denied_visibility(h, slug):
+    before = h.flat(slug)
+    code, response = h.request("POST", f"/api/flats/{slug}/visibility", {"visibility": "public"})
+    require(code == 409 and re.search(r"provider.*not.*permit|permit.*before.*public", response.get("error", ""), re.I),
+            f"permission denial did not report its cause: {code} {response}")
+    after = h.flat(slug)
+    require(after["visibility"] == before["visibility"] and after["live_version"] == before["live_version"],
+            "permission preflight changed current state")
+
+
 def provider_failure(h):
     h.activate("provider", static("PUBLISHED"))
     require(provider_ids(h.flat("provider")) <= {"local"}, "provider auto permitted")
     code, _ = h.request("POST", "/api/flats/provider/providers", {"provider": "portal", "permitted": True})
     require(code in (403, 404, 405), "agent can grant provider permission")
-    a = h.approval(h.ok("POST", "/api/flats/provider/visibility", {"visibility": "public"}, status=202))
-    require(h.flat("provider")["visibility"] == "private", "visibility changed before approval")
-    failed(h.decide(a), "not-permitted")
+    denied_visibility(h, "provider")
     h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale", "permitted": True}, console=True)
     require(h.flat("provider")["visibility"] == "private", "connection permission authorized Public")
     require("tailscale-funnel" not in provider_ids(h.flat("provider")), "Tailscale authorized Funnel")
@@ -658,7 +666,11 @@ def migration(h):
     require(f["publication"] == "unpublished" and f["live_version"] == 0, "migration fabricated publication")
     require(h.versions("historical") == [], "never-deployed snapshots stayed published")
     after = sorted(hashlib.sha256(p.read_bytes()).hexdigest() for p in h.data.rglob("index.html"))
-    require(after == sorted(before.values()), "migration lost or changed saved files")
+    require(set(after) == set(before.values()), "migration lost or changed saved file content")
+    for rel, digest in before.items():
+        path = h.data / rel
+        require(path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest,
+                "migration moved or changed historical bytes: " + rel)
     p = h.ok("POST", "/api/flats/historical/previews", {"target": "draft"}, status=201)
     require("LEGACY-B" in h.traffic(p["host"]), "migration selected wrong current draft")
     h.stop()
@@ -766,9 +778,9 @@ def provider_matrix(h):
         return h.approval(h.ok("POST", "/api/flats/matrix/visibility", {"visibility": "public"}, status=202))
     def allow(provider, permitted=True):
         h.ok("POST", "/console/api/flats/matrix/providers", {"provider": provider, "permitted": permitted}, console=True)
-    failed(h.decide(public_request()), "not-permitted")
+    denied_visibility(h, "matrix")
     allow("tailscale")
-    failed(h.decide(public_request()), "not-permitted")
+    denied_visibility(h, "matrix")
     require(h.ok("GET", "/__gate/state")["calls"].get("funnel_serve", 0) == 0, "Tailscale permission called Funnel")
     allow("tailscale", False)
     allow("tailscale-funnel")
