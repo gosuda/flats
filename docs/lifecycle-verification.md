@@ -223,3 +223,34 @@ Rejected decisions persist validated actor/time but perform no apply operation.
 Their result_data must be empty/null; no execution/data-impact DTO is fabricated.
 The census checks unchanged current pointer, bytes, visibility, providers and
 version count. Approved/applied/failed executions still require actual typed DTOs.
+
+## Final integrated validation
+
+The integrated candidate passes all 23 actual-binary cases with both required
+lanes, matching clean source/binary identities and the machine acceptance verdict.
+The final full Go tests, scoped transport race tests, whole-tree vet and build
+pass. Whole-tree race tests passed before the final transport follow-on; the
+changed final transport packages were then checked with race detection again.
+Owned expose/app/console race checks also pass. Historical failing receipts above
+remain failed evidence and were not relabeled as successful acceptance.
+
+Published visibility changes now remain pending even when a provider grant is
+absent; permission/readiness checks occur at approved apply. Known provider
+failures return typed user-correctable HTTP results. Rejections persist actor/time
+and have no execution receipt. The final gate checks these contracts, current
+bytes on both public/private paths through publish/rollback/restart, partial
+provider cleanup, four real crash phases, migration and DB/FILES restore.
+
+Actual rendered desktop/mobile console checks use disposable production Local
+servers and real APIs, including consecutive source archive saves, revision/dirty
+status, current-preview selection, tabs, Access/Operations, credential unlock,
+separate publish confirmation, result/audit rendering, cancel focus and logout.
+At 390 px, the checked page had no horizontal overflow. Evidence is retained
+privately outside this repository; no operator credentials or raw logs are public.
+
+The gate's human_approval verdict proves credential separation and explicit
+candidate decisions under its stated trust boundary. It does not identify an
+individual human or protect against operator-secret/server/browser/OS access.
+Injected provider faults prove loopback behavior, not live Funnel/Portal internet
+reachability or tailnet ACL enforcement. Independent Claude review is still
+required before product acceptance; no PR, push or merge is authorized here.

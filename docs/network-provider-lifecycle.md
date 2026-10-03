@@ -198,12 +198,10 @@ flag parsing lives in `internal/app`.
 
 ## Limitations
 
-- Core integration is pending. This branch has no exported `LifecycleNet` to
-  implement and no core SHA to adopt. `Host.Providers` and the legacy
-  `Config.Private` / `Config.Public` fields are not that adapter. When a flat
-  is already public and this process started Portal, the core on this branch
-  still publishes through `Config.Public`. That is the old path, not
-  `ServeExposure`.
+- Core integration uses the exact exported `LifecycleNet`, `LifecycleObserver`
+  and `LifecyclePreviewNet` contracts through `Config.Lifecycle`. The app and
+  deterministic integration host leave legacy `Config.Public` unset. Private and
+  public current routes are rebound through Manager before public activation.
 - Portal SDK end-to-end publication was not repeated. The manager calls
   `PortalNet`; policy tests use a loopback double for call counts.
 - Owner-only authentication is deferred. Private access remains the tailnet ACL.
@@ -213,15 +211,15 @@ flag parsing lives in `internal/app`.
   `--portal` or `--permit portal` once; after the grant is stored, omitting
   the flag starts Portal again.
 
-## Integration checkpoint
+## Historical interface-only checkpoint
 
 The purpose integration worktree adopted the exact frozen network, console and
 gate artifacts without conflicts, followed by core prerequisite
 `d0d4aaf07a86024469e4ad43034230d15a33f7d7`. Manager aliases the exact exported
 core DTOs and has a compile-time `core.LifecycleNet` assertion. App and the test
 host now assign `core.Config.Lifecycle`; the legacy Public fallback is unset.
-The prerequisite defines interfaces only. Its committed archive compiles, but
-core lifecycle behavior and operator authority still require exact later grants.
+At this checkpoint the prerequisite defined interfaces only; later exact
+committed grants supplied core lifecycle behavior and operator authority.
 
 Startup assigns a Portal interface only when its concrete backend is non-nil.
 The extended `TestExplicitPortalFalseKeepsGrantAndDoesNotStart` calls Manager

@@ -59,9 +59,11 @@ the next save to conflict with its own first save. Real conflicts retain the
 source archive and do not advance the expected revision. The console test checks
 both source archive bodies and the second request's updated expected revision.
 
-Current package checks and simulated-DOM checks are preparation evidence.
-Desktop/mobile rendered checks with actual lifecycle DTOs, plus operator-session
-unlock and separate candidate confirmation, await exact core/transport adoption.
+Package and simulated-DOM checks are complemented by actual rendered desktop
+and mobile checks against disposable production Local servers and real API DTOs.
+Source autosaves, tabs, Access/Operations, operator unlock, separate publish
+confirmation, status/audit updates, cancellation focus and logout were verified.
+The final frozen binary also rendered persisted actor and data-impact details.
 
 ## Operator authority integration
 
