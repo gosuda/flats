@@ -8,21 +8,17 @@ if [[ -n ${FLATS_BIN:-} ]]; then
 else
   CGO_ENABLED=0 go build -C "$ROOT" -buildvcs=true -o "$WORK/flats" ./cmd/flats
 fi
+# Historical code must always come from the pinned committed tree. An external
+# legacy executable has no verified relationship to that source and cannot prove
+# migration acceptance merely by having its bytes hashed.
 if [[ -n ${FLATS_LIFECYCLE_LEGACY_BIN:-} ]]; then
-  cp "$FLATS_LIFECYCLE_LEGACY_BIN" "$WORK/legacy-flats"
-else
-  # Known pre-lifecycle base. Building an archived tree leaves this worktree
-  # untouched and seeds migrations through the real historical HTTP server.
-  mkdir "$WORK/legacy-source"
-  git -C "$ROOT" archive 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0 | tar -x -C "$WORK/legacy-source"
-  CGO_ENABLED=0 go build -C "$WORK/legacy-source" -o "$WORK/legacy-flats" ./cmd/flats
+  echo "legacy binary overrides are unverified; use the pinned archive build" >&2
+  exit 2
 fi
-# The historical provider fixture must link historical core/API/runtime, never
-# the candidate. Archive even when a legacy binary override was supplied.
-if [[ ! -d "$WORK/legacy-source" ]]; then
-  mkdir "$WORK/legacy-source"
-  git -C "$ROOT" archive 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0 | tar -x -C "$WORK/legacy-source"
-fi
+mkdir "$WORK/legacy-source"
+git -C "$ROOT" archive 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0 | tar -x -C "$WORK/legacy-source"
+CGO_ENABLED=0 go build -C "$WORK/legacy-source" -o "$WORK/legacy-flats" ./cmd/flats
+# The historical provider fixture links only archived core/API/runtime.
 mkdir -p "$WORK/legacy-source/internal/lifecyclecheck/legacyadapter"
 cp "$ROOT/internal/lifecyclecheck/legacyadapter/main.go" "$WORK/legacy-source/internal/lifecyclecheck/legacyadapter/main.go"
 CGO_ENABLED=0 go build -C "$WORK/legacy-source" -o "$WORK/legacy-provider-adapter" ./internal/lifecyclecheck/legacyadapter
