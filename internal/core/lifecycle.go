@@ -722,16 +722,12 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		next := f
 		next.Visibility = target
 		if err := s.ensureExposure(ctx, next); err != nil {
-			_ = s.stopPublicConfirmed(ctx, a.Flat)
-			_ = s.ensureExposure(ctx, f)
-			return ActionResult{}, err
+			return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
 		}
 		next.UpdatedAt = s.now()
 		raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
 		if err := s.st.CommitVisibility(ctx, next, f.Visibility, a.ID, raw); err != nil {
-			_ = s.stopPublicConfirmed(ctx, a.Flat)
-			_ = s.ensureExposure(ctx, f)
-			return ActionResult{}, err
+			return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
 		}
 		s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> %s", p.From, target), nil)
 		fv := s.view(ctx, next)
@@ -750,11 +746,29 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	s.stopPublicRedirects(a.Flat)
 	if err := s.ensureExposure(ctx, f); err != nil {
 		s.Event(ctx, a.Flat, "error", "exposure", err.Error(), nil)
-		return ActionResult{}, fmt.Errorf("%w: private visibility is saved but exposure did not match it: %v", ErrConflict, err)
+		fv := s.view(ctx, f)
+		return ActionResult{Status: "done", Flat: &fv, Notice: "Visibility is Private, but its private route needs attention: " + err.Error(), Message: "visibility changed to private; private exposure needs attention"}, nil
 	}
 	s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> private", p.From), nil)
 	fv := s.view(ctx, f)
 	return ActionResult{Status: "done", Flat: &fv, Message: "visibility changed to private"}, nil
+}
+
+// rollbackPublicExposure restores the previous private policy after a failed
+// Private-to-Public apply. Keep teardown and restore failures in the returned
+// chain so an unconfirmed public route is never hidden by the initial error.
+func (s *Service) rollbackPublicExposure(ctx context.Context, previous store.Flat, cause error) error {
+	var rollback []error
+	if err := s.stopPublicConfirmed(ctx, previous.Slug); err != nil {
+		rollback = append(rollback, fmt.Errorf("rollback public exposure: %w", err))
+	}
+	if err := s.ensureExposure(ctx, previous); err != nil {
+		rollback = append(rollback, fmt.Errorf("restore private exposure: %w", err))
+	}
+	if len(rollback) == 0 {
+		return cause
+	}
+	return errors.Join(append([]error{cause}, rollback...)...)
 }
 
 func (s *Service) stopPublicConfirmed(ctx context.Context, slugName string) error {
@@ -820,6 +834,9 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 		if _, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)}); err != nil {
 			return fmt.Errorf("private exposure: %w", err)
 		}
+		// Public setup may fail after Local/Tailscale are already live. Keep
+		// that successful registration visible to rename and teardown logic.
+		lf.privateServed = true
 	}
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),

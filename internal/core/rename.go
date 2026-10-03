@@ -42,7 +42,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return FlatView{}, err
 	}
-	s.dropPreviews(ctx, from) // their data lives under the flat directory
+	_ = s.dropPreviews(ctx, from) // their data lives under the flat directory
 	s.mu.Lock()
 	lf := s.live[from]
 	s.mu.Unlock()

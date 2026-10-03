@@ -984,7 +984,7 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	if err := s.ensureExposure(ctx, f); err != nil {
 		s.Event(ctx, slugName, "error", "exposure", err.Error(), nil)
 	}
-	s.dropPreviews(ctx, slugName)
+	_ = s.dropPreviews(ctx, slugName)
 	s.Event(ctx, slugName, "info", "deploy", fmt.Sprintf("%s: version %d is live (was %d) via %s", kind, n, prev, via), map[string]int{"version": n, "previous": prev})
 	s.pruneVersions(ctx, slugName)
 	fv, _ := s.st.GetFlat(ctx, slugName)
@@ -1325,7 +1325,9 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 			return ActionResult{}, err
 		}
 	}
-	s.dropPreviews(ctx, slugName)
+	if err := s.dropPreviews(ctx, slugName); err != nil {
+		return ActionResult{}, fmt.Errorf("stop previews: %w", err)
+	}
 	s.mu.Lock()
 	lf := s.live[slugName]
 	delete(s.live, slugName)
@@ -1610,15 +1612,20 @@ func (s *Service) ClosePreview(ctx context.Context, host string) error {
 	return s.st.DeletePreview(ctx, host)
 }
 
-func (s *Service) dropPreviews(ctx context.Context, slugName string) {
+func (s *Service) dropPreviews(ctx context.Context, slugName string) error {
 	ps, err := s.st.ListPreviews(ctx, slugName)
 	if err != nil {
-		return
+		return err
 	}
+	var errs []error
 	for _, p := range ps {
-		_ = s.ClosePreview(ctx, p.Host)
+		if err := s.ClosePreview(ctx, p.Host); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.Host, err))
+			continue
+		}
 		s.Event(ctx, slugName, "info", "preview", "closed preview "+p.Host, nil)
 	}
+	return errors.Join(errs...)
 }
 
 // --- background ---
