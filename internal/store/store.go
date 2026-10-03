@@ -305,6 +305,9 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
 		return err
 	}
+	if ver > 4 {
+		return fmt.Errorf("metadata schema %d is newer than supported schema 4", ver)
+	}
 	if ver < 1 {
 		// Before the redirects table only the latest rename was kept, on the
 		// flat row. A slug that a flat uses again is no longer a redirect.

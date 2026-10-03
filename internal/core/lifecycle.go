@@ -393,7 +393,9 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 		return s.st.GetApproval(ctx, a.ID)
 	}
 	res, err := s.applyApproval(ctx, a)
-	lifecyclePhase(ctx, "after_live_before_finalize", a.Flat, a.ID)
+	if err == nil {
+		lifecyclePhase(ctx, "after_live_before_finalize", a.Flat, a.ID)
+	}
 	status, result := "approved", res.Message
 	if err != nil {
 		status, result = "failed", err.Error()
@@ -722,6 +724,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		next.UpdatedAt = s.now()
 		raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
 		if err := s.st.CommitVisibility(ctx, next, f.Visibility, a.ID, raw); err != nil {
+			_ = s.stopPublicConfirmed(ctx, a.Flat)
 			_ = s.ensureExposure(ctx, f)
 			return ActionResult{}, err
 		}
@@ -750,10 +753,30 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 }
 
 func (s *Service) stopPublicConfirmed(ctx context.Context, slugName string) error {
+	s.mu.Lock()
+	var aliases []string
+	for old, r := range s.redir {
+		if r.cur == slugName && r.public {
+			aliases = append(aliases, old)
+		}
+	}
+	s.mu.Unlock()
+	for _, old := range aliases {
+		if n, ok := s.lifecycleNet(); ok {
+			res, err := n.StopPublicRoutes(ctx, old)
+			if err != nil || len(res.Unconfirmed) > 0 {
+				return fmt.Errorf("%w: %w: public redirect %s stop unconfirmed", ErrConflict, ErrPublicStopUnconfirmed, old)
+			}
+		} else if s.cfg.Public != nil {
+			if err := s.cfg.Public.Stop(old); err != nil {
+				return fmt.Errorf("%w: %w: public redirect %s stop: %v", ErrConflict, ErrPublicStopUnconfirmed, old, err)
+			}
+		}
+	}
 	if ln, ok := s.lifecycleNet(); ok {
 		res, err := ln.StopPublicRoutes(ctx, slugName)
 		if err != nil {
-			return fmt.Errorf("%w: stop public routes: %v", ErrConflict, err)
+			return fmt.Errorf("%w: %w: stop public routes: %w", ErrConflict, ErrPublicStopUnconfirmed, err)
 		}
 		if len(res.Unconfirmed) > 0 {
 			names := make([]string, 0, len(res.Unconfirmed))
@@ -768,7 +791,7 @@ func (s *Service) stopPublicConfirmed(ctx context.Context, slugName string) erro
 	lf := s.state(slugName)
 	if lf.publicServed && s.cfg.Public != nil {
 		if err := s.cfg.Public.Stop(slugName); err != nil {
-			return fmt.Errorf("%w: stop public exposure: %v", ErrConflict, err)
+			return fmt.Errorf("%w: %w: stop public exposure: %w", ErrConflict, ErrPublicStopUnconfirmed, err)
 		}
 		lf.publicServed = false
 	}
@@ -803,7 +826,7 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	if f.Visibility.Public() {
 		ready := false
 		for _, ep := range res.Endpoints {
-			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && ep.State == "ready" {
+			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && slices.Contains(permitted, ep.Provider) && ep.State == "ready" && ep.Ready && ep.Configured && ep.Permitted {
 				ready = true
 			}
 		}
@@ -1113,7 +1136,9 @@ func (s *Service) migrateLegacyDrafts(ctx context.Context) error {
 						return err
 					}
 				} else if os.IsNotExist(err) {
-					rev.Pruned = true
+					// Recover the predecessor's rename-before-metadata window.
+					recovered, e := bundle.FromDir(dst, bundle.Limits{MaxBytes: max(v.Size+1, s.UploadLimit())})
+					rev.Pruned = e != nil || bundle.Hash(recovered) != v.Hash
 				} else {
 					return err
 				}

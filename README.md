@@ -15,9 +15,9 @@ Flats lets agents deploy sites and small server apps directly to your own machin
 Your machine runs the code and keeps the versions, SQLite databases, persistent files and secrets. Flats is a single CGO-free Go binary for macOS and Linux, with a CLI, HTTP API, MCP endpoint and web console.
 
 - Each flat and preview gets its own origin and private Tailscale node.
-- Immutable versions, health-checked deploys, previews and rollback keep a failed candidate from replacing a working site.
+- Draft saves preserve Current; approved, successful publishes create immutable numbered versions. Health checks and previews use isolated data.
 - Static sites and sandboxed JavaScript/WASI server apps share the same deploy flow.
-- Agents request public exposure or deletion; the operator approves in the console.
+- Publish, activation, rollback and both visibility directions require a validated operator approval.
 
 ```text
 Agent / CLI / web console → Flats on your machine → version + local data
@@ -50,13 +50,13 @@ printf '<h1>Hello from Flats</h1>\n' > hello/index.html
 flats deploy ./hello --flat hello
 ```
 
-Open `http://hello.localhost:7879`; the console is at `http://127.0.0.1:7878`. Local mode serves loopback development origins and does not join Tailscale. Use `--listen` and `--local-addr` to select other ports. Each running host needs its own data directory; concurrent hosts sharing one directory are rejected before store or runtime startup.
+The deploy command saves Draft and returns a pending publish request. Approve it through the authenticated operator console before opening `http://hello.localhost:7879`; the console is at `http://127.0.0.1:7878`. Local mode serves loopback development origins and does not join Tailscale. Use `--listen` and `--local-addr` to select other ports. Each running host needs its own data directory; concurrent hosts sharing one directory are rejected before store or runtime startup.
 
 ## Private and public deployment
 
 For normal private hosting, run `flats serve` with the default Tailscale network. Enable MagicDNS and HTTPS certificates in your tailnet, then follow the node login links in the console, or supply a reusable, untagged Tailscale auth key with `--authkey-file`. Flats embeds tsnet; each flat, preview and console has its own node. Tailnet ACLs decide which devices can reach those origins. Code and data stay on your machine.
 
-Portal is enabled by default but exposes only flats made public. After operator approval, a relay routes internet requests to your machine under a stable per-flat Portal identity. `public-unlisted` is accessible to anyone with the URL; it only hides relay listings. `public-listed` also appears in those listings. Relay availability and Tailscale connectivity are external dependencies.
+Visibility is Private or Public, independently of publication and connection state. Private routes use Local or permitted Tailscale with existing tailnet ACLs; Public routes use explicitly permitted Portal or Tailscale Funnel. Configuration alone never publishes a version or changes visibility. Public requires a published version and an approved transition with a ready public route. Legacy listed/unlisted inputs map to Public. Relay availability and Tailscale connectivity are external dependencies.
 
 `flats install` runs the host at login using launchd on macOS or a systemd user service on Linux; `flats uninstall` removes the service and keeps data. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS), overridable with `--data` or `FLATS_DATA`.
 
@@ -79,7 +79,7 @@ Deploy that directory with the same `flats deploy` command. JavaScript runs in Q
 
 A `.wasm` server is a WASI preview1 command instantiated afresh per request: request JSON on stdin, response JSON on stdout, only the flat's secrets as environment variables, clocks and randomness. It has **no SQLite/FILES host ABI, filesystem mounts, outbound network or WebSocket API**. See the [capability table and response format](docs/design.md#server-flats-handler-abi).
 
-Data survives deploys and ordinary rollbacks. `flats rollback hello` restores code; `--restore-data` restores only the pre-deploy database snapshot; FILES remains current. Preview data is isolated from live data.
+Data survives deploys and ordinary rollbacks. `flats rollback hello` restores code; `--restore-data` requests a separately frozen restore approval for the pre-deploy DB and FILES snapshot. Historical DB-only snapshots preserve current FILES. Preview data is isolated from live data.
 
 ## Agent integration
 
@@ -108,13 +108,13 @@ call `save_version` with `{"slug":"hello","files":[{"path":"index.html",
 "content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}`. For a server,
 include the `flats.json` and `server.js` shown above in the same complete inline
 file list. Fetch the returned URL and check `get_flat`/`get_logs`; a successful
-save alone does not establish a live site.
+save alone does not establish a live site, and requesting deploy still waits for operator approval.
 
 Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
 
 ## Security and operations
 
-Server code runs in separate worker processes with WebAssembly memory/time limits and restricted host capabilities. The loopback management listener and console node are privileged control surfaces: restrict console access with tailnet ACLs. Approvals constrain the supported agent tools and browser requests; they are **not an authorization boundary against arbitrary processes running as the operator** or clients that can imitate console headers.
+Server code runs in separate worker processes with WebAssembly memory/time limits and restricted host capabilities. The loopback management listener and console node are privileged control surfaces: restrict console access with tailnet ACLs. Core denies approval decisions unless its operator validator accepts the request context; Console labels and same-origin headers are insufficient. The transport must supply a validated operator session and the app must wire that same authority into core. Protect the operator credential/session and OS account: a process holding operator authority can decide approvals. See the [core lifecycle contract](docs/lifecycle-core-contract.md) for implementation and integration boundaries.
 
 Secret values are operator-managed, encrypted at rest with the local `secret.key`, and delivered to a flat at its next deploy. APIs expose names only. A flat can read and return its own injected secrets, so deploy code you trust with those values. Anyone who can read the data directory can recover them. Back up the key alongside metadata and flat data; immutable code versions alone are not data backups.
 

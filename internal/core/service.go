@@ -443,6 +443,17 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 		}
 		lf.publicServed = false
 	}
+	if wantPublic {
+		ready := false
+		for _, host := range s.cfg.Public.Status().Hosts {
+			if (host.Host == f.Slug || host.URL == s.cfg.Public.URL(f.Slug)) && host.State == "ready" {
+				ready = true
+			}
+		}
+		if !ready {
+			return fmt.Errorf("%w: legacy public endpoint is not ready", ErrProviderNotReady)
+		}
+	}
 	return nil
 }
 
@@ -488,6 +499,9 @@ const PublicAccessNotice = "This flat is public: anyone on the internet can open
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
 	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)
+	if f.Visibility.Public() {
+		v.PublicNotice = PublicAccessNotice
+	}
 	if f.Visibility.Canonical().Public() && s.cfg.Public != nil {
 		if ok, _ := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal); ok {
 			v.PublicURL = s.cfg.Public.URL(f.Slug)
@@ -1514,9 +1528,10 @@ func (s *Service) ListPreviews(ctx context.Context, slugName string) ([]PreviewV
 // flat, the console, a redirect) are never touched: it returns
 // store.ErrNotFound for them.
 func (s *Service) ClosePreview(ctx context.Context, host string) error {
+	unlock := s.lock("preview:" + host)
+	defer unlock()
 	s.mu.Lock()
 	p := s.prevs[host]
-	delete(s.prevs, host)
 	s.mu.Unlock()
 	if p == nil {
 		// A preview row without a running preview (e.g. a half-failed open)
@@ -1525,7 +1540,12 @@ func (s *Service) ClosePreview(ctx context.Context, host string) error {
 			return err
 		}
 	}
-	_ = s.stopPreviewExposure(ctx, host)
+	if err := s.stopPreviewExposure(ctx, host); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	delete(s.prevs, host)
+	s.mu.Unlock()
 	if p != nil {
 		if p.inst != nil {
 			p.inst.Stop()

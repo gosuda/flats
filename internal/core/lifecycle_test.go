@@ -460,3 +460,119 @@ func TestLifecycleLegacyMigrationKeepsNumberedIdentityAndRefs(t *testing.T) {
 		t.Fatal("number reuse revived old approval")
 	}
 }
+
+func TestLifecycleInterruptedRestoreRecoversPriorData(t *testing.T) {
+	s, _ := newTestService(t)
+	lifecycleSave(t, s, "journal", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "journal"))
+	if err := writeFile(filepath.Join(s.dataDirOf("journal"), "files", "note"), "prior"); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := s.snapshotAs("journal", "before-restore", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := lifecycleRequest(t, s, "journal")
+	raw, _ := json.Marshal(restoreJournal{Approval: p.Approval.ID, Backup: backup})
+	if err := atomicJournal(filepath.Join(s.flatDir("journal"), "restore-journal.json"), raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(s.dataDirOf("journal"), "files", "note"), "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recoverRestoreJournals(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := readFile(filepath.Join(s.dataDirOf("journal"), "files", "note")); b != "prior" {
+		t.Fatalf("failed interrupted restore recovery: %q", b)
+	}
+	if err := s.recoverRestoreJournals(t.Context()); err != nil {
+		t.Fatal("not idempotent", err)
+	}
+}
+
+func TestLifecycleDraftPreviewPinnedAcrossSave(t *testing.T) {
+	s, _ := newTestService(t)
+	lifecycleSave(t, s, "preview", "one")
+	p, err := s.OpenPreview(t.Context(), "preview", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleSave(t, s, "preview", "two")
+	r, err := s.st.GetDraftRevision(t.Context(), "preview", 1)
+	if err != nil || r.Pruned {
+		t.Fatalf("preview target pruned %+v %v", r, err)
+	}
+	if err := s.ClosePreview(t.Context(), p.Host); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLifecycleVisibilityReceiptDoesNotReapply(t *testing.T) {
+	s, _ := newTestService(t)
+	n := &lifecycleNetwork{policy: "grant", state: "ready"}
+	s.cfg.Lifecycle = n
+	lifecycleSave(t, s, "receipt", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "receipt"))
+	if err := s.SetProviderPermission(t.Context(), "receipt", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.SetVisibility(t.Context(), "receipt", store.Public, ViaConsole, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.st.ClaimApprovalAuthorized(t.Context(), r.Approval.ID, "operator fixture", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.applyApproval(t.Context(), *r.Approval); err != nil {
+		t.Fatal(err)
+	}
+	count := len(n.requests)
+	s.resumeApplying(t.Context())
+	if len(n.requests) != count {
+		t.Fatal("committed visibility reapplied")
+	}
+	a, _ := s.GetApproval(t.Context(), r.Approval.ID)
+	if a.Status != "approved" || a.DecidedBy != "operator fixture" || a.AuthorizedAt == nil {
+		t.Fatalf("receipt/audit lost %+v", a)
+	}
+}
+
+func TestLifecycleNeverPublishedLegacyFirstVersionIsOne(t *testing.T) {
+	s, _ := newTestService(t)
+	now := time.Now()
+	if err := s.st.CreateFlat(t.Context(), store.Flat{Slug: "never", Name: "never", Visibility: store.Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	fs := []bundle.File{{Path: "index.html", Data: []byte("legacy-draft")}}
+	r, err := bundle.Write(fs, s.versionDir("never", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, _ := json.Marshal(r.Manifest)
+	if err := s.st.InsertVersion(t.Context(), store.Version{Flat: "never", Number: 1, Hash: r.Hash, Size: r.Size, Files: r.Files, Kind: r.Manifest.Kind, Manifest: man, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate interruption after the old implementation's file rename.
+	if err := os.MkdirAll(filepath.Dir(s.draftRevDir("never", 1)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(s.versionDir("never", 1), s.draftRevDir("never", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateLegacyDrafts(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.migrateLegacyDrafts(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := s.GetFlat(t.Context(), "never")
+	if f.Publication != "unpublished" || f.Draft == nil {
+		t.Fatal(f)
+	}
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "never"))
+	f, _ = s.GetFlat(t.Context(), "never")
+	if f.LiveVersion != 1 || liveBytes(t, s, "never") != "legacy-draft" {
+		t.Fatal("first legacy draft publication is not v1")
+	}
+}

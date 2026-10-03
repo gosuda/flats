@@ -156,6 +156,39 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 	if err != nil {
 		return
 	}
+	if n, ok := s.lifecycleNet(); ok {
+		ids, err := s.permittedIDs(ctx, cur)
+		if err != nil {
+			return
+		}
+		_, err = n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "private", Audience: AudienceCurrent, Handler: s.redirectHandler(func() string { return s.cfg.Private.URL(cur) }), Permitted: privateProviders(ids)})
+		if err != nil {
+			s.Event(ctx, cur, "error", "rename", err.Error(), nil)
+		}
+		public := false
+		if f.Visibility.Public() {
+			target := s.redirectHandler(func() string {
+				fv, _ := s.GetFlat(context.Background(), cur)
+				if !fv.Visibility.Public() {
+					return ""
+				}
+				return fv.PublicURL
+			})
+			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: target, Permitted: ids})
+			for _, ep := range res.Endpoints {
+				if ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal {
+					public = true
+				}
+			}
+			if err != nil {
+				s.Event(ctx, cur, "error", "rename", err.Error(), nil)
+			}
+		}
+		s.mu.Lock()
+		s.redir[old] = &redirect{cur: cur, public: public}
+		s.mu.Unlock()
+		return
+	}
 	if _, err := s.cfg.Private.Serve(ctx, old, s.redirectHandler(func() string { return s.cfg.Private.URL(cur) }), false); err != nil {
 		s.Event(ctx, cur, "error", "rename", "could not serve private redirect from "+old+": "+err.Error(), nil)
 	}
