@@ -31,16 +31,47 @@ export function permittedProviders(flat) {
   return PROVIDERS.filter((p) => ids.has(p.id));
 }
 
+function currentProvider(provider, visibility) {
+  return visibility === 'public'
+    ? provider === 'tailscale-funnel' || provider === 'portal'
+    : provider === 'local' || provider === 'tailscale';
+}
+
+function endpointRank(endpoint) {
+  if (endpointStopped(endpoint)) return 0;
+  const rank = {
+    ready: 70,
+    'key-expiring': 65,
+    starting: 60,
+    'needs-login': 50,
+    error: 40,
+    unavailable: 30,
+  }[endpoint?.state] || 10;
+  return rank + (endpoint?.ready ? 4 : 0) + (endpoint?.permitted ? 2 : 0) + (endpoint?.configured ? 1 : 0);
+}
+
+// The API's aggregate connection_state can reflect whichever Public provider
+// was visited last. Select the most useful current route so one stopped route
+// does not hide another route that is ready, connecting, or needs setup.
+export function currentEndpoint(flat) {
+  const visibility = flat?.visibility === 'public' ? 'public' : 'private';
+  let best = null;
+  for (const endpoint of flat?.endpoints || []) {
+    if (endpoint?.audience !== 'current' || (endpoint.host && endpoint.host !== flat?.slug) ||
+        !currentProvider(endpoint?.provider, visibility)) continue;
+    if (!best || endpointRank(endpoint) > endpointRank(best)) best = endpoint;
+  }
+  return best;
+}
+
 export function connectionState(flat) {
-  if (flat?.connection_state) return flat.connection_state;
-  return '';
+  const endpoint = currentEndpoint(flat);
+  if (endpoint) return endpointStopped(endpoint) ? 'stopped' : (endpoint.state || flat?.connection_state || '');
+  return flat?.connection_state || '';
 }
 
 export function connectionDetail(flat) {
-  const publicRoute = flat?.visibility === 'public';
-  if (!publicRoute) return flat?.private_detail || '';
-  return flat?.endpoints?.find((ep) => ep.audience === 'current' && ep.host === flat.slug &&
-    ['tailscale-funnel', 'portal'].includes(ep.provider) && (ep.url || '') === (flat.public_url || '') && ep.state === connectionState(flat))?.detail || '';
+  return currentEndpoint(flat)?.detail || (flat?.visibility === 'public' ? '' : flat?.private_detail || '');
 }
 
 export function connectionLabel(state) {
@@ -51,21 +82,34 @@ export function connectionLabel(state) {
     case 'needs-login': return 'Needs setup';
     case 'unavailable': return 'Needs setup';
     case 'error': return 'Connection failed';
+    case 'stopped': return 'Stopped';
     default: return state ? state : 'Connection not reported';
   }
 }
 
 export function endpointStopped(endpoint) {
-  return endpoint?.state === 'unavailable' && /route stopped/i.test(endpoint?.detail || '');
+  return endpoint?.state === 'stopped' ||
+    (endpoint?.state === 'unavailable' && /^route stopped$/i.test(String(endpoint?.detail || '').trim()));
 }
 
 export function endpointConnectionLabel(endpoint) {
-  return endpointStopped(endpoint) ? 'Stopped' : connectionLabel(endpoint?.state);
+  if (endpointStopped(endpoint)) return 'Stopped';
+  if (endpoint?.state === 'unavailable' && endpoint?.permitted === false) return 'Not permitted';
+  if (endpoint?.state === 'unavailable' && endpoint?.configured === false) return 'Not configured';
+  return connectionLabel(endpoint?.state);
+}
+
+export function endpointStatusLine(endpoint) {
+  const parts = [endpoint?.configured ? 'Configured' : 'Not configured', endpoint?.permitted ? 'Route permitted' : 'Route not permitted'];
+  if (endpointStopped(endpoint) || endpoint?.state !== 'unavailable' || (endpoint?.configured !== false && endpoint?.permitted !== false)) {
+    parts.push(endpointConnectionLabel(endpoint));
+  }
+  return parts.join(' · ');
 }
 
 export function endpointAudienceLabel(endpoint, previews = []) {
+  if (endpointStopped(endpoint)) return endpoint?.audience === 'current' ? 'Stopped current route' : 'Stopped preview route';
   if (endpoint?.audience === 'current') return 'Current version';
-  if (endpointStopped(endpoint)) return 'Stopped preview route';
   const preview = previews.find((item) => item.host === endpoint?.host);
   if (preview?.target === 'draft' || (preview && preview.version === 0)) return 'Draft preview (Private)';
   if (preview?.target === 'version' || preview?.version > 0) return `v${preview.version} preview (Private)`;
@@ -101,10 +145,7 @@ export function endpointState(flat, which) {
 
 export function currentTarget(flat) {
   const visibility = flat?.visibility === 'public' ? 'public' : 'private';
-  const endpoint = flat?.endpoints?.find((ep) => ep.audience === 'current' &&
-    (visibility === 'public' ? ['tailscale-funnel', 'portal'].includes(ep.provider) : ['local', 'tailscale'].includes(ep.provider)) && ep.ready)
-    || flat?.endpoints?.find((ep) => ep.audience === 'current' &&
-      (visibility === 'public' ? ['tailscale-funnel', 'portal'].includes(ep.provider) : ['local', 'tailscale'].includes(ep.provider)));
+  const endpoint = currentEndpoint(flat);
   const url = endpoint?.url || (visibility === 'public' ? flat?.public_url : flat?.private_url);
   const state = endpoint?.state || endpointState(flat, visibility);
   const ready = !!(url && isOpenable(state) && (!endpoint || (endpoint.ready && endpoint.permitted && endpoint.configured))
@@ -534,6 +575,11 @@ export function draftEditor(flat, onUploaded) {
 
 export function renderAccess(flat, controls, previews = []) {
   const state = connectionState(flat);
+  const connectionCopy = state === 'ready'
+    ? 'Connected describes the provider path. Publication is shown separately.'
+    : state === 'stopped'
+      ? 'No current route is active. Publication and access policy are shown separately.'
+      : 'The address stays closed until the connection is ready.';
   return h('div', { class: 'access-panel', id: 'access' },
     h('section', { class: 'card', 'aria-labelledby': 'access-range-title' },
       h('h2', { id: 'access-range-title', text: 'Access' }),
@@ -545,13 +591,13 @@ export function renderAccess(flat, controls, previews = []) {
       controls.providers),
     h('section', { class: 'card', 'aria-labelledby': 'address-title' },
       h('h2', { id: 'address-title', text: 'Addresses' }),
-      h('p', { text: `Connection: ${connectionLabel(state)}. ${state === 'ready' ? 'Connected describes the provider path. Publication is shown separately.' : 'The address stays closed until the connection is ready.'}` }),
+      h('p', { text: `Connection: ${connectionLabel(state)}. ${connectionCopy}` }),
       connectionDetail(flat) ? h('p', { class: 'muted small', text: connectionDetail(flat) }) : null,
       Array.isArray(flat.endpoints) && flat.endpoints.length ? h('ul', { class: 'plain-list' }, flat.endpoints.map((ep) =>
         h('li', { class: 'plain-row' },
           h('div', null,
             h('strong', { text: `${providerLabel(ep.provider)} · ${endpointAudienceLabel(ep, previews)}` }),
-            h('p', { class: 'muted small', text: `${ep.configured ? 'Configured' : 'Needs setup'} · ${ep.permitted ? 'Route permitted' : 'Route not permitted'} · ${endpointConnectionLabel(ep)}` }),
+            h('p', { class: 'muted small', text: endpointStatusLine(ep) }),
             ep.detail ? h('p', { class: 'muted small', text: ep.detail }) : null,
             openControl({url:ep.url, ready:ep.ready, state:ep.state}, `Open ${providerLabel(ep.provider)} ${endpointAudienceLabel(ep, previews).toLowerCase()}`)))) ) : null,
       controls.addresses));

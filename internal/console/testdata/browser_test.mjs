@@ -115,6 +115,30 @@ try {
   await page.getByRole('tab', { name: 'Access', exact: true }).click();
   await page.locator('strong').filter({ hasText: 'v1 preview (Private)' }).waitFor();
   receipt.cases.push({ version_preview: versionPreview.host, label: 'v1 preview (Private)' });
+  const providerStateFixture = {
+    ...live,
+    visibility: 'public',
+    providers: ['local', 'portal', 'tailscale-funnel'],
+    public_url: '',
+    connection_state: 'stopped',
+    endpoints: [
+      { provider: 'local', url: live.private_url, state: 'ready', configured: true, permitted: true, ready: true, audience: 'current', host: 'rendered' },
+      { provider: 'portal', state: 'unavailable', detail: 'portal is permitted but not configured', configured: false, permitted: true, ready: false, audience: 'current', host: 'rendered' },
+      { provider: 'tailscale-funnel', state: 'stopped', detail: 'route stopped', configured: true, permitted: true, ready: false, audience: 'current', host: 'rendered' },
+    ],
+  };
+  await page.route('**/console/api/flats/rendered', (route) => route.fulfill({ status: 200, json: providerStateFixture }));
+  await page.goto(base + '/flats/rendered#access');
+  await page.getByText('Connection: Needs setup.', { exact: false }).waitFor();
+  const refusedPortal = page.locator('li.plain-row').filter({ hasText: 'Portal · Current version' });
+  assert.equal(await refusedPortal.locator('p.muted.small').nth(0).innerText(), 'Not configured · Route permitted');
+  assert.equal(await refusedPortal.locator('p.muted.small').nth(1).innerText(), 'portal is permitted but not configured');
+  const stoppedFunnel = page.locator('li.plain-row').filter({ hasText: 'Tailscale Funnel · Stopped current route' });
+  assert.equal(await stoppedFunnel.locator('p.muted.small').nth(0).innerText(), 'Configured · Route permitted · Stopped');
+  assert.equal((await page.locator('main').innerText()).includes('Connection: Stopped.'), false);
+  await both('provider-endpoint-states');
+  receipt.cases.push({ provider_states: ['unavailable/not-configured', 'stopped'], aggregate: 'Needs setup' });
+  await page.unroute('**/console/api/flats/rendered');
   const missing = await agent('POST', '/flats/rendered/visibility', { visibility: 'public' });
   await page.goto(base + '/approvals/' + missing.approval.id);
   await page.getByText('If approved, this flat becomes Public: anyone on the internet can open it.', { exact: false }).waitFor();
@@ -145,6 +169,9 @@ try {
     await page.getByRole('button', { name: 'Approve', exact: true }).click();
     await page.locator('.alert-error').first().waitFor();
     assert.equal(await page.getByText('The content or access settings changed. Review again.', { exact: true }).count(), 0);
+    if (code === 'public_stop_unconfirmed') {
+      await page.getByText('Could not confirm the public route is blocked. Access is not shown as Private.', { exact: true }).waitFor();
+    }
     await both('typed-' + code);
     receipt.cases.push({ category: code, http: 409, fixture: true });
     await page.unroute(`**/console/api/approvals/${request.approval.id}/approve`);

@@ -222,7 +222,7 @@ assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
 assert.equal(all(dbMain, (e) => e.tagName === 'A' && e.textContent === 'Manage versions and rollback')[0].getAttribute('href'), '/flats/blog#history');
 for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
-const { connectionDetail, statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion, endpointAudienceLabel, endpointConnectionLabel, providerRemovalCopy } = await import('./lifecycle.js');
+const { connectionState, connectionDetail, statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion, endpointAudienceLabel, endpointConnectionLabel, endpointStatusLine, providerRemovalCopy } = await import('./lifecycle.js');
 assert.equal(statusLine(blog).startsWith('Published · v2 · Public'), true, statusLine(blog));
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Published · v2'), true);
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Unpublished'), false);
@@ -495,8 +495,22 @@ assert.ok(missingMain.textContent.includes('Provider permissions at requestlocal
 assert.equal(missingMain.textContent.includes(rawPolicyHash), false);
 assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'preview-v1', state: 'ready' }, [{ host: 'preview-v1', target: 'version', version: 1 }]), 'v1 preview (Private)');
 assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'preview-draft', state: 'ready' }, [{ host: 'preview-draft', target: 'draft', version: 0 }]), 'Draft preview (Private)');
-assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'closed', state: 'unavailable', detail: 'route stopped' }, []), 'Stopped preview route');
-assert.equal(endpointConnectionLabel({ state: 'unavailable', detail: 'route stopped' }), 'Stopped');
+const stoppedFunnel = { provider: 'tailscale-funnel', audience: 'current', host: 'blog', state: 'stopped', detail: 'route stopped', configured: true, permitted: true, ready: false };
+const refusedPortal = { provider: 'portal', audience: 'current', host: 'blog', state: 'unavailable', detail: 'portal is permitted but not configured', configured: false, permitted: true, ready: false };
+const startingPortal = { ...refusedPortal, state: 'starting', detail: 'waiting for relay', configured: true };
+assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'closed', state: 'stopped', detail: 'route stopped' }, []), 'Stopped preview route');
+assert.equal(endpointAudienceLabel(stoppedFunnel, []), 'Stopped current route');
+assert.equal(endpointConnectionLabel(stoppedFunnel), 'Stopped');
+assert.equal(endpointConnectionLabel(refusedPortal), 'Not configured');
+assert.equal(endpointConnectionLabel({ ...refusedPortal, configured: true, permitted: false, detail: 'host permission absent' }), 'Not permitted');
+assert.equal(endpointStatusLine(refusedPortal), 'Not configured · Route permitted');
+assert.equal(endpointStatusLine(stoppedFunnel), 'Configured · Route permitted · Stopped');
+assert.equal(endpointConnectionLabel({ state: 'unavailable', detail: 'route stopped' }), 'Stopped'); // legacy DTO
+assert.equal(connectionState({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, refusedPortal] }), 'unavailable');
+assert.equal(connectionDetail({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, refusedPortal] }), 'portal is permitted but not configured');
+assert.equal(connectionState({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, startingPortal] }), 'starting');
+assert.equal(connectionState({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel] }), 'stopped');
+assert.equal(currentTarget({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, refusedPortal] }).state, 'unavailable');
 assert.ok(providerRemovalCopy({ visibility: 'public' }, 'tailscale').includes('Private Tailscale') && providerRemovalCopy({ visibility: 'public' }, 'tailscale').includes('Funnel route stays up'));
 assert.ok(providerRemovalCopy({ visibility: 'private' }, 'portal').includes('removes permission'));
 assert.equal(providerRemovalCopy({ visibility: 'private' }, 'portal').includes('changing this flat to Private'), false);
