@@ -79,11 +79,12 @@ Executed `scripts/lifecycle-gate.sh --prepare-only`, initially exit **1**:
 Local-only legacy mode refused a Public visibility request with 409 because
 Portal was disabled. No exposure was enabled. Changed only the historical
 pending-reference fixture to a real pending delete request, then reran the
-corrected preparation once: exit **0**, both preparation cases passed. Evidence:
-`/var/folders/r_/5jr0xg0s7wg3xmd4ws3h5wlw0000gn/T/flats-lifecycle-gate.NN9dnI/evidence.json`;
+corrected preparation once: exit **0**, both preparation cases passed. Evidence
+was retained in the corrected run's temporary gate evidence directory as
+`flats-lifecycle-gate.<run>/evidence.json`;
 mixed seed manifest is sibling `prepare-mixed-history/mixed-seed.json`.
-The initial failed receipt remains at
-`/var/folders/r_/5jr0xg0s7wg3xmd4ws3h5wlw0000gn/T/flats-lifecycle-gate.p6555P/evidence.json`.
+The initial failed receipt was retained separately as
+`flats-lifecycle-gate.<failed-run>/evidence.json`.
 Corrected receipt SHA256:
 `ed0d620638b4a3637dd04af6d6e21a551202853d4db37f0bebe76ce4c0a6686e`.
 Preparation seeded using the archived pre-lifecycle binary, never the candidate.
