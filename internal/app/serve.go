@@ -16,22 +16,23 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/oesni/flats/internal/api"
-	"github.com/oesni/flats/internal/console"
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/expose/local"
-	"github.com/oesni/flats/internal/expose/portal"
-	tsnetx "github.com/oesni/flats/internal/expose/tsnet"
-	"github.com/oesni/flats/internal/forkwatch"
-	"github.com/oesni/flats/internal/mcpx"
-	"github.com/oesni/flats/internal/runtime"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/api"
+	"github.com/gosuda/flats/internal/console"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/expose/portal"
+	tsnetx "github.com/gosuda/flats/internal/expose/tsnet"
+	"github.com/gosuda/flats/internal/forkwatch"
+	"github.com/gosuda/flats/internal/mcpx"
+	"github.com/gosuda/flats/internal/runtime"
+	"github.com/gosuda/flats/internal/store"
 )
 
-// Version is set at build time with -ldflags "-X github.com/oesni/flats/internal/app.Version=...".
+// Version is set at build time with -ldflags "-X github.com/gosuda/flats/internal/app.Version=...".
 var Version = "dev"
 
 // Options configure `flats serve`.
@@ -120,15 +121,18 @@ func Serve(args []string) error {
 
 // Host is a running Flats process.
 type Host struct {
-	Opts    Options
-	Svc     *core.Service
-	Store   *store.Store
-	Private core.PrivateNet
-	Public  core.PublicNet
-	Mux     http.Handler
-	srv     *http.Server
-	ln      net.Listener
-	console string
+	Opts      Options
+	Svc       *core.Service
+	Store     *store.Store
+	Private   core.PrivateNet
+	Public    core.PublicNet
+	Mux       http.Handler
+	srv       *http.Server
+	ln        net.Listener
+	console   string
+	dataLock  *os.File
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // ConsoleURL is the operator console address (tailnet URL when available).
@@ -142,21 +146,26 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err := os.MkdirAll(o.DataDir, 0o700); err != nil {
 		return nil, err
 	}
+	lock, err := lockDataDir(o.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	h := &Host{Opts: o, dataLock: lock}
+	ok := false
+	defer func() {
+		if !ok {
+			if err := h.Close(); err != nil {
+				log.Printf("startup cleanup: %v", err)
+			}
+		}
+	}()
 	logf := log.Printf
-	// macOS can wedge a forked child before exec, which stops all of this
-	// process's networking (see internal/forkwatch).
 	forkwatch.Start(ctx, logf)
 	st, err := store.Open(filepath.Join(o.DataDir, "flats.db"))
 	if err != nil {
 		return nil, err
 	}
-	h := &Host{Opts: o, Store: st}
-	ok := false
-	defer func() {
-		if !ok {
-			h.Close()
-		}
-	}()
+	h.Store = st
 
 	switch o.Network {
 	case "local":
@@ -338,24 +347,60 @@ func (h *Host) Status(ctx context.Context) any {
 	return s
 }
 
-// Close stops everything.
+// Close drains management requests, stops workers, closes public then private
+// networks and the store, and finally releases the data-directory lock.
+// A teardown timeout retains the directory lock until process exit because
+// background teardown may still access its state. Cleanup is best effort;
+// repeated and concurrent calls return the same result.
 func (h *Host) Close() error {
-	if h.srv != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		h.srv.Shutdown(ctx)
-		cancel()
-	}
-	if h.Svc != nil {
-		h.Svc.Close()
-	}
-	if h.Public != nil {
-		h.Public.Close()
-	}
-	if h.Private != nil {
-		h.Private.Close()
-	}
-	if h.Store != nil {
-		h.Store.Close()
-	}
-	return nil
+	h.closeOnce.Do(func() {
+		var errs []error
+		collect := func(component string, err error) {
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", component, err))
+			}
+		}
+		if h.srv != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := h.srv.Shutdown(ctx)
+			cancel()
+			collect("management shutdown", err)
+			if err != nil {
+				collect("management close", h.srv.Close())
+			}
+		}
+		if h.Svc != nil {
+			collect("core shutdown", h.Svc.Close())
+		}
+		if h.Public != nil {
+			collect("public network shutdown", h.Public.Close())
+		}
+		if h.Private != nil {
+			collect("private network shutdown", h.Private.Close())
+		}
+		if h.Store != nil {
+			collect("store shutdown", h.Store.Close())
+		}
+		if h.dataLock != nil {
+			if errors.Is(errors.Join(errs...), context.DeadlineExceeded) {
+				retainDataLock(h.dataLock)
+			} else {
+				collect("data directory unlock", h.dataLock.Close())
+			}
+		}
+		h.closeErr = errors.Join(errs...)
+	})
+	return h.closeErr
+}
+
+// Keep timed-out teardown's lock reachable, including after the Host is dropped.
+var retainedLocks struct {
+	sync.Mutex
+	files []*os.File
+}
+
+func retainDataLock(f *os.File) {
+	retainedLocks.Lock()
+	retainedLocks.files = append(retainedLocks.files, f)
+	retainedLocks.Unlock()
 }

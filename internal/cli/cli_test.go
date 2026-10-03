@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/launchd"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/launchd"
 )
 
 // fakeAPI serves canned replies keyed by "METHOD /path" and records requests.

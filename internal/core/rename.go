@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oesni/flats/internal/slug"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/slug"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // RenameSlug changes a flat's slug (and therefore its addresses). The old

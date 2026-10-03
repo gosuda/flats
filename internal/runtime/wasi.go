@@ -18,7 +18,8 @@ import (
 
 // wasiEngine runs a WASI preview1 command module once per request: request
 // JSON on stdin, response JSON on stdout, env vars from the flat's env, no
-// file system, no network, wasm memory capped.
+// file system mounts, no network, DB/FILES host ABI or WebSocket API.
+// Clocks and CSPRNG are enabled; wasm memory and request time are capped.
 type wasiEngine struct {
 	w   *worker
 	rt  wazero.Runtime

@@ -24,7 +24,7 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 	"github.com/gosuda/portal-tunnel/v2/utils"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // DefaultMaxActiveRelays matches the Portal CLI's --max-active-relays default.
@@ -35,6 +35,8 @@ const ConflictHint = "another Portal user owns this name on that relay; rename t
 
 // Config configures a Net.
 type Config struct {
+	// ShutdownTimeout bounds HTTP drain, SDK close and listener-pump waits (default 30s).
+	ShutdownTimeout time.Duration
 	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600).
 	Dir string
 	// Relays lists explicit relays. Empty means the Portal CLI default:
@@ -87,10 +89,14 @@ type Net struct {
 	ctx    context.Context // parent of every exposure; cancelled by Close
 	cancel context.CancelFunc
 
-	mu      sync.RWMutex
-	closed  bool
-	entries map[string]*entry
-	locks   map[string]*sync.Mutex // per-slug Serve/Stop/SetHidden serialization
+	mu           sync.RWMutex
+	closeOnce    sync.Once
+	closeErr     error
+	ops          sync.WaitGroup // admitted operations; Add is serialized with closing
+	shutdownErrs []error        // failures from completed teardown, including concurrent Stop
+	closed       bool
+	entries      map[string]*entry
+	locks        map[string]*sync.Mutex // per-slug Serve/Stop/SetHidden serialization
 }
 
 var _ core.PublicNet = (*Net)(nil)
@@ -101,6 +107,7 @@ type entry struct {
 	ln      *drainListener // what RunHTTP serves; closing it leaves exp registered
 	handler *handlerBox
 	cancel  context.CancelFunc // stops RunHTTP and the watcher
+	httpErr error              // read only after done closes
 	done    chan struct{}      // closed when RunHTTP and the watcher returned
 
 	mu      sync.Mutex
@@ -132,6 +139,9 @@ func (b *handlerBox) set(h http.Handler) {
 // New validates cfg and prepares the identity directory. It does not
 // contact any relay.
 func New(cfg Config) (*Net, error) {
+	if cfg.ShutdownTimeout <= 0 {
+		cfg.ShutdownTimeout = 30 * time.Second
+	}
 	if cfg.Dir == "" {
 		return nil, errors.New("portal: identity directory is required")
 	}
@@ -237,6 +247,10 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	if h == nil {
 		return "", errors.New("portal: handler is nil")
 	}
+	if !n.beginOp() {
+		return "", errors.New("portal: closed")
+	}
+	defer n.ops.Done()
 	l := n.slugLock(slug)
 	l.Lock()
 	defer l.Unlock()
@@ -292,7 +306,8 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := n.runHTTP(runCtx, e.ln, publicHandler(e.handler)); err != nil {
+		e.httpErr = n.runHTTP(runCtx, e.ln, publicHandler(e.handler))
+		if err := e.httpErr; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 			n.logf("portal: %s: http server stopped: %v", slug, err)
 		}
 	}()
@@ -332,6 +347,10 @@ func publicHandler(b *handlerBox) http.Handler {
 // SetHidden toggles relay listing. Relays pick it up at the next lease
 // renewal, up to about 90 s later.
 func (n *Net) SetHidden(slug string, hidden bool) error {
+	if !n.beginOp() {
+		return errors.New("portal: closed")
+	}
+	defer n.ops.Done()
 	l := n.slugLock(slug)
 	l.Lock()
 	defer l.Unlock()
@@ -367,6 +386,24 @@ func (n *Net) setHidden(e *entry, hidden bool) error {
 // Stop shuts the HTTP server down, unregisters slug from its relays and
 // forgets its status. Unknown slugs are a no-op.
 func (n *Net) Stop(slug string) error {
+	if !n.beginOp() {
+		return nil
+	} // Close owns remaining entries.
+	defer n.ops.Done()
+	return n.stop(slug)
+}
+
+func (n *Net) beginOp() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return false
+	}
+	n.ops.Add(1)
+	return true
+}
+
+func (n *Net) stop(slug string) error {
 	l := n.slugLock(slug)
 	l.Lock()
 	defer l.Unlock()
@@ -380,38 +417,87 @@ func (n *Net) Stop(slug string) error {
 	return n.stopEntry(e)
 }
 
-func (n *Net) stopEntry(e *entry) error {
-	// Drain HTTP first, then unregister. RunHTTP's shutdown closes only the
-	// drain listener, so the relays keep routing in-flight requests to us
-	// until exp.Close below.
-	e.cancel()
-	<-e.done
-	err := e.exp.Close()
-	<-e.ln.pumped
-	if err != nil && !errors.Is(err, net.ErrClosed) {
-		return fmt.Errorf("portal: close %s: %w", e.slug, err)
+func (n *Net) stopEntry(e *entry) (retErr error) {
+	// A Stop may remove its entry before Close snapshots entries. Preserve
+	// its failure so Close cannot silently release host state after a timeout.
+	defer func() {
+		if retErr != nil {
+			n.mu.Lock()
+			n.shutdownErrs = append(n.shutdownErrs, retErr)
+			n.mu.Unlock()
+		}
+	}()
+	// A single deadline bounds all stages. Even if HTTP drain fails, attempt
+	// unregistering the exposure; an SDK Close that hangs is left to process exit.
+	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
+	defer cancel()
+	var errs []error
+	wait := func(done <-chan struct{}, stage string) bool {
+		select {
+		case <-done:
+			return true
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("portal: %s %s exceeded %s: %w", e.slug, stage, n.cfg.ShutdownTimeout, ctx.Err()))
+		}
+		return false
 	}
-	return nil
+	e.cancel()
+	if wait(e.done, "HTTP drain") && e.httpErr != nil && !errors.Is(e.httpErr, net.ErrClosed) && !errors.Is(e.httpErr, context.Canceled) {
+		errs = append(errs, fmt.Errorf("portal: %s HTTP shutdown: %w", e.slug, e.httpErr))
+	}
+	// Force the drain listener closed even if a stuck HTTP/watch path did
+	// not do so, allowing the pump to discard queued connections.
+	e.ln.Close()
+	closed := make(chan error, 1)
+	go func() { closed <- e.exp.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			errs = append(errs, fmt.Errorf("portal: close %s: %w", e.slug, err))
+		}
+	case <-ctx.Done():
+		errs = append(errs, fmt.Errorf("portal: %s exposure close exceeded %s: %w", e.slug, n.cfg.ShutdownTimeout, ctx.Err()))
+	}
+	if wait(e.ln.pumped, "listener pump") && e.ln.err != nil && !errors.Is(e.ln.err, net.ErrClosed) && !errors.Is(e.ln.err, context.Canceled) {
+		errs = append(errs, fmt.Errorf("portal: %s listener pump: %w", e.slug, e.ln.err))
+	}
+	return errors.Join(errs...)
 }
 
 // Close stops every exposure. Later Serve calls fail.
 func (n *Net) Close() error {
-	n.mu.Lock()
-	n.closed = true
-	slugs := make([]string, 0, len(n.entries))
-	for s := range n.entries {
-		slugs = append(slugs, s)
-	}
-	n.mu.Unlock()
+	n.closeOnce.Do(func() {
+		n.mu.Lock()
+		n.closed = true
+		slugs := make([]string, 0, len(n.entries))
+		for s := range n.entries {
+			slugs = append(slugs, s)
+		}
+		n.mu.Unlock()
 
-	errs := make([]error, len(slugs))
-	var wg sync.WaitGroup
-	for i, s := range slugs {
-		wg.Go(func() { errs[i] = n.Stop(s) })
-	}
-	wg.Wait()
-	n.cancel()
-	return errors.Join(errs...)
+		var wg sync.WaitGroup
+		for _, s := range slugs {
+			wg.Go(func() { n.stop(s) })
+		}
+		// The SDK closes an exposure on parent cancellation and discards the
+		// first Close error. Keep that parent alive until explicit teardown
+		// drains HTTP and captures unregister errors, including an admitted
+		// Stop that already removed its entry or a late Serve's cleanup.
+		// On timeout cancellation unblocks context-aware SDK work; the caller
+		// receives a deadline error even if background cleanup outlives Close.
+		defer n.cancel()
+		done := make(chan struct{})
+		go func() { wg.Wait(); n.ops.Wait(); close(done) }()
+		select {
+		case <-done:
+			n.mu.Lock()
+			n.closeErr = errors.Join(n.shutdownErrs...)
+			n.mu.Unlock()
+		case <-time.After(n.cfg.ShutdownTimeout):
+			n.closeErr = fmt.Errorf("portal: network shutdown exceeded %s: %w", n.cfg.ShutdownTimeout, context.DeadlineExceeded)
+		}
+	})
+	return n.closeErr
 }
 
 func (n *Net) entry(slug string) *entry {

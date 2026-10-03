@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/store"
 )
 
 type trafficKey struct {

@@ -5,6 +5,37 @@ Measured on the development Mac (Apple Silicon, macOS, Go 1.27.1), 2026-10-03.
 `http://<flat>.localhost:<port>`), used where a real tailnet was not
 available.
 
+## Pull-request baseline
+
+`.github/workflows/ci.yml` runs on every PR and push to main, with read-only
+repository permission and no secrets. It uses the Go version from `go.mod`:
+
+```sh
+go mod tidy                         # CI requires no go.mod/go.sum diff
+go test ./...
+go vet ./...
+go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
+go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/flats-linux-amd64 ./cmd/flats
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/flats-linux-arm64 ./cmd/flats
+```
+
+Tests use disposable hosts/data and local test-control infrastructure. Portal
+relay E2E remains opt-in (`FLATS_PORTAL_E2E=1`); ordinary CI never enables it.
+Real tailnet/control, Portal relay, Claude/Codex/Cursor agent, launchd/systemd
+recovery and reboot gates below remain manual external checks. A Linux cross
+build does not establish real Linux service recovery or tailnet behavior.
+
+The new local regressions cover lifetime directory locking (including another
+process with different ephemeral listen addresses), complete atomic first-key
+publication, concurrent FILES quota/accounting, JS/WASI capabilities, joined
+Host shutdown errors, and bounded Portal teardown with stalled SDK/drain/pump
+or per-slug locks. The runtime suite shares only a disposable process-local
+compilation cache. `scripts/server-flat-gate.sh` can run a disposable local
+host with `FLATS_GATE_PORT` and `FLATS_BIN`; it does not need credentials.
+Public `go install github.com/gosuda/flats/cmd/flats@latest` must be verified
+outside the checkout after the canonical module migration reaches main.
+
 ## Phase 0 — spike
 
 | Check | Result | How |

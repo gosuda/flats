@@ -5,12 +5,14 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"time"
 
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Secrets are encrypted with AES-256-GCM under a host key stored in
@@ -20,22 +22,61 @@ import (
 var secretName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
 func loadOrCreateKey(path string) ([]byte, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		if len(b) != 32 {
-			return nil, fmt.Errorf("%s: secret key must be 32 bytes", path)
-		}
+	if b, err := readSecretKey(path); err == nil {
 		return b, nil
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, key, 0o600); err != nil {
+	// Publish a complete, synced key without replacing a concurrent winner.
+	// O_EXCL on the final file alone would expose an empty/partial key to readers.
+	f, err := os.CreateTemp(filepath.Dir(path), ".secret-key-*")
+	if err != nil {
 		return nil, err
 	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(key); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(f.Name(), path); err != nil {
+		if os.IsExist(err) {
+			// A winner must now be readable. EEXIST can also mean a dangling
+			// symlink; never recurse or create more unpublished temporary keys.
+			return readSecretKey(path)
+		}
+		return nil, fmt.Errorf("publish secret key: %w", err)
+	}
+
 	return key, nil
+}
+
+func readSecretKey(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("read secret key %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: secret key must be a regular file", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read secret key %s: %w", path, err)
+	}
+	if len(b) != 32 {
+		return nil, fmt.Errorf("%s: secret key must be 32 bytes", path)
+	}
+	return b, nil
 }
 
 func (s *Service) aead() (cipher.AEAD, error) {

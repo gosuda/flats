@@ -19,7 +19,7 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 	zlog "github.com/rs/zerolog/log"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // fakeExposure is a loopback TCP listener standing in for a Portal exposure,
@@ -680,13 +680,31 @@ func TestStopDrainsBeforeUnregister(t *testing.T) {
 // live entry behind.
 func TestServeRacingClose(t *testing.T) {
 	n, ff := newTestNet(t, Config{Discovery: true})
+	closed := make(chan error, 1)
 	ff.onExpose = func() {
-		if err := n.Close(); err != nil {
-			t.Error(err)
+		go func() { closed <- n.Close() }()
+		// Let Close mark the network closed while creation is in progress.
+		// The exposure parent stays alive for this Serve's explicit cleanup.
+		deadline := time.After(time.Second)
+		for {
+			n.mu.RLock()
+			closing := n.closed
+			n.mu.RUnlock()
+			if closing {
+				break
+			}
+			select {
+			case <-deadline:
+				t.Fatal("Close did not mark the network closed")
+			case <-time.After(time.Millisecond):
+			}
 		}
 	}
 	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err == nil {
 		t.Fatal("Serve succeeded although Close ran during it")
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
 	}
 	if c := ff.last(t).closeCount(); c != 1 {
 		t.Fatalf("exposure closed %d times, want 1", c)

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // Net is a Host-routed loopback server.

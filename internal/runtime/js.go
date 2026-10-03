@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/oesni/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/qjs"
 )
 
 //go:embed prelude.js

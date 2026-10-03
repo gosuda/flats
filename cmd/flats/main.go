@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/oesni/flats/internal/app"
-	"github.com/oesni/flats/internal/cli"
-	"github.com/oesni/flats/internal/runtime"
+	"github.com/gosuda/flats/internal/app"
+	"github.com/gosuda/flats/internal/cli"
+	"github.com/gosuda/flats/internal/runtime"
 )
 
 func init() {

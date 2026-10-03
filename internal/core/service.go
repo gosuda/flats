@@ -20,10 +20,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/oesni/flats/internal/bundle"
-	"github.com/oesni/flats/internal/site"
-	"github.com/oesni/flats/internal/slug"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/site"
+	"github.com/gosuda/flats/internal/slug"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Via names the surface a request came from.

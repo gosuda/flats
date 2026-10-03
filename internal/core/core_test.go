@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oesni/flats/internal/bundle"
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/expose/local"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 	_ "modernc.org/sqlite"
 )
 

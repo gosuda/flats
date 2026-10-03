@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oesni/flats/internal/launchd"
-	"github.com/oesni/flats/internal/systemd"
+	"github.com/gosuda/flats/internal/launchd"
+	"github.com/gosuda/flats/internal/systemd"
 )
 
 // DefaultDataDir returns the data directory: FLATS_DATA, else the user

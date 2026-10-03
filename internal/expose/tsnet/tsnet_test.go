@@ -41,7 +41,7 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/nettype"
 
-	"github.com/oesni/flats/internal/core"
+	"github.com/gosuda/flats/internal/core"
 )
 
 const testDomain = "tail-scale.ts.net"

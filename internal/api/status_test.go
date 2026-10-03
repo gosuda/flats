@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/oesni/flats/internal/core"
-	"github.com/oesni/flats/internal/slug"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/slug"
+	"github.com/gosuda/flats/internal/store"
 )
 
 func TestStatusOfUsesTypedErrors(t *testing.T) {

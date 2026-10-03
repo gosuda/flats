@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oesni/flats/internal/bundle"
-	"github.com/oesni/flats/internal/store"
+	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/store"
 )
 
 func noRedact(s string) string { return s }
