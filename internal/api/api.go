@@ -716,31 +716,26 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, _ core.Vi
 	writeJSON(w, 200, map[string]any{"approvals": as})
 }
 
-// decision is an approval as returned by approve/reject, with the tailnet
-// login of the operator who decided when the request came through the
-// console node (empty on the loopback listener, which has no identity).
-type decision struct {
-	store.Approval
-	DecidedBy string `json:"decided_by,omitempty"`
-}
-
 func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Request, via core.Via) {
 	return func(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		a, err := s.Svc.Decide(r.Context(), r.PathValue("id"), approve)
-		who := approverOf(r.Context())
+		who := a.DecidedBy
+		if who == "" {
+			who = s.Operator.DecisionIdentity(r.Context())
+		}
 		decided := err == nil || (a.Status == "failed" && !errors.Is(err, core.ErrConflict))
 		// A deleted flat's events are gone with it, so an approved delete
 		// reports its approver only in the response.
 		if a.ID != "" && decided && !(a.Action == "delete" && a.Status == "approved") {
 			src := "tailnet user " + who
-			if who == "" {
-				src = "the console on the loopback listener (no tailnet identity)"
+			if approverOf(r.Context()) == "" {
+				src = "authorized operator " + who
 			}
 			s.Svc.Event(r.Context(), a.Flat, "info", "approval",
 				fmt.Sprintf("approval %s (%s) %s by %s", a.ID, a.Action, a.Status, src),
 				map[string]string{"approval": a.ID, "status": a.Status, "decided_by": who})
 		}
-		out := decision{Approval: a, DecidedBy: who}
+		out := a
 		if err != nil {
 			writeJSON(w, statusOf(err), map[string]any{"error": err.Error(), "approval": out})
 			return

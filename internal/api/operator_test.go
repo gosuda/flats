@@ -75,9 +75,16 @@ func TestOperatorRoutesFailClosedAgainstForgedBrowserHeaders(t *testing.T) {
 			{"PUT", "/console/api/settings"},
 			{"DELETE", "/console/api/flats/test"},
 		} {
-			w := httptest.NewRecorder()
-			s.Handler().ServeHTTP(w, browserRequest(route.method, route.path, `{}`))
-			requireCategory(t, w, category)
+			for _, forgedCookie := range []bool{false, true} {
+				w := httptest.NewRecorder()
+				r := browserRequest(route.method, route.path, `{}`)
+				r.Header.Set("Authorization", "Bearer agent-only-credential")
+				if forgedCookie {
+					r.AddCookie(&http.Cookie{Name: operatorCookie, Value: strings.Repeat("A", 43)})
+				}
+				s.Handler().ServeHTTP(w, r)
+				requireCategory(t, w, category)
+			}
 		}
 	}
 }
@@ -171,5 +178,14 @@ func TestOperatorCredentialRefusesRemotePlaintext(t *testing.T) {
 	requireCategory(t, w, "operator_secure_transport_required")
 	if len(w.Result().Cookies()) != 0 {
 		t.Fatal("remote plaintext login issued authority")
+	}
+}
+
+func TestOperatorMalformedSessionNeverEchoesCredential(t *testing.T) {
+	s := &Server{Operator: testAuthority(t)}
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, browserRequest("POST", "/console/api/operator/session", `{"`+testOperatorCredential+`":"value"}`))
+	if w.Code != 400 || strings.Contains(w.Body.String(), testOperatorCredential) || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("malformed session leaked or authorized: %d %s", w.Code, w.Body)
 	}
 }

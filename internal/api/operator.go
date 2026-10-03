@@ -117,7 +117,7 @@ func (s *Server) operatorSession(w http.ResponseWriter, r *http.Request) {
 		Credential string `json:"credential"`
 	}
 	if err := decode(r, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, errors.New("invalid operator session request"))
 		return
 	}
 	hash := sha256.Sum256([]byte(in.Credential))

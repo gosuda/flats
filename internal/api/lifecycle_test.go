@@ -55,6 +55,18 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 		}
 		flatState(t, srv, "drafts", 0, "private", revision)
 	}
+	for _, query := range []string{"expected_revision=-1", "expected_revision=unknown", "expected_revision=1&expected_revision=2"} {
+		code, denied := req(t, "POST", srv.URL+"/api/flats/drafts/draft?"+query, bytes.NewReader(archive(map[string]string{"index.html": "OVERWRITE"})), nil)
+		if code != 400 {
+			t.Fatalf("invalid revision query: %d %v", code, denied)
+		}
+		flatState(t, srv, "drafts", 0, "private", 3)
+	}
+	code, denied := req(t, "POST", srv.URL+"/api/flats/drafts/draft?expected_revision=3", bytes.NewReader(archive(map[string]string{"app.js": "no entry"})), nil)
+	if code != 422 || denied["problems"] == nil {
+		t.Fatalf("invalid Draft validation: %d %v", code, denied)
+	}
+	flatState(t, srv, "drafts", 0, "private", 3)
 	code, out := req(t, "GET", srv.URL+"/api/flats/drafts/versions", nil, nil)
 	if code != 200 || len(out["versions"].([]any)) != 0 {
 		t.Fatalf("save allocated published versions: %v", out)
@@ -108,7 +120,7 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	_, out = req(t, "POST", srv.URL+"/api/flats/drafts/draft?expected_revision=4", bytes.NewReader(archive(map[string]string{"index.html": "DRAFT-5"})), nil)
 	id = pending["approval"].(map[string]any)["id"].(string)
 	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
-	if code != 409 || out["approval"].(map[string]any)["result_data"].(map[string]any)["failure_code"] != "stale_approval" {
+	if code != 409 || !strings.Contains(fmt.Sprint(out["error"]), "draft") || out["approval"].(map[string]any)["result_data"].(map[string]any)["failure_code"] != "stale_approval" {
 		t.Fatalf("frozen Draft drift: %d %v", code, out)
 	}
 	flatState(t, srv, "drafts", 1, "private", 5)
@@ -160,4 +172,68 @@ func TestProviderGrantAndBothVisibilityDirectionsRequireOperator(t *testing.T) {
 	if code != 200 || out["status"] != "done" || out["message"] != "visibility unchanged" {
 		t.Fatalf("same visibility: %d %v", code, out)
 	}
+}
+
+// This exercises real HTTP/core transitions through disposable Local listeners
+// behind the historical PublicNet adapter. The production provider-manager lane
+// and real internet/tailnet behavior are verified separately by integration.
+func TestPublicPublishRollbackKeepsBothCurrentEndpointsOnApprovedVersion(t *testing.T) {
+	srv, _ := setup(t)
+	saveAndPublish(t, srv, "dual", "VERSION-1")
+	code, out := req(t, "POST", srv.URL+"/console/api/flats/dual/providers", strings.NewReader(`{"provider":"portal","permitted":true}`), consoleHdr(t, srv))
+	if code != 200 {
+		t.Fatalf("grant: %d %v", code, out)
+	}
+	_, pending := req(t, "POST", srv.URL+"/api/flats/dual/visibility", strings.NewReader(`{"visibility":"public"}`), nil)
+	approveRequest(t, srv, pending)
+	f := flatState(t, srv, "dual", 1, "public", 1)
+	privateURL, publicURL := f["private_url"].(string), f["public_url"].(string)
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-1")
+	}
+	code, out = req(t, "POST", srv.URL+"/api/flats/dual/draft?expected_revision=1", bytes.NewReader(archive(map[string]string{"index.html": "VERSION-2"})), nil)
+	if code != 201 {
+		t.Fatalf("save: %d %v", code, out)
+	}
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-1")
+	}
+	code, preview := req(t, "POST", srv.URL+"/api/flats/dual/previews", strings.NewReader(`{"target":"draft","version":0}`), nil)
+	if code != 201 {
+		t.Fatalf("Draft preview: %d %v", code, preview)
+	}
+	serving(t, preview["url"].(string), "VERSION-2")
+	code, pending = req(t, "POST", srv.URL+"/api/flats/dual/publish", strings.NewReader(`{"revision":2}`), nil)
+	if code != 202 {
+		t.Fatalf("publish: %d %v", code, pending)
+	}
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-1")
+	}
+	approveRequest(t, srv, pending)
+	flatState(t, srv, "dual", 2, "public", 2)
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-2")
+	}
+	code, pending = req(t, "POST", srv.URL+"/api/flats/dual/rollback", strings.NewReader(`{"version":1,"restore_data":false}`), nil)
+	if code != 202 {
+		t.Fatalf("rollback: %d %v", code, pending)
+	}
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-2")
+	}
+	approveRequest(t, srv, pending)
+	flatState(t, srv, "dual", 1, "public", 2)
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-1")
+	}
+	_, versions := req(t, "GET", srv.URL+"/api/flats/dual/versions", nil, nil)
+	if len(versions["versions"].([]any)) != 2 {
+		t.Fatalf("rollback allocated version: %v", versions)
+	}
+	code, preview = req(t, "POST", srv.URL+"/api/flats/dual/previews", strings.NewReader(`{"target":"draft","version":0}`), nil)
+	if code != 201 {
+		t.Fatalf("retained Draft preview: %d %v", code, preview)
+	}
+	serving(t, preview["url"].(string), "VERSION-2")
 }

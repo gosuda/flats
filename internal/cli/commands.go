@@ -35,13 +35,16 @@ func (a *app) deploy(args []string) error {
 	if *slug == "" {
 		return usagef("--flat is required")
 	}
-	versionSet := false
+	versionSet, expectedSet := false, false
 	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "expected-revision" {
+			expectedSet = true
+		}
 		if f.Name == "version" {
 			versionSet = true
 		}
 	})
-	if *n < 0 || *expected < -1 {
+	if *n < 0 || *expected < -1 || (expectedSet && *expected < 0) {
 		return usagef("version and expected-revision must be nonnegative")
 	}
 	if versionSet {
@@ -935,7 +938,13 @@ func (a *app) draft(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *expected < -1 {
+	expectedSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "expected-revision" {
+			expectedSet = true
+		}
+	})
+	if *expected < -1 || (expectedSet && *expected < 0) {
 		return usagef("expected-revision must be nonnegative")
 	}
 	if len(pos) == 2 {

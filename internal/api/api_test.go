@@ -35,7 +35,7 @@ func setupWithAuthority(t *testing.T) (*httptest.Server, *core.Service, *api.Ope
 	}
 	priv, _ := local.Listen("127.0.0.1:0")
 	pubNet, _ := local.Listen("127.0.0.1:0")
-	svc, err := core.New(context.Background(), core.Config{ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
+	svc, err := core.New(context.Background(), core.Config{OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
 		ConsoleURL: func() string { return "http://console" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -317,6 +317,10 @@ func TestDecisionRecordsTailnetLogin(t *testing.T) {
 	if code != 200 || out["decided_by"] != "jürgen@example.com" || out["status"] != "rejected" {
 		t.Fatalf("reject via console node: %d %v", code, out)
 	}
+	_, stored := req(t, "GET", srv.URL+"/api/approvals/"+id, nil, nil)
+	if stored["decided_by"] != "jürgen@example.com" || stored["authorized_at"] == nil {
+		t.Fatalf("rejection actor not persisted: %v", stored)
+	}
 	_, logs := req(t, "GET", srv.URL+"/api/flats/site/logs?kind=approval", nil, nil)
 	b, _ := json.Marshal(logs)
 	if !strings.Contains(string(b), "tailnet user jürgen@example.com") || !strings.Contains(string(b), id) {
@@ -325,7 +329,7 @@ func TestDecisionRecordsTailnetLogin(t *testing.T) {
 
 	id = pending()
 	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
-	if code != 200 || out["decided_by"] != nil {
+	if code != 200 || out["decided_by"] != "local operator" {
 		t.Fatalf("loopback approve: %d %v", code, out)
 	}
 }
