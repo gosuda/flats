@@ -55,8 +55,9 @@ type Options struct {
 	Relays                  []string
 	Runtime                 bool
 	OperatorCredentialStdin bool
+	OperatorCredentialFile  string
 	// OperatorCredential is an embedding-only input; Start clears it before
-	// retaining options. CLI credentials are accepted only through stdin.
+	// retaining options. CLI credentials are accepted through stdin or an operator-owned 0600 file.
 	OperatorCredential string
 }
 
@@ -83,7 +84,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	var relays, permit string
 	fs.StringVar(&o.DataDir, "data", DefaultDataDir(), "data directory")
 	fs.StringVar(&o.Listen, "listen", "127.0.0.1:7878", "loopback address for the CLI, local agents and the console")
-	fs.StringVar(&o.Network, "network", "local", "legacy private path: tailscale or local. tailscale records a host grant and does not enable Funnel")
+	fs.StringVar(&o.Network, "network", "local", "legacy private path: tailscale or local. tailscale records a host grant and preserves Private Tailscale for pre-lifecycle flats; does not enable Funnel")
 	fs.StringVar(&o.LocalAddr, "local-addr", "127.0.0.1:7879", "address of the local network")
 	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "file holding a reusable, untagged Tailscale auth key for new nodes (else TS_AUTHKEY or interactive login)")
 	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console")
@@ -92,8 +93,19 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&relays, "relays", "", "comma-separated Portal relays (default: Portal CLI default discovery)")
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
 	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "read a separately provisioned operator credential from hidden terminal input or stdin; required to enable console decisions")
+	fs.StringVar(&o.OperatorCredentialFile, "operator-credential-file", "", "operator-owned regular 0600 credential file for noninteractive services; mutually exclusive with stdin")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	if o.OperatorCredentialStdin && o.OperatorCredentialFile != "" {
+		return o, errors.New("choose only one operator credential source")
+	}
+	if o.OperatorCredentialFile != "" {
+		var err error
+		o.OperatorCredentialFile, err = filepath.Abs(o.OperatorCredentialFile)
+		if err != nil {
+			return o, err
+		}
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -190,6 +202,16 @@ func (h *Host) Addr() string { return h.ln.Addr().String() }
 // Start builds and starts every component.
 func Start(ctx context.Context, o Options) (*Host, error) {
 	var operator *api.OperatorAuthority
+	if o.OperatorCredentialFile != "" {
+		if o.OperatorCredentialStdin || o.OperatorCredential != "" {
+			return nil, errors.New("choose only one operator credential source")
+		}
+		var err error
+		o.OperatorCredential, err = readOperatorCredentialFile(o.OperatorCredentialFile)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if o.OperatorCredential != "" {
 		var err error
 		operator, err = api.NewOperatorAuthority(o.OperatorCredential)
@@ -221,6 +243,13 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, err
 	}
 	h.Store = st
+	// --network tailscale is the explicit compatibility selection for flats
+	// present before the lifecycle schema. Local startup grants nothing.
+	if o.Network == "tailscale" {
+		if err := st.PreserveLegacyTailscale(ctx); err != nil {
+			return nil, fmt.Errorf("legacy Private Tailscale upgrade: %w", err)
+		}
+	}
 
 	grants, err := hostGrants(o)
 	if err != nil {
@@ -261,7 +290,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, Configuration: providerConfiguration(portalOptions)}
+	backends := provider.Options{Local: loop, Tailscale: tail, Configuration: providerConfiguration(portalOptions), Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+		return st.ProviderPermitted(ctx, slug, string(id))
+	}}
 	if h.portalNet != nil {
 		backends.Portal = h.portalNet
 	}
@@ -591,4 +622,32 @@ func retainDataLock(f *os.File) {
 	retainedLocks.Lock()
 	retainedLocks.files = append(retainedLocks.files, f)
 	retainedLocks.Unlock()
+}
+
+// readOperatorCredentialFile validates the opened descriptor, avoiding a
+// pathname-check/read race and refusing symlinks and blocking special files.
+func readOperatorCredentialFile(path string) (string, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", errors.New("could not open operator credential file")
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", errors.New("could not inspect operator credential file")
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 4098 || owner.Uid != uint32(os.Geteuid()) {
+		return "", errors.New("operator credential file must be a regular 0600 file owned by the service user")
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, 4099))
+	if err != nil {
+		return "", errors.New("could not read operator credential file")
+	}
+	value := strings.TrimRight(string(raw), "\r\n")
+	if len(value) < 32 || len(value) > 4096 || strings.ContainsAny(value, "\r\n") {
+		return "", errors.New("operator credential file must contain one credential of 32 to 4096 bytes")
+	}
+	return value, nil
 }

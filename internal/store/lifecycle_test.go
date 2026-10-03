@@ -180,3 +180,54 @@ func TestLifecycleAuthorizedRejectClaimRacePersistsWinner(t *testing.T) {
 		})
 	}
 }
+
+func TestExplicitLegacyTailscaleUpgradeDoesNotInventPublicPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"legacy", "denied"} {
+		if err := s.CreateFlat(t.Context(), Flat{Slug: name, Name: name, Visibility: Private, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetProviderPermission(t.Context(), "denied", ProviderTailscale, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`PRAGMA user_version=1`); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if allowed, _ := s.ProviderPermitted(t.Context(), "legacy", ProviderTailscale); allowed {
+		t.Fatal("opening legacy store invented permission")
+	}
+	if err := s.CreateFlat(t.Context(), Flat{Slug: "new", Name: "new", Visibility: Private, CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PreserveLegacyTailscale(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"legacy", "denied", "new"} {
+		for _, id := range []string{ProviderTailscale, ProviderFunnel, ProviderPortal} {
+			got, err := s.ProviderPermitted(t.Context(), name, id)
+			if err != nil || got != (name == "legacy" && id == ProviderTailscale) {
+				t.Fatalf("%s/%s allowed=%t %v", name, id, got, err)
+			}
+		}
+	}
+	if err := s.SetProviderPermission(t.Context(), "legacy", ProviderTailscale, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PreserveLegacyTailscale(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, _ := s.ProviderPermitted(t.Context(), "legacy", ProviderTailscale); allowed {
+		t.Fatal("restart undid revocation")
+	}
+}

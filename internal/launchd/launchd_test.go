@@ -372,3 +372,26 @@ func TestBuildJobKeepsSymlinkedExecutable(t *testing.T) {
 		t.Fatalf("program[0] = %q, want the link %q", job.Program[0], link)
 	}
 }
+
+func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
+	fake := &fakeLaunchctl{}
+	opts := testOpts(t, fake)
+	opts.OperatorCredentialFile = filepath.Join(opts.Home, "operator credentials", "credential")
+	for _, exe := range []string{opts.Executable, filepath.Join(opts.Home, "flats-updated")} {
+		opts.Executable = exe
+		res, err := Install(t.Context(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Job.Program[len(res.Job.Program)-2:]; !reflect.DeepEqual(got, []string{"--operator-credential-file", opts.OperatorCredentialFile}) {
+			t.Fatal(got)
+		}
+		raw, err := os.ReadFile(res.PlistPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
+			t.Fatal("installed configuration lost credential source")
+		}
+	}
+}

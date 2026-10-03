@@ -305,8 +305,8 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
 		return err
 	}
-	if ver > 4 {
-		return fmt.Errorf("metadata schema %d is newer than supported schema 4", ver)
+	if ver > 5 {
+		return fmt.Errorf("metadata schema %d is newer than supported schema 5", ver)
 	}
 	if ver < 1 {
 		// Before the redirects table only the latest rename was kept, on the
@@ -314,6 +314,16 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec(`INSERT OR IGNORE INTO redirects(old,flat,until)
 			SELECT old_slug, slug, old_slug_until FROM flats
 			WHERE old_slug IS NOT NULL AND old_slug_until IS NOT NULL AND old_slug NOT IN (SELECT slug FROM flats)`); err != nil {
+			return err
+		}
+	}
+	// Persist only eligibility here, never permission. The explicit operator
+	// network selection decides whether to retain legacy Private Tailscale.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS legacy_private_upgrade (flat TEXT PRIMARY KEY REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE, pending INTEGER NOT NULL DEFAULT 1)`); err != nil {
+		return err
+	}
+	if ver < 2 {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO legacy_private_upgrade(flat) SELECT slug FROM flats`); err != nil {
 			return err
 		}
 	}
@@ -331,7 +341,7 @@ func migrate(db *sql.DB) error {
 	if err := addColumn(db, "approvals", "authorized_at", "INTEGER"); err != nil {
 		return err
 	}
-	_, err := db.Exec(`PRAGMA user_version = 4`)
+	_, err := db.Exec(`PRAGMA user_version = 5`)
 	return err
 }
 

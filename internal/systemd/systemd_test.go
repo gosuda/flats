@@ -56,3 +56,23 @@ func TestInstallUninstall(t *testing.T) {
 		t.Fatal("unit file left behind")
 	}
 }
+
+func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	home := t.TempDir()
+	opts := Options{Home: home, DataDir: filepath.Join(home, "data"), OperatorCredentialFile: filepath.Join(home, "operator credentials", "credential"), Run: func(context.Context, string, ...string) ([]byte, error) { return nil, nil }}
+	for _, exe := range []string{"/opt/flats-v1", "/opt/flats-v2"} {
+		opts.Executable = exe
+		path, err := Install(t.Context(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "ExecStart="+exe) || !strings.Contains(string(raw), "--operator-credential-file "+quote(opts.OperatorCredentialFile)) {
+			t.Fatal("update lost noninteractive source")
+		}
+	}
+}

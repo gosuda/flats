@@ -502,3 +502,22 @@ func (s *Store) CommitVisibility(ctx context.Context, f Flat, from Visibility, a
 	}
 	return tx.Commit()
 }
+
+// PreserveLegacyTailscale is called only for an explicit operator selection of
+// --network tailscale. Existing explicit allow/deny rows win; newly-created
+// flats are not eligible, and this never grants Funnel or Portal. Consuming
+// eligibility with the insert prevents a restart from undoing later revocation.
+func (s *Store) PreserveLegacyTailscale(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO flat_providers(flat,provider,permitted) SELECT flat,'tailscale',1 FROM legacy_private_upgrade WHERE pending=1`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE legacy_private_upgrade SET pending=0 WHERE pending=1`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}

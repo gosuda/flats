@@ -38,13 +38,14 @@ func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error
 
 // Options configures Install, Uninstall and Status.
 type Options struct {
-	Executable string            // absolute path of the flats binary; default: the running executable
-	Args       []string          // extra `flats serve` flags
-	DataDir    string            // logs go to DataDir/logs (required by Install)
-	Env        map[string]string // extra environment; PATH is always set
-	Home       string            // default: os.UserHomeDir
-	UID        int               // default (0): os.Getuid
-	Run        Runner            // default: ExecRunner
+	OperatorCredentialFile string            // optional noninteractive operator-owned 0600 file
+	Executable             string            // absolute path of the flats binary; default: the running executable
+	Args                   []string          // extra `flats serve` flags
+	DataDir                string            // logs go to DataDir/logs (required by Install)
+	Env                    map[string]string // extra environment; PATH is always set
+	Home                   string            // default: os.UserHomeDir
+	UID                    int               // default (0): os.Getuid
+	Run                    Runner            // default: ExecRunner
 }
 
 func (o *Options) fill() error {
@@ -170,9 +171,17 @@ func BuildJob(opts Options) (Job, error) {
 	if env["PATH"] == "" {
 		env["PATH"] = DefaultPath
 	}
+	args := append([]string{}, opts.Args...)
+	if opts.OperatorCredentialFile != "" {
+		path, err := filepath.Abs(opts.OperatorCredentialFile)
+		if err != nil {
+			return Job{}, err
+		}
+		args = append(args, "--operator-credential-file", path)
+	}
 	out, errp := LogPaths(dataDir)
 	return Job{
-		Program: append([]string{exe, "serve"}, opts.Args...),
+		Program: append([]string{exe, "serve"}, args...),
 		Stdout:  out,
 		Stderr:  errp,
 		Env:     env,
