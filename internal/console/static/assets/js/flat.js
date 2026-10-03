@@ -139,7 +139,16 @@ export function mount(main, [slug], ctx, settings = false) {
       ['operations', 'Operations'],
     ];
     return h('div', { class: 'life-tabs', role: 'tablist', 'aria-label': 'Flat sections' }, tabs.map(([id, label]) => {
-      const btn = h('button', { type: 'button', role: 'tab', id: 'tab-' + id, 'aria-controls': 'panel-' + id, 'aria-selected': tab === id ? 'true' : 'false', text: label });
+      const btn = h('button', { type: 'button', role: 'tab', id: 'tab-' + id, 'aria-controls': 'panel-' + id, 'aria-selected': tab === id ? 'true' : 'false', tabindex: tab === id ? '0' : '-1', text: label });
+      btn.addEventListener('keydown', (ev) => {
+        const index = tabs.findIndex(([value]) => value === id);
+        const next = ev.key === 'Home' ? 0 : ev.key === 'End' ? tabs.length - 1
+          : ev.key === 'ArrowRight' ? (index + 1) % tabs.length
+            : ev.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : null;
+        if (next === null) return;
+        ev.preventDefault();
+        document.getElementById('tab-' + tabs[next][0])?.click();
+      });
       btn.addEventListener('click', () => {
         tab = id;
         try { history.replaceState(null, '', `#${id}`); } catch { /* harness without history */ }

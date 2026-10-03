@@ -18,14 +18,15 @@ class HarnessChecks(unittest.TestCase):
             self.assertFalse(accepted({**report, field: value}), field)
 
     def test_failure_needs_its_cause(self):
-        failed({"status": "failed", "result": "draft revision changed"}, "draft-drift")
+        failed({"status": "failed", "result": "draft revision changed",
+                "result_data": {"status": "failed", "failure_code": "stale_approval"}}, "draft-drift")
         with self.assertRaises(AssertionError):
             failed({"status": "failed", "result": "database unavailable"}, "draft-drift")
         with self.assertRaises(AssertionError):
             failed({"status": "failed", "result": "500 internal error"}, "health")
 
     def test_impact_requires_a_field_and_truthful_value(self):
-        self.assertEqual(data_impact({"data_impact": "none"}), "none")
+        self.assertEqual(data_impact({"data_impact": "none", "health_data": "not_run", "live_data": "untouched"}), "none")
         with self.assertRaises(AssertionError):
             data_impact({"error": 'some mention of "data_impact"'})
         with self.assertRaises(AssertionError):

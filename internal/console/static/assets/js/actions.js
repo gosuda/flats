@@ -18,7 +18,7 @@ function restoreBox(flat) {
   const id = 'restore-' + flat.slug;
   const input = h('input', { type: 'checkbox', id });
   const row = h('div', { class: 'field field-check' }, input,
-    h('label', { for: id, text: `Also restore the database as it was before version ${flat.live_version} was deployed (server flats only)` }));
+    h('label', { for: id, text: `Also restore data from before version ${flat.live_version} was deployed (historical snapshots restore only the database)` }));
   return { input, row };
 }
 

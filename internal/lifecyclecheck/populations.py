@@ -17,7 +17,7 @@ def durable_server(version):
     files = server(version)
     files['server.js'] = files['server.js'].replace(
         'return Response.json({version: VERSION, hits:c});'.replace('VERSION', str(version)),
-        'if (path === "/put") env.FILES.put("record", "DISPOSABLE-FILE");\n'
+        'if (path === "/put") env.FILES.put("record", new URL(request.url).searchParams.get("value") || "DISPOSABLE-FILE");\n'
         f'return Response.json({{version:{version}, hits:c, file:env.FILES.get("record"), '
         'secret:env.GATE_SECRET === "DISPOSABLE-SECRET"});')
     return files
@@ -27,7 +27,7 @@ def seed_mixed(h):
     Host, _, require, _, static = helpers()
     require(h.legacy_binary and h.legacy_adapter_binary, 'mixed seed needs archived real binary and archived-core provider fixture')
     h.stop()
-    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed')
+    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed', operator=False)
     try:
         old.start()
         old.save('mixed', static('UNDEPLOYED-ONE'))
@@ -60,6 +60,8 @@ def seed_mixed(h):
                                                 {'visibility': 'public-unlisted'}, status=202))
         versions = old.versions('mixed')
         manifest = {'versions': versions, 'live': live, 'previews': previews,
+                    'snapshots': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                  for p in (old.data / 'flats/mixed/snapshots').glob('*.sqlite')},
                     'deployments': old.ok('GET', '/api/flats/mixed/deployments')['deployments'],
                     'public_flat': old.flat('legacy-public'),
                     'visibility_pending': old.ok('GET', '/api/approvals/' + visibility_pending),
@@ -136,6 +138,20 @@ def mixed_migration(h):
         if restart == 0:
             h.stop()
             h.start()
+    # Real legacy DB-only snapshots restore DB while preserving present FILES.
+    for name, digest in seed['snapshots'].items():
+        path = h.data / 'flats/mixed/snapshots' / name
+        require(path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest,
+                'migration changed historical snapshot bytes')
+        require(not Path(str(path) + '.data').exists(), 'legacy seed unexpectedly has a full-data sidecar')
+    legacy_restore = h.approval(h.ok('POST', '/api/flats/mixed/rollback',
+                                    {'version': 2, 'restore_data': True}, status=202))
+    from gate import data_impact
+    decision = h.decide(legacy_restore)
+    require(decision['status'] == 'approved' and data_impact(decision) == 'restore_data',
+            'legacy DB-only approved restore failed or impact DTO missing')
+    restored_live = {**seed['live'], 'version': 2, 'hits': 1}
+    require(h.traffic('mixed') == restored_live, 'legacy DB restore lost current FILES/secret or wrong DB')
     p = h.ok('POST', '/api/flats/mixed/previews', {'target': 'draft'}, status=201)
     require('UNDEPLOYED-FOUR' in h.traffic(p['host']), 'newest historical working content lost')
     # Discriminate new publication identity from an alias of saved legacy v4.
@@ -151,7 +167,7 @@ def mixed_migration(h):
                     'legacy v4 preview was stolen by new published v4')
     rollback = h.approval(h.ok('POST', '/api/flats/mixed/rollback', {'version': 2}, status=202))
     require(h.decide(rollback)['status'] == 'approved', 'rollback to migrated v2 failed')
-    require(h.traffic('mixed') == {**seed['live'], 'version': 2}, 'migrated rollback changed data')
+    require(h.traffic('mixed') == restored_live, 'migrated rollback changed restored data')
     # Decide legacy pending references after the preservation observations.
     visibility_row = h.ok('GET', '/api/approvals/' + seed['visibility_pending']['id'])
     decision = h.decide(visibility_row['id'])
@@ -168,9 +184,11 @@ def mixed_migration(h):
 
 def restore_success(h):
     _, _, require, server, _ = helpers()
-    h.activate('restore', server(1))
+    h.activate('restore', durable_server(1))
     h.traffic('restore', '/hit')
-    h.activate('restore', server(2))
+    h.traffic('restore', '/put?value=FILES-ONE')
+    h.activate('restore', durable_server(2))
+    h.traffic('restore', '/put?value=FILES-TWO')
     require(h.traffic('restore', '/hit')['hits'] == 2, 'pre-restore data setup')
     a = h.approval(h.ok('POST', '/api/flats/restore/rollback',
                         {'version': 1, 'restore_data': True}, status=202))
@@ -179,9 +197,14 @@ def restore_success(h):
         params = json.loads(params)
     require(params.get('restore_data') is True, 'restore consent not frozen')
     # Data may change while waiting; approval must still restore the pre-v2 snapshot.
-    require(h.traffic('restore', '/hit') == {'version': 2, 'hits': 3}, 'pending restore ran')
-    require(h.decide(a)['status'] == 'approved', 'approved restore failed')
-    require(h.traffic('restore') == {'version': 1, 'hits': 1}, 'frozen restore data mismatch')
+    require(h.traffic('restore', '/hit') == {'version': 2, 'hits': 3, 'file': 'FILES-TWO', 'secret': False}, 'pending restore ran')
+    h.traffic('restore', '/put?value=FILES-THREE')
+    from gate import data_impact
+    decision = h.decide(a)
+    require(decision['status'] == 'approved', 'approved restore failed')
+    require(data_impact(decision) == 'restore_data', 'restore impact DTO did not report restored data')
+    expected = {'version': 1, 'hits': 1, 'file': 'FILES-ONE', 'secret': False}
+    require(h.traffic('restore') == expected, 'new full snapshot did not restore DB and FILES')
     require(sorted(v['number'] for v in h.versions('restore')) == [1, 2], 'restore allocated code number')
     backup_counts = []
     names = h.ok('GET', '/console/api/flats/restore/snapshots', console=True)['snapshots'] or []
@@ -193,10 +216,13 @@ def restore_success(h):
             with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as db:
                 backup_counts.append(db.execute('SELECT count(*) FROM hits').fetchone()[0])
     require(3 in backup_counts, 'pre-restore data backup not preserved')
+    sidecars = [h.data / 'flats/restore/snapshots' / (name + '.data') for name in names]
+    require(any((folder / 'files/record').is_file() and (folder / 'files/record').read_text() == 'FILES-THREE'
+                for folder in sidecars), 'pre-restore FILES backup not preserved')
     h.decide(a)
     h.stop()
     h.start()
-    require(h.traffic('restore') == {'version': 1, 'hits': 1}, 'retry/restart restored twice or lost data')
+    require(h.traffic('restore') == expected, 'retry/restart restored twice or lost data')
 
 
 def startup_server(broken=False):

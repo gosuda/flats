@@ -191,3 +191,26 @@ versions, deployment count, live pointer and served bytes across two restarts.
 The exact core hook export and final data-impact/layout/restore scope are pending;
 this case fails closed while that capability is absent. Final full integrated
 execution and independent Claude product review remain pending.
+
+## Integrated execution additions
+
+Core behavior and tagged phase hooks have since been adopted through exact
+committed grants, as has the frozen HTTP Draft/Publish/PendingApproval transport.
+The suite currently defines 22 cases, including public v1→v2→rollback route
+binding and an ordinary production-build check that fault environments are
+ignored. The separate tagged binary pauses at four real core phases; SIGKILL
+and two subsequent process restarts observe exactly-once recovery. All binary
+identities, including tagged build metadata, are required for acceptance.
+
+Operator-boundary proof now requires forged console headers to fail, separately
+provisioned credential unlock to succeed, explicit candidate approval to succeed
+and session revocation to fail afterward. The behavioral census still tests
+HTTP/CLI/MCP surfaces. This proof assumes agents cannot read operator secrets or
+server/browser memory; it is not identification of an individual human.
+
+The actual legacy fixture retains snapshot hashes. Migration restores a real
+legacy DB-only snapshot while checking current FILES and secrets remain intact.
+New full-data restore checks both restored DB/FILES and the pre-restore backup.
+Final CLI/MCP transport adoption, full integrated gate and rendered browser
+results are reported in the private integration handoff, not inferred from these
+prepared cases.

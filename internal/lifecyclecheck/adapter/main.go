@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,12 +15,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/cli"
+	"github.com/gosuda/flats/internal/console"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/provider"
@@ -29,9 +32,10 @@ import (
 )
 
 type faults struct {
-	mu          sync.Mutex
-	stop, serve bool
-	calls       map[string]int
+	mu                                               sync.Mutex
+	stop, serve                                      bool
+	portalStop, funnelStop, portalServe, funnelServe bool
+	calls                                            map[string]int
 }
 
 func (f *faults) called(name string) {
@@ -48,7 +52,7 @@ type publicNet struct {
 func (p *publicNet) Stop(slug string) error {
 	p.faults.called("portal_stop")
 	p.faults.mu.Lock()
-	fail := p.faults.stop
+	fail := p.faults.stop || p.faults.portalStop
 	p.faults.mu.Unlock()
 	if fail {
 		return errors.New("deterministic public teardown failure: route remains reachable")
@@ -59,7 +63,7 @@ func (p *publicNet) Stop(slug string) error {
 func (p *publicNet) Serve(ctx context.Context, slug string, handler http.Handler, hidden bool) (string, error) {
 	p.faults.called("portal_serve")
 	p.faults.mu.Lock()
-	fail := p.faults.serve
+	fail := p.faults.serve || p.faults.portalServe
 	p.faults.mu.Unlock()
 	if fail {
 		return "", errors.New("deterministic provider connection failure")
@@ -78,7 +82,7 @@ type tailnet struct {
 func (t *tailnet) ServeFunnel(ctx context.Context, host string, handler http.Handler) (string, error) {
 	t.faults.called("funnel_serve")
 	t.faults.mu.Lock()
-	fail := t.faults.serve
+	fail := t.faults.serve || t.faults.funnelServe
 	t.faults.mu.Unlock()
 	if fail {
 		return "", errors.New("deterministic provider connection failure")
@@ -95,7 +99,7 @@ func (t *tailnet) ServeFunnel(ctx context.Context, host string, handler http.Han
 func (t *tailnet) StopFunnel(host string) error {
 	t.faults.called("funnel_stop")
 	t.faults.mu.Lock()
-	fail := t.faults.stop
+	fail := t.faults.stop || t.faults.funnelStop
 	t.faults.mu.Unlock()
 	if fail {
 		return errors.New("deterministic public teardown failure: route remains reachable")
@@ -118,6 +122,18 @@ func (t *tailnet) FunnelState(host string) core.ExposureEndpoint {
 	return core.ExposureEndpoint{Provider: core.ProviderFunnel, State: "unavailable"}
 }
 
+// managerSystem exposes concrete host configuration and endpoint DTOs even in
+// the loopback fault lane; it never invents production relay or ACL readiness.
+type managerSystem struct {
+	manager *provider.Manager
+	private *local.Net
+}
+
+func (s managerSystem) Status(context.Context) any {
+	return map[string]any{"network": "local", "private": s.private.Status(),
+		"providers": s.manager.HostStatus(), "loopback_provider_double": true}
+}
+
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	data := fs.String("data", "", "disposable data directory")
@@ -125,6 +141,7 @@ func serve(args []string) error {
 	localAddr := fs.String("local-addr", "127.0.0.1:0", "loopback flat listener")
 	fs.String("network", "local", "compatibility flag; only loopback is used")
 	fs.Bool("portal", false, "compatibility flag; no real Portal is used")
+	credentialInput := fs.Bool("operator-credential-stdin", false, "read disposable operator authority from out-of-band stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -136,6 +153,18 @@ func serve(args []string) error {
 	}
 	if *data == "" {
 		return errors.New("explicit disposable --data required")
+	}
+	var authority *api.OperatorAuthority
+	if *credentialInput {
+		credential, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil {
+			return errors.New("could not read test operator authority")
+		}
+		authority, err = api.NewOperatorAuthority(strings.TrimRight(credential, "\r\n"))
+		credential = ""
+		if err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(*data, 0o700); err != nil {
 		return err
@@ -161,14 +190,19 @@ func serve(args []string) error {
 	}
 	defer manager.Close()
 	// Public is deliberately nil: the legacy adapter must never satisfy this lane.
-	svc, err := core.New(ctx, core.Config{DataDir: *data, Store: st, Private: private, Lifecycle: manager,
+	cfg := core.Config{DataDir: *data, Store: st, Private: private, Lifecycle: manager,
 		Runtime: &runtime.Manager{DataDir: *data}, Reserved: []string{"flats"}, Logf: log.Printf,
-		ConsoleURL: func() string { return "http://" + *listen }})
+		ConsoleURL: func() string { return "http://" + *listen }}
+	if authority != nil {
+		cfg.ValidateOperatorDecision = authority.ValidateDecision
+		cfg.OperatorIdentity = authority.DecisionIdentity
+	}
+	svc, err := core.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer svc.Close()
-	apiServer := &api.Server{Svc: svc}
+	apiServer := &api.Server{Svc: svc, Operator: authority, System: managerSystem{manager, private}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__gate/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -202,12 +236,17 @@ func serve(args []string) error {
 	mux.Handle("/api/", apiServer.Handler())
 	mux.Handle("/console/api/", apiServer.Handler())
 	mux.Handle("/mcp", mcpx.Handler(svc, mcpx.Options{}))
+	mux.Handle("/", console.Handler())
 	// Fault control belongs only to this test binary. It cannot approve or
 	// alter product state and is deliberately absent from the real binary.
 	mux.HandleFunc("POST /__gate/fault", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Stop  bool `json:"stop"`
-			Serve bool `json:"serve"`
+			Stop        bool `json:"stop"`
+			Serve       bool `json:"serve"`
+			PortalStop  bool `json:"portal_stop"`
+			FunnelStop  bool `json:"funnel_stop"`
+			PortalServe bool `json:"portal_serve"`
+			FunnelServe bool `json:"funnel_serve"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -215,6 +254,8 @@ func serve(args []string) error {
 		}
 		fault.mu.Lock()
 		fault.stop, fault.serve = in.Stop, in.Serve
+		fault.portalStop, fault.funnelStop = in.PortalStop, in.FunnelStop
+		fault.portalServe, fault.funnelServe = in.PortalServe, in.FunnelServe
 		fault.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	})

@@ -48,6 +48,8 @@ const get = (p) => request('GET', p);
 const post = (p, b) => request('POST', p, b === undefined ? {} : b);
 
 export const api = {
+  operatorSession: (credential) => post('/operator/session', { credential }),
+  operatorLogout: () => request('DELETE', '/operator/session'),
   status: () => get('/status'),
   flats: (q) => get('/flats' + (q ? '?q=' + enc(q) : '')),
   flat: (slug) => get(`/flats/${enc(slug)}`),

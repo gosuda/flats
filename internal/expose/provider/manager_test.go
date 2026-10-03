@@ -46,6 +46,81 @@ func TestHistoricalStateDoesNotGrant(t *testing.T) {
 	}
 }
 
+func TestExposurePolicyTracksPermissionAndRuntimeDisable(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Portal, Funnel}})
+	defer ln.Close()
+	first, err := m.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := m.File()
+	f.Permitted[0], f.Permitted[1] = f.Permitted[1], f.Permitted[0]
+	if err := Save(m.dir, f); err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.ExposurePolicy(context.Background())
+	if err != nil || first != second {
+		t.Fatalf("order changed policy: %v", err)
+	}
+	disabled, err := New(m.dir, Options{Local: ln, Tailscale: m.ts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := disabled.ExposurePolicy(context.Background())
+	if err != nil || token == first {
+		t.Fatal("runtime-disabled Portal did not change policy")
+	}
+	f.Permitted = []ID{Portal}
+	if err := Save(m.dir, f); err != nil {
+		t.Fatal(err)
+	}
+	third, err := m.ExposurePolicy(context.Background())
+	if err != nil || third == first {
+		t.Fatal("persisted host permission change did not change policy")
+	}
+	copy := m.File()
+	copy.Permitted[0] = Funnel
+	if !m.File().Allows(Portal) {
+		t.Fatal("File exposes mutable manager permission storage")
+	}
+}
+
+func TestExposureObserverAndFreshPublicPrivateRoute(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Portal}})
+	m.portal.(*fakePortal).Public = local.NewPublic(ln)
+	defer ln.Close()
+	defer m.Close()
+	res, err := m.ServeExposure(context.Background(), ExposureRequest{Slug: "fresh", Visibility: "public",
+		Audience: AudienceCurrent, Handler: text("published"), Permitted: []ID{Portal}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := endpointURL(res, Local)
+	if get(t, local) != "published" {
+		t.Fatal("fresh Public manager has no independent Private route")
+	}
+	status, err := m.ExposureStatus(context.Background(), "fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range status.Endpoints {
+		if !ep.Configured || !ep.Permitted || ep.Audience != AudienceCurrent || ep.Host != "fresh" {
+			t.Fatalf("incomplete endpoint DTO: %+v", ep)
+		}
+	}
+	before, _ := m.ExposurePolicy(context.Background())
+	if _, err := m.StopPublicRoutes(context.Background(), "fresh"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := m.ExposurePolicy(context.Background())
+	if before != after {
+		t.Fatal("readiness changed desired permission policy")
+	}
+	if get(t, local) != "published" {
+		t.Fatal("stop removed fresh Private route")
+	}
+}
+
 func TestFunnelNameIsNotAnAlias(t *testing.T) {
 	if _, err := ParseID("funnel"); err == nil {
 		t.Fatal("funnel was accepted as a provider id")
@@ -325,4 +400,53 @@ func (f *fakePortal) Serve(ctx context.Context, slug string, h http.Handler, hid
 		return "", errors.New("portal backend missing")
 	}
 	return f.Public.Serve(ctx, slug, h, hidden)
+}
+
+func TestPreviewCleanupKeepsOtherHostsAndCurrent(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1})
+	defer ln.Close()
+	defer m.Close()
+	ctx := context.Background()
+	urls := map[string]string{}
+	for _, host := range []string{"notes", "notes-draft-one", "notes-draft-two"} {
+		audience := AudienceDraft
+		if host == "notes" {
+			audience = AudienceCurrent
+		}
+		res, err := m.ServeExposure(ctx, ExposureRequest{Slug: "notes", Host: host, Audience: audience,
+			Visibility: "private", Handler: text(host), Ephemeral: audience == AudienceDraft})
+		if err != nil {
+			t.Fatal(err)
+		}
+		urls[host] = endpointURL(res, Local)
+	}
+	if err := m.StopExposure(ctx, "notes-draft-one"); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"notes", "notes-draft-two"} {
+		if got := get(t, urls[host]); got != host {
+			t.Fatalf("%s: %s", host, got)
+		}
+	}
+	resp, err := http.Get(urls["notes-draft-one"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("stopped preview: %d", resp.StatusCode)
+	}
+	status, err := m.ExposureStatus(ctx, "notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, ep := range status.Endpoints {
+		if ep.Provider == Local {
+			seen[ep.Host] = ep.Ready
+		}
+	}
+	if seen["notes-draft-one"] || !seen["notes"] || !seen["notes-draft-two"] || len(seen) != 3 {
+		t.Fatalf("host-specific observed routes: %+v", status)
+	}
 }

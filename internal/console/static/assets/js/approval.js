@@ -2,6 +2,7 @@
 
 import { h, clear, dateTime, timeEl, VISIBILITY, visibilityBadge, noticeFor } from './dom.js';
 import { api } from './api.js';
+import { impactText } from './lifecycle.js';
 import { confirmDialog, errorPanel, loading, toast, busy } from './ui.js';
 
 function params(a) {
@@ -77,6 +78,8 @@ export function mount(main, [id], ctx) {
     if (Array.isArray(p.providers)) rows.push(['Permitted providers', p.providers.join(', ') || 'local']);
     rows.push(['Status', statusBadge(a.status)]);
     if (a.decided_at) rows.push(['Decided', dateTime(a.decided_at)]);
+    if (a.decided_by) rows.push(['Decision actor', a.decided_by]);
+    if (a.result_data) rows.push(['Data impact', impactText(a)]);
     if (a.result) rows.push(['Result', a.result]);
     body.appendChild(h('dl', { class: 'facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)])));
 

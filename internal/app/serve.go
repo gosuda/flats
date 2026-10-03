@@ -2,10 +2,13 @@
 package app
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -31,6 +34,7 @@ import (
 	"github.com/gosuda/flats/internal/mcpx"
 	"github.com/gosuda/flats/internal/runtime"
 	"github.com/gosuda/flats/internal/store"
+	"golang.org/x/term"
 )
 
 // Version is set at build time with -ldflags "-X github.com/gosuda/flats/internal/app.Version=...".
@@ -38,18 +42,22 @@ var Version = "dev"
 
 // Options configure `flats serve`.
 type Options struct {
-	DataDir     string
-	Listen      string // loopback management address
-	Network     string // tailscale | local; legacy private path
-	NetworkSet  bool   // true when --network was present on the command line
-	LocalAddr   string // local network address
-	AuthKeyFile string
-	ConsoleHost string
-	Portal      bool
-	PortalSet   bool     // true when --portal was present on the command line
-	Permit      []string // explicit host grants; does not publish a flat
-	Relays      []string
-	Runtime     bool
+	DataDir                 string
+	Listen                  string // loopback management address
+	Network                 string // tailscale | local; legacy private path
+	NetworkSet              bool   // true when --network was present on the command line
+	LocalAddr               string // local network address
+	AuthKeyFile             string
+	ConsoleHost             string
+	Portal                  bool
+	PortalSet               bool     // true when --portal was present on the command line
+	Permit                  []string // explicit host grants; does not publish a flat
+	Relays                  []string
+	Runtime                 bool
+	OperatorCredentialStdin bool
+	// OperatorCredential is an embedding-only input; Start clears it before
+	// retaining options. CLI credentials are accepted only through stdin.
+	OperatorCredential string
 }
 
 // DefaultDataDir returns $FLATS_DATA or ~/Library/Application Support/Flats,
@@ -83,6 +91,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&permit, "permit", "", "comma-separated host grants: tailscale, tailscale-funnel, portal. Local needs no grant. Stored in the data directory and does not publish a flat")
 	fs.StringVar(&relays, "relays", "", "comma-separated Portal relays (default: Portal CLI default discovery)")
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
+	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "read a separately provisioned operator credential from hidden terminal input or stdin; required to enable console decisions")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -132,9 +141,16 @@ func Serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	if o.OperatorCredentialStdin {
+		o.OperatorCredential, err = readOperatorCredential(os.Stdin, os.Stderr)
+		if err != nil {
+			return err
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	h, err := Start(ctx, o)
+	o.OperatorCredential = ""
 	if err != nil {
 		return err
 	}
@@ -152,6 +168,7 @@ type Host struct {
 	Private   core.PrivateNet
 	Public    core.PublicNet
 	Providers *provider.Manager
+	Operator  *api.OperatorAuthority
 	Mux       http.Handler
 	srv       *http.Server
 	ln        net.Listener
@@ -172,6 +189,15 @@ func (h *Host) Addr() string { return h.ln.Addr().String() }
 
 // Start builds and starts every component.
 func Start(ctx context.Context, o Options) (*Host, error) {
+	var operator *api.OperatorAuthority
+	if o.OperatorCredential != "" {
+		var err error
+		operator, err = api.NewOperatorAuthority(o.OperatorCredential)
+		o.OperatorCredential = ""
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := os.MkdirAll(o.DataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -179,7 +205,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Host{Opts: o, dataLock: lock}
+	h := &Host{Opts: o, dataLock: lock, Operator: operator}
 	ok := false
 	defer func() {
 		if !ok {
@@ -223,8 +249,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	// An explicit --portal=false keeps a stored grant and does not start Portal
 	// for this process. Omitting the flag uses a grant that is already stored.
 	usePortal := grants.Allows(provider.Portal) && !(o.PortalSet && !o.Portal)
+	portalOptions := portalConfig(ctx, st, o, logf)
 	if usePortal {
-		p, err := portal.New(portalConfig(ctx, st, o, logf))
+		p, err := portal.New(portalOptions)
 		if err != nil {
 			return nil, fmt.Errorf("portal: %w", err)
 		}
@@ -234,7 +261,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail}
+	backends := provider.Options{Local: loop, Tailscale: tail, Configuration: providerConfiguration(portalOptions)}
 	if h.portalNet != nil {
 		backends.Portal = h.portalNet
 	}
@@ -262,13 +289,17 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	h.console = "http://" + o.Listen
 	cfg := core.Config{DataDir: o.DataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt,
 		ConsoleURL: func() string { return h.console }, Reserved: []string{o.ConsoleHost}, Logf: logf}
+	if operator != nil {
+		cfg.ValidateOperatorDecision = operator.ValidateDecision
+		cfg.OperatorIdentity = operator.DecisionIdentity
+	}
 	svc, err := core.New(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	h.Svc = svc
 
-	apiSrv := &api.Server{Svc: svc, System: h}
+	apiSrv := &api.Server{Svc: svc, System: h, Operator: operator}
 	mux := http.NewServeMux()
 	apiH := apiSrv.Handler()
 	mux.Handle("/api/", apiH)
@@ -302,6 +333,49 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	ok = true
 	return h, nil
+}
+
+func readOperatorCredential(input *os.File, output io.Writer) (string, error) {
+	var raw []byte
+	var err error
+	if term.IsTerminal(int(input.Fd())) {
+		fmt.Fprint(output, "Operator credential (hidden): ")
+		raw, err = term.ReadPassword(int(input.Fd()))
+		fmt.Fprintln(output)
+	} else {
+		// Explicit out-of-band provisioning for embedded/disposable hosts.
+		var value string
+		value, err = bufio.NewReader(io.LimitReader(input, 4097)).ReadString('\n')
+		if errors.Is(err, io.EOF) && len(value) > 0 {
+			err = nil
+		}
+		raw = []byte(strings.TrimRight(value, "\r\n"))
+	}
+	if err != nil {
+		return "", errors.New("could not read operator credential")
+	}
+	if len(raw) < 32 || len(raw) > 4096 {
+		return "", errors.New("operator credential must contain 32 to 4096 bytes")
+	}
+	return string(raw), nil
+}
+
+func providerConfiguration(cfg portal.Config) string {
+	// Only public relay origins and non-secret desired settings participate.
+	// Do not include userinfo, query strings, identities, keys or readiness.
+	origins := make([]string, 0, len(cfg.Relays))
+	for _, relay := range cfg.Relays {
+		if u, err := url.Parse(relay); err == nil {
+			origins = append(origins, u.Scheme+"://"+u.Host)
+		}
+	}
+	slices.Sort(origins)
+	raw, _ := json.Marshal(struct {
+		Relays          []string
+		Discovery       bool
+		MaxActiveRelays int
+	}{origins, cfg.Discovery, cfg.MaxActiveRelays})
+	return string(raw)
 }
 
 // portalConfig builds the Portal configuration from flags and settings. Bad
@@ -420,16 +494,17 @@ func (h *Host) consoleNames() []string {
 
 // SystemStatus is returned by /api/status and the console settings page.
 type SystemStatus struct {
-	Version    string            `json:"version"`
-	DataDir    string            `json:"data_dir"`
-	ConsoleURL string            `json:"console_url"`
-	MCPURL     string            `json:"mcp_url"`
-	LocalURL   string            `json:"local_url"`
-	Private    core.NetStatus    `json:"private"`
-	Public     *core.NetStatus   `json:"public,omitempty"`
-	Runtime    bool              `json:"server_flats"`
-	Grants     []string          `json:"provider_grants,omitempty"`
-	Redirects  map[string]string `json:"redirects,omitempty"`
+	Version    string                  `json:"version"`
+	DataDir    string                  `json:"data_dir"`
+	ConsoleURL string                  `json:"console_url"`
+	MCPURL     string                  `json:"mcp_url"`
+	LocalURL   string                  `json:"local_url"`
+	Private    core.NetStatus          `json:"private"`
+	Public     *core.NetStatus         `json:"public,omitempty"`
+	Runtime    bool                    `json:"server_flats"`
+	Grants     []string                `json:"provider_grants,omitempty"`
+	Providers  []core.ExposureEndpoint `json:"providers"`
+	Redirects  map[string]string       `json:"redirects,omitempty"`
 }
 
 // Status implements api.System.
@@ -437,6 +512,7 @@ func (h *Host) Status(ctx context.Context) any {
 	s := SystemStatus{Version: Version, DataDir: h.Opts.DataDir, ConsoleURL: h.console, MCPURL: strings.TrimSuffix(h.console, "/") + "/mcp",
 		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Opts.Runtime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
+		s.Providers = h.Providers.HostStatus()
 		for _, id := range h.Providers.File().Permitted {
 			s.Grants = append(s.Grants, string(id))
 		}

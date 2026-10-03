@@ -97,8 +97,21 @@ func TestExplicitPortalFalseKeepsGrantAndDoesNotStart(t *testing.T) {
 	if !errors.Is(err, provider.ErrNotConfigured) {
 		t.Fatalf("disabled Portal request = %+v, %v; want not configured", result, err)
 	}
-	if len(result.Endpoints) != 1 || result.Endpoints[0].State != "unavailable" {
+	var portal, private *provider.ExposureEndpoint
+	for i := range result.Endpoints {
+		ep := &result.Endpoints[i]
+		if ep.Provider == provider.Portal {
+			portal = ep
+		}
+		if ep.Provider == provider.Local {
+			private = ep
+		}
+	}
+	if portal == nil || portal.State != "unavailable" || portal.Configured || !portal.Permitted || portal.Ready {
 		t.Fatalf("disabled Portal endpoints = %+v", result.Endpoints)
+	}
+	if private == nil || !private.Ready {
+		t.Fatalf("public failure did not retain independent Local route: %+v", result.Endpoints)
 	}
 	if err := h.Close(); err != nil {
 		t.Fatal(err)

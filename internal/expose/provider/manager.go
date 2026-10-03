@@ -2,10 +2,14 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/gosuda/flats/internal/core"
@@ -85,18 +89,23 @@ type Options struct {
 	Local     *local.Net
 	Tailscale Tailnet
 	Portal    PortalNet
+	// Configuration is a canonical, non-secret desired backend configuration.
+	// It must exclude credentials and transient connection readiness.
+	Configuration string
 }
 
 // Manager opens routes. It does not implement PrivateNet or PublicNet.
 type Manager struct {
-	dir    string
-	file   File
-	local  *local.Net
-	ts     Tailnet
-	portal PortalNet
+	dir           string
+	file          File
+	local         *local.Net
+	ts            Tailnet
+	portal        PortalNet
+	configuration string
 
 	mu     sync.Mutex
 	routes map[string]*route
+	states map[string][]ExposureEndpoint
 }
 
 type route struct {
@@ -118,12 +127,14 @@ func New(dir string, opts Options) (*Manager, error) {
 		return nil, errors.New("provider: local network is required")
 	}
 	return &Manager{
-		dir:    dir,
-		file:   f,
-		local:  opts.Local,
-		ts:     opts.Tailscale,
-		portal: opts.Portal,
-		routes: map[string]*route{},
+		dir:           dir,
+		file:          f,
+		local:         opts.Local,
+		ts:            opts.Tailscale,
+		portal:        opts.Portal,
+		configuration: opts.Configuration,
+		routes:        map[string]*route{},
+		states:        map[string][]ExposureEndpoint{},
 	}, nil
 }
 
@@ -131,7 +142,10 @@ func New(dir string, opts Options) (*Manager, error) {
 func (m *Manager) File() File {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.file
+	f := m.file
+	f.Permitted = slices.Clone(f.Permitted)
+	f.Migration.GrantsFromState = slices.Clone(f.Migration.GrantsFromState)
+	return f
 }
 
 func (m *Manager) allows(id ID) bool {
@@ -158,7 +172,8 @@ func (m *Manager) Reload() error {
 // Draft and private requests use local and, when both gates allow it, tailscale.
 // Current public requests use tailscale-funnel and portal the same way.
 // A provider that fails is not replaced by another one.
-func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (ExposureResult, error) {
+func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (res ExposureResult, err error) {
+	defer m.observe(req, &res)
 	if err := ctx.Err(); err != nil {
 		return ExposureResult{}, err
 	}
@@ -179,6 +194,125 @@ func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (Expos
 		return m.servePrivate(ctx, req)
 	}
 	return m.servePublic(ctx, req)
+}
+
+func (m *Manager) configured(id ID) bool {
+	switch id {
+	case Local:
+		return m.local != nil
+	case Tailscale, Funnel:
+		return m.ts != nil
+	case Portal:
+		return m.portal != nil
+	}
+	return false
+}
+
+func (m *Manager) observe(req ExposureRequest, res *ExposureResult) {
+	if req.Slug == "" || (req.Audience != AudienceCurrent && req.Audience != AudienceDraft) {
+		return
+	}
+	for i := range res.Endpoints {
+		ep := &res.Endpoints[i]
+		ep.Configured = m.configured(ep.Provider)
+		ep.Permitted = ep.Provider == Local || (m.allows(ep.Provider) && listed(req.Permitted, ep.Provider))
+		ep.Ready = ep.State == stateReady || ep.State == "key-expiring"
+		ep.Audience, ep.Host = req.Audience, requestHost(req)
+	}
+	m.mu.Lock()
+	m.states[stateKey(req.Slug, req.Audience, requestHost(req))] = slices.Clone(res.Endpoints)
+	m.mu.Unlock()
+}
+
+// ExposurePolicy binds approval to host permission and effective runtime
+// configuration. A backend skipped by --portal=false is absent from this token.
+func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := m.Reload(); err != nil {
+		return "", err
+	}
+	f := m.File()
+	slices.Sort(f.Permitted)
+	value := struct {
+		Permitted         []ID   `json:"permitted"`
+		PrivateBackend    string `json:"private_backend"`
+		Tailscale, Portal bool
+		Configuration     string
+	}{f.Permitted, f.PrivateBackend, m.ts != nil, m.portal != nil, m.configuration}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ExposureStatus reports observed routes, refreshing backend readiness without
+// changing permission or opening a new route.
+func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ExposureResult{}, err
+	}
+	m.mu.Lock()
+	var endpoints []ExposureEndpoint
+	for k, observed := range m.states {
+		if strings.HasPrefix(k, slug+"\x00") {
+			endpoints = append(endpoints, observed...)
+		}
+	}
+	slices.SortFunc(endpoints, func(a, b ExposureEndpoint) int {
+		return strings.Compare(string(a.Audience)+"\x00"+a.Host+"\x00"+string(a.Provider), string(b.Audience)+"\x00"+b.Host+"\x00"+string(b.Provider))
+	})
+	routes := make(map[string]route)
+	for k, r := range m.routes {
+		if r.slug == slug {
+			routes[k] = *r
+		}
+	}
+	m.mu.Unlock()
+	for i, ep := range endpoints {
+		if r, ok := routes[key(slug, ep.Audience, ep.Provider, ep.Host)]; ok {
+			var fresh ExposureEndpoint
+			switch ep.Provider {
+			case Local:
+				fresh = fromStatus(Local, m.local.Status(), r.host, m.local.URL(r.host))
+			case Tailscale:
+				fresh = fromStatus(Tailscale, m.ts.Status(), r.host, m.ts.URL(r.host))
+			case Funnel:
+				fresh = m.ts.FunnelState(r.host)
+			case Portal:
+				fresh = fromStatus(Portal, m.portal.Status(), r.host, m.portal.URL(r.host))
+			}
+			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
+		} else if ep.Ready {
+			ep.URL, ep.State, ep.Detail = "", stateUnavailable, "route stopped"
+		}
+		ep.Ready = ep.State == stateReady || ep.State == "key-expiring"
+		endpoints[i] = ep
+	}
+	if endpoints == nil {
+		endpoints = []ExposureEndpoint{}
+	}
+	return ExposureResult{Endpoints: endpoints}, nil
+}
+
+// HostStatus separates backend configuration and host permission from a flat's
+// opt-in and actual route readiness. Setup alone never opens a route.
+func (m *Manager) HostStatus() []ExposureEndpoint {
+	f := m.File()
+	out := make([]ExposureEndpoint, 0, 4)
+	for _, id := range []ID{Local, Tailscale, Funnel, Portal} {
+		configured := m.configured(id)
+		detail := "backend is not configured for this process"
+		if configured {
+			detail = "backend configured; route readiness is reported per flat"
+		}
+		out = append(out, ExposureEndpoint{Provider: id, Configured: configured,
+			Permitted: f.Allows(id), State: stateUnavailable, Detail: detail})
+	}
+	return out
 }
 
 func (m *Manager) servePrivate(ctx context.Context, req ExposureRequest) (ExposureResult, error) {
@@ -220,6 +354,20 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 	}
 	var eps []ExposureEndpoint
 	var errs []error
+	// Public current versions retain their independent Private route, including
+	// on restart when this manager has no previously tracked Local listener.
+	private, privateErr := m.retainPrivate(ctx, req, Local)
+	eps = append(eps, private)
+	if privateErr != nil {
+		errs = append(errs, privateErr)
+	}
+	if listed(req.Permitted, Tailscale) {
+		tail, err := m.retainPrivate(ctx, req, Tailscale)
+		eps = append(eps, tail)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
 	opened := 0
 	for _, id := range want {
 		ep, err := m.openPublic(ctx, req, id)
@@ -242,6 +390,26 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 	// The error stays attached so the caller can see the failure; nothing
 	// unpermitted was started in its place.
 	return ExposureResult{Endpoints: eps}, errors.Join(errs...)
+}
+
+func (m *Manager) retainPrivate(ctx context.Context, req ExposureRequest, id ID) (ExposureEndpoint, error) {
+	m.mu.Lock()
+	r := m.routes[key(req.Slug, req.Audience, id, requestHost(req))]
+	var host string
+	if r != nil {
+		host = r.host
+	}
+	m.mu.Unlock()
+	if host != "" {
+		if id == Local {
+			return fromStatus(Local, m.local.Status(), host, m.local.URL(host)), nil
+		}
+		return fromStatus(Tailscale, m.ts.Status(), host, m.ts.URL(host)), nil
+	}
+	if id == Local {
+		return m.openLocal(ctx, req)
+	}
+	return m.openTailscale(ctx, req)
 }
 
 func (m *Manager) openLocal(ctx context.Context, req ExposureRequest) (ExposureEndpoint, error) {
@@ -357,6 +525,43 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 	return res, nil
 }
 
+// StopExposure removes only private routes for this exact preview host. Failed
+// stops stay tracked so cleanup can be retried without losing honest status.
+func (m *Manager) StopExposure(ctx context.Context, host string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	routes := make(map[string]route)
+	for k, r := range m.routes {
+		if r.host == host && r.audience == AudienceDraft && (r.provider == Local || r.provider == Tailscale) {
+			routes[k] = *r
+		}
+	}
+	m.mu.Unlock()
+	var errs []error
+	for k, r := range routes {
+		var err error
+		if r.provider == Local {
+			err = m.local.Stop(host)
+		} else if m.ts != nil {
+			err = m.ts.Stop(host)
+		} else {
+			err = ErrNotConfigured
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.routes, k)
+		m.mu.Unlock()
+	}
+	return errors.Join(errs...)
+}
+
+var _ core.LifecyclePreviewNet = (*Manager)(nil)
+
 // Close drops every route this manager opened. It does not close backends
 // and it does not cancel a Portal parent context; the process owner closes
 // those backends afterwards.
@@ -403,7 +608,7 @@ func (m *Manager) Close() error {
 
 func (m *Manager) track(req ExposureRequest, id ID, host string) {
 	m.mu.Lock()
-	m.routes[key(req.Slug, req.Audience, id)] = &route{
+	m.routes[key(req.Slug, req.Audience, id, requestHost(req))] = &route{
 		slug: req.Slug, host: host, audience: req.Audience, provider: id,
 	}
 	m.mu.Unlock()
@@ -424,8 +629,12 @@ func (m *Manager) take(slug string, id ID, drop bool) (host string, ok bool) {
 	return "", false
 }
 
-func key(slug string, audience Audience, id ID) string {
-	return slug + "\x00" + string(audience) + "\x00" + string(id)
+func stateKey(slug string, audience Audience, host string) string {
+	return slug + "\x00" + string(audience) + "\x00" + host
+}
+
+func key(slug string, audience Audience, id ID, host string) string {
+	return stateKey(slug, audience, host) + "\x00" + string(id)
 }
 
 func requestHost(r ExposureRequest) string {
@@ -466,7 +675,8 @@ func fromStatus(id ID, st core.NetStatus, host, url string) ExposureEndpoint {
 // Compile-time checks for the real backends. Portal's concrete type is
 // assigned below; TSNet covers Funnel.
 var (
-	_ PortalNet         = (*portal.Net)(nil)
-	_ Tailnet           = TSNet{}
-	_ core.LifecycleNet = (*Manager)(nil)
+	_ PortalNet              = (*portal.Net)(nil)
+	_ Tailnet                = TSNet{}
+	_ core.LifecycleNet      = (*Manager)(nil)
+	_ core.LifecycleObserver = (*Manager)(nil)
 )

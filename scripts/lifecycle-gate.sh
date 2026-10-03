@@ -27,6 +27,7 @@ mkdir -p "$WORK/legacy-source/internal/lifecyclecheck/legacyadapter"
 cp "$ROOT/internal/lifecyclecheck/legacyadapter/main.go" "$WORK/legacy-source/internal/lifecyclecheck/legacyadapter/main.go"
 CGO_ENABLED=0 go build -C "$WORK/legacy-source" -o "$WORK/legacy-provider-adapter" ./internal/lifecyclecheck/legacyadapter
 CGO_ENABLED=0 go build -C "$ROOT" -buildvcs=true -o "$WORK/provider-adapter" ./internal/lifecyclecheck/adapter
+CGO_ENABLED=0 go build -C "$ROOT" -buildvcs=true -tags=lifecycle_testhooks -o "$WORK/crash-adapter" ./internal/lifecyclecheck/adapter
 exec python3 -B "$ROOT/internal/lifecyclecheck/gate.py" --binary "$WORK/flats" --work "$WORK" \
   --legacy-binary "$WORK/legacy-flats" --adapter-binary "$WORK/provider-adapter" \
-  --legacy-adapter-binary "$WORK/legacy-provider-adapter" "$@"
+  --legacy-adapter-binary "$WORK/legacy-provider-adapter" --crash-binary "$WORK/crash-adapter" "$@"

@@ -72,11 +72,10 @@ func fetch(t *testing.T, u string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-// TestMVPGate measures the Phase 1 gate on the local network: a 10 MB static
-// upload goes live in under 30 s, rollback takes under 10 s, and every flat
-// has its own origin.
+// TestMVPGate keeps the original size, latency and origin checks while requiring
+// an explicit operator decision before uploaded or rollback bytes become live.
 func TestMVPGate(t *testing.T) {
-	h := startLocal(t)
+	h, operator := operatorHost(t)
 	base := "http://" + h.Addr()
 	blob := make([]byte, 10<<20-4096)
 	rand.Read(blob) // incompressible: the upload really is ~10 MB
@@ -84,52 +83,80 @@ func TestMVPGate(t *testing.T) {
 	if len(archive) < 10<<20-8192 {
 		t.Fatalf("archive is only %d bytes", len(archive))
 	}
+	approve := func(result map[string]any) {
+		t.Helper()
+		approval, ok := result["approval"].(map[string]any)
+		if !ok || result["status"] != "pending_approval" {
+			t.Fatalf("missing pending result: %+v", result)
+		}
+		var decision struct{ Status string }
+		code := operatorCall(t, h, operator, "POST", "/console/api/approvals/"+approval["id"].(string)+"/approve", strings.NewReader("{}"), &decision)
+		if code != 200 || decision.Status != "approved" {
+			t.Fatalf("decision: %d %+v", code, decision)
+		}
+	}
+	currentURL := func() string {
+		t.Helper()
+		var flat struct {
+			PrivateURL string `json:"private_url"`
+		}
+		if code := call(t, "GET", base+"/api/flats/big-site", nil, &flat); code != 200 {
+			t.Fatalf("flat status %d", code)
+		}
+		return flat.PrivateURL
+	}
 	start := time.Now()
-	var out struct {
-		Version struct{ Number int } `json:"version"`
-		Deploy  struct {
-			Flat struct {
-				PrivateURL string `json:"private_url"`
-			} `json:"flat"`
-			Health struct{ OK bool } `json:"health"`
-		} `json:"deploy"`
+	var pending map[string]any
+	code := call(t, "POST", base+"/api/flats/big-site/versions?deploy=1&git_sha=deadbeef", bytes.NewReader(archive), &pending)
+	if code != 202 {
+		t.Fatalf("upload pending status: %d %+v", code, pending)
 	}
-	code := call(t, "POST", base+"/api/flats/big-site/versions?deploy=1&git_sha=deadbeef", bytes.NewReader(archive), &out)
-	if code != 201 || !out.Deploy.Health.OK {
-		t.Fatalf("upload+deploy: %d %+v", code, out)
+	if c, _ := fetch(t, h.Private.URL("big-site")); c == 200 {
+		t.Fatal("upload became live before approval")
 	}
-	if c, body := fetch(t, out.Deploy.Flat.PrivateURL); c != 200 || !strings.Contains(body, "v1") {
+	approve(pending)
+	liveURL := currentURL()
+	if c, body := fetch(t, liveURL); c != 200 || !strings.Contains(body, "v1") {
 		t.Fatalf("live: %d %q", c, body)
 	}
 	uploadToLive := time.Since(start)
-	t.Logf("GATE upload(10MB)->live: %s (limit 30s)", uploadToLive)
+	t.Logf("GATE upload(10MB)+explicit decision->live: %s (limit 30s)", uploadToLive)
 	if uploadToLive > 30*time.Second {
 		t.Fatalf("upload to live took %s", uploadToLive)
 	}
-
 	small := tarGz(t, map[string][]byte{"index.html": []byte("<h1>v2</h1>")})
-	if code := call(t, "POST", base+"/api/flats/big-site/versions?deploy=1", bytes.NewReader(small), &out); code != 201 {
-		t.Fatalf("v2: %d", code)
+	if code := call(t, "POST", base+"/api/flats/big-site/versions?deploy=1", bytes.NewReader(small), &pending); code != 202 {
+		t.Fatalf("v2 pending: %d", code)
 	}
-	if _, body := fetch(t, out.Deploy.Flat.PrivateURL); !strings.Contains(body, "v2") {
+	if _, body := fetch(t, liveURL); !strings.Contains(body, "v1") {
+		t.Fatalf("pending v2 replaced current: %q", body)
+	}
+	approve(pending)
+	if _, body := fetch(t, liveURL); !strings.Contains(body, "v2") {
 		t.Fatalf("v2 not live: %q", body)
 	}
 	start = time.Now()
-	var rb struct{ Version int }
-	if code := call(t, "POST", base+"/api/flats/big-site/rollback", strings.NewReader(`{"version":0}`), &rb); code != 200 || rb.Version != 1 {
-		t.Fatalf("rollback: %d %+v", code, rb)
+	if code := call(t, "POST", base+"/api/flats/big-site/rollback", strings.NewReader(`{"version":1}`), &pending); code != 202 {
+		t.Fatalf("rollback pending: %d %+v", code, pending)
 	}
-	if _, body := fetch(t, out.Deploy.Flat.PrivateURL); !strings.Contains(body, "v1") {
+	if _, body := fetch(t, liveURL); !strings.Contains(body, "v2") {
+		t.Fatalf("pending rollback replaced current: %q", body)
+	}
+	approve(pending)
+	if _, body := fetch(t, liveURL); !strings.Contains(body, "v1") {
 		t.Fatalf("rollback not live: %q", body)
 	}
 	rollback := time.Since(start)
-	t.Logf("GATE rollback: %s (limit 10s)", rollback)
+	t.Logf("GATE rollback+explicit decision: %s (limit 10s)", rollback)
 	if rollback > 10*time.Second {
 		t.Fatalf("rollback took %s", rollback)
 	}
 
 	// Separate origins: every flat and preview has its own host.
-	call(t, "POST", base+"/api/flats/second/versions?deploy=1", bytes.NewReader(small), &out)
+	if code := call(t, "POST", base+"/api/flats/second/versions?deploy=1", bytes.NewReader(small), &pending); code != 202 {
+		t.Fatalf("second flat pending: %d", code)
+	}
+	approve(pending)
 	var list struct {
 		Flats []struct {
 			Slug       string `json:"slug"`

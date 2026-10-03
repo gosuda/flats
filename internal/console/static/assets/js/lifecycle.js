@@ -32,6 +32,7 @@ export function permittedProviders(flat) {
 }
 
 export function connectionState(flat) {
+  if (flat?.connection_state) return flat.connection_state;
   const c = flat?.connection;
   if (!c) return '';
   if (typeof c === 'string') return c;
@@ -84,8 +85,12 @@ export function endpointState(flat, which) {
 
 export function currentTarget(flat) {
   const visibility = flat?.visibility === 'public' ? 'public' : 'private';
-  const url = visibility === 'public' ? flat?.public_url : flat?.private_url;
-  const state = endpointState(flat, visibility);
+  const endpoint = flat?.endpoints?.find((ep) => ep.audience === 'current' &&
+    (visibility === 'public' ? ['tailscale-funnel', 'portal'].includes(ep.provider) : ['local', 'tailscale'].includes(ep.provider)) && ep.ready)
+    || flat?.endpoints?.find((ep) => ep.audience === 'current' &&
+      (visibility === 'public' ? ['tailscale-funnel', 'portal'].includes(ep.provider) : ['local', 'tailscale'].includes(ep.provider)));
+  const url = endpoint?.url || (visibility === 'public' ? flat?.public_url : flat?.private_url);
+  const state = endpoint?.state || endpointState(flat, visibility);
   const ready = !!(url && isOpenable(state) && flat?.publication === 'published' && flat?.live_version);
   return {
     url: ready ? url : (url || ''),
@@ -111,8 +116,13 @@ export function findDraftPreview(previews) {
 const nameOf = (flat) => flat?.name || flat?.slug || 'this flat';
 
 export function impactText(source) {
-  const impact = source?.data_impact || source?.approval?.data_impact || '';
+  let execution = source?.result_data || source?.approval?.result_data || source;
+  if (typeof execution === 'string') { try { execution = JSON.parse(execution); } catch { execution = {}; } }
+  const impact = execution?.data_impact || source?.data_impact || source?.approval?.data_impact || '';
   if (impact === 'none') return 'The check reported data impact: none. Live data was not used for the check.';
+  if (impact === 'runtime_start') return 'The runtime started against live data and may have written to it. Health checks use an isolated copy.';
+  if (impact === 'restore_data') return 'The approved data restore ran. The previous live data was backed up.';
+  if (impact === 'unknown') return 'The result could not confirm the live data impact. Inspect the operation logs before retrying.';
   if (impact) return String(impact);
   const result = source?.result || source?.error || '';
   if (/ran against the live data/i.test(result)) return result;
@@ -303,7 +313,7 @@ export async function activateVersion(flat, version, opts = {}) {
     body: [
       h('p', { text: `This serves published v${version} again. It does not create a new version number.` }),
       h('p', { text: restore
-        ? 'This approval also restores the database from the snapshot taken before the current version. That is a separate data change.'
+        ? 'This approval also restores data from the snapshot taken before the current version. New snapshots include the database and FILES; historical DB-only snapshots preserve current FILES.'
         : 'The database is left as it is. Restoring data is a separate choice.' }),
       h('p', { text: CHECK_COPY }),
     ],
@@ -459,6 +469,13 @@ export function renderAccess(flat, controls) {
       h('h2', { id: 'address-title', text: 'Addresses' }),
       h('p', { text: `Connection: ${connectionLabel(state)}. ${state === 'ready' ? 'Connected describes the provider path. Publication is shown separately.' : 'The address stays closed until the connection is ready.'}` }),
       connectionDetail(flat) ? h('p', { class: 'muted small', text: connectionDetail(flat) }) : null,
+      Array.isArray(flat.endpoints) && flat.endpoints.length ? h('ul', { class: 'plain-list' }, flat.endpoints.map((ep) =>
+        h('li', { class: 'plain-row' },
+          h('div', null,
+            h('strong', { text: `${providerLabel(ep.provider)} · ${ep.audience === 'draft' ? 'Draft (Private)' : 'Current version'}` }),
+            h('p', { class: 'muted small', text: `${ep.configured ? 'Configured' : 'Needs setup'} · ${ep.permitted ? 'Route permitted' : 'Route not permitted'} · ${connectionLabel(ep.state)}` }),
+            ep.detail ? h('p', { class: 'muted small', text: ep.detail }) : null,
+            openControl({url:ep.url, ready:ep.ready, state:ep.state}, `Open ${providerLabel(ep.provider)} ${ep.audience === 'draft' ? 'draft' : 'current version'}`)))) ) : null,
       controls.addresses));
 }
 

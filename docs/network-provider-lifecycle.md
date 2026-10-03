@@ -228,3 +228,16 @@ The extended `TestExplicitPortalFalseKeepsGrantAndDoesNotStart` calls Manager
 with an explicitly permitted Portal request after runtime disable and requires
 `ErrNotConfigured` plus an unavailable endpoint, while retaining the host grant.
 This avoids the typed-nil interface panic and preserves `--portal=false`.
+
+The integrated Manager implements `LifecycleObserver` and
+`LifecyclePreviewNet` from the granted core exports. Host permission plus
+effective runtime configuration is hashed into approval policy; readiness is
+observed separately. Explicit `--portal=false` changes effective policy while
+retaining the grant. Canonical nonsecret relay origins and settings bind provider
+configuration changes without binding secrets or transient readiness.
+
+Routes and observed endpoints are keyed by exact host, audience and provider.
+Preview cleanup stops only Draft private routes for the requested host; another
+preview and the current site remain reachable. Public opening preserves an
+independent Local route on a fresh Manager, and normal core rebinding refreshes
+both current handlers before each public activation.

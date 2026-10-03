@@ -384,7 +384,9 @@ td > .badge:first-child { margin-left: 0; }
 /* --- small screens --- */
 
 @media (max-width: 720px) {
-  .topbar { padding: 10px 16px; }
+  .topbar { padding: 10px 16px; flex-wrap: wrap; gap: 8px; }
+  #operator-controls { flex-basis: 100%; }
+  #operator-controls > [role="status"] { flex-basis: 100%; }
   .page { padding: 20px 16px 48px; }
   h1 { font-size: 24px; }
   .list-head { display: none; }

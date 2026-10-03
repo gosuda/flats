@@ -7,15 +7,18 @@ JSON evidence is retained locally; do not commit raw server logs.
 import argparse
 import concurrent.futures
 import hashlib
+import http.cookiejar
 import io
 import json
 import os
 import re
+import secrets
 from pathlib import Path
 import socket
 import sqlite3
 import subprocess
 import tarfile
+import threading
 import time
 import traceback
 import urllib.error
@@ -33,7 +36,7 @@ def failed(row, category):
         "policy-drift": r"(?:provider|policy|permission).*(?:changed|stale|mismatch)|stale.*(?:provider|policy)",
         "live-drift": r"(?:live|current|base).*(?:changed|stale|mismatch)|stale.*(?:live|current|base)",
         "visibility-drift": r"visibility.*(?:changed|stale|mismatch)|stale.*visibility",
-        "not-permitted": r"(?:no|not|without|absent|missing|unpermitted).*permit|permission|no.*public.*provider",
+        "not-permitted": r"(?:no|not|without|absent|missing|unpermitted).*permit|permission|no.*public.*provider|permit.*before.*public",
         "unavailable": r"unavailable|not configured|disabled|not available",
         "health": r"503|not healthy",
         "module-init": r"GATE-MODULE-INITIALIZATION-FAILURE",
@@ -41,16 +44,29 @@ def failed(row, category):
         "serve": r"deterministic provider connection failure",
     }
     require(row.get("status") == "failed", f"{category}: approval did not fail: {row}")
-    cause = json.dumps({k: row.get(k) for k in ("result", "error", "failure_code")})
+    dto = execution(row)
+    require(dto.get('status') == 'failed' and dto.get('failure_code'), f"missing typed failure DTO: {row}")
+    cause = json.dumps({"result": row.get("result"), "failure_code": dto['failure_code']})
     require(re.search(patterns[category], cause, re.I), f"{category}: unrelated failure cause: {row}")
     return row
 
 
 def data_impact(row, changed=False):
-    require(isinstance(row, dict) and isinstance(row.get("data_impact"), str)
-            and bool(row["data_impact"]), f"missing explicit data-impact DTO: {row}")
-    require(not changed or row["data_impact"] != "none", f"live data changed but impact is none: {row}")
-    return row["data_impact"]
+    dto = execution(row)
+    require(dto.get('data_impact') in {'none', 'runtime_start', 'restore_data', 'unknown'}, f"invalid data-impact enum: {row}")
+    require(dto.get('health_data') in {'not_run', 'isolated_copy'} and
+            dto.get('live_data') in {'untouched', 'runtime_may_write', 'restored', 'unknown'}, f"invalid data scope DTO: {row}")
+    require(not changed or dto["data_impact"] != "none", f"live data changed but impact is none: {row}")
+    return dto["data_impact"]
+
+
+def execution(row):
+    require(isinstance(row, dict), f"expected typed approval DTO: {row}")
+    dto = row.get('result_data', row)
+    if isinstance(dto, str):
+        dto = json.loads(dto)
+    require(isinstance(dto, dict), f"expected object result_data: {row}")
+    return dto
 
 
 def provider_ids(flat):
@@ -83,7 +99,7 @@ def binary_identity(path):
 
 def acceptance_identity(source, binaries):
     return (not source["dirty"] and all(binaries.get(k) and binaries[k]["revision"] == source["head"]
-            and binaries[k]["modified"] == "false" for k in ("candidate", "provider_adapter")))
+            and binaries[k]["modified"] == "false" for k in ("candidate", "provider_adapter", "tagged_crash_adapter")))
 
 
 def accepted(report):
@@ -120,6 +136,7 @@ export default { async fetch(request, env) {
   env.DB.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
   const path = new URL(request.url).pathname;
   if (path === "/hit") env.DB.exec("INSERT INTO hits VALUES (1)");
+  if (path === "/health-file") return Response.json(env.FILES.get("health-sentinel"));
   if (path === "/health" && (BROKEN || HEALTHY_WRITE)) {
     env.DB.exec("INSERT INTO hits VALUES (999)");
     env.FILES.put("health-sentinel", "HEALTH-COPY-ONLY");
@@ -132,15 +149,21 @@ export default { async fetch(request, env) {
 
 
 class Host:
-    def __init__(self, binary, work, adapter=False):
+    def __init__(self, binary, work, adapter=False, operator=True):
         self.binary, self.work, self.adapter = str(binary), Path(work), adapter
         self.work.mkdir(parents=True, exist_ok=True)
         self.data = self.work / "data"
         self.proc = None
         self.serial = 0
         self.mcp_session = None
+        self.operator = operator
+        self.credential = None
+        self.phase = None
+        self.phase_marker = None
         self.trace = []
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.cookies = http.cookiejar.CookieJar()
+        self.console_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(self.cookies))
 
     def start(self):
         # Reserve both ports until immediately before spawn. Bind-race failures
@@ -153,16 +176,27 @@ class Host:
         self.local = f"http://127.0.0.1:{ports[1]}"
         argv = [self.binary, "serve", "--data", str(self.data), "--listen", f"127.0.0.1:{ports[0]}",
                 "--network", "local", "--local-addr", f"127.0.0.1:{ports[1]}", "--portal=false"]
+        if self.operator:
+            argv.append("--operator-credential-stdin")
         for sock in reservations:
             sock.close()
         env = os.environ.copy()
         # Explicitly remove inherited provider credentials; not even their values
         # are inspected or recorded. Worker child keeps this disposable binary.
         for name in ("TS_AUTHKEY", "TS_AUTH_KEY", "FLATS_URL", "HTTP_PROXY", "HTTPS_PROXY",
-                     "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                     "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "FLATS_TEST_PHASE", "FLATS_TEST_PHASE_MARKER"):
             env.pop(name, None)
+        if self.phase:
+            env['FLATS_TEST_PHASE'] = self.phase
+            env['FLATS_TEST_PHASE_MARKER'] = str(self.phase_marker)
         self.log = open(self.work / "serve.log", "ab")
-        self.proc = subprocess.Popen(argv, stdout=self.log, stderr=self.log, env=env)
+        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE if self.operator else subprocess.DEVNULL,
+                                     stdout=self.log, stderr=self.log, env=env)
+        if self.operator:
+            self.credential = secrets.token_urlsafe(40)
+            self.proc.stdin.write((self.credential + "\n").encode())
+            self.proc.stdin.close()
+            self.cookies.clear()
         self.trace.append({"argv": argv, "kind": "start"})
         until = time.monotonic() + 30
         while time.monotonic() < until:
@@ -170,6 +204,8 @@ class Host:
                 raise AssertionError(f"server exited {self.proc.returncode}; inspect disposable serve.log")
             try:
                 if self.request("GET", "/api/status")[0] == 200:
+                    if self.operator:
+                        self.authorize()
                     return
             except (OSError, urllib.error.URLError):
                 pass
@@ -192,7 +228,7 @@ class Host:
             require(not re.search(rb"panic:|fatal error:", (self.work / "serve.log").read_bytes()),
                     "server log contains a panic/fatal marker")
 
-    def request(self, method, path, body=None, console=False, headers=None, local_host=None):
+    def request(self, method, path, body=None, console=False, headers=None, local_host=None, authorized=True):
         base = self.local if local_host else self.base
         hdr = {"Content-Type": "application/json"}
         if console:
@@ -207,7 +243,8 @@ class Host:
         raw = body if isinstance(body, bytes) else (None if body is None else json.dumps(body).encode())
         req = urllib.request.Request(base + path, data=raw, headers=hdr, method=method)
         try:
-            response = self.opener.open(req, timeout=25)
+            opener = self.console_opener if console and authorized else self.opener
+            response = opener.open(req, timeout=25)
         except urllib.error.HTTPError as error:
             response = error
         with response:
@@ -221,6 +258,19 @@ class Host:
         self.trace.append({"method": method, "path": path, "console": console,
                            "host": local_host, "status": status, "response": value})
         return status, value
+
+    def authorize(self):
+        require(self.credential, "no out-of-band operator authority provisioned")
+        self.ok("POST", "/console/api/operator/session", {"credential": self.credential}, console=True)
+
+    def set_host_permissions(self, permitted):
+        # Explicit disposable host permission file. This changes permission,
+        # never constructs a backend or restarts into a live network provider.
+        path = self.data / 'network-provider.json'
+        value = json.loads(path.read_text())
+        value['permitted'] = permitted
+        path.write_text(json.dumps(value) + '\n')
+        self.trace.append({'kind': 'disposable-host-permission', 'permitted': permitted})
 
     def ok(self, method, path, body=None, status=200, **kwargs):
         code, value = self.request(method, path, body, **kwargs)
@@ -424,7 +474,7 @@ def approval_boundary(h):
     for prefix in ("/api", "/console/api"):
         for action in ("approve", "reject", "decide", "resolve"):
             code, _ = h.request("POST", f"{prefix}/approvals/{pending}/{action}",
-                                {"approved": True, "decision": "approve"})
+                                {"approved": True, "decision": "approve"}, authorized=False)
             require(code in (403, 404, 405), f"agent decision route admitted: {prefix}/{action}: {code}")
             require(h.ok("GET", f"/api/approvals/{pending}")["status"] == "pending", "HTTP probe decided approval")
     for command in ("approve", "reject", "decide", "resolve"):
@@ -439,7 +489,7 @@ def approval_boundary(h):
     for name, value in static("BOUNDARY-CANDIDATE").items():
         (folder / name).write_text(value)
     inputs = {"slug": "boundary", "flat": "boundary", "id": pending, "approval": pending,
-              "approval_id": pending, "version": 0, "revision": 0, "visibility": "private",
+              "approval_id": pending, "version": 0, "revision": 0, "hash": h.flat("boundary").get("draft", {}).get("hash", ""), "visibility": "private",
               "provider": "portal", "permitted": False, "deploy": False, "path": str(folder),
               "dir": str(folder), "directory": str(folder), "restore_data": False,
               "files": [{"path": n, "content": v, "encoding": "utf8"} for n, v in static("BOUNDARY-CANDIDATE").items()]}
@@ -453,14 +503,25 @@ def approval_boundary(h):
         require(h.ok("GET", f"/api/approvals/{pending}")["status"] == "pending",
                 f"MCP tool decided existing approval: {tool['name']}")
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
-    # This deliberately tests the concrete retained risk. It cannot establish
-    # human authorization and must remain a machine-readable OPEN requirement.
-    code, response = h.request("POST", f"/console/api/approvals/{pending}/approve", {}, console=True)
+    # Browser headers alone must never establish operator authority.
+    code, response = h.request("POST", f"/console/api/approvals/{pending}/approve", {}, console=True, authorized=False)
     row = h.ok("GET", f"/api/approvals/{pending}")
+    require(code == 403 and row['status'] == 'pending', 'forged console headers gained operator authority')
+    code, _ = h.request("POST", "/console/api/operator/session", {"credential": "wrong-operator-credential"}, console=True, authorized=False)
+    require(code == 403, 'agent credential granted operator session')
+    # Correctly provisioned operator session remains a separate positive control.
+    require(h.decide(pending)['status'] == 'approved', 'authorized operator did not publish')
+    require('BOUNDARY-CANDIDATE' in h.traffic('boundary'), 'authorized boundary bytes not serving')
+    h.ok('DELETE', '/console/api/operator/session', console=True)
+    h.save('boundary', static('REVOKED-SESSION-CANDIDATE'))
+    next_pending = h.publish('boundary')
+    require(h.request('POST', f'/console/api/approvals/{next_pending}/approve', {}, console=True)[0] == 403,
+            'revoked operator session still decides')
+    h.authorize()
     h.trace.append({"kind": "human-approval-known-risk", "mcp_census": census,
                     "forged_console_status": code, "approval_status": row["status"],
-                    "human_approval_proven": False, "response": response})
-    require(code in (200, 403, 409, 422), "forged-header probe produced unexpected response")
+                    "human_approval_proven": True, "boundary": "separate operator credential; excludes OS/server/browser secret access",
+                    "response": response})
 
 
 def provider_failure(h):
@@ -476,6 +537,7 @@ def provider_failure(h):
     require("tailscale-funnel" not in provider_ids(h.flat("provider")), "Tailscale authorized Funnel")
     h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale-funnel", "permitted": True}, console=True)
     require(h.flat("provider")["visibility"] == "private", "Funnel permission authorized Public")
+    h.set_host_permissions(['tailscale-funnel'])
     a = h.approval(h.ok("POST", "/api/flats/provider/visibility", {"visibility": "public"}, status=202))
     failed(h.decide(a), "unavailable")
     f = h.flat("provider")
@@ -496,8 +558,10 @@ def runtime_data(h):
     failure = failed(h.decide(a), "health")
     data_impact(failure)
     require(h.traffic("counter") == {"version": 1, "hits": 1}, "failed health touched live data")
+    require(h.traffic("counter", "/health-file") is None, "failed health FILES sentinel escaped copy")
     require([v["number"] for v in h.versions("counter")] == [1], "failed publish consumed number")
     h.activate("counter", server(2, healthy_write=True))
+    require(h.traffic("counter", "/health-file") is None, "healthy health FILES sentinel escaped copy")
     require(h.traffic("counter", "/hit") == {"version": 2, "hits": 2}, "second publish lost data")
     a = h.approval(h.ok("POST", "/api/flats/counter/rollback", {"version": 1}, status=202))
     require(h.traffic("counter")["version"] == 2, "rollback applied before approval")
@@ -521,20 +585,32 @@ def resume_claimed(h):
     # No direct store UPDATE: approval state must be reached by the real
     # decision path. Named phase hooks require the separately granted core
     # contract and exist only in the test executable, never product HTTP.
-    phases = h.ok("GET", "/__gate/capabilities").get("activation_crash_phases", [])
-    required = {"after-claim", "after-allocation", "after-live-switch"}
-    require(required <= set(phases), f"core test-only crash phase contract pending: {phases}")
-    for phase in sorted(required):
-        slug = "resume-" + phase
+    phases = ('before_health', 'after_health', 'after_allocation_before_live', 'after_live_before_finalize')
+    for i, phase in enumerate(phases):
+        h.stop()
+        h.phase, h.phase_marker = phase, h.work / (phase + '.json')
+        h.start()
+        slug = "resume-" + str(i)
         h.save(slug, static("RESUME-" + phase))
         a = h.publish(slug)
-        h.ok("POST", "/__gate/crash-phase", {"phase": phase})
-        try:
-            h.request("POST", f"/console/api/approvals/{a}/approve", {}, console=True)
-        except (OSError, urllib.error.URLError):
-            pass
-        require(h.proc.wait(timeout=10) == 86, "test phase did not exit at the documented crash boundary")
-        h.trace.append({"kind": "intentional-phase-crash", "phase": phase, "exit": 86})
+        def approve_at_phase():
+            try:
+                h.request("POST", f"/console/api/approvals/{a}/approve", {}, console=True)
+            except (OSError, urllib.error.URLError):
+                pass
+        thread = threading.Thread(target=approve_at_phase, daemon=True)
+        thread.start()
+        until = time.monotonic() + 15
+        while time.monotonic() < until and not h.phase_marker.exists() and h.proc.poll() is None:
+            time.sleep(.02)
+        require(h.phase_marker.exists(), f"tagged core crash phase was not observed: {phase}")
+        marker = json.loads(h.phase_marker.read_text())
+        require(marker.get('phase') == phase, f"wrong observed crash phase: {marker}")
+        h.proc.kill()
+        require(h.proc.wait(timeout=10) == -9, "controlled SIGKILL exit not observed")
+        thread.join(timeout=10)
+        require(not thread.is_alive(), "approval request survived killed disposable process")
+        h.trace.append({"kind": "intentional-phase-crash", "phase": phase, "exit": -9, "marker": marker})
         h.log.close()
         h.proc = None
         for _ in range(2):
@@ -545,12 +621,25 @@ def resume_claimed(h):
             require(len(h.ok("GET", f"/api/flats/{slug}/deployments")["deployments"]) == 1, "crash resume activation count")
             h.stop()
         h.start()
+    h.phase = None
+    h.phase_marker = None
+
+
+def production_hooks_absent(h):
+    h.stop()
+    h.phase = 'before_health'
+    h.phase_marker = h.work / 'ordinary-build-must-not-pause.json'
+    h.start()
+    h.activate('ordinary', static('ORDINARY-BUILD-NO-FAULT-HOOK'))
+    require(not h.phase_marker.exists(), 'ordinary production build read fault environment or paused')
+    require('ORDINARY-BUILD-NO-FAULT-HOOK' in h.traffic('ordinary'), 'ordinary build did not publish')
+    h.phase, h.phase_marker = None, None
 
 
 def migration(h):
     require(h.legacy_binary, "migration needs --legacy-binary from pre-lifecycle base")
     h.stop()
-    legacy = Host(h.legacy_binary, h.work / "legacy")
+    legacy = Host(h.legacy_binary, h.work / "legacy", operator=False)
     try:
         legacy.start()
         for marker in ("LEGACY-A", "LEGACY-B"):
@@ -639,6 +728,35 @@ def visibility_transitions(h):
     require("PUBLIC-V1" in h.traffic("pub-public"), "provider positive control did not serve")
 
 
+def public_publish_rollback(h):
+    h.ok("POST", "/__gate/host-permission", {"permitted": ["portal"]})
+    h.activate("binding", static("BINDING-V1"))
+    h.ok("POST", "/console/api/flats/binding/providers", {"provider": "portal", "permitted": True}, console=True)
+    a = h.approval(h.ok("POST", "/api/flats/binding/visibility", {"visibility": "public"}, status=202))
+    require(h.decide(a)["status"] == "approved", "public binding setup failed")
+    def both(marker):
+        for host in ("binding", "pub-binding"):
+            require(marker in h.traffic(host), f"{host} did not serve approved {marker}")
+    both("BINDING-V1")
+    h.save("binding", static("BINDING-V2"))
+    a = h.publish("binding")
+    both("BINDING-V1")
+    require(h.decide(a)["status"] == "approved", "public v2 publish failed")
+    both("BINDING-V2")
+    h.save("binding", static("UNAPPROVED-BINDING-DRAFT"))
+    both("BINDING-V2")
+    a = h.approval(h.ok("POST", "/api/flats/binding/rollback", {"version": 1}, status=202))
+    both("BINDING-V2")
+    require(h.decide(a)["status"] == "approved", "public rollback failed")
+    both("BINDING-V1")
+    require(h.flat("binding")["visibility"] == "public", "public rollback changed visibility")
+    preview = h.ok("POST", "/api/flats/binding/previews", {"target": "draft"}, status=201)
+    require("UNAPPROVED-BINDING-DRAFT" in h.traffic(preview["host"]), "rollback consumed draft")
+    h.stop()
+    h.start()
+    both("BINDING-V1")
+
+
 def provider_matrix(h):
     h.activate("matrix", static("MANAGER-MATRIX"))
     # Both injected backends exist throughout; permission causes cannot be
@@ -677,6 +795,7 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("frozen-revision-policy", drift), ("cli-console-pending", cli_pending),
                ("mcp-pending", mcp_pending), ("api-upload-deploy-pending", api_pending),
                ("approval-boundary-census", approval_boundary),
+               ("production-fault-hooks-absent", production_hooks_absent),
                ("provider-permission-failure", provider_failure), ("runtime-health-rollback-data", runtime_data),
                ("historical-migration", migration),
                ("historical-mixed-migration", mixed_migration),
@@ -684,6 +803,7 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("rollback-approved-restore-data", restore_success),
                ("frozen-current-live", current_live_drift)]
 ADAPTER_CASES = [("visibility-all-surfaces-teardown", visibility_transitions),
+                 ("public-publish-rollback-route-binding", public_publish_rollback),
                  ("frozen-visibility", visibility_drift),
                  ("provider-host-flat-permission-matrix", provider_matrix),
                  ("restart-claimed-approval", resume_claimed)]
@@ -699,6 +819,7 @@ def main():
     parser.add_argument("--legacy-binary")
     parser.add_argument("--adapter-binary")
     parser.add_argument("--legacy-adapter-binary")
+    parser.add_argument("--crash-binary")
     args = parser.parse_args()
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
@@ -707,6 +828,7 @@ def main():
                 "legacy_provider_fixture": binary_identity(args.legacy_adapter_binary)}
     if not args.prepare_only:
         binaries.update(candidate=binary_identity(args.binary), provider_adapter=binary_identity(args.adapter_binary))
+        binaries['tagged_crash_adapter'] = binary_identity(args.crash_binary)
     report = {"source": source, "source_head": source["head"], "binaries": binaries,
               "cases": [], "scope": "actual binary, disposable Local only; no external provider traffic",
               "required_lanes": sorted(REQUIRED_LANES), "human_approval": "OPEN: forged headers are not human proof"}
@@ -720,15 +842,18 @@ def main():
         if name not in selected:
             continue
         adapter = (name, test) in ADAPTER_CASES
-        host = Host((args.adapter_binary or args.binary) if adapter else args.binary, work / name, adapter=adapter)
+        binary = args.crash_binary if name == 'restart-claimed-approval' else (args.adapter_binary if adapter else args.binary)
+        host = Host(binary or args.binary, work / name, adapter=adapter)
         host.legacy_binary = args.legacy_binary
         host.legacy_adapter_binary = args.legacy_adapter_binary
         if args.prepare_only:
             require(args.legacy_binary, "preparation needs --legacy-binary")
             host.binary = args.legacy_binary
+            host.operator = False
         result = {"id": name, "lane": "unverified-provider-adapter" if adapter else "actual-binary-local"}
         try:
             require(not adapter or args.adapter_binary, "missing --adapter-binary; provider lane cannot pass")
+            require(name != 'restart-claimed-approval' or args.crash_binary, 'missing separately tagged --crash-binary')
             host.start()
             if adapter:
                 capabilities = host.ok("GET", "/__gate/capabilities")
@@ -752,6 +877,9 @@ def main():
     report["passing_lanes"] = sorted({c["lane"] for c in report["cases"] if c["outcome"] == "pass"})
     report["lane_complete"] = REQUIRED_LANES <= set(report["passing_lanes"])
     report["identity_bound"] = acceptance_identity(source, binaries) if not args.prepare_only else not source["dirty"]
+    boundary = next((c for c in report['cases'] if c['id'] == 'approval-boundary-census'), None)
+    if boundary and boundary['outcome'] == 'pass' and any(t.get('human_approval_proven') is True for t in boundary['trace']):
+        report['human_approval'] = 'proven'
     report["acceptance"] = accepted(report)
     if report["full_suite_selected"] and not report["acceptance"]:
         report["exit"] = 1

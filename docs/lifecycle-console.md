@@ -62,3 +62,22 @@ both source archive bodies and the second request's updated expected revision.
 Current package checks and simulated-DOM checks are preparation evidence.
 Desktop/mobile rendered checks with actual lifecycle DTOs, plus operator-session
 unlock and separate candidate confirmation, await exact core/transport adoption.
+
+## Operator authority integration
+
+The app provisions one `api.OperatorAuthority` from an explicitly supplied
+embedding credential or `--operator-credential-stdin`. Interactive input is
+hidden; pipe input is bounded. Credentials are not supplied through argv,
+environment, HTTP reads or MCP tools. The console unlock dialog creates a
+session, then each candidate still requires its own confirmation. The same
+instance validates core decisions and provides the nonsecret persisted audit
+identity. This separates agent access from operator decision authority; it does
+not authenticate an individual person or defend against access to operator
+secrets, browser memory or the server OS.
+
+Console status prefers exact core `connection_state` and observed current
+endpoints. Access shows backend configuration, host/flat permission and route
+readiness separately. Approval pages show actual persisted `result_data` and
+`decided_by`. Tabs support arrow keys, Home and End with focus transfer; the
+operator toolbar wraps on mobile. New data restores include DB and FILES;
+historical DB-only snapshots preserve current FILES.
