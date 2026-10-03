@@ -145,3 +145,24 @@ func TestMCPDeployZeroRequestsCurrentDraftAndNoVersionBeforeDecision(t *testing.
 		t.Fatalf("published bytes: %q", body)
 	}
 }
+
+func TestMCPVisibilityWithoutProviderRemainsPending(t *testing.T) {
+	e := newEnv(t)
+	publishedFixture(t, e)
+	var out ActionOut
+	text, failed := call(t, e.local, "set_visibility", map[string]any{"slug": "census", "visibility": "public"}, &out)
+	if failed || out.Status != "pending_approval" || out.ApprovalID == "" {
+		t.Fatalf("provider preflight consumed request: %s %+v", text, out)
+	}
+	a, err := e.svc.GetApproval(context.Background(), out.ApprovalID)
+	if err != nil || a.Status != "pending" {
+		t.Fatalf("approval: %+v %v", a, err)
+	}
+	f, err := e.svc.GetFlat(context.Background(), "census")
+	if err != nil || f.LiveVersion != 2 || string(f.Visibility) != "private" || len(f.Providers) != 1 || f.Providers[0] != "local" {
+		t.Fatalf("request applied or granted provider: %+v %v", f, err)
+	}
+	if _, body := get(t, f.PrivateURL); string(body) != "VERSION-2" {
+		t.Fatalf("changed current: %q", body)
+	}
+}

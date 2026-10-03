@@ -146,6 +146,15 @@ func TestAgainstRealAPI(t *testing.T) {
 	if r := run(t, srv.URL, "", "deploy", bad, "--flat", "demo"); r.code != ExitError || !strings.Contains(r.stderr, "fix:") {
 		t.Fatalf("validation: %+v", r)
 	}
+	if r := run(t, srv.URL, "", "visibility", "demo", "public"); r.code != ExitPending || !strings.Contains(r.stdout, "http://console.test/approvals/apr-") {
+		t.Fatalf("unpermitted provider must still request approval: %+v", r)
+	}
+	assertState(1, "private", "<h1>v1</h1>")
+	unpermitted, err := svc.ListApprovals(context.Background(), "pending")
+	if err != nil || len(unpermitted) != 1 {
+		t.Fatalf("unpermitted pending: %v %v", unpermitted, err)
+	}
+	operatorCall("/approvals/"+unpermitted[0].ID+"/reject", "")
 	operatorCall("/flats/demo/providers", `{"provider":"portal","permitted":true}`)
 	if r := run(t, srv.URL, "", "visibility", "demo", "public-unlisted", "--reason", "demo day"); r.code != ExitPending || !strings.Contains(r.stdout, "http://console.test/approvals/apr-") {
 		t.Fatalf("public pending: %+v", r)
