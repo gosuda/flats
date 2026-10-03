@@ -247,12 +247,7 @@ func (s *Service) stopRedirect(old string) error {
 	}
 	// Keep the registration in memory on an unconfirmed stop so later expiry
 	// sweeps can retry and status continues to reflect the actual route.
-	if r.public {
-		if err := s.stopPublicRoutes(context.Background(), old); err != nil {
-			return err
-		}
-	}
-	if err := s.stopPreviewExposure(context.Background(), old); err != nil {
+	if err := s.stopSlugRoutes(context.Background(), old); err != nil {
 		return err
 	}
 	s.mu.Lock()

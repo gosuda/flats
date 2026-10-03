@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/store"
@@ -27,15 +28,23 @@ type lifecycleRouteKey struct {
 type lifecycleRouteNet struct {
 	mu                    sync.Mutex
 	routes                map[lifecycleRouteKey]http.Handler
+	owners                map[lifecycleRouteKey]string
+	identities            map[string]int
+	nextIdentity          int
 	failPublic            error
 	failPrivate           error
 	failPrivateAfterLocal error
 	stopPublic            error
 	stopExposure          map[string]error
+	stopSlug              map[string]error
+	stopSlugCalls         map[string]int
 }
 
 func newLifecycleRouteNet() *lifecycleRouteNet {
-	return &lifecycleRouteNet{routes: make(map[lifecycleRouteKey]http.Handler), stopExposure: make(map[string]error)}
+	return &lifecycleRouteNet{
+		routes: make(map[lifecycleRouteKey]http.Handler), owners: make(map[lifecycleRouteKey]string), identities: make(map[string]int),
+		stopExposure: make(map[string]error), stopSlug: make(map[string]error), stopSlugCalls: make(map[string]int),
+	}
 }
 
 func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest) (ExposureResult, error) {
@@ -66,7 +75,13 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, State: "unavailable", Detail: n.failPrivateAfterLocal.Error(), Audience: req.Audience, Host: req.Host})
 			continue
 		}
-		n.routes[lifecycleRouteKey{host: req.Host, provider: id}] = req.Handler
+		key := lifecycleRouteKey{host: req.Host, provider: id}
+		n.routes[key] = req.Handler
+		n.owners[key] = req.Slug
+		if id == ProviderFunnel && n.identities[req.Host] == 0 {
+			n.nextIdentity++
+			n.identities[req.Host] = n.nextIdentity
+		}
 		res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, URL: fmt.Sprintf("https://%s.%s.test", req.Host, id), State: "ready", Configured: true, Permitted: true, Ready: true, Audience: req.Audience, Host: req.Host})
 	}
 	if req.Visibility == "private" && n.failPrivateAfterLocal != nil && slices.Contains(req.Permitted, ProviderTailscale) {
@@ -86,6 +101,7 @@ func (n *lifecycleRouteNet) StopPublicRoutes(_ context.Context, host string) (Pu
 		key := lifecycleRouteKey{host: host, provider: id}
 		if _, ok := n.routes[key]; ok {
 			delete(n.routes, key)
+			delete(n.owners, key)
 			stopped = append(stopped, id)
 		}
 	}
@@ -98,15 +114,47 @@ func (n *lifecycleRouteNet) StopExposure(_ context.Context, host string) error {
 	if err := n.stopExposure[host]; err != nil {
 		return err
 	}
-	delete(n.routes, lifecycleRouteKey{host: host, provider: ProviderLocal})
-	delete(n.routes, lifecycleRouteKey{host: host, provider: ProviderTailscale})
+	for _, id := range []ProviderID{ProviderLocal, ProviderTailscale} {
+		key := lifecycleRouteKey{host: host, provider: id}
+		delete(n.routes, key)
+		delete(n.owners, key)
+	}
+	return nil
+}
+
+func (n *lifecycleRouteNet) StopSlug(_ context.Context, slugName string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.stopSlugCalls[slugName]++
+	if err := n.stopSlug[slugName]; err != nil {
+		return err
+	}
+	for key, owner := range n.owners {
+		if owner == slugName {
+			if err := n.stopExposure[key.host]; err != nil {
+				return fmt.Errorf("stop previews: %w", err)
+			}
+		}
+	}
+	for key, owner := range n.owners {
+		if owner != slugName {
+			continue
+		}
+		delete(n.routes, key)
+		delete(n.owners, key)
+		if key.provider == ProviderFunnel {
+			delete(n.identities, key.host)
+		}
+	}
 	return nil
 }
 
 func (n *lifecycleRouteNet) StopProviderRoutes(_ context.Context, host string, id ProviderID) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	delete(n.routes, lifecycleRouteKey{host: host, provider: id})
+	key := lifecycleRouteKey{host: host, provider: id}
+	delete(n.routes, key)
+	delete(n.owners, key)
 	return nil
 }
 
@@ -140,6 +188,18 @@ func (n *lifecycleRouteNet) serves(host string, id ProviderID) bool {
 	return ok
 }
 
+func (n *lifecycleRouteNet) identity(host string) int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.identities[host]
+}
+
+func (n *lifecycleRouteNet) slugStopCount(slugName string) int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.stopSlugCalls[slugName]
+}
+
 func (n *lifecycleRouteNet) status(host string, id ProviderID) int {
 	n.mu.Lock()
 	h := n.routes[lifecycleRouteKey{host: host, provider: id}]
@@ -167,6 +227,100 @@ func newLifecycleService(t *testing.T, dir string, st *store.Store, network Life
 		t.Fatal(err)
 	}
 	return s
+}
+
+func makeFunnelPublic(t *testing.T, s *Service, slugName, body string) {
+	t.Helper()
+	lifecycleSave(t, s, slugName, body)
+	lifecycleApprove(t, s, lifecycleRequest(t, s, slugName))
+	if err := s.SetProviderPermission(t.Context(), slugName, store.ProviderFunnel, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	request, err := s.SetVisibility(t.Context(), slugName, store.Public, ViaAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(t.Context(), request.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFunnelOnlyDeleteRetiresSlugBeforeApprovalCommits(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	makeFunnelPublic(t, s, "funnel-delete", "one")
+	firstIdentity := network.identity("funnel-delete")
+	if firstIdentity == 0 || !network.serves("funnel-delete", ProviderFunnel) || network.serves("funnel-delete", ProviderTailscale) {
+		t.Fatal("test did not create a Funnel-only provider identity")
+	}
+
+	network.stopSlug["funnel-delete"] = errors.New("logout is not confirmed")
+	pending, err := s.Delete(t.Context(), "funnel-delete", ViaAPI, "retire its provider identity")
+	if err != nil || pending.Status != "pending_approval" {
+		t.Fatalf("delete must remain approval-gated: %+v %v", pending, err)
+	}
+	receipt, err := s.Decide(t.Context(), pending.Approval.ID, true)
+	if err == nil || receipt.Status != "failed" || network.slugStopCount("funnel-delete") != 1 {
+		t.Fatalf("unconfirmed retirement reported success: receipt=%+v err=%v calls=%d", receipt, err, network.slugStopCount("funnel-delete"))
+	}
+	if _, err := s.GetFlat(t.Context(), "funnel-delete"); err != nil || network.identity("funnel-delete") != firstIdentity || !network.serves("funnel-delete", ProviderFunnel) {
+		t.Fatalf("failed retirement lost retry state: flat=%v identity=%d funnel=%t", err, network.identity("funnel-delete"), network.serves("funnel-delete", ProviderFunnel))
+	}
+
+	delete(network.stopSlug, "funnel-delete")
+	pending, err = s.Delete(t.Context(), "funnel-delete", ViaAPI, "retry confirmed retirement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = s.Decide(t.Context(), pending.Approval.ID, true)
+	if err != nil || receipt.Status != "approved" {
+		t.Fatalf("confirmed retirement did not finish delete: %+v %v", receipt, err)
+	}
+	if _, err := s.GetFlat(t.Context(), "funnel-delete"); !errors.Is(err, store.ErrNotFound) || network.identity("funnel-delete") != 0 || network.serves("funnel-delete", ProviderFunnel) {
+		t.Fatalf("delete left the old identity or route: flat=%v identity=%d funnel=%t", err, network.identity("funnel-delete"), network.serves("funnel-delete", ProviderFunnel))
+	}
+
+	makeFunnelPublic(t, s, "funnel-delete", "two")
+	if nextIdentity := network.identity("funnel-delete"); nextIdentity == 0 || nextIdentity == firstIdentity {
+		t.Fatalf("recreated slug inherited deleted identity: old=%d new=%d", firstIdentity, nextIdentity)
+	}
+}
+
+func TestFunnelOnlyRedirectExpiryRetriesRetirement(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	clock := time.Now().UTC()
+	s.now = func() time.Time { return clock }
+	makeFunnelPublic(t, s, "funnel-alias", "one")
+	if _, err := s.RenameSlug(t.Context(), "funnel-alias", "funnel-moved", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	aliasIdentity := network.identity("funnel-alias")
+	if aliasIdentity == 0 || s.Redirects()["funnel-alias"] != "funnel-moved" {
+		t.Fatal("rename did not retain the Funnel alias identity")
+	}
+
+	network.stopSlug["funnel-alias"] = errors.New("alias logout is not confirmed")
+	clock = clock.Add(8 * 24 * time.Hour)
+	s.Sweep(t.Context())
+	if s.Redirects()["funnel-alias"] != "funnel-moved" || network.identity("funnel-alias") != aliasIdentity || !network.serves("funnel-alias", ProviderFunnel) {
+		t.Fatalf("failed expiry lost retry state: redirects=%v identity=%d funnel=%t", s.Redirects(), network.identity("funnel-alias"), network.serves("funnel-alias", ProviderFunnel))
+	}
+	if _, err := s.CreateFlat(t.Context(), "funnel-alias", "", ViaAPI); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unconfirmed alias retirement released the slug: %v", err)
+	}
+
+	delete(network.stopSlug, "funnel-alias")
+	s.Sweep(t.Context())
+	if _, ok := s.Redirects()["funnel-alias"]; ok || network.identity("funnel-alias") != 0 || network.serves("funnel-alias", ProviderFunnel) {
+		t.Fatalf("confirmed expiry left the alias identity or route: redirects=%v identity=%d funnel=%t", s.Redirects(), network.identity("funnel-alias"), network.serves("funnel-alias", ProviderFunnel))
+	}
+	makeFunnelPublic(t, s, "funnel-alias", "two")
+	if nextIdentity := network.identity("funnel-alias"); nextIdentity == 0 || nextIdentity == aliasIdentity {
+		t.Fatalf("recreated alias inherited retired identity: old=%d new=%d", aliasIdentity, nextIdentity)
+	}
 }
 
 func TestPartialPublicRestartRenameTracksAliasForRevokeAndDelete(t *testing.T) {
@@ -289,6 +443,56 @@ func TestRenamePreviewStopFailureIsRetrySafe(t *testing.T) {
 	if _, err := s.st.GetPreview(t.Context(), p.Host); !errors.Is(err, store.ErrNotFound) || network.serves(p.Host, ProviderLocal) {
 		t.Fatalf("rename retry did not close preview: row=%v route=%t", err, network.serves(p.Host, ProviderLocal))
 	}
+}
+
+func TestSweepRecordsPreviewExpiryOnlyAfterConfirmedClose(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "sweep-preview", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "sweep-preview"))
+	p, err := s.OpenPreview(t.Context(), "sweep-preview", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	livePreview := s.prevs[p.Host]
+	s.mu.Unlock()
+	livePreview.last.Store(s.now().Add(-s.previewTTL() - time.Second).UnixMilli())
+	network.stopExposure[p.Host] = errors.New("preview retirement is not confirmed")
+
+	s.Sweep(t.Context())
+	if _, err := s.st.GetPreview(t.Context(), p.Host); err != nil || !network.serves(p.Host, ProviderLocal) {
+		t.Fatalf("failed sweep lost retry state: row=%v route=%t", err, network.serves(p.Host, ProviderLocal))
+	}
+	if got := previewExpiryEvents(t, s, "sweep-preview", p.Host); got != 0 {
+		t.Fatalf("failed close was recorded as expired %d times", got)
+	}
+
+	delete(network.stopExposure, p.Host)
+	s.Sweep(t.Context())
+	if _, err := s.st.GetPreview(t.Context(), p.Host); !errors.Is(err, store.ErrNotFound) || network.serves(p.Host, ProviderLocal) {
+		t.Fatalf("sweep retry did not close preview: row=%v route=%t", err, network.serves(p.Host, ProviderLocal))
+	}
+	if got := previewExpiryEvents(t, s, "sweep-preview", p.Host); got != 1 {
+		t.Fatalf("confirmed close recorded %d expiry events", got)
+	}
+}
+
+func previewExpiryEvents(t *testing.T, s *Service, slugName, host string) int {
+	t.Helper()
+	events, err := s.Events(t.Context(), slugName, "preview", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "preview " + host + " expired after "
+	count := 0
+	for _, event := range events {
+		if strings.Contains(event.Message, want) {
+			count++
+		}
+	}
+	return count
 }
 
 type lifecycleTrackedInstance struct {

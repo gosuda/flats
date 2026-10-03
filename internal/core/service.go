@@ -1310,11 +1310,8 @@ func (s *Service) Delete(ctx context.Context, slugName string, via Via, reason s
 func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
-	if err := s.stopPublicConfirmed(ctx, slugName); err != nil {
+	if err := s.stopSlugRoutes(ctx, slugName); err != nil {
 		return ActionResult{}, err
-	}
-	if err := s.stopPreviewExposure(ctx, slugName); err != nil {
-		return ActionResult{}, fmt.Errorf("stop private routes: %w", err)
 	}
 	var olds []string
 	s.mu.Lock()
@@ -1667,7 +1664,9 @@ func (s *Service) Sweep(ctx context.Context) {
 	s.mu.Unlock()
 	for _, p := range expired {
 		_ = s.st.TouchPreview(ctx, p.host, time.UnixMilli(p.last.Load()))
-		_ = s.ClosePreview(ctx, p.host)
+		if err := s.ClosePreview(ctx, p.host); err != nil {
+			continue
+		}
 		s.Event(ctx, p.flat, "info", "preview", fmt.Sprintf("preview %s expired after %s without visits", p.host, ttl), nil)
 	}
 	s.syncRedirects(ctx)

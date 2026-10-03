@@ -1356,6 +1356,25 @@ func (s *Service) stopPreviewExposure(ctx context.Context, host string) error {
 	}
 	return s.cfg.Private.Stop(host)
 }
+
+// stopSlugRoutes is the destructive teardown used by delete and redirect
+// expiry. A lifecycle manager may own a provider identity even when the only
+// registered route is Funnel, so its slug-wide operation is authoritative.
+func (s *Service) stopSlugRoutes(ctx context.Context, slugName string) error {
+	if n, ok := s.cfg.Lifecycle.(LifecycleSlugNet); ok {
+		if err := n.StopSlug(ctx, slugName); err != nil {
+			return fmt.Errorf("%w: retire routes for %s: %w", ErrConflict, slugName, err)
+		}
+		return nil
+	}
+	if err := s.stopPublicRoutes(ctx, slugName); err != nil {
+		return err
+	}
+	if err := s.stopPreviewExposure(ctx, slugName); err != nil {
+		return fmt.Errorf("stop private routes: %w", err)
+	}
+	return nil
+}
 func (s *Service) verifyContent(flat string, v store.Version) error {
 	files, err := bundle.FromDir(s.contentDir(flat, v), bundle.Limits{MaxBytes: max(v.Size+1, s.UploadLimit())})
 	if err != nil {

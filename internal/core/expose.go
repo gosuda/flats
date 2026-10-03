@@ -132,6 +132,13 @@ type LifecyclePreviewNet interface {
 	StopExposure(context.Context, string) error
 }
 
+// LifecycleSlugNet retires every route and provider identity owned by one
+// slug. It returns only after teardown is confirmed; a failure must retain
+// enough registration state for the same call to be retried safely.
+type LifecycleSlugNet interface {
+	StopSlug(context.Context, string) error
+}
+
 // LifecycleRouteInspector reports registered routes, including routes which
 // are still connecting or whose previous stop was not confirmed.
 type LifecycleRouteInspector interface {
