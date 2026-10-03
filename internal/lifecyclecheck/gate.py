@@ -469,6 +469,7 @@ def api_pending(h):
 
 
 def approval_boundary(h):
+    h.activate("boundary", static("BOUNDARY-CURRENT-V1"))
     h.save("boundary", static("BOUNDARY-CANDIDATE"))
     pending = h.publish("boundary")
     for prefix in ("/api", "/console/api"):
@@ -502,6 +503,11 @@ def approval_boundary(h):
         result = h.rpc("tools/call", {"name": tool["name"], "arguments": args})
         require(h.ok("GET", f"/api/approvals/{pending}")["status"] == "pending",
                 f"MCP tool decided existing approval: {tool['name']}")
+        current = h.flat("boundary")
+        require(current["live_version"] == 1 and current["visibility"] == "private"
+                and provider_ids(current) == {"local"} and len(h.versions("boundary")) == 1
+                and "BOUNDARY-CURRENT-V1" in h.traffic("boundary"),
+                f"MCP tool changed approved current/policy/history: {tool['name']}")
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
     # Browser headers alone must never establish operator authority.
     code, response = h.request("POST", f"/console/api/approvals/{pending}/approve", {}, console=True, authorized=False)
@@ -510,7 +516,8 @@ def approval_boundary(h):
     code, _ = h.request("POST", "/console/api/operator/session", {"credential": "wrong-operator-credential"}, console=True, authorized=False)
     require(code == 403, 'agent credential granted operator session')
     # Correctly provisioned operator session remains a separate positive control.
-    require(h.decide(pending)['status'] == 'approved', 'authorized operator did not publish')
+    failed(h.decide(pending), 'draft-drift')
+    require(h.decide(h.publish('boundary'))['status'] == 'approved', 'fresh authorized operator did not publish')
     require('BOUNDARY-CANDIDATE' in h.traffic('boundary'), 'authorized boundary bytes not serving')
     h.ok('DELETE', '/console/api/operator/session', console=True)
     h.save('boundary', static('REVOKED-SESSION-CANDIDATE'))
@@ -526,12 +533,11 @@ def approval_boundary(h):
 
 def denied_visibility(h, slug):
     before = h.flat(slug)
-    code, response = h.request("POST", f"/api/flats/{slug}/visibility", {"visibility": "public"})
-    require(code == 409 and re.search(r"provider.*not.*permit|permit.*before.*public", response.get("error", ""), re.I),
-            f"permission denial did not report its cause: {code} {response}")
+    pending = h.approval(h.ok("POST", f"/api/flats/{slug}/visibility", {"visibility": "public"}, status=202))
     after = h.flat(slug)
     require(after["visibility"] == before["visibility"] and after["live_version"] == before["live_version"],
-            "permission preflight changed current state")
+            "permission request changed current state before approval")
+    failed(h.decide(pending), "not-permitted")
 
 
 def provider_failure(h):
