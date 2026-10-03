@@ -164,8 +164,10 @@ end-to-end unfamiliar-agent usability evidence**.
 
 The historical three-client static gate above supplies prepared HTML. Keep it
 as a static deployment regression; it does not establish source-free authoring.
-A genuine runtime authoring gate is **pending execution** and must be reported
-separately after an unfamiliar client actually completes all these steps:
+A genuine runtime authoring gate **passed on the pre-integration candidate**;
+see the [sanitized run evidence](gates/runtime-discovery.md). Accepted-base
+integration and final-binary revalidation remain separate gates. Reproduce the
+authoring check with these steps:
 
 1. Start a disposable local host with runtime enabled, Portal disabled, fresh
    synthetic data and free management/site ports. Supply only README host/MCP
