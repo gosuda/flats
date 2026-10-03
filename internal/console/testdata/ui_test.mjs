@@ -485,7 +485,7 @@ assert.equal(byText(missingMain, 'Approve…').length, 1);
 assert.ok(missingMain.textContent.includes('If approved, this flat becomes Public:'));
 assert.equal(missingMain.textContent.includes('This flat is public:'), false);
 for (const state of ['starting', 'error']) {
-  assert.equal(connectionDetail({ slug: 'blog', visibility: 'public', public_url: '', connection_state: state,
+  assert.equal(connectionDetail({ slug: 'blog', visibility: 'public', connection_state: state,
     endpoints: [
       { audience: 'draft', host: 'blog', provider: 'portal', state, detail: 'wrong draft' },
       { audience: 'current', host: 'old', provider: 'portal', state, detail: 'wrong alias' },

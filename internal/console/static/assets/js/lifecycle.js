@@ -40,7 +40,7 @@ export function connectionDetail(flat) {
   const publicRoute = flat?.visibility === 'public';
   if (!publicRoute) return flat?.private_detail || '';
   return flat?.endpoints?.find((ep) => ep.audience === 'current' && ep.host === flat.slug &&
-    ['tailscale-funnel', 'portal'].includes(ep.provider) && ep.url === flat.public_url && ep.state === connectionState(flat))?.detail || '';
+    ['tailscale-funnel', 'portal'].includes(ep.provider) && (ep.url || '') === (flat.public_url || '') && ep.state === connectionState(flat))?.detail || '';
 }
 
 export function connectionLabel(state) {
