@@ -86,7 +86,8 @@ class Host:
         env = os.environ.copy()
         # Explicitly remove inherited provider credentials; not even their values
         # are inspected or recorded. Worker child keeps this disposable binary.
-        for name in ("TS_AUTHKEY", "FLATS_URL"):
+        for name in ("TS_AUTHKEY", "TS_AUTH_KEY", "FLATS_URL", "HTTP_PROXY", "HTTPS_PROXY",
+                     "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
             env.pop(name, None)
         self.log = open(self.work / "serve.log", "ab")
         self.proc = subprocess.Popen(argv, stdout=self.log, stderr=self.log, env=env)
@@ -183,7 +184,11 @@ class Host:
 
     def cli(self, *args):
         argv = [self.binary, "--url", self.base, "--json", *args]
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        env = os.environ.copy()
+        for name in ("TS_AUTHKEY", "TS_AUTH_KEY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                     "http_proxy", "https_proxy", "all_proxy"):
+            env.pop(name, None)
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30, env=env)
         self.trace.append({"kind": "cli", "argv": argv, "exit": proc.returncode,
                            "stdout": proc.stdout, "stderr": proc.stderr})
         return proc
@@ -472,19 +477,30 @@ def visibility_transitions(h):
     require(h.request("GET", "/", local_host="pub-public")[0] == 404, "network fault opened route")
 
 
+from populations import (mixed_migration, seed_mixed, restore_success, runtime_initialization,
+                         probe_runtime, current_live_drift, visibility_drift)
+
+
 LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", invalid_upload),
                ("private-draft-traffic", preview), ("publish-human-idempotency-restart", publish_idempotency),
                ("frozen-revision-policy", drift), ("cli-console-pending", cli_pending),
                ("mcp-pending", mcp_pending), ("api-upload-deploy-pending", api_pending),
                ("provider-permission-failure", provider_failure), ("runtime-health-rollback-data", runtime_data),
-               ("restart-claimed-approval", resume_claimed), ("historical-migration", migration)]
-ADAPTER_CASES = [("visibility-all-surfaces-teardown", visibility_transitions)]
+               ("restart-claimed-approval", resume_claimed), ("historical-migration", migration),
+               ("historical-mixed-migration", mixed_migration),
+               ("runtime-initialization-data", runtime_initialization),
+               ("rollback-approved-restore-data", restore_success),
+               ("frozen-current-live", current_live_drift)]
+ADAPTER_CASES = [("visibility-all-surfaces-teardown", visibility_transitions),
+                 ("frozen-visibility", visibility_drift)]
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--work", required=True)
+    parser.add_argument("--prepare-only", action="store_true",
+                        help="seed/probe legacy binary only; never acceptance")
     parser.add_argument("--only", help="comma separated case IDs")
     parser.add_argument("--legacy-binary")
     parser.add_argument("--adapter-binary")
@@ -494,7 +510,12 @@ def main():
     report = {"binary_sha256": hashlib.sha256(Path(args.binary).read_bytes()).hexdigest(),
               "source_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
               "cases": [], "scope": "actual binary, disposable Local only; no external provider traffic"}
-    cases = LOCAL_CASES + ADAPTER_CASES
+    cases = ([("prepare-mixed-history", seed_mixed), ("prepare-runtime-capability", probe_runtime)]
+             if args.prepare_only else LOCAL_CASES + ADAPTER_CASES)
+    report["full_suite_selected"] = not args.prepare_only and not args.only
+    report["legacy_binary_sha256"] = (hashlib.sha256(Path(args.legacy_binary).read_bytes()).hexdigest()
+                                      if args.legacy_binary else None)
+    report["mode"] = "legacy-preparation" if args.prepare_only else "acceptance"
     selected = set(args.only.split(",")) if args.only else {n for n, _ in cases}
     require(selected <= {n for n, _ in cases}, f"unknown case IDs: {selected}")
     for name, test in cases:
@@ -503,6 +524,9 @@ def main():
         adapter = (name, test) in ADAPTER_CASES
         host = Host((args.adapter_binary or args.binary) if adapter else args.binary, work / name, adapter=adapter)
         host.legacy_binary = args.legacy_binary
+        if args.prepare_only:
+            require(args.legacy_binary, "preparation needs --legacy-binary")
+            host.binary = args.legacy_binary
         result = {"id": name, "lane": "deterministic-provider-loopback" if adapter else "actual-binary-local"}
         try:
             require(not adapter or args.adapter_binary, "missing --adapter-binary; provider lane cannot pass")
@@ -517,6 +541,7 @@ def main():
         report["cases"].append(result)
         print(f"{result['outcome'].upper()}: {name}" + (": " + result["error"] if "error" in result else ""), flush=True)
     report["exit"] = int(any(c["outcome"] != "pass" for c in report["cases"]))
+    report["acceptance"] = report["full_suite_selected"] and report["exit"] == 0
     (work / "evidence.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"Evidence: {work / 'evidence.json'}", flush=True)
     return report["exit"]

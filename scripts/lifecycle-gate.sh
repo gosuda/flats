@@ -18,5 +18,5 @@ else
   CGO_ENABLED=0 go build -C "$WORK/legacy-source" -o "$WORK/legacy-flats" ./cmd/flats
 fi
 CGO_ENABLED=0 go build -C "$ROOT" -o "$WORK/provider-adapter" ./internal/lifecyclecheck/adapter
-exec python3 "$ROOT/internal/lifecyclecheck/gate.py" --binary "$WORK/flats" --work "$WORK" \
+exec python3 -B "$ROOT/internal/lifecyclecheck/gate.py" --binary "$WORK/flats" --work "$WORK" \
   --legacy-binary "$WORK/legacy-flats" --adapter-binary "$WORK/provider-adapter" "$@"

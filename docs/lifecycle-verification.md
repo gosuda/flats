@@ -1,6 +1,8 @@
 # Lifecycle regression gate
 
-Run `scripts/lifecycle-gate.sh` from the integrated worktree. Exit 0 means every
+Run `scripts/lifecycle-gate.sh` from the integrated worktree.
+`--prepare-only` runs just historical seed creation and runtime capability probing
+against the legacy binary; its exit 0 is preparation success, never acceptance. Exit 0 means every
 selected observable case passed; exit 1 means at least one failed. A partial run
 (`--only case-id,...`) is diagnostic and never establishes full acceptance.
 The launcher builds `cmd/flats`, a historical binary from the exact archived
@@ -36,6 +38,10 @@ directory for review. Raw execution logs must stay outside the public repo.
 | Network failure separate from publication; no fallback permission | Local provider-failure and provider lane: connection/setup failure leaves Published/current version and visibility unchanged, no simulated public route opens | Fault injection and real Local traffic; external readiness remains separately unproved |
 | Failed preparation preserves Draft/history/live data | `runtime-health-rollback-data`: real uploaded JS health handler writes sentinel then returns 503 on isolated check; before decision no execution; failure leaves live hits=1/version=1/history=[1] | Actual integrated binary and real runtime/SQLite, not fake DOM |
 | Code rollback preserves number/data; restore separately approved | Runtime case: publish v2, increment data; rollback pending then approved to v1 retains hits=2 and history [1,2]; restore_data request freezes true, leaves hits unchanged until decision, rejection keeps data | Actual binary/runtime; restore execution coverage must be recorded separately |
+| Current live/visibility drift invalidates pending publish | `frozen-current-live`, `frozen-visibility`: change live by approved rollback or visibility by approved Public transition, then old publish fails without new number or candidate traffic | Actual binary/loopback provider lane respectively |
+| Approved explicit restore executes frozen data choice | `rollback-approved-restore-data`: snapshot at hits=1 before v2, pending restore keeps v2 and allows hits=3, approve restores v1/hits=1, preserved backup contains hits=3, retry/restart keep [1,2] | Actual binary/runtime and read-only disposable SQLite oracle |
+| Runtime initialization distinct from health/first request | `runtime-initialization-data`: module capability/throw probe, unchanged live data pending, startup failure does not publish; success compares DB before/after live startup before serving request with impact output | Public runtime JS only; unsupported top-level env explicitly recorded |
+| Mixed deployed and undeployed historical migration | `historical-mixed-migration`: real legacy v2/v3 deployment, saved v1/v4, separate never-deployed flat, DB hits/file/secret, private version previews and pending delete; preserve identity/hash/path/data, classify previews, repeated restart, next publish v4 | Actual historical binary seed; migrated acceptance pending |
 | Historical never-deployed migration preserves files and restarts | `historical-migration`: baseline binary saves historical v1/v2 without deploy; integrated server migrates history empty/Unpublished; both file hashes survive; preview serves latest; restart stable; approved first publish is v1 with legacy bytes | Real historical binary seed and integrated binary migration/traffic |
 
 The test adapter is a separate executable under `internal/lifecyclecheck/adapter`.
@@ -80,33 +86,66 @@ the coordinator requested this committed preparation handoff rather than an idle
 worker awaiting adoption. All post-publish oracles remain unexecuted against the
 candidate because no exact prerequisite adoption was granted in this Dispatch.
 
-The next Codex integration/gate task must additionally implement and execute these
-concrete populations, rather than infer them from the current narrower cases:
+## Expanded preparation receipt
 
-* Historical mixed migration: seed already-deployed legacy versions alongside
-  never-deployed saved versions, live runtime data and disposable secrets, version
-  previews and pending approval references through the baseline binary. After
-  migration and repeated starts, assert exact deployed numbers/hashes, live data
-  values and secret use via runtime responses, preview/reference preservation,
-  newest working snapshot selection, and correct next published number. The
-  current migration case only proves the never-deployed flat population.
-* Runtime initialization effects: include a failing candidate whose initialization
-  or top-level evaluation writes persistent data where that runtime allows it,
-  separate from the existing failing `/health` handler mutation. Verify live data
-  before/after approval and after failure/restart. This receipt makes no blanket
-  `data_impact:none` guarantee for untested startup stages, nor does it assert a
-  success response reports the correct impact field.
-* Successful explicit restore: create known data on both sides of an observed
-  deployment snapshot, request `restore_data:true`, verify no mutation pending,
-  approve it, and assert the exact intended restored value, backup preservation,
-  existing version numbers and serving bytes. The current case tests code-only
-  rollback and rejection of a separately frozen restore request, not execution of
-  an approved restore.
-* Reconcile test provider wiring to the final integrated `LifecycleNet` and test
-  both Funnel permission/failure and Portal teardown without opening the internet.
-  Current Local failure checks do not model an established real Tailscale node or
-  prove tailnet ACL outcomes; no owner-only guarantee is inferred.
+The independent harness expansion adds five acceptance populations, for 18 total
+cases. These new acceptance cases have not run against a candidate. The final
+`LifecycleNet` exports and actual provider manager are not adopted: root has not
+granted an exact compiling prerequisite commit. No product source changed.
+The next integration task must wire the test host to the real manager with its
+injected backend interfaces, then test persisted host permission **and** per-flat
+permission, canonical `tailscale-funnel`, no fallback, Draft Private-only routing,
+unconfirmed teardown and surviving Private traffic. The retained PublicNet
+loopback double does not establish any of those production-manager facts.
 
-Do not use the baseline receipt as approval to merge. Claude review must inspect
-the final integrated tree, execute the full gate there, and reconcile every case
-and the stated proof boundaries before a success claim.
+Executed `scripts/lifecycle-gate.sh --prepare-only`, initially exit **1**:
+Local-only legacy mode refused a Public visibility request with 409 because
+Portal was disabled. No exposure was enabled. Changed only the historical
+pending-reference fixture to a real pending delete request, then reran the
+corrected preparation once: exit **0**, both preparation cases passed. Evidence:
+`/var/folders/r_/5jr0xg0s7wg3xmd4ws3h5wlw0000gn/T/flats-lifecycle-gate.NN9dnI/evidence.json`;
+mixed seed manifest is sibling `prepare-mixed-history/mixed-seed.json`.
+The initial failed receipt remains at
+`/var/folders/r_/5jr0xg0s7wg3xmd4ws3h5wlw0000gn/T/flats-lifecycle-gate.p6555P/evidence.json`.
+Corrected receipt SHA256:
+`ed0d620638b4a3637dd04af6d6e21a551202853d4db37f0bebe76ce4c0a6686e`.
+Preparation seeded using the archived pre-lifecycle binary, never the candidate.
+
+The real mixed seed served v3/hits=2, a disposable FILES value and a boolean
+secret-use oracle; v2/v3 were actually deployed, v1/v4 were never deployed,
+and a separate flat was never deployed. Both old private previews served their
+expected content before stopping the legacy host. Migration assertions preserve
+v2/v3 numbers, hashes and file paths; require undeployed bytes in draft revisions;
+check pending delete ID/action/flat and visibility; accept a historical ephemeral
+preview only if it retains the exact content or is absent with a 404 route.
+They do not claim a pending visibility rewrite is covered by the delete fixture.
+Migration/restart acceptance is still unexecuted, and final core preview
+classification must be reconciled with its approved migration contract.
+
+Runtime preparation returned `topEnv:"undefined"`: current JS modules cannot
+access public `env.DB` or `env.FILES` at top level. This is an explicit capability
+limit, not startup-data-isolation proof. The probe separately observed a durable
+first-request initialization write and an additional write after real restart;
+a first request is not labeled live startup. Candidate acceptance includes a
+module evaluation failure and, when public top-level env is supported, DB/FILES
+writes. It compares actual live DB state before and immediately after successful
+activation, before a serving request, and rejects `data_impact:none` if that DB
+changed. The final integrated DTO and failure-impact output still need execution
+and reconciliation; no blanket `none` claim follows from copied health data.
+
+Approved restore execution and current-live/visibility drift oracles are prepared
+but unexecuted against the candidate. Existing Draft revision/hash and provider
+drift, pending/reject/no-restore rollback, duplicate activation and restart
+oracles remain. Successful restore preserves a read-only observed backup of the
+latest pre-restore data and creates no new numbered code snapshot.
+
+Verification argv: `bash -n scripts/lifecycle-gate.sh`; Python AST parsing of
+both harness modules; `CGO_ENABLED=0 go build -o
+/tmp/flats-lifecycle-gate-adapter-check ./internal/lifecyclecheck/adapter`.
+Each exited **0**. The launcher built both actual binaries and the adapter.
+Python uses `-B` to keep generated bytecode outside the worktree. No unchanged
+full failing baseline was rerun. All raw logs/data remain outside the public repo.
+
+Do not use either preparation or baseline receipt as approval to merge. Claude
+review must inspect the final integrated tree, execute the full gate there, and
+reconcile every case and proof boundary before a success claim.
