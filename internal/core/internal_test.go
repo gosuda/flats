@@ -132,8 +132,19 @@ func (n *memNet) Stop(host string) error {
 }
 
 func (n *memNet) URL(host string) string { return "http://" + host + ".test" }
-func (n *memNet) Status() NetStatus      { return NetStatus{} }
 func (n *memNet) Close() error           { return nil }
+
+// Status reports every served host as starting, like a tailnet node waiting
+// for its HTTPS certificate.
+func (n *memNet) Status() NetStatus {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	st := NetStatus{Kind: "mem", Enabled: true}
+	for h := range n.hosts {
+		st.Hosts = append(st.Hosts, HostInfo{Host: h, URL: n.URL(h), State: "starting", Detail: "waiting for its HTTPS certificate"})
+	}
+	return st
+}
 
 func newTestService(t *testing.T) (*Service, string) {
 	t.Helper()
@@ -230,5 +241,40 @@ func TestFailedSnapshotsDoNotEvictRegularOnes(t *testing.T) {
 	}
 	if regular != keepSnapshots || failed != keepFailedSnapshots {
 		t.Fatalf("regular=%d failed=%d: %v", regular, failed, snaps)
+	}
+}
+
+// Regression (real-tailnet gate): a private host that does not answer yet is
+// reported with the flat and the preview, so agents wait instead of fetching.
+func TestViewsReportHostState(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.SaveVersion(ctx, "pend", []bundle.File{{Path: "index.html", Data: []byte("x")}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.GetFlat(ctx, "pend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.PrivateState != "" {
+		t.Errorf("undeployed flat has host state %q", f.PrivateState)
+	}
+	r, err := s.Deploy(ctx, "pend", 1, ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Flat.PrivateState != "starting" || !strings.Contains(r.Flat.PrivateDetail, "certificate") {
+		t.Errorf("deploy result host state %q %q", r.Flat.PrivateState, r.Flat.PrivateDetail)
+	}
+	p, err := s.OpenPreview(ctx, "pend", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.State != "starting" {
+		t.Errorf("preview state %q", p.State)
+	}
+	ps, err := s.ListPreviews(ctx, "pend")
+	if err != nil || len(ps) != 1 || ps[0].State != "starting" {
+		t.Errorf("listed previews %+v %v", ps, err)
 	}
 }

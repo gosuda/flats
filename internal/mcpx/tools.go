@@ -68,22 +68,24 @@ func register(s *mcp.Server, t *tools) {
 
 // FlatInfo describes a flat.
 type FlatInfo struct {
-	Slug         string    `json:"slug" jsonschema:"flat identifier, also its private host name"`
-	Name         string    `json:"name" jsonschema:"display name"`
-	Visibility   string    `json:"visibility" jsonschema:"private, public-unlisted or public-listed"`
-	LiveVersion  int       `json:"live_version" jsonschema:"version serving now; 0 when never deployed"`
-	Versions     int       `json:"versions" jsonschema:"number of saved versions"`
-	PrivateURL   string    `json:"private_url" jsonschema:"tailnet-only URL (serves once a version is deployed)"`
-	PublicURL    string    `json:"public_url,omitempty" jsonschema:"internet URL when public"`
-	PublicNotice string    `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
-	DiskBytes    int64     `json:"disk_bytes" jsonschema:"disk used by versions and data"`
-	UpdatedAt    time.Time `json:"updated_at" jsonschema:"last change"`
+	Slug          string    `json:"slug" jsonschema:"flat identifier, also its private host name"`
+	Name          string    `json:"name" jsonschema:"display name"`
+	Visibility    string    `json:"visibility" jsonschema:"private, public-unlisted or public-listed"`
+	LiveVersion   int       `json:"live_version" jsonschema:"version serving now; 0 when never deployed"`
+	Versions      int       `json:"versions" jsonschema:"number of saved versions"`
+	PrivateURL    string    `json:"private_url" jsonschema:"tailnet-only URL (serves once a version is deployed)"`
+	PrivateState  string    `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
+	PrivateDetail string    `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
+	PublicURL     string    `json:"public_url,omitempty" jsonschema:"internet URL when public"`
+	PublicNotice  string    `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
+	DiskBytes     int64     `json:"disk_bytes" jsonschema:"disk used by versions and data"`
+	UpdatedAt     time.Time `json:"updated_at" jsonschema:"last change"`
 }
 
 func flatInfo(v core.FlatView) FlatInfo {
 	return FlatInfo{Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,
-		Versions: v.Versions, PrivateURL: v.PrivateURL, PublicURL: v.PublicURL, PublicNotice: v.PublicNotice,
-		DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
+		Versions: v.Versions, PrivateURL: v.PrivateURL, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail,
+		PublicURL: v.PublicURL, PublicNotice: v.PublicNotice, DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
 }
 
 // VersionInfo describes a saved version.
@@ -113,18 +115,20 @@ func versionInfo(v store.Version, live int) VersionInfo {
 
 // DeployInfo is the outcome of a successful deploy or rollback.
 type DeployInfo struct {
-	Version      int               `json:"version" jsonschema:"version now live"`
-	Previous     int               `json:"previous" jsonschema:"version live before (0 = none)"`
-	Health       core.HealthResult `json:"health" jsonschema:"pre-deploy health check result"`
-	PrivateURL   string            `json:"private_url" jsonschema:"tailnet-only URL"`
-	PublicURL    string            `json:"public_url,omitempty" jsonschema:"internet URL when public"`
-	PublicNotice string            `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
-	Millis       int64             `json:"millis" jsonschema:"deploy duration"`
+	Version       int               `json:"version" jsonschema:"version now live"`
+	Previous      int               `json:"previous" jsonschema:"version live before (0 = none)"`
+	Health        core.HealthResult `json:"health" jsonschema:"pre-deploy health check result"`
+	PrivateURL    string            `json:"private_url" jsonschema:"tailnet-only URL"`
+	PrivateState  string            `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
+	PrivateDetail string            `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
+	PublicURL     string            `json:"public_url,omitempty" jsonschema:"internet URL when public"`
+	PublicNotice  string            `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
+	Millis        int64             `json:"millis" jsonschema:"deploy duration"`
 }
 
 func deployInfo(r core.DeployResult) DeployInfo {
 	return DeployInfo{Version: r.Version, Previous: r.Previous, Health: r.Health, PrivateURL: r.Flat.PrivateURL,
-		PublicURL: r.Flat.PublicURL, PublicNotice: r.Flat.PublicNotice, Millis: r.Millis}
+		PrivateState: r.Flat.PrivateState, PrivateDetail: r.Flat.PrivateDetail, PublicURL: r.Flat.PublicURL, PublicNotice: r.Flat.PublicNotice, Millis: r.Millis}
 }
 
 func deployText(slug string, d DeployInfo, kind string) string {
@@ -134,8 +138,21 @@ func deployText(slug string, d DeployInfo, kind string) string {
 		fmt.Fprintf(&b, "; was version %d", d.Previous)
 	}
 	b.WriteString(").")
+	writePending(&b, d.PrivateState, d.PrivateDetail)
 	writePublic(&b, d.PublicURL, d.PublicNotice)
 	return b.String()
+}
+
+// writePending notes that a private URL does not answer yet.
+func writePending(b *strings.Builder, state, detail string) {
+	if state == "" || state == "ready" || state == "key-expiring" {
+		return
+	}
+	fmt.Fprintf(b, "\nThe private URL does not answer yet (%s", state)
+	if detail != "" {
+		fmt.Fprintf(b, ": %s", detail)
+	}
+	b.WriteString("). Check again with get_flat before fetching it.")
 }
 
 func writePublic(b *strings.Builder, url, notice string) {
@@ -241,6 +258,12 @@ type PreviewInfo struct {
 	URL       string    `json:"url" jsonschema:"temporary private URL"`
 	Version   int       `json:"version" jsonschema:"version served"`
 	ExpiresAt time.Time `json:"expires_at" jsonschema:"closes at this time unless visited again (or on the next deploy)"`
+	State     string    `json:"state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
+	Detail    string    `json:"detail,omitempty" jsonschema:"what the preview host is waiting for, when not ready"`
+}
+
+func previewInfo(p core.PreviewView) PreviewInfo {
+	return PreviewInfo{Host: p.Host, URL: p.URL, Version: p.Version, ExpiresAt: p.ExpiresAt, State: p.State, Detail: p.Detail}
 }
 
 // FlatOut is one flat with its previews.
@@ -255,6 +278,7 @@ func flatText(fi FlatInfo) string {
 	if fi.LiveVersion == 0 {
 		b.WriteString(" (serves after the first deploy)")
 	}
+	writePending(&b, fi.PrivateState, fi.PrivateDetail)
 	writePublic(&b, fi.PublicURL, fi.PublicNotice)
 	return b.String()
 }
@@ -268,8 +292,11 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 	text := flatText(out.Flat)
 	if ps, err := t.svc.ListPreviews(ctx, in.Slug); err == nil {
 		for _, p := range ps {
-			out.Previews = append(out.Previews, PreviewInfo{Host: p.Host, URL: p.URL, Version: p.Version, ExpiresAt: p.ExpiresAt})
+			out.Previews = append(out.Previews, previewInfo(p))
 			text += fmt.Sprintf("\nPreview of v%d: %s", p.Version, p.URL)
+			if p.State != "" && p.State != "ready" {
+				text += " (" + p.State + ")"
+			}
 		}
 	}
 	return result(text, out), out, nil
@@ -546,9 +573,16 @@ func (t *tools) openPreview(ctx context.Context, _ *mcp.CallToolRequest, in Prev
 	if err != nil {
 		return nil, PreviewInfo{}, toolErr(err, notFoundHint(err, in.Slug))
 	}
-	out := PreviewInfo{Host: p.Host, URL: p.URL, Version: p.Version, ExpiresAt: p.ExpiresAt}
+	out := previewInfo(p)
 	text := fmt.Sprintf("Preview of %s version %d: %s (private, tailnet only). Live is unchanged. The preview closes on the next deploy of %s or when unused until %s.",
 		in.Slug, p.Version, p.URL, in.Slug, p.ExpiresAt.Format(time.RFC3339))
+	if p.State != "" && p.State != "ready" {
+		text += " Its host is still " + p.State
+		if p.Detail != "" {
+			text += " (" + p.Detail + ")"
+		}
+		text += "; check get_flat for its state before fetching or sharing the URL."
+	}
 	return result(text, out), out, nil
 }
 

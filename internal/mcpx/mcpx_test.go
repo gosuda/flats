@@ -565,3 +565,16 @@ func TestRollbackIsMarkedDestructive(t *testing.T) {
 	}
 	t.Fatal("no rollback tool")
 }
+
+// Regression (real-tailnet gate): tool text tells the agent when the private
+// URL does not answer yet, and stays quiet when it does.
+func TestDeployTextNotesPendingHost(t *testing.T) {
+	d := DeployInfo{Version: 1, PrivateURL: "https://blog.tail1.ts.net", PrivateState: "starting", PrivateDetail: "waiting for its HTTPS certificate"}
+	if got := deployText("blog", d, "Deployed"); !strings.Contains(got, "does not answer yet (starting: waiting for its HTTPS certificate)") {
+		t.Errorf("pending deploy text %q", got)
+	}
+	d.PrivateState, d.PrivateDetail = "ready", ""
+	if got := deployText("blog", d, "Deployed"); strings.Contains(got, "answer yet") {
+		t.Errorf("ready deploy text %q", got)
+	}
+}

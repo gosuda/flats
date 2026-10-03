@@ -76,8 +76,12 @@ export function mount(main, [slug], ctx) {
     const urls = h('dl', { class: 'facts' });
     const add = (k, v) => urls.append(h('dt', { text: k }), h('dd', null, v));
     add('Slug', h('code', { text: flat.slug }));
+    const pending = flat.private_state && !['ready', 'key-expiring'].includes(flat.private_state);
     add('Private URL', flat.live_version
-      ? extLink(flat.private_url)
+      ? h('div', null, extLink(flat.private_url),
+          pending ? h('div', { class: 'muted small' },
+            h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
+            flat.private_detail || 'not answering yet') : null)
       : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), ' (online after the first deploy)'));
     if (flat.public_url) {
       add('Public URL', h('div', null,

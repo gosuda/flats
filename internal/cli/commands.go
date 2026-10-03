@@ -209,11 +209,23 @@ func printHealth(w io.Writer, h health) {
 func printURLs(w io.Writer, f flatView) {
 	if f.PrivateURL != "" {
 		fmt.Fprintf(w, "  private: %s\n", f.PrivateURL)
+		printPending(w, f.PrivateState, f.PrivateDetail)
 	}
 	if f.PublicURL != "" {
 		fmt.Fprintf(w, "  public:  %s\n", f.PublicURL)
 		fmt.Fprintf(w, "  note: %s\n", publicNotice(f))
 	}
+}
+
+// printPending notes that a private host is not answering yet.
+func printPending(w io.Writer, state, detail string) {
+	if state == "" || state == "ready" || state == "key-expiring" {
+		return
+	}
+	if detail == "" {
+		detail = "not answering yet"
+	}
+	fmt.Fprintf(w, "  %s: %s (`flats info` shows when it is ready)\n", state, detail)
 }
 
 // publicURLNotice is shown with a public URL when the server sent no
@@ -427,6 +439,7 @@ func (a *app) preview(args []string) error {
 		return nil
 	}
 	fmt.Fprintf(a.out, "Preview of %s version %d: %s\n", slug, p.Version, p.URL)
+	printPending(a.out, p.State, p.Detail)
 	fmt.Fprintf(a.out, "  private to your tailnet; closes on the next deploy or after 24h without visits (now: %s)\n", p.ExpiresAt.Local().Format(timeFmt))
 	return nil
 }

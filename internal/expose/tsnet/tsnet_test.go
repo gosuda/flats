@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,6 +242,15 @@ func TestServeHTTPSIdentityStop(t *testing.T) {
 		}
 	}
 	t.Logf("3 nodes ready in %v", time.Since(start))
+	shared, err := os.ReadFile(filepath.Join(dir, acmeKeyName))
+	if err != nil {
+		t.Fatalf("shared ACME key: %v", err)
+	}
+	for h := range hosts {
+		if b, err := os.ReadFile(filepath.Join(dir, h, "certs", acmeKeyName)); err != nil || string(b) != string(shared) {
+			t.Errorf("%s does not use the shared ACME account key: %v", h, err)
+		}
+	}
 	after := rssMB(t)
 	t.Logf("memory gate: RSS %.1f MB -> %.1f MB for 3 nodes = %.1f MB per node (incl. first-node code paging)",
 		before, after, (after-before)/3)
@@ -480,13 +491,15 @@ func TestHostStates(t *testing.T) {
 		want  string // detail substring
 	}{
 		{&node{backend: "NoState"}, StateStarting, ""},
-		{&node{backend: "Running", serving: true, keyExpiry: &far}, StateReady, ""},
-		{&node{backend: "Running", serving: true, keyExpiry: &soon}, StateKeyExpiring, "expires"},
+		{&node{backend: "Running", serving: true, certOK: true, keyExpiry: &far}, StateReady, ""},
+		{&node{backend: "Running", serving: true, certOK: true, keyExpiry: &soon}, StateKeyExpiring, "expires"},
+		{&node{backend: "Running", serving: true, keyExpiry: &far}, StateStarting, "HTTPS certificate"},
+		{&node{backend: "Running", serving: true, certErr: "acme: rate limited"}, StateStarting, "last attempt: acme: rate limited"},
 		{&node{backend: "Running", serving: true, plain: true}, StateReady, "plain HTTP"},
 		{&node{backend: "NeedsLogin", authURL: "https://login.example/a"}, StateNeedsLogin, "https://login.example/a"},
 		{&node{backend: "NeedsLogin", keyExpiry: &past}, StateNeedsLogin, "expired"},
 		{&node{backend: "NeedsMachineAuth"}, StateNeedsLogin, "approval"},
-		{&node{backend: "Running", serving: true, err: fmt.Errorf("boom")}, StateError, "boom"},
+		{&node{backend: "Running", serving: true, certOK: true, err: fmt.Errorf("boom")}, StateError, "boom"},
 	}
 	for i, c := range cases {
 		c.nd.host = "h"
@@ -643,5 +656,167 @@ func TestTeardownWaitsForPredecessor(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("teardown did not return after its predecessor finished")
+	}
+}
+
+// Regression (real-tailnet gate): Let's Encrypt can take longer than one
+// attempt; the certificate fetch is retried until it succeeds, and the host
+// is only ready once it has its certificate.
+func TestWarmRetriesUntilCertificate(t *testing.T) {
+	defer func(d time.Duration) { certRetryMin = d }(certRetryMin)
+	certRetryMin = 10 * time.Millisecond
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	n.warmCert = func(context.Context, string) error {
+		if calls.Add(1) < 3 {
+			return errors.New("timed out waiting for the DNS challenge")
+		}
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	nd := &node{host: "h", ctx: ctx, cancel: cancel, backend: "Running", serving: true}
+	n.nodes["h"] = nd
+	done := make(chan struct{})
+	go func() { n.warm(nd, nil, "h.tail1.ts.net"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("warm did not finish")
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("certificate fetched %d times, want 3", got)
+	}
+	n.mu.Lock()
+	hi := n.hostInfoLocked(nd, time.Now())
+	n.mu.Unlock()
+	if hi.State != StateReady {
+		t.Errorf("state after certificate = %s (%s)", hi.State, hi.Detail)
+	}
+
+	// Stopping the node ends the retries.
+	calls.Store(0)
+	n.warmCert = func(context.Context, string) error { calls.Add(1); return errors.New("no") }
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	nd2 := &node{host: "g", ctx: ctx2, cancel: cancel2}
+	done2 := make(chan struct{})
+	go func() { n.warm(nd2, nil, "g.tail1.ts.net"); close(done2) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("warm kept retrying after the node stopped")
+	}
+}
+
+// Regression (real-tailnet gate): a node whose teardown hangs must not block
+// Stop (and with it a deploy or delete) indefinitely.
+func TestStopIsBounded(t *testing.T) {
+	defer func(d time.Duration) { stopWait = d }(stopWait)
+	stopWait = 100 * time.Millisecond
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	close(started)
+	stuck := make(chan struct{}) // the lifecycle goroutine never returns
+	nd := &node{host: "h", dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel, started: started, done: stuck}
+	n.nodes["h"] = nd
+	start := time.Now()
+	if err := n.Stop("h"); err == nil || !strings.Contains(err.Error(), "background") {
+		t.Errorf("Stop of a stuck node = %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Stop took %v", d)
+	}
+	if len(n.Status().Hosts) != 0 {
+		t.Errorf("stuck node still served: %+v", n.Status().Hosts)
+	}
+	close(stuck)
+	if err := n.Close(); err != nil {
+		t.Errorf("Close after the node finished: %v", err)
+	}
+}
+
+// Regression (real-tailnet gate): Let's Encrypt allows 10 new accounts per
+// IP address in 3 hours, so all nodes share one ACME account key; an
+// existing node's key (an already registered account) is adopted.
+func TestSharedACMEKey(t *testing.T) {
+	read := func(p string) string {
+		t.Helper()
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	keyOf := func(dir string) string { return filepath.Join(dir, "certs", acmeKeyName) }
+
+	// Fresh data: one key is created and handed to every node.
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	dirs := []string{"a", "b", "c", "d"}
+	for _, d := range dirs {
+		wg.Go(func() {
+			if err := n.shareACMEKey(filepath.Join(n.cfg.Dir, d)); err != nil {
+				t.Errorf("share %s: %v", d, err)
+			}
+		})
+	}
+	wg.Wait()
+	shared := read(filepath.Join(n.cfg.Dir, acmeKeyName))
+	if !validACMEKey([]byte(shared)) {
+		t.Fatalf("shared key is not a usable private key: %q", shared)
+	}
+	for _, d := range dirs {
+		if got := read(keyOf(filepath.Join(n.cfg.Dir, d))); got != shared {
+			t.Errorf("node %s has a different account key", d)
+		}
+		if fi, err := os.Stat(keyOf(filepath.Join(n.cfg.Dir, d))); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("node %s key mode: %v %v", d, fi.Mode(), err)
+		}
+	}
+
+	// Existing data: a node's registered key becomes the shared key, and a
+	// node's own key is never replaced.
+	n2, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(n2.cfg.Dir, "blog")
+	os.MkdirAll(filepath.Join(old, "certs"), 0o700)
+	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalECPrivateKey(priv)
+	registered := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
+	os.WriteFile(keyOf(old), []byte(registered), 0o600)
+	if err := n2.shareACMEKey(filepath.Join(n2.cfg.Dir, "shop")); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(keyOf(filepath.Join(n2.cfg.Dir, "shop"))); got != registered {
+		t.Errorf("existing account key was not adopted")
+	}
+	if err := n2.shareACMEKey(old); err != nil || read(keyOf(old)) != registered {
+		t.Errorf("node's own key changed: %v", err)
+	}
+}
+
+func TestAuthKeyLoginIsStarting(t *testing.T) {
+	n := &Net{cfg: Config{AuthKey: "k"}, nodes: map[string]*node{}}
+	nd := &node{host: "h", backend: "NeedsLogin"}
+	if hi := n.hostInfoLocked(nd, time.Now()); hi.State != StateStarting || !strings.Contains(hi.Detail, "auth key") {
+		t.Errorf("new node with auth key: %s %q", hi.State, hi.Detail)
+	}
+	nd.wasUp = true // an expired key later is a real needs-login
+	if hi := n.hostInfoLocked(nd, time.Now()); hi.State != StateNeedsLogin {
+		t.Errorf("re-auth: %s", hi.State)
 	}
 }

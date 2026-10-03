@@ -112,6 +112,24 @@ portal/<slug>.json              Portal identity (keeps the public hostname stabl
   `<slug>-<8 random>` serving version n; server flats get a copy of the live
   data directory. Previews close on deploy of that flat or 24 h after the last
   visit.
+* **Certificates and readiness.** When the tailnet issues certificates, a
+  node serving HTTPS fetches its certificate as soon as it listens, retrying
+  with backoff (30 s doubling to 10 min, 5 min per attempt) until it has one.
+  Tailscale gets it from Let's Encrypt with a DNS-01 challenge: on a real
+  tailnet that took about 78 s per host and sometimes more than 2 min. Until
+  then the host is `starting` with detail "waiting for its HTTPS
+  certificate"; it becomes `ready` only once a certificate was obtained (by
+  the fetch or by a visitor's handshake). Flat views carry this as
+  `private_state`/`private_detail`, previews as `state`/`detail`, so agents
+  wait instead of treating a TLS error as a failed deploy. Each host's name
+  appears in Certificate Transparency logs, and each new host uses one
+  certificate of the Let's Encrypt per-domain weekly limit.
+* **Stopping.** `Stop` (delete, preview close) logs the node out, closes it
+  and removes its state. It waits at most 30 s: a node whose Tailscale backend
+  hangs (seen once on a real tailnet, where a deploy then waited 10 minutes
+  for a preview to close) is removed from the served set and finishes in the
+  background, so deploys and deletes never block on it. `Close` at shutdown
+  is bounded the same way.
 * **Measured cost** (spike, testcontrol, darwin/arm64): first node ≈14 MB RSS,
   each further node ≈4.2 MB RSS, ≈1 MB live heap and ≈94 goroutines; `Up`
   ≈0.33 s.

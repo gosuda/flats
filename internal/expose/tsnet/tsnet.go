@@ -5,7 +5,12 @@ package tsnet
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -54,7 +59,20 @@ const (
 	keyExpiringWindow = 14 * 24 * time.Hour
 	defaultPoll       = 5 * time.Minute
 	logoutTimeout     = 10 * time.Second
-	certWarmTimeout   = 2 * time.Minute
+	// certWarmTimeout bounds one certificate request. Tailscale gets the
+	// certificate from Let's Encrypt with a DNS-01 challenge; on a real
+	// tailnet that takes about 80 seconds and sometimes several minutes.
+	certWarmTimeout = 5 * time.Minute
+	// CertPending is the host detail while HTTPS waits for its certificate.
+	CertPending = "waiting for its HTTPS certificate from Let's Encrypt (a new host usually needs 1-2 minutes)"
+)
+
+// Retry backoff for certificate fetches and the longest Stop and Close wait
+// for a node to shut down; variables so tests can shorten them.
+var (
+	certRetryMin = 30 * time.Second
+	certRetryMax = 10 * time.Minute
+	stopWait     = 30 * time.Second
 )
 
 // Host states reported in core.HostInfo.State.
@@ -79,6 +97,8 @@ type Net struct {
 	pollEvery time.Duration
 	getCert   func(*tls.ClientHelloInfo) (*tls.Certificate, error)
 	warmCert  func(ctx context.Context, domain string) error
+
+	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
 	mu       sync.Mutex
 	nodes    map[string]*node
@@ -109,6 +129,8 @@ type node struct {
 	dnsName   string // FQDN without trailing dot
 	serving   bool
 	plain     bool
+	certOK    bool   // the HTTPS certificate has been obtained at least once
+	certErr   string // last certificate fetch error while !certOK
 	err       error
 	loginKick bool // StartLoginInteractive already requested in this needs-login episode
 	wasUp     bool // reached Running at least once (later NeedsLogin means re-auth)
@@ -215,6 +237,10 @@ func (n *Net) run(nd *node) {
 	nd.srv = srv
 	err := os.MkdirAll(nd.dir, 0o700)
 	if err == nil {
+		if kerr := n.shareACMEKey(nd.dir); kerr != nil {
+			// Not fatal: tailscaled then registers its own account.
+			n.logf("tsnet %s: shared ACME account: %v", nd.host, kerr)
+		}
 		err = srv.Start()
 	}
 	close(nd.started)
@@ -263,9 +289,16 @@ func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.St
 		go hs.Serve(ln)
 	}
 	if useTLS {
-		getCert := n.getCert
-		if getCert == nil {
-			getCert = lc.GetCertificate
+		base := n.getCert
+		if base == nil {
+			base = lc.GetCertificate
+		}
+		getCert := func(hi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			c, err := base(hi)
+			if err == nil {
+				n.certObtained(nd, nil)
+			}
+			return c, err
 		}
 		ln443, err := srv.Listen("tcp", ":443")
 		if err != nil {
@@ -304,6 +337,101 @@ func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.St
 	return nil
 }
 
+// acmeKeyName is where tailscaled keeps a node's ACME account key, inside
+// <node dir>/certs (see tailscale.com/feature/acme).
+const acmeKeyName = "acme-account.key.pem"
+
+// shareACMEKey gives the node in dir the Let's Encrypt account key shared by
+// all nodes of this Net, unless it already has one. Without it every node
+// registers its own account, and Let's Encrypt allows only 10 new accounts
+// per IP address in 3 hours: the 11th new flat or preview then waits hours
+// for its certificate. The shared key lives in Config.Dir; the first time,
+// an existing node's key (an already registered account) is adopted, else a
+// new key is created.
+func (n *Net) shareACMEKey(dir string) error {
+	certs := filepath.Join(dir, "certs")
+	own := filepath.Join(certs, acmeKeyName)
+	if _, err := os.Stat(own); err == nil {
+		return nil
+	}
+	key, err := n.sharedACMEKey()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(certs, 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(own, key)
+}
+
+// sharedACMEKey returns the shared account key PEM, creating it if needed.
+func (n *Net) sharedACMEKey() ([]byte, error) {
+	n.acmeMu.Lock()
+	defer n.acmeMu.Unlock()
+	shared := filepath.Join(n.cfg.Dir, acmeKeyName)
+	if b, err := os.ReadFile(shared); err == nil {
+		return b, nil
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	var key []byte
+	entries, _ := os.ReadDir(n.cfg.Dir)
+	for _, e := range entries {
+		if b, err := os.ReadFile(filepath.Join(n.cfg.Dir, e.Name(), "certs", acmeKeyName)); err == nil && validACMEKey(b) {
+			key = b
+			break
+		}
+	}
+	if key == nil {
+		priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		der, err := x509.MarshalECPrivateKey(priv)
+		if err != nil {
+			return nil, err
+		}
+		key = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+	}
+	if err := writeFileAtomic(shared, key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// validACMEKey reports whether b is a PEM private key tailscaled can use.
+func validACMEKey(b []byte) bool {
+	blk, _ := pem.Decode(b)
+	if blk == nil || !strings.Contains(blk.Type, "PRIVATE") {
+		return false
+	}
+	if _, err := x509.ParseECPrivateKey(blk.Bytes); err == nil {
+		return true
+	}
+	_, err := x509.ParsePKCS8PrivateKey(blk.Bytes)
+	return err == nil
+}
+
+// writeFileAtomic writes a 0600 file via a temporary file and rename.
+func writeFileAtomic(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o600)); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 // httpsRedirect sends plain HTTP requests to the same path on https://host.
 // 307 keeps the method and is not cached, so turning HTTPS off later does not
 // leave browsers stuck on a dead redirect.
@@ -319,10 +447,11 @@ func httpsRedirect(host string) http.Handler {
 	})
 }
 
-// warm fetches the node's certificate in the background and logs failures.
+// warm fetches the node's certificate in the background, retrying with
+// backoff until it succeeds or the node stops. Until then the host reports
+// starting rather than ready, so callers do not hand out a URL whose TLS
+// handshake still fails.
 func (n *Net) warm(nd *node, lc *local.Client, domain string) {
-	ctx, cancel := context.WithTimeout(nd.ctx, certWarmTimeout)
-	defer cancel()
 	fetch := n.warmCert
 	if fetch == nil {
 		fetch = func(ctx context.Context, d string) error {
@@ -330,9 +459,42 @@ func (n *Net) warm(nd *node, lc *local.Client, domain string) {
 			return err
 		}
 	}
-	if err := fetch(ctx, domain); err != nil && nd.ctx.Err() == nil {
-		n.logf("tsnet %s: certificate for %s: %v", nd.host, domain, err)
+	wait := certRetryMin
+	for {
+		ctx, cancel := context.WithTimeout(nd.ctx, certWarmTimeout)
+		err := fetch(ctx, domain)
+		cancel()
+		if nd.ctx.Err() != nil {
+			return
+		}
+		if n.certObtained(nd, err) {
+			return
+		}
+		n.logf("tsnet %s: certificate for %s: %v (retrying in %s)", nd.host, domain, err, wait)
+		select {
+		case <-nd.ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, certRetryMax)
 	}
+}
+
+// certObtained records the outcome of a certificate fetch (err == nil means
+// the node has its certificate) and reports whether the node has one.
+func (n *Net) certObtained(nd *node, err error) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if nd.certOK {
+		return true
+	}
+	if err == nil {
+		nd.certOK, nd.certErr = true, ""
+	} else {
+		nd.certErr = err.Error()
+	}
+	n.notifyLocked()
+	return nd.certOK
 }
 
 type logWriter struct {
@@ -515,8 +677,16 @@ func (n *Net) Stop(host string) error {
 	}
 	done := n.retireLocked(nd, true)
 	n.mu.Unlock()
-	<-done
-	return nd.stopErr
+	select {
+	case <-done:
+		return nd.stopErr
+	case <-time.After(stopWait):
+		// The node is gone from the served set; do not let a tailscale
+		// backend that hangs (seen once on a real tailnet) block the deploy
+		// or delete that called Stop. The teardown keeps running.
+		n.logf("tsnet %s: still shutting down after %s; continuing in the background", host, stopWait)
+		return fmt.Errorf("tsnet: %s is still shutting down in the background", host)
+	}
 }
 
 // retireLocked removes nd from the served set and tears it down in the
@@ -614,9 +784,20 @@ func (n *Net) Close() error {
 	for i, nd := range nodes {
 		wg.Go(func() { errs[i] = n.teardown(nd, nd.ephemeral) })
 	}
-	wg.Wait()
-	for _, ch := range pending {
-		<-ch
+	all := make(chan struct{})
+	go func() {
+		wg.Wait()
+		for _, ch := range pending {
+			<-ch
+		}
+		close(all)
+	}()
+	select {
+	case <-all:
+	case <-time.After(stopWait):
+		// Shutting down must finish; a node stuck in its backend is left to
+		// the process exit (an ephemeral one is then removed by control).
+		return fmt.Errorf("tsnet: nodes still shutting down after %s", stopWait)
 	}
 	return errors.Join(errs...)
 }
@@ -684,6 +865,9 @@ func (n *Net) hostInfoLocked(nd *node, now time.Time) core.HostInfo {
 	switch {
 	case nd.err != nil:
 		hi.State, hi.Detail = StateError, nd.err.Error()
+	case nd.backend == ipn.NeedsLogin.String() && !nd.wasUp && n.cfg.AuthKey != "" && nd.authURL == "":
+		// A new node logging in with the auth key passes through NeedsLogin.
+		hi.Detail = "joining the tailnet with the auth key"
 	case nd.backend == ipn.NeedsLogin.String():
 		hi.State = StateNeedsLogin
 		if nd.authURL != "" {
@@ -695,6 +879,11 @@ func (n *Net) hostInfoLocked(nd *node, now time.Time) core.HostInfo {
 		}
 	case nd.backend == ipn.NeedsMachineAuth.String():
 		hi.State, hi.Detail = StateNeedsLogin, "waiting for device approval in the Tailscale admin console"
+	case nd.serving && nd.backend == ipn.Running.String() && !nd.plain && !nd.certOK:
+		hi.Detail = CertPending
+		if nd.certErr != "" {
+			hi.Detail += "; last attempt: " + nd.certErr
+		}
 	case nd.serving && nd.backend == ipn.Running.String():
 		hi.State = StateReady
 		if nd.keyExpiry != nil && nd.keyExpiry.Sub(now) < keyExpiringWindow {

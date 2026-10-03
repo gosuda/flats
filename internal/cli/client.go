@@ -144,20 +144,22 @@ type version struct {
 }
 
 type flatView struct {
-	Slug         string     `json:"slug"`
-	Name         string     `json:"name"`
-	Visibility   string     `json:"visibility"`
-	LiveVersion  int        `json:"live_version"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	OldSlug      string     `json:"old_slug,omitempty"`
-	OldSlugTill  *time.Time `json:"old_slug_until,omitempty"`
-	PrivateURL   string     `json:"private_url"`
-	PublicURL    string     `json:"public_url,omitempty"`
-	PublicNotice string     `json:"public_notice,omitempty"`
-	Live         *version   `json:"live,omitempty"`
-	Versions     int        `json:"versions"`
-	DiskBytes    int64      `json:"disk_bytes"`
+	Slug          string     `json:"slug"`
+	Name          string     `json:"name"`
+	Visibility    string     `json:"visibility"`
+	LiveVersion   int        `json:"live_version"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	OldSlug       string     `json:"old_slug,omitempty"`
+	OldSlugTill   *time.Time `json:"old_slug_until,omitempty"`
+	PrivateURL    string     `json:"private_url"`
+	PrivateState  string     `json:"private_state,omitempty"`
+	PrivateDetail string     `json:"private_detail,omitempty"`
+	PublicURL     string     `json:"public_url,omitempty"`
+	PublicNotice  string     `json:"public_notice,omitempty"`
+	Live          *version   `json:"live,omitempty"`
+	Versions      int        `json:"versions"`
+	DiskBytes     int64      `json:"disk_bytes"`
 }
 
 type health struct {
@@ -234,4 +236,6 @@ type previewView struct {
 	LastAccess time.Time `json:"last_access"`
 	URL        string    `json:"url"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	State      string    `json:"state,omitempty"`
+	Detail     string    `json:"detail,omitempty"`
 }

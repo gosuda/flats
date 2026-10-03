@@ -142,3 +142,18 @@ func TestDetectGitIgnoresInheritedGitDir(t *testing.T) {
 		t.Fatalf("got %+v ok=%v, want HEAD %s", gi, ok, head)
 	}
 }
+
+// Regression (real-tailnet gate): a private host still waiting for its
+// HTTPS certificate is reported next to its URL.
+func TestInfoShowsPendingHost(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	api.handle("GET /api/flats/blog", 200, `{"slug": "blog", "name": "Blog", "visibility": "private", "live_version": 1,
+	  "private_url": "https://blog.tail1.ts.net", "private_state": "starting",
+	  "private_detail": "waiting for its HTTPS certificate from Let's Encrypt"}`)
+	api.handle("GET /api/flats/blog/versions", 200, `{"versions": []}`)
+	api.handle("GET /api/flats/blog/previews", 200, `{"previews": []}`)
+	r := run(t, srv.URL, "", "info", "blog")
+	if !strings.Contains(r.stdout, "starting: waiting for its HTTPS certificate") {
+		t.Errorf("info output without pending state: %q %q", r.stdout, r.stderr)
+	}
+}

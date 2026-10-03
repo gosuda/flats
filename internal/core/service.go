@@ -438,13 +438,18 @@ func errPublicDisabled() error {
 // FlatView is a flat with derived fields for API consumers.
 type FlatView struct {
 	store.Flat
-	PrivateURL   string         `json:"private_url"`
-	PublicURL    string         `json:"public_url,omitempty"`
-	PublicNotice string         `json:"public_notice,omitempty"`
-	Live         *store.Version `json:"live,omitempty"`
-	Versions     int            `json:"versions"`
-	DiskBytes    int64          `json:"disk_bytes"`
-	Thumbnail    string         `json:"thumbnail,omitempty"`
+	PrivateURL string `json:"private_url"`
+	// PrivateState is the private host's state once it is served: "ready"
+	// when the URL answers, "starting" while the node joins the tailnet or
+	// waits for its HTTPS certificate (PrivateDetail says which).
+	PrivateState  string         `json:"private_state,omitempty"`
+	PrivateDetail string         `json:"private_detail,omitempty"`
+	PublicURL     string         `json:"public_url,omitempty"`
+	PublicNotice  string         `json:"public_notice,omitempty"`
+	Live          *store.Version `json:"live,omitempty"`
+	Versions      int            `json:"versions"`
+	DiskBytes     int64          `json:"disk_bytes"`
+	Thumbnail     string         `json:"thumbnail,omitempty"`
 }
 
 // UnlistedNotice is attached to every public-unlisted response.
@@ -455,6 +460,7 @@ const ListedNotice = "This flat is public: anyone can open it, and it appears in
 
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
+	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)
 	if f.Visibility.Public() && s.cfg.Public != nil {
 		v.PublicURL = s.cfg.Public.URL(f.Slug)
 		if f.Visibility == store.PublicUnlisted {
@@ -1374,6 +1380,21 @@ type PreviewView struct {
 	store.Preview
 	URL       string    `json:"url"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// State and Detail are the preview host's network state, as for
+	// FlatView.PrivateState.
+	State  string `json:"state,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// hostState returns a served private host's state and detail ("" when the
+// host is not served).
+func (s *Service) hostState(host string) (string, string) {
+	for _, h := range s.cfg.Private.Status().Hosts {
+		if h.Host == host {
+			return h.State, h.Detail
+		}
+	}
+	return "", ""
 }
 
 // maxPreviews bounds open previews per flat: each runs its own node and,
@@ -1444,7 +1465,9 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	s.prevs[host] = p
 	s.mu.Unlock()
 	s.Event(ctx, slugName, "info", "preview", fmt.Sprintf("preview of version %d at %s", n, url), nil)
-	return PreviewView{Preview: rec, URL: url, ExpiresAt: now.Add(s.previewTTL())}, nil
+	pv := PreviewView{Preview: rec, URL: url, ExpiresAt: now.Add(s.previewTTL())}
+	pv.State, pv.Detail = s.hostState(host)
+	return pv, nil
 }
 
 // ListPreviews returns open previews of a flat.
@@ -1463,7 +1486,9 @@ func (s *Service) ListPreviews(ctx context.Context, slugName string) ([]PreviewV
 			p.LastAccess = time.UnixMilli(lp.last.Load()).UTC()
 		}
 		s.mu.Unlock()
-		out = append(out, PreviewView{Preview: p, URL: s.cfg.Private.URL(p.Host), ExpiresAt: p.LastAccess.Add(s.previewTTL())})
+		pv := PreviewView{Preview: p, URL: s.cfg.Private.URL(p.Host), ExpiresAt: p.LastAccess.Add(s.previewTTL())}
+		pv.State, pv.Detail = s.hostState(p.Host)
+		out = append(out, pv)
 	}
 	return out, nil
 }

@@ -59,6 +59,22 @@ nodes are owned by your user, so they count as user devices (free and
 unlimited on the Personal plan) and inherit your key expiry; the console warns
 14 days before a node key expires.
 
+Every flat and every preview is its own tailnet host with its own Let's
+Encrypt certificate, which Tailscale obtains with a DNS challenge. A new
+flat or preview therefore answers only after about 1-2 minutes (sometimes
+longer); until then its state is `starting` with "waiting for its HTTPS
+certificate", in the console, `flats info` and the MCP tools. Two
+consequences of public certificates:
+
+- Host names are published in Certificate Transparency logs, so flat slugs
+  and preview names under your `*.ts.net` name are publicly visible (the
+  pages are not; they stay reachable only inside the tailnet). Do not put
+  secrets in slugs.
+- Let's Encrypt limits certificates per registered domain (currently 50 per
+  week for your tailnet's `ts.net` name). Each new flat and each preview
+  uses one, so opening many previews in a week can delay new ones; existing
+  flats keep their certificates and renew normally.
+
 ## Connect an agent
 
 ```sh

@@ -27,9 +27,14 @@ Flats host; use MCP `save_version` with inline files otherwise.
    - MCP: `save_version` with `files` (`encoding: "utf8"` or `"base64"`) and
      `deploy: true`, or `save_version_from_dir` when you run on the Flats host.
 4. **Verify**: open the returned `private_url` (fetch it) and check the page.
-   On failure the response lists `problems` with a `fix` for each, or the
-   failed health check. The previous live version keeps serving; fix and
-   upload again rather than retrying blindly.
+   A new flat or preview gets its own tailnet host and HTTPS certificate,
+   which takes about 1-2 minutes: while `private_state` (`state` for a
+   preview) is `starting`, the URL does not answer yet. Check again with
+   `get_flat` / `flats info` every 30 seconds instead of treating a TLS or
+   connection error as a failed deploy. On a rejected upload the response
+   lists `problems` with a `fix` for each, or the failed health check. The
+   previous live version keeps serving; fix and upload again rather than
+   retrying blindly.
 5. **Report** the URL, version number and health result to the user. When a
    response has a `public_url`, always repeat its `public_notice` with it.
 
