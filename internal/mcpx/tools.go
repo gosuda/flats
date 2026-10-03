@@ -134,7 +134,7 @@ type DeployInfo struct {
 	Version       int               `json:"version" jsonschema:"version now live"`
 	Previous      int               `json:"previous" jsonschema:"version live before (0 = none)"`
 	Health        core.HealthResult `json:"health" jsonschema:"pre-deploy health check result"`
-	PrivateURL    string            `json:"private_url" jsonschema:"tailnet-only URL"`
+	PrivateURL    string            `json:"private_url" jsonschema:"private Local loopback or permitted Tailscale URL; serves after an approved publish"`
 	PrivateState  string            `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
 	PrivateDetail string            `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
 	PublicURL     string            `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
@@ -200,42 +200,10 @@ func toolErr(err error, hint string) error {
 	b.WriteString(err.Error())
 	detail := map[string]any{"error": err.Error()}
 	var de *core.DeployError
-	switch {
-	case errors.Is(err, core.ErrStaleApproval):
-		detail["category"] = "stale_approval"
-	case errors.Is(err, core.ErrProviderNotPermitted):
-		detail["category"] = "provider_not_permitted"
-	case errors.Is(err, core.ErrProviderUnavailable):
-		detail["category"] = "provider_unavailable"
-	case errors.Is(err, core.ErrRuntimeUnavailable):
-		detail["category"] = "runtime_unavailable"
-	case errors.Is(err, core.ErrUnavailable):
-		detail["category"] = "unavailable"
-	case errors.Is(err, core.ErrProviderInUse):
-		detail["category"] = "provider_in_use"
-	case errors.Is(err, core.ErrNotDeployed):
-		detail["category"] = "not_deployed"
-	case errors.Is(err, core.ErrProviderNotReady):
-		detail["category"] = "provider_not_ready"
-	case errors.Is(err, core.ErrPublicStopUnconfirmed):
-		detail["category"] = "public_stop_unconfirmed"
-	case errors.Is(err, core.ErrUnchangedContent):
-		detail["category"] = "unchanged_content"
-	case errors.As(err, &de):
-		if de.Cause != nil {
-			detail["category"] = "runtime_start_failed"
-		} else {
-			detail["category"] = "health_check_failed"
-		}
-	case errors.Is(err, core.ErrConflict):
-		detail["category"] = "conflict"
-	case errors.Is(err, core.ErrForbidden):
-		detail["category"] = "forbidden"
-	case errors.Is(err, store.ErrNotFound):
-		detail["category"] = "not_found"
-	case errors.Is(err, core.ErrInvalid):
-		detail["category"] = "invalid"
+	if category := core.ErrorCategory(err); category != "" {
+		detail["category"] = category
 	}
+
 	if v, ok := bundle.IsValidation(err); ok {
 		detail["problems"] = v.Problems
 	}

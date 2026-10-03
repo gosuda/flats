@@ -68,6 +68,23 @@ func (a *app) install(args []string) error {
 	} else if dataDir, err = DefaultDataDir(a.env.Getenv); err != nil {
 		return err
 	}
+	// Validate the documented serve-argument passthrough before service writes.
+	for i, arg := range extra {
+		var path string
+		if arg == "--operator-credential-file" {
+			if i+1 >= len(extra) {
+				return errors.New("--operator-credential-file requires an absolute path")
+			}
+			path = extra[i+1]
+		} else if strings.HasPrefix(arg, "--operator-credential-file=") {
+			path = strings.TrimPrefix(arg, "--operator-credential-file=")
+		} else {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return errors.New("--operator-credential-file requires an absolute path")
+		}
+	}
 	serveArgs = append(serveArgs, extra...)
 
 	if a.goos() == "linux" {

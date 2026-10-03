@@ -376,14 +376,15 @@ func TestBuildJobKeepsSymlinkedExecutable(t *testing.T) {
 func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
 	fake := &fakeLaunchctl{}
 	opts := testOpts(t, fake)
-	opts.OperatorCredentialFile = filepath.Join(opts.Home, "operator credentials", "credential")
+	credential := filepath.Join(opts.Home, "operator credentials", "credential")
+	opts.Args = append(opts.Args, "--operator-credential-file", credential)
 	for _, exe := range []string{opts.Executable, filepath.Join(opts.Home, "flats-updated")} {
 		opts.Executable = exe
 		res, err := Install(t.Context(), opts)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := res.Job.Program[len(res.Job.Program)-2:]; !reflect.DeepEqual(got, []string{"--operator-credential-file", opts.OperatorCredentialFile}) {
+		if got := res.Job.Program[len(res.Job.Program)-2:]; !reflect.DeepEqual(got, []string{"--operator-credential-file", credential}) {
 			t.Fatal(got)
 		}
 		raw, err := os.ReadFile(res.PlistPath)

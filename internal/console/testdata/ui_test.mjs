@@ -222,7 +222,7 @@ assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
 assert.equal(all(dbMain, (e) => e.tagName === 'A' && e.textContent === 'Manage versions and rollback')[0].getAttribute('href'), '/flats/blog#history');
 for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
-const { statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
+const { connectionDetail, statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
 assert.equal(statusLine(blog).startsWith('Published · v2 · Public'), true, statusLine(blog));
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Published · v2'), true);
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Unpublished'), false);
@@ -481,6 +481,18 @@ approvalMount(missingMain, ['missing'], ctx);
 await tick();
 assert.ok(missingMain.textContent.includes('Public') && missingMain.textContent.includes('pending'));
 assert.equal(byText(missingMain, 'Approve…').length, 1);
+
+assert.ok(missingMain.textContent.includes('If approved, this flat becomes Public:'));
+assert.equal(missingMain.textContent.includes('This flat is public:'), false);
+for (const state of ['starting', 'error']) {
+  assert.equal(connectionDetail({ slug: 'blog', visibility: 'public', public_url: '', connection_state: state,
+    endpoints: [
+      { audience: 'draft', host: 'blog', provider: 'portal', state, detail: 'wrong draft' },
+      { audience: 'current', host: 'old', provider: 'portal', state, detail: 'wrong alias' },
+      { audience: 'current', host: 'blog', provider: 'tailscale', state, detail: 'wrong private' },
+      { audience: 'current', host: 'blog', provider: 'portal', url: '', state, detail: 'Public connection detail' },
+    ] }), 'Public connection detail');
+}
 
 // Clean Drafts have no Publish action. First saves guard revision zero.
 routes['GET /console/api/flats/blog'] = { ...blog, draft: { ...blog.draft, dirty: false } };

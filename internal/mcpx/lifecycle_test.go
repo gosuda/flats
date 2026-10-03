@@ -198,6 +198,8 @@ func TestToolErrorPreservesLifecycleCauseBeforeConflict(t *testing.T) {
 		{"stale_approval", core.ErrStaleApproval},
 		{"provider_not_permitted", core.ErrProviderNotPermitted},
 		{"provider_not_ready", core.ErrProviderNotReady},
+		{"provider_unavailable", errors.Join(core.ErrProviderNotReady, core.ErrProviderUnavailable)},
+		{"unchanged_content", errors.Join(core.ErrProviderNotReady, core.ErrUnchangedContent)},
 		{"provider_unavailable", core.ErrProviderUnavailable},
 		{"runtime_unavailable", core.ErrRuntimeUnavailable},
 		{"unavailable", core.ErrUnavailable},

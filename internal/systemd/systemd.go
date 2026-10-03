@@ -26,13 +26,12 @@ func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error
 
 // Options configure the unit.
 type Options struct {
-	OperatorCredentialFile string            // optional noninteractive operator-owned 0600 file
-	Executable             string            // default: the running executable
-	Args                   []string          // extra `flats serve` flags
-	DataDir                string            // required
-	Env                    map[string]string // extra environment
-	Home                   string            // default: os.UserHomeDir
-	Run                    Runner            // default: ExecRunner
+	Executable string            // default: the running executable
+	Args       []string          // extra `flats serve` flags
+	DataDir    string            // required
+	Env        map[string]string // extra environment
+	Home       string            // default: os.UserHomeDir
+	Run        Runner            // default: ExecRunner
 }
 
 func (o *Options) fill() error {
@@ -91,13 +90,7 @@ func Render(opts Options) (string, error) {
 	for _, a := range opts.Args {
 		words = append(words, quote(a))
 	}
-	if opts.OperatorCredentialFile != "" {
-		path, err := filepath.Abs(opts.OperatorCredentialFile)
-		if err != nil {
-			return "", err
-		}
-		words = append(words, "--operator-credential-file", quote(path))
-	}
+
 	var b strings.Builder
 	b.WriteString("[Unit]\nDescription=Flats: self-hosted sites for coding agents\nAfter=network-online.target\nWants=network-online.target\n\n")
 	b.WriteString("[Service]\nType=simple\n")

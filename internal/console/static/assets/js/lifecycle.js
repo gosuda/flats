@@ -38,7 +38,9 @@ export function connectionState(flat) {
 
 export function connectionDetail(flat) {
   const publicRoute = flat?.visibility === 'public';
-  return (publicRoute ? flat?.public_detail : flat?.private_detail) || '';
+  if (!publicRoute) return flat?.private_detail || '';
+  return flat?.endpoints?.find((ep) => ep.audience === 'current' && ep.host === flat.slug &&
+    ['tailscale-funnel', 'portal'].includes(ep.provider) && ep.url === flat.public_url && ep.state === connectionState(flat))?.detail || '';
 }
 
 export function connectionLabel(state) {
@@ -141,7 +143,7 @@ export function failureMessage(source) {
     provider_unavailable: 'The provider is unavailable. Check host configuration before requesting approval again.',
     runtime_unavailable: 'Server flats are disabled on this host. Enable the runtime before requesting approval again.',
     unavailable: 'This feature is unavailable on this host.',
-    provider_in_use: 'This provider still has registered routes. Approve Private access to stop Public routes, or close its Private previews and routes before removing permission.',
+    provider_in_use: 'This provider still has registered routes. Approve Private access before removing a Public provider. If stopping Tailscale failed, its permission stays allowed; retry after checking the connection.',
     not_deployed: 'No current runtime is serving this flat. Activate a published version before requesting Public access.',
     public_stop_unconfirmed: 'Could not confirm the public route is blocked. Access is not shown as Private.',
     unchanged_content: 'The draft matches the current published content. No new version was published.',
@@ -308,7 +310,9 @@ export async function saveProvider(flat, provider, permitted) {
     body: [
       h('p', { text: permitted
         ? `This allows ${desc.label} for this flat. ${desc.audience}`
-        : `This removes permission for ${desc.label} only when none of its routes are registered. Public routes must first be stopped by an approved change to Private; Private routes and previews must also be closed.` }),
+        : provider === 'tailscale'
+          ? 'This stops this flat’s Tailscale current, preview and redirect routes before removing permission. Local stays available. Permission stays allowed if stopping cannot be confirmed.'
+          : `Public routes must first be stopped by an approved change to Private before removing permission for ${desc.label}.` }),
       h('p', { text: 'Provider permission does not publish a version and does not change Private or Public.' }),
       h('p', { class: 'muted', text: 'A connected provider is not the same as a published or reachable flat. A failure does not switch this flat to another provider.' }),
     ],

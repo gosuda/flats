@@ -106,7 +106,7 @@ export function mount(main, [id], ctx) {
     body.appendChild(h('dl', { class: 'facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)])));
 
     const notice = a.action === 'set_visibility' ? noticeFor(p.visibility || p.to) : '';
-    if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
+    if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice.replace('This flat is public:', 'If approved, this flat becomes Public:') }));
     if (a.action === 'delete' && a.status === 'pending') {
       body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, secrets and logs.' }));
     }

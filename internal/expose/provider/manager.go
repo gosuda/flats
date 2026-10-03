@@ -539,6 +539,46 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 	return res, nil
 }
 
+// StopProviderRoutes stops only Private Tailscale registrations owned by slug.
+// Successful stops are forgotten; failed registrations remain available for retry.
+func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) error {
+	if id != Tailscale {
+		return fmt.Errorf("unsupported private provider stop: %s", id)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	routes := make(map[string]route)
+	for k, r := range m.routes {
+		if r.slug == slug && r.provider == id {
+			routes[k] = *r
+		}
+	}
+	m.mu.Unlock()
+	var errs []error
+	for k, r := range routes {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if m.ts == nil {
+			errs = append(errs, ErrNotConfigured)
+			continue
+		}
+		if err := m.ts.Stop(r.host); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.routes, k)
+		m.mu.Unlock()
+	}
+	return errors.Join(errs...)
+}
+
+var _ core.LifecycleProviderStopper = (*Manager)(nil)
+
 // StopExposure removes private routes for this exact host. Failed
 // stops stay tracked so cleanup can be retried without losing honest status.
 func (m *Manager) StopExposure(ctx context.Context, host string) error {

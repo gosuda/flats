@@ -146,3 +146,9 @@ var ErrProviderInUse = errors.New("provider has an active route")
 // while transports can distinguish the operator action each requires.
 var ErrProviderUnavailable = fmt.Errorf("%w: provider unavailable", ErrUnavailable)
 var ErrRuntimeUnavailable = fmt.Errorf("%w: runtime unavailable", ErrUnavailable)
+
+// LifecycleProviderStopper confirms removal of one flat's provider routes,
+// including current, previews and redirect aliases owned by that flat.
+type LifecycleProviderStopper interface {
+	StopProviderRoutes(context.Context, string, ProviderID) error
+}

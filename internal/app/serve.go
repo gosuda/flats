@@ -243,11 +243,16 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, err
 	}
 	h.Store = st
-	grants, err := hostGrants(o)
+	// Read migration evidence before this startup records new host grants.
+	previousGrants, err := provider.Load(o.DataDir)
 	if err != nil {
 		return nil, err
 	}
-	if err := prepareLegacyPrivateUpgrade(ctx, st, o, grants); err != nil {
+	if err := prepareLegacyPrivateUpgrade(ctx, st, o, previousGrants); err != nil {
+		return nil, err
+	}
+	grants, err := hostGrants(o)
+	if err != nil {
 		return nil, err
 	}
 	loop, err := local.Listen(o.LocalAddr)
@@ -658,14 +663,15 @@ func prepareLegacyPrivateUpgrade(ctx context.Context, st *store.Store, o Options
 	if !pending {
 		return nil
 	}
-	if o.Network == "tailscale" || (!o.NetworkSet && grants.PrivateBackend == "tailscale" && grants.Allows(provider.Tailscale)) {
-		return st.PreserveLegacyTailscale(ctx)
-	}
 	if o.NetworkSet && o.Network == "local" {
 		return st.DeclineLegacyTailscale(ctx)
 	}
+	if (o.Network == "tailscale" && grants.Migration.HistoricalTSNet) || (grants.PrivateBackend == "tailscale" && grants.Allows(provider.Tailscale)) {
+		return st.PreserveLegacyTailscale(ctx)
+	}
+
 	if grants.Migration.HistoricalTSNet {
 		return errors.New("legacy Tailscale flats require an explicit upgrade choice: use --network tailscale to preserve Private tailnet access, or --network local to stop using it; neither choice grants Funnel or Portal")
 	}
-	return nil
+	return st.DeclineLegacyTailscale(ctx)
 }

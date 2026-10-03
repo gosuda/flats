@@ -243,3 +243,56 @@ func TestLegacyVisibilityApprovalRequiresFreshFrozenPolicy(t *testing.T) {
 		t.Fatalf("legacy cause %+v %v", got, err)
 	}
 }
+
+func TestJoinedErrorPrecedence(t *testing.T) {
+	for _, err := range []error{errors.Join(ErrProviderNotReady, ErrProviderUnavailable), errors.Join(ErrProviderUnavailable, ErrProviderNotReady)} {
+		if failureCode(err) != "provider_unavailable" || ErrorCategory(err) != "provider_unavailable" {
+			t.Fatal("joined cause precedence", err)
+		}
+	}
+	if failureCode(errors.Join(ErrUnchangedContent, ErrProviderNotReady)) != "unchanged_content" {
+		t.Fatal("unchanged cause precedence")
+	}
+}
+
+func TestDraftDirtyFollowsApprovedCurrentVersion(t *testing.T) {
+	s, _ := newTestService(t)
+	lifecycleSave(t, s, "dirty", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "dirty"))
+	lifecycleSave(t, s, "dirty", "two")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "dirty"))
+	assertDirty := func(want bool) {
+		t.Helper()
+		d, err := s.GetDraft(t.Context(), "dirty")
+		if err != nil || d.Dirty != want {
+			t.Fatalf("draft dirty=%t want=%t err=%v", d.Dirty, want, err)
+		}
+		view, err := s.GetFlat(t.Context(), "dirty")
+		if err != nil || view.Draft == nil || view.Draft.Dirty != want {
+			t.Fatalf("view draft %+v %v", view.Draft, err)
+		}
+	}
+	assertDirty(false)
+	_, err := s.Rollback(t.Context(), "dirty", 1, ViaAPI)
+	var pending *PendingApproval
+	if !errors.As(err, &pending) {
+		t.Fatal(err)
+	}
+	assertDirty(false) // requesting a change does not change live or Draft.
+	lifecycleApprove(t, s, pending)
+	assertDirty(true)
+	lifecycleSave(t, s, "dirty", "one")
+	assertDirty(false)
+	_, err = s.Deploy(t.Context(), "dirty", 2, ViaAPI)
+	if !errors.As(err, &pending) {
+		t.Fatal(err)
+	}
+	lifecycleApprove(t, s, pending)
+	assertDirty(true)
+	_, err = s.Rollback(t.Context(), "dirty", 1, ViaAPI)
+	if !errors.As(err, &pending) {
+		t.Fatal(err)
+	}
+	lifecycleApprove(t, s, pending)
+	assertDirty(false)
+}

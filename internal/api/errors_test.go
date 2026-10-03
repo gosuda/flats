@@ -18,6 +18,8 @@ func TestTypedProviderFailureHTTPMapping(t *testing.T) {
 	}{
 		{core.ErrProviderNotPermitted, 409, "provider_not_permitted"},
 		{core.ErrProviderNotReady, 409, "provider_not_ready"},
+		{errors.Join(core.ErrProviderNotReady, core.ErrProviderUnavailable), 409, "provider_unavailable"},
+		{errors.Join(core.ErrUnchangedContent, core.ErrProviderNotReady), 409, "unchanged_content"},
 		{core.ErrRuntimeUnavailable, 409, "runtime_unavailable"},
 		{core.ErrProviderInUse, 409, "provider_in_use"},
 		{core.ErrNotDeployed, 409, "not_deployed"},

@@ -336,7 +336,7 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return err
 	}
 	if !permitted {
-		if err := s.providerNotInUse(ctx, slugName, ProviderID(provider)); err != nil {
+		if err := s.revokeProviderRoutes(ctx, slugName, ProviderID(provider)); err != nil {
 			return err
 		}
 	}
@@ -1188,6 +1188,14 @@ type ApprovalExecution struct {
 }
 
 func failureCode(err error) string {
+	if category := ErrorCategory(err); category != "" {
+		return category
+	}
+	return "apply_failed"
+}
+
+// ErrorCategory defines cause precedence for persisted failures and transports.
+func ErrorCategory(err error) string {
 	switch {
 	case errors.Is(err, ErrStaleApproval):
 		return "stale_approval"
@@ -1217,7 +1225,17 @@ func failureCode(err error) string {
 		}
 		return "health_check_failed"
 	}
-	return "apply_failed"
+	switch {
+	case errors.Is(err, ErrConflict):
+		return "conflict"
+	case errors.Is(err, ErrForbidden):
+		return "forbidden"
+	case errors.Is(err, store.ErrNotFound):
+		return "not_found"
+	case errors.Is(err, ErrInvalid):
+		return "invalid"
+	}
+	return ""
 }
 
 // GetDraft returns the current mutable Draft pointer.
@@ -1360,6 +1378,32 @@ func (s *Service) restorePreviews(ctx context.Context) {
 		s.prevs[p.Host] = prev
 		s.mu.Unlock()
 	}
+}
+
+// revokeProviderRoutes narrows only Private Tailscale access. Public routes
+// still require the approved Public-to-Private transition before revocation.
+func (s *Service) revokeProviderRoutes(ctx context.Context, slug string, id ProviderID) error {
+	if id != ProviderTailscale {
+		return s.providerNotInUse(ctx, slug, id)
+	}
+	stopper, ok := s.cfg.Lifecycle.(LifecycleProviderStopper)
+	if !ok {
+		return s.providerNotInUse(ctx, slug, id)
+	}
+	names := []string{slug}
+	s.mu.Lock()
+	for old, r := range s.redir {
+		if r.cur == slug {
+			names = append(names, old)
+		}
+	}
+	s.mu.Unlock()
+	for _, name := range names {
+		if err := stopper.StopProviderRoutes(ctx, name, id); err != nil {
+			return fmt.Errorf("%w: cannot confirm %s routes are stopped: %w", ErrProviderInUse, id, err)
+		}
+	}
+	return s.providerNotInUse(ctx, slug, id)
 }
 
 // providerNotInUse refuses revocation without altering either the persisted

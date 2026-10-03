@@ -33,11 +33,11 @@ import (
 )
 
 type faults struct {
-	mu                                               sync.Mutex
-	stop, serve                                      bool
-	portalStop, funnelStop, portalServe, funnelServe bool
-	async, ready                                     bool
-	calls                                            map[string]int
+	mu                                                         sync.Mutex
+	stop, serve                                                bool
+	portalStop, funnelStop, tailStop, portalServe, funnelServe bool
+	async, ready                                               bool
+	calls                                                      map[string]int
 }
 
 func (f *faults) called(name string) {
@@ -168,7 +168,16 @@ func (t *tailnet) Serve(ctx context.Context, host string, h http.Handler, epheme
 	return t.Net.Serve(ctx, "tailnet-"+host, h, ephemeral)
 }
 func (t *tailnet) URL(host string) string { return t.Net.URL("tailnet-" + host) }
-func (t *tailnet) Stop(host string) error { return t.Net.Stop("tailnet-" + host) }
+func (t *tailnet) Stop(host string) error {
+	t.faults.called("tailscale_stop")
+	t.faults.mu.Lock()
+	fail := t.faults.tailStop
+	t.faults.mu.Unlock()
+	if fail {
+		return errors.New("deterministic private teardown failure: route remains reachable")
+	}
+	return t.Net.Stop("tailnet-" + host)
+}
 func (t *tailnet) Status() core.NetStatus {
 	st := t.Net.Status()
 	st.Kind = "tailscale"
@@ -315,6 +324,7 @@ func serve(args []string) error {
 			Stop        bool `json:"stop"`
 			Serve       bool `json:"serve"`
 			PortalStop  bool `json:"portal_stop"`
+			TailStop    bool `json:"tailscale_stop"`
 			FunnelStop  bool `json:"funnel_stop"`
 			PortalServe bool `json:"portal_serve"`
 			FunnelServe bool `json:"funnel_serve"`
@@ -326,7 +336,7 @@ func serve(args []string) error {
 		fault.mu.Lock()
 		fault.async, fault.ready = in.Async, in.Ready
 		fault.stop, fault.serve = in.Stop, in.Serve
-		fault.portalStop, fault.funnelStop = in.PortalStop, in.FunnelStop
+		fault.portalStop, fault.funnelStop, fault.tailStop = in.PortalStop, in.FunnelStop, in.TailStop
 		fault.portalServe, fault.funnelServe = in.PortalServe, in.FunnelServe
 		fault.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))

@@ -939,9 +939,25 @@ def private_tailscale(h):
     state = h.ok('GET', '/__gate/state')['calls']
     require(state.get('tailscale_serve', 0) > 0 and state.get('funnel_serve', 0) == state.get('portal_serve', 0) == 0,
             'Private Tailscale granted or opened Public provider')
+    h.ok('POST', '/__gate/fault', {'tailscale_stop': True})
     code, body = h.request('POST', '/console/api/flats/tail-private/providers', {'provider': 'tailscale', 'permitted': False}, console=True)
     require(code == 409 and body['category'] == 'provider_in_use' and 'tailscale' in provider_ids(h.flat('tail-private')),
-            'in-use Private provider revocation did not preserve prior permission')
+            'unconfirmed Private stop did not preserve permission')
+    with h.opener.open(req, timeout=10) as response:
+        require(response.code == 200, 'failed stop unexpectedly removed route')
+    h.ok('POST', '/__gate/fault', {})
+    h.ok('POST', '/console/api/flats/tail-private/providers', {'provider': 'tailscale', 'permitted': False}, console=True)
+    require('tailscale' not in provider_ids(h.flat('tail-private')), 'confirmed stop did not revoke permission')
+    for url in [endpoint['url'], draft_endpoint['url']]:
+        parsed = urllib.parse.urlparse(url)
+        request = urllib.request.Request(f'http://127.0.0.1:{parsed.port}/', headers={'Host': parsed.netloc})
+        try:
+            h.opener.open(request, timeout=10)
+            raise AssertionError('revoked Private Tailscale route remains reachable')
+        except urllib.error.HTTPError as error:
+            require(error.code == 404, 'revoked route did not close')
+    require('TAILNET-CURRENT' in h.traffic('tail-private'), 'revocation stopped Local current')
+    require(h.request('GET', '/', local_host=preview['host'])[0] == 200, 'revocation stopped Local preview')
 
 
 def provider_revocation_teardown(h):

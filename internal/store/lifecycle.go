@@ -221,7 +221,7 @@ func scanDraft(sc interface{ Scan(...any) error }) (Draft, error) {
 
 // GetDraft returns the current draft.
 func (s *Store) GetDraft(ctx context.Context, flat string) (Draft, error) {
-	d, err := scanDraft(s.db.QueryRowContext(ctx, `SELECT flat,revision,hash,base_version,dirty,size,files,kind,manifest,git_sha,git_dirty,message,updated_at,created_at FROM drafts WHERE flat=?`, flat))
+	d, err := scanDraft(s.db.QueryRowContext(ctx, `SELECT flat,revision,hash,base_version,CASE WHEN hash = (SELECT v.hash FROM versions v JOIN flats f ON f.slug=v.flat AND f.live_version=v.number WHERE f.slug=drafts.flat) THEN 0 ELSE 1 END,size,files,kind,manifest,git_sha,git_dirty,message,updated_at,created_at FROM drafts WHERE flat=?`, flat))
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, fmt.Errorf("draft of %q: %w", flat, ErrNotFound)
 	}

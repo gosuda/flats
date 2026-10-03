@@ -704,3 +704,43 @@ func TestUnknownFlatIsAnError(t *testing.T) {
 		t.Fatalf("follow must stop on 404: exit %d, ctx %v\n%s%s", code, ctx.Err(), out.String(), errb.String())
 	}
 }
+
+func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", "")
+			_, srv := newFakeAPI(t)
+			home := t.TempDir()
+			fl := &fakeLaunchctl{}
+			env := Env{Launchd: fl.run, Home: home, GOOS: goos, InstallWait: time.Second}
+			credential := filepath.Join(home, "operator credentials", "credential")
+			exe := filepath.Join(home, "flats")
+			if err := os.WriteFile(exe, []byte("x"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"--operator-credential-file"}} {
+				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
+				if r.code == 0 || len(fl.calls) != 0 || !strings.Contains(r.stderr, "absolute path") {
+					t.Fatalf("invalid path installed: %+v calls=%v", r, fl.calls)
+				}
+			}
+			for _, args := range [][]string{{"--operator-credential-file", credential}, {"--operator-credential-file=" + credential}} {
+				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
+				if r.code != 0 {
+					t.Fatalf("documented install failed: %+v", r)
+				}
+				path := launchd.PlistPath(home)
+				if goos == "linux" {
+					path = filepath.Join(home, ".config", "systemd", "user", "flats.service")
+				}
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
+					t.Fatal("credential passthrough missing", string(raw))
+				}
+			}
+		})
+	}
+}

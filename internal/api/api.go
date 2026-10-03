@@ -135,36 +135,7 @@ type DecisionError struct {
 
 func errorBody(err error) ErrorBody {
 	body := ErrorBody{Error: err.Error()}
-	switch {
-	case errors.Is(err, core.ErrStaleApproval):
-		body.Category = "stale_approval"
-	case errors.Is(err, core.ErrProviderNotPermitted):
-		body.Category = "provider_not_permitted"
-	case errors.Is(err, core.ErrProviderNotReady):
-		body.Category = "provider_not_ready"
-	case errors.Is(err, core.ErrProviderUnavailable):
-		body.Category = "provider_unavailable"
-	case errors.Is(err, core.ErrRuntimeUnavailable):
-		body.Category = "runtime_unavailable"
-	case errors.Is(err, core.ErrUnavailable):
-		body.Category = "unavailable"
-	case errors.Is(err, core.ErrProviderInUse):
-		body.Category = "provider_in_use"
-	case errors.Is(err, core.ErrNotDeployed):
-		body.Category = "not_deployed"
-	case errors.Is(err, core.ErrPublicStopUnconfirmed):
-		body.Category = "public_stop_unconfirmed"
-	case errors.Is(err, core.ErrUnchangedContent):
-		body.Category = "unchanged_content"
-	case errors.Is(err, core.ErrConflict):
-		body.Category = "conflict"
-	case errors.Is(err, core.ErrForbidden):
-		body.Category = "forbidden"
-	case errors.Is(err, store.ErrNotFound):
-		body.Category = "not_found"
-	case errors.Is(err, core.ErrInvalid):
-		body.Category = "invalid"
-	}
+	body.Category = core.ErrorCategory(err)
 
 	if v, ok := bundle.IsValidation(err); ok {
 		body.Problems = v.Problems

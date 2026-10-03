@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -73,7 +74,15 @@ func (p *asyncPortal) advance() { p.mu.Lock(); p.ready = true; p.mu.Unlock() }
 
 type asyncFunnel struct {
 	*local.Net
-	public *asyncPortal
+	public  *asyncPortal
+	stopErr error
+}
+
+func (f *asyncFunnel) Stop(host string) error {
+	if f.stopErr != nil {
+		return f.stopErr
+	}
+	return f.Net.Stop(host)
 }
 
 func (f *asyncFunnel) ServeFunnel(ctx context.Context, host string, h http.Handler) (string, error) {
@@ -324,8 +333,30 @@ func TestPrivateDTOUsesActuallyServedProvider(t *testing.T) {
 	if v.PrivateURL != f.tail.URL("site") || v.PrivateState != "ready" {
 		t.Fatalf("served tailscale not advertised %+v", v)
 	}
-	if err := f.svc.SetProviderPermission(t.Context(), "site", string(Tailscale), false, core.ViaConsole); err == nil {
-		t.Fatal("private permission removed while serving")
+	tail := f.manager.ts.(*asyncFunnel)
+	tail.stopErr = errors.New("stop not confirmed")
+	if err := f.svc.SetProviderPermission(t.Context(), "site", string(Tailscale), false, core.ViaConsole); !errors.Is(err, core.ErrProviderInUse) {
+		t.Fatal(err)
+	}
+	v, _ = f.svc.GetFlat(t.Context(), "site")
+	if !slices.Contains(v.Providers, "tailscale") || get(t, f.tail.URL("site")) != "v2" {
+		t.Fatal("failed stop lost permission/route")
+	}
+	tail.stopErr = nil
+	if err := f.svc.SetProviderPermission(t.Context(), "site", string(Tailscale), false, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = f.svc.GetFlat(t.Context(), "site")
+	if slices.Contains(v.Providers, "tailscale") || v.PrivateURL != f.local.URL("site") {
+		t.Fatal("revocation did not fall back to registered Local", v)
+	}
+	response, err := http.Get(f.tail.URL("site"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 404 || get(t, f.local.URL("site")) != "v2" {
+		t.Fatal("revocation left Tailscale or stopped Local")
 	}
 }
 
@@ -422,5 +453,68 @@ func TestLegacyPortalCommitsHonestConnectingState(t *testing.T) {
 	v, _ = f.svc.GetFlat(t.Context(), "site")
 	if v.ConnectionState != "ready" || get(t, v.PublicURL) != "v1" {
 		t.Fatalf("legacy readiness %+v", v)
+	}
+}
+
+func TestPrivateTailscaleRevokeClosesOnlyOwnedRoutes(t *testing.T) {
+	f := reviewerService(t, Tailscale)
+	_, err := f.svc.SaveVersion(t.Context(), "site", []bundle.File{{Path: "index.html", Data: []byte("v2")}}, core.SaveMeta{}, core.ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.svc.Publish(t.Context(), "site", 0, "", core.ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveReview(t, f.svc, r)
+	if _, err := f.svc.RenameSlug(t.Context(), "site", "moved", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := f.svc.OpenPreview(t.Context(), "moved", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.manager.ServeExposure(t.Context(), ExposureRequest{Slug: "other", Host: "other", Visibility: "private", Audience: AudienceCurrent, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("other")) }), Permitted: []ID{Local, Tailscale}}); err != nil {
+		t.Fatal(err)
+	}
+	// Confirm a rejected caller cannot stop anything.
+	if err := f.svc.SetProviderPermission(t.Context(), "moved", "tailscale", false, core.ViaAPI); !errors.Is(err, core.ErrForbidden) {
+		t.Fatal(err)
+	}
+	if get(t, f.tail.URL("moved")) != "v2" {
+		t.Fatal("unauthorized revocation stopped current")
+	}
+	if err := f.svc.SetProviderPermission(t.Context(), "moved", "tailscale", false, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"moved", "site", preview.Host} {
+		response, err := http.Get(f.tail.URL(host))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != 404 {
+			t.Fatalf("Tailscale %s still serves: %d", host, response.StatusCode)
+		}
+		active, err := f.manager.HasProviderRoute(t.Context(), host, Tailscale)
+		if err != nil || active {
+			t.Fatalf("retained route %s: %t %v", host, active, err)
+		}
+	}
+	if get(t, f.local.URL("moved")) != "v2" || get(t, f.local.URL(preview.Host)) != "v2" || get(t, f.tail.URL("other")) != "other" {
+		t.Fatal("revocation affected Local or another flat")
+	}
+	// Later activation must not recreate revoked tailnet access.
+	r, err = f.svc.Publish(t.Context(), "moved", 0, "", core.ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.svc.Decide(t.Context(), r.Approval.ID, true)
+	if !errors.Is(err, core.ErrUnchangedContent) {
+		t.Fatal(err)
+	}
+	active, err := f.manager.HasProviderRoute(t.Context(), "moved", Tailscale)
+	if err != nil || active {
+		t.Fatal("revocation reopened", err)
 	}
 }
