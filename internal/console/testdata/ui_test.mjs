@@ -219,6 +219,7 @@ const dbMain = new Element('main');
 database.mount(dbMain, ['blog'], ctx);
 await tick();
 assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
+assert.equal(all(dbMain, (e) => e.tagName === 'A' && e.textContent === 'Manage versions and rollback')[0].getAttribute('href'), '/flats/blog#history');
 for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
 const { statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
