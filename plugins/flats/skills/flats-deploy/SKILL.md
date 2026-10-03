@@ -96,8 +96,9 @@ are supported. Server handlers must serve their own UI/assets.
 
 A `.wasm` server is a fresh WASI preview1 command per HTTP request. Read
 `{method, url, headers, body}` JSON from stdin and write `{status, headers,
-body}` JSON to stdout. Configured variables and injected secrets are available
-as environment variables; clocks and CSPRNG are enabled. WASI has no SQLite
+body}` JSON to stdout. Only the flat's secrets are injected as environment
+variables; there is no separate variable configuration or inherited host
+environment. Clocks and CSPRNG are enabled. WASI has no SQLite
 or persistent FILES host ABI, filesystem mounts, outbound network or WebSocket
 API. Choose JavaScript when the app needs `env.DB`, `env.FILES`, Web Crypto
 or WebSocket callbacks; WASI does not share those JS host objects.

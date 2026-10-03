@@ -109,7 +109,15 @@ const removed = env.FILES.delete("attachments/demo.b64");
 Keys for get/put/delete: nonempty valid UTF-8, at most **512 UTF-8 bytes**,
 relative slash-separated paths. No leading/trailing slash, empty segments,
 `.` or `..` segments, backslash, U+0000–U+001F or U+007F. Each segment must
-not start `.flats-tmp-` (reserved for atomic writes). Keys are case-sensitive.
+not start `.flats-tmp-` (reserved for atomic writes).
+Key identity follows the host filesystem. Typical Linux ext4 is case-sensitive;
+default macOS APFS is case-insensitive and Unicode-normalization-insensitive.
+On such APFS volumes, keys differing only by case or NFC/NFD form name the same
+value: put can overwrite it, and get/delete can resolve either spelling. List
+returns the spelling stored by the filesystem (on default APFS, the first-created
+spelling), and matches its prefix literally: get("CASE/a") can find "case/a"
+while list("CASE/") is empty. For portable apps use canonical names such as
+lowercase ASCII IDs; do not distinguish keys by case or normalization alone.
 The 512-byte check is a whole-key validation limit, not a guarantee that the
 host filesystem accepts the filename. Each path segment also obeys the host's
 name limits: ext4 typically allows **255 UTF-8 bytes** per segment, while APFS
@@ -118,7 +126,8 @@ Overlong segments can make get/put/delete throw filesystem errors even when the
 whole key passes validation. Use short segments for portable keys.
 A file cannot also be a parent directory: conflicting writes throw disk errors;
 get/delete through a regular-file parent (e.g. `a/b` when `a` is a file) also
-throw `ENOTDIR` instead of returning null/false.
+throw a filesystem "not a directory" error (underlying `ENOTDIR`) instead of
+returning null/false; JS error text need not contain the errno name.
 
 List uses a **literal string prefix**, not glob/path normalization: `notes`
 matches `notes.txt` and `notes/a`; `notes/` matches only descendants. Its prefix
@@ -236,7 +245,12 @@ VMs plus a separate WebSocket VM when used. These are host runtime settings,
 not arbitrary manifest fields. Standard JS language/JSON/typed arrays,
 minimal URL/URLSearchParams, btoa/atob, console, Web Crypto randomness
 `crypto.getRandomValues` (integer typed arrays, max 65,536 bytes per call)
-and `crypto.randomUUID` are available. No general Node.js process/fs/require,
+and `crypto.randomUUID` are available. `TextEncoder`, `TextDecoder`,
+`structuredClone`, `Blob`, `AbortController`, `fetch` and `WebAssembly` globals
+are absent; the host UTF-8 encodes response strings. QuickJS may expose sandboxed
+`os`/`std` helpers, but these have no supported Flats API contract. The capability
+list is not an exhaustive inventory of engine globals.
+No general Node.js process/fs/require,
 subprocesses, host environment, general filesystem access, outbound fetch,
 TCP/UDP/client WebSocket, browser DOM or Web Crypto subtle API contract.
 Timers supplied by the engine are subject to the same deadline, not background

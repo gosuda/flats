@@ -104,3 +104,25 @@ func TestRuntimeDocsDiscoveryConsistency(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeDocsWASISecretsConsistency(t *testing.T) {
+	checks := []struct{ path, section, claim string }{
+		{"../../README.md", "## Static and server flats", "only the flat's secrets as environment variables, clocks and randomness."},
+		{"../../docs/design.md", "## Server flats (handler ABI)", "Environment includes only the flat's secrets, with no separate variable configuration or inherited host process environment."},
+		{"../../plugins/flats/skills/flats-deploy/SKILL.md", "## Server flats", "Only the flat's secrets are injected as environment variables; there is no separate variable configuration or inherited host environment."},
+	}
+	for _, c := range checks {
+		b, err := os.ReadFile(c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, section, ok := strings.Cut(string(b), c.section+"\n")
+		if !ok {
+			t.Fatalf("%s missing %s", c.path, c.section)
+		}
+		section, _, _ = strings.Cut(section, "\n## ")
+		if strings.Count(strings.Join(strings.Fields(section), " "), c.claim) != 1 {
+			t.Errorf("%s must describe the actual WASI secrets-only environment", c.path)
+		}
+	}
+}

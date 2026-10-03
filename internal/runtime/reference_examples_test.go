@@ -74,3 +74,17 @@ func TestRuntimeReferenceFilesystemAndJSON(t *testing.T) {
 		t.Fatalf("documented I/O and host JSON contract: %d %+v", r.status, out)
 	}
 }
+
+func TestRuntimeReferenceUnsupportedGlobals(t *testing.T) {
+	code := `export default { fetch() {
+ return Response.json([typeof TextEncoder, typeof TextDecoder,
+ typeof structuredClone, typeof Blob, typeof AbortController,
+ typeof fetch, typeof WebAssembly]);
+} };`
+	f := mustStart(t, newManager(t), "ref-globals", map[string]string{"index.js": code}, "index.js", nil)
+	r := f.do(t, "GET", "/", "")
+	want := `["undefined","undefined","undefined","undefined","undefined","undefined","undefined"]`
+	if r.status != 200 || r.body != want {
+		t.Fatalf("documented absent globals: %d %s", r.status, r.body)
+	}
+}
