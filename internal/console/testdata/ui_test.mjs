@@ -530,4 +530,15 @@ assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/rollback-r
 assert.equal(typeof publishDraft, 'function');
 assert.equal(typeof changeVisibility, 'function');
 assert.equal(typeof saveProvider, 'function');
+// A failed session read must not recursively trigger its own resynchronization.
+const { api } = await import('./api.js');
+let statusEvents = 0;
+globalThis.CustomEvent = class { constructor(type) { this.type = type; } };
+document.dispatchEvent = () => { statusEvents++; };
+routes['GET /console/api/operator/session'] = { __status: 403, category: 'operator_secure_transport_required', error: 'HTTPS required' };
+await assert.rejects(api.operatorStatus());
+assert.equal(statusEvents, 0);
+routes['POST /console/api/flats/blog/publish'] = { __status: 403, category: 'operator_required', error: 'Unlock required' };
+await assert.rejects(api.publish('blog', {}));
+assert.equal(statusEvents, 1);
 console.log('ok');

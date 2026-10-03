@@ -32,7 +32,7 @@ export async function request(method, path, body, raw) {
   let data = null;
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
   if (!res.ok) {
-    if (data?.category?.startsWith('operator_') && typeof CustomEvent === 'function') {
+    if (path !== '/operator/session' && data?.category?.startsWith('operator_') && typeof CustomEvent === 'function') {
       document.dispatchEvent(new CustomEvent('flats-operator-required', { detail: data.category }));
     }
     throw new ApiError(res.status, data);
