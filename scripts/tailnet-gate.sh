@@ -62,6 +62,9 @@ cleanup() {
     kill "$PID" 2>/dev/null
   fi
   wait 2>/dev/null
+  if [ -n "${ACME_CACHE:-}" ] && [ ! -f "$ACME_CACHE" ] && [ -f "$WORK/data/tsnet/acme-account.key.pem" ]; then
+    mkdir -p "$(dirname "$ACME_CACHE")" && install -m 600 "$WORK/data/tsnet/acme-account.key.pem" "$ACME_CACHE"
+  fi
   # The console node is kept across restarts; log it out so the run leaves
   # no device behind.
   [ -d "$WORK/data/tsnet/flats-gate-$SUFFIX" ] &&
@@ -72,9 +75,16 @@ command -v tailscale >/dev/null || { echo "tailscale CLI not found"; exit 2; }
 TAILNET=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["MagicDNSSuffix"])')
 echo "tailnet: $TAILNET"
 
+# Reuse one Let's Encrypt account across gate runs: each fresh data directory
+# would otherwise register a new account, and Let's Encrypt allows only 10
+# per IP address in 3 hours.
+ACME_CACHE=${FLATS_GATE_ACME_KEY:-${XDG_CACHE_HOME:-$HOME/.cache}/flats-gate/acme-account.key.pem}
+mkdir -p "$WORK/data/tsnet"
+[ -f "$ACME_CACHE" ] && install -m 600 "$ACME_CACHE" "$WORK/data/tsnet/acme-account.key.pem"
+
 if [ -n "${FLATS_BIN:-}" ]; then cp "$FLATS_BIN" "$WORK/flats"; else CGO_ENABLED=0 go build -C "$ROOT" -o "$WORK/flats" ./cmd/flats || exit 1; fi
 "$WORK/flats" serve --data "$WORK/data" --listen "127.0.0.1:$PORT" --network tailscale --authkey-file "$KEY" \
-  --console-host "flats-gate-$SUFFIX" --portal=false --runtime=false >"$WORK/serve.log" 2>&1 &
+  --console-host "flats-gate-$SUFFIX" --portal=false >"$WORK/serve.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 100); do
   kill -0 "$PID" 2>/dev/null || { echo "flats serve exited:"; tail -5 "$WORK/serve.log"; exit 1; }
@@ -106,9 +116,7 @@ done
 echo "time to 3 HTTPS flats: $(( $(date +%s) - start ))s"
 echo "RSS with 3 flat nodes + console node: $(ps -o rss= -p $PID) KB"
 
-# Identity headers: serve a page that echoes them is not possible for a static
-# flat, so check the private network status and rely on the unit tests for
-# header contents; here verify the TLS certificate is a real public one.
+# The TLS certificate is a real public one.
 issuer=$(echo | timeout 30 openssl s_client -connect "tg$SUFFIX-1.$TAILNET:443" -servername "tg$SUFFIX-1.$TAILNET" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
 [ -n "$issuer" ] && pass "certificate issuer: $issuer" || fail "no TLS certificate"
 
@@ -142,6 +150,29 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://tg$SUFFIX-2
 [ "$code" != 200 ] && pass "management API not served on a flat host ($code)" || fail "management API reachable on a flat host"
 wait_ready "flats-gate-$SUFFIX" 600 &&
   curl -fsS --max-time 20 "https://flats-gate-$SUFFIX.$TAILNET/api/status" >/dev/null && pass "console node answers over HTTPS" || fail "console node not reachable"
+
+# Identity headers from a real peer: flat 2 becomes a server flat that echoes
+# them (after the management API check, which it would otherwise answer).
+mkdir -p "$WORK/s2b"
+cat >"$WORK/s2b/server.js" <<'JS'
+export default {
+  async fetch(request) {
+    const h = request.headers;
+    const get = (n) => h[n] ?? h[n.toLowerCase()] ?? "";
+    return Response.json({ login: get("Tailscale-User-Login"), name: get("Tailscale-User-Name"),
+      pic: get("Tailscale-User-Profile-Pic") });
+  }
+}
+JS
+echo '{"kind": "server"}' >"$WORK/s2b/flats.json"
+"$F" deploy "$WORK/s2b" --flat "tg$SUFFIX-2" >/dev/null || fail "deploy the header echo flat"
+me=$(tailscale status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["User"][str(d["Self"]["UserID"])]["LoginName"])')
+got=$(curl -fsS --max-time 20 -H "Tailscale-User-Login: attacker@example.com" -H "Tailscale-User-Profile-Pic: spoofed" "https://tg$SUFFIX-2.$TAILNET/")
+python3 - "$me" "$got" <<'PY' && pass "identity headers set from the real peer's login; spoofed headers replaced" || fail "identity headers wrong"
+import json, sys
+me, got = sys.argv[1], json.loads(sys.argv[2])
+sys.exit(0 if got["login"] == me and got["name"] and got["pic"] in ("", None) else 1)
+PY
 
 echo
 [ $FAIL = 0 ] && echo "== tailnet gate: PASS ==" || echo "== tailnet gate: FAIL (logs: $WORK) =="

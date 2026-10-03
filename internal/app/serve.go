@@ -25,6 +25,7 @@ import (
 	"github.com/oesni/flats/internal/expose/local"
 	"github.com/oesni/flats/internal/expose/portal"
 	tsnetx "github.com/oesni/flats/internal/expose/tsnet"
+	"github.com/oesni/flats/internal/forkwatch"
 	"github.com/oesni/flats/internal/mcpx"
 	"github.com/oesni/flats/internal/runtime"
 	"github.com/oesni/flats/internal/store"
@@ -142,6 +143,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, err
 	}
 	logf := log.Printf
+	// macOS can wedge a forked child before exec, which stops all of this
+	// process's networking (see internal/forkwatch).
+	forkwatch.Start(ctx, logf)
 	st, err := store.Open(filepath.Join(o.DataDir, "flats.db"))
 	if err != nil {
 		return nil, err

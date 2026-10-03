@@ -142,6 +142,7 @@ func New(cfg Config) (*Net, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("tsnet: Config.Dir is required")
 	}
+	disableMacTokenLookup()
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, err
 	}
