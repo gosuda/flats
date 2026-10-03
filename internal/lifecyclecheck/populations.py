@@ -1,6 +1,7 @@
 """Additional actual-binary lifecycle populations; no product interfaces or mocks."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import sqlite3
 
@@ -24,9 +25,9 @@ def durable_server(version):
 
 def seed_mixed(h):
     Host, _, require, _, static = helpers()
-    require(h.legacy_binary, 'mixed seed needs real --legacy-binary')
+    require(h.legacy_binary and h.legacy_adapter_binary, 'mixed seed needs archived real binary and archived-core provider fixture')
     h.stop()
-    old = Host(h.legacy_binary, h.work / 'legacy-mixed')
+    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed')
     try:
         old.start()
         old.save('mixed', static('UNDEPLOYED-ONE'))
@@ -47,11 +48,25 @@ def seed_mixed(h):
         require(old.traffic(previews[0]['host'])['version'] == 2, 'deployed preview bytes')
         require('UNDEPLOYED-FOUR' in old.traffic(previews[1]['host']), 'saved preview bytes')
         pending = old.approval(old.ok('DELETE', '/api/flats/mixed', status=202))
+        old.save('legacy-public', static('LEGACY-PUBLIC-CURRENT'))
+        old.ok('POST', '/api/flats/legacy-public/deploy', {'version': 1})
+        public = old.approval(old.ok('POST', '/api/flats/legacy-public/visibility',
+                                   {'visibility': 'public-listed'}, status=202))
+        require(old.decide(public)['status'] == 'approved', 'legacy Public seed failed')
+        require('LEGACY-PUBLIC-CURRENT' in old.traffic('pub-legacy-public'), 'legacy Public seed not serving')
+        old.save('legacy-pending', static('LEGACY-PENDING-PRIVATE'))
+        old.ok('POST', '/api/flats/legacy-pending/deploy', {'version': 1})
+        visibility_pending = old.approval(old.ok('POST', '/api/flats/legacy-pending/visibility',
+                                                {'visibility': 'public-unlisted'}, status=202))
         versions = old.versions('mixed')
         manifest = {'versions': versions, 'live': live, 'previews': previews,
+                    'deployments': old.ok('GET', '/api/flats/mixed/deployments')['deployments'],
+                    'public_flat': old.flat('legacy-public'),
+                    'visibility_pending': old.ok('GET', '/api/approvals/' + visibility_pending),
                     'pending': old.ok('GET', '/api/approvals/' + pending),
                     'files': {p.relative_to(old.data).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                              for p in old.data.glob('flats/*/versions/**/*') if p.is_file()}}
+                              for p in old.data.glob('flats/*/versions/**/*') if p.is_file()
+                              and p.relative_to(old.data).parts[1] in ('mixed', 'never')}}
         require(len(versions) == 4 and len(manifest['files']) >= 8, 'mixed seed incomplete')
         (h.work / 'mixed-seed.json').write_text(json.dumps(manifest, indent=2) + '\n')
     finally:
@@ -77,8 +92,9 @@ def mixed_migration(h):
                 require(path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest,
                         'deployed files moved or changed: ' + rel)
             else:
+                slug = Path(rel).parts[1]
                 require(any(hashlib.sha256(p.read_bytes()).hexdigest() == digest
-                            for p in h.data.glob('flats/*/draft-revs/**/*') if p.is_file()),
+                            for p in (h.data / 'flats' / slug / 'draft-revs').rglob('*') if p.is_file()),
                         'never-deployed file not preserved as draft: ' + rel)
         require(h.versions('never') == [] and h.flat('never')['publication'] == 'unpublished',
                 'never-deployed content fabricated publication')
@@ -95,6 +111,17 @@ def mixed_migration(h):
             require(row['action'] == 'delete' and row['flat'] == 'mixed',
                     'legacy pending delete reference changed')
         require(h.flat('mixed')['visibility'] == 'private', 'migration exposed pending flat')
+        require(h.ok('GET', '/api/flats/mixed/deployments')['deployments'] == seed['deployments'],
+                'legacy deployment history changed')
+        legacy_public = h.flat('legacy-public')
+        require(legacy_public['live_version'] == 1 and legacy_public['publication'] == 'published',
+                'legacy Public identity lost')
+        require(legacy_public['visibility'] in ('private', 'public'), 'legacy visibility not normalized')
+        require(h.request('GET', '/', local_host='pub-legacy-public')[0] == 404,
+                'migration opened ungranted legacy Public provider')
+        visibility_row = h.ok('GET', '/api/approvals/' + seed['visibility_pending']['id'])
+        require(visibility_row['status'] in ('pending', 'failed') and visibility_row['flat'] == 'legacy-pending',
+                'legacy visibility approval lost or automatically applied')
         active = h.ok('GET', '/api/flats/mixed/previews')['previews'] or []
         for p in seed['previews']:
             if any(q['host'] == p['host'] for q in active):
@@ -111,10 +138,32 @@ def mixed_migration(h):
             h.start()
     p = h.ok('POST', '/api/flats/mixed/previews', {'target': 'draft'}, status=201)
     require('UNDEPLOYED-FOUR' in h.traffic(p['host']), 'newest historical working content lost')
+    # Discriminate new publication identity from an alias of saved legacy v4.
+    h.save('mixed', static('NEW-PUBLISH-DISTINCT-FROM-LEGACY-FOUR'))
     a = h.publish('mixed')
     require(h.decide(a)['status'] == 'approved', 'migrated draft publish failed')
     require(h.flat('mixed')['live_version'] == 4, 'next identity not max published + 1')
-    require('UNDEPLOYED-FOUR' in h.traffic('mixed'), 'migrated publish wrong bytes')
+    require('NEW-PUBLISH-DISTINCT-FROM-LEGACY-FOUR' in h.traffic('mixed'), 'new publication aliased legacy saved bytes')
+    for previous in seed['previews']:
+        if previous['version'] == 4:
+            code, body = h.request('GET', '/', local_host=previous['host'])
+            require(code == 404 or (code == 200 and 'UNDEPLOYED-FOUR' in body),
+                    'legacy v4 preview was stolen by new published v4')
+    rollback = h.approval(h.ok('POST', '/api/flats/mixed/rollback', {'version': 2}, status=202))
+    require(h.decide(rollback)['status'] == 'approved', 'rollback to migrated v2 failed')
+    require(h.traffic('mixed') == {**seed['live'], 'version': 2}, 'migrated rollback changed data')
+    # Decide legacy pending references after the preservation observations.
+    visibility_row = h.ok('GET', '/api/approvals/' + seed['visibility_pending']['id'])
+    decision = h.decide(visibility_row['id'])
+    require(decision['status'] == 'failed' and decision.get('result'), 'ungranted historical visibility silently executed')
+    pending_row = h.ok('GET', '/api/approvals/' + seed['pending']['id'])
+    decision = h.decide(pending_row['id'])
+    require(decision['status'] in ('approved', 'failed'), 'historical delete decision did not settle')
+    if decision['status'] == 'approved':
+        require(h.request('GET', '/api/flats/mixed')[0] == 404, 'approved migrated delete did not delete')
+    else:
+        require(decision.get('result') and h.flat('mixed')['live_version'] == 2,
+                'refused historical delete corrupted migrated flat')
 
 
 def restore_success(h):
@@ -135,7 +184,11 @@ def restore_success(h):
     require(h.traffic('restore') == {'version': 1, 'hits': 1}, 'frozen restore data mismatch')
     require(sorted(v['number'] for v in h.versions('restore')) == [1, 2], 'restore allocated code number')
     backup_counts = []
-    for path in (h.data / 'flats/restore/snapshots').glob('*'):
+    names = h.ok('GET', '/console/api/flats/restore/snapshots', console=True)['snapshots'] or []
+    for name in names:
+        require(isinstance(name, str) and re.fullmatch(r'(?:before|failed)-[A-Za-z0-9-]+\.sqlite', name),
+                'snapshot API returned an unrecognized contract filename')
+        path = h.data / 'flats/restore/snapshots' / name
         if path.is_file():
             with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as db:
                 backup_counts.append(db.execute('SELECT count(*) FROM hits').fetchone()[0])
@@ -192,18 +245,15 @@ def runtime_initialization(h):
     h.save('startup', startup_server(broken=True))
     a = h.publish('startup')
     require(h.traffic('startup') == before, 'candidate initialized before approval')
-    require(h.decide(a)['status'] == 'failed', 'module initialization failure published')
+    from gate import failed, data_impact
+    failure = failed(h.decide(a), 'module-init')
     after = h.traffic('startup')
-    failure_outputs = [t['response'] for t in h.trace
-                       if t.get('path', '').endswith('/' + a + '/approve')]
-    require('data_impact' in json.dumps(failure_outputs), 'startup failure omits data-impact output')
-    if before != after:
-        require('"data_impact": "none"' not in json.dumps(failure_outputs),
-                'startup failure changed live data but claimed none')
+    data_impact(failure, changed=before != after)
     if before['topEnv'] == 'undefined':
         require(after == before, 'unsupported top-level data probe changed live data')
     h.trace.append({'kind': 'runtime-startup-effects', 'before': before, 'after': after,
-                    'top_level_data_supported': before['topEnv'] == 'object'})
+                    'top_level_data_supported': before['topEnv'] == 'object',
+                    'module_scope_data_isolation': 'unproven' if before['topEnv'] == 'undefined' else 'observed'})
     # Compare impact reporting against live data immediately after successful
     # start and BEFORE the first serving request (health ran on the trial copy).
     h.save('startup', startup_server())
@@ -212,15 +262,13 @@ def runtime_initialization(h):
     require(len(dbpaths) == 1, 'missing runtime data oracle')
     with sqlite3.connect(f'file:{dbpaths[0]}?mode=ro', uri=True) as db:
         before_start = db.execute('SELECT stage FROM startup').fetchall()
-    require(h.decide(a)['status'] == 'approved', 'startup candidate failed')
+    success = h.decide(a)
+    require(success['status'] == 'approved', 'startup candidate failed')
     with sqlite3.connect(f'file:{dbpaths[0]}?mode=ro', uri=True) as db:
         after_start = db.execute('SELECT stage FROM startup').fetchall()
     h.trace.append({'kind': 'live-start-before-serving-request',
                     'before': before_start, 'after': after_start})
-    impacts = [t['response'] for t in h.trace if t.get('path', '').endswith('/' + a + '/approve')]
-    require(impacts and 'data_impact' in json.dumps(impacts), 'publish omits data-impact output')
-    if before_start != after_start:
-        require('"data_impact": "none"' not in json.dumps(impacts), 'live startup writes mislabeled none')
+    data_impact(success, changed=before_start != after_start)
     h.traffic('startup')
     h.stop()
     h.start()
@@ -235,14 +283,18 @@ def current_live_drift(h):
     pending = h.publish('live-drift')
     rollback = h.approval(h.ok('POST', '/api/flats/live-drift/rollback', {'version': 1}, status=202))
     require(h.decide(rollback)['status'] == 'approved', 'drift setup rollback failed')
-    require(h.decide(pending)['status'] == 'failed', 'current-live drift approved stale publish')
+    from gate import failed
+    failed(h.decide(pending), 'live-drift')
     require(h.flat('live-drift')['live_version'] == 1 and 'LIVE-ONE' in h.traffic('live-drift'),
             'stale approval changed current bytes')
     require(sorted(v['number'] for v in h.versions('live-drift')) == [1, 2], 'stale approval allocated number')
+    require(h.decide(h.publish('live-drift'))['status'] == 'approved', 'fresh live policy approval poisoned')
+    require('PENDING-THREE' in h.traffic('live-drift'), 'fresh live policy did not publish expected bytes')
 
 
 def visibility_drift(h):
     _, _, require, _, static = helpers()
+    h.ok('POST', '/__gate/host-permission', {'permitted': ['portal']})
     h.activate('visibility-drift', static('CURRENT'))
     h.ok('POST', '/console/api/flats/visibility-drift/providers',
          {'provider': 'portal', 'permitted': True}, console=True)
@@ -251,6 +303,9 @@ def visibility_drift(h):
     public = h.approval(h.ok('POST', '/api/flats/visibility-drift/visibility',
                             {'visibility': 'public'}, status=202))
     require(h.decide(public)['status'] == 'approved', 'visibility drift setup failed')
-    require(h.decide(pending)['status'] == 'failed', 'visibility drift approved stale publish')
+    from gate import failed
+    failed(h.decide(pending), 'visibility-drift')
     require('CURRENT' in h.traffic('pub-visibility-drift'), 'stale visibility approval changed public bytes')
     require([v['number'] for v in h.versions('visibility-drift')] == [1], 'stale visibility allocated number')
+    require(h.decide(h.publish('visibility-drift'))['status'] == 'approved', 'fresh visibility approval poisoned')
+    require('STALE-CANDIDATE' in h.traffic('pub-visibility-drift'), 'fresh visibility candidate did not serve')

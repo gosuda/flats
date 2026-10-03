@@ -311,6 +311,16 @@ await tick();
 const draftCall = calls.find((c) => c.key.startsWith('POST /console/api/flats/blog/draft'));
 assert.ok(draftCall, calls.map((c) => c.key).join('\n'));
 assert.equal(draftCall.key.includes('expected_revision=9'), true);
+assert.equal(draftCall.body, file, 'draft autosave sends the source archive');
+routes['POST /console/api/flats/blog/draft?expected_revision=10'] = { draft: { revision: 11, hash: 'ggg', dirty: true }, version: { revision: 11, number: 0, role: 'draft', published: false } };
+const nextFile = new File(['updated flat'], 'site.zip', { type: 'application/zip' });
+fileInput.files = [nextFile];
+fileInput.dispatch('change');
+await tick();
+const nextDraftCall = calls.find((c) => c.key === 'POST /console/api/flats/blog/draft?expected_revision=10');
+assert.ok(nextDraftCall, 'second autosave uses the server-returned revision');
+assert.equal(nextDraftCall.body, nextFile);
+assert.ok(draftMain.textContent.includes('Saved draft revision 11'));
 assert.equal(calls.filter((c) => c.key === 'POST /console/api/flats/blog/publish').length, 1);
 stopDraft();
 

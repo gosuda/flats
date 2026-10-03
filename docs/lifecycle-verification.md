@@ -149,3 +149,45 @@ full failing baseline was rerun. All raw logs/data remain outside the public rep
 Do not use either preparation or baseline receipt as approval to merge. Claude
 review must inspect the final integrated tree, execute the full gate there, and
 reconcile every case and proof boundary before a success claim.
+
+## Claude correction checkpoint
+
+Independent harness review of frozen `3ec41298` returned WITHHOLD. The integration
+corrections add required-lane and source/binary identity checks to the machine
+verdict. A legacy fallback cannot satisfy `production-provider-manager`; the
+candidate adapter now uses actual `provider.Manager` through the exact core
+`LifecycleNet`, with loopback Tailscale/Funnel and Portal backends. The added
+host/per-flat permission matrix exercises available backends, canonical Funnel,
+denial causes and no fallback. This remains loopback proof, not live internet/ACL.
+
+The suite now defines 20 cases. Human authorization stays machine-readable OPEN
+until the separately scoped operator-authority implementation and positive
+authorized decision path are adopted and tested. Forged console-header probes,
+HTTP/CLI decision route checks and an MCP behavioral census establish their own
+boundaries; they do not automatically close that requirement.
+
+Source identity comes from the harness root regardless of caller directory and
+includes HEAD/tree/dirty state, Go version, legacy archive tree and harness file
+hashes. Candidate and adapter must both report matching clean VCS build metadata
+for acceptance. All used binaries are hashed, including the separate historical
+provider fixture built against the archived legacy core. Preparation records only
+used legacy executables and never hashes an unused candidate as its test subject.
+
+Graceful stops reject nonzero exits, forced kills and panic/fatal log markers;
+approval decisions reject HTTP 500. Expected failures assert their cause and
+fresh-request recovery controls. Data-impact checks require an actual DTO field.
+Healthy and failing health handlers write DB/FILES sentinels so isolation can be
+observed in both paths. Unknown module-scope data support remains unproven.
+
+The historical fixture adds Public and pending-visibility references, deployment
+history comparison, flat-scoped file preservation, post-migration rollback,
+decision of historical pending approvals and new publish bytes distinct from
+legacy saved v4. Snapshot backup probes use the snapshots API and its filename
+contract rather than treating every directory entry as SQLite.
+
+The old SQL injection of `status=applying` is removed. Crash acceptance now
+requires named test-only phases after claim/allocation/live switch, then checks
+versions, deployment count, live pointer and served bytes across two restarts.
+The exact core hook export and final data-impact/layout/restore scope are pending;
+this case fails closed while that capability is absent. Final full integrated
+execution and independent Claude product review remain pending.

@@ -1,5 +1,6 @@
-// Command lifecyclecheck is a test-only HTTP host for deterministic provider
-// faults. It never connects to a relay or tailnet; every listener is loopback.
+// Command legacyadapter seeds historical exposure and approval references.
+// Build only against the archived pre-lifecycle source. Its PublicNet is a
+// loopback test double, never a production provider or acceptance lane.
 package main
 
 import (
@@ -8,7 +9,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +22,6 @@ import (
 	"github.com/gosuda/flats/internal/cli"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
-	"github.com/gosuda/flats/internal/expose/provider"
 	"github.com/gosuda/flats/internal/mcpx"
 	"github.com/gosuda/flats/internal/runtime"
 	"github.com/gosuda/flats/internal/store"
@@ -31,13 +30,6 @@ import (
 type faults struct {
 	mu          sync.Mutex
 	stop, serve bool
-	calls       map[string]int
-}
-
-func (f *faults) called(name string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls[name]++
 }
 
 type publicNet struct {
@@ -46,7 +38,6 @@ type publicNet struct {
 }
 
 func (p *publicNet) Stop(slug string) error {
-	p.faults.called("portal_stop")
 	p.faults.mu.Lock()
 	fail := p.faults.stop
 	p.faults.mu.Unlock()
@@ -57,7 +48,6 @@ func (p *publicNet) Stop(slug string) error {
 }
 
 func (p *publicNet) Serve(ctx context.Context, slug string, handler http.Handler, hidden bool) (string, error) {
-	p.faults.called("portal_serve")
 	p.faults.mu.Lock()
 	fail := p.faults.serve
 	p.faults.mu.Unlock()
@@ -65,57 +55,6 @@ func (p *publicNet) Serve(ctx context.Context, slug string, handler http.Handler
 		return "", errors.New("deterministic provider connection failure")
 	}
 	return p.Public.Serve(ctx, slug, handler, hidden)
-}
-
-// tailnet doubles only the backend: policy remains in provider.Manager.
-type tailnet struct {
-	*local.Net
-	faults *faults
-	mu     sync.Mutex
-	funnel map[string]string
-}
-
-func (t *tailnet) ServeFunnel(ctx context.Context, host string, handler http.Handler) (string, error) {
-	t.faults.called("funnel_serve")
-	t.faults.mu.Lock()
-	fail := t.faults.serve
-	t.faults.mu.Unlock()
-	if fail {
-		return "", errors.New("deterministic provider connection failure")
-	}
-	url, err := t.Net.Serve(ctx, "funnel-"+host, handler, false)
-	if err == nil {
-		t.mu.Lock()
-		t.funnel[host] = url
-		t.mu.Unlock()
-	}
-	return url, err
-}
-
-func (t *tailnet) StopFunnel(host string) error {
-	t.faults.called("funnel_stop")
-	t.faults.mu.Lock()
-	fail := t.faults.stop
-	t.faults.mu.Unlock()
-	if fail {
-		return errors.New("deterministic public teardown failure: route remains reachable")
-	}
-	if err := t.Net.Stop("funnel-" + host); err != nil {
-		return err
-	}
-	t.mu.Lock()
-	delete(t.funnel, host)
-	t.mu.Unlock()
-	return nil
-}
-
-func (t *tailnet) FunnelState(host string) core.ExposureEndpoint {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if url := t.funnel[host]; url != "" {
-		return core.ExposureEndpoint{Provider: core.ProviderFunnel, URL: url, State: "ready"}
-	}
-	return core.ExposureEndpoint{Provider: core.ProviderFunnel, State: "unavailable"}
 }
 
 func serve(args []string) error {
@@ -152,18 +91,10 @@ func serve(args []string) error {
 		return err
 	}
 	defer private.Close()
-	fault := &faults{calls: map[string]int{}}
+	fault := &faults{}
 	public := &publicNet{Public: local.NewPublic(private), faults: fault}
-	ts := &tailnet{Net: private, faults: fault, funnel: map[string]string{}}
-	manager, err := provider.New(*data, provider.Options{Local: private, Tailscale: ts, Portal: public})
-	if err != nil {
-		return err
-	}
-	defer manager.Close()
-	// Public is deliberately nil: the legacy adapter must never satisfy this lane.
-	svc, err := core.New(ctx, core.Config{DataDir: *data, Store: st, Private: private, Lifecycle: manager,
-		Runtime: &runtime.Manager{DataDir: *data}, Reserved: []string{"flats"}, Logf: log.Printf,
-		ConsoleURL: func() string { return "http://" + *listen }})
+	svc, err := core.New(ctx, core.Config{DataDir: *data, Store: st, Private: private, Public: public,
+		Runtime: &runtime.Manager{DataDir: *data}, ConsoleURL: func() string { return "http://" + *listen }})
 	if err != nil {
 		return err
 	}
@@ -172,32 +103,8 @@ func serve(args []string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__gate/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"production_provider_manager":true,"legacy_public_fallback":false}`))
-	})
-	mux.HandleFunc("POST /__gate/host-permission", func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			Permitted []core.ProviderID `json:"permitted"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		file := manager.File()
-		file.Permitted = in.Permitted
-		if err := provider.Save(*data, file); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		if err := manager.Reload(); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		w.Write([]byte(`{"ok":true}`))
-	})
-	mux.HandleFunc("GET /__gate/state", func(w http.ResponseWriter, r *http.Request) {
-		fault.mu.Lock()
-		defer fault.mu.Unlock()
-		json.NewEncoder(w).Encode(map[string]any{"calls": fault.calls, "host_permission": manager.File().Permitted})
+		// Fail closed until the exact core-defined LifecycleNet is adopted.
+		w.Write([]byte(`{"production_provider_manager":false,"legacy_public_fallback":true}`))
 	})
 	mux.Handle("/api/", apiServer.Handler())
 	mux.Handle("/console/api/", apiServer.Handler())
@@ -222,9 +129,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	guard := &api.HostGuard{Hosts: func() []string { return []string{"127.0.0.1", "localhost", "::1"} },
-		Ports: []string{fmt.Sprint(ln.Addr().(*net.TCPAddr).Port)}, Next: mux}
-	srv := &http.Server{Handler: guard, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	select {

@@ -390,6 +390,7 @@ export function renderDraft(flat, preview, handlers) {
 export function draftEditor(flat, onUploaded) {
   let lastFile = null;
   let message = '';
+  let revision = flat.draft?.revision;
   const status = { text: '' };
   const fileId = 'draft-archive';
   const msgId = 'draft-message';
@@ -406,9 +407,10 @@ export function draftEditor(flat, onUploaded) {
     retry.hidden = true;
     try {
       const res = await api.saveDraft(flat.slug, file, {
-        expectedRevision: flat.draft?.revision || undefined,
+        expectedRevision: revision || undefined,
         message: message.trim(),
       });
+      revision = res.draft?.revision ?? res.version?.revision ?? revision;
       status.text = `Saved draft revision ${res.draft?.revision ?? res.version?.revision ?? ''}. This did not publish a version.`;
       announce(status.text);
       onUploaded({ pending: false, status: status.text, response: res });

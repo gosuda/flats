@@ -13,25 +13,27 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/gosuda/flats/internal/core"
 )
 
 // ID is a network provider. The public Tailscale provider is tailscale-funnel.
 // The shorter name "funnel" is not an alias and does not grant this one.
-type ID string
+type ID = core.ProviderID
 
 const (
-	Local     ID = "local"
-	Tailscale ID = "tailscale"
-	Funnel    ID = "tailscale-funnel"
-	Portal    ID = "portal"
+	Local     = core.ProviderLocal
+	Tailscale = core.ProviderTailscale
+	Funnel    = core.ProviderFunnel
+	Portal    = core.ProviderPortal
 )
 
 // Audience selects draft or current content.
-type Audience string
+type Audience = core.ExposureAudience
 
 const (
-	AudienceCurrent Audience = "current"
-	AudienceDraft   Audience = "draft"
+	AudienceCurrent = core.AudienceCurrent
+	AudienceDraft   = core.AudienceDraft
 )
 
 const fileName = "network-provider.json"

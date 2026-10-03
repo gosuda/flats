@@ -50,3 +50,15 @@ The flat page keeps the current version and the draft side by side (stacked on a
 Publishing, both access directions, rollback, and provider permission each use a dialog that states the candidate or the policy being changed. Cancel sends no request. The dialog returns focus to the control that opened it. Approval results are announced in the assertive status region. Pending, rejected, failed, and stale approvals stay visible; a stale or failed publish is not shown as a new vN.
 
 Private Tailscale copy follows the tailnet ACL, including other people and devices that ACL allows. Local is this device through localhost. Public Funnel and Portal are internet paths. Funnel visitors do not need Tailscale.
+
+## Integration checkpoint
+
+Consecutive archive autosaves use the revision returned by the preceding
+successful upload. The editor previously retained its initial revision, causing
+the next save to conflict with its own first save. Real conflicts retain the
+source archive and do not advance the expected revision. The console test checks
+both source archive bodies and the second request's updated expected revision.
+
+Current package checks and simulated-DOM checks are preparation evidence.
+Desktop/mobile rendered checks with actual lifecycle DTOs, plus operator-session
+unlock and separate candidate confirmation, await exact core/transport adoption.

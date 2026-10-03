@@ -234,7 +234,11 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
 	}
-	mgr, err := provider.New(o.DataDir, provider.Options{Local: loop, Tailscale: tail, Portal: h.portalNet})
+	backends := provider.Options{Local: loop, Tailscale: tail}
+	if h.portalNet != nil {
+		backends.Portal = h.portalNet
+	}
+	mgr, err := provider.New(o.DataDir, backends)
 	if err != nil {
 		return nil, err
 	}
@@ -256,11 +260,8 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		rt = &runtime.Manager{DataDir: o.DataDir, Logf: logf}
 	}
 	h.console = "http://" + o.Listen
-	cfg := core.Config{DataDir: o.DataDir, Store: st, Private: h.Private, Runtime: rt,
+	cfg := core.Config{DataDir: o.DataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt,
 		ConsoleURL: func() string { return h.console }, Reserved: []string{o.ConsoleHost}, Logf: logf}
-	if h.Public != nil {
-		cfg.Public = h.Public
-	}
 	svc, err := core.New(ctx, cfg)
 	if err != nil {
 		return nil, err

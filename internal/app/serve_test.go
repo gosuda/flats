@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -86,6 +87,18 @@ func TestExplicitPortalFalseKeepsGrantAndDoesNotStart(t *testing.T) {
 	}
 	if !h.Providers.File().Allows(provider.Portal) {
 		t.Fatal("explicit --portal=false revoked the stored grant")
+	}
+	// Exercise the manager, too: a typed nil Portal pointer in its interface
+	// would look configured and panic instead of honoring the runtime disable.
+	result, err := h.Providers.ServeExposure(context.Background(), provider.ExposureRequest{
+		Slug: "disabled-portal", Visibility: "public", Audience: provider.AudienceCurrent,
+		Handler: http.NotFoundHandler(), Permitted: []provider.ID{provider.Portal},
+	})
+	if !errors.Is(err, provider.ErrNotConfigured) {
+		t.Fatalf("disabled Portal request = %+v, %v; want not configured", result, err)
+	}
+	if len(result.Endpoints) != 1 || result.Endpoints[0].State != "unavailable" {
+		t.Fatalf("disabled Portal endpoints = %+v", result.Endpoints)
 	}
 	if err := h.Close(); err != nil {
 		t.Fatal(err)

@@ -212,3 +212,19 @@ flag parsing lives in `internal/app`.
   Portal for that process. Operators who relied on the old default must pass
   `--portal` or `--permit portal` once; after the grant is stored, omitting
   the flag starts Portal again.
+
+## Integration checkpoint
+
+The purpose integration worktree adopted the exact frozen network, console and
+gate artifacts without conflicts, followed by core prerequisite
+`d0d4aaf07a86024469e4ad43034230d15a33f7d7`. Manager aliases the exact exported
+core DTOs and has a compile-time `core.LifecycleNet` assertion. App and the test
+host now assign `core.Config.Lifecycle`; the legacy Public fallback is unset.
+The prerequisite defines interfaces only. Its committed archive compiles, but
+core lifecycle behavior and operator authority still require exact later grants.
+
+Startup assigns a Portal interface only when its concrete backend is non-nil.
+The extended `TestExplicitPortalFalseKeepsGrantAndDoesNotStart` calls Manager
+with an explicitly permitted Portal request after runtime disable and requires
+`ErrNotConfigured` plus an unavailable endpoint, while retaining the host grant.
+This avoids the typed-nil interface panic and preserves `--portal=false`.

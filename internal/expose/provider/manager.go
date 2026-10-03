@@ -24,46 +24,25 @@ const (
 // ErrProviderNotPermitted means a non-local provider was requested without
 // a host grant, without a per-flat permit, or on a draft/private route that
 // cannot use a public provider. Callers should use errors.Is.
-var ErrProviderNotPermitted = errors.New("provider not permitted")
+var ErrProviderNotPermitted = core.ErrProviderNotPermitted
 
 // ErrNotConfigured means the host granted a provider but this process has
 // no backend for it. The manager does not substitute another provider.
 var ErrNotConfigured = errors.New("provider is not configured")
 
-// ExposureRequest is the core-to-network request. Field order matches the
-// core contract so an adapter can copy values once core exports its DTOs.
-// A non-local provider is used only when it is both host-granted and listed
-// in Permitted.
-type ExposureRequest struct {
-	Slug       string
-	Host       string
-	Visibility string
-	Audience   Audience
-	Handler    http.Handler
-	Ephemeral  bool
-	Permitted  []ID
-}
+// ExposureRequest uses the exact core-defined DTO and permission identifiers.
+type ExposureRequest = core.ExposureRequest
 
 // ExposureEndpoint is one route this call opened or refused.
-type ExposureEndpoint struct {
-	Provider ID
-	URL      string
-	State    string
-	Detail   string
-}
+type ExposureEndpoint = core.ExposureEndpoint
 
 // ExposureResult is every route considered for one request.
-type ExposureResult struct {
-	Endpoints []ExposureEndpoint
-}
+type ExposureResult = core.ExposureResult
 
 // PublicStopResult reports Funnel and Portal after a public route is removed.
 // Unconfirmed entries may still be reachable. Private routes are not listed
 // because they are left up.
-type PublicStopResult struct {
-	Stopped     []ID
-	Unconfirmed []ID
-}
+type PublicStopResult = core.PublicStopResult
 
 // Tailnet is the private tailnet plus Funnel on the same nodes.
 // A non-nil value is not permission to publish.
@@ -266,7 +245,7 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 }
 
 func (m *Manager) openLocal(ctx context.Context, req ExposureRequest) (ExposureEndpoint, error) {
-	host := req.host()
+	host := requestHost(req)
 	url, err := m.local.Serve(ctx, host, req.Handler, req.Ephemeral)
 	if err != nil {
 		return ExposureEndpoint{Provider: Local, State: stateError, Detail: err.Error()}, err
@@ -282,7 +261,7 @@ func (m *Manager) openTailscale(ctx context.Context, req ExposureRequest) (Expos
 	if m.ts == nil {
 		return refused(Tailscale, "tailscale is permitted but not configured"), fmt.Errorf("%w: tailscale", ErrNotConfigured)
 	}
-	host := req.host()
+	host := requestHost(req)
 	url, err := m.ts.Serve(ctx, host, req.Handler, req.Ephemeral)
 	if err != nil {
 		return ExposureEndpoint{Provider: Tailscale, State: stateError, Detail: err.Error()}, err
@@ -304,12 +283,12 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if m.ts == nil {
 			return refused(Funnel, "funnel is permitted but tailscale is not configured"), fmt.Errorf("%w: tailscale-funnel", ErrNotConfigured)
 		}
-		url, err := m.ts.ServeFunnel(ctx, req.host(), req.Handler)
+		url, err := m.ts.ServeFunnel(ctx, requestHost(req), req.Handler)
 		if err != nil {
 			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, err
 		}
-		m.track(req, Funnel, req.host())
-		ep := m.ts.FunnelState(req.host())
+		m.track(req, Funnel, requestHost(req))
+		ep := m.ts.FunnelState(requestHost(req))
 		ep.Provider = Funnel
 		if ep.URL == "" {
 			ep.URL = url
@@ -449,7 +428,7 @@ func key(slug string, audience Audience, id ID) string {
 	return slug + "\x00" + string(audience) + "\x00" + string(id)
 }
 
-func (r ExposureRequest) host() string {
+func requestHost(r ExposureRequest) string {
 	if r.Host != "" {
 		return r.Host
 	}
@@ -487,6 +466,7 @@ func fromStatus(id ID, st core.NetStatus, host, url string) ExposureEndpoint {
 // Compile-time checks for the real backends. Portal's concrete type is
 // assigned below; TSNet covers Funnel.
 var (
-	_ PortalNet = (*portal.Net)(nil)
-	_ Tailnet   = TSNet{}
+	_ PortalNet         = (*portal.Net)(nil)
+	_ Tailnet           = TSNet{}
+	_ core.LifecycleNet = (*Manager)(nil)
 )
