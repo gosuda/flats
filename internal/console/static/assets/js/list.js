@@ -3,7 +3,8 @@
 import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials, publicNoticeOf } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading, extLink, busy } from './ui.js';
-import { publishLatest, previewLatest, rollbackPrevious, deleteFlat } from './actions.js';
+import { publishLatest } from './actions.js';
+import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
 
 const VIEW_KEY = 'flats.view';
@@ -118,15 +119,14 @@ export function mount(main, _params, ctx) {
       }
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
-      { label: 'Open settings', onSelect: () => ctx.navigate(href) },
-      { label: 'Preview latest version', disabled: !f.versions, onSelect: () => previewLatest(f) },
-      { label: 'Roll back', disabled: !f.live_version, onSelect: async () => { if (await rollbackPrevious(f)) load(); } },
-      { label: 'Delete', danger: true, onSelect: async () => { if (await deleteFlat(f)) load(); } },
+      { label: 'Share', onSelect: () => shareDialog(f, load) },
+      { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
+      { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
     ]));
     return h('li', { class: 'flat' },
       thumb(f),
       h('div', { class: 'flat-main' },
-        h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
+        extLink(f.public_url || f.private_url, f.name || f.slug, 'flat-name'),
         h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`),
         f.public_url ? h('p', { class: 'notice-text small', text: publicNoticeOf(f) }) : null),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),

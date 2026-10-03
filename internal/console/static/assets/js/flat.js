@@ -7,6 +7,9 @@ import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from '
 import { deployVersion, previewVersion, deleteFlat, setVisibility, redeployLive } from './actions.js';
 import { thumb } from './list.js';
 
+import { siteHeader } from './site.js';
+import { shareDialog } from './share.js';
+
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
 
@@ -16,7 +19,9 @@ function card(title, id, ...children) {
     h('h2', { id: hid, text: title }), ...children);
 }
 
-export function mount(main, [slug], ctx) {
+export function mountSettings(main, params, ctx) { return mount(main, params, ctx, true); }
+
+export function mount(main, [slug], ctx, settings = false) {
   ctx.setTitle(slug);
   let flat = null;
   const timers = [];
@@ -27,9 +32,9 @@ export function mount(main, [slug], ctx) {
   const previewsSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const usageSlot = h('div', null, loading());
-  const logs = logsPanel(slug, ctx, timers);
+  const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
 
-  const page = h('section', { class: 'page' },
+  const page = h('section', { class: 'page' + (settings ? ' site-page' : '') },
     h('a', { class: 'back', href: '/', 'data-nav': true }, '← All flats'),
     headSlot);
   main.appendChild(page);
@@ -56,10 +61,8 @@ export function mount(main, [slug], ctx) {
   async function refresh() {
     const ok = await loadFlat();
     if (ok) {
-      loadVersions();
-      loadPreviews();
       loadSecrets();
-      loadUsage();
+      if (!settings) { loadVersions(); loadPreviews(); loadUsage(); }
       logs.poll();
     }
     return ok;
@@ -68,6 +71,7 @@ export function mount(main, [slug], ctx) {
   // --- header ---
 
   function drawHead() {
+    if (settings) { drawSettings(); return; }
     const nameEl = h('h1', { class: 'flat-title', text: flat.name || flat.slug });
     const edit = h('button', { type: 'button', class: 'btn btn-small', text: 'Edit name' });
     const titleRow = h('div', { class: 'title-row' }, nameEl, edit);
@@ -104,6 +108,37 @@ export function mount(main, [slug], ctx) {
       card('Usage', 'usage', usageSlot),
       card('Rename slug', 'rename', renameForm()),
       card('Delete flat', 'delete', deleteBlock()));
+  }
+
+  function drawSettings() {
+    const name = h('input', { id: 'site-name', value: flat.name || '', maxlength: '200', required: true });
+    const save = h('button', { class: 'btn btn-small', type: 'submit', text: 'Save' });
+    const nameForm = h('form', { class: 'site-name-form' }, name, save);
+    nameForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      busy(save, async () => {
+        try { await api.setName(slug, name.value.trim()); await loadFlat(); toast('Name saved.', 'success'); }
+        catch (err) { toast(err.message, 'error'); }
+      });
+    });
+    const change = h('button', { class: 'btn btn-small', type: 'button', text: 'Change' });
+    const rename = h('div', { class: 'site-rename', hidden: true }, renameForm());
+    change.addEventListener('click', () => { rename.hidden = !rename.hidden; if (!rename.hidden) rename.querySelector('input').focus(); });
+    const manage = h('button', { class: 'btn btn-small', type: 'button', text: 'Manage' });
+    manage.addEventListener('click', () => shareDialog(flat, refresh));
+    const row = (title, hint, control) => h('div', { class: 'setting-row' },
+      h('div', null, h('label', { for: title === 'Name' ? 'site-name' : undefined, text: title }),
+        hint ? h('div', { class: 'muted small', text: hint }) : null), control);
+    fill(headSlot, siteHeader(flat, 'settings'),
+      h('section', { class: 'settings-section', 'aria-labelledby': 'general-title' },
+        h('h2', { id: 'general-title', text: 'General' }),
+        row('Name', 'Name for your site', nameForm),
+        row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
+        row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
+        row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[flat.visibility]?.label || flat.visibility }), manage))),
+      h('section', { class: 'settings-section', id: 'secrets' }, h('h2', { text: 'Environment variables' }), secretsSlot),
+      h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()),
+      h('a', { class: 'back', href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: 'Manage versions, previews and logs' }));
   }
 
   function editName(row) {
@@ -299,7 +334,7 @@ export function mount(main, [slug], ctx) {
       ? h('ul', { class: 'plain-list' }, list.map((s) => {
         const replace = h('button', { type: 'button', class: 'btn btn-small', text: 'Replace', 'aria-label': `Replace value of ${s.name}` });
         const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete secret ${s.name}` });
-        replace.addEventListener('click', () => { name.value = s.name; value.value = ''; value.focus(); });
+        replace.addEventListener('click', () => { form.hidden = false; addVariable?.setAttribute('aria-expanded', 'true'); name.value = s.name; value.value = ''; value.focus(); });
         del.addEventListener('click', () => busy(del, async () => {
           const ok = await confirmDialog({
             title: `Delete secret ${s.name}?`,
@@ -320,7 +355,16 @@ export function mount(main, [slug], ctx) {
         h('span', { class: 'muted', text: `Changes apply when the flat restarts: redeploy the live version ${flat.live_version} to use them now.` }),
         redeployButton())
       : h('p', { class: 'muted', text: 'Secrets apply when a version is deployed.' });
-    fill(secretsSlot,
+    const addVariable = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add variable', 'aria-expanded': 'false' }) : null;
+    if (settings) {
+      form.hidden = true;
+      addVariable.addEventListener('click', () => {
+        form.hidden = !form.hidden;
+        addVariable.setAttribute('aria-expanded', String(!form.hidden));
+        if (!form.hidden) name.focus();
+      });
+    }
+    fill(secretsSlot, addVariable,
       h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server flats read them as environment variables.' }),
       items, form, apply);
   }
@@ -368,7 +412,7 @@ export function mount(main, [slug], ctx) {
         try {
           const f = await api.rename(flat.slug, to);
           toast(`Renamed to ${f.slug}.`, 'success');
-          ctx.navigate(`/flats/${encodeURIComponent(f.slug)}`, { replace: true });
+          ctx.navigate(`/flats/${encodeURIComponent(f.slug)}${settings ? '/settings' : ''}`, { replace: true });
         } catch (err) {
           toast(err.message, 'error');
         }

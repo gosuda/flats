@@ -294,7 +294,7 @@ answers:
 | GET | /api/flats/{slug}/logs | `?kind=&after=&limit=` |
 | GET | /api/flats/{slug}/secrets | names only |
 | PUT/DELETE | /api/flats/{slug}/secrets/{name} | CLI on loopback only (operator) |
-| GET | /api/flats/{slug}/stats | daily page views |
+| GET | /api/flats/{slug}/stats | daily page views and top paths (`?days=7` or `30`, up to 365 UTC calendar days) |
 | GET | /api/approvals/{id} | poll an approval |
 
 Console surface (`/console/api`, `via` = `console`, guarded as above): the same
@@ -309,3 +309,22 @@ MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 (loopback callers only), `deploy`, `rollback`, `list_versions`,
 `open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
 `get_approval`, `list_secrets`.
+
+
+## Per-flat console management
+
+The flat list's menu offers Share, Analytics and Settings. Share changes the
+existing private / public-unlisted / public-listed exposure and provides Visit
+and Copy link. Private means access through tailnet ACLs, not owner-only access.
+Email invitations, profile showcasing and custom domains are not supported.
+
+`/flats/{slug}/settings`, `/analytics` and `/database` share Settings, Analytics
+and Database navigation; there is no Scheduled tab. Settings manages the display
+name, slug, sharing, encrypted environment variables and deletion. The existing
+`/flats/{slug}` page retains versions, previews, deployment and logs. Database
+lists actual pre-deploy snapshots and links to deployment/rollback controls.
+
+Analytics displays daily page requests and top paths for 7 or 30 days. Unique
+visitors are not tracked. Per-path counters start with this update, omit query
+strings, follow slug renames and disappear on deletion. In-memory path buffers
+are bounded and flushed in transactional batches alongside existing counters.

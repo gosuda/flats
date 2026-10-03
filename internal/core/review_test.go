@@ -430,6 +430,31 @@ func TestRenameKeepsPageViews(t *testing.T) {
 	}
 }
 
+func TestTopPagesFlushAndRename(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	if _, err := e.svc.SaveVersion(ctx, "traffic", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Deploy(ctx, "traffic", 1, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/?token=private", "/?token=another", "/notes", "/asset.css"} {
+		get(t, e.priv.URL("traffic")+path)
+	}
+	if _, err := e.svc.RenameSlug(ctx, "traffic", "traffic-new", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	pages, err := e.svc.TopPages(ctx, "traffic-new", 7)
+	if err != nil || len(pages) != 2 || pages[0].Path != "/" || pages[0].Count != 2 || pages[1].Path != "/notes" {
+		t.Fatalf("top pages: %+v, %v", pages, err)
+	}
+	pages, err = e.svc.TopPages(ctx, "traffic-new", 7)
+	if err != nil || pages[0].Count != 2 {
+		t.Fatalf("flush counted twice: %+v, %v", pages, err)
+	}
+}
+
 // Regression (correctness C8): previews of server flats work with *.db user
 // files, are capped and respect the disk quota without leaving copies.
 func TestServerPreviewData(t *testing.T) {

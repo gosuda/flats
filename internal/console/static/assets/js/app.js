@@ -1,4 +1,4 @@
-// Entry point: a small history-API router over four pages.
+// Entry point: the history-API router for console and per-flat management pages.
 
 import { h, clear } from './dom.js';
 import { closeMenus } from './ui.js';
@@ -6,10 +6,15 @@ import * as listPage from './list.js';
 import * as flatPage from './flat.js';
 import * as approvalPage from './approval.js';
 import * as settingsPage from './settings.js';
+import * as analyticsPage from './analytics.js';
+import * as databasePage from './database.js';
 
 const routes = [
   { re: /^\/$/, page: listPage, section: 'flats' },
   { re: /^\/flats\/([^/]+)$/, page: flatPage, section: 'flats' },
+  { re: /^\/flats\/([^/]+)\/settings$/, page: { mount: flatPage.mountSettings }, section: 'flats' },
+  { re: /^\/flats\/([^/]+)\/analytics$/, page: analyticsPage, section: 'flats' },
+  { re: /^\/flats\/([^/]+)\/database$/, page: databasePage, section: 'flats' },
   { re: /^\/approvals\/([^/]+)$/, page: approvalPage, section: 'flats' },
   { re: /^\/settings$/, page: settingsPage, section: 'settings' },
 ];

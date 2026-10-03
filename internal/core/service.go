@@ -118,6 +118,8 @@ type liveFlat struct {
 	publicServed  bool
 	limiter       *limiter
 	views         atomic.Int64
+	trafficMu     sync.Mutex
+	traffic       map[trafficKey]int64
 }
 
 type deployed struct {
@@ -371,6 +373,7 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 		}
 		if isPageView(r) {
 			lf.views.Add(1)
+			lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 		}
 		d.handler.ServeHTTP(w, r)
 	})
@@ -1609,8 +1612,9 @@ func (s *Service) checkQuotas(ctx context.Context, live map[string]*liveFlat, no
 }
 
 func (s *Service) flushViews(ctx context.Context, slugName string, lf *liveFlat) {
+	s.flushPaths(ctx, slugName, lf)
 	if n := lf.views.Swap(0); n > 0 {
-		if err := s.st.AddPageViews(ctx, slugName, s.now().Format("2006-01-02"), n); err != nil {
+		if err := s.st.AddPageViews(ctx, slugName, s.now().UTC().Format("2006-01-02"), n); err != nil {
 			lf.views.Add(n)
 		}
 	}
@@ -1627,7 +1631,8 @@ func (s *Service) PageViews(ctx context.Context, slugName string, days int) ([]s
 	if lf != nil {
 		s.flushViews(ctx, slugName, lf)
 	}
-	pv, err := s.st.PageViews(ctx, slugName, days)
+	since := s.now().UTC().AddDate(0, 0, 1-days).Format("2006-01-02")
+	pv, err := s.st.PageViewsSince(ctx, slugName, since)
 	if pv == nil && err == nil {
 		pv = []store.DayCount{}
 	}
