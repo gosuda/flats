@@ -47,6 +47,8 @@ var (
 	ErrForbidden = errors.New("forbidden")
 	// ErrUnavailable marks features disabled on this host (HTTP 409).
 	ErrUnavailable = errors.New("unavailable on this host")
+	// ErrPending marks an action recorded for the operator and not applied.
+	ErrPending = errors.New("pending approval")
 )
 
 // Runtime starts server flats (nil disables kind "server").
@@ -73,13 +75,14 @@ type Instance interface {
 
 // Config wires a Service.
 type Config struct {
-	DataDir    string
-	Store      *store.Store
-	Private    PrivateNet
-	Lifecycle  LifecycleNet // optional provider manager; independent of legacy adapters
-	Public     PublicNet    // nil disables public flats
-	Runtime    Runtime      // nil disables server flats
-	ConsoleURL func() string
+	DataDir                  string
+	Store                    *store.Store
+	Private                  PrivateNet
+	Lifecycle                LifecycleNet                // optional provider manager; independent of legacy adapters
+	Public                   PublicNet                   // nil disables public flats
+	ValidateOperatorDecision func(context.Context) error // required for approval decisions; nil denies
+	Runtime                  Runtime                     // nil disables server flats
+	ConsoleURL               func() string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string
 	Now      func() time.Time
@@ -161,6 +164,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	s.secretKey = key
+	if err := s.migrateLegacyDrafts(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.restore(ctx); err != nil {
 		return nil, err
 	}
@@ -292,12 +298,9 @@ func (s *Service) restore(ctx context.Context) error {
 			s.serveRedirect(ctx, r.Old, r.Flat)
 		}
 	}
-	// Approvals that were being applied when the process stopped.
-	if as, err := s.st.ListApprovals(ctx, "applying"); err == nil {
-		for _, a := range as {
-			_ = s.st.FinishApproval(ctx, a.ID, "failed", "interrupted by a restart; request it again", s.now())
-		}
-	}
+	// An approval left in "applying" is resumed once. A deployment already
+	// recorded for it is not activated again.
+	s.resumeApplying(ctx)
 	// Previews do not survive a restart: their nodes were ephemeral.
 	prevs, err := s.st.ListPreviews(ctx, "")
 	if err == nil {
@@ -327,7 +330,7 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 	}
 	var m bundle.Manifest
 	_ = json.Unmarshal(v.Manifest, &m)
-	dir := s.versionDir(slugName, v.Number)
+	dir := s.contentDir(slugName, v)
 	switch v.Kind {
 	case "server":
 		if s.cfg.Runtime == nil {
@@ -401,6 +404,9 @@ func isPageView(r *http.Request) bool {
 }
 
 func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
+	if ln, ok := s.lifecycleNet(); ok {
+		return s.ensureLifecycle(ctx, f, ln)
+	}
 	lf := s.state(f.Slug)
 	if lf.cur.Load() == nil {
 		return nil
@@ -412,19 +418,24 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 		return fmt.Errorf("private exposure: %w", err)
 	}
 	lf.privateServed = true
+	portal, err := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal)
+	if err != nil {
+		return err
+	}
+	wantPublic := f.Visibility.Canonical().Public() && portal && s.cfg.Public != nil
 	switch {
-	case f.Visibility.Public() && s.cfg.Public == nil:
+	case f.Visibility.Public() && portal && s.cfg.Public == nil:
 		return errPublicDisabled()
-	case f.Visibility.Public() && !lf.publicServed:
-		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), f.Visibility == store.PublicUnlisted); err != nil {
+	case wantPublic && !lf.publicServed:
+		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), false); err != nil {
 			return fmt.Errorf("public exposure: %w", err)
 		}
 		lf.publicServed = true
-	case f.Visibility.Public() && lf.publicServed:
-		if err := s.cfg.Public.SetHidden(f.Slug, f.Visibility == store.PublicUnlisted); err != nil {
+	case wantPublic && lf.publicServed:
+		if err := s.cfg.Public.SetHidden(f.Slug, false); err != nil {
 			return fmt.Errorf("public listing: %w", err)
 		}
-	case !f.Visibility.Public() && lf.publicServed:
+	case !wantPublic && lf.publicServed:
 		if err := s.cfg.Public.Stop(f.Slug); err != nil {
 			return fmt.Errorf("stop public exposure: %w", err)
 		}
@@ -454,6 +465,13 @@ type FlatView struct {
 	Versions      int            `json:"versions"`
 	DiskBytes     int64          `json:"disk_bytes"`
 	Thumbnail     string         `json:"thumbnail,omitempty"`
+	// Publication is unpublished until the first successful activation, then
+	// published. It does not follow connection state.
+	Publication     string             `json:"publication"`
+	Draft           *store.Draft       `json:"draft,omitempty"`
+	Providers       []string           `json:"providers,omitempty"`
+	ConnectionState string             `json:"connection_state,omitempty"`
+	Endpoints       []ExposureEndpoint `json:"endpoints"`
 }
 
 // UnlistedNotice is attached to every public-unlisted response.
@@ -462,16 +480,50 @@ const UnlistedNotice = "Unlisted only hides this flat from Portal relay listings
 // ListedNotice is attached to every public-listed response.
 const ListedNotice = "This flat is public: anyone can open it, and it appears in Portal relay listings."
 
+// PublicAccessNotice is attached to a flat whose visibility is public.
+const PublicAccessNotice = "This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public."
+
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
 	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)
-	if f.Visibility.Public() && s.cfg.Public != nil {
-		v.PublicURL = s.cfg.Public.URL(f.Slug)
-		if f.Visibility == store.PublicUnlisted {
-			v.PublicNotice = UnlistedNotice
-		} else {
-			v.PublicNotice = ListedNotice
+	if f.Visibility.Canonical().Public() && s.cfg.Public != nil {
+		if ok, _ := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal); ok {
+			v.PublicURL = s.cfg.Public.URL(f.Slug)
+			v.PublicNotice = PublicAccessNotice
 		}
+	}
+	if f.LiveVersion > 0 {
+		v.Publication = "published"
+	} else if n, err := s.st.CountPublished(ctx, f.Slug); err == nil && n > 0 {
+		v.Publication = "published"
+	} else {
+		v.Publication = "unpublished"
+	}
+	if d, err := s.st.GetDraft(ctx, f.Slug); err == nil {
+		v.Draft = &d
+	}
+	if ps, err := s.st.PermittedProviders(ctx, f.Slug); err == nil {
+		v.Providers = ps
+	}
+	if observer, ok := s.cfg.Lifecycle.(LifecycleObserver); ok {
+		if res, err := observer.ExposureStatus(ctx, f.Slug); err == nil {
+			v.Endpoints = res.Endpoints
+			for _, ep := range v.Endpoints {
+				if ep.Audience == AudienceCurrent && (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && f.Visibility.Public() {
+					v.PublicURL = ep.URL
+					v.ConnectionState = ep.State
+				}
+			}
+		}
+	}
+	if v.Endpoints == nil {
+		v.Endpoints = []ExposureEndpoint{}
+	}
+	if v.ConnectionState == "" {
+		v.ConnectionState = v.PrivateState
+	}
+	if v.ConnectionState == "" && f.LiveVersion > 0 {
+		v.ConnectionState = "unavailable"
 	}
 	if vs, err := s.st.ListVersions(ctx, f.Slug); err == nil {
 		v.Versions = len(vs)
@@ -572,14 +624,17 @@ func (s *Service) RenameDisplay(ctx context.Context, slugName, name string) (Fla
 
 // --- versions ---
 
-// SaveMeta describes where a version came from.
+// SaveMeta describes where a draft save came from.
 type SaveMeta struct {
-	GitSHA   string
-	GitDirty bool
-	Message  string
+	GitSHA           string
+	GitDirty         bool
+	Message          string
+	ExpectedRevision int
+	CheckRevision    bool
 }
 
-// SaveVersion validates files and stores them as a new immutable version.
+// SaveVersion validates files and stores them as the flat's draft.
+// It never allocates a published version and never changes what is live.
 // The flat is created when it does not exist yet.
 func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bundle.File, meta SaveMeta, via Via) (store.Version, error) {
 	if err := slug.Validate(slugName); err != nil {
@@ -612,35 +667,7 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 			return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Message: fmt.Sprintf("flat would use %d bytes, over its %d-byte disk quota", used+size, quota), Fix: "delete old versions/data, or raise the per-flat disk quota in system settings"}}}
 		}
 	}
-	n, err := s.st.NextVersionNumber(ctx, slugName)
-	if err != nil {
-		return store.Version{}, err
-	}
-	dir := s.versionDir(slugName, n)
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return store.Version{}, err
-	}
-	res, err := bundle.Write(files, dir)
-	if err != nil {
-		return store.Version{}, err
-	}
-	man, _ := json.Marshal(res.Manifest)
-	v := store.Version{Flat: slugName, Number: n, Hash: res.Hash, Size: res.Size, Files: res.Files, Kind: res.Manifest.Kind,
-		Manifest: man, GitSHA: meta.GitSHA, GitDirty: meta.GitDirty, Message: meta.Message, CreatedAt: s.now(), Screenshot: res.Manifest.Screenshot}
-	if err := s.st.InsertVersion(ctx, v); err != nil {
-		os.RemoveAll(dir)
-		return store.Version{}, err
-	}
-	if res.Manifest.Name != "" {
-		if f, err := s.st.GetFlat(ctx, slugName); err == nil && f.Name == slugName {
-			f.Name, f.UpdatedAt = res.Manifest.Name, s.now()
-			_ = s.st.UpdateFlat(ctx, f)
-		}
-	}
-	_ = s.st.Touch(ctx, slugName, s.now())
-	s.Event(ctx, slugName, "info", "version", fmt.Sprintf("saved version %d (%d files, %d bytes) via %s", n, res.Files, res.Size, via), map[string]any{"version": n, "hash": res.Hash, "git_sha": meta.GitSHA})
-	s.pruneVersions(ctx, slugName)
-	return v, nil
+	return s.saveDraftLocked(ctx, slugName, files, meta, via)
 }
 
 // ListVersions returns versions newest first.
@@ -722,11 +749,14 @@ type HealthResult struct {
 
 // DeployResult is returned by Deploy and Rollback.
 type DeployResult struct {
-	Flat     FlatView     `json:"flat"`
-	Version  int          `json:"version"`
-	Previous int          `json:"previous"`
-	Health   HealthResult `json:"health"`
-	Millis   int64        `json:"millis"`
+	Flat       FlatView     `json:"flat"`
+	Version    int          `json:"version"`
+	Previous   int          `json:"previous"`
+	Health     HealthResult `json:"health"`
+	Millis     int64        `json:"millis"`
+	DataImpact string       `json:"data_impact"`
+	HealthData string       `json:"health_data"`
+	LiveData   string       `json:"live_data"`
 }
 
 // DeployError carries the failed health check.
@@ -737,7 +767,10 @@ type DeployError struct {
 	Cause    error
 	// Data says what happened to the flat's data when the deploy may have
 	// touched it.
-	Data string
+	Data       string
+	DataImpact string
+	HealthData string
+	LiveData   string
 }
 
 func (e *DeployError) Error() string {
@@ -838,73 +871,52 @@ func manifestOf(v store.Version) bundle.Manifest {
 	return m
 }
 
-// Deploy makes version n live after a successful health check.
+// Deploy requests activation. n == 0 publishes the current draft as the next
+// version. n > 0 activates that published version (a redeploy applies secrets
+// and does not allocate a new number). Nothing is activated until the
+// operator approves the returned request.
 func (s *Service) Deploy(ctx context.Context, slugName string, n int, via Via) (DeployResult, error) {
-	unlock := s.lock(slugName)
-	defer unlock()
-	f, err := s.st.GetFlat(ctx, slugName)
-	if err != nil {
-		return DeployResult{}, err
-	}
-	return s.deployLocked(ctx, f, n, "deploy", via)
+	return s.requestDeploy(ctx, slugName, n, via)
 }
 
-// deployLocked starts version n on the live data, health-checks it and makes
-// it live. The caller holds s.lock(f.Slug).
-func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind string, via Via) (DeployResult, error) {
+// deployLocked health-checks version n on a copy of the flat data, then
+// starts it on the live data and makes it live. The check does not run
+// against live data. The caller holds s.lock(f.Slug).
+func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind string, via Via, approvalID string) (DeployResult, error) {
 	start := time.Now()
 	slugName := f.Slug
 	v, err := s.st.GetVersion(ctx, slugName, n)
 	if err != nil {
 		return DeployResult{}, err
 	}
-	// Snapshot before the candidate starts: a server flat runs against the
-	// live data while it is checked, so this is the last copy it cannot have
-	// changed.
-	snap, err := s.snapshotDB(slugName, n, f.LiveVersion)
+	h, err := s.checkIsolated(ctx, f, v)
 	if err != nil {
-		s.Event(ctx, slugName, "warn", "snapshot", "could not snapshot the database before deploy: "+err.Error(), nil)
+		return DeployResult{}, err
 	}
-	// failed reports a failed deploy. ran says whether the candidate served
-	// requests (its health check) against the live data: only then can it
-	// have changed data, and the snapshot is kept as failed-v<n>-* (pruned
-	// separately so failures cannot evict regular pre-deploy snapshots).
-	failed := func(de *DeployError, ran bool) (DeployResult, error) {
-		switch {
-		case snap == "":
-		case v.Kind == "server" && ran:
-			kept := s.markFailedSnapshot(slugName, snap, n)
-			de.Data = fmt.Sprintf("Version %d ran against the live data during its health check and may have changed it; database snapshot %s holds the data from just before this deploy", n, kept)
-		default: // the candidate never touched data
-			os.Remove(filepath.Join(s.snapshotDir(slugName), snap))
-		}
-		return DeployResult{}, de
+	if snap, serr := s.snapshotDB(slugName, n, f.LiveVersion); serr != nil {
+		s.Event(ctx, slugName, "warn", "snapshot", "could not snapshot the database before deploy: "+serr.Error(), nil)
+	} else if snap != "" {
+		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
 	}
 	d, err := s.build(ctx, slugName, v, s.dataDirOf(slugName))
 	if err != nil {
 		s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("%s of version %d failed to start: %v", kind, n, err), nil)
-		return failed(&DeployError{Version: n, Previous: f.LiveVersion, Cause: err}, false)
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: dataUntouched}
 	}
-	h := healthCheck(d.handler, manifestOf(v).Health, d.redact)
-	s.Event(ctx, slugName, map[bool]string{true: "info", false: "error"}[h.OK], "health",
-		fmt.Sprintf("health check of version %d: GET %s -> %d in %dms %s", n, h.Path, h.Status, h.Millis, h.Error), h)
-	if !h.OK {
-		if d.inst != nil {
-			d.inst.Stop()
-		}
-		return failed(&DeployError{Version: n, Previous: f.LiveVersion, Health: h}, true)
-	}
-	if snap != "" {
-		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
-	}
-	return s.activate(ctx, f, d, h, kind, via, start)
+	return s.activate(ctx, f, d, h, kind, via, approvalID, start)
 }
 
 // activate makes the started and checked d live. The caller holds
 // s.lock(f.Slug).
-func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h HealthResult, kind string, via Via, start time.Time) (DeployResult, error) {
+func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h HealthResult, kind string, via Via, approvalID string, start time.Time) (DeployResult, error) {
 	slugName, n, prev := f.Slug, d.version.Number, f.LiveVersion
-	if err := s.st.SetLive(ctx, slugName, n, prev, kind, s.now()); err != nil {
+	var commitErr error
+	if kind == "publish" {
+		commitErr = s.st.CommitPublished(ctx, d.version, prev, approvalID, s.now())
+	} else {
+		commitErr = s.st.SetLive(ctx, slugName, n, prev, kind, approvalID, s.now())
+	}
+	if err := commitErr; err != nil {
 		if d.inst != nil {
 			d.inst.Stop()
 		}
@@ -923,7 +935,13 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	s.Event(ctx, slugName, "info", "deploy", fmt.Sprintf("%s: version %d is live (was %d) via %s", kind, n, prev, via), map[string]int{"version": n, "previous": prev})
 	s.pruneVersions(ctx, slugName)
 	fv, _ := s.st.GetFlat(ctx, slugName)
-	return DeployResult{Flat: s.view(ctx, fv), Version: n, Previous: prev, Health: h, Millis: time.Since(start).Milliseconds()}, nil
+	impact, live := "none", "untouched"
+	if d.version.Kind == "server" {
+		impact, live = "runtime_start", "runtime_may_write"
+	}
+	if kind == "restore" || (kind == "rollback" && approvalID != "") { /* restore callers set the exact impact */
+	}
+	return DeployResult{Flat: s.view(ctx, fv), Version: n, Previous: prev, Health: h, Millis: time.Since(start).Milliseconds(), DataImpact: impact, HealthData: "isolated_copy", LiveData: live}, nil
 }
 
 // Rollback redeploys an earlier version. to=0 picks the version that was
@@ -938,16 +956,16 @@ func (s *Service) Rollback(ctx context.Context, slugName string, to int, via Via
 // touched, and the current database is saved first (before-restore-*) and
 // put back if anything fails.
 func (s *Service) RollbackWithData(ctx context.Context, slugName string, to int, restoreData bool, via Via) (DeployResult, error) {
-	unlock := s.lock(slugName)
-	defer unlock()
-	f, err := s.st.GetFlat(ctx, slugName)
-	if err != nil {
-		return DeployResult{}, err
-	}
+	return s.requestRollback(ctx, slugName, to, restoreData, via)
+}
+
+// rollbackLocked applies an already approved rollback. The caller holds s.lock.
+func (s *Service) rollbackLocked(ctx context.Context, f store.Flat, to int, restoreData bool, via Via, approvalID string) (DeployResult, error) {
 	if f.LiveVersion == 0 {
 		return DeployResult{}, ErrNotDeployed
 	}
 	if to == 0 {
+		var err error
 		if to, err = s.previousLive(ctx, f); err != nil {
 			return DeployResult{}, err
 		}
@@ -956,13 +974,13 @@ func (s *Service) RollbackWithData(ctx context.Context, slugName string, to int,
 		return DeployResult{}, fmt.Errorf("%w: version %d is already live", ErrConflict, to)
 	}
 	if !restoreData {
-		return s.deployLocked(ctx, f, to, "rollback", via)
+		return s.deployLocked(ctx, f, to, "rollback", via, approvalID)
 	}
-	snap, err := s.liveSnapshot(slugName, f.LiveVersion)
+	snap, err := s.liveSnapshot(f.Slug, f.LiveVersion)
 	if err != nil {
 		return DeployResult{}, err
 	}
-	return s.restoreLocked(ctx, f, snap, to, "rollback", via)
+	return s.restoreLocked(ctx, f, snap, to, "rollback", via, approvalID)
 }
 
 // previousLive returns the version that was live before the current one.
@@ -998,7 +1016,7 @@ func (s *Service) RestoreSnapshot(ctx context.Context, slugName, name string, vi
 	if f.LiveVersion == 0 {
 		return DeployResult{}, ErrNotDeployed
 	}
-	return s.restoreLocked(ctx, f, name, f.LiveVersion, "restore", via)
+	return s.restoreLocked(ctx, f, name, f.LiveVersion, "restore", via, "")
 }
 
 // restoreLocked replaces the flat's database with snapshot snap and makes
@@ -1009,7 +1027,7 @@ func (s *Service) RestoreSnapshot(ctx context.Context, slugName, name string, vi
 // the live version is stopped, the current database is saved as a
 // before-restore snapshot, and the snapshot is installed. If anything fails
 // after that, the saved database is put back and the old version restarted.
-func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, to int, kind string, via Via) (DeployResult, error) {
+func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, to int, kind string, via Via, approvalID string) (DeployResult, error) {
 	start := time.Now()
 	slugName := f.Slug
 	v, err := s.st.GetVersion(ctx, slugName, to)
@@ -1056,7 +1074,7 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 		if backup == "" {
 			note = "The flat had no database before, so the restored one was removed"
 		}
-		if err := s.installDB(slugName, src); err != nil {
+		if err := s.installSnapshot(slugName, src); err != nil {
 			note = fmt.Sprintf("Putting the database back failed (%v); the data from before the restore is in snapshot %s", err, backup)
 		}
 		return joinNotes(note, s.restart(ctx, slugName, old))
@@ -1066,28 +1084,23 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 		s.Event(ctx, slugName, "error", "snapshot", fmt.Sprintf("restoring snapshot %s failed: %v", snap, de), nil)
 		return DeployResult{}, de
 	}
-	if err := s.installDB(slugName, snapPath); err != nil {
+	if err := s.installSnapshot(slugName, snapPath); err != nil {
 		return fail(&DeployError{Cause: fmt.Errorf("install snapshot %s: %w", snap, err)})
 	}
 	d, err := s.build(ctx, slugName, v, s.dataDirOf(slugName))
 	if err != nil {
 		return fail(&DeployError{Cause: err})
 	}
-	h := healthCheck(d.handler, manifestOf(v).Health, d.redact)
-	if !h.OK {
-		if d.inst != nil {
-			d.inst.Stop()
-		}
-		return fail(&DeployError{Health: h})
-	}
+	h := HealthResult{OK: true, Path: manifestOf(v).Health}
 	msg := fmt.Sprintf("restored database snapshot %s", snap)
 	if backup != "" {
 		msg += fmt.Sprintf("; the database from before is saved as snapshot %s", backup)
 	}
-	res, err := s.activate(ctx, f, d, h, kind, via, start)
+	res, err := s.activate(ctx, f, d, h, kind, via, approvalID, start)
 	if err != nil {
 		return fail(&DeployError{Cause: err})
 	}
+	res.DataImpact, res.LiveData = "restore_data", "restored"
 	s.Event(ctx, slugName, "warn", "snapshot", msg, nil)
 	return res, nil
 }
@@ -1100,11 +1113,23 @@ func (s *Service) trialRun(ctx context.Context, f store.Flat, v store.Version, s
 	defer os.RemoveAll(dir)
 	untouched := "The data was not touched"
 	if v.Kind == "server" {
-		if err := snapshotFiles(s.dataDirOf(f.Slug), dir); err != nil {
-			return &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: fmt.Errorf("copy data for a trial run: %w", err), Data: untouched}
+		source := s.dataDirOf(f.Slug)
+		if _, err := os.Stat(filepath.Join(snapPath+".data", ".flats-snapshot-complete")); err == nil {
+			source = snapPath + ".data"
 		}
-		if err := copyFile(snapPath, filepath.Join(dir, "db.sqlite")); err != nil {
-			return &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: fmt.Errorf("copy snapshot for a trial run: %w", err), Data: untouched}
+		if err := snapshotFiles(source, dir); err != nil {
+			return &DeployError{Cause: err, Data: untouched}
+		}
+		dbSource := snapPath
+		if source == snapPath+".data" {
+			dbSource = filepath.Join(source, dbName)
+		}
+		if _, err := os.Stat(dbSource); err == nil {
+			if err := copyFile(dbSource, filepath.Join(dir, dbName)); err != nil {
+				return &DeployError{Cause: err, Data: untouched}
+			}
+		} else if !os.IsNotExist(err) {
+			return &DeployError{Cause: err, Data: untouched}
 		}
 	}
 	d, err := s.build(ctx, f.Slug, v, dir)
@@ -1170,18 +1195,13 @@ type ActionResult struct {
 	Flat        *FlatView       `json:"flat,omitempty"`
 	Notice      string          `json:"notice,omitempty"`
 	Message     string          `json:"message"`
+	DataImpact  string          `json:"data_impact,omitempty"`
+	HealthData  string          `json:"health_data,omitempty"`
+	LiveData    string          `json:"live_data,omitempty"`
 }
 
 func (s *Service) requestApproval(ctx context.Context, slugName, action string, params any, via Via, reason string) (ActionResult, error) {
-	raw, _ := json.Marshal(params)
-	a := store.Approval{ID: "apr-" + slug.Random(12), Flat: slugName, Action: action, Params: raw, Status: "pending", Via: string(via), Reason: reason, RequestedAt: s.now()}
-	if err := s.st.InsertApproval(ctx, a); err != nil {
-		return ActionResult{}, err
-	}
-	url := s.ApprovalURL(a.ID)
-	s.Event(ctx, slugName, "warn", "approval", fmt.Sprintf("%s requested via %s; waiting for the operator: %s", action, via, url), params)
-	return ActionResult{Status: "pending_approval", Approval: &a, ApprovalURL: url,
-		Message: "This action needs the operator's approval. Share the approval link with them; nothing changes until they approve it in the web console."}, nil
+	return s.requestFrozen(ctx, slugName, action, params, via, reason)
 }
 
 // ApprovalURL is the console address where the operator decides approval id.
@@ -1189,60 +1209,11 @@ func (s *Service) ApprovalURL(id string) string {
 	return strings.TrimSuffix(s.cfg.ConsoleURL(), "/") + "/approvals/" + id
 }
 
-// SetVisibility changes who can open a flat. Requests that widen exposure from
-// anything other than the console wait for approval.
+// SetVisibility requests a private or public change. Both directions, from
+// every surface including the console, wait for approval. Legacy listed and
+// unlisted values are accepted and stored as public. Nothing is applied here.
 func (s *Service) SetVisibility(ctx context.Context, slugName string, vis store.Visibility, via Via, reason string) (ActionResult, error) {
-	if !vis.Valid() {
-		return ActionResult{}, invalidf("unknown visibility %q (use private, public-listed or public-unlisted)", vis)
-	}
-	f, err := s.st.GetFlat(ctx, slugName)
-	if err != nil {
-		return ActionResult{}, err
-	}
-	if vis.Public() && s.cfg.Public == nil {
-		return ActionResult{}, errPublicDisabled()
-	}
-	if f.Visibility == vis {
-		fv := s.view(ctx, f)
-		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility unchanged"}, nil
-	}
-	if via != ViaConsole && vis.Rank() > f.Visibility.Rank() {
-		res, err := s.requestApproval(ctx, slugName, "set_visibility", map[string]string{"visibility": string(vis), "from": string(f.Visibility)}, via, reason)
-		if vis == store.PublicUnlisted {
-			res.Notice = UnlistedNotice
-		} else {
-			res.Notice = ListedNotice
-		}
-		return res, err
-	}
-	return s.applyVisibility(ctx, slugName, vis, via)
-}
-
-func (s *Service) applyVisibility(ctx context.Context, slugName string, vis store.Visibility, via Via) (ActionResult, error) {
-	unlock := s.lock(slugName)
-	defer unlock()
-	f, err := s.st.GetFlat(ctx, slugName)
-	if err != nil {
-		return ActionResult{}, err
-	}
-	from := f.Visibility
-	f.Visibility, f.UpdatedAt = vis, s.now()
-	if err := s.ensureExposure(ctx, f); err != nil {
-		return ActionResult{}, err
-	}
-	if err := s.st.UpdateFlat(ctx, f); err != nil {
-		return ActionResult{}, err
-	}
-	if !vis.Public() {
-		s.stopPublicRedirects(slugName)
-	}
-	s.Event(ctx, slugName, "info", "visibility", fmt.Sprintf("visibility %s -> %s via %s", from, vis, via), nil)
-	fv := s.view(ctx, f)
-	msg := "visibility changed to " + string(vis)
-	if f.LiveVersion == 0 && vis.Public() {
-		msg += "; the flat goes public when its first version is deployed"
-	}
-	return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: msg}, nil
+	return s.requestVisibility(ctx, slugName, vis, via, reason)
 }
 
 // Delete permanently deletes a flat. Requests from anything other than the
@@ -1321,6 +1292,14 @@ func (s *Service) GetApproval(ctx context.Context, id string) (store.Approval, e
 // The approval is claimed before anything is applied, so of two concurrent
 // decisions exactly one acts and the other gets ErrConflict.
 func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Approval, error) {
+	if s.cfg.ValidateOperatorDecision == nil {
+		return store.Approval{}, forbiddenf("operator decision authority is not configured")
+	}
+	if err := s.cfg.ValidateOperatorDecision(ctx); err != nil {
+		return store.Approval{}, fmt.Errorf("%w: operator decision: %v", ErrForbidden, err)
+	}
+	unlock := s.lock("approval:" + id)
+	defer unlock()
 	a, err := s.st.GetApproval(ctx, id)
 	if err != nil {
 		return a, err
@@ -1336,45 +1315,33 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		}
 		return cur, fmt.Errorf("%w: approval is already %s", ErrConflict, cur.Status)
 	}
-	if a.Status != "pending" {
-		return lost(nil)
-	}
 	if !approve {
+		if a.Status == "rejected" {
+			return a, nil
+		}
+		if a.Status != "pending" {
+			return lost(nil)
+		}
 		if err := s.st.DecideApproval(ctx, id, "rejected", "rejected by the operator", s.now()); err != nil {
 			return lost(err)
 		}
 		s.Event(ctx, a.Flat, "info", "approval", a.Action+" rejected by the operator", nil)
 		return s.st.GetApproval(ctx, id)
 	}
-	if err := s.st.ClaimApproval(ctx, id); err != nil {
-		return lost(err)
-	}
-	var res ActionResult
-	switch a.Action {
-	case "set_visibility":
-		var p struct{ Visibility string }
-		_ = json.Unmarshal(a.Params, &p)
-		res, err = s.applyVisibility(ctx, a.Flat, store.Visibility(p.Visibility), ViaConsole)
-	case "delete":
-		res, err = s.applyDelete(ctx, a.Flat, ViaConsole, a.ID)
+	switch a.Status {
+	case "approved":
+		return a, nil
+	case "applying":
+		return lost(nil)
+	case "pending":
+		if err := s.st.ClaimApproval(ctx, id); err != nil {
+			return lost(err)
+		}
+		a.Status = "applying"
+		return s.finishApplying(ctx, a)
 	default:
-		err = fmt.Errorf("unknown action %q", a.Action)
+		return lost(nil)
 	}
-	status, result := "approved", res.Message
-	if err != nil {
-		status, result = "failed", err.Error()
-	}
-	if derr := s.st.FinishApproval(ctx, id, status, result, s.now()); derr != nil {
-		return a, derr
-	}
-	if a.Action != "delete" || err != nil {
-		s.Event(ctx, a.Flat, "info", "approval", fmt.Sprintf("%s %s by the operator: %s", a.Action, status, result), nil)
-	}
-	out, gerr := s.st.GetApproval(ctx, id)
-	if gerr != nil {
-		return out, gerr
-	}
-	return out, err
 }
 
 // --- previews ---
@@ -1411,6 +1378,9 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	defer unlock()
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return PreviewView{}, err
+	}
+	if n == 0 {
+		return s.openDraftPreviewLocked(ctx, slugName)
 	}
 	v, err := s.st.GetVersion(ctx, slugName, n)
 	if err != nil {
@@ -1459,7 +1429,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 		stop()
 		return PreviewView{}, err
 	}
-	rec := store.Preview{Host: host, Flat: slugName, Version: n, CreatedAt: now, LastAccess: now}
+	rec := store.Preview{Host: host, Flat: slugName, Version: n, CreatedAt: now, LastAccess: now, Target: "version"}
 	if err := s.st.InsertPreview(ctx, rec); err != nil {
 		_ = s.cfg.Private.Stop(host)
 		stop()

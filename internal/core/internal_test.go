@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -153,7 +154,7 @@ func newTestService(t *testing.T) (*Service, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(context.Background(), Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
+	s, err := New(context.Background(), Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestConcurrentRenameSameTarget(t *testing.T) {
 		if _, err := s.SaveVersion(ctx, a, []bundle.File{{Path: "index.html", Data: []byte("page-a")}}, SaveMeta{}, ViaAPI); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Deploy(ctx, a, 1, ViaAPI); err != nil {
+		if _, err := approvedInternalDeploy(t, s, ctx, a, 0); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.CreateFlat(ctx, c, "", ViaAPI); err != nil {
@@ -259,7 +260,7 @@ func TestViewsReportHostState(t *testing.T) {
 	if f.PrivateState != "" {
 		t.Errorf("undeployed flat has host state %q", f.PrivateState)
 	}
-	r, err := s.Deploy(ctx, "pend", 1, ViaAPI)
+	r, err := approvedInternalDeploy(t, s, ctx, "pend", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,4 +278,19 @@ func TestViewsReportHostState(t *testing.T) {
 	if err != nil || len(ps) != 1 || ps[0].State != "starting" {
 		t.Errorf("listed previews %+v %v", ps, err)
 	}
+}
+
+func approvedInternalDeploy(t *testing.T, s *Service, ctx context.Context, slug string, n int) (DeployResult, error) {
+	t.Helper()
+	_, err := s.Deploy(ctx, slug, n, ViaAPI)
+	var p *PendingApproval
+	if !errors.As(err, &p) {
+		return DeployResult{}, err
+	}
+	_, err = s.Decide(ctx, p.Approval.ID, true)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	f, err := s.GetFlat(ctx, slug)
+	return DeployResult{Flat: f, Version: f.LiveVersion}, err
 }

@@ -85,10 +85,15 @@ type ExposureRequest struct {
 
 // ExposureEndpoint is one route the network actually opened.
 type ExposureEndpoint struct {
-	Provider ProviderID
-	URL      string
-	State    string
-	Detail   string
+	Provider   ProviderID       `json:"provider"`
+	URL        string           `json:"url,omitempty"`
+	State      string           `json:"state"`
+	Detail     string           `json:"detail,omitempty"`
+	Configured bool             `json:"configured"`
+	Permitted  bool             `json:"permitted"`
+	Ready      bool             `json:"ready"`
+	Audience   ExposureAudience `json:"audience,omitempty"`
+	Host       string           `json:"host,omitempty"`
 }
 
 // ExposureResult is the set of routes opened for one request.
@@ -113,3 +118,10 @@ type LifecycleNet interface {
 // ErrProviderNotPermitted is returned when a non-local provider is used
 // without an explicit permission, or when a draft is sent to a public provider.
 var ErrProviderNotPermitted = errors.New("provider not permitted")
+
+// LifecycleObserver exposes manager-owned policy and current endpoint state.
+// Policy must change whenever host grants or relevant configuration changes.
+type LifecycleObserver interface {
+	ExposurePolicy(context.Context) (string, error)
+	ExposureStatus(context.Context, string) (ExposureResult, error)
+}

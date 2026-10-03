@@ -70,7 +70,7 @@ func newRuntimeEnv(t *testing.T) *rtEnv {
 		t.Fatal(err)
 	}
 	rt := &fakeRuntime{}
-	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Runtime: rt,
+	svc, err := core.New(context.Background(), core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: priv, Runtime: rt,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -147,24 +147,27 @@ func TestSecretsRedactedFromHealthAndLogs(t *testing.T) {
 	if err := e.svc.SetSecret(ctx, "sec-flat", "API_KEY", secret, core.ViaConsole); err != nil {
 		t.Fatal(err)
 	}
-	res, err := e.svc.Deploy(ctx, "sec-flat", 1, core.ViaMCP)
-	if err != nil {
+	if err := decideDeploy(t, e.svc, "sec-flat", 0); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(res.Health.BodyHead, secret) || !strings.Contains(res.Health.BodyHead, "[redacted]") {
-		t.Fatalf("body_head leaks the secret: %q", res.Health.BodyHead)
-	}
 	evs, _ := e.svc.Events(ctx, "sec-flat", "", 0, 1000)
+	var sawRedacted bool
 	for _, ev := range evs {
 		if strings.Contains(ev.Message, secret) || strings.Contains(string(ev.Data), secret) {
 			t.Fatalf("event leaks the secret: %+v", ev)
 		}
+		if strings.Contains(string(ev.Data), "[redacted]") {
+			sawRedacted = true
+		}
+	}
+	if !sawRedacted {
+		t.Fatal("health result did not record a redacted body")
 	}
 	// A failing start must not leak it either (worker stderr is in the error).
 	e.rt.set(func(spec core.RuntimeSpec) (http.Handler, error) {
 		return nil, errors.New("worker exited: stderr: " + spec.Env["API_KEY"])
 	})
-	_, err = e.svc.Deploy(ctx, "sec-flat", 1, core.ViaMCP)
+	err := decideDeploy(t, e.svc, "sec-flat", 1)
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("start error leaks the secret: %v", err)
 	}
@@ -178,18 +181,17 @@ func TestSnapshotBeforeCandidateStarts(t *testing.T) {
 	e.rt.set(func(spec core.RuntimeSpec) (http.Handler, error) {
 		execDB(t, filepath.Join(spec.DataDir, "db.sqlite"), `CREATE TABLE IF NOT EXISTS log (v TEXT)`, fmt.Sprintf(`INSERT INTO log VALUES ('started v%d')`, spec.Version))
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if spec.Version == 3 {
+			if _, err := os.Stat(filepath.Join(spec.Dir, "fail.txt")); err == nil {
 				w.WriteHeader(500)
 			}
 		}), nil
 	})
 	saveServer(t, e.env, "snap", "")
-	saveServer(t, e.env, "snap", "")
-	saveServer(t, e.env, "snap", "")
-	if _, err := e.svc.Deploy(ctx, "snap", 1, core.ViaAPI); err != nil {
+	if err := decideDeploy(t, e.svc, "snap", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.Deploy(ctx, "snap", 2, core.ViaAPI); err != nil {
+	saveServer(t, e.env, "snap", "")
+	if err := decideDeploy(t, e.svc, "snap", 0); err != nil {
 		t.Fatal(err)
 	}
 	snaps, _ := e.svc.Snapshots("snap")
@@ -200,10 +202,20 @@ func TestSnapshotBeforeCandidateStarts(t *testing.T) {
 	if strings.Join(rows, ",") != "started v1" {
 		t.Fatalf("before-v2 snapshot must not contain anything v2 did, got %v", rows)
 	}
-	_, err := e.svc.Deploy(ctx, "snap", 3, core.ViaAPI)
+	if _, err := e.svc.SaveVersion(ctx, "snap", files("flats.json", `{"kind":"server"}`, "server.js", "export default {}", "fail.txt", "x"), core.SaveMeta{}, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	err := decideDeploy(t, e.svc, "snap", 0)
 	var de *core.DeployError
-	if !errors.As(err, &de) || !strings.Contains(err.Error(), "may have changed") || !strings.Contains(err.Error(), "failed-v3-") {
-		t.Fatalf("failed server deploy must warn about live data and name the snapshot: %v", err)
+	if !errors.As(err, &de) || !strings.Contains(err.Error(), "Live data was not changed") || strings.Contains(err.Error(), "may have changed") {
+		t.Fatalf("failed publish must say live data was not changed: %v", err)
+	}
+	if fv, _ := e.svc.GetFlat(ctx, "snap"); fv.LiveVersion != 2 {
+		t.Fatalf("failed publish consumed a version or changed live: %+v", fv.Flat)
+	}
+	live := queryDB(t, filepath.Join(e.dataDir, "flats", "snap", "data", "db.sqlite"), `SELECT v FROM log`)
+	if strings.Join(live, ",") != "started v1,started v2" {
+		t.Fatalf("failed health check changed live data: %v", live)
 	}
 }
 
@@ -213,17 +225,17 @@ func TestRestoreDataBadTargetKeepsData(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "datum", files("index.html", "v1"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "datum", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "datum", 1)
 	db := dbPath(e, "datum")
 	execDB(t, db, `CREATE TABLE t (v TEXT)`, `INSERT INTO t VALUES ('before')`)
 	e.svc.SaveVersion(ctx, "datum", files("index.html", "v2"), core.SaveMeta{}, core.ViaAPI)
-	if _, err := e.svc.Deploy(ctx, "datum", 2, core.ViaAPI); err != nil {
+	if _, err := approvedTestDeploy(t, e.svc, ctx, "datum", 2); err != nil {
 		t.Fatal(err)
 	}
 	execDB(t, db, `UPDATE t SET v='precious-after'`)
 	e.svc.SaveVersion(ctx, "datum", files("index.html", "v3", "flats.json", `{"health":"/missing"}`), core.SaveMeta{}, core.ViaAPI)
 	for _, to := range []int{99, 3} {
-		if _, err := e.svc.RollbackWithData(ctx, "datum", to, true, core.ViaMCP); err == nil {
+		if _, err := approvedTestRollback(t, e.svc, ctx, "datum", to, true); err == nil {
 			t.Fatalf("rollback to %d succeeded", to)
 		}
 		if got := queryDB(t, db, `SELECT v FROM t`); len(got) != 1 || got[0] != "precious-after" {
@@ -234,7 +246,7 @@ func TestRestoreDataBadTargetKeepsData(t *testing.T) {
 		}
 	}
 	// A successful restore keeps the replaced data as a snapshot.
-	if _, err := e.svc.RollbackWithData(ctx, "datum", 1, true, core.ViaMCP); err != nil {
+	if _, err := approvedTestRollback(t, e.svc, ctx, "datum", 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := queryDB(t, db, `SELECT v FROM t`); got[0] != "before" {
@@ -256,13 +268,13 @@ func TestRestoreDataFailureAfterSwapPutsDataBack(t *testing.T) {
 	ctx := context.Background()
 	e := newRuntimeEnv(t)
 	saveServer(t, e.env, "swap", "")
-	saveServer(t, e.env, "swap", "")
 	db := dbPath(e.env, "swap")
-	if _, err := e.svc.Deploy(ctx, "swap", 1, core.ViaAPI); err != nil {
+	if _, err := approvedTestDeploy(t, e.svc, ctx, "swap", 1); err != nil {
 		t.Fatal(err)
 	}
 	execDB(t, db, `CREATE TABLE t (v TEXT)`, `INSERT INTO t VALUES ('old')`)
-	if _, err := e.svc.Deploy(ctx, "swap", 2, core.ViaAPI); err != nil {
+	saveServer(t, e.env, "swap", "")
+	if _, err := approvedTestDeploy(t, e.svc, ctx, "swap", 2); err != nil {
 		t.Fatal(err)
 	}
 	execDB(t, db, `UPDATE t SET v='current'`)
@@ -274,7 +286,7 @@ func TestRestoreDataFailureAfterSwapPutsDataBack(t *testing.T) {
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintf(w, "v%d", spec.Version) }), nil
 	})
-	_, err := e.svc.RollbackWithData(ctx, "swap", 1, true, core.ViaAPI)
+	_, err := approvedTestRollback(t, e.svc, ctx, "swap", 1, true)
 	if err == nil || !strings.Contains(err.Error(), "put back") {
 		t.Fatalf("want a failure that says the data was put back, got %v", err)
 	}
@@ -292,7 +304,7 @@ func TestClosePreviewOnlyClosesPreviews(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "redep", files("index.html", "one"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "redep", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "redep", 1)
 	for _, host := range []string{"redep", "whatever", "flats"} {
 		if err := e.svc.ClosePreview(ctx, host); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("ClosePreview(%s) = %v, want ErrNotFound", host, err)
@@ -311,7 +323,7 @@ func TestClosePreviewOnlyClosesPreviews(t *testing.T) {
 	// The host goes away behind the service's back: a deploy brings it back.
 	e.priv.Stop("redep")
 	e.svc.SaveVersion(ctx, "redep", files("index.html", "two"), core.SaveMeta{}, core.ViaAPI)
-	if _, err := e.svc.Deploy(ctx, "redep", 2, core.ViaAPI); err != nil {
+	if _, err := approvedTestDeploy(t, e.svc, ctx, "redep", 2); err != nil {
 		t.Fatal(err)
 	}
 	if _, body, _ := get(t, e.priv.URL("redep")); body != "two" {
@@ -332,9 +344,9 @@ func TestRenameRedirectReservation(t *testing.T) {
 	if _, err := e.svc.SaveVersion(ctx, "alpha", files("index.html", "new-alpha"), core.SaveMeta{}, core.ViaAPI); err != nil {
 		t.Fatalf("the slug of an undeployed rename should be free: %v", err)
 	}
-	e.svc.Deploy(ctx, "alpha", 1, core.ViaAPI)
-	e.svc.Deploy(ctx, "beta", 1, core.ViaAPI)
-	svc2, err := core.New(ctx, core.Config{DataDir: e.dataDir, Store: e.st, Private: e.priv, Logf: t.Logf})
+	approvedTestDeploy(t, e.svc, ctx, "alpha", 1)
+	approvedTestDeploy(t, e.svc, ctx, "beta", 1)
+	svc2, err := core.New(ctx, core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: e.dataDir, Store: e.st, Private: e.priv, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +359,7 @@ func TestRenameRedirectReservation(t *testing.T) {
 	}
 	// A deployed rename reserves its old slug.
 	e.svc.SaveVersion(ctx, "gamma", files("index.html", "g"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "gamma", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "gamma", 1)
 	if _, err := e.svc.RenameSlug(ctx, "gamma", "delta", core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +381,7 @@ func TestDoubleRenameKeepsFirstRedirect(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "aaa", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "aaa", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "aaa", 1)
 	if _, err := e.svc.RenameSlug(ctx, "aaa", "bbb", core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +429,7 @@ func TestRenameKeepsPageViews(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "seen", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "seen", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "seen", 1)
 	for i := 0; i < 3; i++ {
 		get(t, e.priv.URL("seen")+"/")
 	}
@@ -436,7 +448,7 @@ func TestTopPagesFlushAndRename(t *testing.T) {
 	if _, err := e.svc.SaveVersion(ctx, "traffic", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.Deploy(ctx, "traffic", 1, core.ViaAPI); err != nil {
+	if _, err := approvedTestDeploy(t, e.svc, ctx, "traffic", 1); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"/?token=private", "/?token=another", "/notes", "/asset.css"} {
@@ -461,7 +473,7 @@ func TestServerPreviewData(t *testing.T) {
 	ctx := context.Background()
 	e := newRuntimeEnv(t)
 	saveServer(t, e.env, "pvflat", "")
-	e.svc.Deploy(ctx, "pvflat", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "pvflat", 1)
 	files := filepath.Join(e.dataDir, "flats", "pvflat", "data", "files")
 	os.MkdirAll(files, 0o700)
 	os.WriteFile(filepath.Join(files, "notes.db"), []byte("hello"), 0o600)
@@ -546,7 +558,7 @@ func TestEventsPrunedAndRuntimeLogsLimited(t *testing.T) {
 		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
 	})
 	saveServer(t, e.env, "logger", "")
-	if _, err := e.svc.Deploy(ctx, "logger", 1, core.ViaAPI); err != nil {
+	if _, err := approvedTestDeploy(t, e.svc, ctx, "logger", 1); err != nil {
 		t.Fatal(err)
 	}
 	e.svc.Sweep(ctx)
@@ -563,7 +575,7 @@ func TestRetentionKeepsNPlusLive(t *testing.T) {
 	e.svc.UpdateSettings(ctx, map[string]string{core.SetKeepVersions: "3"})
 	for i := 1; i <= 6; i++ {
 		e.svc.SaveVersion(ctx, "ret", files("index.html", fmt.Sprint(i)), core.SaveMeta{}, core.ViaAPI)
-		if _, err := e.svc.Deploy(ctx, "ret", i, core.ViaAPI); err != nil {
+		if _, err := approvedTestDeploy(t, e.svc, ctx, "ret", i); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -585,13 +597,14 @@ func TestRollbackAfterRedeployOfLive(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "redo", files("index.html", "one"), core.SaveMeta{}, core.ViaAPI)
+	publish(t, e.svc, "redo")
 	e.svc.SaveVersion(ctx, "redo", files("index.html", "two"), core.SaveMeta{}, core.ViaAPI)
-	for _, v := range []int{1, 2, 2} {
-		if _, err := e.svc.Deploy(ctx, "redo", v, core.ViaAPI); err != nil {
+	for _, v := range []int{2, 2} {
+		if _, err := approvedTestDeploy(t, e.svc, ctx, "redo", v); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rb, err := e.svc.Rollback(ctx, "redo", 0, core.ViaAPI)
+	rb, err := approvedTestRollback(t, e.svc, ctx, "redo", 0, false)
 	if err != nil || rb.Version != 1 {
 		t.Fatalf("rollback after redeploy: %+v %v", rb, err)
 	}
@@ -627,7 +640,8 @@ func TestApproveRejectRace(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "race", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "race", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "race", 1)
+	permitPortal(t, e.svc, "race")
 	for i := 0; i < 20; i++ {
 		r, err := e.svc.SetVisibility(ctx, "race", store.PublicUnlisted, core.ViaMCP, "")
 		if err != nil || r.Approval == nil {
@@ -649,7 +663,11 @@ func TestApproveRejectRace(t *testing.T) {
 			t.Fatalf("round %d: approval %s but public=%v", i, a.Status, public)
 		}
 		if public {
-			if _, err := e.svc.SetVisibility(ctx, "race", store.Private, core.ViaConsole, ""); err != nil {
+			r, err := e.svc.SetVisibility(ctx, "race", store.Private, core.ViaConsole, "")
+			if err == nil {
+				_, err = e.svc.Decide(ctx, r.Approval.ID, true)
+			}
+			if err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -691,12 +709,14 @@ func TestErrorKinds(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := store.Open(filepath.Join(dir, "flats.db"))
 	defer st.Close()
-	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: e.priv, Logf: t.Logf})
+	svc, err := core.New(ctx, core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: e.priv, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer svc.Close()
-	svc.CreateFlat(ctx, "nopub", "", core.ViaAPI)
+	svc.SaveVersion(ctx, "nopub", files("index.html", "x"), core.SaveMeta{}, core.ViaAPI)
+	publish(t, svc, "nopub")
+	permitPortal(t, svc, "nopub")
 	if _, err := svc.SetVisibility(ctx, "nopub", store.PublicListed, core.ViaConsole, ""); !errors.Is(err, core.ErrUnavailable) {
 		t.Errorf("public disabled: %v", err)
 	}
@@ -708,11 +728,11 @@ func TestRestoreSnapshot(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "named", files("index.html", "v1"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "named", 1, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "named", 1)
 	db := dbPath(e, "named")
 	execDB(t, db, `CREATE TABLE t (v TEXT)`, `INSERT INTO t VALUES ('good')`)
 	e.svc.SaveVersion(ctx, "named", files("index.html", "v2"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "named", 2, core.ViaAPI)
+	approvedTestDeploy(t, e.svc, ctx, "named", 2)
 	execDB(t, db, `UPDATE t SET v='damaged'`)
 	if _, err := e.svc.RestoreSnapshot(ctx, "named", "../flats.db", core.ViaConsole); !errors.Is(err, core.ErrInvalid) {
 		t.Fatalf("bad name: %v", err)
@@ -732,7 +752,30 @@ func TestRestoreSnapshot(t *testing.T) {
 		t.Fatalf("replaced data not kept: %v", snaps)
 	}
 	// The live version's own snapshot still drives restore_data rollbacks.
-	if _, err := e.svc.RollbackWithData(ctx, "named", 1, true, core.ViaAPI); err != nil {
+	if _, err := approvedTestRollback(t, e.svc, ctx, "named", 1, true); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Legacy regression fixtures now explicitly request and approve publications.
+func approvedTestDeploy(t *testing.T, s *core.Service, ctx context.Context, slug string, n int) (core.DeployResult, error) {
+	t.Helper()
+	if _, err := s.GetVersion(ctx, slug, n); errors.Is(err, store.ErrNotFound) {
+		n = 0
+	}
+	err := decideDeploy(t, s, slug, n)
+	if err != nil {
+		return core.DeployResult{}, err
+	}
+	f, err := s.GetFlat(ctx, slug)
+	return core.DeployResult{Flat: f, Version: f.LiveVersion}, err
+}
+func approvedTestRollback(t *testing.T, s *core.Service, ctx context.Context, slug string, n int, restore bool) (core.DeployResult, error) {
+	t.Helper()
+	err := decideRollback(t, s, slug, n, restore)
+	if err != nil {
+		return core.DeployResult{}, err
+	}
+	f, err := s.GetFlat(ctx, slug)
+	return core.DeployResult{Flat: f, Version: f.LiveVersion}, err
 }
