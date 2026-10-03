@@ -15,6 +15,49 @@ import (
 
 // Server-flat workers run in "/", so a relative --data or FLATS_DATA must be
 // made absolute before anything uses it.
+func TestServeFlagsDoNotGrantByDefault(t *testing.T) {
+	o, err := ParseServeFlags(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Network != "local" || o.NetworkSet || o.Portal || o.PortalSet || len(o.Permit) != 0 {
+		t.Fatalf("defaults grant a provider: %+v", o)
+	}
+	o, err = ParseServeFlags([]string{"--network", "tailscale", "--permit", "tailscale-funnel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.NetworkSet || o.Network != "tailscale" || len(o.Permit) != 1 || o.Permit[0] != "tailscale-funnel" {
+		t.Fatalf("explicit grants: %+v", o)
+	}
+	if _, err := ParseServeFlags([]string{"--permit", "funnel"}); err == nil {
+		t.Fatal("funnel was accepted as an alias")
+	}
+}
+
+func TestStartDoesNotInferGrantsFromOldDirectories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tsnet", "notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h, err := Start(context.Background(), Options{
+		DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0", ConsoleHost: "flats",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if h.Public != nil || h.tsNet != nil {
+		t.Fatal("historical directories started tailscale or portal")
+	}
+	if h.Providers == nil || len(h.Providers.File().Permitted) != 0 {
+		t.Fatalf("grants = %+v", h.Providers.File())
+	}
+	if !h.Providers.File().Migration.HistoricalTSNet {
+		t.Fatalf("migration = %+v", h.Providers.File().Migration)
+	}
+}
+
 func TestDataDirIsAbsolute(t *testing.T) {
 	t.Chdir(t.TempDir())
 	wd, err := os.Getwd()

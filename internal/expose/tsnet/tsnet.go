@@ -82,6 +82,8 @@ const (
 	StateNeedsLogin  = "needs-login"
 	StateKeyExpiring = "key-expiring"
 	StateError       = "error"
+	// StateIdle means the node is on the tailnet and private HTTP was not requested.
+	StateIdle = "idle"
 )
 
 var hostRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -94,9 +96,14 @@ type Net struct {
 	// Test hooks: pollEvery overrides the status poll interval, getCert
 	// replaces the LocalAPI (ACME) certificate source and warmCert replaces
 	// the certificate fetch done when a node starts serving HTTPS.
-	pollEvery time.Duration
-	getCert   func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-	warmCert  func(ctx context.Context, domain string) error
+	// listenFunnel, when set, replaces Server.ListenFunnel. afterFunnelListen
+	// runs after a listener exists; a non-nil error closes that listener
+	// (which drops the AllowFunnel entry ListenFunnel added) and fails the call.
+	pollEvery         time.Duration
+	getCert           func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	warmCert          func(ctx context.Context, domain string) error
+	listenFunnel      func(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error)
+	afterFunnelListen func() error
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
@@ -123,18 +130,31 @@ type node struct {
 	stopErr   error // set by the retiring goroutine before it closes its done channel
 
 	// Guarded by Net.mu.
-	backend   string // ipn.State string
-	authURL   string
-	keyExpiry *time.Time
-	dnsName   string // FQDN without trailing dot
-	serving   bool
-	plain     bool
-	certOK    bool   // the HTTPS certificate has been obtained at least once
-	certErr   string // last certificate fetch error while !certOK
-	err       error
-	loginKick bool // StartLoginInteractive already requested in this needs-login episode
-	wasUp     bool // reached Running at least once (later NeedsLogin means re-auth)
-	https     []*http.Server
+	backend       string // ipn.State string
+	authURL       string
+	keyExpiry     *time.Time
+	dnsName       string // FQDN without trailing dot
+	private       bool   // tailnet HTTP was requested; funnel-only nodes stay false
+	listenStarted bool
+	serving       bool
+	plain         bool
+	certOK        bool   // the HTTPS certificate has been obtained at least once
+	certErr       string // last certificate fetch error while !certOK
+	err           error
+	loginKick     bool // StartLoginInteractive already requested in this needs-login episode
+	wasUp         bool // reached Running at least once (later NeedsLogin means re-auth)
+	https         []*http.Server
+
+	booted       chan struct{} // closed once Up has finished or the node has given up
+	bootSignaled bool
+	bootOK       bool
+
+	funnelH      atomic.Pointer[http.Handler]
+	funnelLn     net.Listener
+	funnelSrv    *http.Server
+	funnelState  string
+	funnelDetail string
+	funnelURL    string
 }
 
 // New creates a Net. Nodes start on the first Serve of their host.
@@ -185,6 +205,10 @@ func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bo
 	if nd, ok := n.nodes[host]; ok {
 		nd.handler.Store(&h)
 		if nd.err == nil {
+			if !nd.private {
+				nd.private = true
+				go n.ensurePrivate(nd)
+			}
 			return n.urlLocked(host), nil
 		}
 		// The node failed (start, Up or listen) and serving again is how a
@@ -192,18 +216,7 @@ func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bo
 		// node keeps its identity, and start a fresh one after that.
 		n.retireLocked(nd, false)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	nd := &node{
-		host:      host,
-		ephemeral: ephemeral,
-		dir:       filepath.Join(n.cfg.Dir, host),
-		ctx:       ctx,
-		cancel:    cancel,
-		started:   make(chan struct{}),
-		done:      make(chan struct{}),
-		prev:      n.stopping[host],
-		backend:   ipn.NoState.String(),
-	}
+	nd := n.newNode(host, ephemeral, true)
 	nd.handler.Store(&h)
 	n.nodes[host] = nd
 	n.notifyLocked()
@@ -211,9 +224,41 @@ func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bo
 	return n.urlLocked(host), nil
 }
 
+// newNode builds a node that is not yet in the served set. n.mu must be held.
+func (n *Net) newNode(host string, ephemeral, private bool) *node {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &node{
+		host:      host,
+		ephemeral: ephemeral,
+		private:   private,
+		dir:       filepath.Join(n.cfg.Dir, host),
+		ctx:       ctx,
+		cancel:    cancel,
+		started:   make(chan struct{}),
+		done:      make(chan struct{}),
+		booted:    make(chan struct{}),
+		prev:      n.stopping[host],
+		backend:   ipn.NoState.String(),
+	}
+}
+
+// signalBoot wakes ServeFunnel. The first call wins; ok is recorded only then.
+// Nodes built without a boot channel (predecessor-only teardown tests) are ignored.
+func (n *Net) signalBoot(nd *node, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if nd.bootSignaled || nd.booted == nil {
+		return
+	}
+	nd.bootSignaled = true
+	nd.bootOK = ok
+	close(nd.booted)
+}
+
 // run owns one node's lifecycle until its context is cancelled.
 func (n *Net) run(nd *node) {
 	defer close(nd.done)
+	defer n.signalBoot(nd, false)
 	if nd.prev != nil {
 		// A previous node with this host is still tearing down (and may be
 		// deleting the state directory); start fresh after it.
@@ -264,18 +309,64 @@ func (n *Net) run(nd *node) {
 		return
 	}
 	n.applyStatus(nd, st)
-	if err := n.listen(nd, srv, lc, st); err != nil {
+	n.signalBoot(nd, true)
+	n.mu.Lock()
+	wantPrivate := nd.private
+	n.mu.Unlock()
+	if wantPrivate {
+		if err := n.listen(nd, srv, lc, st); err != nil {
+			if nd.ctx.Err() == nil {
+				n.setErr(nd, err)
+			}
+			return
+		}
+	}
+	n.poll(nd, lc)
+}
+
+// ensurePrivate starts tailnet HTTP on a node that was brought up for Funnel
+// only. It does nothing when private HTTP is already being served.
+func (n *Net) ensurePrivate(nd *node) {
+	select {
+	case <-nd.booted:
+	case <-nd.ctx.Done():
+		return
+	}
+	n.mu.Lock()
+	ready := nd.bootOK && nd.err == nil && nd.srv != nil && !nd.serving && !nd.listenStarted
+	n.mu.Unlock()
+	if !ready {
+		return
+	}
+	lc, err := nd.srv.LocalClient()
+	if err != nil {
+		n.setErr(nd, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(nd.ctx, 10*time.Second)
+	st, err := lc.Status(ctx)
+	cancel()
+	if err != nil {
 		if nd.ctx.Err() == nil {
 			n.setErr(nd, err)
 		}
 		return
 	}
-	n.poll(nd, lc)
+	if err := n.listen(nd, nd.srv, lc, st); err != nil && nd.ctx.Err() == nil {
+		n.setErr(nd, err)
+	}
 }
 
 // listen serves the handler with HTTPS on :443 (and a redirect on :80) when
 // the tailnet issues certificates, else plain HTTP on :80.
 func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.Status) error {
+	n.mu.Lock()
+	if nd.listenStarted || nd.serving {
+		n.mu.Unlock()
+		return nil
+	}
+	nd.listenStarted = true
+	n.mu.Unlock()
 	app := n.identity(nd, lc.WhoIs)
 	useTLS := st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSEnabled && len(st.CertDomains) > 0
 	var servers []*http.Server
@@ -734,7 +825,18 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		}
 		n.mu.Lock()
 		servers := nd.https
+		funnelSrv := nd.funnelSrv
+		funnelLn := nd.funnelLn
+		nd.funnelSrv = nil
+		nd.funnelLn = nil
+		nd.funnelState = ""
 		n.mu.Unlock()
+		if funnelSrv != nil {
+			funnelSrv.Close()
+		}
+		if funnelLn != nil {
+			funnelLn.Close()
+		}
 		for _, hs := range servers {
 			if err := hs.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 				errs = append(errs, fmt.Errorf("tsnet %s HTTP close: %w", nd.host, err))
@@ -883,6 +985,9 @@ func (n *Net) hostInfoLocked(nd *node, now time.Time) core.HostInfo {
 		}
 	case nd.backend == ipn.NeedsMachineAuth.String():
 		hi.State, hi.Detail = StateNeedsLogin, "waiting for device approval in the Tailscale admin console"
+	case !nd.private && !nd.serving && nd.bootOK && nd.backend == ipn.Running.String():
+		hi.State = StateIdle
+		hi.Detail = "on the tailnet; private HTTP is not served"
 	case nd.serving && nd.backend == ipn.Running.String() && !nd.plain && !nd.certOK:
 		hi.Detail = CertPending
 		if nd.certErr != "" {

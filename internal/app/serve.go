@@ -25,6 +25,7 @@ import (
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/portal"
+	"github.com/gosuda/flats/internal/expose/provider"
 	tsnetx "github.com/gosuda/flats/internal/expose/tsnet"
 	"github.com/gosuda/flats/internal/forkwatch"
 	"github.com/gosuda/flats/internal/mcpx"
@@ -39,11 +40,14 @@ var Version = "dev"
 type Options struct {
 	DataDir     string
 	Listen      string // loopback management address
-	Network     string // tailscale | local
-	LocalAddr   string // local network address (network=local)
+	Network     string // tailscale | local; legacy private path
+	NetworkSet  bool   // true when --network was present on the command line
+	LocalAddr   string // local network address
 	AuthKeyFile string
 	ConsoleHost string
 	Portal      bool
+	PortalSet   bool     // true when --portal was present on the command line
+	Permit      []string // explicit host grants; does not publish a flat
 	Relays      []string
 	Runtime     bool
 }
@@ -68,18 +72,39 @@ func DefaultDataDir() string {
 func ParseServeFlags(args []string) (Options, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	o := Options{}
-	var relays string
+	var relays, permit string
 	fs.StringVar(&o.DataDir, "data", DefaultDataDir(), "data directory")
 	fs.StringVar(&o.Listen, "listen", "127.0.0.1:7878", "loopback address for the CLI, local agents and the console")
-	fs.StringVar(&o.Network, "network", "tailscale", "private network: tailscale or local (development; serves <flat>.localhost)")
-	fs.StringVar(&o.LocalAddr, "local-addr", "127.0.0.1:7879", "address of the local network (network=local)")
+	fs.StringVar(&o.Network, "network", "local", "legacy private path: tailscale or local. tailscale records a host grant and does not enable Funnel")
+	fs.StringVar(&o.LocalAddr, "local-addr", "127.0.0.1:7879", "address of the local network")
 	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "file holding a reusable, untagged Tailscale auth key for new nodes (else TS_AUTHKEY or interactive login)")
 	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console")
-	fs.BoolVar(&o.Portal, "portal", true, "enable public flats through Portal")
+	fs.BoolVar(&o.Portal, "portal", false, "grant Portal and attach it as the legacy public network")
+	fs.StringVar(&permit, "permit", "", "comma-separated host grants: tailscale, tailscale-funnel, portal. Local needs no grant. Stored in the data directory and does not publish a flat")
 	fs.StringVar(&relays, "relays", "", "comma-separated Portal relays (default: Portal CLI default discovery)")
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
 	if err := fs.Parse(args); err != nil {
 		return o, err
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "network":
+			o.NetworkSet = true
+		case "portal":
+			o.PortalSet = true
+		}
+	})
+	if permit != "" {
+		for _, part := range strings.Split(permit, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, err := provider.ParseID(part); err != nil {
+				return o, err
+			}
+			o.Permit = append(o.Permit, part)
+		}
 	}
 	if relays != "" {
 		for _, r := range strings.Split(relays, ",") {
@@ -126,9 +151,13 @@ type Host struct {
 	Store     *store.Store
 	Private   core.PrivateNet
 	Public    core.PublicNet
+	Providers *provider.Manager
 	Mux       http.Handler
 	srv       *http.Server
 	ln        net.Listener
+	localNet  *local.Net
+	tsNet     *tsnetx.Net
+	portalNet *portal.Net
 	console   string
 	dataLock  *os.File
 	closeOnce sync.Once
@@ -167,14 +196,16 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	h.Store = st
 
-	switch o.Network {
-	case "local":
-		ln, err := local.Listen(o.LocalAddr)
-		if err != nil {
-			return nil, fmt.Errorf("local network: %w", err)
-		}
-		h.Private = ln
-	default:
+	grants, err := hostGrants(o)
+	if err != nil {
+		return nil, err
+	}
+	loop, err := local.Listen(o.LocalAddr)
+	if err != nil {
+		return nil, fmt.Errorf("local network: %w", err)
+	}
+	h.localNet = loop
+	if grants.Allows(provider.Tailscale) || grants.Allows(provider.Funnel) {
 		key := os.Getenv("TS_AUTHKEY")
 		if o.AuthKeyFile != "" {
 			b, err := os.ReadFile(o.AuthKeyFile)
@@ -187,14 +218,35 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		if err != nil {
 			return nil, fmt.Errorf("tailscale: %w", err)
 		}
-		h.Private = n
+		h.tsNet = n
 	}
-	if o.Portal {
+	if grants.Allows(provider.Portal) {
 		p, err := portal.New(portalConfig(ctx, st, o, logf))
 		if err != nil {
 			return nil, fmt.Errorf("portal: %w", err)
 		}
-		h.Public = p
+		h.portalNet = p
+	}
+	var tail provider.Tailnet
+	if h.tsNet != nil {
+		tail = provider.TSNet{Net: h.tsNet}
+	}
+	mgr, err := provider.New(o.DataDir, provider.Options{Local: loop, Tailscale: tail, Portal: h.portalNet})
+	if err != nil {
+		return nil, err
+	}
+	h.Providers = mgr
+	useTailscale := o.Network == "tailscale" || (!o.NetworkSet && grants.PrivateBackend == "tailscale" && grants.Allows(provider.Tailscale))
+	if useTailscale {
+		if h.tsNet == nil {
+			return nil, errors.New("tailscale is selected but not permitted")
+		}
+		h.Private = h.tsNet
+	} else {
+		h.Private = loop
+	}
+	if h.portalNet != nil && !(o.PortalSet && !o.Portal) {
+		h.Public = h.portalNet
 	}
 	var rt core.Runtime
 	if o.Runtime {
@@ -225,7 +277,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", o.Listen, err)
 	}
-	if o.Network == "tailscale" {
+	if useTailscale {
 		h.console = h.Private.URL(o.ConsoleHost)
 	} else {
 		h.console = "http://" + h.ln.Addr().String()
@@ -236,7 +288,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 			logf("management server: %v", err)
 		}
 	}()
-	if o.Network == "tailscale" {
+	if useTailscale {
 		// The tsnet identity middleware sets Tailscale-User-Login from WhoIs
 		// on this node, so console decisions here record who made them.
 		node := &api.HostGuard{Hosts: h.consoleNames, Ports: []string{"", "80", "443"}, Next: api.TailnetIdentity(mux)}
@@ -293,6 +345,45 @@ func portalConfig(ctx context.Context, st *store.Store, o Options, logf func(str
 	return cfg
 }
 
+// hostGrants loads the on-disk permission file and applies explicit flags.
+// A flag records a grant. It does not serve a flat, and a tailscale grant
+// does not grant Funnel. Historical tsnet or portal directories are not grants.
+func hostGrants(o Options) (provider.File, error) {
+	f, err := provider.Load(o.DataDir)
+	if err != nil {
+		return f, err
+	}
+	if o.Network == "tailscale" {
+		f, err = f.Grant(provider.Tailscale)
+		if err != nil {
+			return f, err
+		}
+		f.PrivateBackend = "tailscale"
+	} else if o.NetworkSet && o.Network == "local" {
+		f.PrivateBackend = "local"
+	}
+	if o.Portal {
+		f, err = f.Grant(provider.Portal)
+		if err != nil {
+			return f, err
+		}
+	}
+	for _, raw := range o.Permit {
+		id, err := provider.ParseID(raw)
+		if err != nil {
+			return f, err
+		}
+		f, err = f.Grant(id)
+		if err != nil {
+			return f, err
+		}
+	}
+	if err := provider.Save(o.DataDir, f); err != nil {
+		return f, err
+	}
+	return f, nil
+}
+
 // loopbackGuard accepts only the loopback names of the bound address as
 // Host (and Origin): 127.0.0.1, localhost and ::1 with its port, plus the
 // listen IP itself when it is a specific address.
@@ -333,6 +424,7 @@ type SystemStatus struct {
 	Private    core.NetStatus    `json:"private"`
 	Public     *core.NetStatus   `json:"public,omitempty"`
 	Runtime    bool              `json:"server_flats"`
+	Grants     []string          `json:"provider_grants,omitempty"`
 	Redirects  map[string]string `json:"redirects,omitempty"`
 }
 
@@ -340,6 +432,11 @@ type SystemStatus struct {
 func (h *Host) Status(ctx context.Context) any {
 	s := SystemStatus{Version: Version, DataDir: h.Opts.DataDir, ConsoleURL: h.console, MCPURL: strings.TrimSuffix(h.console, "/") + "/mcp",
 		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Opts.Runtime, Redirects: h.Svc.Redirects()}
+	if h.Providers != nil {
+		for _, id := range h.Providers.File().Permitted {
+			s.Grants = append(s.Grants, string(id))
+		}
+	}
 	if h.Public != nil {
 		ps := h.Public.Status()
 		s.Public = &ps
@@ -372,11 +469,22 @@ func (h *Host) Close() error {
 		if h.Svc != nil {
 			collect("core shutdown", h.Svc.Close())
 		}
+		if h.Providers != nil {
+			collect("provider routes", h.Providers.Close())
+		}
 		if h.Public != nil {
 			collect("public network shutdown", h.Public.Close())
+		} else if h.portalNet != nil {
+			collect("portal shutdown", h.portalNet.Close())
 		}
 		if h.Private != nil {
 			collect("private network shutdown", h.Private.Close())
+		}
+		if h.tsNet != nil && h.Private != h.tsNet {
+			collect("tailscale shutdown", h.tsNet.Close())
+		}
+		if h.localNet != nil && h.Private != h.localNet {
+			collect("local shutdown", h.localNet.Close())
 		}
 		if h.Store != nil {
 			collect("store shutdown", h.Store.Close())

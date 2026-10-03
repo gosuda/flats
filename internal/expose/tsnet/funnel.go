@@ -1,0 +1,355 @@
+package tsnet
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	ts "tailscale.com/tsnet"
+)
+
+// Funnel connection states. These describe the internet listener only.
+// Private tailnet HTTP is reported separately by Status.
+const (
+	FunnelStarting    = "starting"
+	FunnelReady       = "ready"
+	FunnelError       = "error"
+	FunnelUnavailable = "unavailable"
+)
+
+// FunnelReport is the internet route for one host.
+type FunnelReport struct {
+	URL    string
+	State  string
+	Detail string
+}
+
+// ServeFunnel serves h on the public internet with Tailscale Funnel.
+// The listener is FunnelOnly on TCP 443, so tailnet peers are not accepted
+// on it. Private ACL HTTP, when requested through Serve, stays on its own
+// listener. Joining the tailnet does not publish this route; the caller must
+// invoke ServeFunnel. Ephemeral preview hosts are rejected.
+func (n *Net) ServeFunnel(ctx context.Context, host string, h http.Handler) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if !hostRE.MatchString(host) {
+		return "", fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	}
+	if h == nil {
+		return "", errors.New("tsnet: nil handler")
+	}
+	nd, created, err := n.beginFunnel(host, h)
+	if err != nil {
+		return "", err
+	}
+	fail := func(cause error) (string, error) {
+		n.clearFunnel(nd, FunnelError, cause.Error())
+		if created {
+			// This call created the node and never served private HTTP.
+			// Drop it so a failed Funnel attempt does not leave a new tailnet node.
+			_ = n.Stop(host)
+		}
+		return "", cause
+	}
+	select {
+	case <-nd.booted:
+	case <-ctx.Done():
+		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, ctx.Err()))
+	case <-nd.ctx.Done():
+		return fail(fmt.Errorf("tsnet: funnel %s stopped before it joined", host))
+	}
+	n.mu.Lock()
+	bootOK := nd.bootOK && nd.err == nil && nd.srv != nil
+	already := nd.funnelLn != nil && (nd.funnelState == FunnelReady || nd.funnelState == FunnelStarting)
+	bootErr := nd.err
+	n.mu.Unlock()
+	if !bootOK {
+		if bootErr == nil {
+			bootErr = errors.New("node did not come up")
+		}
+		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, bootErr))
+	}
+	if already {
+		nd.funnelH.Store(&h)
+		return n.funnelURL(nd), nil
+	}
+
+	// FunnelOnly registers only the funnel listen key. ListenFunnel without it
+	// uses listen-on-both and refuses :443 when the private tailnet listener
+	// already holds that port (pinned tsnet registerListener). The two keys
+	// share the port number and stay separate listeners.
+	opts := []ts.FunnelOption{ts.FunnelOnly()}
+	if n.getCert != nil {
+		opts = append(opts, ts.FunnelTLSConfig(&tls.Config{GetCertificate: n.getCert}))
+	}
+	ln, err := n.openFunnel(nd.srv, opts)
+	if err != nil {
+		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, err))
+	}
+	if n.afterFunnelListen != nil {
+		if err := n.afterFunnelListen(); err != nil {
+			ln.Close()
+			return fail(fmt.Errorf("tsnet: funnel %s: %w", host, err))
+		}
+	}
+	hs := &http.Server{
+		Handler:           n.publicHandler(nd),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	n.mu.Lock()
+	nd.funnelLn = ln
+	nd.funnelSrv = hs
+	nd.funnelURL = n.funnelURLLocked(nd)
+	nd.funnelState = FunnelStarting
+	nd.funnelDetail = "Funnel listener is up; waiting for its HTTPS certificate"
+	if n.getCert != nil {
+		nd.funnelState = FunnelReady
+		nd.funnelDetail = "Funnel is accepting internet connections on port 443; tailnet peers use the private listener"
+	}
+	url := nd.funnelURL
+	n.notifyLocked()
+	n.mu.Unlock()
+	go n.serveFunnel(nd, hs, ln)
+	if n.getCert == nil {
+		go n.warmFunnel(nd)
+	}
+	return url, nil
+}
+
+// StopFunnel closes the internet listener and the AllowFunnel entry that
+// ListenFunnel added. The private tailnet listener and the node's tailnet
+// membership stay as they were.
+func (n *Net) StopFunnel(host string) error {
+	n.mu.Lock()
+	nd, ok := n.nodes[host]
+	if !ok || nd.funnelLn == nil && nd.funnelState == "" {
+		n.mu.Unlock()
+		return nil
+	}
+	ln := nd.funnelLn
+	hs := nd.funnelSrv
+	nd.funnelLn = nil
+	nd.funnelSrv = nil
+	nd.funnelH.Store(nil)
+	nd.funnelState = FunnelUnavailable
+	nd.funnelDetail = "Funnel route closed; private tailnet access was not removed"
+	n.notifyLocked()
+	n.mu.Unlock()
+	return closeFunnel(hs, ln)
+}
+
+// FunnelStatus reports the internet route. Hosts with no Funnel listener
+// are unavailable, including hosts that are serving private tailnet HTTP.
+func (n *Net) FunnelStatus(host string) FunnelReport {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	nd, ok := n.nodes[host]
+	if !ok || nd.funnelState == "" {
+		return FunnelReport{State: FunnelUnavailable, Detail: "Funnel is not enabled for this host"}
+	}
+	return FunnelReport{URL: nd.funnelURL, State: nd.funnelState, Detail: nd.funnelDetail}
+}
+
+func (n *Net) beginFunnel(host string, h http.Handler) (nd *node, created bool, err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return nil, false, errors.New("tsnet: network is closed")
+	}
+	if nd, ok := n.nodes[host]; ok {
+		if nd.ephemeral {
+			return nil, false, fmt.Errorf("tsnet: funnel %s: ephemeral previews stay on the private network", host)
+		}
+		if nd.err != nil {
+			return nil, false, fmt.Errorf("tsnet: funnel %s: %w", host, nd.err)
+		}
+		nd.funnelH.Store(&h)
+		return nd, false, nil
+	}
+	nd = n.newNode(host, false, false)
+	nd.funnelH.Store(&h)
+	nd.funnelState = FunnelStarting
+	nd.funnelDetail = "joining the tailnet before Funnel can listen"
+	n.nodes[host] = nd
+	n.notifyLocked()
+	go n.run(nd)
+	return nd, true, nil
+}
+
+func (n *Net) openFunnel(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error) {
+	if n.listenFunnel != nil {
+		return n.listenFunnel(srv, opts)
+	}
+	return srv.ListenFunnel("tcp", ":443", opts...)
+}
+
+func (n *Net) publicHandler(nd *node) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k := range r.Header {
+			if isIdentityHeader(k) {
+				delete(r.Header, k)
+			}
+		}
+		h := nd.funnelH.Load()
+		if h == nil || *h == nil {
+			http.Error(w, "not published", http.StatusNotFound)
+			return
+		}
+		(*h).ServeHTTP(w, r)
+	})
+}
+
+func (n *Net) serveFunnel(nd *node, hs *http.Server, ln net.Listener) {
+	err := hs.Serve(ln)
+	if err == nil || errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
+		return
+	}
+	n.mu.Lock()
+	if nd.funnelLn == ln {
+		nd.funnelState = FunnelError
+		nd.funnelDetail = err.Error()
+		n.notifyLocked()
+	}
+	n.mu.Unlock()
+	n.logf("tsnet %s: funnel: %v", nd.host, err)
+}
+
+// warmFunnel holds the internet route at starting until Let's Encrypt has
+// issued the certificate, matching the private HTTPS path.
+func (n *Net) warmFunnel(nd *node) {
+	n.mu.Lock()
+	domain := nd.dnsName
+	srv := nd.srv
+	n.mu.Unlock()
+	if srv == nil {
+		n.setFunnel(nd, FunnelError, "Funnel node is not running")
+		return
+	}
+	if domain == "" && srv != nil {
+		if domains := srv.CertDomains(); len(domains) > 0 {
+			domain = domains[0]
+		}
+	}
+	if domain == "" {
+		n.mu.Lock()
+		if nd.funnelState == FunnelStarting {
+			nd.funnelState = FunnelError
+			nd.funnelDetail = "Funnel has no HTTPS name yet"
+			n.notifyLocked()
+		}
+		n.mu.Unlock()
+		return
+	}
+	lc, err := srv.LocalClient()
+	if err != nil {
+		n.setFunnel(nd, FunnelError, err.Error())
+		return
+	}
+	fetch := n.warmCert
+	if fetch == nil {
+		fetch = func(ctx context.Context, d string) error {
+			_, _, err := lc.CertPair(ctx, d)
+			return err
+		}
+	}
+	wait := certRetryMin
+	for {
+		ctx, cancel := context.WithTimeout(nd.ctx, certWarmTimeout)
+		err := fetch(ctx, domain)
+		cancel()
+		if nd.ctx.Err() != nil {
+			return
+		}
+		n.mu.Lock()
+		stopped := nd.funnelState == FunnelUnavailable || nd.funnelState == ""
+		n.mu.Unlock()
+		if stopped {
+			return
+		}
+		if err == nil {
+			n.setFunnel(nd, FunnelReady, "Funnel is accepting internet connections on port 443; tailnet peers use the private listener")
+			return
+		}
+		n.setFunnel(nd, FunnelStarting, CertPending+"; last attempt: "+err.Error())
+		n.logf("tsnet %s: funnel certificate for %s: %v (retrying in %s)", nd.host, domain, err, wait)
+		select {
+		case <-nd.ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, certRetryMax)
+	}
+}
+
+func (n *Net) setFunnel(nd *node, state, detail string) {
+	n.mu.Lock()
+	if nd.funnelState != FunnelUnavailable {
+		nd.funnelState = state
+		nd.funnelDetail = detail
+		n.notifyLocked()
+	}
+	n.mu.Unlock()
+}
+
+func (n *Net) clearFunnel(nd *node, state, detail string) {
+	n.mu.Lock()
+	ln := nd.funnelLn
+	hs := nd.funnelSrv
+	nd.funnelLn = nil
+	nd.funnelSrv = nil
+	nd.funnelState = state
+	nd.funnelDetail = detail
+	n.notifyLocked()
+	n.mu.Unlock()
+	if hs != nil || ln != nil {
+		_ = closeFunnel(hs, ln)
+	}
+}
+
+func closeFunnel(hs *http.Server, ln net.Listener) error {
+	var errs []error
+	if hs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := hs.Shutdown(ctx)
+		cancel()
+		if err != nil {
+			errs = append(errs, err)
+			if cerr := hs.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+				errs = append(errs, cerr)
+			}
+		}
+	}
+	if ln != nil {
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (n *Net) funnelURL(nd *node) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if nd.funnelURL != "" {
+		return nd.funnelURL
+	}
+	return n.funnelURLLocked(nd)
+}
+
+func (n *Net) funnelURLLocked(nd *node) string {
+	name := nd.dnsName
+	if name == "" {
+		suffix := n.suffix
+		if suffix == "" {
+			suffix = "<tailnet>.ts.net"
+		}
+		name = nd.host + "." + suffix
+	}
+	return "https://" + name
+}
