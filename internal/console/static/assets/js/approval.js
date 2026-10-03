@@ -15,8 +15,10 @@ const visLabel = (v) => (VISIBILITY[v] ? VISIBILITY[v].label : v);
 // describeApproval is a one-line summary for lists.
 export function describeApproval(a) {
   const p = params(a);
-  if (a.action === 'set_visibility') return `Make ${a.flat} ${visLabel(p.visibility).toLowerCase()}`;
+  if (a.action === 'set_visibility') return `Make ${a.flat} ${visLabel(p.visibility || p.to).toLowerCase()}`;
+  if (a.action === 'publish') return `Publish draft revision ${p.revision || ''} of ${a.flat}`;
   if (a.action === 'delete') return `Delete ${a.flat}`;
+  if (a.action === 'rollback' || a.action === 'deploy') return `Make v${p.version || ''} current on ${a.flat}`;
   return `${a.action} on ${a.flat}`;
 }
 
@@ -61,13 +63,18 @@ export function mount(main, [id], ctx) {
     ];
     if (a.action === 'set_visibility') {
       if (a.status === 'pending') {
-        rows.push(['Current visibility', flat ? visibilityBadge(flat.visibility) : h('span', { text: p.from ? visLabel(p.from) : 'unknown' })]);
+        rows.push(['Current access', flat ? visibilityBadge(flat.visibility) : h('span', { text: p.from ? visLabel(p.from) : 'unknown' })]);
       } else {
-        if (p.from) rows.push(['Visibility when requested', visibilityBadge(p.from)]);
-        if (flat) rows.push(['Visibility now', visibilityBadge(flat.visibility)]);
+        if (p.from) rows.push(['Access when requested', visibilityBadge(p.from)]);
+        if (flat) rows.push(['Access now', visibilityBadge(flat.visibility)]);
       }
-      rows.push(['Requested visibility', visibilityBadge(p.visibility)]);
+      rows.push(['Requested access', visibilityBadge(p.visibility || p.to)]);
     }
+    if (p.revision) rows.push(['Draft revision', String(p.revision)]);
+    if (p.hash) rows.push(['Candidate hash', h('code', { text: String(p.hash) })]);
+    if (p.base_version || p.expected_live) rows.push(['Current version at request', `v${p.base_version || p.expected_live}`]);
+    if (p.version) rows.push(['Published version', `v${p.version} (no new number)`]);
+    if (Array.isArray(p.providers)) rows.push(['Permitted providers', p.providers.join(', ') || 'local']);
     rows.push(['Status', statusBadge(a.status)]);
     if (a.decided_at) rows.push(['Decided', dateTime(a.decided_at)]);
     if (a.result) rows.push(['Result', a.result]);
@@ -79,8 +86,17 @@ export function mount(main, [id], ctx) {
       body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, secrets and logs.' }));
     }
 
+    if (/stale/i.test(a.result || '') || a.status === 'stale') {
+      body.appendChild(h('p', { class: 'alert alert-warn', role: 'status', text: 'The content or access settings changed. Review again.' }));
+    }
+    if (a.status === 'rejected') {
+      body.appendChild(h('p', { role: 'status', text: 'The request was rejected. The draft is unchanged.' }));
+    }
+    if (a.status === 'failed' && !/stale/i.test(a.result || '')) {
+      body.appendChild(h('p', { role: 'status', text: a.result || 'The approval failed. It did not publish a version.' }));
+    }
     if (a.status !== 'pending') {
-      body.appendChild(h('p', { class: 'muted', text: `This request was ${a.status}. Nothing else to do.` }));
+      body.appendChild(h('p', { class: 'muted', text: `This request was ${a.status}.` }));
       return;
     }
     if (!flat) {

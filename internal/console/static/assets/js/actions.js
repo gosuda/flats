@@ -2,9 +2,10 @@
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
 
-import { h, dateTime, VISIBILITY, noticeFor, publicNoticeOf } from './dom.js';
+import { h, dateTime, publicNoticeOf } from './dom.js';
 import { api, newestVersion } from './api.js';
-import { confirmDialog, infoDialog, errorPanel, healthBlock, toast, extLink } from './ui.js';
+import { confirmDialog, infoDialog, errorPanel, healthBlock, toast, extLink, announce } from './ui.js';
+import { CHECK_COPY, approvePending, changeVisibility, impactText, publishDraft } from './lifecycle.js';
 
 const label = (f) => f.name || f.slug;
 
@@ -28,7 +29,7 @@ export async function deployVersion(flat, n, kind = 'deploy') {
     title: rollback ? `Roll back to version ${n}?` : `Deploy version ${n}?`,
     body: [
       h('p', { text: `${label(flat)} will serve version ${n}` + (flat.live_version ? ` instead of version ${flat.live_version}.` : '.') }),
-      h('p', { class: 'muted', text: 'The health check runs first; if it fails, the current live version keeps serving. Data is not rolled back unless you ask for it.' }),
+      h('p', { class: 'muted', text: CHECK_COPY + ' The version number does not change when you serve an existing published version again.' }),
       box ? box.row : null,
     ],
     confirmLabel: rollback ? 'Roll back' : 'Deploy',
@@ -36,19 +37,23 @@ export async function deployVersion(flat, n, kind = 'deploy') {
   if (!ok) return false;
   try {
     const res = rollback ? await api.rollback(flat.slug, n, box.input.checked) : await api.deploy(flat.slug, n);
-    await infoDialog(`Version ${res.version} is live`, deployDone(res));
+    const decision = await approvePending(res);
+    await infoDialog(decision?.status === 'approved' ? `Version ${n} approval completed` : 'Approval recorded', deployDone(res, decision, flat));
+    announce(decision?.result || 'Approval completed.');
     return true;
   } catch (err) {
-    await report(rollback ? 'Roll back failed' : 'Deploy failed', err);
+    await report(rollback ? 'Roll back failed' : 'The version change failed', err);
     return false;
   }
 }
 
-function deployDone(res) {
-  const f = res.flat || {};
+function deployDone(res, decision, flat) {
+  const f = (res && res.flat) || flat || {};
+  const reported = decision || res || {};
   return [
-    healthBlock(res.health),
-    res.previous ? h('p', { class: 'muted', text: `Previously live: version ${res.previous}.` }) : null,
+    res && res.health ? healthBlock(res.health) : null,
+    h('p', { text: impactText(reported) }),
+    res && res.previous ? h('p', { class: 'muted', text: `Previously live: version ${res.previous}.` }) : null,
     f.private_url ? h('p', null, 'Private URL: ', extLink(f.private_url)) : null,
     f.public_url ? h('p', null, 'Public URL: ', extLink(f.public_url)) : null,
     f.public_url ? h('p', { class: 'notice-text', text: publicNoticeOf(f) }) : null,
@@ -66,31 +71,27 @@ export async function redeployLive(flat) {
     body: [
       h('p', { text: `${label(flat)} restarts version ${n} with its current secrets.` }),
       h('p', { class: 'muted', text: server
-        ? 'The health check runs first; if it fails, the running instance keeps serving. Data is kept as it is.'
-        : 'This is a static flat: secrets are not used, so it keeps serving the same files.' }),
+        ? CHECK_COPY + ' This restarts the current published version so it reads secrets. It does not create a new version.'
+        : 'This is a static flat: secrets are not used. Restarting does not create a new version. ' + CHECK_COPY }),
     ],
     confirmLabel: 'Redeploy',
   });
   if (!ok) return false;
   try {
     const res = await api.deploy(flat.slug, n);
-    await infoDialog(`Version ${res.version} was redeployed`, deployDone(res));
-    return true;
+    const decision = await approvePending(res);
+    await infoDialog(`Version ${n} restart requested`, deployDone(res, decision, flat));
+    announce(decision?.result || `Restart of version ${n} was submitted.`);
+    return decision?.status !== 'failed' && decision?.status !== 'rejected';
   } catch (err) {
     await report('Redeploy failed', err);
     return false;
   }
 }
 
-// publishLatest deploys the newest saved version.
-export async function publishLatest(flat) {
-  let n;
-  try { n = await newestVersion(flat.slug); } catch (err) { await report('Cannot list versions', err); return false; }
-  if (!n) {
-    await infoDialog('Nothing to publish', 'This flat has no saved versions yet. An agent saves one with save_version (MCP) or `flats deploy`.');
-    return false;
-  }
-  return deployVersion(flat, n);
+// publishLatest publishes the mutable draft after the same confirmation as the flat page.
+export function publishLatest(flat) {
+  return publishDraft(flat);
 }
 
 export async function rollbackPrevious(flat) {
@@ -99,7 +100,7 @@ export async function rollbackPrevious(flat) {
     title: 'Roll back to the previous version?',
     body: [
       h('p', { text: `${label(flat)} will serve the version that was live before version ${flat.live_version}.` }),
-      h('p', { class: 'muted', text: 'The health check runs first. Only code is rolled back unless you also restore the data.' }),
+      h('p', { class: 'muted', text: CHECK_COPY + ' Only code changes unless you also restore the data. The version number does not increase.' }),
       box.row,
     ],
     confirmLabel: 'Roll back',
@@ -107,7 +108,13 @@ export async function rollbackPrevious(flat) {
   if (!ok) return false;
   try {
     const res = await api.rollback(flat.slug, 0, box.input.checked);
-    toast(`Rolled back: version ${res.version} is live.`, 'success');
+    const decision = await approvePending(res);
+    if (decision?.status === 'failed' || decision?.status === 'rejected') {
+      await report('Roll back failed', decision.error || decision.reason || 'The approval was not applied.');
+      return false;
+    }
+    const n = decision?.version || res.version;
+    toast(n ? `Rolled back: version ${n} is current.` : 'Roll back requested.', 'success');
     return true;
   } catch (err) {
     await report('Roll back failed', err);
@@ -166,30 +173,7 @@ export async function deleteFlat(flat) {
   }
 }
 
-// setVisibility changes visibility after a confirm; widening shows the notice.
-export async function setVisibility(flat, vis) {
-  const from = VISIBILITY[flat.visibility] || { rank: 0, label: flat.visibility };
-  const to = VISIBILITY[vis];
-  const widening = to.rank > from.rank;
-  const notice = noticeFor(vis);
-  const ok = await confirmDialog({
-    title: `Make ${label(flat)} ${to.label.toLowerCase()}?`,
-    body: [
-      h('p', { text: `Visibility changes from ${from.label} to ${to.label}.` }),
-      widening && notice ? h('p', { class: 'alert alert-warn', text: notice }) : null,
-      vis === 'private' ? h('p', { class: 'muted', text: 'The public address goes offline. The private address keeps working.' }) : null,
-      !flat.live_version && vis !== 'private' ? h('p', { class: 'muted', text: 'The flat goes public when its first version is deployed.' }) : null,
-    ],
-    confirmLabel: widening ? `Make ${to.label.toLowerCase()}` : 'Change visibility',
-    danger: widening,
-  });
-  if (!ok) return null;
-  try {
-    const res = await api.setVisibility(flat.slug, vis);
-    toast(res.message || 'Visibility changed.', 'success');
-    return res;
-  } catch (err) {
-    await report('Visibility change failed', err);
-    return null;
-  }
+// setVisibility uses the Access confirmation. Publishing stays a separate action.
+export function setVisibility(flat, vis) {
+  return changeVisibility(flat, vis);
 }

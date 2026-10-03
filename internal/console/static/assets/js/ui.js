@@ -8,6 +8,7 @@ import { h, clear, icon } from './dom.js';
 // requireText (the user must type this exactly to enable the confirm button).
 export function confirmDialog(opts) {
   return new Promise((resolve) => {
+    const previous = document.activeElement;
     const titleId = 'dlg-title-' + Math.random().toString(36).slice(2);
     const confirmBtn = h('button', {
       type: 'submit', value: 'ok',
@@ -37,6 +38,7 @@ export function confirmDialog(opts) {
       const ok = dlg.returnValue === 'ok';
       dlg.remove();
       resolve(ok);
+      if (previous && typeof previous.focus === 'function') previous.focus();
     });
     document.body.appendChild(dlg);
     dlg.showModal();
@@ -108,6 +110,13 @@ export function menu(label, items) {
 }
 
 export function closeMenus() { if (openMenu) openMenu(false); }
+
+export function announce(message) {
+  const el = document.getElementById('lifecycle-status');
+  if (!el || !message) return;
+  el.textContent = '';
+  el.textContent = message;
+}
 
 export function toast(message, kind) {
   const box = document.getElementById('toasts');
