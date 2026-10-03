@@ -53,6 +53,8 @@ type Config struct {
 // exposure is the part of *sdk.Exposure Net uses; tests substitute a fake.
 type exposure interface {
 	net.Listener
+	AddRelay(relayURL string) error
+	RemoveRelay(relayURL string) error
 	Relays() []sdk.RelayStatus
 	Updates() <-chan sdk.RelayStatus
 	UpdateMetadata(types.LeaseMetadata) error
@@ -103,6 +105,8 @@ type entry struct {
 
 	mu      sync.Mutex
 	hidden  bool
+	pinned  string                     // discovered relay kept as explicit so the URL stays (see pin)
+	downAt  time.Time                  // when the pinned relay stopped being ready; zero while ready
 	primary string                     // discovered relay whose URL URL() keeps returning while it is ready
 	sticky  map[string]sdk.RelayStatus // terminal failures, kept after deselection
 	logged  map[string]string          // relayURL -> last logged state
@@ -261,7 +265,12 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	if n.cfg.Discovery {
 		maxActive = n.cfg.MaxActiveRelays
 	}
-	exp, err := n.expose(n.ctx, id, slices.Clone(n.relays), maxActive, metadata(slug, hidden))
+	relays := slices.Clone(n.relays)
+	pinned := n.loadPin(slug)
+	if pinned != "" && !slices.Contains(relays, pinned) {
+		relays = append(relays, pinned)
+	}
+	exp, err := n.expose(n.ctx, id, relays, maxActive, metadata(slug, hidden))
 	if err != nil {
 		return "", fmt.Errorf("portal: expose %s: %w", slug, err)
 	}
@@ -274,6 +283,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		cancel:  cancel,
 		done:    make(chan struct{}),
 		hidden:  hidden,
+		pinned:  pinned,
 		sticky:  map[string]sdk.RelayStatus{},
 		logged:  map[string]string{},
 	}
@@ -432,7 +442,7 @@ func (n *Net) readyURLs(e *entry, sts []sdk.RelayStatus) []string {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	ready = n.ordered(ready, e.primary)
+	ready = n.ordered(ready, e.pinned, e.primary)
 	if len(ready) > 0 && !slices.Contains(n.relays, ready[0].RelayURL) {
 		e.primary = ready[0].RelayURL
 	}
@@ -478,17 +488,20 @@ func (n *Net) WaitReady(ctx context.Context, slug string) ([]string, error) {
 }
 
 // ordered sorts statuses with explicit relays first (config order), then
-// primary, then the rest by relay URL, so URL() stays stable as discovery
-// adds relays.
-func (n *Net) ordered(sts []sdk.RelayStatus, primary string) []sdk.RelayStatus {
+// the pinned relay, then primary, then the rest by relay URL, so URL() stays
+// stable as discovery adds relays.
+func (n *Net) ordered(sts []sdk.RelayStatus, pinned, primary string) []sdk.RelayStatus {
 	rank := func(u string) int {
 		if i := slices.Index(n.relays, u); i >= 0 {
 			return i
 		}
-		if u == primary {
+		switch u {
+		case pinned:
 			return len(n.relays)
+		case primary:
+			return len(n.relays) + 1
 		}
-		return len(n.relays) + 1
+		return len(n.relays) + 2
 	}
 	out := slices.Clone(sts)
 	slices.SortStableFunc(out, func(a, b sdk.RelayStatus) int {
@@ -524,7 +537,16 @@ func (n *Net) watch(ctx context.Context, e *entry) {
 
 func (n *Net) observe(e *entry, sts ...sdk.RelayStatus) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	n.record(e, sts)
+	old, next := n.pinChange(e, sts, time.Now())
+	e.mu.Unlock()
+	if next != "" {
+		n.repin(e, old, next)
+	}
+}
+
+// record tracks terminal failures and logs state changes. e.mu is held.
+func (n *Net) record(e *entry, sts []sdk.RelayStatus) {
 	for _, s := range sts {
 		if s.RelayURL == "" {
 			continue
@@ -555,6 +577,117 @@ func (n *Net) observe(e *entry, sts ...sdk.RelayStatus) {
 			n.logf("portal: %s: %s", e.slug, describeFailure(s))
 		}
 	}
+}
+
+// Relay pinning. Without explicit relays, every relay comes from discovery,
+// which swaps relays freely (on a real run it replaced both relays of a
+// flat within two minutes), so a public URL handed to someone stopped
+// working. The first discovered relay that becomes ready is therefore
+// pinned: added as an explicit relay, which discovery never drops, and
+// saved to <Dir>/<slug>.relay so the URL survives restarts too. Discovery
+// still adds other relays next to it. The pin moves only when the pinned
+// relay fails permanently (for example the name is taken there) or has not
+// been ready for repinAfter while another relay is.
+var repinAfter = 24 * time.Hour
+
+func (n *Net) pinPath(slug string) string {
+	return filepath.Join(n.cfg.Dir, slug+".relay")
+}
+
+// loadPin returns slug's saved pinned relay, or "".
+func (n *Net) loadPin(slug string) string {
+	if len(n.relays) > 0 {
+		return "" // explicit relays already keep the URL stable
+	}
+	b, err := os.ReadFile(n.pinPath(slug))
+	if err != nil {
+		return ""
+	}
+	u, err := utils.NormalizeRelayURL(strings.TrimSpace(string(b)))
+	if err != nil {
+		return ""
+	}
+	return u
+}
+
+// pinChange decides whether e's pinned relay should change and returns the
+// old and new pin (next == "" means no change). e.mu is held.
+func (n *Net) pinChange(e *entry, sts []sdk.RelayStatus, now time.Time) (old, next string) {
+	if len(n.relays) > 0 {
+		return "", ""
+	}
+	ready := func(s sdk.RelayStatus) bool {
+		return s.State == sdk.RelayReady && !s.Deselected && s.PublicURL != ""
+	}
+	var candidate string
+	pinnedReady := false
+	for _, s := range sts {
+		if s.RelayURL == e.pinned {
+			pinnedReady = ready(s)
+		} else if candidate == "" && ready(s) {
+			candidate = s.RelayURL
+		}
+	}
+	if e.pinned != "" {
+		if pinnedReady {
+			e.downAt = time.Time{}
+			return "", ""
+		}
+		if e.downAt.IsZero() {
+			e.downAt = now
+		}
+		_, permanent := e.sticky[e.pinned]
+		if !permanent && now.Sub(e.downAt) < repinAfter {
+			return "", ""
+		}
+	}
+	if candidate == "" {
+		return "", ""
+	}
+	return e.pinned, candidate
+}
+
+// repin makes next the explicit pinned relay of e and drops old. It calls
+// into the SDK, so e.mu must not be held.
+func (n *Net) repin(e *entry, old, next string) {
+	if err := e.exp.AddRelay(next); err != nil {
+		n.logf("portal: %s: pin relay %s: %v", e.slug, next, err)
+		return
+	}
+	e.mu.Lock()
+	e.pinned, e.downAt, e.primary = next, time.Time{}, next
+	e.mu.Unlock()
+	if err := writeFileAtomic(n.pinPath(e.slug), []byte(next+"\n")); err != nil {
+		n.logf("portal: %s: save pinned relay: %v", e.slug, err)
+	}
+	if old == "" {
+		n.logf("portal: %s: keeping %s as its public relay", e.slug, next)
+		return
+	}
+	if err := e.exp.RemoveRelay(old); err != nil {
+		n.logf("portal: %s: unpin relay %s: %v", e.slug, old, err)
+	}
+	n.logf("portal: %s: moved its public address from %s to %s (old relay unavailable)", e.slug, old, next)
+}
+
+// writeFileAtomic writes a 0600 file through a temporary file and rename.
+func writeFileAtomic(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp, 0o600)); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func isHostnameConflict(err error) bool {
@@ -645,7 +778,7 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 		merged[s.RelayURL] = s
 	}
 	ready := n.readyURLs(e, live)
-	all := n.ordered(slices.Collect(maps.Values(merged)), "")
+	all := n.ordered(slices.Collect(maps.Values(merged)), "", "")
 
 	var connecting, failed []string
 	permanent, conflict := 0, false

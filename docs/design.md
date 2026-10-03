@@ -104,6 +104,15 @@ portal/<slug>.json              Portal identity (keeps the public hostname stabl
   starts; the settings API reports them in `apply_on_restart` and returns
   `restart_required` when a change needs a restart. A stored value that is
   invalid is logged and ignored at startup, so it cannot stop the server.
+  With discovery and no explicit relays, the first discovered relay that
+  becomes ready for a flat is pinned: added as an explicit relay (which
+  discovery never drops) and saved to `portal/<slug>.relay`, so the flat's
+  public URL survives discovery reshuffles and restarts. On a real run,
+  discovery replaced both relays of a public flat within two minutes, which
+  broke the link the operator had shared. The pin moves only when its relay
+  fails permanently (for example the name is taken there) or has not been
+  ready for 24 hours while another relay is; other relays keep serving
+  meanwhile.
   Discovery-only startup can take about
   a minute; the API returns the public URL once a relay is ready. Unlisted is
   never described as access control; every API response that returns a public

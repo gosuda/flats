@@ -47,6 +47,28 @@ func (f *fakeExposure) Relays() []sdk.RelayStatus {
 
 func (f *fakeExposure) Updates() <-chan sdk.RelayStatus { return f.updates }
 
+func (f *fakeExposure) AddRelay(u string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Contains(f.relays, u) {
+		f.relays = append(f.relays, u)
+	}
+	return nil
+}
+
+func (f *fakeExposure) RemoveRelay(u string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.relays = slices.DeleteFunc(f.relays, func(r string) bool { return r == u })
+	return nil
+}
+
+func (f *fakeExposure) explicit() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.relays)
+}
+
 func (f *fakeExposure) UpdateMetadata(m types.LeaseMetadata) error {
 	if f.metaGate != nil {
 		<-f.metaGate
@@ -720,6 +742,9 @@ func TestURLStaysOnPrimary(t *testing.T) {
 	if got := n.URL("blog"); got != "https://blog.m-relay.example" {
 		t.Fatalf("URL = %s", got)
 	}
+	// The first ready discovered relay is pinned (asynchronously, by the
+	// status watcher); the saved file is written last.
+	waitFor(t, func() bool { return readPin(t, n, "blog") == "https://m-relay.example" })
 	f.set(ready("https://a-relay.example", "https://blog.a-relay.example"), ready("https://m-relay.example", "https://blog.m-relay.example"))
 	if got := n.URL("blog"); got != "https://blog.m-relay.example" {
 		t.Fatalf("URL after discovery added a relay = %s", got)
@@ -736,8 +761,112 @@ func TestURLStaysOnPrimary(t *testing.T) {
 	if got := n.URL("blog"); got != "https://blog.a-relay.example" {
 		t.Fatalf("URL after primary dropped = %s", got)
 	}
+	// The first relay was pinned, so its URL (the one people were given)
+	// is the address again once it is back.
 	f.set(ready("https://a-relay.example", "https://blog.a-relay.example"), ready("https://m-relay.example", "https://blog.m-relay.example"))
+	if got := n.URL("blog"); got != "https://blog.m-relay.example" {
+		t.Fatalf("URL after the pinned relay returned = %s", got)
+	}
+}
+
+func readPin(t *testing.T, n *Net, slug string) string {
+	t.Helper()
+	b, err := os.ReadFile(n.pinPath(slug))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// Regression (public URL churn): with discovery only, the first relay that
+// becomes ready is pinned as an explicit relay and saved, so discovery
+// cannot drop it and a restart reuses it.
+func TestDiscoveredRelayIsPinnedAndReused(t *testing.T) {
+	dir := t.TempDir()
+	n, ff := newTestNet(t, Config{Dir: dir, Discovery: true})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	f := ff.last(t)
+	if len(f.explicit()) != 0 {
+		t.Fatalf("explicit relays before any relay was ready: %v", f.explicit())
+	}
+	f.set(sdk.RelayStatus{RelayURL: "https://a-relay.example", State: sdk.RelayConnecting},
+		ready("https://m-relay.example", "https://blog.m-relay.example"))
+	waitFor(t, func() bool { return slices.Equal(f.explicit(), []string{"https://m-relay.example"}) })
+	waitFor(t, func() bool { return readPin(t, n, "blog") == "https://m-relay.example" })
+	if fi, err := os.Stat(n.pinPath("blog")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("pin file mode: %v %v", fi.Mode(), err)
+	}
+	// A relay that discovery adds later does not move the pin.
+	f.set(ready("https://a-relay.example", "https://blog.a-relay.example"), ready("https://m-relay.example", "https://blog.m-relay.example"))
+	time.Sleep(50 * time.Millisecond)
+	if got := f.explicit(); !slices.Equal(got, []string{"https://m-relay.example"}) {
+		t.Errorf("explicit relays after discovery added one: %v", got)
+	}
+	n.Close()
+
+	// After a restart the pinned relay is explicit from the start.
+	n2, ff2 := newTestNet(t, Config{Dir: dir, Discovery: true})
+	if _, err := n2.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	if got := ff2.last(t).relays; !slices.Equal(got, []string{"https://m-relay.example"}) {
+		t.Errorf("relays passed to Expose after restart: %v", got)
+	}
+}
+
+// The pin moves when the pinned relay fails permanently (its name is taken
+// there), and after a long outage, but not during a short one.
+func TestPinMovesOnlyWhenThePinnedRelayIsGone(t *testing.T) {
+	defer func(d time.Duration) { repinAfter = d }(repinAfter)
+	repinAfter = time.Hour
+	n, ff := newTestNet(t, Config{Discovery: true})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	f := ff.last(t)
+	m, a, z := "https://m-relay.example", "https://a-relay.example", "https://z-relay.example"
+	f.set(ready(m, "https://blog.m-relay.example"))
+	waitFor(t, func() bool { return readPin(t, n, "blog") == m })
+
+	// Short outage: another relay serves, the pin stays.
+	f.set(sdk.RelayStatus{RelayURL: m, State: sdk.RelayConnecting}, ready(a, "https://blog.a-relay.example"))
+	time.Sleep(50 * time.Millisecond)
+	if readPin(t, n, "blog") != m || !slices.Equal(f.explicit(), []string{m}) {
+		t.Fatalf("pin moved during a short outage: %s %v", readPin(t, n, "blog"), f.explicit())
+	}
+
+	// Permanent failure: the pin moves to a ready relay and the old one is
+	// released.
+	f.set(sdk.RelayStatus{RelayURL: m, State: sdk.RelayFailed, Failure: sdk.RelayFailureTerminal,
+		Err: errors.New("hostname already registered")}, ready(a, "https://blog.a-relay.example"))
+	waitFor(t, func() bool { return readPin(t, n, "blog") == a && slices.Equal(f.explicit(), []string{a}) })
 	if got := n.URL("blog"); got != "https://blog.a-relay.example" {
-		t.Fatalf("URL after old primary returned = %s", got)
+		t.Errorf("URL after the pin moved = %s", got)
+	}
+
+	// Long outage: once repinAfter has passed, the pin moves too.
+	repinAfter = 30 * time.Millisecond
+	f.set(sdk.RelayStatus{RelayURL: a, State: sdk.RelayConnecting}, ready(z, "https://blog.z-relay.example"))
+	time.Sleep(60 * time.Millisecond)
+	f.set(sdk.RelayStatus{RelayURL: a, State: sdk.RelayConnecting}, ready(z, "https://blog.z-relay.example"))
+	waitFor(t, func() bool { return readPin(t, n, "blog") == z })
+}
+
+// Explicit relays already keep the URL stable: nothing is pinned.
+func TestNoPinWithExplicitRelays(t *testing.T) {
+	n, ff := newTestNet(t, Config{Relays: []string{"https://e-relay.example"}, Discovery: true})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	f := ff.last(t)
+	f.set(ready("https://m-relay.example", "https://blog.m-relay.example"))
+	time.Sleep(50 * time.Millisecond)
+	if got := f.explicit(); !slices.Equal(got, []string{"https://e-relay.example"}) {
+		t.Errorf("explicit relays = %v", got)
+	}
+	if _, err := os.Stat(n.pinPath("blog")); !os.IsNotExist(err) {
+		t.Errorf("pin file written with explicit relays: %v", err)
 	}
 }
