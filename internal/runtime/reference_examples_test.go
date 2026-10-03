@@ -46,3 +46,31 @@ absentDelete, synchronous: put === undefined, unicode: env.FILES.get("unicode"),
 		t.Fatalf("documented binary/missing/error contract: %d %s", r.status, r.body)
 	}
 }
+
+// Verify the documented boundary cases through the published JS API, including
+// host I/O exceptions rather than merely matching words in the reference.
+func TestRuntimeReferenceFilesystemAndJSON(t *testing.T) {
+	code := `export default { fetch(request, env) {
+ env.FILES.put("parent", "x");
+ const throws = f => { try { f(); return false; } catch (_) { return true; } };
+ const object = {z:1, a:[1,2], m:"<>&"};
+ const [{value}] = env.DB.query("SELECT ? AS value", [object]);
+ return Response.json({get: throws(() => env.FILES.get("parent/child")),
+ put: throws(() => env.FILES.put("parent/child", "x")),
+ delete: throws(() => env.FILES.delete("parent/child")), value,
+ stringify: JSON.stringify(object)});
+} };`
+	f := mustStart(t, newManager(t), "ref-errors", map[string]string{"index.js": code}, "index.js", nil)
+	r := f.do(t, "GET", "/", "")
+	var out struct {
+		Get, Put, Delete bool
+		Value, Stringify string
+	}
+	if err := json.Unmarshal([]byte(r.body), &out); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"a":[1,2],"m":"\u003c\u003e\u0026","z":1}`
+	if r.status != 200 || !out.Get || !out.Put || !out.Delete || out.Value != want || out.Value == out.Stringify {
+		t.Fatalf("documented I/O and host JSON contract: %d %+v", r.status, out)
+	}
+}

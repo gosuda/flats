@@ -127,7 +127,7 @@ In a fresh source-free client directory, use this `mcp.json`:
 {"mcpServers":{"flats":{"type":"http","url":"http://127.0.0.1:61663/mcp"}}}
 ```
 
- Use the exact ordinary
+Use the exact ordinary
 requests and restrictions above, retain each initialization inventory and result,
 and independently run the HTTP assertion sequence above between phases. Record
 returned URLs, live versions, reference/payload hashes, health logs, all exits

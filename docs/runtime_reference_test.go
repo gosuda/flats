@@ -10,22 +10,33 @@ import (
 	"github.com/gosuda/flats/internal/runtime"
 )
 
+// Match a whole claim in its own section: equal numeric limits in unrelated
+// APIs must not mask drift. Normalize wrapping, but preserve the statement.
 func TestDocumentedRuntimeLimits(t *testing.T) {
-	for _, marker := range []string{
-		fmt.Sprintf("%d MiB", runtime.MaxFileValue>>20),
-		fmt.Sprintf("%d GiB", runtime.MaxFilesTotal>>30),
-		fmt.Sprintf("%d MiB", runtime.MaxQueryResult>>20),
-		fmt.Sprintf("%d MiB", runtime.MaxRequestBody>>20),
-		fmt.Sprintf("%d MiB", runtime.MaxResponseBody>>20),
-		fmt.Sprintf("%d MiB", runtime.DefaultMemoryPages*65536>>20),
-		fmt.Sprintf("%d-second", int(runtime.DefaultTimeout.Seconds())),
-		"20,000 upload files",
-	} {
-		if !strings.Contains(runtimeref.Markdown, marker) {
-			t.Errorf("reference omits runtime limit %s", marker)
-		}
+	checks := []struct{ section, claim string }{
+		{"JavaScript env.FILES", fmt.Sprintf("Each value is capped at **%d MiB (%s bytes)** of stored UTF-8 text;", runtime.MaxFileValue>>20, "10,485,760")},
+		{"JavaScript env.FILES", fmt.Sprintf("Per-flat FILES total is **%d GiB (%s bytes)**;", runtime.MaxFilesTotal>>30, "1,073,741,824")},
+		{"JavaScript env.DB", fmt.Sprintf("Query result cap is **%d MiB** while accumulating serialized rows", runtime.MaxQueryResult>>20)},
+		{"Handler, request and response", fmt.Sprintf("Incoming body max **%d MiB** (413 if exceeded).", runtime.MaxRequestBody>>20)},
+		{"Handler, request and response", fmt.Sprintf("Decoded response max **%d MiB**.", runtime.MaxResponseBody>>20)},
+		{"Capabilities, limits and secrets", fmt.Sprintf("default **%d-second wall-clock deadline**, **%d MiB wasm memory per VM**", int(runtime.DefaultTimeout.Seconds()), runtime.DefaultMemoryPages*65536>>20)},
+		{"Capabilities, limits and secrets", fmt.Sprintf("max **%s upload files**,", "20,000")},
 	}
-	if bundle.MaxFiles != 20000 {
-		t.Fatal("upload file count changed: update reference and assertion")
+	for _, c := range checks {
+		t.Run(c.section+"/"+c.claim, func(t *testing.T) {
+			_, body, ok := strings.Cut(runtimeref.Markdown, "## "+c.section+"\n")
+			if !ok {
+				t.Fatal("missing section")
+			}
+			body, _, _ = strings.Cut(body, "\n## ")
+			body = strings.Join(strings.Fields(body), " ")
+			if strings.Count(body, c.claim) != 1 {
+				t.Fatalf("section must contain exactly one complete limit claim: %s", c.claim)
+			}
+		})
+	}
+	// These human-readable byte counts must track their actual constants too.
+	if runtime.MaxFileValue != 10485760 || runtime.MaxFilesTotal != 1073741824 || bundle.MaxFiles != 20000 {
+		t.Fatal("byte/upload counts changed: update the published exact counts")
 	}
 }

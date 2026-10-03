@@ -68,7 +68,9 @@ Use `get_logs` for validation/health/runtime errors and fix before retrying.
 
 `open_preview {slug, version}` copies current live DB/FILES into isolated
 preview storage. Preview writes do not reach live; redeploy closes previews,
-and 24 hours unused expires them. `rollback {slug}` restores previous code
+and unused previews expire after the operator setting `preview_ttl_seconds`
+(default **24 hours**). At most **5 open previews per flat** are allowed.
+`rollback {slug}` restores previous code
 and keeps current DB/FILES. `restore_data: true` restores the pre-deploy
 **database only**, backing up current DB first; FILES is not restored. Ask the
 user before discarding newer DB writes. Versions are not storage backups.
@@ -108,18 +110,32 @@ Keys for get/put/delete: nonempty valid UTF-8, at most **512 UTF-8 bytes**,
 relative slash-separated paths. No leading/trailing slash, empty segments,
 `.` or `..` segments, backslash, U+0000–U+001F or U+007F. Each segment must
 not start `.flats-tmp-` (reserved for atomic writes). Keys are case-sensitive.
-A file cannot also be a parent directory: conflicting writes throw disk errors.
+The 512-byte check is a whole-key validation limit, not a guarantee that the
+host filesystem accepts the filename. Each path segment also obeys the host's
+name limits: ext4 typically allows **255 UTF-8 bytes** per segment, while APFS
+uses different Unicode name semantics (a multibyte segment can exceed 255 bytes).
+Overlong segments can make get/put/delete throw filesystem errors even when the
+whole key passes validation. Use short segments for portable keys.
+A file cannot also be a parent directory: conflicting writes throw disk errors;
+get/delete through a regular-file parent (e.g. `a/b` when `a` is a file) also
+throw `ENOTDIR` instead of returning null/false.
 
 List uses a **literal string prefix**, not glob/path normalization: `notes`
 matches `notes.txt` and `notes/a`; `notes/` matches only descendants. Its prefix
 validation is intentionally looser: at most 512 bytes, no backslash or NUL;
 empty and trailing slash are allowed. It returns regular files only, excludes
-reserved temporary filenames, and stops after **10,000 keys** with no cursor
-or truncation flag. Traversal failures are skipped, so do not treat a list as a
+reserved temporary filenames, and stops after **10,000 keys** in filesystem
+walk order **before sorting** the collected keys, with no cursor or truncation
+flag. This need not select the lexicographically first 10,000 matching keys.
+Traversal failures are skipped, so do not treat a list as a
 transactional/complete snapshot of concurrently changing storage.
 
 Each value is capped at **10 MiB (10,485,760 bytes)** of stored UTF-8 text;
-base64 overhead counts. Per-flat FILES total is **1 GiB (1,073,741,824 bytes)**;
+base64 overhead counts. This explicit size limit does not guarantee a put/get
+will fit in the **48 MiB JS heap**: strings and serialization copies compete
+with other live allocations, so operations near 10 MiB can exhaust the heap
+and produce a generic 500 even with a value within the limit.
+Per-flat FILES total is **1 GiB (1,073,741,824 bytes)**;
 overwriting charges the new size minus old size, deletion releases space.
 Quota checks/mutations are serialized within a worker; individual put publishes
 by rename. Multi-call sequences are not transactions and have no compare/swap.
@@ -127,7 +143,9 @@ There is no FILES TTL or versioning. Invalid keys/prefixes, value/quota overflow
 permissions, disk-full and incompatible file/directory paths throw; catch errors
 and choose an HTTP response. Error wording can contain the key/OS details;
 do not depend on exact text or expose it blindly. Failed atomic put keeps the
-old value. get/delete missing results above are not exceptions.
+old value, but may leave newly created empty parent directories. get/put/delete
+can all throw I/O errors; null/false apply only to the missing/directory cases
+above, not to arbitrary failures to resolve a path.
 
 Live DB/FILES belong to the flat, shared by its serving request VMs, and survive
 successful redeploy, ordinary rollback and host restart on the same data dir.
@@ -151,8 +169,12 @@ RowsAffected/LastInsertId (not meaningful new insert IDs for every statement).
 
 Parameters: null, string, number; booleans become 1/0; objects/arrays become
 JSON text (a single array argument is treated as the parameter list, so nest
-an array to store one). JS JSON serialization rules apply: undefined array
-entries become null, BigInt/cyclic objects throw. Parameters are not BLOBs.
+an array to store one). The JS-to-host JSON transport converts undefined array
+entries to null and rejects BigInt/cyclic objects. The Go host then reserializes
+compound values with `encoding/json`: object keys are sorted and `<`, `>` and
+`&` are escaped as `\u003c`, `\u003e` and `\u0026` (U+2028/U+2029 are also
+escaped). Stored text need not equal the original `JSON.stringify` text;
+parse it as JSON instead of relying on textual identity. Parameters are not BLOBs.
 `CREATE TABLE IF NOT EXISTS` is useful for idempotent setup.
 
 One SQLite connection per JS VM keeps concurrent request transactions apart.
@@ -240,7 +262,9 @@ access can recover them; trust your handler, which can itself return secrets.
 WASI `.wasm` is a fresh preview1 command per request: stdin JSON
 `{method,url,headers,body}`; stdout JSON `{status,headers,body}`, optional
 `body_base64: true` for base64-encoded binary response. Environment receives
-configured variables/secrets, clocks and CSPRNG. It has **no DB/FILES host ABI**,
+only the flat's configured secrets; clocks and CSPRNG are available separately.
+There is no separate variable configuration or inherited host environment.
+It has **no DB/FILES host ABI**,
 filesystem mounts, outbound network, JS Web Crypto or WebSocket callbacks.
 Use JavaScript for persistent DB/FILES APIs.
 

@@ -82,15 +82,25 @@ func TestRuntimeReferenceFollowsUploadLimit(t *testing.T) {
 }
 
 func TestRuntimeDocsDiscoveryConsistency(t *testing.T) {
-	for _, path := range []string{"../../README.md", "../../plugins/flats/skills/flats-deploy/SKILL.md", "../../docs/design.md"} {
-		b, err := os.ReadFile(path)
+	checks := []struct{ path, section, paragraph string }{
+		{"../../README.md", "## Agent integration", "Restart/reconnect your client, list tools, then read resource\n`flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.\nThe [runtime API v1 reference](docs/runtime-api-v1.md) is embedded in the host\nand available through MCP without an installed skill or source checkout."},
+		{"../../plugins/flats/skills/flats-deploy/SKILL.md", "## Runtime API discovery", "Before authoring a server app, read MCP resource `flats://docs/runtime-api/v1`\nor call the read-only `get_runtime_reference` tool with `{}`. The complete\n[runtime API v1 reference](../../../../docs/runtime-api-v1.md) ships in the host;\nMCP clients do not need this skill installed."},
+		{"../../docs/design.md", "## Server flats (handler ABI)", "The authoritative [runtime API v1 reference](runtime-api-v1.md) is embedded\nin the binary and discoverable as MCP resource `flats://docs/runtime-api/v1`\nor read-only tool `get_runtime_reference`. It requires no skill/source access."},
+	}
+	for _, c := range checks {
+		b, err := os.ReadFile(c.path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, marker := range []string{runtimeref.URI, "get_runtime_reference", "runtime-api-v1.md"} {
-			if !strings.Contains(string(b), marker) {
-				t.Errorf("%s omits %s", path, marker)
-			}
+		_, section, ok := strings.Cut(string(b), c.section+"\n")
+		if !ok {
+			t.Fatalf("%s missing discovery section %s", c.path, c.section)
+		}
+		section, _, _ = strings.Cut(section, "\n## ")
+		normalized := strings.Join(strings.Fields(section), " ")
+		want := strings.Join(strings.Fields(c.paragraph), " ")
+		if strings.Count(normalized, want) != 1 {
+			t.Errorf("%s must contain the complete discovery instruction in its section", c.path)
 		}
 	}
 }

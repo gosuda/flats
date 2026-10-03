@@ -317,9 +317,9 @@ Claude Code:
 Codex (~/.codex/config.toml):
 %s
   or: %s
-  Flats itself keeps public exposure and deletion behind your approval, so
-  client auto-approval does not bypass those Flats approvals; tools can still
-  deploy code and mutate data. Use only with trusted agents.
+  Flats requires operator approval for public exposure and deletion.
+  Client auto-approval of MCP calls still permits tools to deploy code and
+  mutate data; it does not grant those Flats approvals. Use only with trusted agents.
   Discover runtime APIs: read flats://docs/runtime-api/v1 or call
   get_runtime_reference with {} (no installed skill required).
 
