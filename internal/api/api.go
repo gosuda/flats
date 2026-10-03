@@ -548,7 +548,16 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"page_views": pv, "note": "request counts of HTML pages; Portal does not pass visitor IPs, so unique visitors are not counted"})
+	pages, err := s.Svc.TopPages(r.Context(), r.PathValue("slug"), days)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"page_views": pv,
+		"top_pages":  pages,
+		"note":       "Page views count GET page requests, including extensionless API routes. Unique visitors are not tracked. Per-page counts start with this update; query strings are excluded.",
+	})
 }
 
 func (s *Server) snapshots(w http.ResponseWriter, r *http.Request, _ core.Via) {

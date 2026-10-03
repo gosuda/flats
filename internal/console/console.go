@@ -82,6 +82,9 @@ func Handler() http.Handler {
 	page := func(w http.ResponseWriter, r *http.Request) { serve(w, r, index) }
 	mux.HandleFunc("GET /{$}", page)
 	mux.HandleFunc("GET /flats/{slug}", page)
+	mux.HandleFunc("GET /flats/{slug}/settings", page)
+	mux.HandleFunc("GET /flats/{slug}/analytics", page)
+	mux.HandleFunc("GET /flats/{slug}/database", page)
 	mux.HandleFunc("GET /approvals/{id}", page)
 	mux.HandleFunc("GET /settings", page)
 	mux.HandleFunc("GET /assets/{path...}", func(w http.ResponseWriter, r *http.Request) {

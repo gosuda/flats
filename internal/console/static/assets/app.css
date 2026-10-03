@@ -413,3 +413,88 @@ td > .badge:first-child { margin-left: 0; }
 
 /* The "…" dots need a heavier stroke to read at icon size. */
 .icon-btn[aria-haspopup] .icon { stroke-width: 3.2; }
+
+/* Per-flat management, following the compact console reference. */
+.site-page { max-width: 840px; }
+.site-page .back { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+.site-head { display: flex; align-items: center; gap: 16px; }
+.site-head .thumb-large { width: 104px; height: 60px; border-radius: 10px; }
+.site-head-main { min-width: 0; }
+.site-head h1 { font-size: 32px; font-weight: 500; margin-bottom: 6px; }
+.site-address { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.site-address .icon { width: 14px; height: 14px; }
+.site-address a { color: var(--muted); }
+.site-tabs { display: flex; align-items: center; gap: 8px; margin-top: 24px; margin-bottom: 48px; }
+.site-tabs a { padding: 8px 17px; border-radius: 999px; color: var(--muted); font-size: 14px; }
+.site-tabs a:hover { color: var(--text); background: var(--hover); text-decoration: none; }
+.site-tabs a[aria-current="page"] { color: var(--text); background: var(--surface-2); }
+.settings-section { margin: 0 0 48px; }
+.settings-section h2 { font-size: 15px; font-weight: 500; margin-bottom: 16px; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 0; border-top: 1px solid var(--border); }
+.setting-row:last-child { border-bottom: 1px solid var(--border); }
+.setting-row label { font-size: 14px; font-weight: 400; }
+.setting-control { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; font-size: 13px; }
+.setting-control a { color: var(--muted); }
+.site-name-form { display: flex; gap: 8px; width: min(380px, 55%); }
+.site-name-form input { width: 100%; min-width: 0; border-radius: 8px; font-size: 13px; }
+.site-rename { padding: 16px 0; }
+.site-rename[hidden] { display: none; }
+.site-page #delete .btn-danger { color: var(--danger); background: transparent; }
+.site-page #delete .danger-zone { border-block: 1px solid var(--border); padding: 18px 0; font-size: 14px; }
+.site-page #secrets { border-bottom: 1px solid var(--border); padding-bottom: 20px; }
+.analytics-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin: 0 0 24px; gap: 16px; }
+.analytics-metrics { display: flex; gap: 32px; margin: 0; font-size: 14px; }
+.analytics-metrics dt { color: var(--muted); font-size: 13px; }
+.analytics-metrics dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; }
+.range-btn { width: 36px; height: 24px; font-size: 12px; }
+.analytics-panel { border: 1px solid var(--border); border-radius: 12px; padding: 18px 16px; margin-bottom: 24px; }
+.analytics-panel h2 { font-size: 14px; font-weight: 500; margin: 0; }
+.analytics-panel > p { margin: 0 0 12px; }
+.traffic-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.traffic-grid { stroke: var(--border); stroke-dasharray: 2 4; stroke-width: 1; }
+.traffic-label { fill: var(--muted); font: 12px var(--font); }
+.traffic-line { fill: none; stroke: #b180ff; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-legend { display: flex; justify-content: center; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; background: #b180ff; }
+.top-pages th:last-child, .top-pages td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.top-pages tbody th { font-weight: 400; overflow-wrap: anywhere; white-space: normal; }
+.top-pages tbody tr:last-child > * { border-bottom: 0; }
+.share-dialog { background: var(--surface-2); border: 0; max-height: calc(100dvh - 32px); overflow: auto; }
+.share-content { padding: 20px; }
+.share-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.share-heading h2 { font-size: 20px; font-weight: 600; margin: 0; }
+.share-access { margin-top: 24px; align-items: flex-start; gap: 12px; }
+.share-access label, .share-people h3 { font-size: 14px; font-weight: 500; }
+.share-access select { background: var(--surface-2); }
+.share-notice { margin: 0; }
+.share-people { margin-top: 24px; border-bottom: 1px solid var(--border-strong); padding-bottom: 12px; }
+.share-people h3 { margin: 0 0 12px; }
+.share-person { display: flex; align-items: center; gap: 12px; font-size: 14px; }
+.share-person > span:last-child { margin-left: auto; }
+.share-avatar { width: 32px; height: 32px; display: flex; justify-content: center; align-items: center; border-radius: 50%; background: var(--surface); }
+.share-footer { margin-top: 24px; }
+.share-link { overflow-wrap: anywhere; margin-bottom: 16px; user-select: all; }
+.share-footer-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+input, select, textarea { caret-color: var(--focus); }
+input::placeholder { color: var(--muted); opacity: 1; }
+::selection { background: var(--focus); color: var(--bg); }
+@media (prefers-color-scheme: light) {
+  .traffic-line { stroke: #7541bb; }
+  .legend-dot { background: #7541bb; }
+}
+@media (max-width: 600px) {
+  .site-head h1 { font-size: 26px; }
+  .site-head .thumb-large { width: 80px; height: 52px; }
+  .site-tabs { margin-bottom: 32px; gap: 4px; }
+  .site-tabs a { padding: 8px 12px; }
+  .setting-row { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .setting-control { justify-content: flex-start; width: 100%; }
+  .site-name-form { width: 100%; }
+  .analytics-panel { padding: 14px 12px; }
+  .analytics-metrics { gap: 20px; }
+  .traffic-chart { min-height: 180px; }
+  .traffic-label { font-size: 20px; }
+  .share-content { padding: 18px; }
+}
+.site-page #secrets form[hidden] { display: none; }
+.site-page #secrets > div > .btn:first-child { float: right; margin-top: -40px; }

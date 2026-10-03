@@ -68,8 +68,8 @@ class Element extends Node {
   get lastElementChild() { return [...this.childNodes].reverse().find((c) => c instanceof Element) || null; }
   focus() {}
   select() {}
-  showModal() {}
-  close(v) { this.returnValue = v; this.dispatch('close'); }
+  showModal() { this.open = true; }
+  close(v) { this.open = false; this.returnValue = v; this.dispatch('close'); }
 }
 globalThis.Node = Node;
 globalThis.document = {
@@ -137,6 +137,12 @@ for (const [row, want] of [[rows[0], UNLISTED], [rows[1], LISTED_NOTICE]]) {
   assert.ok(row.textContent.includes(want), 'public row lacks its notice: ' + row.textContent);
 }
 assert.ok(!rows[2].textContent.includes('anyone'), 'private row must not carry a public notice');
+for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
+ const name = all(row, (e) => e.tagName === 'A' && e.className === 'flat-name')[0];
+ assert.equal(name.getAttribute('href'), new URL(site.public_url || site.private_url).href);
+ assert.equal(name.getAttribute('target'), '_blank');
+ assert.equal(name.getAttribute('data-nav'), null);
+}
 stopList();
 
 // The flat page offers a redeploy of the live version (and only of it), also
@@ -169,4 +175,52 @@ assert.ok(dialogs[0].textContent.includes(UNLISTED), 'deploy result must show th
 dialogs[0].close('ok');
 await tick();
 stopFlat();
+// Management pages use real API data and preserve the deployment tools.
+const management = new Element('main');
+const stopSettings = flat.mountSettings(management, ['blog'], ctx);
+await tick();
+assert.equal(all(management, (e) => e.tagName === 'A' && e.textContent === 'Scheduled').length, 0);
+for (const tab of ['Settings', 'Analytics', 'Database']) {
+ assert.equal(all(management, (e) => e.tagName === 'A' && e.textContent === tab).length, 1);
+}
+assert.equal(byText(management, 'Add variable').length, 1);
+byText(management, 'Add variable')[0].dispatch('click');
+assert.ok(all(management, (e) => e.tagName === 'FORM' && e.className === 'form-grid').some((e) => !e.hidden));
+stopSettings();
+const analytics = await import('./analytics.js');
+assert.deepEqual(analytics.dailySeries([{ day: '2026-10-02', count: 4 }, { day: '2026-01-01', count: 99 }], 2, new Date('2026-10-03T12:00:00Z')),
+ [{ day: '2026-10-02', count: 4 }, { day: '2026-10-03', count: 0 }]);
+const analyticsMain = new Element('main');
+analytics.mount(analyticsMain, ['blog'], ctx);
+await tick();
+assert.ok(analyticsMain.textContent.includes('Traffic over time'));
+byText(analyticsMain, '7d')[0].dispatch('click');
+await tick();
+assert.ok(calls.some((c) => c.key.endsWith('/stats?days=7')));
+const database = await import('./database.js');
+routes['GET /console/api/flats/blog/snapshots'] = { snapshots: ['before-v2-20261002.sqlite'] };
+const dbMain = new Element('main');
+database.mount(dbMain, ['blog'], ctx);
+await tick();
+assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
+const { shareDialog } = await import('./share.js');
+shareDialog(blog);
+const share = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(share.textContent.includes('Share Blog'));
+assert.ok(share.textContent.includes(UNLISTED));
+const access = all(share, (e) => e.tagName === 'SELECT')[0];
+access.value = 'private';
+access.dispatch('change');
+await tick();
+const permissionConfirm = all(document.body, (e) => e.tagName === 'DIALOG' && e !== share)[0];
+assert.ok(permissionConfirm.textContent.includes('Make Blog private?'));
+routes['POST /console/api/flats/blog/visibility'] = { flat: { ...blog, visibility: 'private' } };
+routes['GET /console/api/flats/blog'] = { ...blog, visibility: 'private', public_url: undefined };
+permissionConfirm.close('ok');
+await tick();
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/visibility').body), { visibility: 'private', reason: '' });
+assert.ok(share.textContent.includes('Only devices allowed by your tailnet'));
+assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0].getAttribute('href'), new URL(blog.private_url).href);
+share.close();
+for (const label of ['Share', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 console.log('ok');

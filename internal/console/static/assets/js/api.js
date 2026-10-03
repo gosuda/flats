@@ -55,6 +55,7 @@ export const api = {
   secrets: (slug) => get(`/flats/${enc(slug)}/secrets`),
   putSecret: (slug, name, value) => request('PUT', `/flats/${enc(slug)}/secrets/${enc(name)}`, { value }),
   deleteSecret: (slug, name) => request('DELETE', `/flats/${enc(slug)}/secrets/${enc(name)}`),
+  snapshots: (slug) => get(`/flats/${enc(slug)}/snapshots`),
   stats: (slug, days) => get(`/flats/${enc(slug)}/stats?days=${days || 30}`),
   approvals: (status) => get('/approvals' + (status ? '?status=' + enc(status) : '')),
   approval: (id) => get(`/approvals/${enc(id)}`),
