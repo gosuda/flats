@@ -18,7 +18,11 @@ func TestTypedProviderFailureHTTPMapping(t *testing.T) {
 	}{
 		{core.ErrProviderNotPermitted, 409, "provider_not_permitted"},
 		{core.ErrProviderNotReady, 409, "provider_not_ready"},
-		{core.ErrUnavailable, 409, "provider_unavailable"},
+		{core.ErrRuntimeUnavailable, 409, "runtime_unavailable"},
+		{core.ErrProviderInUse, 409, "provider_in_use"},
+		{core.ErrNotDeployed, 409, "not_deployed"},
+		{core.ErrUnavailable, 409, "unavailable"},
+		{core.ErrProviderUnavailable, 409, "provider_unavailable"},
 		{core.ErrPublicStopUnconfirmed, 409, "public_stop_unconfirmed"},
 		{core.ErrStaleApproval, 409, "stale_approval"},
 		{errors.New("storage write failed"), 500, ""},

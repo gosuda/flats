@@ -141,8 +141,16 @@ func errorBody(err error) ErrorBody {
 		body.Category = "provider_not_permitted"
 	case errors.Is(err, core.ErrProviderNotReady):
 		body.Category = "provider_not_ready"
-	case errors.Is(err, core.ErrUnavailable):
+	case errors.Is(err, core.ErrProviderUnavailable):
 		body.Category = "provider_unavailable"
+	case errors.Is(err, core.ErrRuntimeUnavailable):
+		body.Category = "runtime_unavailable"
+	case errors.Is(err, core.ErrUnavailable):
+		body.Category = "unavailable"
+	case errors.Is(err, core.ErrProviderInUse):
+		body.Category = "provider_in_use"
+	case errors.Is(err, core.ErrNotDeployed):
+		body.Category = "not_deployed"
 	case errors.Is(err, core.ErrPublicStopUnconfirmed):
 		body.Category = "public_stop_unconfirmed"
 	case errors.Is(err, core.ErrUnchangedContent):
@@ -161,6 +169,13 @@ func errorBody(err error) ErrorBody {
 		body.Problems = v.Problems
 	}
 	var de *core.DeployError
+	if errors.As(err, &de) && body.Category == "" {
+		if de.Cause != nil {
+			body.Category = "runtime_start_failed"
+		} else {
+			body.Category = "health_check_failed"
+		}
+	}
 	if errors.As(err, &de) && de.Cause == nil {
 		h := de.Health
 		body.Health = &h
@@ -186,7 +201,7 @@ func statusOf(err error) int {
 	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable),
 		errors.Is(err, core.ErrStaleApproval), errors.Is(err, core.ErrProviderNotPermitted),
 		errors.Is(err, core.ErrProviderNotReady), errors.Is(err, core.ErrPublicStopUnconfirmed),
-		errors.Is(err, core.ErrUnchangedContent):
+		errors.Is(err, core.ErrUnchangedContent), errors.Is(err, core.ErrProviderInUse):
 		return http.StatusConflict
 	case errors.As(err, &de):
 		return http.StatusUnprocessableEntity
@@ -350,7 +365,7 @@ func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Vi
 			writeJSON(w, statusOf(err), struct {
 				SaveResponse
 				DeployError ErrorBody `json:"deploy_error"`
-			}{out, ErrorBody{Error: err.Error()}})
+			}{out, errorBody(err)})
 			return
 		}
 		out.ActionResult, out.Deploy = res, &res

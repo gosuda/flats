@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 )
 
@@ -130,3 +131,18 @@ type LifecycleObserver interface {
 type LifecyclePreviewNet interface {
 	StopExposure(context.Context, string) error
 }
+
+// LifecycleRouteInspector reports registered routes, including routes which
+// are still connecting or whose previous stop was not confirmed.
+type LifecycleRouteInspector interface {
+	HasProviderRoute(context.Context, string, ProviderID) (bool, error)
+}
+
+// ErrProviderInUse refuses permission removal until the provider's routes
+// have been stopped. Permission and visibility remain unchanged on refusal.
+var ErrProviderInUse = errors.New("provider has an active route")
+
+// Provider and runtime availability remain compatible with ErrUnavailable,
+// while transports can distinguish the operator action each requires.
+var ErrProviderUnavailable = fmt.Errorf("%w: provider unavailable", ErrUnavailable)
+var ErrRuntimeUnavailable = fmt.Errorf("%w: runtime unavailable", ErrUnavailable)

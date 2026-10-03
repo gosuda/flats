@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -331,7 +332,7 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 	switch v.Kind {
 	case "server":
 		if s.cfg.Runtime == nil {
-			return nil, unavailablef("server flats are not enabled on this host")
+			return nil, fmt.Errorf("%w: server flats are not enabled on this host", ErrRuntimeUnavailable)
 		}
 		env, err := s.secretsFor(ctx, slugName)
 		if err != nil {
@@ -411,6 +412,9 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	}
 	lf := s.state(f.Slug)
 	if lf.cur.Load() == nil {
+		if f.Visibility.Public() {
+			return fmt.Errorf("%w: no current runtime is serving", ErrNotDeployed)
+		}
 		return nil
 	}
 	// Serve is idempotent: it swaps the handler of a running host and
@@ -446,19 +450,19 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	if wantPublic {
 		ready := false
 		for _, host := range s.cfg.Public.Status().Hosts {
-			if (host.Host == f.Slug || host.URL == s.cfg.Public.URL(f.Slug)) && host.State == "ready" {
+			if (host.Host == f.Slug || host.URL == s.cfg.Public.URL(f.Slug)) && (host.State == "ready" || host.State == "starting" || host.State == "key-expiring") {
 				ready = true
 			}
 		}
 		if !ready {
-			return fmt.Errorf("%w: legacy public endpoint is not ready", ErrProviderNotReady)
+			return fmt.Errorf("%w: no legacy public route opened", ErrProviderNotReady)
 		}
 	}
 	return nil
 }
 
 func errPublicDisabled() error {
-	return unavailablef("public exposure is disabled on this host (start `flats serve` with --portal=true)")
+	return fmt.Errorf("%w: public exposure is disabled on this host (start `flats serve` with --portal=true)", ErrProviderUnavailable)
 }
 
 // --- flats ---
@@ -522,16 +526,34 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		v.Providers = ps
 	}
 	if observer, ok := s.cfg.Lifecycle.(LifecycleObserver); ok {
+		// The configured legacy Private backend may be unpermitted. URLs and
+		// readiness come from the current routes the Manager actually registered.
+		v.PrivateURL, v.PrivateState, v.PrivateDetail = "", "", ""
+		if f.Visibility.Public() {
+			v.ConnectionState = "unavailable"
+		}
 		if res, err := observer.ExposureStatus(ctx, f.Slug); err == nil {
 			v.Endpoints = res.Endpoints
-			for _, ep := range v.Endpoints {
-				if ep.Audience == AudienceCurrent && (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && f.Visibility.Public() {
-					v.PublicURL = ep.URL
-					v.ConnectionState = ep.State
+			for i := range v.Endpoints {
+				ep := &v.Endpoints[i]
+				ep.Permitted = ep.Permitted && slices.Contains(v.Providers, string(ep.Provider))
+				if ep.Audience != AudienceCurrent || ep.Host != f.Slug {
+					continue
+				}
+				if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Permitted && ep.URL != "" {
+					if v.PrivateURL == "" || ep.Provider == ProviderTailscale {
+						v.PrivateURL, v.PrivateState, v.PrivateDetail = ep.URL, ep.State, ep.Detail
+					}
+				}
+				if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && f.Visibility.Public() && ep.Permitted {
+					if v.ConnectionState == "unavailable" || ep.Ready {
+						v.PublicURL, v.ConnectionState = ep.URL, ep.State
+					}
 				}
 			}
 		}
 	}
+
 	if v.Endpoints == nil {
 		v.Endpoints = []ExposureEndpoint{}
 	}
@@ -962,8 +984,6 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	if d.version.Kind == "server" {
 		impact, live = "runtime_start", "runtime_may_write"
 	}
-	if kind == "restore" || (kind == "rollback" && approvalID != "") { /* restore callers set the exact impact */
-	}
 	return DeployResult{Flat: s.view(ctx, fv), Version: n, Previous: prev, Health: h, Millis: time.Since(start).Milliseconds(), DataImpact: impact, HealthData: "isolated_copy", LiveData: live}, nil
 }
 
@@ -1278,26 +1298,12 @@ func (s *Service) Delete(ctx context.Context, slugName string, via Via, reason s
 func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
-	s.dropPreviews(ctx, slugName)
-	s.mu.Lock()
-	lf := s.live[slugName]
-	delete(s.live, slugName)
-	s.mu.Unlock()
-	if lf != nil {
-		if lf.publicServed && s.cfg.Public != nil {
-			_ = s.cfg.Public.Stop(slugName)
-		}
-		if lf.privateServed {
-			_ = s.cfg.Private.Stop(slugName)
-		}
-		if d := lf.cur.Load(); d != nil && d.inst != nil {
-			d.inst.Stop()
-		}
-	}
-	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
+	if err := s.stopPublicConfirmed(ctx, slugName); err != nil {
 		return ActionResult{}, err
 	}
-	// Redirects to the flat end with it (their rows went with the flat).
+	if err := s.stopPreviewExposure(ctx, slugName); err != nil {
+		return ActionResult{}, fmt.Errorf("stop private routes: %w", err)
+	}
 	var olds []string
 	s.mu.Lock()
 	for old, r := range s.redir {
@@ -1307,7 +1313,22 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 	}
 	s.mu.Unlock()
 	for _, old := range olds {
-		s.stopRedirect(old)
+		if err := s.stopRedirect(old); err != nil {
+			return ActionResult{}, err
+		}
+	}
+	s.dropPreviews(ctx, slugName)
+	s.mu.Lock()
+	lf := s.live[slugName]
+	delete(s.live, slugName)
+	s.mu.Unlock()
+	if lf != nil {
+		if d := lf.cur.Load(); d != nil && d.inst != nil {
+			d.inst.Stop()
+		}
+	}
+	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
+		return ActionResult{}, err
 	}
 	s.eventCount.Delete(slugName)
 	s.logLimits.Delete(slugName)

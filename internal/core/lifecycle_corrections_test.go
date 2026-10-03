@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,5 +203,43 @@ func TestLifecycleVisibilityDefersProviderChecksToAuthorizedApply(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+func TestPublicApprovalWithoutCurrentRuntimeFailsPrecisely(t *testing.T) {
+	s, _ := newTestService(t)
+	n := &lifecycleNetwork{policy: "configured", state: "ready"}
+	s.cfg.Lifecycle = n
+	lifecycleSave(t, s, "stopped", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "stopped"))
+	if err := s.SetProviderPermission(t.Context(), "stopped", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	s.state("stopped").cur.Store(nil)
+	r, err := s.SetVisibility(t.Context(), "stopped", store.Public, ViaAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Decide(t.Context(), r.Approval.ID, true)
+	if !errors.Is(err, ErrNotDeployed) || a.Status != "failed" || execution(t, a).FailureCode != "not_deployed" {
+		t.Fatalf("missing current %+v %v", a, err)
+	}
+	f, _ := s.GetFlat(t.Context(), "stopped")
+	if f.Visibility != store.Private || n.public != nil {
+		t.Fatal("Public committed without current route")
+	}
+}
+
+func TestLegacyVisibilityApprovalRequiresFreshFrozenPolicy(t *testing.T) {
+	s, _ := newTestService(t)
+	lifecycleSave(t, s, "legacy-policy", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "legacy-policy"))
+	a := store.Approval{ID: "legacy-visibility", Flat: "legacy-policy", Action: "set_visibility", Params: []byte(`{"visibility":"public","from":"private"}`), Status: "pending", Via: "api", RequestedAt: s.now()}
+	if err := s.st.InsertApproval(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Decide(t.Context(), a.ID, true)
+	if !errors.Is(err, ErrStaleApproval) || execution(t, got).FailureCode != "stale_approval" || !strings.Contains(got.Result, "legacy visibility approval lacks frozen access policy") || strings.Contains(got.Result, "live version changed") {
+		t.Fatalf("legacy cause %+v %v", got, err)
 	}
 }

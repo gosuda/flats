@@ -269,8 +269,8 @@ func (n *lifecycleNetwork) StopPublicRoutes(context.Context, string) (PublicStop
 	return PublicStopResult{Stopped: []ProviderID{ProviderPortal}}, nil
 }
 func (n *lifecycleNetwork) ExposurePolicy(context.Context) (string, error) { return n.policy, nil }
-func (n *lifecycleNetwork) ExposureStatus(context.Context, string) (ExposureResult, error) {
-	return ExposureResult{Endpoints: []ExposureEndpoint{{Provider: ProviderPortal, State: n.state, Configured: true, Permitted: true, Ready: n.state == "ready", Audience: AudienceCurrent}}}, nil
+func (n *lifecycleNetwork) ExposureStatus(_ context.Context, slug string) (ExposureResult, error) {
+	return ExposureResult{Endpoints: []ExposureEndpoint{{Provider: ProviderPortal, State: n.state, Configured: true, Permitted: true, Ready: n.state == "ready", Audience: AudienceCurrent, Host: slug}}}, nil
 }
 
 func TestLifecycleProviderPolicyReadinessAndStop(t *testing.T) {
@@ -298,20 +298,20 @@ func TestLifecycleProviderPolicyReadinessAndStop(t *testing.T) {
 	}
 	n.state = "starting"
 	a, err = s.Decide(t.Context(), r.Approval.ID, true)
-	if !errors.Is(err, ErrProviderNotReady) || execution(t, a).FailureCode != "provider_not_ready" {
-		t.Fatalf("readiness %+v %v", a, err)
+	if err != nil || a.Status != "approved" || execution(t, a).FailureCode != "" {
+		t.Fatalf("connecting approval %+v %v", a, err)
 	}
 	f, _ := s.GetFlat(t.Context(), "routes")
-	if f.Visibility != store.Private || f.Publication != "published" {
-		t.Fatalf("false public %+v", f)
+	if f.Visibility != store.Public || f.Publication != "published" || f.ConnectionState != "starting" {
+		t.Fatalf("connecting state %+v", f)
 	}
 	n.state = "ready"
 	r, err = s.SetVisibility(t.Context(), "routes", store.Public, ViaAPI, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.Decide(t.Context(), r.Approval.ID, true); err != nil {
-		t.Fatal(err)
+	if r.Status != "done" {
+		t.Fatalf("same policy %+v", r)
 	}
 	lifecycleSave(t, s, "routes", "draft")
 	pv, err := s.OpenPreview(t.Context(), "routes", 0)

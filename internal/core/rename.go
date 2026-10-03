@@ -50,7 +50,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	// redirects, so the old addresses keep resolving without a new login.
 	wasPublic, wasPrivate := false, false
 	if lf != nil {
-		wasPublic = lf.publicServed && s.cfg.Public != nil
+		wasPublic = lf.publicServed
 		wasPrivate = lf.privateServed
 		// Page views are stored per slug and follow the rename in the DB.
 		s.flushViews(ctx, from, lf)
@@ -114,11 +114,13 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	if own != nil {
 		// to was a redirect to this flat; ensureExposure took its private
 		// host over. A public redirect stays only if the flat is public now.
-		if own.public && !f.Visibility.Public() && s.cfg.Public != nil {
-			_ = s.cfg.Public.Stop(to)
+		if own.public && !f.Visibility.Public() {
+			if err := s.stopPublicRoutes(ctx, to); err != nil {
+				s.Event(ctx, to, "error", "rename", err.Error(), nil)
+			}
 		}
 		if lf == nil || lf.cur.Load() == nil {
-			_ = s.cfg.Private.Stop(to)
+			_ = s.stopPreviewExposure(ctx, to)
 		}
 	}
 	// Redirects to the old slug now lead to the new one directly.
@@ -161,7 +163,7 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 		if err != nil {
 			return
 		}
-		_, err = n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "private", Audience: AudienceCurrent, Handler: s.redirectHandler(func() string { return s.cfg.Private.URL(cur) }), Permitted: privateProviders(ids)})
+		_, err = n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "private", Audience: AudienceCurrent, Handler: s.redirectHandler(func() string { fv, _ := s.GetFlat(context.Background(), cur); return fv.PrivateURL }), Permitted: privateProviders(ids)})
 		if err != nil {
 			s.Event(ctx, cur, "error", "rename", err.Error(), nil)
 		}
@@ -211,36 +213,49 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 // stopPublicRedirects stops the public redirects to cur, which is no longer
 // public: they would point at an address that does not answer.
 func (s *Service) stopPublicRedirects(cur string) {
-	if s.cfg.Public == nil {
-		return
-	}
 	var olds []string
 	s.mu.Lock()
 	for old, r := range s.redir {
 		if r.cur == cur && r.public {
-			r.public = false
 			olds = append(olds, old)
 		}
 	}
 	s.mu.Unlock()
 	for _, old := range olds {
-		_ = s.cfg.Public.Stop(old)
+		if err := s.stopPublicRoutes(context.Background(), old); err != nil {
+			s.Event(context.Background(), cur, "error", "rename", err.Error(), nil)
+			continue
+		}
+		s.mu.Lock()
+		if r := s.redir[old]; r != nil {
+			r.public = false
+		}
+		s.mu.Unlock()
 	}
 }
 
-func (s *Service) stopRedirect(old string) {
+func (s *Service) stopRedirect(old string) error {
 	s.mu.Lock()
-	r, ok := s.redir[old]
+	r := s.redir[old]
+	s.mu.Unlock()
+	if r == nil {
+		return nil
+	}
+	// Keep the registration in memory on an unconfirmed stop so later expiry
+	// sweeps can retry and status continues to reflect the actual route.
+	if r.public {
+		if err := s.stopPublicRoutes(context.Background(), old); err != nil {
+			return err
+		}
+	}
+	if err := s.stopPreviewExposure(context.Background(), old); err != nil {
+		return err
+	}
+	s.mu.Lock()
 	delete(s.redir, old)
 	s.mu.Unlock()
-	if !ok {
-		return
-	}
-	_ = s.cfg.Private.Stop(old)
-	if r.public && s.cfg.Public != nil {
-		_ = s.cfg.Public.Stop(old)
-	}
 	s.Event(context.Background(), r.cur, "info", "rename", "redirect from "+old+" expired", nil)
+	return nil
 }
 
 // syncRedirects re-points or stops served redirects to match the database:
@@ -258,7 +273,9 @@ func (s *Service) syncRedirects(ctx context.Context) {
 		r, err := s.st.RedirectFor(ctx, old, now)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
-			s.stopRedirect(old)
+			if err := s.stopRedirect(old); err != nil {
+				s.Event(ctx, cur, "error", "rename", err.Error(), nil)
+			}
 		case err == nil && r.Flat != cur:
 			s.serveRedirect(ctx, old, r.Flat)
 		}

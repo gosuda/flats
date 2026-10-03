@@ -32,7 +32,7 @@ var ErrProviderNotPermitted = core.ErrProviderNotPermitted
 
 // ErrNotConfigured means the host granted a provider but this process has
 // no backend for it. The manager does not substitute another provider.
-var ErrNotConfigured = fmt.Errorf("%w: provider is not configured", core.ErrProviderNotReady)
+var ErrNotConfigured = fmt.Errorf("%w: provider is not configured", core.ErrProviderUnavailable)
 
 // ExposureRequest uses the exact core-defined DTO and permission identifiers.
 type ExposureRequest = core.ExposureRequest
@@ -92,6 +92,9 @@ type Options struct {
 	// Configuration is a canonical, non-secret desired backend configuration.
 	// It must exclude credentials and transient connection readiness.
 	Configuration string
+	// Permission reads current per-flat opt-ins for status, without opening routes.
+	// Nil is supported by standalone adapters; core still overlays current policy.
+	Permission func(context.Context, string, ID) (bool, error)
 }
 
 // Manager opens routes. It does not implement PrivateNet or PublicNet.
@@ -102,6 +105,7 @@ type Manager struct {
 	ts            Tailnet
 	portal        PortalNet
 	configuration string
+	permission    func(context.Context, string, ID) (bool, error)
 
 	mu     sync.Mutex
 	routes map[string]*route
@@ -133,6 +137,7 @@ func New(dir string, opts Options) (*Manager, error) {
 		ts:            opts.Tailscale,
 		portal:        opts.Portal,
 		configuration: opts.Configuration,
+		permission:    opts.Permission,
 		routes:        map[string]*route{},
 		states:        map[string][]ExposureEndpoint{},
 	}, nil
@@ -286,9 +291,18 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 				fresh = fromStatus(Portal, m.portal.Status(), r.host, m.portal.URL(r.host))
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
-		} else if ep.Ready {
+		} else {
 			ep.URL, ep.State, ep.Detail = "", stateUnavailable, "route stopped"
 		}
+		permitted := ep.Permitted
+		if m.permission != nil && ep.Provider != Local {
+			var err error
+			permitted, err = m.permission(ctx, slug, ep.Provider)
+			if err != nil {
+				return ExposureResult{}, err
+			}
+		}
+		ep.Permitted = permitted && m.allows(ep.Provider)
 		ep.Ready = ep.State == stateReady || ep.State == "key-expiring"
 		endpoints[i] = ep
 	}
@@ -525,7 +539,7 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 	return res, nil
 }
 
-// StopExposure removes only private routes for this exact preview host. Failed
+// StopExposure removes private routes for this exact host. Failed
 // stops stay tracked so cleanup can be retried without losing honest status.
 func (m *Manager) StopExposure(ctx context.Context, host string) error {
 	if err := ctx.Err(); err != nil {
@@ -534,7 +548,7 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 	m.mu.Lock()
 	routes := make(map[string]route)
 	for k, r := range m.routes {
-		if r.host == host && r.audience == AudienceDraft && (r.provider == Local || r.provider == Tailscale) {
+		if r.host == host && (r.provider == Local || r.provider == Tailscale) {
 			routes[k] = *r
 		}
 	}
@@ -680,3 +694,21 @@ var (
 	_ core.LifecycleNet      = (*Manager)(nil)
 	_ core.LifecycleObserver = (*Manager)(nil)
 )
+
+// HasProviderRoute inspects registration rather than readiness: connecting or
+// failed routes can still recover, so revocation must not persist over them.
+func (m *Manager) HasProviderRoute(ctx context.Context, slug string, id ID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.routes {
+		if r.slug == slug && r.provider == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+var _ core.LifecycleRouteInspector = (*Manager)(nil)

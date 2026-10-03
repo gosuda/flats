@@ -450,3 +450,39 @@ func TestPreviewCleanupKeepsOtherHostsAndCurrent(t *testing.T) {
 		t.Fatalf("host-specific observed routes: %+v", status)
 	}
 }
+
+func TestExposureStatusRecomputesCurrentPermission(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Portal}})
+	defer ln.Close()
+	defer m.Close()
+	m.portal.(*fakePortal).Public = local.NewPublic(ln)
+	permitted := true
+	m.permission = func(context.Context, string, ID) (bool, error) { return permitted, nil }
+	_, err := m.ServeExposure(t.Context(), ExposureRequest{Slug: "status", Visibility: "public", Audience: AudienceCurrent, Handler: text("current"), Permitted: []ID{Portal}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permitted = false
+	observed, err := m.ExposureStatus(t.Context(), "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range observed.Endpoints {
+		if ep.Provider == Portal && (ep.Permitted || !ep.Ready) {
+			t.Fatalf("policy/readiness conflated %+v", ep)
+		}
+	}
+	permitted = true
+	if _, err := m.StopPublicRoutes(t.Context(), "status"); err != nil {
+		t.Fatal(err)
+	}
+	observed, err = m.ExposureStatus(t.Context(), "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ep := range observed.Endpoints {
+		if ep.Provider == Portal && (!ep.Permitted || ep.Ready || ep.URL != "") {
+			t.Fatalf("stopped route confused with permission %+v", ep)
+		}
+	}
+}

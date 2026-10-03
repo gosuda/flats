@@ -335,6 +335,11 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return err
 	}
+	if !permitted {
+		if err := s.providerNotInUse(ctx, slugName, ProviderID(provider)); err != nil {
+			return err
+		}
+	}
 	if err := s.st.SetProviderPermission(ctx, slugName, provider, permitted); err != nil {
 		return err
 	}
@@ -673,6 +678,9 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	if err := json.Unmarshal(a.Params, &p); err != nil {
 		return ActionResult{}, err
 	}
+	if p.Providers == "" || p.From == "" {
+		return ActionResult{}, fmt.Errorf("%w: %w: legacy visibility approval lacks frozen access policy; request fresh approval", ErrConflict, ErrStaleApproval)
+	}
 	target := store.Visibility(p.Visibility).Canonical()
 	if !target.Valid() || (target != store.Private && target != store.Public) {
 		return ActionResult{}, invalidf("unknown visibility %q", p.Visibility)
@@ -759,17 +767,15 @@ func (s *Service) stopPublicConfirmed(ctx context.Context, slugName string) erro
 	}
 	s.mu.Unlock()
 	for _, old := range aliases {
-		if n, ok := s.lifecycleNet(); ok {
-			res, err := n.StopPublicRoutes(ctx, old)
-			if err != nil || len(res.Unconfirmed) > 0 {
-				return fmt.Errorf("%w: %w: public redirect %s stop unconfirmed", ErrConflict, ErrPublicStopUnconfirmed, old)
-			}
-		} else if s.cfg.Public != nil {
-			if err := s.cfg.Public.Stop(old); err != nil {
-				return fmt.Errorf("%w: %w: public redirect %s stop: %v", ErrConflict, ErrPublicStopUnconfirmed, old, err)
-			}
+		if err := s.stopPublicRoutes(ctx, old); err != nil {
+			return err
 		}
 	}
+	return s.stopPublicRoutes(ctx, slugName)
+}
+
+// stopPublicRoutes acts on one exact registration (current or rename alias).
+func (s *Service) stopPublicRoutes(ctx context.Context, slugName string) error {
 	if ln, ok := s.lifecycleNet(); ok {
 		res, err := ln.StopPublicRoutes(ctx, slugName)
 		if err != nil {
@@ -798,6 +804,9 @@ func (s *Service) stopPublicConfirmed(ctx context.Context, slugName string) erro
 func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln LifecycleNet) error {
 	lf := s.state(f.Slug)
 	if lf.cur.Load() == nil {
+		if f.Visibility.Public() {
+			return fmt.Errorf("%w: no current runtime is serving", ErrNotDeployed)
+		}
 		return nil
 	}
 	permitted, err := s.permittedIDs(ctx, f.Slug)
@@ -821,14 +830,16 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 		return fmt.Errorf("exposure: %w", err)
 	}
 	if f.Visibility.Public() {
-		ready := false
+		opened := false
 		for _, ep := range res.Endpoints {
-			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && slices.Contains(permitted, ep.Provider) && ep.State == "ready" && ep.Ready && ep.Configured && ep.Permitted {
-				ready = true
+			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && slices.Contains(permitted, ep.Provider) && ep.Audience == AudienceCurrent && ep.Host == f.Slug && ep.Configured && ep.Permitted {
+				// Serve registers Portal/Funnel before asynchronous readiness. The
+				// approved policy can commit now; Ready remains false while connecting.
+				opened = opened || ep.State == "starting" || ((ep.State == "ready" || ep.State == "key-expiring") && ep.Ready)
 			}
 		}
-		if !ready {
-			return fmt.Errorf("%w: no public endpoint is ready", ErrProviderNotReady)
+		if !opened {
+			return fmt.Errorf("%w: no current public route opened", ErrProviderNotReady)
 		}
 	}
 	lf.privateServed = true
@@ -1182,8 +1193,16 @@ func failureCode(err error) string {
 		return "stale_approval"
 	case errors.Is(err, ErrProviderNotPermitted):
 		return "provider_not_permitted"
-	case errors.Is(err, ErrUnavailable):
+	case errors.Is(err, ErrProviderUnavailable):
 		return "provider_unavailable"
+	case errors.Is(err, ErrRuntimeUnavailable):
+		return "runtime_unavailable"
+	case errors.Is(err, ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, ErrProviderInUse):
+		return "provider_in_use"
+	case errors.Is(err, ErrNotDeployed):
+		return "not_deployed"
 	case errors.Is(err, ErrUnchangedContent):
 		return "unchanged_content"
 	case errors.Is(err, ErrProviderNotReady):
@@ -1341,4 +1360,49 @@ func (s *Service) restorePreviews(ctx context.Context) {
 		s.prevs[p.Host] = prev
 		s.mu.Unlock()
 	}
+}
+
+// providerNotInUse refuses revocation without altering either the persisted
+// opt-in or a route. Include preview hosts and rename aliases in this check.
+func (s *Service) providerNotInUse(ctx context.Context, slug string, id ProviderID) error {
+	names := []string{slug}
+	s.mu.Lock()
+	for old, r := range s.redir {
+		if r.cur == slug {
+			names = append(names, old)
+		}
+	}
+	s.mu.Unlock()
+	if inspector, ok := s.cfg.Lifecycle.(LifecycleRouteInspector); ok {
+		for _, name := range names {
+			active, err := inspector.HasProviderRoute(ctx, name, id)
+			if err != nil {
+				return fmt.Errorf("%w: cannot confirm %s routes are stopped: %v", ErrProviderInUse, id, err)
+			}
+			if active {
+				return fmt.Errorf("%w: %s on %s; approve Private and close previews before revoking permission", ErrProviderInUse, id, name)
+			}
+		}
+		return nil
+	}
+	if observer, ok := s.cfg.Lifecycle.(LifecycleObserver); ok {
+		for _, name := range names {
+			res, err := observer.ExposureStatus(ctx, name)
+			if err != nil {
+				return fmt.Errorf("%w: cannot inspect %s: %v", ErrProviderInUse, id, err)
+			}
+			for _, ep := range res.Endpoints {
+				if ep.Provider == id && (ep.Ready || ep.State == "starting" || ep.State == "needs-login" || ep.State == "error") {
+					return fmt.Errorf("%w: %s on %s", ErrProviderInUse, id, name)
+				}
+			}
+		}
+		return nil
+	}
+	// An adapter without route inspection cannot prove a running provider idle.
+	lf := s.state(slug)
+	if (id == ProviderPortal && lf.publicServed) || (id == ProviderTailscale && lf.privateServed) || s.cfg.Lifecycle != nil {
+		return fmt.Errorf("%w: cannot confirm %s routes are stopped", ErrProviderInUse, id)
+	}
+	return nil
 }

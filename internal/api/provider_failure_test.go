@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -34,7 +35,7 @@ func TestAuthorizedProviderApplyFailureAndPositiveControl(t *testing.T) {
 	}{
 		{"provider_not_permitted", core.ErrProviderNotPermitted},
 		{"provider_not_ready", core.ErrProviderNotReady},
-		{"provider_unavailable", core.ErrUnavailable},
+		{"provider_unavailable", core.ErrProviderUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			network := &decisionNetwork{}
@@ -106,5 +107,27 @@ func TestPublishedVisibilityWithoutProviderStillRequestsApproval(t *testing.T) {
 				t.Fatalf("same visibility: %d %v", code, out)
 			}
 		})
+	}
+}
+
+// RequestPublish freezes host policy after the upload has already been saved.
+// A typed failure here must survive inside deploy_error, preserving the Draft.
+type uploadPolicyFailure struct{ decisionNetwork }
+
+func (*uploadPolicyFailure) ExposurePolicy(context.Context) (string, error) {
+	return "", core.ErrProviderUnavailable
+}
+func (*uploadPolicyFailure) ExposureStatus(context.Context, string) (core.ExposureResult, error) {
+	return core.ExposureResult{}, nil
+}
+func TestUploadDeployErrorRetainsTypedCategoryAndSavedDraft(t *testing.T) {
+	srv, _, _ := setupWithLifecycle(t, &uploadPolicyFailure{})
+	code, out := req(t, "POST", srv.URL+"/api/flats/upload-failure/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "SAVED-DRAFT"})), nil)
+	if code != 409 || out["deploy_error"].(map[string]any)["category"] != "provider_unavailable" {
+		t.Fatalf("upload+deploy error: %d %v", code, out)
+	}
+	f := flatState(t, srv, "upload-failure", 0, "private", 1)
+	if f["publication"] != "unpublished" {
+		t.Fatal("failed request fabricated publication")
 	}
 }
