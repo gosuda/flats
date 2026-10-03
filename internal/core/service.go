@@ -112,10 +112,15 @@ type Service struct {
 	logLimits   sync.Map // slug -> *logLimit
 }
 
-// redirect is an old slug served as a redirect to the flat now called cur.
+// redirect owns an old slug while its route is served or provider teardown is
+// still retryable. teardownOnly entries reserve the slug but must never be
+// served again. retired entries have confirmed teardown and remain only until
+// their durable expired row can be removed.
 type redirect struct {
-	cur    string
-	public bool // also served on the public network
+	cur          string
+	public       bool // also served on the public network
+	teardownOnly bool
+	retired      bool
 }
 
 type liveFlat struct {
@@ -309,7 +314,7 @@ func (s *Service) restore(ctx context.Context) error {
 			// confirms. Keep the slug reserved after restart; Sweep performs
 			// the retry without reopening an already-expired route.
 			s.mu.Lock()
-			s.redir[r.Old] = &redirect{cur: r.Flat}
+			s.redir[r.Old] = &redirect{cur: r.Flat, teardownOnly: true}
 			s.mu.Unlock()
 		}
 	}
@@ -645,6 +650,18 @@ func (s *Service) CreateFlat(ctx context.Context, slugName, name string, via Via
 	if err := slug.Validate(slugName); err != nil {
 		return FlatView{}, invalid(err)
 	}
+	unlock := s.lock(slugName)
+	defer unlock()
+	return s.createFlatLocked(ctx, slugName, name, via)
+}
+
+// createFlatLocked creates a flat while the caller holds slugName's operation
+// lock. The shared lock keeps an expired redirect's retry reservation atomic
+// with both its provider teardown and a competing slug reuse.
+func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, via Via) (FlatView, error) {
+	if via == ViaConsole {
+		return FlatView{}, forbiddenf("flats are created by agents (MCP, CLI or API), not from the console")
+	}
 	if err := s.checkReserved(ctx, slugName, ""); err != nil {
 		return FlatView{}, err
 	}
@@ -714,9 +731,7 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 	unlock := s.lock(slugName)
 	defer unlock()
 	if _, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
-		// A concurrent CreateFlat may win the race; the flat then exists,
-		// which is all this save needs.
-		if _, err := s.CreateFlat(ctx, slugName, m.Name, via); err != nil && !errors.Is(err, store.ErrExists) {
+		if _, err := s.createFlatLocked(ctx, slugName, m.Name, via); err != nil && !errors.Is(err, store.ErrExists) {
 			return store.Version{}, err
 		}
 	} else if err != nil {
@@ -1324,12 +1339,15 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 	if err != nil {
 		return ActionResult{}, err
 	}
-	type alias struct{ old, cur string }
+	type alias struct {
+		old, cur string
+		restore  bool
+	}
 	var aliases []alias
 	s.mu.Lock()
 	for old, r := range s.redir {
 		if r.cur == slugName {
-			aliases = append(aliases, alias{old: old, cur: r.cur})
+			aliases = append(aliases, alias{old: old, cur: r.cur, restore: !r.teardownOnly && !r.retired})
 		}
 	}
 	s.mu.Unlock()
@@ -1346,7 +1364,9 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 	restoreAliases := func() {
 		restoreCtx := context.WithoutCancel(ctx)
 		for _, a := range stoppedAliases {
-			s.serveRedirect(restoreCtx, a.old, a.cur)
+			if a.restore {
+				s.serveRedirect(restoreCtx, a.old, a.cur)
+			}
 		}
 	}
 	for _, a := range aliases {
@@ -1372,6 +1392,9 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 	s.mu.Lock()
 	lf := s.live[slugName]
 	delete(s.live, slugName)
+	for _, a := range aliases {
+		delete(s.redir, a.old)
+	}
 	for _, p := range previews {
 		delete(s.prevs, p.record.Host)
 	}

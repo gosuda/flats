@@ -392,6 +392,152 @@ func TestExpiredRedirectRetirementSurvivesRestart(t *testing.T) {
 	}
 }
 
+func restartedWithExpiredRedirect(t *testing.T, old, current string) (*Service, *lifecycleRouteNet, *store.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	db := filepath.Join(dir, "flats.db")
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := newLifecycleService(t, dir, st, newLifecycleRouteNet(), nil)
+	clock := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	first.now = func() time.Time { return clock }
+	lifecycleSave(t, first, old, "one")
+	lifecycleApprove(t, first, lifecycleRequest(t, first, old))
+	if _, err := first.RenameSlug(t.Context(), old, current, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := newLifecycleRouteNet()
+	restarted := newLifecycleService(t, dir, st, network, nil)
+	t.Cleanup(func() {
+		_ = restarted.Close()
+		_ = st.Close()
+	})
+	if restarted.Redirects()[old] != current || network.serves(old, ProviderLocal) {
+		t.Fatalf("restart did not retain a route-free expiry owner: redirects=%v local=%t", restarted.Redirects(), network.serves(old, ProviderLocal))
+	}
+	return restarted, network, st
+}
+
+func TestRenameDoesNotReopenExpiredRedirectRetryOwner(t *testing.T) {
+	s, network, _ := restartedWithExpiredRedirect(t, "rename-expired", "rename-current")
+	if _, err := s.RenameSlug(t.Context(), "rename-current", "rename-final", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if network.serves("rename-expired", ProviderLocal) {
+		t.Fatal("rename reopened an expired redirect retained only for teardown retry")
+	}
+	if got := s.Redirects()["rename-expired"]; got != "rename-final" {
+		t.Fatalf("expiry owner did not follow its flat without serving: got %q redirects=%v", got, s.Redirects())
+	}
+	if _, err := s.CreateFlat(t.Context(), "rename-expired", "", ViaAPI); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("route-free expiry owner stopped reserving its slug: %v", err)
+	}
+}
+
+func TestDeleteRollbackDoesNotReopenExpiredRedirectRetryOwner(t *testing.T) {
+	s, network, st := restartedWithExpiredRedirect(t, "delete-expired", "delete-retained")
+	network.stopSlug["delete-retained"] = errors.New("current route teardown is not confirmed")
+	if _, err := s.Delete(t.Context(), "delete-retained", ViaConsole, ""); err == nil {
+		t.Fatal("delete accepted an unconfirmed current route teardown")
+	}
+	if _, err := s.GetFlat(t.Context(), "delete-retained"); err != nil {
+		t.Fatalf("failed delete removed the current flat: %v", err)
+	}
+	if !network.serves("delete-retained", ProviderLocal) {
+		t.Fatal("failed delete stopped the retained current route")
+	}
+	if network.serves("delete-expired", ProviderLocal) {
+		t.Fatal("delete rollback reopened an expired redirect retained only for teardown retry")
+	}
+	if _, err := s.CreateFlat(t.Context(), "delete-expired", "", ViaAPI); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("confirmed alias teardown released its slug before durable cleanup: %v", err)
+	}
+	if rows, err := st.ActiveRedirects(t.Context(), time.Time{}); err != nil || len(rows) != 1 || rows[0].Old != "delete-expired" {
+		t.Fatalf("failed delete lost the durable alias row: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestConfirmedExpiredAliasSettlesIndependently(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	clock := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	s.now = func() time.Time { return clock }
+	lifecycleSave(t, s, "settle-a", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "settle-a"))
+	if _, err := s.RenameSlug(t.Context(), "settle-a", "settle-b", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameSlug(t.Context(), "settle-b", "settle-current", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+
+	clock = time.Now().UTC()
+	network.stopSlug["settle-b"] = errors.New("second alias teardown is not confirmed")
+	s.Sweep(t.Context())
+	if network.slugStopCount("settle-a") != 1 || network.slugStopCount("settle-b") != 1 {
+		t.Fatalf("first sweep stop counts: a=%d b=%d", network.slugStopCount("settle-a"), network.slugStopCount("settle-b"))
+	}
+	if got := redirectExpiryEvents(t, s, "settle-current", "settle-a"); got != 1 {
+		t.Fatalf("first confirmed teardown logged %d expiry events, want 1", got)
+	}
+	if _, ok := s.Redirects()["settle-a"]; ok {
+		t.Fatal("confirmed alias still reported as an active retry owner")
+	}
+	if _, err := s.CreateFlat(t.Context(), "settle-a", "", ViaAPI); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("confirmed alias lost its reservation while another row blocked cleanup: %v", err)
+	}
+
+	s.Sweep(t.Context())
+	if network.slugStopCount("settle-a") != 1 || network.slugStopCount("settle-b") != 2 {
+		t.Fatalf("retired alias was stopped again: a=%d b=%d", network.slugStopCount("settle-a"), network.slugStopCount("settle-b"))
+	}
+	if got := redirectExpiryEvents(t, s, "settle-current", "settle-a"); got != 1 {
+		t.Fatalf("retired alias was logged again: %d events", got)
+	}
+
+	delete(network.stopSlug, "settle-b")
+	s.Sweep(t.Context())
+	if network.slugStopCount("settle-a") != 1 || network.slugStopCount("settle-b") != 3 {
+		t.Fatalf("final sweep stop counts: a=%d b=%d", network.slugStopCount("settle-a"), network.slugStopCount("settle-b"))
+	}
+	if got := redirectExpiryEvents(t, s, "settle-current", "settle-a"); got != 1 {
+		t.Fatalf("final cleanup logged retired alias again: %d events", got)
+	}
+	if _, err := s.CreateFlat(t.Context(), "settle-a", "", ViaAPI); err != nil {
+		t.Fatalf("durable cleanup did not release confirmed alias slug: %v", err)
+	}
+}
+
+func redirectExpiryEvents(t *testing.T, s *Service, slugName, old string) int {
+	t.Helper()
+	events, err := s.Events(t.Context(), slugName, "rename", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "redirect from " + old + " expired"
+	count := 0
+	for _, event := range events {
+		if event.Message == want {
+			count++
+		}
+	}
+	return count
+}
+
 func TestDeletePreservesCurrentAndAliasRoutesOnDependentFailure(t *testing.T) {
 	setup := func(t *testing.T) (*Service, *lifecycleRouteNet) {
 		t.Helper()

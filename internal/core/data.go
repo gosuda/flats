@@ -30,12 +30,16 @@ func (s *Service) checkReserved(ctx context.Context, slugName, owner string) err
 	s.mu.Lock()
 	_, isPreview := s.prevs[slugName]
 	r := s.redir[slugName]
+	redirectCur := ""
+	if r != nil {
+		redirectCur = r.cur
+	}
 	s.mu.Unlock()
 	if isPreview {
 		return invalidf("invalid slug: %q is currently used by a preview", slugName)
 	}
-	if r != nil && r.cur != owner {
-		return invalidf("invalid slug: %q is currently used by a redirect to %q", slugName, r.cur)
+	if r != nil && redirectCur != owner {
+		return invalidf("invalid slug: %q is currently used by a redirect to %q", slugName, redirectCur)
 	}
 	// Redirects are kept in the database even when none is being served
 	// (e.g. after a failed restart), so a new flat can never be shadowed by

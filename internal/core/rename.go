@@ -89,7 +89,12 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	var chained []string
 	for old, r := range s.redir {
 		if r.cur == from {
-			chained = append(chained, old)
+			// Durable expiry owners follow the renamed flat for later delete
+			// cleanup, but an expired address must never be served again.
+			r.cur = to
+			if !r.teardownOnly && !r.retired {
+				chained = append(chained, old)
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -242,6 +247,10 @@ func (s *Service) stopPublicRedirects(cur string) {
 func (s *Service) stopRedirect(old string) error {
 	s.mu.Lock()
 	r := s.redir[old]
+	if r != nil && r.retired {
+		s.mu.Unlock()
+		return nil
+	}
 	s.mu.Unlock()
 	if r == nil {
 		return nil
@@ -252,15 +261,29 @@ func (s *Service) stopRedirect(old string) error {
 		return err
 	}
 	s.mu.Lock()
-	delete(s.redir, old)
+	settled := s.redir[old] == r
+	cur := ""
+	if settled {
+		r.teardownOnly = true
+		r.retired = true
+		r.public = false
+		cur = r.cur
+	}
 	s.mu.Unlock()
-	s.Event(context.Background(), r.cur, "info", "rename", "redirect from "+old+" expired", nil)
+	if settled {
+		s.Event(context.Background(), cur, "info", "rename", "redirect from "+old+" expired", nil)
+	}
 	return nil
 }
 
 // syncRedirects re-points or stops served redirects to match the database:
 // a redirect follows later renames of its flat and ends with its window.
 func (s *Service) syncRedirects(ctx context.Context) {
+	// A manual sweep may overlap the periodic one. Serialize their durable-row
+	// snapshots so a late sweep cannot resurrect a row an earlier sweep removed.
+	unlockSweep := s.lock("\x00redirect-sweep")
+	defer unlockSweep()
+
 	now := s.now()
 	// Read every durable row, including expired ones. An expired redirect is
 	// still the retry owner for its provider identity until teardown confirms;
@@ -272,49 +295,100 @@ func (s *Service) syncRedirects(ctx context.Context) {
 	persisted := make(map[string]store.Redirect, len(rows))
 	for _, row := range rows {
 		persisted[row.Old] = row
-		if row.Until.After(now) {
-			continue
-		}
-		if _, err := s.st.GetFlat(ctx, row.Old); err == nil {
-			// A real flat always owns its routes. This can only arise from an
-			// externally repaired/legacy database; discard the stale row below.
-			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return
-		}
-		s.mu.Lock()
-		if s.redir[row.Old] == nil {
-			s.redir[row.Old] = &redirect{cur: row.Flat}
-		}
-		s.mu.Unlock()
 	}
 	s.mu.Lock()
-	served := make(map[string]string, len(s.redir))
-	for old, r := range s.redir {
-		served[old] = r.cur
+	oldsSet := make(map[string]struct{}, len(s.redir)+len(persisted))
+	for old := range s.redir {
+		oldsSet[old] = struct{}{}
 	}
 	s.mu.Unlock()
-	olds := make([]string, 0, len(served))
-	for old := range served {
+	for old := range persisted {
+		oldsSet[old] = struct{}{}
+	}
+	olds := make([]string, 0, len(oldsSet))
+	for old := range oldsSet {
 		olds = append(olds, old)
 	}
 	slices.Sort(olds)
 	teardownFailed := false
 	for _, old := range olds {
-		cur := served[old]
+		unlock := s.lock(old)
 		r, ok := persisted[old]
+		expired := ok && !r.Until.After(now)
+		s.mu.Lock()
+		current := s.redir[old]
+		if expired {
+			if current == nil {
+				current = &redirect{cur: r.Flat, teardownOnly: true}
+				s.redir[old] = current
+			} else {
+				current.cur = r.Flat
+				current.teardownOnly = true
+			}
+		}
+		currentCur := ""
+		currentTeardownOnly, currentRetired := false, false
+		if current != nil {
+			currentCur = current.cur
+			currentTeardownOnly = current.teardownOnly
+			currentRetired = current.retired
+		}
+		s.mu.Unlock()
 		switch {
-		case !ok || !r.Until.After(now):
+		case expired:
+			if _, err := s.st.GetFlat(ctx, old); err == nil {
+				// A real flat always owns its routes. This can only arise from an
+				// externally repaired/legacy database; leave its route untouched.
+				s.mu.Lock()
+				if s.redir[old] == current && current.teardownOnly {
+					delete(s.redir, old)
+				}
+				s.mu.Unlock()
+				break
+			} else if !errors.Is(err, store.ErrNotFound) {
+				unlock()
+				return
+			}
 			if err := s.stopRedirect(old); err != nil {
-				s.Event(ctx, cur, "error", "rename", err.Error(), nil)
+				s.Event(ctx, currentCur, "error", "rename", err.Error(), nil)
 				teardownFailed = true
 			}
-		case r.Flat != cur:
+		case !ok && current != nil:
+			// A route whose durable row disappeared still needs one confirmed
+			// stop, but no database cleanup must hold its reservation afterward.
+			s.mu.Lock()
+			current.teardownOnly = true
+			currentCur = current.cur
+			s.mu.Unlock()
+			if err := s.stopRedirect(old); err != nil {
+				s.Event(ctx, currentCur, "error", "rename", err.Error(), nil)
+				teardownFailed = true
+			} else {
+				s.mu.Lock()
+				if s.redir[old] == current && current.retired {
+					delete(s.redir, old)
+				}
+				s.mu.Unlock()
+			}
+		case current != nil && r.Flat != currentCur && !currentTeardownOnly && !currentRetired:
 			s.serveRedirect(ctx, old, r.Flat)
 		}
+		unlock()
 	}
 	if !teardownFailed {
-		_ = s.st.DeleteExpiredRedirects(ctx, now)
+		if err := s.st.DeleteExpiredRedirects(ctx, now); err != nil {
+			return
+		}
+		s.mu.Lock()
+		for old, row := range persisted {
+			if row.Until.After(now) {
+				continue
+			}
+			if r := s.redir[old]; r != nil && r.retired {
+				delete(s.redir, old)
+			}
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -324,7 +398,9 @@ func (s *Service) Redirects() map[string]string {
 	defer s.mu.Unlock()
 	out := make(map[string]string, len(s.redir))
 	for k, r := range s.redir {
-		out[k] = r.cur
+		if !r.retired {
+			out[k] = r.cur
+		}
 	}
 	return out
 }
