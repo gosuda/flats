@@ -126,9 +126,27 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, code int, err error) {
+// DecisionError retains the persisted approval and its typed execution cause.
+type DecisionError struct {
+	ErrorBody
+	Approval store.Approval `json:"approval"`
+}
+
+func errorBody(err error) ErrorBody {
 	body := ErrorBody{Error: err.Error()}
 	switch {
+	case errors.Is(err, core.ErrStaleApproval):
+		body.Category = "stale_approval"
+	case errors.Is(err, core.ErrProviderNotPermitted):
+		body.Category = "provider_not_permitted"
+	case errors.Is(err, core.ErrProviderNotReady):
+		body.Category = "provider_not_ready"
+	case errors.Is(err, core.ErrUnavailable):
+		body.Category = "provider_unavailable"
+	case errors.Is(err, core.ErrPublicStopUnconfirmed):
+		body.Category = "public_stop_unconfirmed"
+	case errors.Is(err, core.ErrUnchangedContent):
+		body.Category = "unchanged_content"
 	case errors.Is(err, core.ErrConflict):
 		body.Category = "conflict"
 	case errors.Is(err, core.ErrForbidden):
@@ -138,6 +156,7 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	case errors.Is(err, core.ErrInvalid):
 		body.Category = "invalid"
 	}
+
 	if v, ok := bundle.IsValidation(err); ok {
 		body.Problems = v.Problems
 	}
@@ -146,7 +165,11 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 		h := de.Health
 		body.Health = &h
 	}
-	writeJSON(w, code, body)
+	return body
+}
+
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, errorBody(err))
 }
 
 // statusOf maps errors to HTTP codes: typed errors first, then a small
@@ -160,7 +183,10 @@ func statusOf(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, core.ErrForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable):
+	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable),
+		errors.Is(err, core.ErrStaleApproval), errors.Is(err, core.ErrProviderNotPermitted),
+		errors.Is(err, core.ErrProviderNotReady), errors.Is(err, core.ErrPublicStopUnconfirmed),
+		errors.Is(err, core.ErrUnchangedContent):
 		return http.StatusConflict
 	case errors.As(err, &de):
 		return http.StatusUnprocessableEntity
@@ -737,7 +763,7 @@ func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Reques
 		}
 		out := a
 		if err != nil {
-			writeJSON(w, statusOf(err), map[string]any{"error": err.Error(), "approval": out})
+			writeJSON(w, statusOf(err), DecisionError{ErrorBody: errorBody(err), Approval: out})
 			return
 		}
 		writeJSON(w, 200, out)

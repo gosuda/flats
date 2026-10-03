@@ -27,6 +27,11 @@ func setup(t *testing.T) (*httptest.Server, *core.Service) {
 
 func setupWithAuthority(t *testing.T) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
 	t.Helper()
+	return setupWithLifecycle(t, nil)
+}
+
+func setupWithLifecycle(t *testing.T, lifecycle core.LifecycleNet) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
+	t.Helper()
 	authority := operatorAuthority(t)
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "f.db"))
@@ -35,7 +40,7 @@ func setupWithAuthority(t *testing.T) (*httptest.Server, *core.Service, *api.Ope
 	}
 	priv, _ := local.Listen("127.0.0.1:0")
 	pubNet, _ := local.Listen("127.0.0.1:0")
-	svc, err := core.New(context.Background(), core.Config{OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
+	svc, err := core.New(context.Background(), core.Config{Lifecycle: lifecycle, OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
 		ConsoleURL: func() string { return "http://console" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)

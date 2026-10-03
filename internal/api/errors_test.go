@@ -1,0 +1,38 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gosuda/flats/internal/core"
+)
+
+func TestTypedProviderFailureHTTPMapping(t *testing.T) {
+	for _, tc := range []struct {
+		err      error
+		code     int
+		category string
+	}{
+		{core.ErrProviderNotPermitted, 409, "provider_not_permitted"},
+		{core.ErrProviderNotReady, 409, "provider_not_ready"},
+		{core.ErrUnavailable, 409, "provider_unavailable"},
+		{core.ErrPublicStopUnconfirmed, 409, "public_stop_unconfirmed"},
+		{core.ErrStaleApproval, 409, "stale_approval"},
+		{errors.New("storage write failed"), 500, ""},
+	} {
+		t.Run(tc.err.Error(), func(t *testing.T) {
+			w := httptest.NewRecorder()
+			fail(w, fmt.Errorf("apply failed: %w", tc.err))
+			var body ErrorBody
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != tc.code || body.Category != tc.category {
+				t.Fatalf("got %d %+v", w.Code, body)
+			}
+		})
+	}
+}
