@@ -521,3 +521,17 @@ func (s *Store) PreserveLegacyTailscale(ctx context.Context) error {
 	}
 	return tx.Commit()
 }
+
+// LegacyPrivateUpgradePending reports unconsumed pre-lifecycle identities.
+func (s *Store) LegacyPrivateUpgradePending(ctx context.Context) (bool, error) {
+	var pending bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM legacy_private_upgrade WHERE pending=1)`).Scan(&pending)
+	return pending, err
+}
+
+// DeclineLegacyTailscale records an explicit Local-only upgrade choice without
+// inventing permissions. Future default starts need not ask again.
+func (s *Store) DeclineLegacyTailscale(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE legacy_private_upgrade SET pending=0 WHERE pending=1`)
+	return err
+}

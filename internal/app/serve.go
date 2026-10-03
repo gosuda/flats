@@ -243,16 +243,11 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, err
 	}
 	h.Store = st
-	// --network tailscale is the explicit compatibility selection for flats
-	// present before the lifecycle schema. Local startup grants nothing.
-	if o.Network == "tailscale" {
-		if err := st.PreserveLegacyTailscale(ctx); err != nil {
-			return nil, fmt.Errorf("legacy Private Tailscale upgrade: %w", err)
-		}
-	}
-
 	grants, err := hostGrants(o)
 	if err != nil {
+		return nil, err
+	}
+	if err := prepareLegacyPrivateUpgrade(ctx, st, o, grants); err != nil {
 		return nil, err
 	}
 	loop, err := local.Listen(o.LocalAddr)
@@ -650,4 +645,27 @@ func readOperatorCredentialFile(path string) (string, error) {
 		return "", errors.New("operator credential file must contain one credential of 32 to 4096 bytes")
 	}
 	return value, nil
+}
+
+// prepareLegacyPrivateUpgrade requires an explicit choice if the old default
+// was Tailscale. This runs before backend creation, so an ambiguous upgrade
+// neither silently removes tailnet access nor contacts a live provider.
+func prepareLegacyPrivateUpgrade(ctx context.Context, st *store.Store, o Options, grants provider.File) error {
+	pending, err := st.LegacyPrivateUpgradePending(ctx)
+	if err != nil {
+		return err
+	}
+	if !pending {
+		return nil
+	}
+	if o.Network == "tailscale" || (!o.NetworkSet && grants.PrivateBackend == "tailscale" && grants.Allows(provider.Tailscale)) {
+		return st.PreserveLegacyTailscale(ctx)
+	}
+	if o.NetworkSet && o.Network == "local" {
+		return st.DeclineLegacyTailscale(ctx)
+	}
+	if grants.Migration.HistoricalTSNet {
+		return errors.New("legacy Tailscale flats require an explicit upgrade choice: use --network tailscale to preserve Private tailnet access, or --network local to stop using it; neither choice grants Funnel or Portal")
+	}
+	return nil
 }
