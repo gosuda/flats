@@ -27,13 +27,16 @@ type System interface {
 
 // Server serves /api and /console/api.
 type Server struct {
-	Svc    *core.Service
-	System System
+	Svc      *core.Service
+	System   System
+	Operator *OperatorAuthority
 }
 
 // Handler returns the API mux (mount at /).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /console/api/operator/session", s.operatorSession)
+	mux.HandleFunc("DELETE /console/api/operator/session", s.operatorLogout)
 	for _, prefix := range []string{"/api", "/console/api"} {
 		console := prefix == "/console/api"
 		h := func(pattern string, fn func(w http.ResponseWriter, r *http.Request, via core.Via)) {
@@ -43,6 +46,9 @@ func (s *Server) Handler() http.Handler {
 				if console {
 					if err := consoleRequest(r); err != nil {
 						writeErr(w, http.StatusForbidden, err)
+						return
+					}
+					if !safeMethod(r.Method) && !s.requireOperator(w, r) {
 						return
 					}
 					via = core.ViaConsole
@@ -100,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 // ErrorBody is the JSON error shape.
 type ErrorBody struct {
 	Error    string             `json:"error"`
+	Category string             `json:"category,omitempty"`
 	Problems []bundle.Problem   `json:"problems,omitempty"`
 	Health   *core.HealthResult `json:"health,omitempty"`
 }

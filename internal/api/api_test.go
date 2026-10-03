@@ -34,14 +34,41 @@ func setup(t *testing.T) (*httptest.Server, *core.Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer((&api.Server{Svc: svc}).Handler())
+	srv := httptest.NewServer((&api.Server{Svc: svc, Operator: operatorAuthority(t)}).Handler())
 	t.Cleanup(func() { srv.Close(); svc.Close(); priv.Close(); pubNet.Close(); st.Close() })
 	return srv, svc
 }
 
-// consoleHdr is what the console page's fetch sends on a mutation.
-func consoleHdr(srv *httptest.Server) map[string]string {
-	return map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin", "Origin": srv.URL, "Content-Type": "application/json"}
+const operatorTestCredential = "independent-fixture-credential-32-bytes"
+
+func operatorAuthority(t *testing.T) *api.OperatorAuthority {
+	t.Helper()
+	a, err := api.NewOperatorAuthority(operatorTestCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// consoleHdr explicitly authenticates a disposable operator, separately from
+// the agent API. Browser headers alone never authorize a decision.
+func consoleHdr(t *testing.T, srv *httptest.Server) map[string]string {
+	t.Helper()
+	h := map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin", "Origin": srv.URL, "Content-Type": "application/json"}
+	r, _ := http.NewRequest("POST", srv.URL+"/console/api/operator/session", strings.NewReader(`{"credential":"`+operatorTestCredential+`"}`))
+	for k, v := range h {
+		r.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || len(resp.Cookies()) != 1 {
+		t.Fatalf("operator fixture login: %d", resp.StatusCode)
+	}
+	h["Cookie"] = resp.Cookies()[0].String()
+	return h
 }
 
 func archive(files map[string]string) []byte {
@@ -121,7 +148,7 @@ func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 	if code, _ := req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, map[string]string{"X-Flats-Console": "1"}); code != 403 {
 		t.Fatalf("console approve without Sec-Fetch-Site = %d", code)
 	}
-	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(srv))
+	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
 	if code != 200 || out["status"] != "approved" {
 		t.Fatalf("console approve: %d %v", code, out)
 	}
@@ -130,7 +157,7 @@ func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 		t.Fatalf("after approval: %v", out)
 	}
 	// Agents cannot create flats from the console.
-	if code, _ := req(t, "POST", srv.URL+"/console/api/flats", strings.NewReader(`{"slug":"abc"}`), consoleHdr(srv)); code != 405 && code != 404 {
+	if code, _ := req(t, "POST", srv.URL+"/console/api/flats", strings.NewReader(`{"slug":"abc"}`), consoleHdr(t, srv)); code != 405 && code != 404 {
 		t.Fatalf("console create = %d", code)
 	}
 }
@@ -220,7 +247,7 @@ func TestConsoleRefusesClientsAndForeignOrigins(t *testing.T) {
 	id := out["approval"].(map[string]any)["id"].(string)
 	approve := srv.URL + "/console/api/approvals/" + id + "/approve"
 	with := func(k, v string) map[string]string {
-		h := consoleHdr(srv)
+		h := consoleHdr(t, srv)
 		h[k] = v
 		return h
 	}
@@ -247,7 +274,7 @@ func TestConsoleRefusesClientsAndForeignOrigins(t *testing.T) {
 // tsnet middleware set; the loopback listener has none.
 func TestDecisionRecordsTailnetLogin(t *testing.T) {
 	srv, svc := setup(t)
-	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc}).Handler()))
+	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc, Operator: operatorAuthority(t)}).Handler()))
 	t.Cleanup(tail.Close)
 	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	pending := func() string {
@@ -256,7 +283,7 @@ func TestDecisionRecordsTailnetLogin(t *testing.T) {
 	}
 
 	id := pending()
-	h := consoleHdr(tail)
+	h := consoleHdr(t, tail)
 	h["Tailscale-User-Login"] = "=?utf-8?q?j=C3=BCrgen@example.com?="
 	code, out := req(t, "POST", tail.URL+"/console/api/approvals/"+id+"/reject", nil, h)
 	if code != 200 || out["decided_by"] != "jürgen@example.com" || out["status"] != "rejected" {
@@ -269,7 +296,7 @@ func TestDecisionRecordsTailnetLogin(t *testing.T) {
 	}
 
 	id = pending()
-	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(srv))
+	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
 	if code != 200 || out["decided_by"] != nil {
 		t.Fatalf("loopback approve: %d %v", code, out)
 	}
@@ -281,11 +308,11 @@ func TestSettingsReportRestartRequired(t *testing.T) {
 	if code != 200 || !strings.Contains(fmt.Sprint(out["apply_on_restart"]), "portal_relays") {
 		t.Fatalf("get settings: %d %v", code, out)
 	}
-	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"portal_relays":"https://relay.example"}`), consoleHdr(srv))
+	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"portal_relays":"https://relay.example"}`), consoleHdr(t, srv))
 	if code != 200 || fmt.Sprint(out["restart_required"]) != "[portal_relays]" || out["note"] == nil {
 		t.Fatalf("relay change: %d %v", code, out)
 	}
-	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"keep_versions":"5","portal_relays":"https://relay.example"}`), consoleHdr(srv))
+	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"keep_versions":"5","portal_relays":"https://relay.example"}`), consoleHdr(t, srv))
 	if code != 200 || fmt.Sprint(out["restart_required"]) != "[]" {
 		t.Fatalf("unchanged relays: %d %v", code, out)
 	}
