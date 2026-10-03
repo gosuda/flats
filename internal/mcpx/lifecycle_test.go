@@ -166,3 +166,46 @@ func TestMCPVisibilityWithoutProviderRemainsPending(t *testing.T) {
 		t.Fatalf("changed current: %q", body)
 	}
 }
+
+func TestGetFlatRetainsSummaryAlongsideDraftPreview(t *testing.T) {
+	e := newEnv(t)
+	publishedFixture(t, e)
+	var saved SaveOut
+	call(t, e.local, "save_draft", map[string]any{"slug": "census", "files": []any{file("index.html", "DRAFT-3", "")}}, &saved)
+	if text, failed := call(t, e.local, "open_preview", map[string]any{"slug": "census", "target": "draft", "version": 0}, nil); failed {
+		t.Fatal(text)
+	}
+	var out FlatOut
+	text, failed := call(t, e.local, "get_flat", map[string]any{"slug": "census"}, &out)
+	if failed || out.Flat.LiveVersion != 2 || len(out.Previews) != 1 {
+		t.Fatalf("get_flat: %s %+v", text, out)
+	}
+	for _, want := range []string{"census (", "private", "2 version(s)", "Private URL:", "Private Draft preview of census revision 3", "Current version is unchanged"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in %s", want, text)
+		}
+	}
+	if strings.Contains(text, "Preview of v0") {
+		t.Errorf("Draft is mislabeled as a published version: %s", text)
+	}
+}
+
+func TestToolErrorPreservesLifecycleCauseBeforeConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"stale_approval", core.ErrStaleApproval},
+		{"provider_not_permitted", core.ErrProviderNotPermitted},
+		{"provider_not_ready", core.ErrProviderNotReady},
+		{"public_stop_unconfirmed", core.ErrPublicStopUnconfirmed},
+		{"unchanged_content", core.ErrUnchangedContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := toolErr(errors.Join(core.ErrConflict, tc.err), "")
+			if !strings.Contains(err.Error(), `"category":"`+tc.name+`"`) {
+				t.Fatalf("lost typed cause: %v", err)
+			}
+		})
+	}
+}

@@ -501,6 +501,9 @@ func TestMCPConfig(t *testing.T) {
 	for _, want := range []string{
 		"claude mcp add --transport http flats http://127.0.0.1:7878/mcp",
 		"[mcp_servers.flats]",
+		"every publish, activation, rollback",
+		"visibility change in both directions",
+		"does not make a version live",
 		`url = "http://127.0.0.1:7878/mcp"`,
 		`"mcpServers"`,
 	} {

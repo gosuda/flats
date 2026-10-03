@@ -31,7 +31,12 @@ export async function request(method, path, body, raw) {
   }
   let data = null;
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
-  if (!res.ok) throw new ApiError(res.status, data);
+  if (!res.ok) {
+    if (data?.category?.startsWith('operator_') && typeof CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('flats-operator-required', { detail: data.category }));
+    }
+    throw new ApiError(res.status, data);
+  }
   return data;
 }
 
@@ -61,7 +66,7 @@ export const api = {
   openDraftPreview: (slug) => post(`/flats/${enc(slug)}/previews`, { target: 'draft', version: 0 }),
   saveDraft: (slug, file, meta = {}) => {
     const q = new URLSearchParams();
-    if (meta.expectedRevision) q.set('expected_revision', String(meta.expectedRevision));
+    if (meta.expectedRevision !== undefined) q.set('expected_revision', String(meta.expectedRevision));
     if (meta.message) q.set('message', meta.message);
     if (meta.gitSHA) q.set('git_sha', meta.gitSHA);
     if (meta.gitDirty) q.set('git_dirty', 'true');

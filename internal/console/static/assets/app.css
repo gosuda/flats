@@ -304,7 +304,7 @@ td > .badge:first-child { margin-left: 0; }
 
 /* --- alerts, health --- */
 
-.alert { padding: 12px 14px; border-radius: 10px; margin: 12px 0; border: 1px solid transparent; }
+.alert { overflow-wrap: anywhere; padding: 12px 14px; border-radius: 10px; margin: 12px 0; border: 1px solid transparent; }
 .alert p { margin: 4px 0 0; }
 .alert-error { background: var(--danger-bg); border-color: var(--danger); }
 .alert-warn { background: var(--warn-bg); border-color: var(--warn); }

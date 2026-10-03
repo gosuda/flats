@@ -113,6 +113,7 @@ export function plural(n, word) {
 // Visibility labels and widening order, mirroring internal/store.
 export const VISIBILITY = {
   private: { label: 'Private', icon: 'lock', rank: 0 },
+  public: { label: 'Public', icon: 'globe', rank: 1 },
   'public-unlisted': { label: 'Public · unlisted', icon: 'globe', rank: 1 },
   'public-listed': { label: 'Public · listed', icon: 'globe', rank: 2 },
 };
@@ -122,7 +123,10 @@ export const VISIBILITY = {
 export const UNLISTED_NOTICE = 'Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone with the URL can open it.';
 export const LISTED_NOTICE = 'This flat is public: anyone can open it, and it appears in Portal relay listings.';
 
+export const PUBLIC_ACCESS_NOTICE = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
+
 export function noticeFor(vis) {
+  if (vis === 'public') return PUBLIC_ACCESS_NOTICE;
   if (vis === 'public-unlisted') return UNLISTED_NOTICE;
   if (vis === 'public-listed') return LISTED_NOTICE;
   return '';

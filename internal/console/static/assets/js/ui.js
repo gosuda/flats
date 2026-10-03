@@ -219,6 +219,9 @@ export function extLink(href, text, cls) {
 // busy disables a button while fn runs.
 export async function busy(btn, fn) {
   const was = btn.disabled;
+  const scope = btn.closest?.('.page') || document;
+  const focusId = btn.id || btn.getAttribute('id');
+  const focusText = btn.textContent;
   btn.disabled = true;
   btn.setAttribute('aria-busy', 'true');
   try { return await fn(); } finally {
@@ -227,6 +230,14 @@ export async function busy(btn, fn) {
     if (restoreAfterBusy.has(btn)) {
       restoreAfterBusy.delete(btn);
       if (!btn.disabled && btn.isConnected !== false) btn.focus();
+      else if (btn.isConnected === false) {
+        const replacement = focusId ? document.getElementById(focusId) : [...scope.querySelectorAll('button')].find((el) => el.textContent === focusText);
+        if (replacement && !replacement.disabled) replacement.focus();
+        else {
+          const draft = document.getElementById('draft');
+          if (draft) { draft.setAttribute('tabindex', '-1'); draft.focus(); }
+        }
+      }
     }
   }
 }

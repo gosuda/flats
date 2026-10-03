@@ -107,14 +107,14 @@ const UNLISTED = 'Unlisted only hides this flat from Portal relay listings. It i
 const blog = {
   slug: 'blog', name: 'Blog', visibility: 'public', publication: 'published', live_version: 2, versions: 2,
   private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: UNLISTED,
-  private_state: 'ready', connection: { state: 'ready', detail: '' },
+  private_state: 'ready', connection_state: 'ready',
   providers: ['local', 'portal'],
   draft: { revision: 9, hash: 'abc123draft', base_version: 2, dirty: true, updated_at: '2026-10-03T00:00:00Z', role: 'draft', number: 0 },
   live: { number: 2, kind: 'server' }, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z', disk_bytes: 10,
 };
 // An older server may omit the notice; the console must still show one.
 const shop = { ...blog, slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: 'https://shop.portal.example', public_notice: undefined, providers: ['local', 'tailscale-funnel'] };
-const notes = { ...blog, slug: 'notes', name: 'Notes', visibility: 'private', publication: 'unpublished', live_version: 0, public_url: undefined, public_notice: undefined, providers: ['local'], draft: null, connection: 'starting' };
+const notes = { ...blog, slug: 'notes', name: 'Notes', visibility: 'private', publication: 'unpublished', live_version: 0, public_url: undefined, public_notice: undefined, providers: ['local'], draft: null, connection_state: 'starting' };
 const calls = [];
 const routes = {
   'GET /console/api/flats': { flats: [blog, shop, notes] },
@@ -221,7 +221,7 @@ await tick();
 assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
 for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
-const { statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY } = await import('./lifecycle.js');
+const { statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
 assert.equal(statusLine(blog).startsWith('Published · v2 · Public'), true, statusLine(blog));
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Published · v2'), true);
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Unpublished'), false);
@@ -289,7 +289,7 @@ vis.value = 'private';
 accessForm.dispatch('submit');
 await tick();
 routes['POST /console/api/flats/blog/visibility'] = { status: 'pending_approval', approval: { id: 'ap2', status: 'pending' } };
-routes['POST /console/api/approvals/ap2/approve'] = { id: 'ap2', status: 'failed', result: 'public route unconfirmed' };
+routes['POST /console/api/approvals/ap2/approve'] = { __status: 409, category: 'public_stop_unconfirmed', error: 'public route unconfirmed', approval: { id: 'ap2', status: 'failed', result: 'public route unconfirmed', result_data: { status: 'failed', failure_code: 'public_stop_unconfirmed', data_impact: 'none', health_data: 'not_run', live_data: 'untouched' } } };
 routes['GET /console/api/flats/blog'] = { ...blog, visibility: 'public' };
 all(document.body, (e) => e.tagName === 'DIALOG').at(-1).close('ok');
 await tick();
@@ -381,7 +381,7 @@ await tick();
 assert.ok(conflictMain.textContent.includes('The draft changed somewhere else') || document.body.textContent.includes('The draft changed somewhere else'));
 stopConflict();
 
-const { mount: approvalMount } = await import('./approval.js');
+const { mount: approvalMount, describeApproval, RESTORE_COPY, RUNTIME_COPY } = await import('./approval.js');
 routes['GET /console/api/approvals/stale1'] = { id: 'stale1', flat: 'blog', action: 'publish', status: 'failed', via: 'mcp', params: { revision: 9, hash: 'abc123draft' }, result: 'stale candidate', requested_at: '2026-10-03T00:00:00Z' };
 const approvalMain = new Element('main');
 const stopApproval = approvalMount(approvalMain, ['stale1'], ctx);
@@ -389,6 +389,133 @@ await tick();
 assert.ok(approvalMain.textContent.includes('The content or access settings changed. Review again.'));
 assert.equal(byText(approvalMain, 'Approve…').length, 0);
 if (stopApproval) stopApproval();
+
+// Every decision 409 uses the server's DecisionError envelope, not a synthetic 200.
+for (const [code, expected] of [
+  ['provider_not_permitted', 'not permitted'], ['provider_not_ready', 'still connecting'],
+  ['provider_unavailable', 'unavailable'], ['public_stop_unconfirmed', 'not shown as Private'],
+  ['unchanged_content', 'matches the current'], ['stale_approval', 'Review again'],
+]) {
+  const response = { __status: 409, error: 'decision failed', category: code,
+    approval: { id: 'typed-' + code, status: 'failed', result: 'decision failed', result_data: {
+      status: 'failed', failure_code: code, data_impact: 'none', health_data: 'not_run', live_data: 'untouched',
+    } } };
+  assert.ok(failureMessage(response).includes(expected));
+  assert.ok(failureMessage({ approval: { result_data: JSON.stringify(response.approval.result_data) } }).includes(expected));
+  routes['POST /console/api/flats/blog/visibility'] = { status: 'pending_approval', approval: { id: 'typed' } };
+  routes['POST /console/api/approvals/typed/approve'] = response;
+  const pending = changeVisibility(blog, 'private');
+  await tick();
+  all(document.body, (e) => e.tagName === 'DIALOG').at(-1).close('ok');
+  await tick();
+  const resultDialog = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
+  assert.ok(resultDialog.textContent.includes(expected), code + ': ' + resultDialog.textContent);
+  if (code !== 'stale_approval') assert.equal(resultDialog.textContent.includes('content or access settings changed'), false);
+  resultDialog.close('ok');
+  const outcome = await pending;
+  assert.equal(outcome.stale, code === 'stale_approval');
+  assert.ok(visibilitySettled(blog, 'private', outcome).text.includes(expected));
+}
+
+// The approval decision surface exposes canonical Public and frozen restore identity.
+for (const [id, action, params, expected] of [
+  ['public', 'set_visibility', { visibility: 'public' }, 'anyone on the internet'],
+  ['restore', 'rollback', { version: 1, restore_data: true, snapshot: 'before-v2.sqlite', snapshot_hash: 'snapshot-sha256' }, RESTORE_COPY],
+  ['data', 'restore_data', { version: 1, snapshot: 'before-v2.sqlite', snapshot_hash: 'snapshot-sha256' }, RESTORE_COPY],
+  ['activate', 'activate', { version: 2 }, RUNTIME_COPY],
+  ['publish', 'publish', { revision: 9, hash: blog.draft.hash }, RUNTIME_COPY],
+]) {
+  routes['GET /console/api/approvals/' + id] = { id, flat: 'blog', action, params, status: 'pending', via: 'mcp' };
+  const main = new Element('main');
+  approvalMount(main, [id], ctx);
+  await tick();
+  assert.ok(main.textContent.includes(expected), id + ': ' + main.textContent);
+  if (id === 'public') {
+    const badge = all(main, (e) => e.className === 'vis vis-public')[0];
+    assert.equal(badge.textContent, 'Public');
+    const globe = (await import('./dom.js')).visibilityBadge('public');
+    assert.equal(badge.childNodes[0].childNodes[0].getAttribute('d'), globe.childNodes[0].childNodes[0].getAttribute('d'));
+  }
+  if (params.snapshot) assert.ok(main.textContent.includes('snapshot-sha256') && main.textContent.includes('before-v2.sqlite'));
+  byText(main, 'Approve…')[0].dispatch('click');
+  await tick();
+  const dlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
+  assert.ok(dlg.textContent.includes(expected));
+  if (['public', 'restore', 'data'].includes(id)) assert.equal(byText(dlg, 'Approve')[0].className, 'btn btn-danger');
+  dlg.close('cancel');
+  await tick();
+  assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/' + id + '/approve'), false);
+}
+assert.equal(describeApproval({ flat: 'blog', action: 'activate', params: { version: 1 } }), 'Make v1 current on blog');
+
+// Rejection never attempts approval and renders the persisted rejection.
+routes['GET /console/api/approvals/reject'] = { id: 'reject', flat: 'blog', action: 'publish', params: { revision: 9 }, status: 'pending', via: 'mcp' };
+const rejectMain = new Element('main');
+approvalMount(rejectMain, ['reject'], ctx);
+await tick();
+byText(rejectMain, 'Reject…')[0].dispatch('click');
+await tick();
+routes['POST /console/api/approvals/reject/reject'] = { id: 'reject', status: 'rejected' };
+routes['GET /console/api/approvals/reject'] = { ...routes['GET /console/api/approvals/reject'], status: 'rejected', decided_by: 'local operator' };
+all(document.body, (e) => e.tagName === 'DIALOG').at(-1).close('ok');
+await tick();
+assert.ok(rejectMain.textContent.includes('request was rejected'));
+assert.equal(byText(rejectMain, 'Approve…').length, 0);
+assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/reject/approve'), false);
+
+// Provider-missing requests remain pending and disclose permission policy before decision.
+routes['GET /console/api/flats/blog'] = { ...blog, providers: ['local'], endpoints: [], connection_state: 'unavailable' };
+routes['GET /console/api/approvals/missing'] = { id: 'missing', flat: 'blog', action: 'set_visibility', status: 'pending', via: 'mcp', params: { visibility: 'public', providers: 'local' } };
+const missingMain = new Element('main');
+approvalMount(missingMain, ['missing'], ctx);
+await tick();
+assert.ok(missingMain.textContent.includes('Public') && missingMain.textContent.includes('pending'));
+assert.equal(byText(missingMain, 'Approve…').length, 1);
+
+// Clean Drafts have no Publish action. First saves guard revision zero.
+routes['GET /console/api/flats/blog'] = { ...blog, draft: { ...blog.draft, dirty: false } };
+const cleanMain = new Element('main');
+const stopClean = flat.mount(cleanMain, ['blog'], ctx);
+await tick();
+assert.equal(byText(cleanMain, 'Publish the next version after v2').length, 0);
+stopClean();
+const firstEditor = draftEditor(notes, () => {});
+const firstInput = all(firstEditor.editor, (e) => e.getAttribute('type') === 'file')[0];
+firstInput.files = [file];
+routes['POST /console/api/flats/notes/draft?expected_revision=0'] = { draft: { revision: 1 } };
+firstInput.dispatch('change');
+await tick();
+assert.ok(calls.some((c) => c.key === 'POST /console/api/flats/notes/draft?expected_revision=0'));
+
+// Retry refreshes revision from the server instead of reusing the conflicting one.
+const retryEditor = draftEditor(blog, () => {});
+const retryInput = all(retryEditor.editor, (e) => e.getAttribute('type') === 'file')[0];
+retryInput.files = [file];
+routes['POST /console/api/flats/blog/draft?expected_revision=9'] = { __status: 409, category: 'conflict', error: 'draft revision conflict' };
+retryInput.dispatch('change');
+await tick();
+routes['GET /console/api/flats/blog'] = { ...blog, draft: { ...blog.draft, revision: 12 } };
+routes['POST /console/api/flats/blog/draft?expected_revision=12'] = { draft: { revision: 13 } };
+byText(retryEditor.editor, 'Retry draft save')[0].dispatch('click');
+await tick();
+assert.ok(calls.some((c) => c.key === 'POST /console/api/flats/blog/draft?expected_revision=12'));
+
+// Console rollback can explicitly request the existing API's restore_data path,
+// then requires a danger confirmation for the frozen snapshot.
+const rollback = activateVersion(blog, 1, { rollback: true });
+await tick();
+let restoreDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
+all(restoreDlg, (e) => e.getAttribute('id') === 'rollback-restore-data')[0].checked = true;
+routes['POST /console/api/flats/blog/rollback'] = { status: 'pending_approval', approval: { id: 'rollback-restore', params: { version: 1, restore_data: true, snapshot: 'before-v2.sqlite', snapshot_hash: 'frozen-hash' } } };
+restoreDlg.close('ok');
+await tick();
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/rollback').body), { version: 1, restore_data: true });
+restoreDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
+assert.ok(restoreDlg.textContent.includes('frozen-hash'));
+assert.equal(byText(restoreDlg, 'Approve and restore live data')[0].className, 'btn btn-danger');
+restoreDlg.close('cancel');
+assert.equal((await rollback).pending, true);
+assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/rollback-restore/approve'), false);
 
 assert.equal(typeof publishDraft, 'function');
 assert.equal(typeof changeVisibility, 'function');

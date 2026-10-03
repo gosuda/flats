@@ -42,7 +42,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
 		Description: "Request operator approval to activate an already published version; version 0 requests publish of current Draft. Nothing changes before approval."}, t.deploy)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft", Annotations: write,
-		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. No published number is allocated."}, t.saveVersion)
+		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. Saving allocates no published number. Optional deploy=true requests pending publication; only successful operator approval later creates vN."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_draft", Annotations: ro,
 		Description: "Read the current Private Draft revision and hash."}, t.getDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "publish", Annotations: write,
@@ -81,7 +81,7 @@ type FlatInfo struct {
 	Visibility      string                  `json:"visibility" jsonschema:"private or public"`
 	LiveVersion     int                     `json:"live_version" jsonschema:"version serving now; 0 when never deployed"`
 	Versions        int                     `json:"versions" jsonschema:"number of successfully published versions"`
-	PrivateURL      string                  `json:"private_url" jsonschema:"tailnet-only URL (serves once a version is deployed)"`
+	PrivateURL      string                  `json:"private_url" jsonschema:"private Local loopback or permitted Tailscale URL; serves after an approved publish"`
 	PrivateState    string                  `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
 	PrivateDetail   string                  `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
 	PublicURL       string                  `json:"public_url,omitempty" jsonschema:"internet URL when public"`
@@ -200,6 +200,16 @@ func toolErr(err error, hint string) error {
 	b.WriteString(err.Error())
 	detail := map[string]any{"error": err.Error()}
 	switch {
+	case errors.Is(err, core.ErrStaleApproval):
+		detail["category"] = "stale_approval"
+	case errors.Is(err, core.ErrProviderNotPermitted):
+		detail["category"] = "provider_not_permitted"
+	case errors.Is(err, core.ErrProviderNotReady):
+		detail["category"] = "provider_not_ready"
+	case errors.Is(err, core.ErrPublicStopUnconfirmed):
+		detail["category"] = "public_stop_unconfirmed"
+	case errors.Is(err, core.ErrUnchangedContent):
+		detail["category"] = "unchanged_content"
 	case errors.Is(err, core.ErrConflict):
 		detail["category"] = "conflict"
 	case errors.Is(err, core.ErrForbidden):
@@ -307,7 +317,7 @@ func flatText(fi FlatInfo) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s): %s, %s, %d version(s). Private URL: %s", fi.Slug, fi.Name, fi.Visibility, liveText(fi.LiveVersion), fi.Versions, fi.PrivateURL)
 	if fi.LiveVersion == 0 {
-		b.WriteString(" (serves after the first deploy)")
+		b.WriteString(" (serves after the first approved publish)")
 	}
 	writePending(&b, fi.PrivateState, fi.PrivateDetail)
 	writePublic(&b, fi.PublicURL, fi.PublicNotice)
@@ -324,9 +334,10 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 	if ps, err := t.svc.ListPreviews(ctx, in.Slug); err == nil {
 		for _, p := range ps {
 			out.Previews = append(out.Previews, previewInfo(p))
-			text += fmt.Sprintf("\nPreview of v%d: %s", p.Version, p.URL)
 			if p.Target == "draft" {
-				text = fmt.Sprintf("Private Draft preview of %s revision %d: %s. Current version is unchanged; access follows loopback or existing tailnet ACL. Expires %s.", in.Slug, p.Revision, p.URL, p.ExpiresAt.Format(time.RFC3339))
+				text += fmt.Sprintf("\nPrivate Draft preview of %s revision %d: %s. Current version is unchanged; access follows loopback or existing tailnet ACL. Expires %s.", in.Slug, p.Revision, p.URL, p.ExpiresAt.Format(time.RFC3339))
+			} else {
+				text += fmt.Sprintf("\nPreview of v%d: %s", p.Version, p.URL)
 			}
 			if p.State != "" && p.State != "ready" {
 				text += " (" + p.State + ")"
@@ -348,7 +359,7 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 		return nil, FlatInfo{}, toolErr(err, "pick another slug (3-54 lowercase letters, digits and single hyphens, starting with a letter) or use the existing flat")
 	}
 	fi := flatInfo(f)
-	return result("Created private flat "+fi.Slug+". Next: save_version, then deploy.", fi), fi, nil
+	return result("Created unpublished Private flat "+fi.Slug+". Next: save_draft, then publish and wait for operator approval.", fi), fi, nil
 }
 
 // --- save_version / save_version_from_dir ---

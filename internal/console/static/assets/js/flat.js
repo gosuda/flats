@@ -85,6 +85,7 @@ export function mount(main, [slug], ctx, settings = false) {
   // --- header ---
 
   function drawHead() {
+    const activeId = headSlot.contains(document.activeElement) ? document.activeElement?.id : '';
     if (settings) { drawSettings(); return; }
     const nameEl = h('h1', { class: 'flat-title', text: flat.name || flat.slug });
     const edit = h('button', { type: 'button', class: 'btn btn-small', text: 'Edit name' });
@@ -105,9 +106,9 @@ export function mount(main, [slug], ctx, settings = false) {
       else if (ev.conflict) draftSaveText = ev.status;
     });
     if (draftSaveText) draftUi.status = () => draftSaveText;
-    const publish = h('button', { type: 'button', class: 'btn btn-primary', text: flat.live_version ? `Publish the next version after v${flat.live_version}` : 'Publish v1' });
-    publish.addEventListener('click', () => busy(publish, async () => { if (await publishDraft(flat)) refresh(); }));
-    const prepare = h('button', { type: 'button', class: 'btn btn-small', text: 'Open draft (private)' });
+    const publish = h('button', { id: 'publish-draft', type: 'button', class: 'btn btn-primary', text: flat.live_version ? `Publish the next version after v${flat.live_version}` : 'Publish v1' });
+    publish.addEventListener('click', () => busy(publish, async () => { if (await publishDraft(flat)) await refresh(); }));
+    const prepare = h('button', { id: 'prepare-draft', type: 'button', class: 'btn btn-small', text: 'Open draft (private)' });
     prepare.addEventListener('click', () => busy(prepare, async () => {
       try {
         await api.openDraftPreview(slug);
@@ -126,15 +127,16 @@ export function mount(main, [slug], ctx, settings = false) {
           h('ul', null, waiting.map((a) => h('li', null,
             h('a', { href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: `${a.action} · ${a.status}` })))))) : null,
       h('div', { class: 'life-grid' },
-        renderCurrent(flat, (btn) => busy(btn, async () => { if (await redeployLive(flat)) refresh(); })),
+        renderCurrent(flat, (btn) => busy(btn, async () => { if (await redeployLive(flat)) await refresh(); })),
         renderDraft(flat, findDraftPreview(previews, flat.draft?.revision), {
           editor: draftUi.editor,
           saveState: draftSaveText || (flat.draft ? `Saved ${flat.draft.updated_at ? dateTime(flat.draft.updated_at) : ''}`.trim() : ''),
-          publishButton: publish,
+          publishButton: flat.draft?.dirty ? publish : null,
           previewButton: prepare,
         })),
       tabBar(),
       tabPanel());
+    if (activeId) document.getElementById(activeId)?.focus();
   }
 
   function tabBar() {
@@ -193,7 +195,7 @@ export function mount(main, [slug], ctx, settings = false) {
         if (current) return h('div', { class: 'cell-actions' }, preview, redeployButton());
         const make = h('button', { type: 'button', class: 'btn btn-small', text: `Make v${v.number} current`, disabled: v.pruned });
         make.addEventListener('click', () => busy(make, async () => {
-          if (await activateVersion(flat, v.number, { rollback: v.number < flat.live_version })) refresh();
+          if (await activateVersion(flat, v.number, { rollback: v.number < flat.live_version })) await refresh();
         }));
         return h('div', { class: 'cell-actions' }, preview, make);
       },
@@ -204,7 +206,7 @@ export function mount(main, [slug], ctx, settings = false) {
     const select = h('select', { id: 'access-visibility', 'aria-describedby': 'access-hint' },
       h('option', { value: 'private', selected: flat.visibility !== 'public', text: 'Private' }),
       h('option', { value: 'public', selected: flat.visibility === 'public', disabled: flat.publication !== 'published', text: 'Public' }));
-    const apply = h('button', { type: 'submit', class: 'btn btn-small', text: 'Apply access' });
+    const apply = h('button', { id: 'apply-access', type: 'submit', class: 'btn btn-small', text: 'Apply access' });
     const cancel = h('button', { type: 'button', class: 'btn btn-small', text: 'Cancel' });
     const form = h('form', { class: 'inline-form' },
       h('label', { for: 'access-visibility', text: 'Access' }), select, apply, cancel);
@@ -247,7 +249,7 @@ export function mount(main, [slug], ctx, settings = false) {
     sync();
     save.addEventListener('click', () => busy(save, async () => {
       if (p.id !== 'local' && permit.checked && !intent.checked) return;
-      if (await saveProvider(flat, p.id, permit.checked)) refresh();
+      if (await saveProvider(flat, p.id, permit.checked)) await refresh();
     }));
     return h('div', { class: 'provider-row' },
       h('div', null, h('strong', { text: p.label }), h('div', { class: 'muted small', text: p.audience })),
@@ -358,7 +360,7 @@ export function mount(main, [slug], ctx, settings = false) {
       type: 'button', class: 'btn btn-small', text: 'Redeploy (apply secrets)',
       'aria-label': `Redeploy live version ${flat.live_version} to apply secrets`,
     });
-    btn.addEventListener('click', () => busy(btn, async () => { if (await redeployLive(flat)) refresh(); }));
+    btn.addEventListener('click', () => busy(btn, async () => { if (await redeployLive(flat)) await refresh(); }));
     return btn;
   }
 

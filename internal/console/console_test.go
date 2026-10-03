@@ -255,7 +255,7 @@ func TestLifecycleCopy(t *testing.T) {
 // same text the API returns afterwards.
 func TestNoticesMatchCore(t *testing.T) {
 	dom := readStatic(t, "assets/js/dom.js")
-	for name, want := range map[string]string{"UNLISTED_NOTICE": core.UnlistedNotice, "LISTED_NOTICE": core.ListedNotice} {
+	for name, want := range map[string]string{"UNLISTED_NOTICE": core.UnlistedNotice, "LISTED_NOTICE": core.ListedNotice, "PUBLIC_ACCESS_NOTICE": core.PublicAccessNotice} {
 		decl := "export const " + name + " = '" + want + "';"
 		if !strings.Contains(dom, decl) {
 			t.Errorf("dom.js %s differs from internal/core; want %s", name, decl)

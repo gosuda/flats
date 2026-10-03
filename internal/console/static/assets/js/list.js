@@ -4,7 +4,7 @@ import { h, clear, icon, timeEl, slugHue, initials } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading } from './ui.js';
 import { describeApproval } from './approval.js';
-import { statusLine, currentTarget, draftTarget, visibilityWord, connectionLabel, openControl } from './lifecycle.js';
+import { statusLine, currentTarget, connectionState, visibilityWord, connectionLabel, openControl } from './lifecycle.js';
 
 const VIEW_KEY = 'flats.view';
 
@@ -102,7 +102,6 @@ export function mount(main, _params, ctx) {
   function row(f) {
     const href = `/flats/${encodeURIComponent(f.slug)}`;
     const current = currentTarget(f);
-    const draft = draftTarget(f.draft_preview);
     const actions = h('div', { class: 'row-actions' },
       menu(`More actions for ${f.name || f.slug}`, [
         { label: 'Access', onSelect: () => ctx.navigate(href + '#access') },
@@ -116,9 +115,9 @@ export function mount(main, _params, ctx) {
         h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ' · ', statusLine(f)),
         h('div', { class: 'flat-opens' },
           openControl(current, current.version ? `Open current version v${current.version}` : 'Open current version'),
-          openControl({ ...draft, ready: draft.ready }, 'Open draft (private)'))),
+          h('a', { href: href + '#draft', 'data-nav': true, text: 'Review draft (private)' }))),
       h('div', { class: 'flat-vis' }, h('span', { class: 'vis vis-' + (f.visibility === 'public' ? 'public' : 'private'), text: visibilityWord(f.visibility) }),
-        h('div', { class: 'muted small', text: connectionLabel(f.connection && f.connection.state || f.connection) })),
+        h('div', { class: 'muted small', text: connectionLabel(connectionState(f)) })),
       actions);
   }
 

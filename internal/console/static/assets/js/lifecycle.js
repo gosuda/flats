@@ -33,15 +33,12 @@ export function permittedProviders(flat) {
 
 export function connectionState(flat) {
   if (flat?.connection_state) return flat.connection_state;
-  const c = flat?.connection;
-  if (!c) return '';
-  if (typeof c === 'string') return c;
-  return c.state || '';
+  return '';
 }
 
 export function connectionDetail(flat) {
-  const c = flat?.connection;
-  return c && typeof c === 'object' ? (c.detail || '') : '';
+  const publicRoute = flat?.visibility === 'public';
+  return (publicRoute ? flat?.public_detail : flat?.private_detail) || '';
 }
 
 export function connectionLabel(state) {
@@ -130,9 +127,27 @@ export function impactText(source) {
   return 'This result did not report data impact. A failed approval does not create a published version. The console will not claim the data was untouched.';
 }
 
+export function failureCode(source) {
+  let execution = source?.approval?.result_data || source?.result_data;
+  if (typeof execution === 'string') { try { execution = JSON.parse(execution); } catch { execution = {}; } }
+  return execution?.failure_code || source?.category || '';
+}
+
+export function failureMessage(source) {
+  const messages = {
+    provider_not_permitted: 'This provider is not permitted. Review host and per-flat provider grants before requesting approval again.',
+    provider_not_ready: 'The provider is still connecting or needs setup. Check its connection before requesting approval again.',
+    provider_unavailable: 'The provider is unavailable. Check host configuration before requesting approval again.',
+    public_stop_unconfirmed: 'Could not confirm the public route is blocked. Access is not shown as Private.',
+    unchanged_content: 'The draft matches the current published content. No new version was published.',
+    stale_approval: 'The content or access settings changed. Review again.',
+  };
+  return messages[failureCode(source)] || '';
+}
+
 function failedKind(source) {
-  const text = `${source?.result || ''} ${source?.error || ''} ${source?.status || ''}`;
-  return /stale/i.test(text);
+  const code = failureCode(source);
+  return code ? code === 'stale_approval' : /stale/i.test(`${source?.result || ''} ${source?.error || ''}`);
 }
 
 export async function approvePending(res) {
@@ -157,6 +172,7 @@ function policyLines(flat, draft) {
       ? `Current version link is openable (${connectionLabel(link.state)}).`
       : `Current connection: ${connectionLabel(link.state)}. An address is not treated as reachable until the connection is ready.` }),
     h('p', { text: CHECK_COPY }),
+    draft.kind !== 'static' ? h('p', { text: 'Starting a server runtime may write to live DB and FILES, even if activation fails.' }) : null,
     h('p', { class: 'muted', text: 'You are approving this in the console. The draft revision above is the one that will be published.' }),
   ];
 }
@@ -194,18 +210,18 @@ async function settle(kind, created, flat) {
   try {
     decision = await approvePending(created);
   } catch (err) {
-    const stale = err.status === 409 || failedKind(err.body) || /stale/i.test(err.message);
-    const title = stale ? 'The content or access settings changed. Review again.' : 'The approval failed';
+    const stale = failedKind(err.body);
+    const title = failureMessage(err.body) || (stale ? 'The content or access settings changed. Review again.' : 'The approval failed');
     await infoDialog(title, [h('p', { text: err.message }), h('p', { text: impactText(err.body) })]);
     announce(title);
-    return { created, error: err, stale };
+    return { created, error: err, stale, message: title };
   }
   const status = decision?.status || '';
   if (status === 'failed' || status === 'rejected') {
     const stale = failedKind(decision);
-    const title = stale
+    const title = failureMessage(decision) || (stale
       ? 'The content or access settings changed. Review again.'
-      : status === 'rejected' ? 'The request was rejected. The draft is unchanged.' : 'Publish did not complete';
+      : status === 'rejected' ? 'The request was rejected. The draft is unchanged.' : 'Publish did not complete');
     await infoDialog(title, [h('p', { text: decision.result || title }), h('p', { text: impactText(decision) })]);
     announce(title);
     return { created, decision, stale };
@@ -262,12 +278,12 @@ export async function changeVisibility(flat, next) {
 }
 
 export function visibilitySettled(flat, requested, outcome) {
-  if (!outcome || outcome.stale || outcome.error) return { ok: false, text: outcome?.stale ? 'The content or access settings changed. Review again.' : 'The access change did not complete.' };
+  if (!outcome || outcome.stale || outcome.error) return { ok: false, text: outcome?.message || (outcome?.stale ? 'The content or access settings changed. Review again.' : 'The access change did not complete.') };
   if (outcome.decision?.status === 'rejected') return { ok: false, text: 'The access request was rejected. The previous access remains.' };
   if (outcome.decision?.status === 'failed') {
-    return { ok: false, text: /block|unconfirmed|public route/i.test(outcome.decision.result || '')
+    return { ok: false, text: failureMessage(outcome.decision) || (/block|unconfirmed|public route/i.test(outcome.decision.result || '')
       ? 'Could not confirm the public route is blocked. Access is not shown as Private.'
-      : (outcome.decision.result || 'The access change failed.') };
+      : (outcome.decision.result || 'The access change failed.')) };
   }
   if (requested === 'private' && flat?.visibility === 'public') {
     return { ok: false, text: 'Could not confirm the public route is blocked. Access is not shown as Private.' };
@@ -309,14 +325,17 @@ export async function saveProvider(flat, provider, permitted) {
 export async function activateVersion(flat, version, opts = {}) {
   const rollback = !!opts.rollback;
   const restore = !!opts.restoreData;
+  const restoreInput = rollback ? h('input', { type: 'checkbox', id: 'rollback-restore-data', checked: restore }) : null;
   const ok = await confirmDialog({
     title: rollback ? `Roll back ${nameOf(flat)} to v${version}?` : `Make v${version} the current version of ${nameOf(flat)}?`,
     body: [
       h('p', { text: `This serves published v${version} again. It does not create a new version number.` }),
       h('p', { text: restore
         ? 'This approval also restores data from the snapshot taken before the current version. New snapshots include the database and FILES; historical DB-only snapshots preserve current FILES.'
-        : 'The database is left as it is. Restoring data is a separate choice.' }),
+        : 'Without the restore option below, live DB and FILES stay in place. Server runtime start may still write to them.' }),
       h('p', { text: CHECK_COPY }),
+      h('p', { text: 'For a server candidate, starting the runtime may write to live DB and FILES, even if activation fails.' }),
+      restoreInput ? h('div', { class: 'field field-check' }, restoreInput, h('label', { for: 'rollback-restore-data', text: 'Also restore live data from before the current version (current live data is backed up first; captured DB and FILES are replaced, historical DB-only snapshots preserve FILES).' })) : null,
     ],
     confirmLabel: rollback ? 'Approve rollback' : 'Approve and make current',
     danger: restore,
@@ -325,7 +344,7 @@ export async function activateVersion(flat, version, opts = {}) {
   let created;
   try {
     created = rollback
-      ? await api.rollback(flat.slug, version, restore)
+      ? await api.rollback(flat.slug, version, !!restoreInput?.checked)
       : await api.deploy(flat.slug, version);
   } catch (err) {
     await infoDialog('The version change did not complete', [h('p', { text: err.message }), h('p', { text: impactText(err.body) })]);
@@ -334,6 +353,23 @@ export async function activateVersion(flat, version, opts = {}) {
   if (created?.status !== 'pending_approval') {
     await infoDialog('Approval was not created', 'The server did not return a pending approval, so the current version was not changed from this console.');
     return null;
+  }
+  if (restoreInput?.checked || created.approval?.params?.restore_data) {
+    let p = created.approval?.params || {};
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch { p = {}; } }
+    if (!p.snapshot || !p.snapshot_hash) {
+      await infoDialog('Review the pending restore request', 'Snapshot identity was not returned. Open its approval page to review before deciding.');
+      return { created, pending: true };
+    }
+    if (p.restore_data) {
+      const confirmed = await confirmDialog({
+        title: 'Approve rollback with live data restore?',
+        body: [h('p', { text: `Snapshot: ${p.snapshot || 'not reported'} · hash ${p.snapshot_hash || 'not reported'}` }),
+          h('p', { text: 'Replaces live DB and captured FILES after backing up current live data. Historical DB-only snapshots preserve current FILES.' })],
+        confirmLabel: 'Approve and restore live data', danger: true,
+      });
+      if (!confirmed) return { created, pending: true };
+    }
   }
   return settle('activate', created, flat);
 }
@@ -401,7 +437,8 @@ export function renderDraft(flat, preview, handlers) {
 export function draftEditor(flat, onUploaded) {
   let lastFile = null;
   let message = '';
-  let revision = flat.draft?.revision;
+  let revision = flat.draft?.revision ?? 0;
+  let conflicted = false;
   const status = { text: '' };
   const fileId = 'draft-archive';
   const msgId = 'draft-message';
@@ -417,8 +454,13 @@ export function draftEditor(flat, onUploaded) {
     onUploaded({ pending: true, status: status.text });
     retry.hidden = true;
     try {
+      if (conflicted) {
+        const latest = await api.flat(flat.slug);
+        revision = latest.draft?.revision ?? 0;
+        conflicted = false;
+      }
       const res = await api.saveDraft(flat.slug, file, {
-        expectedRevision: revision || undefined,
+        expectedRevision: revision,
         message: message.trim(),
       });
       revision = res.draft?.revision ?? res.version?.revision ?? revision;
@@ -427,6 +469,7 @@ export function draftEditor(flat, onUploaded) {
       onUploaded({ pending: false, status: status.text, response: res });
     } catch (err) {
       const conflict = err.status === 409;
+      conflicted = conflict;
       status.text = conflict
         ? 'The draft changed somewhere else. Review it before uploading again. Your selected file was kept.'
         : 'Could not save the draft. Your selected file was kept.';
