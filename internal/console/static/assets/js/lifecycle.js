@@ -421,7 +421,7 @@ export function renderDraft(flat, preview, handlers) {
   const base = draft?.base_version ? `Based on v${draft.base_version}` : 'Not based on a published version';
   const dirty = draft?.dirty ? 'Draft changes' : draft ? 'No unpublished file changes reported' : 'No draft';
   const save = handlers.saveState || (draft ? 'Saved' : '');
-  return h('section', { class: 'card life-card', id: 'draft' },
+  return h('section', { class: 'card life-card', id: 'draft', tabindex: '-1' },
     h('h2', { text: 'Draft' }),
     h('p', { text: draft
       ? `${base} · revision ${draft.revision} · ${dirty} · Private`

@@ -234,6 +234,7 @@ const stopLife = flat.mount(lifeMain, ['blog'], ctx);
 await tick();
 assert.ok(lifeMain.textContent.includes('Current version'));
 assert.ok(lifeMain.textContent.includes('Draft'));
+assert.equal(all(lifeMain, (e) => e.getAttribute('id') === 'draft')[0].getAttribute('tabindex'), '-1');
 assert.ok(lifeMain.textContent.includes('revision 9'));
 assert.equal(lifeMain.textContent.toLowerCase().includes('only me'), false);
 assert.equal(lifeMain.textContent.includes('Tailscale Serve'), false);
