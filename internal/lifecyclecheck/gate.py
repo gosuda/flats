@@ -525,10 +525,12 @@ def approval_boundary(h):
     rejected = h.ok('GET', f'/api/approvals/{rejection}')
     require(rejected['status'] == 'rejected' and rejected.get('decided_by') and rejected.get('authorized_at'),
             'rejection did not persist validated actor/time')
-    require(execution(rejected).get('status') == 'rejected' and data_impact(rejected) == 'none',
-            'rejection result_data missing actual status/data impact')
-    require('BOUNDARY-CANDIDATE' in h.traffic('boundary') and len(h.versions('boundary')) == 2,
-            'rejection changed current or allocated a version')
+    require(not rejected.get('result_data'), 'rejection synthesized an execution receipt')
+    after_rejection = h.flat('boundary')
+    require(after_rejection['live_version'] == 2 and after_rejection['visibility'] == 'private'
+            and provider_ids(after_rejection) == {'local'}
+            and 'BOUNDARY-CANDIDATE' in h.traffic('boundary') and len(h.versions('boundary')) == 2,
+            'rejection changed current/policy or allocated a version')
     h.ok('DELETE', '/console/api/operator/session', console=True)
     h.save('boundary', static('REVOKED-SESSION-CANDIDATE'))
     next_pending = h.publish('boundary')

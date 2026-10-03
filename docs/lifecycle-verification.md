@@ -218,3 +218,8 @@ prepared cases.
 Dual-provider fault coverage uses selective Funnel/Portal serve and stop failures,
 checks confirmed and unconfirmed routes through actual HTTP, preserves current
 Private traffic and requires a fresh successful approval afterward.
+
+Rejected decisions persist validated actor/time but perform no apply operation.
+Their result_data must be empty/null; no execution/data-impact DTO is fabricated.
+The census checks unchanged current pointer, bytes, visibility, providers and
+version count. Approved/applied/failed executions still require actual typed DTOs.
