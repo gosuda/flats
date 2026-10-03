@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -261,23 +262,59 @@ func (s *Service) stopRedirect(old string) error {
 // a redirect follows later renames of its flat and ends with its window.
 func (s *Service) syncRedirects(ctx context.Context) {
 	now := s.now()
-	_ = s.st.DeleteExpiredRedirects(ctx, now)
+	// Read every durable row, including expired ones. An expired redirect is
+	// still the retry owner for its provider identity until teardown confirms;
+	// deleting the row first would lose that owner across a restart.
+	rows, err := s.st.ActiveRedirects(ctx, time.Time{})
+	if err != nil {
+		return
+	}
+	persisted := make(map[string]store.Redirect, len(rows))
+	for _, row := range rows {
+		persisted[row.Old] = row
+		if row.Until.After(now) {
+			continue
+		}
+		if _, err := s.st.GetFlat(ctx, row.Old); err == nil {
+			// A real flat always owns its routes. This can only arise from an
+			// externally repaired/legacy database; discard the stale row below.
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return
+		}
+		s.mu.Lock()
+		if s.redir[row.Old] == nil {
+			s.redir[row.Old] = &redirect{cur: row.Flat}
+		}
+		s.mu.Unlock()
+	}
 	s.mu.Lock()
 	served := make(map[string]string, len(s.redir))
 	for old, r := range s.redir {
 		served[old] = r.cur
 	}
 	s.mu.Unlock()
-	for old, cur := range served {
-		r, err := s.st.RedirectFor(ctx, old, now)
+	olds := make([]string, 0, len(served))
+	for old := range served {
+		olds = append(olds, old)
+	}
+	slices.Sort(olds)
+	teardownFailed := false
+	for _, old := range olds {
+		cur := served[old]
+		r, ok := persisted[old]
 		switch {
-		case errors.Is(err, store.ErrNotFound):
+		case !ok || !r.Until.After(now):
 			if err := s.stopRedirect(old); err != nil {
 				s.Event(ctx, cur, "error", "rename", err.Error(), nil)
+				teardownFailed = true
 			}
-		case err == nil && r.Flat != cur:
+		case r.Flat != cur:
 			s.serveRedirect(ctx, old, r.Flat)
 		}
+	}
+	if !teardownFailed {
+		_ = s.st.DeleteExpiredRedirects(ctx, now)
 	}
 }
 

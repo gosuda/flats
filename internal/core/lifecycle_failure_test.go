@@ -323,6 +323,169 @@ func TestFunnelOnlyRedirectExpiryRetriesRetirement(t *testing.T) {
 	}
 }
 
+func TestExpiredRedirectRetirementSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "flats.db")
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstNet := newLifecycleRouteNet()
+	first := newLifecycleService(t, dir, st, firstNet, nil)
+	clock := time.Now().UTC().Add(-8 * 24 * time.Hour)
+	first.now = func() time.Time { return clock }
+	lifecycleSave(t, first, "durable-old", "one")
+	lifecycleApprove(t, first, lifecycleRequest(t, first, "durable-old"))
+	if _, err := first.RenameSlug(t.Context(), "durable-old", "durable-new", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+
+	clock = time.Now().UTC()
+	firstNet.stopSlug["durable-old"] = errors.New("identity logout is not confirmed")
+	first.Sweep(t.Context())
+	if first.Redirects()["durable-old"] != "durable-new" || firstNet.status("durable-old", ProviderLocal) != http.StatusTemporaryRedirect {
+		t.Fatal("failed expiry did not retain the redirect and Local route")
+	}
+	if rows, err := st.ActiveRedirects(t.Context(), time.Time{}); err != nil || len(rows) != 1 || rows[0].Old != "durable-old" {
+		t.Fatalf("failed expiry lost its durable retry owner: rows=%+v err=%v", rows, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	restartedNet := newLifecycleRouteNet()
+	restartedNet.stopSlug["durable-old"] = errors.New("identity logout is still not confirmed")
+	restarted := newLifecycleService(t, dir, st, restartedNet, nil)
+	defer restarted.Close()
+	if restarted.Redirects()["durable-old"] != "durable-new" {
+		t.Fatal("restart did not restore the expired alias as a teardown retry owner")
+	}
+	if _, err := restarted.CreateFlat(t.Context(), "durable-old", "", ViaAPI); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("restart released a slug whose retirement is unconfirmed: %v", err)
+	}
+	restarted.Sweep(t.Context())
+	if restartedNet.slugStopCount("durable-old") != 1 || restarted.Redirects()["durable-old"] != "durable-new" {
+		t.Fatalf("restart retry lost state: calls=%d redirects=%v", restartedNet.slugStopCount("durable-old"), restarted.Redirects())
+	}
+	if rows, err := st.ActiveRedirects(t.Context(), time.Time{}); err != nil || len(rows) != 1 {
+		t.Fatalf("failed restart retry deleted durable state: rows=%+v err=%v", rows, err)
+	}
+
+	delete(restartedNet.stopSlug, "durable-old")
+	restarted.Sweep(t.Context())
+	if _, ok := restarted.Redirects()["durable-old"]; ok || restartedNet.slugStopCount("durable-old") != 2 {
+		t.Fatalf("confirmed retry did not remove alias: calls=%d redirects=%v", restartedNet.slugStopCount("durable-old"), restarted.Redirects())
+	}
+	if rows, err := st.ActiveRedirects(t.Context(), time.Time{}); err != nil || len(rows) != 0 {
+		t.Fatalf("confirmed retry retained expired row: rows=%+v err=%v", rows, err)
+	}
+	if _, err := restarted.CreateFlat(t.Context(), "durable-old", "", ViaAPI); err != nil {
+		t.Fatalf("confirmed cleanup did not release old slug: %v", err)
+	}
+}
+
+func TestDeletePreservesCurrentAndAliasRoutesOnDependentFailure(t *testing.T) {
+	setup := func(t *testing.T) (*Service, *lifecycleRouteNet) {
+		t.Helper()
+		s, _ := newTestService(t)
+		network := newLifecycleRouteNet()
+		s.cfg.Lifecycle = network
+		lifecycleSave(t, s, "delete-alias-a", "one")
+		lifecycleApprove(t, s, lifecycleRequest(t, s, "delete-alias-a"))
+		if _, err := s.RenameSlug(t.Context(), "delete-alias-a", "delete-alias-b", ViaAPI); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.RenameSlug(t.Context(), "delete-alias-b", "delete-current", ViaAPI); err != nil {
+			t.Fatal(err)
+		}
+		return s, network
+	}
+	assertAvailable := func(t *testing.T, s *Service, network *lifecycleRouteNet) {
+		t.Helper()
+		if _, err := s.GetFlat(t.Context(), "delete-current"); err != nil {
+			t.Fatalf("failed delete removed flat: %v", err)
+		}
+		if !network.serves("delete-current", ProviderLocal) {
+			t.Fatal("failed delete stopped the current Local route")
+		}
+		for _, old := range []string{"delete-alias-a", "delete-alias-b"} {
+			if s.Redirects()[old] != "delete-current" || network.status(old, ProviderLocal) != http.StatusTemporaryRedirect {
+				t.Fatalf("failed delete did not preserve alias %s: redirects=%v", old, s.Redirects())
+			}
+		}
+	}
+	assertDeleted := func(t *testing.T, s *Service, network *lifecycleRouteNet) {
+		t.Helper()
+		if _, err := s.GetFlat(t.Context(), "delete-current"); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("successful retry retained flat: %v", err)
+		}
+		for _, host := range []string{"delete-current", "delete-alias-a", "delete-alias-b"} {
+			if network.serves(host, ProviderLocal) {
+				t.Fatalf("successful retry retained Local route %s", host)
+			}
+		}
+		if len(s.Redirects()) != 0 {
+			t.Fatalf("successful retry retained aliases: %v", s.Redirects())
+		}
+	}
+
+	t.Run("later alias failure", func(t *testing.T) {
+		s, network := setup(t)
+		preview, err := s.OpenPreview(t.Context(), "delete-current", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		network.stopSlug["delete-alias-b"] = errors.New("alias identity retirement is not confirmed")
+		if _, err := s.Delete(t.Context(), "delete-current", ViaConsole, ""); err == nil {
+			t.Fatal("delete accepted an unconfirmed alias retirement")
+		}
+		assertAvailable(t, s, network)
+		if !network.serves(preview.Host, ProviderLocal) {
+			t.Fatal("later alias failure did not restore the prepared preview route")
+		}
+		if network.slugStopCount("delete-alias-a") != 1 || network.slugStopCount("delete-current") != 0 {
+			t.Fatalf("delete order did not stop before current: a=%d current=%d", network.slugStopCount("delete-alias-a"), network.slugStopCount("delete-current"))
+		}
+		delete(network.stopSlug, "delete-alias-b")
+		if _, err := s.Delete(t.Context(), "delete-current", ViaConsole, ""); err != nil {
+			t.Fatal(err)
+		}
+		assertDeleted(t, s, network)
+		if network.serves(preview.Host, ProviderLocal) {
+			t.Fatal("successful retry retained preview route")
+		}
+	})
+
+	t.Run("preview failure", func(t *testing.T) {
+		s, network := setup(t)
+		preview, err := s.OpenPreview(t.Context(), "delete-current", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		network.stopExposure[preview.Host] = errors.New("preview listener is still reachable")
+		if _, err := s.Delete(t.Context(), "delete-current", ViaConsole, ""); err == nil || !strings.Contains(err.Error(), "stop previews") {
+			t.Fatalf("delete did not surface preview teardown failure: %v", err)
+		}
+		assertAvailable(t, s, network)
+		if network.slugStopCount("delete-alias-a") != 0 || network.slugStopCount("delete-alias-b") != 0 || network.slugStopCount("delete-current") != 0 {
+			t.Fatal("preview failure started slug teardown")
+		}
+		delete(network.stopExposure, preview.Host)
+		if _, err := s.Delete(t.Context(), "delete-current", ViaConsole, ""); err != nil {
+			t.Fatal(err)
+		}
+		assertDeleted(t, s, network)
+	})
+}
+
 func TestPartialPublicRestartRenameTracksAliasForRevokeAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "flats.db")

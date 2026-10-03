@@ -295,12 +295,22 @@ func (s *Service) restore(ctx context.Context) error {
 			}
 		}
 	}
-	if rs, err := s.st.ActiveRedirects(ctx, s.now()); err == nil {
+	if rs, err := s.st.ActiveRedirects(ctx, time.Time{}); err == nil {
+		now := s.now()
 		for _, r := range rs {
 			if _, err := s.st.GetFlat(ctx, r.Old); err == nil {
 				continue // a flat uses that slug again; never shadow it
 			}
-			s.serveRedirect(ctx, r.Old, r.Flat)
+			if r.Until.After(now) {
+				s.serveRedirect(ctx, r.Old, r.Flat)
+				continue
+			}
+			// Expired rows remain durable teardown owners until StopSlug
+			// confirms. Keep the slug reserved after restart; Sweep performs
+			// the retry without reopening an already-expired route.
+			s.mu.Lock()
+			s.redir[r.Old] = &redirect{cur: r.Flat}
+			s.mu.Unlock()
 		}
 	}
 	// An approval left in "applying" is resumed once. A deployment already
@@ -1310,36 +1320,74 @@ func (s *Service) Delete(ctx context.Context, slugName string, via Via, reason s
 func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
-	if err := s.stopSlugRoutes(ctx, slugName); err != nil {
+	flat, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
 		return ActionResult{}, err
 	}
-	var olds []string
+	type alias struct{ old, cur string }
+	var aliases []alias
 	s.mu.Lock()
 	for old, r := range s.redir {
 		if r.cur == slugName {
-			olds = append(olds, old)
+			aliases = append(aliases, alias{old: old, cur: r.cur})
 		}
 	}
 	s.mu.Unlock()
-	for _, old := range olds {
-		if err := s.stopRedirect(old); err != nil {
-			return ActionResult{}, err
+	slices.SortFunc(aliases, func(a, b alias) int { return strings.Compare(a.old, b.old) })
+
+	// Previews and aliases can fail independently of the current route. Prepare
+	// their network teardown while keeping their rows, runtimes and data intact,
+	// so any later failure can restore every route of the retained flat.
+	previews, err := s.prepareDeletePreviews(ctx, slugName)
+	if err != nil {
+		return ActionResult{}, fmt.Errorf("stop previews: %w", err)
+	}
+	stoppedAliases := make([]alias, 0, len(aliases))
+	restoreAliases := func() {
+		restoreCtx := context.WithoutCancel(ctx)
+		for _, a := range stoppedAliases {
+			s.serveRedirect(restoreCtx, a.old, a.cur)
 		}
 	}
-	if err := s.dropPreviews(ctx, slugName); err != nil {
-		return ActionResult{}, fmt.Errorf("stop previews: %w", err)
+	for _, a := range aliases {
+		if err := s.stopRedirect(a.old); err != nil {
+			restoreAliases()
+			restoreErr := s.restoreDeletePreviews(context.WithoutCancel(ctx), previews)
+			return ActionResult{}, errors.Join(err, restoreErr)
+		}
+		stoppedAliases = append(stoppedAliases, a)
+	}
+	if err := s.stopSlugRoutes(ctx, slugName); err != nil {
+		restoreAliases()
+		restoreErr := s.restoreDeletePreviews(context.WithoutCancel(ctx), previews)
+		return ActionResult{}, errors.Join(err, restoreErr)
+	}
+	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
+		restoreCtx := context.WithoutCancel(ctx)
+		restoreErr := s.ensureExposure(restoreCtx, flat)
+		restoreAliases()
+		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
+		return ActionResult{}, errors.Join(err, restoreErr)
 	}
 	s.mu.Lock()
 	lf := s.live[slugName]
 	delete(s.live, slugName)
+	for _, p := range previews {
+		delete(s.prevs, p.record.Host)
+	}
 	s.mu.Unlock()
+	for _, p := range previews {
+		if p.live != nil {
+			if p.live.inst != nil {
+				p.live.inst.Stop()
+			}
+			_ = os.RemoveAll(p.live.dataDir)
+		}
+	}
 	if lf != nil {
 		if d := lf.cur.Load(); d != nil && d.inst != nil {
 			d.inst.Stop()
 		}
-	}
-	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
-		return ActionResult{}, err
 	}
 	s.eventCount.Delete(slugName)
 	s.logLimits.Delete(slugName)
@@ -1625,6 +1673,52 @@ func (s *Service) dropPreviews(ctx context.Context, slugName string) error {
 			continue
 		}
 		s.Event(ctx, slugName, "info", "preview", "closed preview "+p.Host, nil)
+	}
+	return errors.Join(errs...)
+}
+
+type deletePreview struct {
+	record store.Preview
+	live   *preview
+}
+
+// prepareDeletePreviews confirms that every preview route can stop without
+// deleting its row, runtime or data. A later alias/current failure can then
+// restore the stopped routes and leave the flat fully usable for retry.
+func (s *Service) prepareDeletePreviews(ctx context.Context, slugName string) ([]deletePreview, error) {
+	rows, err := s.st.ListPreviews(ctx, slugName)
+	if err != nil {
+		return nil, err
+	}
+	prepared := make([]deletePreview, 0, len(rows))
+	for _, row := range rows {
+		s.mu.Lock()
+		live := s.prevs[row.Host]
+		s.mu.Unlock()
+		if err := s.stopPreviewExposure(ctx, row.Host); err != nil {
+			restoreErr := s.restoreDeletePreviews(context.WithoutCancel(ctx), prepared)
+			return nil, errors.Join(fmt.Errorf("%s: %w", row.Host, err), restoreErr)
+		}
+		prepared = append(prepared, deletePreview{record: row, live: live})
+	}
+	return prepared, nil
+}
+
+func (s *Service) restoreDeletePreviews(ctx context.Context, previews []deletePreview) error {
+	var errs []error
+	for _, prepared := range previews {
+		p := prepared.live
+		if p == nil {
+			continue
+		}
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p.last.Store(s.now().UnixMilli())
+			w.Header().Set("X-Robots-Tag", "noindex")
+			p.handler.ServeHTTP(w, r)
+		})
+		if _, err := s.servePreview(ctx, p.flat, p.host, handler); err != nil {
+			errs = append(errs, fmt.Errorf("restore preview %s: %w", p.host, err))
+		}
 	}
 	return errors.Join(errs...)
 }
