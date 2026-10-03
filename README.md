@@ -1,6 +1,12 @@
+<!-- PROTECTED BRANDING: Do not modify the image or copy in this block without an explicit user request. -->
 <p align="center">
   <img src="docs/assets/flats-logo.png" alt="flats caretaker gopher logo" width="280">
 </p>
+
+<p align="center">
+  <strong>Open-source alternative to sites/artifacts</strong>
+</p>
+<!-- END PROTECTED BRANDING -->
 
 # Flats
 
