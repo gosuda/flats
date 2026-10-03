@@ -6,11 +6,11 @@ This page is the console binding to the core contract. Core owns the store and H
 
 ## Routes the console calls
 
-All paths are under `/console/api`. Mutations other than provider permission return `pending_approval`. The console then calls the existing approve or reject endpoint. Nothing is marked published, rolled back, or made Public or Private until that approve call returns.
+All paths are under `/console/api`. Publish, activation, rollback, deletion and visibility transitions return `pending_approval`; Draft saves, previews, settings and provider permission have their own immediate results. The console then calls the existing approve or reject endpoint. Nothing is marked published, rolled back, or made Public or Private until that approve call returns.
 
 | Action | Call |
 |---|---|
-| Save draft files | `POST /flats/{slug}/draft` with the archive body and `expected_revision` when a draft already exists. Optional `message` is metadata on that upload, not the flat content. A save message typed alone is not uploaded. |
+| Save draft files | `POST /flats/{slug}/draft` with the archive body and `expected_revision` on every save (`0` for the first save). Optional `message` is metadata on that upload, not the flat content. A save message typed alone is not uploaded. |
 | Publish | `POST /flats/{slug}/publish` `{revision, hash}` then approve |
 | Serve an existing published version again | `POST /flats/{slug}/deploy` `{version}` then approve. This does not allocate a new number. |
 | Roll back | `POST /flats/{slug}/rollback` `{version, restore_data}` then approve. Restoring data is explicit in that approval. |
@@ -30,10 +30,10 @@ On each flat:
 - `visibility`: `private` or `public`
 - `draft`: `null` or `{revision, hash, base_version, dirty, updated_at, kind, message, size, files, number:0, role:"draft"}`
 - `providers`: permitted ids. `local` is treated as permitted even when omitted
-- `connection`: a state string or `{state, detail}` using `starting`, `ready`, `error`, `needs-login`, `key-expiring`, `unavailable`
+- `connection_state`: a state string using `starting`, `ready`, `error`, `needs-login`, `key-expiring`, `unavailable`
 - Existing `private_url`, `private_state`, `public_url` for the current version’s address. The current-version link is enabled only when `publication` is `published`, a version exists, and the matching connection state is `ready` or `key-expiring`
 
-List rows use those fields. An optional `draft_preview` object with `url`, `state`, `target:"draft"` supplies the list’s Open draft link. Without it, the list does not invent a draft URL.
+List rows use actual `connection_state` and link to the Draft management section. Flat DTOs do not contain `connection` or `draft_preview`. The flat page reads `/flats/{slug}/previews` to find an open Private Draft preview.
 
 Previews may include `target` and `revision`. A draft preview is labeled private. Approval `params` are shown when they include `revision`, `hash`, `base_version` or `expected_live`, `version`, `from`, `to` / `visibility`, and `providers`.
 
@@ -43,7 +43,7 @@ A Private approval that leaves `visibility` as `public`, or whose result says th
 
 ## Screen
 
-The flat list links the name to the management page. Open current version and Open draft are separate controls, each named with its target. Rows do not repeat a public-access banner.
+The flat list links the name to the management page. Open current version and Review draft are separate list controls; the flat page offers Open draft only from actual preview data. Clean Drafts do not offer Publish. Rows do not repeat a public-access banner.
 
 The flat page keeps the current version and the draft side by side (stacked on a narrow screen). Tabs are Overview, Version history, Access, and Operations. Logs, secrets, database, and analytics stay reachable from Operations and from the existing settings, analytics, and database pages.
 
@@ -56,7 +56,7 @@ Private Tailscale copy follows the tailnet ACL, including other people and devic
 Consecutive archive autosaves use the revision returned by the preceding
 successful upload. The editor previously retained its initial revision, causing
 the next save to conflict with its own first save. Real conflicts retain the
-source archive and do not advance the expected revision. The console test checks
+source archive; an explicit retry first reloads the latest Draft revision and then guards that revision on upload. The console test checks
 both source archive bodies and the second request's updated expected revision.
 
 Package and simulated-DOM checks are complemented by actual rendered desktop
@@ -83,3 +83,11 @@ readiness separately. Approval pages show actual persisted `result_data` and
 `decided_by`. Tabs support arrow keys, Home and End with focus transfer; the
 operator toolbar wraps on mobile. New data restores include DB and FILES;
 historical DB-only snapshots preserve current FILES.
+
+## Approval disclosure and correction evidence
+
+Canonical `public` uses the globe/Public badge, internet warning, and danger confirmation. Pending rollback with `restore_data:true`, and `restore_data` actions, show the frozen snapshot name/hash and explain that current live data is backed up before replacing DB and captured FILES (historical DB-only snapshots preserve FILES). Activation and publication of server candidates disclose live-data writes at runtime start, separately from isolated health checks; unknown candidate kind uses conditional server copy. Rollback in Version history offers an explicit restore checkbox and a second danger confirmation with the server-frozen snapshot before decision. The API does not expose arbitrary snapshot selection/restore as a console route.
+
+The console maps decision `category` or `approval.result_data.failure_code` for provider permission/readiness/availability, unconfirmed public stop, unchanged content and stale approval. HTTP 409 alone never means drift. Failed Private transitions retain Public until confirmed. Simulated DOM tests use real server-shaped 409 envelopes and exercise pending provider-missing, rejection, disclosure, retry and first-save flows. Rendered correction evidence is external to the repository and binds the exact corrected source/binary in the handoff; combined-head integration must rerun it.
+
+The existing API exposes no operator-session status read. The toolbar resets to an unverified state on reload, window refocus, return to visibility, known expiry, or operator-required API errors; it cannot truthfully infer an existing cookie’s validity. Full session resynchronization needs a console-only nonsecret status endpoint from API integration. The credential is never stored by this UI.

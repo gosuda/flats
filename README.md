@@ -10,11 +10,11 @@
 
 # Flats
 
-Flats lets agents deploy sites and small server apps directly to your own machine: private by default over Tailscale, optionally public through Portal, with no hosted Flats control plane.
+Flats lets agents deploy sites and small server apps directly to your own machine: Private by default through local loopback or permitted Tailscale, optionally Public through permitted Portal or Tailscale Funnel, with no hosted Flats control plane.
 
 Your machine runs the code and keeps the versions, SQLite databases, persistent files and secrets. Flats is a single CGO-free Go binary for macOS and Linux, with a CLI, HTTP API, MCP endpoint and web console.
 
-- Each flat and preview gets its own origin and private Tailscale node.
+- Each flat and preview gets its own origin; explicitly permitted Tailscale routes get their own private node.
 - Draft saves preserve Current; approved, successful publishes create immutable numbered versions. Health checks and previews use isolated data.
 - Static sites and sandboxed JavaScript/WASI server apps share the same deploy flow.
 - Publish, activation, rollback and both visibility directions require a validated operator approval.
@@ -36,13 +36,15 @@ go install github.com/gosuda/flats/cmd/flats@latest
 CGO_ENABLED=0 go build -o flats ./cmd/flats
 ```
 
-Put the installed binary's directory on `PATH`. For a credential-free local trial, start a host in one terminal:
+Put the installed binary's directory on `PATH`. Provision a high-entropy operator credential (at least 32 bytes; for example, a password manager-generated random secret) through an operator-controlled channel. Keep it outside agent-readable files and do not paste it into agent chat, commands, or logs. Start a foreground host in one operator terminal:
 
 ```sh
-flats serve --data ./flats-demo-data --network local --portal=false
+flats serve --data ./flats-demo-data --network local --portal=false --operator-credential-stdin
 ```
 
-In another terminal, deploy a minimal static site:
+Enter that credential at the hidden startup prompt and retain it in your password manager. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential. Unlocking creates a browser session; each publish still needs a separate approval.
+
+In another terminal, request publication of a minimal static site:
 
 ```sh
 mkdir -p hello
@@ -50,15 +52,23 @@ printf '<h1>Hello from Flats</h1>\n' > hello/index.html
 flats deploy ./hello --flat hello
 ```
 
-The deploy command saves Draft and returns a pending publish request. Approve it through the authenticated operator console before opening `http://hello.localhost:7879`; the console is at `http://127.0.0.1:7878`. Local mode serves loopback development origins and does not join Tailscale. Use `--listen` and `--local-addr` to select other ports. Each running host needs its own data directory; concurrent hosts sharing one directory are rejected before store or runtime startup.
+The deploy command saves Draft and returns a pending publish request (exit code 3, including with `--json`). Follow its approval URL and approve the frozen Draft in the unlocked operator console before opening `http://hello.localhost:7879`; the console is at `http://127.0.0.1:7878`. Local mode serves loopback development origins and does not join Tailscale. Use `--listen` and `--local-addr` to select other ports. Each running host needs its own data directory; concurrent hosts sharing one directory are rejected before store or runtime startup.
 
 ## Private and public deployment
 
-For normal private hosting, run `flats serve` with the default Tailscale network. Enable MagicDNS and HTTPS certificates in your tailnet, then follow the node login links in the console, or supply a reusable, untagged Tailscale auth key with `--authkey-file`. Flats embeds tsnet; each flat, preview and console has its own node. Tailnet ACLs decide which devices can reach those origins. Code and data stay on your machine.
+The default network is Local and Portal is off. For private tailnet hosting, explicitly select `flats serve --network tailscale --operator-credential-stdin`; this records the host Tailscale grant. Unlock the console and allow Tailscale separately for each flat in Access. Enable MagicDNS and HTTPS certificates in your tailnet, then follow the node login links in the console, or supply a reusable, untagged Tailscale auth key with `--authkey-file`. Flats embeds tsnet; permitted flat and preview routes, and the console in Tailscale mode, use separate nodes. Tailnet ACLs decide which devices can reach those origins. Code and data stay on your machine.
 
 Visibility is Private or Public, independently of publication and connection state. Private routes use Local or permitted Tailscale with existing tailnet ACLs; Public routes use explicitly permitted Portal or Tailscale Funnel. Configuration alone never publishes a version or changes visibility. Public requires a published version and an approved transition with a ready public route. Legacy listed/unlisted inputs map to Public. Relay availability and Tailscale connectivity are external dependencies.
 
-`flats install` runs the host at login using launchd on macOS or a systemd user service on Linux; `flats uninstall` removes the service and keeps data. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS), overridable with `--data` or `FLATS_DATA`.
+`flats install` currently has no supported operator-credential source. Its generated service cannot enable console decisions, so use the foreground startup above for an approvable host until service provisioning is implemented. Do not assume an install flag exists for credentials. `flats install` runs the host at login using launchd on macOS or a systemd user service on Linux; `flats uninstall` removes the service and keeps data. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS), overridable with `--data` or `FLATS_DATA`.
+
+## Upgrading an existing host
+
+Back up the data directory and stop the old host before starting the upgrade. Published versions keep their numbers; saved-only versions become Private Draft revisions. Historical network configuration does not create provider permissions. Existing Public policy can remain Public while its route is unavailable; do not report a link as reachable until its endpoint is ready and has been checked.
+
+Provision operator authority with `--operator-credential-stdin` and unlock the console again after restart. Restore intended host grants explicitly: `--network tailscale` grants Tailscale, `--portal=true` grants Portal, or `--permit tailscale,tailscale-funnel,portal` records only the listed grants. `--portal=false` disables Portal even if its stored grant remains. A Tailscale grant does not grant Funnel. Configure the relevant backend and allow each desired provider separately in each flat’s Access tab. Neither a host grant nor a per-flat grant publishes or changes visibility; both Private→Public and Public→Private still require approval. Per-flat Tailscale permissions are not automatically migrated.
+
+Local loopback also binds in Tailscale mode: concurrent hosts need distinct `--listen`, `--local-addr`, and data directories. Before switching an installed service to this lifecycle, reconcile its missing credential source; unattended approval provisioning is an integration dependency, not a supported command today.
 
 ## Static and server flats
 

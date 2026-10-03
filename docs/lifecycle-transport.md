@@ -177,3 +177,9 @@ internal storage failures remain HTTP 500. A published visibility change request
 approval even when a provider is unavailable or unpermitted; only authorized
 application checks those prerequisites. Same visibility remains unchanged HTTP
 200, and an unpublished flat cannot request Public visibility.
+
+## Foreground provisioning and service dependency
+
+The working CLI path is `flats serve --operator-credential-stdin`: the operator supplies the independently provisioned credential through hidden terminal input, then uses **Unlock decisions** in the console with the same credential. A host without this authority cannot approve quickstart requests. Local is the default network and Portal is off; host grants and per-flat permissions must be restored explicitly after upgrade, including Tailscale. No service credential flag is currently implemented: `flats install` generates launchd/systemd commands without an authority source. Integration must add a protected operator-only credential source to app startup and service generators before promising unattended approvable service installation. File mode alone is insufficient isolation from same-user agents.
+
+`get_flat` retains its publication/visibility/current-version summary when appending Draft preview text. `save_draft` saves without allocating a number; its compatibility `deploy:true` option requests pending publication, whose successful approval later allocates vN. Tool and CLI guidance never treats pending as live.

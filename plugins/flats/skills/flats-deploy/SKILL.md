@@ -5,16 +5,9 @@ description: Deploy a website or small web app the user built to their own Flats
 
 # Deploy a site with Flats
 
-Flats hosts each site as a *flat* on the operator's own machine. Every upload
-becomes an immutable **version**; **deploying** a version makes it live after a
-health check, and **rollback** redeploys an earlier one. New flats are
-**private**: only devices on the operator's Tailscale network can open them
-in Tailscale mode; local trial mode uses loopback .localhost origins.
+Flats hosts sites on the operator’s own machine. Uploads save immutable Private **Draft revisions**, without a published number. **Publish** freezes a Draft and requests operator approval; only approved successful publication creates v1, v2, … and makes it current. Activation and rollback reuse published numbers and also require approval. Publication, visibility, and connection state are independent.
 
-You can use either the MCP tools (server `flats`, endpoint
-`http://127.0.0.1:7878/mcp` on the Flats host, or `https://flats.<tailnet>.ts.net/mcp`)
-or the `flats` CLI. Prefer the CLI when the build output is on disk on the
-Flats host; use MCP `save_version` with inline files otherwise.
+Use the Flats MCP tools or CLI on the host. Prefer CLI for build output on disk; use MCP `save_draft` with inline files otherwise. Agent access never grants operator authority.
 
 ## Runtime API discovery
 
@@ -28,35 +21,14 @@ local-disk string store, not S3. Use application base64 text for binary storage.
 
 ## Workflow
 
-1. **Build** the site so you have an output directory (e.g. `dist/`, `out/`,
-   `build/`). Its root must contain `index.html` for a static flat.
-2. **Pick a slug**: 3-54 characters, lowercase letters, digits and single
-   hyphens, starting with a letter (`my-blog`). It becomes the address.
-3. **Save and deploy**:
-   - CLI: `flats deploy ./dist --flat my-blog` (records the git commit and
-     dirty state automatically). Add `--save-only` to save without deploying.
-   - MCP: `save_version` with `files` (`encoding: "utf8"` or `"base64"`) and
-     `deploy: true`, or `save_version_from_dir` when you run on the Flats host.
-4. **Verify**: open the returned `private_url` (fetch it) and check the page.
-   A new flat or preview gets its own tailnet host and HTTPS certificate,
-   which takes about 1-2 minutes: while `private_state` (`state` for a
-   preview) is `starting`, the URL does not answer yet. Check again with
-   `get_flat` / `flats info` every 30 seconds instead of treating a TLS or
-   connection error as a failed deploy. On a rejected upload the response
-   lists `problems` with a `fix` for each, or the failed health check. The
-   previous live version keeps serving; fix and upload again rather than
-   retrying blindly.
-5. **Report** the URL, version number and health result to the user. When a
-   response has a `public_url`, always repeat its `public_notice` with it.
+1. Build the site into an output directory (`dist/`, `out/`, `build/`). Static builds need `index.html` at the root. Pick a slug of 3–54 lowercase letters, digits and single hyphens, starting with a letter.
+2. Save Private Draft content: CLI `flats draft my-blog ./dist --expected-revision 0` for a first save; on later saves, read Draft metadata and supply its revision. MCP `save_draft` takes actual `files` and `expected_revision`. A conflict preserves existing content; read and review the latest Draft before retrying. Compatibility `flats deploy ./dist --flat my-blog --save-only` also saves Draft.
+3. Review privately with `flats preview my-blog` or MCP `open_preview` targeting Draft/version 0. Draft previews use Local loopback or explicitly permitted Tailscale with existing tailnet ACLs. Public visitors keep seeing the current published version. Read the preview state; do not claim a starting or unavailable URL works.
+4. Request publication with `flats publish my-blog --revision N --hash HASH` or MCP `publish`. CLI exit 3 (also JSON mode), or `pending_approval`, means waiting. Give the operator the approval URL and frozen candidate identity. `deploy:true` on a save is also only a publish request. Never approve, retrieve credentials, forge a console session, or work around the boundary.
+5. Poll read-only MCP `get_approval` or `flats approvals --json` (match the returned approval ID). While pending, report “waiting for operator approval”; on rejected or failed, report that outcome and its typed cause. Do not report a version as live from a save result or pending request.
+6. After `approved`, read `get_flat` / `flats info`, confirm the actual current version and a ready endpoint, and fetch the page. Report the verified version, address and observed health. If Public, repeat its internet-access notice. Provider connection alone never proves approval or publication. Recheck externally shared links over time.
 
-To let the user review before going live: save only, then `open_preview`
-(`flats preview my-blog`) and share the preview URL. Previews close on the
-next deploy or after 24 hours without visits.
-
-Rollback: `flats rollback my-blog` (previous version) or `--to N`. It restores
-code only. `--restore-data` (MCP `restore_data: true`) replaces a server flat's
-database with the snapshot taken before the current deploy, so writes since
-then stop being live: ask the user before using it.
+Rollback (`flats rollback my-blog`, optionally `--to N`, or MCP `rollback`) requests approval to serve an earlier published version. Ordinary rollback preserves live data. Use `--restore-data` / `restore_data:true` only when the user explicitly wants replacement: the request freezes a snapshot and hash, backs up current live data, then replaces DB and captured FILES. Historical DB-only snapshots preserve FILES. Writes since the snapshot stop being live. Report pending and poll the approval before claiming restoration.
 
 ## Manifest (`flats.json`, optional, at the build root)
 
@@ -90,8 +62,7 @@ The handler runs in a sandbox (QuickJS on WebAssembly): no Node.js APIs, no
 npm packages that need Node, no file system or network. Use `env.DB`
 (SQLite: `query`, `exec`), `env.FILES` (`get`, `put`, `delete`, `list`) and
 secrets as `env.NAME`. Live DB/FILES data survives redeploys and ordinary code rollbacks.
-Previews use isolated copies. Failed candidates can still write storage during
-startup/health; keep those paths free of destructive mutations. Bundle dependencies for the sandbox; uploaded relative ES module imports
+Previews use isolated copies. Candidate health checks use isolated DB/FILES copies. After approval, starting the live runtime can write live data, even if activation fails; inspect reported data impact and keep startup paths free of destructive mutations. Bundle dependencies for the sandbox; uploaded relative ES module imports
 are supported. Server handlers must serve their own UI/assets.
 
 A `.wasm` server is a fresh WASI preview1 command per HTTP request. Read
@@ -103,17 +74,12 @@ or persistent FILES host ABI, filesystem mounts, outbound network or WebSocket
 API. Choose JavaScript when the app needs `env.DB`, `env.FILES`, Web Crypto
 or WebSocket callbacks; WASI does not share those JS host objects.
 
-## Visibility and approvals — never decide this for the user
+## Visibility and approvals — never decide for the user
 
-- `private` (default): tailnet only.
-- `public-unlisted`: anyone **with the URL** can open it. It is only hidden
-  from Portal relay listings — it is NOT private. Always tell the user that.
-- `public-listed`: public and listed on Portal relays.
+- **Private** (default): Local on this device through localhost, or Tailscale for people/devices allowed by the existing tailnet ACL. This does not mean owner-only.
+- **Public**: anyone on the internet through explicitly permitted Portal or Tailscale Funnel; Funnel visitors do not need Tailscale. A URL or domain does not define visibility.
 
-Making a flat public or deleting it needs the operator's approval. The tool
-returns `pending_approval` and an `approval_url`: give that link to the user
-and stop; do not try to approve it yourself or work around it. Making a flat
-less public applies immediately.
+Use only `private` / `public`. Both directions require explicit operator approval, as do publish, activation, rollback, data restore and deletion. Give the approval link and poll `get_approval`; never treat Public→Private as immediate. Public requires a published version. Nonlocal providers need a host grant/configuration plus per-flat operator permission; Tailscale connectivity does not grant Funnel. Agents cannot set those permissions. A provider failure never authorizes switching providers.
 
 ## Secrets
 
@@ -121,5 +87,5 @@ You can list secret names (`list_secrets`, `flats secret ls`) but never set or
 read values. Ask the user to set them in the Flats console or with
 `flats secret set <flat> NAME` on the Flats host. Secrets apply when a version
 starts: redeploy the live version (`flats deploy --flat <flat> --version <live>`
-or MCP `deploy`), or ask the user to click **Redeploy (apply secrets)** in the
+or MCP `deploy`), then report pending and poll approval, or ask the user to click **Redeploy (apply secrets)** in the
 console.
