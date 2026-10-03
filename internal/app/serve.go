@@ -290,7 +290,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, Configuration: providerConfiguration(portalOptions), Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(o.DataDir, "tsnet"), Configuration: providerConfiguration(portalOptions), Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}}
 	if h.portalNet != nil {

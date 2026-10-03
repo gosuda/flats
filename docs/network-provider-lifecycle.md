@@ -40,9 +40,15 @@ routes stay up. A stop error, or a Funnel state that is still `ready` or
 call can retry. Unconfirmed means the caller must not treat the flat as
 private. This does not remove an allowed private tailnet ACL, and it does not
 implement owner-only authentication. When the stopped Funnel route has no
-Private Tailscale sibling, its now-unused node identity is retired before the
-Funnel stop is confirmed. This prevents Public-to-Private transitions from
-leaving a Funnel-only identity behind.
+Private Tailscale sibling, its now-unused node identity is retired after the
+listener is confirmed closed. This prevents completed cleanup from leaving a
+Funnel-only identity behind. Listener closure and identity retirement
+are separate confirmations: if the listener and `AllowFunnel` entry are gone
+but control is unavailable for logout, Funnel is reported in `Stopped`, the
+visibility transition may complete, and the failed identity cleanup is retained
+durably as a non-public obligation across process restart. `StopSlug`, a later Funnel activation, and Funnel
+permission-revocation inspection retry it. Revocation remains refused until
+that already-authorized cleanup confirms.
 
 Connection states used here are `starting`, `ready`, `error`, `stopped`, and
 `unavailable`. A node that is on the tailnet without private HTTP is `idle`
@@ -101,7 +107,7 @@ backends. It does not serve a flat.
 A non-nil backend is not permission. Tests inject fakes through these
 interfaces. There is no permit-skipping constructor.
 
-Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. A Funnel node waiting for login or device approval remains a registered, permitted route in `needs-login`; it is not reported as an absent provider permission. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry. `StopSlug` is the authoritative delete/redirect-expiry operation. It includes the exact slug as a deterministic tsnet identity candidate even when no Funnel or Tailscale route remains in memory, then stops every Funnel listener and confirms every candidate node retirement before it stops Portal or Local. A public or node failure therefore leaves Local reachable and keeps route records for retry; sibling slug routes are untouched.
+Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. A Funnel node waiting for login or device approval remains a registered, permitted route in `needs-login`; it is not reported as an absent provider permission. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry. `StopSlug` is the authoritative delete/redirect-expiry operation. It includes the exact slug as a deterministic tsnet identity candidate even when no Funnel or Tailscale route remains in memory, then stops every Funnel listener and confirms every candidate node retirement before it stops Portal or Local. A public listener or node failure therefore leaves Local reachable and keeps the appropriate route or cleanup record for retry; sibling slug routes are untouched. When no tailnet backend exists because neither Tailscale provider is granted, `StopSlug` removes only the validated host's local `tsnet/<host>` directory. It does not start a backend or contact control, and it prevents a later flat with the same slug from loading the historical identity. The old offline machine may remain visible in the tailnet administration plane until it expires or an operator removes it.
 
 Legacy schema 5 eligibility is consumed once by an explicit Private Tailscale/Local upgrade choice. An ambiguous historical-default host refuses before networking; the choice never authorizes Public providers. See README for operator credential-file/install and upgrade commands.
 
@@ -125,6 +131,16 @@ without waiting for control, login, or certificate readiness. `FunnelStatus`
 reports the later ready or error result. Setup and stop are serialized, so a
 listener cannot appear after a confirmed stop and concurrent registrations do
 not open duplicate listeners.
+
+A successful Funnel-only Public-to-Private transition logs the node out and
+removes its certificate cache. A later Private-to-Public transition therefore
+creates a new node identity and obtains a new certificate. This deliberately
+keeps delete, alias expiry, and permission-revocation cleanup deterministic,
+at the cost of additional certificate issuance. Repeated approved visibility
+cycles can encounter certificate-authority rate limits and leave Funnel waiting
+for certificate readiness. Visibility changes require explicit approval and
+are expected to be infrequent; operators should avoid using them as a rapid
+on/off control.
 
 `StopFunnel` closes that listener. `cleanupListener.Close` deletes the
 `AllowFunnel` entry. It does not log the node out and it does not close the

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -91,6 +93,10 @@ type Options struct {
 	Local     *local.Net
 	Tailscale Tailnet
 	Portal    PortalNet
+	// TailscaleStateDir is the local tsnet state root. Manager uses it only
+	// when no tailnet backend is configured, so deleting a legacy Local-only
+	// flat can discard its old identity without contacting control.
+	TailscaleStateDir string
 	// Configuration is a canonical, non-secret desired backend configuration.
 	// It must exclude credentials and transient connection readiness.
 	Configuration string
@@ -106,12 +112,17 @@ type Manager struct {
 	local         *local.Net
 	ts            Tailnet
 	portal        PortalNet
+	tailscaleDir  string
+	retirementDir string
 	configuration string
 	permission    func(context.Context, string, ID) (bool, error)
 
 	mu     sync.Mutex
 	routes map[string]*route
 	states map[string][]observedEndpoint
+	// pendingTailnet records node retirement failures after Funnel itself is
+	// confirmed closed. These are cleanup obligations, not public routes.
+	pendingTailnet map[string]map[string]struct{} // slug -> hosts
 }
 
 type observedEndpoint struct {
@@ -137,16 +148,23 @@ func New(dir string, opts Options) (*Manager, error) {
 	if opts.Local == nil {
 		return nil, errors.New("provider: local network is required")
 	}
+	tailscaleDir := opts.TailscaleStateDir
+	if tailscaleDir == "" {
+		tailscaleDir = filepath.Join(dir, "tsnet")
+	}
 	return &Manager{
-		dir:           dir,
-		file:          f,
-		local:         opts.Local,
-		ts:            opts.Tailscale,
-		portal:        opts.Portal,
-		configuration: opts.Configuration,
-		permission:    opts.Permission,
-		routes:        map[string]*route{},
-		states:        map[string][]observedEndpoint{},
+		dir:            dir,
+		file:           f,
+		local:          opts.Local,
+		ts:             opts.Tailscale,
+		portal:         opts.Portal,
+		tailscaleDir:   tailscaleDir,
+		retirementDir:  filepath.Join(dir, "network-retirements"),
+		configuration:  opts.Configuration,
+		permission:     opts.Permission,
+		routes:         map[string]*route{},
+		states:         map[string][]observedEndpoint{},
+		pendingTailnet: map[string]map[string]struct{}{},
 	}, nil
 }
 
@@ -480,12 +498,25 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if m.ts == nil {
 			return refused(Funnel, "funnel is permitted but tailscale is not configured"), fmt.Errorf("%w: tailscale-funnel", ErrNotConfigured)
 		}
-		url, err := m.ts.ServeFunnel(ctx, requestHost(req), req.Handler)
+		host := requestHost(req)
+		pending, err := m.hasPendingTailnet(req.Slug, host)
+		if err != nil {
+			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup state: %w", core.ErrProviderNotReady, err)
+		}
+		if pending {
+			if err := m.ts.Stop(host); err != nil {
+				return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: "previous Funnel identity retirement is still pending: " + err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup: %w", core.ErrProviderNotReady, err)
+			}
+			if err := m.clearPendingTailnet(req.Slug, host); err != nil {
+				return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup record: %w", core.ErrProviderNotReady, err)
+			}
+		}
+		url, err := m.ts.ServeFunnel(ctx, host, req.Handler)
 		if err != nil {
 			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel: %w", core.ErrProviderNotReady, err)
 		}
-		m.track(req, Funnel, requestHost(req))
-		ep := m.ts.FunnelState(requestHost(req))
+		m.track(req, Funnel, host)
+		ep := m.ts.FunnelState(host)
 		ep.Provider = Funnel
 		if ep.URL == "" {
 			ep.URL = url
@@ -516,35 +547,152 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 	}
 }
 
+func (m *Manager) retirementPath(slug, host string) (string, error) {
+	for label, value := range map[string]string{"slug": slug, "host": host} {
+		if value == "" || value == "." || value == ".." || filepath.Base(value) != value {
+			return "", fmt.Errorf("provider: invalid retirement %s %q", label, value)
+		}
+	}
+	return filepath.Join(m.retirementDir, slug, host), nil
+}
+
+func (m *Manager) markPendingTailnet(slug, host string) error {
+	path, err := m.retirementPath(slug, host)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	hosts := m.pendingTailnet[slug]
+	if hosts == nil {
+		hosts = map[string]struct{}{}
+		m.pendingTailnet[slug] = hosts
+	}
+	hosts[host] = struct{}{}
+	return nil
+}
+
+func (m *Manager) clearPendingTailnet(slug, host string) error {
+	path, err := m.retirementPath(slug, host)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(filepath.Dir(path))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	hosts := m.pendingTailnet[slug]
+	delete(hosts, host)
+	if len(hosts) == 0 {
+		delete(m.pendingTailnet, slug)
+	}
+	return nil
+}
+
+func (m *Manager) hasPendingTailnet(slug, host string) (bool, error) {
+	m.mu.Lock()
+	_, ok := m.pendingTailnet[slug][host]
+	m.mu.Unlock()
+	if ok {
+		return true, nil
+	}
+	path, err := m.retirementPath(slug, host)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (m *Manager) pendingTailnetHosts(slug string) ([]string, error) {
+	if _, err := m.retirementPath(slug, "host"); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	set := make(map[string]struct{}, len(m.pendingTailnet[slug]))
+	for host := range m.pendingTailnet[slug] {
+		set[host] = struct{}{}
+	}
+	m.mu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(m.retirementDir, slug))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, err := m.retirementPath(slug, entry.Name()); err != nil {
+			return nil, err
+		}
+		set[entry.Name()] = struct{}{}
+	}
+	hosts := make([]string, 0, len(set))
+	for host := range set {
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
 // StopPublicRoutes closes Funnel and Portal for slug. Local and tailscale
-// routes for that slug keep serving. A stop error is Unconfirmed and the
-// route stays tracked so a later call can retry it.
-func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopResult, error) {
+// routes for that slug keep serving. Listener stop failures are Unconfirmed
+// and stay tracked. Once Funnel is confirmed closed, a failed node retirement
+// is retained separately for StopSlug or a later Funnel activation to retry;
+// it does not mean the public route remains reachable.
+func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStopResult, error) {
 	funnelHost, hadFunnel := m.take(slug, Funnel, false)
 	_, hadPortal := m.take(slug, Portal, false)
 	var res PublicStopResult
 	if hadFunnel {
 		if m.ts == nil {
 			res.Unconfirmed = append(res.Unconfirmed, Funnel)
-		} else if err := m.ts.StopFunnel(funnelHost); err != nil {
-			res.Unconfirmed = append(res.Unconfirmed, Funnel)
-		} else if st := m.ts.FunnelState(funnelHost); st.State == stateReady || st.State == stateStarting {
-			res.Unconfirmed = append(res.Unconfirmed, Funnel)
-		} else if !m.hasRoute(slug, funnelHost, Tailscale) {
-			// A Funnel-only node has no Private tailnet route to preserve after
-			// Public -> Private. Retire it now so a later permission revocation,
-			// delete, or restart cannot orphan its identity.
-			if err := m.ts.Stop(funnelHost); err != nil {
+		} else {
+			sharedPrivate := m.hasRoute(slug, funnelHost, Tailscale)
+			marked := sharedPrivate
+			if !sharedPrivate {
+				// Persist the non-public cleanup obligation before changing the
+				// listener. A local durability failure leaves the public route up.
+				marked = m.markPendingTailnet(slug, funnelHost) == nil
+			}
+			if !marked {
+				res.Unconfirmed = append(res.Unconfirmed, Funnel)
+			} else if err := m.ts.StopFunnel(funnelHost); err != nil {
+				if !sharedPrivate {
+					_ = m.clearPendingTailnet(slug, funnelHost)
+				}
+				res.Unconfirmed = append(res.Unconfirmed, Funnel)
+			} else if st := m.ts.FunnelState(funnelHost); st.State == stateReady || st.State == stateStarting {
+				if !sharedPrivate {
+					_ = m.clearPendingTailnet(slug, funnelHost)
+				}
 				res.Unconfirmed = append(res.Unconfirmed, Funnel)
 			} else {
 				m.take(slug, Funnel, true)
 				m.pruneState(slug, Funnel)
 				res.Stopped = append(res.Stopped, Funnel)
+				if !sharedPrivate && ctx.Err() == nil {
+					// Funnel is already unreachable. Identity retirement is a separate
+					// cleanup obligation: failure retains the durable marker but does
+					// not claim public access is still live.
+					if err := m.ts.Stop(funnelHost); err == nil {
+						_ = m.clearPendingTailnet(slug, funnelHost)
+					}
+				}
 			}
-		} else {
-			m.take(slug, Funnel, true)
-			m.pruneState(slug, Funnel)
-			res.Stopped = append(res.Stopped, Funnel)
 		}
 	}
 	if hadPortal {
@@ -604,6 +752,13 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	// their host. Include it even when a prior visibility transition or a
 	// restart pruned every Funnel/Tailscale route record.
 	byHost[slug] = new(hostRoutes)
+	pendingHosts, err := m.pendingTailnetHosts(slug)
+	if err != nil {
+		return fmt.Errorf("provider: inspect pending tailnet retirement for %s: %w", slug, err)
+	}
+	for _, host := range pendingHosts {
+		byHost[host] = new(hostRoutes)
+	}
 	for _, r := range routes {
 		h := byHost[r.host]
 		if h == nil {
@@ -664,11 +819,22 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		if m.ts == nil {
 			if owned.tailscale || owned.funnel {
 				errs = append(errs, fmt.Errorf("tailscale %s: %w", host, ErrNotConfigured))
+				continue
+			}
+			// No grant means no backend may contact control. Delete only the
+			// deterministic local state so a later flat with this slug cannot
+			// inherit the legacy identity.
+			if err := tsnet.RemoveLocalState(m.tailscaleDir, host); err != nil {
+				errs = append(errs, fmt.Errorf("tailscale %s local state: %w", host, err))
+			} else if err := m.clearPendingTailnet(slug, host); err != nil {
+				errs = append(errs, fmt.Errorf("tailscale %s cleanup record: %w", host, err))
 			}
 			continue
 		}
 		if err := m.ts.Stop(host); err != nil {
 			errs = append(errs, fmt.Errorf("tailscale %s: %w", host, err))
+		} else if err := m.clearPendingTailnet(slug, host); err != nil {
+			errs = append(errs, fmt.Errorf("tailscale %s cleanup record: %w", host, err))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -827,6 +993,7 @@ func (m *Manager) Close() error {
 	m.mu.Lock()
 	m.routes = map[string]*route{}
 	m.states = map[string][]observedEndpoint{}
+	m.pendingTailnet = map[string]map[string]struct{}{}
 	m.mu.Unlock()
 	return nil
 }
@@ -948,15 +1115,40 @@ var (
 
 // HasProviderRoute inspects registration rather than readiness: connecting or
 // failed routes can still recover, so revocation must not persist over them.
+// A confirmed-closed Funnel can also have a pending identity retirement. The
+// visibility approval already authorized that cleanup, so a later permission
+// revocation inspection retries it and refuses revocation until it confirms.
 func (m *Manager) HasProviderRoute(ctx context.Context, slug string, id ID) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for _, r := range m.routes {
 		if r.slug == slug && r.provider == id {
+			m.mu.Unlock()
 			return true, nil
+		}
+	}
+	m.mu.Unlock()
+	if id == Funnel {
+		hosts, err := m.pendingTailnetHosts(slug)
+		if err != nil {
+			return false, err
+		}
+		sort.Strings(hosts)
+		for _, host := range hosts {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if m.ts == nil {
+				return false, fmt.Errorf("pending Funnel identity %s: %w", host, ErrNotConfigured)
+			}
+			if err := m.ts.Stop(host); err != nil {
+				return false, fmt.Errorf("pending Funnel identity %s: %w", host, err)
+			}
+			if err := m.clearPendingTailnet(slug, host); err != nil {
+				return false, err
+			}
 		}
 	}
 	return false, nil

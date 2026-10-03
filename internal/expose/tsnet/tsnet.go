@@ -1236,6 +1236,20 @@ func persistedNodeState(dir string) (bool, error) {
 	return false, err
 }
 
+// RemoveLocalState deletes one deterministic host's local tsnet identity
+// without starting a backend or contacting control. It is for lifecycle
+// deletion when Tailscale and Funnel are not granted, so retaining the old
+// local key would let a later flat with the same slug inherit that identity.
+func RemoveLocalState(dir, host string) error {
+	if dir == "" {
+		return errors.New("tsnet: state directory is required")
+	}
+	if !hostRE.MatchString(host) {
+		return fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	}
+	return os.RemoveAll(filepath.Join(dir, host))
+}
+
 type stateSnapshot struct {
 	data   []byte
 	exists bool

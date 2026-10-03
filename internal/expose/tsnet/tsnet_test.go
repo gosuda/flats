@@ -606,6 +606,31 @@ func TestHeaderValue(t *testing.T) {
 	}
 }
 
+func TestRemoveLocalStateIsHostScopedAndOffline(t *testing.T) {
+	dir := t.TempDir()
+	for _, host := range []string{"removed", "preserved"} {
+		stateDir := filepath.Join(dir, host)
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(host), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveLocalState(dir, "removed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "removed")); !os.IsNotExist(err) {
+		t.Fatalf("target state survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "preserved", "tailscaled.state")); err != nil {
+		t.Fatalf("sibling state changed: %v", err)
+	}
+	if err := RemoveLocalState(dir, "../preserved"); err == nil {
+		t.Fatal("path traversal host was accepted")
+	}
+}
+
 func hostInfo(n *Net, host string) core.HostInfo {
 	for _, hi := range n.Status().Hosts {
 		if hi.Host == host {

@@ -293,6 +293,138 @@ func TestPublicStopLeavesPrivateAndReportsUnconfirmed(t *testing.T) {
 	}
 }
 
+func TestPublicStopSeparatesClosedFunnelFromPendingIdentityRetirement(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Funnel}})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	res, err := m.ServeExposure(ctx, ExposureRequest{
+		Slug: "offline-private", Host: "offline-private", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("private remains"), Permitted: []ID{Funnel},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail.tailStopErr = errors.New("control unavailable")
+	stopped, err := m.StopPublicRoutes(ctx, "offline-private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stopped.Stopped, []ID{Funnel}) || len(stopped.Unconfirmed) != 0 {
+		t.Fatalf("confirmed listener was reported as reachable: %+v", stopped)
+	}
+	if _, tracked := m.take("offline-private", Funnel, false); tracked {
+		t.Fatal("closed Funnel stayed registered as a public route")
+	}
+	if pending, err := m.hasPendingTailnet("offline-private", "offline-private"); err != nil || !pending {
+		t.Fatalf("failed identity retirement was not retained separately: pending=%v err=%v", pending, err)
+	}
+	if _, err := m.HasProviderRoute(ctx, "offline-private", Funnel); err == nil {
+		t.Fatal("permission revocation inspection accepted an unconfirmed identity retirement")
+	}
+	if got := get(t, endpointURL(res, Local)); got != "private remains" {
+		t.Fatalf("identity retirement failure removed Local: %q", got)
+	}
+	if err := m.StopSlug(ctx, "offline-private"); err == nil {
+		t.Fatal("StopSlug accepted the pending identity retirement")
+	}
+	if got := get(t, endpointURL(res, Local)); got != "private remains" {
+		t.Fatalf("failed StopSlug removed Local: %q", got)
+	}
+	tail.tailStopErr = nil
+	if err := m.StopSlug(ctx, "offline-private"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := m.hasPendingTailnet("offline-private", "offline-private"); err != nil || pending {
+		t.Fatalf("confirmed StopSlug retained the identity obligation: pending=%v err=%v", pending, err)
+	}
+}
+
+func TestFunnelRevocationInspectionRetriesPendingIdentityRetirement(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Funnel}})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	if _, err := m.ServeExposure(ctx, ExposureRequest{
+		Slug: "revoke-after-private", Host: "revoke-after-private", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("private"), Permitted: []ID{Funnel},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tail.tailStopErr = errors.New("control unavailable")
+	if _, err := m.StopPublicRoutes(ctx, "revoke-after-private"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.HasProviderRoute(ctx, "revoke-after-private", Funnel); err == nil {
+		t.Fatal("revocation inspection accepted pending identity retirement")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := New(m.dir, Options{Local: ln, Tailscale: tail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail.tailStopErr = nil
+	active, err := restarted.HasProviderRoute(ctx, "revoke-after-private", Funnel)
+	if err != nil || active {
+		t.Fatalf("revocation retry did not confirm cleanup: active=%v err=%v", active, err)
+	}
+	if pending, err := restarted.hasPendingTailnet("revoke-after-private", "revoke-after-private"); err != nil || pending {
+		t.Fatalf("revocation retry retained the cleanup obligation: pending=%v err=%v", pending, err)
+	}
+}
+
+func TestStopSlugWithoutTailnetRemovesOnlyDeterministicLegacyState(t *testing.T) {
+	dir := t.TempDir()
+	if err := Save(dir, File{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loopback.Close()
+	legacyDir := filepath.Join(dir, "tsnet", "legacy-flat")
+	unrelatedDir := filepath.Join(dir, "tsnet", "other-flat")
+	for _, stateDir := range []string{legacyDir, unrelatedDir} {
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte("historical identity"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(dir, Options{Local: loopback})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.ServeExposure(t.Context(), ExposureRequest{
+		Slug: "legacy-flat", Host: "legacy-flat", Visibility: "private", Audience: AudienceCurrent,
+		Handler: text("legacy"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.StopSlug(t.Context(), "legacy-flat"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {
+		t.Fatalf("legacy identity survived local-only delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(unrelatedDir, "tailscaled.state")); err != nil {
+		t.Fatalf("unrelated identity was removed: %v", err)
+	}
+	response, err := http.Get(endpointURL(res, Local))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("Local route survived delete: %d", response.StatusCode)
+	}
+}
+
 func managerWith(t *testing.T, f File) (*Manager, *local.Net) {
 	t.Helper()
 	dir := t.TempDir()

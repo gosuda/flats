@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -397,6 +398,212 @@ func TestManagerPublicToPrivateRetiresFunnelOnlyIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := tailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagerPublicStopControlOutageClosesFunnelAndDefersIdentityRetirement(t *testing.T) {
+	control := startHTTPSManagerControl(t)
+	u, err := url.Parse(control.HTTPTestServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := startManagerControlProxy(t, u.Host)
+	dir := t.TempDir()
+	tsDir := filepath.Join(dir, "tsnet")
+	tailnet, err := tsnet.New(tsnet.Config{
+		Dir: tsDir, ControlURL: "http://" + proxy.ln.Addr().String(),
+		GetCertificate: managerTestCertificate(t), Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loopback.Close()
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, Options{Local: loopback, Tailscale: TSNet{tailnet}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	res, err := m.ServeExposure(ctx, ExposureRequest{
+		Slug: "offline-transition", Host: "offline-transition", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("private after stop"), Permitted: []ID{Funnel},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitManagerFunnelState(t, ctx, m, "offline-transition", stateReady)
+	proxy.pause()
+	stopped, err := m.StopPublicRoutes(ctx, "offline-transition")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stopped.Stopped, []ID{Funnel}) || len(stopped.Unconfirmed) != 0 {
+		t.Fatalf("closed Funnel was reported reachable: %+v", stopped)
+	}
+	if state := tailnet.FunnelStatus("offline-transition"); state.State != tsnet.FunnelUnavailable {
+		t.Fatalf("Funnel remained reachable after confirmed listener close: %+v", state)
+	}
+	if _, tracked := m.take("offline-transition", Funnel, false); tracked {
+		t.Fatal("closed Funnel stayed registered as a public route")
+	}
+	if pending, err := m.hasPendingTailnet("offline-transition", "offline-transition"); err != nil || !pending {
+		t.Fatalf("logout failure was not retained as a non-public obligation: pending=%v err=%v", pending, err)
+	}
+	if got := get(t, endpointURL(res, Local)); got != "private after stop" {
+		t.Fatalf("transition removed Local: %q", got)
+	}
+	statePath := filepath.Join(tsDir, "offline-transition", "tailscaled.state")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("failed logout discarded retry identity: %v", err)
+	}
+
+	proxy.resume()
+	if err := m.StopSlug(ctx, "offline-transition"); err != nil {
+		t.Fatalf("StopSlug did not retry deferred identity retirement: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tsDir, "offline-transition")); !os.IsNotExist(err) {
+		t.Fatalf("confirmed retry retained identity: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagerWithoutTailnetDeletesLegacyIdentityBeforeSlugRecreation(t *testing.T) {
+	control := startHTTPSManagerControl(t)
+	u, err := url.Parse(control.HTTPTestServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := startManagerControlProxy(t, u.Host)
+	dir := t.TempDir()
+	tsDir := filepath.Join(dir, "tsnet")
+	getCert := managerTestCertificate(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	newTailnet := func() *tsnet.Net {
+		t.Helper()
+		n, err := tsnet.New(tsnet.Config{
+			Dir: tsDir, ControlURL: "http://" + proxy.ln.Addr().String(),
+			GetCertificate: getCert, Logf: t.Logf,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	newLocal := func() *local.Net {
+		t.Helper()
+		n, err := local.Listen("127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	servePublic := func(m *Manager) []byte {
+		t.Helper()
+		if _, err := m.ServeExposure(ctx, ExposureRequest{
+			Slug: "legacy-recreate", Host: "legacy-recreate", Visibility: "public", Audience: AudienceCurrent,
+			Handler: text("public"), Permitted: []ID{Funnel},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		waitManagerFunnelState(t, ctx, m, "legacy-recreate", stateReady)
+		state, err := os.ReadFile(filepath.Join(tsDir, "legacy-recreate", "tailscaled.state"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	firstTail := newTailnet()
+	firstLocal := newLocal()
+	first, err := New(dir, Options{Local: firstLocal, Tailscale: TSNet{firstTail}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := servePublic(first)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstTail.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := firstLocal.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Save(dir, File{Version: 1, Permitted: []ID{}}); err != nil {
+		t.Fatal(err)
+	}
+	localOnly := newLocal()
+	withoutTailnet, err := New(dir, Options{Local: localOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := withoutTailnet.ServeExposure(ctx, ExposureRequest{
+		Slug: "legacy-recreate", Host: "legacy-recreate", Visibility: "private", Audience: AudienceCurrent,
+		Handler: text("local only"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proxy.pause()
+	start := time.Now()
+	if err := withoutTailnet.StopSlug(ctx, "legacy-recreate"); err != nil {
+		t.Fatalf("local-only legacy cleanup: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("local-only cleanup contacted unavailable control for %s", elapsed)
+	}
+	if _, err := os.Stat(filepath.Join(tsDir, "legacy-recreate")); !os.IsNotExist(err) {
+		t.Fatalf("local-only delete retained legacy identity: %v", err)
+	}
+	if err := withoutTailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := localOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	proxy.resume()
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	recreatedTail := newTailnet()
+	recreatedLocal := newLocal()
+	recreated, err := New(dir, Options{Local: recreatedLocal, Tailscale: TSNet{recreatedTail}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := servePublic(recreated)
+	if bytes.Equal(before, after) {
+		t.Fatal("recreated slug inherited the legacy node identity")
+	}
+	if err := recreated.StopSlug(ctx, "legacy-recreate"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recreated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := recreatedTail.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := recreatedLocal.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
