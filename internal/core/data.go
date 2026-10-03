@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -338,4 +339,73 @@ func (s *Service) installSnapshot(slugName, path string) error {
 		return os.RemoveAll(old)
 	}
 	return s.installDB(slugName, path)
+}
+
+// restoreJournal lets startup undo an interrupted data swap before starting code.
+type restoreJournal struct {
+	Approval string `json:"approval"`
+	Backup   string `json:"backup"`
+}
+
+func atomicJournal(path string, b []byte) error {
+	f, err := os.OpenFile(path+".tmp", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(b); err == nil {
+		err = f.Sync()
+	}
+	cerr := f.Close()
+	if err != nil {
+		return err
+	}
+	if cerr != nil {
+		return cerr
+	}
+	return os.Rename(path+".tmp", path)
+}
+func (s *Service) recoverRestoreJournals(ctx context.Context) error {
+	fs, err := s.st.ListFlats(ctx)
+	if err != nil {
+		return err
+	}
+	for _, f := range fs {
+		path := filepath.Join(s.flatDir(f.Slug), "restore-journal.json")
+		raw, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var j restoreJournal
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return err
+		}
+		if j.Approval == "" {
+			return fmt.Errorf("restore journal missing approval")
+		}
+		_, committed, err := s.st.DeploymentByApproval(ctx, j.Approval)
+		if err != nil {
+			return err
+		}
+		if !committed {
+			if j.Backup == "" {
+				if err := os.RemoveAll(s.dataDirOf(f.Slug)); err != nil {
+					return err
+				}
+			} else {
+				if !validSnapshotName(j.Backup) {
+					return errors.New("invalid restore journal backup")
+				}
+				if err := s.installSnapshot(f.Slug, filepath.Join(s.snapshotDir(f.Slug), j.Backup)); err != nil {
+					return err
+				}
+			}
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }

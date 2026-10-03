@@ -78,10 +78,11 @@ type Config struct {
 	DataDir                  string
 	Store                    *store.Store
 	Private                  PrivateNet
-	Lifecycle                LifecycleNet                // optional provider manager; independent of legacy adapters
-	Public                   PublicNet                   // nil disables public flats
-	ValidateOperatorDecision func(context.Context) error // required for approval decisions; nil denies
-	Runtime                  Runtime                     // nil disables server flats
+	Lifecycle                LifecycleNet                 // optional provider manager; independent of legacy adapters
+	Public                   PublicNet                    // nil disables public flats
+	OperatorIdentity         func(context.Context) string // nonsecret identity of validated operator
+	ValidateOperatorDecision func(context.Context) error  // required for approval decisions; nil denies
+	Runtime                  Runtime                      // nil disables server flats
 	ConsoleURL               func() string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string
@@ -165,6 +166,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	s.secretKey = key
 	if err := s.migrateLegacyDrafts(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.recoverRestoreJournals(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.restore(ctx); err != nil {
@@ -301,14 +305,7 @@ func (s *Service) restore(ctx context.Context) error {
 	// An approval left in "applying" is resumed once. A deployment already
 	// recorded for it is not activated again.
 	s.resumeApplying(ctx)
-	// Previews do not survive a restart: their nodes were ephemeral.
-	prevs, err := s.st.ListPreviews(ctx, "")
-	if err == nil {
-		for _, p := range prevs {
-			_ = s.st.DeletePreview(ctx, p.Host)
-			os.RemoveAll(filepath.Join(s.flatDir(p.Flat), "previews", p.Host))
-		}
-	}
+	s.restorePreviews(ctx)
 	return nil
 }
 
@@ -361,6 +358,11 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 	lf := s.state(slugName)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if public {
+			f, err := s.st.GetFlat(r.Context(), slugName)
+			if err != nil || !f.Visibility.Public() {
+				http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
+				return
+			}
 			stripIdentity(r)
 		}
 		if !lf.limiter.allow() {
@@ -640,6 +642,10 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 	if err := slug.Validate(slugName); err != nil {
 		return store.Version{}, invalid(err)
 	}
+	files, err := bundle.FromFiles(files, bundle.Limits{MaxBytes: s.UploadLimit()})
+	if err != nil {
+		return store.Version{}, err
+	}
 	m, err := bundle.ParseManifest(files)
 	if err != nil {
 		return store.Version{}, err
@@ -901,7 +907,7 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	d, err := s.build(ctx, slugName, v, s.dataDirOf(slugName))
 	if err != nil {
 		s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("%s of version %d failed to start: %v", kind, n, err), nil)
-		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: dataUntouched}
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
 	}
 	return s.activate(ctx, f, d, h, kind, via, approvalID, start)
 }
@@ -919,6 +925,9 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	if err := commitErr; err != nil {
 		if d.inst != nil {
 			d.inst.Stop()
+		}
+		if d.version.Kind == "server" {
+			return DeployResult{}, &DeployError{Version: n, Previous: prev, Cause: err, Data: "Live runtime startup may have changed data.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
 		}
 		return DeployResult{}, err
 	}
@@ -1016,7 +1025,23 @@ func (s *Service) RestoreSnapshot(ctx context.Context, slugName, name string, vi
 	if f.LiveVersion == 0 {
 		return DeployResult{}, ErrNotDeployed
 	}
-	return s.restoreLocked(ctx, f, name, f.LiveVersion, "restore", via, "")
+	v, err := s.st.GetVersion(ctx, slugName, f.LiveVersion)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	key, err := s.providerKey(ctx, slugName)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	hash, err := snapshotHash(filepath.Join(s.snapshotDir(slugName), name))
+	if err != nil {
+		return DeployResult{}, err
+	}
+	res, err := s.requestFrozen(ctx, slugName, "restore_data", rollbackParams{Version: f.LiveVersion, ExpectedLive: f.LiveVersion, RestoreData: true, Visibility: string(f.Visibility.Canonical()), Providers: key, Hash: v.Hash, Snapshot: name, SnapshotHash: hash}, via, "")
+	if err != nil {
+		return DeployResult{}, err
+	}
+	return pending(res)
 }
 
 // restoreLocked replaces the flat's database with snapshot snap and makes
@@ -1062,8 +1087,15 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 		rerr := s.restart(ctx, slugName, old)
 		return DeployResult{}, &DeployError{Version: to, Previous: f.LiveVersion,
 			Cause: fmt.Errorf("could not save the current database before the restore: %w", err),
-			Data:  joinNotes("Nothing was changed", rerr)}
+			Data:  joinNotes("Nothing was changed", rerr), DataImpact: "unknown", HealthData: "isolated_copy", LiveData: "unknown"}
 	}
+	journal := filepath.Join(s.flatDir(slugName), "restore-journal.json")
+	raw, _ := json.Marshal(restoreJournal{Approval: approvalID, Backup: backup})
+	if err := atomicJournal(journal, raw); err != nil {
+		_ = s.restart(ctx, slugName, old)
+		return DeployResult{}, err
+	}
+	defer os.Remove(journal)
 	// undo puts the current database back and restarts the old version.
 	undo := func() string {
 		src := ""
@@ -1081,6 +1113,7 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 	}
 	fail := func(de *DeployError) (DeployResult, error) {
 		de.Version, de.Previous, de.Data = to, f.LiveVersion, undo()
+		de.DataImpact, de.HealthData, de.LiveData = "unknown", "isolated_copy", "unknown"
 		s.Event(ctx, slugName, "error", "snapshot", fmt.Sprintf("restoring snapshot %s failed: %v", snap, de), nil)
 		return DeployResult{}, de
 	}
@@ -1334,10 +1367,20 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 	case "applying":
 		return lost(nil)
 	case "pending":
-		if err := s.st.ClaimApproval(ctx, id); err != nil {
+		actor := "validated operator"
+		if s.cfg.OperatorIdentity != nil {
+			actor = s.cfg.OperatorIdentity(ctx)
+			if actor == "" {
+				return a, forbiddenf("operator identity missing")
+			}
+		}
+		if err := s.st.ClaimApprovalAuthorized(ctx, id, actor, s.now()); err != nil {
 			return lost(err)
 		}
-		a.Status = "applying"
+		a, err = s.st.GetApproval(ctx, id)
+		if err != nil {
+			return a, err
+		}
 		return s.finishApplying(ctx, a)
 	default:
 		return lost(nil)
@@ -1424,14 +1467,14 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 		}
 		os.RemoveAll(dataDir)
 	}
-	url, err := s.cfg.Private.Serve(ctx, host, h, true)
+	url, err := s.servePreview(ctx, slugName, host, h)
 	if err != nil {
 		stop()
 		return PreviewView{}, err
 	}
 	rec := store.Preview{Host: host, Flat: slugName, Version: n, CreatedAt: now, LastAccess: now, Target: "version"}
 	if err := s.st.InsertPreview(ctx, rec); err != nil {
-		_ = s.cfg.Private.Stop(host)
+		_ = s.stopPreviewExposure(ctx, host)
 		stop()
 		return PreviewView{}, err
 	}
@@ -1482,7 +1525,7 @@ func (s *Service) ClosePreview(ctx context.Context, host string) error {
 			return err
 		}
 	}
-	_ = s.cfg.Private.Stop(host)
+	_ = s.stopPreviewExposure(ctx, host)
 	if p != nil {
 		if p.inst != nil {
 			p.inst.Stop()

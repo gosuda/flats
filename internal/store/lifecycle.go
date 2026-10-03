@@ -449,3 +449,42 @@ func (s *Store) FinishApprovalData(ctx context.Context, id, status, result strin
 	}
 	return nil
 }
+
+// ClaimApprovalAuthorized records validated operator authority before execution.
+func (s *Store) ClaimApprovalAuthorized(ctx context.Context, id, actor string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET status='applying',decided_by=?,authorized_at=? WHERE id=? AND status='pending'`, actor, unix(now), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return errors.New("approval no longer pending")
+	}
+	return nil
+}
+
+// CommitVisibility records policy and an execution receipt in one transaction.
+func (s *Store) CommitVisibility(ctx context.Context, f Flat, from Visibility, approval string, data json.RawMessage) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE flats SET visibility=?,updated_at=? WHERE slug=? AND visibility=? AND live_version=?`, string(f.Visibility), unix(f.UpdatedAt), f.Slug, string(from), f.LiveVersion)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return errors.New("visibility changed concurrently")
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE approvals SET result_data=? WHERE id=? AND status='applying'`, string(data), approval)
+	if err != nil {
+		return err
+	}
+	n, _ = res.RowsAffected()
+	if n != 1 {
+		return errors.New("approval no longer applying")
+	}
+	return tx.Commit()
+}

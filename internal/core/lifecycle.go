@@ -58,6 +58,9 @@ type activateParams struct {
 }
 
 type rollbackParams struct {
+	Hash         string `json:"hash"`
+	Snapshot     string `json:"snapshot,omitempty"`
+	SnapshotHash string `json:"snapshot_hash,omitempty"`
 	Version      int    `json:"version"`
 	ExpectedLive int    `json:"expected_live"`
 	RestoreData  bool   `json:"restore_data"`
@@ -219,15 +222,27 @@ func (s *Service) requestRollback(ctx context.Context, slugName string, to int, 
 	if to == f.LiveVersion {
 		return DeployResult{}, fmt.Errorf("%w: version %d is already live", ErrConflict, to)
 	}
-	if _, err := s.st.GetVersion(ctx, slugName, to); err != nil {
+	v, err := s.st.GetVersion(ctx, slugName, to)
+	if err != nil {
 		return DeployResult{}, err
 	}
 	providers, err := s.providerKey(ctx, slugName)
 	if err != nil {
 		return DeployResult{}, err
 	}
+	snapshot, shash := "", ""
+	if restoreData {
+		snapshot, err = s.liveSnapshot(slugName, f.LiveVersion)
+		if err != nil {
+			return DeployResult{}, err
+		}
+		shash, err = snapshotHash(filepath.Join(s.snapshotDir(slugName), snapshot))
+		if err != nil {
+			return DeployResult{}, err
+		}
+	}
 	res, err := s.requestFrozen(ctx, slugName, "rollback", rollbackParams{
-		Version: to, ExpectedLive: f.LiveVersion, RestoreData: restoreData,
+		Version: to, ExpectedLive: f.LiveVersion, RestoreData: restoreData, Hash: v.Hash, Snapshot: snapshot, SnapshotHash: shash,
 		Visibility: string(f.Visibility.Canonical()), Providers: providers,
 	}, via, "")
 	if err != nil {
@@ -296,7 +311,7 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if portal && s.cfg.Public == nil {
 		return errPublicDisabled()
 	}
-	return fmt.Errorf("%w: permit portal or tailscale-funnel before making this flat public", ErrConflict)
+	return fmt.Errorf("%w: %w: permit portal or tailscale-funnel before making this flat public", ErrConflict, ErrProviderNotPermitted)
 }
 
 // SetProviderPermission records an explicit non-local provider permission.
@@ -337,6 +352,10 @@ func (s *Service) resumeApplying(ctx context.Context) {
 		return
 	}
 	for _, a := range as {
+		if a.AuthorizedAt == nil || a.DecidedBy == "" {
+			_ = s.st.FinishApproval(ctx, a.ID, "failed", "legacy applying approval lacks validated operator decision; request fresh approval", s.now())
+			continue
+		}
 		if _, err := s.finishApplying(ctx, a); err != nil {
 			s.logf("resume approval %s: %v", a.ID, err)
 		}
@@ -344,16 +363,37 @@ func (s *Service) resumeApplying(ctx context.Context) {
 }
 
 func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.Approval, error) {
+	var receipt ApprovalExecution
+	if json.Unmarshal(a.ResultData, &receipt) == nil && receipt.Status == "applied" {
+		receipt.Status = "approved"
+		raw, _ := json.Marshal(receipt)
+		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", "visibility applied", raw, s.now()); err != nil {
+			return a, err
+		}
+		return s.st.GetApproval(ctx, a.ID)
+	}
+
 	if dep, ok, err := s.st.DeploymentByApproval(ctx, a.ID); err != nil {
 		return a, err
 	} else if ok {
 		msg := fmt.Sprintf("version %d is live (was %d)", dep.Version, dep.Previous)
-		if err := s.st.FinishApproval(ctx, a.ID, "approved", msg, s.now()); err != nil {
+		dto := ApprovalExecution{Status: "approved", DataImpact: "none", HealthData: "isolated_copy", LiveData: "untouched"}
+		if v, err := s.st.GetVersion(ctx, a.Flat, dep.Version); err == nil && v.Kind == "server" {
+			dto.DataImpact, dto.LiveData = "runtime_start", "runtime_may_write"
+		}
+		var params rollbackParams
+		_ = json.Unmarshal(a.Params, &params)
+		if params.RestoreData {
+			dto.DataImpact, dto.LiveData = "restore_data", "restored"
+		}
+		raw, _ := json.Marshal(dto)
+		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err
 		}
 		return s.st.GetApproval(ctx, a.ID)
 	}
 	res, err := s.applyApproval(ctx, a)
+	lifecyclePhase(ctx, "after_live_before_finalize", a.Flat, a.ID)
 	status, result := "approved", res.Message
 	if err != nil {
 		status, result = "failed", err.Error()
@@ -396,7 +436,7 @@ func (s *Service) applyApproval(ctx context.Context, a store.Approval) (ActionRe
 		return s.applyPublishApproval(ctx, a)
 	case "activate":
 		return s.applyActivateApproval(ctx, a)
-	case "rollback":
+	case "rollback", "restore_data":
 		return s.applyRollbackApproval(ctx, a)
 	default:
 		return ActionResult{}, fmt.Errorf("unknown action %q", a.Action)
@@ -445,6 +485,14 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if rev.Hash != p.Hash || rev.Pruned {
 		return ActionResult{}, fmt.Errorf("%w: draft revision %d no longer matches the approved snapshot", ErrConflict, p.Revision)
 	}
+	if f.LiveVersion > 0 {
+		if v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion); err == nil && v.Hash == rev.Hash {
+			return ActionResult{}, fmt.Errorf("%w: %w", ErrConflict, ErrUnchangedContent)
+		}
+	}
+	if err := s.verifyContent(a.Flat, versionFromRevision(rev)); err != nil {
+		return ActionResult{}, err
+	}
 	res, err := s.publishRevision(ctx, f, rev, a.ID)
 	if err != nil {
 		return ActionResult{}, err
@@ -454,14 +502,17 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 
 func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string) (DeployResult, error) {
 	candidate := versionFromRevision(rev)
+	lifecyclePhase(ctx, "before_health", f.Slug, approvalID)
 	h, err := s.checkIsolated(ctx, f, candidate)
 	if err != nil {
 		return DeployResult{}, err
 	}
+	lifecyclePhase(ctx, "after_health", f.Slug, approvalID)
 	n, err := s.st.NextVersionNumber(ctx, f.Slug)
 	if err != nil {
 		return DeployResult{}, err
 	}
+	lifecyclePhase(ctx, "after_allocation_before_live", f.Slug, approvalID)
 	dir := s.versionDir(f.Slug, n)
 	if err := os.RemoveAll(dir); err != nil {
 		return DeployResult{}, err
@@ -484,7 +535,7 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 	d, err := s.build(ctx, f.Slug, v, s.dataDirOf(f.Slug))
 	if err != nil {
 		os.RemoveAll(dir)
-		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: dataUntouched}
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
 	}
 	res, err := s.activate(ctx, f, d, h, "publish", ViaConsole, approvalID, time.Now())
 	if err != nil {
@@ -543,6 +594,9 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 	if v.Hash != p.Hash {
 		return ActionResult{}, fmt.Errorf("%w: version %d no longer matches the approved snapshot", ErrConflict, p.Version)
 	}
+	if err := s.verifyContent(a.Flat, v); err != nil {
+		return ActionResult{}, err
+	}
 	kind := "deploy"
 	if f.LiveVersion == p.Version {
 		kind = "redeploy"
@@ -578,7 +632,33 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 	if providers != p.Providers {
 		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
 	}
-	res, err := s.rollbackLocked(ctx, f, p.Version, p.RestoreData, ViaConsole, a.ID)
+	v, err := s.st.GetVersion(ctx, a.Flat, p.Version)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if v.Hash != p.Hash {
+		return ActionResult{}, mismatch(p.Hash, v.Hash, "version hash")
+	}
+	if err := s.verifyContent(a.Flat, v); err != nil {
+		return ActionResult{}, err
+	}
+	var res DeployResult
+	if p.RestoreData {
+		hash, hashErr := snapshotHash(filepath.Join(s.snapshotDir(a.Flat), p.Snapshot))
+		if hashErr != nil {
+			return ActionResult{}, hashErr
+		}
+		if hash != p.SnapshotHash {
+			return ActionResult{}, mismatch(p.SnapshotHash, hash, "restore snapshot")
+		}
+		kind := "rollback"
+		if a.Action == "restore_data" {
+			kind = "restore"
+		}
+		res, err = s.restoreLocked(ctx, f, p.Snapshot, p.Version, kind, ViaConsole, a.ID)
+	} else {
+		res, err = s.rollbackLocked(ctx, f, p.Version, false, ViaConsole, a.ID)
+	}
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -635,11 +715,13 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		next := f
 		next.Visibility = target
 		if err := s.ensureExposure(ctx, next); err != nil {
+			_ = s.stopPublicConfirmed(ctx, a.Flat)
 			_ = s.ensureExposure(ctx, f)
 			return ActionResult{}, err
 		}
 		next.UpdatedAt = s.now()
-		if err := s.st.UpdateFlat(ctx, next); err != nil {
+		raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
+		if err := s.st.CommitVisibility(ctx, next, f.Visibility, a.ID, raw); err != nil {
 			_ = s.ensureExposure(ctx, f)
 			return ActionResult{}, err
 		}
@@ -650,9 +732,11 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	if err := s.stopPublicConfirmed(ctx, a.Flat); err != nil {
 		return ActionResult{}, err
 	}
+	from := f.Visibility
 	f.Visibility = store.Private
 	f.UpdatedAt = s.now()
-	if err := s.st.UpdateFlat(ctx, f); err != nil {
+	raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
+	if err := s.st.CommitVisibility(ctx, f, from, a.ID, raw); err != nil {
 		return ActionResult{}, err
 	}
 	s.stopPublicRedirects(a.Flat)
@@ -702,6 +786,11 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	}
 	if !f.Visibility.Public() {
 		permitted = privateProviders(permitted)
+	}
+	if f.Visibility.Public() {
+		if _, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)}); err != nil {
+			return fmt.Errorf("private exposure: %w", err)
+		}
 	}
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),
@@ -844,6 +933,15 @@ func (s *Service) pruneDraftRevisions(ctx context.Context, slugName string, keep
 			}
 		}
 	}
+	if ps, err := s.st.ListPreviews(ctx, slugName); err == nil {
+		for _, p := range ps {
+			if p.Target == "draft" {
+				pinned[p.Revision] = true
+			}
+		}
+	} else {
+		return
+	}
 	revs, err := s.st.ListDraftRevisions(ctx, slugName)
 	if err != nil {
 		return
@@ -909,7 +1007,7 @@ func (s *Service) openDraftPreviewLocked(ctx context.Context, slugName string) (
 	}
 	rec := store.Preview{Host: host, Flat: slugName, Version: 0, CreatedAt: now, LastAccess: now, Target: "draft", Revision: rev.Revision}
 	if err := s.st.InsertPreview(ctx, rec); err != nil {
-		_ = s.cfg.Private.Stop(host)
+		_ = s.stopPreviewExposure(ctx, host)
 		stop()
 		return PreviewView{}, err
 	}
@@ -1062,6 +1160,10 @@ func failureCode(err error) string {
 		return "stale_approval"
 	case errors.Is(err, ErrProviderNotPermitted):
 		return "provider_not_permitted"
+	case errors.Is(err, ErrUnavailable):
+		return "provider_unavailable"
+	case errors.Is(err, ErrUnchangedContent):
+		return "unchanged_content"
 	case errors.Is(err, ErrProviderNotReady):
 		return "provider_not_ready"
 	case errors.Is(err, ErrPublicStopUnconfirmed):
@@ -1117,4 +1219,104 @@ func (s *Service) SaveDraft(ctx context.Context, flat string, files []bundle.Fil
 // RequestPublish is the pending-action facade used by transports.
 func (s *Service) RequestPublish(ctx context.Context, flat string, revision int, hash string, via Via) (ActionResult, error) {
 	return s.Publish(ctx, flat, revision, hash, via)
+}
+
+var ErrUnchangedContent = errors.New("content already published")
+
+func snapshotHash(path string) (string, error) {
+	h := sha256.New()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	h.Write(b)
+	err = filepath.Walk(path+".data", func(p string, info os.FileInfo, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			rel, _ := filepath.Rel(path+".data", p)
+			h.Write([]byte(rel))
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			h.Write(b)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (s *Service) stopPreviewExposure(ctx context.Context, host string) error {
+	if n, ok := s.cfg.Lifecycle.(LifecyclePreviewNet); ok {
+		return n.StopExposure(ctx, host)
+	}
+	return s.cfg.Private.Stop(host)
+}
+func (s *Service) verifyContent(flat string, v store.Version) error {
+	files, err := bundle.FromDir(s.contentDir(flat, v), bundle.Limits{MaxBytes: max(v.Size+1, s.UploadLimit())})
+	if err != nil {
+		return err
+	}
+	if bundle.Hash(files) != v.Hash {
+		return fmt.Errorf("%w: %w: immutable content hash changed", ErrConflict, ErrStaleApproval)
+	}
+	return nil
+}
+
+// restorePreviews retains persisted Private targets and their isolated data.
+func (s *Service) restorePreviews(ctx context.Context) {
+	ps, err := s.st.ListPreviews(ctx, "")
+	if err != nil {
+		s.logf("restore previews: %v", err)
+		return
+	}
+	for _, p := range ps {
+		if !p.LastAccess.Add(s.previewTTL()).After(s.now()) {
+			_ = s.st.DeletePreview(ctx, p.Host)
+			continue
+		}
+		var v store.Version
+		if p.Target == "draft" {
+			r, e := s.st.GetDraftRevision(ctx, p.Flat, p.Revision)
+			err = e
+			v = versionFromRevision(r)
+		} else {
+			v, err = s.st.GetVersion(ctx, p.Flat, p.Version)
+		}
+		if err != nil || v.Pruned {
+			s.Event(ctx, p.Flat, "error", "preview", "preview target unavailable after restart", nil)
+			continue
+		}
+		data := filepath.Join(s.flatDir(p.Flat), "previews", p.Host)
+		built, err := s.build(ctx, p.Flat, v, data)
+		if err != nil {
+			s.Event(ctx, p.Flat, "error", "preview", err.Error(), nil)
+			continue
+		}
+		prev := &preview{host: p.Host, flat: p.Flat, version: p.Version, handler: built.handler, inst: built.inst, dataDir: data}
+		prev.last.Store(p.LastAccess.UnixMilli())
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			prev.last.Store(s.now().UnixMilli())
+			w.Header().Set("X-Robots-Tag", "noindex")
+			prev.handler.ServeHTTP(w, r)
+		})
+		if _, err := s.servePreview(ctx, p.Flat, p.Host, handler); err != nil {
+			if built.inst != nil {
+				built.inst.Stop()
+			}
+			s.Event(ctx, p.Flat, "error", "preview", err.Error(), nil)
+			continue
+		}
+		s.mu.Lock()
+		s.prevs[p.Host] = prev
+		s.mu.Unlock()
+	}
 }

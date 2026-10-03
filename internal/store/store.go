@@ -117,6 +117,8 @@ type Approval struct {
 	DecidedAt      *time.Time      `json:"decided_at,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 	ResultData     json.RawMessage `json:"result_data,omitempty"`
+	DecidedBy      string          `json:"decided_by,omitempty"`
+	AuthorizedAt   *time.Time      `json:"authorized_at,omitempty"`
 }
 
 // Preview is an ephemeral address for a saved version.
@@ -194,7 +196,9 @@ CREATE TABLE IF NOT EXISTS approvals (
   requested_at INTEGER NOT NULL,
   decided_at INTEGER,
   idempotency_key TEXT,
-  result_data TEXT
+  result_data TEXT,
+  decided_by TEXT,
+  authorized_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS previews (
   host TEXT PRIMARY KEY,
@@ -318,7 +322,13 @@ func migrate(db *sql.DB) error {
 	if err := addColumn(db, "approvals", "result_data", "TEXT"); err != nil {
 		return err
 	}
-	_, err := db.Exec(`PRAGMA user_version = 3`)
+	if err := addColumn(db, "approvals", "decided_by", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumn(db, "approvals", "authorized_at", "INTEGER"); err != nil {
+		return err
+	}
+	_, err := db.Exec(`PRAGMA user_version = 4`)
 	return err
 }
 
@@ -787,14 +797,19 @@ func (s *Store) InsertApproval(ctx context.Context, a Approval) error {
 func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	var a Approval
 	var params string
-	var reason, result, idem, data sql.NullString
+	var reason, result, idem, data, actor sql.NullString
 	var req int64
-	var dec sql.NullInt64
-	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data); err != nil {
+	var dec, authorized sql.NullInt64
+	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data, &actor, &authorized); err != nil {
 		return a, err
 	}
 	a.Params = json.RawMessage(params)
 	a.ResultData = json.RawMessage(data.String)
+	a.DecidedBy = actor.String
+	if authorized.Valid {
+		at := fromUnix(authorized.Int64)
+		a.AuthorizedAt = &at
+	}
 	a.Reason, a.Result, a.IdempotencyKey = reason.String, result.String, idem.String
 	a.RequestedAt = fromUnix(req)
 	if dec.Valid {
@@ -804,7 +819,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	return a, nil
 }
 
-const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data`
+const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data,decided_by,authorized_at`
 
 // GetApproval returns one approval.
 func (s *Store) GetApproval(ctx context.Context, id string) (Approval, error) {

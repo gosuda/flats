@@ -82,7 +82,7 @@ func newRuntimeEnv(t *testing.T) *rtEnv {
 func saveServer(t *testing.T, e *env, slugName, manifestExtra string) int {
 	t.Helper()
 	m := `{"kind":"server"` + manifestExtra + `}`
-	v, err := e.svc.SaveVersion(context.Background(), slugName, files("flats.json", m, "server.js", "export default {}"), core.SaveMeta{}, core.ViaAPI)
+	v, err := e.svc.SaveVersion(context.Background(), slugName, files("flats.json", m, "server.js", fmt.Sprintf("export default {} // revision %d", func() int { d, _ := e.svc.GetDraft(context.Background(), slugName); return d.Revision + 1 }())), core.SaveMeta{}, core.ViaAPI)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,7 +738,7 @@ func TestRestoreSnapshot(t *testing.T) {
 		t.Fatalf("bad name: %v", err)
 	}
 	snaps, _ := e.svc.Snapshots("named")
-	if _, err := e.svc.RestoreSnapshot(ctx, "named", snaps[0], core.ViaConsole); err != nil {
+	if _, err := approvedTestRestore(t, e.svc, ctx, "named", snaps[0]); err != nil {
 		t.Fatal(err)
 	}
 	if got := queryDB(t, db, `SELECT v FROM t`); got[0] != "good" {
@@ -778,4 +778,15 @@ func approvedTestRollback(t *testing.T, s *core.Service, ctx context.Context, sl
 	}
 	f, err := s.GetFlat(ctx, slug)
 	return core.DeployResult{Flat: f, Version: f.LiveVersion}, err
+}
+
+func approvedTestRestore(t *testing.T, s *core.Service, ctx context.Context, slug, name string) (core.DeployResult, error) {
+	t.Helper()
+	_, err := s.RestoreSnapshot(ctx, slug, name, core.ViaConsole)
+	var p *core.PendingApproval
+	if !errors.As(err, &p) {
+		return core.DeployResult{}, err
+	}
+	_, err = s.Decide(ctx, p.Approval.ID, true)
+	return core.DeployResult{}, err
 }

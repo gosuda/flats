@@ -125,3 +125,8 @@ type LifecycleObserver interface {
 	ExposurePolicy(context.Context) (string, error)
 	ExposureStatus(context.Context, string) (ExposureResult, error)
 }
+
+// LifecyclePreviewNet stops only an exact isolated host and its private routes.
+type LifecyclePreviewNet interface {
+	StopExposure(context.Context, string) error
+}
