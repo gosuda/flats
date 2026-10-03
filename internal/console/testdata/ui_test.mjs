@@ -220,7 +220,7 @@ permissionConfirm.close('ok');
 await tick();
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/visibility').body), { visibility: 'private', reason: '' });
 assert.ok(share.textContent.includes('Only devices allowed by your tailnet'));
-assert.ok(share.textContent.includes('https://blog.tail.ts.net'));
+assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0].getAttribute('href'), new URL(blog.private_url).href);
 share.close();
 for (const label of ['Share', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 console.log('ok');
