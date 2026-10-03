@@ -196,7 +196,7 @@ execution and independent Claude product review remain pending.
 
 Core behavior and tagged phase hooks have since been adopted through exact
 committed grants, as has the frozen HTTP Draft/Publish/PendingApproval transport.
-The suite currently defines 22 cases, including public v1→v2→rollback route
+The suite currently defines 23 cases, including public v1→v2→rollback route
 binding and an ordinary production-build check that fault environments are
 ignored. The separate tagged binary pauses at four real core phases; SIGKILL
 and two subsequent process restarts observe exactly-once recovery. All binary
@@ -214,3 +214,7 @@ New full-data restore checks both restored DB/FILES and the pre-restore backup.
 Final CLI/MCP transport adoption, full integrated gate and rendered browser
 results are reported in the private integration handoff, not inferred from these
 prepared cases.
+
+Dual-provider fault coverage uses selective Funnel/Portal serve and stop failures,
+checks confirmed and unconfirmed routes through actual HTTP, preserves current
+Private traffic and requires a fresh successful approval afterward.

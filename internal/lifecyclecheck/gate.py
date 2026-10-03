@@ -545,6 +545,7 @@ def provider_failure(h):
     require("tailscale-funnel" not in provider_ids(h.flat("provider")), "Tailscale authorized Funnel")
     h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale-funnel", "permitted": True}, console=True)
     require(h.flat("provider")["visibility"] == "private", "Funnel permission authorized Public")
+    h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale", "permitted": False}, console=True)
     h.set_host_permissions(['tailscale-funnel'])
     a = h.approval(h.ok("POST", "/api/flats/provider/visibility", {"visibility": "public"}, status=202))
     failed(h.decide(a), "unavailable")
@@ -740,6 +741,36 @@ def visibility_transitions(h):
     require("PUBLIC-V1" in h.traffic("pub-public"), "provider positive control did not serve")
 
 
+def partial_provider_failures(h):
+    h.ok("POST", "/__gate/host-permission", {"permitted": ["portal", "tailscale-funnel"]})
+    h.activate("siblings", static("SIBLING-CURRENT"))
+    for provider in ("portal", "tailscale-funnel"):
+        h.ok("POST", "/console/api/flats/siblings/providers", {"provider": provider, "permitted": True}, console=True)
+    def change(target):
+        return h.approval(h.ok("POST", "/api/flats/siblings/visibility", {"visibility": target}, status=202))
+    require(h.decide(change("public"))["status"] == "approved", "both-provider setup failed")
+    for host in ("siblings", "pub-siblings", "funnel-siblings"):
+        require("SIBLING-CURRENT" in h.traffic(host), "configured sibling route missing")
+    h.ok("POST", "/__gate/fault", {"funnel_stop": True})
+    failed(h.decide(change("private")), "teardown")
+    require(h.flat("siblings")["visibility"] == "public", "partial teardown falsely saved Private")
+    require("SIBLING-CURRENT" in h.traffic("funnel-siblings") and "SIBLING-CURRENT" in h.traffic("siblings"),
+            "unconfirmed public route or independent private path lost")
+    require(h.request("GET", "/", local_host="pub-siblings")[0] == 404, "confirmed sibling stop stayed open")
+    h.ok("POST", "/__gate/fault", {})
+    require(h.decide(change("private"))["status"] == "approved", "partial stop retry failed")
+    h.ok("POST", "/__gate/fault", {"portal_serve": True})
+    failed(h.decide(change("public")), "serve")
+    require(h.flat("siblings")["visibility"] == "private", "partial serve falsely reported Public")
+    for host in ("pub-siblings", "funnel-siblings"):
+        require(h.request("GET", "/", local_host=host)[0] == 404, "successful sibling leaked after failed preparation")
+    require("SIBLING-CURRENT" in h.traffic("siblings"), "partial opening failure lost private traffic")
+    h.ok("POST", "/__gate/fault", {})
+    require(h.decide(change("public"))["status"] == "approved", "fresh both-provider approval poisoned")
+    for host in ("pub-siblings", "funnel-siblings"):
+        require("SIBLING-CURRENT" in h.traffic(host), "both-provider positive control missing")
+
+
 def public_publish_rollback(h):
     h.ok("POST", "/__gate/host-permission", {"permitted": ["portal"]})
     h.activate("binding", static("BINDING-V1"))
@@ -816,6 +847,7 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("frozen-current-live", current_live_drift)]
 ADAPTER_CASES = [("visibility-all-surfaces-teardown", visibility_transitions),
                  ("public-publish-rollback-route-binding", public_publish_rollback),
+                 ("partial-provider-failures", partial_provider_failures),
                  ("frozen-visibility", visibility_drift),
                  ("provider-host-flat-permission-matrix", provider_matrix),
                  ("restart-claimed-approval", resume_claimed)]

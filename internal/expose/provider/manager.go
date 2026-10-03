@@ -32,7 +32,7 @@ var ErrProviderNotPermitted = core.ErrProviderNotPermitted
 
 // ErrNotConfigured means the host granted a provider but this process has
 // no backend for it. The manager does not substitute another provider.
-var ErrNotConfigured = errors.New("provider is not configured")
+var ErrNotConfigured = fmt.Errorf("%w: provider is not configured", core.ErrProviderNotReady)
 
 // ExposureRequest uses the exact core-defined DTO and permission identifiers.
 type ExposureRequest = core.ExposureRequest
@@ -453,7 +453,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		url, err := m.ts.ServeFunnel(ctx, requestHost(req), req.Handler)
 		if err != nil {
-			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, err
+			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel: %w", core.ErrProviderNotReady, err)
 		}
 		m.track(req, Funnel, requestHost(req))
 		ep := m.ts.FunnelState(requestHost(req))
@@ -471,7 +471,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		url, err := m.portal.Serve(ctx, req.Slug, req.Handler, false)
 		if err != nil {
-			return ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error()}, err
+			return ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: portal: %w", core.ErrProviderNotReady, err)
 		}
 		m.track(req, Portal, req.Slug)
 		ep := fromStatus(Portal, m.portal.Status(), req.Slug, url)

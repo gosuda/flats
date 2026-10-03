@@ -109,8 +109,9 @@ export function draftTarget(preview) {
   return { url: preview.url || '', ready, target: 'draft', visibility: 'private', state, revision: preview.revision || 0 };
 }
 
-export function findDraftPreview(previews) {
-  return (previews || []).find((p) => p.target === 'draft' || (p.version === 0 && p.revision)) || null;
+export function findDraftPreview(previews, revision) {
+  return (previews || []).find((p) => (p.target === 'draft' || (p.version === 0 && p.revision))
+    && (!revision || p.revision === revision)) || null;
 }
 
 const nameOf = (flat) => flat?.name || flat?.slug || 'this flat';

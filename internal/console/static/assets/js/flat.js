@@ -95,7 +95,13 @@ export function mount(main, [slug], ctx, settings = false) {
       draftSaveText = ev.status;
       const live = headSlot.querySelector('.draft-save');
       if (live) live.textContent = ev.status;
-      if (ev.response?.draft) flat = { ...flat, draft: ev.response.draft };
+      if (ev.response?.draft) {
+        flat = { ...flat, draft: ev.response.draft };
+        const active = document.activeElement;
+        const focusId = active && headSlot.contains(active) ? active.id : '';
+        drawHead();
+        if (focusId) document.getElementById(focusId)?.focus();
+      }
       else if (ev.conflict) draftSaveText = ev.status;
     });
     if (draftSaveText) draftUi.status = () => draftSaveText;
@@ -121,7 +127,7 @@ export function mount(main, [slug], ctx, settings = false) {
             h('a', { href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: `${a.action} · ${a.status}` })))))) : null,
       h('div', { class: 'life-grid' },
         renderCurrent(flat, (btn) => busy(btn, async () => { if (await redeployLive(flat)) refresh(); })),
-        renderDraft(flat, findDraftPreview(previews), {
+        renderDraft(flat, findDraftPreview(previews, flat.draft?.revision), {
           editor: draftUi.editor,
           saveState: draftSaveText || (flat.draft ? `Saved ${flat.draft.updated_at ? dateTime(flat.draft.updated_at) : ''}`.trim() : ''),
           publishButton: publish,
@@ -170,7 +176,7 @@ export function mount(main, [slug], ctx, settings = false) {
 
   function overviewPanel() {
     const current = currentTarget(flat);
-    const draft = draftTarget(findDraftPreview(previews));
+    const draft = draftTarget(findDraftPreview(previews, flat.draft?.revision));
     return h('div', null,
       h('p', { text: `${flat.name || flat.slug} is ${publicationPhrase(flat)} and ${visibilityWord(flat.visibility)}.` }),
       h('div', { class: 'life-actions' },
@@ -216,7 +222,7 @@ export function mount(main, [slug], ctx, settings = false) {
     });
     const providerRows = PROVIDERS.map((p) => providerRow(p));
     const current = currentTarget(flat);
-    const draft = draftTarget(findDraftPreview(previews));
+    const draft = draftTarget(findDraftPreview(previews, flat.draft?.revision));
     return renderAccess(flat, {
       visibility: h('div', null,
         h('p', { id: 'access-hint', class: 'muted small', text: flat.publication === 'published'

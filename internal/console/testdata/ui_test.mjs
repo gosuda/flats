@@ -90,6 +90,7 @@ globalThis.document = {
   addEventListener() {},
   removeEventListener() {},
   getElementById: () => null,
+  querySelector: (selector) => document.body.querySelector(selector),
 };
 
 // all returns every element under root (inclusive) matching pred.
