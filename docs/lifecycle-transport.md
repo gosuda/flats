@@ -165,3 +165,15 @@ complete restore data populations and rendered console/bootstrap integration are
 separate core/integration gates. These tests claim neither live internet/Funnel
 reachability nor visitor ACL/owner-only behavior. The installed operator server,
 real flats/data/authkeys/credentials and real network providers are untouched.
+
+## Typed decision failures
+
+Failed decision responses retain the persisted `approval` and its `result_data`
+(including `failure_code`), alongside `error` and typed `category`. Provider
+permission, readiness, availability, unconfirmed public-stop, stale approval and
+unchanged-content causes return HTTP 409, with categories matching their core
+execution cause. Health/runtime deployment failures retain HTTP 422; unrelated
+internal storage failures remain HTTP 500. A published visibility change requests
+approval even when a provider is unavailable or unpermitted; only authorized
+application checks those prerequisites. Same visibility remains unchanged HTTP
+200, and an unpublished flat cannot request Public visibility.

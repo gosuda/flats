@@ -73,3 +73,38 @@ func TestAuthorizedProviderApplyFailureAndPositiveControl(t *testing.T) {
 		})
 	}
 }
+
+func TestPublishedVisibilityWithoutProviderStillRequestsApproval(t *testing.T) {
+	for _, via := range []string{"api", "cli", "console"} {
+		t.Run(via, func(t *testing.T) {
+			srv, _ := setup(t)
+			saveAndPublish(t, srv, "unpermitted", "CURRENT")
+			prefix, h := "/api", map[string]string(nil)
+			if via == "cli" {
+				h = map[string]string{"X-Flats-Client": "cli"}
+			}
+			if via == "console" {
+				prefix, h = "/console/api", consoleHdr(t, srv)
+			}
+			code, pending := req(t, "POST", srv.URL+prefix+"/flats/unpermitted/visibility", strings.NewReader(`{"visibility":"public"}`), h)
+			if code != 202 || pending["status"] != "pending_approval" {
+				t.Fatalf("published change must defer availability until decision: %d %v", code, pending)
+			}
+			flatState(t, srv, "unpermitted", 1, "private", 1)
+			id := pending["approval"].(map[string]any)["id"].(string)
+			code, out := req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
+			if code != 409 || out["category"] != "provider_not_permitted" {
+				t.Fatalf("authorized application must check permission: %d %v", code, out)
+			}
+			a := out["approval"].(map[string]any)
+			if a["status"] != "failed" || a["result_data"].(map[string]any)["failure_code"] != "provider_not_permitted" {
+				t.Fatalf("failure cause: %v", a)
+			}
+			flatState(t, srv, "unpermitted", 1, "private", 1)
+			code, out = req(t, "POST", srv.URL+"/api/flats/unpermitted/visibility", strings.NewReader(`{"visibility":"private"}`), nil)
+			if code != 200 || out["message"] != "visibility unchanged" {
+				t.Fatalf("same visibility: %d %v", code, out)
+			}
+		})
+	}
+}
