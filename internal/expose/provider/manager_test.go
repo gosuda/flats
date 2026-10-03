@@ -349,24 +349,25 @@ func get(t *testing.T, url string) string {
 }
 
 type fakeTail struct {
-	serve, funnel int
-	funnelErr     error
-	stopErr       error
-	stopped       bool
+	serve, funnel             int
+	stop, funnelStops, closes int
+	funnelErr                 error
+	stopErr                   error
+	stopped                   bool
 }
 
 func (f *fakeTail) Serve(context.Context, string, http.Handler, bool) (string, error) {
 	f.serve++
 	return "https://notes.example.ts.net", nil
 }
-func (f *fakeTail) Stop(string) error { return nil }
+func (f *fakeTail) Stop(string) error { f.stop++; return nil }
 func (f *fakeTail) URL(string) string { return "https://notes.example.ts.net" }
 func (f *fakeTail) Status() core.NetStatus {
 	return core.NetStatus{Kind: "tailscale", Enabled: true, Hosts: []core.HostInfo{{
 		Host: "notes", URL: "https://notes.example.ts.net", State: "ready",
 	}}}
 }
-func (f *fakeTail) Close() error { return nil }
+func (f *fakeTail) Close() error { f.closes++; return nil }
 func (f *fakeTail) ServeFunnel(context.Context, string, http.Handler) (string, error) {
 	f.funnel++
 	if f.funnelErr != nil {
@@ -376,6 +377,7 @@ func (f *fakeTail) ServeFunnel(context.Context, string, http.Handler) (string, e
 	return "https://notes.example.ts.net", nil
 }
 func (f *fakeTail) StopFunnel(string) error {
+	f.funnelStops++
 	if f.stopErr != nil {
 		return f.stopErr
 	}
@@ -446,7 +448,7 @@ func TestPreviewCleanupKeepsOtherHostsAndCurrent(t *testing.T) {
 			seen[ep.Host] = ep.Ready
 		}
 	}
-	if seen["notes-draft-one"] || !seen["notes"] || !seen["notes-draft-two"] || len(seen) != 3 {
+	if seen["notes-draft-one"] || !seen["notes"] || !seen["notes-draft-two"] || len(seen) != 2 {
 		t.Fatalf("host-specific observed routes: %+v", status)
 	}
 }
@@ -481,8 +483,36 @@ func TestExposureStatusRecomputesCurrentPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, ep := range observed.Endpoints {
-		if ep.Provider == Portal && (!ep.Permitted || ep.Ready || ep.URL != "") {
-			t.Fatalf("stopped route confused with permission %+v", ep)
+		if ep.Provider == Portal {
+			t.Fatalf("stopped route was retained: %+v", ep)
 		}
+	}
+}
+
+func TestManagerCloseForgetsRoutesWithoutDestructiveBackendStops(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Tailscale, Funnel}})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	if _, err := m.ServeExposure(ctx, ExposureRequest{Slug: "notes", Visibility: "private", Audience: AudienceCurrent,
+		Handler: text("private"), Permitted: []ID{Tailscale}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ServeExposure(ctx, ExposureRequest{Slug: "notes", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("public"), Permitted: []ID{Tailscale, Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if tail.stop != 0 || tail.funnelStops != 0 || tail.closes != 0 {
+		t.Fatalf("manager performed destructive backend cleanup: stop=%d funnel=%d close=%d", tail.stop, tail.funnelStops, tail.closes)
+	}
+	status, err := m.ExposureStatus(ctx, "notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Endpoints) != 0 || len(m.routes) != 0 {
+		t.Fatalf("manager retained closed registrations: endpoints=%+v routes=%+v", status.Endpoints, m.routes)
 	}
 }

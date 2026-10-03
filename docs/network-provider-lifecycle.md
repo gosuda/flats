@@ -41,9 +41,11 @@ call can retry. Unconfirmed means the caller must not treat the flat as
 private. This does not remove an allowed private tailnet ACL, and it does not
 implement owner-only authentication.
 
-Connection states used here are `starting`, `ready`, `error`, and
+Connection states used here are `starting`, `ready`, `error`, `stopped`, and
 `unavailable`. A node that is on the tailnet without private HTTP is `idle`
-and is not ready.
+and is not ready. Successful route teardown prunes its observed endpoint;
+`stopped` is reserved for stale observations whose registration is already
+absent. Failed teardown keeps the registration and observation for retry.
 
 ## Host file
 
@@ -127,12 +129,15 @@ and does not set identity.
 
 ## Shutdown
 
-`Host.Close` still drains the management HTTP server before it closes
-networks. It then closes core, provider routes, the legacy public backend or
-the portal backend, the private backend, and any tailnet or local backend that
-was not that private pointer. `Manager.Close` stops routes only. It does not
-call `portal.Net.Close` and it does not cancel the Portal parent context.
-Portal SDK shutdown inside `portal.Net.Close` is unchanged.
+`Host.Close` drains the management HTTP server before it closes networks. It
+then closes core, forgets Manager registrations, closes the legacy public
+backend or the portal backend, the private backend, and any tailnet or local
+backend that was not that private pointer. `Manager.Close` does not call
+destructive per-route stop methods. The backend owner performs process
+shutdown: `tsnet.Close` preserves persistent node state and identity, while
+explicit delete, revocation, and preview close continue to use logout. Portal
+SDK shutdown inside `portal.Net.Close` is unchanged. Startup-failure cleanup
+uses the same identity-preserving `Host.Close` path.
 
 ## Historical network-slice tests
 
@@ -226,6 +231,8 @@ retaining the grant. Canonical nonsecret relay origins and settings bind provide
 configuration changes without binding secrets or transient readiness.
 
 Routes and observed endpoints are keyed by exact host, audience and provider.
+Confirmed stops prune the matching endpoint state, and Manager shutdown clears
+all observations, so closed previews and routes do not accumulate in status.
 Preview cleanup stops only Draft private routes for the requested host; another
 preview and the current site remain reachable. Public opening preserves an
 independent Local route on a fresh Manager, and normal core rebinding refreshes
@@ -233,4 +240,4 @@ both current handlers before each public activation.
 
 ### Per-flat Private Tailscale revocation
 
-An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route. Unconfirmed node retirement is retained across retries; absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.
+An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure preserves its server and persistent state, and the next `StopPrivate` call performs a fresh logout attempt in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.

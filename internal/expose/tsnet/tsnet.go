@@ -104,6 +104,7 @@ type Net struct {
 	warmCert          func(ctx context.Context, domain string) error
 	listenFunnel      func(srv *ts.Server, opts []ts.FunnelOption) (net.Listener, error)
 	afterFunnelListen func() error
+	logoutNode        func(context.Context, *node) error
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
@@ -135,6 +136,7 @@ type node struct {
 	prev      chan struct{} // teardown of the previous node with this host, or nil
 	srv       *ts.Server
 	stopErr   error // set by the retiring goroutine before it closes its done channel
+	loggedOut bool  // set after control confirms logout; later retries skip that step
 
 	// Guarded by Net.mu.
 	backend       string // ipn.State string
@@ -209,6 +211,17 @@ func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bo
 	defer n.mu.Unlock()
 	if n.closed {
 		return "", errors.New("tsnet: network is closed")
+	}
+	if pending, ok := n.privateStopping[host]; ok {
+		select {
+		case <-pending.done:
+			if pending.node.stopErr != nil {
+				return "", fmt.Errorf("tsnet: %s Private teardown failed; retry the provider removal before serving it again: %w", host, pending.node.stopErr)
+			}
+			delete(n.privateStopping, host)
+		default:
+			return "", fmt.Errorf("tsnet: %s Private teardown is still unconfirmed", host)
+		}
 	}
 	if nd, ok := n.nodes[host]; ok {
 		nd.handler.Store(&h)
@@ -777,12 +790,41 @@ func (n *Net) setErr(nd *node, err error) {
 func (n *Net) StopPrivate(host string) error {
 	n.mu.Lock()
 	if pending, ok := n.privateStopping[host]; ok {
-		n.mu.Unlock()
-		if err := n.waitPrivateStop(host, pending); err != nil {
-			return err
+		scheduled := false
+		select {
+		case <-pending.done:
+			if pending.node.stopErr == nil {
+				delete(n.privateStopping, host)
+				n.mu.Unlock()
+				// A caller may have recreated this host while retirement was pending.
+				return n.StopPrivate(host)
+			}
+			if n.closed {
+				err := pending.node.stopErr
+				n.mu.Unlock()
+				return err
+			}
+			// A completed but failed teardown keeps its server and state. Re-arm
+			// it so an operator retry performs real work in this process.
+			pending.node.stopErr = nil
+			pending.done = n.retireLocked(pending.node, true)
+			n.privateStopping[host] = pending
+			scheduled = true
+		default:
 		}
-		// A caller may have recreated this host while retirement was pending.
-		return n.StopPrivate(host)
+		n.mu.Unlock()
+		err := n.waitPrivateStop(host, pending)
+		if err != nil && !scheduled {
+			select {
+			case <-pending.done:
+				// This caller arrived while the previous attempt was still
+				// running. If it has now failed terminally, this retry owns the
+				// next real attempt instead of merely replaying the old error.
+				return n.StopPrivate(host)
+			default:
+			}
+		}
+		return err
 	}
 	nd := n.nodes[host]
 	n.mu.Unlock()
@@ -826,14 +868,17 @@ func (n *Net) StopPrivate(host string) error {
 func (n *Net) waitPrivateStop(host string, pending privateRetirement) error {
 	select {
 	case <-pending.done:
-		if pending.node.stopErr != nil {
-			return pending.node.stopErr
-		}
 		n.mu.Lock()
-		if current, ok := n.privateStopping[host]; ok && current.done == pending.done {
-			delete(n.privateStopping, host)
+		err := pending.node.stopErr
+		if err == nil {
+			if current, ok := n.privateStopping[host]; ok && current.done == pending.done {
+				delete(n.privateStopping, host)
+			}
 		}
 		n.mu.Unlock()
+		if err != nil {
+			return err
+		}
 		return nil
 	case <-time.After(stopWait):
 		return fmt.Errorf("tsnet: %s Private teardown is still unconfirmed", host)
@@ -893,18 +938,6 @@ func (n *Net) teardown(nd *node, logout bool) error {
 	<-nd.started
 	var errs []error
 	if nd.srv != nil {
-		if logout {
-			if lc, err := nd.srv.LocalClient(); err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
-				if err := lc.Logout(ctx); err != nil {
-					// The node stays in the admin console until removed there
-					// (ephemeral nodes are collected by control anyway).
-					n.logf("tsnet %s: logout: %v", nd.host, err)
-					errs = append(errs, fmt.Errorf("tsnet %s logout: %w", nd.host, err))
-				}
-				cancel()
-			}
-		}
 		n.mu.Lock()
 		servers := nd.https
 		funnelSrv := nd.funnelSrv
@@ -924,6 +957,21 @@ func (n *Net) teardown(nd *node, logout bool) error {
 				errs = append(errs, fmt.Errorf("tsnet %s HTTP close: %w", nd.host, err))
 			}
 		}
+	}
+	if logout && !nd.loggedOut && (nd.srv != nil || n.logoutNode != nil) {
+		ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+		err := n.logout(ctx, nd)
+		cancel()
+		if err != nil {
+			// Private HTTP is already closed, so access fails closed. Keep the
+			// backend and state alive so a later StopPrivate can retry logout.
+			n.logf("tsnet %s: logout: %v", nd.host, err)
+			<-nd.done
+			return errors.Join(append(errs, fmt.Errorf("tsnet %s logout: %w", nd.host, err))...)
+		}
+		nd.loggedOut = true
+	}
+	if nd.srv != nil {
 		if err := nd.srv.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 			errs = append(errs, fmt.Errorf("tsnet %s backend close: %w", nd.host, err))
 		}
@@ -941,6 +989,20 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (n *Net) logout(ctx context.Context, nd *node) error {
+	if n.logoutNode != nil {
+		return n.logoutNode(ctx, nd)
+	}
+	if nd.srv == nil {
+		return nil
+	}
+	lc, err := nd.srv.LocalClient()
+	if err != nil {
+		return err
+	}
+	return lc.Logout(ctx)
 }
 
 // Close implements core.PrivateNet. Persistent nodes are shut down but not
@@ -964,6 +1026,10 @@ func (n *Net) Close() error {
 	for _, ch := range n.stopping {
 		pending = append(pending, ch)
 	}
+	privatePending := make([]privateRetirement, 0, len(n.privateStopping))
+	for _, retirement := range n.privateStopping {
+		privatePending = append(privatePending, retirement)
+	}
 	n.notifyLocked()
 	n.mu.Unlock()
 
@@ -972,16 +1038,31 @@ func (n *Net) Close() error {
 	for i, nd := range nodes {
 		wg.Go(func() { errs[i] = n.teardown(nd, nd.ephemeral) })
 	}
-	all := make(chan struct{})
+	all := make(chan []error, 1)
 	go func() {
 		wg.Wait()
 		for _, ch := range pending {
 			<-ch
 		}
-		close(all)
+		var cleanupErrs []error
+		for _, retirement := range privatePending {
+			<-retirement.done
+			if retirement.node.stopErr != nil {
+				// Persistent nodes use the graceful path here, retaining identity.
+				// Ephemeral nodes retry logout because they cannot be restored, then
+				// force a local close if control is still unavailable.
+				err := n.teardown(retirement.node, retirement.node.ephemeral)
+				if err != nil && retirement.node.ephemeral {
+					err = errors.Join(err, n.teardown(retirement.node, false))
+				}
+				cleanupErrs = append(cleanupErrs, err)
+			}
+		}
+		all <- cleanupErrs
 	}()
 	select {
-	case <-all:
+	case cleanupErrs := <-all:
+		errs = append(errs, cleanupErrs...)
 	case <-time.After(stopWait):
 		// Shutting down must finish; a node stuck in its backend is left to
 		// the process exit (an ephemeral one is then removed by control).

@@ -22,6 +22,7 @@ const (
 	stateReady       = "ready"
 	stateStarting    = "starting"
 	stateError       = "error"
+	stateStopped     = "stopped"
 	stateUnavailable = "unavailable"
 )
 
@@ -292,7 +293,7 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
 		} else {
-			ep.URL, ep.State, ep.Detail = "", stateUnavailable, "route stopped"
+			ep.URL, ep.State, ep.Detail = "", stateStopped, "route stopped"
 		}
 		permitted := ep.Permitted
 		if m.permission != nil && ep.Provider != Local {
@@ -517,6 +518,7 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 			res.Unconfirmed = append(res.Unconfirmed, Funnel)
 		} else {
 			m.take(slug, Funnel, true)
+			m.pruneState(slug, Funnel)
 			res.Stopped = append(res.Stopped, Funnel)
 		}
 	}
@@ -527,6 +529,7 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 			res.Unconfirmed = append(res.Unconfirmed, Portal)
 		} else {
 			m.take(slug, Portal, true)
+			m.pruneState(slug, Portal)
 			res.Stopped = append(res.Stopped, Portal)
 		}
 	}
@@ -593,6 +596,7 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 		}
 		m.mu.Lock()
 		delete(m.routes, k)
+		m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
 		m.mu.Unlock()
 	}
 	return errors.Join(errs...)
@@ -630,6 +634,7 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 		}
 		m.mu.Lock()
 		delete(m.routes, k)
+		m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
 		m.mu.Unlock()
 	}
 	return errors.Join(errs...)
@@ -637,48 +642,56 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 
 var _ core.LifecyclePreviewNet = (*Manager)(nil)
 
-// Close drops every route this manager opened. It does not close backends
-// and it does not cancel a Portal parent context; the process owner closes
-// those backends afterwards.
+// Close forgets every registration this manager opened. The process owner
+// closes the backends afterwards. In particular, it must not call Tailnet.Stop:
+// that operation logs a node out and deletes its persistent identity, while a
+// normal process shutdown must let Tailnet.Close preserve that identity.
 func (m *Manager) Close() error {
 	m.mu.Lock()
-	routes := m.routes
 	m.routes = map[string]*route{}
+	m.states = map[string][]ExposureEndpoint{}
 	m.mu.Unlock()
-	var errs []error
-	seenPortal := map[string]bool{}
-	seenFunnel := map[string]bool{}
-	for _, r := range routes {
-		switch r.provider {
-		case Funnel:
-			if seenFunnel[r.host] || m.ts == nil {
-				continue
-			}
-			seenFunnel[r.host] = true
-			if err := m.ts.StopFunnel(r.host); err != nil {
-				errs = append(errs, err)
-			}
-		case Portal:
-			if seenPortal[r.slug] || m.portal == nil {
-				continue
-			}
-			seenPortal[r.slug] = true
-			if err := m.portal.Stop(r.slug); err != nil {
-				errs = append(errs, err)
-			}
-		case Tailscale:
-			if m.ts != nil {
-				if err := m.ts.Stop(r.host); err != nil {
-					errs = append(errs, err)
-				}
-			}
-		case Local:
-			if err := m.local.Stop(r.host); err != nil {
-				errs = append(errs, err)
+	return nil
+}
+
+// pruneState removes successfully stopped endpoints while retaining state for
+// routes whose teardown is still unconfirmed. That keeps status honest without
+// accumulating every preview or stopped route for the life of the process.
+func (m *Manager) pruneState(slug string, id ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, endpoints := range m.states {
+		if !strings.HasPrefix(k, slug+"\x00") {
+			continue
+		}
+		filtered := endpoints[:0]
+		for _, ep := range endpoints {
+			if ep.Provider != id {
+				filtered = append(filtered, ep)
 			}
 		}
+		if len(filtered) == 0 {
+			delete(m.states, k)
+		} else {
+			m.states[k] = slices.Clone(filtered)
+		}
 	}
-	return errors.Join(errs...)
+}
+
+func (m *Manager) pruneStateLocked(slug string, audience Audience, host string, id ID) {
+	k := stateKey(slug, audience, host)
+	endpoints := m.states[k]
+	filtered := endpoints[:0]
+	for _, ep := range endpoints {
+		if ep.Provider != id {
+			filtered = append(filtered, ep)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(m.states, k)
+	} else {
+		m.states[k] = slices.Clone(filtered)
+	}
 }
 
 func (m *Manager) track(req ExposureRequest, id ID, host string) {

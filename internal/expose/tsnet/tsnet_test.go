@@ -366,6 +366,72 @@ func TestServeHTTPSIdentityStop(t *testing.T) {
 	}
 }
 
+func TestCloseRestartPreservesPersistentNodeIdentity(t *testing.T) {
+	control := startControl(t, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	newNet := func() *Net {
+		n, err := New(Config{Dir: dir, ControlURL: control.HTTPTestServer.URL, Logf: t.Logf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	n := newNet()
+	if _, err := n.Serve(ctx, "stable", echo("first"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.WaitReady(ctx, "stable"); err != nil {
+		t.Fatal(err)
+	}
+	before := stableNodeID(t, n, "stable")
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stable", "tailscaled.state")); err != nil {
+		t.Fatalf("graceful close removed persistent state: %v", err)
+	}
+
+	restarted := newNet()
+	defer restarted.Close()
+	if _, err := restarted.Serve(ctx, "stable", echo("second"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.WaitReady(ctx, "stable"); err != nil {
+		t.Fatal(err)
+	}
+	if after := stableNodeID(t, restarted, "stable"); after != before {
+		t.Fatalf("node identity changed across restart: before=%q after=%q", before, after)
+	}
+}
+
+func stableNodeID(t *testing.T, n *Net, host string) string {
+	t.Helper()
+	n.mu.Lock()
+	nd := n.nodes[host]
+	var srv *ts.Server
+	if nd != nil {
+		srv = nd.srv
+	}
+	n.mu.Unlock()
+	if srv == nil {
+		t.Fatalf("node %q has no server", host)
+	}
+	lc, err := srv.LocalClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := lc.StatusWithoutPeers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Self == nil || st.Self.ID == "" {
+		t.Fatalf("node %q has no stable identity: %+v", host, st.Self)
+	}
+	return string(st.Self.ID)
+}
+
 func TestPlainHTTPFallbackAndKeyExpiry(t *testing.T) {
 	control := startControl(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -852,6 +918,72 @@ func TestStopPrivateRetainsUnconfirmedRetirement(t *testing.T) {
 	}
 	if err := n.StopPrivate("held"); err != nil {
 		t.Fatal("settled retry", err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopPrivateRetriesTerminalLogoutFailure(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "retry"
+	dir := filepath.Join(n.cfg.Dir, host)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, runDone := make(chan struct{}), make(chan struct{})
+	close(started)
+	close(runDone)
+	nd := &node{host: host, dir: dir, ctx: ctx, cancel: cancel, started: started, done: runDone}
+	n.nodes[host] = nd
+	attempts := 0
+	n.logoutNode = func(context.Context, *node) error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("control unavailable")
+		}
+		return nil
+	}
+	if err := n.StopPrivate(host); err == nil || !strings.Contains(err.Error(), "control unavailable") {
+		t.Fatalf("first stop = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil {
+		t.Fatalf("failed logout discarded retry identity: %v", err)
+	}
+	if _, err := n.Serve(t.Context(), host, echo("must stay closed"), false); err == nil {
+		t.Fatal("failed retirement allowed Private HTTP to reopen")
+	}
+	if err := n.StopPrivate(host); err == nil || !strings.Contains(err.Error(), "control unavailable") {
+		t.Fatalf("second stop did not perform and report its retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("logout attempts after second call = %d, want 2", attempts)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil {
+		t.Fatalf("second failed logout discarded retry identity: %v", err)
+	}
+	if err := n.StopPrivate(host); err != nil {
+		t.Fatalf("retry did not perform a fresh logout: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("logout attempts = %d, want 3", attempts)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("confirmed retry kept retired state: %v", err)
+	}
+	n.mu.Lock()
+	_, pending := n.privateStopping[host]
+	_, active := n.nodes[host]
+	n.mu.Unlock()
+	if pending || active {
+		t.Fatalf("confirmed retry left registrations: pending=%v active=%v", pending, active)
 	}
 	if err := n.Close(); err != nil {
 		t.Fatal(err)
