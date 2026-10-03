@@ -2,8 +2,10 @@ package tsnet
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -176,6 +178,122 @@ func TestStopRetriesLogoutWithFreshBackend(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestExpiredKeyRetirementRetriesWithoutReachingRunning(t *testing.T) {
+	control := startControl(t, false)
+	u, err := url.Parse(control.HTTPTestServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := startControlProxy(t, u.Host)
+	dir := t.TempDir()
+	n, err := New(Config{Dir: dir, ControlURL: "http://" + proxy.ln.Addr().String(), Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if _, err := n.Serve(ctx, "expired", echo("expired"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.WaitReady(ctx, "expired"); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	identityBytes := len(n.nodes["expired"].identityState)
+	n.mu.Unlock()
+	if identityBytes == 0 {
+		t.Fatal("running node did not capture its persisted identity state")
+	}
+	control.SetExpireAllNodes(true)
+	deadline := time.Now().Add(20 * time.Second)
+	for hostInfo(n, "expired").State != StateNeedsLogin {
+		if time.Now().After(deadline) {
+			t.Fatalf("expired node state = %+v", hostInfo(n, "expired"))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	proxy.pause()
+	if err := n.StopPrivate("expired"); err == nil {
+		t.Fatal("expired-key logout succeeded while control was unavailable")
+	}
+	proxy.resume()
+	if err := n.StopPrivate("expired"); err != nil {
+		t.Fatalf("fresh backend could not retire an expired key: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "expired")); !os.IsNotExist(err) {
+		t.Fatalf("expired identity remained after confirmed retry: %v", err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNeverStartedNodeWithoutStateRetiresConfirmed(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "never-started"
+	dir := filepath.Join(n.cfg.Dir, host)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "acme-account.key.pem"), []byte("not identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, done := make(chan struct{}), make(chan struct{})
+	close(started)
+	close(done)
+	nd := &node{host: host, dir: dir, ctx: ctx, cancel: cancel, started: started, done: done}
+	n.nodes[host] = nd
+	if err := n.Stop(host); err != nil {
+		t.Fatalf("no-state retirement was not confirmed: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("no-state directory remained: %v", err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFailedRetirementRefusesFunnelUntilRetry(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "retiring"
+	dir := filepath.Join(n.cfg.Dir, host)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, done := make(chan struct{}), make(chan struct{})
+	close(started)
+	close(done)
+	nd := &node{host: host, dir: dir, ctx: ctx, cancel: cancel, started: started, done: done, backendStarted: true}
+	n.nodes[host] = nd
+	n.logoutNode = func(context.Context, *node) error { return errors.New("control unavailable") }
+	if err := n.Stop(host); err == nil {
+		t.Fatal("failed retirement reported success")
+	}
+	if _, err := n.ServeFunnel(t.Context(), host, http.NotFoundHandler()); err == nil {
+		t.Fatal("Funnel reopened while retirement was failed")
+	}
+	n.logoutNode = func(context.Context, *node) error { return nil }
+	if err := n.Stop(host); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

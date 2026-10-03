@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"tailscale.com/client/local"
@@ -45,40 +47,57 @@ func (n *Net) ServeFunnel(ctx context.Context, host string, h http.Handler) (str
 	if h == nil {
 		return "", errors.New("tsnet: nil handler")
 	}
-	nd, created, err := n.beginFunnel(host, h)
+	nd, minted, launch, err := n.beginFunnel(host, h)
 	if err != nil {
 		return "", err
 	}
-	fail := func(cause error) (string, error) {
-		n.clearFunnel(nd, FunnelError, cause.Error())
-		if created {
-			// This call created the node and never served private HTTP.
-			// Drop it so a failed Funnel attempt does not leave a new tailnet node.
-			_ = n.Stop(host)
-		}
-		return "", cause
+	if launch {
+		go n.setupFunnel(nd, minted)
 	}
+	return n.funnelURL(nd), nil
+}
+
+// setupFunnel waits for the node and opens Funnel independently of the caller.
+// Restore and management startup must not wait for control, login, or listener
+// readiness; FunnelStatus reports the later outcome.
+func (n *Net) setupFunnel(nd *node, minted bool) {
 	select {
 	case <-nd.booted:
-	case <-ctx.Done():
-		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, ctx.Err()))
 	case <-nd.ctx.Done():
-		return fail(fmt.Errorf("tsnet: funnel %s stopped before it joined", host))
+		n.mu.Lock()
+		nd.funnelOpening = false
+		n.mu.Unlock()
+		return
 	}
+
+	nd.funnelMu.Lock()
 	n.mu.Lock()
+	active := n.nodes[nd.host] == nd && nd.funnelH.Load() != nil && !nd.funnelCleanup
 	bootOK := nd.bootOK && nd.err == nil && nd.srv != nil
 	already := nd.funnelLn != nil && (nd.funnelState == FunnelReady || nd.funnelState == FunnelStarting)
 	bootErr := nd.err
 	n.mu.Unlock()
+	if !active {
+		n.mu.Lock()
+		nd.funnelOpening = false
+		n.mu.Unlock()
+		nd.funnelMu.Unlock()
+		return
+	}
 	if !bootOK {
 		if bootErr == nil {
 			bootErr = errors.New("node did not come up")
 		}
-		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, bootErr))
+		nd.funnelMu.Unlock()
+		n.failFunnelSetup(nd, minted, fmt.Errorf("tsnet: funnel %s: %w", nd.host, bootErr))
+		return
 	}
 	if already {
-		nd.funnelH.Store(&h)
-		return n.funnelURL(nd), nil
+		n.mu.Lock()
+		nd.funnelOpening = false
+		n.mu.Unlock()
+		nd.funnelMu.Unlock()
+		return
 	}
 
 	// FunnelOnly registers only the funnel listen key. ListenFunnel without it
@@ -94,13 +113,17 @@ func (n *Net) ServeFunnel(ctx context.Context, host string, h http.Handler) (str
 	ln, err := n.openFunnel(nd.srv, opts)
 	if err != nil {
 		err = n.undoNewAllowFunnel(nd, priorAllow, err)
-		return fail(fmt.Errorf("tsnet: funnel %s: %w", host, err))
+		nd.funnelMu.Unlock()
+		n.failFunnelSetup(nd, minted, fmt.Errorf("tsnet: funnel %s: %w", nd.host, err))
+		return
 	}
 	if n.afterFunnelListen != nil {
 		if err := n.afterFunnelListen(); err != nil {
 			ln.Close()
 			err = n.undoNewAllowFunnel(nd, priorAllow, err)
-			return fail(fmt.Errorf("tsnet: funnel %s: %w", host, err))
+			nd.funnelMu.Unlock()
+			n.failFunnelSetup(nd, minted, fmt.Errorf("tsnet: funnel %s: %w", nd.host, err))
+			return
 		}
 	}
 	hs := &http.Server{
@@ -112,54 +135,122 @@ func (n *Net) ServeFunnel(ctx context.Context, host string, h http.Handler) (str
 	nd.funnelLn = ln
 	nd.funnelSrv = hs
 	nd.funnelURL = n.funnelURLLocked(nd)
+	nd.funnelOpening = false
 	nd.funnelState = FunnelStarting
 	nd.funnelDetail = "Funnel listener is up; waiting for its HTTPS certificate"
 	if n.getCert != nil {
 		nd.funnelState = FunnelReady
 		nd.funnelDetail = "Funnel is accepting internet connections on port 443; tailnet peers use the private listener"
 	}
-	url := nd.funnelURL
+	delete(n.funnelReports, nd.host)
 	n.notifyLocked()
 	n.mu.Unlock()
+	nd.funnelMu.Unlock()
 	go n.serveFunnel(nd, hs, ln)
 	if n.getCert == nil {
 		go n.warmFunnel(nd)
 	}
-	return url, nil
+}
+
+func (n *Net) failFunnelSetup(nd *node, minted bool, cause error) {
+	n.mu.Lock()
+	active := n.nodes[nd.host] == nd && nd.funnelH.Load() != nil
+	cleanup := active && minted && !nd.private
+	if active {
+		nd.funnelOpening = false
+		nd.funnelCleanup = cleanup
+		nd.funnelState = FunnelError
+		nd.funnelDetail = cause.Error()
+		if cleanup {
+			nd.funnelH.Store(nil)
+			n.funnelReports[nd.host] = FunnelReport{URL: n.funnelURLLocked(nd), State: FunnelError, Detail: cause.Error()}
+		}
+		n.notifyLocked()
+	}
+	n.mu.Unlock()
+	if cleanup {
+		if err := n.Stop(nd.host); err != nil {
+			n.mu.Lock()
+			report := n.funnelReports[nd.host]
+			report.Detail = errors.Join(cause, err).Error()
+			n.funnelReports[nd.host] = report
+			n.notifyLocked()
+			n.mu.Unlock()
+		}
+	}
 }
 
 // StopFunnel closes the internet listener and the AllowFunnel entry that
 // ListenFunnel added. The private tailnet listener and the node's tailnet
 // membership stay as they were.
 func (n *Net) StopFunnel(host string) error {
+	// Do not wait for a node that is still joining. setupFunnel takes this
+	// lock only after boot, then rechecks the request before opening a listener.
 	n.mu.Lock()
-	nd, ok := n.nodes[host]
-	if !ok || nd.funnelLn == nil && nd.funnelState == "" {
+	nd := n.nodes[host]
+	if nd == nil {
+		delete(n.funnelReports, host)
+		n.mu.Unlock()
+		return nil
+	}
+	n.mu.Unlock()
+	nd.funnelMu.Lock()
+	defer nd.funnelMu.Unlock()
+	n.mu.Lock()
+	if n.nodes[host] != nd || nd.funnelLn == nil && nd.funnelState == "" {
 		n.mu.Unlock()
 		return nil
 	}
 	ln := nd.funnelLn
 	hs := nd.funnelSrv
+	mayHaveAllow := nd.bootOK && (ln != nil || nd.funnelState == FunnelError)
 	nd.funnelLn = nil
 	nd.funnelSrv = nil
 	nd.funnelH.Store(nil)
-	nd.funnelState = FunnelUnavailable
-	nd.funnelDetail = "Funnel route closed; private tailnet access was not removed"
-	n.notifyLocked()
+	nd.funnelOpening = false
+	nd.funnelCleanup = false
+	delete(n.funnelReports, host)
 	n.mu.Unlock()
 	// A confirmed close must not leave the internet route in the node config.
 	// An entry that is still present is an error, so the caller reports the
 	// stop as unconfirmed instead of claiming the route is gone.
-	err := errors.Join(closeFunnel(hs, ln), n.clearAllowFunnel(nd))
+	var clearErr error
+	if mayHaveAllow {
+		clearErr = n.clearAllowFunnel(nd)
+	}
+	err := errors.Join(closeFunnel(hs, ln), clearErr)
 	if err != nil {
+		n.setFunnelStopResult(nd, err)
 		return err
 	}
-	if on, err := n.allowFunnelSet(nd); err != nil {
-		return err
-	} else if on {
-		return errors.New("tsnet: funnel AllowFunnel entry is still set")
+	if mayHaveAllow {
+		if on, err := n.allowFunnelSet(nd); err != nil {
+			n.setFunnelStopResult(nd, err)
+			return err
+		} else if on {
+			err := errors.New("tsnet: funnel AllowFunnel entry is still set")
+			n.setFunnelStopResult(nd, err)
+			return err
+		}
 	}
+	n.setFunnelStopResult(nd, nil)
 	return nil
+}
+
+func (n *Net) setFunnelStopResult(nd *node, err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.nodes[nd.host] != nd {
+		return
+	}
+	if err != nil {
+		nd.funnelState = FunnelError
+		nd.funnelDetail = "Funnel teardown is unconfirmed: " + err.Error()
+	} else {
+		nd.funnelState = FunnelUnavailable
+		nd.funnelDetail = "Funnel route closed; private tailnet access was not removed"
+	}
+	n.notifyLocked()
 }
 
 // FunnelStatus reports the internet route. Hosts with no Funnel listener
@@ -169,35 +260,72 @@ func (n *Net) FunnelStatus(host string) FunnelReport {
 	defer n.mu.Unlock()
 	nd, ok := n.nodes[host]
 	if !ok || nd.funnelState == "" {
+		if report, ok := n.funnelReports[host]; ok {
+			return report
+		}
 		return FunnelReport{State: FunnelUnavailable, Detail: "Funnel is not enabled for this host"}
 	}
-	return FunnelReport{URL: nd.funnelURL, State: nd.funnelState, Detail: nd.funnelDetail}
+	report := FunnelReport{URL: nd.funnelURL, State: nd.funnelState, Detail: nd.funnelDetail}
+	if report.URL == "" {
+		report.URL = n.funnelURLLocked(nd)
+	}
+	if nd.funnelOpening && (nd.backend == ipn.NeedsLogin.String() || nd.backend == ipn.NeedsMachineAuth.String()) {
+		hi := n.hostInfoLocked(nd, time.Now())
+		report.State, report.Detail = FunnelError, hi.Detail
+	}
+	return report
 }
 
-func (n *Net) beginFunnel(host string, h http.Handler) (nd *node, created bool, err error) {
+func (n *Net) beginFunnel(host string, h http.Handler) (nd *node, minted, launch bool, err error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.closed {
-		return nil, false, errors.New("tsnet: network is closed")
+		return nil, false, false, errors.New("tsnet: network is closed")
+	}
+	if pending := n.retiring[host]; pending != nil {
+		select {
+		case <-pending.attempt.done:
+			if pending.attempt.err != nil {
+				return nil, false, false, fmt.Errorf("tsnet: %s teardown failed; retry the removal before enabling Funnel: %w", host, pending.attempt.err)
+			}
+			delete(n.retiring, host)
+		default:
+			return nil, false, false, fmt.Errorf("tsnet: %s teardown is still unconfirmed", host)
+		}
 	}
 	if nd, ok := n.nodes[host]; ok {
 		if nd.ephemeral {
-			return nil, false, fmt.Errorf("tsnet: funnel %s: ephemeral previews stay on the private network", host)
+			return nil, false, false, fmt.Errorf("tsnet: funnel %s: ephemeral previews stay on the private network", host)
 		}
 		if nd.err != nil {
-			return nil, false, fmt.Errorf("tsnet: funnel %s: %w", host, nd.err)
+			return nil, false, false, fmt.Errorf("tsnet: funnel %s: %w", host, nd.err)
+		}
+		if nd.funnelCleanup {
+			return nil, false, false, fmt.Errorf("tsnet: funnel %s: failed setup is retiring its node", host)
 		}
 		nd.funnelH.Store(&h)
-		return nd, false, nil
+		delete(n.funnelReports, host)
+		if nd.funnelLn == nil && !nd.funnelOpening {
+			nd.funnelOpening = true
+			nd.funnelState = FunnelStarting
+			nd.funnelDetail = "joining the tailnet before Funnel can listen"
+			n.notifyLocked()
+			return nd, false, true, nil
+		}
+		return nd, false, false, nil
 	}
+	_, statErr := os.Stat(filepath.Join(n.cfg.Dir, host, "tailscaled.state"))
+	preexisting := statErr == nil || !os.IsNotExist(statErr)
 	nd = n.newNode(host, false, false)
 	nd.funnelH.Store(&h)
+	nd.funnelOpening = true
 	nd.funnelState = FunnelStarting
 	nd.funnelDetail = "joining the tailnet before Funnel can listen"
 	n.nodes[host] = nd
+	delete(n.funnelReports, host)
 	n.notifyLocked()
 	go n.run(nd)
-	return nd, true, nil
+	return nd, !preexisting, true, nil
 }
 
 // undoNewAllowFunnel drops an AllowFunnel entry this attempt introduced.

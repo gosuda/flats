@@ -555,6 +555,109 @@ func (m *Manager) StopPublicRoutes(_ context.Context, slug string) (PublicStopRe
 	return res, nil
 }
 
+// StopSlug authoritatively retires every registered route and tailnet node
+// owned by slug. It is the delete/redirect-expiry operation: unlike
+// StopPublicRoutes it retires Funnel-only nodes after their public listener is
+// confirmed closed. Any failed route remains registered so the same process
+// can retry without reporting false success.
+func (m *Manager) StopSlug(ctx context.Context, slug string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	routes := make([]route, 0)
+	for _, r := range m.routes {
+		if r.slug == slug {
+			routes = append(routes, *r)
+		}
+	}
+	m.mu.Unlock()
+
+	type hostRoutes struct {
+		local, tailscale, funnel, portal bool
+	}
+	byHost := make(map[string]*hostRoutes)
+	for _, r := range routes {
+		h := byHost[r.host]
+		if h == nil {
+			h = new(hostRoutes)
+			byHost[r.host] = h
+		}
+		switch r.provider {
+		case Local:
+			h.local = true
+		case Tailscale:
+			h.tailscale = true
+		case Funnel:
+			h.funnel = true
+		case Portal:
+			h.portal = true
+		}
+	}
+
+	var errs []error
+	for host, owned := range byHost {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if owned.portal {
+			if m.portal == nil {
+				errs = append(errs, fmt.Errorf("portal %s: %w", host, ErrNotConfigured))
+			} else if err := m.portal.Stop(host); err != nil {
+				errs = append(errs, fmt.Errorf("portal %s: %w", host, err))
+			} else {
+				m.forgetRoutes(slug, host, Portal)
+			}
+		}
+		if owned.local {
+			if err := m.local.Stop(host); err != nil {
+				errs = append(errs, fmt.Errorf("local %s: %w", host, err))
+			} else {
+				m.forgetRoutes(slug, host, Local)
+			}
+		}
+
+		// A Funnel listener must be confirmed closed before its shared node is
+		// logged out. Keep its route registration until node retirement also
+		// succeeds, even though the listener itself is already down.
+		funnelStopped := !owned.funnel
+		if owned.funnel {
+			if m.ts == nil {
+				errs = append(errs, fmt.Errorf("funnel %s: %w", host, ErrNotConfigured))
+			} else if err := m.ts.StopFunnel(host); err != nil {
+				errs = append(errs, fmt.Errorf("funnel %s: %w", host, err))
+			} else if state := m.ts.FunnelState(host); state.State == stateReady || state.State == stateStarting {
+				errs = append(errs, fmt.Errorf("funnel %s teardown remains %s", host, state.State))
+			} else {
+				funnelStopped = true
+			}
+		}
+		if (owned.tailscale || owned.funnel) && funnelStopped {
+			if m.ts == nil {
+				errs = append(errs, fmt.Errorf("tailscale %s: %w", host, ErrNotConfigured))
+			} else if err := m.ts.Stop(host); err != nil {
+				errs = append(errs, fmt.Errorf("tailscale %s: %w", host, err))
+			} else {
+				m.forgetRoutes(slug, host, Tailscale, Funnel)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *Manager) forgetRoutes(slug, host string, providers ...ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, r := range m.routes {
+		if r.slug != slug || r.host != host || !slices.Contains(providers, r.provider) {
+			continue
+		}
+		delete(m.routes, k)
+		m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
+	}
+}
+
 // StopProviderRoutes stops only Private Tailscale registrations owned by slug.
 // Successful stops are forgotten; failed registrations remain available for retry.
 func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) error {

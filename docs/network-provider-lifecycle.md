@@ -98,7 +98,7 @@ backends. It does not serve a flat.
 A non-nil backend is not permission. Tests inject fakes through these
 interfaces. There is no permit-skipping constructor.
 
-Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry.
+Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry. `StopSlug` is the authoritative delete/redirect-expiry operation: it closes Funnel first, then retires the shared tailnet node even when the slug had no Private Tailscale route. A failed listener or node retirement keeps that registration for the next call; sibling slug routes are untouched.
 
 Legacy schema 5 eligibility is consumed once by an explicit Private Tailscale/Local upgrade choice. An ambiguous historical-default host refuses before networking; the choice never authorizes Public providers. See README for operator credential-file/install and upgrade commands.
 
@@ -116,13 +116,22 @@ always passes `FunnelOnly`, which stores only `funnel=true`, so the two
 listeners share port 443 and stay independent. Ingress is dispatched with
 `funnel=true` and does not enter the private handler.
 
+Funnel registration is asynchronous. `ServeFunnel` records the handler and a
+`starting` route, starts at most one background listener attempt, and returns
+without waiting for control, login, or certificate readiness. `FunnelStatus`
+reports the later ready or error result. Setup and stop are serialized, so a
+listener cannot appear after a confirmed stop and concurrent registrations do
+not open duplicate listeners.
+
 `StopFunnel` closes that listener. `cleanupListener.Close` deletes the
 `AllowFunnel` entry. It does not log the node out and it does not close the
 private listener. If the entry is still set after that close, `StopFunnel`
 returns an error so the caller reports the stop as unconfirmed. If Funnel
-created the node and then fails, `Stop` rolls the new node back. If private
-HTTP already owned the node, the failure leaves that node up and closes only
-the Funnel listener. A failed `ListenFunnel` that introduced `AllowFunnel`
+created a new persistent identity and then fails, `Stop` rolls that identity
+back. Identity provenance is the `tailscaled.state` file observed before node
+startup: a state that existed before this registration is preserved across
+listener failure and process restart. If private HTTP already owned the node,
+the failure leaves that node up and closes only the Funnel listener. A failed `ListenFunnel` that introduced `AllowFunnel`
 and then returned no listener is cleared the same way; an entry that was
 already present is left alone. Funnel stays `starting` until the
 certificate fetch succeeds, unless a test certificate source is installed, in
@@ -145,8 +154,14 @@ Explicit retirement is confirmed only after control accepts logout. If that
 request fails, tsnet closes the now-consumed backend but retains its disk state
 or ephemeral memory store and keeps the retirement registered. A later
 `Stop` or `StopPrivate` creates a fresh backend without an auth key, reloads
-that retained node key, reconnects, and retries logout. State is deleted only
-after confirmation. `Net.Close` waits for all in-flight retirement attempts,
+that retained node key, and retries logout once LocalBackend has installed its
+control client. It does not require `Server.Up`: expired and unapproved keys
+can be retired from `NeedsLogin`, `NeedsMachineAuth`, or the post-start state.
+The last state observed while Running is restored after a failed logout so a
+later same-process attempt still has the identity needed for the control-plane
+logout. A successor cancelled before its backend starts is confirmed retired
+when its predecessor has finished and no `tailscaled.state` remains. State is
+deleted only after confirmation. `Net.Close` waits for all in-flight retirement attempts,
 closes every remaining backend, and reports any retained failure.
 
 ## Historical network-slice tests

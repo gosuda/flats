@@ -354,6 +354,7 @@ type fakeTail struct {
 	serveErr                  error
 	funnelErr                 error
 	stopErr                   error
+	tailStopErr               error
 	stopped                   bool
 }
 
@@ -364,7 +365,7 @@ func (f *fakeTail) Serve(context.Context, string, http.Handler, bool) (string, e
 	}
 	return "https://notes.example.ts.net", nil
 }
-func (f *fakeTail) Stop(string) error { f.stop++; return nil }
+func (f *fakeTail) Stop(string) error { f.stop++; return f.tailStopErr }
 func (f *fakeTail) URL(string) string { return "https://notes.example.ts.net" }
 func (f *fakeTail) Status() core.NetStatus {
 	return core.NetStatus{Kind: "tailscale", Enabled: true, Hosts: []core.HostInfo{{
@@ -393,6 +394,46 @@ func (f *fakeTail) FunnelState(string) ExposureEndpoint {
 		return ExposureEndpoint{Provider: Funnel, State: stateUnavailable, Detail: "closed"}
 	}
 	return ExposureEndpoint{Provider: Funnel, URL: "https://notes.example.ts.net", State: stateReady}
+}
+
+func TestStopSlugRetiresFunnelOnlyNodeAndRetainsFailures(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Funnel}})
+	defer ln.Close()
+	tail := m.ts.(*fakeTail)
+	ctx := context.Background()
+	for _, slug := range []string{"remove-me", "sibling"} {
+		if _, err := m.ServeExposure(ctx, ExposureRequest{
+			Slug: slug, Host: slug, Visibility: "public", Audience: AudienceCurrent,
+			Handler: text(slug), Permitted: []ID{Funnel},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tail.tailStopErr = errors.New("logout unavailable")
+	if err := m.StopSlug(ctx, "remove-me"); err == nil {
+		t.Fatal("StopSlug accepted an unconfirmed Funnel-only node retirement")
+	}
+	if tracked, err := m.HasProviderRoute(ctx, "remove-me", Funnel); err != nil || !tracked {
+		t.Fatalf("failed Funnel-only retirement was forgotten: tracked=%v err=%v", tracked, err)
+	}
+	if tail.funnelStops != 1 || tail.stop != 1 {
+		t.Fatalf("first teardown calls: StopFunnel=%d Stop=%d", tail.funnelStops, tail.stop)
+	}
+
+	tail.tailStopErr = nil
+	if err := m.StopSlug(ctx, "remove-me"); err != nil {
+		t.Fatal(err)
+	}
+	if tracked, err := m.HasProviderRoute(ctx, "remove-me", Funnel); err != nil || tracked {
+		t.Fatalf("confirmed Funnel-only retirement stayed registered: tracked=%v err=%v", tracked, err)
+	}
+	if tracked, err := m.HasProviderRoute(ctx, "sibling", Funnel); err != nil || !tracked {
+		t.Fatalf("sibling Funnel route was removed: tracked=%v err=%v", tracked, err)
+	}
+	if tail.funnelStops != 2 || tail.stop != 2 {
+		t.Fatalf("retry calls: StopFunnel=%d Stop=%d", tail.funnelStops, tail.stop)
+	}
 }
 
 type fakePortal struct {

@@ -106,10 +106,10 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 		}
 		return nil, errors.New("listener already open for tcp, :443")
 	}
-	if _, err := n.ServeFunnel(ctx, "flat", public); err == nil {
-		t.Fatal("FunnelOnly setup failure was ignored")
+	if _, err := n.ServeFunnel(ctx, "flat", public); err != nil {
+		t.Fatal(err)
 	}
-	if got := n.FunnelStatus("flat"); got.State != FunnelError {
+	if got := waitFunnelState(t, n, "flat", FunnelError); got.State != FunnelError {
 		t.Fatalf("failed FunnelOnly state = %+v", got)
 	}
 	if err := funnelAllowCleared(ctx, lc); err != nil {
@@ -122,7 +122,7 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 	if _, err := n.ServeFunnel(ctx, "flat", public); err != nil {
 		t.Fatal(err)
 	}
-	if got := n.FunnelStatus("flat"); got.State != FunnelReady {
+	if got := waitFunnelState(t, n, "flat", FunnelReady); got.State != FunnelReady {
 		t.Fatalf("funnel status = %+v", got)
 	}
 
@@ -207,10 +207,10 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 	}
 
 	n.afterFunnelListen = func() error { return errors.New("listener setup failed") }
-	if _, err := n.ServeFunnel(ctx, "flat", public); err == nil {
-		t.Fatal("funnel setup failure was ignored")
+	if _, err := n.ServeFunnel(ctx, "flat", public); err != nil {
+		t.Fatal(err)
 	}
-	if got := n.FunnelStatus("flat"); got.State != FunnelError {
+	if got := waitFunnelState(t, n, "flat", FunnelError); got.State != FunnelError {
 		t.Fatalf("post-listen funnel failure state = %+v", got)
 	}
 	if err := funnelAllowCleared(ctx, lc); err != nil {
@@ -218,6 +218,21 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 	}
 	if got := fetchBody(t, tailClient, "https://flat."+testDomain+"/"); got == "public" {
 		t.Fatal("failed Funnel replaced the private route")
+	}
+}
+
+func waitFunnelState(t *testing.T, n *Net, host string, want string) FunnelReport {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		report := n.FunnelStatus(host)
+		if report.State == want {
+			return report
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("FunnelStatus(%q) = %+v, want state %q", host, report, want)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

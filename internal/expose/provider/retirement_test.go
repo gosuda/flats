@@ -122,6 +122,71 @@ func (p *managerControlProxy) resume() {
 	p.mu.Unlock()
 }
 
+func TestManagerServeFunnelReturnsWhileControlIsUnavailable(t *testing.T) {
+	control := startManagerControl(t)
+	u, err := url.Parse(control.HTTPTestServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := startManagerControlProxy(t, u.Host)
+	proxy.pause()
+	dir := t.TempDir()
+	tailnet, err := tsnet.New(tsnet.Config{
+		Dir: filepath.Join(dir, "tsnet"), ControlURL: "http://" + proxy.ln.Addr().String(), Logf: t.Logf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loopback.Close()
+	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, Options{Local: loopback, Tailscale: TSNet{tailnet}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	res, err := m.ServeExposure(context.Background(), ExposureRequest{
+		Slug: "offline", Host: "offline", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("offline"), Permitted: []ID{Funnel},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Funnel registration blocked on unavailable control for %s", elapsed)
+	}
+	var funnel ExposureEndpoint
+	for _, ep := range res.Endpoints {
+		if ep.Provider == Funnel {
+			funnel = ep
+		}
+	}
+	if funnel.State != stateStarting {
+		t.Fatalf("initial Funnel endpoint = %+v", funnel)
+	}
+	if tracked, err := m.HasProviderRoute(t.Context(), "offline", Funnel); err != nil || !tracked {
+		t.Fatalf("starting Funnel was not tracked: tracked=%v err=%v", tracked, err)
+	}
+
+	proxy.resume()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := m.StopSlug(ctx, "offline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tailnet.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // StopExposure is shared by delete, preview close and redirect expiry. A
 // failed backend retirement must leave the manager registration in place so
 // the next lifecycle pass performs a real retry instead of reporting success.

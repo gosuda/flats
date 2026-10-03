@@ -108,14 +108,15 @@ type Net struct {
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
-	mu       sync.Mutex
-	nodes    map[string]*node
-	stopping map[string]chan struct{} // host -> closed when any teardown attempt finishes
-	retiring map[string]*retirement   // logout retirements, including terminal failures
-	suffix   string                   // MagicDNS suffix, once any node learns it
-	plain    bool                     // some node found HTTPS unavailable
-	closed   bool
-	changed  chan struct{} // closed and replaced on every state change
+	mu            sync.Mutex
+	nodes         map[string]*node
+	stopping      map[string]chan struct{} // host -> closed when any teardown attempt finishes
+	retiring      map[string]*retirement   // logout retirements, including terminal failures
+	funnelReports map[string]FunnelReport  // terminal setup reports after a minted node is retired
+	suffix        string                   // MagicDNS suffix, once any node learns it
+	plain         bool                     // some node found HTTPS unavailable
+	closed        bool
+	changed       chan struct{} // closed and replaced on every state change
 }
 
 type retirement struct {
@@ -131,19 +132,21 @@ type retirementAttempt struct {
 }
 
 type node struct {
-	privateMu sync.Mutex // serializes private listener setup and confirmed stop
-	host      string
-	ephemeral bool
-	dir       string
-	handler   atomic.Pointer[http.Handler]
-	ctx       context.Context
-	cancel    context.CancelFunc
-	started   chan struct{} // closed once srv.Start has returned (Close is then safe)
-	done      chan struct{} // closed when the lifecycle goroutine returns
-	prev      chan struct{} // teardown of the previous node with this host, or nil
-	srv       *ts.Server
-	stopErr   error // set by the retiring goroutine before it closes its done channel
-	store     ipn.StateStore
+	privateMu      sync.Mutex // serializes private listener setup and confirmed stop
+	funnelMu       sync.Mutex // serializes Funnel listener setup and stop after node boot
+	host           string
+	ephemeral      bool
+	dir            string
+	handler        atomic.Pointer[http.Handler]
+	ctx            context.Context
+	cancel         context.CancelFunc
+	started        chan struct{} // closed once srv.Start has returned (Close is then safe)
+	done           chan struct{} // closed when the lifecycle goroutine returns
+	prev           chan struct{} // teardown of the previous node with this host, or nil
+	srv            *ts.Server
+	backendStarted bool  // published before started closes
+	stopErr        error // set by the retiring goroutine before it closes its done channel
+	store          ipn.StateStore
 
 	// Guarded by Net.mu.
 	backend       string // ipn.State string
@@ -157,20 +160,23 @@ type node struct {
 	certOK        bool   // the HTTPS certificate has been obtained at least once
 	certErr       string // last certificate fetch error while !certOK
 	err           error
-	loginKick     bool // StartLoginInteractive already requested in this needs-login episode
-	wasUp         bool // reached Running at least once (later NeedsLogin means re-auth)
+	loginKick     bool   // StartLoginInteractive already requested in this needs-login episode
+	wasUp         bool   // reached Running at least once (later NeedsLogin means re-auth)
+	identityState []byte // last persisted state observed while Running, for failure-atomic logout
 	https         []*http.Server
 
 	booted       chan struct{} // closed once Up has finished or the node has given up
 	bootSignaled bool
 	bootOK       bool
 
-	funnelH      atomic.Pointer[http.Handler]
-	funnelLn     net.Listener
-	funnelSrv    *http.Server
-	funnelState  string
-	funnelDetail string
-	funnelURL    string
+	funnelH       atomic.Pointer[http.Handler]
+	funnelLn      net.Listener
+	funnelSrv     *http.Server
+	funnelState   string
+	funnelDetail  string
+	funnelURL     string
+	funnelOpening bool
+	funnelCleanup bool
 }
 
 // New creates a Net. Nodes start on the first Serve of their host.
@@ -189,12 +195,13 @@ func New(cfg Config) (*Net, error) {
 		logf = func(string, ...any) {}
 	}
 	return &Net{
-		cfg:      cfg,
-		logf:     logf,
-		nodes:    map[string]*node{},
-		stopping: map[string]chan struct{}{},
-		retiring: map[string]*retirement{},
-		changed:  make(chan struct{}),
+		cfg:           cfg,
+		logf:          logf,
+		nodes:         map[string]*node{},
+		stopping:      map[string]chan struct{}{},
+		retiring:      map[string]*retirement{},
+		funnelReports: map[string]FunnelReport{},
+		changed:       make(chan struct{}),
 	}, nil
 }
 
@@ -319,6 +326,7 @@ func (n *Net) run(nd *node) {
 		}
 		err = srv.Start()
 	}
+	nd.backendStarted = err == nil
 	close(nd.started)
 	if err != nil {
 		n.setErr(nd, fmt.Errorf("start node: %w", err))
@@ -766,6 +774,10 @@ func (n *Net) refresh(nd *node, lc *local.Client) {
 }
 
 func (n *Net) applyStatus(nd *node, st *ipnstate.Status) {
+	var identityState []byte
+	if st.BackendState == ipn.Running.String() {
+		identityState, _ = os.ReadFile(filepath.Join(nd.dir, "tailscaled.state"))
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if st.BackendState != "" {
@@ -779,6 +791,9 @@ func (n *Net) applyStatus(nd *node, st *ipnstate.Status) {
 		if name := strings.TrimSuffix(st.Self.DNSName, "."); name != "" {
 			nd.dnsName = name
 		}
+	}
+	if len(identityState) > 0 {
+		nd.identityState = identityState
 	}
 	if s := strings.TrimSuffix(st.MagicDNSSuffix, "."); s != "" {
 		n.suffix = s
@@ -852,9 +867,11 @@ func (n *Net) stop(host string, privateOnly bool) error {
 		// identity. A concurrent preview/delete path may have retired nd while
 		// this goroutine waited for privateMu.
 		nd.privateMu.Lock()
+		nd.funnelMu.Lock()
 		n.mu.Lock()
 		if n.nodes[host] != nd {
 			n.mu.Unlock()
+			nd.funnelMu.Unlock()
 			nd.privateMu.Unlock()
 			continue
 		}
@@ -877,11 +894,13 @@ func (n *Net) stop(host string, privateOnly bool) error {
 			}
 			n.notifyLocked()
 			n.mu.Unlock()
+			nd.funnelMu.Unlock()
 			nd.privateMu.Unlock()
 			return err
 		}
 		pending, attempt := n.beginRetirementLocked(nd)
 		n.mu.Unlock()
+		nd.funnelMu.Unlock()
 		nd.privateMu.Unlock()
 		return n.waitRetirement(host, pending, attempt)
 	}
@@ -935,6 +954,10 @@ func (n *Net) retryLogout(pending *retirement) error {
 		}
 		return os.RemoveAll(dir)
 	}
+	snapshot, err := readStateSnapshot(dir)
+	if err != nil {
+		return fmt.Errorf("tsnet %s logout retry snapshot: %w", pending.host, err)
+	}
 
 	srv := &ts.Server{
 		Dir:        dir,
@@ -951,14 +974,17 @@ func (n *Net) retryLogout(pending *retirement) error {
 		if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && !errors.Is(closeErr, context.Canceled) {
 			startErr = errors.Join(startErr, fmt.Errorf("tsnet %s logout retry backend close: %w", pending.host, closeErr))
 		}
+		if restoreErr := snapshot.restore(dir); restoreErr != nil {
+			startErr = errors.Join(startErr, fmt.Errorf("tsnet %s restore retry identity: %w", pending.host, restoreErr))
+		}
 		return startErr
 	}
 	var retryErr error
 	ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
-	if _, err := srv.Up(ctx); err != nil {
-		retryErr = fmt.Errorf("tsnet %s logout retry connect: %w", pending.host, err)
-	} else if lc, err := srv.LocalClient(); err != nil {
+	if lc, err := srv.LocalClient(); err != nil {
 		retryErr = fmt.Errorf("tsnet %s logout retry client: %w", pending.host, err)
+	} else if err := waitForLogoutState(ctx, lc); err != nil {
+		retryErr = fmt.Errorf("tsnet %s logout retry backend: %w", pending.host, err)
 	} else {
 		cancel()
 		ctx, cancel = context.WithTimeout(context.Background(), logoutTimeout)
@@ -972,8 +998,40 @@ func (n *Net) retryLogout(pending *retirement) error {
 	}
 	if retryErr == nil {
 		retryErr = os.RemoveAll(dir)
+	} else if err := snapshot.restore(dir); err != nil {
+		retryErr = errors.Join(retryErr, fmt.Errorf("tsnet %s restore retry identity: %w", pending.host, err))
 	}
 	return retryErr
+}
+
+// waitForLogoutState waits only until the backend has loaded enough identity
+// to accept Logout. Server.Up cannot be used here: it waits exclusively for
+// Running, while an expired or unapproved key deliberately enters a login
+// state that must still be revocable.
+func waitForLogoutState(ctx context.Context, lc *local.Client) error {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	last := ""
+	for {
+		status, err := lc.StatusWithoutPeers(ctx)
+		if err == nil {
+			last = status.BackendState
+			switch last {
+			case ipn.Running.String(), ipn.NeedsLogin.String(), ipn.NeedsMachineAuth.String(), ipn.Starting.String(), ipn.NoState.String():
+				// tsnet.Start returns only after LocalBackend.Start installed the
+				// control client. For an expired key, tsnet observes NeedsLogin and
+				// immediately starts interactive login, so an external observer can
+				// first see Starting or NoState even though Direct still holds the
+				// restored node key needed by Logout.
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("last backend state %q: %w", last, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (n *Net) scheduleRetirementLocked(pending *retirement, run func() error) *retirementAttempt {
@@ -1020,8 +1078,22 @@ func (n *Net) teardown(nd *node, logout bool) error {
 	// Cancelling first unblocks a node still waiting for its predecessor or
 	// for login; the LocalAPI used for Logout does not depend on nd.ctx.
 	nd.cancel()
+	nd.privateMu.Lock()
+	defer nd.privateMu.Unlock()
 	<-nd.started
+	waited := false
+	if !nd.backendStarted {
+		// A successor cancelled while waiting for an earlier teardown has no
+		// backend of its own. Wait for both lifetimes before deciding whether
+		// any persisted identity remains to retire.
+		<-nd.done
+		if nd.prev != nil {
+			<-nd.prev
+		}
+		waited = true
+	}
 	var errs []error
+	nd.funnelMu.Lock()
 	if nd.srv != nil {
 		n.mu.Lock()
 		servers := nd.https
@@ -1043,19 +1115,39 @@ func (n *Net) teardown(nd *node, logout bool) error {
 			}
 		}
 	}
+	nd.funnelMu.Unlock()
 	logoutOK := !logout
+	var snapshot stateSnapshot
+	var restoreState bool
 	if logout {
-		if nd.srv == nil && n.logoutNode == nil {
-			errs = append(errs, fmt.Errorf("tsnet %s logout: backend did not start", nd.host))
+		if !nd.backendStarted && n.logoutNode == nil {
+			hasState, err := persistedNodeState(nd.dir)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("tsnet %s inspect persisted state: %w", nd.host, err))
+			} else if hasState {
+				errs = append(errs, fmt.Errorf("tsnet %s logout: backend did not start and persisted identity remains", nd.host))
+			} else {
+				logoutOK = true
+			}
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
-			err := n.logout(ctx, nd)
-			cancel()
+			var err error
+			snapshot, err = readStateSnapshot(nd.dir)
+			n.mu.Lock()
+			if len(nd.identityState) > 0 {
+				snapshot = stateSnapshot{data: append([]byte(nil), nd.identityState...), exists: true}
+			}
+			n.mu.Unlock()
+			if err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+				err = n.logout(ctx, nd)
+				cancel()
+			}
 			if err != nil {
 				// Access already fails closed. Keep the state, but close this backend:
 				// its in-memory key is consumed and only a fresh backend can retry.
 				n.logf("tsnet %s: logout: %v", nd.host, err)
 				errs = append(errs, fmt.Errorf("tsnet %s logout: %w", nd.host, err))
+				restoreState = true
 			} else {
 				logoutOK = true
 			}
@@ -1066,8 +1158,15 @@ func (n *Net) teardown(nd *node, logout bool) error {
 			errs = append(errs, fmt.Errorf("tsnet %s backend close: %w", nd.host, err))
 		}
 	}
-	<-nd.done
-	if nd.prev != nil {
+	if restoreState {
+		if err := snapshot.restore(nd.dir); err != nil {
+			errs = append(errs, fmt.Errorf("tsnet %s restore logout identity: %w", nd.host, err))
+		}
+	}
+	if !waited {
+		<-nd.done
+	}
+	if !waited && nd.prev != nil {
 		// A node cancelled while waiting for its predecessor never started;
 		// keep teardowns of one host in order so the predecessor cannot
 		// delete a directory that a later node is already using.
@@ -1079,6 +1178,43 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func persistedNodeState(dir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(dir, "tailscaled.state"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+type stateSnapshot struct {
+	data   []byte
+	exists bool
+}
+
+func readStateSnapshot(dir string) (stateSnapshot, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "tailscaled.state"))
+	if err == nil {
+		return stateSnapshot{data: data, exists: true}, nil
+	}
+	if os.IsNotExist(err) {
+		return stateSnapshot{}, nil
+	}
+	return stateSnapshot{}, err
+}
+
+func (s stateSnapshot) restore(dir string) error {
+	if !s.exists {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, "tailscaled.state"), s.data)
 }
 
 func (n *Net) logout(ctx context.Context, nd *node) error {
