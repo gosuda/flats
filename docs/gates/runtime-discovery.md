@@ -140,3 +140,55 @@ other clients or OS isolation. Accepted-main integration, final frozen-binary
 revalidation of the existing generated app, and independent review must be
 recorded separately before final acceptance; this historical run cannot certify
 a later binary merely because its reference text remains identical.
+
+
+## Integrated frozen-binary revalidation
+
+On 2026-10-03, after integration onto the explicitly authorized merged main,
+the operator restarted the existing test host with the frozen integrated binary
+against the same retained data. This checks the historical generated app on the
+final binary; it is separate from the unfamiliar-agent authoring run above.
+
+| Item | Value |
+|---|---|
+| Authorized merged-main base | `313ef2557d28350cb91a0daff719aca5bf6813c9` |
+| Base tree | `c7ff38c3cfa5fe5a2c4c683707368adae66e3f1c` |
+| Binary source commit | `e3ab93f0c6df28fbb9e36915c7f32fc73343009f` |
+| Binary source tree | `df49ff3fda26e16fbefbd9333546b28af7a61399` |
+| Native binary SHA256 | `1aa3100e773f698974efaee3dd0ae81f0ae8a2d3191ba8af7c829b9a2fea5163` |
+| Served reference text SHA256 | `9bec2dc57e4b75382062a8203824b58d7364e240dde36a354c86d41d42b6451a` |
+| Documentation version | `1` |
+
+The two issue-9 commits rebased without conflicts from their historical base;
+range comparison showed unchanged patches. The independent base fixes and
+console files were retained, and runtime API v1 bytes did not change. Full Go
+tests and vet, core/API/MCP/runtime/portal races, focused reference/limits/FILES
+concurrency/WASI checks, static/API/CLI/app/console tests, module tidy with zero
+module diff, module verification, native and CGO-free Linux amd64/arm64 builds,
+and the real-binary server gate all passed. The server gate used separate data
+and disposable ports. Build metadata recorded the binary source commit above,
+`vcs.modified=false`, Go 1.27.1 and `CGO_ENABLED=0` on darwin/arm64.
+
+The operator verified the old test process identity, stopped only that process,
+confirmed exit and released ports, and launched the exact hashed binary on the
+same data and ports. The separate restart and HTTP verification receipts record:
+
+- The existing private notebook restored live v2, with saved rejected v3 retained.
+- The same returned site URL served HTTP 200, the unchanged revision-two homepage,
+  the original SQLite note and the exact Unicode FILES attachment.
+- Persistence and failed-version retention checks both passed after restart.
+- MCP returned documentation version 1 and the exact reference hash above.
+
+The retained v3 health-503 log belongs to the historical failed deployment.
+This restart check did not perform another failed deployment or fresh-agent run;
+it does not extend the historical side-effect-free failure result to arbitrary
+candidate storage mutations. Receipt copies were kept separately from the
+historical observations. The documentation append itself follows the binary
+source commit above and does not identify a newly built binary.
+
+The coordinator reported main CI run `37122887675` passed on the exact authorized
+base. That merged tree also contains an unrelated three-file console change;
+independent review of that base delta and final issue-9 source acceptance were
+still pending when this revalidation was recorded. These results complete local
+integration and final-binary restart validation, with final acceptance remaining
+subject to those independent reviews.
