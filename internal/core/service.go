@@ -76,8 +76,9 @@ type Config struct {
 	DataDir    string
 	Store      *store.Store
 	Private    PrivateNet
-	Public     PublicNet // nil disables public flats
-	Runtime    Runtime   // nil disables server flats
+	Lifecycle  LifecycleNet // optional provider manager; independent of legacy adapters
+	Public     PublicNet    // nil disables public flats
+	Runtime    Runtime      // nil disables server flats
 	ConsoleURL func() string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string

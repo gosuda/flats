@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net/http"
 )
 
@@ -50,3 +51,65 @@ type HostInfo struct {
 	KeyExpiry string `json:"key_expiry,omitempty"`
 	Ephemeral bool   `json:"ephemeral,omitempty"`
 }
+
+// ProviderID names a network provider. Public Tailscale is Funnel, not Serve.
+type ProviderID string
+
+const (
+	ProviderLocal     ProviderID = "local"
+	ProviderTailscale ProviderID = "tailscale"
+	ProviderFunnel    ProviderID = "tailscale-funnel"
+	ProviderPortal    ProviderID = "portal"
+)
+
+// ExposureAudience selects the content a provider serves.
+type ExposureAudience string
+
+const (
+	AudienceCurrent ExposureAudience = "current"
+	AudienceDraft   ExposureAudience = "draft"
+)
+
+// ExposureRequest is the core-to-network serving request.
+// Draft and private audiences must not be placed on Funnel or Portal.
+// A non-local provider is used only when it appears in Permitted.
+type ExposureRequest struct {
+	Slug       string
+	Host       string
+	Visibility string // private | public
+	Audience   ExposureAudience
+	Handler    http.Handler
+	Ephemeral  bool
+	Permitted  []ProviderID
+}
+
+// ExposureEndpoint is one route the network actually opened.
+type ExposureEndpoint struct {
+	Provider ProviderID
+	URL      string
+	State    string
+	Detail   string
+}
+
+// ExposureResult is the set of routes opened for one request.
+type ExposureResult struct {
+	Endpoints []ExposureEndpoint
+}
+
+// PublicStopResult reports public routes after a private transition.
+// Unconfirmed routes are still reachable; core does not mark the flat private.
+type PublicStopResult struct {
+	Stopped     []ProviderID
+	Unconfirmed []ProviderID
+}
+
+// LifecycleNet is the optional network contract wired through Config.Lifecycle.
+// Legacy PrivateNet and PublicNet adapters retain their existing methods.
+type LifecycleNet interface {
+	ServeExposure(ctx context.Context, req ExposureRequest) (ExposureResult, error)
+	StopPublicRoutes(ctx context.Context, slug string) (PublicStopResult, error)
+}
+
+// ErrProviderNotPermitted is returned when a non-local provider is used
+// without an explicit permission, or when a draft is sent to a public provider.
+var ErrProviderNotPermitted = errors.New("provider not permitted")
