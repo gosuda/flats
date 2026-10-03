@@ -25,12 +25,13 @@ type lifecycleRouteKey struct {
 // lifecycleRouteNet keeps exact route registrations so partial exposure and
 // teardown failures can be exercised without touching a live provider.
 type lifecycleRouteNet struct {
-	mu           sync.Mutex
-	routes       map[lifecycleRouteKey]http.Handler
-	failPublic   error
-	failPrivate  error
-	stopPublic   error
-	stopExposure map[string]error
+	mu                    sync.Mutex
+	routes                map[lifecycleRouteKey]http.Handler
+	failPublic            error
+	failPrivate           error
+	failPrivateAfterLocal error
+	stopPublic            error
+	stopExposure          map[string]error
 }
 
 func newLifecycleRouteNet() *lifecycleRouteNet {
@@ -61,8 +62,15 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 	}
 	res := ExposureResult{}
 	for _, id := range ids {
+		if id == ProviderTailscale && n.failPrivateAfterLocal != nil {
+			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, State: "unavailable", Detail: n.failPrivateAfterLocal.Error(), Audience: req.Audience, Host: req.Host})
+			continue
+		}
 		n.routes[lifecycleRouteKey{host: req.Host, provider: id}] = req.Handler
 		res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, URL: fmt.Sprintf("https://%s.%s.test", req.Host, id), State: "ready", Configured: true, Permitted: true, Ready: true, Audience: req.Audience, Host: req.Host})
+	}
+	if req.Visibility == "private" && n.failPrivateAfterLocal != nil && slices.Contains(req.Permitted, ProviderTailscale) {
+		return res, n.failPrivateAfterLocal
 	}
 	return res, nil
 }
@@ -230,6 +238,59 @@ func TestPartialPublicRestartRenameTracksAliasForRevokeAndDelete(t *testing.T) {
 	}
 }
 
+func TestPartialPrivateExposureRenameTracksLocalAlias(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "private-partial", "one")
+	if err := s.SetProviderPermission(t.Context(), "private-partial", store.ProviderTailscale, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	network.failPrivateAfterLocal = fmt.Errorf("host provider: %w", ErrProviderNotPermitted)
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "private-partial"))
+	if !s.state("private-partial").privateServed || !network.serves("private-partial", ProviderLocal) || network.serves("private-partial", ProviderTailscale) {
+		t.Fatal("partial exposure did not retain exact Local registration state")
+	}
+	if _, err := s.RenameSlug(t.Context(), "private-partial", "private-moved", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if s.Redirects()["private-partial"] != "private-moved" || network.status("private-partial", ProviderLocal) != http.StatusTemporaryRedirect {
+		t.Fatal("rename orphaned a Local route after sibling Tailscale failure")
+	}
+}
+
+func TestRenamePreviewStopFailureIsRetrySafe(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "preview-rename", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "preview-rename"))
+	p, err := s.OpenPreview(t.Context(), "preview-rename", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network.stopExposure[p.Host] = errors.New("preview route still reachable")
+	if _, err := s.RenameSlug(t.Context(), "preview-rename", "preview-moved", ViaAPI); err == nil || !strings.Contains(err.Error(), "close previews before rename") {
+		t.Fatalf("rename did not surface preview teardown failure: %v", err)
+	}
+	if _, err := s.GetFlat(t.Context(), "preview-rename"); err != nil {
+		t.Fatalf("failed rename lost source flat: %v", err)
+	}
+	if _, err := s.GetFlat(t.Context(), "preview-moved"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("failed rename created target flat: %v", err)
+	}
+	if _, err := s.st.GetPreview(t.Context(), p.Host); err != nil || !network.serves(p.Host, ProviderLocal) {
+		t.Fatalf("failed rename lost retryable preview: row=%v route=%t", err, network.serves(p.Host, ProviderLocal))
+	}
+	delete(network.stopExposure, p.Host)
+	if _, err := s.RenameSlug(t.Context(), "preview-rename", "preview-moved", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.st.GetPreview(t.Context(), p.Host); !errors.Is(err, store.ErrNotFound) || network.serves(p.Host, ProviderLocal) {
+		t.Fatalf("rename retry did not close preview: row=%v route=%t", err, network.serves(p.Host, ProviderLocal))
+	}
+}
+
 type lifecycleTrackedInstance struct {
 	http.Handler
 	stopped atomic.Bool
@@ -293,8 +354,8 @@ func TestVisibilityRollbackSurfacesUnconfirmedPublicStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	network.failPublic = errors.New("public registration failed")
-	network.stopPublic = errors.New("public teardown unconfirmed")
+	network.failPublic = fmt.Errorf("public registration failed: %w", ErrProviderNotReady)
+	network.stopPublic = fmt.Errorf("public teardown unconfirmed: %w", ErrProviderUnavailable)
 	receipt, err := s.Decide(t.Context(), request.Approval.ID, true)
 	if !errors.Is(err, ErrPublicStopUnconfirmed) || !strings.Contains(err.Error(), "public teardown unconfirmed") {
 		t.Fatalf("rollback hid public teardown failure: %v", err)

@@ -42,7 +42,11 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return FlatView{}, err
 	}
-	_ = s.dropPreviews(ctx, from) // their data lives under the flat directory
+	// Preview data lives below the flat directory. Do not rename while an
+	// old-slug preview route remains reachable; leave all flat state retryable.
+	if err := s.dropPreviews(ctx, from); err != nil {
+		return FlatView{}, fmt.Errorf("close previews before rename: %w", err)
+	}
 	s.mu.Lock()
 	lf := s.live[from]
 	s.mu.Unlock()

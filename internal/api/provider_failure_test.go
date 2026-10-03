@@ -12,7 +12,10 @@ import (
 
 // A disposable network boundary reports exact typed failures without opening
 // a non-local route. Core still performs the real frozen approval application.
-type decisionNetwork struct{ failure error }
+type decisionNetwork struct {
+	failure     error
+	stopFailure error
+}
 
 func (n *decisionNetwork) ServeExposure(_ context.Context, r core.ExposureRequest) (core.ExposureResult, error) {
 	id := core.ProviderLocal
@@ -25,7 +28,50 @@ func (n *decisionNetwork) ServeExposure(_ context.Context, r core.ExposureReques
 	return core.ExposureResult{Endpoints: []core.ExposureEndpoint{{Provider: id, State: "ready", Ready: true, Configured: true, Permitted: true, Audience: r.Audience, Host: r.Host}}}, nil
 }
 func (n *decisionNetwork) StopPublicRoutes(context.Context, string) (core.PublicStopResult, error) {
+	if n.stopFailure != nil {
+		return core.PublicStopResult{}, n.stopFailure
+	}
 	return core.PublicStopResult{Stopped: []core.ProviderID{core.ProviderFunnel}}, nil
+}
+
+func TestPendingPublicNoticeIsConditionalAtHTTPBoundary(t *testing.T) {
+	srv, _ := setup(t)
+	saveAndPublish(t, srv, "pending-copy", "CURRENT")
+	code, pending := req(t, "POST", srv.URL+"/api/flats/pending-copy/visibility", strings.NewReader(`{"visibility":"public"}`), nil)
+	if code != 202 || pending["notice"] != core.PendingPublicAccessNotice || strings.Contains(fmt.Sprint(pending["notice"]), "This flat is public:") {
+		t.Fatalf("pending HTTP response claims visibility already changed: %d %v", code, pending)
+	}
+	flatState(t, srv, "pending-copy", 1, "private", 1)
+}
+
+func TestTypedProviderFailureCannotHideUnconfirmedPublicRollback(t *testing.T) {
+	network := &decisionNetwork{}
+	srv, _, _ := setupWithLifecycle(t, network)
+	saveAndPublish(t, srv, "rollback-risk", "CURRENT")
+	code, out := req(t, "POST", srv.URL+"/console/api/flats/rollback-risk/providers", strings.NewReader(`{"provider":"tailscale-funnel","permitted":true}`), consoleHdr(t, srv))
+	if code != 200 {
+		t.Fatalf("grant: %d %v", code, out)
+	}
+	code, pending := req(t, "POST", srv.URL+"/api/flats/rollback-risk/visibility", strings.NewReader(`{"visibility":"public"}`), nil)
+	if code != 202 {
+		t.Fatalf("request: %d %v", code, pending)
+	}
+	network.failure = fmt.Errorf("open public route: %w", core.ErrProviderNotReady)
+	network.stopFailure = fmt.Errorf("stop public route: %w", core.ErrProviderUnavailable)
+	id := pending["approval"].(map[string]any)["id"].(string)
+	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
+	if code != 409 || out["category"] != "public_stop_unconfirmed" || !strings.Contains(fmt.Sprint(out["error"]), "stop public route") {
+		t.Fatalf("typed provider cause hid unconfirmed public route: %d %v", code, out)
+	}
+	a := out["approval"].(map[string]any)
+	if a["status"] != "failed" || a["result_data"].(map[string]any)["failure_code"] != "public_stop_unconfirmed" {
+		t.Fatalf("persisted receipt hid unconfirmed public route: %v", a)
+	}
+	_, persisted := req(t, "GET", srv.URL+"/api/approvals/"+id, nil, nil)
+	if persisted["result_data"].(map[string]any)["failure_code"] != "public_stop_unconfirmed" {
+		t.Fatalf("read receipt hid unconfirmed public route: %v", persisted)
+	}
+	flatState(t, srv, "rollback-risk", 1, "private", 1)
 }
 
 func TestAuthorizedProviderApplyFailureAndPositiveControl(t *testing.T) {

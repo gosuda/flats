@@ -253,6 +253,14 @@ func TestJoinedErrorPrecedence(t *testing.T) {
 	if failureCode(errors.Join(ErrUnchangedContent, ErrProviderNotReady)) != "unchanged_content" {
 		t.Fatal("unchanged cause precedence")
 	}
+	for _, err := range []error{
+		errors.Join(ErrProviderNotReady, ErrPublicStopUnconfirmed),
+		errors.Join(ErrPublicStopUnconfirmed, ErrProviderUnavailable),
+	} {
+		if failureCode(err) != "public_stop_unconfirmed" || ErrorCategory(err) != "public_stop_unconfirmed" {
+			t.Fatal("unconfirmed public route must outrank typed provider cause", err)
+		}
+	}
 }
 
 func TestDraftDirtyFollowsApprovedCurrentVersion(t *testing.T) {

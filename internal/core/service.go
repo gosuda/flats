@@ -501,6 +501,10 @@ const ListedNotice = "This flat is public: anyone can open it, and it appears in
 // PublicAccessNotice is attached to a flat whose visibility is public.
 const PublicAccessNotice = "This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public."
 
+// PendingPublicAccessNotice describes the effect of a visibility request that
+// has not yet received the operator's explicit approval.
+const PendingPublicAccessNotice = "If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public."
+
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
 	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)

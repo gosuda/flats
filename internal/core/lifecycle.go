@@ -285,7 +285,7 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		return ActionResult{}, err
 	}
 	if vis.Public() {
-		res.Notice = PublicAccessNotice
+		res.Notice = PendingPublicAccessNotice
 	}
 	return res, nil
 }
@@ -831,18 +831,22 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 		permitted = privateProviders(permitted)
 	}
 	if f.Visibility.Public() {
-		if _, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)}); err != nil {
+		res, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)})
+		if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
+			lf.privateServed = true
+		}
+		if err != nil {
 			return fmt.Errorf("private exposure: %w", err)
 		}
-		// Public setup may fail after Local/Tailscale are already live. Keep
-		// that successful registration visible to rename and teardown logic.
-		lf.privateServed = true
 	}
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),
 		Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, f.Visibility.Public()),
 		Permitted: permitted,
 	})
+	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
+		lf.privateServed = true
+	}
 	if err != nil {
 		return fmt.Errorf("exposure: %w", err)
 	}
@@ -862,6 +866,21 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	lf.privateServed = true
 	lf.publicServed = f.Visibility.Public()
 	return nil
+}
+
+// privateRegistrationOpened recognizes endpoint states returned after a route
+// was registered. ServeExposure may return these endpoints together with an
+// error when a sibling provider failed.
+func privateRegistrationOpened(res ExposureResult, host string, audience ExposureAudience) bool {
+	for _, ep := range res.Endpoints {
+		if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted {
+			switch ep.State {
+			case "ready", "starting", "needs-login", "key-expiring":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Version) (HealthResult, error) {
@@ -1214,6 +1233,11 @@ func ErrorCategory(err error) string {
 	switch {
 	case errors.Is(err, ErrStaleApproval):
 		return "stale_approval"
+	// A failed rollback can join the original typed provider failure with an
+	// unconfirmed public stop. The possibly reachable Public route is the
+	// safety-critical outcome transports and receipts must surface first.
+	case errors.Is(err, ErrPublicStopUnconfirmed):
+		return "public_stop_unconfirmed"
 	case errors.Is(err, ErrProviderNotPermitted):
 		return "provider_not_permitted"
 	case errors.Is(err, ErrProviderUnavailable):
@@ -1230,8 +1254,6 @@ func ErrorCategory(err error) string {
 		return "unchanged_content"
 	case errors.Is(err, ErrProviderNotReady):
 		return "provider_not_ready"
-	case errors.Is(err, ErrPublicStopUnconfirmed):
-		return "public_stop_unconfirmed"
 	}
 	var de *DeployError
 	if errors.As(err, &de) {

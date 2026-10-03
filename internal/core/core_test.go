@@ -347,7 +347,7 @@ func TestApprovedDeleteClosesOtherApprovals(t *testing.T) {
 	publish(t, e.svc, "multi")
 	permitPortal(t, e.svc, "multi")
 	vis, err := e.svc.SetVisibility(ctx, "multi", store.PublicListed, core.ViaMCP, "")
-	if err != nil || vis.Notice != core.PublicAccessNotice {
+	if err != nil || vis.Notice != core.PendingPublicAccessNotice || strings.Contains(vis.Notice, "This flat is public:") {
 		t.Fatalf("pending visibility must carry the notice: %v %+v", err, vis)
 	}
 	del, _ := e.svc.Delete(ctx, "multi", core.ViaMCP, "")
