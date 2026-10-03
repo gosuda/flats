@@ -198,6 +198,13 @@ func TestToolErrorPreservesLifecycleCauseBeforeConflict(t *testing.T) {
 		{"stale_approval", core.ErrStaleApproval},
 		{"provider_not_permitted", core.ErrProviderNotPermitted},
 		{"provider_not_ready", core.ErrProviderNotReady},
+		{"provider_unavailable", core.ErrProviderUnavailable},
+		{"runtime_unavailable", core.ErrRuntimeUnavailable},
+		{"unavailable", core.ErrUnavailable},
+		{"provider_in_use", core.ErrProviderInUse},
+		{"not_deployed", core.ErrNotDeployed},
+		{"runtime_start_failed", &core.DeployError{Cause: errors.New("startup failed")}},
+		{"health_check_failed", &core.DeployError{}},
 		{"public_stop_unconfirmed", core.ErrPublicStopUnconfirmed},
 		{"unchanged_content", core.ErrUnchangedContent},
 	} {

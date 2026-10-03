@@ -178,10 +178,16 @@ try {
   await page.getByText('Published · v2', { exact: false }).first().waitFor();
   await page.waitForFunction(() => document.activeElement?.id === 'draft');
   receipt.cases.push({ focus_after_publish: await page.evaluate(() => document.activeElement.id) });
-  // A reload cannot establish cookie validity from a safe GET status route.
+  // Nonsecret status resynchronizes a retained cookie after reload.
   await page.reload();
-  await page.getByText('Operator session not verified; unlock to confirm', { exact: true }).waitFor();
+  await page.getByText('Operator session unlocked', { exact: true }).waitFor();
+  receipt.cases.push({ operator_status_after_reload: 'authorized' });
+  await both('operator-session-resynchronized');
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.getByText('Decisions require operator unlock', { exact: true }).waitFor();
+  await page.reload();
+  await page.getByText('Decisions require operator unlock', { exact: true }).waitFor();
+  receipt.cases.push({ operator_status_after_logout_reload: 'unauthorized' });
   assert.deepEqual(pageErrors, []);
   receipt.page_errors = pageErrors;
   receipt.acceptance = true;

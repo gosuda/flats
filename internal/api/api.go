@@ -35,6 +35,7 @@ type Server struct {
 // Handler returns the API mux (mount at /).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /console/api/operator/session", s.operatorStatus)
 	mux.HandleFunc("POST /console/api/operator/session", s.operatorSession)
 	mux.HandleFunc("DELETE /console/api/operator/session", s.operatorLogout)
 	for _, prefix := range []string{"/api", "/console/api"} {

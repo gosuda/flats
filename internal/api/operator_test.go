@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -102,7 +103,7 @@ func TestOperatorAuthorityCannotBeSelfGranted(t *testing.T) {
 	for _, path := range []string{"/console/api/operator/session", "/api/operator/session"} {
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, browserRequest("GET", path, ""))
-		if w.Code != 404 && w.Code != 405 {
+		if w.Code != 404 && w.Code != 405 && !(path == "/console/api/operator/session" && w.Code == 200) {
 			t.Fatalf("GET bootstrap %s: %d", path, w.Code)
 		}
 		if len(w.Result().Cookies()) != 0 {
@@ -188,4 +189,65 @@ func TestOperatorMalformedSessionNeverEchoesCredential(t *testing.T) {
 	if w.Code != 400 || strings.Contains(w.Body.String(), testOperatorCredential) || len(w.Result().Cookies()) != 0 {
 		t.Fatalf("malformed session leaked or authorized: %d %s", w.Code, w.Body)
 	}
+}
+
+func TestOperatorStatusIsNonsecretReadOnlyAndSessionBound(t *testing.T) {
+	s := &Server{Operator: testAuthority(t)}
+	cookie := establishSession(t, s)
+	check := func(cookie *http.Cookie, configured, authorized bool) {
+		t.Helper()
+		r := browserRequest("GET", "/console/api/operator/session", "")
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		var out struct {
+			Configured bool       `json:"configured"`
+			Authorized bool       `json:"authorized"`
+			ExpiresAt  *time.Time `json:"expires_at"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != 200 || out.Configured != configured || out.Authorized != authorized || (out.ExpiresAt != nil) != authorized {
+			t.Fatalf("status: %d %s", w.Code, w.Body)
+		}
+		if w.Header().Get("Cache-Control") != "no-store" || len(w.Result().Cookies()) != 0 || strings.Contains(w.Body.String(), testOperatorCredential) || (cookie != nil && strings.Contains(w.Body.String(), cookie.Value)) {
+			t.Fatal("status leaked or issued authority")
+		}
+		if s.Operator != nil && s.Operator.ValidateDecision(r.Context()) == nil {
+			t.Fatal("status created proof context")
+		}
+	}
+	check(nil, true, false)
+	check(cookie, true, true)
+	for _, mutation := range []func(*http.Request){
+		func(r *http.Request) { r.Header.Set("X-Flats-Client", "api") },
+		func(r *http.Request) { r.Header.Set("Origin", "https://attacker.invalid") },
+		func(r *http.Request) { r.Header.Del("X-Flats-Console") },
+		func(r *http.Request) { r.RemoteAddr = "192.0.2.1:12345" },
+	} {
+		r := browserRequest("GET", "/console/api/operator/session", "")
+		r.AddCookie(cookie)
+		mutation(r)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != 403 {
+			t.Fatalf("unguarded status: %d", w.Code)
+		}
+	}
+	s.Operator.mu.Lock()
+	s.Operator.sessions[sha256.Sum256([]byte(cookie.Value))] = time.Now().Add(-time.Second)
+	s.Operator.mu.Unlock()
+	check(cookie, true, false)
+	cookie = establishSession(t, s)
+	logout := browserRequest("DELETE", "/console/api/operator/session", "")
+	logout.AddCookie(cookie)
+	s.Handler().ServeHTTP(httptest.NewRecorder(), logout)
+	check(cookie, true, false)
+	s.Operator = testAuthority(t)
+	check(cookie, true, false)
+	s.Operator = nil
+	check(cookie, false, false)
 }

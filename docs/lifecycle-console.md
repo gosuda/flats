@@ -19,7 +19,7 @@ All paths are under `/console/api`. Publish, activation, rollback, deletion and 
 | Published-version preview | `POST /flats/{slug}/previews` `{version}` |
 | Provider permission | `POST /flats/{slug}/providers` `{provider, permitted}` |
 
-`local` stays permitted. `tailscale`, `tailscale-funnel`, and `portal` start unpermitted until the operator allows them. The visible name for `tailscale-funnel` is Tailscale Funnel. Serve is not a public option. Allowing Funnel is separate from Tailscale being connected, and neither action publishes or changes Private/Public.
+`local` stays permitted. `tailscale`, `tailscale-funnel`, and `portal` require host and per-flat grants. The explicit legacy upgrade choice can preserve eligible Private Tailscale opt-ins once; it never grants Public providers. The visible name for `tailscale-funnel` is Tailscale Funnel. Serve is not a public option. Allowing Funnel is separate from Tailscale being connected, and neither action publishes or changes Private/Public.
 
 ## Fields the console reads
 
@@ -68,7 +68,7 @@ The final frozen binary also rendered persisted actor and data-impact details.
 ## Operator authority integration
 
 The app provisions one `api.OperatorAuthority` from an explicitly supplied
-embedding credential or `--operator-credential-stdin`. Interactive input is
+embedding credential, `--operator-credential-stdin`, or the protected `--operator-credential-file` source documented in README. Interactive input is
 hidden; pipe input is bounded. Credentials are not supplied through argv,
 environment, HTTP reads or MCP tools. The console unlock dialog creates a
 session, then each candidate still requires its own confirmation. The same
@@ -90,4 +90,6 @@ Canonical `public` uses the globe/Public badge, internet warning, and danger con
 
 The console maps decision `category` or `approval.result_data.failure_code` for provider permission/readiness/availability, unconfirmed public stop, unchanged content and stale approval. HTTP 409 alone never means drift. Failed Private transitions retain Public until confirmed. Simulated DOM tests use real server-shaped 409 envelopes and exercise pending provider-missing, rejection, disclosure, retry and first-save flows. Rendered correction evidence is external to the repository and binds the exact corrected source/binary in the handoff; combined-head integration must rerun it.
 
-The existing API exposes no operator-session status read. The toolbar resets to an unverified state on reload, window refocus, return to visibility, known expiry, or operator-required API errors; it cannot truthfully infer an existing cookie’s validity. Full session resynchronization needs a console-only nonsecret status endpoint from API integration. The credential is never stored by this UI.
+The toolbar reads console-only `GET /console/api/operator/session` on reload, refocus, return to visibility, known expiry and operator-required responses. It reports configured/authorized state and schedules resynchronization at the server-provided expiry; a failed read keeps status unverified. This endpoint returns no credential or cookie and grants no authority. The credential is never stored by this UI.
+
+In-use permission removal is refused with `provider_in_use`; permission remains intact. Stop Public routes through an approved change to Private before revoking their provider. Private registered routes and previews also block revocation. Current links use actual current endpoints and `connection_state`: Public Connecting is an approved visibility policy, not a reachable URL. Private URLs come from actually registered permitted Tailscale or Local routes, rather than an unserved ts.net name.

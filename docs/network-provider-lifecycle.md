@@ -1,11 +1,8 @@
 # Network provider lifecycle
 
-This document is the network-provider candidate on `oesni/flats-lifecycle-network`.
-It covers host permission, selectable private and public providers, and the
-Tailscale Funnel path. Core, store, API, CLI, MCP, bundle, and the console are
-owned elsewhere and are not wired to `ServeExposure` on this branch.
+This document describes the integrated provider Manager. Production app and disposable gate host wire the exact exported core `LifecycleNet`, observer and preview contracts through `Config.Lifecycle`; legacy `Config.Public` is unset. Historical branch/test checkpoints below are receipts, not the current integration boundary.
 
-## Revisions
+## Historical revisions
 
 - `git cat-file -p 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0` shows one parent, `313ef2557d28350cb91a0daff719aca5bf6813c9`. `29edc2a6` is the child. `313ef255` is the parent. `git merge-base --is-ancestor 313ef2557d28350cb91a0daff719aca5bf6813c9 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0` exits 0, and the reverse exits 1.
 - This branch started at the child `29edc2a6e13e27867603a23ff5b1b5a8d1b84df0`.
@@ -97,15 +94,9 @@ backends. It does not serve a flat.
 A non-nil backend is not permission. Tests inject fakes through these
 interfaces. There is no permit-skipping constructor.
 
-This is not core integration. `*provider.Manager` does not implement an
-exported `LifecycleNet`, and this branch does not assign one through a
-dedicated `core.Config` field. The request types in this package are a local
-stand-in with the same field layout. `Config.Private` and `Config.Public`
-remain the legacy nets for the core that is on this branch; that arrangement
-is not the finished adapter. The finished adapter implements the exact
-exported core `LifecycleNet` through a dedicated config field, and core does
-not import `internal/expose`. No core SHA is ready to adopt. `internal/expose`
-already imports `internal/core`, so the import must stay in that direction.
+Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry.
+
+Legacy schema 5 eligibility is consumed once by an explicit Private Tailscale/Local upgrade choice. An ambiguous historical-default host refuses before networking; the choice never authorizes Public providers. See README for operator credential-file/install and upgrade commands.
 
 ## Funnel
 
@@ -143,7 +134,7 @@ was not that private pointer. `Manager.Close` stops routes only. It does not
 call `portal.Net.Close` and it does not cancel the Portal parent context.
 Portal SDK shutdown inside `portal.Net.Close` is unchanged.
 
-## Tests
+## Historical network-slice tests
 
 Commands run from this worktree. Exit 0 for each.
 

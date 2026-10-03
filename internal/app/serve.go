@@ -640,7 +640,7 @@ func readOperatorCredentialFile(path string) (string, error) {
 	if err != nil {
 		return "", errors.New("could not read operator credential file")
 	}
-	value := strings.TrimRight(string(raw), "\r\n")
+	value := strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
 	if len(value) < 32 || len(value) > 4096 || strings.ContainsAny(value, "\r\n") {
 		return "", errors.New("operator credential file must contain one credential of 32 to 4096 bytes")
 	}

@@ -127,7 +127,7 @@ result. Failed recovery/start/swap paths conservatively use unknown where the
 prior runtime may have restarted and written data. `failure_code` is additive:
 `stale_approval`, `health_check_failed`, `runtime_start_failed`,
 `provider_not_permitted`, `provider_not_ready`, `provider_unavailable`,
-`public_stop_unconfirmed`, `unchanged_content`, or `apply_failed`.
+`public_stop_unconfirmed`, `provider_in_use`, `runtime_unavailable`, `unavailable`, `not_deployed`, `unchanged_content`, or `apply_failed`.
 The human-readable `result` describes the specific drift or error.
 
 New snapshots retain API names `before-v<N>-<milliseconds>.sqlite`; the matching
@@ -142,7 +142,7 @@ Runtime restart side effects are not exactly-once application side effects.
 
 ## Migration
 
-Store migration uses `PRAGMA user_version=4` and idempotent column additions.
+Store migration uses `PRAGMA user_version=5` and idempotent column additions.
 Historical deployed version numbers, hashes, metadata, histories, secrets,
 pageviews and data stay intact. Live/deployment references mark published rows.
 Saved-but-never-deployed rows become Draft revisions; files copy before DB
@@ -183,7 +183,7 @@ type LifecyclePreviewNet interface {
 Requests contain `Slug, Host, Visibility, Audience, Handler, Ephemeral, Permitted`.
 Public stops return `Stopped, Unconfirmed`. Private requests filter out all
 public providers; Public requests preserve Private routes. Only permitted public
-providers with a ready endpoint allow a Public policy commit. Failed setup is
+providers with a registered current endpoint in starting, or ready/key-expiring with its readiness bit, allow a Public policy commit. Starting remains Connecting and not ready; backend readiness advances independently. Missing current runtime returns `not_deployed`. Failed setup is
 closed and its route handler cannot serve public bytes while policy is Private.
 Unconfirmed public stops cannot commit Private. Manager owns persisted host gates
 and backend readiness; per-flat permissions alone are insufficient. There is no
@@ -202,3 +202,9 @@ and restarts with the same marker, which prevents a second pause. No HTTP fault
 endpoint or SQL status injection exists. A slow-health process can exercise a
 kill while health is executing. Integration owns the real-process gate and
 independent Claude review; scoped core tests are not their substitute.
+
+## Restore-journal recovery
+
+An unreadable, malformed or incomplete `flats/<slug>/restore-journal.json` blocks startup. This is intentional: serving after an unverified swap could use the wrong data. Stop the host and preserve a full copy of the data directory, metadata DB, journal and snapshots before repair. Correct file access problems and retry startup with the unchanged journal first. For malformed/missing-approval journals, reconcile the exact approval against `DeploymentByApproval` and the referenced backup in the preserved copy; an uncommitted swap must restore its pre-restore DB/FILES backup, while a committed deployment keeps the restored data. Do not blindly delete the journal or overwrite the only backup. There is no automated repair command for a corrupt journal; operator-assisted offline recovery remains a limitation.
+
+Schema 5 records eligible pre-lifecycle flats for a one-time explicit Private Tailscale upgrade choice without granting providers. Existing explicit denials win. Host grants are still required; neither the choice nor a Tailscale grant authorizes Funnel or Portal. In-use per-flat revocation returns `provider_in_use` before writing policy. Delete, rename and redirect expiry use Manager stop confirmation and retain unconfirmed registrations for retry.

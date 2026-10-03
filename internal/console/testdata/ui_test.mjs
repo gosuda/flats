@@ -222,7 +222,7 @@ assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
 assert.equal(all(dbMain, (e) => e.tagName === 'A' && e.textContent === 'Manage versions and rollback')[0].getAttribute('href'), '/flats/blog#history');
 for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
-const { statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
+const { statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion } = await import('./lifecycle.js');
 assert.equal(statusLine(blog).startsWith('Published · v2 · Public'), true, statusLine(blog));
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Published · v2'), true);
 assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Unpublished'), false);
@@ -392,10 +392,18 @@ assert.ok(approvalMain.textContent.includes('The content or access settings chan
 assert.equal(byText(approvalMain, 'Approve…').length, 0);
 if (stopApproval) stopApproval();
 
+// Actual endpoint readiness gates Current links even when a URL/state exists.
+const currentEndpoint = { provider: 'portal', audience: 'current', host: 'blog', url: 'https://example.invalid', state: 'starting', ready: false, configured: true, permitted: true };
+assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [currentEndpoint] }).ready, false);
+assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [{ ...currentEndpoint, state: 'ready' }] }).ready, false);
+assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [{ ...currentEndpoint, state: 'ready', ready: true }] }).ready, true);
+assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [{ ...currentEndpoint, state: 'ready', ready: true, permitted: false }] }).ready, false);
+
 // Every decision 409 uses the server's DecisionError envelope, not a synthetic 200.
 for (const [code, expected] of [
   ['provider_not_permitted', 'not permitted'], ['provider_not_ready', 'still connecting'],
-  ['provider_unavailable', 'unavailable'], ['public_stop_unconfirmed', 'not shown as Private'],
+  ['provider_unavailable', 'unavailable'], ['runtime_unavailable', 'Server flats are disabled'],
+  ['unavailable', 'feature is unavailable'], ['provider_in_use', 'registered routes'], ['not_deployed', 'No current runtime'], ['public_stop_unconfirmed', 'not shown as Private'],
   ['unchanged_content', 'matches the current'], ['stale_approval', 'Review again'],
 ]) {
   const response = { __status: 409, error: 'decision failed', category: code,

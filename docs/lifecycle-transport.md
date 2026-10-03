@@ -44,6 +44,8 @@ on TLS). JSON reports only `{"status":"operator_authorized"}`. Console fetches
 must send same-origin cookies. Neither a GET nor an API/MCP/CLI operation issues
 operator authority. Agent client headers remain forbidden on console routes.
 
+`GET /console/api/operator/session` is console-only and requires the console header, same origin, and TLS or loopback. It returns only `configured`, `authorized` and, for a valid current cookie, `expires_at`, with `Cache-Control: no-store`. It issues no cookie, proof or credential and has no `/api`/MCP equivalent. The toolbar resynchronizes on reload, refocus, visibility return, expiry and authorization failures.
+
 `DELETE /console/api/operator/session` requires a valid session and console
 CSRF headers, revokes it immediately and clears its cookie. Sessions expire
 after eight hours, and at most 64 live sessions are retained. The server stores
@@ -137,7 +139,7 @@ instructions. `approvals` only reads; no approve/decide/reject/operator/provider
 commands are added. Operator startup credential input belongs to app/server
 integration (`--operator-credential-stdin`), not an approval command or agent
 credential lookup. Unconfigured authority disables decisions rather than falling
-back to headers; unattended credential persistence is not promised.
+back to headers; unattended startup can read the operator-controlled credential file described below.
 
 MCP adds `save_draft`, `get_draft`, `publish` and retains existing save/deploy/
 rollback/preview tools. Saves contain actual inline files or validated host
@@ -178,8 +180,10 @@ approval even when a provider is unavailable or unpermitted; only authorized
 application checks those prerequisites. Same visibility remains unchanged HTTP
 200, and an unpublished flat cannot request Public visibility.
 
-## Foreground provisioning and service dependency
+## Operator provisioning
 
-The working CLI path is `flats serve --operator-credential-stdin`: the operator supplies the independently provisioned credential through hidden terminal input, then uses **Unlock decisions** in the console with the same credential. A host without this authority cannot approve quickstart requests. Local is the default network and Portal is off; host grants and per-flat permissions must be restored explicitly after upgrade, including Tailscale. No service credential flag is currently implemented: `flats install` generates launchd/systemd commands without an authority source. Integration must add a protected operator-only credential source to app startup and service generators before promising unattended approvable service installation. File mode alone is insufficient isolation from same-user agents.
+Foreground startup accepts `flats serve --operator-credential-stdin` (hidden terminal input or bounded pipe). Unattended startup accepts `--operator-credential-file /absolute/operator/path/credential`; `flats install -- --operator-credential-file /absolute/operator/path/credential` persists that path in launchd/systemd service arguments. The file must be regular, nonsymlink, owned by the effective service user, exact mode 0600, with one 32–4096-byte credential and an optional terminal newline. Missing, multiline, oversized, insecure or ambiguous sources fail before serving. Keep the file outside data and host-upload directories and outside agent filesystem access. Mode 0600 alone does not isolate same-user agents. The operator then uses **Unlock decisions** and separately approves each candidate. Credentials are cleared from retained Host options and never exposed through reads/tools.
+
+Local is default; Portal is off. Legacy schema 5 records eligible pre-lifecycle flats. Explicit `--network tailscale` (or a stored explicit Tailscale backend/grant) preserves only those flats’ Private Tailscale opt-in once, honoring explicit denials. Explicit `--network local` consumes that choice as Local-only; an ambiguous historical-default startup refuses before constructing backends. Neither choice grants Funnel or Portal. See README upgrade instructions.
 
 `get_flat` retains its publication/visibility/current-version summary when appending Draft preview text. `save_draft` saves without allocating a number; its compatibility `deploy:true` option requests pending publication, whose successful approval later allocates vN. Tool and CLI guidance never treats pending as live.

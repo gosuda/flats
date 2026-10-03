@@ -53,6 +53,7 @@ const get = (p) => request('GET', p);
 const post = (p, b) => request('POST', p, b === undefined ? {} : b);
 
 export const api = {
+  operatorStatus: () => get('/operator/session'),
   operatorSession: (credential) => post('/operator/session', { credential }),
   operatorLogout: () => request('DELETE', '/operator/session'),
   status: () => get('/status'),

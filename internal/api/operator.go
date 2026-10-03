@@ -98,6 +98,39 @@ func (s *Server) requireOperator(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// operatorStatus reports only configuration and this browser's session validity.
+// It neither creates authority nor exposes a credential, token, or audit identity.
+func (s *Server) operatorStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if err := consoleRequest(r); err != nil {
+		writeErr(w, http.StatusForbidden, err)
+		return
+	}
+	if r.TLS == nil && !isLoopback(r) {
+		operatorError(w, "operator_secure_transport_required", "operator sessions require HTTPS or a loopback connection")
+		return
+	}
+	out := struct {
+		Configured bool       `json:"configured"`
+		Authorized bool       `json:"authorized"`
+		ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	}{Configured: s.Operator != nil}
+	if s.Operator != nil {
+		if cookie, err := r.Cookie(operatorCookie); err == nil && len(cookie.Value) == 43 {
+			hash := sha256.Sum256([]byte(cookie.Value))
+			a := s.Operator
+			a.mu.Lock()
+			if expiry, ok := a.sessions[hash]; ok && time.Now().Before(expiry) {
+				out.Authorized, out.ExpiresAt = true, &expiry
+			} else {
+				delete(a.sessions, hash)
+			}
+			a.mu.Unlock()
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // operatorSession validates an operator-entered credential. Headers provide
 // CSRF protection only; they never establish operator authority.
 func (s *Server) operatorSession(w http.ResponseWriter, r *http.Request) {

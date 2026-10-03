@@ -88,7 +88,8 @@ export function currentTarget(flat) {
       (visibility === 'public' ? ['tailscale-funnel', 'portal'].includes(ep.provider) : ['local', 'tailscale'].includes(ep.provider)));
   const url = endpoint?.url || (visibility === 'public' ? flat?.public_url : flat?.private_url);
   const state = endpoint?.state || endpointState(flat, visibility);
-  const ready = !!(url && isOpenable(state) && flat?.publication === 'published' && flat?.live_version);
+  const ready = !!(url && isOpenable(state) && (!endpoint || (endpoint.ready && endpoint.permitted && endpoint.configured))
+    && flat?.publication === 'published' && flat?.live_version);
   return {
     url: ready ? url : (url || ''),
     ready,
@@ -138,6 +139,10 @@ export function failureMessage(source) {
     provider_not_permitted: 'This provider is not permitted. Review host and per-flat provider grants before requesting approval again.',
     provider_not_ready: 'The provider is still connecting or needs setup. Check its connection before requesting approval again.',
     provider_unavailable: 'The provider is unavailable. Check host configuration before requesting approval again.',
+    runtime_unavailable: 'Server flats are disabled on this host. Enable the runtime before requesting approval again.',
+    unavailable: 'This feature is unavailable on this host.',
+    provider_in_use: 'This provider still has registered routes. Approve Private access to stop Public routes, or close its Private previews and routes before removing permission.',
+    not_deployed: 'No current runtime is serving this flat. Activate a published version before requesting Public access.',
     public_stop_unconfirmed: 'Could not confirm the public route is blocked. Access is not shown as Private.',
     unchanged_content: 'The draft matches the current published content. No new version was published.',
     stale_approval: 'The content or access settings changed. Review again.',
@@ -303,7 +308,7 @@ export async function saveProvider(flat, provider, permitted) {
     body: [
       h('p', { text: permitted
         ? `This allows ${desc.label} for this flat. ${desc.audience}`
-        : `This removes permission for ${desc.label} on this flat.` }),
+        : `This removes permission for ${desc.label} only when none of its routes are registered. Public routes must first be stopped by an approved change to Private; Private routes and previews must also be closed.` }),
       h('p', { text: 'Provider permission does not publish a version and does not change Private or Public.' }),
       h('p', { class: 'muted', text: 'A connected provider is not the same as a published or reachable flat. A failure does not switch this flat to another provider.' }),
     ],
@@ -316,7 +321,7 @@ export async function saveProvider(flat, provider, permitted) {
     toast(permitted ? `${desc.label} allowed for this flat.` : `${desc.label} permission removed.`, 'success');
     return res;
   } catch (err) {
-    await infoDialog('Provider permission did not save', err.message);
+    await infoDialog('Provider permission did not save', failureMessage(err.body) || err.message);
     announce('Provider permission did not save. ' + err.message);
     return null;
   }

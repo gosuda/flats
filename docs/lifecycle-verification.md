@@ -7,7 +7,7 @@ selected observable case passed; exit 1 means at least one failed. A partial run
 (`--only case-id,...`) is diagnostic and never establishes full acceptance.
 The launcher builds `cmd/flats`, a historical binary from the exact archived
 pre-lifecycle base, and a test-only provider host. `FLATS_BIN` may supply an
-integrated binary; `FLATS_LIFECYCLE_LEGACY_BIN` may supply the historical binary.
+integrated binary only when its clean source identity matches; `FLATS_LIFECYCLE_LEGACY_BIN` is rejected with exit 2.
 Neither variable refers to a running server.
 
 Each case starts a new server with its own disposable data directory and two
@@ -17,44 +17,21 @@ proxy settings, and never opens user data, authkeys, tailnet identities, or
 relay configuration. Data and logs remain in the printed temporary evidence
 directory for review. Raw execution logs must stay outside the public repo.
 
-## Observable acceptance matrix
+## Current acceptance and proof boundaries
 
-| Requirement | Case / observable oracle | Proof boundary |
-|---|---|---|
-| Repeated saves create no published v1; conflicting writer rejected | `draft-save-conflict`: three validated tar.gz uploads return number 0, revision 3, no history/live pointer; stale expected revision returns 409 and keeps revision | Actual binary, HTTP |
-| Unsafe archive validation changes nothing | `archive-validation`: traversal upload rejected 422, prior flat view preserved | Actual binary, HTTP archive validation |
-| Draft preview before publication is Private | `private-draft-traffic`: preview serves the exact uploaded marker over loopback, no live version/history/public URL | Actual binary, Local traffic |
-| All publish entrypoints await human approval | `api-upload-deploy-pending`, `cli-console-pending`, `mcp-pending`: upload-and-deploy and explicit deploy produce pending approval, API 202/CLI 3/MCP pending, live 0/history empty; console request also pending | Actual integrated binary, CLI subprocess and JSON-RPC MCP |
-| Agent cannot approve its request | `publish-human-idempotency-restart`: `/api/.../approve` unavailable; `mcp-pending`: initialized tool inventory has no approve capability | Existing console/API trust boundary; this does not establish owner auth |
-| Explicit approval first creates v1/Published/Private | `publish-human-idempotency-restart`: console decision simulation approves once; published history exactly [1], live 1, publication Published; GET serves candidate marker | Actual binary, HTTP and traffic |
-| Duplicate pending requests, concurrent decisions, retries do not activate twice | `publish-human-idempotency-restart`: same approval id; concurrent decisions plus repeat approve; one version and one deployment before/after restart | Actual binary, persisted observable history |
-| Approval rejects candidate/current policy drift | `frozen-revision-policy`: save newer revision then approve old request => failed/no version/live; provider policy change likewise fails | Actual binary, HTTP |
-| Claimed approval resumes once after restart | `restart-claimed-approval`: after stopping the disposable host, test-only SQLite update models crash after persisted pending→applying claim; actual startup must activate bytes, with one deployment across two starts | Deterministic crash boundary; real binary restore/activation |
-| v1 stays serving while Draft changes | `publish-human-idempotency-restart` and provider lane: GET remains old marker after new upload; private preview serves new marker | Actual Local traffic and separately labeled simulated public traffic |
-| Explicit provider permission; Tailscale never implicitly authorizes Funnel | `provider-permission-failure`: initial provider set empty/local; agent cannot grant; grant tailscale excludes tailscale-funnel; neither permission changes visibility; unavailable/unpermitted Public approve fails, keeps Published v1 and Local traffic | Actual binary, disabled external infrastructure; no real Tailscale connection claim |
-| Both visibility directions through API/console/CLI/MCP await approval | `visibility-all-surfaces-teardown`: each surface cycles Private→Public→Private, asserting old visibility before decision and unchanged v1 numbering | Deterministic loopback provider host uses product API/core/CLI/MCP |
-| Draft never on Public path | Provider lane: Public current GET still v1, preview GET is draft, simulated public preview host returns 404 | Deterministic route registration and actual loopback traffic, not internet Funnel proof |
-| Public→Private teardown failure is not success | Provider lane: injected Stop failure leaves GET answering, approval fails, visibility remains Public; clear fault and reapprove => route 404, Private current still answers | Deterministic provider fault, actual HTTP serving oracle |
-| Network failure separate from publication; no fallback permission | Local provider-failure and provider lane: connection/setup failure leaves Published/current version and visibility unchanged, no simulated public route opens | Fault injection and real Local traffic; external readiness remains separately unproved |
-| Failed preparation preserves Draft/history/live data | `runtime-health-rollback-data`: real uploaded JS health handler writes sentinel then returns 503 on isolated check; before decision no execution; failure leaves live hits=1/version=1/history=[1] | Actual integrated binary and real runtime/SQLite, not fake DOM |
-| Code rollback preserves number/data; restore separately approved | Runtime case: publish v2, increment data; rollback pending then approved to v1 retains hits=2 and history [1,2]; restore_data request freezes true, leaves hits unchanged until decision, rejection keeps data | Actual binary/runtime; restore execution coverage must be recorded separately |
-| Current live/visibility drift invalidates pending publish | `frozen-current-live`, `frozen-visibility`: change live by approved rollback or visibility by approved Public transition, then old publish fails without new number or candidate traffic | Actual binary/loopback provider lane respectively |
-| Approved explicit restore executes frozen data choice | `rollback-approved-restore-data`: snapshot at hits=1 before v2, pending restore keeps v2 and allows hits=3, approve restores v1/hits=1, preserved backup contains hits=3, retry/restart keep [1,2] | Actual binary/runtime and read-only disposable SQLite oracle |
-| Runtime initialization distinct from health/first request | `runtime-initialization-data`: module capability/throw probe, unchanged live data pending, startup failure does not publish; success compares DB before/after live startup before serving request with impact output | Public runtime JS only; unsupported top-level env explicitly recorded |
-| Mixed deployed and undeployed historical migration | `historical-mixed-migration`: real legacy v2/v3 deployment, saved v1/v4, separate never-deployed flat, DB hits/file/secret, private version previews and pending delete; preserve identity/hash/path/data, classify previews, repeated restart, next publish v4 | Actual historical binary seed; migrated acceptance pending |
-| Historical never-deployed migration preserves files and restarts | `historical-migration`: baseline binary saves historical v1/v2 without deploy; integrated server migrates history empty/Unpublished; both file hashes survive; preview serves latest; restart stable; approved first publish is v1 with legacy bytes | Real historical binary seed and integrated binary migration/traffic |
+The full source-bound launcher builds the candidate, pinned historical source, real Manager adapter and tagged crash adapter from the clean worktree. It rejects an unverified legacy-binary override. Run without `FLATS_BIN`, `FLATS_LIFECYCLE_LEGACY_BIN`, `FLATS_URL`, authkeys, live-provider opt-ins or fault variables. The private integration handoff records exact commands, exits, source/tree/binary hashes and rendered receipts; past pass counts below are historical only.
 
-The test adapter is a separate executable under `internal/lifecyclecheck/adapter`.
-Its fault endpoint exists only there and does not approve actions or write product
-state. It links the real product core, HTTP API, MCP server, CLI and runtime;
-only the external provider is doubled. The current adapter uses the historical
-`PublicNet` fallback, not the production network manager. It must be reconciled
-to the final optional `LifecycleNet` interface before claiming integrated provider
-acceptance. Portal is represented by a loopback route, not a real relay. No result in
-this lane proves Funnel internet access, provider identity/ACL behavior, or remote
-teardown. Private remains existing loopback/tailnet ACL policy; owner-only auth is
-deferred. Console decisions are simulated with the existing same-origin headers,
-which agents can forge under the intentionally retained admin trust boundary.
+The actual-binary lane checks Draft saves/conflicts/archive validation; private previews; pending HTTP/CLI/MCP requests and successful censused tools; separately provisioned operator authority, forged requests and retained-cookie revocation; frozen policy drift; health/data isolation; publish/rollback/restore; migrations; restart and four real SIGKILL publish phases. No SQL mutation substitutes for a crash.
+
+The production-provider-manager lane links real core/API/CLI/MCP and Manager with disposable loopback backends. It checks host+flat grants, distinct Private Tailscale current/Draft URLs, independently controlled asynchronous Portal/Funnel readiness, approved Public Connecting followed by ready without reopening, in-use refusal and confirmed delete/rename/expiry teardown, Public-to-Private failures, current bytes and no fallback. Authentication uses real operator credential/session bootstrap and individual candidate decisions, not headers alone. This proves capability separation under the documented operator-secret/OS boundary, not identification of a human.
+
+`internal/console/testdata/browser_test.mjs` runs the production frozen binary on disposable loopback ports at desktop/mobile sizes, recording exact identity, pending/approved/rejected requests, real typed 409s, clearly marked response fixtures, consent/focus, page errors and overflow. Inspect screenshots and receipt. It does not prove live providers or restore execution (covered by the runtime gate).
+
+Nonblocking limitations: live Portal/Funnel ingress, ACME and tailnet ACLs are not exercised; real service managers and production tailnet-console identity are not exercised. Real-process crash injection remains publish-only; activation/rollback/restore swap/visibility have persistence/unit and execution coverage, not their own SIGKILL phases. Runtime module-scope env is unsupported and never counted as live-startup write proof. Operator-assisted corrupt restore-journal recovery is documented in the core contract. Multiple hosts must choose distinct Local/management ports and data directories. Secret-set changes are not frozen into approval policy; operator secret writes remain privileged and the next approved activation delivers the then-current values.
+
+## Historical receipts
+
+Everything below records earlier checkpoints and their scope at that time; it neither supersedes the current contract above nor certifies the current frozen tree.
 
 ## Baseline execution receipt
 

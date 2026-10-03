@@ -23,6 +23,7 @@ func TestOperatorCredentialFileFailClosed(t *testing.T) {
 		{"readable_by_all", strings.Repeat("x", 32), 0644, false},
 		{"short", "short", 0600, false},
 		{"oversized", strings.Repeat("x", 4097), 0600, false},
+		{"multiple_final_newlines", strings.Repeat("x", 32) + "\n\n", 0600, false},
 		{"multiline", strings.Repeat("x", 32) + "\nsecond", 0600, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
