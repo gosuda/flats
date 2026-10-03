@@ -178,6 +178,7 @@ func (t *tailnet) Stop(host string) error {
 	}
 	return t.Net.Stop("tailnet-" + host)
 }
+func (t *tailnet) StopPrivate(host string) error { return t.Stop(host) }
 func (t *tailnet) Status() core.NetStatus {
 	st := t.Net.Status()
 	st.Kind = "tailscale"

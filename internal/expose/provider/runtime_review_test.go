@@ -85,6 +85,8 @@ func (f *asyncFunnel) Stop(host string) error {
 	return f.Net.Stop(host)
 }
 
+func (f *asyncFunnel) StopPrivate(host string) error { return f.Stop(host) }
+
 func (f *asyncFunnel) ServeFunnel(ctx context.Context, host string, h http.Handler) (string, error) {
 	return f.public.Serve(ctx, host, h, false)
 }
@@ -521,5 +523,44 @@ func TestPrivateTailscaleRevokeClosesOnlyOwnedRoutes(t *testing.T) {
 	active, err := f.manager.HasProviderRoute(t.Context(), "moved", Tailscale)
 	if err != nil || active {
 		t.Fatal("revocation reopened", err)
+	}
+}
+
+func TestTailscaleRevocationPreservesPublicFunnel(t *testing.T) {
+	f := reviewerService(t, Funnel)
+	if err := f.svc.SetProviderPermission(t.Context(), "site", "tailscale", true, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.svc.SaveVersion(t.Context(), "site", []bundle.File{{Path: "index.html", Data: []byte("v2")}}, core.SaveMeta{}, core.ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.svc.Publish(t.Context(), "site", 0, "", core.ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveReview(t, f.svc, r)
+	f.public.advance()
+	publicReview(t, f)
+	before, err := f.svc.GetFlat(t.Context(), "site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.SetProviderPermission(t.Context(), "site", "tailscale", false, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.svc.GetFlat(t.Context(), "site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Visibility != store.Public || after.LiveVersion != before.LiveVersion || get(t, after.PublicURL) != "v2" || get(t, f.local.URL("site")) != "v2" {
+		t.Fatal("Private revocation changed Public or current", after)
+	}
+	active, err := f.manager.HasProviderRoute(t.Context(), "site", Tailscale)
+	if active || err != nil {
+		t.Fatal("Private route remained", err)
+	}
+	if err := f.svc.SetProviderPermission(t.Context(), "site", "tailscale-funnel", false, core.ViaConsole); !errors.Is(err, core.ErrProviderInUse) {
+		t.Fatal("Public revocation bypassed approval", err)
 	}
 }

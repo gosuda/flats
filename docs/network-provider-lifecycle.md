@@ -230,3 +230,7 @@ Preview cleanup stops only Draft private routes for the requested host; another
 preview and the current site remain reachable. Public opening preserves an
 independent Local route on a fresh Manager, and normal core rebinding refreshes
 both current handlers before each public activation.
+
+### Per-flat Private Tailscale revocation
+
+An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route. Unconfirmed node retirement is retained across retries; absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.

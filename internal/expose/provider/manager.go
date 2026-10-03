@@ -566,7 +566,28 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 			errs = append(errs, ErrNotConfigured)
 			continue
 		}
-		if err := m.ts.Stop(r.host); err != nil {
+		var stopErr error
+		if private, ok := m.ts.(interface{ StopPrivate(string) error }); ok {
+			stopErr = private.StopPrivate(r.host)
+		} else {
+			// A legacy backend Stop may retire a shared Funnel node. Refuse rather
+			// than silently altering the separately approved Public route.
+			m.mu.Lock()
+			sharedFunnel := false
+			for _, sibling := range m.routes {
+				if sibling.host == r.host && sibling.provider == Funnel {
+					sharedFunnel = true
+					break
+				}
+			}
+			m.mu.Unlock()
+			if sharedFunnel {
+				stopErr = errors.New("private-only teardown is unavailable; approve Private access to stop Funnel first")
+			} else {
+				stopErr = m.ts.Stop(r.host)
+			}
+		}
+		if err := stopErr; err != nil {
 			errs = append(errs, err)
 			continue
 		}

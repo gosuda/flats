@@ -163,6 +163,32 @@ func TestServeFunnelRoutesIngressAndLeavesPrivate(t *testing.T) {
 		t.Fatalf("tailnet body = %q", got)
 	}
 
+	// Private permission removal must not retire the approved internet route
+	// on the same real tsnet node (all traffic uses disposable testcontrol).
+	if err := n.StopPrivate("flat"); err != nil {
+		t.Fatal(err)
+	}
+	tailClient.CloseIdleConnections()
+	if response, err := tailClient.Get("https://flat." + testDomain + "/"); err == nil {
+		response.Body.Close()
+		t.Fatal("Private listener survived StopPrivate")
+	}
+	if got := fetchBody(t, funnelClient, "https://"+target); got != "public" {
+		t.Fatalf("Private stop removed Funnel: %q", got)
+	}
+	if n.FunnelStatus("flat").State != FunnelReady {
+		t.Fatal("Private stop changed Funnel status")
+	}
+	if _, err := n.Serve(ctx, "flat", private, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.WaitReady(ctx, "flat"); err != nil {
+		t.Fatal("Private listener could not reopen", err)
+	}
+	if got := fetchBody(t, tailClient, "https://flat."+testDomain+"/"); !strings.HasPrefix(got, "private") {
+		t.Fatal(got)
+	}
+
 	if err := n.StopFunnel("flat"); err != nil {
 		t.Fatal(err)
 	}

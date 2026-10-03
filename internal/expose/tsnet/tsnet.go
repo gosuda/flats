@@ -107,16 +107,23 @@ type Net struct {
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
-	mu       sync.Mutex
-	nodes    map[string]*node
-	stopping map[string]chan struct{} // host -> closed when its teardown finishes
-	suffix   string                   // MagicDNS suffix, once any node learns it
-	plain    bool                     // some node found HTTPS unavailable
-	closed   bool
-	changed  chan struct{} // closed and replaced on every state change
+	mu              sync.Mutex
+	nodes           map[string]*node
+	stopping        map[string]chan struct{}     // host -> closed when its teardown finishes
+	privateStopping map[string]privateRetirement // preserves unconfirmed Private stops across retries
+	suffix          string                       // MagicDNS suffix, once any node learns it
+	plain           bool                         // some node found HTTPS unavailable
+	closed          bool
+	changed         chan struct{} // closed and replaced on every state change
+}
+
+type privateRetirement struct {
+	node *node
+	done chan struct{}
 }
 
 type node struct {
+	privateMu sync.Mutex // serializes private listener setup and confirmed stop
 	host      string
 	ephemeral bool
 	dir       string
@@ -173,11 +180,12 @@ func New(cfg Config) (*Net, error) {
 		logf = func(string, ...any) {}
 	}
 	return &Net{
-		cfg:      cfg,
-		logf:     logf,
-		nodes:    map[string]*node{},
-		stopping: map[string]chan struct{}{},
-		changed:  make(chan struct{}),
+		cfg:             cfg,
+		logf:            logf,
+		nodes:           map[string]*node{},
+		stopping:        map[string]chan struct{}{},
+		privateStopping: map[string]privateRetirement{},
+		changed:         make(chan struct{}),
 	}, nil
 }
 
@@ -333,7 +341,7 @@ func (n *Net) ensurePrivate(nd *node) {
 		return
 	}
 	n.mu.Lock()
-	ready := nd.bootOK && nd.err == nil && nd.srv != nil && !nd.serving && !nd.listenStarted
+	ready := nd.private && nd.bootOK && nd.err == nil && nd.srv != nil && !nd.serving && !nd.listenStarted
 	n.mu.Unlock()
 	if !ready {
 		return
@@ -360,8 +368,10 @@ func (n *Net) ensurePrivate(nd *node) {
 // listen serves the handler with HTTPS on :443 (and a redirect on :80) when
 // the tailnet issues certificates, else plain HTTP on :80.
 func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.Status) error {
+	nd.privateMu.Lock()
+	defer nd.privateMu.Unlock()
 	n.mu.Lock()
-	if nd.listenStarted || nd.serving {
+	if !nd.private || nd.ctx.Err() != nil || nd.listenStarted || nd.serving {
 		n.mu.Unlock()
 		return nil
 	}
@@ -622,7 +632,11 @@ func (n *Net) identity(nd *node, whoIs whoIsFunc) http.Handler {
 			r.Header.Set("Tailscale-User-Login", headerValue(who.UserProfile.LoginName))
 			r.Header.Set("Tailscale-User-Name", headerValue(who.UserProfile.DisplayName))
 		}
-		(*nd.handler.Load()).ServeHTTP(w, r)
+		if handler := nd.handler.Load(); handler != nil {
+			(*handler).ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
 	})
 }
 
@@ -756,6 +770,74 @@ func (n *Net) setErr(nd *node, err error) {
 	nd.err = err
 	n.notifyLocked()
 	n.mu.Unlock()
+}
+
+// StopPrivate closes only tailnet HTTP when Funnel shares the node. Without
+// a Funnel request it retires the node normally, including isolated previews.
+func (n *Net) StopPrivate(host string) error {
+	n.mu.Lock()
+	if pending, ok := n.privateStopping[host]; ok {
+		n.mu.Unlock()
+		if err := n.waitPrivateStop(host, pending); err != nil {
+			return err
+		}
+		// A caller may have recreated this host while retirement was pending.
+		return n.StopPrivate(host)
+	}
+	nd := n.nodes[host]
+	n.mu.Unlock()
+	if nd == nil {
+		return nil
+	}
+	nd.privateMu.Lock()
+	n.mu.Lock()
+	nd.private = false
+	nd.handler.Store(nil)
+	if nd.funnelH.Load() == nil {
+		pending := privateRetirement{node: nd, done: n.retireLocked(nd, true)}
+		if n.privateStopping == nil {
+			n.privateStopping = map[string]privateRetirement{}
+		}
+		n.privateStopping[host] = pending
+		n.mu.Unlock()
+		nd.privateMu.Unlock()
+		return n.waitPrivateStop(host, pending)
+	}
+	servers := nd.https
+	n.mu.Unlock()
+	var errs []error
+	for _, hs := range servers {
+		if err := hs.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			errs = append(errs, err)
+		}
+	}
+	err := errors.Join(errs...)
+	n.mu.Lock()
+	if err == nil {
+		nd.https = nil
+		nd.serving, nd.listenStarted = false, false
+	}
+	n.notifyLocked()
+	n.mu.Unlock()
+	nd.privateMu.Unlock()
+	return err
+}
+
+func (n *Net) waitPrivateStop(host string, pending privateRetirement) error {
+	select {
+	case <-pending.done:
+		if pending.node.stopErr != nil {
+			return pending.node.stopErr
+		}
+		n.mu.Lock()
+		if current, ok := n.privateStopping[host]; ok && current.done == pending.done {
+			delete(n.privateStopping, host)
+		}
+		n.mu.Unlock()
+		return nil
+	case <-time.After(stopWait):
+		return fmt.Errorf("tsnet: %s Private teardown is still unconfirmed", host)
+	}
 }
 
 // Stop implements core.PrivateNet: it logs the node out (removing it from the

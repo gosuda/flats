@@ -820,3 +820,40 @@ func TestAuthKeyLoginIsStarting(t *testing.T) {
 		t.Errorf("re-auth: %s", hi.State)
 	}
 }
+
+func TestStopPrivateRetainsUnconfirmedRetirement(t *testing.T) {
+	oldWait := stopWait
+	stopWait = time.Millisecond
+	defer func() { stopWait = oldWait }()
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, runDone := make(chan struct{}), make(chan struct{})
+	close(started)
+	nd := &node{host: "held", dir: filepath.Join(n.cfg.Dir, "held"), ctx: ctx, cancel: cancel, started: started, done: runDone}
+	n.nodes["held"] = nd
+	// The retiring backend's lifecycle is held, proving a second attempt cannot
+	// turn absence from n.nodes into a successful stop.
+	if err := n.StopPrivate("held"); err == nil {
+		t.Fatal("first unconfirmed stop accepted")
+	}
+	if err := n.StopPrivate("held"); err == nil {
+		t.Fatal("retry forgot unconfirmed retirement")
+	}
+	close(runDone)
+	n.mu.Lock()
+	pending := n.privateStopping["held"]
+	n.mu.Unlock()
+	<-pending.done
+	if err := n.StopPrivate("held"); err != nil {
+		t.Fatal("confirmed stop did not settle", err)
+	}
+	if err := n.StopPrivate("held"); err != nil {
+		t.Fatal("settled retry", err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
