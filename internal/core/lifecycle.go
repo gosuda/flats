@@ -1256,6 +1256,8 @@ func ErrorCategory(err error) string {
 		return "provider_not_ready"
 	case errors.Is(err, ErrConfigOverridden):
 		return "config_overridden"
+	case errors.Is(err, ErrConfigChanged):
+		return "config_changed"
 	}
 	var de *DeployError
 	if errors.As(err, &de) {

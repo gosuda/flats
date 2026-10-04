@@ -74,13 +74,13 @@ func TestSettingsSourceSavesBeforeApplying(t *testing.T) {
 	}
 	var saved *config.Document
 	fail := error(nil)
-	src, err := core.NewSettingsSource(doc, func(_ context.Context, apply func(*config.Document) error) error {
+	src, err := core.NewSettingsSource(doc, &core.SettingsFile{Mode: "config", Hash: "h0", Save: func(expected string, apply func(*config.Document) error) (string, error) {
 		if fail != nil {
-			return fail
+			return "", fail
 		}
 		saved = doc.Clone()
-		return apply(saved)
-	})
+		return "h1", apply(saved)
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

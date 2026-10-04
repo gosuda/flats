@@ -32,16 +32,23 @@ func setupWithAuthority(t *testing.T) (*httptest.Server, *core.Service, *api.Ope
 
 func setupWithLifecycle(t *testing.T, lifecycle core.LifecycleNet) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
 	t.Helper()
+	return setupWith(t, t.TempDir(), func(c *core.Config) { c.Lifecycle = lifecycle })
+}
+
+// setupWith serves a Service on data directory dir; edit adjusts its config.
+func setupWith(t *testing.T, dir string, edit func(*core.Config)) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
+	t.Helper()
 	authority := operatorAuthority(t)
-	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "f.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	priv, _ := local.Listen("127.0.0.1:0")
 	pubNet, _ := local.Listen("127.0.0.1:0")
-	svc, err := core.New(context.Background(), core.Config{Lifecycle: lifecycle, OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
-		ConsoleURL: func() string { return "http://console" }, Logf: t.Logf})
+	cfg := core.Config{OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
+		ConsoleURL: func() string { return "http://console" }, Logf: t.Logf}
+	edit(&cfg)
+	svc, err := core.New(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

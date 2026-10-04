@@ -428,15 +428,13 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		rt = &runtime.Manager{DataDir: dataDir, Logf: logf}
 	}
 	// Settings are saved to config.json against the hash this process last
-	// read or wrote. SettingsSource serializes saves, so hash needs no lock.
-	writer, hash := config.NewWriter(p.path), p.hash
-	settings, err := core.NewSettingsSource(p.doc, func(_ context.Context, apply func(*config.Document) error) error {
-		h, err := writer.Save(hash, apply)
-		if err == nil {
-			hash = h
-		}
-		return err
-	})
+	// read or wrote; SettingsSource keeps that hash as the settings ETag.
+	mode := "config"
+	if s.legacy {
+		mode = "legacy"
+	}
+	settings, err := core.NewSettingsSource(p.doc, &core.SettingsFile{Mode: mode, Hash: p.hash, Overrides: s.overrides,
+		Save: config.NewWriter(p.path).Save, DiskHash: func() (string, error) { return configHash(p.path) }})
 	if err != nil {
 		return nil, err
 	}
@@ -502,6 +500,15 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	ok = true
 	return h, nil
+}
+
+// configHash returns the config hash of the file at path.
+func configHash(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return config.Hash(b), nil
 }
 
 // storedPrivateBackend is network.private_backend as the operator chose

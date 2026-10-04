@@ -28,6 +28,7 @@ func TestTypedProviderFailureHTTPMapping(t *testing.T) {
 		{core.ErrPublicStopUnconfirmed, 409, "public_stop_unconfirmed"},
 		{core.ErrStaleApproval, 409, "stale_approval"},
 		{core.ErrConfigOverridden, 409, "config_overridden"},
+		{core.ErrConfigChanged, 412, "config_changed"},
 		{errors.New("storage write failed"), 500, ""},
 	} {
 		t.Run(tc.err.Error(), func(t *testing.T) {

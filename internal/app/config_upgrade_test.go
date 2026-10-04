@@ -658,6 +658,11 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	}
 	path := h.ConfigPath
 	before := hashFile(t, path)
+	var view struct{ Config core.ConfigView }
+	if code := operatorCall(t, h, client, "GET", "/console/api/settings", nil, &view); code != 200 || view.Config.Mode != "legacy" ||
+		view.Config.ETag != before || view.Config.Pinned[core.SetPortalRelays] != "the service's --relays flag" || view.Config.Sources["host.management_addr"] != config.SourceFlag {
+		t.Fatalf("legacy settings view = %d %+v", code, view.Config)
+	}
 	code, out := put(`{"portal_relays":"https://other.example"}`)
 	if code != 409 || out["category"] != "config_overridden" || !strings.Contains(fmt.Sprint(out["error"]), "--relays flag; reinstall the service with `flats install`") {
 		t.Fatalf("pinned relays = %d %v", code, out)
@@ -685,6 +690,9 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h3.Close()
+	if v, err := h3.Svc.SettingsConfig(); err != nil || v.Mode != "config" || len(v.Pinned) != 0 || v.ETag != hashFile(t, path) {
+		t.Fatalf("config mode view = %+v %v", v, err)
+	}
 	if _, err := h3.Svc.UpdateSettings(context.Background(), map[string]string{core.SetPortalRelays: "https://other.example"}); err != nil {
 		t.Fatalf("config mode: %v", err)
 	}
