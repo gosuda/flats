@@ -31,13 +31,14 @@ storage](configuration.md) is the full map, including what to back up:
 config.json                     operator configuration (see configuration.md)
 config-history/                 previous config.json copies
 flats.lock                      lifetime exclusive advisory lock (never unlink while hosts run)
-flats.db                        metadata
+flats.db                        metadata and durable runtime activation generations
 backups/                        flats.db copies taken before schema migrations
 secret.key                      32-byte AES-256-GCM key for flat secrets (0600)
 flats/<slug>/versions/<n>/      immutable version files (read-only, 0444)
 flats/<slug>/data/              server-flat data: db.sqlite and files/
 flats/<slug>/previews/<host>/   preview copy of data/ (removed with the preview)
 tsnet/<host>/                   tsnet node state (one directory per node)
+runtime/docs/<app>-<content>/  read-only embedded docs modules and generated content.js
 portal/<slug>.json              Portal identity (keeps the public hostname stable)
 ```
 
@@ -93,6 +94,7 @@ failures or an injected implementation that ignores the network contract.
 
 ```json
 {
+  "type": "flat",
   "name": "My blog",
   "kind": "static",
   "entry": "index.html",
@@ -103,6 +105,7 @@ failures or an injected implementation that ignores the network contract.
 }
 ```
 
+* `type`: `flat` (default website) or `docs` (Markdown documents).
 * `kind`: `static` (default) or `server`.
 * static `entry` defaults to `index.html` and must exist at the bundle root.
   `spa: true` serves the entry for unknown extension-less paths. `/about`
@@ -116,6 +119,19 @@ failures or an injected implementation that ignores the network contract.
   no special files, no paths outside the root; a single wrapping directory
   (e.g. `dist/`) is stripped. `.git`, `node_modules`, `.DS_Store`, `__MACOSX`
   are skipped.
+
+## Content types
+
+The [content types contract](content-types.md) describes `flat` websites and
+`docs` Markdown documents. Docs uploads retain their original files and run
+through the embedded docs app on the existing server-flat worker. Core writes
+read-only modules under `runtime/docs/`, serves uploaded assets, and sets
+`X-Flats-Access: private|public` according to each route. Types are derived
+from stored manifest JSON; there is no additional type store column. A durable
+host counter orders runtime activations independently of published versions;
+rollback merges target Markdown against the live document's current seed.
+Public and preview route lifetimes cancel admitted requests, closing upgraded
+connections when exposure is withdrawn.
 
 ## Exposure
 
@@ -339,6 +355,7 @@ answers:
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | /api/flats/{slug}/document?doc= | live docs Markdown, else Current Draft |
 | GET | /api/status | host, networks, limits |
 | GET | /api/flats | list |
 | POST | /api/flats | `{slug, name}` create |
@@ -382,7 +399,9 @@ MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 `create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`
 (loopback callers only), `deploy`, `rollback`, `list_versions`,
 `open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
-`get_approval`, `list_secrets`.
+`get_approval`, `list_secrets`, `save_draft`, `get_draft`, `publish`,
+`save_document`, `get_document`, `get_runtime_reference`, `get_content_types`.
+Content type discovery: resource `flats://docs/content-types/v1`.
 
 
 ## Per-flat console management

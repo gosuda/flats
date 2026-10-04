@@ -21,10 +21,18 @@ func TestRuntimeReferenceDiscovery(t *testing.T) {
 				t.Fatal("initialization must point to both documentation discovery paths")
 			}
 			resources, err := cs.ListResources(context.Background(), nil)
-			if err != nil || len(resources.Resources) != 1 {
+			if err != nil || len(resources.Resources) != 2 {
 				t.Fatalf("resource discovery: %+v, %v", resources, err)
 			}
-			r := resources.Resources[0]
+			var r *mcp.Resource
+			for _, resource := range resources.Resources {
+				if resource.URI == runtimeref.URI {
+					r = resource
+				}
+			}
+			if r == nil {
+				t.Fatal("runtime resource missing")
+			}
 			if r.URI != runtimeref.URI || r.MIMEType != "text/markdown" {
 				t.Fatalf("wrong resource metadata: %+v", r)
 			}

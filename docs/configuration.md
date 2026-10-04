@@ -29,6 +29,7 @@ macOS, `$XDG_CONFIG_HOME/Flats` or `~/.config/Flats` on Linux).
   flats.db                    metadata database (+ -wal, -shm)
   secret.key                  key for flat secrets, 32 bytes, mode 0600
   backups/                    flats.db copies taken before a schema migration
+  runtime/docs/               generated read-only docs app modules (recreated as needed)
                               (newest 3) and the archived network-provider.json
   flats/<slug>/
     draft-revs/ versions/     draft and published code
@@ -69,7 +70,7 @@ in the file once written; `flats config unset KEY` removes it.
   "schema_version": 1,
   "host": {
     "instance_id": "63b57046-582f-48d9-a64f-877ae28d12aa",
-    "data_dir": "/Users/example/Library/Application Support/Flats"
+    "data_dir": "/path/to/flats-data"
   },
   "network": {
     "permitted": ["portal"]

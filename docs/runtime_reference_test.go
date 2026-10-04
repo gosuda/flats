@@ -40,3 +40,15 @@ func TestDocumentedRuntimeLimits(t *testing.T) {
 		t.Fatal("byte/upload counts changed: update the published exact counts")
 	}
 }
+
+func TestBuiltInHelpersAreOutsideRuntimeV1(t *testing.T) {
+	for _, name := range []string{"runtimeGeneration", "ws.setSendLimits"} {
+		if !strings.Contains(runtimeref.Markdown, name) || !strings.Contains(runtimeref.ContentTypesMarkdown, name) {
+			t.Fatalf("missing internal helper boundary: %s", name)
+		}
+	}
+	if !strings.Contains(runtimeref.Markdown, "explicitly outside runtime API v1") ||
+		!strings.Contains(runtimeref.ContentTypesMarkdown, "not part of runtime API\nv1") {
+		t.Fatal("built-in host internals must not silently extend v1")
+	}
+}

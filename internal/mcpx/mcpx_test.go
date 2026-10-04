@@ -35,7 +35,9 @@ type env struct {
 	remote              *mcp.ClientSession // looks like a tailnet peer
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env        { return newEnvWithRuntime(t, nil) }
+func newEnvRuntime(t *testing.T) *env { return newEnvWithRuntime(t, documentRuntime{}) }
+func newEnvWithRuntime(t *testing.T, rt core.Runtime) *env {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
@@ -51,7 +53,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	pub := local.NewPublic(pubNet)
-	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
+	svc, err := core.New(context.Background(), core.Config{Runtime: rt, DataDir: dir, Store: st, Private: priv, Public: pub,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -146,8 +148,8 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_draft", "get_flat", "get_logs", "get_runtime_reference", "list_flats",
-		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_draft", "save_version", "save_version_from_dir", "set_visibility"}
+	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_runtime_reference", "list_flats",
+		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_version", "save_version_from_dir", "set_visibility"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)
@@ -233,7 +235,7 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 func TestValidationErrorsHaveFixes(t *testing.T) {
 	e := newEnv(t)
 	text, isErr := call(t, e.local, "save_version", map[string]any{
-		"slug": "site", "files": []any{file("readme.md", "# hi", "utf8")},
+		"slug": "site", "files": []any{file("readme.txt", "hi", "utf8")},
 	}, nil)
 	if !isErr {
 		t.Fatalf("missing index.html accepted: %s", text)

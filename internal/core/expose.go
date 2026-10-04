@@ -75,13 +75,14 @@ const (
 // Draft and private audiences must not be placed on Funnel or Portal.
 // A non-local provider is used only when it appears in Permitted.
 type ExposureRequest struct {
-	Slug       string
-	Host       string
-	Visibility string // private | public
-	Audience   ExposureAudience
-	Handler    http.Handler
-	Ephemeral  bool
-	Permitted  []ProviderID
+	Slug           string
+	Host           string
+	Visibility     string // private | public
+	Audience       ExposureAudience
+	PrivateHandler http.Handler // private routes retained by a Public request
+	Handler        http.Handler
+	Ephemeral      bool
+	Permitted      []ProviderID
 }
 
 // ExposureEndpoint is one route the network actually opened.

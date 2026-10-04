@@ -128,6 +128,7 @@ func pathEscape(s string) string { return url.PathEscape(s) }
 // --- API shapes (mirrors of internal/core and internal/store JSON) ---
 
 type version struct {
+	Type       string          `json:"type"`
 	Published  bool            `json:"published"`
 	Role       string          `json:"role,omitempty"`
 	Revision   int             `json:"revision,omitempty"`
@@ -147,6 +148,7 @@ type version struct {
 }
 
 type flatView struct {
+	Type            string         `json:"type"`
 	Publication     string         `json:"publication"`
 	Draft           *draftView     `json:"draft"`
 	Providers       []string       `json:"providers"`
@@ -259,6 +261,7 @@ type previewView struct {
 }
 
 type draftView struct {
+	Type        string    `json:"type"`
 	Flat        string    `json:"flat"`
 	Revision    int       `json:"revision"`
 	Hash        string    `json:"hash"`

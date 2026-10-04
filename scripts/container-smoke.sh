@@ -3,7 +3,7 @@
 # documented network modes: host networking, and ports published on
 # 127.0.0.1 from a dedicated bridge network. Each mode starts from empty data
 # (config.json created on first start), approves static and JavaScript server
-# deploys through the console API, restarts the container and checks that
+# deploys and a built-in docs flat through the console API, restarts the container and checks that
 # config, flats and data survive, then stops it with SIGTERM. Containers run
 # hardened as docs/container.md suggests: read-only root, no capabilities, no
 # new privileges.
@@ -159,10 +159,19 @@ EOF'
 	before=$(hits)
 	[ -n "$before" ] || fail "server flat returned no hit count"
 
+	step "$mode: approved document deploy under the writable data volume"
+	docker exec "$name" sh -c '
+		mkdir -p /tmp/document &&
+		printf "# Container document\n\nPersistent Markdown.\n" >/tmp/document/index.md'
+	deploy_approved document
+	get document | grep -q 'Container document' || fail "built-in docs flat was not served"
+	docker exec "$name" test -d /data/runtime/docs || fail "docs modules are not under /data"
+
 	step "$mode: restart keeps config, flats and data"
 	docker restart "$name" >/dev/null
 	wait_for "the restarted host" healthy
 	wait_for "the static flat after restart" static_served
+	get document | grep -q 'Container document' || fail "docs flat did not survive restart"
 	after=$(hits)
 	if [ -z "$after" ] || [ "$after" -le "$before" ]; then
 		fail "server flat data did not survive the restart ($before then $after hits)"

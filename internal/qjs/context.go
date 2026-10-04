@@ -12,9 +12,11 @@ import (
 type Context struct {
 	context.Context
 
-	handle  *Handle
-	runtime *Runtime
-	global  *Value
+	handle      *Handle
+	runtime     *Runtime
+	global      *Value
+	intrinsics  map[string]*Value
+	goFunctions map[uint64]*Value
 }
 
 func (c *Context) Call(name string, args ...uint64) *Value {
@@ -125,7 +127,7 @@ func (c *Context) SetAsyncFunc(name string, fn AsyncFunction) {
 // ParseJSON parses given JSON string and returns an object value.
 func (c *Context) ParseJSON(v string) *Value {
 	cStr := c.NewStringHandle(v)
-	defer cStr.Free()
+	defer cStr.handle.Free()
 
 	return c.Call("QJS_ParseJSON", c.Raw(), cStr.Raw())
 }
@@ -200,6 +202,7 @@ func (c *Context) NewFloat64(v float64) *Value {
 // NewString creates a new JavaScript string value.
 func (c *Context) NewString(v string) *Value {
 	str := c.NewStringHandle(v)
+	defer str.handle.Free()
 
 	return c.Call("QJS_NewString", c.Raw(), str.Raw())
 }
@@ -242,7 +245,7 @@ func (c *Context) NewAtom(v string) Atom {
 
 	atomValue := c.Call("JS_NewAtom", c.Raw(), cstr.Raw())
 
-	defer cstr.Free()
+	defer cstr.handle.Free()
 
 	return Atom{context: c, Value: atomValue}
 }
@@ -302,7 +305,7 @@ func (c *Context) ThrowSyntaxError(format string, args ...any) *Value {
 	cause := fmt.Sprintf(format, args...)
 
 	causePtr := c.NewStringHandle(cause)
-	defer causePtr.Free()
+	defer causePtr.handle.Free()
 
 	return c.Call("QJS_ThrowSyntaxError", c.Raw(), causePtr.Raw())
 }
@@ -312,7 +315,7 @@ func (c *Context) ThrowTypeError(format string, args ...any) *Value {
 	cause := fmt.Sprintf(format, args...)
 
 	causePtr := c.NewStringHandle(cause)
-	defer causePtr.Free()
+	defer causePtr.handle.Free()
 
 	return c.Call("QJS_ThrowTypeError", c.Raw(), causePtr.Raw())
 }
@@ -322,7 +325,7 @@ func (c *Context) ThrowReferenceError(format string, args ...any) *Value {
 	cause := fmt.Sprintf(format, args...)
 
 	causePtr := c.NewStringHandle(cause)
-	defer causePtr.Free()
+	defer causePtr.handle.Free()
 
 	return c.Call("QJS_ThrowReferenceError", c.Raw(), causePtr.Raw())
 }
@@ -332,7 +335,7 @@ func (c *Context) ThrowRangeError(format string, args ...any) *Value {
 	cause := fmt.Sprintf(format, args...)
 
 	causePtr := c.NewStringHandle(cause)
-	defer causePtr.Free()
+	defer causePtr.handle.Free()
 
 	return c.Call("QJS_ThrowRangeError", c.Raw(), causePtr.Raw())
 }
@@ -342,7 +345,7 @@ func (c *Context) ThrowInternalError(format string, args ...any) *Value {
 	cause := fmt.Sprintf(format, args...)
 
 	causePtr := c.NewStringHandle(cause)
-	defer causePtr.Free()
+	defer causePtr.handle.Free()
 
 	return c.Call("QJS_ThrowInternalError", c.Raw(), causePtr.Raw())
 }
@@ -400,4 +403,61 @@ func createJsCallArgs(c *Context, args ...*Value) (uint64, uint64) {
 	}
 
 	return argc, argvPtr
+}
+
+// readCString copies a JS-owned C string, then releases both allocation kinds.
+func (c *Context) readCString(h *Handle) string {
+	defer h.Free()
+	if h.Raw() == 0 {
+		return h.String()
+	}
+	addr, size := c.runtime.mem.UnpackPtr(h.Raw())
+	defer c.Call("JS_FreeCString", c.Raw(), uint64(addr))
+	return string(c.MemRead(addr, uint64(size)))
+}
+
+// captureIntrinsics runs before guest code can replace the built-in globals.
+func (c *Context) captureIntrinsics() {
+	c.intrinsics = make(map[string]*Value)
+	for _, entry := range []struct{ object, method string }{{"JSON", "stringify"}, {"Reflect", "ownKeys"}, {"Reflect", "getOwnPropertyDescriptor"}} {
+		object := c.Global().GetPropertyStr(entry.object)
+		c.intrinsics[entry.method] = object.GetPropertyStr(entry.method)
+		object.Free()
+	}
+}
+
+func (c *Context) invokeIntrinsic(name string, args ...*Value) (*Value, error) {
+	argc, argv := createJsCallArgs(c, args...)
+	defer c.FreeHandle(argv)
+	return normalizeJsValue(c, c.Call("QJS_Call", c.Raw(), c.intrinsics[name].Raw(), c.NewUndefined().Raw(), argc, argv))
+}
+
+// Go functions may outlive the conversion's borrowed input. Retain one owned
+// reference per distinct function until Runtime.Close; callers must not invoke
+// converted functions after closing their runtime. No finalizer calls into WASM.
+func (c *Context) retainGoFunction(input *Value) *Value {
+	if c.goFunctions == nil {
+		c.goFunctions = make(map[uint64]*Value)
+	}
+	if retained := c.goFunctions[input.Raw()]; retained != nil {
+		return retained
+	}
+	retained := input.Clone()
+	c.goFunctions[input.Raw()] = retained
+	return retained
+}
+
+func (c *Context) freeOwnedValues() {
+	for _, value := range c.intrinsics {
+		value.Free()
+	}
+	for _, value := range c.goFunctions {
+		value.Free()
+	}
+	c.intrinsics = nil
+	c.goFunctions = nil
+	if c.global != nil {
+		c.global.Free()
+		c.global = nil
+	}
 }

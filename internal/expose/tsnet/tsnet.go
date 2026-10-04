@@ -164,8 +164,9 @@ type node struct {
 	backend       string // ipn.State string
 	authURL       string
 	keyExpiry     *time.Time
-	dnsName       string // FQDN without trailing dot
-	private       bool   // tailnet HTTP was requested; funnel-only nodes stay false
+	dnsName       string   // FQDN without trailing dot
+	servedNames   []string // refreshed by applyStatus under Net.mu
+	private       bool     // tailnet HTTP was requested; funnel-only nodes stay false
 	listenStarted bool
 	serving       bool
 	plain         bool
@@ -430,7 +431,12 @@ func (n *Net) listen(nd *node, srv *ts.Server, lc *local.Client, st *ipnstate.St
 	}
 	nd.listenStarted = true
 	n.mu.Unlock()
-	app := n.identity(nd, lc.WhoIs)
+	n.applyStatus(nd, st)
+	app := servedHosts(n.identity(nd, lc.WhoIs), func() []string {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		return append([]string{nd.host}, nd.servedNames...)
+	})
 	useTLS := st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSEnabled && len(st.CertDomains) > 0
 	var servers []*http.Server
 	start := func(ln net.Listener, h http.Handler) {
@@ -611,6 +617,29 @@ func writeRootFileAtomic(root *os.Root, name string, b []byte) error {
 		return err
 	}
 	return nil
+}
+
+// servedHosts binds private routes to names belonging to this node, including
+// plain HTTP when MagicDNS certificates are unavailable.
+func servedHosts(next http.Handler, names func() []string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowed := make(map[string]bool)
+		for _, name := range names() {
+			if name != "" {
+				allowed[strings.ToLower(strings.TrimSuffix(name, "."))] = true
+			}
+		}
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+		if !allowed[host] {
+			http.Error(w, "unknown host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // httpsRedirect sends plain HTTP requests to the same path on https://host.
@@ -835,7 +864,14 @@ func (n *Net) applyStatus(nd *node, st *ipnstate.Status) {
 	if st.AuthURL != "" {
 		nd.authURL = st.AuthURL
 	}
+	nd.servedNames = append([]string(nil), st.CertDomains...)
 	if st.Self != nil {
+		name := strings.TrimSuffix(st.Self.DNSName, ".")
+		short, _, _ := strings.Cut(name, ".")
+		nd.servedNames = append(nd.servedNames, name, short)
+		for _, ip := range st.Self.TailscaleIPs {
+			nd.servedNames = append(nd.servedNames, ip.String())
+		}
 		nd.keyExpiry = st.Self.KeyExpiry
 		if name := strings.TrimSuffix(st.Self.DNSName, "."); name != "" {
 			nd.dnsName = name

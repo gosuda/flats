@@ -173,7 +173,7 @@ func TestMigrationRegistryIsOrdered(t *testing.T) {
 			t.Fatalf("step %d after %d", m.version, migrations[i-1].version)
 		}
 	}
-	if latestVersion() != 6 {
+	if latestVersion() != 7 {
 		t.Fatalf("latest %d", latestVersion())
 	}
 }
@@ -529,7 +529,7 @@ func TestFailedStepRollsBack(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Close()
-		withMigrations(t, append(slices.Clone(migrations), migration{7, "broken", func(ctx context.Context, x executor) error {
+		withMigrations(t, append(slices.Clone(migrations), migration{8, "broken", func(ctx context.Context, x executor) error {
 			if _, err := x.ExecContext(ctx, `CREATE TABLE step7(x)`); err != nil {
 				return err
 			}
@@ -541,7 +541,7 @@ func TestFailedStepRollsBack(t *testing.T) {
 		if _, err := Open(path); !errors.Is(err, boom) {
 			t.Fatalf("open with failing step: %v", err)
 		}
-		if info, err := Inspect(path); err != nil || info.Version != 6 {
+		if info, err := Inspect(path); err != nil || info.Version != 7 {
 			t.Fatalf("version after failed step %+v %v", info, err)
 		}
 		var name string

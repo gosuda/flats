@@ -9,6 +9,10 @@ The version identifies the documented contract, separately from the host build.
 Changes to this contract require a new reference version; corrections that do
 not change behavior may revise v1. Record the document hash with gate evidence.
 
+Non-website content types are described in `flats://docs/content-types/v1`.
+Built-in app host internals (`runtimeGeneration`, `ws.setSendLimits` and `__flats_docsCodec`) are
+described there and are explicitly outside runtime API v1.
+
 ## Deploy from an MCP client
 
 Connect using Streamable HTTP to the operator's console URL plus `/mcp`

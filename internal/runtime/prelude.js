@@ -6,6 +6,34 @@
   "use strict";
   const host = globalThis.__flats_host;
   delete globalThis.__flats_host;
+  const docsCodec = globalThis.__flats_docs_codec;
+  delete globalThis.__flats_docs_codec;
+  Object.defineProperty(globalThis, "__flats_docsCodec", {value: Object.freeze({
+    encode(bytes) {
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength > 1536 * 1024) throw new Error("docs codec binary limit");
+      const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      return docsCodec("encode", buffer);
+    },
+    decode(s) { return new Uint8Array(docsCodec("decode", JSON.stringify(s))); },
+    digest(s) { return docsCodec("digest", JSON.stringify(s)); },
+    length(s) { return docsCodec("length", JSON.stringify(s)); },
+    textEncoder: Object.freeze({
+      encode(s) { return new Uint8Array(docsCodec("textEncode", JSON.stringify(s))); },
+      encodeInto(s, destination) {
+        const bytes = this.encode(s);
+        if (bytes.length > destination.length) throw new Error("docs codec destination too small");
+        destination.set(bytes);
+        return {read: s.length, written: bytes.length};
+      },
+    }),
+    textDecoder: Object.freeze({
+      decode(bytes) {
+        if (!(bytes instanceof Uint8Array) || bytes.byteLength > 1536 * 1024) throw new Error("docs codec binary limit");
+        return JSON.parse(docsCodec("textDecode", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)));
+      },
+    }),
+  })});
   const call = (op, args) => {
     const r = host(op, JSON.stringify(args));
     return r === "" ? undefined : JSON.parse(r);
@@ -248,6 +276,10 @@
     return String(b);
   };
 
+  // Trusted, read-only deployment metadata for apps coordinating overlapping
+  // workers. The host generation orders activations, including previews and rollbacks.
+  const runtimeGeneration = call("runtime.generation", []);
+
   // --- Request ---
   const headerHelpers = (o) => {
     const h = (k) => norm(k);
@@ -263,6 +295,7 @@
   };
   class Request {
     constructor(r) {
+      Object.defineProperty(this, "runtimeGeneration", { value: runtimeGeneration });
       this.method = r.method;
       this.url = r.url;
       this.headers = headerHelpers(r.headers || {});
@@ -374,6 +407,7 @@
   const sockets = new Map();
   class FlatsWebSocket {
     constructor(id, url, headers) {
+      Object.defineProperty(this, "runtimeGeneration", { value: runtimeGeneration });
       this.id = id;
       this.url = url;
       this.headers = headerHelpers(headers || {});
@@ -382,6 +416,11 @@
     send(data) {
       if (this.readyState !== 1) throw new Error("WebSocket is not open");
       call("ws.send", [this.id, bodyText(data)]);
+    }
+    // Optional byte budgets include queued and currently writing frames.
+    // Repeated calls may only lower either budget; existing apps opt out.
+    setSendLimits(connectionBytes, flatBytes) {
+      call("ws.limits", [this.id, connectionBytes, flatBytes]);
     }
     close(code = 1000, reason = "") {
       if (this.readyState >= 2) return;

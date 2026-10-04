@@ -31,6 +31,7 @@ import (
 
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/derp/derpserver"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/net/netns"
 	"tailscale.com/net/stun/stuntest"
@@ -1087,5 +1088,54 @@ func TestStopPrivateRetriesTerminalLogoutFailure(t *testing.T) {
 	}
 	if err := n.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServedHosts(t *testing.T) {
+	h := servedHosts(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }), func() []string { return []string{"docs", "docs.tail.ts.net", "100.64.0.1", "fd7a:115c:a1e0::1"} })
+	for _, host := range []string{"docs", "DOCS.tail.ts.net:80", "100.64.0.1", "[fd7a:115c:a1e0::1]", "[fd7a:115c:a1e0::1]:80", "attacker.test"} {
+		r := httptest.NewRequest("GET", "http://"+host+"/_docs/ws", nil)
+		r.Header.Set("Origin", "http://"+host)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		want := 204
+		if host == "attacker.test" {
+			want = 403
+		}
+		if w.Code != want {
+			t.Fatalf("%s: %d", host, w.Code)
+		}
+	}
+}
+
+func TestServedHostsFollowsRename(t *testing.T) {
+	n := &Net{changed: make(chan struct{})}
+	nd := &node{host: "flats"}
+	h := servedHosts(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }), func() []string {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		return append([]string{nd.host}, nd.servedNames...)
+	})
+	for _, name := range []string{"flats.old.ts.net.", "flats-1.new.ts.net."} {
+		n.applyStatus(nd, &ipnstate.Status{Self: &ipnstate.PeerStatus{DNSName: name}, CertDomains: []string{strings.TrimSuffix(name, ".")}})
+		short, _, _ := strings.Cut(name, ".")
+		for _, host := range []string{"flats", short, strings.TrimSuffix(name, "."), "attacker.test"} {
+			t.Run(name+host, func(t *testing.T) {
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequest("GET", "http://"+host+"/", nil))
+				want := 204
+				if host == "attacker.test" {
+					want = 403
+				}
+				if w.Code != want {
+					t.Fatalf("host %s: %d", host, w.Code)
+				}
+			})
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://flats.old.ts.net/", nil))
+	if w.Code != 403 {
+		t.Fatal("old status hostname retained", w.Code)
 	}
 }

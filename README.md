@@ -54,7 +54,7 @@ CGO_ENABLED=0 go build -o flats ./cmd/flats
 
 ### Container
 
-A Linux image for amd64 and arm64 is published with every release. Its `/data` volume holds `config.json` and all other data; an empty volume starts with the defaults. On Linux, run it with host networking so the console, CLI and agents reach it on loopback as with a native install:
+A Linux image for amd64 and arm64 is published with every release. Its `/data` volume holds `config.json`, flat data and materialized docs runtime modules; an empty volume starts with the defaults. On Linux, run it with host networking so the console, CLI and agents reach it on loopback as with a native install:
 
 ```sh
 docker run -d --name flats --restart unless-stopped --network host \
@@ -110,6 +110,20 @@ Restore intended host grants explicitly: `--network tailscale` grants Tailscale,
 
 Local loopback also binds in Tailscale mode: concurrent hosts need distinct `host.management_addr`, `host.local_addr` and data directories.
 
+Flats also supports Markdown documents with `type: "docs"`. The embedded
+collaborative editor runs on the server-flat runtime with private editing and
+public reading. Agents read live edits with `get_document`, save a Draft with
+`save_document`, then request operator approval to publish. Agent publications
+and code rollbacks merge into live Markdown while keeping independent human
+edits (conflicting lines prefer the target version). Read the
+[content types contract](docs/content-types.md) through MCP resource
+`flats://docs/content-types/v1` or `get_content_types`. Overlapping edits and
+bounded merge fallback preserve recent pre-activation live text for private
+recovery (newest 8 records within
+2 MiB per document); editors see a notice and view/copy link. Agent reads list
+conflict metadata rather than full preserved documents. Retrieve preserved text
+with `get_document {slug, conflict: generation}`; optional `doc` selects the file.
+
 ## Static and server flats
 
 Static builds need an `index.html`. For a JavaScript server, include `flats.json` containing `{"kind":"server"}` and a `server.js` ES module:
@@ -164,7 +178,7 @@ Agents and tools that read [llms.txt](https://llmstxt.org) can start from
 `http://127.0.0.1:7878/llms.txt`. The host serves it on the management server
 with the MCP endpoint and client setup, and links `/docs/agent-guide.md` (the
 instructions and tool list the MCP server reports, plus core CLI commands) and
-`/docs/runtime-api-v1.md`; `/llms-full.txt` concatenates all three.
+`/docs/runtime-api-v1.md` and `/docs/content-types.md`; `/llms-full.txt` concatenates the discovery page and all three references.
 
 Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
 

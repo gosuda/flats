@@ -43,6 +43,7 @@ type migration struct {
 var migrations = []migration{
 	{5, "legacy baseline 5", legacyBaseline},
 	{6, "host binding", addHostBinding},
+	{7, "runtime generation", addRuntimeGeneration},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
@@ -446,5 +447,15 @@ func addColumn(ctx context.Context, x executor, table, col, decl string) error {
 		return err
 	}
 	_, err = x.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+col+` `+decl)
+	return err
+}
+
+// addRuntimeGeneration preserves the activation counter independently of config.json.
+// IF NOT EXISTS also preserves counters from the pre-registry docs branch.
+func addRuntimeGeneration(ctx context.Context, x executor) error {
+	_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS runtime_generation (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  generation INTEGER NOT NULL
+)`)
 	return err
 }

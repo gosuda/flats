@@ -81,6 +81,8 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		return FlatView{}, err
 	}
 
+	s.revokeRoute("public:" + from)
+
 	// The rename is committed: move the in-memory state to the new slug.
 	s.mu.Lock()
 	delete(s.live, from)
@@ -186,7 +188,7 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 				}
 				return fv.PublicURL
 			})
-			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: target, Permitted: ids})
+			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: target, PrivateHandler: s.redirectHandler(func() string { fv, _ := s.GetFlat(context.Background(), cur); return fv.PrivateURL }), Permitted: ids})
 			for _, ep := range res.Endpoints {
 				if ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal {
 					public = true

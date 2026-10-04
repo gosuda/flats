@@ -74,9 +74,7 @@ func (a Atom) Free() {
 
 func (a Atom) String() string {
 	result := a.context.Call("QJS_AtomToCString", a.context.Raw(), a.Raw())
-	defer result.handle.Free()
-
-	return result.handle.String()
+	return a.context.readCString(result.handle)
 }
 
 func (a Atom) ToValue() *Value {
@@ -219,65 +217,79 @@ func (v *Value) NewUndefined() *Value {
 
 // GetOwnPropertyNames returns the names of the properties of the value.
 func (v *Value) GetOwnPropertyNames() (_ []string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = AnyToError(recovered)
+		}
+	}()
 	pList := v.GetOwnProperties()
-
+	defer func() {
+		for _, property := range pList {
+			property.atom.Free()
+		}
+	}()
 	names := make([]string, len(pList))
-
 	for i := range names {
 		names[i] = pList[i].String()
 	}
-
 	return names, nil
 }
 
-func (v *Value) GetOwnProperties() []OwnProperty {
-	ptr, entriesCount := v.context.CallUnPack(
-		"QJS_GetOwnPropertyNames",
-		v.Ctx(),
-		v.Raw(),
-	)
-	if entriesCount == 0 {
-		return []OwnProperty{}
+func (v *Value) GetOwnProperties() (properties []OwnProperty) {
+	if !v.IsObject() {
+		return nil
 	}
-
-	// Block size: number of entries * sizeof(JSPropertyEnum)
-	blockSize := entriesCount * jsPropertyEnumSize
-	bytes := v.context.MemRead(ptr, uint64(blockSize))
-
-	// SAFETY: This converts C memory layout to Go structs.
-	// The memory comes from QJS C code and matches JSPropertyEnum layout.
-	// This is safe because:
-	// 1. Memory size is validated (size * jsPropertyEnumSize)
-	// 2. JSPropertyEnum layout matches C struct layout
-	// 3. Memory lifetime is managed by context.FreeHandle()
-	entries := unsafe.Slice((*JSPropertyEnum)(unsafe.Pointer(&bytes[0])), entriesCount)
-
-	property := make([]OwnProperty, len(entries))
-
-	for i, entry := range entries {
-		property[i].isEnumerable = entry.isEnumerable
-		property[i].atom = Atom{
-			context: v.context,
-			Value: v.context.NewValue(NewHandle(
-				v.context.runtime,
-				uint64(entry.atom),
-			)),
+	// Own JS results avoid the upstream js_malloc array, whose allocator has
+	// no exported matching free. The captured intrinsics survive guest overrides.
+	keys, err := v.context.invokeIntrinsic("ownKeys", v)
+	if err != nil {
+		panic(err)
+	}
+	defer keys.Free()
+	complete := false
+	defer func() {
+		if !complete {
+			for _, property := range properties {
+				property.atom.Free()
+			}
 		}
+	}()
+	for i := int64(0); i < keys.Len(); i++ {
+		func() {
+			key := keys.GetPropertyIndex(i)
+			defer key.Free()
+			descriptor, err := v.context.invokeIntrinsic("getOwnPropertyDescriptor", v, key)
+			if err != nil {
+				panic(err)
+			}
+			defer descriptor.Free()
+			// Proxy traps can remove a property between ownKeys and descriptor lookup.
+			if descriptor.IsUndefined() {
+				return
+			}
+			enumerable := descriptor.GetPropertyStr("enumerable")
+			defer enumerable.Free()
+			atom := v.Call("JS_ValueToAtom", v.Ctx(), key.Raw())
+			if atom.Raw() == 0 && v.context.HasException() {
+				panic(v.context.Exception())
+			}
+			properties = append(properties, OwnProperty{isEnumerable: enumerable.Bool(), atom: Atom{context: v.context, Value: atom}})
+		}()
 	}
-
-	v.context.FreeHandle(uint64(ptr))
-
-	return property
+	complete = true
+	return properties
 }
 
 func (v *Value) GetProperty(name *Value) *Value {
 	atom := v.Call("JS_ValueToAtom", v.Ctx(), name.Raw())
+	defer v.Call("JS_FreeAtom", v.Ctx(), atom.Raw())
 
 	return v.Call("JS_GetProperty", v.Ctx(), v.Raw(), atom.Raw())
 }
 
 func (v *Value) SetProperty(name, val *Value) {
 	atom := v.Call("JS_ValueToAtom", v.Ctx(), name.Raw())
+	defer v.Call("JS_FreeAtom", v.Ctx(), atom.Raw())
 	v.Call("JS_SetProperty", v.Ctx(), v.Raw(), atom.Raw(), val.Raw())
 }
 
@@ -293,6 +305,7 @@ func (v *Value) GetPropertyStr(name string) *Value {
 func (v *Value) SetPropertyStr(name string, val *Value) {
 	if val != nil {
 		nameVal := v.context.NewStringHandle(name)
+		defer nameVal.handle.Free()
 		v.Call("JS_SetPropertyStr", v.Ctx(), v.Raw(), nameVal.Raw(), val.Raw())
 	}
 }
@@ -376,17 +389,28 @@ func (v *Value) Len() int64 {
 
 // ByteLen returns the length of the ArrayBuffer.
 func (v *Value) ByteLen() int64 {
-	return v.GetPropertyStr("byteLength").Int64()
+	length := v.GetPropertyStr("byteLength")
+	defer length.Free()
+	return length.Int64()
 }
 
 // ToByteArray returns the byte array of the ArrayBuffer.
 func (v *Value) ToByteArray() []byte {
-	v2 := v.Clone()
-
-	result := v2.context.Call("QJS_GetArrayBuffer", v2.context.Raw(), v2.Raw())
-	defer result.Free()
-
-	return result.handle.Bytes()
+	// JS_GetArrayBuffer borrows the backing store: only the packed wrapper
+	// is malloc-owned. Keep v alive and copy before freeing that wrapper.
+	result := v.Call("QJS_GetArrayBuffer", v.Ctx(), v.Raw())
+	defer result.handle.Free()
+	if result.Raw() == 0 {
+		if v.context.HasException() {
+			panic(v.context.Exception())
+		}
+		return nil
+	}
+	addr, size := v.context.runtime.mem.UnpackPtr(result.Raw())
+	if size == 0 {
+		return []byte{}
+	}
+	return append([]byte(nil), v.context.MemRead(addr, uint64(size))...)
 }
 
 func (v *Value) Exception() error {
@@ -519,7 +543,9 @@ func (v *Value) Await() (*Value, error) {
 		return nil, newInvalidJsInputErr("Promise", v)
 	}
 
-	result := v.Call("js_std_await", v.Ctx(), v.Raw())
+	// js_std_await consumes its promise argument. Preserve caller ownership.
+	copy := v.Clone()
+	result := v.Call("js_std_await", v.Ctx(), copy.Raw())
 
 	return normalizeJsValue(v.context, result)
 }
@@ -564,25 +590,30 @@ func (v *Value) ForEach(fn func(key *Value, value *Value)) {
 	if !v.IsObject() {
 		return
 	}
-
 	props := v.GetOwnProperties()
-	for _, prop := range props {
-		key := prop.atom
-
-		keyValue := key.ToValue()
-		if keyValue.String() == "length" {
-			keyValue.Free()
-
-			continue // Skip the length property
+	// Enumeration owns all atoms, including unvisited ones if the callback panics.
+	defer func() {
+		for _, prop := range props {
+			if prop.atom.Value != nil {
+				prop.atom.Free()
+			}
 		}
-
-		value := v.GetProperty(keyValue)
-		fn(keyValue, value)
-		key.Free()
-
-		if !value.IsFunction() {
-			value.Free()
-		}
+	}()
+	for i, prop := range props {
+		func() {
+			defer func() { prop.atom.Free(); props[i].atom.Value = nil }()
+			key := prop.atom.ToValue()
+			defer key.Free()
+			if key.String() == "length" {
+				return
+			}
+			value := v.GetProperty(key)
+			defer value.Free()
+			if v.context.HasException() {
+				panic(v.context.Exception())
+			}
+			fn(key, value)
+		}()
 	}
 }
 
@@ -592,9 +623,7 @@ func (v *Value) Bytes() []byte {
 
 func (v *Value) String() string {
 	result := v.Call("QJS_ToCString", v.Ctx(), v.Raw())
-	defer result.handle.Free()
-
-	return result.handle.String()
+	return v.context.readCString(result.handle)
 }
 
 // JSONStringify returns the JSON string representation of the value.
@@ -606,10 +635,13 @@ func (v *Value) JSONStringify() (_ string, err error) {
 		}
 	}()
 
-	result := v.Call("QJS_JSONStringify", v.Ctx(), v.Raw())
-	defer result.handle.Free()
-
-	return result.handle.String(), nil
+	// The upstream packed helper frees its string before returning it.
+	result, err := v.context.invokeIntrinsic("stringify", v)
+	if err != nil {
+		return "", err
+	}
+	defer result.Free()
+	return result.String(), nil
 }
 
 // DateTime returns the date value of the value.

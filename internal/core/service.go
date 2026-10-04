@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/site"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
@@ -59,13 +60,15 @@ type Runtime interface {
 
 // RuntimeSpec describes one server flat instance.
 type RuntimeSpec struct {
-	Flat    string
-	Version int
-	Dir     string // version files (read-only)
-	Entry   string
-	DataDir string // per-flat data (SQLite, files); a copy for previews
-	Env     map[string]string
-	Log     func(level, msg string)
+	Flat           string
+	Version        int
+	Generation     int64                                // host activation order, independent of Version
+	NextGeneration func(context.Context) (int64, error) // worker recovery
+	Dir            string                               // version files (read-only)
+	Entry          string
+	DataDir        string // per-flat data (SQLite, files); a copy for previews
+	Env            map[string]string
+	Log            func(level, msg string)
 }
 
 // Instance is a running server flat.
@@ -81,7 +84,8 @@ type Config struct {
 	Private   PrivateNet
 	Lifecycle LifecycleNet // optional provider manager; independent of legacy adapters
 	Public    PublicNet    // nil disables public flats
-	Runtime   Runtime      // nil disables server flats
+	DocsApp   DocsApp
+	Runtime   Runtime // nil disables server flats
 	// Settings holds the system settings (config.json). Nil keeps the
 	// frozen defaults in memory.
 	Settings   *SettingsSource
@@ -100,17 +104,22 @@ type Service struct {
 	logf  func(string, ...any)
 	locks sync.Map // slug -> *sync.Mutex
 
-	mu          sync.Mutex
-	live        map[string]*liveFlat // slug -> state
-	prevs       map[string]*preview  // host -> preview
-	redir       map[string]*redirect // old slug -> redirect being served
-	quotaWarned map[string]time.Time
-	stop        chan struct{}
-	wg          sync.WaitGroup
-	secretKey   []byte
-	settings    *SettingsSource
-	eventCount  sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits   sync.Map // slug -> *logLimit
+	docsMu        sync.Mutex
+	docsRefs      map[string]int
+	mu            sync.Mutex
+	live          map[string]*liveFlat // slug -> state
+	prevs         map[string]*preview  // host -> preview
+	redir         map[string]*redirect // old slug -> redirect being served
+	quotaWarned   map[string]time.Time
+	stop          chan struct{}
+	wg            sync.WaitGroup
+	secretKey     []byte
+	runtimeMu     sync.Mutex
+	runtimeOwners map[string]int64 // data directory -> newest runtime start
+	routeEpochs   sync.Map         // route key -> *routeEpoch
+	settings      *SettingsSource
+	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits     sync.Map // slug -> *logLimit
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -166,7 +175,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		cfg.Settings = memorySettings()
 	}
 	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf, settings: cfg.Settings,
-		live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
+		runtimeOwners: map[string]int64{}, docsRefs: map[string]int{}, live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "flats"), 0o700); err != nil {
 		return nil, err
 	}
@@ -187,6 +196,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err := s.restore(ctx); err != nil {
 		return nil, err
 	}
+	s.cleanupDocs()
 	s.wg.Add(1)
 	go s.sweeper()
 	return s, nil
@@ -195,6 +205,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 // Close stops background work and all served hosts.
 func (s *Service) Close() error {
 	close(s.stop)
+	s.routeEpochs.Range(func(key, value any) bool { value.(*routeEpoch).cancel(); return true })
 	s.wg.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -361,15 +372,40 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 			return nil, err
 		}
 		redact := newRedactor(env)
-		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{Flat: slugName, Version: v.Number, Dir: dir, Entry: m.Entry, DataDir: dataDir, Env: env,
+		runtimeDir, entry := dir, m.Entry
+		release := func() {}
+		var assets []string
+		if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
+			runtimeDir, assets, release, err = s.docsRuntime(v, dir)
+			if err != nil {
+				return nil, err
+			}
+			entry = s.cfg.DocsApp.Entry
+		}
+		generation, nextGeneration, undoGeneration, err := s.runtimeGeneration(ctx, dataDir)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{Flat: slugName, Version: v.Number, Generation: generation, NextGeneration: nextGeneration, Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env,
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))
 			}})
 		if err != nil {
+			undoGeneration()
+			release()
 			// Start errors can carry the worker's stderr.
 			return nil, errors.New(redact(err.Error()))
 		}
-		return &deployed{version: v, handler: inst, inst: inst, redact: redact}, nil
+		var managed Instance = &runtimeInstance{Instance: inst, release: func() {
+			release()
+			undoGeneration()
+		}}
+		var handler http.Handler = managed
+		if assets != nil {
+			handler = docsAssets(managed, dir, assets)
+		}
+		return &deployed{version: v, handler: handler, inst: managed, redact: redact}, nil
 	default:
 		return &deployed{version: v, handler: &site.Static{Dir: dir, Entry: m.Entry, SPA: m.SPA, NotFound: m.NotFound, ModTime: v.CreatedAt},
 			redact: func(s string) string { return s }}, nil
@@ -379,8 +415,19 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 // siteHandler serves the live version of slug (used for both networks).
 func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 	lf := s.state(slugName)
+	var epoch *routeEpoch
+	if public {
+		epoch = s.routeEpoch("public:" + slugName)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if public {
+			var done func()
+			r, done = epoch.request(r)
+			defer done()
+			if r.Context().Err() != nil {
+				http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
+				return
+			}
 			f, err := s.st.GetFlat(r.Context(), slugName)
 			if err != nil || !f.Visibility.Public() {
 				http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
@@ -404,7 +451,7 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 			lf.views.Add(1)
 			lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 		}
-		d.handler.ServeHTTP(w, r)
+		d.handler.ServeHTTP(w, trustedAccess(r, public))
 	})
 }
 
@@ -467,6 +514,7 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 		if err := s.cfg.Public.Stop(f.Slug); err != nil {
 			return fmt.Errorf("stop public exposure: %w", err)
 		}
+		s.revokeRoute("public:" + f.Slug)
 		lf.publicServed = false
 	}
 	if wantPublic {
@@ -492,6 +540,7 @@ func errPublicDisabled() error {
 
 // FlatView is a flat with derived fields for API consumers.
 type FlatView struct {
+	Type string `json:"type"`
 	store.Flat
 	PrivateURL string `json:"private_url"`
 	// PrivateState is the private host's state once it is served: "ready"
@@ -622,6 +671,13 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 				}
 			}
 		}
+	}
+	v.Type = contenttype.Flat
+	if v.Live != nil {
+		v.Type = contenttype.FromManifest(v.Live.Manifest)
+	}
+	if v.Draft != nil {
+		v.Type = contenttype.FromManifest(v.Draft.Manifest)
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))
 	return v
@@ -921,6 +977,8 @@ func healthCheck(h http.Handler, p string, redact func(string) string) HealthRes
 			msg = err.Error()
 			return
 		}
+		req = trustedAccess(req, false)
+		req.Header.Set("X-Flats-Health", "1")
 		h.ServeHTTP(rec, req)
 	}()
 	select {
@@ -1030,9 +1088,22 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 		return DeployResult{}, err
 	}
 	lf := s.state(slugName)
+	if d.version.Kind != "server" {
+		s.retireRuntime(s.dataDirOf(slugName))
+	}
 	old := lf.cur.Swap(d)
 	if old != nil && old.inst != nil {
-		go func() { time.Sleep(5 * time.Second); old.inst.Stop() }() // drain in-flight requests
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C: // drain in-flight requests
+			case <-s.stop: // shutdown must stop every instance before releasing data ownership
+			}
+			old.inst.Stop()
+		}()
 	}
 	f.LiveVersion = n
 	if err := s.ensureExposure(ctx, f); err != nil {
@@ -1627,11 +1698,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	p := &preview{host: host, flat: slugName, version: n, handler: d.handler, inst: d.inst, dataDir: dataDir}
 	now := s.now()
 	p.last.Store(now.UnixMilli())
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.last.Store(s.now().UnixMilli())
-		w.Header().Set("X-Robots-Tag", "noindex")
-		p.handler.ServeHTTP(w, r)
-	})
+	h := s.previewHandler(p)
 	stop := func() {
 		if d.inst != nil {
 			d.inst.Stop()
@@ -1758,11 +1825,7 @@ func (s *Service) restoreDeletePreviews(ctx context.Context, previews []deletePr
 		if p == nil {
 			continue
 		}
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			p.last.Store(s.now().UnixMilli())
-			w.Header().Set("X-Robots-Tag", "noindex")
-			p.handler.ServeHTTP(w, r)
-		})
+		handler := s.previewHandler(p)
 		if _, err := s.servePreview(ctx, p.flat, p.host, handler); err != nil {
 			errs = append(errs, fmt.Errorf("restore preview %s: %w", p.host, err))
 		}

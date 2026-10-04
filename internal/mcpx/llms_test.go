@@ -84,7 +84,7 @@ func TestLLMsTxt(t *testing.T) {
 	}
 	// Every linked document on this host resolves.
 	links := checkLLMsFormat(t, index)
-	for _, path := range []string{AgentGuidePath, RuntimeReferencePath, LLMsFullPath} {
+	for _, path := range []string{AgentGuidePath, RuntimeReferencePath, ContentTypesPath, LLMsFullPath} {
 		if !strings.Contains(strings.Join(links, " "), srv.URL+path) {
 			t.Errorf("llms.txt does not link %s", path)
 		}
@@ -122,12 +122,24 @@ func TestLLMsTxt(t *testing.T) {
 	}
 
 	code, _, full := fetch(t, c, "GET", srv.URL+LLMsFullPath)
-	if code != 200 || full != index+"\n---\n\n"+guide+"\n---\n\n"+runtimeref.Markdown {
+	if code != 200 || full != index+"\n---\n\n"+guide+"\n---\n\n"+runtimeref.Markdown+"\n---\n\n"+runtimeref.ContentTypesMarkdown {
 		t.Fatalf("llms-full.txt must concatenate the index, agent guide and runtime reference (status %d)", code)
 	}
 	code, h, md := fetch(t, c, "GET", srv.URL+RuntimeReferencePath)
 	if code != 200 || md != runtimeref.Markdown || h.Get("Content-Type") != "text/markdown; charset=utf-8" {
 		t.Fatalf("runtime reference = %d %q", code, h.Get("Content-Type"))
+	}
+	code, _, contentTypes := fetch(t, c, "GET", srv.URL+ContentTypesPath)
+	if code != 200 || contentTypes != runtimeref.ContentTypesMarkdown {
+		t.Fatal("content types reference missing")
+	}
+	for _, want := range []string{"save_document", "get_document", "flats://docs/content-types/v1", "type ("} {
+		if !strings.Contains(guide, want) {
+			t.Errorf("guide missing %s", want)
+		}
+	}
+	if strings.Contains(guide, "- `get_document` (read-only)") {
+		t.Fatal("live read incorrectly labeled read-only")
 	}
 	for _, path := range LLMsPaths {
 		if code, _, _ := fetch(t, c, "POST", srv.URL+path); code != http.StatusMethodNotAllowed {

@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -33,7 +34,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
 		Description: "Create an empty private flat. Optional: save_version creates the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version", Annotations: write,
-		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval."}, t.saveVersion)
+		Description: "For Markdown use save_document; read live edits with get_document and flats://docs/content-types/v1. Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version_from_dir", Annotations: write,
 		Description: "Save a Private Draft from a directory on the Flats host (absolute path). " +
 			"Only works when the agent runs on the Flats host itself (loopback); otherwise use save_version or the flats CLI."}, t.saveVersionFromDir)
@@ -47,6 +48,10 @@ func register(s *mcp.Server, t *tools) {
 		Description: "Read the current Private Draft revision and hash."}, t.getDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "publish", Annotations: write,
 		Description: "Freeze current Draft revision/hash and request explicit operator approval to publish. No version is created before successful approval."}, t.publish)
+	mcp.AddTool(s, &mcp.Tool{Name: "save_document", Annotations: write,
+		Description: "Save one Markdown document as a docs Draft, creating the flat when absent. Never publishes. Read get_document first to preserve live edits; read flats://docs/content-types/v1 for docs bundles. Use save_version for multiple documents/assets."}, t.saveDocument)
+	mcp.AddTool(s, &mcp.Tool{Name: "get_document", Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no},
+		Description: "Read exact live Markdown including people's edits from a docs flat, or Current Draft when no docs version runs. Default doc is the entry; doc is an exact Markdown path. Live reads may seed or activate state; idempotent and non-destructive. Use optional conflict (positive generation from conflict metadata) to retrieve preserved text through private host access. Missing/evicted generations fail. Read before save_document."}, t.getDocument)
 	// rollback can replace the flat's database (restore_data), so clients
 	// must treat it as destructive and ask before running it.
 	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
@@ -71,6 +76,7 @@ func register(s *mcp.Server, t *tools) {
 
 // FlatInfo describes a flat.
 type FlatInfo struct {
+	Type            string                  `json:"type" jsonschema:"flat (website) or docs (document)"`
 	Publication     string                  `json:"publication"`
 	Draft           *DraftInfo              `json:"draft"`
 	Providers       []string                `json:"providers"`
@@ -91,13 +97,14 @@ type FlatInfo struct {
 }
 
 func flatInfo(v core.FlatView) FlatInfo {
-	return FlatInfo{Publication: v.Publication, Draft: draftPointer(v.Draft), Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints, Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,
+	return FlatInfo{Type: v.Type, Publication: v.Publication, Draft: draftPointer(v.Draft), Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints, Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,
 		Versions: v.Versions, PrivateURL: v.PrivateURL, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail,
 		PublicURL: v.PublicURL, PublicNotice: v.PublicNotice, DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
 }
 
 // VersionInfo describes a saved version.
 type VersionInfo struct {
+	Type      string    `json:"type" jsonschema:"flat (website) or docs (document)"`
 	Published bool      `json:"published"`
 	Role      string    `json:"role,omitempty"`
 	Revision  int       `json:"revision,omitempty"`
@@ -119,7 +126,7 @@ type VersionInfo struct {
 func versionInfo(v store.Version, live int) VersionInfo {
 	var m bundle.Manifest
 	_ = json.Unmarshal(v.Manifest, &m)
-	return VersionInfo{Published: v.Published, Role: v.Role, Revision: v.Revision, Number: v.Number, Live: v.Number > 0 && v.Number == live, Kind: v.Kind, Entry: m.Entry, Health: m.Health,
+	return VersionInfo{Type: contenttype.FromManifest(v.Manifest), Published: v.Published, Role: v.Role, Revision: v.Revision, Number: v.Number, Live: v.Number > 0 && v.Number == live, Kind: v.Kind, Entry: m.Entry, Health: m.Health,
 		Files: v.Files, Size: v.Size, Hash: v.Hash, GitSHA: v.GitSHA, GitDirty: v.GitDirty, Message: v.Message,
 		Pruned: v.Pruned, CreatedAt: v.CreatedAt}
 }
@@ -445,7 +452,7 @@ func (t *tools) saveVersionFromDir(ctx context.Context, _ *mcp.CallToolRequest, 
 			"send the files inline with save_version, or run `flats deploy <dir>` with the Flats CLI")
 	}
 	if !filepath.IsAbs(in.Dir) {
-		return nil, SaveOut{}, toolErr(fmt.Errorf("dir %q is not an absolute path", in.Dir), "pass the absolute path of the build output directory, e.g. /Users/me/project/dist")
+		return nil, SaveOut{}, toolErr(fmt.Errorf("dir %q is not an absolute path", in.Dir), "pass the absolute path of the build output directory, e.g. /path/to/project/dist")
 	}
 	// Resolve a symlinked root (e.g. dist -> build); FromDir still refuses
 	// links inside the tree.
@@ -858,6 +865,7 @@ func (t *tools) listSecrets(ctx context.Context, _ *mcp.CallToolRequest, in Slug
 
 // DraftInfo is working content metadata, separate from published version IDs.
 type DraftInfo struct {
+	Type        string    `json:"type" jsonschema:"flat (website) or docs (document)"`
 	Flat        string    `json:"flat"`
 	Revision    int       `json:"revision"`
 	Hash        string    `json:"hash"`
@@ -874,7 +882,7 @@ type DraftInfo struct {
 }
 
 func draftInfo(d store.Draft) DraftInfo {
-	return DraftInfo{Flat: d.Flat, Revision: d.Revision, Hash: d.Hash, BaseVersion: d.BaseVersion, Dirty: d.Dirty, Size: d.Size, Files: d.Files, Kind: d.Kind, GitSHA: d.GitSHA, GitDirty: d.GitDirty, Message: d.Message, UpdatedAt: d.UpdatedAt, CreatedAt: d.CreatedAt}
+	return DraftInfo{Type: contenttype.FromManifest(d.Manifest), Flat: d.Flat, Revision: d.Revision, Hash: d.Hash, BaseVersion: d.BaseVersion, Dirty: d.Dirty, Size: d.Size, Files: d.Files, Kind: d.Kind, GitSHA: d.GitSHA, GitDirty: d.GitDirty, Message: d.Message, UpdatedAt: d.UpdatedAt, CreatedAt: d.CreatedAt}
 }
 func draftPointer(d *store.Draft) *DraftInfo {
 	if d == nil {

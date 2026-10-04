@@ -209,7 +209,7 @@ func (m *Map) CreateObject() *Value {
 
 	object := m.context.NewObject()
 	m.ForEach(func(key, value *Value) {
-		object.SetProperty(key, value)
+		object.SetProperty(key, value.Clone())
 	})
 
 	return object
@@ -290,7 +290,7 @@ func (s *Set) ToArray() *Array {
 
 	array := s.context.NewArray()
 	s.ForEach(func(value *Value) {
-		array.Push(value.Clone())
+		array.Push(value)
 	})
 
 	return array

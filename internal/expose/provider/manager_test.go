@@ -992,3 +992,20 @@ func TestManagerCloseForgetsRoutesWithoutDestructiveBackendStops(t *testing.T) {
 		t.Fatalf("manager retained closed registrations: endpoints=%+v routes=%+v", status.Endpoints, m.routes)
 	}
 }
+
+func TestFreshPublicUsesIndependentPrivateHandler(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Portal}})
+	m.portal.(*fakePortal).Public = local.NewPublic(ln)
+	defer ln.Close()
+	defer m.Close()
+	res, err := m.ServeExposure(context.Background(), ExposureRequest{Slug: "independent", Visibility: "public", Audience: AudienceCurrent, Handler: text("public"), PrivateHandler: text("private"), Permitted: []ID{Portal}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := get(t, endpointURL(res, Local)); body != "private" {
+		t.Fatalf("private route received Public handler: %q", body)
+	}
+	if body := get(t, m.portal.URL("independent")); body != "public" {
+		t.Fatalf("public route received Private handler: %q", body)
+	}
+}

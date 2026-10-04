@@ -5,7 +5,7 @@ import { h, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
 import { deployVersion, publishDraft, previewVersion, deleteFlat, setVisibility, setProvider, redeployLive, PROVIDERS } from './actions.js';
-import { thumb } from './list.js';
+import { thumb, typeBadge } from './list.js';
 
 import { siteHeader } from './site.js';
 import { shareDialog } from './share.js';
@@ -101,7 +101,7 @@ export function mount(main, [slug], ctx, settings = false) {
     }
 
     fill(headSlot,
-      h('header', { class: 'flat-head' }, thumb(flat, true), h('div', { class: 'flat-head-main' }, titleRow, urls)),
+      h('header', { class: 'flat-head' }, thumb(flat, true), h('div', { class: 'flat-head-main' }, titleRow, typeBadge(flat), urls)),
       visSlot,
       card('Versions', 'versions', versionsSlot),
       card('Open previews', 'previews', previewsSlot),
@@ -584,4 +584,3 @@ function eventRow(e) {
     h('span', { class: 'log-msg', text: e.message }),
     data);
 }
-

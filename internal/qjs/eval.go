@@ -44,7 +44,7 @@ func compile(c *Context, file string, flags ...EvalOptionFunc) (_ []byte, err er
 		return nil, err
 	}
 
-	defer result.Free()
+	defer result.handle.Free()
 
 	bytecodeBytes := result.Bytes()
 

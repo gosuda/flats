@@ -39,6 +39,7 @@ const (
 type workerSpec struct {
 	Flat        string            `json:"flat"`
 	Version     int               `json:"version"`
+	Generation  int64             `json:"generation"`
 	Dir         string            `json:"dir"`
 	Entry       string            `json:"entry"`
 	DataDir     string            `json:"data_dir"`

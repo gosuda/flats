@@ -124,6 +124,11 @@ func createFuncProxyWithRegistry(registry *ProxyRegistry) JsFunctionProxy {
 		argv uint32,
 	) (rs uint64) {
 		goFunc, this := getProxyFuncParams(registry, module.Memory(), thisVal, argc, argv)
+		defer func() {
+			for _, arg := range this.args {
+				arg.Free()
+			}
+		}()
 
 		defer func() {
 			if r := recover(); r != nil {
@@ -136,6 +141,16 @@ func createFuncProxyWithRegistry(registry *ProxyRegistry) JsFunctionProxy {
 			return this.context.ThrowError(err).Raw()
 		}
 
+		// A callback may return one of its borrowed arguments. Transfer a
+		// separate reference before argument cleanup runs.
+		if result != nil {
+			for _, arg := range this.args {
+				if result.Raw() != 0 && result.Raw() == arg.Raw() {
+					result = result.Clone()
+					break
+				}
+			}
+		}
 		return validateAndReturnResult(this, result)
 	}
 }

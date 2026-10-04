@@ -210,6 +210,7 @@ func (r *Runtime) FreeQJSRuntime() {
 		}
 	}()
 
+	r.context.freeOwnedValues()
 	r.Call("QJS_Free", r.handle.raw)
 }
 
@@ -229,38 +230,39 @@ func (r *Runtime) Close() {
 		return
 	}
 
-	// Free QJS runtime handle
+	// A deadline may have already closed the guest module. JS teardown then
+	// panics, but the native wazero store must still close and release its memory.
+	// Preserve that panic for callers while making subsequent Close calls safe.
+	defer func() {
+		if r.module != nil {
+			_ = r.module.Close(context.Background())
+		}
+		if r.wrt != nil {
+			_ = r.wrt.Close(context.Background())
+		}
+		r.handle = nil
+		r.module = nil
+		r.wrt = nil
+		if r.context != nil {
+			r.context.handle = nil
+			r.context.runtime = nil
+			r.context.global = nil
+			r.context.intrinsics = nil
+			r.context.goFunctions = nil
+			r.context = nil
+		}
+		if r.registry != nil {
+			r.registry.Clear()
+			r.registry = nil
+		}
+		r.malloc = nil
+		r.free = nil
+		r.mem = nil
+	}()
 	if r.handle != nil {
 		r.FreeQJSRuntime()
-		r.handle = nil
 	}
 
-	// Close WASM module
-	if r.module != nil {
-		r.module.Close(r.context)
-		r.module = nil
-	}
-
-	// FORK (flats): release the per-runtime wazero runtime too.
-	if r.wrt != nil {
-		_ = r.wrt.Close(context.Background())
-		r.wrt = nil
-	}
-
-	// Clear references
-	if r.context != nil {
-		r.context = nil
-	}
-
-	if r.registry != nil {
-		r.registry.Clear()
-		r.registry = nil
-	}
-
-	// Clear function references
-	r.malloc = nil
-	r.free = nil
-	r.mem = nil
 }
 
 // Load executes a JavaScript file in the runtime's context.
@@ -290,7 +292,9 @@ func (r *Runtime) Call(name string, args ...uint64) *Handle {
 
 // CallUnPack calls a WebAssembly function and unpacks the returned pointer.
 func (r *Runtime) CallUnPack(name string, args ...uint64) (uint32, uint32) {
-	return r.mem.UnpackPtr(r.Call(name, args...).raw)
+	h := r.Call(name, args...)
+	defer h.Free()
+	return r.mem.UnpackPtr(h.raw)
 }
 
 // Malloc allocates memory in the WebAssembly linear memory and return a pointer to it.
@@ -355,6 +359,7 @@ func (r *Runtime) initializeRuntime() {
 
 	r.context.handle = r.Call("QJS_GetContext", r.handle.raw)
 	r.context.runtime = r
+	r.context.captureIntrinsics()
 }
 
 func (r *Runtime) call(name string, args ...uint64) uint64 {
@@ -477,3 +482,6 @@ func (p *Pool) createNewRuntime() (*Runtime, error) {
 
 	return rt, nil
 }
+
+// MemorySize returns linear memory bytes in O(1), without walking the JS heap.
+func (r *Runtime) MemorySize() uint32 { return r.module.Memory().Size() }
