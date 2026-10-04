@@ -34,6 +34,7 @@ REPO=gosuda/flats
 DEFAULT_LISTEN=127.0.0.1:7878
 
 tmp_dir=
+staged=
 
 say() {
 	printf 'flats-install: %s\n' "$*"
@@ -49,6 +50,9 @@ die() {
 }
 
 cleanup() {
+	if [ -n "$staged" ]; then
+		rm -f "$staged"
+	fi
 	if [ -n "$tmp_dir" ] && [ -d "$tmp_dir" ]; then
 		rm -rf "$tmp_dir"
 	fi
@@ -218,11 +222,10 @@ ensure_credential() {
 		printf '\n' >>"$staged"
 	) || die "cannot write $credential_file"
 	chmod 600 "$staged"
-	if [ "$(wc -c <"$staged" | tr -d ' ')" -ne 65 ]; then
-		rm -f "$staged"
+	[ "$(wc -c <"$staged" | tr -d ' ')" -eq 65 ] ||
 		die "could not read 32 random bytes from /dev/urandom"
-	fi
 	mv "$staged" "$credential_file" || die "cannot write $credential_file"
+	staged=
 	created_credential=1
 	say "created operator credential $credential_file (mode 0600)"
 }
@@ -248,20 +251,22 @@ restart_service() {
 	fi
 }
 
-# service_enabled succeeds when the service is loaded (macOS) or enabled or
-# active (Linux), that is, when the user has not stopped it on purpose.
-service_enabled() {
+# service_active succeeds when the service is loaded (macOS) or active
+# (Linux), that is, when the user has not stopped it.
+service_active() {
 	if [ "$os" = darwin ]; then
 		launchctl print "gui/$(id -u)/dev.flats.serve" >/dev/null 2>&1
 	else
-		systemctl --user is-enabled --quiet flats.service 2>/dev/null ||
-			systemctl --user is-active --quiet flats.service 2>/dev/null
+		systemctl --user is-active --quiet flats.service 2>/dev/null
 	fi
 }
 
 start_command() {
 	if [ "$os" = darwin ]; then
-		printf 'launchctl bootstrap gui/%s %s\n' "$(id -u)" "$(service_file)"
+		printf 'launchctl enable gui/%s/dev.flats.serve && launchctl bootstrap gui/%s %s\n' \
+			"$(id -u)" "$(id -u)" "$(service_file)"
+	elif [ "$(systemctl --user is-enabled flats.service 2>/dev/null || true)" = masked ]; then
+		printf 'systemctl --user unmask flats.service && systemctl --user enable --now flats.service\n'
 	else
 		printf 'systemctl --user enable --now flats.service\n'
 	fi
@@ -275,14 +280,16 @@ restart_command() {
 	fi
 }
 
-# latest_tag prints the tag of the latest release, or nothing without curl.
-# Resolving it once keeps the archive and checksums.txt from coming from two
-# different releases.
+# latest_tag prints the tag of the latest release, or nothing when it cannot
+# be looked up (no curl, or the lookup request failed). Resolving it once keeps
+# the archive and checksums.txt from coming from two different releases.
 latest_tag() {
 	has curl || return 0
 	effective=$(curl -fsSLI --proto '=https' --tlsv1.2 --retry 3 -o /dev/null -w '%{url_effective}' \
-		"https://github.com/$REPO/releases/latest") ||
-		die "no Flats release found at https://github.com/$REPO/releases"
+		"https://github.com/$REPO/releases/latest" 2>/dev/null) || {
+		warn "could not look up the latest release tag; downloading through the latest-release link"
+		return 0
+	}
 	case "${effective##*/}" in
 	v[0-9]*) printf '%s\n' "${effective##*/}" ;;
 	*) die "no Flats release found at https://github.com/$REPO/releases" ;;
@@ -375,8 +382,12 @@ main() {
 	# Decide what happens to the service before touching anything, so a
 	# conflict stops the installer with the old binary still in place.
 	mode=none
+	service_uses_binary=
+	if [ -f "$(service_file)" ] && grep -qF "$binary" "$(service_file)"; then
+		service_uses_binary=1
+	fi
 	if [ -n "$no_service" ]; then
-		if [ -f "$(service_file)" ]; then
+		if [ -n "$service_uses_binary" ]; then
 			warn "the installed Flats service keeps running its current binary until it restarts"
 		fi
 	else
@@ -384,12 +395,12 @@ main() {
 		if [ -f "$(service_file)" ] && [ -z "$serve_args_given" ]; then
 			url=$(service_url)
 			# Upgrade a running service; leave one the user stopped alone.
-			if service_enabled; then
+			if service_active; then
 				mode=restart
 			else
 				mode=replace
 			fi
-			if ! grep -qF "$binary" "$(service_file)"; then
+			if [ -z "$service_uses_binary" ]; then
 				warn "the installed service does not run $binary and keeps its current binary"
 				warn "to switch it, rerun with: -- <flats serve flags>"
 			fi
@@ -445,19 +456,18 @@ main() {
 	chmod 0755 "$staged"
 	# Run the staged copy rather than the one in TMPDIR, which may be noexec.
 	if ! new_version=$("$staged" version 2>"$tmp_dir/version.err"); then
-		rm -f "$staged"
 		die "the downloaded binary does not run on this system: $(sed -n 1p "$tmp_dir/version.err")"
 	fi
-	mv -f "$staged" "$binary" || {
-		rm -f "$staged"
-		die "cannot install $binary"
-	}
+	mv -f "$staged" "$binary" || die "cannot install $binary"
+	staged=
 	say "installed $binary: $new_version"
 
 	created_credential=
 	case "$mode" in
 	replace)
-		warn "the Flats service is installed but stopped or disabled; it uses the new binary once started"
+		if [ -n "$service_uses_binary" ]; then
+			warn "the Flats service is installed but stopped; it uses the new binary once started"
+		fi
 		;;
 	restart)
 		say "restarting the existing Flats service"
@@ -511,8 +521,8 @@ Operator credential: $credential_file (not shown here)
   deny it in their sandbox or file-access settings.
 EOF
 	fi
-	if [ "$mode" = none ] && [ -f "$(service_file)" ]; then
-		printf '\nRestart the service to use the new binary:  %s\n' "$(restart_command)"
+	if [ "$mode" = none ] && [ -n "$service_uses_binary" ]; then
+		printf '\nIf the Flats service is running, restart it to use the new binary:  %s\n' "$(restart_command)"
 	elif [ "$mode" = replace ]; then
 		printf '\nStart the service:  %s\n' "$(start_command)"
 	elif [ "$mode" = none ]; then
