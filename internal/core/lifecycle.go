@@ -503,7 +503,7 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 	lifecyclePhase(ctx, "before_health", f.Slug, approvalID)
 	env, err := s.captureEnvironment(ctx, f.Slug, candidate)
 	if err != nil {
-		return DeployResult{}, err
+		return DeployResult{}, &DeployError{Version: candidate.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched, DataImpact: "none", HealthData: "not_run", LiveData: "untouched"}
 	}
 	h, err := s.checkIsolated(ctx, f, candidate, env)
 	if err != nil {

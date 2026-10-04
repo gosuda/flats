@@ -51,6 +51,7 @@ func TestDocumentedEnvironmentActivation(t *testing.T) {
 	body, _, _ = strings.Cut(body, "`list_secrets {slug}`")
 	body = strings.Join(strings.Fields(body), " ")
 	for _, claim := range []string{
+		"standalone data snapshot restoration captures current variables and secrets",
 		"when activation begins; the health check and live worker share that snapshot.",
 		"Settings are not pinned to the approval request or code version.",
 		"Writes after capture apply at the next activation.",

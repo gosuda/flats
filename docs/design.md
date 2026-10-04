@@ -229,7 +229,7 @@ current validation, even when replacing a historical secret.
 
 Settings are desired configuration, not code-version metadata. Saving or deleting
 a value leaves running workers and previews on their startup snapshot. An approved
-deployment, redeployment or rollback captures current variables and secrets when activation
+deployment, redeployment, rollback or standalone data snapshot restoration captures current variables and secrets when activation
 begins and uses that snapshot for both health checking and live startup. Settings
 are not pinned when approval is requested or to historical code versions. Writes
 after capture apply at the next activation. Preview creation and Flats host
@@ -246,7 +246,7 @@ times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
 with a shell on the Flats host (see Approvals). Values reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation
-snapshot. Changes apply on the next approved deployment, redeployment or rollback,
+snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
 or Flats host restart; automatic worker restarts reuse the captured settings.
 
 ## Approvals

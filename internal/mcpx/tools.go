@@ -64,11 +64,11 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_approval", Annotations: ro,
 		Description: "Poll an approval request (pending, approved, rejected or failed)."}, t.getApproval)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_env", Annotations: ro,
-		Description: "List ordinary app environment variables including values. Secret values are never returned. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.listEnv)
+		Description: "List ordinary app environment variables including values. Secret values are never returned. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.listEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "set_env", Annotations: write,
-		Description: "Set an ordinary server-only app environment variable. Values are readable by management clients; use operator-managed secrets for credentials. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.setEnv)
+		Description: "Set an ordinary server-only app environment variable. Values are readable by management clients; use operator-managed secrets for credentials. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.setEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_env", Annotations: write,
-		Description: "Delete an ordinary app environment variable. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.deleteEnv)
+		Description: "Delete an ordinary app environment variable. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.deleteEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_secrets", Annotations: ro,
 		Description: "List secret names of a flat (values are never returned; only the operator sets them)."}, t.listSecrets)
 }
@@ -850,7 +850,7 @@ func (t *tools) listSecrets(ctx context.Context, _ *mcp.CallToolRequest, in Slug
 	if err != nil {
 		return nil, SecretsOut{}, toolErr(err, notFoundHint(err, in.Slug))
 	}
-	out := SecretsOut{Secrets: secs, Note: "Values are never returned. The operator sets them in the console or with `flats secret set`; server flats receive them as env values. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}
+	out := SecretsOut{Secrets: secs, Note: "Values are never returned. The operator sets them in the console or with `flats secret set`; server flats receive them as env values. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}
 	if out.Secrets == nil {
 		out.Secrets = []core.SecretInfo{}
 	}

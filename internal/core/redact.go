@@ -27,7 +27,7 @@ func newRedactor(env map[string]string) func(string) string {
 			pats = append(pats, p)
 		}
 	}
-	for _, v := range env {
+	addEncoded := func(v string) {
 		add(v)
 		add(url.QueryEscape(v))
 		add(url.PathEscape(v))
@@ -37,8 +37,21 @@ func newRedactor(env map[string]string) func(string) string {
 		add(base64.RawURLEncoding.EncodeToString([]byte(v)))
 		add(hex.EncodeToString([]byte(v)))
 		add(strings.ToUpper(hex.EncodeToString([]byte(v))))
+	}
+	for _, v := range env {
+		addEncoded(v)
 		if q, err := json.Marshal(v); err == nil {
 			add(string(q[1 : len(q)-1]))
+			// Worker settings travel through JSON. Legacy invalid UTF-8 bytes
+			// normalize to replacement runes when decoded; output may contain
+			// that normalized value or an encoding of it instead of raw bytes.
+			var normalized string
+			if json.Unmarshal(q, &normalized) == nil && normalized != v {
+				addEncoded(normalized)
+				if normalizedJSON, err := json.Marshal(normalized); err == nil {
+					add(string(normalizedJSON[1 : len(normalizedJSON)-1]))
+				}
+			}
 		}
 	}
 	if len(pats) == 0 {

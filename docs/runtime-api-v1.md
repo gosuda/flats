@@ -286,7 +286,7 @@ accepts `{value}` and `DELETE` removes it. Ordinary values are readable by
 management clients and stored without secret encryption: use secrets for credentials.
 
 Changes leave running handlers and previews on their startup snapshot. Approved
-deployment, redeployment or rollback captures current variables and secrets
+deployment, redeployment, rollback or standalone data snapshot restoration captures current variables and secrets
 when activation begins; the health check and live worker share that snapshot.
 Settings are not pinned to the approval request or code version. Writes after
 capture apply at the next activation. New previews and a Flats host restart load

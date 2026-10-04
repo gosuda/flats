@@ -65,5 +65,5 @@ func envJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
 // Activation guidance must distinguish a host restart from a worker restart.
 func describesEnvActivation(v any) bool {
 	note, ok := v.(string)
-	return ok && strings.Contains(note, "after any required approval") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
+	return ok && strings.Contains(note, "after any required approval") && strings.Contains(note, "rollback or data restoration") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
 }

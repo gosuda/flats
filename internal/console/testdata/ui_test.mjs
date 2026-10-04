@@ -228,14 +228,15 @@ for (const tab of ['Settings', 'Analytics', 'Database']) {
 const envPanel = all(management, (e) => e.getAttribute('id') === 'env')[0];
 const secretPanel = all(management, (e) => e.getAttribute('id') === 'secrets')[0];
 assert.ok(envPanel.textContent.includes('Ordinary environment variables'));
-for (const disclosure of ['plain text', 'readable by authorized agents', 'env.NAME', 'WASI', 'browser bundles', 'next approved deployment or Flats host restart']) {
+for (const disclosure of ['plain text', 'readable by authorized agents', 'env.NAME', 'WASI', 'browser bundles', 'next approved activation or Flats host restart']) {
   assert.ok(envPanel.textContent.includes(disclosure), `environment panel lacks ${disclosure}`);
 }
 assert.ok(envPanel.textContent.includes('<script>demo</script>\nsecond line'));
 assert.equal(all(envPanel, (e) => e.tagName === 'SCRIPT').length, 0, 'values must be text, never HTML');
 assert.ok(envPanel.textContent.includes('(empty)'));
 for (const panel of [envPanel, secretPanel]) {
-  assert.ok(panel.textContent.includes('next approved deployment or Flats host restart'));
+  assert.ok(panel.textContent.includes('next approved activation or Flats host restart'));
+  assert.ok(panel.textContent.includes('standalone data snapshot restoration capture current settings'));
   assert.ok(panel.textContent.includes('Automatic worker restarts reuse the captured settings'));
   assert.ok(panel.textContent.includes('New previews load current settings'));
 }
@@ -265,7 +266,7 @@ byText(envPanel, 'Delete')[0].dispatch('click');
 await tick();
 let envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
 assert.ok(envDelete.textContent.includes('Delete variable APP_MODE?'));
-assert.ok(envDelete.textContent.includes('next approved deployment or Flats host restart'));
+assert.ok(envDelete.textContent.includes('next approved activation or Flats host restart'));
 assert.equal(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'), false);
 envDelete.close('cancel');
 await tick();

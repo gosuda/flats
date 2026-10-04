@@ -389,3 +389,82 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 		})
 	}
 }
+
+func TestEnvironmentCaptureFailureReportsUntouchedData(t *testing.T) {
+	for _, action := range []string{"publish", "deploy", "restore"} {
+		t.Run(action, func(t *testing.T) {
+			s, _ := newTestService(t)
+			ctx := t.Context()
+			starts := 0
+			s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+				starts++
+				return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "version-%d", spec.Version) })}, nil
+			})
+			save := func(body string) {
+				if _, err := s.SaveVersion(ctx, "app", []bundle.File{{Path: "flats.json", Data: []byte(`{"kind":"server","entry":"server.js"}`)}, {Path: "server.js", Data: []byte(body)}}, SaveMeta{}, ViaAPI); err != nil {
+					t.Fatal(err)
+				}
+			}
+			save("first")
+			if err := s.SetSecret(ctx, "app", "TOKEN", "do-not-leak-value", ViaCLI); err != nil {
+				t.Fatal(err)
+			}
+			lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+			notePath := filepath.Join(s.dataDirOf("app"), "files", "note")
+			if err := writeFile(notePath, "snapshot-data"); err != nil {
+				t.Fatal(err)
+			}
+			save("second")
+			lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+			if err := writeFile(notePath, "current-data"); err != nil {
+				t.Fatal(err)
+			}
+			var pending *PendingApproval
+			var err error
+			wantVersion := 1
+			switch action {
+			case "publish":
+				save("third")
+				pending = lifecycleRequest(t, s, "app")
+				wantVersion = 0 // publication number is allocated only after health passes
+			case "deploy":
+				_, err = s.Deploy(ctx, "app", 1, ViaConsole)
+			case "restore":
+				_, err = s.RollbackWithData(ctx, "app", 1, true, ViaConsole)
+			}
+			if action != "publish" && !errors.As(err, &pending) {
+				t.Fatal(err)
+			}
+			// Corruption can arise from a mismatched restored host key/database pair.
+			// It must fail before any health runtime or live data mutation.
+			if err := s.st.PutSecret(ctx, "app", store.SealedSecret{Name: "TOKEN", Nonce: make([]byte, 12), Ciphertext: []byte("invalid-sealed-data"), UpdatedAt: s.now()}); err != nil {
+				t.Fatal(err)
+			}
+			beforeStarts := starts
+			receipt, err := s.Decide(ctx, pending.Approval.ID, true)
+			var de *DeployError
+			if !errors.As(err, &de) {
+				t.Fatalf("missing DeployError: %v", err)
+			}
+			if de.Version != wantVersion || de.Previous != 2 || de.Data != dataUntouched {
+				t.Fatalf("lost activation context: %+v", de)
+			}
+			dto := execution(t, receipt)
+			if receipt.Status != "failed" || dto.DataImpact != "none" || dto.HealthData != "not_run" || dto.LiveData != "untouched" {
+				t.Fatalf("incorrect receipt: %+v %+v", receipt, dto)
+			}
+			if starts != beforeStarts {
+				t.Fatal("runtime started despite capture failure")
+			}
+			if got := liveBytes(t, s, "app"); got != "version-2" {
+				t.Fatalf("previous live runtime changed: %q", got)
+			}
+			if got, _ := readFile(notePath); got != "current-data" {
+				t.Fatalf("live data changed: %q", got)
+			}
+			if strings.Contains(err.Error(), "do-not-leak-value") || strings.Contains(receipt.Result, "do-not-leak-value") {
+				t.Fatal("capture failure leaked secret")
+			}
+		})
+	}
+}

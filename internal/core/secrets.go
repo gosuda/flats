@@ -115,7 +115,9 @@ type SecretInfo struct {
 }
 
 // SetSecret stores a secret value. Only the operator (console or local CLI)
-// may call it; the change applies on the next deploy.
+// may call it. Approved deployment activations (including rollback and data
+// restore), new previews, and Flats host restarts capture the change. Automatic
+// worker restarts retain the previously captured environment.
 func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, via Via) error {
 	if via != ViaConsole && via != ViaCLI {
 		return forbiddenf("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")

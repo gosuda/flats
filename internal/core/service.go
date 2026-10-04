@@ -1002,7 +1002,7 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	}
 	env, err := s.captureEnvironment(ctx, slugName, v)
 	if err != nil {
-		return DeployResult{}, err
+		return DeployResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched, DataImpact: "none", HealthData: "not_run", LiveData: "untouched"}
 	}
 	h, err := s.checkIsolated(ctx, f, v, env)
 	if err != nil {
@@ -1175,7 +1175,7 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 	}
 	env, err := s.captureEnvironment(ctx, slugName, v)
 	if err != nil {
-		return DeployResult{}, err
+		return DeployResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched, DataImpact: "none", HealthData: "not_run", LiveData: "untouched"}
 	}
 	if err := s.trialRun(ctx, f, v, snapPath, env); err != nil {
 		return DeployResult{}, err

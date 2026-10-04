@@ -32,7 +32,9 @@ func validateEnvValue(value, kind string) error {
 }
 
 // SetEnv stores ordinary readable configuration. Running instances keep their
-// environment until the next runtime start (deploy, preview, or host restart).
+// captured environment through automatic worker restarts. Approved deployment
+// activations (including rollback and data restore), new previews, and Flats
+// host restarts capture stored settings again.
 func (s *Service) SetEnv(ctx context.Context, slugName, name, value string, via Via) error {
 	if err := validateEnvName(name, "environment variable"); err != nil {
 		return err

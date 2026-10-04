@@ -93,8 +93,8 @@ share a secret name: remove the old kind before changing kinds. Server JavaScrip
 reads `env.NAME`; WASI gets environment variables. They do not enter frontend
 bundles, static files or builds.
 
-Saving does not update running handlers or previews. Approved deployment, redeployment
-or rollback captures current variables and secrets when activation begins; its
+Saving does not update running handlers or previews. Approved deployment, redeployment, rollback or standalone data snapshot
+restoration captures current variables and secrets when activation begins; its
 health check and live worker share that snapshot. Settings are not pinned to the
 approval request or code version. Writes after capture apply at the next
 activation. New previews and a Flats host restart load current settings; automatic
@@ -106,7 +106,7 @@ flow to apply changes deliberately.
 You can list secret names (`list_secrets`, `flats secret ls`) but never set or
 read values. Ask the user to set them in the Flats console or with
 `flats secret set <flat> NAME` on the Flats host. Secret changes apply on approved
-deployment, redeployment or rollback, or Flats host restart. Automatic worker
+deployment, redeployment, rollback or standalone data snapshot restoration, or Flats host restart. Automatic worker
 restarts reuse their captured settings. To apply changes deliberately: redeploy the live version (`flats deploy --flat <flat> --version <live>`
 or MCP `deploy`), then report pending and poll approval, or ask the user to click **Redeploy (apply environment)** in the
 console.

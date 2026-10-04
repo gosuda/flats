@@ -192,7 +192,7 @@ names. Other historical names and values retain their runtime behavior.
 Server JavaScript reads strings as `env.GREETING`; WASI receives environment
 variables. They are never substituted into frontend bundles, static files or
 builds. Saving does not change running handlers or previews. Approved deployment,
-redeployment or rollback captures current variables and secrets when activation begins; its health check and live worker share that
+redeployment, rollback or standalone data snapshot restoration captures current variables and secrets when activation begins; its health check and live worker share that
 snapshot. Settings are not pinned to the approval request or code version; writes
 after capture apply at the next activation. A newly created preview and a Flats
 host restart also load current settings. Automatic worker restarts reuse the
@@ -202,7 +202,7 @@ captured snapshot. Redeploy through the existing approval flow to apply changes.
 
 Server code runs in separate worker processes with WebAssembly memory/time limits and restricted host capabilities. The loopback management listener and console node are privileged control surfaces: restrict console access with tailnet ACLs. Approval decisions and provider changes are accepted only on console routes, which require the console header and a same-origin browser request. That is CSRF protection, not authentication: a local process that sends those headers to the loopback listener can decide approvals, so run only trusted agents on the host. A separate operator credential is planned; `credentials.operator_file` and the `--operator-credential-*` flags are still accepted but ignored. See the [core lifecycle contract](docs/lifecycle-core-contract.md) for implementation and integration boundaries.
 
-Secret values are operator-managed, encrypted at rest with the local `secret.key`, and delivered to a flat at its next approved deployment, redeployment or rollback, or Flats host restart. Automatic worker restarts reuse their captured settings. Secret APIs expose names only; ordinary environment-variable APIs expose their values. A flat can read and return its own injected secrets, so deploy code you trust with those values. Anyone who can read the data directory can recover them. Back up the key alongside metadata and flat data; immutable code versions alone are not data backups.
+Secret values are operator-managed, encrypted at rest with the local `secret.key`, and delivered to a flat at its next approved deployment, redeployment, rollback or standalone data snapshot restoration, or Flats host restart. Automatic worker restarts reuse their captured settings. Secret APIs expose names only; ordinary environment-variable APIs expose their values. A flat can read and return its own injected secrets, so deploy code you trust with those values. Anyone who can read the data directory can recover them. Back up the key alongside metadata and flat data; immutable code versions alone are not data backups.
 
 Shutdown attempts every component and reports failures. Portal drains in-flight HTTP before unregistering exposures on normal shutdown. Network teardown is bounded; a timed-out SDK/backend may continue cleanup in the background until process exit. In that case the data-directory lock stays held until exit, so another host cannot race that cleanup.
 

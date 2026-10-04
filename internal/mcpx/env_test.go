@@ -44,5 +44,5 @@ func TestEnvTools(t *testing.T) {
 }
 
 func describesEnvActivation(note string) bool {
-	return strings.Contains(note, "after any required approval") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
+	return strings.Contains(note, "after any required approval") && strings.Contains(note, "rollback or data restoration") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
 }

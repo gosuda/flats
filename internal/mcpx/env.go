@@ -10,7 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const envNote = "Ordinary values are readable by management clients; use operator-managed secrets for credentials. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings. Values are server-only and never enter frontend bundles."
+const envNote = "Ordinary values are readable by management clients; use operator-managed secrets for credentials. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings. Values are server-only and never enter frontend bundles."
 
 type EnvOut struct {
 	Env  []store.EnvVar `json:"env" jsonschema:"ordinary environment variables including values; excludes secrets"`

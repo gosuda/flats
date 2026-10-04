@@ -366,7 +366,7 @@ export function mount(main, [slug], ctx, settings = false) {
       busy(save, async () => {
         try {
           await api.putEnv(slug, name.value, value.value);
-          toast(`Variable ${name.value} saved. It applies on the next approved deployment or Flats host restart.`, 'success');
+          toast(`Variable ${name.value} saved. It applies on the next approved activation or Flats host restart.`, 'success');
           loadEnv(); logs.poll();
         } catch (err) { toast(err.message, 'error'); }
       });
@@ -390,13 +390,13 @@ export function mount(main, [slug], ctx, settings = false) {
       del.addEventListener('click', () => busy(del, async () => {
         const ok = await confirmDialog({
           title: `Delete variable ${v.name}?`,
-          body: 'The running version keeps its current environment until the next approved deployment or Flats host restart.',
+          body: 'The running version keeps its current environment until the next approved activation or Flats host restart.',
           confirmLabel: 'Delete', danger: true,
         });
         if (!ok) return;
         try {
           await api.deleteEnv(slug, v.name);
-          toast(`Variable ${v.name} deleted. It applies on the next approved deployment or Flats host restart.`, 'success');
+          toast(`Variable ${v.name} deleted. It applies on the next approved activation or Flats host restart.`, 'success');
           loadEnv();
         } catch (err) { toast(err.message, 'error'); }
       }));
@@ -408,12 +408,12 @@ export function mount(main, [slug], ctx, settings = false) {
     })) : h('p', { class: 'muted', text: 'No ordinary environment variables.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply on the next approved deployment or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
+        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
       : h('p', { class: 'muted', text: 'Changes apply when a deployment is approved.' });
     fill(envSlot, add,
       h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
       items, form, apply,
-      h('p', { class: 'muted small', text: 'Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
+      h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
 
   // --- secrets ---
@@ -490,7 +490,7 @@ export function mount(main, [slug], ctx, settings = false) {
       : h('p', { class: 'muted', text: 'No secrets.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply on the next approved deployment or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }),
+        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }),
         redeployButton())
       : h('p', { class: 'muted', text: 'Secrets apply when a deployment is approved.' });
     const addVariable = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add secret', 'aria-expanded': 'false' }) : null;
@@ -505,7 +505,7 @@ export function mount(main, [slug], ctx, settings = false) {
     fill(secretsSlot, addVariable,
       h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
       items, form, apply,
-      h('p', { class: 'muted small', text: 'Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
+      h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
 
   // --- usage ---
