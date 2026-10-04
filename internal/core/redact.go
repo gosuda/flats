@@ -59,7 +59,7 @@ func newRedactor(env map[string]string) func(string) string {
 	}
 	// Longest first, so a value is never partly replaced by a shorter one.
 	slices.SortFunc(pats, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
-	args := make([]string, 0, 2*len(pats))
+	var args []string
 	for _, p := range pats {
 		args = append(args, p, redacted)
 	}
