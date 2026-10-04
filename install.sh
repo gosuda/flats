@@ -248,6 +248,47 @@ restart_service() {
 	fi
 }
 
+# service_enabled succeeds when the service is loaded (macOS) or enabled or
+# active (Linux), that is, when the user has not stopped it on purpose.
+service_enabled() {
+	if [ "$os" = darwin ]; then
+		launchctl print "gui/$(id -u)/dev.flats.serve" >/dev/null 2>&1
+	else
+		systemctl --user is-enabled --quiet flats.service 2>/dev/null ||
+			systemctl --user is-active --quiet flats.service 2>/dev/null
+	fi
+}
+
+start_command() {
+	if [ "$os" = darwin ]; then
+		printf 'launchctl bootstrap gui/%s %s\n' "$(id -u)" "$(service_file)"
+	else
+		printf 'systemctl --user enable --now flats.service\n'
+	fi
+}
+
+restart_command() {
+	if [ "$os" = darwin ]; then
+		printf 'launchctl kickstart -k gui/%s/dev.flats.serve\n' "$(id -u)"
+	else
+		printf 'systemctl --user restart flats.service\n'
+	fi
+}
+
+# latest_tag prints the tag of the latest release, or nothing without curl.
+# Resolving it once keeps the archive and checksums.txt from coming from two
+# different releases.
+latest_tag() {
+	has curl || return 0
+	effective=$(curl -fsSLI --proto '=https' --tlsv1.2 --retry 3 -o /dev/null -w '%{url_effective}' \
+		"https://github.com/$REPO/releases/latest") ||
+		die "no Flats release found at https://github.com/$REPO/releases"
+	case "${effective##*/}" in
+	v[0-9]*) printf '%s\n' "${effective##*/}" ;;
+	*) die "no Flats release found at https://github.com/$REPO/releases" ;;
+	esac
+}
+
 # service_running succeeds when the service manager reports a running service.
 service_running() {
 	if [ "$os" = darwin ]; then
@@ -313,6 +354,7 @@ main() {
 	[ -z "$no_service" ] || [ -z "$serve_args_given" ] ||
 		die "serve flags after -- need the service; drop --no-service"
 
+	credential_given=$credential_file
 	[ -n "${HOME:-}" ] || die "HOME is not set"
 	[ -n "$install_dir" ] || install_dir=$HOME/.local/bin
 	[ -n "$credential_file" ] || credential_file=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
@@ -333,14 +375,26 @@ main() {
 	# Decide what happens to the service before touching anything, so a
 	# conflict stops the installer with the old binary still in place.
 	mode=none
-	if [ -z "$no_service" ]; then
+	if [ -n "$no_service" ]; then
+		if [ -f "$(service_file)" ]; then
+			warn "the installed Flats service keeps running its current binary until it restarts"
+		fi
+	else
 		check_service_manager
 		if [ -f "$(service_file)" ] && [ -z "$serve_args_given" ]; then
-			mode=restart
 			url=$(service_url)
+			# Upgrade a running service; leave one the user stopped alone.
+			if service_enabled; then
+				mode=restart
+			else
+				mode=replace
+			fi
 			if ! grep -qF "$binary" "$(service_file)"; then
 				warn "the installed service does not run $binary and keeps its current binary"
 				warn "to switch it, rerun with: -- <flats serve flags>"
+			fi
+			if [ -n "$credential_given" ] || [ -n "${FLATS_DATA:-}" ]; then
+				warn "--credential-file and FLATS_DATA apply only when the service is (re)installed with: -- <flats serve flags>"
 			fi
 		else
 			mode=install
@@ -354,10 +408,16 @@ main() {
 	asset=flats_${os}_${arch}.tar.gz
 	if [ -n "${FLATS_DOWNLOAD_BASE:-}" ]; then
 		base=${FLATS_DOWNLOAD_BASE%/}
-	elif [ "$version" = latest ]; then
-		base=https://github.com/$REPO/releases/latest/download
 	else
-		base=https://github.com/$REPO/releases/download/$version
+		if [ "$version" = latest ]; then
+			tag=$(latest_tag)
+			[ -z "$tag" ] || version=$tag
+		fi
+		if [ "$version" = latest ]; then
+			base=https://github.com/$REPO/releases/latest/download
+		else
+			base=https://github.com/$REPO/releases/download/$version
+		fi
 	fi
 
 	tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/flats-install.XXXXXX")
@@ -375,9 +435,6 @@ main() {
 	[ "$want" = "$(sha256_of "$tmp_dir/$asset")" ] || die "checksum mismatch for $asset"
 	tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" flats || die "cannot extract $asset"
 	[ -f "$tmp_dir/flats" ] || die "$asset has no flats binary"
-	chmod 0755 "$tmp_dir/flats"
-	new_version=$("$tmp_dir/flats" version 2>/dev/null) ||
-		die "the downloaded binary does not run on this system"
 
 	mkdir -p "$install_dir" || die "cannot create $install_dir; pass a writable --dir"
 	[ -w "$install_dir" ] || die "$install_dir is not writable; pass a writable --dir"
@@ -386,6 +443,11 @@ main() {
 	staged=$install_dir/.flats.install.$$
 	cp "$tmp_dir/flats" "$staged" || die "cannot write to $install_dir"
 	chmod 0755 "$staged"
+	# Run the staged copy rather than the one in TMPDIR, which may be noexec.
+	if ! new_version=$("$staged" version 2>"$tmp_dir/version.err"); then
+		rm -f "$staged"
+		die "the downloaded binary does not run on this system: $(sed -n 1p "$tmp_dir/version.err")"
+	fi
 	mv -f "$staged" "$binary" || {
 		rm -f "$staged"
 		die "cannot install $binary"
@@ -394,6 +456,9 @@ main() {
 
 	created_credential=
 	case "$mode" in
+	replace)
+		warn "the Flats service is installed but stopped or disabled; it uses the new binary once started"
+		;;
 	restart)
 		say "restarting the existing Flats service"
 		restart_service
@@ -409,7 +474,7 @@ main() {
 		;;
 	esac
 
-	if [ "$mode" != none ]; then
+	if [ "$mode" = restart ] || [ "$mode" = install ]; then
 		if [ "$os" = linux ]; then
 			enable_linger
 		fi
@@ -442,9 +507,15 @@ Operator credential: $credential_file (not shown here)
   Save it in your password manager. Enter it in the console under
   "Unlock decisions" to approve publishes. To copy it: $copy
   Keep it away from agents: do not paste it into agent chats or logs.
+  Agents running as your user can read this file despite mode 0600, so
+  deny it in their sandbox or file-access settings.
 EOF
 	fi
-	if [ "$mode" = none ]; then
+	if [ "$mode" = none ] && [ -f "$(service_file)" ]; then
+		printf '\nRestart the service to use the new binary:  %s\n' "$(restart_command)"
+	elif [ "$mode" = replace ]; then
+		printf '\nStart the service:  %s\n' "$(start_command)"
+	elif [ "$mode" = none ]; then
 		cat <<'EOF'
 
 Run a host in the foreground:  flats serve --operator-credential-stdin

@@ -10,9 +10,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,11 +24,25 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Require a commit on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Test
         run: |
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          go vet ./...
+          go test ./...
       - name: Build archives
         run: scripts/build-release.sh "$GITHUB_REF_NAME" dist
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: |
+          # Tags such as v1.2.0-rc.1 are prereleases and never become "latest",
+          # which the installer and its upgrade path download by default.
+          case "$GITHUB_REF_NAME" in
+          *-*) set -- --prerelease --latest=false ;;
+          *) set -- --latest ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "$@"
