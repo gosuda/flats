@@ -35,3 +35,25 @@ jobs:
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$RUNNER_TEMP/flats-linux-$arch" ./cmd/flats
           done
+
+  install-script:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      FLATS_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh install.sh
+      - name: Install without Go on PATH
+        # Fetch this commit straight from GitHub; the module proxy may not know it yet.
+        run: |
+          env PATH=/usr/bin:/bin:/usr/sbin:/sbin GOPRIVATE=github.com/gosuda/flats \
+            sh install.sh --dir "$RUNNER_TEMP/bin" --version "$FLATS_REF" | tee "$RUNNER_TEMP/install.log"
+          grep -F "installed $RUNNER_TEMP/bin/flats" "$RUNNER_TEMP/install.log" | grep -F -- "-$(printf %.12s "$FLATS_REF"))"
+          "$RUNNER_TEMP/bin/flats" --help

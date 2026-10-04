@@ -28,7 +28,15 @@ Agent / CLI / web console → Flats on your machine → version + local data
 
 ## Install and try a local flat
 
-Requires Go 1.27.1 or newer to build. Install from the canonical module path:
+On macOS or Linux, run the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
+```
+
+It builds `flats` from source and installs it to `~/.local/bin`. Pass options after `sh -s --`: `--dir DIR` changes the install directory and `--version` selects a module version or ref, such as `main`. If Go 1.27.1 or newer is not on `PATH`, it downloads the official Go release for this build only, verifies its checksum and removes it afterwards. It does not use sudo, edit shell profiles or install the host service.
+
+With Go 1.27.1 or newer, you can also install from the canonical module path:
 
 ```sh
 go install github.com/gosuda/flats/cmd/flats@latest
