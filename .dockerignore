@@ -1,0 +1,6 @@
+# The image packages release archives (see Dockerfile); nothing else from the
+# checkout belongs in the build context.
+*
+!dist/checksums.txt
+!dist/flats_linux_*.tar.gz
+!scripts/docker-entrypoint.sh

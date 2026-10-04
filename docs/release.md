@@ -12,6 +12,9 @@ Every `v*` tag on `main` produces a GitHub release with:
   tag stamped into `flats version`), `LICENSE` and `README.md`.
 - `checksums.txt`: SHA-256 of every archive, in `sha256sum` format.
 - A GitHub build provenance attestation for every archive.
+- A multi-platform container image, `ghcr.io/gosuda/flats` for `linux/amd64`
+  and `linux/arm64`, that packages those Linux archives (see
+  [Container image](#container-image)).
 
 `install.sh` on `main` downloads from the latest non-prerelease release. Tags
 with a hyphen (`v1.3.0-rc.1`) are prereleases: they never become latest, so
@@ -40,6 +43,7 @@ unreleased changes.
    second job builds the archives with `scripts/build-release.sh`, refuses
    binaries whose build info is not clean tagged source, attests the archives
    and creates the release with generated notes. A stable tag becomes latest.
+   A third job pushes and attests the container image.
 5. Verify the published release before announcing it:
 
    ```sh
@@ -50,7 +54,12 @@ unreleased changes.
 
    On a disposable macOS and Linux machine, run the installer and confirm
    that `flats version` prints the tag and `flats status` reports a running
-   host.
+   host. Check the image as well:
+
+   ```sh
+   gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats
+   docker run --rm ghcr.io/gosuda/flats:1.2.3 version
+   ```
 6. Edit the release notes to add upgrade notes: data migrations, changed
    flags, and whether operators should back up first.
 
@@ -85,6 +94,33 @@ gh attestation verify flats_darwin_arm64.tar.gz --repo gosuda/flats \
 The binaries themselves record the tag's commit: `go version -m flats` shows
 it as `vcs.revision`.
 
+## Container image
+
+The `image` job of the release workflow runs after the release exists. It
+downloads the release's `flats_linux_*.tar.gz` and `checksums.txt`, checks the
+checksums and archive attestations, and builds the [Dockerfile](../Dockerfile)
+for `linux/amd64` and `linux/arm64` from them, so the image contains the
+published binaries rather than a second build. It pushes to
+`ghcr.io/gosuda/flats` and attests the image digest in the registry. Tags drop
+the leading `v`:
+
+| Tag | Pushed for |
+| --- | --- |
+| `1.2.3`, `1.3.0-rc.1` | every release, including backfills and prereleases |
+| `1.2` | pushed stable tags |
+| `latest` | pushed stable tags |
+
+A backfill (`workflow_dispatch`) pushes only the exact version, so it never
+moves `1.2` or `latest` back to an older release. Re-running the job rebuilds
+the version tag from the same archives. The Dockerfile and entrypoint come from
+the workflow's commit, like `build-release.sh`.
+
+The first push creates the package. An organization owner must make
+`ghcr.io/gosuda/flats` public once in the package settings; until then pulls
+need authentication. CI builds both platforms on every pull request and runs
+`scripts/container-smoke.sh` against the runner's image. How operators run the
+image is in [Running Flats in a container](container.md).
+
 ## Retracting a bad release
 
 Never replace the assets of a published release: their checksums and
@@ -98,8 +134,15 @@ gh release edit v1.2.3 --repo gosuda/flats --prerelease --latest=false
 gh release edit v1.2.2 --repo gosuda/flats --latest
 ```
 
-Operators who pinned `--version v1.2.3` can still download it. A GitHub
-prerelease flag does not affect `go install …@latest`; add a
+Operators who pinned `--version v1.2.3` can still download it. Point the
+moving image tags back at the good release as well (also `1.2` when both are
+in the same minor series):
+
+```sh
+docker buildx imagetools create -t ghcr.io/gosuda/flats:latest ghcr.io/gosuda/flats:1.2.2
+```
+
+A GitHub prerelease flag does not affect `go install …@latest`; add a
 `retract v1.2.3` directive to `go.mod` in the fixed release so the Go
 toolchain skips the bad version.
 

@@ -51,7 +51,7 @@ jobs:
           cache: true
       - name: Lint
         if: runner.os == 'Linux'
-        run: shellcheck -s sh install.sh scripts/build-release.sh scripts/install-smoke.sh
+        run: shellcheck -s sh install.sh scripts/build-release.sh scripts/install-smoke.sh scripts/docker-entrypoint.sh scripts/container-smoke.sh
       - name: Build release archives
         run: |
           # Linux builds every platform to check the release build; macOS only its own.
@@ -70,3 +70,23 @@ jobs:
           echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - name: Install, upgrade, crash and uninstall the service
         run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build Linux release archives
+        run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image for every release platform
+        run: docker buildx build --platform linux/amd64,linux/arm64 .
+      - name: Build the image for this runner
+        run: docker buildx build --load -t flats:ci .
+      - name: Start, unlock, deploy, restart and stop a container
+        run: scripts/container-smoke.sh flats:ci v0.0.0-ci

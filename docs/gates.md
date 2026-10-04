@@ -20,6 +20,14 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/flats-linux-amd64 ./cmd/f
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/flats-linux-arm64 ./cmd/flats
 ```
 
+A `container` job builds the image for `linux/amd64` and `linux/arm64` from
+the Linux release archives and runs `scripts/container-smoke.sh` on the
+runner's image, once with host networking and once with ports published on
+`127.0.0.1` from a dedicated network: `config.json` created on first start,
+approved static and JavaScript server deploys, restart persistence of config,
+flats and data, and a clean SIGTERM exit, all with a read-only root, no
+capabilities and `no-new-privileges`.
+
 Tests use disposable hosts/data and local test-control infrastructure. Portal
 relay E2E remains opt-in (`FLATS_PORTAL_E2E=1`); ordinary CI never enables it.
 Real tailnet/control, Portal relay, Claude/Codex/Cursor agent, launchd/systemd

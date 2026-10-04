@@ -52,6 +52,17 @@ go install github.com/gosuda/flats/cmd/flats@latest   # highest stable release; 
 CGO_ENABLED=0 go build -o flats ./cmd/flats
 ```
 
+### Container
+
+A Linux image for amd64 and arm64 is published with every release. Its `/data` volume holds `config.json` and all other data; an empty volume starts with the defaults. On Linux, run it with host networking so the console, CLI and agents reach it on loopback as with a native install:
+
+```sh
+docker run -d --name flats --restart unless-stopped --network host \
+  -v flats-data:/data ghcr.io/gosuda/flats:latest
+```
+
+On macOS or other Docker hosts, publish the same ports on `127.0.0.1` only, or use Tailscale. Never publish the console port to your network: anything that reaches it can approve deploys. See [Running Flats in a container](docs/container.md) for each network mode, configuration, hardening, upgrades and building the image.
+
 ### Foreground host
 
 Without the service, start a foreground host in one terminal:
