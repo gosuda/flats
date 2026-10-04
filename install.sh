@@ -461,7 +461,7 @@ main() {
 
 	say "downloading $asset ($version)"
 	fetch "$base/$asset" "$tmp_dir/$asset" ||
-		die "download failed: $base/$asset (does release $version exist?)"
+		die "download failed: $base/$asset (release $version may not exist or may not have prebuilt binaries; see https://github.com/$REPO/releases)"
 	fetch "$base/checksums.txt" "$tmp_dir/checksums.txt" ||
 		die "download failed: $base/checksums.txt"
 	want=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp_dir/checksums.txt")

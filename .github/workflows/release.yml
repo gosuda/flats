@@ -1,11 +1,26 @@
 name: Release
 
+# A pushed v* tag on main builds, tests and publishes its release.
+# Run the workflow manually with an existing tag to attach the prebuilt
+# archives to a release that was published without them. Existing assets are
+# never replaced: a published archive and its checksum stay immutable.
+
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag on main to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -15,34 +30,55 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - name: Validate tag name
+        run: |
+          case "$TAG" in
+          v[0-9]*) ;;
+          *) echo "release tags look like v1.2.3, got: $TAG"; exit 1 ;;
+          esac
       - uses: actions/checkout@v4
         with:
+          ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
+      # The release tooling comes from the workflow's own commit, so a tag cut
+      # before the tooling existed can still be built.
+      - uses: actions/checkout@v4
+        with:
+          path: .release-tools
+          sparse-checkout: scripts/build-release.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
       - name: Require a commit on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+        run: git merge-base --is-ancestor "$(git rev-parse "$TAG^{commit}")" origin/main
       - name: Test
         run: |
           go vet ./...
           go test ./...
       - name: Build archives
-        run: scripts/build-release.sh "$GITHUB_REF_NAME" dist
+        run: FLATS_SOURCE_DIR="$PWD" .release-tools/scripts/build-release.sh "$TAG" "$RUNNER_TEMP/dist"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: ${{ runner.temp }}/dist/*.tar.gz
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Backfill: upload fails rather than overwrite an existing asset.
+            gh release upload "$TAG" "$RUNNER_TEMP"/dist/*
+            exit 0
+          fi
           # Tags such as v1.2.0-rc.1 are prereleases and never become "latest",
           # which the installer and its upgrade path download by default.
-          case "$GITHUB_REF_NAME" in
+          case "$TAG" in
           *-*) set -- --prerelease --latest=false ;;
           *) set -- --latest ;;
           esac
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "$@"
+          gh release create "$TAG" "$RUNNER_TEMP"/dist/* --verify-tag --generate-notes --title "$TAG" "$@"

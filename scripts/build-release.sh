@@ -6,6 +6,7 @@
 # Writes flats_<os>_<arch>.tar.gz for every supported platform and a
 # checksums.txt in sha256sum format to the output directory.
 # FLATS_RELEASE_TARGETS (space-separated os/arch) narrows the platforms.
+# FLATS_SOURCE_DIR builds another checkout (default: this script's repository).
 
 set -eu
 
@@ -28,7 +29,7 @@ esac
 COPYFILE_DISABLE=1
 export COPYFILE_DISABLE
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(cd "${FLATS_SOURCE_DIR:-$(dirname "$0")/..}" && pwd)
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/flats-release.XXXXXX")
