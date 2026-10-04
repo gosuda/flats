@@ -689,3 +689,51 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 		t.Fatalf("config mode: %v", err)
 	}
 }
+
+// With no Portal settings stored, the release before config.json read the
+// defaults table (3 active relays, discovery on). The migrated host must
+// produce the same exposure policy token, or pending approvals go stale.
+func TestLegacyUpgradeKeepsDefaultPortalPolicyToken(t *testing.T) {
+	dir := t.TempDir()
+	ddl, err := os.ReadFile(filepath.Join("..", "store", "testdata", "schema", "v5-80b206b.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "flats.db")+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(ddl)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM settings`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file := provider.File{Version: 1, Permitted: []provider.ID{provider.Portal}, PrivateBackend: "local"}
+	if err := provider.Save(dir, file); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.key"), bytes.Repeat([]byte{7}, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := legacyPolicyToken(t, file, portal.Config{Discovery: true, MaxActiveRelays: 3})
+	if legacyPolicyToken(t, file, portal.Config{Discovery: true}) == before {
+		t.Fatal("the token does not depend on the relay limit, so this test cannot tell 0 from 3")
+	}
+
+	h, err := Start(context.Background(), legacyFlags(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	after, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil || after != before {
+		t.Errorf("default Portal policy token changed by the migration: %s -> %s (%v)", before, after, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "config.json")); strings.Contains(string(got), `"portal": {`) {
+		t.Errorf("defaults were written into config.json:\n%s", got)
+	}
+}
