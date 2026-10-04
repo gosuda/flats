@@ -2,13 +2,11 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"maps"
 	"math"
@@ -37,7 +35,6 @@ import (
 	"github.com/gosuda/flats/internal/runtime"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
-	"golang.org/x/term"
 )
 
 // Version is set at build time with -ldflags "-X github.com/gosuda/flats/internal/app.Version=...".
@@ -52,22 +49,22 @@ var Version = "dev"
 // creates that file from the flags (migrating a legacy data directory), and
 // later runs refuse flags that differ from it.
 type Options struct {
-	ConfigPath              string
-	DataDir                 string // legacy mode: the directory holding config.json
-	Listen                  string // loopback management address
-	Network                 string // tailscale | local; legacy private path
-	LocalAddr               string // local network address
-	AuthKeyFile             string
-	ConsoleHost             string
-	Portal                  bool
-	Permit                  []string // explicit host grants; does not publish a flat
-	Relays                  []string
-	Runtime                 bool
+	ConfigPath  string
+	DataDir     string // legacy mode: the directory holding config.json
+	Listen      string // loopback management address
+	Network     string // tailscale | local; legacy private path
+	LocalAddr   string // local network address
+	AuthKeyFile string
+	ConsoleHost string
+	Portal      bool
+	Permit      []string // explicit host grants; does not publish a flat
+	Relays      []string
+	Runtime     bool
+	// OperatorCredentialStdin and OperatorCredentialFile are accepted so
+	// existing services keep starting; the operator credential is no longer
+	// used and both are ignored with a warning.
 	OperatorCredentialStdin bool
 	OperatorCredentialFile  string
-	// OperatorCredential is an embedding-only input; Start clears it before
-	// retaining options. CLI credentials are accepted through stdin or an operator-owned 0600 file.
-	OperatorCredential string
 	// Set names the flags given on the command line. Only these flags take
 	// effect: a field whose flag is not in Set is ignored.
 	Set map[string]bool
@@ -109,8 +106,8 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal. Local needs no grant. Recorded in config.json and does not publish a flat")
 	fs.StringVar(&relays, "relays", "", "legacy mode: comma-separated Portal relays (default: Portal CLI default discovery)")
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
-	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "read a separately provisioned operator credential from hidden terminal input or stdin; required to enable console decisions")
-	fs.StringVar(&o.OperatorCredentialFile, "operator-credential-file", "", "legacy mode: operator-owned regular 0600 credential file for noninteractive services; mutually exclusive with stdin")
+	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "ignored: the operator credential is no longer used")
+	fs.StringVar(&o.OperatorCredentialFile, "operator-credential-file", "", "ignored: the operator credential is no longer used")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -127,9 +124,6 @@ func ParseServeFlags(args []string) (Options, error) {
 			return o, fmt.Errorf("--config: %w", err)
 		}
 		o.ConfigPath = abs
-	}
-	if o.OperatorCredentialStdin && o.OperatorCredentialFile != "" {
-		return o, errors.New("choose only one operator credential source")
 	}
 	for _, path := range []*string{&o.OperatorCredentialFile, &o.AuthKeyFile} {
 		if *path != "" {
@@ -183,16 +177,9 @@ func Serve(args []string) error {
 			return actionf("FLATS_CONFIG must be an absolute path, not %q", o.ConfigPath)
 		}
 	}
-	if o.OperatorCredentialStdin {
-		o.OperatorCredential, err = readOperatorCredential(os.Stdin, os.Stderr)
-		if err != nil {
-			return err
-		}
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	h, err := Start(ctx, o)
-	o.OperatorCredential = ""
 	if err != nil {
 		return err
 	}
@@ -212,17 +199,22 @@ type Host struct {
 	Private    core.PrivateNet
 	Public     core.PublicNet
 	Providers  *provider.Manager
-	Operator   *api.OperatorAuthority
 	Mux        http.Handler
 	srv        *http.Server
 	ln         net.Listener
 	localNet   *local.Net
+	pmu        sync.Mutex // guards tsNet and portalNet, which the console can attach
 	tsNet      *tsnetx.Net
 	portalNet  *portal.Net
-	console    string
-	dataLock   *os.File
-	closeOnce  sync.Once
-	closeErr   error
+	// For providers the console turns on while the host runs.
+	logf          func(string, ...any)
+	legacy        bool
+	portalOptions portal.Config
+	networkPins   map[provider.ID]string // provider -> service flag that fixes it
+	console       string
+	dataLock      *os.File
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 // ConsoleURL is the operator console address (tailnet URL when available).
@@ -306,11 +298,6 @@ func tailscaleAuthKey(c *config.Config, legacy bool, logf func(string, ...any)) 
 
 // Start builds and starts every component.
 func Start(ctx context.Context, o Options) (*Host, error) {
-	credential := o.OperatorCredential
-	o.OperatorCredential = ""
-	if o.OperatorCredentialFile != "" && (o.OperatorCredentialStdin || credential != "") {
-		return nil, errors.New("choose only one operator credential source")
-	}
 	logf := log.Printf
 	s, err := o.setup(logf)
 	if err != nil {
@@ -321,7 +308,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, err
 	}
 	cfg := p.cfg
-	h := &Host{Opts: o, Config: cfg, ConfigPath: p.path, Store: p.st, dataLock: p.lock}
+	h := &Host{Opts: o, Config: cfg, ConfigPath: p.path, Store: p.st, dataLock: p.lock, logf: logf, legacy: s.legacy}
 	ok := false
 	defer func() {
 		if !ok {
@@ -354,22 +341,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		return nil, err
 	}
-	if path := cfg.Credentials.OperatorFile; path != "" {
-		if o.OperatorCredentialStdin || credential != "" {
-			return nil, errors.New("choose only one operator credential source: credentials.operator_file is set")
-		}
-		if credential, err = readOperatorCredentialFile(path); err != nil {
-			return nil, err
-		}
+	if cfg.Credentials.OperatorFile != "" || o.OperatorCredentialStdin || o.OperatorCredentialFile != "" {
+		logf("warning: the operator credential is no longer used; ignoring credentials.operator_file and --operator-credential-*. Console decisions rely on the console's same-origin checks")
 	}
-	if credential != "" {
-		h.Operator, err = api.NewOperatorAuthority(credential)
-		credential = ""
-		if err != nil {
-			return nil, err
-		}
-	}
-	operator := h.Operator
 
 	forkwatch.Start(ctx, logf)
 	loop, err := local.Listen(cfg.Host.LocalAddr)
@@ -386,6 +360,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	portalOptions := portal.Config{Dir: filepath.Join(dataDir, "portal"), Relays: cfg.Portal.Relays,
 		Discovery: cfg.Portal.Discovery, MaxActiveRelays: relayLimit(cfg.Portal.MaxActiveRelays), Logf: logf}
+	h.portalOptions = portalOptions
 	if permits(provider.Portal) {
 		pn, err := portal.New(portalOptions)
 		if err != nil {
@@ -444,20 +419,21 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if r, _ := flagRelays(o); s.legacy && len(r) > 0 {
 		settings.Pin(core.SetPortalRelays, "the service's --relays flag")
 	}
+	// Likewise for network.permitted: the console must not turn off a
+	// provider a legacy service's flags grant, or change one its --portal sets.
+	if s.legacy {
+		h.networkPins = legacyNetworkPins(o)
+	}
 	h.console = "http://" + cfg.Host.ManagementAddr
 	coreCfg := core.Config{DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: func() string { return h.console }, Reserved: []string{cfg.Host.ConsoleHost}, Logf: logf}
-	if operator != nil {
-		coreCfg.ValidateOperatorDecision = operator.ValidateDecision
-		coreCfg.OperatorIdentity = operator.DecisionIdentity
-	}
 	svc, err := core.New(ctx, coreCfg)
 	if err != nil {
 		return nil, err
 	}
 	h.Svc = svc
 
-	apiSrv := &api.Server{Svc: svc, System: h, Operator: operator}
+	apiSrv := &api.Server{Svc: svc, System: h}
 	mux := http.NewServeMux()
 	apiH := apiSrv.Handler()
 	mux.Handle("/api/", apiH)
@@ -522,31 +498,6 @@ func storedPrivateBackend(c *config.Config) string {
 		return ""
 	}
 	return v.(string)
-}
-
-func readOperatorCredential(input *os.File, output io.Writer) (string, error) {
-	var raw []byte
-	var err error
-	if term.IsTerminal(int(input.Fd())) {
-		fmt.Fprint(output, "Operator credential (hidden): ")
-		raw, err = term.ReadPassword(int(input.Fd()))
-		fmt.Fprintln(output)
-	} else {
-		// Explicit out-of-band provisioning for embedded/disposable hosts.
-		var value string
-		value, err = bufio.NewReader(io.LimitReader(input, 4097)).ReadString('\n')
-		if errors.Is(err, io.EOF) && len(value) > 0 {
-			err = nil
-		}
-		raw = []byte(strings.TrimRight(value, "\r\n"))
-	}
-	if err != nil {
-		return "", errors.New("could not read operator credential")
-	}
-	if len(raw) < 32 || len(raw) > 4096 {
-		return "", errors.New("operator credential must contain 32 to 4096 bytes")
-	}
-	return string(raw), nil
 }
 
 func providerConfiguration(cfg portal.Config) string {
@@ -657,16 +608,19 @@ func (h *Host) Close() error {
 		if h.Providers != nil {
 			collect("provider routes", h.Providers.Close())
 		}
+		h.pmu.Lock()
+		tsNet, portalNet := h.tsNet, h.portalNet
+		h.pmu.Unlock()
 		if h.Public != nil {
 			collect("public network shutdown", h.Public.Close())
-		} else if h.portalNet != nil {
-			collect("portal shutdown", h.portalNet.Close())
+		} else if portalNet != nil {
+			collect("portal shutdown", portalNet.Close())
 		}
 		if h.Private != nil {
 			collect("private network shutdown", h.Private.Close())
 		}
-		if h.tsNet != nil && h.Private != h.tsNet {
-			collect("tailscale shutdown", h.tsNet.Close())
+		if tsNet != nil && h.Private != core.PrivateNet(tsNet) {
+			collect("tailscale shutdown", tsNet.Close())
 		}
 		if h.localNet != nil && h.Private != h.localNet {
 			collect("local shutdown", h.localNet.Close())
@@ -696,34 +650,6 @@ func retainDataLock(f *os.File) {
 	retainedLocks.Lock()
 	retainedLocks.files = append(retainedLocks.files, f)
 	retainedLocks.Unlock()
-}
-
-// readOperatorCredentialFile validates the opened descriptor, avoiding a
-// pathname-check/read race and refusing symlinks and blocking special files.
-func readOperatorCredentialFile(path string) (string, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return "", errors.New("could not open operator credential file")
-	}
-	f := os.NewFile(uintptr(fd), path)
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return "", errors.New("could not inspect operator credential file")
-	}
-	owner, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() > 4098 || owner.Uid != uint32(os.Geteuid()) {
-		return "", errors.New("operator credential file must be a regular 0600 file owned by the service user")
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, 4099))
-	if err != nil {
-		return "", errors.New("could not read operator credential file")
-	}
-	value := strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
-	if len(value) < 32 || len(value) > 4096 || strings.ContainsAny(value, "\r\n") {
-		return "", errors.New("operator credential file must contain one credential of 32 to 4096 bytes")
-	}
-	return value, nil
 }
 
 // relayLimit converts portal.max_active_relays, which config bounds to

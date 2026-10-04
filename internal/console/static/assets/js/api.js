@@ -13,13 +13,11 @@ export class ApiError extends Error {
   get health() { return this.body.health || null; }
 }
 
-export async function request(method, path, body, raw, extraHeaders) {
+// extraHeaders adds request headers (If-Match for settings saves).
+export async function request(method, path, body, extraHeaders) {
   const headers = { 'X-Flats-Console': '1', Accept: 'application/json', ...extraHeaders };
   const opts = { method, headers, credentials: 'same-origin', cache: 'no-store' };
-  if (raw) {
-    headers['Content-Type'] = raw.contentType || 'application/octet-stream';
-    opts.body = body;
-  } else if (body !== undefined) {
+  if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
@@ -31,31 +29,15 @@ export async function request(method, path, body, raw, extraHeaders) {
   }
   let data = null;
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
-  if (!res.ok) {
-    if (path !== '/operator/session' && data?.category?.startsWith('operator_') && typeof CustomEvent === 'function') {
-      document.dispatchEvent(new CustomEvent('flats-operator-required', { detail: data.category }));
-    }
-    throw new ApiError(res.status, data);
-  }
+  if (!res.ok) throw new ApiError(res.status, data);
   return data;
 }
 
 const enc = encodeURIComponent;
-
-function archiveType(file) {
-  const name = String(file && file.name || '').toLowerCase();
-  if (name.endsWith('.tar.gz') || name.endsWith('.tgz') || name.endsWith('.gz')) return 'application/gzip';
-  if (name.endsWith('.tar')) return 'application/x-tar';
-  if (name.endsWith('.zip')) return 'application/zip';
-  return 'application/octet-stream';
-}
 const get = (p) => request('GET', p);
 const post = (p, b) => request('POST', p, b === undefined ? {} : b);
 
 export const api = {
-  operatorStatus: () => get('/operator/session'),
-  operatorSession: (credential) => post('/operator/session', { credential }),
-  operatorLogout: () => request('DELETE', '/operator/session'),
   status: () => get('/status'),
   flats: (q) => get('/flats' + (q ? '?q=' + enc(q) : '')),
   flat: (slug) => get(`/flats/${enc(slug)}`),
@@ -63,19 +45,9 @@ export const api = {
   deploy: (slug, version) => post(`/flats/${enc(slug)}/deploy`, { version }),
   rollback: (slug, version, restoreData) => post(`/flats/${enc(slug)}/rollback`, { version: version || 0, restore_data: !!restoreData }),
   deployments: (slug) => get(`/flats/${enc(slug)}/deployments`),
-  openPreview: (slug, version) => post(`/flats/${enc(slug)}/previews`, { version }),
-  openDraftPreview: (slug) => post(`/flats/${enc(slug)}/previews`, { target: 'draft', version: 0 }),
-  saveDraft: (slug, file, meta = {}) => {
-    const q = new URLSearchParams();
-    if (meta.expectedRevision !== undefined) q.set('expected_revision', String(meta.expectedRevision));
-    if (meta.message) q.set('message', meta.message);
-    if (meta.gitSHA) q.set('git_sha', meta.gitSHA);
-    if (meta.gitDirty) q.set('git_dirty', 'true');
-    const qs = q.toString();
-    return request('POST', `/flats/${enc(slug)}/draft` + (qs ? '?' + qs : ''), file, { contentType: archiveType(file) });
-  },
-  publish: (slug, body) => post(`/flats/${enc(slug)}/publish`, body),
-  setProvider: (slug, provider, permitted) => post(`/flats/${enc(slug)}/providers`, { provider, permitted }),
+  publish: (slug, draft) => post(`/flats/${enc(slug)}/publish`, { revision: draft.revision, hash: draft.hash }),
+  setFlatProvider: (slug, provider, permitted) => post(`/flats/${enc(slug)}/providers`, { provider, permitted }),
+  openPreview: (slug, version) => post(`/flats/${enc(slug)}/previews`, version ? { version } : { target: 'draft', version: 0 }),
   previews: (slug) => get(`/flats/${enc(slug)}/previews`),
   closePreview: (host) => request('DELETE', `/previews/${enc(host)}`),
   setVisibility: (slug, visibility) => post(`/flats/${enc(slug)}/visibility`, { visibility, reason: '' }),
@@ -91,18 +63,15 @@ export const api = {
   approvals: (status) => get('/approvals' + (status ? '?status=' + enc(status) : '')),
   approval: (id) => get(`/approvals/${enc(id)}`),
   decide: (id, approve) => post(`/approvals/${enc(id)}/${approve ? 'approve' : 'reject'}`),
+  providers: () => get('/providers'),
+  // etag is config.etag from settings(), as for saveSettings.
+  setProvider: (id, enabled, etag) => request('PUT', `/providers/${enc(id)}`, { enabled }, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another
   // save since then makes the server refuse with 412.
-  saveSettings: (values, etag) => request('PUT', '/settings', values, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  saveSettings: (values, etag) => request('PUT', '/settings', values, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settingsImpact: (values) => post('/settings/impact', values),
 };
-
-// newestVersion returns the highest saved version number, or 0.
-export async function newestVersion(slug) {
-  const { versions } = await api.versions(slug);
-  return (versions || []).reduce((m, v) => Math.max(m, v.number), 0);
-}
 
 // Thumbnails are version files behind the console API, which needs the
 // console header, so they are fetched and inlined as data: URLs (allowed by

@@ -70,7 +70,7 @@ func newRuntimeEnv(t *testing.T) *rtEnv {
 		t.Fatal(err)
 	}
 	rt := &fakeRuntime{}
-	svc, err := core.New(context.Background(), core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: priv, Runtime: rt,
+	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Runtime: rt,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +346,7 @@ func TestRenameRedirectReservation(t *testing.T) {
 	}
 	approvedTestDeploy(t, e.svc, ctx, "alpha", 1)
 	approvedTestDeploy(t, e.svc, ctx, "beta", 1)
-	svc2, err := core.New(ctx, core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: e.dataDir, Store: e.st, Private: e.priv, Logf: t.Logf})
+	svc2, err := core.New(ctx, core.Config{DataDir: e.dataDir, Store: e.st, Private: e.priv, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +712,7 @@ func TestErrorKinds(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := store.Open(filepath.Join(dir, "flats.db"))
 	defer st.Close()
-	svc, err := core.New(ctx, core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: e.priv, Logf: t.Logf})
+	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: e.priv, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}

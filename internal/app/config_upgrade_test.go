@@ -190,8 +190,8 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 			t.Errorf("setting %s = %q, want %q", k, settings[k], v)
 		}
 	}
-	if !slices.Equal(h.Config.Network.Permitted, []string{"portal"}) || h.Public == nil || h.tsNet != nil || h.Operator == nil {
-		t.Errorf("grants %+v public=%t tailscale=%t operator=%t", h.Config.Network, h.Public != nil, h.tsNet != nil, h.Operator != nil)
+	if !slices.Equal(h.Config.Network.Permitted, []string{"portal"}) || h.Public == nil || h.tsNet != nil {
+		t.Errorf("grants %+v public=%t tailscale=%t", h.Config.Network, h.Public != nil, h.tsNet != nil)
 	}
 	after, err := h.Providers.ExposurePolicy(context.Background())
 	if err != nil || after != before {
@@ -606,9 +606,9 @@ func TestLegacyFreshStartInitializes(t *testing.T) {
 }
 
 func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
-	h, client := operatorHost(t)
+	h, client := consoleHost(t)
 	path := h.ConfigPath
-	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"3","portal_relays":"https://relay.example.com"}`), nil); code != 200 {
+	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"3","portal_relays":"https://relay.example.com"}`), nil); code != 200 {
 		t.Fatalf("PUT settings = %d", code)
 	}
 	raw, _ := os.ReadFile(path)
@@ -622,7 +622,7 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 		t.Fatal("upload limit changed")
 	}
 	// An out-of-range value is invalid, not a server error.
-	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"9007199254740992"}`), nil); code != 400 {
+	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"9007199254740992"}`), nil); code != 400 {
 		t.Fatalf("out of range = %d", code)
 	}
 	// An edit on disk while the host runs makes console saves conflict.
@@ -631,7 +631,7 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out map[string]any
-	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"5"}`), &out); code != 409 || !strings.Contains(out["error"].(string), "restart") {
+	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"5"}`), &out); code != 409 || !strings.Contains(out["error"].(string), "restart") {
 		t.Fatalf("conflicting save = %d %v", code, out)
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, edited) {
@@ -647,19 +647,19 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 // settings, and the same relays, still save. Config mode has no such pin.
 func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	dir := t.TempDir()
-	h, client := operatorHostWith(t, dir, func(o *Options) {
+	h, client := consoleHostWith(t, dir, func(o *Options) {
 		o.Relays, o.Set = []string{"https://relay.example.com"}, map[string]bool{"relays": true}
 	})
 	put := func(body string) (int, map[string]any) {
 		t.Helper()
 		var out map[string]any
-		code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(body), &out)
+		code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(body), &out)
 		return code, out
 	}
 	path := h.ConfigPath
 	before := hashFile(t, path)
 	var view struct{ Config core.ConfigView }
-	if code := operatorCall(t, h, client, "GET", "/console/api/settings", nil, &view); code != 200 || view.Config.Mode != "legacy" ||
+	if code := consoleCall(t, h, client, "GET", "/console/api/settings", nil, &view); code != 200 || view.Config.Mode != "legacy" ||
 		view.Config.ETag != before || view.Config.Pinned[core.SetPortalRelays] != "the service's --relays flag" || view.Config.Sources["host.management_addr"] != config.SourceFlag {
 		t.Fatalf("legacy settings view = %d %+v", code, view.Config)
 	}

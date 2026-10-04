@@ -110,50 +110,44 @@ export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
-// Visibility labels and widening order, mirroring internal/store.
+// Visibility labels and widening order, mirroring internal/store. Legacy
+// public-listed and public-unlisted values are shown as Public.
 export const VISIBILITY = {
   private: { label: 'Private', icon: 'lock', rank: 0 },
   public: { label: 'Public', icon: 'globe', rank: 1 },
-  'public-unlisted': { label: 'Public · unlisted', icon: 'globe', rank: 1 },
-  'public-listed': { label: 'Public · listed', icon: 'globe', rank: 2 },
 };
 
-// Notices shown before widening; the API returns the same text afterwards.
-// console_test.go checks they match internal/core.
-export const UNLISTED_NOTICE = 'Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone with the URL can open it.';
-export const LISTED_NOTICE = 'This flat is public: anyone can open it, and it appears in Portal relay listings.';
+export const visibilityOf = (vis) => (!vis || vis === 'private' ? 'private' : 'public');
 
+// Notice shown before making a flat public; the API returns the same text
+// afterwards. console_test.go checks it matches internal/core.
 export const PUBLIC_ACCESS_NOTICE = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 
 export function noticeFor(vis) {
-  if (vis === 'public') return PUBLIC_ACCESS_NOTICE;
-  if (vis === 'public-unlisted') return UNLISTED_NOTICE;
-  if (vis === 'public-listed') return LISTED_NOTICE;
-  return '';
+  return visibilityOf(vis) === 'public' ? PUBLIC_ACCESS_NOTICE : '';
 }
 
-// Pending requests describe a future state. The canonical notices above are
-// reserved for flats that are already Public.
-export function pendingNoticeFor(vis) {
-  if (vis === 'public') return 'If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public.';
-  if (vis === 'public-unlisted') return 'If approved, this flat becomes Public. Unlisted only hides it from Portal relay listings; it is NOT access control: anyone with the URL can open it.';
-  if (vis === 'public-listed') return 'If approved, this flat becomes Public: anyone can open it, and it appears in Portal relay listings.';
-  return '';
+// publicURL is the current public address: Portal's public_url, or the URL
+// of a current Tailscale Funnel route.
+export function publicURL(f) {
+  if (!f) return '';
+  if (f.public_url) return f.public_url;
+  const ep = (f.endpoints || []).find((e) => e.audience === 'current' && e.url &&
+    (e.provider === 'tailscale-funnel' || e.provider === 'portal'));
+  return ep ? ep.url : '';
 }
-
-// PUBLIC_URL_NOTICE covers a public URL that came without a notice.
-export const PUBLIC_URL_NOTICE = 'Anyone with the public URL can open it. Unlisted only hides a flat from Portal relay listings; it is NOT access control.';
 
 // publicNoticeOf returns the warning to show next to a flat's public URL
 // ('' when it has none). Every public URL in the console carries one.
 export function publicNoticeOf(f) {
-  if (!f || !f.public_url) return '';
-  return f.public_notice || noticeFor(f.visibility) || PUBLIC_URL_NOTICE;
+  if (!publicURL(f)) return '';
+  return f.public_notice || PUBLIC_ACCESS_NOTICE;
 }
 
 export function visibilityBadge(vis) {
-  const v = VISIBILITY[vis] || { label: vis, icon: 'lock' };
-  return h('span', { class: 'vis vis-' + vis }, icon(v.icon), h('span', { text: v.label }));
+  const key = visibilityOf(vis);
+  const v = VISIBILITY[key];
+  return h('span', { class: 'vis vis-' + key }, icon(v.icon), h('span', { text: v.label }));
 }
 
 // slugColor derives a stable hue from the slug for initials tiles.

@@ -21,72 +21,40 @@ import (
 )
 
 func setup(t *testing.T) (*httptest.Server, *core.Service) {
-	srv, svc, _ := setupWithAuthority(t)
-	return srv, svc
-}
-
-func setupWithAuthority(t *testing.T) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
 	t.Helper()
 	return setupWithLifecycle(t, nil)
 }
 
-func setupWithLifecycle(t *testing.T, lifecycle core.LifecycleNet) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
+func setupWithLifecycle(t *testing.T, lifecycle core.LifecycleNet) (*httptest.Server, *core.Service) {
 	t.Helper()
 	return setupWith(t, t.TempDir(), func(c *core.Config) { c.Lifecycle = lifecycle })
 }
 
 // setupWith serves a Service on data directory dir; edit adjusts its config.
-func setupWith(t *testing.T, dir string, edit func(*core.Config)) (*httptest.Server, *core.Service, *api.OperatorAuthority) {
+func setupWith(t *testing.T, dir string, edit func(*core.Config)) (*httptest.Server, *core.Service) {
 	t.Helper()
-	authority := operatorAuthority(t)
 	st, err := store.Open(filepath.Join(dir, "f.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	priv, _ := local.Listen("127.0.0.1:0")
 	pubNet, _ := local.Listen("127.0.0.1:0")
-	cfg := core.Config{OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
+	cfg := core.Config{DataDir: dir, Store: st, Private: priv, Public: local.NewPublic(pubNet),
 		ConsoleURL: func() string { return "http://console" }, Logf: t.Logf}
 	edit(&cfg)
 	svc, err := core.New(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer((&api.Server{Svc: svc, Operator: authority}).Handler())
+	srv := httptest.NewServer((&api.Server{Svc: svc}).Handler())
 	t.Cleanup(func() { srv.Close(); svc.Close(); priv.Close(); pubNet.Close(); st.Close() })
-	return srv, svc, authority
+	return srv, svc
 }
 
-const operatorTestCredential = "independent-fixture-credential-32-bytes"
-
-func operatorAuthority(t *testing.T) *api.OperatorAuthority {
-	t.Helper()
-	a, err := api.NewOperatorAuthority(operatorTestCredential)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
-}
-
-// consoleHdr explicitly authenticates a disposable operator, separately from
-// the agent API. Browser headers alone never authorize a decision.
+// consoleHdr carries the headers a console page sends from the browser.
 func consoleHdr(t *testing.T, srv *httptest.Server) map[string]string {
 	t.Helper()
-	h := map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin", "Origin": srv.URL, "Content-Type": "application/json"}
-	r, _ := http.NewRequest("POST", srv.URL+"/console/api/operator/session", strings.NewReader(`{"credential":"`+operatorTestCredential+`"}`))
-	for k, v := range h {
-		r.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 || len(resp.Cookies()) != 1 {
-		t.Fatalf("operator fixture login: %d", resp.StatusCode)
-	}
-	h["Cookie"] = resp.Cookies()[0].String()
-	return h
+	return map[string]string{"X-Flats-Console": "1", "Sec-Fetch-Site": "same-origin", "Origin": srv.URL, "Content-Type": "application/json"}
 }
 
 func archive(files map[string]string) []byte {
@@ -313,8 +281,8 @@ func TestConsoleRefusesClientsAndForeignOrigins(t *testing.T) {
 // Decisions made through the console node carry the WhoIs login that the
 // tsnet middleware set; the loopback listener has none.
 func TestDecisionRecordsTailnetLogin(t *testing.T) {
-	srv, svc, authority := setupWithAuthority(t)
-	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc, Operator: authority}).Handler()))
+	srv, svc := setup(t)
+	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc}).Handler()))
 	t.Cleanup(tail.Close)
 	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	pending := func() string {
@@ -341,7 +309,7 @@ func TestDecisionRecordsTailnetLogin(t *testing.T) {
 
 	id = pending()
 	code, out = req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/approve", nil, consoleHdr(t, srv))
-	if code != 200 || out["decided_by"] != "local operator" {
+	if code != 200 || out["decided_by"] != "console" {
 		t.Fatalf("loopback approve: %d %v", code, out)
 	}
 }

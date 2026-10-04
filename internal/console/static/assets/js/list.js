@@ -1,10 +1,11 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
 
-import { h, clear, icon, timeEl, slugHue, initials } from './dom.js';
+import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials, publicURL } from './dom.js';
 import { api, thumbnail } from './api.js';
-import { menu, errorPanel, loading } from './ui.js';
+import { menu, errorPanel, loading, extLink, busy } from './ui.js';
+import { publishDraft } from './actions.js';
+import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
-import { statusLine, currentTarget, connectionState, visibilityWord, connectionLabel, openControl } from './lifecycle.js';
 
 const VIEW_KEY = 'flats.view';
 
@@ -101,23 +102,35 @@ export function mount(main, _params, ctx) {
 
   function row(f) {
     const href = `/flats/${encodeURIComponent(f.slug)}`;
-    const current = currentTarget(f);
-    const actions = h('div', { class: 'row-actions' },
-      menu(`More actions for ${f.name || f.slug}`, [
-        { label: 'Access', onSelect: () => ctx.navigate(href + '#access') },
-        { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
-        { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
-      ]));
+    const draft = f.draft && f.draft.dirty;
+    const status = (f.live_version ? `Live v${f.live_version}` : 'Not published') + (f.live_version && draft ? ' · draft changes' : '');
+    const actions = h('div', { class: 'row-actions' });
+    if (!f.live_version || draft) {
+      const pub = h('button', {
+        type: 'button', class: 'btn btn-pill', text: 'Publish', disabled: !draft,
+        title: draft ? 'Publish the draft' : 'No draft saved yet',
+        'aria-label': `Publish ${f.name || f.slug}`,
+      });
+      pub.addEventListener('click', () => busy(pub, async () => { if (await publishDraft(f)) load(); }));
+      actions.appendChild(pub);
+    }
+    if (f.live_version) {
+      actions.appendChild(extLink(f.private_url, icon('external', `Open ${f.name || f.slug} (private URL)`), 'icon-btn'));
+      if (publicURL(f)) {
+        actions.appendChild(extLink(publicURL(f), icon('globe', `Open ${f.name || f.slug} (public URL: anyone with it can open the flat)`), 'icon-btn'));
+      }
+    }
+    actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
+      { label: 'Share', onSelect: () => shareDialog(f, load) },
+      { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
+      { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
+    ]));
     return h('li', { class: 'flat' },
       thumb(f),
       h('div', { class: 'flat-main' },
-        h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
-        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ' · ', statusLine(f)),
-        h('div', { class: 'flat-opens' },
-          openControl(current, current.version ? `Open current version v${current.version}` : 'Open current version'),
-          h('a', { href: href + '#draft', 'data-nav': true, text: 'Review draft (private)' }))),
-      h('div', { class: 'flat-vis' }, h('span', { class: 'vis vis-' + (f.visibility === 'public' ? 'public' : 'private'), text: visibilityWord(f.visibility) }),
-        h('div', { class: 'muted small', text: connectionLabel(connectionState(f)) })),
+        extLink(publicURL(f) || f.private_url, f.name || f.slug, 'flat-name'),
+        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
+      h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
   }
 

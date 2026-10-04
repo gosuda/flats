@@ -76,7 +76,7 @@ func fetch(t *testing.T, u string) (int, string) {
 // TestMVPGate keeps the original size, latency and origin checks while requiring
 // an explicit operator decision before uploaded or rollback bytes become live.
 func TestMVPGate(t *testing.T) {
-	h, operator := operatorHost(t)
+	h, operator := consoleHost(t)
 	base := "http://" + h.Addr()
 	blob := make([]byte, 10<<20-4096)
 	rand.Read(blob) // incompressible: the upload really is ~10 MB
@@ -91,7 +91,7 @@ func TestMVPGate(t *testing.T) {
 			t.Fatalf("missing pending result: %+v", result)
 		}
 		var decision struct{ Status string }
-		code := operatorCall(t, h, operator, "POST", "/console/api/approvals/"+approval["id"].(string)+"/approve", strings.NewReader("{}"), &decision)
+		code := consoleCall(t, h, operator, "POST", "/console/api/approvals/"+approval["id"].(string)+"/approve", strings.NewReader("{}"), &decision)
 		if code != 200 || decision.Status != "approved" {
 			t.Fatalf("decision: %d %+v", code, decision)
 		}

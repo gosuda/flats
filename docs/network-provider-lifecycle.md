@@ -82,6 +82,18 @@ Defaults changed so a process does not opt in by omission:
 - `--portal` defaults to `false`. The previous default was `true`.
 - `--permit` accepts a comma-separated list of canonical ids.
 
+The console's Settings page can also turn a provider on or off for the host
+(`PUT /console/api/providers/{id}` with `{"enabled": bool}` and the settings
+ETag in `If-Match`). Turning one on saves `network.permitted` in config.json,
+updates the running Manager's grants (`SetGrant`) and attaches the provider's
+backend (`AttachTailnet`/`AttachPortal`, nil to set only); constructing a
+backend does not contact a tailnet or relay. Portal started this way uses the
+Portal settings saved at that moment. Turning one off is refused with
+`provider_in_use` while any flat still allows it, and `local` cannot be turned
+off. A legacy service whose `--portal`, `--permit` or `--network tailscale`
+flag fixes a provider refuses the change, and Tailscale cannot be turned off
+while it carries the console and private routes.
+
 `--network tailscale` grants `tailscale` only and sets `private_backend`. It
 does not grant Funnel. `--network local`, when the flag is present, sets
 `private_backend` to `local` and does not revoke other grants. `--portal`

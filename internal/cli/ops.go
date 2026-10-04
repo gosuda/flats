@@ -68,27 +68,6 @@ func (a *app) install(args []string) error {
 	if err := a.requireMacOS(); err != nil {
 		return err
 	}
-	// Validate the documented serve-argument passthrough before any write.
-	for i, arg := range extra {
-		if arg == "--operator-credential-stdin" || arg == "-operator-credential-stdin" ||
-			strings.HasPrefix(arg, "--operator-credential-stdin=") || strings.HasPrefix(arg, "-operator-credential-stdin=") {
-			return errors.New("--operator-credential-stdin cannot be used by an installed service; use --operator-credential-file with an absolute path")
-		}
-		var path string
-		if arg == "--operator-credential-file" || arg == "-operator-credential-file" {
-			if i+1 >= len(extra) {
-				return errors.New("--operator-credential-file requires an absolute path")
-			}
-			path = extra[i+1]
-		} else if strings.HasPrefix(arg, "--operator-credential-file=") || strings.HasPrefix(arg, "-operator-credential-file=") {
-			_, path, _ = strings.Cut(arg, "=")
-		} else {
-			continue
-		}
-		if !filepath.IsAbs(path) {
-			return errors.New("--operator-credential-file requires an absolute path")
-		}
-	}
 	dataDir := *data
 	if dataDir == "" {
 		dataDir = a.env.Getenv("FLATS_DATA")

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -13,13 +12,13 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-func TestLifecycleRejectionPersistsAuthorizedActor(t *testing.T) {
+func TestLifecycleRejectionPersistsActor(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(t.Context(), Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, ValidateOperatorDecision: func(context.Context) error { return nil }, Logf: t.Logf})
+	s, err := New(t.Context(), Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
 	if err != nil {
 		st.Close()
 		t.Fatal(err)
@@ -30,51 +29,18 @@ func TestLifecycleRejectionPersistsAuthorizedActor(t *testing.T) {
 	if err != nil || r.Approval == nil {
 		t.Fatalf("request: %+v %v", r, err)
 	}
-	type proofKey struct{}
-	authorized := context.WithValue(t.Context(), proofKey{}, "operator-session:fixture")
-	s.cfg.ValidateOperatorDecision = func(ctx context.Context) error {
-		if ctx.Value(proofKey{}) == nil {
-			return errors.New("no operator session")
-		}
-		return nil
-	}
-	s.cfg.OperatorIdentity = func(ctx context.Context) string { actor, _ := ctx.Value(proofKey{}).(string); return actor }
-	assertPending := func() {
-		t.Helper()
-		a, err := s.GetApproval(t.Context(), r.Approval.ID)
-		if err != nil || a.Status != "pending" || a.DecidedBy != "" || a.AuthorizedAt != nil || a.DecidedAt != nil {
-			t.Fatalf("unauthorized write: %+v %v", a, err)
-		}
-	}
-	if _, err := s.Decide(t.Context(), r.Approval.ID, false); !errors.Is(err, ErrForbidden) {
-		t.Fatal(err)
-	}
-	assertPending()
 	before := time.Now().Unix()
-	a, err := s.Decide(authorized, r.Approval.ID, false)
-	if err != nil || a.Status != "rejected" || a.DecidedBy != "operator-session:fixture" || a.AuthorizedAt == nil || a.DecidedAt == nil || a.AuthorizedAt.Unix() < before || !a.DecidedAt.Equal(*a.AuthorizedAt) {
+	a, err := s.Decide(t.Context(), r.Approval.ID, false)
+	if err != nil || a.Status != "rejected" || a.DecidedBy != "console" || a.AuthorizedAt == nil || a.DecidedAt == nil || a.AuthorizedAt.Unix() < before || !a.DecidedAt.Equal(*a.AuthorizedAt) {
 		t.Fatalf("rejection audit: %+v %v", a, err)
 	}
-	other := context.WithValue(t.Context(), proofKey{}, "operator-session:other")
-	again, err := s.Decide(other, a.ID, false)
+	again, err := s.Decide(t.Context(), a.ID, false)
 	if err != nil || again.DecidedBy != a.DecidedBy || !again.AuthorizedAt.Equal(*a.AuthorizedAt) {
 		t.Fatalf("retry overwrote actor: %+v %v", again, err)
 	}
-	if _, err := s.Decide(other, a.ID, true); !errors.Is(err, ErrConflict) {
+	if _, err := s.Decide(t.Context(), a.ID, true); !errors.Is(err, ErrConflict) {
 		t.Fatalf("opposite decision: %v", err)
 	}
-	if _, err := s.Decide(t.Context(), a.ID, false); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("unauthorized retry: %v", err)
-	}
-	r, err = s.Delete(t.Context(), "audit", ViaAPI, "another request")
-	if err != nil || r.Approval == nil {
-		t.Fatalf("second request: %+v %v", r, err)
-	}
-	empty := context.WithValue(t.Context(), proofKey{}, "")
-	if _, err := s.Decide(empty, r.Approval.ID, false); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("missing identity: %v", err)
-	}
-	assertPending()
 	// Restart both service and store: the returned DTO must reflect durable audit.
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -145,11 +111,6 @@ func TestLifecycleVisibilityDefersProviderChecksToAuthorizedApply(t *testing.T) 
 				if len(n.requests) != count {
 					t.Fatal("network started before approval")
 				}
-				s.cfg.ValidateOperatorDecision = func(context.Context) error { return errors.New("unauthorized") }
-				if _, err := s.Decide(t.Context(), r.Approval.ID, true); !errors.Is(err, ErrForbidden) {
-					t.Fatal(err)
-				}
-				s.cfg.ValidateOperatorDecision = func(context.Context) error { return nil }
 				a, err := s.Decide(t.Context(), r.Approval.ID, true)
 				want := ErrProviderNotPermitted
 				code := "provider_not_permitted"

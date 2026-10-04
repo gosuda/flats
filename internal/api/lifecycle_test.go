@@ -94,16 +94,6 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	}
 	flatState(t, srv, "drafts", 0, "private", 3)
 	id := out["approval"].(map[string]any)["id"].(string)
-	for _, decision := range []string{"approve", "reject"} {
-		code, denied := req(t, "POST", srv.URL+"/console/api/approvals/"+id+"/"+decision, nil, map[string]string{"X-Flats-Console": "1", "Origin": srv.URL, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json"})
-		if code != 403 || denied["category"] != "operator_required" {
-			t.Fatalf("forged decision: %d %v", code, denied)
-		}
-		_, a := req(t, "GET", srv.URL+"/api/approvals/"+id, nil, nil)
-		if a["status"] != "pending" {
-			t.Fatalf("forged decision mutated approval: %v", a)
-		}
-	}
 	approveRequest(t, srv, out)
 	f := flatState(t, srv, "drafts", 1, "private", 3)
 	serving(t, f["private_url"].(string), "DRAFT-3")
@@ -134,23 +124,17 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	serving(t, f["private_url"].(string), "DRAFT-5")
 }
 
-func TestProviderGrantAndBothVisibilityDirectionsRequireOperator(t *testing.T) {
+func TestProviderGrantAndBothVisibilityDirectionsRequireConsole(t *testing.T) {
 	srv, _ := setup(t)
 	saveAndPublish(t, srv, "access", "CURRENT")
 	grant := `{"provider":"portal","permitted":true}`
-	for _, prefix := range []string{"/api", "/console/api"} {
-		h := map[string]string(nil)
-		if prefix == "/console/api" {
-			h = map[string]string{"X-Flats-Console": "1", "Origin": srv.URL, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json"}
-		}
-		code, out := req(t, "POST", srv.URL+prefix+"/flats/access/providers", strings.NewReader(grant), h)
-		if code != 403 || out["category"] != "operator_required" {
-			t.Fatalf("forged grant: %d %v", code, out)
-		}
+	code, out := req(t, "POST", srv.URL+"/api/flats/access/providers", strings.NewReader(grant), nil)
+	if code != 403 {
+		t.Fatalf("agent grant: %d %v", code, out)
 	}
-	code, out := req(t, "POST", srv.URL+"/console/api/flats/access/providers", strings.NewReader(grant), consoleHdr(t, srv))
+	code, out = req(t, "POST", srv.URL+"/console/api/flats/access/providers", strings.NewReader(grant), consoleHdr(t, srv))
 	if code != 200 {
-		t.Fatalf("authorized grant: %d %v", code, out)
+		t.Fatalf("console grant: %d %v", code, out)
 	}
 	flatState(t, srv, "access", 1, "private", 1)
 	for _, visibility := range []string{"public-unlisted", "private"} {

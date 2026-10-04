@@ -26,7 +26,6 @@ import (
 
 type env struct {
 	management          *httptest.Server
-	operatorCookie      *http.Cookie
 	localURL, remoteURL string
 	svc                 *core.Service
 	st                  *store.Store
@@ -38,10 +37,6 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	authority, err := api.NewOperatorAuthority(mcpOperatorCredential)
-	if err != nil {
-		t.Fatal(err)
-	}
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
 	if err != nil {
@@ -56,7 +51,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	pub := local.NewPublic(pubNet)
-	svc, err := core.New(context.Background(), core.Config{OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: pub,
+	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +59,7 @@ func newEnv(t *testing.T) *env {
 	h := Handler(svc, Options{Version: "test"})
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", h)
-	management := httptest.NewServer((&api.Server{Svc: svc, Operator: authority}).Handler())
+	management := httptest.NewServer((&api.Server{Svc: svc}).Handler())
 	localSrv := httptest.NewServer(mux)
 	remoteSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.RemoteAddr = "100.64.0.7:41641" // a tailnet peer
@@ -576,26 +571,10 @@ func TestDeployTextNotesPendingHost(t *testing.T) {
 	}
 }
 
-const mcpOperatorCredential = "separate-mcp-test-operator-credential-32-bytes"
-
 func (e *env) operatorCall(t *testing.T, method, path, body string) (int, map[string]any) {
 	t.Helper()
-	if e.operatorCookie == nil {
-		r, _ := http.NewRequest("POST", e.management.URL+"/console/api/operator/session", strings.NewReader(`{"credential":"`+mcpOperatorCredential+`"}`))
-		setOperatorHeaders(r, e.management.URL)
-		resp, err := http.DefaultClient.Do(r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 || len(resp.Cookies()) != 1 {
-			t.Fatalf("operator session: %d", resp.StatusCode)
-		}
-		e.operatorCookie = resp.Cookies()[0]
-	}
 	r, _ := http.NewRequest(method, e.management.URL+"/console/api"+path, strings.NewReader(body))
 	setOperatorHeaders(r, e.management.URL)
-	r.AddCookie(e.operatorCookie)
 	resp, err := http.DefaultClient.Do(r)
 	if err != nil {
 		t.Fatal(err)

@@ -12,7 +12,7 @@ The question "who decides this value?" picks the place:
 | The operator | `config.json` | addresses, system policies, permitted networks, credential file paths |
 | Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, encrypted secrets |
 | The flat | `flats/<slug>/` | uploaded code, the flat's SQLite database and FILES |
-| Nobody may read it in plain text | separate files | `secret.key`, the operator credential, the Tailscale auth key |
+| Nobody may read it in plain text | separate files | `secret.key`, the Tailscale auth key |
 
 No value is stored in two places. `flats.db` also holds `host_binding`, which
 records which `config.json` belongs to this data directory; it is a link, not a
@@ -42,9 +42,8 @@ macOS, `$XDG_CONFIG_HOME/Flats` or `~/.config/Flats` on Linux).
   logs/ cache/ run/ flats.lock  logs, caches, sockets, the host lock
 ```
 
-The operator credential and the Tailscale auth key stay outside the data
-directory and outside anything agents can read; `config.json` holds only their
-paths.
+The Tailscale auth key stays outside the data directory and outside anything
+agents can read; `config.json` holds only its path.
 
 ### What to back up
 
@@ -92,7 +91,7 @@ in the file once written; `flats config unset KEY` removes it.
 | `host.local_addr` | `127.0.0.1:7879` | restart |
 | `host.console_host` | `flats` | restart |
 | `host.server_runtime` | `true` | restart |
-| `network.permitted` | `[]` | restart |
+| `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.keep_versions` | `10` per flat, `0` = never prune | next pruning |
@@ -104,7 +103,7 @@ in the file once written; `flats config unset KEY` removes it.
 | `portal.relays` | `[]` (Portal defaults) | restart |
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
-| `credentials.operator_file` | none (console decisions disabled) | restart |
+| `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | none (interactive login) | restart |
 
 Addresses take any `host:port` that the old `--listen` and `--local-addr`
@@ -115,9 +114,12 @@ JavaScript client reads them exactly.
 Only providers listed in `network.permitted` start. Permitting `tailscale`
 does not permit Funnel, and Local needs no entry. `private_backend:
 "tailscale"` requires `tailscale` in `permitted`. Removing a provider from
-`permitted` takes its routes down at the next start but keeps each flat's
-provider permission and visibility in `flats.db`; it never publishes a flat or
-changes visibility.
+`permitted` in the file takes its routes down at the next start but keeps each
+flat's provider permission and visibility in `flats.db`; it never publishes a
+flat or changes visibility. The console's Settings → Network providers turns a
+provider on or off while the host runs: turning one on saves the file and
+starts its backend at once (a backend contacts nothing until a flat allows the
+provider), and turning one off is refused while a flat still allows it.
 
 Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole
@@ -125,10 +127,12 @@ file, and the error names its JSON path.
 
 ### Editing
 
-- **Console** (operator session): the system and Portal keys. A save rereads
-  the file under a lock and fails if it changed on disk since the host read it;
-  restart to pick up an outside edit. Host, network and credential keys are
-  read-only there. A service that still passes `--relays` pins the relays: the
+- **Console**: the system and Portal keys, and `network.permitted` through
+  Network providers. A save rereads the file under a lock and fails if it
+  changed on disk since the host read it; restart to pick up an outside edit.
+  Host, `network.private_backend` and credential keys are read-only there. A
+  service that still passes `--relays` pins the relays, and one that passes
+  `--portal`, `--permit` or `--network tailscale` pins those providers: the
   console refuses to change them until the service is reinstalled.
 - **`flats config set KEY VALUE` / `unset KEY`**: offline; they take the host
   lock and refuse while a host runs.
@@ -188,7 +192,8 @@ restore the backup.
 `flats serve --config PATH` (or `FLATS_CONFIG`) runs from that file. Only
 `--listen`, `--local-addr`, `--console-host` and `--runtime` may override a
 value for one run; they are not saved. Other configuration flags are refused.
-`--operator-credential-stdin` still works for a foreground run.
+`--operator-credential-stdin` and `--operator-credential-file` are accepted and
+ignored, with a warning: the operator credential is no longer used.
 
 Without `--config` and `FLATS_CONFIG`, `flats serve` keeps accepting the older
 flags and uses `<data-dir>/config.json`. This is what an installed service
@@ -238,8 +243,8 @@ The migration converts exactly what the old release used:
   `--relays` wins over the stored relays, as before. Stored values the old
   release ignored become the value that was in effect, and the migration log
   lists them.
-- `--operator-credential-file` and `--authkey-file` paths. File contents are
-  not read.
+- `--operator-credential-file` (kept but ignored) and `--authkey-file` paths.
+  File contents are not read.
 - Pre-lifecycle flats waiting for the one-time Private Tailscale choice are
   decided by the old rules. If the choice is ambiguous (old Tailscale state but
   no `--network`), nothing is written and the start stops with the same

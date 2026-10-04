@@ -146,7 +146,7 @@ func reviewerServiceMode(t *testing.T, id ID, legacy bool) reviewFixture {
 		lifecycle = nil
 		public = p
 	}
-	svc, err := core.New(t.Context(), core.Config{Public: public, Now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, DataDir: dir, Store: st, Private: tail, Lifecycle: lifecycle, ConsoleURL: func() string { return "http://console" }, ValidateOperatorDecision: func(context.Context) error { return nil }, Logf: t.Logf})
+	svc, err := core.New(t.Context(), core.Config{Public: public, Now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }, DataDir: dir, Store: st, Private: tail, Lifecycle: lifecycle, ConsoleURL: func() string { return "http://console" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}

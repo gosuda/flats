@@ -215,13 +215,12 @@ func (n *lifecycleRouteNet) status(host string, id ProviderID) int {
 func newLifecycleService(t *testing.T, dir string, st *store.Store, network LifecycleNet, runtime Runtime) *Service {
 	t.Helper()
 	s, err := New(t.Context(), Config{
-		DataDir:                  dir,
-		Store:                    st,
-		Private:                  &memNet{hosts: map[string]http.Handler{}},
-		Lifecycle:                network,
-		Runtime:                  runtime,
-		ValidateOperatorDecision: func(context.Context) error { return nil },
-		Logf:                     t.Logf,
+		DataDir:   dir,
+		Store:     st,
+		Private:   &memNet{hosts: map[string]http.Handler{}},
+		Lifecycle: network,
+		Runtime:   runtime,
+		Logf:      t.Logf,
 	})
 	if err != nil {
 		t.Fatal(err)

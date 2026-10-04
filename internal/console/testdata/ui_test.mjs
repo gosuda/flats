@@ -62,17 +62,8 @@ class Element extends Node {
   }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
   contains(n) { for (let x = n; x; x = x.parentNode) if (x === this) return true; return false; }
-  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
-  querySelectorAll(sel) {
-    const out = [];
-    const walk = (node) => {
-      if (!(node instanceof Element)) return;
-      if (sel.startsWith('.') ? (node.className || '').split(/\s+/).includes(sel.slice(1)) : node.tagName === String(sel).toUpperCase()) out.push(node);
-      for (const c of node.childNodes) walk(c);
-    };
-    for (const c of this.childNodes) walk(c);
-    return out;
-  }
+  querySelector() { return null; }
+  querySelectorAll() { return []; }
   get childElementCount() { return this.childNodes.filter((c) => c instanceof Element).length; }
   get lastElementChild() { return [...this.childNodes].reverse().find((c) => c instanceof Element) || null; }
   focus() {}
@@ -90,7 +81,6 @@ globalThis.document = {
   addEventListener() {},
   removeEventListener() {},
   getElementById: () => null,
-  querySelector: (selector) => document.body.querySelector(selector),
 };
 
 // all returns every element under root (inclusive) matching pred.
@@ -103,18 +93,19 @@ const byText = (root, text) => all(root, (e) => e.tagName === 'BUTTON' && e.text
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
 // --- stubbed API ---
-const UNLISTED = 'Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone with the URL can open it.';
+const PUBLIC = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 const blog = {
-  slug: 'blog', name: 'Blog', visibility: 'public', publication: 'published', live_version: 2, versions: 2,
-  private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: UNLISTED,
-  private_state: 'ready', connection_state: 'ready',
-  providers: ['local', 'portal'],
-  draft: { revision: 9, hash: 'abc123draft', base_version: 2, dirty: true, updated_at: '2026-10-03T00:00:00Z', role: 'draft', number: 0 },
+  slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
+  private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: PUBLIC,
+  draft: { revision: 3, hash: 'c', dirty: true, size: 1, files: 1, kind: 'server', updated_at: '2026-10-03T00:00:00Z' },
   live: { number: 2, kind: 'server' }, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z', disk_bytes: 10,
 };
-// An older server may omit the notice; the console must still show one.
-const shop = { ...blog, slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: 'https://shop.portal.example', public_notice: undefined, providers: ['local', 'tailscale-funnel'] };
-const notes = { ...blog, slug: 'notes', name: 'Notes', visibility: 'private', publication: 'unpublished', live_version: 0, public_url: undefined, public_notice: undefined, providers: ['local'], draft: null, connection_state: 'starting' };
+// An older server may omit the notice or report a legacy public value, and a
+// Funnel address comes from the flat's endpoints; the console still shows the notice.
+const shop = { ...blog, slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: undefined, public_notice: undefined,
+  endpoints: [{ provider: 'tailscale-funnel', audience: 'current', url: 'https://shop.tail.ts.net', state: 'ready' }] };
+const notes = { ...blog, slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null };
+const pending = (id) => ({ status: 'pending_approval', approval: { id, status: 'pending' } });
 const calls = [];
 const routes = {
   'GET /console/api/flats': { flats: [blog, shop, notes] },
@@ -123,7 +114,8 @@ const routes = {
   'GET /console/api/flats/blog/versions': { versions: [
     { number: 2, kind: 'server', hash: 'b', size: 1, files: 1, created_at: '2026-10-02T00:00:00Z' },
     { number: 1, kind: 'server', hash: 'a', size: 1, files: 1, created_at: '2026-10-01T00:00:00Z' }] },
-  'POST /console/api/flats/blog/deploy': { flat: blog, version: 2, previous: 2, health: { path: '/', status: 200, ok: true } },
+  'POST /console/api/flats/blog/deploy': pending('apr-deploy'),
+  'POST /console/api/approvals/apr-deploy/approve': { id: 'apr-deploy', status: 'approved', result: 'version 2 is live' },
 };
 globalThis.fetch = async (url, opts) => {
   const key = (opts.method || 'GET') + ' ' + url;
@@ -134,10 +126,10 @@ globalThis.fetch = async (url, opts) => {
   return { ok: status < 400, status, json: async () => body };
 };
 
-const { publicNoticeOf, PUBLIC_URL_NOTICE, LISTED_NOTICE, pendingNoticeFor } = await import('./dom.js');
-assert.equal(publicNoticeOf(blog), UNLISTED);
-assert.equal(publicNoticeOf(shop), LISTED_NOTICE);
-assert.equal(publicNoticeOf({ public_url: 'https://x.example' }), PUBLIC_URL_NOTICE);
+const { publicNoticeOf, publicURL } = await import('./dom.js');
+assert.equal(publicNoticeOf(blog), PUBLIC);
+assert.equal(publicNoticeOf(shop), PUBLIC);
+assert.equal(publicURL(shop), 'https://shop.tail.ts.net');
 assert.equal(publicNoticeOf(notes), '');
 
 // List rows show visibility badges without repeated public-access banners.
@@ -153,13 +145,13 @@ for (const row of rows) {
 }
 for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
  const name = all(row, (e) => e.tagName === 'A' && e.className === 'flat-name')[0];
- assert.equal(name.getAttribute('href'), `/flats/${site.slug}`);
- assert.equal(name.getAttribute('data-nav'), '');
- assert.equal(name.getAttribute('target'), null);
- assert.equal(row.textContent.includes('This flat is public'), false);
- assert.equal(row.textContent.toLowerCase().includes('only me'), false);
- assert.equal(row.textContent.toLowerCase().includes('only you'), false);
+ assert.equal(name.getAttribute('href'), new URL(site.public_url || publicURL(site) || site.private_url).href);
+ assert.equal(name.getAttribute('target'), '_blank');
+ assert.equal(name.getAttribute('data-nav'), null);
 }
+// A flat with draft changes offers Publish; one without does not.
+assert.equal(byText(rows[0], 'Publish').length, 1);
+assert.equal(byText(rows[2], 'Publish').length, 0);
 stopList();
 
 // The flat page offers a redeploy of the live version (and only of it), also
@@ -168,10 +160,10 @@ const flat = await import('./flat.js');
 const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
-byText(flatMain, 'Operations')[0].dispatch('click');
-await tick();
 const redeploys = byText(flatMain, 'Redeploy (apply secrets)');
-assert.ok(redeploys.length >= 2, 'want a redeploy button on the current version and in the secrets panel');
+assert.equal(redeploys.length, 2, 'want a redeploy button on the live version row and in the secrets panel');
+const liveRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-live')[0];
+assert.ok(liveRow && byText(liveRow, 'Redeploy (apply secrets)').length === 1, 'live version row has no redeploy action');
 const secrets = all(flatMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'secrets')[0];
 assert.ok(secrets.textContent.includes('redeploy the live version 2'), 'secrets panel must mention redeploying: ' + secrets.textContent);
 
@@ -185,12 +177,39 @@ await tick();
 const deploy = calls.find((c) => c.key === 'POST /console/api/flats/blog/deploy');
 assert.ok(deploy, 'redeploy must deploy the live version');
 assert.deepEqual(JSON.parse(deploy.body), { version: 2 });
+assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-deploy/approve'), 'the console approves its own confirmed request');
 dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
 assert.equal(dialogs.length, 1);
 assert.ok(dialogs[0].textContent.includes('https://blog.portal.example'));
-assert.ok(dialogs[0].textContent.includes(UNLISTED), 'deploy result must show the public notice: ' + dialogs[0].textContent);
+assert.ok(dialogs[0].textContent.includes(PUBLIC), 'deploy result must show the public notice: ' + dialogs[0].textContent);
 dialogs[0].close('ok');
 await tick();
+
+// The unpublished draft is a row above the published versions and publishes
+// the exact revision shown.
+const draftRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-draft')[0];
+assert.ok(draftRow, 'want a draft row');
+routes['POST /console/api/flats/blog/publish'] = pending('apr-publish');
+routes['POST /console/api/approvals/apr-publish/approve'] = { id: 'apr-publish', status: 'approved', result: 'version 3 is live' };
+byText(draftRow, 'Publish')[0].dispatch('click');
+await tick();
+dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
+assert.ok(dialogs[0].textContent.includes('Publish Blog?'));
+dialogs[0].close('ok');
+await tick();
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/publish').body), { revision: 3, hash: 'c' });
+assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/approve'));
+all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
+await tick();
+
+// Networks are per-flat permissions; Local is always on.
+const portal = all(flatMain, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-portal')[0];
+assert.equal(portal.checked, true);
+const funnel = all(flatMain, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-tailscale-funnel')[0];
+funnel.checked = true;
+funnel.dispatch('change');
+await tick();
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/providers').body), { provider: 'tailscale-funnel', permitted: true });
 stopFlat();
 // Management pages use real API data and preserve the deployment tools.
 const management = new Element('main');
@@ -220,370 +239,27 @@ const dbMain = new Element('main');
 database.mount(dbMain, ['blog'], ctx);
 await tick();
 assert.ok(dbMain.textContent.includes('before-v2-20261002.sqlite'));
-assert.equal(all(dbMain, (e) => e.tagName === 'A' && e.textContent === 'Manage versions and rollback')[0].getAttribute('href'), '/flats/blog#history');
-for (const label of ['Access', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
-
-const { connectionState, connectionDetail, statusLine, publishDraft, changeVisibility, saveProvider, CHECK_COPY, currentTarget, failureMessage, visibilitySettled, draftEditor, activateVersion, endpointAudienceLabel, endpointConnectionLabel, endpointStatusLine, providerRemovalCopy } = await import('./lifecycle.js');
-assert.equal(statusLine(blog).startsWith('Published · v2 · Public'), true, statusLine(blog));
-assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Published · v2'), true);
-assert.equal(statusLine({ ...notes, connection: 'error', publication: 'published', live_version: 2 }).includes('Unpublished'), false);
-assert.equal(statusLine(notes).includes('Unpublished'), true);
-assert.ok(statusLine(blog).includes('Tailscale') === false || statusLine(blog).includes('Portal'));
-assert.equal(CHECK_COPY.includes('copy of this flat'), true);
-
-const lifeMain = new Element('main');
-const stopLife = flat.mount(lifeMain, ['blog'], ctx);
+const { shareDialog } = await import('./share.js');
+shareDialog(blog);
+const share = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(share.textContent.includes('Share Blog'));
+assert.ok(share.textContent.includes(PUBLIC));
+const access = all(share, (e) => e.tagName === 'SELECT')[0];
+access.value = 'private';
+access.dispatch('change');
 await tick();
-assert.ok(lifeMain.textContent.includes('Current version'));
-assert.ok(lifeMain.textContent.includes('Draft'));
-assert.equal(all(lifeMain, (e) => e.getAttribute('id') === 'draft')[0].getAttribute('tabindex'), '-1');
-assert.ok(lifeMain.textContent.includes('revision 9'));
-assert.equal(lifeMain.textContent.toLowerCase().includes('only me'), false);
-assert.equal(lifeMain.textContent.includes('Tailscale Serve'), false);
-const publishBtn = byText(lifeMain, 'Publish the next version after v2')[0];
-assert.ok(publishBtn, lifeMain.textContent);
-publishBtn.dispatch('click');
+const permissionConfirm = all(document.body, (e) => e.tagName === 'DIALOG' && e !== share)[0];
+assert.ok(permissionConfirm.textContent.includes('Make Blog private?'));
+routes['POST /console/api/flats/blog/visibility'] = pending('apr-vis');
+routes['POST /console/api/approvals/apr-vis/approve'] = { id: 'apr-vis', status: 'approved', result: 'blog is now private' };
+routes['GET /console/api/flats/blog'] = { ...blog, visibility: 'private', public_url: undefined };
+permissionConfirm.close('ok');
 await tick();
-let pubDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-assert.ok(pubDlg.textContent.includes('revision 9'), pubDlg.textContent);
-assert.ok(pubDlg.textContent.includes('abc123draft'.slice(0, 12)) || pubDlg.textContent.includes('abc123d'));
-assert.ok(pubDlg.textContent.includes('Access stays Public'));
-assert.ok(pubDlg.textContent.includes(CHECK_COPY));
-pubDlg.close('cancel');
-await tick();
-assert.equal(calls.some((c) => c.key === 'POST /console/api/flats/blog/publish'), false);
-
-publishBtn.dispatch('click');
-await tick();
-pubDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-routes['POST /console/api/flats/blog/publish'] = { status: 'pending_approval', approval: { id: 'ap1', status: 'pending' } };
-routes['POST /console/api/approvals/ap1/approve'] = { id: 'ap1', status: 'approved', result: 'published v3', data_impact: 'none' };
-pubDlg.close('ok');
-await tick();
-const pubCall = calls.find((c) => c.key === 'POST /console/api/flats/blog/publish');
-assert.deepEqual(JSON.parse(pubCall.body), { revision: 9, hash: 'abc123draft' });
-assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/ap1/approve'));
-all(document.body, (e) => e.tagName === 'DIALOG').at(-1)?.close('ok');
-await tick();
-stopLife();
-
-const accessMain = new Element('main');
-const stopAccess = flat.mount(accessMain, ['blog'], ctx);
-await tick();
-byText(accessMain, 'Access')[0].dispatch('click');
-await tick();
-const vis = all(accessMain, (e) => e.tagName === 'SELECT')[0];
-assert.ok(vis, accessMain.textContent);
-vis.value = 'private';
-vis.dispatch('change');
-await tick();
-assert.equal(calls.some((c) => c.key === 'POST /console/api/flats/blog/visibility'), false);
-const accessForm = all(accessMain, (e) => e.tagName === 'FORM' && e.textContent.includes('Apply access'))[0];
-accessForm.dispatch('submit');
-await tick();
-const visDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-assert.ok(visDlg.textContent.includes('Make Blog private?'), visDlg.textContent);
-assert.ok(visDlg.textContent.includes('tailnet ACL'));
-visDlg.close('cancel');
-await tick();
-assert.equal(calls.filter((c) => c.key === 'POST /console/api/flats/blog/visibility').length, 0);
-
-vis.value = 'private';
-accessForm.dispatch('submit');
-await tick();
-routes['POST /console/api/flats/blog/visibility'] = { status: 'pending_approval', approval: { id: 'ap2', status: 'pending' } };
-routes['POST /console/api/approvals/ap2/approve'] = { __status: 409, category: 'public_stop_unconfirmed', error: 'public route unconfirmed', approval: { id: 'ap2', status: 'failed', result: 'public route unconfirmed', result_data: { status: 'failed', failure_code: 'public_stop_unconfirmed', data_impact: 'none', health_data: 'not_run', live_data: 'untouched' } } };
-routes['GET /console/api/flats/blog'] = { ...blog, visibility: 'public' };
-all(document.body, (e) => e.tagName === 'DIALOG').at(-1).close('ok');
-await tick();
-all(document.body, (e) => e.tagName === 'DIALOG').at(-1)?.close('ok');
-await tick();
-assert.equal(accessMain.textContent.includes('Access is Private'), false);
-stopAccess();
-
-const draftMain = new Element('main');
-routes['GET /console/api/flats/blog'] = blog;
-const stopDraft = flat.mount(draftMain, ['blog'], ctx);
-await tick();
-const fileInput = all(draftMain, (e) => e.tagName === 'INPUT' && e.getAttribute('type') === 'file')[0];
-assert.ok(fileInput, 'draft upload control');
-const file = new File(['flat'], 'site.zip', { type: 'application/zip' });
-fileInput.files = [file];
-routes['POST /console/api/flats/blog/draft?expected_revision=9'] = { draft: { revision: 10, hash: 'fff', dirty: false }, version: { revision: 10, number: 0, role: 'draft', published: false } };
-fileInput.dispatch('change');
-await tick();
-const draftCall = calls.find((c) => c.key.startsWith('POST /console/api/flats/blog/draft'));
-assert.ok(draftCall, calls.map((c) => c.key).join('\n'));
-assert.equal(draftCall.key.includes('expected_revision=9'), true);
-assert.equal(draftCall.body, file, 'draft autosave sends the source archive');
-routes['POST /console/api/flats/blog/draft?expected_revision=10'] = { draft: { revision: 11, hash: 'ggg', dirty: true }, version: { revision: 11, number: 0, role: 'draft', published: false } };
-const nextFile = new File(['updated flat'], 'site.zip', { type: 'application/zip' });
-fileInput.files = [nextFile];
-fileInput.dispatch('change');
-await tick();
-const nextDraftCall = calls.find((c) => c.key === 'POST /console/api/flats/blog/draft?expected_revision=10');
-assert.ok(nextDraftCall, 'second autosave uses the server-returned revision');
-assert.equal(nextDraftCall.body, nextFile);
-assert.ok(draftMain.textContent.includes('Saved draft revision 11'));
-assert.equal(calls.filter((c) => c.key === 'POST /console/api/flats/blog/publish').length, 1);
-stopDraft();
-
-routes['GET /console/api/flats/notes'] = notes;
-routes['GET /console/api/flats/notes/versions'] = { versions: [] };
-routes['GET /console/api/flats/notes/previews'] = { previews: [] };
-routes['GET /console/api/approvals'] = { approvals: [] };
-const bare = new Element('main');
-const stopBare = flat.mount(bare, ['notes'], ctx);
-await tick();
-byText(bare, 'Access')[0].dispatch('click');
-await tick();
-const publicOpt = all(bare, (e) => e.tagName === 'OPTION' && e.getAttribute('value') === 'public')[0];
-assert.equal(publicOpt.getAttribute('disabled'), '');
-assert.ok(bare.textContent.includes('Publish v1 before making this flat Public'));
-assert.ok(bare.textContent.includes('Connecting'));
-assert.equal(bare.textContent.toLowerCase().includes('reachable'), false);
-stopBare();
-
-const permitMain = new Element('main');
-const stopPermit = flat.mount(permitMain, ['blog'], ctx);
-await tick();
-byText(permitMain, 'Access')[0].dispatch('click');
-await tick();
-const funnel = all(permitMain, (e) => e.getAttribute('id') === 'permit-tailscale-funnel')[0];
-const intent = all(permitMain, (e) => e.getAttribute('id') === 'intent-tailscale-funnel')[0];
-const saveFunnel = byText(permitMain, 'Save Tailscale Funnel')[0];
-funnel.checked = true;
-funnel.dispatch('change');
-assert.equal(saveFunnel.disabled, true);
-intent.checked = true;
-intent.dispatch('change');
-assert.equal(saveFunnel.disabled, false);
-routes['POST /console/api/flats/blog/providers'] = { provider: 'tailscale-funnel', permitted: true };
-const beforePublish = calls.filter((c) => c.key === 'POST /console/api/flats/blog/publish').length;
-saveFunnel.dispatch('click');
-await tick();
-const permitDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-assert.ok(permitDlg.textContent.includes('does not publish'));
-assert.ok(permitDlg.textContent.includes('Funnel'));
-permitDlg.close('ok');
-await tick();
-const permitCall = calls.find((c) => c.key === 'POST /console/api/flats/blog/providers');
-assert.deepEqual(JSON.parse(permitCall.body), { provider: 'tailscale-funnel', permitted: true });
-assert.equal(calls.filter((c) => c.key === 'POST /console/api/flats/blog/publish').length, beforePublish);
-all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => { try { d.close('ok'); } catch { /* already closed */ } });
-stopPermit();
-
-routes['POST /console/api/flats/blog/draft?expected_revision=9'] = { __status: 409, error: 'draft revision conflict' };
-const conflictMain = new Element('main');
-const stopConflict = flat.mount(conflictMain, ['blog'], ctx);
-await tick();
-const conflictInput = all(conflictMain, (e) => e.getAttribute('type') === 'file')[0];
-conflictInput.files = [file];
-conflictInput.dispatch('change');
-await tick();
-assert.ok(conflictMain.textContent.includes('The draft changed somewhere else') || document.body.textContent.includes('The draft changed somewhere else'));
-stopConflict();
-
-const { mount: approvalMount, describeApproval, RESTORE_COPY, RUNTIME_COPY } = await import('./approval.js');
-routes['GET /console/api/approvals/stale1'] = { id: 'stale1', flat: 'blog', action: 'publish', status: 'failed', via: 'mcp', params: { revision: 9, hash: 'abc123draft' }, result: 'stale candidate', requested_at: '2026-10-03T00:00:00Z' };
-const approvalMain = new Element('main');
-const stopApproval = approvalMount(approvalMain, ['stale1'], ctx);
-await tick();
-assert.ok(approvalMain.textContent.includes('The content or access settings changed. Review again.'));
-assert.equal(byText(approvalMain, 'Approve…').length, 0);
-if (stopApproval) stopApproval();
-
-// Actual endpoint readiness gates Current links even when a URL/state exists.
-const currentEndpoint = { provider: 'portal', audience: 'current', host: 'blog', url: 'https://example.invalid', state: 'starting', ready: false, configured: true, permitted: true };
-assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [currentEndpoint] }).ready, false);
-assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [{ ...currentEndpoint, state: 'ready' }] }).ready, false);
-assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [{ ...currentEndpoint, state: 'ready', ready: true }] }).ready, true);
-assert.equal(currentTarget({ ...blog, visibility: 'public', endpoints: [{ ...currentEndpoint, state: 'ready', ready: true, permitted: false }] }).ready, false);
-
-// Every decision 409 uses the server's DecisionError envelope, not a synthetic 200.
-for (const [code, expected] of [
-  ['provider_not_permitted', 'not permitted'], ['provider_not_ready', 'still connecting'],
-  ['provider_unavailable', 'unavailable'], ['runtime_unavailable', 'Server flats are disabled'],
-  ['unavailable', 'feature is unavailable'], ['provider_in_use', 'registered routes'], ['not_deployed', 'No current runtime'], ['public_stop_unconfirmed', 'not shown as Private'],
-  ['unchanged_content', 'matches the current'], ['stale_approval', 'Review again'],
-]) {
-  const response = { __status: 409, error: 'decision failed', category: code,
-    approval: { id: 'typed-' + code, status: 'failed', result: 'decision failed', result_data: {
-      status: 'failed', failure_code: code, data_impact: 'none', health_data: 'not_run', live_data: 'untouched',
-    } } };
-  assert.ok(failureMessage(response).includes(expected));
-  assert.ok(failureMessage({ approval: { result_data: JSON.stringify(response.approval.result_data) } }).includes(expected));
-  routes['POST /console/api/flats/blog/visibility'] = { status: 'pending_approval', approval: { id: 'typed' } };
-  routes['POST /console/api/approvals/typed/approve'] = response;
-  const pending = changeVisibility(blog, 'private');
-  await tick();
-  all(document.body, (e) => e.tagName === 'DIALOG').at(-1).close('ok');
-  await tick();
-  const resultDialog = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-  assert.ok(resultDialog.textContent.includes(expected), code + ': ' + resultDialog.textContent);
-  if (code !== 'stale_approval') assert.equal(resultDialog.textContent.includes('content or access settings changed'), false);
-  resultDialog.close('ok');
-  const outcome = await pending;
-  assert.equal(outcome.stale, code === 'stale_approval');
-  assert.ok(visibilitySettled(blog, 'private', outcome).text.includes(expected));
-}
-
-// The approval decision surface exposes canonical Public and frozen restore identity.
-for (const [id, action, params, expected] of [
-  ['public', 'set_visibility', { visibility: 'public' }, 'anyone on the internet'],
-  ['restore', 'rollback', { version: 1, restore_data: true, snapshot: 'before-v2.sqlite', snapshot_hash: 'snapshot-sha256' }, RESTORE_COPY],
-  ['data', 'restore_data', { version: 1, snapshot: 'before-v2.sqlite', snapshot_hash: 'snapshot-sha256' }, RESTORE_COPY],
-  ['activate', 'activate', { version: 2 }, RUNTIME_COPY],
-  ['publish', 'publish', { revision: 9, hash: blog.draft.hash }, RUNTIME_COPY],
-]) {
-  routes['GET /console/api/approvals/' + id] = { id, flat: 'blog', action, params, status: 'pending', via: 'mcp' };
-  const main = new Element('main');
-  approvalMount(main, [id], ctx);
-  await tick();
-  assert.ok(main.textContent.includes(expected), id + ': ' + main.textContent);
-  if (id === 'public') {
-    const badge = all(main, (e) => e.className === 'vis vis-public')[0];
-    assert.equal(badge.textContent, 'Public');
-    const globe = (await import('./dom.js')).visibilityBadge('public');
-    assert.equal(badge.childNodes[0].childNodes[0].getAttribute('d'), globe.childNodes[0].childNodes[0].getAttribute('d'));
-    assert.ok(main.textContent.includes(pendingNoticeFor('public')));
-    assert.equal(main.textContent.includes('This flat is public:'), false);
-  }
-  if (params.snapshot) assert.ok(main.textContent.includes('snapshot-sha256') && main.textContent.includes('before-v2.sqlite'));
-  byText(main, 'Approve…')[0].dispatch('click');
-  await tick();
-  const dlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-  assert.ok(dlg.textContent.includes(expected));
-  if (id === 'public') {
-    assert.ok(dlg.textContent.includes(pendingNoticeFor('public')));
-    assert.equal(dlg.textContent.includes('This flat is public:'), false);
-  }
-  if (['public', 'restore', 'data'].includes(id)) assert.equal(byText(dlg, 'Approve')[0].className, 'btn btn-danger');
-  dlg.close('cancel');
-  await tick();
-  assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/' + id + '/approve'), false);
-}
-assert.equal(describeApproval({ flat: 'blog', action: 'activate', params: { version: 1 } }), 'Make v1 current on blog');
-
-// Rejection never attempts approval and renders the persisted rejection.
-routes['GET /console/api/approvals/reject'] = { id: 'reject', flat: 'blog', action: 'publish', params: { revision: 9 }, status: 'pending', via: 'mcp' };
-const rejectMain = new Element('main');
-approvalMount(rejectMain, ['reject'], ctx);
-await tick();
-byText(rejectMain, 'Reject…')[0].dispatch('click');
-await tick();
-routes['POST /console/api/approvals/reject/reject'] = { id: 'reject', status: 'rejected' };
-routes['GET /console/api/approvals/reject'] = { ...routes['GET /console/api/approvals/reject'], status: 'rejected', decided_by: 'local operator' };
-all(document.body, (e) => e.tagName === 'DIALOG').at(-1).close('ok');
-await tick();
-assert.ok(rejectMain.textContent.includes('request was rejected'));
-assert.equal(byText(rejectMain, 'Approve…').length, 0);
-assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/reject/approve'), false);
-
-// Provider-missing requests remain pending and disclose permission policy before decision.
-routes['GET /console/api/flats/blog'] = { ...blog, providers: ['local'], endpoints: [], connection_state: 'unavailable' };
-const rawPolicyHash = 'raw-policy-sha256-must-stay-hidden';
-routes['GET /console/api/approvals/missing'] = { id: 'missing', flat: 'blog', action: 'set_visibility', status: 'pending', via: 'mcp', params: { visibility: 'public', providers: `local,portal\n${rawPolicyHash}` } };
-const missingMain = new Element('main');
-approvalMount(missingMain, ['missing'], ctx);
-await tick();
-assert.ok(missingMain.textContent.includes('Public') && missingMain.textContent.includes('pending'));
-assert.equal(byText(missingMain, 'Approve…').length, 1);
-
-assert.ok(missingMain.textContent.includes('If approved, this flat becomes Public:'));
-assert.equal(missingMain.textContent.includes('This flat is public:'), false);
-assert.ok(missingMain.textContent.includes('Provider permissions at requestlocal, portal'));
-assert.equal(missingMain.textContent.includes(rawPolicyHash), false);
-assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'preview-v1', state: 'ready' }, [{ host: 'preview-v1', target: 'version', version: 1 }]), 'v1 preview (Private)');
-assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'preview-draft', state: 'ready' }, [{ host: 'preview-draft', target: 'draft', version: 0 }]), 'Draft preview (Private)');
-const stoppedFunnel = { provider: 'tailscale-funnel', audience: 'current', host: 'blog', state: 'stopped', detail: 'route stopped', configured: true, permitted: true, ready: false };
-const refusedPortal = { provider: 'portal', audience: 'current', host: 'blog', state: 'unavailable', detail: 'portal is permitted but not configured', configured: false, permitted: true, ready: false };
-const startingPortal = { ...refusedPortal, state: 'starting', detail: 'waiting for relay', configured: true };
-assert.equal(endpointAudienceLabel({ audience: 'draft', host: 'closed', state: 'stopped', detail: 'route stopped' }, []), 'Stopped preview route');
-assert.equal(endpointAudienceLabel(stoppedFunnel, []), 'Stopped current route');
-assert.equal(endpointConnectionLabel(stoppedFunnel), 'Stopped');
-assert.equal(endpointConnectionLabel(refusedPortal), 'Not configured');
-assert.equal(endpointConnectionLabel({ ...refusedPortal, configured: true, permitted: false, detail: 'host permission absent' }), 'Not permitted');
-assert.equal(endpointStatusLine(refusedPortal), 'Not configured · Route permitted');
-assert.equal(endpointStatusLine(stoppedFunnel), 'Configured · Route permitted · Stopped');
-assert.equal(endpointConnectionLabel({ state: 'unavailable', detail: 'route stopped' }), 'Stopped'); // legacy DTO
-assert.equal(connectionState({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, refusedPortal] }), 'unavailable');
-assert.equal(connectionDetail({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, refusedPortal] }), 'portal is permitted but not configured');
-assert.equal(connectionState({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, startingPortal] }), 'starting');
-assert.equal(connectionState({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel] }), 'stopped');
-assert.equal(currentTarget({ ...blog, connection_state: 'stopped', endpoints: [stoppedFunnel, refusedPortal] }).state, 'unavailable');
-assert.ok(providerRemovalCopy({ visibility: 'public' }, 'tailscale').includes('Private Tailscale') && providerRemovalCopy({ visibility: 'public' }, 'tailscale').includes('Funnel route stays up'));
-assert.ok(providerRemovalCopy({ visibility: 'private' }, 'portal').includes('removes permission'));
-assert.equal(providerRemovalCopy({ visibility: 'private' }, 'portal').includes('changing this flat to Private'), false);
-for (const state of ['starting', 'error']) {
-  assert.equal(connectionDetail({ slug: 'blog', visibility: 'public', connection_state: state,
-    endpoints: [
-      { audience: 'draft', host: 'blog', provider: 'portal', state, detail: 'wrong draft' },
-      { audience: 'current', host: 'old', provider: 'portal', state, detail: 'wrong alias' },
-      { audience: 'current', host: 'blog', provider: 'tailscale', state, detail: 'wrong private' },
-      { audience: 'current', host: 'blog', provider: 'portal', url: '', state, detail: 'Public connection detail' },
-    ] }), 'Public connection detail');
-}
-
-// Clean Drafts have no Publish action. First saves guard revision zero.
-routes['GET /console/api/flats/blog'] = { ...blog, draft: { ...blog.draft, dirty: false } };
-const cleanMain = new Element('main');
-const stopClean = flat.mount(cleanMain, ['blog'], ctx);
-await tick();
-assert.equal(byText(cleanMain, 'Publish the next version after v2').length, 0);
-stopClean();
-const firstEditor = draftEditor(notes, () => {});
-const firstInput = all(firstEditor.editor, (e) => e.getAttribute('type') === 'file')[0];
-firstInput.files = [file];
-routes['POST /console/api/flats/notes/draft?expected_revision=0'] = { draft: { revision: 1 } };
-firstInput.dispatch('change');
-await tick();
-assert.ok(calls.some((c) => c.key === 'POST /console/api/flats/notes/draft?expected_revision=0'));
-
-// Retry refreshes revision from the server instead of reusing the conflicting one.
-const retryEditor = draftEditor(blog, () => {});
-const retryInput = all(retryEditor.editor, (e) => e.getAttribute('type') === 'file')[0];
-retryInput.files = [file];
-routes['POST /console/api/flats/blog/draft?expected_revision=9'] = { __status: 409, category: 'conflict', error: 'draft revision conflict' };
-retryInput.dispatch('change');
-await tick();
-routes['GET /console/api/flats/blog'] = { ...blog, draft: { ...blog.draft, revision: 12 } };
-routes['POST /console/api/flats/blog/draft?expected_revision=12'] = { draft: { revision: 13 } };
-byText(retryEditor.editor, 'Retry draft save')[0].dispatch('click');
-await tick();
-assert.ok(calls.some((c) => c.key === 'POST /console/api/flats/blog/draft?expected_revision=12'));
-
-// Console rollback can explicitly request the existing API's restore_data path,
-// then requires a danger confirmation for the frozen snapshot.
-const rollback = activateVersion(blog, 1, { rollback: true });
-await tick();
-let restoreDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-all(restoreDlg, (e) => e.getAttribute('id') === 'rollback-restore-data')[0].checked = true;
-routes['POST /console/api/flats/blog/rollback'] = { status: 'pending_approval', approval: { id: 'rollback-restore', params: { version: 1, restore_data: true, snapshot: 'before-v2.sqlite', snapshot_hash: 'frozen-hash' } } };
-restoreDlg.close('ok');
-await tick();
-assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/rollback').body), { version: 1, restore_data: true });
-restoreDlg = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
-assert.ok(restoreDlg.textContent.includes('frozen-hash'));
-assert.equal(byText(restoreDlg, 'Approve and restore live data')[0].className, 'btn btn-danger');
-restoreDlg.close('cancel');
-assert.equal((await rollback).pending, true);
-assert.equal(calls.some((c) => c.key === 'POST /console/api/approvals/rollback-restore/approve'), false);
-
-assert.equal(typeof publishDraft, 'function');
-assert.equal(typeof changeVisibility, 'function');
-assert.equal(typeof saveProvider, 'function');
-// A failed session read must not recursively trigger its own resynchronization.
-const { api } = await import('./api.js');
-let statusEvents = 0;
-globalThis.CustomEvent = class { constructor(type) { this.type = type; } };
-document.dispatchEvent = () => { statusEvents++; };
-routes['GET /console/api/operator/session'] = { __status: 403, category: 'operator_secure_transport_required', error: 'HTTPS required' };
-await assert.rejects(api.operatorStatus());
-assert.equal(statusEvents, 0);
-routes['POST /console/api/flats/blog/publish'] = { __status: 403, category: 'operator_required', error: 'Unlock required' };
-await assert.rejects(api.publish('blog', {}));
-assert.equal(statusEvents, 1);
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/visibility').body), { visibility: 'private', reason: '' });
+assert.ok(share.textContent.includes('devices allowed by your tailnet'));
+assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0].getAttribute('href'), new URL(blog.private_url).href);
+share.close();
+for (const label of ['Share', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
 // --- settings page ---
 // The console never asks through window.confirm.
@@ -608,6 +284,9 @@ const CONFIG = {
 };
 const settingsRoute = (config) => ({ settings: SETTINGS, defaults: SETTINGS, apply_on_restart: ['portal_relays'], config });
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+const provider = (id, scope, enabled, flats = []) => ({ id, scope, enabled, configured: enabled, flats });
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true), provider('tailscale', 'private', false),
+  provider('tailscale-funnel', 'public', false), provider('portal', 'public', true, ['blog'])] };
 const mountSettings = async () => {
   const main = new Element('main');
   settingsPage.mount(main, [], ctx);
@@ -619,8 +298,8 @@ const puts = () => calls.filter((c) => c.key === 'PUT /console/api/settings');
 // Host, network and credentials are read only, with their sources.
 let page = await mountSettings();
 const configCard = byId(page, 'configuration');
-for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Network', 'portal', 'Credentials',
-  'Operator credential file', 'not configured', 'flats config set', 'apply after Flats restarts']) {
+for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Network', 'Credentials',
+  'Tailscale auth key file', 'not configured', 'flats config set', 'apply after Flats restarts']) {
   assert.ok(configCard.textContent.includes(text), `configuration lacks ${text}: ${configCard.textContent}`);
 }
 assert.equal(all(configCard, (e) => ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(e.tagName)).length, 0);
@@ -629,7 +308,7 @@ assert.equal(configCard.textContent.includes('flats install'), false);
 // The system and Portal settings stay editable and show their source; the
 // pinned relays cannot be changed and say why.
 const legends = all(page, (e) => e.tagName === 'LEGEND').map((e) => e.textContent);
-assert.deepEqual(legends, ['System', 'Portal']);
+assert.deepEqual(legends, ['Portal settings', 'System']);
 assert.ok(byId(page, 'set-keep_versions-help').textContent.includes('Source: config.json.'));
 assert.ok(byId(page, 'set-events_keep-help').textContent.includes('Source: default.'));
 const relaysInput = byId(page, 'set-portal_relays');
@@ -649,7 +328,7 @@ assert.ok(byId(page, 'configuration').textContent.includes('flats install'));
 // learns that the file changed.
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 page = await mountSettings();
-let form = all(page, (e) => e.tagName === 'FORM')[0];
+let form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
 byId(page, 'set-upload_max_bytes').value = '30';
 routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, changed_on_disk: true });
 routes['PUT /console/api/settings'] = { __status: 412, category: 'config_changed', error: 'config.json changed on disk since Flats loaded it; restart Flats to load the file, then retry' };
@@ -677,16 +356,15 @@ assert.ok(byId(page, 'set-upload_max_bytes-error').textContent.includes('out of 
 // and saves only after a second, explicit confirmation.
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 page = await mountSettings();
-form = all(page, (e) => e.tagName === 'FORM')[0];
+form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
 routes['POST /console/api/settings/impact'] = { impact: { keep_versions: { current: '10', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3, versions: [3, 2, 1] }] } } };
 routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['keep_versions'], restart_required: ['portal_max_relays'], etag: 'etag-2' };
 byId(page, 'set-keep_versions').value = '2';
-byId(page, 'set-portal_max_relays').value = '5';
 let putCount = puts().length;
 form.dispatch('submit');
 await tick();
 const impactCall = calls.filter((c) => c.key === 'POST /console/api/settings/impact').at(-1);
-assert.deepEqual(JSON.parse(impactCall.body), { keep_versions: '2', portal_max_relays: '5' });
+assert.deepEqual(JSON.parse(impactCall.body), { keep_versions: '2' });
 assert.equal(puts().length, putCount, 'a decrease must not save before the confirmation');
 let panel = all(page, (e) => e.className === 'impact')[0];
 assert.ok(panel.textContent.includes('Saving removes data'));
@@ -711,7 +389,7 @@ await tick();
 put = puts().at(-1);
 assert.equal(puts().length, putCount + 1);
 assert.equal(put.headers['If-Match'], '"etag-1"');
-assert.deepEqual(JSON.parse(put.body), { keep_versions: '2', portal_max_relays: '5' });
+assert.deepEqual(JSON.parse(put.body), { keep_versions: '2' });
 const limits = byId(page, 'limits');
 assert.ok(limits.textContent.includes('Versions to keep: saved, applied now.'), limits.textContent);
 assert.ok(limits.textContent.includes('Active Portal relays: saved, applies after Flats restarts.'));
@@ -719,7 +397,7 @@ assert.ok(limits.textContent.includes('Active Portal relays: saved, applies afte
 // A decrease that removes nothing still asks once, with a plain Save.
 routes['POST /console/api/settings/impact'] = { impact: { events_keep: { current: '5000', candidate: '100', total: 0, flats: [] } } };
 page = await mountSettings();
-form = all(page, (e) => e.tagName === 'FORM')[0];
+form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
 byId(page, 'set-events_keep').value = '100';
 putCount = puts().length;
 form.dispatch('submit');
@@ -737,7 +415,7 @@ const IMPACT_2 = { impact: { keep_versions: { current: '10', candidate: '2', tot
 let release;
 routes['POST /console/api/settings/impact'] = () => new Promise((resolve) => { release = () => resolve(IMPACT_2); });
 page = await mountSettings();
-form = all(page, (e) => e.tagName === 'FORM')[0];
+form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
 byId(page, 'set-keep_versions').value = '2';
 putCount = puts().length;
 form.dispatch('submit');
@@ -754,7 +432,7 @@ assert.equal(byId(page, 'set-keep_versions').value, '9');
 // The confirmation saves only the values it described.
 routes['POST /console/api/settings/impact'] = IMPACT_2;
 page = await mountSettings();
-form = all(page, (e) => e.tagName === 'FORM')[0];
+form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
 byId(page, 'set-keep_versions').value = '2';
 form.dispatch('submit');
 await tick();
@@ -769,7 +447,7 @@ assert.equal(byId(page, 'set-keep_versions').value, '9');
 
 // Raising a limit saves at once.
 page = await mountSettings();
-form = all(page, (e) => e.tagName === 'FORM')[0];
+form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
 byId(page, 'set-keep_versions').value = '20';
 const impactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
 putCount = puts().length;
@@ -779,4 +457,41 @@ assert.equal(calls.filter((c) => c.key === 'POST /console/api/settings/impact').
 assert.equal(puts().length, putCount + 1);
 assert.equal(settingsPage.isDecrease('keep_versions', '0', '5'), true);
 assert.equal(settingsPage.isDecrease('keep_versions', '5', '0'), false);
+
+// The Portal settings save from their own form in the Portal provider panel.
+routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, pinned: {} });
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: [], restart_required: ['portal_max_relays'], etag: 'etag-3' };
+page = await mountSettings();
+const portalForm = all(byId(page, 'provider-portal'), (e) => e.tagName === 'FORM')[0];
+assert.ok(portalForm, 'the Portal panel holds the Portal settings');
+assert.equal(all(byId(page, 'limits'), (e) => e.getAttribute('id') === 'set-portal_relays').length, 0);
+byId(page, 'set-portal_max_relays').value = '5';
+putCount = puts().length;
+portalForm.dispatch('submit');
+await tick();
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { portal_max_relays: '5' });
+
+// Settings group providers into Private and Public; only Local is always on,
+// and turning a provider on is an explicit host request.
+routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, etag: 'etag-9', pinned: {} });
+routes['PUT /console/api/providers/tailscale'] = { providers: [] };
+const settingsMain = new Element('main');
+settingsPage.mount(settingsMain, [], ctx);
+await tick();
+const groups = all(settingsMain, (e) => e.className === 'provider-group');
+assert.deepEqual(groups.map((g) => all(g, (e) => e.tagName === 'H3')[0].textContent), ['Private', 'Public']);
+assert.deepEqual(all(groups[0], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-local', 'provider-tailscale']);
+assert.deepEqual(all(groups[1], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-tailscale-funnel', 'provider-portal']);
+assert.equal(all(groups[0], (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 1, 'Local has no switch');
+assert.ok(groups[1].textContent.includes('Portal relays'), 'Portal settings belong to the Portal provider');
+byText(groups[0], 'Turn on')[0].dispatch('click');
+await tick();
+const turnOn = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+assert.ok(turnOn.textContent.includes('Turn on Tailscale?'));
+turnOn.close('ok');
+await tick();
+const turnOnCall = calls.find((c) => c.key === 'PUT /console/api/providers/tailscale');
+assert.deepEqual(JSON.parse(turnOnCall.body), { enabled: true });
+assert.equal(turnOnCall.headers['If-Match'], '"etag-9"', 'a provider change is guarded by the settings ETag');
 console.log('ok');
