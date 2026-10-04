@@ -42,7 +42,7 @@ func TestLegacyTailscaleDefaultUpgradeRequiresExplicitChoiceBeforeNetworking(t *
 				grants.PrivateBackend = "tailscale"
 				grants.Permitted = []provider.ID{provider.Tailscale}
 			} else if choice != "unspecified" {
-				opts.Network, opts.NetworkSet = choice, true
+				opts.Network, opts.Set = choice, map[string]bool{"network": true}
 			}
 			err = prepareLegacyPrivateUpgrade(t.Context(), st, opts, grants)
 			pending, perr := st.LegacyPrivateUpgradePending(t.Context())
@@ -104,7 +104,7 @@ func TestNonHistoricalHostLaterTailscaleDoesNotOptInLegacyFlats(t *testing.T) {
 		t.Fatalf("Local startup retained eligibility: %t %v", pending, err)
 	}
 	grants.PrivateBackend, grants.Permitted = "tailscale", []provider.ID{provider.Tailscale}
-	if err := prepareLegacyPrivateUpgrade(t.Context(), st, Options{Network: "tailscale", NetworkSet: true}, grants); err != nil {
+	if err := prepareLegacyPrivateUpgrade(t.Context(), st, Options{Network: "tailscale", Set: map[string]bool{"network": true}}, grants); err != nil {
 		t.Fatal(err)
 	}
 	permitted, err := st.ProviderPermitted(t.Context(), "legacy", store.ProviderTailscale)

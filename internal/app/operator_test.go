@@ -26,7 +26,7 @@ func operatorHost(t *testing.T) (*Host, *http.Client) {
 	}
 	credential := base64.RawURLEncoding.EncodeToString(raw[:])
 	opts := localOptions(t.TempDir())
-	opts.Runtime = false
+	opts.Overrides["host.server_runtime"] = "false"
 	opts.OperatorCredential = credential
 	h, err := Start(context.Background(), opts)
 	if err != nil {

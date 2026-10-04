@@ -3,6 +3,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,10 @@ func lockDataDir(dir string) (*os.File, error) {
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("data directory %q is already in use or cannot be locked: %w", dir, err)
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, fmt.Errorf("data directory %q is already in use: %w", dir, errDataDirInUse)
+		}
+		return nil, fmt.Errorf("data directory %q cannot be locked: %w", dir, err)
 	}
 	return f, nil
 }

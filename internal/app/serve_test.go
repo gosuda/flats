@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/provider"
 	"github.com/gosuda/flats/internal/mcpx"
@@ -24,18 +26,21 @@ func TestServeFlagsDoNotGrantByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.Network != "local" || o.NetworkSet || o.Portal || o.PortalSet || len(o.Permit) != 0 {
+	if o.Network != "local" || len(o.Set) != 0 || o.Portal || len(o.Permit) != 0 || o.ConfigPath != "" {
 		t.Fatalf("defaults grant a provider: %+v", o)
 	}
 	o, err = ParseServeFlags([]string{"--network", "tailscale", "--permit", "tailscale-funnel"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !o.NetworkSet || o.Network != "tailscale" || len(o.Permit) != 1 || o.Permit[0] != "tailscale-funnel" {
+	if !o.Set["network"] || o.Network != "tailscale" || len(o.Permit) != 1 || o.Permit[0] != "tailscale-funnel" {
 		t.Fatalf("explicit grants: %+v", o)
 	}
 	if _, err := ParseServeFlags([]string{"--permit", "funnel"}); err == nil {
 		t.Fatal("funnel was accepted as an alias")
+	}
+	if _, err := ParseServeFlags([]string{"--config", "relative/config.json"}); err == nil {
+		t.Fatal("relative --config accepted")
 	}
 }
 
@@ -44,9 +49,7 @@ func TestStartDoesNotInferGrantsFromOldDirectories(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "tsnet", "notes"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	h, err := Start(context.Background(), Options{
-		DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0", ConsoleHost: "flats",
-	})
+	h, err := Start(context.Background(), localOptions(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,78 +57,61 @@ func TestStartDoesNotInferGrantsFromOldDirectories(t *testing.T) {
 	if h.Public != nil || h.tsNet != nil {
 		t.Fatal("historical directories started tailscale or portal")
 	}
-	if h.Providers == nil || len(h.Providers.File().Permitted) != 0 {
-		t.Fatalf("grants = %+v", h.Providers.File())
+	if len(h.Providers.File().Permitted) != 0 || len(h.Config.Network.Permitted) != 0 {
+		t.Fatalf("grants = %+v, config = %+v", h.Providers.File(), h.Config.Network)
 	}
-	if !h.Providers.File().Migration.HistoricalTSNet {
-		t.Fatalf("migration = %+v", h.Providers.File().Migration)
+	if _, err := os.Stat(filepath.Join(dir, provider.FileName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a new host wrote the legacy host file: %v", err)
 	}
 }
 
-func TestExplicitPortalFalseKeepsGrantAndDoesNotStart(t *testing.T) {
+// After the first legacy start, flags may only repeat config.json: an
+// explicit --portal=false no longer switches a permitted Portal off for one
+// run. Omitting the flag runs from the config.
+func TestLegacyFlagsMustMatchConfig(t *testing.T) {
 	dir := t.TempDir()
-	start := func(portal, set bool) *Host {
+	start := func(o Options) (*Host, error) {
 		t.Helper()
-		h, err := Start(context.Background(), Options{
-			DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0",
-			ConsoleHost: "flats", Portal: portal, PortalSet: set,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return h
+		return Start(context.Background(), o)
 	}
-	h := start(true, true)
-	if h.Public == nil || h.portalNet == nil || !h.Providers.File().Allows(provider.Portal) {
-		t.Fatalf("portal grant did not start portal: public=%v net=%v file=%+v", h.Public != nil, h.portalNet != nil, h.Providers.File())
+	on := localOptions(dir)
+	on.Portal, on.Set = true, map[string]bool{"portal": true}
+	h, err := start(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Public == nil || h.portalNet == nil || !slices.Equal(h.Config.Network.Permitted, []string{"portal"}) {
+		t.Fatalf("portal grant did not start portal: public=%v config=%+v", h.Public != nil, h.Config.Network)
 	}
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	h = start(false, true)
-	if h.Public != nil || h.portalNet != nil {
-		t.Fatal("explicit --portal=false started portal")
-	}
-	if !h.Providers.File().Allows(provider.Portal) {
-		t.Fatal("explicit --portal=false revoked the stored grant")
-	}
-	// Exercise the manager, too: a typed nil Portal pointer in its interface
-	// would look configured and panic instead of honoring the runtime disable.
-	result, err := h.Providers.ServeExposure(context.Background(), provider.ExposureRequest{
-		Slug: "disabled-portal", Visibility: "public", Audience: provider.AudienceCurrent,
-		Handler: http.NotFoundHandler(), Permitted: []provider.ID{provider.Portal},
-	})
-	if !errors.Is(err, provider.ErrNotConfigured) {
-		t.Fatalf("disabled Portal request = %+v, %v; want not configured", result, err)
-	}
-	var portal, private *provider.ExposureEndpoint
-	for i := range result.Endpoints {
-		ep := &result.Endpoints[i]
-		if ep.Provider == provider.Portal {
-			portal = ep
+	off := localOptions(dir)
+	off.Set = map[string]bool{"portal": true}
+	if h, err := start(off); err == nil || !strings.Contains(err.Error(), "--portal false") || exitCode(err) != ExitConfig {
+		if h != nil {
+			h.Close()
 		}
-		if ep.Provider == provider.Local {
-			private = ep
-		}
-	}
-	if portal == nil || portal.State != "unavailable" || portal.Configured || !portal.Permitted || portal.Ready {
-		t.Fatalf("disabled Portal endpoints = %+v", result.Endpoints)
-	}
-	if private == nil || !private.Ready {
-		t.Fatalf("public failure did not retain independent Local route: %+v", result.Endpoints)
-	}
-	if err := h.Close(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("explicit --portal=false after the grant: %v", err)
 	}
 
-	h = start(false, false)
-	if h.Public == nil || h.portalNet == nil || !h.Providers.File().Allows(provider.Portal) {
-		t.Fatal("omitted --portal ignored the stored portal grant")
-	}
-	if err := h.Close(); err != nil {
+	h, err = start(localOptions(dir))
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer h.Close()
+	if h.Public == nil || h.portalNet == nil {
+		t.Fatal("omitted --portal ignored the configured portal grant")
+	}
+}
+
+func exitCode(err error) int {
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) {
+		return ec.ExitCode()
+	}
+	return 1
 }
 
 func TestDataDirIsAbsolute(t *testing.T) {
@@ -167,11 +153,13 @@ func storeWith(t *testing.T, settings map[string]string) (string, *store.Store) 
 }
 
 // A bad relay saved in the console must not keep `flats serve` from
-// starting after a restart: it is logged and Portal defaults are used.
+// starting after the upgrade: the migration uses the Portal defaults, as
+// serve did, and reports it.
 func TestStartIgnoresBadStoredRelays(t *testing.T) {
 	dir, st := storeWith(t, map[string]string{core.SetPortalRelays: "ftp://bad host"})
 	st.Close()
-	o := Options{DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0", ConsoleHost: "flats", Portal: true}
+	o := localOptions(dir)
+	o.Portal, o.Set = true, map[string]bool{"portal": true}
 	h, err := Start(context.Background(), o)
 	if err != nil {
 		t.Fatalf("serve exits on a bad stored relay: %v", err)
@@ -180,42 +168,64 @@ func TestStartIgnoresBadStoredRelays(t *testing.T) {
 	if d := h.Public.Status().Detail; !strings.Contains(d, "Portal defaults") {
 		t.Fatalf("public detail = %q", d)
 	}
+	if len(h.Config.Portal.Relays) != 0 {
+		t.Fatalf("relays = %q", h.Config.Portal.Relays)
+	}
 }
 
-func TestPortalConfigFromSettings(t *testing.T) {
-	var logged []string
-	logf := func(f string, a ...any) { logged = append(logged, f) }
-	o := Options{DataDir: "/data"}
-
-	_, st := storeWith(t, map[string]string{core.SetPortalRelays: "https://relay.example/, ftp://bad host"})
-	cfg := portalConfig(context.Background(), st, o, logf)
-	st.Close()
-	if len(cfg.Relays) != 0 || !cfg.Discovery || len(logged) != 1 {
-		t.Fatalf("bad relay list: %+v logs=%q", cfg, logged)
+// The legacy conversion produces the Portal and system values serve used.
+func TestLegacyPlanSettings(t *testing.T) {
+	plan := func(settings map[string]string, o Options) (*config.Config, []string, error) {
+		t.Helper()
+		dir, st := storeWith(t, settings)
+		st.Close()
+		info, err := store.Inspect(filepath.Join(dir, "flats.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := planLegacy(dir, info, o, config.NewInstanceID())
+		if err != nil {
+			return nil, nil, err
+		}
+		c, err := p.doc.Effective(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, p.notes, nil
 	}
 
-	logged = nil
-	_, st = storeWith(t, map[string]string{core.SetPortalRelays: "https://relay.example/", core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "5"})
-	cfg = portalConfig(context.Background(), st, o, logf)
-	st.Close()
-	if !slices.Equal(cfg.Relays, []string{"https://relay.example"}) || cfg.Discovery || cfg.MaxActiveRelays != 5 || len(logged) != 0 {
-		t.Fatalf("own relay only: %+v logs=%q", cfg, logged)
+	c, notes, err := plan(map[string]string{core.SetPortalRelays: "https://relay.example/, ftp://bad host"}, Options{})
+	if err != nil || len(c.Portal.Relays) != 0 || !c.Portal.Discovery || len(notes) != 1 {
+		t.Fatalf("bad relay list: %+v notes=%q %v", c.Portal, notes, err)
+	}
+
+	c, notes, err = plan(map[string]string{core.SetPortalRelays: "https://relay.example/", core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "5"}, Options{})
+	if err != nil || !slices.Equal(c.Portal.Relays, []string{"https://relay.example"}) || c.Portal.Discovery || c.Portal.MaxActiveRelays != 5 || len(notes) != 0 {
+		t.Fatalf("own relay only: %+v notes=%q %v", c.Portal, notes, err)
 	}
 
 	// --relays wins over the stored list; discovery still follows settings.
-	_, st = storeWith(t, map[string]string{core.SetPortalRelays: "https://relay.example", core.SetPortalDiscover: "false"})
-	cfg = portalConfig(context.Background(), st, Options{DataDir: "/data", Relays: []string{"https://flag.example"}}, logf)
-	st.Close()
-	if !slices.Equal(cfg.Relays, []string{"https://flag.example"}) || cfg.Discovery {
-		t.Fatalf("flag relays: %+v", cfg)
+	c, _, err = plan(map[string]string{core.SetPortalRelays: "https://relay.example", core.SetPortalDiscover: "false"}, Options{Relays: []string{"https://flag.example"}})
+	if err != nil || !slices.Equal(c.Portal.Relays, []string{"https://flag.example"}) || c.Portal.Discovery {
+		t.Fatalf("flag relays: %+v %v", c.Portal, err)
 	}
 
-	logged = nil
-	_, st = storeWith(t, map[string]string{core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "-1"})
-	cfg = portalConfig(context.Background(), st, o, logf)
-	st.Close()
-	if !cfg.Discovery || cfg.MaxActiveRelays != 0 || len(logged) != 2 {
-		t.Fatalf("discovery off without relays: %+v logs=%q", cfg, logged)
+	c, notes, err = plan(map[string]string{core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "-1"}, Options{})
+	if err != nil || !c.Portal.Discovery || c.Portal.MaxActiveRelays != 3 || len(notes) != 2 {
+		t.Fatalf("discovery off without relays: %+v notes=%q %v", c.Portal, notes, err)
+	}
+
+	c, notes, err = plan(map[string]string{core.SetKeepVersions: "20", core.SetUploadMaxBytes: "lots", core.SetRateLimit: "50"}, Options{})
+	if err != nil || c.System.KeepVersions != 20 || c.System.UploadMaxBytes != 20<<20 || len(notes) != 1 {
+		t.Fatalf("system settings: %+v notes=%q %v", c.System, notes, err)
+	}
+	if src := func() config.Source { _, s, _ := c.Lookup("system.rate_limit_rps"); return s }(); src != config.SourceDefault {
+		t.Fatalf("a stored default was written to the file: %s", src)
+	}
+
+	// A value serve applied but config.json cannot hold is a conflict.
+	if _, _, err := plan(map[string]string{core.SetUploadMaxBytes: "4294967296"}, Options{}); exitCode(err) != ExitConfig {
+		t.Fatalf("out-of-range upload limit: %v", err)
 	}
 }
 

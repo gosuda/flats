@@ -18,8 +18,9 @@ import (
 
 func startLocal(t *testing.T) *Host {
 	t.Helper()
-	h, err := Start(context.Background(), Options{DataDir: t.TempDir(), Listen: "127.0.0.1:0", Network: "local",
-		LocalAddr: "127.0.0.1:0", ConsoleHost: "flats", Portal: false, Runtime: false})
+	o := localOptions(t.TempDir())
+	o.Overrides["host.server_runtime"] = "false"
+	h, err := Start(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)
 	}
