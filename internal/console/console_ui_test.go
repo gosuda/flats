@@ -10,7 +10,7 @@ import (
 
 // TestConsoleUI renders the list and flat pages under Node with a fake DOM
 // (testdata/ui_test.mjs): list rows omit repeated public notices, deployment
-// results retain their disclosures, and live versions can apply secrets.
+// results retain their disclosures, and live versions can apply environment settings, and ordinary values stay separate from secrets.
 func TestConsoleUI(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

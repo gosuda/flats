@@ -63,6 +63,12 @@ func register(s *mcp.Server, t *tools) {
 		Description: "Read a flat's event log: saves, deploys, health checks, runtime output, approvals."}, t.getLogs)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_approval", Annotations: ro,
 		Description: "Poll an approval request (pending, approved, rejected or failed)."}, t.getApproval)
+	mcp.AddTool(s, &mcp.Tool{Name: "list_env", Annotations: ro,
+		Description: "List ordinary app environment variables including values. Secret values are never returned. Changes apply at the next runtime start."}, t.listEnv)
+	mcp.AddTool(s, &mcp.Tool{Name: "set_env", Annotations: write,
+		Description: "Set an ordinary server-only app environment variable. Values are readable by management clients; use operator-managed secrets for credentials. Applies at the next runtime start."}, t.setEnv)
+	mcp.AddTool(s, &mcp.Tool{Name: "delete_env", Annotations: write,
+		Description: "Delete an ordinary app environment variable. Removal applies at the next runtime start."}, t.deleteEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_secrets", Annotations: ro,
 		Description: "List secret names of a flat (values are never returned; only the operator sets them)."}, t.listSecrets)
 }

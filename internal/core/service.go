@@ -361,6 +361,10 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 			return nil, err
 		}
 		redact := newRedactor(env)
+		env, err = s.mergeEnvironment(ctx, slugName, env)
+		if err != nil {
+			return nil, err
+		}
 		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{Flat: slugName, Version: v.Number, Dir: dir, Entry: m.Entry, DataDir: dataDir, Env: env,
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))

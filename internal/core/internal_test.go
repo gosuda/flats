@@ -211,10 +211,12 @@ func TestConcurrentRenameSameTarget(t *testing.T) {
 	}
 }
 
-func TestShortSecretsAreNotRedacted(t *testing.T) {
-	r := newRedactor(map[string]string{"DEBUG": "1", "MODE": "on", "TOKEN": "tok-123456"})
-	got := r("worker started in 1ms; connection on port 8001; token tok-123456")
-	if got != "worker started in 1ms; connection on port 8001; token "+redacted {
+func TestShortSecretsAreRedacted(t *testing.T) {
+	r := newRedactor(map[string]string{"TOKEN": "s3c", "EMPTY": ""})
+	if got := r("token s3c"); got != "token "+redacted {
+		t.Fatalf("got %q", got)
+	}
+	if got := r("ordinary configuration"); got != "ordinary configuration" {
 		t.Fatalf("got %q", got)
 	}
 }

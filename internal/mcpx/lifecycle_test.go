@@ -58,6 +58,12 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"rollback": {"slug": "census", "version": 1}, "open_preview": {"slug": "census", "target": "draft", "version": 0},
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
 				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {},
+				"list_env": {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},
+			}
+			if tool.Name == "delete_env" {
+				if err := e.svc.SetEnv(context.Background(), "census", "MODE", "test", core.ViaMCP); err != nil {
+					t.Fatal(err)
+				}
 			}
 			input, ok := args[tool.Name]
 			if !ok {

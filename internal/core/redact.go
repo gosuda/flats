@@ -17,8 +17,6 @@ const redacted = "[redacted]"
 // encodings of it, from output a flat's code produced (runtime logs, worker
 // stderr, health check bodies). Secrets reach a flat only through env, so
 // these are exactly the values its output can leak.
-// minRedactLen is the shortest secret value that is redacted.
-const minRedactLen = 6
 
 func newRedactor(env map[string]string) func(string) string {
 	seen := map[string]bool{}
@@ -30,11 +28,6 @@ func newRedactor(env map[string]string) func(string) string {
 		}
 	}
 	for _, v := range env {
-		// Very short values ("1", "on") are not secrets in any useful sense
-		// and would shred unrelated log text.
-		if len(v) < minRedactLen {
-			continue
-		}
 		add(v)
 		add(url.QueryEscape(v))
 		add(url.PathEscape(v))

@@ -108,6 +108,7 @@ func init() {
 		{"rename", "change a flat's slug", "rename <slug> <new-slug>", (*app).rename},
 		{"delete", "request deletion of a flat", "delete <slug> [--reason r]", (*app).delete},
 		{"logs", "show a flat's events", "logs <slug> [--follow] [--kind k] [--limit n]", (*app).logs},
+		{"env", "manage ordinary server environment variables", "env set <slug> <NAME> <VALUE>\n       flats env rm <slug> <NAME>\n       flats env ls <slug>", (*app).envVars},
 		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},
 		{"approvals", "list approval requests", "approvals [--status pending|approved|rejected|failed]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},

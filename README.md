@@ -127,7 +127,7 @@ export default {
 
 Deploy that directory with the same `flats deploy` command. JavaScript runs in QuickJS on WebAssembly with SQLite (`env.DB`), persistent string files (`env.FILES`), Web Crypto and WebSocket callbacks. It has no Node.js APIs or outbound network access; bundle imports into the uploaded version.
 
-A `.wasm` server is a WASI preview1 command instantiated afresh per request: request JSON on stdin, response JSON on stdout, only the flat's secrets as environment variables, clocks and randomness. It has **no SQLite/FILES host ABI, filesystem mounts, outbound network or WebSocket API**. See the [capability table and response format](docs/design.md#server-flats-handler-abi).
+A `.wasm` server is a WASI preview1 command instantiated afresh per request: request JSON on stdin, response JSON on stdout, only the flat's configured environment variables and secrets, with no inherited host environment, plus clocks and randomness. It has **no SQLite/FILES host ABI, filesystem mounts, outbound network or WebSocket API**. See the [capability table and response format](docs/design.md#server-flats-handler-abi).
 
 Data survives deploys and ordinary rollbacks. `flats rollback hello` restores code; `--restore-data` requests a separately frozen restore approval for the pre-deploy DB and FILES snapshot. Historical DB-only snapshots preserve current FILES. Preview data is isolated from live data.
 
@@ -168,11 +168,36 @@ instructions and tool list the MCP server reports, plus core CLI commands) and
 
 Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
 
+## App environment settings
+
+Ordinary environment variables belong to one flat and are readable by management
+clients. Use secrets for credentials. Set, inspect and remove ordinary values with:
+
+```sh
+flats env set hello GREETING 'Hello'
+flats env set hello OPTIONAL ''
+flats env ls hello
+flats env rm hello OPTIONAL
+```
+
+The console's flat Settings page and MCP tools `list_env`, `set_env`, `delete_env`
+manage the same values. Names match `[A-Z_][A-Z0-9_]*` and are at most 64
+characters; `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are reserved. Values may be empty, are at most
+64 KiB, and must be valid UTF-8 without NUL. A name cannot be both an ordinary variable and
+a secret; remove the existing setting before switching kinds.
+
+Server JavaScript reads strings as `env.GREETING`; WASI receives environment
+variables. They are never substituted into frontend bundles, static files or
+builds. Saving does not change running handlers or previews. The next deployment
+or runtime restart reads the latest settings; a newly created preview also reads
+the then-current settings. Rollback uses current settings, which are not pinned
+to code versions. Redeploy through the existing approval flow to apply changes.
+
 ## Security and operations
 
 Server code runs in separate worker processes with WebAssembly memory/time limits and restricted host capabilities. The loopback management listener and console node are privileged control surfaces: restrict console access with tailnet ACLs. Approval decisions and provider changes are accepted only on console routes, which require the console header and a same-origin browser request. That is CSRF protection, not authentication: a local process that sends those headers to the loopback listener can decide approvals, so run only trusted agents on the host. A separate operator credential is planned; `credentials.operator_file` and the `--operator-credential-*` flags are still accepted but ignored. See the [core lifecycle contract](docs/lifecycle-core-contract.md) for implementation and integration boundaries.
 
-Secret values are operator-managed, encrypted at rest with the local `secret.key`, and delivered to a flat at its next deploy. APIs expose names only. A flat can read and return its own injected secrets, so deploy code you trust with those values. Anyone who can read the data directory can recover them. Back up the key alongside metadata and flat data; immutable code versions alone are not data backups.
+Secret values are operator-managed, encrypted at rest with the local `secret.key`, and delivered to a flat at its next deployment or runtime restart. Secret APIs expose names only; ordinary environment-variable APIs expose their values. A flat can read and return its own injected secrets, so deploy code you trust with those values. Anyone who can read the data directory can recover them. Back up the key alongside metadata and flat data; immutable code versions alone are not data backups.
 
 Shutdown attempts every component and reports failures. Portal drains in-flight HTTP before unregistering exposures on normal shutdown. Network teardown is bounded; a timed-out SDK/backend may continue cleanup in the background until process exit. In that case the data-directory lock stays held until exit, so another host cannot race that cleanup.
 

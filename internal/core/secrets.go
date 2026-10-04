@@ -120,11 +120,11 @@ func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, v
 	if via != ViaConsole && via != ViaCLI {
 		return forbiddenf("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")
 	}
-	if !secretName.MatchString(name) {
-		return invalidf("secret name %q must match [A-Z_][A-Z0-9_]* (at most 64 characters)", name)
+	if err := validateEnvName(name, "secret"); err != nil {
+		return err
 	}
-	if len(value) > 64<<10 {
-		return invalidf("secret value is larger than 64 KiB")
+	if err := validateEnvValue(value, "secret"); err != nil {
+		return err
 	}
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return err
@@ -139,6 +139,9 @@ func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, v
 	}
 	ct := g.Seal(nil, nonce, []byte(value), []byte(name))
 	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, UpdatedAt: s.now()}); err != nil {
+		if errors.Is(err, store.ErrEnvCollision) {
+			return invalidf("secret %q conflicts with an existing environment variable", name)
+		}
 		return err
 	}
 	s.Event(ctx, slugName, "info", "secret", fmt.Sprintf("secret %s set via %s; redeploy to apply", name, via), nil)
@@ -184,9 +187,15 @@ func (s *Service) secretsFor(ctx context.Context, slugName string) (map[string]s
 	}
 	env := map[string]string{}
 	for _, sec := range secs {
+		if err := validateEnvName(sec.Name, "secret"); err != nil {
+			return nil, err
+		}
 		pt, err := g.Open(nil, sec.Nonce, sec.Ciphertext, []byte(sec.Name))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt secret %s: %w", sec.Name, err)
+		}
+		if err := validateEnvValue(string(pt), "secret"); err != nil {
+			return nil, err
 		}
 		env[sec.Name] = string(pt)
 	}

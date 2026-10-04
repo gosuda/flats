@@ -80,7 +80,7 @@ export function mount(main, [id], ctx) {
     const notice = a.action === 'set_visibility' ? noticeFor(p.visibility) : '';
     if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
     if (a.action === 'delete' && a.status === 'pending') {
-      body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, secrets and logs.' }));
+      body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, environment variables, secrets and logs.' }));
     }
 
     if (a.status !== 'pending') {

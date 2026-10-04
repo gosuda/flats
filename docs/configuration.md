@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, credential file paths |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, encrypted secrets |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, ordinary app environment variables, encrypted secrets |
 | The flat | `flats/<slug>/` | uploaded code, the flat's SQLite database and FILES |
 | Nobody may read it in plain text | separate files | `secret.key`, the Tailscale auth key |
 

@@ -90,7 +90,7 @@ async function showLive(slug, what) {
   ]);
 }
 
-// redeployLive restarts the live version so it picks up changed secrets
+// redeployLive restarts the live version so it picks up changed environment variables and secrets
 // (a worker reads them only when it starts).
 export async function redeployLive(flat) {
   const n = flat.live_version;
@@ -99,10 +99,10 @@ export async function redeployLive(flat) {
   const ok = await confirmDialog({
     title: `Redeploy version ${n}?`,
     body: [
-      h('p', { text: `${label(flat)} restarts version ${n} with its current secrets.` }),
+      h('p', { text: `${label(flat)} restarts version ${n} with its current environment variables and secrets.` }),
       h('p', { class: 'muted', text: server
         ? 'The health check runs first; if it fails, the running instance keeps serving. Data is kept as it is.'
-        : 'This is a static flat: secrets are not used, so it keeps serving the same files.' }),
+        : 'This is a static flat: environment variables and secrets are not injected, so it keeps serving the same files.' }),
     ],
     confirmLabel: 'Redeploy',
   });
@@ -138,7 +138,7 @@ export async function deleteFlat(flat) {
   const ok = await confirmDialog({
     title: `Delete ${label(flat)}?`,
     body: [
-      h('p', { text: 'This permanently deletes the flat, every version, its data, secrets and logs, and takes its private and public addresses offline.' }),
+      h('p', { text: 'This permanently deletes the flat, every version, its data, environment variables, secrets and logs, and takes its private and public addresses offline.' }),
       h('p', { class: 'muted', text: 'This cannot be undone.' }),
     ],
     confirmLabel: 'Delete permanently',

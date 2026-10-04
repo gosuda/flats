@@ -475,7 +475,7 @@ td > .badge:first-child { margin-left: 0; }
 .site-rename[hidden] { display: none; }
 .site-page #delete .btn-danger { color: var(--danger); background: transparent; }
 .site-page #delete .danger-zone { border-block: 1px solid var(--border); padding: 18px 0; font-size: 14px; }
-.site-page #secrets { border-bottom: 1px solid var(--border); padding-bottom: 20px; }
+.site-page #env, .site-page #secrets { border-bottom: 1px solid var(--border); padding-bottom: 20px; }
 .analytics-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin: 0 0 24px; gap: 16px; }
 .analytics-metrics { display: flex; gap: 32px; margin: 0; font-size: 14px; }
 .analytics-metrics dt { color: var(--muted); font-size: 13px; }
@@ -530,5 +530,7 @@ input::placeholder { color: var(--muted); opacity: 1; }
   .traffic-label { font-size: 20px; }
   .share-content { padding: 18px; }
 }
-.site-page #secrets form[hidden] { display: none; }
+.site-page #env form[hidden], .site-page #secrets form[hidden] { display: none; }
 .site-page #secrets > div > .btn:first-child { float: right; margin-top: -40px; }
+
+.env-value { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }

@@ -43,6 +43,7 @@ type migration struct {
 var migrations = []migration{
 	{5, "legacy baseline 5", legacyBaseline},
 	{6, "host binding", addHostBinding},
+	{7, "application environment variables", addEnvVars},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
