@@ -65,6 +65,9 @@ type spec struct {
 	check    func(any) (any, error) // validates and normalizes; nil = type only
 	hint     string
 	override bool // may be overridden for one run (SourceFlag)
+	// ephemeral lets a per-run override use port 0, which binds a free
+	// port. Such a value is never stored.
+	ephemeral bool
 }
 
 // sections lists the top-level objects in file order.
@@ -76,9 +79,9 @@ var specs = []spec{
 		hint: "use the lowercase UUID written by config init"},
 	{key: "host.data_dir", kind: kindString, required: true, check: checkAbsPath,
 		hint: "use an absolute path"},
-	{key: "host.management_addr", kind: kindString, def: "127.0.0.1:7878", check: checkLoopback, override: true,
+	{key: "host.management_addr", kind: kindString, def: "127.0.0.1:7878", check: checkLoopback, override: true, ephemeral: true,
 		hint: "use a loopback IP and port such as 127.0.0.1:7878 or [::1]:7878"},
-	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkLoopback, override: true,
+	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkLoopback, override: true, ephemeral: true,
 		hint: "use a loopback IP and port such as 127.0.0.1:7879 or [::1]:7879"},
 	{key: "host.console_host", kind: kindString, def: "flats", check: checkHostName, override: true,
 		hint: "use 3-54 lowercase letters, digits and single hyphens, starting with a letter"},
@@ -118,6 +121,19 @@ func lookupSpec(key string) (*spec, bool) {
 		}
 	}
 	return nil, false
+}
+
+// Default returns the frozen default of key: a string, bool, int64 or
+// []string, or nil for a key without one.
+func Default(key string) (any, bool) {
+	sp, ok := lookupSpec(key)
+	if !ok {
+		return nil, false
+	}
+	if l, isList := sp.def.([]string); isList {
+		return slices.Clone(l), true
+	}
+	return sp.def, true
 }
 
 // Keys returns every config key in file order.
@@ -167,6 +183,18 @@ func New(instanceID, dataDir string) (*Document, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+// Clone returns an independent copy of d.
+func (d *Document) Clone() *Document {
+	c := &Document{version: d.version, values: make(map[string]any, len(d.values))}
+	for k, v := range d.values {
+		if l, isList := v.([]string); isList {
+			v = slices.Clone(l)
+		}
+		c.values[k] = v
+	}
+	return c
 }
 
 // SchemaVersion is the document's schema_version.
@@ -257,6 +285,20 @@ func (sp *spec) parseString(s string) (any, error) {
 		v = list
 	}
 	return sp.validate(v, sp.key)
+}
+
+// parseOverride parses a per-run value like Set, except that an ephemeral
+// address may use port 0.
+func (sp *spec) parseOverride(s string) (any, error) {
+	if sp.ephemeral {
+		if ap, err := netip.ParseAddrPort(s); err == nil && ap.Port() == 0 && ap.String() == s {
+			if _, err := sp.parseString(netip.AddrPortFrom(ap.Addr(), 1).String()); err != nil {
+				return nil, err
+			}
+			return s, nil
+		}
+	}
+	return sp.parseString(s)
 }
 
 // validate range-checks and normalizes a typed value.
@@ -470,7 +512,8 @@ func (c *Config) Lookup(key string) (value any, src Source, ok bool) {
 
 // Effective resolves the document with defaults and per-run overrides.
 // Only host.management_addr, host.local_addr, host.console_host and
-// host.server_runtime may be overridden; the values are parsed like Set.
+// host.server_runtime may be overridden; the values are parsed like Set,
+// except that the two addresses may use port 0 for a free port.
 func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 	c := &Config{SchemaVersion: d.version, values: map[string]any{}, sources: map[string]Source{}}
 	var errs []error
@@ -493,7 +536,7 @@ func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 			errs = append(errs, fieldErr(key, "change it in config.json", "cannot be overridden for one run"))
 			continue
 		}
-		v, err := sp.parseString(overrides[key])
+		v, err := sp.parseOverride(overrides[key])
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -526,7 +569,7 @@ func (c *Config) fill() error {
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error
-	if c.Host.ManagementAddr == c.Host.LocalAddr {
+	if c.Host.ManagementAddr == c.Host.LocalAddr && !strings.HasSuffix(c.Host.LocalAddr, ":0") {
 		errs = append(errs, fieldErr("host.local_addr", "use a port different from host.management_addr",
 			"%s is also host.management_addr", c.Host.LocalAddr))
 	}

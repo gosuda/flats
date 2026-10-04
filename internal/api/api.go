@@ -760,7 +760,7 @@ func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Reques
 // restartKeys are settings `flats serve` reads only at startup.
 var restartKeys = []string{core.SetPortalRelays, core.SetPortalDiscover, core.SetPortalMaxRelay}
 
-const restartNote = "portal relay settings apply after `flats serve` restarts; a --relays flag overrides portal_relays"
+const restartNote = "portal relay settings are saved to config.json and apply after `flats serve` restarts"
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	st, err := s.Svc.Settings(r.Context())

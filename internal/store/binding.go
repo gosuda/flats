@@ -75,3 +75,20 @@ func (s *Store) BindHost(ctx context.Context, b HostBinding) error {
 	}
 	return tx.Commit()
 }
+
+// ReplaceHostBinding records b as the owner of this database, replacing any
+// earlier binding. It is for `flats config rebind`, which gives a copied
+// data directory its own instance.
+func (s *Store) ReplaceHostBinding(ctx context.Context, b HostBinding) error {
+	if b.InstanceID == "" || b.ConfigPath == "" || b.BoundAt.IsZero() {
+		return errors.New("host binding needs an instance id, config path and bound time")
+	}
+	var migrated any
+	if b.MigratedAt != nil {
+		migrated = b.MigratedAt.Unix()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO host_binding(id,instance_id,config_path,bound_at,migrated_at) VALUES(1,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET instance_id=excluded.instance_id, config_path=excluded.config_path, bound_at=excluded.bound_at, migrated_at=excluded.migrated_at`,
+		b.InstanceID, b.ConfigPath, b.BoundAt.Unix(), migrated)
+	return err
+}

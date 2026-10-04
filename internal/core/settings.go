@@ -2,7 +2,10 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,9 +13,12 @@ import (
 	"time"
 
 	"github.com/gosuda/portal-tunnel/v2/utils"
+
+	"github.com/gosuda/flats/internal/config"
 )
 
-// Setting keys and defaults (all configurable in system settings).
+// Setting keys (all configurable in system settings). Each is stored in
+// config.json under the key in settingKeys.
 const (
 	SetUploadMaxBytes = "upload_max_bytes"
 	SetKeepVersions   = "keep_versions"
@@ -26,31 +32,151 @@ const (
 	SetEventsKeep     = "events_keep"       // log events kept per flat
 )
 
-// Defaults are the factory settings.
-var Defaults = map[string]string{
-	SetUploadMaxBytes: strconv.Itoa(20 << 20),
-	SetKeepVersions:   "10",
-	SetDiskQuotaBytes: strconv.FormatInt(30<<30, 10),
-	SetPreviewTTL:     strconv.Itoa(24 * 3600),
-	SetRateLimit:      "50",
-	SetPortalRelays:   "",
-	SetRedirectDays:   "7",
-	SetPortalDiscover: "true",
-	SetPortalMaxRelay: "3",
-	SetEventsKeep:     "5000",
+// settingKeys maps each setting to its config.json key.
+var settingKeys = map[string]string{
+	SetUploadMaxBytes: "system.upload_max_bytes",
+	SetKeepVersions:   "system.keep_versions",
+	SetDiskQuotaBytes: "system.disk_quota_bytes",
+	SetPreviewTTL:     "system.preview_ttl_seconds",
+	SetRateLimit:      "system.rate_limit_rps",
+	SetRedirectDays:   "system.redirect_days",
+	SetEventsKeep:     "system.events_keep",
+	SetPortalRelays:   "portal.relays",
+	SetPortalDiscover: "portal.discovery",
+	SetPortalMaxRelay: "portal.max_active_relays",
 }
 
-func (s *Service) setting(key string) string {
-	if v, ok := s.settings.Load(key); ok {
-		return v.(string)
-	}
-	v, err := s.st.GetSetting(context.Background(), key, Defaults[key])
-	if err != nil {
-		v = Defaults[key]
-	}
-	s.settings.Store(key, v)
-	return v
+// SettingConfigKey returns the config.json key of a setting.
+func SettingConfigKey(setting string) (string, bool) {
+	k, ok := settingKeys[setting]
+	return k, ok
 }
+
+// Defaults are the factory settings: the frozen config.json defaults.
+var Defaults = func() map[string]string {
+	out := make(map[string]string, len(settingKeys))
+	for k, ck := range settingKeys {
+		v, ok := config.Default(ck)
+		if !ok {
+			panic("core: no config key " + ck)
+		}
+		out[k] = settingString(v)
+	}
+	return out
+}()
+
+// settingString formats a config value the way the settings API shows it.
+func settingString(v any) string {
+	switch v := v.(type) {
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case bool:
+		return strconv.FormatBool(v)
+	case []string:
+		return strings.Join(v, ",")
+	case string:
+		return v
+	}
+	return fmt.Sprint(v)
+}
+
+// SettingsSource holds the system settings as a config.json document. Save,
+// when set, persists a change before it is applied; nil keeps settings in
+// memory only, as for a Service built without one.
+type SettingsSource struct {
+	mu     sync.Mutex
+	doc    *config.Document
+	values map[string]string
+	save   func(ctx context.Context, apply func(*config.Document) error) error
+}
+
+// NewSettingsSource serves the settings of doc. save receives the change as
+// a function to apply to the document it writes.
+func NewSettingsSource(doc *config.Document, save func(ctx context.Context, apply func(*config.Document) error) error) (*SettingsSource, error) {
+	src := &SettingsSource{doc: doc.Clone(), save: save}
+	if err := src.refresh(); err != nil {
+		return nil, err
+	}
+	return src, nil
+}
+
+func memorySettings() *SettingsSource {
+	doc, err := config.New(config.NewInstanceID(), string(filepath.Separator))
+	if err == nil {
+		var src *SettingsSource
+		if src, err = NewSettingsSource(doc, nil); err == nil {
+			return src
+		}
+	}
+	panic(err) // the default document is always valid
+}
+
+// refresh recomputes the settings view of s.doc.
+func (s *SettingsSource) refresh() error {
+	c, err := s.doc.Effective(nil)
+	if err != nil {
+		return err
+	}
+	values := make(map[string]string, len(settingKeys))
+	for k, ck := range settingKeys {
+		v, _, _ := c.Lookup(ck)
+		values[k] = settingString(v)
+	}
+	s.values = values
+	return nil
+}
+
+func (s *SettingsSource) get(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.values[key]
+}
+
+func (s *SettingsSource) all() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.values)
+}
+
+// update validates values against the config rules, persists them and only
+// then makes them current. Nothing changes unless every value is accepted.
+func (s *SettingsSource) update(ctx context.Context, values map[string]string) error {
+	apply := func(d *config.Document) error {
+		for _, k := range slices.Sorted(maps.Keys(values)) {
+			if err := d.Set(settingKeys[k], values[k]); err != nil {
+				return err
+			}
+		}
+		return d.Validate()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.doc.Clone()
+	if err := apply(next); err != nil {
+		return invalid(err)
+	}
+	if s.save != nil {
+		if err := s.save(ctx, apply); err != nil {
+			if errors.Is(err, config.ErrConflict) {
+				return withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; restart `flats serve` to load the file, then retry: %w", err))
+			}
+			var fe *config.FieldError
+			if errors.As(err, &fe) {
+				return invalid(err)
+			}
+			return err
+		}
+	}
+	prev := s.doc
+	s.doc = next
+	if err := s.refresh(); err != nil {
+		s.doc = prev
+		return err
+	}
+	return nil
+}
+
+func (s *Service) setting(key string) string { return s.settings.get(key) }
 
 func (s *Service) intSetting(key string) int64 {
 	n, err := strconv.ParseInt(s.setting(key), 10, 64)
@@ -74,20 +200,7 @@ func (s *Service) redirectWindow() time.Duration {
 
 // Settings returns every setting with defaults filled in.
 func (s *Service) Settings(ctx context.Context) (map[string]string, error) {
-	stored, err := s.st.AllSettings(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for k, v := range Defaults {
-		out[k] = v
-	}
-	for k, v := range stored {
-		if _, known := Defaults[k]; known {
-			out[k] = v
-		}
-	}
-	return out, nil
+	return s.settings.all(), nil
 }
 
 // UpdateSettings validates and stores settings. Only the console calls it.
@@ -105,11 +218,8 @@ func (s *Service) UpdateSettings(ctx context.Context, in map[string]string) (map
 		}
 		clean[k] = norm
 	}
-	for k, v := range clean {
-		if err := s.st.SetSetting(ctx, k, v); err != nil {
-			return nil, err
-		}
-		s.settings.Store(k, v)
+	if err := s.settings.update(ctx, clean); err != nil {
+		return nil, err
 	}
 	if _, ok := clean[SetRateLimit]; ok {
 		s.mu.Lock()

@@ -36,7 +36,9 @@ const (
 	AudienceDraft   = core.AudienceDraft
 )
 
-const fileName = "network-provider.json"
+// FileName is the host permission file in the data directory. Hosts
+// configured by config.json no longer use it.
+const FileName = "network-provider.json"
 
 // File is the host permission record. It is not a flat's provider choice
 // and it does not publish anything by itself.
@@ -92,18 +94,30 @@ func (f File) Grant(id ID) (File, error) {
 // the file is absent. A missing file is not a grant, including when tsnet
 // or portal directories already exist.
 func Load(dir string) (File, error) {
-	if dir == "" {
-		return File{}, errors.New("provider: data directory is required")
+	f, exists, err := Read(dir)
+	if err != nil || exists {
+		return f, err
 	}
-	path := filepath.Join(dir, fileName)
-	b, err := os.ReadFile(path)
+	if err := Save(dir, f); err != nil {
+		return File{}, err
+	}
+	return f, nil
+}
+
+// Read returns what Load would return without writing anything: the host
+// file, or the version 1 record Load would create when it is absent. exists
+// reports whether the file was there.
+func Read(dir string) (f File, exists bool, err error) {
+	if dir == "" {
+		return File{}, false, errors.New("provider: data directory is required")
+	}
+	b, err := os.ReadFile(filepath.Join(dir, FileName))
 	if err == nil {
-		var f File
 		if err := json.Unmarshal(b, &f); err != nil {
-			return File{}, fmt.Errorf("provider: read %s: %w", fileName, err)
+			return File{}, true, fmt.Errorf("provider: read %s: %w", FileName, err)
 		}
 		if err := validate(f); err != nil {
-			return File{}, err
+			return File{}, true, err
 		}
 		if f.Permitted == nil {
 			f.Permitted = []ID{}
@@ -111,12 +125,12 @@ func Load(dir string) (File, error) {
 		if f.Migration.GrantsFromState == nil {
 			f.Migration.GrantsFromState = []ID{}
 		}
-		return f, nil
+		return f, true, nil
 	}
 	if !os.IsNotExist(err) {
-		return File{}, err
+		return File{}, false, err
 	}
-	f := File{
+	return File{
 		Version:   1,
 		Permitted: []ID{},
 		Migration: Migration{
@@ -126,11 +140,7 @@ func Load(dir string) (File, error) {
 			GrantsFromState:  []ID{},
 			Note:             "Historical tsnet and portal files were not treated as permission. Funnel is not implied by a tailnet node. The files were left in place so a later explicit grant keeps the same hostnames.",
 		},
-	}
-	if err := Save(dir, f); err != nil {
-		return File{}, err
-	}
-	return f, nil
+	}, false, nil
 }
 
 // Save writes the host file atomically. It does not open a network.
@@ -155,8 +165,8 @@ func Save(dir string, f File) error {
 		return err
 	}
 	b = append(b, '\n')
-	path := filepath.Join(dir, fileName)
-	tmp, err := os.CreateTemp(dir, "."+fileName+".tmp*")
+	path := filepath.Join(dir, FileName)
+	tmp, err := os.CreateTemp(dir, "."+FileName+".tmp*")
 	if err != nil {
 		return err
 	}

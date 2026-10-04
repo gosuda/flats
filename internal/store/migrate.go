@@ -57,6 +57,7 @@ type Info struct {
 	Version int          `json:"version"` // PRAGMA user_version
 	Latest  int          `json:"latest"`  // newest schema this build supports
 	IsFlats bool         `json:"is_flats"`
+	HasData bool         `json:"has_data"`          // some table other than host_binding has a row
 	Binding *HostBinding `json:"binding,omitempty"` // nil when no host is bound
 }
 
@@ -111,6 +112,14 @@ func Inspect(path string) (Info, error) {
 	case info.New && info.Version != 0:
 		info.IsFlats = false
 		return info, fmt.Errorf("%w: no tables but schema version %d", ErrNotFlats, info.Version)
+	}
+	for _, t := range tables {
+		if t == "host_binding" || info.HasData {
+			continue
+		}
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM "`+strings.ReplaceAll(t, `"`, `""`)+`")`).Scan(&info.HasData); err != nil {
+			return info, err
+		}
 	}
 	if slices.Contains(tables, "host_binding") {
 		b, ok, err := readHostBinding(ctx, db)

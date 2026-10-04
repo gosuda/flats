@@ -84,7 +84,10 @@ type Config struct {
 	OperatorIdentity         func(context.Context) string // nonsecret identity of validated operator
 	ValidateOperatorDecision func(context.Context) error  // required for approval decisions; nil denies
 	Runtime                  Runtime                      // nil disables server flats
-	ConsoleURL               func() string
+	// Settings holds the system settings (config.json). Nil keeps the
+	// frozen defaults in memory.
+	Settings   *SettingsSource
+	ConsoleURL func() string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string
 	Now      func() time.Time
@@ -107,7 +110,7 @@ type Service struct {
 	stop        chan struct{}
 	wg          sync.WaitGroup
 	secretKey   []byte
-	settings    sync.Map // setting key -> value cache
+	settings    *SettingsSource
 	eventCount  sync.Map // slug -> *atomic.Int64, events since the last prune
 	logLimits   sync.Map // slug -> *logLimit
 }
@@ -161,9 +164,15 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.ConsoleURL == nil {
 		cfg.ConsoleURL = func() string { return "" }
 	}
-	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf,
+	if cfg.Settings == nil {
+		cfg.Settings = memorySettings()
+	}
+	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf, settings: cfg.Settings,
 		live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "flats"), 0o700); err != nil {
+		return nil, err
+	}
+	if err := CheckSecretKey(ctx, cfg.DataDir, cfg.Store); err != nil {
 		return nil, err
 	}
 	key, err := loadOrCreateKey(filepath.Join(cfg.DataDir, "secret.key"))

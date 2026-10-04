@@ -494,3 +494,52 @@ func TestProductionRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestEphemeralOverrides(t *testing.T) {
+	doc, err := New(testID, "/var/lib/flats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := doc.Effective(map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Host.ManagementAddr != "127.0.0.1:0" || c.Host.LocalAddr != "127.0.0.1:0" {
+		t.Fatalf("Host = %+v", c.Host)
+	}
+	for _, bad := range []string{"0.0.0.0:0", "127.000.0.1:0"} {
+		if _, err := doc.Effective(map[string]string{"host.management_addr": bad}); err == nil {
+			t.Errorf("override %s accepted", bad)
+		}
+	}
+	if err := doc.Set("host.management_addr", "127.0.0.1:0"); err == nil {
+		t.Error("port 0 stored in the file")
+	}
+}
+
+func TestDefaultAndClone(t *testing.T) {
+	if v, ok := Default("system.keep_versions"); !ok || v != int64(10) {
+		t.Fatalf("Default(keep_versions) = %v, %t", v, ok)
+	}
+	if v, ok := Default("credentials.operator_file"); !ok || v != nil {
+		t.Fatalf("Default(operator_file) = %v, %t", v, ok)
+	}
+	if _, ok := Default("nope"); ok {
+		t.Fatal("unknown key has a default")
+	}
+	doc, err := New(testID, "/var/lib/flats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Set("portal.relays", "https://rly.best"); err != nil {
+		t.Fatal(err)
+	}
+	c := doc.Clone()
+	if err := c.Set("system.keep_versions", "3"); err != nil {
+		t.Fatal(err)
+	}
+	c.values["portal.relays"].([]string)[0] = "changed"
+	if bytes.Contains(doc.Encode(), []byte("keep_versions")) || !bytes.Contains(doc.Encode(), []byte("rly.best")) {
+		t.Fatalf("clone shares state:\n%s", doc.Encode())
+	}
+}

@@ -104,12 +104,17 @@ type Options struct {
 	// Permission reads current per-flat opt-ins for status, without opening routes.
 	// Nil is supported by standalone adapters; core still overlays current policy.
 	Permission func(context.Context, string, ID) (bool, error)
+	// Grants, when set, are the host grants (Permitted and PrivateBackend)
+	// from config.json. The manager then neither reads nor writes the host
+	// file, and Reload keeps these grants until the process restarts.
+	Grants *File
 }
 
 // Manager opens routes. It does not implement PrivateNet or PublicNet.
 type Manager struct {
 	dir           string
 	file          File
+	fixed         bool // grants came from Options.Grants
 	local         *local.Net
 	ts            Tailnet
 	portal        PortalNet
@@ -142,9 +147,21 @@ type route struct {
 // serve a flat and it does not contact a relay or a tailnet beyond whatever
 // the backends already did.
 func New(dir string, opts Options) (*Manager, error) {
-	f, err := Load(dir)
-	if err != nil {
-		return nil, err
+	var f File
+	if opts.Grants != nil {
+		f = File{Version: 1, Permitted: slices.Clone(opts.Grants.Permitted), PrivateBackend: opts.Grants.PrivateBackend}
+		if f.Permitted == nil {
+			f.Permitted = []ID{}
+		}
+		f.Migration.GrantsFromState = []ID{}
+		if err := validate(f); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		if f, err = Load(dir); err != nil {
+			return nil, err
+		}
 	}
 	if opts.Local == nil {
 		return nil, errors.New("provider: local network is required")
@@ -156,6 +173,7 @@ func New(dir string, opts Options) (*Manager, error) {
 	return &Manager{
 		dir:            dir,
 		file:           f,
+		fixed:          opts.Grants != nil,
 		local:          opts.Local,
 		ts:             opts.Tailscale,
 		portal:         opts.Portal,
@@ -187,8 +205,12 @@ func (m *Manager) allows(id ID) bool {
 }
 
 // Reload reads the host file again. Existing routes are left as they are;
-// a grant removed here does not by itself tear a route down.
+// a grant removed here does not by itself tear a route down. Grants from
+// Options.Grants are kept: config.json changes apply on restart.
 func (m *Manager) Reload() error {
+	if m.fixed {
+		return nil
+	}
 	f, err := Load(m.dir)
 	if err != nil {
 		return err
