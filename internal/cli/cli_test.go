@@ -579,12 +579,21 @@ type fakeLaunchctl struct {
 	loaded bool
 	active bool
 	onStop func()
+	// fail makes the next n calls whose first argument (or, for systemctl,
+	// any argument) is the key fail.
+	fail map[string]int
 }
 
 func (f *fakeLaunchctl) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, append([]string{name}, args...))
+	for key, n := range f.fail {
+		if n > 0 && (args[0] == key || name == "systemctl" && slices.Contains(args, key)) {
+			f.fail[key] = n - 1
+			return []byte("injected failure"), errors.New("exit status 1")
+		}
+	}
 	if name == "systemctl" {
 		switch {
 		case slices.Contains(args, "is-active"):
@@ -703,6 +712,23 @@ func TestInstallStopsRunningService(t *testing.T) {
 			}
 			if again, _ := os.ReadFile(definition); string(again) != string(raw) || !running() {
 				t.Fatalf("definition changed or service left stopped: running=%t", running())
+			}
+
+			// Loading the new definition fails: the previous one is put back
+			// and started again.
+			fl.mu.Lock()
+			fl.calls = nil
+			fl.fail = map[string]int{"bootstrap": 2, "load": 1}
+			if goos == "linux" {
+				fl.fail = map[string]int{"enable": 1}
+			}
+			fl.mu.Unlock()
+			r = runEnv(t, env, srv.URL, "install", "--executable", exe)
+			if r.code == 0 || !strings.Contains(r.stderr, "Restored and started the previous Flats service") {
+				t.Fatalf("failed load: %+v", r)
+			}
+			if again, _ := os.ReadFile(definition); string(again) != string(raw) || !running() {
+				t.Fatalf("previous definition not restored and running: running=%t\n%s", running(), again)
 			}
 
 			// A foreground host keeps the lock after the service stopped.

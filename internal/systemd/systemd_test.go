@@ -117,7 +117,7 @@ func TestStopKeepsUnitAndStartRuns(t *testing.T) {
 	if err := Start(context.Background(), opts); err != nil || state != "active" {
 		t.Fatalf("start: %v %s", err, state)
 	}
-	if strings.Join(calls, ";") != "--user is-active flats.service;--user stop flats.service;--user is-active flats.service;--user start flats.service" {
+	if strings.Join(calls, ";") != "--user is-active flats.service;--user stop flats.service;--user is-active flats.service;--user daemon-reload;--user start flats.service" {
 		t.Fatalf("calls %v", calls)
 	}
 }

@@ -138,11 +138,38 @@ func (a *app) install(args []string) error {
 	// launchd and systemd do not inherit the shell environment; the service
 	// runs from config.json alone.
 	serveArgs := []string{"--config", cfgPath}
+	// If writing or loading the new definition fails, put the previous one
+	// back and start it again, so a failed reinstall never leaves a
+	// previously running host stopped.
+	definition := launchd.PlistPath(a.env.Home)
+	if a.goos() == "linux" {
+		definition = systemd.UnitPath(a.env.Home)
+	}
+	previous, readErr := os.ReadFile(definition)
+	restore := func(err error) error {
+		if readErr != nil {
+			return err
+		}
+		if a.goos() == "darwin" {
+			_, _ = launchd.Stop(a.ctx, a.launchdOpts())
+		}
+		if werr := os.WriteFile(definition, previous, 0o644); werr != nil {
+			return errors.Join(err, fmt.Errorf("could not restore the previous service definition: %w", werr))
+		}
+		if !stopped {
+			return err
+		}
+		if rerr := restart(); rerr != nil {
+			return errors.Join(err, fmt.Errorf("could not start the previous service again: %w", rerr))
+		}
+		fmt.Fprintln(a.errw, "Restored and started the previous Flats service.")
+		return err
+	}
 
 	if a.goos() == "linux" {
 		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: serveArgs, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
 		if err != nil {
-			return err
+			return restore(err)
 		}
 		up := a.waitForServer()
 		if a.jsonOut {
@@ -167,7 +194,7 @@ func (a *app) install(args []string) error {
 	opts.Env = map[string]string{"PATH": a.env.Getenv("PATH")}
 	res, err := launchd.Install(a.ctx, opts)
 	if err != nil {
-		return err
+		return restore(err)
 	}
 	up := a.waitForServer()
 	if a.jsonOut {

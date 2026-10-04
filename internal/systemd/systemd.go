@@ -187,8 +187,11 @@ func Start(ctx context.Context, opts Options) error {
 	if err := opts.fill(); err != nil {
 		return err
 	}
-	if out, err := opts.Run(ctx, "systemctl", "--user", "start", Unit); err != nil {
-		return fmt.Errorf("systemctl --user start %s: %v: %s", Unit, err, strings.TrimSpace(string(out)))
+	// The unit file may have been rewritten since systemd last read it.
+	for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "start", Unit}} {
+		if out, err := opts.Run(ctx, "systemctl", args...); err != nil {
+			return fmt.Errorf("systemctl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }
