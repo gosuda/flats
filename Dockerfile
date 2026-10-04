@@ -23,15 +23,15 @@ RUN cd /dist \
 	&& tar -xzf "flats_${TARGETOS}_${TARGETARCH}.tar.gz" flats
 
 FROM ${ALPINE_IMAGE}
-# 65532 is the conventional unprivileged "nonroot" ID. /data holds the flats,
-# their data and secret.key; /run/flats-operator holds only the operator
-# credential, in its own volume so it never travels with data backups.
-RUN install -d -o 65532 -g 65532 -m 0700 /data /run/flats-operator /home/flats
+# 65532 is the conventional unprivileged "nonroot" ID. /data is the data
+# directory, config.json included (docs/configuration.md).
+RUN install -d -o 65532 -g 65532 -m 0700 /data /home/flats
 COPY --from=unpack /dist/flats /usr/local/bin/flats
 COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/flats-entrypoint
 ENV FLATS_DATA=/data \
+	FLATS_CONFIG=/data/config.json \
 	HOME=/home/flats
-VOLUME ["/data", "/run/flats-operator"]
+VOLUME ["/data"]
 USER 65532:65532
 WORKDIR /home/flats
 # `flats status` exits non-zero when the management listener does not answer

@@ -54,16 +54,14 @@ CGO_ENABLED=0 go build -o flats ./cmd/flats
 
 ### Container
 
-A Linux image for amd64 and arm64 is published with every release. On Linux, run it with host networking so the console and CLI keep their loopback trust:
+A Linux image for amd64 and arm64 is published with every release. Its `/data` volume holds `config.json` and all other data; an empty volume starts with the defaults. On Linux, run it with host networking so the console, CLI and agents reach it on loopback as with a native install:
 
 ```sh
 docker run -d --name flats --restart unless-stopped --network host \
-  -v flats-data:/data -v flats-operator:/run/flats-operator \
-  ghcr.io/gosuda/flats:latest
-docker exec flats cat /run/flats-operator/credential   # copy once into your password manager
+  -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-On first start the container creates its operator credential in the `flats-operator` volume and does not print it. On macOS or other Docker hosts, use `--network tailscale` instead of publishing ports: published ports are not loopback, so the console refuses to unlock over them. See [Running Flats in a container](docs/container.md) for Tailscale, hardening, upgrades and building the image.
+On macOS or other Docker hosts, publish the same ports on `127.0.0.1` only, or use Tailscale. Never publish the console port to your network: anything that reaches it can approve deploys. See [Running Flats in a container](docs/container.md) for each network mode, configuration, hardening, upgrades and building the image.
 
 ### Foreground host
 

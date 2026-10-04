@@ -9,13 +9,13 @@ ghcr.io/gosuda/flats:latest    # newest stable release; prereleases never get it
 ```
 
 The image runs the same `flats` binary as that release's
-`flats_linux_<arch>.tar.gz`, on Alpine, as the unprivileged user `65532`. It
-has two volumes:
-
-| Path | Holds |
-| --- | --- |
-| `/data` | the data directory (`FLATS_DATA`): flats, versions, SQLite databases, FILES, `secret.key`, Tailscale and Portal state |
-| `/run/flats-operator` | only the operator credential, kept apart from data and its backups |
+`flats_linux_<arch>.tar.gz`, on Alpine, as the unprivileged user `65532`.
+Everything Flats keeps lives in one volume, `/data`: `config.json`,
+`flats.db`, `secret.key`, the flats and their data, and Tailscale and Portal
+state (see [Configuration and storage](configuration.md)). The image sets
+`FLATS_DATA=/data` and `FLATS_CONFIG=/data/config.json`; on first start the
+entrypoint runs `flats config init`, so an empty volume starts with the
+defaults (Local network, Portal off).
 
 Verify an image before you run it:
 
@@ -25,87 +25,95 @@ gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats
 
 ## Choose a network mode
 
-Flats trusts loopback: the CLI, local agents and the console reach the
-management listener on `127.0.0.1:7878`, and the console accepts the operator
-credential only over loopback or HTTPS. A container must keep that property,
-so two modes are supported.
+The management listener (`host.management_addr`, `127.0.0.1:7878`) is a
+privileged control surface: approval decisions need only the console's
+same-origin headers, not a credential, so anything that can reach it can
+approve. A container must keep it reachable only from the host, and the
+browser must reach it under the same port it listens on (the listener accepts
+only loopback `Host` names with its own port).
 
 **Linux host networking.** The container shares the host's loopback, so the
-console, CLI, MCP endpoint and `http://<flat>.localhost:7879` work exactly as
-with a native install:
+console, CLI, MCP endpoint and `http://<flat>.localhost:7879` behave exactly
+as with a native install:
 
 ```sh
 docker run -d --name flats --restart unless-stopped --network host \
-  -v flats-data:/data -v flats-operator:/run/flats-operator \
-  ghcr.io/gosuda/flats:latest
+  -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-**Tailscale, on any Docker host** (including Docker Desktop or Rancher Desktop
-on macOS). Publish no ports. The console and permitted flats get their own
-tailnet nodes with HTTPS, and their state lives in `/data`:
+**Published loopback ports, on any Docker host** (including Docker Desktop or
+Rancher Desktop on macOS). Listen on all container interfaces, publish the
+same port numbers on the host's `127.0.0.1` only, and use a dedicated network
+so other containers cannot reach the listener:
 
 ```sh
+docker network create flats
+docker run -d --name flats --restart unless-stopped --network flats \
+  -p 127.0.0.1:7878:7878 -p 127.0.0.1:7879:7879 \
+  -v flats-data:/data ghcr.io/gosuda/flats:latest \
+  serve --listen 0.0.0.0:7878 --local-addr 0.0.0.0:7879
+```
+
+The host logs a warning that the management API is not on loopback; that is
+expected here. Never publish without `127.0.0.1:`, which would let your
+network approve deploys. Connections through published ports are not loopback
+to Flats, so MCP's `save_version_from_dir` is unavailable: agents use
+`save_version` or the `flats` CLI, which uploads the files.
+
+**Tailscale.** Permit Tailscale and make it the private backend while the
+host is stopped, then start it; the console and permitted flats get their own
+tailnet nodes with HTTPS, and no ports need publishing:
+
+```sh
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config init
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set network.permitted tailscale
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set network.private_backend tailscale
 docker run -d --name flats --restart unless-stopped \
-  -v flats-data:/data -v flats-operator:/run/flats-operator \
-  -v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro" \
-  ghcr.io/gosuda/flats:latest serve --network tailscale \
-  --authkey-file /run/secrets/tailscale-authkey
+  -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-The auth key must be reusable and untagged, and readable by uid `65532`.
-Without one, each node waits for an interactive login; `docker exec flats
-flats status` shows its login link. Agents outside the container reach MCP at
-the console's tailnet URL plus `/mcp`, with the same limits as any non-loopback
-agent.
+Each node prints a login link to `docker logs flats` and shows it in `docker
+exec flats flats status` until you log it in. To log nodes in automatically,
+mount a reusable, untagged auth key that uid `65532` can read outside the data
+volume, for example `-v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro"`,
+and set `credentials.tailscale_authkey_file` to
+`/run/secrets/tailscale-authkey`. A host started from `config.json` refuses
+`TS_AUTHKEY` and other `TS_*` variables.
 
-**Do not publish the management port** with `-p 7878:7878` on a bridge
-network. Published connections do not arrive over loopback, so the console
-refuses to unlock (`operator_secure_transport_required`) and loopback-only MCP
-tools are unavailable, while the agent API stays open to anything that can
-reach the port.
+## Configuration
 
-Arguments after the image name are `flats serve` flags; Portal and other
-providers are chosen the same way as for a native host (see the
-[README](../README.md#private-and-public-deployment)). Any other subcommand
-runs instead of `serve`, for example `docker run --rm ghcr.io/gosuda/flats
-version`.
-
-## Operator credential
-
-On first start the entrypoint creates a random credential at
-`/run/flats-operator/credential` (mode 0600, owned by `65532`) and does not
-print it. Copy it into your password manager once and do not paste it into
-agent chat, commands or logs:
+`flats config set` and `unset` work offline and refuse while the host runs.
+Stop the container, change the settings with one-off containers on the same
+volume, and start it again:
 
 ```sh
-docker exec flats cat /run/flats-operator/credential
+docker stop flats
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set system.keep_versions 20
+docker start flats
+docker exec flats flats config show
 ```
 
-Then open the console and choose **Unlock decisions**, as with a native host.
-Later starts reuse the file. Anyone who can run `docker` on the host can read
-the volume, so treat Docker access as operator access and do not give it to
-agents.
-
-To bring your own credential, place a file in the operator volume that is a
-regular file owned by uid `65532`, mode 0600, holding one 32–4096-byte value;
-or pass `--operator-credential-file PATH` or `--operator-credential-stdin`
-(foreground, `docker run -it`), which turns off the generated file.
-`FLATS_CREDENTIAL_FILE` moves the default path.
+Arguments after the image name go to `flats serve`. With `config.json`, only
+`--listen`, `--local-addr`, `--console-host` and `--runtime` can be overridden
+for a run; set everything else in the file. Any other subcommand runs instead
+of `serve`, for example `docker run --rm ghcr.io/gosuda/flats:latest version`.
+The console's Settings page can change the system and Portal settings and
+`network.permitted` while the host runs, as on a native host.
 
 ## Using the host
 
-With host networking, use the host's own `flats` CLI and agents as usual.
-The image also carries the CLI:
+With host networking or published ports, use the host's own `flats` CLI and
+agents as usual. The image also carries the CLI:
 
 ```sh
 docker exec flats flats status
 docker exec flats flats approvals
 ```
 
-`docker exec` runs inside the container, so `flats deploy` there needs the
-site files inside it as well; deploying from the host CLI or an agent is
-usually simpler. The image healthcheck runs `flats status`; if you move the
-listener with `--listen`, also set `-e FLATS_URL=http://<that address>`.
+`docker exec` runs inside the container, so `flats deploy` there needs the site
+files inside it as well; deploying from the host CLI or an agent is usually
+simpler. The image healthcheck runs `flats status`; if you move the listener
+to another port, also set `-e FLATS_URL=http://127.0.0.1:<port>`.
 
 ## Hardening
 
@@ -114,17 +122,19 @@ The host needs no capabilities and no writable root filesystem:
 ```sh
 docker run -d --name flats --restart unless-stopped --network host \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  -v flats-data:/data -v flats-operator:/run/flats-operator \
-  ghcr.io/gosuda/flats:latest
+  -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
 Server flats still run in separate worker processes with WebAssembly limits.
-`scripts/container-smoke.sh` checks this configuration end to end on a Linux
-Docker host.
+`scripts/container-smoke.sh` checks this configuration end to end, with host
+networking and with published loopback ports, on a Linux Docker host. Anyone
+who can run `docker` on the host can read the data volume and reach the
+container, so treat Docker access as operator access and do not give it to
+agents.
 
 ## Upgrading and backups
 
-Upgrade by replacing the container and keeping both volumes:
+Upgrade by replacing the container and keeping the volume:
 
 ```sh
 docker pull ghcr.io/gosuda/flats:latest
@@ -134,16 +144,19 @@ docker run -d --name flats ...   # the same command as before
 
 Pin a version tag rather than `latest` when you want upgrades to happen only
 when you choose them. Back up before upgrades whose release notes mention data
-changes: stop the container (`docker stop flats`), then copy the whole data
-volume, including `secret.key`:
+changes. Stop the container first, so `flats.db` is not copied while live, then
+copy the whole volume:
 
 ```sh
+docker stop flats
 docker run --rm -v flats-data:/data:ro -v "$PWD:/backup" alpine \
   tar -czf /backup/flats-data.tar.gz -C /data .
+docker start flats
 ```
 
-Downgrading across a data migration is not supported; restore the backup taken
-before the upgrade.
+Keep the Tailscale auth key, if you use one, backed up separately. Restore with
+the same or a newer release: an older binary refuses a newer `config.json` or
+database.
 
 ## Building the image
 
