@@ -171,7 +171,9 @@ docker restart "$name" >/dev/null
 wait_for "the restarted host" healthy
 wait_for "the static flat after restart" static_served
 after=$(hits)
-[ -n "$after" ] && [ "$after" -gt "$before" ] || fail "server flat data did not survive the restart ($before then $after hits)"
+if [ -z "$after" ] || [ "$after" -le "$before" ]; then
+	fail "server flat data did not survive the restart ($before then $after hits)"
+fi
 docker exec "$name" cat /run/flats-operator/credential | cmp -s - "$work/credential" || fail "the credential changed on restart"
 operator_configured || fail "restarted host has no operator credential"
 [ "$(docker logs "$name" 2>&1 | grep -c 'created operator credential')" -eq 1 ] || fail "restart created another credential"

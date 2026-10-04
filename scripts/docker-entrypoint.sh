@@ -44,8 +44,9 @@ ensure_credential() {
 		return 0
 	fi
 	cred_dir=$(dirname "$credential_file")
-	[ -d "$cred_dir" ] && [ -w "$cred_dir" ] ||
+	if [ ! -d "$cred_dir" ] || [ ! -w "$cred_dir" ]; then
 		die "cannot create the operator credential: $cred_dir is not a writable directory (mount a volume owned by $(id -u) there)"
+	fi
 	staged=$credential_file.tmp.$$
 	(
 		umask 077
