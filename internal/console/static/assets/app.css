@@ -152,6 +152,7 @@ input, select, textarea {
 textarea { width: 100%; resize: vertical; }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; border-color: transparent; }
 input:user-invalid { border-color: var(--danger); }
+input:disabled, textarea:disabled { opacity: 0.6; cursor: not-allowed; }
 label { font-weight: 500; }
 
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -166,6 +167,17 @@ label { font-weight: 500; }
 .unit { color: var(--muted); font-size: 13.5px; white-space: nowrap; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 12px; }
 .form-grid .actions { flex-direction: row; align-items: center; justify-content: flex-end; }
+.field-group { border: 0; margin: 0 0 20px; padding: 0; min-width: 0; }
+.field-group legend { padding: 0; font-size: 15px; font-weight: 600; }
+.field-error { color: var(--danger); font-size: 13px; }
+input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); }
+.impact { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 10px; }
+.impact h3 { margin: 0 0 6px; }
+.impact h3:focus { outline: none; }
+.impact p { margin: 8px 0 4px; }
+.impact .compact { overflow-wrap: anywhere; }
+.impact .actions { margin-top: 12px; }
+.saved-list { padding-left: 18px; }
 .inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .inline-form input { flex: 1 1 200px; min-width: 0; }
 .check { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }

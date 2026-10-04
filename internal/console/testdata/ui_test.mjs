@@ -127,7 +127,7 @@ const routes = {
 };
 globalThis.fetch = async (url, opts) => {
   const key = (opts.method || 'GET') + ' ' + url;
-  calls.push({ key, body: opts.body });
+  calls.push({ key, body: opts.body, headers: opts.headers });
   const body = routes[key] ?? (key.includes('/logs') ? { events: [] } : key.includes('/stats') ? { page_views: [] } : {});
   const status = body && body.__status ? body.__status : 200;
   return { ok: status < 400, status, json: async () => body };
@@ -583,4 +583,163 @@ assert.equal(statusEvents, 0);
 routes['POST /console/api/flats/blog/publish'] = { __status: 403, category: 'operator_required', error: 'Unlock required' };
 await assert.rejects(api.publish('blog', {}));
 assert.equal(statusEvents, 1);
+
+// --- settings page ---
+// The console never asks through window.confirm.
+globalThis.confirm = () => { throw new Error('window.confirm used'); };
+globalThis.location = { origin: 'http://127.0.0.1:7878' };
+const settingsPage = await import('./settings.js');
+const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
+const SETTINGS = { upload_max_bytes: '20971520', keep_versions: '10', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
+  rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://rly.best', portal_discovery: 'true', portal_max_relays: '3' };
+const CONFIG = {
+  mode: 'config', schema_version: 1, etag: 'etag-1', changed_on_disk: false,
+  host: { management_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', console_host: 'flats', server_runtime: true },
+  network: { permitted: ['portal'], private_backend: 'local' },
+  credentials: { operator_file: true, tailscale_authkey_file: false },
+  keys: { upload_max_bytes: 'system.upload_max_bytes', keep_versions: 'system.keep_versions', disk_quota_bytes: 'system.disk_quota_bytes',
+    preview_ttl_seconds: 'system.preview_ttl_seconds', rate_limit_rps: 'system.rate_limit_rps', redirect_days: 'system.redirect_days',
+    events_keep: 'system.events_keep', portal_relays: 'portal.relays', portal_discovery: 'portal.discovery', portal_max_relays: 'portal.max_active_relays' },
+  sources: { 'host.management_addr': 'flag', 'host.local_addr': 'default', 'host.console_host': 'default', 'host.server_runtime': 'default',
+    'network.permitted': 'file', 'network.private_backend': 'default', 'credentials.operator_file': 'file', 'credentials.tailscale_authkey_file': 'default',
+    'system.keep_versions': 'file', 'system.events_keep': 'default', 'portal.relays': 'file' },
+  pinned: { portal_relays: "the service's --relays flag" },
+};
+const settingsRoute = (config) => ({ settings: SETTINGS, defaults: SETTINGS, apply_on_restart: ['portal_relays'], config });
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+const mountSettings = async () => {
+  const main = new Element('main');
+  settingsPage.mount(main, [], ctx);
+  await tick();
+  return main;
+};
+const puts = () => calls.filter((c) => c.key === 'PUT /console/api/settings');
+
+// Host, network and credentials are read only, with their sources.
+let page = await mountSettings();
+const configCard = byId(page, 'configuration');
+for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Network', 'portal', 'Credentials',
+  'Operator credential file', 'not configured', 'flats config set', 'apply after Flats restarts']) {
+  assert.ok(configCard.textContent.includes(text), `configuration lacks ${text}: ${configCard.textContent}`);
+}
+assert.equal(all(configCard, (e) => ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(e.tagName)).length, 0);
+assert.equal(page.textContent.includes('config.json changed on disk'), false);
+assert.equal(configCard.textContent.includes('flats install'), false);
+// The system and Portal settings stay editable and show their source; the
+// pinned relays cannot be changed and say why.
+const legends = all(page, (e) => e.tagName === 'LEGEND').map((e) => e.textContent);
+assert.deepEqual(legends, ['System', 'Portal']);
+assert.ok(byId(page, 'set-keep_versions-help').textContent.includes('Source: config.json.'));
+assert.ok(byId(page, 'set-events_keep-help').textContent.includes('Source: default.'));
+const relaysInput = byId(page, 'set-portal_relays');
+assert.equal(relaysInput.getAttribute('disabled'), '');
+assert.ok(relaysInput.getAttribute('aria-describedby').split(' ').includes('set-portal_relays-pin'));
+assert.ok(byId(page, 'set-portal_relays-pin').textContent.includes("Set by the service's --relays flag"));
+assert.equal(byId(page, 'set-keep_versions').getAttribute('disabled'), null);
+
+// A file changed on disk and legacy mode are both explained.
+routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, mode: 'legacy', changed_on_disk: true });
+page = await mountSettings();
+assert.ok(page.textContent.includes('config.json changed on disk'));
+assert.ok(page.textContent.includes('Restart Flats to load it'));
+assert.ok(byId(page, 'configuration').textContent.includes('flats install'));
+
+// A refused save keeps the operator's input and says why; the page then
+// learns that the file changed.
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+page = await mountSettings();
+let form = all(page, (e) => e.tagName === 'FORM')[0];
+byId(page, 'set-upload_max_bytes').value = '30';
+routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, changed_on_disk: true });
+routes['PUT /console/api/settings'] = { __status: 412, category: 'config_changed', error: 'config.json changed on disk since Flats loaded it; restart Flats to load the file, then retry' };
+form.dispatch('submit');
+await tick();
+let put = puts().at(-1);
+assert.equal(put.headers['If-Match'], '"etag-1"');
+assert.deepEqual(JSON.parse(put.body), { upload_max_bytes: String(30 * 1048576) });
+assert.equal(byId(page, 'set-upload_max_bytes').value, '30');
+let alert = all(page, (e) => e.getAttribute('role') === 'alert' && e.textContent.includes('Settings not saved'))[0];
+assert.ok(alert && alert.textContent.includes('restart Flats') && alert.textContent.includes('still in the form'));
+assert.ok(page.textContent.includes('config.json changed on disk'), 'the notice must appear after a 412');
+
+// A server error that names a setting is tied to its field.
+routes['PUT /console/api/settings'] = { __status: 400, category: 'invalid', error: 'config: system.upload_max_bytes: 0 is out of range (use an integer from 1 to 9007199254740991)' };
+byId(page, 'set-upload_max_bytes').value = '0';
+form.dispatch('submit');
+await tick();
+const upload = byId(page, 'set-upload_max_bytes');
+assert.equal(upload.getAttribute('aria-invalid'), 'true');
+assert.ok(upload.getAttribute('aria-describedby').split(' ').includes('set-upload_max_bytes-error'));
+assert.ok(byId(page, 'set-upload_max_bytes-error').textContent.includes('out of range'));
+
+// Lowering a retention setting first shows what the next pruning removes
+// and saves only after a second, explicit confirmation.
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+page = await mountSettings();
+form = all(page, (e) => e.tagName === 'FORM')[0];
+routes['POST /console/api/settings/impact'] = { impact: { keep_versions: { current: '10', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3, versions: [3, 2, 1] }] } } };
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['keep_versions'], restart_required: ['portal_max_relays'], etag: 'etag-2' };
+byId(page, 'set-keep_versions').value = '2';
+byId(page, 'set-portal_max_relays').value = '5';
+let putCount = puts().length;
+form.dispatch('submit');
+await tick();
+const impactCall = calls.filter((c) => c.key === 'POST /console/api/settings/impact').at(-1);
+assert.deepEqual(JSON.parse(impactCall.body), { keep_versions: '2', portal_max_relays: '5' });
+assert.equal(puts().length, putCount, 'a decrease must not save before the confirmation');
+let panel = all(page, (e) => e.className === 'impact')[0];
+assert.ok(panel.textContent.includes('Saving removes data'));
+assert.ok(panel.textContent.includes('Versions to keep: 10 → 2 versions.'));
+assert.ok(panel.textContent.includes('blog: 3 versions (3, 2, 1)'));
+// Keep editing closes the panel without saving.
+byText(panel, 'Keep editing')[0].dispatch('click');
+await tick();
+assert.equal(all(page, (e) => e.className === 'impact').length, 0);
+assert.equal(puts().length, putCount);
+// An edit while the panel is open withdraws it.
+form.dispatch('submit');
+await tick();
+assert.equal(all(page, (e) => e.className === 'impact').length, 1);
+form.dispatch('input');
+assert.equal(all(page, (e) => e.className === 'impact').length, 0);
+form.dispatch('submit');
+await tick();
+panel = all(page, (e) => e.className === 'impact')[0];
+byText(panel, 'Save and remove')[0].dispatch('click');
+await tick();
+put = puts().at(-1);
+assert.equal(puts().length, putCount + 1);
+assert.equal(put.headers['If-Match'], '"etag-1"');
+assert.deepEqual(JSON.parse(put.body), { keep_versions: '2', portal_max_relays: '5' });
+const limits = byId(page, 'limits');
+assert.ok(limits.textContent.includes('Versions to keep: saved, applied now.'), limits.textContent);
+assert.ok(limits.textContent.includes('Active Portal relays: saved, applies after Flats restarts.'));
+
+// A decrease that removes nothing still asks once, with a plain Save.
+routes['POST /console/api/settings/impact'] = { impact: { events_keep: { current: '5000', candidate: '100', total: 0, flats: [] } } };
+page = await mountSettings();
+form = all(page, (e) => e.tagName === 'FORM')[0];
+byId(page, 'set-events_keep').value = '100';
+putCount = puts().length;
+form.dispatch('submit');
+await tick();
+panel = all(page, (e) => e.className === 'impact')[0];
+assert.ok(panel.textContent.includes('Nothing is removed now.'));
+assert.equal(puts().length, putCount);
+byText(panel, 'Save')[0].dispatch('click');
+await tick();
+assert.equal(puts().length, putCount + 1);
+
+// Raising a limit saves at once.
+page = await mountSettings();
+form = all(page, (e) => e.tagName === 'FORM')[0];
+byId(page, 'set-keep_versions').value = '20';
+const impactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+putCount = puts().length;
+form.dispatch('submit');
+await tick();
+assert.equal(calls.filter((c) => c.key === 'POST /console/api/settings/impact').length, impactCount);
+assert.equal(puts().length, putCount + 1);
+assert.equal(settingsPage.isDecrease('keep_versions', '0', '5'), true);
+assert.equal(settingsPage.isDecrease('keep_versions', '5', '0'), false);
 console.log('ok');

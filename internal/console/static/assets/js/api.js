@@ -13,8 +13,8 @@ export class ApiError extends Error {
   get health() { return this.body.health || null; }
 }
 
-export async function request(method, path, body, raw) {
-  const headers = { 'X-Flats-Console': '1', Accept: 'application/json' };
+export async function request(method, path, body, raw, extraHeaders) {
+  const headers = { 'X-Flats-Console': '1', Accept: 'application/json', ...extraHeaders };
   const opts = { method, headers, credentials: 'same-origin', cache: 'no-store' };
   if (raw) {
     headers['Content-Type'] = raw.contentType || 'application/octet-stream';
@@ -92,7 +92,10 @@ export const api = {
   approval: (id) => get(`/approvals/${enc(id)}`),
   decide: (id, approve) => post(`/approvals/${enc(id)}/${approve ? 'approve' : 'reject'}`),
   settings: () => get('/settings'),
-  saveSettings: (values) => request('PUT', '/settings', values),
+  // etag is config.etag from settings(); a change to config.json or another
+  // save since then makes the server refuse with 412.
+  saveSettings: (values, etag) => request('PUT', '/settings', values, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  settingsImpact: (values) => post('/settings/impact', values),
 };
 
 // newestVersion returns the highest saved version number, or 0.
