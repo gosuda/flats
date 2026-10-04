@@ -17,7 +17,8 @@ Every `v*` tag on `main` produces a GitHub release with:
 with a hyphen (`v1.3.0-rc.1`) are prereleases: they never become latest, so
 the installer and its upgrade path ignore them unless asked for with
 `--version`. Once a tag exists, `go install github.com/gosuda/flats/cmd/flats@latest`
-also resolves to the newest tag rather than `main`; use `@main` for
+resolves to the highest released semantic version (prereleases excluded)
+rather than `main`, possibly after a Go module proxy delay; use `@main` for
 unreleased changes.
 
 ## Cutting a release
@@ -35,9 +36,10 @@ unreleased changes.
    ```
 
 4. The `Release` workflow (`.github/workflows/release.yml`) refuses tags that
-   are not on `main`, runs `go vet` and `go test`, builds the archives with
-   `scripts/build-release.sh`, attests them and creates the release with
-   generated notes. A stable tag becomes latest.
+   are not on `main` and runs `go vet` and `go test` in a read-only job. A
+   second job builds the archives with `scripts/build-release.sh`, refuses
+   binaries whose build info is not clean tagged source, attests the archives
+   and creates the release with generated notes. A stable tag becomes latest.
 5. Verify the published release before announcing it:
 
    ```sh
@@ -58,16 +60,30 @@ tagged versions, and operators may already have verified its checksums.
 ## Backfilling a release without binaries
 
 `v0.1.0` was published before the release tooling existed. Attach archives
-to such a release by running the workflow manually with its tag:
+to such a release by running the workflow manually from `main` with its tag:
 
 ```sh
-gh workflow run release.yml --repo gosuda/flats -f tag=v0.1.0
+gh workflow run release.yml --repo gosuda/flats --ref main -f tag=v0.1.0
 ```
 
-The workflow builds the tag's source with the tooling from the workflow's
-commit, tests it, attests the archives and uploads them. The upload fails if
-an asset with the same name already exists; published assets are never
-replaced.
+The workflow tests the tag's source, builds it with the tooling from the
+workflow's commit and uploads the archives, then `checksums.txt`. The upload
+fails if an asset with the same name already exists; published assets are
+never replaced. If a backfill fails partway, delete every asset it uploaded
+and run it again: rebuilt archives are not byte-identical, so never mix
+assets from two runs.
+
+A backfilled attestation names the `main` commit the workflow ran from, not
+the tag's commit. Add the tag's commit to the release notes, and verify
+backfilled archives by signer workflow rather than by source ref:
+
+```sh
+gh attestation verify flats_darwin_arm64.tar.gz --repo gosuda/flats \
+  --signer-workflow gosuda/flats/.github/workflows/release.yml
+```
+
+The binaries themselves record the tag's commit: `go version -m flats` shows
+it as `vcs.revision`.
 
 ## Retracting a bad release
 
@@ -82,7 +98,10 @@ gh release edit v1.2.3 --repo gosuda/flats --prerelease --latest=false
 gh release edit v1.2.2 --repo gosuda/flats --latest
 ```
 
-Operators who pinned `--version v1.2.3` can still download it.
+Operators who pinned `--version v1.2.3` can still download it. A GitHub
+prerelease flag does not affect `go install …@latest`; add a
+`retract v1.2.3` directive to `go.mod` in the fixed release so the Go
+toolchain skips the bad version.
 
 ## Installing a host
 
@@ -90,8 +109,10 @@ Operators who pinned `--version v1.2.3` can still download it.
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
-The installer needs only `sh`, `curl` (or `wget`), `tar` and `sha256sum` or
-`shasum`, which macOS and common Linux distributions include. It:
+The installer uses tools that macOS and common Linux distributions include:
+`sh`, `curl` (or `wget`), `tar`, `awk`, `od`, `sha256sum` or `shasum`, and
+`launchctl` or `systemctl --user` for the service. It needs no Go toolchain.
+It:
 
 1. Resolves the latest release, downloads the archive for this OS and CPU and
    its `checksums.txt`, and refuses a checksum mismatch.
@@ -126,7 +147,12 @@ changes, back up first:
 
 1. Stop the service: `launchctl bootout gui/$(id -u)/dev.flats.serve` on
    macOS, `systemctl --user stop flats.service` on Linux.
-2. Copy the whole data directory, including `secret.key`.
+2. Copy the whole data directory, including `secret.key`. It is `FLATS_DATA`
+   or the service's `--data` when set, otherwise
+   `~/Library/Application Support/Flats` on macOS and
+   `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux. Keep the operator
+   credential (`~/.config/flats-operator/credential` by default) in your
+   password manager as well.
 3. Run the installer, then start the service with the command it prints.
 
 Install a specific release with `--version v1.2.3`. Downgrading across a data

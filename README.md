@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -
 If the service is stopped (not running), the installer only replaces the binary and prints how to start it. Releases include a GitHub build provenance attestation; check an archive with `gh attestation verify flats_<os>_<arch>.tar.gz --repo gosuda/flats`. The installer does not use sudo or edit shell profiles. `flats status` shows whether the host answers, and `flats uninstall` removes the service while keeping your data. The installer does not back up data; see [Releases and installation](docs/release.md) for upgrade backups and how releases are cut. To build from source instead (Go 1.27.1 or newer):
 
 ```sh
-go install github.com/gosuda/flats/cmd/flats@latest   # latest release; @main for unreleased changes
+go install github.com/gosuda/flats/cmd/flats@latest   # highest stable release; @main for unreleased changes
 # From a checkout:
 CGO_ENABLED=0 go build -o flats ./cmd/flats
 ```
