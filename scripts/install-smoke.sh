@@ -42,6 +42,14 @@ healthy() {
 	curl -fsS --max-time 3 -o /dev/null "$url/api/status"
 }
 
+service_file() {
+	if [ "$(uname -s)" = Darwin ]; then
+		echo "$HOME/Library/LaunchAgents/dev.flats.serve.plist"
+	else
+		echo "$HOME/.config/systemd/user/flats.service"
+	fi
+}
+
 operator_configured() {
 	curl -fsS -H 'X-Flats-Console: 1' -H "Origin: $url" -H 'Sec-Fetch-Site: same-origin' \
 		"$url/console/api/operator/session" | grep -q '"configured": *true'
@@ -54,6 +62,8 @@ healthy || fail "service is not answering"
 operator_configured || fail "service has no operator credential"
 cred=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
 [ "$(wc -c <"$cred" | tr -d ' ')" -eq 65 ] || fail "unexpected credential size"
+grep -q -- '--config' "$(service_file)" || fail "service does not run from config.json"
+"$flats" config validate || fail "config.json does not validate"
 
 step "rerun restarts the service"
 pid=$(main_pid)
@@ -66,6 +76,7 @@ if [ -z "$new" ] || [ "$new" = "$pid" ]; then
 	fail "service was not restarted (pid $pid -> $new)"
 fi
 operator_configured || fail "restarted service lost its operator credential"
+grep -q -- '--config' "$(service_file)" || fail "rerun dropped --config from the service"
 
 step "service recovers from a crash"
 kill -9 "$new"

@@ -185,11 +185,72 @@ listen_url() {
 	printf 'http://%s\n' "$listen"
 }
 
-# service_url prints the console URL of the installed service, read from the
-# words of its plist or unit file.
+# service_url prints the console URL of the installed service: from its
+# config.json when it runs with --config, else from the words of its plist or
+# unit file.
 service_url() {
+	config=$(service_arg --config)
+	if [ -n "$config" ]; then
+		config_url "$config"
+		return
+	fi
 	# shellcheck disable=SC2046 # split the file into words on purpose.
 	listen_url $(sed -e 's/<[^>]*>/ /g' -e 's/"/ /g' -e 's/^ExecStart=//' "$(service_file)")
+}
+
+# service_arg prints the value that follows the flag $1 (--config, --data) in
+# the installed service's arguments, or nothing. Paths may contain spaces
+# (~/Library/Application Support), so they are unescaped, not word-split.
+service_arg() {
+	if [ "$os" = darwin ]; then
+		awk -v flag="$1" '
+			/<string>/ {
+				s = $0
+				sub(/^[[:space:]]*<string>/, "", s)
+				sub(/<\/string>[[:space:]]*$/, "", s)
+				if (config) {
+					gsub(/&lt;/, "<", s); gsub(/&gt;/, ">", s)
+					gsub(/&#34;/, "\"", s); gsub(/&#39;/, "\047", s)
+					gsub(/&amp;/, "\\&", s)
+					print s
+					exit
+				}
+				config = (s == flag)
+			}' "$(service_file)"
+	else
+		awk -v flag="$1" '
+			/^ExecStart=/ {
+				i = index($0, " " flag " ")
+				if (!i) exit
+				rest = substr($0, i + length(flag) + 2)
+				if (substr(rest, 1, 1) != "\"") {
+					sub(/ .*/, "", rest)
+					print rest
+					exit
+				}
+				out = ""
+				for (j = 2; j <= length(rest); j++) {
+					c = substr(rest, j, 1)
+					if (c == "\\") {
+						j++
+						out = out substr(rest, j, 1)
+						continue
+					}
+					if (c == "\"") break
+					if ((c == "$" || c == "%") && substr(rest, j + 1, 1) == c) j++
+					out = out c
+				}
+				print out
+				exit
+			}' "$(service_file)"
+	fi
+}
+
+# config_url prints the console URL from a config.json; a missing or
+# unreadable file, or one without host.management_addr, means the default.
+config_url() {
+	listen=$(sed -n 's/^[[:space:]]*"management_addr"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$1" 2>/dev/null | sed -n 1p)
+	printf 'http://%s\n' "${listen:-$DEFAULT_LISTEN}"
 }
 
 has_credential_flag() {
@@ -517,6 +578,18 @@ main() {
 			die "the service did not become healthy; see the logs listed above and \`$binary status\`"
 		else
 			die "the service did not become healthy; see: journalctl --user -u flats.service"
+		fi
+	fi
+	# An upgraded service keeps its old serve flags; the new binary moved
+	# their values into config.json on this start.
+	if [ "$mode" = restart ] && [ -z "$(service_arg --config)" ] &&
+		"$binary" help 2>&1 | grep -q '^  config '; then
+		data=$(service_arg --data)
+		say "the service now keeps its settings in config.json; to run it from there, run:"
+		if [ -n "$data" ]; then
+			printf '\n    %s --url %s install --executable %s --config "%s/config.json"\n\n' "$binary" "$url" "$binary" "$data"
+		else
+			printf '\n    %s --url %s install --executable %s\n\n' "$binary" "$url" "$binary"
 		fi
 	fi
 
