@@ -398,3 +398,29 @@ func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
 		}
 	}
 }
+
+func TestStopKeepsPlistAndStartReloads(t *testing.T) {
+	f := &fakeLaunchctl{}
+	opts := testOpts(t, f)
+	if stopped, err := Stop(context.Background(), opts); err != nil || stopped || len(f.calls) != 0 {
+		t.Fatalf("stop without an agent: %v %v calls=%v", stopped, err, f.calls)
+	}
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	f.calls, f.lingering = nil, 2
+	stopped, err := Stop(context.Background(), opts)
+	if err != nil || !stopped || f.loaded {
+		t.Fatalf("stop: %v %v loaded=%v", stopped, err, f.loaded)
+	}
+	// Stop waits until launchd no longer knows the job.
+	if got := f.subcommands(); !reflect.DeepEqual(got, []string{"print", "bootout", "print", "print", "print"}) {
+		t.Fatalf("calls = %v", got)
+	}
+	if _, err := os.Stat(PlistPath(opts.Home)); err != nil {
+		t.Fatalf("plist removed: %v", err)
+	}
+	if err := Start(context.Background(), opts); err != nil || !f.loaded {
+		t.Fatalf("start: %v loaded=%v", err, f.loaded)
+	}
+}

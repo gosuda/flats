@@ -114,8 +114,25 @@ func (a *app) install(args []string) error {
 			return fmt.Errorf("FLATS_CONFIG must be an absolute path, not %q", cfgPath)
 		}
 	}
+	// A running service holds the data lock that preparing the config may
+	// need (install.sh reinstalls without stopping it). Stop it, keeping its
+	// definition, and start it again if the config cannot be prepared.
+	stopped, restart, err := a.stopService()
+	if err != nil {
+		return err
+	}
+	if stopped {
+		fmt.Fprintln(a.errw, "Stopped the running Flats service to prepare its config.")
+	}
 	cfgPath, dataDir, err = EnsureConfig(a.ctx, cfgPath, dataDir, extra, a.errw)
 	if err != nil {
+		if stopped {
+			if rerr := restart(); rerr != nil {
+				err = errors.Join(err, fmt.Errorf("could not start the previous service again: %w", rerr))
+			} else {
+				fmt.Fprintln(a.errw, "Started the previous Flats service again.")
+			}
+		}
 		return err
 	}
 	// launchd and systemd do not inherit the shell environment; the service
@@ -167,6 +184,19 @@ func (a *app) install(args []string) error {
 		fmt.Fprintf(a.out, "The agent is loaded but %s is not answering yet; check the logs above or run `flats status`.\n", a.url)
 	}
 	return nil
+}
+
+// stopService stops the installed Flats service if it runs, keeping its
+// plist or unit, and returns how to start it again.
+func (a *app) stopService() (bool, func() error, error) {
+	if a.goos() == "linux" {
+		opts := systemd.Options{Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)}
+		stopped, err := systemd.Stop(a.ctx, opts)
+		return stopped, func() error { return systemd.Start(a.ctx, opts) }, err
+	}
+	opts := a.launchdOpts()
+	stopped, err := launchd.Stop(a.ctx, opts)
+	return stopped, func() error { return launchd.Start(a.ctx, opts) }, err
 }
 
 // waitForServer polls /api/status until it answers or InstallWait passes.

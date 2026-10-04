@@ -160,3 +160,35 @@ func Active(ctx context.Context, opts Options) (string, error) {
 	out, _ := opts.Run(ctx, "systemctl", "--user", "is-active", Unit)
 	return strings.TrimSpace(string(out)), nil
 }
+
+// Stop stops the installed unit if it is active or starting, keeping the
+// unit file so Start can run it again. It reports whether it stopped it.
+// systemctl stop returns once the process has exited.
+func Stop(ctx context.Context, opts Options) (bool, error) {
+	if err := opts.fill(); err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(UnitPath(opts.Home)); err != nil {
+		return false, nil
+	}
+	switch state, _ := Active(ctx, opts); state {
+	case "active", "activating", "reloading", "deactivating":
+	default:
+		return false, nil
+	}
+	if out, err := opts.Run(ctx, "systemctl", "--user", "stop", Unit); err != nil {
+		return false, fmt.Errorf("systemctl --user stop %s: %v: %s", Unit, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
+// Start starts the installed unit again, after Stop.
+func Start(ctx context.Context, opts Options) error {
+	if err := opts.fill(); err != nil {
+		return err
+	}
+	if out, err := opts.Run(ctx, "systemctl", "--user", "start", Unit); err != nil {
+		return fmt.Errorf("systemctl --user start %s: %v: %s", Unit, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
