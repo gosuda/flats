@@ -21,13 +21,18 @@ flats serve                     (one long-running process; launchd on macOS, sys
                                 version (re-exec of the same binary; internal/runtime)
 ```
 
-Data directory (default `~/Library/Application Support/Flats`, override with
-`--data` or `FLATS_DATA`; a relative path is made absolute at startup, since
-workers run with `/` as their working directory):
+Data directory (default `~/Library/Application Support/Flats`; `host.data_dir`
+in `config.json`, or `--data`/`FLATS_DATA` for a host started without
+`--config`; a relative path is made absolute at startup, since workers run
+with `/` as their working directory). [Configuration and
+storage](configuration.md) is the full map, including what to back up:
 
 ```
+config.json                     operator configuration (see configuration.md)
+config-history/                 previous config.json copies
 flats.lock                      lifetime exclusive advisory lock (never unlink while hosts run)
 flats.db                        metadata
+backups/                        flats.db copies taken before schema migrations
 secret.key                      32-byte AES-256-GCM key for flat secrets (0600)
 flats/<slug>/versions/<n>/      immutable version files (read-only, 0444)
 flats/<slug>/data/              server-flat data: db.sqlite and files/
@@ -125,13 +130,12 @@ failures or an injected implementation that ignores the network contract.
   shows the conflict). `public-unlisted` sets `LeaseMetadata.Hide`; the change
   reaches relay listings at the next lease renewal (up to ~90 s). Relays: the
   Portal CLI default (discovery, up to 3 active relays) unless
-  `portal_relays` (or the `--relays` flag, which wins) lists explicit relays.
-  `portal_discovery=false` uses only the explicit relays (ignored when there
-  are none) and `portal_max_relays` caps the relays discovery adds (0 = the
-  Portal default, 3). These three settings are read when `flats serve`
-  starts; the settings API reports them in `apply_on_restart` and returns
-  `restart_required` when a change needs a restart. A stored value that is
-  invalid is logged and ignored at startup, so it cannot stop the server.
+  `portal.relays` in `config.json` lists explicit relays.
+  `portal.discovery: false` uses only the explicit relays (it requires at
+  least one) and `portal.max_active_relays` caps the relays discovery adds
+  (default 3). These settings are read when `flats serve` starts; the
+  settings API reports them in `apply_on_restart` and returns
+  `restart_required` when a change needs a restart.
   With discovery and no explicit relays, the first discovered relay that
   becomes ready for a flat is pinned: added as an explicit relay (which
   discovery never drops) and saved to `portal/<slug>.relay`, so the flat's
@@ -194,8 +198,10 @@ Flats polls each node's `Self.KeyExpiry` and `BackendState` every 5 minutes.
 * On `NeedsLogin` the node is `needs-login`; the console shows the login URL
   (from the IPN bus) so the operator can re-authenticate, or the operator
   disables key expiry for the node in the Tailscale admin console.
-* `flats serve --authkey-file` supplies a reusable untagged auth key for new
-  nodes; it is never logged and only read at startup.
+* `credentials.tailscale_authkey_file` in `config.json` names a file with a
+  reusable untagged auth key for new nodes; it is never logged and only read
+  at startup. A host started with `--config` refuses the `TS_*` environment
+  variables tsnet would otherwise read.
 
 ## Secrets
 
@@ -220,7 +226,8 @@ There are no accounts, so operator authority rests on where a request comes
 from and what it carries. Enforced:
 
 * MCP, the CLI and `/api` have no approve, reject or settings operation, and
-  their visibility and delete calls only create approvals.
+  their visibility and delete calls only create approvals. `flats config`
+  edits `config.json` only while no host runs (it takes the data lock).
 * Every request to the management server (loopback listener and console
   node) must name the server in `Host`: `127.0.0.1`, `localhost` or `[::1]`
   with the listen port, or the console node's tailnet names (configured host,
@@ -358,7 +365,10 @@ reads plus `POST /console/api/approvals/{id}/{approve|reject}`, deploy,
 rollback, visibility, rename, delete, preview, secrets, `GET/PUT settings`,
 `GET system`. Approve/reject return the approval plus `decided_by` (tailnet
 login, console node only). `GET settings` lists `apply_on_restart`; `PUT
-settings` returns `restart_required` with the changed keys among them.
+settings` saves to `config.json` and returns `restart_required` with the
+changed keys among them. A save fails with a conflict when `config.json`
+changed on disk since the host read it, or when the key is pinned by a flag
+of a service that still runs without `--config`.
 
 MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 `create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`

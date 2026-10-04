@@ -140,15 +140,24 @@ serve` flags after a second `--` to choose them explicitly.
 Run the installer again. It replaces the binary and, when the service is
 running, restarts it with its existing settings. A stopped service stays
 stopped; the installer prints the command that starts it. Passing `flats
-serve` flags after `--` reinstalls the service with those flags instead.
+serve` flags after `--` reinstalls the service with those flags written into
+`config.json` instead.
+
+A service installed before `config.json` existed still passes `flats serve`
+flags. Its first start on the new release moves those flags, the console
+settings and `network-provider.json` into `<data>/config.json`, after backing
+up `flats.db` to `<data>/backups/`. The installer then prints the `flats
+install` command that switches the service to `serve --config`. See
+[Configuration and storage](configuration.md#moving-an-existing-installation).
 
 The installer does not back up data. When the release notes mention data
 changes, back up first:
 
 1. Stop the service: `launchctl bootout gui/$(id -u)/dev.flats.serve` on
    macOS, `systemctl --user stop flats.service` on Linux.
-2. Copy the whole data directory, including `secret.key`. It is `FLATS_DATA`
-   or the service's `--data` when set, otherwise
+2. Copy the whole data directory, including `config.json` and `secret.key`.
+   It is `host.data_dir` in the service's `config.json`, or `FLATS_DATA` or
+   the service's `--data` when set, otherwise
    `~/Library/Application Support/Flats` on macOS and
    `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux. Keep the operator
    credential (`~/.config/flats-operator/credential` by default) in your

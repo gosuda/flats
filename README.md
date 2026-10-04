@@ -34,11 +34,11 @@ On macOS or Linux (amd64 or arm64), run the installer:
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
-It downloads the latest release binary for your platform, verifies its SHA-256 checksum, installs it to `~/.local/bin` and runs Flats as a background service: a launchd agent on macOS or a systemd user service on Linux. The service starts at login and restarts if it stops; on Linux the installer also enables lingering when allowed, so Flats keeps running after you log out. It runs `flats serve` with the defaults (Local network, Portal off) and the data directory described below.
+It downloads the latest release binary for your platform, verifies its SHA-256 checksum, installs it to `~/.local/bin` and runs Flats as a background service: a launchd agent on macOS or a systemd user service on Linux. The service starts at login and restarts if it stops; on Linux the installer also enables lingering when allowed, so Flats keeps running after you log out. It runs `flats serve --config` with a new `config.json` in the data directory described below, using the defaults (Local network, Portal off). [Configuration and storage](docs/configuration.md) lists every setting and where Flats keeps each kind of data.
 
 On first install it creates a random operator credential at `~/.config/flats-operator/credential` (mode 0600) and does not print it. Copy it into your password manager (on macOS: `pbcopy < ~/.config/flats-operator/credential`) and do not paste it into agent chat, commands or logs. Mode 0600 does not stop agents running as your OS user from reading the file. Keep it outside every directory agents can read or upload: deny that path in their sandbox or file-access settings, or pass `--credential-file` with a path they cannot reach. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter it. Unlocking creates a browser session; each publish still needs a separate approval.
 
-Run the installer again to upgrade: it replaces the binary and restarts the service with its existing settings. Options go after `sh -s --`: `--version v1.2.3` installs a specific release, `--dir DIR` changes the install directory, `--no-service` installs only the binary, and `flats serve` flags after a second `--` reinstall the service with those flags:
+Run the installer again to upgrade: it replaces the binary and restarts the service with its existing settings. A service installed by an earlier release still passes `flats serve` flags; on its first start the new release moves those flags and the stored console settings into `config.json`, and the installer prints the `flats install` command that switches the service to run from that file. Options go after `sh -s --`: `--version v1.2.3` installs a specific release, `--dir DIR` changes the install directory, `--no-service` installs only the binary, and `flats serve` flags after a second `--` reinstall the service with those flags written into `config.json`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
@@ -57,10 +57,11 @@ CGO_ENABLED=0 go build -o flats ./cmd/flats
 Without the service, provision a high-entropy operator credential (at least 32 bytes; for example, a password manager-generated random secret) through an operator-controlled channel. Keep it outside agent-readable files and do not paste it into agent chat, commands, or logs. Start a foreground host in one operator terminal:
 
 ```sh
-flats serve --data ./flats-demo-data --network local --portal=false --operator-credential-stdin
+flats config init --data ./flats-demo-data
+flats serve --config ./flats-demo-data/config.json --operator-credential-stdin
 ```
 
-Enter that credential at the hidden startup prompt, open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential.
+`flats config init` writes `config.json` with the defaults (Local network, Portal off) and creates the database. Enter the credential at the hidden startup prompt, open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential.
 
 ### First flat
 
@@ -72,11 +73,18 @@ printf '<h1>Hello from Flats</h1>\n' > hello/index.html
 flats deploy ./hello --flat hello
 ```
 
-The deploy command saves Draft and returns a pending publish request (exit code 3, including with `--json`). Follow its approval URL and approve the frozen Draft in the unlocked operator console before opening `http://hello.localhost:7879`; the console is at `http://127.0.0.1:7878`. Local mode serves loopback development origins and does not join Tailscale. Use `--listen` and `--local-addr` to select other ports. Each running host needs its own data directory; concurrent hosts sharing one directory are rejected before store or runtime startup.
+The deploy command saves Draft and returns a pending publish request (exit code 3, including with `--json`). Follow its approval URL and approve the frozen Draft in the unlocked operator console before opening `http://hello.localhost:7879`; the console is at `http://127.0.0.1:7878`. Local mode serves loopback development origins and does not join Tailscale. To use other ports, set `host.management_addr` and `host.local_addr` with `flats config set` while the host is stopped, or pass `--listen` and `--local-addr` for one run. Each running host needs its own data directory; concurrent hosts sharing one directory are rejected before store or runtime startup.
 
 ## Private and public deployment
 
-The default network is Local and Portal is off. For private tailnet hosting, explicitly select `flats serve --network tailscale --operator-credential-stdin`; this records the host Tailscale grant. Unlock the console and allow Tailscale separately for each flat in Access. Enable MagicDNS and HTTPS certificates in your tailnet, then follow the node login links in the console, or supply a reusable, untagged Tailscale auth key with `--authkey-file`. Flats embeds tsnet; permitted flat and preview routes, and the console in Tailscale mode, use separate nodes. Tailnet ACLs decide which devices can reach those origins. Code and data stay on your machine.
+The default network is Local and Portal is off. For private tailnet hosting, permit Tailscale in the host configuration while the host is stopped, then start it again:
+
+```sh
+flats config set network.permitted tailscale
+flats config set network.private_backend tailscale
+```
+
+Permitting Tailscale does not permit Funnel; add `tailscale-funnel` or `portal` to `network.permitted` for public routes. Unlock the console and allow Tailscale separately for each flat in Access. Enable MagicDNS and HTTPS certificates in your tailnet, then follow the node login links in the console, or put a reusable, untagged Tailscale auth key in a protected file and set its path as `credentials.tailscale_authkey_file`. A host started with `--config` refuses `TS_AUTHKEY` and the other `TS_*` variables, which would bypass `config.json`. Flats embeds tsnet; permitted flat and preview routes, and the console in Tailscale mode, use separate nodes. Tailnet ACLs decide which devices can reach those origins. Code and data stay on your machine.
 
 Removing a flat’s Tailscale permission stops its Private Tailscale current, preview and redirect routes before saving the revocation; Local stays available, and a separately permitted Public Tailscale Funnel route stays up. An unconfirmed stop keeps permission allowed so the operator can retry. A currently Public flat must complete an approved change to Private before its Public provider can be revoked.
 
@@ -86,19 +94,19 @@ For unattended services, provision a credential file outside flat data, source/b
 
 ```sh
 flats install -- --operator-credential-file /absolute/operator/path/credential
-# Foreground equivalent:
-flats serve --operator-credential-file /absolute/operator/path/credential
+# Or set it in config.json while the host is stopped:
+flats config set credentials.operator_file /absolute/operator/path/credential
 ```
 
-Supply the path only; never put the credential value in argv, environment or logs. Stdin and file sources cannot be combined. `--operator-credential-stdin` is foreground-only; `flats install` rejects it in every flag form before writing service configuration. Restart/update reads the file again and invalidates old console sessions. `flats install` runs the host at login using launchd on macOS or a systemd user service on Linux; `flats uninstall` removes the service and keeps data. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS), overridable with `--data` or `FLATS_DATA`.
+Supply the path only; never put the credential value in argv, environment or logs. Stdin and file sources cannot be combined. `--operator-credential-stdin` is foreground-only; `flats install` rejects it in every flag form before writing service configuration. Restart/update reads the file again and invalidates old console sessions. `flats install` runs `flats serve --config` at login using launchd on macOS or a systemd user service on Linux, writing any flags you pass into `config.json` first; `flats uninstall` removes the service and keeps data and `config.json`. The default data directory comes from your OS user configuration directory (`~/Library/Application Support/Flats` on macOS); `--data` or `FLATS_DATA` selects another one, and its `config.json` sits inside it.
 
 ## Upgrading an existing host
 
-Back up the data directory and stop the old host before starting the upgrade. Published versions keep their numbers; saved-only versions become Private Draft revisions. Historical network configuration does not create provider permissions. Existing Public policy can remain Public while its route is unavailable; do not report a link as reachable until its endpoint is ready and has been checked.
+Back up the data directory and stop the old host before starting the upgrade. The first start of this release moves the old serve flags, `network-provider.json` and the console settings into `config.json`, after backing up the database to `backups/`; see [Configuration and storage](docs/configuration.md#moving-an-existing-installation). Until the service is reinstalled with `flats install`, later starts check that the flags they are given still match `config.json`. Published versions keep their numbers; saved-only versions become Private Draft revisions. Historical network configuration does not create provider permissions. Existing Public policy can remain Public while its route is unavailable; do not report a link as reachable until its endpoint is ready and has been checked.
 
 Provision operator authority with `--operator-credential-stdin` or `--operator-credential-file /absolute/operator/path/credential` and unlock the console again after restart. Restore intended host grants explicitly: `--network tailscale` grants Tailscale, `--portal=true` grants Portal, or `--permit tailscale,tailscale-funnel,portal` records only the listed grants. `--portal=false` disables Portal even if its stored grant remains. A Tailscale grant does not grant Funnel. Configure the relevant backend and allow each desired provider separately in each flat’s Access tab. Neither a host grant nor a per-flat grant publishes or changes visibility; both Private→Public and Public→Private still require approval. Schema 5 records pre-lifecycle flats as eligible for a one-time Private Tailscale choice. An old default-Tailscale host with historical tsnet state must explicitly choose `--network tailscale` to preserve eligible flats’ Private Tailscale opt-in, or `--network local` to consume eligibility as Local-only. Ambiguous startup stops before networking. An already persisted explicit Tailscale backend/grant also preserves eligible flats once. Hosts with neither historical tsnet state nor a persisted Tailscale choice consume eligibility as Local-only on their first upgraded startup; a later host Tailscale grant never opts those flats in. Existing explicit denials win; new flats and later revocations are never opted in by restart. Neither choice grants Funnel or Portal.
 
-Local loopback also binds in Tailscale mode: concurrent hosts need distinct `--listen`, `--local-addr`, and data directories. When updating an installed service, include the protected credential-file path in its install arguments.
+Local loopback also binds in Tailscale mode: concurrent hosts need distinct `host.management_addr`, `host.local_addr` and data directories.
 
 ## Static and server flats
 

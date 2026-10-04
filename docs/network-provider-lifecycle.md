@@ -60,6 +60,13 @@ Failed teardown keeps the registration and observation for retry.
 
 ## Host file
 
+Host grants now live in `config.json` (`network.permitted` and
+`network.private_backend`; see [Configuration and storage](configuration.md)).
+`network-provider.json` and the serve flags below are read only by a host
+started without `--config` before its one-time migration, which converts them
+and moves the file into `backups/`. The rest of this section describes that
+legacy input.
+
 `network-provider.json` (mode `0600`, version 1) lives in the data directory.
 A missing file is written with an empty `permitted` list and a migration
 record. Existing `tsnet/<node>/` directories and `portal/*.json` files are
