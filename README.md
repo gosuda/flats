@@ -28,23 +28,43 @@ Agent / CLI / web console → Flats on your machine → version + local data
 
 ## Install and try a local flat
 
-Requires Go 1.27.1 or newer to build. Install from the canonical module path:
+On macOS or Linux (amd64 or arm64), run the installer:
 
 ```sh
-go install github.com/gosuda/flats/cmd/flats@latest
+curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
+```
+
+It downloads the latest release binary for your platform, verifies its SHA-256 checksum, installs it to `~/.local/bin` and runs Flats as a background service: a launchd agent on macOS or a systemd user service on Linux. The service starts at login and restarts if it stops; on Linux the installer also enables lingering when allowed, so Flats keeps running after you log out. It runs `flats serve` with the defaults (Local network, Portal off) and the data directory described below.
+
+On first install it creates a random operator credential at `~/.config/flats-operator/credential` (mode 0600) and does not print it. Copy it into your password manager (on macOS: `pbcopy < ~/.config/flats-operator/credential`) and do not paste it into agent chat, commands or logs. Mode 0600 does not stop agents running as your OS user from reading the file. Keep it outside every directory agents can read or upload: deny that path in their sandbox or file-access settings, or pass `--credential-file` with a path they cannot reach. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter it. Unlocking creates a browser session; each publish still needs a separate approval.
+
+Run the installer again to upgrade: it replaces the binary and restarts the service with its existing settings. Options go after `sh -s --`: `--version v1.2.3` installs a specific release, `--dir DIR` changes the install directory, `--no-service` installs only the binary, and `flats serve` flags after a second `--` reinstall the service with those flags:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
+```
+
+If the service is stopped (not running), the installer only replaces the binary and prints how to start it. Releases include a GitHub build provenance attestation; check an archive with `gh attestation verify flats_<os>_<arch>.tar.gz --repo gosuda/flats`. The installer does not use sudo or edit shell profiles. `flats status` shows whether the host answers, and `flats uninstall` removes the service while keeping your data. The installer does not back up data; see [Releases and installation](docs/release.md) for upgrade backups and how releases are cut. To build from source instead (Go 1.27.1 or newer):
+
+```sh
+go install github.com/gosuda/flats/cmd/flats@latest   # highest stable release; @main for unreleased changes
 # From a checkout:
 CGO_ENABLED=0 go build -o flats ./cmd/flats
 ```
 
-Put the installed binary's directory on `PATH`. Provision a high-entropy operator credential (at least 32 bytes; for example, a password manager-generated random secret) through an operator-controlled channel. Keep it outside agent-readable files and do not paste it into agent chat, commands, or logs. Start a foreground host in one operator terminal:
+### Foreground host
+
+Without the service, provision a high-entropy operator credential (at least 32 bytes; for example, a password manager-generated random secret) through an operator-controlled channel. Keep it outside agent-readable files and do not paste it into agent chat, commands, or logs. Start a foreground host in one operator terminal:
 
 ```sh
 flats serve --data ./flats-demo-data --network local --portal=false --operator-credential-stdin
 ```
 
-Enter that credential at the hidden startup prompt and retain it in your password manager. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential. Unlocking creates a browser session; each publish still needs a separate approval.
+Enter that credential at the hidden startup prompt, open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential.
 
-In another terminal, request publication of a minimal static site:
+### First flat
+
+Request publication of a minimal static site:
 
 ```sh
 mkdir -p hello

@@ -35,3 +35,38 @@ jobs:
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -o "$RUNNER_TEMP/flats-linux-$arch" ./cmd/flats
           done
+
+  install-script:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Lint
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh install.sh scripts/build-release.sh scripts/install-smoke.sh
+      - name: Build release archives
+        run: |
+          # Linux builds every platform to check the release build; macOS only its own.
+          if [ "$RUNNER_OS" = macOS ]; then
+            FLATS_RELEASE_TARGETS="$(go env GOOS)/$(go env GOARCH)"
+            export FLATS_RELEASE_TARGETS
+          fi
+          scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Start the systemd user manager
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime=/run/user/$(id -u)
+          for _ in $(seq 1 30); do [ -S "$runtime/bus" ] && break; sleep 1; done
+          [ -S "$runtime/bus" ] || { echo "systemd user bus did not appear at $runtime/bus"; exit 1; }
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+      - name: Install, upgrade, crash and uninstall the service
+        run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci

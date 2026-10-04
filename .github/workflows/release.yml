@@ -1,0 +1,131 @@
+name: Release
+
+# A pushed v* tag on main builds, tests and publishes its release.
+# Run the workflow manually from main with an existing tag to attach the
+# prebuilt archives to a release that was published without them. Existing
+# assets are never replaced: a published archive and its checksum stay
+# immutable.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag on main to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - name: Validate the run
+        run: |
+          case "$TAG" in
+          v[0-9]*) ;;
+          *) echo "release tags look like v1.2.3, got: $TAG"; exit 1 ;;
+          esac
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "run the release workflow from main, not $GITHUB_REF"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Require a commit on main
+        id: resolve
+        run: |
+          commit=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+      - name: Test
+        run: |
+          go vet ./...
+          go test ./...
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      # Build the exact commit the test job checked, even if the tag moved.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.test.outputs.commit }}
+          persist-credentials: false
+      # The release tooling comes from the workflow's own commit, so a tag cut
+      # before the tooling existed can still be built.
+      - uses: actions/checkout@v4
+        with:
+          path: .release-tools
+          sparse-checkout: scripts/build-release.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Keep the tools checkout out of the source status
+        # Go stamps vcs.modified=true when git status shows untracked files.
+        run: echo '/.release-tools/' >>.git/info/exclude
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build archives
+        env:
+          COMMIT: ${{ needs.test.outputs.commit }}
+        run: |
+          FLATS_SOURCE_DIR="$PWD" .release-tools/scripts/build-release.sh "$TAG" "$RUNNER_TEMP/dist"
+          for archive in "$RUNNER_TEMP"/dist/*.tar.gz; do
+            info=$(tar -xzOf "$archive" flats >"$RUNNER_TEMP/flats.bin" && go version -m "$RUNNER_TEMP/flats.bin")
+            if ! printf '%s\n' "$info" | grep -q 'vcs.modified=false' ||
+              ! printf '%s\n' "$info" | grep -q "vcs.revision=$COMMIT"; then
+              echo "$archive was not built from clean source at $COMMIT"
+              printf '%s\n' "$info"
+              exit 1
+            fi
+          done
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ runner.temp }}/dist/*.tar.gz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Backfill: upload fails rather than overwrite an existing asset.
+            # Archives go first so checksums.txt never lists missing files.
+            gh release upload "$TAG" "$RUNNER_TEMP"/dist/*.tar.gz
+            gh release upload "$TAG" "$RUNNER_TEMP/dist/checksums.txt"
+            exit 0
+          fi
+          # Tags such as v1.2.0-rc.1 are prereleases and never become "latest",
+          # which the installer and its upgrade path download by default.
+          case "$TAG" in
+          *-*) set -- --prerelease --latest=false ;;
+          *) set -- --latest ;;
+          esac
+          gh release create "$TAG" "$RUNNER_TEMP"/dist/* --verify-tag --generate-notes --title "$TAG" "$@"
