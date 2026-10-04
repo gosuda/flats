@@ -118,8 +118,14 @@ func ParseServeFlags(args []string) (Options, error) {
 	}
 	o.Set = map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { o.Set[f.Name] = true })
-	if o.Set["config"] && !filepath.IsAbs(o.ConfigPath) {
-		return o, errors.New("--config must be an absolute path")
+	if o.Set["config"] {
+		// Like --data, a relative path is resolved against the working
+		// directory once, so later chdirs cannot change the file.
+		abs, err := filepath.Abs(o.ConfigPath)
+		if err != nil {
+			return o, fmt.Errorf("--config: %w", err)
+		}
+		o.ConfigPath = abs
 	}
 	if o.OperatorCredentialStdin && o.OperatorCredentialFile != "" {
 		return o, errors.New("choose only one operator credential source")

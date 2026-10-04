@@ -39,8 +39,9 @@ func TestServeFlagsDoNotGrantByDefault(t *testing.T) {
 	if _, err := ParseServeFlags([]string{"--permit", "funnel"}); err == nil {
 		t.Fatal("funnel was accepted as an alias")
 	}
-	if _, err := ParseServeFlags([]string{"--config", "relative/config.json"}); err == nil {
-		t.Fatal("relative --config accepted")
+	o, err = ParseServeFlags([]string{"--config", "relative/config.json"})
+	if err != nil || !filepath.IsAbs(o.ConfigPath) || !strings.HasSuffix(o.ConfigPath, filepath.Join("relative", "config.json")) {
+		t.Fatalf("relative --config not resolved: %q %v", o.ConfigPath, err)
 	}
 }
 
