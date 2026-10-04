@@ -705,14 +705,25 @@ func (s *Store) ListEvents(ctx context.Context, flat, kind string, after int64, 
 // PruneEvents keeps the newest keep events of flat and returns how many
 // were deleted.
 func (s *Store) PruneEvents(ctx context.Context, flat string, keep int) (int64, error) {
-	if keep < 0 {
-		keep = 0
-	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE flat=? AND id <= (SELECT id FROM events WHERE flat=? ORDER BY id DESC LIMIT 1 OFFSET ?)`, flat, flat, keep)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE `+prunedEvents, prunedEventsArgs(flat, keep)...)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// PrunableEvents counts the events PruneEvents would delete with keep.
+func (s *Store) PrunableEvents(ctx context.Context, flat string, keep int) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE `+prunedEvents, prunedEventsArgs(flat, keep)...).Scan(&n)
+	return n, err
+}
+
+// prunedEvents selects the events of a flat older than its newest keep.
+const prunedEvents = `flat=? AND id <= (SELECT id FROM events WHERE flat=? ORDER BY id DESC LIMIT 1 OFFSET ?)`
+
+func prunedEventsArgs(flat string, keep int) []any {
+	return []any{flat, flat, max(keep, 0)}
 }
 
 // EventFlats returns every flat name that has events.
