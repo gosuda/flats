@@ -120,7 +120,7 @@ func newCollector(lim Limits) *collector {
 func cleanPath(p string) (string, bool) {
 	p = strings.ReplaceAll(p, "\\", "/")
 	p = strings.TrimPrefix(p, "./")
-	if p == "" || strings.HasPrefix(p, "/") {
+	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsRune(p, '\x00') {
 		return "", false
 	}
 	c := path.Clean(p)
@@ -605,6 +605,10 @@ func Hash(files []File) string {
 // Write validates files, then writes them into dst atomically (dst must not
 // exist). It returns the manifest and content hash.
 func Write(files []File, dst string) (Result, error) {
+	files, err := canonicalWriteFiles(files)
+	if err != nil {
+		return Result{}, err
+	}
 	m, err := ParseManifest(files)
 	if err != nil {
 		return Result{}, err
@@ -612,24 +616,83 @@ func Write(files []File, dst string) (Result, error) {
 	if _, err := os.Stat(dst); err == nil {
 		return Result{}, fmt.Errorf("version directory %s already exists", dst)
 	}
-	tmp := dst + ".tmp"
-	os.RemoveAll(tmp)
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return Result{}, err
+	}
+	tmp, err := os.MkdirTemp(parent, "."+filepath.Base(dst)+".tmp-")
+	if err != nil {
+		return Result{}, err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+	root, err := os.OpenRoot(tmp)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := writeBundleFiles(root, files); err != nil {
+		_ = root.Close()
+		return Result{}, err
+	}
+	if err := root.Close(); err != nil {
+		return Result{}, err
+	}
 	var size int64
 	for _, f := range files {
-		p := filepath.Join(tmp, filepath.FromSlash(f.Path))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return Result{}, err
-		}
-		if err := os.WriteFile(p, f.Data, 0o444); err != nil {
-			return Result{}, err
-		}
 		size += int64(len(f.Data))
 	}
 	if err := os.Rename(tmp, dst); err != nil {
-		os.RemoveAll(tmp)
 		return Result{}, err
 	}
+	cleanup = false
 	return Result{Manifest: m, Hash: Hash(files), Size: size, Files: len(files)}, nil
+}
+
+func canonicalWriteFiles(files []File) ([]File, error) {
+	out := make([]File, len(files))
+	seen := make(map[string]struct{}, len(files))
+	var verr ValidationError
+	for i, f := range files {
+		p, ok := cleanPath(f.Path)
+		rel := filepath.FromSlash(p)
+		if !ok || p != f.Path || !filepath.IsLocal(rel) {
+			verr.add(f.Path, "path escapes the bundle root or is absolute", "use relative paths inside the build directory")
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			verr.add(p, "file appears twice in the bundle", "remove the duplicate entry")
+			continue
+		}
+		seen[p] = struct{}{}
+		f.Path = p
+		out[i] = f
+	}
+	if len(verr.Problems) > 0 {
+		return nil, &verr
+	}
+	return out, nil
+}
+
+// writeBundleFiles writes only through an os.Root opened on the fresh staging
+// directory. Even if a caller supplies a hostile path or a local race replaces
+// a directory with a symlink, the kernel-backed root cannot escape tmp.
+func writeBundleFiles(root *os.Root, files []File) error {
+	for _, f := range files {
+		name := filepath.FromSlash(f.Path)
+		if dir := filepath.Dir(name); dir != "." {
+			if err := root.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+		}
+		if err := root.WriteFile(name, f.Data, 0o444); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // IsValidation reports whether err is a ValidationError.

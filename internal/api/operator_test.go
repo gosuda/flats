@@ -32,6 +32,31 @@ func testAuthority(t *testing.T) *OperatorAuthority {
 	return a
 }
 
+func TestOperatorCredentialUsesRandomChallengeVerifierAndBounds(t *testing.T) {
+	first := testAuthority(t)
+	second := testAuthority(t)
+	if first.credentialChallenge == second.credentialChallenge || first.credentialVerifier == second.credentialVerifier {
+		t.Fatal("separate authorities retained identical credential verifier material")
+	}
+	if got := operatorCredentialVerifier(first.credentialChallenge, testOperatorCredential); got != first.credentialVerifier {
+		t.Fatal("correct high-entropy credential did not reproduce verifier")
+	}
+	if got := operatorCredentialVerifier(first.credentialChallenge, testOperatorCredential+"-wrong"); got == first.credentialVerifier {
+		t.Fatal("wrong credential reproduced verifier")
+	}
+	if _, err := NewOperatorAuthority(strings.Repeat("x", operatorCredentialMinBytes-1)); err == nil {
+		t.Fatal("short operator credential was accepted")
+	}
+	if _, err := NewOperatorAuthority(strings.Repeat("x", operatorCredentialMaxBytes+1)); err == nil {
+		t.Fatal("oversized operator credential was accepted")
+	}
+
+	s := &Server{Operator: first}
+	w := httptest.NewRecorder()
+	s.operatorSession(w, browserRequest("POST", "/console/api/operator/session", `{"credential":"`+strings.Repeat("x", operatorCredentialMaxBytes+1)+`"}`))
+	requireCategory(t, w, "invalid_operator_credential")
+}
+
 func establishSession(t *testing.T, s *Server) *http.Cookie {
 	t.Helper()
 	w := httptest.NewRecorder()

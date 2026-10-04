@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"tailscale.com/client/local"
@@ -41,8 +39,8 @@ func (n *Net) ServeFunnel(ctx context.Context, host string, h http.Handler) (str
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if !hostRE.MatchString(host) {
-		return "", fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	if err := validateHost(host); err != nil {
+		return "", err
 	}
 	if h == nil {
 		return "", errors.New("tsnet: nil handler")
@@ -314,8 +312,14 @@ func (n *Net) beginFunnel(host string, h http.Handler) (nd *node, minted, launch
 		}
 		return nd, false, false, nil
 	}
-	_, statErr := os.Stat(filepath.Join(n.cfg.Dir, host, "tailscaled.state"))
-	preexisting := statErr == nil || !os.IsNotExist(statErr)
+	state, err := newNodeStateLocation(n.cfg.Dir, host)
+	if err != nil {
+		return nil, false, false, err
+	}
+	preexisting, err := state.persisted()
+	if err != nil {
+		return nil, false, false, fmt.Errorf("tsnet: inspect %s state: %w", host, err)
+	}
 	nd = n.newNode(host, false, false)
 	nd.funnelH.Store(&h)
 	nd.funnelOpening = true

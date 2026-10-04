@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/gosuda/flats/internal/core"
@@ -423,6 +424,115 @@ func TestStopSlugWithoutTailnetRemovesOnlyDeterministicLegacyState(t *testing.T)
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("Local route survived delete: %d", response.StatusCode)
 	}
+}
+
+func TestRetirementMarkersAreRootConfinedAndLegacyCompatible(t *testing.T) {
+	newManager := func(root string) *Manager {
+		return &Manager{retirementDir: root, pendingTailnet: map[string]map[string]struct{}{}}
+	}
+
+	t.Run("legacy marker", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "network-retirements")
+		legacy := filepath.Join(root, "legacy-slug", "legacy-host")
+		if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(legacy, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		m := newManager(root)
+		if pending, err := m.hasPendingTailnet("legacy-slug", "legacy-host"); err != nil || !pending {
+			t.Fatalf("legacy marker was not loaded: pending=%v err=%v", pending, err)
+		}
+		hosts, err := m.pendingTailnetHosts("legacy-slug")
+		if err != nil || !slices.Equal(hosts, []string{"legacy-host"}) {
+			t.Fatalf("legacy marker census: hosts=%v err=%v", hosts, err)
+		}
+		if err := m.clearPendingTailnet("legacy-slug", "legacy-host"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+			t.Fatalf("legacy marker was not cleared: %v", err)
+		}
+	})
+
+	t.Run("component traversal", func(t *testing.T) {
+		m := newManager(filepath.Join(t.TempDir(), "network-retirements"))
+		for _, value := range []string{"", ".", "..", "../escape", "a/b", `a\b`, "a..b", "Upper", "ünicode", "a" + strings.Repeat("b", 63)} {
+			if err := m.markPendingTailnet(value, "host"); err == nil {
+				t.Errorf("retirement slug %q was accepted", value)
+			}
+			if err := m.markPendingTailnet("slug", value); err == nil {
+				t.Errorf("retirement host %q was accepted", value)
+			}
+		}
+	})
+
+	t.Run("slug directory symlink", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "network-retirements")
+		outside := t.TempDir()
+		victim := filepath.Join(outside, "host")
+		if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, "slug")); err != nil {
+			t.Fatal(err)
+		}
+		m := newManager(root)
+		if err := m.markPendingTailnet("slug", "host"); err == nil {
+			t.Fatal("marker write followed a slug-directory symlink")
+		}
+		if pending, err := m.hasPendingTailnet("slug", "host"); err == nil || pending {
+			t.Fatalf("symlinked marker was accepted: pending=%v err=%v", pending, err)
+		}
+		if got, err := os.ReadFile(victim); err != nil || string(got) != "keep" {
+			t.Fatalf("outside marker changed: %q err=%v", got, err)
+		}
+	})
+
+	t.Run("retirement root symlink", func(t *testing.T) {
+		parent := t.TempDir()
+		outside := t.TempDir()
+		victim := filepath.Join(outside, "victim")
+		if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(parent, "network-retirements")
+		if err := os.Symlink(outside, root); err != nil {
+			t.Fatal(err)
+		}
+		m := newManager(root)
+		if err := m.markPendingTailnet("slug", "victim"); err == nil {
+			t.Fatal("marker write followed a retirement-root symlink")
+		}
+		if got, err := os.ReadFile(victim); err != nil || string(got) != "keep" {
+			t.Fatalf("retirement-root symlink target changed: %q err=%v", got, err)
+		}
+	})
+
+	t.Run("marker symlink", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "network-retirements")
+		if err := os.MkdirAll(filepath.Join(root, "slug"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		victim := filepath.Join(t.TempDir(), "victim")
+		if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(victim, filepath.Join(root, "slug", "host")); err != nil {
+			t.Fatal(err)
+		}
+		m := newManager(root)
+		if err := m.markPendingTailnet("slug", "host"); err == nil {
+			t.Fatal("marker write accepted a final symlink")
+		}
+		if got, err := os.ReadFile(victim); err != nil || string(got) != "keep" {
+			t.Fatalf("marker symlink target changed: %q err=%v", got, err)
+		}
+	})
 }
 
 func managerWith(t *testing.T, f File) (*Manager, *local.Net) {

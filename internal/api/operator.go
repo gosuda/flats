@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -14,6 +14,8 @@ import (
 
 const operatorCookie = "flats_operator"
 const operatorSessionLifetime = 8 * time.Hour
+const operatorCredentialMinBytes = 32
+const operatorCredentialMaxBytes = 4096
 
 // OperatorAuthority authenticates management decisions independently of agent
 // access and browser headers. The embedding application must provision the
@@ -22,19 +24,45 @@ const operatorSessionLifetime = 8 * time.Hour
 // This is credential separation, not protection from an OS administrator or an
 // agent that can read the operator's secrets or the server/browser memory.
 type OperatorAuthority struct {
-	credential [32]byte
-	mu         sync.Mutex
-	sessions   map[[32]byte]time.Time
+	credentialChallenge [32]byte
+	credentialVerifier  [32]byte
+	mu                  sync.Mutex
+	sessions            map[[32]byte]time.Time
 }
 
 // NewOperatorAuthority accepts a separately provisioned high-entropy credential
-// (at least 32 bytes). Only its hash and hashes of session cookies are retained.
-// Constructing a new authority invalidates existing sessions, including restart.
+// (at least 32 bytes). Only a challenge-based verifier and hashes of session
+// cookies are retained. Constructing a new authority invalidates existing
+// sessions, including restart.
 func NewOperatorAuthority(credential string) (*OperatorAuthority, error) {
-	if len(credential) < 32 {
+	if len(credential) < operatorCredentialMinBytes {
 		return nil, errors.New("operator credential must contain at least 32 bytes of independently provisioned entropy")
 	}
-	return &OperatorAuthority{credential: sha256.Sum256([]byte(credential)), sessions: make(map[[32]byte]time.Time)}, nil
+	if len(credential) > operatorCredentialMaxBytes {
+		return nil, errors.New("operator credential must not exceed 4096 bytes")
+	}
+	var challenge [32]byte
+	if _, err := rand.Read(challenge[:]); err != nil {
+		return nil, errors.New("could not initialize operator credential verifier")
+	}
+	return &OperatorAuthority{
+		credentialChallenge: challenge,
+		credentialVerifier:  operatorCredentialVerifier(challenge, credential),
+		sessions:            make(map[[32]byte]time.Time),
+	}, nil
+}
+
+// operatorCredentialVerifier authenticates a high-entropy operator secret
+// without retaining it or treating it as a human-memorable password. The
+// per-authority random challenge makes the retained verifier unique across
+// restarts; HMAC provides a keyed, constant-time-verifiable authenticator.
+func operatorCredentialVerifier(challenge [32]byte, credential string) [32]byte {
+	mac := hmac.New(sha256.New, []byte(credential))
+	_, _ = mac.Write([]byte("flats operator credential verifier\x00"))
+	_, _ = mac.Write(challenge[:])
+	var verifier [32]byte
+	copy(verifier[:], mac.Sum(nil))
+	return verifier
 }
 
 type operatorContextKey struct{}
@@ -153,8 +181,12 @@ func (s *Server) operatorSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid operator session request"))
 		return
 	}
-	hash := sha256.Sum256([]byte(in.Credential))
-	if subtle.ConstantTimeCompare(hash[:], s.Operator.credential[:]) != 1 {
+	if len(in.Credential) < operatorCredentialMinBytes || len(in.Credential) > operatorCredentialMaxBytes {
+		operatorError(w, "invalid_operator_credential", "operator credential was not accepted")
+		return
+	}
+	verifier := operatorCredentialVerifier(s.Operator.credentialChallenge, in.Credential)
+	if !hmac.Equal(verifier[:], s.Operator.credentialVerifier[:]) {
 		operatorError(w, "invalid_operator_credential", "operator credential was not accepted")
 		return
 	}

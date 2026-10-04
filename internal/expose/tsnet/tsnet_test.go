@@ -485,17 +485,14 @@ func TestPlainHTTPFallbackAndKeyExpiry(t *testing.T) {
 		t.Errorf("re-served host: %q %v", body, err)
 	}
 
-	// A node that failed to start is retried by serving it again, without
-	// Stop (which would log it out and delete its state).
+	// A non-directory at the deterministic state path is rejected before a
+	// backend starts. Removing it lets the host be served from scratch.
 	dir := n.cfg.Dir
 	if err := os.WriteFile(filepath.Join(dir, "broken"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Serve(ctx, "broken", echo("broken"), false); err != nil {
-		t.Fatal(err)
-	}
-	if err := n.WaitReady(ctx, "broken"); err == nil {
-		t.Fatalf("node with a file as its state dir became ready")
+	if _, err := n.Serve(ctx, "broken", echo("broken"), false); err == nil {
+		t.Fatal("node with a file as its state dir was accepted")
 	}
 	if err := os.Remove(filepath.Join(dir, "broken")); err != nil {
 		t.Fatal(err)
@@ -628,6 +625,82 @@ func TestRemoveLocalStateIsHostScopedAndOffline(t *testing.T) {
 	}
 	if err := RemoveLocalState(dir, "../preserved"); err == nil {
 		t.Fatal("path traversal host was accepted")
+	}
+}
+
+func TestStopRejectsUntrustedHostsBeforeStateAccess(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "tailscaled.state")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := New(Config{Dir: root, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	invalid := []string{"", ".", "..", "../escape", "/absolute", `a\b`, "a..b", "Upper", "ünicode", "a" + strings.Repeat("b", 63)}
+	for _, host := range invalid {
+		if err := n.Stop(host); err == nil {
+			t.Errorf("Stop accepted host %q", host)
+		}
+		if err := n.StopPrivate(host); err == nil {
+			t.Errorf("StopPrivate accepted host %q", host)
+		}
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+		t.Fatalf("invalid stop changed outside state: %q err=%v", got, err)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.nodes) != 0 || len(n.retiring) != 0 || len(n.stopping) != 0 {
+		t.Fatalf("invalid stop mutated lifecycle ledgers: nodes=%d retiring=%d stopping=%d", len(n.nodes), len(n.retiring), len(n.stopping))
+	}
+}
+
+func TestNodeStateSymlinkFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "tailscaled.state")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	n, err := New(Config{Dir: root, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	if _, err := n.Serve(t.Context(), "linked", http.NotFoundHandler(), false); err == nil {
+		t.Fatal("Serve followed a symlinked host state directory")
+	}
+	if _, err := n.ServeFunnel(t.Context(), "linked", http.NotFoundHandler()); err == nil {
+		t.Fatal("ServeFunnel followed a symlinked host state directory")
+	}
+	if err := n.Stop("linked"); err == nil {
+		t.Fatal("Stop followed a symlinked host state directory")
+	}
+	state, err := newNodeStateLocation(root, "linked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (stateSnapshot{data: []byte("replace"), exists: true}).restore(state); err == nil {
+		t.Fatal("snapshot restore followed a symlinked host state directory")
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+		t.Fatalf("symlink target changed: %q err=%v", got, err)
+	}
+	if err := RemoveLocalState(root, "linked"); err != nil {
+		t.Fatalf("safe symlink unlink failed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "linked")); !os.IsNotExist(err) {
+		t.Fatalf("host symlink survived removal: %v", err)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+		t.Fatalf("symlink unlink changed target: %q err=%v", got, err)
 	}
 }
 

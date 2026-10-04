@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -547,24 +548,79 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 	}
 }
 
-func (m *Manager) retirementPath(slug, host string) (string, error) {
+type retirementMarker struct {
+	slug string
+	host string
+}
+
+var retirementComponentRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+func newRetirementMarker(slug, host string) (retirementMarker, error) {
 	for label, value := range map[string]string{"slug": slug, "host": host} {
-		if value == "" || value == "." || value == ".." || filepath.Base(value) != value {
-			return "", fmt.Errorf("provider: invalid retirement %s %q", label, value)
+		if value == "" || value == "." || value == ".." || !filepath.IsLocal(value) ||
+			strings.ContainsAny(value, `/\`) || strings.Contains(value, "..") || filepath.Base(value) != value ||
+			!retirementComponentRE.MatchString(value) {
+			return retirementMarker{}, fmt.Errorf("provider: invalid retirement %s %q", label, value)
 		}
 	}
-	return filepath.Join(m.retirementDir, slug, host), nil
+	return retirementMarker{slug: slug, host: host}, nil
+}
+
+func (r retirementMarker) name() string { return filepath.Join(r.slug, r.host) }
+
+func (m *Manager) openRetirementRoot(create bool) (*os.Root, error) {
+	parent, name := filepath.Dir(m.retirementDir), filepath.Base(m.retirementDir)
+	parentRoot, err := os.OpenRoot(parent)
+	if err != nil {
+		return nil, err
+	}
+	defer parentRoot.Close()
+	if create {
+		if err := parentRoot.MkdirAll(name, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	info, err := parentRoot.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("provider: retirement root is not a directory")
+	}
+	return parentRoot.OpenRoot(name)
 }
 
 func (m *Manager) markPendingTailnet(slug, host string) error {
-	path, err := m.retirementPath(slug, host)
+	marker, err := newRetirementMarker(slug, host)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	root, err := m.openRetirementRoot(true)
+	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
+	defer root.Close()
+	if err := root.MkdirAll(marker.slug, 0o700); err != nil {
+		return err
+	}
+	if info, err := root.Lstat(marker.slug); err != nil {
+		return err
+	} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("provider: retirement slug %q is not a directory", marker.slug)
+	}
+	f, err := root.OpenFile(marker.name(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if !os.IsExist(err) {
+			return err
+		}
+		info, statErr := root.Lstat(marker.name())
+		if statErr != nil {
+			return statErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("provider: retirement marker %q is not a regular file", marker.name())
+		}
+	} else if err := f.Close(); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -579,14 +635,23 @@ func (m *Manager) markPendingTailnet(slug, host string) error {
 }
 
 func (m *Manager) clearPendingTailnet(slug, host string) error {
-	path, err := m.retirementPath(slug, host)
+	marker, err := newRetirementMarker(slug, host)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	root, err := m.openRetirementRoot(false)
+	if err == nil {
+		if err := root.Remove(marker.name()); err != nil && !os.IsNotExist(err) {
+			root.Close()
+			return err
+		}
+		_ = root.Remove(marker.slug)
+		if err := root.Close(); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	_ = os.Remove(filepath.Dir(path))
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	hosts := m.pendingTailnet[slug]
@@ -604,12 +669,23 @@ func (m *Manager) hasPendingTailnet(slug, host string) (bool, error) {
 	if ok {
 		return true, nil
 	}
-	path, err := m.retirementPath(slug, host)
+	marker, err := newRetirementMarker(slug, host)
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(path)
+	root, err := m.openRetirementRoot(false)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	info, err := root.Lstat(marker.name())
 	if err == nil {
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("provider: retirement marker %q is not a regular file", marker.name())
+		}
 		return true, nil
 	}
 	if os.IsNotExist(err) {
@@ -619,7 +695,7 @@ func (m *Manager) hasPendingTailnet(slug, host string) (bool, error) {
 }
 
 func (m *Manager) pendingTailnetHosts(slug string) ([]string, error) {
-	if _, err := m.retirementPath(slug, "host"); err != nil {
+	if _, err := newRetirementMarker(slug, "host"); err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
@@ -628,24 +704,59 @@ func (m *Manager) pendingTailnetHosts(slug string) ([]string, error) {
 		set[host] = struct{}{}
 	}
 	m.mu.Unlock()
-	entries, err := os.ReadDir(filepath.Join(m.retirementDir, slug))
-	if err != nil && !os.IsNotExist(err) {
+	root, err := m.openRetirementRoot(false)
+	if os.IsNotExist(err) {
+		return sortedKeys(set), nil
+	}
+	if err != nil {
 		return nil, err
 	}
+	defer root.Close()
+	info, err := root.Lstat(slug)
+	if os.IsNotExist(err) {
+		return sortedKeys(set), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("provider: retirement slug %q is not a directory", slug)
+	}
+	dir, err := root.Open(slug)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
 		}
-		if _, err := m.retirementPath(slug, entry.Name()); err != nil {
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("provider: retirement marker %q is not a regular file", filepath.Join(slug, entry.Name()))
+		}
+		if _, err := newRetirementMarker(slug, entry.Name()); err != nil {
 			return nil, err
 		}
 		set[entry.Name()] = struct{}{}
 	}
+	return sortedKeys(set), nil
+}
+
+func sortedKeys(set map[string]struct{}) []string {
 	hosts := make([]string, 0, len(set))
 	for host := range set {
 		hosts = append(hosts, host)
 	}
-	return hosts, nil
+	sort.Strings(hosts)
+	return hosts
 }
 
 // StopPublicRoutes closes Funnel and Portal for slug. Local and tailscale

@@ -91,6 +91,13 @@ const (
 
 var hostRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+func validateHost(host string) error {
+	if !filepath.IsLocal(host) || strings.ContainsAny(host, `/\`) || strings.Contains(host, "..") || !hostRE.MatchString(host) {
+		return fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	}
+	return nil
+}
+
 // Net implements core.PrivateNet with one tsnet.Server per host.
 type Net struct {
 	cfg  Config
@@ -221,11 +228,18 @@ func (n *Net) notifyLocked() {
 // in the background and Status reports its progress. Serving a host that is
 // already served swaps its handler without restarting the node.
 func (n *Net) Serve(_ context.Context, host string, h http.Handler, ephemeral bool) (string, error) {
-	if !hostRE.MatchString(host) {
-		return "", fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	if err := validateHost(host); err != nil {
+		return "", err
 	}
 	if h == nil {
 		return "", errors.New("tsnet: nil handler")
+	}
+	state, err := newNodeStateLocation(n.cfg.Dir, host)
+	if err != nil {
+		return "", err
+	}
+	if _, err := state.persisted(); err != nil {
+		return "", fmt.Errorf("tsnet: inspect %s state: %w", host, err)
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -573,6 +587,32 @@ func writeFileAtomic(path string, b []byte) error {
 	return nil
 }
 
+// writeRootFileAtomic is the confined equivalent used for node identity
+// restoration. The destination name and every temporary file remain beneath
+// root even if a local race introduces a symlink.
+func writeRootFileAtomic(root *os.Root, name string, b []byte) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	tmp := fmt.Sprintf(".%s.tmp-%x", name, nonce)
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.Write(b)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		_ = root.Remove(tmp)
+		return err
+	}
+	if err := root.Rename(tmp, name); err != nil {
+		_ = root.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 // httpsRedirect sends plain HTTP requests to the same path on https://host.
 // 307 keeps the method and is not cached, so turning HTTPS off later does not
 // leave browsers stuck on a dead redirect.
@@ -832,6 +872,10 @@ func (n *Net) Stop(host string) error {
 }
 
 func (n *Net) stop(host string, privateOnly bool) error {
+	state, err := newNodeStateLocation(n.cfg.Dir, host)
+	if err != nil {
+		return err
+	}
 	for {
 		n.mu.Lock()
 		if pending := n.retiring[host]; pending != nil {
@@ -881,7 +925,7 @@ func (n *Net) stop(host string, privateOnly bool) error {
 				n.mu.Unlock()
 				return errors.New("tsnet: network is closed")
 			}
-			hasState, err := persistedNodeState(filepath.Join(n.cfg.Dir, host))
+			hasState, err := state.persisted()
 			if err != nil {
 				n.mu.Unlock()
 				return fmt.Errorf("tsnet: inspect %s persisted state: %w", host, err)
@@ -981,7 +1025,11 @@ func (n *Net) retryRetirementLocked(pending *retirement) *retirementAttempt {
 // calling Logout on that same backend again cannot retry the request. A fresh
 // backend reloads the still-persisted key and can complete the revocation.
 func (n *Net) retryLogout(pending *retirement) error {
-	dir := filepath.Join(n.cfg.Dir, pending.host)
+	state, err := newNodeStateLocation(n.cfg.Dir, pending.host)
+	if err != nil {
+		return err
+	}
+	dir := state.dir()
 	if n.logoutNode != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
 		defer cancel()
@@ -989,16 +1037,16 @@ func (n *Net) retryLogout(pending *retirement) error {
 		if err := n.logoutNode(ctx, nd); err != nil {
 			return fmt.Errorf("tsnet %s logout retry: %w", pending.host, err)
 		}
-		return os.RemoveAll(dir)
+		return state.remove()
 	}
-	snapshot, err := readStateSnapshot(dir)
+	snapshot, err := state.snapshot()
 	if err != nil {
 		return fmt.Errorf("tsnet %s logout retry snapshot: %w", pending.host, err)
 	}
 	if pending.persisted && !snapshot.exists {
 		// The deterministic host candidate has no identity. Do not start a
 		// backend: that could mint a new node while trying to retire nothing.
-		return os.RemoveAll(dir)
+		return state.remove()
 	}
 
 	srv := &ts.Server{
@@ -1016,7 +1064,7 @@ func (n *Net) retryLogout(pending *retirement) error {
 		if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && !errors.Is(closeErr, context.Canceled) {
 			startErr = errors.Join(startErr, fmt.Errorf("tsnet %s logout retry backend close: %w", pending.host, closeErr))
 		}
-		if restoreErr := snapshot.restore(dir); restoreErr != nil {
+		if restoreErr := snapshot.restore(state); restoreErr != nil {
 			startErr = errors.Join(startErr, fmt.Errorf("tsnet %s restore retry identity: %w", pending.host, restoreErr))
 		}
 		return startErr
@@ -1039,8 +1087,8 @@ func (n *Net) retryLogout(pending *retirement) error {
 		retryErr = errors.Join(retryErr, fmt.Errorf("tsnet %s logout retry backend close: %w", pending.host, err))
 	}
 	if retryErr == nil {
-		retryErr = os.RemoveAll(dir)
-	} else if err := snapshot.restore(dir); err != nil {
+		retryErr = state.remove()
+	} else if err := snapshot.restore(state); err != nil {
 		retryErr = errors.Join(retryErr, fmt.Errorf("tsnet %s restore retry identity: %w", pending.host, err))
 	}
 	return retryErr
@@ -1133,6 +1181,10 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		waited = true
 	}
 	var errs []error
+	state, stateErr := newNodeStateLocation(n.cfg.Dir, nd.host)
+	if stateErr != nil {
+		errs = append(errs, stateErr)
+	}
 	// Wait for an in-progress private listener setup to publish all of its
 	// servers, then close that complete set. Release privateMu before waiting
 	// for run: run itself may need this mutex before it observes cancellation.
@@ -1166,7 +1218,7 @@ func (n *Net) teardown(nd *node, logout bool) error {
 	var restoreState bool
 	if logout {
 		if !nd.backendStarted && n.logoutNode == nil {
-			hasState, err := persistedNodeState(nd.dir)
+			hasState, err := state.persisted()
 			if err != nil {
 				errs = append(errs, fmt.Errorf("tsnet %s inspect persisted state: %w", nd.host, err))
 			} else if hasState {
@@ -1176,7 +1228,7 @@ func (n *Net) teardown(nd *node, logout bool) error {
 			}
 		} else {
 			var err error
-			snapshot, err = readStateSnapshot(nd.dir)
+			snapshot, err = state.snapshot()
 			n.mu.Lock()
 			if len(nd.identityState) > 0 {
 				snapshot = stateSnapshot{data: append([]byte(nil), nd.identityState...), exists: true}
@@ -1204,7 +1256,7 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		}
 	}
 	if restoreState {
-		if err := snapshot.restore(nd.dir); err != nil {
+		if err := snapshot.restore(state); err != nil {
 			errs = append(errs, fmt.Errorf("tsnet %s restore logout identity: %w", nd.host, err))
 		}
 	}
@@ -1218,15 +1270,76 @@ func (n *Net) teardown(nd *node, logout bool) error {
 		<-nd.prev
 	}
 	if logoutOK && (logout || nd.ephemeral) {
-		if err := os.RemoveAll(nd.dir); err != nil {
+		if err := state.remove(); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func persistedNodeState(dir string) (bool, error) {
-	_, err := os.Stat(filepath.Join(dir, "tailscaled.state"))
+// RemoveLocalState deletes one deterministic host's local tsnet identity
+// without starting a backend or contacting control. It is for lifecycle
+// deletion when Tailscale and Funnel are not granted, so retaining the old
+// local key would let a later flat with the same slug inherit that identity.
+func RemoveLocalState(dir, host string) error {
+	state, err := newNodeStateLocation(dir, host)
+	if err != nil {
+		return err
+	}
+	return state.remove()
+}
+
+type stateSnapshot struct {
+	data   []byte
+	exists bool
+}
+
+type nodeStateLocation struct {
+	rootDir string
+	host    string
+}
+
+func newNodeStateLocation(rootDir, host string) (nodeStateLocation, error) {
+	if rootDir == "" {
+		return nodeStateLocation{}, errors.New("tsnet: state directory is required")
+	}
+	if err := validateHost(host); err != nil {
+		return nodeStateLocation{}, err
+	}
+	return nodeStateLocation{rootDir: rootDir, host: host}, nil
+}
+
+func (p nodeStateLocation) dir() string { return filepath.Join(p.rootDir, p.host) }
+
+func (p nodeStateLocation) open() (*os.Root, error) {
+	root, err := os.OpenRoot(p.rootDir)
+	if err != nil {
+		return nil, err
+	}
+	info, err := root.Lstat(p.host)
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		root.Close()
+		return nil, fmt.Errorf("tsnet: state host %q is not a directory", p.host)
+	}
+	hostRoot, err := root.OpenRoot(p.host)
+	root.Close()
+	return hostRoot, err
+}
+
+func (p nodeStateLocation) persisted() (bool, error) {
+	root, err := p.open()
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	_, err = root.Stat("tailscaled.state")
 	if err == nil {
 		return true, nil
 	}
@@ -1236,27 +1349,28 @@ func persistedNodeState(dir string) (bool, error) {
 	return false, err
 }
 
-// RemoveLocalState deletes one deterministic host's local tsnet identity
-// without starting a backend or contacting control. It is for lifecycle
-// deletion when Tailscale and Funnel are not granted, so retaining the old
-// local key would let a later flat with the same slug inherit that identity.
-func RemoveLocalState(dir, host string) error {
-	if dir == "" {
-		return errors.New("tsnet: state directory is required")
+func (p nodeStateLocation) remove() error {
+	root, err := os.OpenRoot(p.rootDir)
+	if os.IsNotExist(err) {
+		return nil
 	}
-	if !hostRE.MatchString(host) {
-		return fmt.Errorf("tsnet: invalid host %q (want a lowercase DNS label)", host)
+	if err != nil {
+		return err
 	}
-	return os.RemoveAll(filepath.Join(dir, host))
+	defer root.Close()
+	return root.RemoveAll(p.host)
 }
 
-type stateSnapshot struct {
-	data   []byte
-	exists bool
-}
-
-func readStateSnapshot(dir string) (stateSnapshot, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "tailscaled.state"))
+func (p nodeStateLocation) snapshot() (stateSnapshot, error) {
+	root, err := p.open()
+	if os.IsNotExist(err) {
+		return stateSnapshot{}, nil
+	}
+	if err != nil {
+		return stateSnapshot{}, err
+	}
+	defer root.Close()
+	data, err := root.ReadFile("tailscaled.state")
 	if err == nil {
 		return stateSnapshot{data: data, exists: true}, nil
 	}
@@ -1266,14 +1380,31 @@ func readStateSnapshot(dir string) (stateSnapshot, error) {
 	return stateSnapshot{}, err
 }
 
-func (s stateSnapshot) restore(dir string) error {
+func (s stateSnapshot) restore(p nodeStateLocation) error {
 	if !s.exists {
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	root, err := os.OpenRoot(p.rootDir)
+	if err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(dir, "tailscaled.state"), s.data)
+	defer root.Close()
+	if err := root.MkdirAll(p.host, 0o700); err != nil {
+		return err
+	}
+	info, err := root.Lstat(p.host)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("tsnet: state host %q is not a directory", p.host)
+	}
+	hostRoot, err := root.OpenRoot(p.host)
+	if err != nil {
+		return err
+	}
+	defer hostRoot.Close()
+	return writeRootFileAtomic(hostRoot, "tailscaled.state", s.data)
 }
 
 func (n *Net) logout(ctx context.Context, nd *node) error {
