@@ -73,6 +73,24 @@ until p=$(main_pid) && [ -n "$p" ] && [ "$p" != 0 ] && [ "$p" != "$new" ] && hea
 done
 echo "restarted as pid $p after ${i}s"
 
+step "a stopped service stays stopped on upgrade"
+if [ "$(uname -s)" = Darwin ]; then
+	launchctl bootout "gui/$(id -u)/dev.flats.serve"
+else
+	systemctl --user stop flats.service
+fi
+i=0
+while healthy 2>/dev/null; do
+	i=$((i + 1))
+	[ $i -lt 20 ] || fail "service still answers after it was stopped"
+	sleep 1
+done
+out=$(sh "$root/install.sh" 2>&1) || fail "installer failed on a stopped service: $out"
+printf '%s\n' "$out"
+printf '%s\n' "$out" | grep -q 'Start the service' || fail "installer did not print how to start the service"
+sleep 3
+! healthy 2>/dev/null || fail "installer started a service the user stopped"
+
 step "uninstall"
 "$flats" uninstall
 i=0
