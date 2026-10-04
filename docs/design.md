@@ -83,9 +83,11 @@ failures or an injected implementation that ignores the network contract.
   live before the current one), recorded with kind `rollback`.
 * **Data belongs to the flat** (`data/`), not to versions; rollback restores
   code only.
-* **Retention.** After every save and deploy, files of versions beyond the
-  newest `keep_versions` (default 10) are deleted unless the version is live or
-  previewed; the row stays with `pruned=1`.
+* **Retention.** After every deploy (publish, redeploy or rollback), files of
+  versions beyond the newest `keep_versions` (default 10) are deleted unless
+  the version is live; the deploy closes the flat's previews first, so a
+  previewed version is protected only if its preview failed to close. The row
+  stays with `pruned=1`.
 
 ## Manifest (`flats.json`, optional)
 
