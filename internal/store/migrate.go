@@ -213,19 +213,22 @@ func migrate(ctx context.Context, path string, info Info) error {
 			return fmt.Errorf("backup before migration: %w", err)
 		}
 	}
-	// WAL before the first step: a process killed mid-step then leaves
-	// uncommitted WAL frames, which a read-only Inspect can read past. In
-	// rollback-journal mode (a database restored from a VACUUM INTO backup)
-	// it would leave a hot journal that only a writer can recover, and every
-	// later start would fail its read-only probe.
 	// _txlock makes every BeginTx a BEGIN IMMEDIATE, so a concurrent opener
 	// waits for the write lock instead of failing halfway through a step.
-	db, err := sql.Open("sqlite", fileURI(path)+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	db, err := sql.Open("sqlite", fileURI(path)+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	// WAL before the first step: a process killed mid-step then leaves
+	// uncommitted WAL frames, which a read-only Inspect can read past. In
+	// rollback-journal mode (a database restored from a VACUUM INTO backup)
+	// it would leave a hot journal that only a writer can recover, and every
+	// later start would fail its read-only probe.
+	if err := useWAL(ctx, db); err != nil {
+		return fmt.Errorf("switch to WAL: %w", err)
+	}
 	for _, m := range migrations {
 		if m.version <= info.Version {
 			continue
@@ -235,6 +238,30 @@ func migrate(ctx context.Context, path string, info Info) error {
 		}
 	}
 	return nil
+}
+
+// useWAL switches db to WAL. The switch needs an exclusive lock and SQLite
+// does not call the busy handler for it, so a concurrent opener is waited
+// out here.
+func useWAL(ctx context.Context, db *sql.DB) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var mode string
+		err := db.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&mode)
+		switch {
+		case err == nil && mode == "wal":
+			return nil
+		case err == nil:
+			return fmt.Errorf("journal mode is %s", mode)
+		case !strings.Contains(err.Error(), "SQLITE_BUSY") || time.Now().After(deadline):
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 // runMigration applies one step and its user_version in one transaction.
