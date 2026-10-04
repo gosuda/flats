@@ -434,6 +434,11 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A legacy service started with --relays compares it with the config on
+	// every start, so the console must not change the relays under it.
+	if r, _ := flagRelays(o); s.legacy && len(r) > 0 {
+		settings.Pin(core.SetPortalRelays, "the service's --relays flag")
+	}
 	h.console = "http://" + cfg.Host.ManagementAddr
 	coreCfg := core.Config{DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: func() string { return h.console }, Reserved: []string{cfg.Host.ConsoleHost}, Logf: logf}

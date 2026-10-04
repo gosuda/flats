@@ -88,7 +88,24 @@ type SettingsSource struct {
 	mu     sync.Mutex
 	doc    *config.Document
 	values map[string]string
+	pinned map[string]string // setting -> who sets it
 	save   func(ctx context.Context, apply func(*config.Document) error) error
+}
+
+// ErrConfigOverridden rejects a change to a setting that the running
+// process takes from elsewhere, such as a service flag.
+var ErrConfigOverridden = fmt.Errorf("%w: setting overridden", ErrConflict)
+
+// Pin refuses changes to setting: by names what sets it, such as "the
+// service's --relays flag". Saving another value would make the next start
+// disagree with that source.
+func (s *SettingsSource) Pin(setting, by string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pinned == nil {
+		s.pinned = map[string]string{}
+	}
+	s.pinned[setting] = by
 }
 
 // NewSettingsSource serves the settings of doc. save receives the change as
@@ -152,6 +169,11 @@ func (s *SettingsSource) update(ctx context.Context, values map[string]string) e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, k := range slices.Sorted(maps.Keys(values)) {
+		if by, ok := s.pinned[k]; ok && values[k] != s.values[k] {
+			return withKind(ErrConfigOverridden, fmt.Errorf("%s is set by %s; reinstall the service with `flats install` to manage it here", k, by))
+		}
+	}
 	next := s.doc.Clone()
 	if err := apply(next); err != nil {
 		return invalid(err)

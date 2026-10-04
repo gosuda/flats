@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -638,5 +639,53 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 	}
 	if _, err := h.Svc.UpdateSettings(context.Background(), map[string]string{core.SetKeepVersions: "6"}); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("direct save after edit: %v", err)
+	}
+}
+
+// A legacy service started with --relays compares the flag with the config
+// on every start, so the console cannot change the relays under it. Other
+// settings, and the same relays, still save. Config mode has no such pin.
+func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
+	dir := t.TempDir()
+	h, client := operatorHostWith(t, dir, func(o *Options) {
+		o.Relays, o.Set = []string{"https://rly.best"}, map[string]bool{"relays": true}
+	})
+	put := func(body string) (int, map[string]any) {
+		t.Helper()
+		var out map[string]any
+		code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(body), &out)
+		return code, out
+	}
+	path := h.ConfigPath
+	before := hashFile(t, path)
+	code, out := put(`{"portal_relays":"https://other.example"}`)
+	if code != 409 || out["category"] != "config_overridden" || !strings.Contains(fmt.Sprint(out["error"]), "--relays flag; reinstall the service with `flats install`") {
+		t.Fatalf("pinned relays = %d %v", code, out)
+	}
+	if hashFile(t, path) != before {
+		t.Fatal("rejected change was saved")
+	}
+	if code, out := put(`{"portal_relays":"https://rly.best/","keep_versions":"4"}`); code != 200 {
+		t.Fatalf("unchanged relays with another setting = %d %v", code, out)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The same flags still start.
+	o := localOptions(dir)
+	o.Relays, o.Set = []string{"https://rly.best"}, map[string]bool{"relays": true}
+	h2, err := Start(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2.Close()
+
+	h3, err := Start(context.Background(), configModeOptions(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h3.Close()
+	if _, err := h3.Svc.UpdateSettings(context.Background(), map[string]string{core.SetPortalRelays: "https://other.example"}); err != nil {
+		t.Fatalf("config mode: %v", err)
 	}
 }

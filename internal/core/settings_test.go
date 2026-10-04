@@ -135,3 +135,37 @@ func TestMissingSecretKeyWithSecretsRefused(t *testing.T) {
 		t.Fatalf("core.New created a key over secrets: %v", err)
 	}
 }
+
+func TestPinnedSettingRefusesChanges(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	doc, err := config.New(config.NewInstanceID(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := core.NewSettingsSource(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Pin(core.SetPortalRelays, "the service's --relays flag")
+	st, err := store.Open(filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Settings: src, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	_, err = svc.UpdateSettings(ctx, map[string]string{core.SetPortalRelays: "https://rly.best", core.SetKeepVersions: "2"})
+	if !errors.Is(err, core.ErrConfigOverridden) || !errors.Is(err, core.ErrConflict) || core.ErrorCategory(err) != "config_overridden" {
+		t.Fatalf("pinned change: %v", err)
+	}
+	if all, _ := svc.Settings(ctx); all[core.SetKeepVersions] != "10" {
+		t.Fatal("a refused update applied another setting")
+	}
+	if _, err := svc.UpdateSettings(ctx, map[string]string{core.SetPortalRelays: "", core.SetKeepVersions: "2"}); err != nil {
+		t.Fatalf("unchanged pinned value: %v", err)
+	}
+}

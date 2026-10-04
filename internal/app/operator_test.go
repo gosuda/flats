@@ -20,14 +20,24 @@ import (
 
 func operatorHost(t *testing.T) (*Host, *http.Client) {
 	t.Helper()
+	return operatorHostWith(t, t.TempDir(), nil)
+}
+
+// operatorHostWith starts a legacy-mode host in dir, after edit adjusts its
+// options, and unlocks an operator session.
+func operatorHostWith(t *testing.T, dir string, edit func(*Options)) (*Host, *http.Client) {
+	t.Helper()
 	var raw [40]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		t.Fatal(err)
 	}
 	credential := base64.RawURLEncoding.EncodeToString(raw[:])
-	opts := localOptions(t.TempDir())
+	opts := localOptions(dir)
 	opts.Overrides["host.server_runtime"] = "false"
 	opts.OperatorCredential = credential
+	if edit != nil {
+		edit(&opts)
+	}
 	h, err := Start(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
