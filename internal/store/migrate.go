@@ -287,7 +287,10 @@ func backup(ctx context.Context, path string, version int, now time.Time) error 
 		os.Remove(target)
 		return err
 	}
-	return pruneBackups(dir)
+	// The new backup is complete, so failing to remove old ones must not
+	// block the migration it protects; the next backup retries the pruning.
+	_ = pruneBackups(dir)
+	return nil
 }
 
 // pruneBackups removes all but the newest backupsKept backup files. Other
