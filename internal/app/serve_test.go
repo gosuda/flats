@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/provider"
+	"github.com/gosuda/flats/internal/mcpx"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -233,7 +235,7 @@ func TestManagementServerRejectsForeignHost(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	for _, path := range []string{"/console/api/settings", "/api/flats", "/"} {
+	for _, path := range []string{"/console/api/settings", "/api/flats", "/", "/llms.txt"} {
 		if code := get("attacker.example:"+port, path); code != 403 {
 			t.Errorf("rebound Host on %s = %d", path, code)
 		}
@@ -254,5 +256,34 @@ func TestManagementServerRejectsForeignHost(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 403 {
 		t.Fatalf("foreign Origin settings change = %d", resp.StatusCode)
+	}
+}
+
+func TestManagementServerServesLLMsTxt(t *testing.T) {
+	h := startLocal(t)
+	_, port, _ := strings.Cut(h.Addr(), ":")
+	do := func(method, path string) (int, string) {
+		req, _ := http.NewRequest(method, "http://"+h.Addr()+path, nil)
+		req.Host = "localhost:" + port
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	for _, path := range mcpx.LLMsPaths {
+		code, body := do("GET", path)
+		if code != 200 {
+			t.Fatalf("%s = %d", path, code)
+		}
+		if path != mcpx.RuntimeReferencePath && !strings.Contains(body, "http://localhost:"+port+"/mcp") {
+			t.Errorf("%s does not name the MCP endpoint of the requested host", path)
+		}
+		// Other methods reach the documentation handler, not the console.
+		if code, _ := do("POST", path); code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s = %d", path, code)
+		}
 	}
 }

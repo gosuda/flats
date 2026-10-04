@@ -336,6 +336,10 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	mux.Handle("/api/", apiH)
 	mux.Handle("/console/api/", apiH)
 	mux.Handle("/mcp", mcpx.Handler(svc, mcpx.Options{Version: Version}))
+	llms := mcpx.LLMsHandler(svc, mcpx.Options{Version: Version})
+	for _, p := range mcpx.LLMsPaths {
+		mux.Handle(p, llms)
+	}
 	mux.Handle("/", console.Handler())
 	h.Mux = mux
 
