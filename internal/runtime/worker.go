@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/gosuda/flats/internal/egress"
 )
 
 // engine handles one request: request JSON in, response JSON out.
@@ -25,11 +27,12 @@ type engine interface {
 }
 
 type worker struct {
-	spec workerSpec
-	log  *childLog
-	data *dataStore
-	eng  engine
-	js   *jsEngine // nil for WASI
+	spec    workerSpec
+	log     *childLog
+	data    *dataStore
+	eng     engine
+	js      *jsEngine      // nil for WASI
+	network *egress.Client // shared by all JS request and WebSocket VMs
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
@@ -82,6 +85,9 @@ func WorkerMain(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	srv.Shutdown(ctx)
 	cancel()
+	if w.network != nil {
+		w.network.Close()
+	}
 	w.eng.close()
 	w.data.Close()
 	return nil
@@ -102,8 +108,14 @@ func (w *worker) init() error {
 			return err
 		}
 		w.spec.Dir = dir
+		client, err := egress.New(w.spec.NetworkOrigins)
+		if err != nil {
+			return err
+		}
+		w.network = client
 		e, err := newJSEngine(w)
 		if err != nil {
+			client.Close()
 			return err
 		}
 		w.js, w.eng = e, e
@@ -217,6 +229,9 @@ func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	reqJSON, _ := json.Marshal(p)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), w.spec.timeout())
 	defer cancel()
+	// Visitor disconnects cancel outbound I/O without destroying the shared VM
+	// or interrupting the handler's DB/FILES work. The VM keeps its deadline.
+	ctx = context.WithValue(ctx, outboundRequestContextKey{}, r.Context())
 	start := time.Now()
 	out, err := w.eng.handle(ctx, reqJSON)
 	if err == nil {

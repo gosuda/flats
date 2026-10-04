@@ -69,6 +69,8 @@ func register(s *mcp.Server, t *tools) {
 		Description: "Set an ordinary server-only app environment variable. Values are readable by management clients; use operator-managed secrets for credentials. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.setEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_env", Annotations: write,
 		Description: "Delete an ordinary app environment variable. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.deleteEnv)
+	mcp.AddTool(s, &mcp.Tool{Name: "get_network", Annotations: ro,
+		Description: "Read the operator-managed server HTTP(S) origin allowlist. Agents cannot grant network permissions; browser fetch follows browser CORS/CSP."}, t.getNetwork)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_secrets", Annotations: ro,
 		Description: "List secret names of a flat (values are never returned; only the operator sets them)."}, t.listSecrets)
 }

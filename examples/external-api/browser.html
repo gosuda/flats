@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browser API example</title>
+<h1>Read a public API</h1>
+<p>Enter an HTTPS JSON endpoint that allows this page's origin with CORS.
+Use public data only; never enter a server API token.</p>
+<form id="api-form">
+  <label>Endpoint <input id="endpoint" type="url" required placeholder="https://api.example.com/message"></label>
+  <button>Fetch</button>
+</form>
+<pre id="result" role="status" aria-live="polite"></pre>
+<script>
+document.querySelector('#api-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const result = document.querySelector('#result');
+  result.textContent = 'Loading…';
+  try {
+    const response = await fetch(document.querySelector('#endpoint').value, {
+      credentials: 'omit',
+    });
+    if (!response.ok) throw new Error('HTTP error');
+    result.textContent = JSON.stringify(await response.json(), null, 2);
+  } catch (_) {
+    result.textContent = 'Request failed. Check the endpoint, CORS, CSP and HTTPS requirements.';
+  }
+});
+</script>
+</html>

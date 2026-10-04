@@ -134,6 +134,9 @@ func TestEnvironmentSnapshotReadsNamespacesTogether(t *testing.T) {
 	if err := s.PutSecret(ctx, "app", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte("a"), UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SetNetworkPolicy(ctx, "app", NetworkPolicy{Origins: []string{"a"}, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
 	go func() {
 		for i := 0; i < 100; i++ {
@@ -143,10 +146,19 @@ func TestEnvironmentSnapshotReadsNamespacesTogether(t *testing.T) {
 				done <- err
 				return
 			}
-			if _, err = tx.ExecContext(ctx, `UPDATE env_vars SET value=? WHERE flat='app'; UPDATE secrets SET ciphertext=? WHERE flat='app'`, value, []byte(value)); err != nil {
-				tx.Rollback()
-				done <- err
-				return
+			for _, update := range []struct {
+				query string
+				value any
+			}{
+				{`UPDATE env_vars SET value=? WHERE flat='app'`, value},
+				{`UPDATE secrets SET ciphertext=? WHERE flat='app'`, []byte(value)},
+				{`UPDATE network_settings SET origins=? WHERE flat='app'`, `["` + value + `"]`},
+			} {
+				if _, err = tx.ExecContext(ctx, update.query, update.value); err != nil {
+					tx.Rollback()
+					done <- err
+					return
+				}
 			}
 			if err := tx.Commit(); err != nil {
 				done <- err
@@ -156,11 +168,11 @@ func TestEnvironmentSnapshotReadsNamespacesTogether(t *testing.T) {
 		done <- nil
 	}()
 	for i := 0; i < 100; i++ {
-		vars, secs, err := s.EnvironmentSnapshot(ctx, "app")
+		vars, secs, origins, err := s.RuntimeSettingsSnapshot(ctx, "app")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(vars) != 1 || len(secs) != 1 || vars[0].Value != string(secs[0].Ciphertext) {
+		if len(vars) != 1 || len(secs) != 1 || vars[0].Value != string(secs[0].Ciphertext) || len(origins) != 1 || origins[0] != vars[0].Value {
 			t.Fatalf("split snapshot: %v %v", vars, secs)
 		}
 	}

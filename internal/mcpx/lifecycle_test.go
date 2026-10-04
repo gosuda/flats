@@ -57,7 +57,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"list_versions":         {"slug": "census"}, "deploy": {"slug": "census", "version": 1}, "publish": {"slug": "census", "revision": 3},
 				"rollback": {"slug": "census", "version": 1}, "open_preview": {"slug": "census", "target": "draft", "version": 0},
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
-				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {},
+				"get_network": {"slug": "census"}, "get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {},
 				"list_env": {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},
 			}
 			if tool.Name == "delete_env" {

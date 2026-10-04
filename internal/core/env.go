@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -74,19 +75,21 @@ func (s *Service) ListEnv(ctx context.Context, slugName string) ([]store.EnvVar,
 	return s.st.ListEnv(ctx, slugName)
 }
 
-// runtimeEnvironment is captured at activation, not approval: health checking
+// runtimeEnvironment includes operator network grants and is captured at activation,
+// not approval: health checking
 // and live startup use the same settings. Secrets determine the redactor before
-// ordinary values are merged. Runtime.Start receives a clone of values.
+// ordinary values are merged. Runtime.Start receives clones of values and origins.
 type runtimeEnvironment struct {
-	values map[string]string
-	redact func(string) string
+	values         map[string]string
+	networkOrigins []string
+	redact         func(string) string
 }
 
 func (s *Service) captureEnvironment(ctx context.Context, slugName string, v store.Version) (*runtimeEnvironment, error) {
 	if v.Kind != "server" {
 		return nil, nil
 	}
-	vars, secs, err := s.st.EnvironmentSnapshot(ctx, slugName)
+	vars, secs, origins, err := s.st.RuntimeSettingsSnapshot(ctx, slugName)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +97,11 @@ func (s *Service) captureEnvironment(ctx context.Context, slugName string, v sto
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &runtimeEnvironment{values: env, redact: newRedactor(env)}
+	origins, err = egress.NormalizeOrigins(origins)
+	if err != nil {
+		return nil, invalidf("invalid stored network policy")
+	}
+	snapshot := &runtimeEnvironment{values: env, redact: newRedactor(env), networkOrigins: origins}
 	for _, v := range vars {
 		if err := validateEnvName(v.Name, "environment variable"); err != nil {
 			return nil, err

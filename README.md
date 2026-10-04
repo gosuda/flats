@@ -125,7 +125,7 @@ export default {
 };
 ```
 
-Deploy that directory with the same `flats deploy` command. JavaScript runs in QuickJS on WebAssembly with SQLite (`env.DB`), persistent string files (`env.FILES`), Web Crypto and WebSocket callbacks. It has no Node.js APIs or outbound network access; bundle imports into the uploaded version.
+Deploy that directory with the same `flats deploy` command. JavaScript runs in QuickJS on WebAssembly with SQLite (`env.DB`), persistent string files (`env.FILES`), Web Crypto and WebSocket callbacks. It has no Node.js APIs; bundle imports into the uploaded version. Server-side `fetch` can call exact operator-granted HTTP(S) origins with bounded host enforcement. Browser-side `fetch` uses normal CORS/CSP protections. See [external API setup and examples](docs/external-api.md).
 
 A `.wasm` server is a WASI preview1 command instantiated afresh per request: request JSON on stdin, response JSON on stdout, only the flat's configured environment variables and secrets, with no inherited host environment, plus clocks and randomness. It has **no SQLite/FILES host ABI, filesystem mounts, outbound network or WebSocket API**. See the [capability table and response format](docs/design.md#server-flats-handler-abi).
 

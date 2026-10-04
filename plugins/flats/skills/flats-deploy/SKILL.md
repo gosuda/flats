@@ -59,7 +59,8 @@ export default {
 ```
 
 The handler runs in a sandbox (QuickJS on WebAssembly): no Node.js APIs, no
-npm packages that need Node, no file system or network. Use `env.DB`
+npm packages that need Node, no general filesystem or socket API. Bounded
+global `fetch` supports HTTP(S) APIs only after an operator grants exact origins. Use `env.DB`
 (SQLite: `query`, `exec`), `env.FILES` (`get`, `put`, `delete`, `list`) and
 ordinary environment variables and secrets as `env.NAME`. Live DB/FILES data survives redeploys and ordinary code rollbacks.
 Previews use isolated copies. Candidate health checks use isolated DB/FILES copies. After approval, starting the live runtime can write live data, even if activation fails; inspect reported data impact and keep startup paths free of destructive mutations. Bundle dependencies for the sandbox; uploaded relative ES module imports
@@ -110,3 +111,19 @@ deployment, redeployment, rollback or standalone data snapshot restoration, or F
 restarts reuse their captured settings. To apply changes deliberately: redeploy the live version (`flats deploy --flat <flat> --version <live>`
 or MCP `deploy`), then report pending and poll approval, or ask the user to click **Redeploy (apply environment)** in the
 console.
+
+## External APIs
+
+Read `get_network` / `flats network ls <flat>` before relying on server fetch.
+Agents cannot grant origins; ask the operator to use console settings or
+`flats network set <flat> https://api.example.com` on the host. Grants default
+to deny and follow the captured activation settings, including worker restart
+semantics described above. Revoking grants requires redeploy to revoke running
+access. Do not request raw sockets, private/metadata endpoints, arbitrary ports
+or automatic redirect following. Use server-only env/secrets for tokens and a
+narrow same-origin handler for browser clients. Keep health checks local: checks
+and previews can make real external calls when granted. Browser fetch needs
+real CORS/CSP and HTTPS compatibility; never embed server credentials or disable
+browser protections. Read the runtime reference and docs/external-api.md for
+request/response size, deadline, concurrency and rate limits before generating
+an integration.

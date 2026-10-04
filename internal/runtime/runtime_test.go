@@ -652,6 +652,8 @@ export default {
     out.osExec = typeof os.exec;
     out.urlGet = probe(() => typeof std.urlGet === "function" ? std.urlGet("http://127.0.0.1:" + q.port + "/") : "absent");
     out.socket = typeof os.socket;
+    try { await fetch("http://127.0.0.1:" + q.port + "/"); out.outboundFetch = "allowed"; }
+    catch (e) { out.outboundFetch = "refused: " + e.message; }
     try { await import("/etc/passwd"); out.importPasswd = "imported"; } catch (e) { out.importPasswd = "refused"; }
     try { env.DB.exec("ATTACH DATABASE ? AS x", q.attach); out.attach = "attached"; } catch (e) { out.attach = "refused: " + e.message; }
     try { env.DB.exec("VACUUM INTO ?", q.vacuum); out.vacuum = "vacuumed"; } catch (e) { out.vacuum = "refused: " + e.message; }
@@ -718,8 +720,11 @@ export default {
 	if out["envKeys"] != "BETA_SECRET,DB,FILES" {
 		t.Errorf("env keys = %q", out["envKeys"])
 	}
-	if out["globals"] != "fetch:undefined,XMLHttpRequest:undefined,WebSocket:undefined,Deno:undefined,process:undefined,require:undefined" {
+	if out["globals"] != "fetch:function,XMLHttpRequest:undefined,WebSocket:undefined,Deno:undefined,process:undefined,require:undefined" {
 		t.Errorf("globals = %q", out["globals"])
+	}
+	if !strings.HasPrefix(out["outboundFetch"], "refused:") {
+		t.Errorf("outbound fetch reached host: %q", out["outboundFetch"])
 	}
 	if out["osExec"] != "undefined" || out["socket"] != "undefined" {
 		t.Errorf("os.exec %q, os.socket %q", out["osExec"], out["socket"])

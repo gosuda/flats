@@ -5,7 +5,8 @@
 // callbacks) or runs a fresh WASI preview1 command per request (request JSON
 // on stdin, response JSON on stdout, selected environment including secrets,
 // clocks and CSPRNG). WASI has no DB/FILES host ABI or WebSocket API. Neither
-// engine receives host process environment or outbound network access. JS
+// engine receives host process environment. JS outbound HTTP(S) is host-mediated
+// and limited to explicitly permitted public origins; WASI has no network. JS
 // loads read-only bundled modules and persists only through its host ABI;
 // WASI receives no filesystem mounts.
 package runtime
@@ -37,16 +38,17 @@ const (
 // workerSpec is sent to the child on stdin as one JSON line. Secrets travel
 // only here: never in argv or in the child's environment.
 type workerSpec struct {
-	Flat        string            `json:"flat"`
-	Version     int               `json:"version"`
-	Dir         string            `json:"dir"`
-	Entry       string            `json:"entry"`
-	DataDir     string            `json:"data_dir"`
-	Env         map[string]string `json:"env"`
-	CacheDir    string            `json:"cache_dir,omitempty"`
-	TimeoutMS   int64             `json:"timeout_ms,omitempty"`
-	MemoryPages uint32            `json:"memory_pages,omitempty"`
-	PoolSize    int               `json:"pool_size,omitempty"`
+	Flat           string            `json:"flat"`
+	Version        int               `json:"version"`
+	Dir            string            `json:"dir"`
+	Entry          string            `json:"entry"`
+	DataDir        string            `json:"data_dir"`
+	Env            map[string]string `json:"env"`
+	NetworkOrigins []string          `json:"network_origins,omitempty"`
+	CacheDir       string            `json:"cache_dir,omitempty"`
+	TimeoutMS      int64             `json:"timeout_ms,omitempty"`
+	MemoryPages    uint32            `json:"memory_pages,omitempty"`
+	PoolSize       int               `json:"pool_size,omitempty"`
 }
 
 func (s *workerSpec) timeout() time.Duration {

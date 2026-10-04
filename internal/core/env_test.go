@@ -240,11 +240,15 @@ func TestDeploymentUsesCheckedEnvironmentDespiteConcurrentWrites(t *testing.T) {
 	if err := s.SetSecret(ctx, "app", "TOKEN", "original-secret", ViaCLI); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SetNetworkPolicy(ctx, "app", []string{"https://original.example.com"}, ViaCLI); err != nil {
+		t.Fatal(err)
+	}
 	starts := 0
 	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
 		starts++
 		start := starts
 		mode, token := spec.Env["MODE"], spec.Env["TOKEN"]
+		origin := spec.NetworkOrigins[0]
 		return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if start == 1 || start == 3 {
 				// A settings write must complete during health checking without deadlocking
@@ -255,7 +259,11 @@ func TestDeploymentUsesCheckedEnvironmentDespiteConcurrentWrites(t *testing.T) {
 						done <- err
 						return
 					}
-					done <- s.SetSecret(ctx, "app", "TOKEN", fmt.Sprintf("updated-secret-%d", start), ViaCLI)
+					if err := s.SetSecret(ctx, "app", "TOKEN", fmt.Sprintf("updated-secret-%d", start), ViaCLI); err != nil {
+						done <- err
+						return
+					}
+					done <- s.SetNetworkPolicy(ctx, "app", []string{fmt.Sprintf("https://updated-%d.example.com", start)}, ViaCLI)
 				}()
 				select {
 				case err := <-done:
@@ -268,15 +276,16 @@ func TestDeploymentUsesCheckedEnvironmentDespiteConcurrentWrites(t *testing.T) {
 				// Runtime implementations must not mutate the frozen live-start snapshot.
 				spec.Env["MODE"] = "mutated-runtime-map"
 				spec.Env["TOKEN"] = "mutated-runtime-secret"
+				spec.NetworkOrigins[0] = "https://mutation.example.com"
 			}
-			fmt.Fprintf(w, "%s|%s", mode, token)
+			fmt.Fprintf(w, "%s|%s|%s", mode, token, origin)
 		})}, nil
 	})
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
-	if got := liveBytes(t, s, "app"); got != "original|original-secret" {
+	if got := liveBytes(t, s, "app"); got != "original|original-secret|https://original.example.com" {
 		t.Fatalf("publish applied unchecked settings: %q", got)
 	}
-	for _, want := range []string{"updated-1|updated-secret-1", "updated-3|updated-secret-3"} {
+	for _, want := range []string{"updated-1|updated-secret-1|https://updated-1.example.com", "updated-3|updated-secret-3|https://updated-3.example.com"} {
 		_, err := s.Deploy(ctx, "app", 1, ViaConsole)
 		var pending *PendingApproval
 		if !errors.As(err, &pending) {
@@ -305,7 +314,7 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 			ctx := t.Context()
 			s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
 				return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					fmt.Fprintf(w, "%s|%s", spec.Env["MODE"], spec.Env["TOKEN"])
+					fmt.Fprintf(w, "%s|%s|%s", spec.Env["MODE"], spec.Env["TOKEN"], spec.NetworkOrigins[0])
 				})}, nil
 			})
 			save := func(body string) {
@@ -315,6 +324,9 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 			}
 			configure := func(value string) {
 				if err := s.SetEnv(ctx, "app", "MODE", value, ViaAPI); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.SetNetworkPolicy(ctx, "app", []string{"https://" + value + ".example.com"}, ViaCLI); err != nil {
 					t.Fatal(err)
 				}
 				if err := s.SetSecret(ctx, "app", "TOKEN", value+"-secret", ViaCLI); err != nil {
@@ -339,6 +351,7 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 				starts++
 				start := starts
 				mode, token := spec.Env["MODE"], spec.Env["TOKEN"]
+				origin := spec.NetworkOrigins[0]
 				if start == 2 && failLive {
 					return nil, errors.New("live restore startup rejected")
 				}
@@ -350,7 +363,11 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 								done <- err
 								return
 							}
-							done <- s.SetSecret(ctx, "app", "TOKEN", "pending-secret", ViaCLI)
+							if err := s.SetSecret(ctx, "app", "TOKEN", "pending-secret", ViaCLI); err != nil {
+								done <- err
+								return
+							}
+							done <- s.SetNetworkPolicy(ctx, "app", []string{"https://pending.example.com"}, ViaCLI)
 						}()
 						select {
 						case err := <-done:
@@ -361,8 +378,9 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 							t.Fatal("settings write blocked during restore trial")
 						}
 						spec.Env["MODE"] = "runtime-mutation"
+						spec.NetworkOrigins[0] = "https://mutation.example.com"
 					}
-					fmt.Fprintf(w, "%s|%s", mode, token)
+					fmt.Fprintf(w, "%s|%s|%s", mode, token, origin)
 				})}, nil
 			})
 			_, err := s.RollbackWithData(ctx, "app", 1, true, ViaConsole)
@@ -371,12 +389,12 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 				t.Fatal(err)
 			}
 			receipt, err := s.Decide(ctx, pending.Approval.ID, true)
-			want, note := "checked|checked-secret", "before"
+			want, note := "checked|checked-secret|https://checked.example.com", "before"
 			if failLive {
 				if err == nil || receipt.Status != "failed" {
 					t.Fatalf("restore failure: %+v %v", receipt, err)
 				}
-				want, note = "previous-live|previous-live-secret", "after"
+				want, note = "previous-live|previous-live-secret|https://previous-live.example.com", "after"
 			} else if err != nil {
 				t.Fatal(err)
 			}

@@ -237,6 +237,17 @@ restart load current settings; automatic worker restarts reuse their captured
 snapshot. To apply a change intentionally, redeploy using the existing operator
 approval flow.
 
+## Outbound HTTP permissions
+
+App origin grants are separate from inbound network provider permissions. They
+default to deny and are operator-managed through console or local CLI; MCP can
+read them with `get_network`. Activation captures grants with env/secrets, and
+automatic worker replacement retains that snapshot. Clearing desired grants
+requires redeploy to revoke running access. The host validates public addresses,
+pins DNS results, ignores proxies and refuses automatic redirect following.
+See [external API setup and limits](external-api.md) for the complete contract
+and separate browser-side CORS/CSP behavior. WASI has no outbound HTTP ABI.
+
 ## Secrets
 
 Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
@@ -327,7 +338,7 @@ export default {
   and replaced. ATTACH, VACUUM INTO and extension loading are blocked;
   env.FILES is capped at 1 GiB. Database growth is not capped by SQLite; the
   per-flat disk quota refuses new uploads and the console reports flats over
-  quota. JS has no file system or network access except through `env`.
+  quota. JS has no general filesystem or socket access; outbound `fetch` is host-mediated and requires exact operator-granted origins.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing response JSON on stdout. Each request creates a fresh instance.
   Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment. Clocks, cancellable
@@ -341,7 +352,7 @@ export default {
 | SQLite | `env.DB.query` / `exec` | Unavailable |
 | Persistent files | `env.FILES.get` / `put` / `delete` / `list` | Unavailable |
 | WebSocket | `websocket.open` / `message` / `close`, `ws.send` | Unavailable; Upgrade remains an ordinary HTTP request |
-| Outbound network | Unavailable (no `fetch` or sockets) | Unavailable |
+| Outbound network | Bounded HTTP(S) `fetch` to exact operator-granted origins; no sockets | Unavailable |
 | Filesystem | Read-only bundled modules; no arbitrary host filesystem; persistence via DB/FILES | No mounts or preopened directories |
 | App environment variables and secrets | `env.NAME` (strings) | Only the flat's configured variables and secrets as environment variables |
 | Clocks/randomness | timers, `Date`, Web Crypto CSPRNG | WASI clocks, cancellable sleeps and CSPRNG |
@@ -350,7 +361,7 @@ WASI request JSON is `{method, url, headers, body}` (body is a string or null).
 Response JSON is `{status, headers, body}` (body is a string); binary
 responses put base64 text in `body` and set `body_base64: true`. Stderr is forwarded as flat log lines.
 These are executable contracts in `internal/runtime` tests, including rejected
-JS host imports, absent filesystem/network access, app-scoped environment,
+JS host imports, absent arbitrary filesystem/socket access, bounded outbound fetch, app-scoped environment,
 clocks/randomness, and no WebSocket negotiation.
 
 ## HTTP API
@@ -389,6 +400,8 @@ answers:
 | POST | /api/flats/{slug}/rename | `{slug}` |
 | DELETE | /api/flats/{slug} | `?reason=` (returns pending_approval) |
 | GET | /api/flats/{slug}/logs | `?kind=&after=&limit=` |
+| GET | /api/flats/{slug}/network | `{origins, updated_at, note}`; desired server HTTP(S) grants |
+| PUT | /api/flats/{slug}/network | `{origins: [...]}`; operator console or local CLI on loopback; `[]` clears |
 | GET | /api/flats/{slug}/env | `{env: [{name, value, updated_at}], note}`; ordinary values only |
 | PUT | /api/flats/{slug}/env/{name} | `{value}` (string, including empty); save desired config |
 | DELETE | /api/flats/{slug}/env/{name} | remove ordinary variable |
@@ -417,7 +430,7 @@ MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 `create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`
 (loopback callers only), `deploy`, `rollback`, `list_versions`,
 `open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
-`get_approval`, `list_env`, `set_env`, `delete_env`, `list_secrets`.
+`get_approval`, `get_network`, `list_env`, `set_env`, `delete_env`, `list_secrets`.
 
 
 ## Per-flat console management

@@ -65,28 +65,43 @@ func (s *Store) ListEnv(ctx context.Context, flat string) ([]EnvVar, error) {
 // SQLite statement, so concurrent setting writes cannot split the two namespaces.
 // It does not decrypt or expose secret values.
 func (s *Store) EnvironmentSnapshot(ctx context.Context, flat string) ([]EnvVar, []SealedSecret, error) {
+	vars, secs, _, err := s.RuntimeSettingsSnapshot(ctx, flat)
+	return vars, secs, err
+}
+
+// RuntimeSettingsSnapshot reads all desired runtime settings in one SQLite
+// statement. Concurrent writes cannot mix environment and network snapshots.
+func (s *Store) RuntimeSettingsSnapshot(ctx context.Context, flat string) ([]EnvVar, []SealedSecret, []string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT 0,name,value,X'',X'' FROM env_vars WHERE flat=?
- UNION ALL SELECT 1,name,'',nonce,ciphertext FROM secrets WHERE flat=?`, flat, flat)
+ UNION ALL SELECT 1,name,'',nonce,ciphertext FROM secrets WHERE flat=?
+ UNION ALL SELECT 2,'',origins,X'',X'' FROM network_settings WHERE flat=?`, flat, flat, flat)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 	vars := make([]EnvVar, 0)
 	secs := make([]SealedSecret, 0)
+	origins := make([]string, 0)
 	for rows.Next() {
 		var kind int
 		var name, value string
 		var nonce, ciphertext []byte
 		if err := rows.Scan(&kind, &name, &value, &nonce, &ciphertext); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if kind == 0 {
+		switch kind {
+		case 0:
 			vars = append(vars, EnvVar{Name: name, Value: value})
-		} else {
+		case 1:
 			secs = append(secs, SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext})
+		case 2:
+			origins, err = decodeNetworkOrigins(value)
+			if err != nil {
+				return nil, nil, nil, err
+			}
 		}
 	}
-	return vars, secs, rows.Err()
+	return vars, secs, origins, rows.Err()
 }
 
 // addEnvVars keeps ordinary configuration separate from encrypted secrets.
