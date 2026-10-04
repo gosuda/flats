@@ -120,3 +120,55 @@ func TestEnvMigrationPreservesSecrets(t *testing.T) {
 		t.Fatalf("migration collision: %v", err)
 	}
 }
+
+func TestEnvironmentSnapshotReadsNamespacesTogether(t *testing.T) {
+	s := open(t)
+	ctx := t.Context()
+	now := time.Now()
+	if err := s.CreateFlat(ctx, Flat{Slug: "app", Name: "app", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutEnv(ctx, "app", EnvVar{Name: "MODE", Value: "a", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutSecret(ctx, "app", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte("a"), UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 100; i++ {
+			value := []string{"a", "b"}[i%2]
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				done <- err
+				return
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE env_vars SET value=? WHERE flat='app'; UPDATE secrets SET ciphertext=? WHERE flat='app'`, value, []byte(value)); err != nil {
+				tx.Rollback()
+				done <- err
+				return
+			}
+			if err := tx.Commit(); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	for i := 0; i < 100; i++ {
+		vars, secs, err := s.EnvironmentSnapshot(ctx, "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(vars) != 1 || len(secs) != 1 || vars[0].Value != string(secs[0].Ciphertext) {
+			t.Fatalf("split snapshot: %v %v", vars, secs)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	vars, secs, err := s.EnvironmentSnapshot(ctx, "other")
+	if err != nil || len(vars) != 0 || len(secs) != 0 {
+		t.Fatalf("cross-flat snapshot: %v %v %v", vars, secs, err)
+	}
+}

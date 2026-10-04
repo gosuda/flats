@@ -11,7 +11,7 @@ func TestEnvCommand(t *testing.T) {
 	api.handle("PUT /api/flats/blog/env/MODE", 200, `{"name":"MODE","status":"stored"}`)
 	for _, value := range []string{"staging", "", "-test"} {
 		r := run(t, srv.URL, "", "env", "set", "--", "blog", "MODE", value)
-		if r.code != ExitOK || !strings.Contains(r.stdout, "next deploy") {
+		if r.code != ExitOK || !describesEnvActivation(r.stdout) {
 			t.Fatalf("set: %+v", r)
 		}
 		var body map[string]string
@@ -25,7 +25,7 @@ func TestEnvCommand(t *testing.T) {
 		t.Fatalf("ls: %+v", r)
 	}
 	api.handle("DELETE /api/flats/blog/env/MODE", 200, `{"deleted":"MODE"}`)
-	if r := run(t, srv.URL, "", "env", "rm", "blog", "MODE"); r.code != ExitOK {
+	if r := run(t, srv.URL, "", "env", "rm", "blog", "MODE"); r.code != ExitOK || !describesEnvActivation(r.stdout) {
 		t.Fatalf("rm: %+v", r)
 	}
 	for _, args := range [][]string{{"env"}, {"env", "set", "blog", "MODE"}, {"env", "ls"}, {"env", "unknown"}} {
@@ -33,4 +33,8 @@ func TestEnvCommand(t *testing.T) {
 			t.Fatalf("invalid %v: %+v", args, r)
 		}
 	}
+}
+
+func describesEnvActivation(note string) bool {
+	return strings.Contains(note, "after any required approval") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
 }

@@ -266,10 +266,15 @@ send queue 256 messages, closes on overflow. Redeploy closes connections.
 
 Ordinary app environment variables and operator-managed secrets are strings
 injected as `env.NAME` when the worker starts. `env` is frozen; `env.DB` and
-`env.FILES` are reserved host bindings. Both variable and secret names match
-`[A-Z_][A-Z0-9_]*`, at most 64 characters; `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are rejected.
-Values are at most 64 KiB and must be valid UTF-8 without NUL; empty strings are supported.
+`env.FILES` are reserved host bindings. New variable and secret writes require names matching
+`[A-Z_][A-Z0-9_]*`, at most 64 characters; `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are rejected for new writes.
+New values are at most 64 KiB and must be valid UTF-8 without NUL; empty strings are supported.
 A name cannot exist in both namespaces. Missing properties are undefined.
+Historical secrets remain stored and keep their runtime behavior: JavaScript
+`DB`/`FILES` host bindings take precedence over historical secrets with those
+names, while WASI receives their stored strings. Other historical names and
+values are preserved, including WASI rejecting NUL values as before. Replacing
+a historical secret must pass the current write validation.
 
 Manage ordinary values with `flats env set <slug> <name> <value>`,
 `flats env ls <slug>` and `flats env rm <slug> <name>`, the console Settings
@@ -280,10 +285,13 @@ times. HTTP API `GET /api/flats/{slug}/env` returns
 accepts `{value}` and `DELETE` removes it. Ordinary values are readable by
 management clients and stored without secret encryption: use secrets for credentials.
 
-Changes leave running handlers and previews on their startup snapshot. The next
-deployment or runtime restart loads current settings; new previews load the
-then-current settings too. Rollback uses current settings, not version-pinned
-values. Redeploy through the existing approval flow to apply changes. Neither
+Changes leave running handlers and previews on their startup snapshot. Approved
+deployment, redeployment or rollback captures current variables and secrets
+when activation begins; the health check and live worker share that snapshot.
+Settings are not pinned to the approval request or code version. Writes after
+capture apply at the next activation. New previews and a Flats host restart load
+current settings; automatic worker restarts reuse the captured snapshot. Redeploy
+through the existing approval flow to apply changes. Neither
 ordinary variables nor secrets enter frontend bundles, static files or build
 substitution. There is no inherited host environment.
 

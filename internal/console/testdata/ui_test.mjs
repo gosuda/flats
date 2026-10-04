@@ -175,6 +175,9 @@ let dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
 assert.equal(dialogs.length, 1);
 assert.ok(dialogs[0].textContent.includes('Redeploy version 2?'));
 assert.ok(dialogs[0].textContent.includes('environment variables and secrets'));
+assert.ok(dialogs[0].textContent.includes('when approved activation begins'));
+assert.ok(dialogs[0].textContent.includes('health check and live worker use the same settings snapshot'));
+assert.ok(dialogs[0].textContent.includes('after capture apply at the next activation'));
 dialogs[0].close('ok');
 await tick();
 const deploy = calls.find((c) => c.key === 'POST /console/api/flats/blog/deploy');
@@ -225,12 +228,17 @@ for (const tab of ['Settings', 'Analytics', 'Database']) {
 const envPanel = all(management, (e) => e.getAttribute('id') === 'env')[0];
 const secretPanel = all(management, (e) => e.getAttribute('id') === 'secrets')[0];
 assert.ok(envPanel.textContent.includes('Ordinary environment variables'));
-for (const disclosure of ['plain text', 'readable by authorized agents', 'env.NAME', 'WASI', 'browser bundles', 'next deploy or restart']) {
+for (const disclosure of ['plain text', 'readable by authorized agents', 'env.NAME', 'WASI', 'browser bundles', 'next approved deployment or Flats host restart']) {
   assert.ok(envPanel.textContent.includes(disclosure), `environment panel lacks ${disclosure}`);
 }
 assert.ok(envPanel.textContent.includes('<script>demo</script>\nsecond line'));
 assert.equal(all(envPanel, (e) => e.tagName === 'SCRIPT').length, 0, 'values must be text, never HTML');
 assert.ok(envPanel.textContent.includes('(empty)'));
+for (const panel of [envPanel, secretPanel]) {
+  assert.ok(panel.textContent.includes('next approved deployment or Flats host restart'));
+  assert.ok(panel.textContent.includes('Automatic worker restarts reuse the captured settings'));
+  assert.ok(panel.textContent.includes('New previews load current settings'));
+}
 assert.equal(secretPanel.textContent.includes('SECRET_MUST_NEVER_RENDER'), false);
 assert.equal(all(secretPanel, (e) => e.getAttribute('id') === 'secret-value')[0].getAttribute('type'), 'password');
 const field = (id) => all(envPanel, (e) => e.getAttribute('id') === id)[0];
@@ -257,7 +265,7 @@ byText(envPanel, 'Delete')[0].dispatch('click');
 await tick();
 let envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
 assert.ok(envDelete.textContent.includes('Delete variable APP_MODE?'));
-assert.ok(envDelete.textContent.includes('next deploy or restart'));
+assert.ok(envDelete.textContent.includes('next approved deployment or Flats host restart'));
 assert.equal(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'), false);
 envDelete.close('cancel');
 await tick();

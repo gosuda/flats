@@ -210,7 +210,7 @@ Flats polls each node's `Self.KeyExpiry` and `BackendState` every 5 minutes.
 Ordinary app-scoped strings are stored in `flats.db` separately from encrypted
 secrets. Management API, CLI, MCP and console clients can read and write these
 values; they are unsuitable for credentials. Names match `[A-Z_][A-Z0-9_]*`,
-with a maximum of 64 characters. `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are reserved in both namespaces.
+with a maximum of 64 characters. `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are reserved for new writes in both namespaces.
 Values may be empty, are at most 64 KiB, and must be valid UTF-8 without NUL. Ordinary
 variables and secrets cannot share a name, even if their values match.
 
@@ -218,14 +218,24 @@ variables and secrets cannot share a name, even if their values match.
 `flats env rm <slug> <name>` manage ordinary variables. JavaScript receives
 strings at `env.NAME`; WASI receives environment variables. No host environment
 is inherited and no values are substituted into static/frontend files or builds.
-The existing worker startup path combines ordinary variables with decrypted
-secrets without exposing secret values through ordinary management responses.
+Activation combines ordinary variables with decrypted secrets in one consistent
+store snapshot without exposing secret values through ordinary management responses.
+Historical secret records are retained without applying the new write validation
+at read time. JavaScript continues to expose `DB` and `FILES` as host bindings
+even if historical secrets have those names; WASI receives their historical
+string values. Other historical names and values keep their runtime behavior,
+including WASI rejecting NUL values as before. New writes must satisfy the
+current validation, even when replacing a historical secret.
 
 Settings are desired configuration, not code-version metadata. Saving or deleting
-a value leaves running workers and previews on their startup snapshot. A deployment
-or runtime restart reads the latest settings; preview creation does the same.
-Rollback also reads current settings rather than historical values. To apply a
-change intentionally, redeploy using the existing operator approval flow.
+a value leaves running workers and previews on their startup snapshot. An approved
+deployment, redeployment or rollback captures current variables and secrets when activation
+begins and uses that snapshot for both health checking and live startup. Settings
+are not pinned when approval is requested or to historical code versions. Writes
+after capture apply at the next activation. Preview creation and Flats host
+restart load current settings; automatic worker restarts reuse their captured
+snapshot. To apply a change intentionally, redeploy using the existing operator
+approval flow.
 
 ## Secrets
 
@@ -235,8 +245,9 @@ loopback only) can set or delete values; APIs and MCP return names and update
 times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
 with a shell on the Flats host (see Approvals). Values reach JavaScript as
-`env.NAME` and WASI as environment variables at worker start, so a change
-applies on the next deployment or runtime restart.
+`env.NAME` and WASI as environment variables from the captured activation
+snapshot. Changes apply on the next approved deployment, redeployment or rollback,
+or Flats host restart; automatic worker restarts reuse the captured settings.
 
 ## Approvals
 

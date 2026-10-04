@@ -16,6 +16,11 @@ func TestJSAppEnvironment(t *testing.T) {
 	configured := map[string]string{
 		"MODE": "production", "EMPTY": "", "UNICODE": "서울 ☕\nsecond line",
 		"API_KEY": "synthetic-secret-for-runtime-test",
+		// Historical secret names remain readable. Native JS bindings retain
+		// precedence over legacy DB/FILES strings without discarding other keys.
+		"DB": "legacy-db-secret", "FILES": "legacy-files-secret",
+		"PROTOTYPE": "legacy-prototype", "CONSTRUCTOR": "legacy-constructor",
+		"__PROTO__": "legacy-proto", "LEGACY_NUL": "before\x00after",
 	}
 	f := mustStart(t, newManager(t), "js-env", map[string]string{"index.js": `
 export default { fetch(request, env) {
@@ -23,7 +28,8 @@ export default { fetch(request, env) {
   env.DB.exec("INSERT INTO environment_test VALUES (?)", env.UNICODE);
   env.FILES.put("environment-test", env.MODE);
   return Response.json({
-    values: { MODE: env.MODE, EMPTY: env.EMPTY, UNICODE: env.UNICODE, API_KEY: env.API_KEY },
+    values: { MODE: env.MODE, EMPTY: env.EMPTY, UNICODE: env.UNICODE, API_KEY: env.API_KEY,
+      PROTOTYPE: env.PROTOTYPE, CONSTRUCTOR: env.CONSTRUCTOR, __PROTO__: env.__PROTO__, LEGACY_NUL: env.LEGACY_NUL },
     keys: Object.keys(env).sort(),
     db: env.DB.query("SELECT value FROM environment_test")[0].value,
     file: env.FILES.get("environment-test"),
@@ -38,7 +44,13 @@ export default { fetch(request, env) {
 		HostMissing, ProcessMissing bool
 	}
 	f.json(t, "/", &got)
-	if !reflect.DeepEqual(got.Values, configured) || !reflect.DeepEqual(got.Keys, []string{"API_KEY", "DB", "EMPTY", "FILES", "MODE", "UNICODE"}) {
+	expectedValues := make(map[string]string, len(configured)-2)
+	for key, value := range configured {
+		if key != "DB" && key != "FILES" {
+			expectedValues[key] = value
+		}
+	}
+	if !reflect.DeepEqual(got.Values, expectedValues) || !reflect.DeepEqual(got.Keys, []string{"API_KEY", "CONSTRUCTOR", "DB", "EMPTY", "FILES", "LEGACY_NUL", "MODE", "PROTOTYPE", "UNICODE", "__PROTO__"}) {
 		t.Fatalf("injected environment = %+v", got)
 	}
 	if got.DB != configured["UNICODE"] || got.File != configured["MODE"] || !got.HostMissing || !got.ProcessMissing {
@@ -91,6 +103,11 @@ func main() {
 	configured := map[string]string{
 		"MODE": "production", "EMPTY": "", "UNICODE": "서울 ☕\nsecond=line",
 		"API_KEY": "synthetic-secret-for-runtime-test",
+		// WASI has no native DB/FILES environment bindings, so legacy names
+		// must reach the guest unchanged, just like other historical secrets.
+		"DB": "legacy-db-secret", "FILES": "legacy-files-secret",
+		"PROTOTYPE": "legacy-prototype", "CONSTRUCTOR": "legacy-constructor",
+		"__PROTO__": "legacy-proto",
 	}
 	f := mustStart(t, newManager(t), "wasi-env", map[string]string{"environment.wasm": string(wasm)}, "environment.wasm", configured)
 	for i := 0; i < 2; i++ {

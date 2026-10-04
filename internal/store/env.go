@@ -61,6 +61,34 @@ func (s *Store) ListEnv(ctx context.Context, flat string) ([]EnvVar, error) {
 	return out, rows.Err()
 }
 
+// EnvironmentSnapshot reads ordinary variables and sealed secrets in a single
+// SQLite statement, so concurrent setting writes cannot split the two namespaces.
+// It does not decrypt or expose secret values.
+func (s *Store) EnvironmentSnapshot(ctx context.Context, flat string) ([]EnvVar, []SealedSecret, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT 0,name,value,X'',X'' FROM env_vars WHERE flat=?
+ UNION ALL SELECT 1,name,'',nonce,ciphertext FROM secrets WHERE flat=?`, flat, flat)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	vars := make([]EnvVar, 0)
+	secs := make([]SealedSecret, 0)
+	for rows.Next() {
+		var kind int
+		var name, value string
+		var nonce, ciphertext []byte
+		if err := rows.Scan(&kind, &name, &value, &nonce, &ciphertext); err != nil {
+			return nil, nil, err
+		}
+		if kind == 0 {
+			vars = append(vars, EnvVar{Name: name, Value: value})
+		} else {
+			secs = append(secs, SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext})
+		}
+	}
+	return vars, secs, rows.Err()
+}
+
 // addEnvVars keeps ordinary configuration separate from encrypted secrets.
 // Both directions are protected in SQLite, including across Store instances.
 func addEnvVars(ctx context.Context, x executor) error {

@@ -17,11 +17,11 @@ func TestEnvTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	var change EnvChangeOut
-	if text, failed := call(t, e.remote, "set_env", map[string]any{"slug": "envapp", "name": "MODE", "value": "staging"}, &change); failed || change.Status != "stored" || strings.Contains(text, "staging") {
+	if text, failed := call(t, e.remote, "set_env", map[string]any{"slug": "envapp", "name": "MODE", "value": "staging"}, &change); failed || change.Status != "stored" || strings.Contains(text, "staging") || !describesEnvActivation(change.Note) {
 		t.Fatalf("set: %s %+v", text, change)
 	}
 	var listed EnvOut
-	if text, failed := call(t, e.local, "list_env", map[string]any{"slug": "envapp"}, &listed); failed || len(listed.Env) != 1 || listed.Env[0].Value != "staging" || strings.Contains(text, "test-secret") {
+	if text, failed := call(t, e.local, "list_env", map[string]any{"slug": "envapp"}, &listed); failed || len(listed.Env) != 1 || listed.Env[0].Value != "staging" || strings.Contains(text, "test-secret") || !describesEnvActivation(listed.Note) {
 		t.Fatalf("list: %s %+v", text, listed)
 	}
 	for _, name := range []string{"TOKEN", "DB", "bad-name"} {
@@ -32,7 +32,7 @@ func TestEnvTools(t *testing.T) {
 	if text, failed := call(t, e.local, "set_env", map[string]any{"slug": "envapp", "name": "MODE", "value": ""}, &change); failed {
 		t.Fatalf("empty: %s", text)
 	}
-	if text, failed := call(t, e.remote, "delete_env", map[string]any{"slug": "envapp", "name": "MODE"}, &change); failed || change.Status != "deleted" {
+	if text, failed := call(t, e.remote, "delete_env", map[string]any{"slug": "envapp", "name": "MODE"}, &change); failed || change.Status != "deleted" || !describesEnvActivation(change.Note) {
 		t.Fatalf("delete: %s %+v", text, change)
 	}
 	if text, failed := call(t, e.local, "list_env", map[string]any{"slug": "envapp"}, &listed); failed || len(listed.Env) != 0 {
@@ -41,4 +41,8 @@ func TestEnvTools(t *testing.T) {
 	if text, failed := call(t, e.local, "list_env", map[string]any{"slug": "missing"}, nil); !failed {
 		t.Fatalf("missing: %s", text)
 	}
+}
+
+func describesEnvActivation(note string) bool {
+	return strings.Contains(note, "after any required approval") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
 }

@@ -26,16 +26,16 @@ func TestEnvManagement(t *testing.T) {
 			}
 		}
 		for _, value := range []string{"staging", ""} {
-			if code, out := req(t, "PUT", base+"/MODE", strings.NewReader(`{"value":"`+value+`"}`), hdr); code != 200 {
+			if code, out := req(t, "PUT", base+"/MODE", strings.NewReader(`{"value":"`+value+`"}`), hdr); code != 200 || !describesEnvActivation(out["note"]) {
 				t.Fatalf("set = %d %v", code, out)
 			}
 			code, out := req(t, "GET", base, nil, hdr)
 			vars, ok := out["env"].([]any)
-			if code != 200 || !ok || len(vars) != 1 || vars[0].(map[string]any)["value"] != value || out["note"] == "" {
+			if code != 200 || !ok || len(vars) != 1 || vars[0].(map[string]any)["value"] != value || !describesEnvActivation(out["note"]) {
 				t.Fatalf("list = %d %v", code, out)
 			}
 		}
-		if code, out := req(t, "DELETE", base+"/MODE", nil, hdr); code != 200 {
+		if code, out := req(t, "DELETE", base+"/MODE", nil, hdr); code != 200 || !describesEnvActivation(out["note"]) {
 			t.Fatalf("delete = %d %v", code, out)
 		}
 		if code, out := req(t, "GET", base, nil, hdr); code != 200 || len(out["env"].([]any)) != 0 {
@@ -61,3 +61,9 @@ func TestEnvManagement(t *testing.T) {
 }
 
 func envJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
+
+// Activation guidance must distinguish a host restart from a worker restart.
+func describesEnvActivation(v any) bool {
+	note, ok := v.(string)
+	return ok && strings.Contains(note, "after any required approval") && strings.Contains(note, "Flats host restart") && strings.Contains(note, "New previews capture current settings") && strings.Contains(note, "automatic worker restarts reuse their captured settings")
+}

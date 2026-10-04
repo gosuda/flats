@@ -40,3 +40,30 @@ func TestDocumentedRuntimeLimits(t *testing.T) {
 		t.Fatal("byte/upload counts changed: update the published exact counts")
 	}
 }
+
+// The embedded reference is also the agent-facing contract: distinguish a host
+// restart from automatic worker recovery, and explain approval-time settings.
+func TestDocumentedEnvironmentActivation(t *testing.T) {
+	_, body, ok := strings.Cut(runtimeref.Markdown, "Ordinary app environment variables and operator-managed secrets")
+	if !ok {
+		t.Fatal("missing environment contract")
+	}
+	body, _, _ = strings.Cut(body, "`list_secrets {slug}`")
+	body = strings.Join(strings.Fields(body), " ")
+	for _, claim := range []string{
+		"when activation begins; the health check and live worker share that snapshot.",
+		"Settings are not pinned to the approval request or code version.",
+		"Writes after capture apply at the next activation.",
+		"a Flats host restart load current settings; automatic worker restarts reuse the captured snapshot.",
+		"JavaScript `DB`/`FILES` host bindings take precedence over historical secrets",
+		"WASI receives their stored strings.",
+		"Replacing a historical secret must pass the current write validation.",
+	} {
+		if !strings.Contains(body, claim) {
+			t.Errorf("missing environment behavior disclosure: %s", claim)
+		}
+	}
+	if strings.Contains(body, "runtime restart") {
+		t.Error("ambiguous runtime restart activation guidance")
+	}
+}

@@ -8,7 +8,7 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-const envNote = "ordinary values are readable by management clients; use secrets for credentials. Changes apply on the next deploy or runtime restart, and never enter frontend bundles"
+const envNote = "ordinary values are readable by management clients; use secrets for credentials. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings. Values are server-only and never enter frontend bundles."
 
 func (s *Server) listEnv(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	vars, err := s.Svc.ListEnv(r.Context(), r.PathValue("slug"))

@@ -91,7 +91,7 @@ async function showLive(slug, what) {
 }
 
 // redeployLive restarts the live version so it picks up changed environment variables and secrets
-// (a worker reads them only when it starts).
+// (approval captures one snapshot for health checking and live startup).
 export async function redeployLive(flat) {
   const n = flat.live_version;
   if (!n) return false;
@@ -99,9 +99,9 @@ export async function redeployLive(flat) {
   const ok = await confirmDialog({
     title: `Redeploy version ${n}?`,
     body: [
-      h('p', { text: `${label(flat)} restarts version ${n} with its current environment variables and secrets.` }),
+      h('p', { text: `${label(flat)} redeploys version ${n} with environment variables and secrets captured when approved activation begins.` }),
       h('p', { class: 'muted', text: server
-        ? 'The health check runs first; if it fails, the running instance keeps serving. Data is kept as it is.'
+        ? 'The health check and live worker use the same settings snapshot. Changes saved after capture apply at the next activation. If the health check fails, the running instance keeps serving. Data is kept as it is.'
         : 'This is a static flat: environment variables and secrets are not injected, so it keeps serving the same files.' }),
     ],
     confirmLabel: 'Redeploy',

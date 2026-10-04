@@ -176,26 +176,19 @@ func (s *Service) SecretNames(ctx context.Context, slugName string) ([]SecretInf
 	return out, nil
 }
 
-func (s *Service) secretsFor(ctx context.Context, slugName string) (map[string]string, error) {
-	secs, err := s.st.ListSecrets(ctx, slugName)
-	if err != nil {
-		return nil, err
-	}
+// Stored secrets predate ordinary env validation. Preserve their names and bytes;
+// each runtime retains its existing binding and value handling. New writes remain
+// strictly validated. Never silently remove legacy operator configuration.
+func (s *Service) decryptSecrets(secs []store.SealedSecret) (map[string]string, error) {
 	g, err := s.aead()
 	if err != nil {
 		return nil, err
 	}
 	env := map[string]string{}
 	for _, sec := range secs {
-		if err := validateEnvName(sec.Name, "secret"); err != nil {
-			return nil, err
-		}
 		pt, err := g.Open(nil, sec.Nonce, sec.Ciphertext, []byte(sec.Name))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt secret %s: %w", sec.Name, err)
-		}
-		if err := validateEnvValue(string(pt), "secret"); err != nil {
-			return nil, err
 		}
 		env[sec.Name] = string(pt)
 	}

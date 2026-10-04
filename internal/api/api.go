@@ -641,7 +641,7 @@ func (s *Server) secrets(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"secrets": names, "note": "values are never returned; changes apply on the next deploy"})
+	writeJSON(w, 200, map[string]any{"secrets": names, "note": "values are never returned. Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
 }
 
 // operatorVia allows secret writes from the console or the CLI on this host.
@@ -672,7 +672,7 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request, via core.Via)
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply"})
+	writeJSON(w, 200, map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply", "note": "Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
 }
 
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request, via core.Via) {
@@ -685,7 +685,7 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request, via core.V
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"deleted": r.PathValue("name")})
+	writeJSON(w, 200, map[string]any{"deleted": r.PathValue("name"), "note": "Changes apply to live on the next deploy/redeploy (after any required approval) or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ core.Via) {

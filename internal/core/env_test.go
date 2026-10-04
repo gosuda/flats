@@ -3,10 +3,13 @@ package core
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/store"
@@ -181,5 +184,208 @@ func TestEnvUpdateActivationOnRedeploy(t *testing.T) {
 	lifecycleApprove(t, s, pending)
 	if got := liveBytes(t, s, "app"); got != "" {
 		t.Fatalf("delete was not applied %q", got)
+	}
+}
+
+// Old releases accepted these reserved names and arbitrary secret bytes. An
+// upgrade must decrypt them unchanged, while rejecting equivalent new writes.
+func TestLegacySecretsRemainReadableByRuntime(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := t.Context()
+	if _, err := s.CreateFlat(ctx, "legacy", "", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	g, err := s.aead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]string{"PROTOTYPE": "prototype-value", "CONSTRUCTOR": "constructor-value", "__PROTO__": "proto-value", "DB": "legacy-db", "FILES": "legacy-files", "BYTES": "legacy\x00\xffvalue"}
+	for name, value := range legacy {
+		nonce := make([]byte, g.NonceSize())
+		ciphertext := g.Seal(nil, nonce, []byte(value), []byte(name))
+		if err := s.st.PutSecret(ctx, "legacy", store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext, UpdatedAt: s.now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetSecret(ctx, "legacy", name, value, ViaCLI); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("new write %s: %v", name, err)
+		}
+	}
+	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+		if !maps.Equal(spec.Env, legacy) {
+			t.Fatalf("legacy configuration changed: got %q want %q", spec.Env, legacy)
+		}
+		return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })}, nil
+	})
+	d, err := s.build(ctx, "legacy", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.inst.Stop()
+	vars, err := s.ListEnv(ctx, "legacy")
+	if err != nil || len(vars) != 0 {
+		t.Fatalf("legacy secrets exposed as ordinary vars: %+v %v", vars, err)
+	}
+}
+
+func TestDeploymentUsesCheckedEnvironmentDespiteConcurrentWrites(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) { return nil, errors.New("unused runtime") })
+	ctx := t.Context()
+	if _, err := s.SaveVersion(ctx, "app", []bundle.File{{Path: "flats.json", Data: []byte(`{"kind":"server","entry":"server.js"}`)}, {Path: "server.js", Data: []byte(`export default {}`)}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnv(ctx, "app", "MODE", "original", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSecret(ctx, "app", "TOKEN", "original-secret", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+		starts++
+		start := starts
+		mode, token := spec.Env["MODE"], spec.Env["TOKEN"]
+		return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if start == 1 || start == 3 {
+				// A settings write must complete during health checking without deadlocking
+				// on the deployment lock. It applies only to the following activation.
+				done := make(chan error, 1)
+				go func() {
+					if err := s.SetEnv(ctx, "app", "MODE", fmt.Sprintf("updated-%d", start), ViaAPI); err != nil {
+						done <- err
+						return
+					}
+					done <- s.SetSecret(ctx, "app", "TOKEN", fmt.Sprintf("updated-secret-%d", start), ViaCLI)
+				}()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("settings write blocked during deployment health check")
+				}
+				// Runtime implementations must not mutate the frozen live-start snapshot.
+				spec.Env["MODE"] = "mutated-runtime-map"
+				spec.Env["TOKEN"] = "mutated-runtime-secret"
+			}
+			fmt.Fprintf(w, "%s|%s", mode, token)
+		})}, nil
+	})
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+	if got := liveBytes(t, s, "app"); got != "original|original-secret" {
+		t.Fatalf("publish applied unchecked settings: %q", got)
+	}
+	for _, want := range []string{"updated-1|updated-secret-1", "updated-3|updated-secret-3"} {
+		_, err := s.Deploy(ctx, "app", 1, ViaConsole)
+		var pending *PendingApproval
+		if !errors.As(err, &pending) {
+			t.Fatal(err)
+		}
+		lifecycleApprove(t, s, pending)
+		if got := liveBytes(t, s, "app"); got != want {
+			t.Fatalf("redeploy environment: got %q want %q", got, want)
+		}
+	}
+	events, err := s.st.ListEvents(ctx, "app", "health", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if strings.Contains(ev.Message, "original-secret") || strings.Contains(ev.Message, "updated-secret-") || strings.Contains(string(ev.Data), "original-secret") || strings.Contains(string(ev.Data), "updated-secret-") {
+			t.Fatalf("checked snapshot secret leaked: %+v", ev)
+		}
+	}
+}
+
+func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
+	for _, failLive := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fail-live-%v", failLive), func(t *testing.T) {
+			s, _ := newTestService(t)
+			ctx := t.Context()
+			s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+				return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					fmt.Fprintf(w, "%s|%s", spec.Env["MODE"], spec.Env["TOKEN"])
+				})}, nil
+			})
+			save := func(body string) {
+				if _, err := s.SaveVersion(ctx, "app", []bundle.File{{Path: "flats.json", Data: []byte(`{"kind":"server","entry":"server.js"}`)}, {Path: "server.js", Data: []byte(body)}}, SaveMeta{}, ViaAPI); err != nil {
+					t.Fatal(err)
+				}
+			}
+			configure := func(value string) {
+				if err := s.SetEnv(ctx, "app", "MODE", value, ViaAPI); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.SetSecret(ctx, "app", "TOKEN", value+"-secret", ViaCLI); err != nil {
+					t.Fatal(err)
+				}
+			}
+			save("version-one")
+			configure("first")
+			lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+			if err := writeFile(filepath.Join(s.dataDirOf("app"), "files", "note"), "before"); err != nil {
+				t.Fatal(err)
+			}
+			save("version-two")
+			configure("previous-live")
+			lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+			if err := writeFile(filepath.Join(s.dataDirOf("app"), "files", "note"), "after"); err != nil {
+				t.Fatal(err)
+			}
+			configure("checked")
+			starts := 0
+			s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+				starts++
+				start := starts
+				mode, token := spec.Env["MODE"], spec.Env["TOKEN"]
+				if start == 2 && failLive {
+					return nil, errors.New("live restore startup rejected")
+				}
+				return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if start == 1 {
+						done := make(chan error, 1)
+						go func() {
+							if err := s.SetEnv(ctx, "app", "MODE", "pending", ViaAPI); err != nil {
+								done <- err
+								return
+							}
+							done <- s.SetSecret(ctx, "app", "TOKEN", "pending-secret", ViaCLI)
+						}()
+						select {
+						case err := <-done:
+							if err != nil {
+								t.Fatal(err)
+							}
+						case <-time.After(3 * time.Second):
+							t.Fatal("settings write blocked during restore trial")
+						}
+						spec.Env["MODE"] = "runtime-mutation"
+					}
+					fmt.Fprintf(w, "%s|%s", mode, token)
+				})}, nil
+			})
+			_, err := s.RollbackWithData(ctx, "app", 1, true, ViaConsole)
+			var pending *PendingApproval
+			if !errors.As(err, &pending) {
+				t.Fatal(err)
+			}
+			receipt, err := s.Decide(ctx, pending.Approval.ID, true)
+			want, note := "checked|checked-secret", "before"
+			if failLive {
+				if err == nil || receipt.Status != "failed" {
+					t.Fatalf("restore failure: %+v %v", receipt, err)
+				}
+				want, note = "previous-live|previous-live-secret", "after"
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if got := liveBytes(t, s, "app"); got != want {
+				t.Fatalf("restored runtime: got %q want %q", got, want)
+			}
+			if got, _ := readFile(filepath.Join(s.dataDirOf("app"), "files", "note")); got != note {
+				t.Fatalf("restore data: got %q want %q", got, note)
+			}
+		})
 	}
 }
