@@ -42,7 +42,7 @@ func TestSettingsDefaultsComeFromConfig(t *testing.T) {
 		t.Fatalf("settings table written: %q", v)
 	}
 	// config.json's ranges and rules apply to console values too.
-	for k, v := range map[string]string{core.SetKeepVersions: "100001", core.SetPortalDiscover: "false"} {
+	for k, v := range map[string]string{core.SetKeepVersions: "9007199254740992", core.SetPortalDiscover: "false"} {
 		if _, err := e.svc.UpdateSettings(ctx, map[string]string{k: v}); !errors.Is(err, core.ErrInvalid) {
 			t.Errorf("%s=%s: %v", k, v, err)
 		}

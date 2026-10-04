@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -393,6 +395,86 @@ var hostFlags = []struct {
 	{"runtime", "host.server_runtime", func(o Options) string { return strconv.FormatBool(o.Runtime) }},
 }
 
+// legacyHostValues converts the explicitly set host flags to the config
+// values that have the effect they had: a service name port becomes its
+// number. A flag `flats serve` could not have started with is ignored and
+// reported, and is then neither stored nor compared.
+func legacyHostValues(o Options) (map[string]string, []string) {
+	values, notes := map[string]string{}, []string(nil)
+	scratch, _ := config.New(config.NewInstanceID(), string(filepath.Separator))
+	for _, hf := range hostFlags {
+		if !o.Set[hf.flag] {
+			continue
+		}
+		v := hf.value(o)
+		if host, port, err := net.SplitHostPort(v); err == nil && hf.flag != "console-host" {
+			if _, err := strconv.ParseUint(port, 10, 16); err != nil && port != "" {
+				if n, err := net.LookupPort("tcp", port); err == nil {
+					notes = append(notes, fmt.Sprintf("--%s %s is stored as port %d", hf.flag, v, n))
+					v = net.JoinHostPort(host, strconv.Itoa(n))
+				}
+			}
+		}
+		if err := scratch.Set(hf.key, v); err != nil {
+			notes = append(notes, fmt.Sprintf("--%s %s was ignored: flats serve could not listen on it (%v)", hf.flag, v, err))
+			continue
+		}
+		values[hf.key] = v
+	}
+	// Equal fixed addresses could never both listen. Ignore the explicit
+	// local address, else the explicit management address.
+	if err := scratch.Validate(); err != nil {
+		for _, f := range []struct{ flag, key string }{{"local-addr", "host.local_addr"}, {"listen", "host.management_addr"}} {
+			if v, ok := values[f.key]; ok {
+				notes = append(notes, fmt.Sprintf("--%s %s was ignored: flats serve could not listen on both addresses", f.flag, v))
+				delete(values, f.key)
+				break
+			}
+		}
+	}
+	return values, notes
+}
+
+// flagRelays returns the relays of --relays, or none (and a note) when
+// they are not valid relay URLs and so could not have been used.
+func flagRelays(o Options) ([]string, string) {
+	if len(o.Relays) == 0 {
+		return nil, ""
+	}
+	r, err := portal.NormalizeRelays(o.Relays)
+	if err != nil {
+		return nil, fmt.Sprintf("--relays %s was ignored (%v); Portal could not have started with it", strings.Join(o.Relays, ","), err)
+	}
+	return r, ""
+}
+
+// inEffect maps a stored system setting outside the config range to the
+// config value with the effect it had, with the reason. why is "" for a
+// value in range.
+func inEffect(setting string, n int64) (v int64, why string) {
+	if n > config.MaxInt {
+		return config.MaxInt, "above the largest value, which has the same effect"
+	}
+	switch {
+	case n >= 1:
+		return n, ""
+	case setting == core.SetKeepVersions || setting == core.SetDiskQuotaBytes || setting == core.SetRedirectDays:
+		if n < 0 {
+			return 0, "a negative value worked like 0"
+		}
+		return n, ""
+	case setting == core.SetRateLimit:
+		return config.MaxInt, "a value below 1 turned rate limiting off; the largest rate never limits"
+	case setting == core.SetPreviewTTL:
+		return 1, "a value below 1 expired previews at once; the shortest stored time is 1 second"
+	case setting == core.SetUploadMaxBytes:
+		return 1, "a value below 1 refused every upload; the smallest stored limit is 1 byte"
+	case setting == core.SetEventsKeep:
+		return 1, "a value below 1 kept no events; the smallest stored count is 1"
+	}
+	return n, ""
+}
+
 // systemSettings are the legacy settings rows of the system.* keys.
 var systemSettings = []string{core.SetUploadMaxBytes, core.SetKeepVersions, core.SetDiskQuotaBytes,
 	core.SetPreviewTTL, core.SetRateLimit, core.SetRedirectDays, core.SetEventsKeep}
@@ -424,9 +506,11 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 		return nil
 	}
 
+	host, hostNotes := legacyHostValues(o)
+	plan.notes = append(plan.notes, hostNotes...)
 	for _, hf := range hostFlags {
 		def, _ := config.Default(hf.key)
-		if v := hf.value(o); o.Set[hf.flag] && v != fmt.Sprint(def) {
+		if v, ok := host[hf.key]; ok && v != fmt.Sprint(def) {
 			if err := set(hf.key, v, "--"+hf.flag+" "+v); err != nil {
 				return nil, err
 			}
@@ -487,6 +571,10 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 			note("setting %s=%q was ignored (not an integer); %s keeps its default %s", k, v, key, core.Defaults[k])
 			continue
 		}
+		if c, why := inEffect(k, n); why != "" {
+			note("setting %s=%s: %s; %s is %d", k, v, why, key, c)
+			n = c
+		}
 		if strconv.FormatInt(n, 10) == core.Defaults[k] {
 			continue
 		}
@@ -495,7 +583,10 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 		}
 	}
 
-	relays := o.Relays
+	relays, flagNote := flagRelays(o)
+	if flagNote != "" {
+		note("%s", flagNote)
+	}
 	if len(relays) > 0 {
 		if v := strings.TrimSpace(old.Settings[core.SetPortalRelays]); v != "" {
 			note("--relays replaces the stored portal relays %q, as before", v)
@@ -531,8 +622,15 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 		switch {
 		case err != nil || n < 0:
 			note("setting %s=%q was ignored (want a non-negative integer); portal.max_active_relays keeps its default %d", core.SetPortalMaxRelay, v, portal.DefaultMaxActiveRelays)
-		case n == 0 || n == portal.DefaultMaxActiveRelays:
-			// 0 selected the Portal default, which is the config default.
+		case n == 0:
+			note("setting %s=0 selected the Portal default; portal.max_active_relays keeps its default %d", core.SetPortalMaxRelay, portal.DefaultMaxActiveRelays)
+		case n == portal.DefaultMaxActiveRelays:
+		case n > math.MaxInt32:
+			// No relay set comes near this; the cap stays unreachable.
+			note("setting %s=%s is stored as %d, the largest value", core.SetPortalMaxRelay, v, math.MaxInt32)
+			if err := set("portal.max_active_relays", strconv.Itoa(math.MaxInt32), "setting "+core.SetPortalMaxRelay); err != nil {
+				return nil, err
+			}
 		default:
 			if err := set("portal.max_active_relays", strconv.Itoa(n), "setting "+core.SetPortalMaxRelay+"="+v); err != nil {
 				return nil, err
@@ -615,10 +713,11 @@ func flagConflicts(c *config.Config, o Options) []string {
 	differ := func(flag, value, key string, have any) {
 		out = append(out, fmt.Sprintf("--%s %s, but %s is %s", flag, value, key, show(have)))
 	}
+	host, _ := legacyHostValues(o)
 	for _, hf := range hostFlags {
 		have, _, _ := c.Lookup(hf.key)
-		if v := hf.value(o); o.Set[hf.flag] && v != fmt.Sprint(have) {
-			differ(hf.flag, v, hf.key, have)
+		if v, ok := host[hf.key]; ok && v != fmt.Sprint(have) {
+			differ(hf.flag, hf.value(o), hf.key, have)
 		}
 	}
 	permitted := func(id provider.ID) bool { return slices.Contains(c.Network.Permitted, string(id)) }
@@ -638,11 +737,8 @@ func flagConflicts(c *config.Config, o Options) []string {
 			differ("permit", raw, "network.permitted", c.Network.Permitted)
 		}
 	}
-	if len(o.Relays) > 0 {
-		r, err := portal.NormalizeRelays(o.Relays)
-		if err != nil || !slices.Equal(r, c.Portal.Relays) {
-			differ("relays", strings.Join(o.Relays, ","), "portal.relays", c.Portal.Relays)
-		}
+	if r, _ := flagRelays(o); len(r) > 0 && !slices.Equal(r, c.Portal.Relays) {
+		differ("relays", strings.Join(o.Relays, ","), "portal.relays", c.Portal.Relays)
 	}
 	if o.Set["authkey-file"] && o.AuthKeyFile != c.Credentials.TailscaleAuthKeyFile {
 		differ("authkey-file", o.AuthKeyFile, "credentials.tailscale_authkey_file", c.Credentials.TailscaleAuthKeyFile)

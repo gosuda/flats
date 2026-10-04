@@ -47,26 +47,34 @@ func TestValidation(t *testing.T) {
 		wantPath        string // "" = valid
 	}{
 		{"host", `"instance_id": "0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b"`, "host.instance_id"}, // duplicate key
+		// Every address `flats serve --listen` accepted stays valid, as written.
 		{"host", `"management_addr": "127.0.0.1:7878"`, ""},
 		{"host", `"management_addr": "127.1.2.3:80"`, ""},
 		{"host", `"management_addr": "[::1]:9000"`, ""},
-		{"host", `"management_addr": "localhost:7878"`, "host.management_addr"},
-		{"host", `"management_addr": "0.0.0.0:7878"`, "host.management_addr"},
-		{"host", `"management_addr": "10.0.0.1:7878"`, "host.management_addr"},
-		{"host", `"management_addr": "127.0.0.1:0"`, "host.management_addr"},
+		{"host", `"management_addr": "localhost:7878"`, ""},
+		{"host", `"management_addr": "0.0.0.0:7878"`, ""},
+		{"host", `"management_addr": "10.0.0.1:7878"`, ""},
+		{"host", `"management_addr": ":7878"`, ""},
+		{"host", `"management_addr": "flats.example:7878"`, ""},
+		{"host", `"management_addr": "127.0.0.1:0"`, ""},
+		{"host", `"management_addr": "127.0.0.1:"`, ""},
+		{"host", `"management_addr": "127.0.0.1:07878"`, ""},
+		{"host", `"management_addr": "[::ffff:127.0.0.1]:7878"`, ""},
+		{"host", `"management_addr": "[fe80::1%lo0]:7878"`, ""},
+		{"host", `"management_addr": "127.0.0.1:65535"`, ""},
 		{"host", `"management_addr": "127.0.0.1:65536"`, "host.management_addr"},
+		{"host", `"management_addr": "127.0.0.1:-1"`, "host.management_addr"},
+		{"host", `"management_addr": "127.0.0.1:http"`, "host.management_addr"},
 		{"host", `"management_addr": "127.0.0.1"`, "host.management_addr"},
-		{"host", `"management_addr": "127.0.0.1:07878"`, "host.management_addr"},
-		{"host", `"management_addr": "[::ffff:127.0.0.1]:7878"`, "host.management_addr"},
-		{"host", `"management_addr": "[fe80::1%lo0]:7878"`, "host.management_addr"},
+		{"host", `"management_addr": "::1:7878"`, "host.management_addr"},
 		{"host", `"management_addr": 7878`, "host.management_addr"},
 		{"host", `"local_addr": "127.0.0.2:7879"`, ""},
+		{"host", `"local_addr": "192.168.0.1:7879"`, ""},
 		{"host", `"local_addr": "127.0.0.1:7878"`, "host.local_addr"}, // equals default management_addr
-		{"host", `"local_addr": "192.168.0.1:7879"`, "host.local_addr"},
 		{"host", `"console_host": "my-console"`, ""},
-		{"host", `"console_host": "Flats"`, "host.console_host"},
-		{"host", `"console_host": "ab"`, "host.console_host"},
-		{"host", `"console_host": "a.flats"`, "host.console_host"},
+		{"host", `"console_host": "Flats"`, ""},
+		{"host", `"console_host": "a.flats"`, ""},
+		{"host", `"console_host": 1`, "host.console_host"},
 		{"host", `"server_runtime": false`, ""},
 		{"host", `"server_runtime": "false"`, "host.server_runtime"},
 		{"host", `"server_runtime": 0`, "host.server_runtime"},
@@ -81,32 +89,33 @@ func TestValidation(t *testing.T) {
 		{"network", `"private_backend": "tailscale"`, "network.private_backend"},
 		{"network", `"private_backend": "tailscale-funnel"`, "network.private_backend"},
 		{"system", `"upload_max_bytes": 1`, ""},
-		{"system", `"upload_max_bytes": 1073741824`, ""},
+		{"system", `"upload_max_bytes": 9007199254740991`, ""},
 		{"system", `"upload_max_bytes": 0`, "system.upload_max_bytes"},
-		{"system", `"upload_max_bytes": 1073741825`, "system.upload_max_bytes"},
+		{"system", `"upload_max_bytes": 9007199254740992`, "system.upload_max_bytes"},
 		{"system", `"keep_versions": 0`, ""},
-		{"system", `"keep_versions": 100000`, ""},
+		{"system", `"keep_versions": 9007199254740991`, ""},
 		{"system", `"keep_versions": -1`, "system.keep_versions"},
-		{"system", `"keep_versions": 100001`, "system.keep_versions"},
+		{"system", `"keep_versions": 9007199254740992`, "system.keep_versions"},
 		{"system", `"disk_quota_bytes": 0`, ""},
 		{"system", `"disk_quota_bytes": 9007199254740991`, ""},
 		{"system", `"disk_quota_bytes": 9007199254740992`, "system.disk_quota_bytes"},
 		{"system", `"disk_quota_bytes": 99999999999999999999`, "system.disk_quota_bytes"},
 		{"system", `"preview_ttl_seconds": 1`, ""},
-		{"system", `"preview_ttl_seconds": 31536000`, ""},
+		{"system", `"preview_ttl_seconds": 9007199254740991`, ""},
 		{"system", `"preview_ttl_seconds": 0`, "system.preview_ttl_seconds"},
-		{"system", `"preview_ttl_seconds": 31536001`, "system.preview_ttl_seconds"},
+		{"system", `"preview_ttl_seconds": 9007199254740992`, "system.preview_ttl_seconds"},
 		{"system", `"rate_limit_rps": 1`, ""},
-		{"system", `"rate_limit_rps": 1000000`, ""},
+		{"system", `"rate_limit_rps": 9007199254740991`, ""},
 		{"system", `"rate_limit_rps": 0`, "system.rate_limit_rps"},
-		{"system", `"rate_limit_rps": 1000001`, "system.rate_limit_rps"},
+		{"system", `"rate_limit_rps": 9007199254740992`, "system.rate_limit_rps"},
 		{"system", `"redirect_days": 0`, ""},
-		{"system", `"redirect_days": 3650`, ""},
-		{"system", `"redirect_days": 3651`, "system.redirect_days"},
+		{"system", `"redirect_days": 9007199254740991`, ""},
+		{"system", `"redirect_days": -1`, "system.redirect_days"},
+		{"system", `"redirect_days": 9007199254740992`, "system.redirect_days"},
 		{"system", `"events_keep": 1`, ""},
-		{"system", `"events_keep": 10000000`, ""},
+		{"system", `"events_keep": 9007199254740991`, ""},
 		{"system", `"events_keep": 0`, "system.events_keep"},
-		{"system", `"events_keep": 10000001`, "system.events_keep"},
+		{"system", `"events_keep": 9007199254740992`, "system.events_keep"},
 		{"portal", `"relays": []`, ""},
 		{"portal", `"relays": ["https://rly.best", "relay.example.com:8443"]`, ""},
 		{"portal", `"relays": ["http://example.com"]`, "portal.relays[0]"},
@@ -310,7 +319,7 @@ func TestOverrides(t *testing.T) {
 		{"portal.relays", "https://rly.best", "portal.relays"},
 		{"credentials.operator_file", "/x", "credentials.operator_file"},
 		{"host.nope", "x", "host.nope"},
-		{"host.management_addr", "0.0.0.0:80", "host.management_addr"},
+		{"host.management_addr", "127.0.0.1", "host.management_addr"},
 		{"host.local_addr", "127.0.0.1:7878", "host.local_addr"}, // same as management_addr
 		{"host.server_runtime", "yes", "host.server_runtime"},
 	}
@@ -375,7 +384,7 @@ func TestSetUnset(t *testing.T) {
 		{"system.keep_versions", "+5"},
 		{"system.keep_versions", "05"},
 		{"system.keep_versions", " 5"},
-		{"system.keep_versions", "100001"},
+		{"system.keep_versions", "9007199254740992"},
 		{"host.server_runtime", "yes"},
 		{"host.server_runtime", "True"},
 		{"network.permitted", "portal,portal"},
@@ -495,7 +504,8 @@ func TestProductionRegistry(t *testing.T) {
 	}
 }
 
-func TestEphemeralOverrides(t *testing.T) {
+// Two addresses that pick free ports do not collide; equal fixed ports do.
+func TestFreePortAddresses(t *testing.T) {
 	doc, err := New(testID, "/var/lib/flats")
 	if err != nil {
 		t.Fatal(err)
@@ -507,13 +517,15 @@ func TestEphemeralOverrides(t *testing.T) {
 	if c.Host.ManagementAddr != "127.0.0.1:0" || c.Host.LocalAddr != "127.0.0.1:0" {
 		t.Fatalf("Host = %+v", c.Host)
 	}
-	for _, bad := range []string{"0.0.0.0:0", "127.000.0.1:0"} {
-		if _, err := doc.Effective(map[string]string{"host.management_addr": bad}); err == nil {
-			t.Errorf("override %s accepted", bad)
-		}
+	if _, err := doc.Effective(map[string]string{"host.management_addr": "localhost:9000", "host.local_addr": "localhost:9000"}); err == nil {
+		t.Error("equal fixed addresses accepted")
 	}
-	if err := doc.Set("host.management_addr", "127.0.0.1:0"); err == nil {
-		t.Error("port 0 stored in the file")
+	// Values are stored exactly as written, so flag comparison is exact.
+	if err := doc.Set("host.management_addr", "localhost:07878"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(doc.Encode(), []byte(`"management_addr": "localhost:07878"`)) {
+		t.Errorf("address rewritten:\n%s", doc.Encode())
 	}
 }
 

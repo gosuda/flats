@@ -223,9 +223,49 @@ func TestLegacyPlanSettings(t *testing.T) {
 		t.Fatalf("a stored default was written to the file: %s", src)
 	}
 
-	// A value serve applied but config.json cannot hold is a conflict.
-	if _, _, err := plan(map[string]string{core.SetUploadMaxBytes: "4294967296"}, Options{}); exitCode(err) != ExitConfig {
-		t.Fatalf("out-of-range upload limit: %v", err)
+	// Every value serve accepted converts to one with the same effect.
+	c, notes, err = plan(map[string]string{
+		core.SetUploadMaxBytes: "4294967296",        // above the old 1 GiB cap: kept
+		core.SetRateLimit:      "0",                 // limiting off
+		core.SetKeepVersions:   "-3",                // no pruning
+		core.SetEventsKeep:     "99999999999999999", // above 2^53-1
+		core.SetPortalMaxRelay: "0",                 // Portal default
+	}, Options{})
+	if err != nil || c.System.UploadMaxBytes != 4294967296 || c.System.RateLimitRPS != config.MaxInt || c.System.KeepVersions != 0 ||
+		c.System.EventsKeep != config.MaxInt || c.Portal.MaxActiveRelays != 3 || len(notes) != 4 {
+		t.Fatalf("converted settings: %+v %+v notes=%q %v", c.System, c.Portal, notes, err)
+	}
+	if _, src, _ := c.Lookup("portal.max_active_relays"); src != config.SourceDefault {
+		t.Fatal("max_active_relays=0 was written")
+	}
+	c, notes, err = plan(map[string]string{core.SetPortalMaxRelay: "4294967296"}, Options{})
+	if err != nil || c.Portal.MaxActiveRelays != 1<<31-1 || len(notes) != 1 {
+		t.Fatalf("huge max relays: %+v notes=%q %v", c.Portal, notes, err)
+	}
+
+	// Addresses are stored as written; a service name becomes its port, and
+	// a flag serve could not have used is ignored with a note.
+	flags := func(args ...string) Options {
+		o, err := ParseServeFlags(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	c, notes, err = plan(nil, flags("--listen", "localhost:http", "--local-addr", ":7999", "--console-host", "My_Console"))
+	if err != nil || c.Host.ManagementAddr != "localhost:80" || c.Host.LocalAddr != ":7999" || c.Host.ConsoleHost != "My_Console" || len(notes) != 1 {
+		t.Fatalf("host flags: %+v notes=%q %v", c.Host, notes, err)
+	}
+	c, notes, err = plan(nil, flags("--listen", "nonsense", "--relays", "ftp://bad host"))
+	if err != nil || c.Host.ManagementAddr != "127.0.0.1:7878" || len(c.Portal.Relays) != 0 || len(notes) != 2 {
+		t.Fatalf("unusable flags: %+v %+v notes=%q %v", c.Host, c.Portal, notes, err)
+	}
+	if conflicts := flagConflicts(c, flags("--listen", "nonsense", "--relays", "ftp://bad host")); len(conflicts) != 0 {
+		t.Fatalf("ignored flags compared: %q", conflicts)
+	}
+	c, notes, err = plan(nil, flags("--listen", "127.0.0.1:7879"))
+	if err != nil || c.Host.ManagementAddr != "127.0.0.1:7878" || len(notes) != 1 {
+		t.Fatalf("--listen on the local address: %+v notes=%q %v", c.Host, notes, err)
 	}
 }
 

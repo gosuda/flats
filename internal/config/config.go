@@ -17,7 +17,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"net/netip"
+	"net"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -25,8 +25,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gosuda/portal-tunnel/v2/utils"
-
-	"github.com/gosuda/flats/internal/slug"
 )
 
 // CurrentSchemaVersion is the config.json format this binary reads and writes.
@@ -65,9 +63,6 @@ type spec struct {
 	check    func(any) (any, error) // validates and normalizes; nil = type only
 	hint     string
 	override bool // may be overridden for one run (SourceFlag)
-	// ephemeral lets a per-run override use port 0, which binds a free
-	// port. Such a value is never stored.
-	ephemeral bool
 }
 
 // sections lists the top-level objects in file order.
@@ -79,25 +74,29 @@ var specs = []spec{
 		hint: "use the lowercase UUID written by config init"},
 	{key: "host.data_dir", kind: kindString, required: true, check: checkAbsPath,
 		hint: "use an absolute path"},
-	{key: "host.management_addr", kind: kindString, def: "127.0.0.1:7878", check: checkLoopback, override: true, ephemeral: true,
-		hint: "use a loopback IP and port such as 127.0.0.1:7878 or [::1]:7878"},
-	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkLoopback, override: true, ephemeral: true,
-		hint: "use a loopback IP and port such as 127.0.0.1:7879 or [::1]:7879"},
-	{key: "host.console_host", kind: kindString, def: "flats", check: checkHostName, override: true,
-		hint: "use 3-54 lowercase letters, digits and single hyphens, starting with a letter"},
+	{key: "host.management_addr", kind: kindString, def: "127.0.0.1:7878", check: checkAddr, override: true,
+		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7878"},
+	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkAddr, override: true,
+		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7879"},
+	// Any console host `flats serve --console-host` accepted stays valid;
+	// serve warns about one that is not a valid flat host name.
+	{key: "host.console_host", kind: kindString, def: "flats", override: true,
+		hint: "use a host name such as flats"},
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
 		hint: `list any of "tailscale", "tailscale-funnel" and "portal" once each; local is always available`},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
-	intSpec("system.upload_max_bytes", 20<<20, 1, 1<<30),
-	intSpec("system.keep_versions", 10, 0, 100000),
-	intSpec("system.disk_quota_bytes", 30<<30, 0, 1<<53-1),
-	intSpec("system.preview_ttl_seconds", 24*3600, 1, 365*24*3600),
-	intSpec("system.rate_limit_rps", 50, 1, 1000000),
-	intSpec("system.redirect_days", 7, 0, 3650),
-	intSpec("system.events_keep", 5000, 1, 10000000),
+	// The system limits accept every value up to 2^53-1 (exact in JSON
+	// numbers everywhere), as the settings table did.
+	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
+	intSpec("system.keep_versions", 10, 0, MaxInt),
+	intSpec("system.disk_quota_bytes", 30<<30, 0, MaxInt),
+	intSpec("system.preview_ttl_seconds", 24*3600, 1, MaxInt),
+	intSpec("system.rate_limit_rps", 50, 1, MaxInt),
+	intSpec("system.redirect_days", 7, 0, MaxInt),
+	intSpec("system.events_keep", 5000, 1, MaxInt),
 	{key: "portal.relays", kind: kindList, def: []string{}, check: checkRelays,
 		hint: "list https://host[:port] relay origins once each, or [] for Portal defaults"},
 	{key: "portal.discovery", kind: kindBool, def: true,
@@ -108,6 +107,9 @@ var specs = []spec{
 	{key: "credentials.tailscale_authkey_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to log in interactively"},
 }
+
+// MaxInt is the largest system.* value, 2^53-1.
+const MaxInt = 1<<53 - 1
 
 func intSpec(key string, def, lo, hi int64) spec {
 	return spec{key: key, kind: kindInt, def: def, min: lo, max: hi,
@@ -287,20 +289,6 @@ func (sp *spec) parseString(s string) (any, error) {
 	return sp.validate(v, sp.key)
 }
 
-// parseOverride parses a per-run value like Set, except that an ephemeral
-// address may use port 0.
-func (sp *spec) parseOverride(s string) (any, error) {
-	if sp.ephemeral {
-		if ap, err := netip.ParseAddrPort(s); err == nil && ap.Port() == 0 && ap.String() == s {
-			if _, err := sp.parseString(netip.AddrPortFrom(ap.Addr(), 1).String()); err != nil {
-				return nil, err
-			}
-			return s, nil
-		}
-	}
-	return sp.parseString(s)
-}
-
 // validate range-checks and normalizes a typed value.
 func (sp *spec) validate(v any, path string) (any, error) {
 	if sp.kind == kindInt {
@@ -364,33 +352,25 @@ func checkAbsPath(v any) (any, error) {
 	return s, nil
 }
 
-// checkLoopback accepts a literal loopback IP (127.0.0.0/8 or ::1) and a
-// port 1-65535 in canonical host:port form. Host names are not resolved.
-func checkLoopback(v any) (any, error) {
+// checkAddr accepts every address `flats serve` could listen on: any
+// host (an IP, a name or empty) and a decimal port from 0 to 65535, where an
+// empty port or 0 picks a free port. The value is kept as written.
+func checkAddr(v any) (any, error) {
 	s := v.(string)
-	ap, err := netip.ParseAddrPort(s)
+	_, port, err := net.SplitHostPort(s)
 	if err != nil {
-		return nil, fmt.Errorf("%q is not an IP:port address", s)
+		return nil, fmt.Errorf("%q is not a host:port address", s)
 	}
-	ip := ap.Addr()
-	if ip.Zone() != "" || ip.Is4In6() || !ip.IsLoopback() {
-		return nil, fmt.Errorf("%s is not a loopback address", ip)
-	}
-	if ap.Port() == 0 {
-		return nil, errors.New("port must be 1-65535")
-	}
-	if ap.String() != s {
-		return nil, fmt.Errorf("write %q as %q", s, ap.String())
+	if _, err := strconv.ParseUint(port, 10, 16); port != "" && err != nil {
+		return nil, fmt.Errorf("port %q is not a number from 0 to 65535", port)
 	}
 	return s, nil
 }
 
-func checkHostName(v any) (any, error) {
-	s := v.(string)
-	if err := slug.Validate(s); err != nil {
-		return nil, fmt.Errorf("%q is not a valid host name", s)
-	}
-	return s, nil
+// ephemeralPort reports whether addr picks a free port.
+func ephemeralPort(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	return err == nil && strings.TrimLeft(port, "0") == ""
 }
 
 func checkBackend(v any) (any, error) {
@@ -512,8 +492,7 @@ func (c *Config) Lookup(key string) (value any, src Source, ok bool) {
 
 // Effective resolves the document with defaults and per-run overrides.
 // Only host.management_addr, host.local_addr, host.console_host and
-// host.server_runtime may be overridden; the values are parsed like Set,
-// except that the two addresses may use port 0 for a free port.
+// host.server_runtime may be overridden; the values are parsed like Set.
 func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 	c := &Config{SchemaVersion: d.version, values: map[string]any{}, sources: map[string]Source{}}
 	var errs []error
@@ -536,7 +515,7 @@ func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 			errs = append(errs, fieldErr(key, "change it in config.json", "cannot be overridden for one run"))
 			continue
 		}
-		v, err := sp.parseOverride(overrides[key])
+		v, err := sp.parseString(overrides[key])
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -569,7 +548,8 @@ func (c *Config) fill() error {
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error
-	if c.Host.ManagementAddr == c.Host.LocalAddr && !strings.HasSuffix(c.Host.LocalAddr, ":0") {
+	// Two free ports never collide.
+	if c.Host.ManagementAddr == c.Host.LocalAddr && !ephemeralPort(c.Host.LocalAddr) {
 		errs = append(errs, fieldErr("host.local_addr", "use a port different from host.management_addr",
 			"%s is also host.management_addr", c.Host.LocalAddr))
 	}

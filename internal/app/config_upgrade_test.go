@@ -621,7 +621,7 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 		t.Fatal("upload limit changed")
 	}
 	// An out-of-range value is invalid, not a server error.
-	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"100001"}`), nil); code != 400 {
+	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"9007199254740992"}`), nil); code != 400 {
 		t.Fatalf("out of range = %d", code)
 	}
 	// An edit on disk while the host runs makes console saves conflict.

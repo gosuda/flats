@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -191,11 +192,20 @@ func (s *Service) UploadLimit() int64 { return s.intSetting(SetUploadMaxBytes) }
 func (s *Service) keepVersions() int  { return int(s.intSetting(SetKeepVersions)) }
 func (s *Service) diskQuota() int64   { return s.intSetting(SetDiskQuotaBytes) }
 func (s *Service) previewTTL() time.Duration {
-	return time.Duration(s.intSetting(SetPreviewTTL)) * time.Second
+	return durationOf(s.intSetting(SetPreviewTTL), time.Second)
 }
 func (s *Service) rateLimit() float64 { return float64(s.intSetting(SetRateLimit)) }
 func (s *Service) redirectWindow() time.Duration {
-	return time.Duration(s.intSetting(SetRedirectDays)) * 24 * time.Hour
+	return durationOf(s.intSetting(SetRedirectDays), 24*time.Hour)
+}
+
+// durationOf is n units, saturated at the longest duration: config.json
+// allows counts whose product would overflow.
+func durationOf(n int64, unit time.Duration) time.Duration {
+	if n > int64(math.MaxInt64/unit) {
+		return math.MaxInt64
+	}
+	return time.Duration(n) * unit
 }
 
 // Settings returns every setting with defaults filled in.

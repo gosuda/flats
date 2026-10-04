@@ -34,6 +34,7 @@ import (
 	"github.com/gosuda/flats/internal/forkwatch"
 	"github.com/gosuda/flats/internal/mcpx"
 	"github.com/gosuda/flats/internal/runtime"
+	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 	"golang.org/x/term"
 )
@@ -467,6 +468,12 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		h.console = h.Private.URL(cfg.Host.ConsoleHost)
 	} else {
 		h.console = "http://" + h.ln.Addr().String()
+	}
+	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
+		logf("warning: the management API listens on %s, which is not a loopback address", h.ln.Addr())
+	}
+	if err := slug.Validate(cfg.Host.ConsoleHost); err != nil {
+		logf("warning: host.console_host %q is not a valid host name; flats cannot use it as a tailnet name", cfg.Host.ConsoleHost)
 	}
 	h.srv = &http.Server{Handler: loopbackGuard(h.ln.Addr(), mux), ReadHeaderTimeout: 15 * time.Second}
 	go func() {
