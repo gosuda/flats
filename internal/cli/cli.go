@@ -28,6 +28,22 @@ var Serve func(args []string) error
 // Worker runs a server-flat worker (`flats worker`), wired like Serve.
 var Worker func(args []string) error
 
+// Config runs `flats config <subcommand>` against config.json and the data
+// directory, wired like Serve.
+var Config func(ctx context.Context, args []string, out io.Writer) error
+
+// ConfigUsage is the usage of `flats config`, wired like Serve.
+var ConfigUsage = "config <subcommand> [args]"
+
+// EnsureConfig prepares the config `flats install` runs the service with
+// and returns its path and the data directory, wired like Serve. Empty
+// configPath and dataDir select the defaults.
+var EnsureConfig func(ctx context.Context, configPath, dataDir string, serveArgs []string, out io.Writer) (string, string, error)
+
+// exitCoder is an error that selects the exit code, such as 78 for a
+// configuration the operator must fix.
+type exitCoder interface{ ExitCode() int }
+
 // Version is the release version, set with
 // -ldflags "-X github.com/gosuda/flats/internal/cli.Version=v1.2.3".
 var Version = "dev"
@@ -38,6 +54,7 @@ const (
 	ExitError   = 1
 	ExitUsage   = 2
 	ExitPending = 3
+	ExitConfig  = 78 // the operator must fix the configuration (EX_CONFIG)
 )
 
 // Env is the process environment of one invocation; tests replace parts.
@@ -94,11 +111,19 @@ func init() {
 		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},
 		{"approvals", "list approval requests", "approvals [--status pending|approved|rejected|failed]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},
-		{"install", "run `flats serve` at login (launchd)", "install [--data dir] [-- serve flags...]", (*app).install},
+		{"install", "run `flats serve` at login (launchd/systemd)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
 		{"uninstall", "remove the launchd agent", "uninstall", (*app).uninstall},
 		{"mcp-config", "print MCP setup for agent tools", "mcp-config [--url url]", (*app).mcpConfig},
+		{"config", "manage the host configuration (config.json)", "", (*app).config},
 		{"version", "print the flats version", "version", (*app).version},
 	}
+}
+
+func (c *command) commandUsage() string {
+	if c.name == "config" {
+		return ConfigUsage
+	}
+	return c.usage
 }
 
 func findCommand(name string) *command {
@@ -166,7 +191,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 	case "help", "-h", "--help":
 		if len(rest) > 0 {
 			if c := findCommand(rest[0]); c != nil {
-				fmt.Fprintf(a.out, "usage: flats %s\n", c.usage)
+				fmt.Fprintf(a.out, "usage: flats %s\n", c.commandUsage())
 				return ExitOK
 			}
 		}
@@ -181,7 +206,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 	err := c.run(a, rest)
 	var ue usageError
 	if errors.As(err, &ue) {
-		fmt.Fprintf(a.errw, "flats %s: %s\nusage: flats %s\n", c.name, ue.msg, c.usage)
+		fmt.Fprintf(a.errw, "flats %s: %s\nusage: flats %s\n", c.name, ue.msg, c.commandUsage())
 		return ExitUsage
 	}
 	return a.finish(err)
@@ -194,6 +219,10 @@ func (a *app) runHook(name string, fn func([]string) error, args []string) int {
 	}
 	if err := fn(args); err != nil {
 		fmt.Fprintf(a.errw, "flats %s: %v\n", name, err)
+		var ec exitCoder
+		if errors.As(err, &ec) {
+			return ec.ExitCode()
+		}
 		return ExitError
 	}
 	return ExitOK
@@ -216,6 +245,11 @@ func (a *app) finish(err error) int {
 		fmt.Fprintf(a.errw, "flats: %s\n", ue.msg)
 		return ExitUsage
 	}
+	var coded exitCoder
+	if errors.As(err, &coded) && !a.jsonOut {
+		fmt.Fprintf(a.errw, "flats: %v\n", err)
+		return coded.ExitCode()
+	}
 	var ae *apiError
 	if errors.As(err, &ae) {
 		if a.jsonOut {
@@ -227,6 +261,9 @@ func (a *app) finish(err error) int {
 	}
 	if a.jsonOut {
 		a.writeJSON(map[string]string{"error": err.Error()})
+		if errors.As(err, &coded) {
+			return coded.ExitCode()
+		}
 	} else {
 		fmt.Fprintf(a.errw, "flats: %v\n", err)
 	}
@@ -296,7 +333,7 @@ func (a *app) parse(fs *flag.FlagSet, args []string, minPos, maxPos int) ([]stri
 		if err := fs.Parse(args); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				if c := findCommand(fs.Name()); c != nil {
-					fmt.Fprintf(a.out, "usage: flats %s\n", c.usage)
+					fmt.Fprintf(a.out, "usage: flats %s\n", c.commandUsage())
 				}
 				fs.SetOutput(a.out)
 				fs.PrintDefaults()

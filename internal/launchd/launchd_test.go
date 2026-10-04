@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -89,7 +90,7 @@ func testOpts(t *testing.T, f *fakeLaunchctl) Options {
 	}
 	return Options{
 		Executable: exe,
-		Args:       []string{"--data", filepath.Join(home, "data & more")},
+		Args:       []string{"--config", filepath.Join(home, "data & more", "config.json")},
 		DataDir:    filepath.Join(home, "data & more"),
 		Env:        map[string]string{"PATH": "/usr/bin:/bin", "FLATS_X": "<a>"},
 		Home:       home,
@@ -104,7 +105,8 @@ func TestPlistContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Program[0] != opts.Executable || job.Program[1] != "serve" || job.Program[2] != "--data" {
+	// flats install runs the agent from config.json alone.
+	if !slices.Equal(job.Program, []string{opts.Executable, "serve", "--config", filepath.Join(opts.DataDir, "config.json")}) {
 		t.Fatalf("program = %q", job.Program)
 	}
 	p := string(job.Plist())

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	flatsapp "github.com/gosuda/flats/internal/app"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -480,6 +481,45 @@ func TestServeAndWorkerHooks(t *testing.T) {
 	}
 }
 
+type codedError struct{ code int }
+
+func (e codedError) Error() string { return "fix config.json" }
+func (e codedError) ExitCode() int { return e.code }
+
+// Operator-action failures exit 78, so a service manager stops restarting.
+func TestHooksMapExitCodes(t *testing.T) {
+	Serve = func([]string) error { return errors.Join(errors.New("start"), codedError{ExitConfig}) }
+	var got []string
+	Config = func(_ context.Context, args []string, out io.Writer) error {
+		got = args
+		switch args[0] {
+		case "bad":
+			return codedError{ExitUsage}
+		case "refuse":
+			return codedError{ExitConfig}
+		}
+		io.WriteString(out, "shown\n")
+		return nil
+	}
+	ConfigUsage = "config show [--config path]"
+	t.Cleanup(func() { Serve, Config, ConfigUsage = nil, nil, "config <subcommand> [args]" })
+	if r := run(t, "", "", "serve"); r.code != ExitConfig || !strings.Contains(r.stderr, "fix config.json") {
+		t.Fatalf("serve: %d %s", r.code, r.stderr)
+	}
+	if r := run(t, "", "", "config", "show", "--config", "/c.json"); r.code != 0 || r.stdout != "shown\n" || strings.Join(got, " ") != "show --config /c.json" {
+		t.Fatalf("config show: %d %q %v", r.code, r.stdout, got)
+	}
+	if r := run(t, "", "", "config", "refuse"); r.code != ExitConfig || !strings.Contains(r.stderr, "fix config.json") {
+		t.Fatalf("config refusal: %d %s", r.code, r.stderr)
+	}
+	if r := run(t, "", "", "config", "bad"); r.code != ExitUsage || !strings.Contains(r.stderr, "usage: flats config show") {
+		t.Fatalf("config usage: %d %s", r.code, r.stderr)
+	}
+	if r := run(t, "", "", "help", "config"); !strings.Contains(r.stdout, "usage: flats config show") {
+		t.Fatalf("help config: %s", r.stdout)
+	}
+}
+
 func TestUnreachableServer(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	u := srv.URL
@@ -564,6 +604,7 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 		t.Fatal(err)
 	}
 	fl := &fakeLaunchctl{}
+	hermeticInstall(t, home)
 	env := Env{Launchd: fl.run, Home: home, GOOS: "darwin", InstallWait: time.Second}
 	data := filepath.Join(home, "data")
 	r := runEnv(t, env, srv.URL, "install", "--executable", exe, "--data", data, "--", "--authkey-file", "/k")
@@ -574,10 +615,20 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<string>serve</string>", "<string>--data</string>", "<string>" + data + "</string>", "<string>--authkey-file</string>", "data/logs/serve.err.log"} {
+	// The service runs from config.json alone; install wrote the flags there.
+	config := filepath.Join(data, "config.json")
+	for _, want := range []string{"<string>serve</string>", "<string>--config</string>", "<string>" + config + "</string>", "data/logs/serve.err.log"} {
 		if !strings.Contains(string(plist), want) {
 			t.Errorf("plist missing %q", want)
 		}
+	}
+	for _, unwanted := range []string{"--data", "--authkey-file"} {
+		if strings.Contains(string(plist), unwanted) {
+			t.Errorf("plist still has %q:\n%s", unwanted, plist)
+		}
+	}
+	if raw, err := os.ReadFile(config); err != nil || !strings.Contains(string(raw), `"tailscale_authkey_file": "/k"`) {
+		t.Errorf("config.json = %s, %v", raw, err)
 	}
 	if !strings.Contains(r.stdout, "Flats is running at "+srv.URL) {
 		t.Errorf("stdout: %s", r.stdout)
@@ -713,6 +764,7 @@ func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", "")
 			_, srv := newFakeAPI(t)
 			home := t.TempDir()
+			hermeticInstall(t, home)
 			fl := &fakeLaunchctl{}
 			env := Env{Launchd: fl.run, Home: home, GOOS: goos, InstallWait: time.Second}
 			credential := filepath.Join(home, "operator credentials", "credential")
@@ -749,10 +801,28 @@ func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
-					t.Fatal("credential passthrough missing", string(raw))
+				// The credential path moved into config.json; the service runs
+				// only `serve --config`.
+				config := filepath.Join(home, "data", "config.json")
+				if strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), config) {
+					t.Fatal("service does not run from config.json", string(raw))
+				}
+				if b, err := os.ReadFile(config); err != nil || !strings.Contains(string(b), "operator credentials/credential") {
+					t.Fatalf("credential passthrough missing from config.json: %s %v", b, err)
 				}
 			}
 		})
 	}
+}
+
+// hermeticInstall wires the real install config hook and keeps every
+// default data directory inside home, so install never touches the user's
+// own Flats data.
+func hermeticInstall(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("FLATS_DATA", filepath.Join(home, "data"))
+	t.Setenv("FLATS_CONFIG", "")
+	EnsureConfig = flatsapp.EnsureConfig
+	t.Cleanup(func() { EnsureConfig = nil })
 }

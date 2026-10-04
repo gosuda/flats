@@ -27,8 +27,8 @@ func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error
 // Options configure the unit.
 type Options struct {
 	Executable string            // default: the running executable
-	Args       []string          // extra `flats serve` flags
-	DataDir    string            // required
+	Args       []string          // `flats serve` flags, such as --config PATH
+	DataDir    string            // required; created private before the unit starts
 	Env        map[string]string // extra environment
 	Home       string            // default: os.UserHomeDir
 	Run        Runner            // default: ExecRunner
@@ -82,11 +82,7 @@ func Render(opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := filepath.Abs(opts.DataDir)
-	if err != nil {
-		return "", err
-	}
-	words := []string{quote(exe), "serve", "--data", quote(data)}
+	words := []string{quote(exe), "serve"}
 	for _, a := range opts.Args {
 		words = append(words, quote(a))
 	}
@@ -102,7 +98,9 @@ func Render(opts Options) (string, error) {
 	for _, k := range keys {
 		b.WriteString("Environment=" + quote(k+"="+opts.Env[k]) + "\n")
 	}
-	b.WriteString("Restart=always\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
+	// Exit status 78 means the operator must fix the configuration, which a
+	// restart cannot do.
+	b.WriteString("Restart=always\nRestartSec=5\nRestartPreventExitStatus=78\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
 	return b.String(), nil
 }
 

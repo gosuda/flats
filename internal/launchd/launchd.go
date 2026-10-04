@@ -39,7 +39,7 @@ func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error
 // Options configures Install, Uninstall and Status.
 type Options struct {
 	Executable string            // absolute path of the flats binary; default: the running executable
-	Args       []string          // extra `flats serve` flags
+	Args       []string          // `flats serve` flags; install passes --config PATH
 	DataDir    string            // logs go to DataDir/logs (required by Install)
 	Env        map[string]string // extra environment; PATH is always set
 	Home       string            // default: os.UserHomeDir

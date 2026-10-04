@@ -40,9 +40,26 @@ func (a *app) requireMacOS() error {
 	return errors.New("install/uninstall support macOS (launchd) and Linux (systemd user units); elsewhere run `flats serve` under your service manager")
 }
 
+// config runs `flats config` through the Config hook.
+func (a *app) config(args []string) error {
+	if Config == nil {
+		return errors.New("config is not wired")
+	}
+	err := Config(a.ctx, args, a.out)
+	var ec exitCoder
+	if errors.As(err, &ec) && ec.ExitCode() == ExitUsage {
+		return usageError{err.Error()}
+	}
+	return err
+}
+
+// install makes sure config.json exists and matches the given legacy serve
+// flags (creating it for a new host or migrating a legacy data directory),
+// then installs a service that runs only `flats serve --config <path>`.
 func (a *app) install(args []string) error {
 	fs := a.flags("install")
-	data := fs.String("data", "", "data directory (default: FLATS_DATA or ~/Library/Application Support/Flats)")
+	configPath := fs.String("config", "", "config.json for the service (default: FLATS_CONFIG, else <data>/config.json)")
+	data := fs.String("data", "", "data directory for a new host (default: FLATS_DATA or ~/Library/Application Support/Flats)")
 	exe := fs.String("executable", "", "flats binary to run (default: this executable)")
 	extra, err := a.parse(fs, args, 0, -1)
 	if err != nil {
@@ -51,24 +68,7 @@ func (a *app) install(args []string) error {
 	if err := a.requireMacOS(); err != nil {
 		return err
 	}
-	dataDir := *data
-	if dataDir == "" {
-		// launchd does not inherit the shell environment, so an explicit
-		// FLATS_DATA becomes a --data flag of the agent.
-		dataDir = a.env.Getenv("FLATS_DATA")
-	}
-	var serveArgs []string
-	if dataDir != "" {
-		abs, err := filepath.Abs(dataDir)
-		if err != nil {
-			return err
-		}
-		dataDir = abs
-		serveArgs = append(serveArgs, "--data", dataDir)
-	} else if dataDir, err = DefaultDataDir(a.env.Getenv); err != nil {
-		return err
-	}
-	// Validate the documented serve-argument passthrough before service writes.
+	// Validate the documented serve-argument passthrough before any write.
 	for i, arg := range extra {
 		if arg == "--operator-credential-stdin" || arg == "-operator-credential-stdin" ||
 			strings.HasPrefix(arg, "--operator-credential-stdin=") || strings.HasPrefix(arg, "-operator-credential-stdin=") {
@@ -89,19 +89,51 @@ func (a *app) install(args []string) error {
 			return errors.New("--operator-credential-file requires an absolute path")
 		}
 	}
-	serveArgs = append(serveArgs, extra...)
+	dataDir := *data
+	if dataDir == "" {
+		dataDir = a.env.Getenv("FLATS_DATA")
+	}
+	if a.goos() == "darwin" {
+		// Refuse a `go run` binary before config.json is written.
+		bin := *exe
+		if bin == "" {
+			if bin, err = os.Executable(); err != nil {
+				return err
+			}
+		}
+		if strings.Contains(bin, string(filepath.Separator)+"go-build") {
+			return fmt.Errorf("%s looks like a temporary `go run` build; install a built binary (go build -o /usr/local/bin/flats ./cmd/flats) and run its install, or pass --executable", bin)
+		}
+	}
+	if EnsureConfig == nil {
+		return errors.New("install is not wired")
+	}
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if cfgPath = a.env.Getenv("FLATS_CONFIG"); cfgPath != "" && !filepath.IsAbs(cfgPath) {
+			return fmt.Errorf("FLATS_CONFIG must be an absolute path, not %q", cfgPath)
+		}
+	}
+	cfgPath, dataDir, err = EnsureConfig(a.ctx, cfgPath, dataDir, extra, a.errw)
+	if err != nil {
+		return err
+	}
+	// launchd and systemd do not inherit the shell environment; the service
+	// runs from config.json alone.
+	serveArgs := []string{"--config", cfgPath}
 
 	if a.goos() == "linux" {
-		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: extra, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
+		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: serveArgs, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
 		if err != nil {
 			return err
 		}
 		up := a.waitForServer()
 		if a.jsonOut {
-			a.writeJSON(map[string]any{"unit": path, "url": a.url, "running": up})
+			a.writeJSON(map[string]any{"unit": path, "config": cfgPath, "url": a.url, "running": up})
 			return nil
 		}
 		fmt.Fprintf(a.out, "Installed systemd user service %s (%s)\n", systemd.Unit, path)
+		fmt.Fprintf(a.out, "  config: %s\n", cfgPath)
 		fmt.Fprintln(a.out, "  logs:   journalctl --user -u flats.service")
 		fmt.Fprintln(a.out, "  To keep Flats running while you are logged out: loginctl enable-linger $USER")
 		if up {
@@ -116,20 +148,13 @@ func (a *app) install(args []string) error {
 	opts.DataDir = dataDir
 	opts.Args = serveArgs
 	opts.Env = map[string]string{"PATH": a.env.Getenv("PATH")}
-	job, err := launchd.BuildJob(opts)
-	if err != nil {
-		return err
-	}
-	if strings.Contains(job.Program[0], string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s looks like a temporary `go run` build; install a built binary (go build -o /usr/local/bin/flats ./cmd/flats) and run its install, or pass --executable", job.Program[0])
-	}
 	res, err := launchd.Install(a.ctx, opts)
 	if err != nil {
 		return err
 	}
 	up := a.waitForServer()
 	if a.jsonOut {
-		a.writeJSON(map[string]any{"plist": res.PlistPath, "method": res.Method, "program": res.Job.Program,
+		a.writeJSON(map[string]any{"plist": res.PlistPath, "method": res.Method, "program": res.Job.Program, "config": cfgPath,
 			"stdout": res.Job.Stdout, "stderr": res.Job.Stderr, "url": a.url, "running": up})
 		return nil
 	}

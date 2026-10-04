@@ -9,11 +9,13 @@ import (
 )
 
 func TestRenderQuotesAndRestarts(t *testing.T) {
-	u, err := Render(Options{Executable: "/opt/flats bin/flats", DataDir: "/var/lib/flats", Args: []string{"--network", "local"}, Env: map[string]string{"PATH": "/usr/bin"}})
+	u, err := Render(Options{Executable: "/opt/flats bin/flats", DataDir: "/var/lib/flats", Args: []string{"--config", "/etc/flats dir/config.json"}, Env: map[string]string{"PATH": "/usr/bin"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`ExecStart="/opt/flats bin/flats" serve --data /var/lib/flats --network local`, "Restart=always", "WantedBy=default.target", `Environment=PATH=/usr/bin`} {
+	// The unit runs from config.json alone, and exit 78 (fix the config)
+	// does not restart in a loop.
+	for _, want := range []string{"ExecStart=\"/opt/flats bin/flats\" serve --config \"/etc/flats dir/config.json\"\n", "Restart=always", "RestartPreventExitStatus=78", "WantedBy=default.target", `Environment=PATH=/usr/bin`} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit missing %q:\n%s", want, u)
 		}
