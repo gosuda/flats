@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -284,8 +285,8 @@ func TestVisibilityPendingApproval(t *testing.T) {
 	if !strings.Contains(r.stdout, "Approval needed: https://flats.tail.ts.net/approvals/apr-1") {
 		t.Errorf("stdout: %s", r.stdout)
 	}
-	if !strings.Contains(r.stdout, core.UnlistedNotice+"\n") {
-		t.Errorf("unlisted notice not printed verbatim:\n%s", r.stdout)
+	if !strings.Contains(r.stdout, pendingPublicNotice+"\n") || strings.Contains(r.stdout, "This flat is public:") {
+		t.Errorf("pending Public notice is not future tense:\n%s", r.stdout)
 	}
 	var body map[string]string
 	_ = json.Unmarshal(api.last("POST /api/flats/blog/visibility").body, &body)
@@ -294,7 +295,8 @@ func TestVisibilityPendingApproval(t *testing.T) {
 	}
 
 	r = run(t, srv.URL, "", "--json", "visibility", "blog", "public-unlisted")
-	if r.code != ExitPending || !strings.Contains(r.stdout, `"approval_url"`) {
+	if r.code != ExitPending || !strings.Contains(r.stdout, `"approval_url"`) ||
+		!strings.Contains(r.stdout, pendingPublicNotice) || strings.Contains(r.stdout, "This flat is public:") {
 		t.Errorf("json: %d %s", r.code, r.stdout)
 	}
 }
@@ -368,12 +370,12 @@ func TestRollbackAndPreview(t *testing.T) {
 	}
 
 	api.handle("GET /api/flats/blog/versions", 200, `{"versions": [{"number": 3}, {"number": 9}, {"number": 5}]}`)
-	api.handle("POST /api/flats/blog/previews", 201, `{"host": "blog-ab12cd34", "version": 9, "url": "https://blog-ab12cd34.tail.ts.net", "expires_at": "2026-10-04T10:00:00Z"}`)
+	api.handle("POST /api/flats/blog/previews", 201, `{"host": "blog-ab12cd34", "version": 0, "target":"draft", "revision":3, "url": "https://blog-ab12cd34.tail.ts.net", "expires_at": "2026-10-04T10:00:00Z"}`)
 	r := run(t, srv.URL, "", "preview", "blog")
 	if r.code != 0 || !strings.Contains(r.stdout, "https://blog-ab12cd34.tail.ts.net") {
 		t.Fatalf("preview: %d %s %s", r.code, r.stdout, r.stderr)
 	}
-	if b := string(api.last("POST /api/flats/blog/previews").body); b != `{"version":9}` {
+	if b := string(api.last("POST /api/flats/blog/previews").body); b != `{"version":0}` {
 		t.Errorf("preview body = %s", b)
 	}
 }
@@ -501,6 +503,9 @@ func TestMCPConfig(t *testing.T) {
 	for _, want := range []string{
 		"claude mcp add --transport http flats http://127.0.0.1:7878/mcp",
 		"[mcp_servers.flats]",
+		"every publish, activation, rollback",
+		"visibility change in both directions",
+		"does not make a version live",
 		`url = "http://127.0.0.1:7878/mcp"`,
 		`"mcpServers"`,
 	} {
@@ -699,5 +704,55 @@ func TestUnknownFlatIsAnError(t *testing.T) {
 	code := Run(ctx, []string{"logs", "gone", "-f"}, env)
 	if ctx.Err() != nil || code != ExitError || !strings.Contains(errb.String(), "no longer exists") || !strings.Contains(out.String(), "v1 live") {
 		t.Fatalf("follow must stop on 404: exit %d, ctx %v\n%s%s", code, ctx.Err(), out.String(), errb.String())
+	}
+}
+
+func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", "")
+			_, srv := newFakeAPI(t)
+			home := t.TempDir()
+			fl := &fakeLaunchctl{}
+			env := Env{Launchd: fl.run, Home: home, GOOS: goos, InstallWait: time.Second}
+			credential := filepath.Join(home, "operator credentials", "credential")
+			exe := filepath.Join(home, "flats")
+			if err := os.WriteFile(exe, []byte("x"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{
+				{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"-operator-credential-file", "relative"}, {"--operator-credential-file"},
+				{"--operator-credential-stdin"}, {"-operator-credential-stdin"}, {"--operator-credential-stdin=true"}, {"-operator-credential-stdin=false"},
+				{"--operator-credential-file", credential, "--operator-credential-stdin"},
+			} {
+				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
+				want := "absolute path"
+				if slices.ContainsFunc(args, func(arg string) bool {
+					return strings.HasPrefix(arg, "--operator-credential-stdin") || strings.HasPrefix(arg, "-operator-credential-stdin")
+				}) {
+					want = "cannot be used by an installed service"
+				}
+				if r.code == 0 || len(fl.calls) != 0 || !strings.Contains(r.stderr, want) {
+					t.Fatalf("invalid path installed: %+v calls=%v", r, fl.calls)
+				}
+			}
+			for _, args := range [][]string{{"--operator-credential-file", credential}, {"--operator-credential-file=" + credential}} {
+				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
+				if r.code != 0 {
+					t.Fatalf("documented install failed: %+v", r)
+				}
+				path := launchd.PlistPath(home)
+				if goos == "linux" {
+					path = filepath.Join(home, ".config", "systemd", "user", "flats.service")
+				}
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
+					t.Fatal("credential passthrough missing", string(raw))
+				}
+			}
+		})
 	}
 }

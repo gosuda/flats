@@ -124,6 +124,74 @@ func TestWriteIsImmutableAndHashed(t *testing.T) {
 	}
 }
 
+func TestWriteConfinesDirectPathsAndSymlinks(t *testing.T) {
+	t.Run("direct traversal", func(t *testing.T) {
+		for _, hostile := range []string{"../escaped", "/absolute", `..\escaped`, "a/../escaped", "a//escaped", "bad\x00name"} {
+			parent := t.TempDir()
+			dst := filepath.Join(parent, "versions", "1")
+			files := []File{{Path: "index.html", Data: []byte("safe")}, {Path: hostile, Data: []byte("unsafe")}}
+			if _, err := Write(files, dst); err == nil {
+				t.Errorf("Write accepted hostile path %q", hostile)
+			} else if _, ok := IsValidation(err); !ok {
+				t.Errorf("Write(%q) returned a non-validation error: %v", hostile, err)
+			}
+			if _, err := os.Stat(dst); !os.IsNotExist(err) {
+				t.Errorf("Write(%q) created destination: %v", hostile, err)
+			}
+		}
+	})
+
+	t.Run("legacy staging symlink", func(t *testing.T) {
+		parent := t.TempDir()
+		dst := filepath.Join(parent, "1")
+		outside := t.TempDir()
+		legacy := dst + ".tmp"
+		if err := os.Symlink(outside, legacy); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Write([]File{{Path: "index.html", Data: []byte("safe")}}, dst); err != nil {
+			t.Fatal(err)
+		}
+		if target, err := os.Readlink(legacy); err != nil || target != outside {
+			t.Fatalf("Write changed legacy staging symlink: target=%q err=%v", target, err)
+		}
+		if _, err := os.Stat(filepath.Join(outside, "index.html")); !os.IsNotExist(err) {
+			t.Fatalf("Write touched legacy staging target: %v", err)
+		}
+	})
+
+	t.Run("file directory collision cleans staging", func(t *testing.T) {
+		parent := t.TempDir()
+		dst := filepath.Join(parent, "1")
+		files := []File{{Path: "index.html"}, {Path: "a", Data: []byte("file")}, {Path: "a/b", Data: []byte("child")}}
+		if _, err := Write(files, dst); err == nil {
+			t.Fatal("Write accepted a file/directory collision")
+		}
+		if matches, err := filepath.Glob(filepath.Join(parent, ".1.tmp-*")); err != nil || len(matches) != 0 {
+			t.Fatalf("failed Write retained staging directories: %v err=%v", matches, err)
+		}
+	})
+
+	t.Run("root rejects escaping symlink", func(t *testing.T) {
+		staging := t.TempDir()
+		outside := t.TempDir()
+		if err := os.Symlink(outside, filepath.Join(staging, "linked")); err != nil {
+			t.Fatal(err)
+		}
+		root, err := os.OpenRoot(staging)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer root.Close()
+		if err := writeBundleFiles(root, []File{{Path: "linked/escaped", Data: []byte("unsafe")}}); err == nil {
+			t.Fatal("rooted write followed a symlink outside the staging directory")
+		}
+		if _, err := os.Stat(filepath.Join(outside, "escaped")); !os.IsNotExist(err) {
+			t.Fatalf("rooted write changed the symlink target: %v", err)
+		}
+	})
+}
+
 func TestFromDirSkipsLinksAndJunk(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("i"), 0o644)

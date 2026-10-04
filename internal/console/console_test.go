@@ -238,11 +238,24 @@ func TestRequestsUseConsoleAPI(t *testing.T) {
 	}
 }
 
+// Lifecycle copy must not promise owner-only access or present Serve as public.
+func TestLifecycleCopy(t *testing.T) {
+	src := strings.ToLower(readStatic(t, "assets/js/lifecycle.js") + readStatic(t, "assets/js/list.js") + readStatic(t, "assets/js/flat.js"))
+	for _, banned := range []string{"only me", "only you", "tailscale serve", "this flat is public"} {
+		if strings.Contains(src, banned) {
+			t.Errorf("console lifecycle copy contains %q", banned)
+		}
+	}
+	if !strings.Contains(src, "tailscale funnel") {
+		t.Error("console does not name Tailscale Funnel")
+	}
+}
+
 // The confirm dialog shows the public notice before widening; it must be the
 // same text the API returns afterwards.
 func TestNoticesMatchCore(t *testing.T) {
 	dom := readStatic(t, "assets/js/dom.js")
-	for name, want := range map[string]string{"UNLISTED_NOTICE": core.UnlistedNotice, "LISTED_NOTICE": core.ListedNotice} {
+	for name, want := range map[string]string{"UNLISTED_NOTICE": core.UnlistedNotice, "LISTED_NOTICE": core.ListedNotice, "PUBLIC_ACCESS_NOTICE": core.PublicAccessNotice} {
 		decl := "export const " + name + " = '" + want + "';"
 		if !strings.Contains(dom, decl) {
 			t.Errorf("dom.js %s differs from internal/core; want %s", name, decl)

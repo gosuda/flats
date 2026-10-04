@@ -366,6 +366,72 @@ func TestServeHTTPSIdentityStop(t *testing.T) {
 	}
 }
 
+func TestCloseRestartPreservesPersistentNodeIdentity(t *testing.T) {
+	control := startControl(t, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	newNet := func() *Net {
+		n, err := New(Config{Dir: dir, ControlURL: control.HTTPTestServer.URL, Logf: t.Logf})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	n := newNet()
+	if _, err := n.Serve(ctx, "stable", echo("first"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.WaitReady(ctx, "stable"); err != nil {
+		t.Fatal(err)
+	}
+	before := stableNodeID(t, n, "stable")
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stable", "tailscaled.state")); err != nil {
+		t.Fatalf("graceful close removed persistent state: %v", err)
+	}
+
+	restarted := newNet()
+	defer restarted.Close()
+	if _, err := restarted.Serve(ctx, "stable", echo("second"), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.WaitReady(ctx, "stable"); err != nil {
+		t.Fatal(err)
+	}
+	if after := stableNodeID(t, restarted, "stable"); after != before {
+		t.Fatalf("node identity changed across restart: before=%q after=%q", before, after)
+	}
+}
+
+func stableNodeID(t *testing.T, n *Net, host string) string {
+	t.Helper()
+	n.mu.Lock()
+	nd := n.nodes[host]
+	var srv *ts.Server
+	if nd != nil {
+		srv = nd.srv
+	}
+	n.mu.Unlock()
+	if srv == nil {
+		t.Fatalf("node %q has no server", host)
+	}
+	lc, err := srv.LocalClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := lc.StatusWithoutPeers(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Self == nil || st.Self.ID == "" {
+		t.Fatalf("node %q has no stable identity: %+v", host, st.Self)
+	}
+	return string(st.Self.ID)
+}
+
 func TestPlainHTTPFallbackAndKeyExpiry(t *testing.T) {
 	control := startControl(t, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -419,17 +485,14 @@ func TestPlainHTTPFallbackAndKeyExpiry(t *testing.T) {
 		t.Errorf("re-served host: %q %v", body, err)
 	}
 
-	// A node that failed to start is retried by serving it again, without
-	// Stop (which would log it out and delete its state).
+	// A non-directory at the deterministic state path is rejected before a
+	// backend starts. Removing it lets the host be served from scratch.
 	dir := n.cfg.Dir
 	if err := os.WriteFile(filepath.Join(dir, "broken"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Serve(ctx, "broken", echo("broken"), false); err != nil {
-		t.Fatal(err)
-	}
-	if err := n.WaitReady(ctx, "broken"); err == nil {
-		t.Fatalf("node with a file as its state dir became ready")
+	if _, err := n.Serve(ctx, "broken", echo("broken"), false); err == nil {
+		t.Fatal("node with a file as its state dir was accepted")
 	}
 	if err := os.Remove(filepath.Join(dir, "broken")); err != nil {
 		t.Fatal(err)
@@ -540,6 +603,107 @@ func TestHeaderValue(t *testing.T) {
 	}
 }
 
+func TestRemoveLocalStateIsHostScopedAndOffline(t *testing.T) {
+	dir := t.TempDir()
+	for _, host := range []string{"removed", "preserved"} {
+		stateDir := filepath.Join(dir, host)
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, "tailscaled.state"), []byte(host), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveLocalState(dir, "removed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "removed")); !os.IsNotExist(err) {
+		t.Fatalf("target state survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "preserved", "tailscaled.state")); err != nil {
+		t.Fatalf("sibling state changed: %v", err)
+	}
+	if err := RemoveLocalState(dir, "../preserved"); err == nil {
+		t.Fatal("path traversal host was accepted")
+	}
+}
+
+func TestStopRejectsUntrustedHostsBeforeStateAccess(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "tailscaled.state")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := New(Config{Dir: root, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	invalid := []string{"", ".", "..", "../escape", "/absolute", `a\b`, "a..b", "Upper", "ünicode", "a" + strings.Repeat("b", 63)}
+	for _, host := range invalid {
+		if err := n.Stop(host); err == nil {
+			t.Errorf("Stop accepted host %q", host)
+		}
+		if err := n.StopPrivate(host); err == nil {
+			t.Errorf("StopPrivate accepted host %q", host)
+		}
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+		t.Fatalf("invalid stop changed outside state: %q err=%v", got, err)
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if len(n.nodes) != 0 || len(n.retiring) != 0 || len(n.stopping) != 0 {
+		t.Fatalf("invalid stop mutated lifecycle ledgers: nodes=%d retiring=%d stopping=%d", len(n.nodes), len(n.retiring), len(n.stopping))
+	}
+}
+
+func TestNodeStateSymlinkFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "tailscaled.state")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	n, err := New(Config{Dir: root, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	if _, err := n.Serve(t.Context(), "linked", http.NotFoundHandler(), false); err == nil {
+		t.Fatal("Serve followed a symlinked host state directory")
+	}
+	if _, err := n.ServeFunnel(t.Context(), "linked", http.NotFoundHandler()); err == nil {
+		t.Fatal("ServeFunnel followed a symlinked host state directory")
+	}
+	if err := n.Stop("linked"); err == nil {
+		t.Fatal("Stop followed a symlinked host state directory")
+	}
+	state, err := newNodeStateLocation(root, "linked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (stateSnapshot{data: []byte("replace"), exists: true}).restore(state); err == nil {
+		t.Fatal("snapshot restore followed a symlinked host state directory")
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+		t.Fatalf("symlink target changed: %q err=%v", got, err)
+	}
+	if err := RemoveLocalState(root, "linked"); err != nil {
+		t.Fatalf("safe symlink unlink failed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "linked")); !os.IsNotExist(err) {
+		t.Fatalf("host symlink survived removal: %v", err)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "keep" {
+		t.Fatalf("symlink unlink changed target: %q err=%v", got, err)
+	}
+}
+
 func hostInfo(n *Net, host string) core.HostInfo {
 	for _, hi := range n.Status().Hosts {
 		if hi.Host == host {
@@ -635,11 +799,11 @@ func TestTeardownWaitsForPredecessor(t *testing.T) {
 	}
 	prev := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	nd := &node{host: "h", dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel,
+	nd := &node{host: "h", ephemeral: true, dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel,
 		started: make(chan struct{}), done: make(chan struct{}), prev: prev}
 	go n.run(nd) // waits for prev, returns on cancel without starting
 	ret := make(chan error, 1)
-	go func() { ret <- n.teardown(nd, true) }()
+	go func() { ret <- n.teardown(nd, false) }()
 	select {
 	case err := <-ret:
 		t.Fatalf("teardown returned before its predecessor finished: %v", err)
@@ -728,6 +892,7 @@ func TestStopIsBounded(t *testing.T) {
 	stuck := make(chan struct{}) // the lifecycle goroutine never returns
 	nd := &node{host: "h", dir: filepath.Join(n.cfg.Dir, "h"), ctx: ctx, cancel: cancel, started: started, done: stuck}
 	n.nodes["h"] = nd
+	n.logoutNode = func(context.Context, *node) error { return nil }
 	start := time.Now()
 	if err := n.Stop("h"); err == nil || !strings.Contains(err.Error(), "background") {
 		t.Errorf("Stop of a stuck node = %v", err)
@@ -818,5 +983,109 @@ func TestAuthKeyLoginIsStarting(t *testing.T) {
 	nd.wasUp = true // an expired key later is a real needs-login
 	if hi := n.hostInfoLocked(nd, time.Now()); hi.State != StateNeedsLogin {
 		t.Errorf("re-auth: %s", hi.State)
+	}
+}
+
+func TestStopPrivateRetainsUnconfirmedRetirement(t *testing.T) {
+	oldWait := stopWait
+	stopWait = time.Millisecond
+	defer func() { stopWait = oldWait }()
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, runDone := make(chan struct{}), make(chan struct{})
+	close(started)
+	nd := &node{host: "held", dir: filepath.Join(n.cfg.Dir, "held"), ctx: ctx, cancel: cancel, started: started, done: runDone}
+	n.nodes["held"] = nd
+	n.logoutNode = func(context.Context, *node) error { return nil }
+	// The retiring backend's lifecycle is held, proving a second attempt cannot
+	// turn absence from n.nodes into a successful stop.
+	if err := n.StopPrivate("held"); err == nil {
+		t.Fatal("first unconfirmed stop accepted")
+	}
+	if err := n.StopPrivate("held"); err == nil {
+		t.Fatal("retry forgot unconfirmed retirement")
+	}
+	close(runDone)
+	n.mu.Lock()
+	pending := n.retiring["held"]
+	n.mu.Unlock()
+	<-pending.attempt.done
+	if err := n.StopPrivate("held"); err != nil {
+		t.Fatal("confirmed stop did not settle", err)
+	}
+	if err := n.StopPrivate("held"); err != nil {
+		t.Fatal("settled retry", err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStopPrivateRetriesTerminalLogoutFailure(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "retry"
+	dir := filepath.Join(n.cfg.Dir, host)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tailscaled.state"), []byte("identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started, runDone := make(chan struct{}), make(chan struct{})
+	close(started)
+	close(runDone)
+	nd := &node{host: host, dir: dir, ctx: ctx, cancel: cancel, started: started, done: runDone}
+	n.nodes[host] = nd
+	attempts := 0
+	n.logoutNode = func(context.Context, *node) error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("control unavailable")
+		}
+		return nil
+	}
+	if err := n.StopPrivate(host); err == nil || !strings.Contains(err.Error(), "control unavailable") {
+		t.Fatalf("first stop = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil {
+		t.Fatalf("failed logout discarded retry identity: %v", err)
+	}
+	if _, err := n.Serve(t.Context(), host, echo("must stay closed"), false); err == nil {
+		t.Fatal("failed retirement allowed Private HTTP to reopen")
+	}
+	if err := n.StopPrivate(host); err == nil || !strings.Contains(err.Error(), "control unavailable") {
+		t.Fatalf("second stop did not perform and report its retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("logout attempts after second call = %d, want 2", attempts)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tailscaled.state")); err != nil {
+		t.Fatalf("second failed logout discarded retry identity: %v", err)
+	}
+	if err := n.StopPrivate(host); err != nil {
+		t.Fatalf("retry did not perform a fresh logout: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("logout attempts = %d, want 3", attempts)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("confirmed retry kept retired state: %v", err)
+	}
+	n.mu.Lock()
+	_, pending := n.retiring[host]
+	_, active := n.nodes[host]
+	n.mu.Unlock()
+	if pending || active {
+		t.Fatalf("confirmed retry left registrations: pending=%v active=%v", pending, active)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

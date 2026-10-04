@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,12 +30,16 @@ func (s *Service) checkReserved(ctx context.Context, slugName, owner string) err
 	s.mu.Lock()
 	_, isPreview := s.prevs[slugName]
 	r := s.redir[slugName]
+	redirectCur := ""
+	if r != nil {
+		redirectCur = r.cur
+	}
 	s.mu.Unlock()
 	if isPreview {
 		return invalidf("invalid slug: %q is currently used by a preview", slugName)
 	}
-	if r != nil && r.cur != owner {
-		return invalidf("invalid slug: %q is currently used by a redirect to %q", slugName, r.cur)
+	if r != nil && redirectCur != owner {
+		return invalidf("invalid slug: %q is currently used by a redirect to %q", slugName, redirectCur)
 	}
 	// Redirects are kept in the database even when none is being served
 	// (e.g. after a failed restart), so a new flat can never be shadowed by
@@ -59,7 +64,10 @@ func snapshotData(src, dst string) error {
 		return err
 	}
 	if _, err := os.Stat(filepath.Join(src, dbName)); err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	return vacuumInto(filepath.Join(src, dbName), filepath.Join(dst, dbName))
 }
@@ -207,9 +215,15 @@ func (s *Service) snapshotDB(slugName string, n, live int) (string, error) {
 // and prunes old snapshots, never removing protect. It returns "" when the
 // flat has no database.
 func (s *Service) snapshotAs(slugName, kind, protect string) (string, error) {
-	db := filepath.Join(s.dataDirOf(slugName), dbName)
-	if _, err := os.Stat(db); err != nil {
+	if _, err := os.Stat(s.dataDirOf(slugName)); os.IsNotExist(err) {
 		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	db := filepath.Join(s.dataDirOf(slugName), dbName)
+	_, dbErr := os.Stat(db)
+	if dbErr != nil && !os.IsNotExist(dbErr) {
+		return "", dbErr
 	}
 	dir := s.snapshotDir(slugName)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -224,7 +238,27 @@ func (s *Service) snapshotAs(slugName, kind, protect string) (string, error) {
 		ms++
 		name = fmt.Sprintf("%s-%d.sqlite", kind, ms)
 	}
-	if err := vacuumInto(db, filepath.Join(dir, name)); err != nil {
+	sidecar := filepath.Join(dir, name+".data")
+	if err := snapshotData(s.dataDirOf(slugName), sidecar); err != nil {
+		os.RemoveAll(sidecar)
+		return "", err
+	}
+	if dbErr == nil {
+		if err := copyFile(filepath.Join(sidecar, dbName), filepath.Join(dir, name)); err != nil {
+			return "", err
+		}
+	} else {
+		marker, err := sql.Open("sqlite", filepath.Join(dir, name))
+		if err != nil {
+			return "", err
+		}
+		_, err = marker.Exec("CREATE TABLE IF NOT EXISTS flats_empty_snapshot (id INTEGER)")
+		marker.Close()
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sidecar, ".flats-snapshot-complete"), []byte("1"), 0600); err != nil {
 		return "", err
 	}
 	s.pruneSnapshots(slugName, name, protect)
@@ -245,6 +279,7 @@ func (s *Service) pruneSnapshots(slugName string, protect ...string) {
 		*count++
 		if *count > limit && !slices.Contains(protect, name) {
 			os.Remove(filepath.Join(s.snapshotDir(slugName), name))
+			os.RemoveAll(filepath.Join(s.snapshotDir(slugName), name+".data"))
 		}
 	}
 }
@@ -284,4 +319,97 @@ func (s *Service) liveSnapshot(slugName string, live int) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: no database snapshot was taken before version %d was deployed", ErrConflict, live)
+}
+
+// installSnapshot restores full new snapshots; legacy snapshots only contain DB.
+// FILES are preserved when the historical snapshot contains no FILES archive.
+func (s *Service) installSnapshot(slugName, path string) error {
+	if _, err := os.Stat(filepath.Join(path+".data", ".flats-snapshot-complete")); err == nil {
+		staged := s.dataDirOf(slugName) + ".restore"
+		os.RemoveAll(staged)
+		if err := snapshotData(path+".data", staged); err != nil {
+			return err
+		}
+		os.Remove(filepath.Join(staged, ".flats-snapshot-complete"))
+		old := s.dataDirOf(slugName) + ".restore-old"
+		os.RemoveAll(old)
+		if err := os.Rename(s.dataDirOf(slugName), old); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(staged, s.dataDirOf(slugName)); err != nil {
+			_ = os.Rename(old, s.dataDirOf(slugName))
+			return err
+		}
+		return os.RemoveAll(old)
+	}
+	return s.installDB(slugName, path)
+}
+
+// restoreJournal lets startup undo an interrupted data swap before starting code.
+type restoreJournal struct {
+	Approval string `json:"approval"`
+	Backup   string `json:"backup"`
+}
+
+func atomicJournal(path string, b []byte) error {
+	f, err := os.OpenFile(path+".tmp", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(b); err == nil {
+		err = f.Sync()
+	}
+	cerr := f.Close()
+	if err != nil {
+		return err
+	}
+	if cerr != nil {
+		return cerr
+	}
+	return os.Rename(path+".tmp", path)
+}
+func (s *Service) recoverRestoreJournals(ctx context.Context) error {
+	fs, err := s.st.ListFlats(ctx)
+	if err != nil {
+		return err
+	}
+	for _, f := range fs {
+		path := filepath.Join(s.flatDir(f.Slug), "restore-journal.json")
+		raw, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var j restoreJournal
+		if err := json.Unmarshal(raw, &j); err != nil {
+			return err
+		}
+		if j.Approval == "" {
+			return fmt.Errorf("restore journal missing approval")
+		}
+		_, committed, err := s.st.DeploymentByApproval(ctx, j.Approval)
+		if err != nil {
+			return err
+		}
+		if !committed {
+			if j.Backup == "" {
+				if err := os.RemoveAll(s.dataDirOf(f.Slug)); err != nil {
+					return err
+				}
+			} else {
+				if !validSnapshotName(j.Backup) {
+					return errors.New("invalid restore journal backup")
+				}
+				if err := s.installSnapshot(f.Slug, filepath.Join(s.snapshotDir(f.Slug), j.Backup)); err != nil {
+					return err
+				}
+			}
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }

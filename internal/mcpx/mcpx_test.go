@@ -18,14 +18,18 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/store"
 )
 
 type env struct {
+	management          *httptest.Server
+	operatorCookie      *http.Cookie
 	localURL, remoteURL string
 	svc                 *core.Service
+	st                  *store.Store
 	priv                *local.Net
 	pub                 *local.Public
 	local               *mcp.ClientSession // connects from loopback
@@ -34,6 +38,10 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
+	authority, err := api.NewOperatorAuthority(mcpOperatorCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
 	if err != nil {
@@ -48,7 +56,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	pub := local.NewPublic(pubNet)
-	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
+	svc, err := core.New(context.Background(), core.Config{OperatorIdentity: authority.DecisionIdentity, ValidateOperatorDecision: authority.ValidateDecision, DataDir: dir, Store: st, Private: priv, Public: pub,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -56,12 +64,14 @@ func newEnv(t *testing.T) *env {
 	h := Handler(svc, Options{Version: "test"})
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", h)
+	management := httptest.NewServer((&api.Server{Svc: svc, Operator: authority}).Handler())
 	localSrv := httptest.NewServer(mux)
 	remoteSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.RemoteAddr = "100.64.0.7:41641" // a tailnet peer
 		h.ServeHTTP(w, r)
 	}))
 	t.Cleanup(func() {
+		management.Close()
 		localSrv.Close()
 		remoteSrv.Close()
 		svc.Close()
@@ -69,7 +79,7 @@ func newEnv(t *testing.T) *env {
 		pubNet.Close()
 		st.Close()
 	})
-	return &env{localURL: localSrv.URL + "/mcp", remoteURL: remoteSrv.URL, svc: svc, priv: priv, pub: pub,
+	return &env{management: management, localURL: localSrv.URL + "/mcp", remoteURL: remoteSrv.URL, svc: svc, st: st, priv: priv, pub: pub,
 		local: connect(t, localSrv.URL+"/mcp"), remote: connect(t, remoteSrv.URL)}
 }
 
@@ -141,14 +151,14 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_flat", "get_logs", "get_runtime_reference", "list_flats",
-		"list_secrets", "list_versions", "open_preview", "rollback", "save_version", "save_version_from_dir", "set_visibility"}
+	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_draft", "get_flat", "get_logs", "get_runtime_reference", "list_flats",
+		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_draft", "save_version", "save_version_from_dir", "set_visibility"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
 	ins := e.local.InitializeResult().Instructions
-	for _, s := range []string{"approval_url", "NOT access control", "flats.json", "save_version_from_dir"} {
+	for _, s := range []string{"approval_url", "NOT access control", "flats.json", "save_version_from_dir", "Local loopback or explicitly permitted Tailscale"} {
 		if !strings.Contains(ins, s) {
 			t.Errorf("instructions do not mention %q", s)
 		}
@@ -157,79 +167,71 @@ func TestListTools(t *testing.T) {
 
 func TestSaveVersionAndDeploy(t *testing.T) {
 	e := newEnv(t)
-	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00, 0xff, 0xfe}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0xff, 0xfe}
 	var out SaveOut
-	text, isErr := call(t, e.local, "save_version", map[string]any{
-		"slug": "blog",
-		"files": []any{
-			file("index.html", "<h1>héllo</h1>", "UTF-8"),
-			file("img/logo.png", base64.StdEncoding.EncodeToString(png), "Base64"),
-			file("flats.json", `{"name":"My Blog"}`, ""),
-		},
-		"git_sha": "abc123", "git_dirty": true, "message": "first", "deploy": true,
-	}, &out)
-	if isErr {
-		t.Fatalf("save_version failed: %s", text)
+	text, failed := call(t, e.local, "save_version", map[string]any{"slug": "blog", "files": []any{file("index.html", "<h1>héllo</h1>", "UTF-8"), file("img/logo.png", base64.StdEncoding.EncodeToString(png), "Base64"), file("flats.json", `{"name":"My Blog"}`, "")}, "git_sha": "abc123", "git_dirty": true, "message": "first", "deploy": true}, &out)
+	if failed || out.Version.Number != 0 || out.Version.Live || out.Version.Published || out.Version.Role != "draft" || out.Version.Revision != 1 || out.Version.GitSHA != "abc123" || !out.Version.GitDirty || out.Version.Files != 3 {
+		t.Fatalf("Draft save: %s %+v", text, out)
 	}
-	if out.Version.Number != 1 || !out.Version.Live || out.Version.GitSHA != "abc123" || !out.Version.GitDirty || out.Version.Files != 3 {
-		t.Fatalf("version = %+v", out.Version)
+	if out.Deploy == nil || out.Deploy.Status != "pending_approval" || out.Deploy.ApprovalID == "" || strings.Contains(text, " is live") {
+		t.Fatalf("pending: %s %+v", text, out)
 	}
-	if out.Deploy == nil || !out.Deploy.Health.OK || out.Deploy.Version != 1 {
-		t.Fatalf("deploy = %+v", out.Deploy)
+	f, _ := e.svc.GetFlat(context.Background(), "blog")
+	if f.LiveVersion != 0 || f.Versions != 0 || f.Publication != "unpublished" {
+		t.Fatalf("premature publish: %+v", f)
 	}
-	if !strings.Contains(text, out.Deploy.PrivateURL) || !strings.Contains(text, "is live") {
-		t.Fatalf("summary should name the live URL: %s", text)
-	}
-	code, body := get(t, out.Deploy.PrivateURL)
+	e.approve(t, out.Deploy.ApprovalID)
+	f, _ = e.svc.GetFlat(context.Background(), "blog")
+	code, body := get(t, f.PrivateURL)
 	if code != 200 || string(body) != "<h1>héllo</h1>" {
-		t.Fatalf("GET private URL: %d %q", code, body)
+		t.Fatalf("traffic: %d %q", code, body)
 	}
-	if _, body := get(t, out.Deploy.PrivateURL+"/img/logo.png"); !bytes.Equal(body, png) {
-		t.Fatalf("base64 file round trip: %v", body)
+	if _, body := get(t, f.PrivateURL+"/img/logo.png"); !bytes.Equal(body, png) {
+		t.Fatalf("base64 roundtrip: %v", body)
 	}
-
 	var flat FlatOut
-	if text, isErr := call(t, e.local, "get_flat", map[string]any{"slug": "blog"}, &flat); isErr {
+	if text, failed := call(t, e.local, "get_flat", map[string]any{"slug": "blog"}, &flat); failed || flat.Flat.Name != "My Blog" || flat.Flat.LiveVersion != 1 || flat.Flat.Publication != "published" || flat.Flat.Draft.Revision != 1 {
+		t.Fatalf("flat: %s %+v", text, flat)
+	}
+	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "blog", "expected_revision": 1, "files": []any{file("index.html", "two", "")}}, nil); failed {
 		t.Fatal(text)
 	}
-	if flat.Flat.Name != "My Blog" || flat.Flat.LiveVersion != 1 || flat.Flat.Visibility != "private" {
-		t.Fatalf("flat = %+v", flat.Flat)
-	}
-
-	// A second save leaves live alone; list_versions marks the live one.
-	if text, isErr := call(t, e.local, "save_version", map[string]any{"slug": "blog", "files": []any{file("index.html", "two", "")}}, nil); isErr {
-		t.Fatal(text)
-	}
-	if _, body := get(t, out.Deploy.PrivateURL); string(body) != "<h1>héllo</h1>" {
-		t.Fatalf("save without deploy changed live: %q", body)
+	if _, body := get(t, f.PrivateURL); string(body) != "<h1>héllo</h1>" {
+		t.Fatalf("Draft changed live: %q", body)
 	}
 	var vs VersionsOut
 	call(t, e.local, "list_versions", map[string]any{"slug": "blog"}, &vs)
-	if len(vs.Versions) != 2 || vs.Versions[0].Number != 2 || vs.Versions[0].Live || !vs.Versions[1].Live {
-		t.Fatalf("versions = %+v", vs)
+	if len(vs.Versions) != 1 || vs.Versions[0].Number != 1 || !vs.Versions[0].Live || !vs.Versions[0].Published {
+		t.Fatalf("published history: %+v", vs)
 	}
 	var prev PreviewInfo
-	if text, isErr := call(t, e.local, "open_preview", map[string]any{"slug": "blog", "version": 2}, &prev); isErr {
-		t.Fatal(text)
+	if text, failed := call(t, e.local, "open_preview", map[string]any{"slug": "blog", "target": "draft", "version": 0}, &prev); failed || prev.Target != "draft" || prev.Revision != 2 {
+		t.Fatalf("Draft preview: %s %+v", text, prev)
 	}
 	if _, body := get(t, prev.URL); string(body) != "two" {
-		t.Fatalf("preview serves %q", body)
+		t.Fatalf("preview: %q", body)
 	}
+	var action ActionOut
+	if text, failed := call(t, e.local, "publish", map[string]any{"slug": "blog", "revision": 2}, &action); failed || action.Status != "pending_approval" {
+		t.Fatalf("publish: %s %+v", text, action)
+	}
+	e.approve(t, action.ApprovalID)
 	var d DeployInfo
-	if text, isErr := call(t, e.local, "deploy", map[string]any{"slug": "blog", "version": 2}, &d); isErr || d.Previous != 1 {
-		t.Fatalf("deploy: %s %+v", text, d)
+	if text, failed := call(t, e.local, "rollback", map[string]any{"slug": "blog"}, &d); failed || d.Status != "pending_approval" {
+		t.Fatalf("rollback pending: %s %+v", text, d)
 	}
-	if text, isErr := call(t, e.local, "rollback", map[string]any{"slug": "blog"}, &d); isErr || d.Version != 1 {
-		t.Fatalf("rollback: %s %+v", text, d)
+	e.approve(t, d.ApprovalID)
+	if _, body := get(t, f.PrivateURL); string(body) != "<h1>héllo</h1>" {
+		t.Fatalf("rollback traffic: %q", body)
 	}
 	var logs LogsOut
 	call(t, e.local, "get_logs", map[string]any{"slug": "blog", "kind": "deploy"}, &logs)
 	if len(logs.Events) != 3 || logs.NextAfter != logs.Events[2].ID {
-		t.Fatalf("deploy events = %+v", logs)
+		t.Fatalf("deploy events: %+v", logs)
 	}
 	var secs SecretsOut
-	if text, isErr := call(t, e.local, "list_secrets", map[string]any{"slug": "blog"}, &secs); isErr || len(secs.Secrets) != 0 || secs.Note == "" {
-		t.Fatalf("list_secrets: %s %+v", text, secs)
+	if text, failed := call(t, e.local, "list_secrets", map[string]any{"slug": "blog"}, &secs); failed || len(secs.Secrets) != 0 || secs.Note == "" {
+		t.Fatalf("secrets: %s %+v", text, secs)
 	}
 }
 
@@ -263,7 +265,7 @@ func TestValidationErrorsHaveFixes(t *testing.T) {
 	}
 	call(t, e.local, "create_flat", map[string]any{"slug": "empty"}, nil)
 	text, isErr = call(t, e.local, "rollback", map[string]any{"slug": "empty"}, nil)
-	if !isErr || !strings.Contains(text, "deploy a saved version first") {
+	if !isErr || !strings.Contains(text, "request publish of a Draft") || !strings.Contains(text, "operator approval") {
 		t.Fatalf("rollback of an undeployed flat: %s", text)
 	}
 	text, isErr = call(t, e.local, "get_flat", map[string]any{"slug": "nope"}, nil)
@@ -295,85 +297,78 @@ func TestUploadLimit(t *testing.T) {
 func TestFailedDeployKeepsLive(t *testing.T) {
 	e := newEnv(t)
 	var out SaveOut
-	if text, isErr := call(t, e.local, "save_version", map[string]any{"slug": "site", "files": []any{file("index.html", "ok", "")}, "deploy": true}, &out); isErr {
+	if text, failed := call(t, e.local, "save_version", map[string]any{"slug": "site", "files": []any{file("index.html", "ok", "")}, "deploy": true}, &out); failed {
 		t.Fatal(text)
 	}
-	text, isErr := call(t, e.local, "save_version", map[string]any{"slug": "site", "deploy": true, "files": []any{
-		file("index.html", "broken", ""), file("flats.json", `{"health":"/missing"}`, ""),
-	}}, nil)
-	if !isErr {
-		t.Fatalf("failed health check reported as success: %s", text)
+	e.approve(t, out.Deploy.ApprovalID)
+	f, _ := e.svc.GetFlat(context.Background(), "site")
+	text, failed := call(t, e.local, "save_version", map[string]any{"slug": "site", "deploy": true, "files": []any{file("index.html", "broken", ""), file("flats.json", `{"health":"/missing"}`, "")}}, &out)
+	if failed || out.Deploy.Status != "pending_approval" {
+		t.Fatalf("health ran before approval: %s %+v", text, out)
 	}
-	for _, s := range []string{"saved version 2", "previous live version 1 keeps serving", `"health"`, `"status":404`} {
-		if !strings.Contains(text, s) {
-			t.Errorf("deploy failure text lacks %q:\n%s", s, text)
-		}
+	code, a := e.decision(t, out.Deploy.ApprovalID, true)
+	if code != 422 || a.Status != "failed" || a.ResultData == nil || a.ResultData.FailureCode != "health_check_failed" || a.ResultData.DataImpact != "none" || a.ResultData.HealthData != "isolated_copy" || a.ResultData.LiveData != "untouched" {
+		t.Fatalf("failure cause/data: %d %+v", code, a)
 	}
-	if _, body := get(t, out.Deploy.PrivateURL); string(body) != "ok" {
-		t.Fatalf("live changed after failed deploy: %q", body)
+	if _, body := get(t, f.PrivateURL); string(body) != "ok" {
+		t.Fatalf("failure changed serving: %q", body)
+	}
+	f, _ = e.svc.GetFlat(context.Background(), "site")
+	if f.LiveVersion != 1 || f.Versions != 1 {
+		t.Fatalf("failed health allocated version: %+v", f)
 	}
 }
 
 func TestSetVisibilityNeedsApproval(t *testing.T) {
 	e := newEnv(t)
-	call(t, e.local, "save_version", map[string]any{"slug": "demo", "files": []any{file("index.html", "hi", "")}, "deploy": true}, nil)
+	var saved SaveOut
+	call(t, e.local, "save_version", map[string]any{"slug": "demo", "files": []any{file("index.html", "hi", "")}, "deploy": true}, &saved)
+	e.approve(t, saved.Deploy.ApprovalID)
+	if code, _ := e.operatorCall(t, "POST", "/flats/demo/providers", `{"provider":"portal","permitted":true}`); code != 200 {
+		t.Fatalf("provider grant: %d", code)
+	}
 	var out ActionOut
-	text, isErr := call(t, e.local, "set_visibility", map[string]any{"slug": "demo", "visibility": "public-unlisted", "reason": "show a friend"}, &out)
-	if isErr {
-		t.Fatal(text)
+	text, failed := call(t, e.local, "set_visibility", map[string]any{"slug": "demo", "visibility": "public-unlisted", "reason": "show a friend"}, &out)
+	if failed || out.Status != "pending_approval" || out.ApprovalID == "" || out.Notice != pendingPublicNotice || !strings.Contains(text, out.ApprovalURL) || strings.Contains(text, "This flat is public:") {
+		t.Fatalf("public pending: %s %+v", text, out)
 	}
-	if out.Status != "pending_approval" || !strings.HasPrefix(out.ApprovalURL, "http://console.test/approvals/apr-") || out.ApprovalID == "" {
-		t.Fatalf("result = %+v", out)
-	}
-	if out.Notice != core.UnlistedNotice || !strings.Contains(text, core.UnlistedNotice) || !strings.Contains(text, out.ApprovalURL) {
-		t.Fatalf("pending result must carry the approval URL and the unlisted notice:\n%s", text)
-	}
-	if _, served := e.pub.Hidden("demo"); served {
-		t.Fatal("flat went public without approval")
-	}
-	var fi FlatOut
-	call(t, e.local, "get_flat", map[string]any{"slug": "demo"}, &fi)
-	if fi.Flat.Visibility != "private" || fi.Flat.PublicURL != "" {
-		t.Fatalf("flat changed before approval: %+v", fi.Flat)
+	f, _ := e.svc.GetFlat(context.Background(), "demo")
+	if f.Visibility != store.Private {
+		t.Fatal("public applied before approval")
 	}
 	var a ApprovalOut
 	call(t, e.local, "get_approval", map[string]any{"id": out.ApprovalID}, &a)
-	if a.Status != "pending" || a.Action != "set_visibility" || a.Params["visibility"] != "public-unlisted" || a.Reason != "show a friend" {
-		t.Fatalf("approval = %+v", a)
+	if a.Status != "pending" || a.Params["visibility"] != "public" || a.Reason != "show a friend" {
+		t.Fatalf("canonical approval: %+v", a)
 	}
-
-	// After the operator approves, the flat reports its public URL and notice.
-	if _, err := e.svc.Decide(context.Background(), out.ApprovalID, true); err != nil {
-		t.Fatal(err)
-	}
+	e.approve(t, out.ApprovalID)
+	var fi FlatOut
 	text, _ = call(t, e.local, "get_flat", map[string]any{"slug": "demo"}, &fi)
-	if fi.Flat.PublicURL == "" || fi.Flat.PublicNotice != core.UnlistedNotice || !strings.Contains(text, core.UnlistedNotice) {
-		t.Fatalf("public flat without notice: %s", text)
+	if fi.Flat.Visibility != "public" || fi.Flat.PublicURL == "" || fi.Flat.PublicNotice != core.PublicAccessNotice {
+		t.Fatalf("public result: %s %+v", text, fi)
 	}
-	text, _ = call(t, e.local, "list_flats", nil, nil)
-	if !strings.Contains(text, core.UnlistedNotice) {
-		t.Fatalf("list_flats omits the notice next to a public URL: %s", text)
-	}
-	var d DeployInfo
-	text, isErr = call(t, e.local, "deploy", map[string]any{"slug": "demo", "version": 1}, &d)
-	if isErr || d.PublicURL == "" || d.PublicNotice != core.UnlistedNotice || !strings.Contains(text, d.PublicURL) || !strings.Contains(text, core.UnlistedNotice) {
-		t.Fatalf("deploy of a public flat must show the public URL with its notice: %s %+v", text, d)
-	}
-	// Narrowing applies immediately.
 	call(t, e.local, "set_visibility", map[string]any{"slug": "demo", "visibility": "private"}, &out)
-	if out.Status != "done" || out.Visibility != "private" {
-		t.Fatalf("narrowing: %+v", out)
+	if out.Status != "pending_approval" {
+		t.Fatalf("private applied immediately: %+v", out)
+	}
+	f, _ = e.svc.GetFlat(context.Background(), "demo")
+	if string(f.Visibility) != "public" {
+		t.Fatal("private applied before approval")
+	}
+	e.approve(t, out.ApprovalID)
+	f, _ = e.svc.GetFlat(context.Background(), "demo")
+	if f.Visibility != store.Private || f.LiveVersion != 1 || f.Versions != 1 {
+		t.Fatalf("private result: %+v", f)
 	}
 	if _, served := e.pub.Hidden("demo"); served {
-		t.Fatal("still public after going private")
+		t.Fatal("public route remained after approved private")
 	}
-
 	call(t, e.local, "delete_flat", map[string]any{"slug": "demo", "reason": "done"}, &out)
 	if out.Status != "pending_approval" || out.ApprovalURL == "" {
-		t.Fatalf("delete must wait for approval: %+v", out)
+		t.Fatalf("delete: %+v", out)
 	}
 	if _, err := e.svc.GetFlat(context.Background(), "demo"); err != nil {
-		t.Fatal("flat deleted without approval")
+		t.Fatal("flat deleted before approval")
 	}
 }
 
@@ -403,7 +398,9 @@ func TestSaveVersionFromDir(t *testing.T) {
 	if out.Version.Files != 2 || out.Deploy == nil {
 		t.Fatalf("out = %+v", out)
 	}
-	if _, body := get(t, out.Deploy.PrivateURL); string(body) != "from dir" {
+	e.approve(t, out.Deploy.ApprovalID)
+	f, _ := e.svc.GetFlat(context.Background(), "local")
+	if _, body := get(t, f.PrivateURL); string(body) != "from dir" {
 		t.Fatalf("served %q", body)
 	}
 	// A symlinked build directory is resolved; links inside it are still refused.
@@ -576,5 +573,67 @@ func TestDeployTextNotesPendingHost(t *testing.T) {
 	d.PrivateState, d.PrivateDetail = "ready", ""
 	if got := deployText("blog", d, "Deployed"); strings.Contains(got, "answer yet") {
 		t.Errorf("ready deploy text %q", got)
+	}
+}
+
+const mcpOperatorCredential = "separate-mcp-test-operator-credential-32-bytes"
+
+func (e *env) operatorCall(t *testing.T, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	if e.operatorCookie == nil {
+		r, _ := http.NewRequest("POST", e.management.URL+"/console/api/operator/session", strings.NewReader(`{"credential":"`+mcpOperatorCredential+`"}`))
+		setOperatorHeaders(r, e.management.URL)
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 || len(resp.Cookies()) != 1 {
+			t.Fatalf("operator session: %d", resp.StatusCode)
+		}
+		e.operatorCookie = resp.Cookies()[0]
+	}
+	r, _ := http.NewRequest(method, e.management.URL+"/console/api"+path, strings.NewReader(body))
+	setOperatorHeaders(r, e.management.URL)
+	r.AddCookie(e.operatorCookie)
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, out
+}
+func setOperatorHeaders(r *http.Request, origin string) {
+	r.Header.Set("X-Flats-Console", "1")
+	r.Header.Set("Origin", origin)
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	r.Header.Set("Content-Type", "application/json")
+}
+func (e *env) decision(t *testing.T, id string, approve bool) (int, ApprovalOut) {
+	t.Helper()
+	action := "reject"
+	if approve {
+		action = "approve"
+	}
+	code, out := e.operatorCall(t, "POST", "/approvals/"+id+"/"+action, "")
+	if nested, ok := out["approval"].(map[string]any); ok {
+		out = nested
+	}
+	b, _ := json.Marshal(out)
+	var a ApprovalOut
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	return code, a
+}
+func (e *env) approve(t *testing.T, id string) {
+	t.Helper()
+	code, a := e.decision(t, id, true)
+	if code != 200 || a.Status != "approved" {
+		t.Fatalf("authorized approval: %d %+v", code, a)
 	}
 }

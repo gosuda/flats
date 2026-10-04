@@ -28,12 +28,12 @@ func TestFlatLifecycleAndCAS(t *testing.T) {
 	if err := s.CreateFlat(ctx, Flat{Slug: "blog", Name: "x", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err == nil {
 		t.Fatal("duplicate slug accepted")
 	}
-	s.InsertVersion(ctx, Version{Flat: "blog", Number: 1, Hash: "h", Kind: "static", Manifest: []byte("{}"), CreatedAt: now})
-	if err := s.SetLive(ctx, "blog", 1, 0, "deploy", now); err != nil {
+	s.InsertVersion(ctx, Version{Flat: "blog", Number: 1, Hash: "h", Kind: "static", Manifest: []byte("{}"), CreatedAt: now, Published: true})
+	if err := s.SetLive(ctx, "blog", 1, 0, "deploy", "", now); err != nil {
 		t.Fatal(err)
 	}
 	// Compare-and-swap: a stale previous version must fail.
-	if err := s.SetLive(ctx, "blog", 1, 0, "deploy", now); err == nil {
+	if err := s.SetLive(ctx, "blog", 1, 0, "deploy", "", now); err == nil {
 		t.Fatal("stale SetLive succeeded")
 	}
 	f, _ := s.GetFlat(ctx, "blog")
@@ -51,7 +51,7 @@ func TestRenameCascadesAndRedirectWindow(t *testing.T) {
 	s := open(t)
 	now := time.Now().UTC()
 	s.CreateFlat(ctx, Flat{Slug: "old", Name: "o", Visibility: Private, CreatedAt: now, UpdatedAt: now})
-	s.InsertVersion(ctx, Version{Flat: "old", Number: 1, Hash: "h", Kind: "static", Manifest: []byte("{}"), CreatedAt: now})
+	s.InsertVersion(ctx, Version{Flat: "old", Number: 1, Hash: "h", Kind: "static", Manifest: []byte("{}"), CreatedAt: now, Published: true})
 	s.AddEvent(ctx, Event{Flat: "old", Time: now, Level: "info", Kind: "x", Message: "m"})
 	s.PutSecret(ctx, "old", SealedSecret{Name: "K", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now})
 	if err := s.RenameFlat(ctx, "old", "new", now.Add(7*24*time.Hour), now); err != nil {

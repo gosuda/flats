@@ -13,10 +13,13 @@ export class ApiError extends Error {
   get health() { return this.body.health || null; }
 }
 
-export async function request(method, path, body) {
+export async function request(method, path, body, raw) {
   const headers = { 'X-Flats-Console': '1', Accept: 'application/json' };
   const opts = { method, headers, credentials: 'same-origin', cache: 'no-store' };
-  if (body !== undefined) {
+  if (raw) {
+    headers['Content-Type'] = raw.contentType || 'application/octet-stream';
+    opts.body = body;
+  } else if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
@@ -28,15 +31,31 @@ export async function request(method, path, body) {
   }
   let data = null;
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
-  if (!res.ok) throw new ApiError(res.status, data);
+  if (!res.ok) {
+    if (path !== '/operator/session' && data?.category?.startsWith('operator_') && typeof CustomEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('flats-operator-required', { detail: data.category }));
+    }
+    throw new ApiError(res.status, data);
+  }
   return data;
 }
 
 const enc = encodeURIComponent;
+
+function archiveType(file) {
+  const name = String(file && file.name || '').toLowerCase();
+  if (name.endsWith('.tar.gz') || name.endsWith('.tgz') || name.endsWith('.gz')) return 'application/gzip';
+  if (name.endsWith('.tar')) return 'application/x-tar';
+  if (name.endsWith('.zip')) return 'application/zip';
+  return 'application/octet-stream';
+}
 const get = (p) => request('GET', p);
 const post = (p, b) => request('POST', p, b === undefined ? {} : b);
 
 export const api = {
+  operatorStatus: () => get('/operator/session'),
+  operatorSession: (credential) => post('/operator/session', { credential }),
+  operatorLogout: () => request('DELETE', '/operator/session'),
   status: () => get('/status'),
   flats: (q) => get('/flats' + (q ? '?q=' + enc(q) : '')),
   flat: (slug) => get(`/flats/${enc(slug)}`),
@@ -45,6 +64,18 @@ export const api = {
   rollback: (slug, version, restoreData) => post(`/flats/${enc(slug)}/rollback`, { version: version || 0, restore_data: !!restoreData }),
   deployments: (slug) => get(`/flats/${enc(slug)}/deployments`),
   openPreview: (slug, version) => post(`/flats/${enc(slug)}/previews`, { version }),
+  openDraftPreview: (slug) => post(`/flats/${enc(slug)}/previews`, { target: 'draft', version: 0 }),
+  saveDraft: (slug, file, meta = {}) => {
+    const q = new URLSearchParams();
+    if (meta.expectedRevision !== undefined) q.set('expected_revision', String(meta.expectedRevision));
+    if (meta.message) q.set('message', meta.message);
+    if (meta.gitSHA) q.set('git_sha', meta.gitSHA);
+    if (meta.gitDirty) q.set('git_dirty', 'true');
+    const qs = q.toString();
+    return request('POST', `/flats/${enc(slug)}/draft` + (qs ? '?' + qs : ''), file, { contentType: archiveType(file) });
+  },
+  publish: (slug, body) => post(`/flats/${enc(slug)}/publish`, body),
+  setProvider: (slug, provider, permitted) => post(`/flats/${enc(slug)}/providers`, { provider, permitted }),
   previews: (slug) => get(`/flats/${enc(slug)}/previews`),
   closePreview: (host) => request('DELETE', `/previews/${enc(host)}`),
   setVisibility: (slug, visibility) => post(`/flats/${enc(slug)}/visibility`, { visibility, reason: '' }),

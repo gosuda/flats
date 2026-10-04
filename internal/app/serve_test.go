@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -10,11 +11,121 @@ import (
 	"testing"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/provider"
 	"github.com/gosuda/flats/internal/store"
 )
 
 // Server-flat workers run in "/", so a relative --data or FLATS_DATA must be
 // made absolute before anything uses it.
+func TestServeFlagsDoNotGrantByDefault(t *testing.T) {
+	o, err := ParseServeFlags(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Network != "local" || o.NetworkSet || o.Portal || o.PortalSet || len(o.Permit) != 0 {
+		t.Fatalf("defaults grant a provider: %+v", o)
+	}
+	o, err = ParseServeFlags([]string{"--network", "tailscale", "--permit", "tailscale-funnel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.NetworkSet || o.Network != "tailscale" || len(o.Permit) != 1 || o.Permit[0] != "tailscale-funnel" {
+		t.Fatalf("explicit grants: %+v", o)
+	}
+	if _, err := ParseServeFlags([]string{"--permit", "funnel"}); err == nil {
+		t.Fatal("funnel was accepted as an alias")
+	}
+}
+
+func TestStartDoesNotInferGrantsFromOldDirectories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tsnet", "notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h, err := Start(context.Background(), Options{
+		DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0", ConsoleHost: "flats",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if h.Public != nil || h.tsNet != nil {
+		t.Fatal("historical directories started tailscale or portal")
+	}
+	if h.Providers == nil || len(h.Providers.File().Permitted) != 0 {
+		t.Fatalf("grants = %+v", h.Providers.File())
+	}
+	if !h.Providers.File().Migration.HistoricalTSNet {
+		t.Fatalf("migration = %+v", h.Providers.File().Migration)
+	}
+}
+
+func TestExplicitPortalFalseKeepsGrantAndDoesNotStart(t *testing.T) {
+	dir := t.TempDir()
+	start := func(portal, set bool) *Host {
+		t.Helper()
+		h, err := Start(context.Background(), Options{
+			DataDir: dir, Listen: "127.0.0.1:0", Network: "local", LocalAddr: "127.0.0.1:0",
+			ConsoleHost: "flats", Portal: portal, PortalSet: set,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	h := start(true, true)
+	if h.Public == nil || h.portalNet == nil || !h.Providers.File().Allows(provider.Portal) {
+		t.Fatalf("portal grant did not start portal: public=%v net=%v file=%+v", h.Public != nil, h.portalNet != nil, h.Providers.File())
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h = start(false, true)
+	if h.Public != nil || h.portalNet != nil {
+		t.Fatal("explicit --portal=false started portal")
+	}
+	if !h.Providers.File().Allows(provider.Portal) {
+		t.Fatal("explicit --portal=false revoked the stored grant")
+	}
+	// Exercise the manager, too: a typed nil Portal pointer in its interface
+	// would look configured and panic instead of honoring the runtime disable.
+	result, err := h.Providers.ServeExposure(context.Background(), provider.ExposureRequest{
+		Slug: "disabled-portal", Visibility: "public", Audience: provider.AudienceCurrent,
+		Handler: http.NotFoundHandler(), Permitted: []provider.ID{provider.Portal},
+	})
+	if !errors.Is(err, provider.ErrNotConfigured) {
+		t.Fatalf("disabled Portal request = %+v, %v; want not configured", result, err)
+	}
+	var portal, private *provider.ExposureEndpoint
+	for i := range result.Endpoints {
+		ep := &result.Endpoints[i]
+		if ep.Provider == provider.Portal {
+			portal = ep
+		}
+		if ep.Provider == provider.Local {
+			private = ep
+		}
+	}
+	if portal == nil || portal.State != "unavailable" || portal.Configured || !portal.Permitted || portal.Ready {
+		t.Fatalf("disabled Portal endpoints = %+v", result.Endpoints)
+	}
+	if private == nil || !private.Ready {
+		t.Fatalf("public failure did not retain independent Local route: %+v", result.Endpoints)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h = start(false, false)
+	if h.Public == nil || h.portalNet == nil || !h.Providers.File().Allows(provider.Portal) {
+		t.Fatal("omitted --portal ignored the stored portal grant")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDataDirIsAbsolute(t *testing.T) {
 	t.Chdir(t.TempDir())
 	wd, err := os.Getwd()

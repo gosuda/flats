@@ -170,9 +170,10 @@ func BuildJob(opts Options) (Job, error) {
 	if env["PATH"] == "" {
 		env["PATH"] = DefaultPath
 	}
+	args := append([]string{}, opts.Args...)
 	out, errp := LogPaths(dataDir)
 	return Job{
-		Program: append([]string{exe, "serve"}, opts.Args...),
+		Program: append([]string{exe, "serve"}, args...),
 		Stdout:  out,
 		Stderr:  errp,
 		Env:     env,

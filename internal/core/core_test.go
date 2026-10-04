@@ -44,7 +44,7 @@ func newEnv(t *testing.T) *env {
 	}
 	pub := local.NewPublic(pubNet)
 	priv.Identity = func(*http.Request) (string, string) { return "op@example.com", "Operator" }
-	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
+	svc, err := core.New(context.Background(), core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: priv, Public: pub,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +59,52 @@ func files(kv ...string) []bundle.File {
 		out = append(out, bundle.File{Path: kv[i], Data: []byte(kv[i+1])})
 	}
 	return out
+}
+
+func decideDeploy(t *testing.T, svc *core.Service, slug string, version int) error {
+	t.Helper()
+	ctx := context.Background()
+	_, err := svc.Deploy(ctx, slug, version, core.ViaAPI)
+	var pending *core.PendingApproval
+	if !errors.As(err, &pending) || pending.Approval == nil {
+		if err == nil {
+			t.Fatal("deploy applied without approval")
+		}
+		return err
+	}
+	_, err = svc.Decide(ctx, pending.Approval.ID, true)
+	return err
+}
+
+func publish(t *testing.T, svc *core.Service, slug string) core.FlatView {
+	t.Helper()
+	if err := decideDeploy(t, svc, slug, 0); err != nil {
+		t.Fatalf("publish %s: %v", slug, err)
+	}
+	f, err := svc.GetFlat(context.Background(), slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func permitPortal(t *testing.T, svc *core.Service, slug string) {
+	t.Helper()
+	if err := svc.SetProviderPermission(context.Background(), slug, store.ProviderPortal, true, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func decideRollback(t *testing.T, svc *core.Service, slug string, to int, restore bool) error {
+	t.Helper()
+	ctx := context.Background()
+	_, err := svc.RollbackWithData(ctx, slug, to, restore, core.ViaAPI)
+	var pending *core.PendingApproval
+	if !errors.As(err, &pending) || pending.Approval == nil {
+		return err
+	}
+	_, err = svc.Decide(ctx, pending.Approval.ID, true)
+	return err
 }
 
 func get(t *testing.T, url string, hdr ...string) (int, string, http.Header) {
@@ -84,8 +130,8 @@ func TestSaveDeployRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v1.Number != 1 || v1.GitSHA != "abc123" || !v1.GitDirty || v1.Hash == "" {
-		t.Fatalf("unexpected version %+v", v1)
+	if v1.Number != 0 || v1.Revision != 1 || v1.Published || v1.Role != "draft" || v1.GitSHA != "abc123" || !v1.GitDirty || v1.Hash == "" {
+		t.Fatalf("unexpected draft %+v", v1)
 	}
 	fv, _ := e.svc.GetFlat(ctx, "blog")
 	if fv.Visibility != store.Private || fv.LiveVersion != 0 {
@@ -94,12 +140,9 @@ func TestSaveDeployRollback(t *testing.T) {
 	if e.priv.Serving("blog") {
 		t.Fatal("undeployed flat must not be exposed yet")
 	}
-	res, err := e.svc.Deploy(ctx, "blog", 1, core.ViaMCP)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Health.OK || res.Version != 1 {
-		t.Fatalf("bad deploy result %+v", res)
+	res := publish(t, e.svc, "blog")
+	if res.LiveVersion != 1 || res.Publication != "published" {
+		t.Fatalf("bad publish result %+v", res)
 	}
 	code, body, _ := get(t, e.priv.URL("blog"))
 	if code != 200 || !strings.Contains(body, "one") {
@@ -112,19 +155,18 @@ func TestSaveDeployRollback(t *testing.T) {
 	if _, body, _ := get(t, e.priv.URL("blog")); !strings.Contains(body, "one") {
 		t.Fatalf("save must not change live, got %q", body)
 	}
-	if _, err := e.svc.Deploy(ctx, "blog", 2, core.ViaCLI); err != nil {
-		t.Fatal(err)
+	if f := publish(t, e.svc, "blog"); f.LiveVersion != 2 {
+		t.Fatalf("live %d", f.LiveVersion)
 	}
 	if _, body, _ := get(t, e.priv.URL("blog")); !strings.Contains(body, "two") {
 		t.Fatalf("live v2: %q", body)
 	}
 	start := time.Now()
-	rb, err := e.svc.Rollback(ctx, "blog", 0, core.ViaAPI)
-	if err != nil {
+	if err := decideRollback(t, e.svc, "blog", 0, false); err != nil {
 		t.Fatal(err)
 	}
-	if rb.Version != 1 || time.Since(start) > 10*time.Second {
-		t.Fatalf("rollback: %+v in %s", rb, time.Since(start))
+	if f, _ := e.svc.GetFlat(ctx, "blog"); f.LiveVersion != 1 || time.Since(start) > 10*time.Second {
+		t.Fatalf("rollback live %d in %s", f.LiveVersion, time.Since(start))
 	}
 	if _, body, _ := get(t, e.priv.URL("blog")); !strings.Contains(body, "one") {
 		t.Fatalf("after rollback: %q", body)
@@ -135,15 +177,15 @@ func TestFailedHealthCheckKeepsLive(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "site", files("index.html", "ok"), core.SaveMeta{}, core.ViaAPI)
-	if _, err := e.svc.Deploy(ctx, "site", 1, core.ViaAPI); err != nil {
-		t.Fatal(err)
+	if f := publish(t, e.svc, "site"); f.LiveVersion != 1 {
+		t.Fatal(f.LiveVersion)
 	}
 	// v2 points health at a missing path.
 	_, err := e.svc.SaveVersion(ctx, "site", files("index.html", "broken", "flats.json", `{"health":"/missing"}`), core.SaveMeta{}, core.ViaAPI)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.svc.Deploy(ctx, "site", 2, core.ViaAPI)
+	err = decideDeploy(t, e.svc, "site", 0)
 	var de *core.DeployError
 	if !errors.As(err, &de) || de.Health.Status != 404 {
 		t.Fatalf("expected health failure, got %v", err)
@@ -174,7 +216,8 @@ func TestVisibilityApprovalAndIdentityHeaders(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "who", files("index.html", "hi"), core.SaveMeta{}, core.ViaMCP)
-	e.svc.Deploy(ctx, "who", 1, core.ViaMCP)
+	publish(t, e.svc, "who")
+	permitPortal(t, e.svc, "who")
 	r, err := e.svc.SetVisibility(ctx, "who", store.PublicUnlisted, core.ViaMCP, "share demo")
 	if err != nil {
 		t.Fatal(err)
@@ -190,28 +233,34 @@ func TestVisibilityApprovalAndIdentityHeaders(t *testing.T) {
 		t.Fatalf("approve: %v %+v", err, a)
 	}
 	hidden, served := e.pub.Hidden("who")
-	if !served || !hidden {
-		t.Fatalf("unlisted flat should be served hidden: served=%v hidden=%v", served, hidden)
+	if !served || hidden {
+		t.Fatalf("public flat should be served and visible: served=%v hidden=%v", served, hidden)
 	}
 	fv, _ := e.svc.GetFlat(ctx, "who")
-	if fv.PublicNotice != core.UnlistedNotice || fv.PublicURL == "" {
-		t.Fatalf("unlisted notice missing: %+v", fv)
+	if fv.PublicNotice != core.PublicAccessNotice || fv.PublicURL == "" {
+		t.Fatalf("public notice missing: %+v", fv)
 	}
-	// Exposure-reducing change by an agent applies immediately.
+	// Making a flat private also waits for approval, including for an agent.
 	r, err = e.svc.SetVisibility(ctx, "who", store.Private, core.ViaMCP, "")
-	if err != nil || r.Status != "done" {
-		t.Fatalf("reduce exposure: %v %+v", err, r)
+	if err != nil || r.Status != "pending_approval" {
+		t.Fatalf("private transition: %v %+v", err, r)
+	}
+	if _, err := e.svc.Decide(ctx, r.Approval.ID, true); err != nil {
+		t.Fatal(err)
 	}
 	if _, served := e.pub.Hidden("who"); served {
 		t.Fatal("private flat still public")
 	}
-	// Console changes apply directly (confirm dialog is in the UI).
+	// The console cannot skip approval either.
 	r, _ = e.svc.SetVisibility(ctx, "who", store.PublicListed, core.ViaConsole, "")
-	if r.Status != "done" {
-		t.Fatalf("console change should apply: %+v", r)
+	if r.Status != "pending_approval" {
+		t.Fatalf("console change should wait: %+v", r)
+	}
+	if _, err := e.svc.Decide(ctx, r.Approval.ID, true); err != nil {
+		t.Fatal(err)
 	}
 	if hidden, served := e.pub.Hidden("who"); !served || hidden {
-		t.Fatal("listed flat should be served and visible")
+		t.Fatal("public flat should be served and visible")
 	}
 	// Spoofed identity headers are stripped on the public path.
 	_, body, _ := get(t, e.pub.URL("who"), "Tailscale-User-Login", "evil@example.com")
@@ -224,7 +273,7 @@ func TestDeleteNeedsApproval(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "gone", files("index.html", "x"), core.SaveMeta{}, core.ViaMCP)
-	e.svc.Deploy(ctx, "gone", 1, core.ViaMCP)
+	publish(t, e.svc, "gone")
 	r, err := e.svc.Delete(ctx, "gone", core.ViaCLI, "cleanup")
 	if err != nil || r.Status != "pending_approval" {
 		t.Fatalf("delete must wait: %v %+v", err, r)
@@ -253,9 +302,9 @@ func TestPreviewLifecycle(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "prev", files("index.html", "live"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "prev", 1, core.ViaAPI)
+	publish(t, e.svc, "prev")
 	e.svc.SaveVersion(ctx, "prev", files("index.html", "candidate"), core.SaveMeta{}, core.ViaAPI)
-	p, err := e.svc.OpenPreview(ctx, "prev", 2)
+	p, err := e.svc.OpenPreview(ctx, "prev", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,9 +317,7 @@ func TestPreviewLifecycle(t *testing.T) {
 	if _, body, _ := get(t, e.priv.URL("prev")); body != "live" {
 		t.Fatalf("live changed by preview: %q", body)
 	}
-	if _, err := e.svc.Deploy(ctx, "prev", 2, core.ViaAPI); err != nil {
-		t.Fatal(err)
-	}
+	publish(t, e.svc, "prev")
 	if e.priv.Serving(p.Host) {
 		t.Fatal("deploy must close previews")
 	}
@@ -280,7 +327,7 @@ func TestRenameRedirect(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "old-name", files("index.html", "page", "about.html", "about"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "old-name", 1, core.ViaAPI)
+	publish(t, e.svc, "old-name")
 	if _, err := e.svc.RenameSlug(ctx, "old-name", "new-name", core.ViaConsole); err != nil {
 		t.Fatal(err)
 	}
@@ -297,10 +344,11 @@ func TestApprovedDeleteClosesOtherApprovals(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "multi", files("index.html", "x"), core.SaveMeta{}, core.ViaMCP)
-	e.svc.Deploy(ctx, "multi", 1, core.ViaMCP)
-	vis, _ := e.svc.SetVisibility(ctx, "multi", store.PublicListed, core.ViaMCP, "")
-	if vis.Notice != core.ListedNotice {
-		t.Fatalf("pending visibility must carry the notice: %+v", vis)
+	publish(t, e.svc, "multi")
+	permitPortal(t, e.svc, "multi")
+	vis, err := e.svc.SetVisibility(ctx, "multi", store.PublicListed, core.ViaMCP, "")
+	if err != nil || vis.Notice != core.PendingPublicAccessNotice || strings.Contains(vis.Notice, "This flat is public:") {
+		t.Fatalf("pending visibility must carry the notice: %v %+v", err, vis)
 	}
 	del, _ := e.svc.Delete(ctx, "multi", core.ViaMCP, "")
 	a, err := e.svc.Decide(ctx, del.Approval.ID, true)
@@ -317,7 +365,7 @@ func TestDeployErrorWhenNothingLive(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "fresh", files("index.html", "x", "flats.json", `{"health":"/nope"}`), core.SaveMeta{}, core.ViaAPI)
-	_, err := e.svc.Deploy(ctx, "fresh", 1, core.ViaAPI)
+	err := decideDeploy(t, e.svc, "fresh", 0)
 	if err == nil || !strings.Contains(err.Error(), "nothing was live") {
 		t.Fatalf("got %v", err)
 	}
@@ -327,7 +375,7 @@ func TestPreDeploySnapshotAndDataRollback(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "datum", files("index.html", "v1"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "datum", 1, core.ViaAPI)
+	publish(t, e.svc, "datum")
 	// Simulate a server flat's database.
 	dbPath := filepath.Join(e.dataDir, "flats", "datum", "data", "db.sqlite")
 	os.MkdirAll(filepath.Dir(dbPath), 0o700)
@@ -339,9 +387,7 @@ func TestPreDeploySnapshotAndDataRollback(t *testing.T) {
 	db.Exec(`INSERT INTO t VALUES ('before')`)
 	db.Close()
 	e.svc.SaveVersion(ctx, "datum", files("index.html", "v2"), core.SaveMeta{}, core.ViaAPI)
-	if _, err := e.svc.Deploy(ctx, "datum", 2, core.ViaAPI); err != nil {
-		t.Fatal(err)
-	}
+	publish(t, e.svc, "datum")
 	snaps, _ := e.svc.Snapshots("datum")
 	if len(snaps) != 1 || !strings.HasPrefix(snaps[0], "before-v2-") {
 		t.Fatalf("snapshots %v", snaps)
@@ -349,7 +395,7 @@ func TestPreDeploySnapshotAndDataRollback(t *testing.T) {
 	db, _ = sql.Open("sqlite", dbPath)
 	db.Exec(`UPDATE t SET v='after'`)
 	db.Close()
-	if _, err := e.svc.RollbackWithData(ctx, "datum", 0, true, core.ViaAPI); err != nil {
+	if err := decideRollback(t, e.svc, "datum", 0, true); err != nil {
 		t.Fatal(err)
 	}
 	db, _ = sql.Open("sqlite", dbPath)
@@ -372,12 +418,17 @@ func TestThumbnailFallsBackToFavicon(t *testing.T) {
 	if fv.Thumbnail != "" {
 		t.Fatalf("no live version yet, want no thumbnail, got %q", fv.Thumbnail)
 	}
-	e.svc.Deploy(ctx, "icon-site", 1, core.ViaAPI)
+	publish(t, e.svc, "icon-site")
 	fv, _ = e.svc.GetFlat(ctx, "icon-site")
 	if !strings.HasSuffix(fv.Thumbnail, "/versions/1/files/favicon.svg") {
 		t.Fatalf("favicon fallback: %q", fv.Thumbnail)
 	}
 	e.svc.SaveVersion(ctx, "icon-site", files("index.html", "x", "shot.png", "png", "flats.json", `{"screenshot":"shot.png"}`), core.SaveMeta{}, core.ViaAPI)
+	fv, _ = e.svc.GetFlat(ctx, "icon-site")
+	if !strings.HasSuffix(fv.Thumbnail, "/versions/1/files/favicon.svg") {
+		t.Fatalf("draft save must not change the published thumbnail: %q", fv.Thumbnail)
+	}
+	publish(t, e.svc, "icon-site")
 	fv, _ = e.svc.GetFlat(ctx, "icon-site")
 	if !strings.HasSuffix(fv.Thumbnail, "/versions/2/files/shot.png") {
 		t.Fatalf("screenshot should win: %q", fv.Thumbnail)
@@ -388,7 +439,7 @@ func TestPageViewsCountHTMLRequests(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.svc.SaveVersion(ctx, "counted", files("index.html", "x", "app.js", "js"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "counted", 1, core.ViaAPI)
+	publish(t, e.svc, "counted")
 	for i := 0; i < 3; i++ {
 		get(t, e.priv.URL("counted")+"/")
 	}
@@ -421,21 +472,21 @@ func TestSecondRestoreUndoesFirst(t *testing.T) {
 		return v
 	}
 	e.svc.SaveVersion(ctx, "epoch", files("index.html", "v1"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "epoch", 1, core.ViaAPI)
+	publish(t, e.svc, "epoch")
 	os.MkdirAll(filepath.Dir(dbPath), 0o700)
 	exec(`CREATE TABLE t (v TEXT)`)
 	exec(`INSERT INTO t VALUES ('a')`)
 	e.svc.SaveVersion(ctx, "epoch", files("index.html", "v2"), core.SaveMeta{}, core.ViaAPI)
-	e.svc.Deploy(ctx, "epoch", 2, core.ViaAPI) // snapshot before-v2 = [a]
-	exec(`INSERT INTO t VALUES ('b')`)         // live data [a,b]
-	if _, err := e.svc.RollbackWithData(ctx, "epoch", 1, true, core.ViaAPI); err != nil {
+	publish(t, e.svc, "epoch")         // snapshot before-v2 = [a]
+	exec(`INSERT INTO t VALUES ('b')`) // live data [a,b]
+	if err := decideRollback(t, e.svc, "epoch", 1, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(); got != "a" {
 		t.Fatalf("first restore: %q", got)
 	}
 	// Rolling forward to v2 with restore_data undoes the restore.
-	if _, err := e.svc.RollbackWithData(ctx, "epoch", 2, true, core.ViaAPI); err != nil {
+	if err := decideRollback(t, e.svc, "epoch", 2, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(); got != "a,b" {

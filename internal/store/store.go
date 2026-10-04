@@ -19,30 +19,41 @@ var ErrNotFound = errors.New("not found")
 // ErrExists is returned when a flat slug is already taken.
 var ErrExists = errors.New("already exists")
 
-// Visibility of a flat.
+// Visibility of a flat. Only private and public are stored. The listed and
+// unlisted values remain accepted on input so older clients keep working;
+// Canonical maps both to public.
 type Visibility string
 
 const (
 	Private        Visibility = "private"
+	Public         Visibility = "public"
 	PublicListed   Visibility = "public-listed"
 	PublicUnlisted Visibility = "public-unlisted"
 )
 
-// Valid reports whether v is a known visibility.
+// Valid reports whether v is a known visibility, including legacy aliases.
 func (v Visibility) Valid() bool {
-	return v == Private || v == PublicListed || v == PublicUnlisted
+	return v == Private || v == Public || v == PublicListed || v == PublicUnlisted
 }
 
-// Public reports whether v exposes the flat through Portal.
-func (v Visibility) Public() bool { return v == PublicListed || v == PublicUnlisted }
+// Canonical returns private or public. Legacy listed and unlisted values are public.
+func (v Visibility) Canonical() Visibility {
+	if v.Public() {
+		return Public
+	}
+	return Private
+}
 
-// Rank orders visibilities by exposure: private < unlisted < listed.
+// Public reports whether v exposes the flat beyond the private network.
+func (v Visibility) Public() bool {
+	return v == Public || v == PublicListed || v == PublicUnlisted
+}
+
+// Rank orders visibilities by exposure. Private is 0 and every public value is 1,
+// so neither direction is a silent narrowing.
 func (v Visibility) Rank() int {
-	switch v {
-	case PublicUnlisted:
+	if v.Public() {
 		return 1
-	case PublicListed:
-		return 2
 	}
 	return 0
 }
@@ -74,6 +85,11 @@ type Version struct {
 	CreatedAt  time.Time       `json:"created_at"`
 	Screenshot string          `json:"screenshot,omitempty"`
 	Pruned     bool            `json:"pruned"`
+	// Published is true for an immutable activated version. Draft snapshots
+	// use Role "draft", Number 0 and Revision.
+	Published bool   `json:"published"`
+	Role      string `json:"role,omitempty"`
+	Revision  int    `json:"revision,omitempty"`
 }
 
 // Event is a log line attached to a flat (deploys, health checks, runtime).
@@ -89,16 +105,20 @@ type Event struct {
 
 // Approval is a request that needs the operator.
 type Approval struct {
-	ID          string          `json:"id"`
-	Flat        string          `json:"flat"`
-	Action      string          `json:"action"` // set_visibility | delete
-	Params      json.RawMessage `json:"params"`
-	Status      string          `json:"status"` // pending | applying | approved | rejected | failed
-	Via         string          `json:"via"`    // mcp | cli | api
-	Reason      string          `json:"reason,omitempty"`
-	Result      string          `json:"result,omitempty"`
-	RequestedAt time.Time       `json:"requested_at"`
-	DecidedAt   *time.Time      `json:"decided_at,omitempty"`
+	ID             string          `json:"id"`
+	Flat           string          `json:"flat"`
+	Action         string          `json:"action"` // set_visibility | delete
+	Params         json.RawMessage `json:"params"`
+	Status         string          `json:"status"` // pending | applying | approved | rejected | failed
+	Via            string          `json:"via"`    // mcp | cli | api
+	Reason         string          `json:"reason,omitempty"`
+	Result         string          `json:"result,omitempty"`
+	RequestedAt    time.Time       `json:"requested_at"`
+	DecidedAt      *time.Time      `json:"decided_at,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	ResultData     json.RawMessage `json:"result_data,omitempty"`
+	DecidedBy      string          `json:"decided_by,omitempty"`
+	AuthorizedAt   *time.Time      `json:"authorized_at,omitempty"`
 }
 
 // Preview is an ephemeral address for a saved version.
@@ -108,6 +128,8 @@ type Preview struct {
 	Version    int       `json:"version"`
 	CreatedAt  time.Time `json:"created_at"`
 	LastAccess time.Time `json:"last_access"`
+	Target     string    `json:"target,omitempty"` // version | draft
+	Revision   int       `json:"revision,omitempty"`
 }
 
 // Store wraps the metadata database.
@@ -140,6 +162,7 @@ CREATE TABLE IF NOT EXISTS versions (
   created_at INTEGER NOT NULL,
   screenshot TEXT,
   pruned INTEGER NOT NULL DEFAULT 0,
+  published INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (flat, number)
 );
 CREATE TABLE IF NOT EXISTS deployments (
@@ -148,7 +171,8 @@ CREATE TABLE IF NOT EXISTS deployments (
   version INTEGER NOT NULL,
   previous INTEGER NOT NULL,
   kind TEXT NOT NULL,
-  at INTEGER NOT NULL
+  at INTEGER NOT NULL,
+  approval_id TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,14 +194,59 @@ CREATE TABLE IF NOT EXISTS approvals (
   reason TEXT,
   result TEXT,
   requested_at INTEGER NOT NULL,
-  decided_at INTEGER
+  decided_at INTEGER,
+  idempotency_key TEXT,
+  result_data TEXT,
+  decided_by TEXT,
+  authorized_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS previews (
   host TEXT PRIMARY KEY,
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
   version INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  last_access INTEGER NOT NULL
+  last_access INTEGER NOT NULL,
+  target TEXT NOT NULL DEFAULT 'version',
+  revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS drafts (
+  flat TEXT PRIMARY KEY REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+  revision INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  base_version INTEGER NOT NULL DEFAULT 0,
+  dirty INTEGER NOT NULL DEFAULT 1,
+  size INTEGER NOT NULL,
+  files INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  manifest TEXT NOT NULL,
+  git_sha TEXT,
+  git_dirty INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  updated_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draft_revisions (
+  flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+  revision INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  files INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  manifest TEXT NOT NULL,
+  git_sha TEXT,
+  git_dirty INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  screenshot TEXT,
+  created_at INTEGER NOT NULL,
+  pruned INTEGER NOT NULL DEFAULT 0,
+  legacy_number INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (flat, revision)
+);
+CREATE TABLE IF NOT EXISTS flat_providers (
+  flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+  provider TEXT NOT NULL,
+  permitted INTEGER NOT NULL,
+  PRIMARY KEY (flat, provider)
 );
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -236,6 +305,9 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
 		return err
 	}
+	if ver > 5 {
+		return fmt.Errorf("metadata schema %d is newer than supported schema 5", ver)
+	}
 	if ver < 1 {
 		// Before the redirects table only the latest rename was kept, on the
 		// flat row. A slug that a flat uses again is no longer a redirect.
@@ -245,7 +317,61 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	_, err := db.Exec(`PRAGMA user_version = 1`)
+	// Persist only eligibility here, never permission. The explicit operator
+	// network selection decides whether to retain legacy Private Tailscale.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS legacy_private_upgrade (flat TEXT PRIMARY KEY REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE, pending INTEGER NOT NULL DEFAULT 1)`); err != nil {
+		return err
+	}
+	if ver < 2 {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO legacy_private_upgrade(flat) SELECT slug FROM flats`); err != nil {
+			return err
+		}
+	}
+	if ver < 2 {
+		if err := migrateLifecycle(db); err != nil {
+			return err
+		}
+	}
+	if err := addColumn(db, "approvals", "result_data", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumn(db, "approvals", "decided_by", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumn(db, "approvals", "authorized_at", "INTEGER"); err != nil {
+		return err
+	}
+	_, err := db.Exec(`PRAGMA user_version = 5`)
+	return err
+}
+
+func hasColumn(db *sql.DB, table, col string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func addColumn(db *sql.DB, table, col, decl string) error {
+	ok, err := hasColumn(db, table, col)
+	if err != nil || ok {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + decl)
 	return err
 }
 
@@ -467,39 +593,48 @@ func (s *Store) NextVersionNumber(ctx context.Context, flat string) (int, error)
 
 // InsertVersion records a saved version.
 func (s *Store) InsertVersion(ctx context.Context, v Version) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO versions(flat,number,hash,size,files,kind,manifest,git_sha,git_dirty,message,created_at,screenshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		v.Flat, v.Number, v.Hash, v.Size, v.Files, v.Kind, string(v.Manifest), v.GitSHA, v.GitDirty, v.Message, unix(v.CreatedAt), v.Screenshot)
+	published := 0
+	if v.Published {
+		published = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO versions(flat,number,hash,size,files,kind,manifest,git_sha,git_dirty,message,created_at,screenshot,published) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		v.Flat, v.Number, v.Hash, v.Size, v.Files, v.Kind, string(v.Manifest), v.GitSHA, v.GitDirty, v.Message, unix(v.CreatedAt), v.Screenshot, published)
 	return err
 }
 
-const versionCols = `flat,number,hash,size,files,kind,manifest,git_sha,git_dirty,message,created_at,screenshot,pruned`
+const versionCols = `flat,number,hash,size,files,kind,manifest,git_sha,git_dirty,message,created_at,screenshot,pruned,published`
 
 func scanVersion(sc interface{ Scan(...any) error }) (Version, error) {
 	var v Version
 	var manifest string
 	var git, msg, shot sql.NullString
 	var created int64
-	if err := sc.Scan(&v.Flat, &v.Number, &v.Hash, &v.Size, &v.Files, &v.Kind, &manifest, &git, &v.GitDirty, &msg, &created, &shot, &v.Pruned); err != nil {
+	var published int
+	if err := sc.Scan(&v.Flat, &v.Number, &v.Hash, &v.Size, &v.Files, &v.Kind, &manifest, &git, &v.GitDirty, &msg, &created, &shot, &v.Pruned, &published); err != nil {
 		return v, err
 	}
 	v.Manifest = json.RawMessage(manifest)
 	v.GitSHA, v.Message, v.Screenshot = git.String, msg.String, shot.String
 	v.CreatedAt = fromUnix(created)
+	v.Published = published == 1
+	if v.Published {
+		v.Role = "published"
+	}
 	return v, nil
 }
 
-// GetVersion returns one version.
+// GetVersion returns one published version.
 func (s *Store) GetVersion(ctx context.Context, flat string, n int) (Version, error) {
-	v, err := scanVersion(s.db.QueryRowContext(ctx, `SELECT `+versionCols+` FROM versions WHERE flat=? AND number=?`, flat, n))
+	v, err := scanVersion(s.db.QueryRowContext(ctx, `SELECT `+versionCols+` FROM versions WHERE flat=? AND number=? AND published=1`, flat, n))
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, fmt.Errorf("version %d of %q: %w", n, flat, ErrNotFound)
 	}
 	return v, err
 }
 
-// ListVersions returns versions of a flat, newest first.
+// ListVersions returns published versions of a flat, newest first.
 func (s *Store) ListVersions(ctx context.Context, flat string) ([]Version, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+versionCols+` FROM versions WHERE flat=? ORDER BY number DESC`, flat)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+versionCols+` FROM versions WHERE flat=? AND published=1 ORDER BY number DESC`, flat)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +659,7 @@ func (s *Store) MarkPruned(ctx context.Context, flat string, n int) error {
 // --- deployments ---
 
 // SetLive atomically records a deployment and moves the live pointer.
-func (s *Store) SetLive(ctx context.Context, flat string, version, previous int, kind string, now time.Time) error {
+func (s *Store) SetLive(ctx context.Context, flat string, version, previous int, kind, approvalID string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -537,7 +672,11 @@ func (s *Store) SetLive(ctx context.Context, flat string, version, previous int,
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("flat %q changed concurrently; retry", flat)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO deployments(flat,version,previous,kind,at) VALUES(?,?,?,?,?)`, flat, version, previous, kind, unix(now)); err != nil {
+	var approval any
+	if approvalID != "" {
+		approval = approvalID
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO deployments(flat,version,previous,kind,at,approval_id) VALUES(?,?,?,?,?,?)`, flat, version, previous, kind, unix(now), approval); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -545,15 +684,16 @@ func (s *Store) SetLive(ctx context.Context, flat string, version, previous int,
 
 // Deployment is a row of the deploy history.
 type Deployment struct {
-	Version  int       `json:"version"`
-	Previous int       `json:"previous"`
-	Kind     string    `json:"kind"` // deploy | rollback
-	At       time.Time `json:"at"`
+	Version    int       `json:"version"`
+	Previous   int       `json:"previous"`
+	Kind       string    `json:"kind"` // deploy | publish | rollback
+	At         time.Time `json:"at"`
+	ApprovalID string    `json:"approval_id,omitempty"`
 }
 
 // ListDeployments returns the deploy history, newest first.
 func (s *Store) ListDeployments(ctx context.Context, flat string, limit int) ([]Deployment, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT version,previous,kind,at FROM deployments WHERE flat=? ORDER BY id DESC LIMIT ?`, flat, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT version,previous,kind,at,approval_id FROM deployments WHERE flat=? ORDER BY id DESC LIMIT ?`, flat, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -562,10 +702,12 @@ func (s *Store) ListDeployments(ctx context.Context, flat string, limit int) ([]
 	for rows.Next() {
 		var d Deployment
 		var at int64
-		if err := rows.Scan(&d.Version, &d.Previous, &d.Kind, &at); err != nil {
+		var approval sql.NullString
+		if err := rows.Scan(&d.Version, &d.Previous, &d.Kind, &at, &approval); err != nil {
 			return nil, err
 		}
 		d.At = fromUnix(at)
+		d.ApprovalID = approval.String
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -660,22 +802,28 @@ func (s *Store) EventFlats(ctx context.Context) ([]string, error) {
 
 // InsertApproval records a pending approval.
 func (s *Store) InsertApproval(ctx context.Context, a Approval) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(id,flat,action,params,status,via,reason,requested_at) VALUES(?,?,?,?,?,?,?,?)`,
-		a.ID, a.Flat, a.Action, string(a.Params), a.Status, a.Via, a.Reason, unix(a.RequestedAt))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(id,flat,action,params,status,via,reason,requested_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Flat, a.Action, string(a.Params), a.Status, a.Via, a.Reason, unix(a.RequestedAt), nullString(a.IdempotencyKey))
 	return err
 }
 
 func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	var a Approval
 	var params string
-	var reason, result sql.NullString
+	var reason, result, idem, data, actor sql.NullString
 	var req int64
-	var dec sql.NullInt64
-	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec); err != nil {
+	var dec, authorized sql.NullInt64
+	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data, &actor, &authorized); err != nil {
 		return a, err
 	}
 	a.Params = json.RawMessage(params)
-	a.Reason, a.Result = reason.String, result.String
+	a.ResultData = json.RawMessage(data.String)
+	a.DecidedBy = actor.String
+	if authorized.Valid {
+		at := fromUnix(authorized.Int64)
+		a.AuthorizedAt = &at
+	}
+	a.Reason, a.Result, a.IdempotencyKey = reason.String, result.String, idem.String
 	a.RequestedAt = fromUnix(req)
 	if dec.Valid {
 		t := fromUnix(dec.Int64)
@@ -684,7 +832,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	return a, nil
 }
 
-const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at`
+const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data,decided_by,authorized_at`
 
 // GetApproval returns one approval.
 func (s *Store) GetApproval(ctx context.Context, id string) (Approval, error) {
@@ -759,14 +907,18 @@ func (s *Store) moveApproval(ctx context.Context, id, from, status, result strin
 
 // InsertPreview records a preview address.
 func (s *Store) InsertPreview(ctx context.Context, p Preview) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO previews(host,flat,version,created_at,last_access) VALUES(?,?,?,?,?)`,
-		p.Host, p.Flat, p.Version, unix(p.CreatedAt), unix(p.LastAccess))
+	target := p.Target
+	if target == "" {
+		target = "version"
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO previews(host,flat,version,created_at,last_access,target,revision) VALUES(?,?,?,?,?,?,?)`,
+		p.Host, p.Flat, p.Version, unix(p.CreatedAt), unix(p.LastAccess), target, p.Revision)
 	return err
 }
 
 // ListPreviews returns previews of flat ("" for all).
 func (s *Store) ListPreviews(ctx context.Context, flat string) ([]Preview, error) {
-	q := `SELECT host,flat,version,created_at,last_access FROM previews`
+	q := `SELECT host,flat,version,created_at,last_access,target,revision FROM previews`
 	var args []any
 	if flat != "" {
 		q += ` WHERE flat=?`
@@ -781,7 +933,7 @@ func (s *Store) ListPreviews(ctx context.Context, flat string) ([]Preview, error
 	for rows.Next() {
 		var p Preview
 		var c, l int64
-		if err := rows.Scan(&p.Host, &p.Flat, &p.Version, &c, &l); err != nil {
+		if err := rows.Scan(&p.Host, &p.Flat, &p.Version, &c, &l, &p.Target, &p.Revision); err != nil {
 			return nil, err
 		}
 		p.CreatedAt, p.LastAccess = fromUnix(c), fromUnix(l)
@@ -794,7 +946,7 @@ func (s *Store) ListPreviews(ctx context.Context, flat string) ([]Preview, error
 func (s *Store) GetPreview(ctx context.Context, host string) (Preview, error) {
 	var p Preview
 	var c, l int64
-	err := s.db.QueryRowContext(ctx, `SELECT host,flat,version,created_at,last_access FROM previews WHERE host=?`, host).Scan(&p.Host, &p.Flat, &p.Version, &c, &l)
+	err := s.db.QueryRowContext(ctx, `SELECT host,flat,version,created_at,last_access,target,revision FROM previews WHERE host=?`, host).Scan(&p.Host, &p.Flat, &p.Version, &c, &l, &p.Target, &p.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, fmt.Errorf("preview %q: %w", host, ErrNotFound)
 	}

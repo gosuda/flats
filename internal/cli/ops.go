@@ -68,6 +68,27 @@ func (a *app) install(args []string) error {
 	} else if dataDir, err = DefaultDataDir(a.env.Getenv); err != nil {
 		return err
 	}
+	// Validate the documented serve-argument passthrough before service writes.
+	for i, arg := range extra {
+		if arg == "--operator-credential-stdin" || arg == "-operator-credential-stdin" ||
+			strings.HasPrefix(arg, "--operator-credential-stdin=") || strings.HasPrefix(arg, "-operator-credential-stdin=") {
+			return errors.New("--operator-credential-stdin cannot be used by an installed service; use --operator-credential-file with an absolute path")
+		}
+		var path string
+		if arg == "--operator-credential-file" || arg == "-operator-credential-file" {
+			if i+1 >= len(extra) {
+				return errors.New("--operator-credential-file requires an absolute path")
+			}
+			path = extra[i+1]
+		} else if strings.HasPrefix(arg, "--operator-credential-file=") || strings.HasPrefix(arg, "-operator-credential-file=") {
+			_, path, _ = strings.Cut(arg, "=")
+		} else {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return errors.New("--operator-credential-file requires an absolute path")
+		}
+	}
 	serveArgs = append(serveArgs, extra...)
 
 	if a.goos() == "linux" {
@@ -317,9 +338,10 @@ Claude Code:
 Codex (~/.codex/config.toml):
 %s
   or: %s
-  Flats requires operator approval for public exposure and deletion.
-  Client auto-approval of MCP calls still permits tools to deploy code and
-  mutate data; it does not grant those Flats approvals. Use only with trusted agents.
+  Flats requires operator approval for every publish, activation, rollback,
+  deletion and visibility change in both directions. Client auto-approval
+  permits Draft edits and pending requests; it does not make a version live
+  or grant operator authority. Use only with trusted agents.
   Discover runtime APIs: read flats://docs/runtime-api/v1 or call
   get_runtime_reference with {} (no installed skill required).
 

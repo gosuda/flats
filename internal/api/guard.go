@@ -136,11 +136,11 @@ func agentRequest(r *http.Request) (int, error) {
 	return http.StatusUnsupportedMediaType, errNoClient
 }
 
-// consoleRequest accepts only requests from the console page: they carry
+// consoleRequest provides browser CSRF protection, not operator identity.
+// Requests carry
 // X-Flats-Console: 1 (a custom header, so cross-origin pages need a
 // preflight), never X-Flats-Client, and mutations come same-origin with the
-// browser's Origin header. Agents can forge all of this; see "Approvals" in
-// docs/design.md for what this does and does not stop.
+// browser's Origin header. OperatorAuthority separately validates decisions.
 func consoleRequest(r *http.Request) error {
 	if r.Header.Get("X-Flats-Console") != "1" {
 		return errors.New("console endpoints only accept requests from the Flats web console")

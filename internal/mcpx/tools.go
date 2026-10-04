@@ -33,27 +33,30 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
 		Description: "Create an empty private flat. Optional: save_version creates the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version", Annotations: write,
-		Description: "Upload build output as a new immutable version (files inline; utf8 for text, base64 for binary). " +
-			"Saving does not change what is live unless deploy=true."}, t.saveVersion)
+		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version_from_dir", Annotations: write,
-		Description: "Save a version from a directory on the Flats host (absolute path). " +
+		Description: "Save a Private Draft from a directory on the Flats host (absolute path). " +
 			"Only works when the agent runs on the Flats host itself (loopback); otherwise use save_version or the flats CLI."}, t.saveVersionFromDir)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_versions", Annotations: ro,
-		Description: "List saved versions, newest first, with the live one marked."}, t.listVersions)
+		Description: "List published versions only, newest first, with the current version marked."}, t.listVersions)
 	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
-		Description: "Make a saved version live after a health check. On failure the previous live version keeps serving."}, t.deploy)
+		Description: "Request operator approval to activate an already published version; version 0 requests publish of current Draft. Nothing changes before approval."}, t.deploy)
+	mcp.AddTool(s, &mcp.Tool{Name: "save_draft", Annotations: write,
+		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. Saving allocates no published number. Optional deploy=true requests pending publication; only successful operator approval later creates vN."}, t.saveVersion)
+	mcp.AddTool(s, &mcp.Tool{Name: "get_draft", Annotations: ro,
+		Description: "Read the current Private Draft revision and hash."}, t.getDraft)
+	mcp.AddTool(s, &mcp.Tool{Name: "publish", Annotations: write,
+		Description: "Freeze current Draft revision/hash and request explicit operator approval to publish. No version is created before successful approval."}, t.publish)
 	// rollback can replace the flat's database (restore_data), so clients
 	// must treat it as destructive and ask before running it.
 	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
-		Description: "Redeploy an earlier version (default: the version live before the current one). " +
+		Description: "Request operator approval to activate an earlier published version (default: previous live). " +
 			"Code only by default; restore_data=true also REPLACES the flat's current database with the snapshot taken before the current version was deployed. " +
-			"Writes made since then (including users' data) are no longer live; the current database is backed up first, but only the operator can bring it back."}, t.rollback)
+			"New snapshots restore captured DB and FILES; legacy DB-only snapshots preserve current FILES. Writes made since then are no longer live; current data is backed up first. Restoration occurs only after operator approval."}, t.rollback)
 	mcp.AddTool(s, &mcp.Tool{Name: "open_preview", Annotations: write,
-		Description: "Serve a saved version at a temporary private URL without changing live."}, t.openPreview)
+		Description: "Preview a published version, or current Private Draft with version 0, without changing live."}, t.openPreview)
 	mcp.AddTool(s, &mcp.Tool{Name: "set_visibility", Annotations: write,
-		Description: "Change who can open a flat: private, public-unlisted or public-listed. " +
-			"Going public needs the operator's approval (returns approval_url); going private applies immediately. " +
-			"public-unlisted is NOT access control."}, t.setVisibility)
+		Description: "Request visibility private or public. BOTH directions require explicit operator approval. Same visibility is unchanged; unpublished flats cannot be Public. Legacy listed/unlisted values normalize to public."}, t.setVisibility)
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_flat", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
 		Description: "Request permanent deletion of a flat. Always waits for the operator's approval (returns approval_url)."}, t.deleteFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_logs", Annotations: ro,
@@ -68,28 +71,36 @@ func register(s *mcp.Server, t *tools) {
 
 // FlatInfo describes a flat.
 type FlatInfo struct {
-	Slug          string    `json:"slug" jsonschema:"flat identifier, also its private host name"`
-	Name          string    `json:"name" jsonschema:"display name"`
-	Visibility    string    `json:"visibility" jsonschema:"private, public-unlisted or public-listed"`
-	LiveVersion   int       `json:"live_version" jsonschema:"version serving now; 0 when never deployed"`
-	Versions      int       `json:"versions" jsonschema:"number of saved versions"`
-	PrivateURL    string    `json:"private_url" jsonschema:"tailnet-only URL (serves once a version is deployed)"`
-	PrivateState  string    `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
-	PrivateDetail string    `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
-	PublicURL     string    `json:"public_url,omitempty" jsonschema:"internet URL when public"`
-	PublicNotice  string    `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
-	DiskBytes     int64     `json:"disk_bytes" jsonschema:"disk used by versions and data"`
-	UpdatedAt     time.Time `json:"updated_at" jsonschema:"last change"`
+	Publication     string                  `json:"publication"`
+	Draft           *DraftInfo              `json:"draft"`
+	Providers       []string                `json:"providers"`
+	ConnectionState string                  `json:"connection_state,omitempty"`
+	Endpoints       []core.ExposureEndpoint `json:"endpoints"`
+	Slug            string                  `json:"slug" jsonschema:"flat identifier, also its private host name"`
+	Name            string                  `json:"name" jsonschema:"display name"`
+	Visibility      string                  `json:"visibility" jsonschema:"private or public"`
+	LiveVersion     int                     `json:"live_version" jsonschema:"version serving now; 0 when never deployed"`
+	Versions        int                     `json:"versions" jsonschema:"number of successfully published versions"`
+	PrivateURL      string                  `json:"private_url" jsonschema:"private Local loopback or permitted Tailscale URL; serves after an approved publish"`
+	PrivateState    string                  `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
+	PrivateDetail   string                  `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
+	PublicURL       string                  `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
+	PublicNotice    string                  `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
+	DiskBytes       int64                   `json:"disk_bytes" jsonschema:"disk used by versions and data"`
+	UpdatedAt       time.Time               `json:"updated_at" jsonschema:"last change"`
 }
 
 func flatInfo(v core.FlatView) FlatInfo {
-	return FlatInfo{Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,
+	return FlatInfo{Publication: v.Publication, Draft: draftPointer(v.Draft), Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints, Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,
 		Versions: v.Versions, PrivateURL: v.PrivateURL, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail,
 		PublicURL: v.PublicURL, PublicNotice: v.PublicNotice, DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
 }
 
 // VersionInfo describes a saved version.
 type VersionInfo struct {
+	Published bool      `json:"published"`
+	Role      string    `json:"role,omitempty"`
+	Revision  int       `json:"revision,omitempty"`
 	Number    int       `json:"number" jsonschema:"version number"`
 	Live      bool      `json:"live" jsonschema:"true when this version is serving"`
 	Kind      string    `json:"kind" jsonschema:"static or server"`
@@ -108,20 +119,25 @@ type VersionInfo struct {
 func versionInfo(v store.Version, live int) VersionInfo {
 	var m bundle.Manifest
 	_ = json.Unmarshal(v.Manifest, &m)
-	return VersionInfo{Number: v.Number, Live: v.Number == live, Kind: v.Kind, Entry: m.Entry, Health: m.Health,
+	return VersionInfo{Published: v.Published, Role: v.Role, Revision: v.Revision, Number: v.Number, Live: v.Number > 0 && v.Number == live, Kind: v.Kind, Entry: m.Entry, Health: m.Health,
 		Files: v.Files, Size: v.Size, Hash: v.Hash, GitSHA: v.GitSHA, GitDirty: v.GitDirty, Message: v.Message,
 		Pruned: v.Pruned, CreatedAt: v.CreatedAt}
 }
 
 // DeployInfo is the outcome of a successful deploy or rollback.
 type DeployInfo struct {
+	Status        string            `json:"status"`
+	Approval      *ApprovalOut      `json:"approval,omitempty"`
+	ApprovalID    string            `json:"approval_id,omitempty"`
+	ApprovalURL   string            `json:"approval_url,omitempty"`
+	Message       string            `json:"message,omitempty"`
 	Version       int               `json:"version" jsonschema:"version now live"`
 	Previous      int               `json:"previous" jsonschema:"version live before (0 = none)"`
 	Health        core.HealthResult `json:"health" jsonschema:"pre-deploy health check result"`
-	PrivateURL    string            `json:"private_url" jsonschema:"tailnet-only URL"`
+	PrivateURL    string            `json:"private_url" jsonschema:"private Local loopback or permitted Tailscale URL; serves after an approved publish"`
 	PrivateState  string            `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
 	PrivateDetail string            `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
-	PublicURL     string            `json:"public_url,omitempty" jsonschema:"internet URL when public"`
+	PublicURL     string            `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
 	PublicNotice  string            `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
 	Millis        int64             `json:"millis" jsonschema:"deploy duration"`
 }
@@ -132,6 +148,9 @@ func deployInfo(r core.DeployResult) DeployInfo {
 }
 
 func deployText(slug string, d DeployInfo, kind string) string {
+	if d.Status == "pending_approval" {
+		return actionText(ActionOut{Status: d.Status, Message: d.Message, ApprovalID: d.ApprovalID, ApprovalURL: d.ApprovalURL, Approval: d.Approval})
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: version %d of %s is live at %s (health GET %s -> %d in %dms", kind, d.Version, slug, d.PrivateURL, d.Health.Path, d.Health.Status, d.Health.Millis)
 	if d.Previous > 0 {
@@ -180,10 +199,14 @@ func toolErr(err error, hint string) error {
 	var b strings.Builder
 	b.WriteString(err.Error())
 	detail := map[string]any{"error": err.Error()}
+	var de *core.DeployError
+	if category := core.ErrorCategory(err); category != "" {
+		detail["category"] = category
+	}
+
 	if v, ok := bundle.IsValidation(err); ok {
 		detail["problems"] = v.Problems
 	}
-	var de *core.DeployError
 	if errors.As(err, &de) && de.Cause == nil {
 		detail["health"] = de.Health
 		if de.Health.BodyHead != "" {
@@ -254,6 +277,8 @@ type SlugIn struct {
 
 // PreviewInfo describes an open preview.
 type PreviewInfo struct {
+	Target    string    `json:"target"`
+	Revision  int       `json:"revision,omitempty"`
 	Host      string    `json:"host" jsonschema:"preview host name"`
 	URL       string    `json:"url" jsonschema:"temporary private URL"`
 	Version   int       `json:"version" jsonschema:"version served"`
@@ -263,7 +288,7 @@ type PreviewInfo struct {
 }
 
 func previewInfo(p core.PreviewView) PreviewInfo {
-	return PreviewInfo{Host: p.Host, URL: p.URL, Version: p.Version, ExpiresAt: p.ExpiresAt, State: p.State, Detail: p.Detail}
+	return PreviewInfo{Target: p.Target, Revision: p.Revision, Host: p.Host, URL: p.URL, Version: p.Version, ExpiresAt: p.ExpiresAt, State: p.State, Detail: p.Detail}
 }
 
 // FlatOut is one flat with its previews.
@@ -276,10 +301,13 @@ func flatText(fi FlatInfo) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (%s): %s, %s, %d version(s). Private URL: %s", fi.Slug, fi.Name, fi.Visibility, liveText(fi.LiveVersion), fi.Versions, fi.PrivateURL)
 	if fi.LiveVersion == 0 {
-		b.WriteString(" (serves after the first deploy)")
+		b.WriteString(" (serves after the first approved publish)")
 	}
 	writePending(&b, fi.PrivateState, fi.PrivateDetail)
 	writePublic(&b, fi.PublicURL, fi.PublicNotice)
+	if fi.Visibility == "public" {
+		fmt.Fprintf(&b, "\nCurrent public connection: %s. A URL alone does not establish readiness; inspect current endpoints before fetching.", fi.ConnectionState)
+	}
 	return b.String()
 }
 
@@ -293,7 +321,11 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 	if ps, err := t.svc.ListPreviews(ctx, in.Slug); err == nil {
 		for _, p := range ps {
 			out.Previews = append(out.Previews, previewInfo(p))
-			text += fmt.Sprintf("\nPreview of v%d: %s", p.Version, p.URL)
+			if p.Target == "draft" {
+				text += fmt.Sprintf("\nPrivate Draft preview of %s revision %d: %s. Current version is unchanged; access follows loopback or existing tailnet ACL. Expires %s.", in.Slug, p.Revision, p.URL, p.ExpiresAt.Format(time.RFC3339))
+			} else {
+				text += fmt.Sprintf("\nPreview of v%d: %s", p.Version, p.URL)
+			}
 			if p.State != "" && p.State != "ready" {
 				text += " (" + p.State + ")"
 			}
@@ -314,7 +346,7 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 		return nil, FlatInfo{}, toolErr(err, "pick another slug (3-54 lowercase letters, digits and single hyphens, starting with a letter) or use the existing flat")
 	}
 	fi := flatInfo(f)
-	return result("Created private flat "+fi.Slug+". Next: save_version, then deploy.", fi), fi, nil
+	return result("Created unpublished Private flat "+fi.Slug+". Next: save_draft, then publish and wait for operator approval.", fi), fi, nil
 }
 
 // --- save_version / save_version_from_dir ---
@@ -328,27 +360,30 @@ type FileIn struct {
 
 // SaveIn saves inline files.
 type SaveIn struct {
-	Slug     string   `json:"slug" jsonschema:"flat slug (created when missing)"`
-	Files    []FileIn `json:"files" jsonschema:"every file of the build output"`
-	GitSHA   string   `json:"git_sha,omitempty" jsonschema:"git commit of the source"`
-	GitDirty bool     `json:"git_dirty,omitempty" jsonschema:"true when the working tree had uncommitted changes"`
-	Message  string   `json:"message,omitempty" jsonschema:"short note about this version"`
-	Deploy   bool     `json:"deploy,omitempty" jsonschema:"deploy right after saving"`
+	ExpectedRevision *int     `json:"expected_revision,omitempty" jsonschema:"current Draft revision expected; 0 means no Draft exists; conflicts never overwrite"`
+	Slug             string   `json:"slug" jsonschema:"flat slug (created when missing)"`
+	Files            []FileIn `json:"files" jsonschema:"every file of the build output"`
+	GitSHA           string   `json:"git_sha,omitempty" jsonschema:"git commit of the source"`
+	GitDirty         bool     `json:"git_dirty,omitempty" jsonschema:"true when the working tree had uncommitted changes"`
+	Message          string   `json:"message,omitempty" jsonschema:"short note about this version"`
+	Deploy           bool     `json:"deploy,omitempty" jsonschema:"request publish approval after saving; never activates directly"`
 }
 
 // SaveDirIn saves a directory on the Flats host.
 type SaveDirIn struct {
-	Slug     string `json:"slug" jsonschema:"flat slug (created when missing)"`
-	Dir      string `json:"dir" jsonschema:"absolute path of the build output directory on the Flats host"`
-	GitSHA   string `json:"git_sha,omitempty" jsonschema:"git commit of the source"`
-	GitDirty bool   `json:"git_dirty,omitempty" jsonschema:"true when the working tree had uncommitted changes"`
-	Message  string `json:"message,omitempty" jsonschema:"short note about this version"`
-	Deploy   bool   `json:"deploy,omitempty" jsonschema:"deploy right after saving"`
+	ExpectedRevision *int   `json:"expected_revision,omitempty" jsonschema:"current Draft revision expected; conflicts never overwrite"`
+	Slug             string `json:"slug" jsonschema:"flat slug (created when missing)"`
+	Dir              string `json:"dir" jsonschema:"absolute path of the build output directory on the Flats host"`
+	GitSHA           string `json:"git_sha,omitempty" jsonschema:"git commit of the source"`
+	GitDirty         bool   `json:"git_dirty,omitempty" jsonschema:"true when the working tree had uncommitted changes"`
+	Message          string `json:"message,omitempty" jsonschema:"short note about this version"`
+	Deploy           bool   `json:"deploy,omitempty" jsonschema:"request publish approval after saving; never activates directly"`
 }
 
 // SaveOut is a saved (and possibly deployed) version.
 type SaveOut struct {
-	Version VersionInfo `json:"version" jsonschema:"the saved version"`
+	Draft   DraftInfo   `json:"draft"`
+	Version VersionInfo `json:"version" jsonschema:"Draft compatibility object: number 0, role draft, revision; not a published version"`
 	Deploy  *DeployInfo `json:"deploy,omitempty" jsonschema:"deploy outcome when deploy=true"`
 }
 
@@ -401,7 +436,7 @@ func (t *tools) saveVersion(ctx context.Context, _ *mcp.CallToolRequest, in Save
 	if err != nil {
 		return nil, SaveOut{}, toolErr(err, "fix every listed problem and call save_version again with the complete file list")
 	}
-	return t.save(ctx, in.Slug, files, core.SaveMeta{GitSHA: in.GitSHA, GitDirty: in.GitDirty, Message: in.Message}, in.Deploy)
+	return t.save(ctx, in.Slug, files, core.SaveMeta{GitSHA: in.GitSHA, GitDirty: in.GitDirty, Message: in.Message}, in.Deploy, in.ExpectedRevision)
 }
 
 func (t *tools) saveVersionFromDir(ctx context.Context, _ *mcp.CallToolRequest, in SaveDirIn) (*mcp.CallToolResult, SaveOut, error) {
@@ -425,39 +460,41 @@ func (t *tools) saveVersionFromDir(ctx context.Context, _ *mcp.CallToolRequest, 
 	if err != nil {
 		return nil, SaveOut{}, toolErr(err, "fix every listed problem in the directory and call save_version_from_dir again")
 	}
-	return t.save(ctx, in.Slug, files, core.SaveMeta{GitSHA: in.GitSHA, GitDirty: in.GitDirty, Message: in.Message}, in.Deploy)
+	return t.save(ctx, in.Slug, files, core.SaveMeta{GitSHA: in.GitSHA, GitDirty: in.GitDirty, Message: in.Message}, in.Deploy, in.ExpectedRevision)
 }
 
-func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta core.SaveMeta, deploy bool) (*mcp.CallToolResult, SaveOut, error) {
+func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta core.SaveMeta, deploy bool, expected *int) (*mcp.CallToolResult, SaveOut, error) {
+	if expected != nil {
+		if *expected < 0 {
+			return nil, SaveOut{}, toolErr(errors.New("expected_revision must be nonnegative"), "read get_draft and retry with its revision")
+		}
+		meta.ExpectedRevision, meta.CheckRevision = *expected, true
+	}
 	v, err := t.svc.SaveVersion(ctx, slug, files, meta, core.ViaMCP)
 	if err != nil {
-		hint := "no version was saved; fix the problem above and save again"
+		hint := "no Draft was saved; fix the problem above and save again"
 		if _, ok := bundle.IsValidation(err); ok {
-			hint = "no version was saved; fix every listed problem and save again"
+			hint = "no Draft was saved; fix every listed problem and save again"
 		}
 		return nil, SaveOut{}, toolErr(err, hint)
 	}
 	f, _ := t.svc.GetFlat(ctx, slug)
-	out := SaveOut{Version: versionInfo(v, f.LiveVersion)}
-	if !deploy {
-		text := fmt.Sprintf("Saved version %d of %s (%d files, %d bytes). Live is unchanged (%s). Next: deploy version %d, or open_preview to check it first.",
-			v.Number, slug, v.Files, v.Size, liveText(f.LiveVersion), v.Number)
-		return result(text, out), out, nil
-	}
-	res, err := t.svc.Deploy(ctx, slug, v.Number, core.ViaMCP)
+	draft, err := t.svc.GetDraft(ctx, slug)
 	if err != nil {
-		keeps := "Nothing was live before, so the flat is still not deployed."
-		if f.LiveVersion > 0 {
-			keeps = fmt.Sprintf("The previous live version %d keeps serving.", f.LiveVersion)
-		}
-		return nil, SaveOut{}, toolErr(fmt.Errorf("saved version %d of %s, but its deploy failed: %w", v.Number, slug, err),
-			fmt.Sprintf("%s Fix the build and save again, use open_preview with version %d to inspect it, or get_logs for details.", keeps, v.Number))
+		return nil, SaveOut{}, toolErr(err, "read get_draft to inspect the saved content")
 	}
-	d := deployInfo(res)
-	out.Version.Live = true
+	out := SaveOut{Version: versionInfo(v, f.LiveVersion), Draft: draftInfo(draft)}
+	text := fmt.Sprintf("Saved Private Draft revision %d of %s (%d files, %d bytes). Current version is unchanged (%s).", v.Revision, slug, v.Files, v.Size, liveText(f.LiveVersion))
+	if !deploy {
+		return result(text+" Next: open_preview with version 0, or publish to request operator approval.", out), out, nil
+	}
+	res, err := t.svc.RequestPublish(ctx, slug, v.Revision, v.Hash, core.ViaMCP)
+	if err != nil {
+		return nil, SaveOut{}, toolErr(err, "Draft was saved; read get_draft and request publish approval again")
+	}
+	d := pendingDeploy(res)
 	out.Deploy = &d
-	text := fmt.Sprintf("Saved version %d (%d files, %d bytes).\n%s", v.Number, v.Files, v.Size, deployText(slug, d, "Deployed"))
-	return result(text, out), out, nil
+	return result(text+"\n"+deployText(slug, d, "Publish requested"), out), out, nil
 }
 
 // --- versions, deploy, rollback, preview ---
@@ -506,14 +543,14 @@ func (t *tools) listVersions(ctx context.Context, _ *mcp.CallToolRequest, in Slu
 // DeployIn deploys a version.
 type DeployIn struct {
 	Slug    string `json:"slug" jsonschema:"flat slug"`
-	Version int    `json:"version" jsonschema:"saved version number to make live"`
+	Version int    `json:"version" jsonschema:"published version to activate after approval; 0 requests publish of current Draft"`
 }
 
 // RollbackIn rolls back.
 type RollbackIn struct {
 	Slug        string `json:"slug" jsonschema:"flat slug"`
 	Version     int    `json:"version,omitempty" jsonschema:"version to go back to (default: the one live before the current one)"`
-	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"server flats: replace the current database with the snapshot taken before the current version was deployed, after backing the current database up; writes since that deploy stop being live. Default false keeps data as it is. Ask the user first."`
+	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"server flats: replace the current database with the snapshot taken before the current version was deployed, after backing the current database up; writes since that deploy stop being live. New snapshots also restore captured FILES; legacy DB-only snapshots preserve FILES. Default false keeps data as it is. This is frozen for explicit operator approval."`
 }
 
 func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
@@ -528,7 +565,7 @@ func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
 			hint = "nothing was live before, so the flat is still not deployed; " + hint
 		}
 	} else if errors.Is(err, core.ErrNotDeployed) {
-		hint = "nothing is live yet, so there is nothing to roll back; deploy a saved version first"
+		hint = "nothing is live yet, so there is nothing to roll back; request publish of a Draft and wait for successful operator approval first"
 	} else if errors.Is(err, core.ErrConflict) {
 		hint = "call list_versions to pick a version"
 	}
@@ -536,10 +573,15 @@ func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
 }
 
 func (t *tools) deploy(ctx context.Context, _ *mcp.CallToolRequest, in DeployIn) (*mcp.CallToolResult, DeployInfo, error) {
-	if in.Version <= 0 {
-		return nil, DeployInfo{}, toolErr(errors.New("version must be a positive version number"), "call list_versions to see saved versions")
+	if in.Version < 0 {
+		return nil, DeployInfo{}, toolErr(errors.New("version must be nonnegative"), "0 requests current Draft publication; positive numbers activate published versions")
 	}
 	res, err := t.svc.Deploy(ctx, in.Slug, in.Version, core.ViaMCP)
+	var pending *core.PendingApproval
+	if errors.As(err, &pending) {
+		d := pendingDeploy(pending.ActionResult)
+		return result(deployText(in.Slug, d, "Requested"), d), d, nil
+	}
 	if err != nil {
 		return nil, DeployInfo{}, t.deployErr(ctx, in.Slug, err)
 	}
@@ -552,6 +594,11 @@ func (t *tools) rollback(ctx context.Context, _ *mcp.CallToolRequest, in Rollbac
 		return nil, DeployInfo{}, toolErr(errors.New("version must not be negative"), "omit version to roll back to the previous live version")
 	}
 	res, err := t.svc.RollbackWithData(ctx, in.Slug, in.Version, in.RestoreData, core.ViaMCP)
+	var pending *core.PendingApproval
+	if errors.As(err, &pending) {
+		d := pendingDeploy(pending.ActionResult)
+		return result(deployText(in.Slug, d, "Requested"), d), d, nil
+	}
 	if err != nil {
 		return nil, DeployInfo{}, t.deployErr(ctx, in.Slug, err)
 	}
@@ -561,20 +608,21 @@ func (t *tools) rollback(ctx context.Context, _ *mcp.CallToolRequest, in Rollbac
 
 // PreviewIn opens a preview.
 type PreviewIn struct {
+	Target  string `json:"target,omitempty" jsonschema:"draft or version; draft requires version 0"`
 	Slug    string `json:"slug" jsonschema:"flat slug"`
-	Version int    `json:"version" jsonschema:"saved version number to preview (live is not changed)"`
+	Version int    `json:"version" jsonschema:"published version to preview; 0 previews current Private Draft (live is unchanged)"`
 }
 
 func (t *tools) openPreview(ctx context.Context, _ *mcp.CallToolRequest, in PreviewIn) (*mcp.CallToolResult, PreviewInfo, error) {
-	if in.Version <= 0 {
-		return nil, PreviewInfo{}, toolErr(errors.New("version must be a positive version number"), "call list_versions to see saved versions")
+	if in.Version < 0 || (in.Target != "" && in.Target != "draft" && in.Target != "version") || (in.Target == "draft" && in.Version != 0) || (in.Target == "version" && in.Version == 0) {
+		return nil, PreviewInfo{}, toolErr(errors.New("preview requires draft with version 0, or a positive published version"), "call get_draft or list_versions")
 	}
 	p, err := t.svc.OpenPreview(ctx, in.Slug, in.Version)
 	if err != nil {
 		return nil, PreviewInfo{}, toolErr(err, notFoundHint(err, in.Slug))
 	}
 	out := previewInfo(p)
-	text := fmt.Sprintf("Preview of %s version %d: %s (private, tailnet only). Live is unchanged. The preview closes on the next deploy of %s or when unused until %s.",
+	text := fmt.Sprintf("Preview of %s version %d: %s (Private via loopback or existing tailnet ACL). Live is unchanged. The preview closes on the next deploy of %s or when unused until %s.",
 		in.Slug, p.Version, p.URL, in.Slug, p.ExpiresAt.Format(time.RFC3339))
 	if p.State != "" && p.State != "ready" {
 		text += " Its host is still " + p.State
@@ -591,7 +639,7 @@ func (t *tools) openPreview(ctx context.Context, _ *mcp.CallToolRequest, in Prev
 // VisibilityIn changes visibility.
 type VisibilityIn struct {
 	Slug       string `json:"slug" jsonschema:"flat slug"`
-	Visibility string `json:"visibility" jsonschema:"private, public-unlisted (not access control: anyone with the URL can open it) or public-listed"`
+	Visibility string `json:"visibility" jsonschema:"private or public; legacy public-listed/public-unlisted normalize to public"`
 	Reason     string `json:"reason,omitempty" jsonschema:"why, shown to the operator in the approval request"`
 }
 
@@ -603,19 +651,22 @@ type DeleteIn struct {
 
 // ActionOut is the outcome of an action that may need approval.
 type ActionOut struct {
-	Status      string `json:"status" jsonschema:"done, or pending_approval (nothing changed yet)"`
-	Message     string `json:"message" jsonschema:"what happened"`
-	ApprovalID  string `json:"approval_id,omitempty" jsonschema:"poll it with get_approval"`
-	ApprovalURL string `json:"approval_url,omitempty" jsonschema:"console link for the operator; give it to the user verbatim"`
-	Visibility  string `json:"visibility,omitempty" jsonschema:"visibility now in effect"`
-	PublicURL   string `json:"public_url,omitempty" jsonschema:"internet URL when public"`
-	Notice      string `json:"notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
+	Approval    *ApprovalOut `json:"approval,omitempty"`
+	Status      string       `json:"status" jsonschema:"done, or pending_approval (nothing changed yet)"`
+	Message     string       `json:"message" jsonschema:"what happened"`
+	ApprovalID  string       `json:"approval_id,omitempty" jsonschema:"poll it with get_approval"`
+	ApprovalURL string       `json:"approval_url,omitempty" jsonschema:"console link for the operator; give it to the user verbatim"`
+	Visibility  string       `json:"visibility,omitempty" jsonschema:"visibility now in effect"`
+	PublicURL   string       `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
+	Notice      string       `json:"notice,omitempty" jsonschema:"access consequence to repeat to the user; pending notices describe what approval would do"`
 }
 
 func actionOut(r core.ActionResult) ActionOut {
 	out := ActionOut{Status: r.Status, Message: r.Message, ApprovalURL: r.ApprovalURL, Notice: r.Notice}
 	if r.Approval != nil {
 		out.ApprovalID = r.Approval.ID
+		a := approvalOut(*r.Approval)
+		out.Approval = &a
 	}
 	if r.Flat != nil {
 		out.Visibility = string(r.Flat.Visibility)
@@ -639,6 +690,8 @@ func actionText(out ActionOut) string {
 
 func noticeFor(v store.Visibility) string {
 	switch v {
+	case store.Public:
+		return core.PublicAccessNotice
 	case store.PublicUnlisted:
 		return core.UnlistedNotice
 	case store.PublicListed:
@@ -647,19 +700,30 @@ func noticeFor(v store.Visibility) string {
 	return ""
 }
 
+const pendingPublicNotice = "If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public."
+
+func pendingNoticeFor(v store.Visibility) string {
+	if v.Canonical() == store.Public {
+		return pendingPublicNotice
+	}
+	return ""
+}
+
 func (t *tools) setVisibility(ctx context.Context, _ *mcp.CallToolRequest, in VisibilityIn) (*mcp.CallToolResult, ActionOut, error) {
-	vis := store.Visibility(in.Visibility)
+	vis := store.Visibility(in.Visibility).Canonical()
 	res, err := t.svc.SetVisibility(ctx, in.Slug, vis, core.ViaMCP, in.Reason)
 	if err != nil {
 		hint := notFoundHint(err, in.Slug)
 		if !vis.Valid() {
-			hint = "visibility must be private, public-unlisted or public-listed"
+			hint = "visibility must be private or public"
 		}
 		return nil, ActionOut{}, toolErr(err, hint)
 	}
 	out := actionOut(res)
-	if out.Notice == "" {
-		out.Notice = noticeFor(vis) // pending requests: what the requested visibility will mean
+	if out.Status == "pending_approval" {
+		out.Notice = pendingNoticeFor(vis)
+	} else if out.Notice == "" {
+		out.Notice = noticeFor(vis)
 	}
 	return result(actionText(out), out), out, nil
 }
@@ -680,15 +744,19 @@ type ApprovalIn struct {
 
 // ApprovalOut is an approval request.
 type ApprovalOut struct {
-	ID          string            `json:"id" jsonschema:"approval id"`
-	Flat        string            `json:"flat" jsonschema:"flat slug"`
-	Action      string            `json:"action" jsonschema:"set_visibility or delete"`
-	Params      map[string]string `json:"params,omitempty" jsonschema:"requested change"`
-	Status      string            `json:"status" jsonschema:"pending, approved, rejected or failed"`
-	Reason      string            `json:"reason,omitempty" jsonschema:"reason given with the request"`
-	Result      string            `json:"result,omitempty" jsonschema:"outcome once decided"`
-	RequestedAt time.Time         `json:"requested_at" jsonschema:"request time"`
-	DecidedAt   *time.Time        `json:"decided_at,omitempty" jsonschema:"decision time"`
+	DecidedBy    string                  `json:"decided_by,omitempty"`
+	AuthorizedAt *time.Time              `json:"authorized_at,omitempty"`
+	Via          string                  `json:"via"`
+	ResultData   *core.ApprovalExecution `json:"result_data,omitempty"`
+	ID           string                  `json:"id" jsonschema:"approval id"`
+	Flat         string                  `json:"flat" jsonschema:"flat slug"`
+	Action       string                  `json:"action" jsonschema:"publish, activate, rollback, set_visibility, restore_data or delete"`
+	Params       map[string]any          `json:"params,omitempty" jsonschema:"requested change"`
+	Status       string                  `json:"status" jsonschema:"pending, applying, approved, rejected or failed"`
+	Reason       string                  `json:"reason,omitempty" jsonschema:"reason given with the request"`
+	Result       string                  `json:"result,omitempty" jsonschema:"outcome once decided"`
+	RequestedAt  time.Time               `json:"requested_at" jsonschema:"request time"`
+	DecidedAt    *time.Time              `json:"decided_at,omitempty" jsonschema:"decision time"`
 }
 
 func (t *tools) getApproval(ctx context.Context, _ *mcp.CallToolRequest, in ApprovalIn) (*mcp.CallToolResult, ApprovalOut, error) {
@@ -700,18 +768,18 @@ func (t *tools) getApproval(ctx context.Context, _ *mcp.CallToolRequest, in Appr
 		}
 		return nil, ApprovalOut{}, toolErr(err, hint)
 	}
-	out := ApprovalOut{ID: a.ID, Flat: a.Flat, Action: a.Action, Status: a.Status, Reason: a.Reason, Result: a.Result,
-		RequestedAt: a.RequestedAt, DecidedAt: a.DecidedAt}
-	_ = json.Unmarshal(a.Params, &out.Params)
+	out := approvalOut(a)
 	text := fmt.Sprintf("Approval %s (%s on %s): %s.", a.ID, a.Action, a.Flat, a.Status)
 	if a.Status == "pending" {
 		text += " Waiting for the operator to decide in the Flats console."
+	} else if a.Status == "applying" {
+		text += " The operator approved it; the operation is still applying."
 	}
 	if a.Result != "" {
 		text += " Result: " + a.Result
 	}
 	if a.Action == "set_visibility" && a.Status == "approved" {
-		if n := noticeFor(store.Visibility(out.Params["visibility"])); n != "" {
+		if n := noticeFor(store.Visibility(fmt.Sprint(out.Params["visibility"]))); n != "" {
 			text += "\nNotice: " + n
 		}
 	}
@@ -786,4 +854,78 @@ func (t *tools) listSecrets(ctx context.Context, _ *mcp.CallToolRequest, in Slug
 	}
 	text := fmt.Sprintf("%s has %d secret(s): %s\n%s", in.Slug, len(secs), strings.Join(names, ", "), out.Note)
 	return result(text, out), out, nil
+}
+
+// DraftInfo is working content metadata, separate from published version IDs.
+type DraftInfo struct {
+	Flat        string    `json:"flat"`
+	Revision    int       `json:"revision"`
+	Hash        string    `json:"hash"`
+	BaseVersion int       `json:"base_version"`
+	Dirty       bool      `json:"dirty"`
+	Size        int64     `json:"size"`
+	Files       int       `json:"files"`
+	Kind        string    `json:"kind"`
+	GitSHA      string    `json:"git_sha,omitempty"`
+	GitDirty    bool      `json:"git_dirty"`
+	Message     string    `json:"message,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func draftInfo(d store.Draft) DraftInfo {
+	return DraftInfo{Flat: d.Flat, Revision: d.Revision, Hash: d.Hash, BaseVersion: d.BaseVersion, Dirty: d.Dirty, Size: d.Size, Files: d.Files, Kind: d.Kind, GitSHA: d.GitSHA, GitDirty: d.GitDirty, Message: d.Message, UpdatedAt: d.UpdatedAt, CreatedAt: d.CreatedAt}
+}
+func draftPointer(d *store.Draft) *DraftInfo {
+	if d == nil {
+		return nil
+	}
+	out := draftInfo(*d)
+	return &out
+}
+func (t *tools) getDraft(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) (*mcp.CallToolResult, DraftInfo, error) {
+	d, err := t.svc.GetDraft(ctx, in.Slug)
+	if err != nil {
+		return nil, DraftInfo{}, toolErr(err, "save complete build content with save_draft first")
+	}
+	out := draftInfo(d)
+	return result(fmt.Sprintf("Private Draft revision %d; no publication is implied.", d.Revision), out), out, nil
+}
+
+type PublishIn struct {
+	Slug     string `json:"slug"`
+	Revision int    `json:"revision,omitempty" jsonschema:"current Draft revision; zero selects current"`
+	Hash     string `json:"hash,omitempty" jsonschema:"optional expected content hash"`
+}
+
+func (t *tools) publish(ctx context.Context, _ *mcp.CallToolRequest, in PublishIn) (*mcp.CallToolResult, ActionOut, error) {
+	if in.Revision < 0 {
+		return nil, ActionOut{}, toolErr(errors.New("revision must be nonnegative"), "read get_draft")
+	}
+	r, err := t.svc.RequestPublish(ctx, in.Slug, in.Revision, in.Hash, core.ViaMCP)
+	if err != nil {
+		return nil, ActionOut{}, toolErr(err, "read current Draft and request approval again")
+	}
+	out := actionOut(r)
+	return result(actionText(out), out), out, nil
+}
+func pendingDeploy(r core.ActionResult) DeployInfo {
+	out := DeployInfo{Status: r.Status, ApprovalURL: r.ApprovalURL, Message: r.Message}
+	if r.Approval != nil {
+		a := approvalOut(*r.Approval)
+		out.Approval = &a
+		out.ApprovalID = a.ID
+	}
+	return out
+}
+func approvalOut(a store.Approval) ApprovalOut {
+	out := ApprovalOut{DecidedBy: a.DecidedBy, AuthorizedAt: a.AuthorizedAt, Via: a.Via, ID: a.ID, Flat: a.Flat, Action: a.Action, Status: a.Status, Reason: a.Reason, Result: a.Result, RequestedAt: a.RequestedAt, DecidedAt: a.DecidedAt}
+	_ = json.Unmarshal(a.Params, &out.Params)
+	if len(a.ResultData) > 0 {
+		var data core.ApprovalExecution
+		if json.Unmarshal(a.ResultData, &data) == nil {
+			out.ResultData = &data
+		}
+	}
+	return out
 }

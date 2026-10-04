@@ -27,13 +27,17 @@ type System interface {
 
 // Server serves /api and /console/api.
 type Server struct {
-	Svc    *core.Service
-	System System
+	Svc      *core.Service
+	System   System
+	Operator *OperatorAuthority
 }
 
 // Handler returns the API mux (mount at /).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /console/api/operator/session", s.operatorStatus)
+	mux.HandleFunc("POST /console/api/operator/session", s.operatorSession)
+	mux.HandleFunc("DELETE /console/api/operator/session", s.operatorLogout)
 	for _, prefix := range []string{"/api", "/console/api"} {
 		console := prefix == "/console/api"
 		h := func(pattern string, fn func(w http.ResponseWriter, r *http.Request, via core.Via)) {
@@ -43,6 +47,9 @@ func (s *Server) Handler() http.Handler {
 				if console {
 					if err := consoleRequest(r); err != nil {
 						writeErr(w, http.StatusForbidden, err)
+						return
+					}
+					if !safeMethod(r.Method) && !s.requireOperator(w, r) {
 						return
 					}
 					via = core.ViaConsole
@@ -61,6 +68,11 @@ func (s *Server) Handler() http.Handler {
 		h("GET /status", s.status)
 		h("GET /flats", s.listFlats)
 		h("GET /flats/{slug}", s.getFlat)
+		h("GET /flats/{slug}/draft", s.getDraft)
+		h("POST /flats/{slug}/draft", s.saveVersion)
+		h("PUT /flats/{slug}/draft", s.saveVersion)
+		h("POST /flats/{slug}/publish", s.publish)
+		h("POST /flats/{slug}/providers", s.providers)
 		h("GET /flats/{slug}/versions", s.listVersions)
 		h("GET /flats/{slug}/versions/{n}", s.getVersion)
 		h("GET /flats/{slug}/versions/{n}/files/{path...}", s.versionFile)
@@ -82,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
+			h("POST /flats/{slug}/versions", s.saveVersion)
 			h("POST /approvals/{id}/approve", s.decide(true))
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
@@ -100,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 // ErrorBody is the JSON error shape.
 type ErrorBody struct {
 	Error    string             `json:"error"`
+	Category string             `json:"category,omitempty"`
 	Problems []bundle.Problem   `json:"problems,omitempty"`
 	Health   *core.HealthResult `json:"health,omitempty"`
 }
@@ -113,17 +127,36 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, code int, err error) {
+// DecisionError retains the persisted approval and its typed execution cause.
+type DecisionError struct {
+	ErrorBody
+	Approval store.Approval `json:"approval"`
+}
+
+func errorBody(err error) ErrorBody {
 	body := ErrorBody{Error: err.Error()}
+	body.Category = core.ErrorCategory(err)
+
 	if v, ok := bundle.IsValidation(err); ok {
 		body.Problems = v.Problems
 	}
 	var de *core.DeployError
+	if errors.As(err, &de) && body.Category == "" {
+		if de.Cause != nil {
+			body.Category = "runtime_start_failed"
+		} else {
+			body.Category = "health_check_failed"
+		}
+	}
 	if errors.As(err, &de) && de.Cause == nil {
 		h := de.Health
 		body.Health = &h
 	}
-	writeJSON(w, code, body)
+	return body
+}
+
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, errorBody(err))
 }
 
 // statusOf maps errors to HTTP codes: typed errors first, then a small
@@ -137,7 +170,10 @@ func statusOf(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, core.ErrForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable):
+	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable),
+		errors.Is(err, core.ErrStaleApproval), errors.Is(err, core.ErrProviderNotPermitted),
+		errors.Is(err, core.ErrProviderNotReady), errors.Is(err, core.ErrPublicStopUnconfirmed),
+		errors.Is(err, core.ErrUnchangedContent), errors.Is(err, core.ErrProviderInUse):
 		return http.StatusConflict
 	case errors.As(err, &de):
 		return http.StatusUnprocessableEntity
@@ -158,7 +194,14 @@ func statusOf(err error) int {
 	return http.StatusInternalServerError
 }
 
-func fail(w http.ResponseWriter, err error) { writeErr(w, statusOf(err), err) }
+func fail(w http.ResponseWriter, err error) {
+	var pending *core.PendingApproval
+	if errors.As(err, &pending) {
+		writeJSON(w, http.StatusAccepted, pending.ActionResult)
+		return
+	}
+	writeErr(w, statusOf(err), err)
+}
 
 func decode(r *http.Request, v any) error {
 	if r.Body == nil {
@@ -221,7 +264,13 @@ func (s *Server) getFlat(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, f)
+	writeJSON(w, 200, FlatResponse{FlatView: f, Draft: f.Draft})
+}
+
+// FlatResponse makes the absence of a Draft explicit for console consumers.
+type FlatResponse struct {
+	core.FlatView
+	Draft *store.Draft `json:"draft"`
 }
 
 func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via) {
@@ -241,38 +290,115 @@ func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, 201, f)
 }
 
+// SaveResponse keeps the archive-upload compatibility object and the current
+// Draft separate. A pending request is never represented as a live version.
+type SaveResponse struct {
+	Version store.Version      `json:"version"`
+	Draft   store.Draft        `json:"draft"`
+	Deploy  *core.ActionResult `json:"deploy,omitempty"`
+	core.ActionResult
+}
+
 func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
-	slugName := r.PathValue("slug")
-	lim := bundle.Limits{MaxBytes: s.Svc.UploadLimit()}
-	files, err := bundle.FromArchive(r.Body, lim)
-	if err != nil {
-		fail(w, err)
-		return
-	}
 	q := r.URL.Query()
 	dirty, _ := strconv.ParseBool(q.Get("git_dirty"))
 	meta := core.SaveMeta{GitSHA: q.Get("git_sha"), GitDirty: dirty, Message: q.Get("message")}
-	v, err := s.Svc.SaveVersion(r.Context(), slugName, files, meta, via)
+	if values, present := q["expected_revision"]; present {
+		if len(values) != 1 {
+			writeErr(w, 400, errors.New("expected_revision must be a single nonnegative integer"))
+			return
+		}
+		n, err := strconv.Atoi(values[0])
+		if err != nil || n < 0 {
+			writeErr(w, 400, errors.New("expected_revision must be a nonnegative integer"))
+			return
+		}
+		meta.ExpectedRevision, meta.CheckRevision = n, true
+	}
+	files, err := bundle.FromArchive(r.Body, bundle.Limits{MaxBytes: s.Svc.UploadLimit()})
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	out := map[string]any{"version": v}
+	v, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	out := SaveResponse{Version: v, Draft: draft}
 	if deploy, _ := strconv.ParseBool(q.Get("deploy")); deploy {
-		res, err := s.Svc.Deploy(r.Context(), slugName, v.Number, via)
+		res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), v.Revision, v.Hash, via)
 		if err != nil {
-			body := ErrorBody{Error: err.Error()}
-			var de *core.DeployError
-			if errors.As(err, &de) && de.Cause == nil {
-				h := de.Health
-				body.Health = &h
-			}
-			writeJSON(w, statusOf(err), map[string]any{"version": v, "deploy_error": body})
+			writeJSON(w, statusOf(err), struct {
+				SaveResponse
+				DeployError ErrorBody `json:"deploy_error"`
+			}{out, errorBody(err)})
 			return
 		}
-		out["deploy"] = res
+		out.ActionResult, out.Deploy = res, &res
+		writeJSON(w, http.StatusAccepted, out)
+		return
 	}
-	writeJSON(w, 201, out)
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) getDraft(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, draft)
+}
+
+// PublishRequest freezes the selected current revision and optional content
+// hash. Revision zero selects current, and cannot substitute a stale revision.
+type PublishRequest struct {
+	Revision int    `json:"revision"`
+	Hash     string `json:"hash,omitempty"`
+}
+
+func (s *Server) publish(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in PublishRequest
+	if err := decode(r, &in); err != nil || in.Revision < 0 {
+		writeErr(w, 400, errors.New("publish body requires a nonnegative revision and optional hash"))
+		return
+	}
+	res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), in.Revision, in.Hash, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, res)
+}
+
+// ProviderPermissionRequest grants usage only; it never publishes or changes
+// visibility. Core independently validates the operator proof.
+type ProviderPermissionRequest struct {
+	Provider  string `json:"provider"`
+	Permitted bool   `json:"permitted"`
+}
+
+func (s *Server) providers(w http.ResponseWriter, r *http.Request, via core.Via) {
+	if via != core.ViaConsole {
+		operatorError(w, "operator_required", "provider permissions require a separately authorized operator")
+		return
+	}
+	var in ProviderPermissionRequest
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := s.Svc.SetProviderPermission(r.Context(), r.PathValue("slug"), in.Provider, in.Permitted, via); err != nil {
+		fail(w, err)
+		return
+	}
+	s.getFlat(w, r, via)
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -280,6 +406,9 @@ func (s *Server) listVersions(w http.ResponseWriter, r *http.Request, _ core.Via
 	if err != nil {
 		fail(w, err)
 		return
+	}
+	if vs == nil {
+		vs = []store.Version{}
 	}
 	writeJSON(w, 200, map[string]any{"versions": vs})
 }
@@ -338,8 +467,8 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request, via core.Via) {
 		writeErr(w, 400, err)
 		return
 	}
-	if n <= 0 {
-		writeErr(w, 400, errors.New(`body must be {"version": <n>} with the saved version to deploy`))
+	if n < 0 {
+		writeErr(w, 400, errors.New(`body must be {"version": <n>}; 0 requests publish of the current Draft`))
 		return
 	}
 	res, err := s.Svc.Deploy(r.Context(), r.PathValue("slug"), n, via)
@@ -376,13 +505,22 @@ func (s *Server) deployments(w http.ResponseWriter, r *http.Request, _ core.Via)
 	writeJSON(w, 200, map[string]any{"deployments": ds})
 }
 
+type PreviewRequest struct {
+	Target  string `json:"target,omitempty"`
+	Version int    `json:"version"`
+}
+
 func (s *Server) openPreview(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	n, err := versionBody(r)
-	if err != nil || n <= 0 {
-		writeErr(w, 400, errors.New(`body must be {"version": <n>}`))
+	var in PreviewRequest
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
-	p, err := s.Svc.OpenPreview(r.Context(), r.PathValue("slug"), n)
+	if in.Version < 0 || (in.Target != "" && in.Target != "draft" && in.Target != "version") || (in.Target == "draft" && in.Version != 0) || (in.Target == "version" && in.Version == 0) {
+		writeErr(w, 400, errors.New("preview target must be draft with version 0, or a published positive version"))
+		return
+	}
+	p, err := s.Svc.OpenPreview(r.Context(), r.PathValue("slug"), in.Version)
 	if err != nil {
 		fail(w, err)
 		return
@@ -591,33 +729,28 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, _ core.Vi
 	writeJSON(w, 200, map[string]any{"approvals": as})
 }
 
-// decision is an approval as returned by approve/reject, with the tailnet
-// login of the operator who decided when the request came through the
-// console node (empty on the loopback listener, which has no identity).
-type decision struct {
-	store.Approval
-	DecidedBy string `json:"decided_by,omitempty"`
-}
-
 func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Request, via core.Via) {
 	return func(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		a, err := s.Svc.Decide(r.Context(), r.PathValue("id"), approve)
-		who := approverOf(r.Context())
+		who := a.DecidedBy
+		if who == "" {
+			who = s.Operator.DecisionIdentity(r.Context())
+		}
 		decided := err == nil || (a.Status == "failed" && !errors.Is(err, core.ErrConflict))
 		// A deleted flat's events are gone with it, so an approved delete
 		// reports its approver only in the response.
 		if a.ID != "" && decided && !(a.Action == "delete" && a.Status == "approved") {
 			src := "tailnet user " + who
-			if who == "" {
-				src = "the console on the loopback listener (no tailnet identity)"
+			if approverOf(r.Context()) == "" {
+				src = "authorized operator " + who
 			}
 			s.Svc.Event(r.Context(), a.Flat, "info", "approval",
 				fmt.Sprintf("approval %s (%s) %s by %s", a.ID, a.Action, a.Status, src),
 				map[string]string{"approval": a.ID, "status": a.Status, "decided_by": who})
 		}
-		out := decision{Approval: a, DecidedBy: who}
+		out := a
 		if err != nil {
-			writeJSON(w, statusOf(err), map[string]any{"error": err.Error(), "approval": out})
+			writeJSON(w, statusOf(err), DecisionError{ErrorBody: errorBody(err), Approval: out})
 			return
 		}
 		writeJSON(w, 200, out)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/expose/provider"
 )
 
 func localOptions(dir string) Options {
@@ -163,6 +166,59 @@ func TestHostCloseReportsErrorsAndContinues(t *testing.T) {
 		t.Fatalf("directory lock not released: %v", err)
 	}
 	lock.Close()
+}
+
+type shutdownTail struct {
+	stops, funnelStops, closes int
+}
+
+func (n *shutdownTail) Serve(context.Context, string, http.Handler, bool) (string, error) {
+	return "https://flat.example.ts.net", nil
+}
+func (n *shutdownTail) Stop(string) error { n.stops++; return nil }
+func (n *shutdownTail) URL(string) string { return "https://flat.example.ts.net" }
+func (n *shutdownTail) Status() core.NetStatus {
+	return core.NetStatus{Kind: "tailscale", Enabled: true, Hosts: []core.HostInfo{{Host: "flat", URL: n.URL("flat"), State: "ready"}}}
+}
+func (n *shutdownTail) Close() error { n.closes++; return nil }
+func (n *shutdownTail) ServeFunnel(context.Context, string, http.Handler) (string, error) {
+	return "https://flat.example.ts.net", nil
+}
+func (n *shutdownTail) StopFunnel(string) error { n.funnelStops++; return nil }
+func (n *shutdownTail) FunnelState(string) core.ExposureEndpoint {
+	return core.ExposureEndpoint{Provider: provider.Funnel, URL: n.URL("flat"), State: "ready", Ready: true}
+}
+
+func TestHostCloseUsesIdentityPreservingTailnetClose(t *testing.T) {
+	dir := t.TempDir()
+	if err := provider.Save(dir, provider.File{Version: 1, Permitted: []provider.ID{provider.Tailscale, provider.Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	loop, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tail := &shutdownTail{}
+	mgr, err := provider.New(dir, provider.Options{Local: loop, Tailscale: tail})
+	if err != nil {
+		loop.Close()
+		t.Fatal(err)
+	}
+	h := &Host{Providers: mgr, Private: tail, localNet: loop}
+	if _, err := mgr.ServeExposure(t.Context(), core.ExposureRequest{Slug: "flat", Host: "flat", Visibility: "private",
+		Audience: core.AudienceCurrent, Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), Permitted: []core.ProviderID{provider.Tailscale}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.ServeExposure(t.Context(), core.ExposureRequest{Slug: "flat", Host: "flat", Visibility: "public",
+		Audience: core.AudienceCurrent, Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), Permitted: []core.ProviderID{provider.Funnel}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if tail.stops != 0 || tail.funnelStops != 0 || tail.closes != 1 {
+		t.Fatalf("shutdown path stop=%d funnelStop=%d close=%d", tail.stops, tail.funnelStops, tail.closes)
+	}
 }
 
 func TestHostCloseTimeoutRetainsLock(t *testing.T) {
