@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -330,5 +331,41 @@ func TestTooNew(t *testing.T) {
 	}
 	if readString(t, path) != newer || historyFiles(t, filepath.Dir(path)) != nil {
 		t.Fatal("too-new file was changed")
+	}
+}
+
+// A save or create that would produce a file Load rejects must not write it.
+func TestWritesStayWithinMaxFileSize(t *testing.T) {
+	var relays []string
+	for i := 0; len(strings.Join(relays, ",")) <= MaxFileSize; i++ {
+		relays = append(relays, fmt.Sprintf("https://%s-%06d.%s.example.com", strings.Repeat("r", 56), i, strings.Repeat("s", 60)))
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	orig := fileWith()
+	hash := writeFile(t, path, orig)
+	if _, err := NewWriter(path).Save(hash, set("portal.relays", strings.Join(relays, ","))); err == nil {
+		t.Fatal("Save wrote a file larger than MaxFileSize")
+	}
+	if readString(t, path) != orig {
+		t.Fatal("oversized save replaced the file")
+	}
+	if _, err := os.Stat(filepath.Join(dir, historyDir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("oversized save kept a history copy: %v", err)
+	}
+
+	doc, err := New(NewInstanceID(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Set("portal.relays", strings.Join(relays, ",")); err != nil {
+		t.Fatal(err)
+	}
+	created := filepath.Join(dir, "created.json")
+	if _, err := Create(created, doc); err == nil {
+		t.Fatal("Create wrote a file larger than MaxFileSize")
+	}
+	if _, err := os.Stat(created); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("oversized create left a file: %v", err)
 	}
 }

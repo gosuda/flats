@@ -107,6 +107,9 @@ func Create(path string, doc *Document) (string, error) {
 		return "", err
 	}
 	data := doc.Encode()
+	if err := checkSize(data); err != nil {
+		return "", err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
@@ -178,6 +181,9 @@ func (w *Writer) Save(expectedHash string, mutate func(*Document) error) (string
 	if bytes.Equal(data, old) {
 		return l.Hash, nil
 	}
+	if err := checkSize(data); err != nil {
+		return "", err
+	}
 	dir := filepath.Dir(w.path)
 	if err := keepHistory(dir, old, l.FileVersion); err != nil {
 		return "", fmt.Errorf("config: keep previous copy in %s: %w", historyDir, err)
@@ -195,6 +201,14 @@ func (w *Writer) Save(expectedHash string, mutate func(*Document) error) (string
 	}
 	_ = pruneHistory(filepath.Join(dir, historyDir), historyKeep)
 	return Hash(data), nil
+}
+
+// checkSize refuses to write a file that Load would then reject.
+func checkSize(data []byte) error {
+	if len(data) > MaxFileSize {
+		return fmt.Errorf("config: the result would be %d bytes, more than the %d-byte limit", len(data), MaxFileSize)
+	}
+	return nil
 }
 
 // writeTemp writes data to a synced 0600 temporary file in dir.
