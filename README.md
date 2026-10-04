@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 
 It downloads the latest release binary for your platform, verifies its SHA-256 checksum, installs it to `~/.local/bin` and runs Flats as a background service: a launchd agent on macOS or a systemd user service on Linux. The service starts at login and restarts if it stops; on Linux the installer also enables lingering when allowed, so Flats keeps running after you log out. It runs `flats serve` with the defaults (Local network, Portal off) and the data directory described below.
 
-On first install it creates a random operator credential at `~/.config/flats-operator/credential` (mode 0600) and does not print it. Copy it into your password manager (on macOS: `pbcopy < ~/.config/flats-operator/credential`) and do not paste it into agent chat, commands or logs. Mode 0600 does not stop agents running as your OS user from reading the file, so deny that path in their sandbox or file-access settings, or pass `--credential-file` to keep it elsewhere. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter it. Unlocking creates a browser session; each publish still needs a separate approval.
+On first install it creates a random operator credential at `~/.config/flats-operator/credential` (mode 0600) and does not print it. Copy it into your password manager (on macOS: `pbcopy < ~/.config/flats-operator/credential`) and do not paste it into agent chat, commands or logs. Mode 0600 does not stop agents running as your OS user from reading the file. Keep it outside every directory agents can read or upload: deny that path in their sandbox or file-access settings, or pass `--credential-file` with a path they cannot reach. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter it. Unlocking creates a browser session; each publish still needs a separate approval.
 
 Run the installer again to upgrade: it replaces the binary and restarts the service with its existing settings. Options go after `sh -s --`: `--version v1.2.3` installs a specific release, `--dir DIR` changes the install directory, `--no-service` installs only the binary, and `flats serve` flags after a second `--` reinstall the service with those flags:
 
@@ -44,7 +44,7 @@ Run the installer again to upgrade: it replaces the binary and restarts the serv
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
 ```
 
-If the service is stopped or disabled, the installer only replaces the binary. Releases include a GitHub build provenance attestation; check an archive with `gh attestation verify flats_<os>_<arch>.tar.gz --repo gosuda/flats`. The installer does not use sudo or edit shell profiles. `flats status` shows whether the host answers, and `flats uninstall` removes the service while keeping your data. To build from source instead (Go 1.27.1 or newer):
+If the service is stopped (not running), the installer only replaces the binary and prints how to start it. Releases include a GitHub build provenance attestation; check an archive with `gh attestation verify flats_<os>_<arch>.tar.gz --repo gosuda/flats`. The installer does not use sudo or edit shell profiles. `flats status` shows whether the host answers, and `flats uninstall` removes the service while keeping your data. To build from source instead (Go 1.27.1 or newer):
 
 ```sh
 go install github.com/gosuda/flats/cmd/flats@latest
