@@ -132,10 +132,9 @@ save alone does not establish a live site, and requesting deploy still waits for
 
 Agents and tools that read [llms.txt](https://llmstxt.org) can start from
 `http://127.0.0.1:7878/llms.txt`. The host serves it on the management server
-alongside `/llms-full.txt` (the same index plus the complete runtime reference)
-and `/docs/runtime-api-v1.md`. It carries the MCP endpoint and client setup,
-the same instructions and tool list the MCP server reports, and the core CLI
-commands.
+with the MCP endpoint and client setup, and links `/docs/agent-guide.md` (the
+instructions and tool list the MCP server reports, plus core CLI commands) and
+`/docs/runtime-api-v1.md`; `/llms-full.txt` concatenates all three.
 
 Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
 
