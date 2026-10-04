@@ -119,7 +119,7 @@ func instructions(uploadLimit int64) string {
 	return fmt.Sprintf(`Flats hosts websites ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a Private URL through Local loopback or explicitly permitted Tailscale.
 
 Runtime reference
-Before authoring a server app, read resource flats://docs/runtime-api/v1 (resources/read), or call the read-only get_runtime_reference tool with {}. It contains the complete versioned FILES/DB, handler/response, encoding, persistence, secrets and limits contract; no installed skill or source checkout is needed. FILES methods and DB methods are synchronous.
+Before authoring a server app, read resource flats://docs/runtime-api/v1 (resources/read), or call the read-only get_runtime_reference tool with {}. It contains the complete versioned FILES/DB, handler/response, encoding, persistence, ordinary environment variables, secrets and limits contract; no installed skill or source checkout is needed. FILES methods and DB methods are synchronous.
 
 Workflow
 1. save_draft or save_version uploads COMPLETE build content as a Private Draft revision, never a published version. Use encoding "utf8" for text and "base64" for binary files. A missing flat is created on first save. expected_revision detects conflicting edits; on conflict preserve your content, read get_draft and reconcile. deploy=true requests publish approval after saving.
@@ -135,7 +135,7 @@ Exposure
 
 flats.json (optional, at the bundle root; unknown fields are rejected)
   name, kind ("static" default or "server"), entry (static default index.html; server default server.js, index.js, main.wasm or server.wasm), spa (serve the entry for unknown paths), not_found (e.g. "404.html", served with status 404), health (default "/"), screenshot (thumbnail path).
-Server flats: export default { async fetch(request, env) { return new Response("hi") } }. env.DB is SQLite (query/exec), env.FILES is a per-flat local-disk string key-value store (not S3), secrets arrive as env values. Only the operator sets secret values; list_secrets shows names.
+Server flats: export default { async fetch(request, env) { return new Response("hi") } }. env.DB is SQLite (query/exec), env.FILES is a per-flat local-disk string key-value store (not S3), ordinary environment variables and secrets arrive as env values (WASI receives only these as environment variables). Use list_env/set_env/delete_env for readable ordinary configuration. Values are server-only, never bundled into frontend assets, and live changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, or Flats host restart. New previews capture current settings; running instances and automatic worker restarts keep their captured settings. Only the operator sets secret values; list_secrets shows names without values. Never put credentials in ordinary env variables.
 
 Limits: %d bytes total (uncompressed) per upload (operator-configurable), %d files, no symlinks or paths outside the root. A single wrapping directory such as dist/ is stripped; .git and .DS_Store are skipped (save_version_from_dir also skips node_modules). Do not upload sources or node_modules. Every validation problem comes with a fix hint.
 For large builds on the Flats host itself, call save_version_from_dir with an absolute directory path, or run the CLI: flats deploy <dir>.`, slug.MinLen, slug.MaxLen, uploadLimit, maxFiles)

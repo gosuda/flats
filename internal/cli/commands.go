@@ -726,7 +726,7 @@ func (a *app) secret(args []string) error {
 			a.emitRaw(resp)
 			return nil
 		}
-		fmt.Fprintf(a.out, "Stored %s for %s. It applies on the next deploy.\n", pos[1], pos[0])
+		fmt.Fprintf(a.out, "Stored %s for %s. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings.\n", pos[1], pos[0])
 		return nil
 	case "rm", "delete":
 		pos, err := a.parse(fs, args, 2, 2)
@@ -741,7 +741,7 @@ func (a *app) secret(args []string) error {
 			a.emitRaw(resp)
 			return nil
 		}
-		fmt.Fprintf(a.out, "Deleted %s from %s. It is removed on the next deploy.\n", pos[1], pos[0])
+		fmt.Fprintf(a.out, "Deleted %s from %s. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings.\n", pos[1], pos[0])
 		return nil
 	case "ls", "list":
 		pos, err := a.parse(fs, args, 1, 1)

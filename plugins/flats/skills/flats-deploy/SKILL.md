@@ -16,7 +16,7 @@ or call the read-only `get_runtime_reference` tool with `{}`. The complete
 [runtime API v1 reference](../../../../docs/runtime-api-v1.md) ships in the host;
 MCP clients do not need this skill installed. It defines synchronous FILES/DB
 methods, arguments, returns, missing keys, text/binary encoding, errors,
-limits, persistence, request/response helpers and secrets. FILES is a per-flat
+limits, persistence, request/response helpers, app environment variables and secrets. FILES is a per-flat
 local-disk string store, not S3. Use application base64 text for binary storage.
 
 ## Workflow
@@ -61,15 +61,13 @@ export default {
 The handler runs in a sandbox (QuickJS on WebAssembly): no Node.js APIs, no
 npm packages that need Node, no file system or network. Use `env.DB`
 (SQLite: `query`, `exec`), `env.FILES` (`get`, `put`, `delete`, `list`) and
-secrets as `env.NAME`. Live DB/FILES data survives redeploys and ordinary code rollbacks.
+ordinary environment variables and secrets as `env.NAME`. Live DB/FILES data survives redeploys and ordinary code rollbacks.
 Previews use isolated copies. Candidate health checks use isolated DB/FILES copies. After approval, starting the live runtime can write live data, even if activation fails; inspect reported data impact and keep startup paths free of destructive mutations. Bundle dependencies for the sandbox; uploaded relative ES module imports
 are supported. Server handlers must serve their own UI/assets.
 
 A `.wasm` server is a fresh WASI preview1 command per HTTP request. Read
 `{method, url, headers, body}` JSON from stdin and write `{status, headers,
-body}` JSON to stdout. Only the flat's secrets are injected as environment
-variables; there is no separate variable configuration or inherited host
-environment. Clocks and CSPRNG are enabled. WASI has no SQLite
+body}` JSON to stdout. Only the flat's configured environment variables and secrets are injected as environment variables; there is no inherited host environment. Clocks and CSPRNG are enabled. WASI has no SQLite
 or persistent FILES host ABI, filesystem mounts, outbound network or WebSocket
 API. Choose JavaScript when the app needs `env.DB`, `env.FILES`, Web Crypto
 or WebSocket callbacks; WASI does not share those JS host objects.
@@ -81,11 +79,34 @@ or WebSocket callbacks; WASI does not share those JS host objects.
 
 Use only `private` / `public`. Both directions require explicit operator approval, as do publish, activation, rollback, data restore and deletion. Give the approval link and poll `get_approval`; never treat Public→Private as immediate. Public requires a published version. Nonlocal providers need a host grant/configuration plus per-flat operator permission; Tailscale connectivity does not grant Funnel. Agents cannot set those permissions. A provider failure never authorizes switching providers.
 
+## App environment variables
+
+Use MCP `list_env {slug}`, `set_env {slug, name, value}` and
+`delete_env {slug, name}`, or `flats env set <flat> NAME VALUE`,
+`flats env ls <flat>` and `flats env rm <flat> NAME`. Empty strings are allowed.
+Ordinary values are readable by management clients and stored without secret
+encryption. Use the secret workflow below for credentials.
+
+Names match `[A-Z_][A-Z0-9_]*`, at most 64 characters; `DB`, `FILES`,
+`__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are reserved. Values are at most 64 KiB of valid UTF-8 without NUL. An ordinary variable cannot
+share a secret name: remove the old kind before changing kinds. Server JavaScript
+reads `env.NAME`; WASI gets environment variables. They do not enter frontend
+bundles, static files or builds.
+
+Saving does not update running handlers or previews. Approved deployment, redeployment, rollback or standalone data snapshot
+restoration captures current variables and secrets when activation begins; its
+health check and live worker share that snapshot. Settings are not pinned to the
+approval request or code version. Writes after capture apply at the next
+activation. New previews and a Flats host restart load current settings; automatic
+worker restarts reuse the captured snapshot. Redeploy with the existing approval
+flow to apply changes deliberately.
+
 ## Secrets
 
 You can list secret names (`list_secrets`, `flats secret ls`) but never set or
 read values. Ask the user to set them in the Flats console or with
-`flats secret set <flat> NAME` on the Flats host. Secrets apply when a version
-starts: redeploy the live version (`flats deploy --flat <flat> --version <live>`
-or MCP `deploy`), then report pending and poll approval, or ask the user to click **Redeploy (apply secrets)** in the
+`flats secret set <flat> NAME` on the Flats host. Secret changes apply on approved
+deployment, redeployment, rollback or standalone data snapshot restoration, or Flats host restart. Automatic worker
+restarts reuse their captured settings. To apply changes deliberately: redeploy the live version (`flats deploy --flat <flat> --version <live>`
+or MCP `deploy`), then report pending and poll approval, or ask the user to click **Redeploy (apply environment)** in the
 console.

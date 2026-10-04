@@ -264,20 +264,48 @@ closeReason. Incoming text/binary messages are delivered as strings (not a
 lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
 send queue 256 messages, closes on overflow. Redeploy closes connections.
 
-Secrets are operator-managed strings injected as `env.NAME` at next deploy.
-`env` is frozen; injected DB/FILES names are overwritten by host objects.
-Operator secret names match `[A-Z_][A-Z0-9_]*`, at most 64 characters; values
-are at most 64 KiB. Missing secret properties are undefined. `list_secrets {slug}`
-shows names/update times only. Agent MCP cannot set/read secret values;
-operator uses console or `flats secret set`. No inherited host credentials.
-Secrets are encrypted on disk with local secret.key, but anyone with data-dir
-access can recover them; trust your handler, which can itself return secrets.
+Ordinary app environment variables and operator-managed secrets are strings
+injected as `env.NAME` when the worker starts. `env` is frozen; `env.DB` and
+`env.FILES` are reserved host bindings. New variable and secret writes require names matching
+`[A-Z_][A-Z0-9_]*`, at most 64 characters; `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are rejected for new writes.
+New values are at most 64 KiB and must be valid UTF-8 without NUL; empty strings are supported.
+A name cannot exist in both namespaces. Missing properties are undefined.
+Historical secrets remain stored and keep their runtime behavior: JavaScript
+`DB`/`FILES` host bindings take precedence over historical secrets with those
+names, while WASI receives their stored strings. Other historical names and
+values are preserved, including WASI rejecting NUL values as before. Replacing
+a historical secret must pass the current write validation.
+
+Manage ordinary values with `flats env set <slug> <name> <value>`,
+`flats env ls <slug>` and `flats env rm <slug> <name>`, the console Settings
+page, or MCP `list_env {slug}`, `set_env {slug, name, value}` and
+`delete_env {slug, name}`. `list_env` returns ordinary names, values and update
+times. HTTP API `GET /api/flats/{slug}/env` returns
+`{env: [{name, value, updated_at}], note}`; `PUT /api/flats/{slug}/env/{name}`
+accepts `{value}` and `DELETE` removes it. Ordinary values are readable by
+management clients and stored without secret encryption: use secrets for credentials.
+
+Changes leave running handlers and previews on their startup snapshot. Approved
+deployment, redeployment, rollback or standalone data snapshot restoration captures current variables and secrets
+when activation begins; the health check and live worker share that snapshot.
+Settings are not pinned to the approval request or code version. Writes after
+capture apply at the next activation. New previews and a Flats host restart load
+current settings; automatic worker restarts reuse the captured snapshot. Redeploy
+through the existing approval flow to apply changes. Neither
+ordinary variables nor secrets enter frontend bundles, static files or build
+substitution. There is no inherited host environment.
+
+`list_secrets {slug}` shows names/update times only. Agent MCP cannot set/read
+secret values; operators use the console or `flats secret set`. Secrets are
+encrypted on disk with local secret.key, but anyone with data-dir access can
+recover them; trust your handler, which can itself return secrets. Never log
+secret values or put credentials in ordinary variables.
 
 WASI `.wasm` is a fresh preview1 command per request: stdin JSON
 `{method,url,headers,body}`; stdout JSON `{status,headers,body}`, optional
 `body_base64: true` for base64-encoded binary response. Environment receives
-only the flat's configured secrets; clocks and CSPRNG are available separately.
-There is no separate variable configuration or inherited host environment.
+only the flat's configured environment variables and secrets; clocks and CSPRNG
+are available separately. There is no inherited host environment.
 It has **no DB/FILES host ABI**,
 filesystem mounts, outbound network, JS Web Crypto or WebSocket callbacks.
 Use JavaScript for persistent DB/FILES APIs.

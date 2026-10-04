@@ -128,7 +128,7 @@ Read the agent guide before the first deploy, and the runtime API reference befo
 ## Docs
 
 - [Agent guide](%s%s): deploy workflow, approvals, exposure rules, flats.json, upload limits, every MCP tool and the core CLI commands, as this host reports them.
-- [Runtime API v1](%s%s): complete server-flat contract (env.DB SQLite, env.FILES, handler and Response helpers, encoding, limits, secrets, approvals). Also MCP resource %s and tool get_runtime_reference.
+- [Runtime API v1](%s%s): complete server-flat contract (env.DB SQLite, env.FILES, handler and Response helpers, encoding, limits, ordinary environment variables, secrets, approvals). Also MCP resource %s and tool get_runtime_reference.
 
 ## Optional
 

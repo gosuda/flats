@@ -1,4 +1,4 @@
-// Flat page: addresses, visibility, versions, previews, logs, secrets,
+// Flat page: addresses, visibility, versions, previews, logs, environment variables, secrets,
 // usage, rename and delete.
 
 import { h, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
@@ -31,6 +31,7 @@ export function mount(main, [slug], ctx, settings = false) {
   const visSlot = h('div');
   const versionsSlot = h('div', null, loading());
   const previewsSlot = h('div', null, loading());
+  const envSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const usageSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
@@ -62,7 +63,7 @@ export function mount(main, [slug], ctx, settings = false) {
   async function refresh() {
     const ok = await loadFlat();
     if (ok) {
-      loadSecrets();
+      loadEnv(); loadSecrets();
       if (!settings) { loadVersions(); loadPreviews(); loadUsage(); loadHostProviders(); }
       logs.poll();
     }
@@ -106,6 +107,7 @@ export function mount(main, [slug], ctx, settings = false) {
       card('Versions', 'versions', versionsSlot),
       card('Open previews', 'previews', previewsSlot),
       card('Logs', 'logs', logs.el),
+      card('Ordinary environment variables', 'env', envSlot),
       card('Secrets', 'secrets', secretsSlot),
       card('Usage', 'usage', usageSlot),
       card('Rename slug', 'rename', renameForm()),
@@ -138,7 +140,8 @@ export function mount(main, [slug], ctx, settings = false) {
         row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
-      h('section', { class: 'settings-section', id: 'secrets' }, h('h2', { text: 'Environment variables' }), secretsSlot),
+      h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
+      h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()),
       h('a', { class: 'back', href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: 'Manage versions, previews and logs' }));
   }
@@ -297,11 +300,11 @@ export function mount(main, [slug], ctx, settings = false) {
       h('td', null, h('div', { class: 'cell-actions' }, prev, pub)));
   }
 
-  // redeployButton restarts the live version, e.g. after a secret changed.
+  // redeployButton restarts the live version, e.g. after environment settings changed.
   function redeployButton() {
     const btn = h('button', {
-      type: 'button', class: 'btn btn-small', text: 'Redeploy (apply secrets)',
-      'aria-label': `Redeploy live version ${flat.live_version} to apply secrets`,
+      type: 'button', class: 'btn btn-small', text: 'Redeploy (apply environment)',
+      'aria-label': `Redeploy live version ${flat.live_version} to apply environment`,
     });
     btn.addEventListener('click', () => busy(btn, async () => { if (await redeployLive(flat)) refresh(); }));
     return btn;
@@ -331,6 +334,86 @@ export function mount(main, [slug], ctx, settings = false) {
     } catch (err) {
       if (ctx.alive()) fill(previewsSlot, errorPanel(err, 'Cannot load previews'));
     }
+  }
+
+  // --- ordinary environment variables ---
+
+  async function loadEnv() {
+    try {
+      const res = await api.env(slug);
+      if (ctx.alive()) drawEnv(res.env || []);
+    } catch (err) {
+      if (ctx.alive()) fill(envSlot, errorPanel(err, 'Cannot load environment variables'));
+    }
+  }
+
+  function drawEnv(list) {
+    const name = h('input', {
+      id: 'env-name', type: 'text', required: true, pattern: '[A-Z_][A-Z0-9_]*', maxlength: '64',
+      autocomplete: 'off', spellcheck: 'false', autocapitalize: 'characters', class: 'mono', placeholder: 'APP_MODE',
+    });
+    const value = h('textarea', { id: 'env-value', rows: '2', autocomplete: 'off', spellcheck: 'false', class: 'mono' });
+    const save = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Save variable' });
+    name.addEventListener('input', () => { name.value = name.value.toUpperCase(); });
+    const form = h('form', { class: 'form-grid', id: 'env-form' },
+      h('div', { class: 'field' }, h('label', { for: 'env-name', text: 'Name' }), name,
+        h('span', { class: 'hint', text: 'Capital letters, digits and _. Reserved names and secret names cannot be used.' })),
+      h('div', { class: 'field' }, h('label', { for: 'env-value', text: 'Value' }), value,
+        h('span', { class: 'hint', text: 'Plain text; an empty value is allowed' })),
+      h('div', { class: 'field field-end' }, save));
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      busy(save, async () => {
+        try {
+          await api.putEnv(slug, name.value, value.value);
+          toast(`Variable ${name.value} saved. It applies on the next approved activation or Flats host restart.`, 'success');
+          loadEnv(); logs.poll();
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
+    const add = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add variable', 'aria-expanded': 'false', 'aria-controls': 'env-form' }) : null;
+    if (settings) {
+      form.hidden = true;
+      add.addEventListener('click', () => {
+        form.hidden = !form.hidden;
+        add.setAttribute('aria-expanded', String(!form.hidden));
+        if (!form.hidden) name.focus();
+      });
+    }
+    const items = list.length ? h('ul', { class: 'plain-list' }, list.map((v) => {
+      const edit = h('button', { type: 'button', class: 'btn btn-small', text: 'Edit', 'aria-label': `Edit variable ${v.name}` });
+      edit.addEventListener('click', () => {
+        form.hidden = false; add?.setAttribute('aria-expanded', 'true');
+        name.value = v.name; value.value = v.value; value.focus();
+      });
+      const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete variable ${v.name}` });
+      del.addEventListener('click', () => busy(del, async () => {
+        const ok = await confirmDialog({
+          title: `Delete variable ${v.name}?`,
+          body: 'The running version keeps its current environment until the next approved activation or Flats host restart.',
+          confirmLabel: 'Delete', danger: true,
+        });
+        if (!ok) return;
+        try {
+          await api.deleteEnv(slug, v.name);
+          toast(`Variable ${v.name} deleted. It applies on the next approved activation or Flats host restart.`, 'success');
+          loadEnv();
+        } catch (err) { toast(err.message, 'error'); }
+      }));
+      return h('li', { class: 'plain-row' },
+        h('div', null, h('code', { text: v.name }),
+          h('pre', { class: 'env-value', text: v.value === '' ? '(empty)' : v.value }),
+          h('div', { class: 'muted small' }, 'Updated ', timeEl(v.updated_at))),
+        h('div', { class: 'cell-actions' }, edit, del));
+    })) : h('p', { class: 'muted', text: 'No ordinary environment variables.' });
+    const apply = flat.live_version
+      ? h('div', { class: 'inline-form' },
+        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
+      : h('p', { class: 'muted', text: 'Changes apply when a deployment is approved.' });
+    fill(envSlot, add,
+      h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
+      items, form, apply,
+      h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
 
   // --- secrets ---
@@ -375,7 +458,7 @@ export function mount(main, [slug], ctx, settings = false) {
       busy(save, async () => {
         try {
           await api.putSecret(slug, name.value, value.value);
-          toast(`Secret ${name.value} saved. It applies after Redeploy (apply secrets).`, 'success');
+          toast(`Secret ${name.value} saved. It applies after Redeploy (apply environment).`, 'success');
           loadSecrets();
           logs.poll();
         } catch (err) {
@@ -393,7 +476,7 @@ export function mount(main, [slug], ctx, settings = false) {
         del.addEventListener('click', () => busy(del, async () => {
           const ok = await confirmDialog({
             title: `Delete secret ${s.name}?`,
-            body: 'The running version keeps its current environment until it is redeployed (Redeploy (apply secrets) on the live version).',
+            body: 'The running version keeps its current environment until it is redeployed (Redeploy (apply environment) on the live version).',
             confirmLabel: 'Delete', danger: true,
           });
           if (!ok) return;
@@ -407,10 +490,10 @@ export function mount(main, [slug], ctx, settings = false) {
       : h('p', { class: 'muted', text: 'No secrets.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply when the flat restarts: redeploy the live version ${flat.live_version} to use them now.` }),
+        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }),
         redeployButton())
-      : h('p', { class: 'muted', text: 'Secrets apply when a version is deployed.' });
-    const addVariable = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add variable', 'aria-expanded': 'false' }) : null;
+      : h('p', { class: 'muted', text: 'Secrets apply when a deployment is approved.' });
+    const addVariable = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add secret', 'aria-expanded': 'false' }) : null;
     if (settings) {
       form.hidden = true;
       addVariable.addEventListener('click', () => {
@@ -420,8 +503,9 @@ export function mount(main, [slug], ctx, settings = false) {
       });
     }
     fill(secretsSlot, addVariable,
-      h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server flats read them as environment variables.' }),
-      items, form, apply);
+      h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
+      items, form, apply,
+      h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
 
   // --- usage ---
@@ -483,7 +567,7 @@ export function mount(main, [slug], ctx, settings = false) {
       if (await deleteFlat(flat)) ctx.navigate('/', { replace: true });
     }));
     return h('div', { class: 'danger-zone' },
-      h('p', { text: 'Permanently deletes every version, the flat’s data, secrets and logs, and takes its addresses offline.' }),
+      h('p', { text: 'Permanently deletes every version, the flat’s data, environment variables, secrets and logs, and takes its addresses offline.' }),
       btn);
   }
 
