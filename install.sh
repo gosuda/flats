@@ -78,6 +78,22 @@ FLATS_NO_SERVICE=1, FLATS_DATA, FLATS_DOWNLOAD_BASE.
 EOF
 }
 
+# clean_path removes repeated slashes, "/." segments and a trailing slash,
+# matching the cleaned path that `flats install` writes to the service file.
+clean_path() {
+	p=$1
+	while :; do
+		case "$p" in
+		*//*) p=$(printf '%s\n' "$p" | sed 's#//*#/#g') ;;
+		*/./*) p=$(printf '%s\n' "$p" | sed 's#/\./#/#') ;;
+		*/.) p=${p%/.} ;;
+		?*/) p=${p%/} ;;
+		*) break ;;
+		esac
+	done
+	printf '%s\n' "${p:-/}"
+}
+
 has() {
 	command -v "$1" >/dev/null 2>&1
 }
@@ -251,14 +267,17 @@ restart_service() {
 	fi
 }
 
-# service_active succeeds when the service is loaded (macOS) or active
-# (Linux), that is, when the user has not stopped it.
+# service_active succeeds when the service is loaded (macOS) or active or
+# restarting (Linux), that is, when the user has not stopped it.
 service_active() {
 	if [ "$os" = darwin ]; then
 		launchctl print "gui/$(id -u)/dev.flats.serve" >/dev/null 2>&1
-	else
-		systemctl --user is-active --quiet flats.service 2>/dev/null
+		return
 	fi
+	case "$(systemctl --user is-active flats.service 2>/dev/null || true)" in
+	active | activating | reloading) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 start_command() {
@@ -367,7 +386,9 @@ main() {
 	[ -n "$credential_file" ] || credential_file=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
 	case "$install_dir" in /*) ;; *) install_dir=$(pwd)/$install_dir ;; esac
 	case "$credential_file" in /*) ;; *) credential_file=$(pwd)/$credential_file ;; esac
-	binary=$install_dir/flats
+	install_dir=$(clean_path "$install_dir")
+	credential_file=$(clean_path "$credential_file")
+	binary=${install_dir%/}/flats
 
 	case "$version" in
 	"") die "empty version" ;;
