@@ -56,6 +56,12 @@ type serverCache struct {
 }
 
 func (c *serverCache) get() *mcp.Server {
+	srv, _ := c.current()
+	return srv
+}
+
+// current returns the server together with the upload limit it was built for.
+func (c *serverCache) current() (*mcp.Server, int64) {
 	limit := c.svc.UploadLimit()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -66,7 +72,7 @@ func (c *serverCache) get() *mcp.Server {
 		registerReference(srv, c.version, limit)
 		c.srv, c.limit = srv, limit
 	}
-	return c.srv
+	return c.srv, c.limit
 }
 
 // maxBody bounds a JSON-RPC request: inline files arrive base64 (4/3 of

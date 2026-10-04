@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -233,7 +234,7 @@ func TestManagementServerRejectsForeignHost(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	for _, path := range []string{"/console/api/settings", "/api/flats", "/"} {
+	for _, path := range []string{"/console/api/settings", "/api/flats", "/", "/llms.txt"} {
 		if code := get("attacker.example:"+port, path); code != 403 {
 			t.Errorf("rebound Host on %s = %d", path, code)
 		}
@@ -254,5 +255,26 @@ func TestManagementServerRejectsForeignHost(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 403 {
 		t.Fatalf("foreign Origin settings change = %d", resp.StatusCode)
+	}
+}
+
+func TestManagementServerServesLLMsTxt(t *testing.T) {
+	h := startLocal(t)
+	_, port, _ := strings.Cut(h.Addr(), ":")
+	for _, path := range []string{"/llms.txt", "/llms-full.txt", "/docs/runtime-api-v1.md"} {
+		req, _ := http.NewRequest("GET", "http://"+h.Addr()+path, nil)
+		req.Host = "localhost:" + port
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s = %d", path, resp.StatusCode)
+		}
+		if path != "/docs/runtime-api-v1.md" && !strings.Contains(string(b), "http://localhost:"+port+"/mcp") {
+			t.Errorf("%s does not name the MCP endpoint of the requested host", path)
+		}
 	}
 }
