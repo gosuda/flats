@@ -94,7 +94,7 @@ func TestSettingsSourceSavesBeforeApplying(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer svc.Close()
-	if _, err := svc.UpdateSettings(ctx, map[string]string{core.SetUploadMaxBytes: "4096", core.SetPortalRelays: "https://rly.best"}); err != nil {
+	if _, err := svc.UpdateSettings(ctx, map[string]string{core.SetUploadMaxBytes: "4096", core.SetPortalRelays: "https://relay.example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	if svc.UploadLimit() != 4096 || saved == nil {
@@ -158,7 +158,7 @@ func TestPinnedSettingRefusesChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer svc.Close()
-	_, err = svc.UpdateSettings(ctx, map[string]string{core.SetPortalRelays: "https://rly.best", core.SetKeepVersions: "2"})
+	_, err = svc.UpdateSettings(ctx, map[string]string{core.SetPortalRelays: "https://relay.example.com", core.SetKeepVersions: "2"})
 	if !errors.Is(err, core.ErrConfigOverridden) || !errors.Is(err, core.ErrConflict) || core.ErrorCategory(err) != "config_overridden" {
 		t.Fatalf("pinned change: %v", err)
 	}

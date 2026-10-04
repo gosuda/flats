@@ -174,7 +174,7 @@ INSERT INTO flat_providers(flat,provider,permitted) VALUES
 INSERT INTO legacy_private_upgrade(flat,pending) VALUES
   ('blog',0),
   ('docs',1);
-INSERT INTO settings(key,value) VALUES ('portal.relays','https://rly.best');
+INSERT INTO settings(key,value) VALUES ('portal.relays','https://relay.example.com');
 INSERT INTO pageviews(flat,day,count) VALUES ('blog','2023-11-14',42);
 INSERT INTO pagepaths(flat,day,path,count) VALUES ('blog','2023-11-14','/',30);
 INSERT INTO redirects(old,flat,until) VALUES ('oldblog','docs',4102444800000);

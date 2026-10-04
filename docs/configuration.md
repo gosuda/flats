@@ -79,7 +79,7 @@ in the file once written; `flats config unset KEY` removes it.
     "keep_versions": 20
   },
   "portal": {
-    "relays": ["https://rly.best"]
+    "relays": ["https://relay.example.com"]
   }
 }
 ```

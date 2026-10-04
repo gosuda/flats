@@ -22,7 +22,7 @@
     "events_keep": 5000
   },
   "portal": {
-    "relays": ["https://rly.best", "https://relay.example.com:8443"],
+    "relays": ["https://relay.example.com", "https://relay.example.com:8443"],
     "discovery": false,
     "max_active_relays": 2147483647
   },

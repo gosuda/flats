@@ -11,6 +11,6 @@
     "keep_versions": 20
   },
   "portal": {
-    "relays": ["https://rly.best"]
+    "relays": ["https://relay.example.com"]
   }
 }

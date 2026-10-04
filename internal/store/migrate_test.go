@@ -248,7 +248,7 @@ func commonChecks(t *testing.T, s *Store) {
 	if secs, _ := s.ListSecrets(ctx, "blog"); len(secs) != 1 || secs[0].Name != "API_KEY" || string(secs[0].Ciphertext) != "\xa1\xb2\xc3" {
 		t.Fatalf("secrets %+v", secs)
 	}
-	if v, _ := s.GetSetting(ctx, "portal.relays", ""); v != "https://rly.best" {
+	if v, _ := s.GetSetting(ctx, "portal.relays", ""); v != "https://relay.example.com" {
 		t.Fatalf("setting %q", v)
 	}
 	if pv, _ := s.PageViewsSince(ctx, "blog", "2023-11-01"); len(pv) != 1 || pv[0].Count != 42 {

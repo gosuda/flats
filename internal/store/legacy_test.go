@@ -15,7 +15,7 @@ func TestReadLegacyIsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// docs still waits for the legacy Private Tailscale choice.
-	if !l.PrivateUpgradePending || l.Settings["portal.relays"] != "https://rly.best" || len(l.Settings) != 1 {
+	if !l.PrivateUpgradePending || l.Settings["portal.relays"] != "https://relay.example.com" || len(l.Settings) != 1 {
 		t.Fatalf("legacy = %+v", l)
 	}
 	if snapshot(t, path) != before {

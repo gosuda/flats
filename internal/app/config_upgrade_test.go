@@ -44,7 +44,7 @@ func legacyDir(t *testing.T) string {
 		core.SetKeepVersions:    "20",
 		core.SetRateLimit:       "50", // equal to the default: not written
 		core.SetUploadMaxBytes:  "lots",
-		core.SetPortalRelays:    "https://rly.best/",
+		core.SetPortalRelays:    "https://relay.example.com/",
 		core.SetPortalDiscover:  "false",
 		core.SetPortalMaxRelay:  "5",
 		core.SetDiskQuotaBytes:  "0",
@@ -142,7 +142,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 	}
 	flags := []string{"--network", "local", "--console-host", "console", "--operator-credential-file", credential}
 	before := legacyPolicyToken(t, provider.File{Version: 1, Permitted: []provider.ID{provider.Portal}, PrivateBackend: "local"},
-		portal.Config{Relays: []string{"https://rly.best"}, Discovery: false, MaxActiveRelays: 5})
+		portal.Config{Relays: []string{"https://relay.example.com"}, Discovery: false, MaxActiveRelays: 5})
 
 	h, err := Start(context.Background(), legacyFlags(t, dir, flags...))
 	if err != nil {
@@ -167,7 +167,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
     "redirect_days": 14
   },
   "portal": {
-    "relays": ["https://rly.best"],
+    "relays": ["https://relay.example.com"],
     "discovery": false,
     "max_active_relays": 5
   },
@@ -185,7 +185,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 	// Effective values equal what serve applied before the upgrade.
 	settings, _ := h.Svc.Settings(context.Background())
 	for k, v := range map[string]string{core.SetKeepVersions: "20", core.SetUploadMaxBytes: core.Defaults[core.SetUploadMaxBytes],
-		core.SetPortalRelays: "https://rly.best", core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "5", core.SetDiskQuotaBytes: "0"} {
+		core.SetPortalRelays: "https://relay.example.com", core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "5", core.SetDiskQuotaBytes: "0"} {
 		if settings[k] != v {
 			t.Errorf("setting %s = %q, want %q", k, settings[k], v)
 		}
@@ -479,7 +479,7 @@ func TestConfigModeRefusals(t *testing.T) {
 	})
 	t.Run("legacy flags", func(t *testing.T) {
 		path := initConfig(t, t.TempDir())
-		for _, flags := range [][]string{{"--permit", "portal"}, {"--network", "local"}, {"--portal=false"}, {"--relays", "https://rly.best"},
+		for _, flags := range [][]string{{"--permit", "portal"}, {"--network", "local"}, {"--portal=false"}, {"--relays", "https://relay.example.com"},
 			{"--authkey-file", "/k"}, {"--operator-credential-file", "/c"}, {"--data", "/d"}} {
 			o, err := ParseServeFlags(append([]string{"--config", path}, flags...))
 			if err != nil {
@@ -608,11 +608,11 @@ func TestLegacyFreshStartInitializes(t *testing.T) {
 func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 	h, client := operatorHost(t)
 	path := h.ConfigPath
-	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"3","portal_relays":"https://rly.best"}`), nil); code != 200 {
+	if code := operatorCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"3","portal_relays":"https://relay.example.com"}`), nil); code != 200 {
 		t.Fatalf("PUT settings = %d", code)
 	}
 	raw, _ := os.ReadFile(path)
-	if !bytes.Contains(raw, []byte(`"keep_versions": 3`)) || !bytes.Contains(raw, []byte(`"relays": ["https://rly.best"]`)) {
+	if !bytes.Contains(raw, []byte(`"keep_versions": 3`)) || !bytes.Contains(raw, []byte(`"relays": ["https://relay.example.com"]`)) {
 		t.Fatalf("config.json =\n%s", raw)
 	}
 	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v1.*.json")); len(hist) != 1 {
@@ -648,7 +648,7 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	dir := t.TempDir()
 	h, client := operatorHostWith(t, dir, func(o *Options) {
-		o.Relays, o.Set = []string{"https://rly.best"}, map[string]bool{"relays": true}
+		o.Relays, o.Set = []string{"https://relay.example.com"}, map[string]bool{"relays": true}
 	})
 	put := func(body string) (int, map[string]any) {
 		t.Helper()
@@ -670,7 +670,7 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	if hashFile(t, path) != before {
 		t.Fatal("rejected change was saved")
 	}
-	if code, out := put(`{"portal_relays":"https://rly.best/","keep_versions":"4"}`); code != 200 {
+	if code, out := put(`{"portal_relays":"https://relay.example.com/","keep_versions":"4"}`); code != 200 {
 		t.Fatalf("unchanged relays with another setting = %d %v", code, out)
 	}
 	if err := h.Close(); err != nil {
@@ -678,7 +678,7 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	}
 	// The same flags still start.
 	o := localOptions(dir)
-	o.Relays, o.Set = []string{"https://rly.best"}, map[string]bool{"relays": true}
+	o.Relays, o.Set = []string{"https://relay.example.com"}, map[string]bool{"relays": true}
 	h2, err := Start(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)

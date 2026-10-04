@@ -592,7 +592,7 @@ globalThis.location = { origin: 'http://127.0.0.1:7878' };
 const settingsPage = await import('./settings.js');
 const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
 const SETTINGS = { upload_max_bytes: '20971520', keep_versions: '10', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
-  rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://rly.best', portal_discovery: 'true', portal_max_relays: '3' };
+  rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://relay.example.com', portal_discovery: 'true', portal_max_relays: '3' };
 const CONFIG = {
   mode: 'config', schema_version: 1, etag: 'etag-1', changed_on_disk: false,
   host: { management_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', console_host: 'flats', server_runtime: true },

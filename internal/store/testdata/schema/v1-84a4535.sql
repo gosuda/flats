@@ -113,7 +113,7 @@ INSERT INTO approvals(id,flat,action,params,status,via,reason,result,requested_a
   ('a-old','blog','set_visibility','{"visibility":"public-unlisted"}','approved','cli',NULL,'done',1700000000000,1700000001000);
 INSERT INTO previews(host,flat,version,created_at,last_access) VALUES
   ('p-blog-3','blog',3,1700000030000,1700000600000);
-INSERT INTO settings(key,value) VALUES ('portal.relays','https://rly.best');
+INSERT INTO settings(key,value) VALUES ('portal.relays','https://relay.example.com');
 INSERT INTO pageviews(flat,day,count) VALUES ('blog','2023-11-14',42);
 INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES ('blog','API_KEY',X'0102',X'A1B2C3',1700000000000);
 INSERT INTO redirects(old,flat,until) VALUES

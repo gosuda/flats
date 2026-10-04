@@ -117,11 +117,11 @@ func TestValidation(t *testing.T) {
 		{"system", `"events_keep": 0`, "system.events_keep"},
 		{"system", `"events_keep": 9007199254740992`, "system.events_keep"},
 		{"portal", `"relays": []`, ""},
-		{"portal", `"relays": ["https://rly.best", "relay.example.com:8443"]`, ""},
+		{"portal", `"relays": ["https://relay.example.com", "relay.example.com:8443"]`, ""},
 		{"portal", `"relays": ["http://example.com"]`, "portal.relays[0]"},
 		{"portal", `"relays": ["https://user@example.com"]`, "portal.relays[0]"},
-		{"portal", `"relays": ["https://rly.best", "https://rly.best/"]`, "portal.relays[1]"},
-		{"portal", `"relays": ["https://rly.best", "rly.best"]`, "portal.relays[1]"},
+		{"portal", `"relays": ["https://relay.example.com", "https://relay.example.com/"]`, "portal.relays[1]"},
+		{"portal", `"relays": ["https://relay.example.com", "relay.example.com"]`, "portal.relays[1]"},
 		{"portal", `"discovery": true`, ""},
 		{"portal", `"discovery": false`, "portal.discovery"},
 		{"portal", `"max_active_relays": 1`, ""},
@@ -158,7 +158,7 @@ func TestValidation(t *testing.T) {
 func TestCrossKeyRules(t *testing.T) {
 	valid := []string{
 		fileWith("network", `"permitted": ["tailscale"]`, "network", `"private_backend": "tailscale"`),
-		fileWith("portal", `"relays": ["https://rly.best"]`, "portal", `"discovery": false`),
+		fileWith("portal", `"relays": ["https://relay.example.com"]`, "portal", `"discovery": false`),
 		fileWith("host", `"management_addr": "127.0.0.1:9000"`, "host", `"local_addr": "127.0.0.1:7878"`),
 	}
 	for _, f := range valid {
@@ -266,17 +266,17 @@ func TestEffectiveDefaults(t *testing.T) {
 		t.Errorf("explicit default dropped:\n%s", l.Doc.Encode())
 	}
 	// Lookup and the typed fields must not share slices with the document.
-	if err := l.Doc.Set("portal.relays", "https://rly.best"); err != nil {
+	if err := l.Doc.Set("portal.relays", "https://relay.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	c, _ = l.Doc.Effective(nil)
 	v, _, _ := c.Lookup("portal.relays")
 	v.([]string)[0] = "changed"
 	c.Portal.Relays[0] = "changed"
-	if v, _, _ := c.Lookup("portal.relays"); v.([]string)[0] != "https://rly.best" {
+	if v, _, _ := c.Lookup("portal.relays"); v.([]string)[0] != "https://relay.example.com" {
 		t.Errorf("Lookup returned a shared slice")
 	}
-	if !bytes.Contains(l.Doc.Encode(), []byte(`"https://rly.best"`)) {
+	if !bytes.Contains(l.Doc.Encode(), []byte(`"https://relay.example.com"`)) {
 		t.Errorf("typed field shares the document slice")
 	}
 }
@@ -316,7 +316,7 @@ func TestOverrides(t *testing.T) {
 		{"host.instance_id", testID, "host.instance_id"},
 		{"network.permitted", "portal", "network.permitted"},
 		{"system.keep_versions", "3", "system.keep_versions"},
-		{"portal.relays", "https://rly.best", "portal.relays"},
+		{"portal.relays", "https://relay.example.com", "portal.relays"},
 		{"credentials.operator_file", "/x", "credentials.operator_file"},
 		{"host.nope", "x", "host.nope"},
 		{"host.management_addr", "127.0.0.1", "host.management_addr"},
@@ -338,7 +338,7 @@ func TestSetUnset(t *testing.T) {
 	}
 	sets := []struct{ key, value string }{
 		{"network.permitted", "portal, tailscale"},
-		{"portal.relays", `["rly.best", "https://relay.example.com/relay"]`},
+		{"portal.relays", `["relay-a.example.com", "https://relay.example.com/relay"]`},
 		{"system.keep_versions", "10"},
 		{"host.server_runtime", "false"},
 		{"credentials.operator_file", "/etc/flats/operator"},
@@ -362,7 +362,7 @@ func TestSetUnset(t *testing.T) {
     "keep_versions": 10
   },
   "portal": {
-    "relays": ["https://rly.best", "https://relay.example.com"]
+    "relays": ["https://relay-a.example.com", "https://relay.example.com"]
   },
   "credentials": {
     "operator_file": "/etc/flats/operator"
@@ -543,7 +543,7 @@ func TestDefaultAndClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := doc.Set("portal.relays", "https://rly.best"); err != nil {
+	if err := doc.Set("portal.relays", "https://relay.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	c := doc.Clone()
@@ -551,7 +551,7 @@ func TestDefaultAndClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.values["portal.relays"].([]string)[0] = "changed"
-	if bytes.Contains(doc.Encode(), []byte("keep_versions")) || !bytes.Contains(doc.Encode(), []byte("rly.best")) {
+	if bytes.Contains(doc.Encode(), []byte("keep_versions")) || !bytes.Contains(doc.Encode(), []byte("relay.example.com")) {
 		t.Fatalf("clone shares state:\n%s", doc.Encode())
 	}
 }
