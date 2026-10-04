@@ -248,9 +248,42 @@ service_arg() {
 
 # config_url prints the console URL from a config.json; a missing or
 # unreadable file, or one without host.management_addr, means the default.
+# Newlines are removed first so a hand-edited compact file also matches.
 config_url() {
-	listen=$(sed -n 's/^[[:space:]]*"management_addr"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' "$1" 2>/dev/null | sed -n 1p)
+	listen=$(tr -d '\r\n' 2>/dev/null <"$1" |
+		sed -n 's/.*"management_addr"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p')
 	printf 'http://%s\n' "${listen:-$DEFAULT_LISTEN}"
+}
+
+# install_url prints the console URL a service installed with the serve
+# flags given as arguments will answer on: --listen when given, else the
+# config.json that `flats install` keeps (the current service's, or the one
+# in the data directory).
+install_url() {
+	for a in "$@"; do
+		case "$a" in
+		--listen | -listen | --listen=* | -listen=*)
+			listen_url "$@"
+			return
+			;;
+		esac
+	done
+	config=
+	if [ -f "$(service_file)" ]; then
+		config=$(service_arg --config)
+	fi
+	config_url "${config:-$(data_dir)/config.json}"
+}
+
+# data_dir prints the data directory `flats install` uses by default.
+data_dir() {
+	if [ -n "${FLATS_DATA:-}" ]; then
+		echo "$FLATS_DATA"
+	elif [ "$os" = darwin ]; then
+		echo "$HOME/Library/Application Support/Flats"
+	else
+		echo "${XDG_CONFIG_HOME:-$HOME/.config}/Flats"
+	fi
 }
 
 has_credential_flag() {
@@ -493,7 +526,7 @@ main() {
 			fi
 		else
 			mode=install
-			url=$(listen_url "$@")
+			url=$(install_url "$@")
 			if [ ! -f "$(service_file)" ] && api_up "$url"; then
 				die "a Flats server is already running at $url outside the service; stop it first, or rerun with --no-service"
 			fi
