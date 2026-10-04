@@ -217,13 +217,15 @@ check_service_manager() {
 
 ensure_credential() {
 	if [ -e "$credential_file" ] || [ -L "$credential_file" ]; then
-		[ -f "$credential_file" ] && [ ! -L "$credential_file" ] ||
+		if [ ! -f "$credential_file" ] || [ -L "$credential_file" ]; then
 			die "$credential_file must be a regular file, not a link or directory"
+		fi
 		# shellcheck disable=SC2046 # split ls output into fields on purpose.
 		set -- $(ls -ln "$credential_file")
 		# Drop the xattr/ACL/SELinux marker that ls may append to the mode.
-		[ "${1%[@+.]}" = "-rw-------" ] && [ "$3" = "$(id -u)" ] ||
+		if [ "${1%[@+.]}" != "-rw-------" ] || [ "$3" != "$(id -u)" ]; then
 			die "$credential_file must be owned by $(id -un) with mode 0600 (chmod 600 it)"
+		fi
 		say "using existing operator credential $credential_file"
 		return 0
 	fi

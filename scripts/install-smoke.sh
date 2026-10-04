@@ -57,10 +57,14 @@ cred=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
 
 step "rerun restarts the service"
 pid=$(main_pid)
-[ -n "$pid" ] && [ "$pid" != 0 ] || fail "no service pid"
+if [ -z "$pid" ] || [ "$pid" = 0 ]; then
+	fail "no service pid"
+fi
 sh "$root/install.sh"
 new=$(main_pid)
-[ -n "$new" ] && [ "$new" != "$pid" ] || fail "service was not restarted (pid $pid -> $new)"
+if [ -z "$new" ] || [ "$new" = "$pid" ]; then
+	fail "service was not restarted (pid $pid -> $new)"
+fi
 operator_configured || fail "restarted service lost its operator credential"
 
 step "service recovers from a crash"
