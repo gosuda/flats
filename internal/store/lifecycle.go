@@ -62,29 +62,30 @@ func nullString(s string) any {
 
 // migrateLifecycle brings a v1 database to the draft/published split.
 // It is idempotent: columns and tables that already exist are left in place.
-func migrateLifecycle(db *sql.DB) error {
-	if err := addColumn(db, "versions", "published", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+// It runs inside the caller's migration transaction.
+func migrateLifecycle(ctx context.Context, x executor) error {
+	if err := addColumn(ctx, x, "versions", "published", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := addColumn(db, "approvals", "idempotency_key", "TEXT"); err != nil {
+	if err := addColumn(ctx, x, "approvals", "idempotency_key", "TEXT"); err != nil {
 		return err
 	}
-	if err := addColumn(db, "deployments", "approval_id", "TEXT"); err != nil {
+	if err := addColumn(ctx, x, "deployments", "approval_id", "TEXT"); err != nil {
 		return err
 	}
-	if err := addColumn(db, "previews", "target", "TEXT NOT NULL DEFAULT 'version'"); err != nil {
+	if err := addColumn(ctx, x, "previews", "target", "TEXT NOT NULL DEFAULT 'version'"); err != nil {
 		return err
 	}
-	if err := addColumn(db, "previews", "revision", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := addColumn(ctx, x, "previews", "revision", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS approvals_open_key ON approvals(idempotency_key) WHERE idempotency_key IS NOT NULL AND status IN ('pending','applying')`); err != nil {
+	if _, err := x.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS approvals_open_key ON approvals(idempotency_key) WHERE idempotency_key IS NOT NULL AND status IN ('pending','applying')`); err != nil {
 		return err
 	}
 	// A version that was live or named by a deployment is published history.
 	// Numbers and files stay. Saved-but-never-deployed rows stay published=0
 	// until core moves them into draft revisions.
-	if _, err := db.Exec(`UPDATE versions SET published=1
+	if _, err := x.ExecContext(ctx, `UPDATE versions SET published=1
 		WHERE published=0 AND (
 			EXISTS (SELECT 1 FROM flats f WHERE f.slug=versions.flat AND f.live_version=versions.number AND f.live_version>0)
 			OR EXISTS (SELECT 1 FROM deployments d WHERE d.flat=versions.flat AND d.version=versions.number)
@@ -92,18 +93,18 @@ func migrateLifecycle(db *sql.DB) error {
 		)`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`UPDATE flats SET visibility='public' WHERE visibility IN ('public-listed','public-unlisted')`); err != nil {
+	if _, err := x.ExecContext(ctx, `UPDATE flats SET visibility='public' WHERE visibility IN ('public-listed','public-unlisted')`); err != nil {
 		return err
 	}
 	// Unpublished flats are not public. A public flag with nothing activated
 	// was a reservation the new contract does not keep.
-	if _, err := db.Exec(`UPDATE flats SET visibility='private'
+	if _, err := x.ExecContext(ctx, `UPDATE flats SET visibility='private'
 		WHERE visibility='public' AND live_version=0
 		AND NOT EXISTS (SELECT 1 FROM versions v WHERE v.flat=flats.slug AND v.published=1)`); err != nil {
 		return err
 	}
 	// Rewrite pending visibility requests onto the two-value vocabulary.
-	rows, err := db.Query(`SELECT id, params FROM approvals WHERE action='set_visibility' AND status IN ('pending','applying')`)
+	rows, err := x.QueryContext(ctx, `SELECT id, params FROM approvals WHERE action='set_visibility' AND status IN ('pending','applying')`)
 	if err != nil {
 		return err
 	}
@@ -145,7 +146,7 @@ func migrateLifecycle(db *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		if _, err := db.Exec(`UPDATE approvals SET params=? WHERE id=?`, string(raw), r.id); err != nil {
+		if _, err := x.ExecContext(ctx, `UPDATE approvals SET params=? WHERE id=?`, string(raw), r.id); err != nil {
 			return err
 		}
 	}
