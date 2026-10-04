@@ -387,15 +387,8 @@ func TestSettingsImpactMatchesPruning(t *testing.T) {
 		}
 	}
 
-	// Previews: a previewed version is kept on top of keep_versions.
-	_, b = impactOf(t, h, `{"keep_versions":"1"}`)
-	if vi := b.Impact["keep_versions"]; vi.Total != 1 || !slices.Equal(vi.Flats[0].Versions, []int{3}) {
-		t.Fatalf("keep 1 = %+v", vi)
-	}
+	// Previews: the next sweep closes those idle longer than the candidate.
 	old := openPreview(t, h, "blog", 4)
-	if _, b = impactOf(t, h, `{"keep_versions":"1"}`); b.Impact["keep_versions"].Total != 0 {
-		t.Fatalf("previewed version pruned: %+v", b.Impact)
-	}
 	h.advance(2 * time.Hour)
 	fresh := openPreview(t, h, "notes", 1)
 	_, b = impactOf(t, h, `{"preview_ttl_seconds":"3600"}`)
@@ -417,6 +410,24 @@ func TestSettingsImpactMatchesPruning(t *testing.T) {
 	}
 	if open[old] || !open[fresh] {
 		t.Fatalf("open previews after the sweep: %v (closed %s, kept %s)", open, old, fresh)
+	}
+
+	// An open preview does not protect its version from the next pruning:
+	// the deploy that prunes closes the flat's previews first.
+	openPreview(t, h, "blog", 4)
+	_, b = impactOf(t, h, `{"keep_versions":"1"}`)
+	vi = b.Impact["keep_versions"]
+	if vi.Total != 1 || !slices.Equal(vi.Flats[0].Versions, []int{3}) {
+		t.Fatalf("keep 1 with v4 previewed = %+v", vi)
+	}
+	put(t, h, `{"keep_versions":"1"}`)
+	code, out = req(t, "POST", h.srv.URL+"/api/flats/blog/deploy", strings.NewReader(`{"version":5}`), nil)
+	if code != 202 {
+		t.Fatalf("redeploy: %d %v", code, out)
+	}
+	approveRequest(t, h.srv, out)
+	if got := prunedVersions(t, h, "blog"); !slices.Equal(got, []int{3, 2, 1}) {
+		t.Fatalf("pruned %v after the redeploy, preview said %v on top of [2 1]", got, vi.Flats[0].Versions)
 	}
 }
 

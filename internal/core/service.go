@@ -789,7 +789,7 @@ func (s *Service) VersionFile(slugName string, n int, rel string) (string, error
 
 func (s *Service) pruneVersions(ctx context.Context, slugName string) {
 	keep := s.keepVersions()
-	prune, err := s.prunableVersions(ctx, slugName, keep)
+	prune, err := s.prunableVersions(ctx, slugName, keep, true)
 	if err != nil {
 		return
 	}
@@ -802,8 +802,10 @@ func (s *Service) pruneVersions(ctx context.Context, slugName string) {
 }
 
 // prunableVersions returns the versions of a flat whose files pruning
-// removes when keep_versions is keep, newest first. 0 prunes nothing.
-func (s *Service) prunableVersions(ctx context.Context, slugName string, keep int) ([]int, error) {
+// removes when keep_versions is keep, newest first. 0 prunes nothing. The
+// live version is kept on top of keep, and so are the versions of open
+// previews when keepPreviewed is set.
+func (s *Service) prunableVersions(ctx context.Context, slugName string, keep int, keepPreviewed bool) ([]int, error) {
 	if keep <= 0 {
 		return nil, nil
 	}
@@ -816,9 +818,11 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 		return nil, err
 	}
 	inPreview := map[int]bool{}
-	if ps, err := s.st.ListPreviews(ctx, slugName); err == nil {
-		for _, p := range ps {
-			inPreview[p.Version] = true
+	if keepPreviewed {
+		if ps, err := s.st.ListPreviews(ctx, slugName); err == nil {
+			for _, p := range ps {
+				inPreview[p.Version] = true
+			}
 		}
 	}
 	var prune []int

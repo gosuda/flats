@@ -41,8 +41,9 @@ const (
 // RetentionImpact reports, for each decrease of keep_versions, events_keep
 // or preview_ttl_seconds in candidate, what the next pruning would remove
 // with the candidate value: the version files pruned after a flat's next
-// deploy, the log events trimmed by the next sweep and the previews it
-// closes. It changes nothing. Other settings in candidate are validated
+// deploy that keeps its live version live (the deploy closes the flat's
+// previews first), the log events trimmed by the next sweep and the
+// previews it closes. It changes nothing. Other settings in candidate are validated
 // but have no impact.
 func (s *Service) RetentionImpact(ctx context.Context, candidate map[string]string) (map[string]RetentionImpact, error) {
 	clean, err := cleanSettings(candidate)
@@ -94,7 +95,9 @@ func (s *Service) versionImpact(ctx context.Context, keep int) ([]FlatImpact, er
 	}
 	var out []FlatImpact
 	for _, f := range fs {
-		prune, err := s.prunableVersions(ctx, f.Slug, keep)
+		// Pruning runs only at the end of a deploy, which closes the
+		// flat's previews first: they protect no version then.
+		prune, err := s.prunableVersions(ctx, f.Slug, keep, false)
 		if err != nil {
 			return nil, err
 		}

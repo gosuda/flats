@@ -9,7 +9,7 @@ import { describeApproval, statusBadge } from './approval.js';
 // Limits shown in human units; values are stored as integers in base units.
 const FIELDS = [
   { key: 'upload_max_bytes', label: 'Upload size limit', unit: 'MB', factor: 1 << 20, min: 0.001, help: 'Total uncompressed size of one saved version.' },
-  { key: 'keep_versions', label: 'Versions to keep', unit: 'versions', factor: 1, step: 1, help: 'Files of older versions are pruned. The live and previewed versions are always kept. 0 keeps every version.' },
+  { key: 'keep_versions', label: 'Versions to keep', unit: 'versions', factor: 1, step: 1, help: 'Files of older versions are pruned after each deploy, which also closes the flat’s previews. The live version is always kept. 0 keeps every version.' },
   { key: 'disk_quota_bytes', label: 'Disk quota per flat', unit: 'GB', factor: 1 << 30, help: '0 means no quota.' },
   { key: 'preview_ttl_seconds', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
@@ -399,7 +399,7 @@ function savedSummary(res) {
 }
 
 const IMPACT_TEXT = {
-  keep_versions: (n) => `The next deploy of each flat prunes the files of ${plural(n, 'version')}.`,
+  keep_versions: (n) => `The next deploy of each flat prunes the files of ${plural(n, 'version')}, if the live versions stay live.`,
   events_keep: (n) => `The next cleanup deletes ${plural(n, 'log event')}.`,
   preview_ttl_seconds: (n) => `The next cleanup closes ${plural(n, 'preview')}.`,
 };
