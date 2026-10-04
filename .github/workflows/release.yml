@@ -30,6 +30,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
     steps:
       - name: Validate the run
         run: |
@@ -51,7 +53,11 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Require a commit on main
-        run: git merge-base --is-ancestor "$(git rev-parse "$TAG^{commit}")" origin/main
+        id: resolve
+        run: |
+          commit=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
       - name: Test
         run: |
           go vet ./...
@@ -66,9 +72,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # Build the exact commit the test job checked, even if the tag moved.
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ needs.test.outputs.commit }}
           persist-credentials: false
       # The release tooling comes from the workflow's own commit, so a tag cut
       # before the tooling existed can still be built.
@@ -86,15 +93,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Build archives
+        env:
+          COMMIT: ${{ needs.test.outputs.commit }}
         run: |
           FLATS_SOURCE_DIR="$PWD" .release-tools/scripts/build-release.sh "$TAG" "$RUNNER_TEMP/dist"
           for archive in "$RUNNER_TEMP"/dist/*.tar.gz; do
             info=$(tar -xzOf "$archive" flats >"$RUNNER_TEMP/flats.bin" && go version -m "$RUNNER_TEMP/flats.bin")
-            printf '%s\n' "$info" | grep -q 'vcs.modified=false' || {
-              echo "$archive was not built from clean tagged source"
+            if ! printf '%s\n' "$info" | grep -q 'vcs.modified=false' ||
+              ! printf '%s\n' "$info" | grep -q "vcs.revision=$COMMIT"; then
+              echo "$archive was not built from clean source at $COMMIT"
               printf '%s\n' "$info"
               exit 1
-            }
+            fi
           done
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
