@@ -128,7 +128,8 @@ const routes = {
 globalThis.fetch = async (url, opts) => {
   const key = (opts.method || 'GET') + ' ' + url;
   calls.push({ key, body: opts.body, headers: opts.headers });
-  const body = routes[key] ?? (key.includes('/logs') ? { events: [] } : key.includes('/stats') ? { page_views: [] } : {});
+  let body = routes[key] ?? (key.includes('/logs') ? { events: [] } : key.includes('/stats') ? { page_views: [] } : {});
+  if (typeof body === 'function') body = await body(); // a deferred response
   const status = body && body.__status ? body.__status : 200;
   return { ok: status < 400, status, json: async () => body };
 };
@@ -729,6 +730,42 @@ assert.equal(puts().length, putCount);
 byText(panel, 'Save')[0].dispatch('click');
 await tick();
 assert.equal(puts().length, putCount + 1);
+
+// An edit while the impact request is in flight drops its late answer, so
+// the older value can never be confirmed and saved.
+const IMPACT_2 = { impact: { keep_versions: { current: '10', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3, versions: [3, 2, 1] }] } } };
+let release;
+routes['POST /console/api/settings/impact'] = () => new Promise((resolve) => { release = () => resolve(IMPACT_2); });
+page = await mountSettings();
+form = all(page, (e) => e.tagName === 'FORM')[0];
+byId(page, 'set-keep_versions').value = '2';
+putCount = puts().length;
+form.dispatch('submit');
+await tick();
+assert.equal(typeof release, 'function', 'the impact request must be pending');
+byId(page, 'set-keep_versions').value = '9';
+form.dispatch('input');
+release();
+await tick();
+assert.equal(all(page, (e) => e.className === 'impact').length, 0, 'a late impact answer must not show');
+assert.equal(puts().length, putCount);
+assert.equal(byId(page, 'set-keep_versions').value, '9');
+
+// The confirmation saves only the values it described.
+routes['POST /console/api/settings/impact'] = IMPACT_2;
+page = await mountSettings();
+form = all(page, (e) => e.tagName === 'FORM')[0];
+byId(page, 'set-keep_versions').value = '2';
+form.dispatch('submit');
+await tick();
+panel = all(page, (e) => e.className === 'impact')[0];
+byId(page, 'set-keep_versions').value = '9'; // changed without an input event
+byText(panel, 'Save and remove')[0].dispatch('click');
+await tick();
+assert.equal(puts().length, putCount);
+assert.equal(all(page, (e) => e.className === 'impact').length, 0);
+assert.ok(page.textContent.includes('The form changed after the preview.'));
+assert.equal(byId(page, 'set-keep_versions').value, '9');
 
 // Raising a limit saves at once.
 page = await mountSettings();

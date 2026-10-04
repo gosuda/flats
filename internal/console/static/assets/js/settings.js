@@ -356,11 +356,16 @@ function limitsForm(data, opts) {
     }
   };
 
-  // Any edit invalidates a shown impact; saving checks it again.
-  form.addEventListener('input', () => fill(impactSlot));
-  form.addEventListener('change', () => fill(impactSlot));
+  // Any edit invalidates a shown or pending impact; saving checks it again.
+  // generation counts edits and submits, so a late impact response for
+  // older values is dropped.
+  let generation = 0;
+  const edited = () => { generation++; fill(impactSlot); };
+  form.addEventListener('input', edited);
+  form.addEventListener('change', edited);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
+    const gen = ++generation;
     clearErrors();
     fill(impactSlot);
     const out = changes();
@@ -373,17 +378,34 @@ function limitsForm(data, opts) {
       try {
         impact = (await api.settingsImpact(out)).impact || {};
       } catch (err) {
-        showError(err);
+        if (gen === generation) showError(err);
         return;
       }
+      if (gen !== generation) return;
       if (!Object.keys(impact).length) return store(out);
-      fill(impactSlot, impactPanel(impact, () => store(out), () => {
+      // The confirmation saves only the values it described.
+      const confirm = () => {
+        const now = changes();
+        if (gen !== generation || !now || !sameChanges(now, out)) {
+          fill(impactSlot);
+          if (now) fill(errorSlot, h('div', { class: 'alert alert-warn', role: 'alert' },
+            h('p', { text: 'The form changed after the preview. Save again to check the new values.' })));
+          return undefined;
+        }
+        return store(out);
+      };
+      fill(impactSlot, impactPanel(impact, confirm, () => {
         fill(impactSlot);
         controls[lower[0]].input.focus();
       }));
     });
   });
   return form;
+}
+
+function sameChanges(a, b) {
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => k in b && a[k] === b[k]);
 }
 
 // savedSummary lists what the last save changed: in effect now, or after
