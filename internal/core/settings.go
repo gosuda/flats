@@ -334,6 +334,17 @@ func (s *SettingsSource) view() (*ConfigView, error) {
 
 func (s *Service) setting(key string) string { return s.settings.get(key) }
 
+// clampInt converts a setting to int, saturating where int is narrower.
+func clampInt(n int64) int {
+	if n > math.MaxInt {
+		return math.MaxInt
+	}
+	if n < math.MinInt {
+		return math.MinInt
+	}
+	return int(n)
+}
+
 func (s *Service) intSetting(key string) int64 {
 	n, err := strconv.ParseInt(s.setting(key), 10, 64)
 	if err != nil {
@@ -344,7 +355,7 @@ func (s *Service) intSetting(key string) int64 {
 
 // UploadLimit is the maximum uncompressed upload size in bytes.
 func (s *Service) UploadLimit() int64 { return s.intSetting(SetUploadMaxBytes) }
-func (s *Service) keepVersions() int  { return int(s.intSetting(SetKeepVersions)) }
+func (s *Service) keepVersions() int  { return clampInt(s.intSetting(SetKeepVersions)) }
 func (s *Service) diskQuota() int64   { return s.intSetting(SetDiskQuotaBytes) }
 func (s *Service) previewTTL() time.Duration {
 	return durationOf(s.intSetting(SetPreviewTTL), time.Second)

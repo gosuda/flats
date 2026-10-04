@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -384,7 +385,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		h.tsNet = n
 	}
 	portalOptions := portal.Config{Dir: filepath.Join(dataDir, "portal"), Relays: cfg.Portal.Relays,
-		Discovery: cfg.Portal.Discovery, MaxActiveRelays: int(cfg.Portal.MaxActiveRelays), Logf: logf}
+		Discovery: cfg.Portal.Discovery, MaxActiveRelays: relayLimit(cfg.Portal.MaxActiveRelays), Logf: logf}
 	if permits(provider.Portal) {
 		pn, err := portal.New(portalOptions)
 		if err != nil {
@@ -723,4 +724,16 @@ func readOperatorCredentialFile(path string) (string, error) {
 		return "", errors.New("operator credential file must contain one credential of 32 to 4096 bytes")
 	}
 	return value, nil
+}
+
+// relayLimit converts portal.max_active_relays, which config bounds to
+// 2^31-1, to the int the Portal SDK takes.
+func relayLimit(n int64) int {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < 0 {
+		return 0
+	}
+	return int(n)
 }

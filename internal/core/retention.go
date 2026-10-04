@@ -65,9 +65,9 @@ func (s *Service) RetentionImpact(ctx context.Context, candidate map[string]stri
 		var flats []FlatImpact
 		switch k {
 		case SetKeepVersions:
-			flats, err = s.versionImpact(ctx, int(n))
+			flats, err = s.versionImpact(ctx, clampInt(n))
 		case SetEventsKeep:
-			flats, err = s.eventImpact(ctx, int(n))
+			flats, err = s.eventImpact(ctx, clampInt(n))
 		case SetPreviewTTL:
 			flats = s.previewImpact(durationOf(n, time.Second))
 		}
