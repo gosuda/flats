@@ -365,10 +365,16 @@ reads plus `POST /console/api/approvals/{id}/{approve|reject}`, deploy,
 rollback, visibility, rename, delete, preview, secrets, `GET/PUT settings`,
 `GET system`. Approve/reject return the approval plus `decided_by` (tailnet
 login, console node only). `GET settings` lists `apply_on_restart`; `PUT
-settings` saves to `config.json` and returns `restart_required` with the
-changed keys among them. A save fails with a conflict when `config.json`
-changed on disk since the host read it, or when the key is pinned by a flag
-of a service that still runs without `--config`.
+settings` saves to `config.json` and returns `applied` and
+`restart_required` with the changed keys among them. `GET settings` also
+describes the file (`config`: mode, ETag, `changed_on_disk`, read-only host,
+network and credential values without paths, per-key sources and flag pins).
+The console sends `If-Match`; a save answers 412 `config_changed` when
+`config.json` changed since the host read it or the page is stale, and 409
+when the key is pinned by a flag of a service that still runs without
+`--config`. `POST settings/impact` reports, without writing, what the next
+pruning would remove after lowering `keep_versions`, `events_keep` or
+`preview_ttl_seconds`; the console shows it before such a save.
 
 MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 `create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`
