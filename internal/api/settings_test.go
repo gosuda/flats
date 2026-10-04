@@ -278,6 +278,55 @@ func TestSettingsIfMatch(t *testing.T) {
 	}
 }
 
+// A conditional save after config.json was removed or became unreadable
+// is a 412; a failed write is a server error. Neither names the path.
+func TestSettingsSaveWithoutReadableFile(t *testing.T) {
+	h := setupConfig(t, false)
+	hdr := consoleHdr(t, h.srv)
+	hdr["If-Match"] = strconv.Quote(fileHash(t, h.path))
+	noPath := func(raw []byte) {
+		t.Helper()
+		if bytes.Contains(raw, []byte(h.dir)) {
+			t.Fatalf("response names the path: %s", raw)
+		}
+	}
+
+	// The directory cannot take the new file: a write failure.
+	if err := os.Chmod(h.dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4"}`, hdr)
+	os.Chmod(h.dir, 0o700)
+	if os.Geteuid() != 0 {
+		if b := decodeSettings(t, raw); code != 500 || b.Category != "" {
+			t.Fatalf("write failure: %d %s", code, raw)
+		}
+		noPath(raw)
+	}
+
+	if err := os.Chmod(h.path, 0); err != nil {
+		t.Fatal(err)
+	}
+	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4"}`, hdr)
+	if os.Geteuid() != 0 {
+		if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" {
+			t.Fatalf("unreadable file: %d %s", code, raw)
+		}
+		noPath(raw)
+	}
+	if err := os.Remove(h.path); err != nil {
+		t.Fatal(err)
+	}
+	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4"}`, hdr)
+	if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" || !strings.Contains(b.Error, "restart Flats") {
+		t.Fatalf("removed file: %d %s", code, raw)
+	}
+	noPath(raw)
+	if all, _ := h.svc.Settings(context.Background()); all["keep_versions"] != "10" {
+		t.Fatalf("a refused save applied: %v", all)
+	}
+}
+
 type impactBody struct {
 	Impact   map[string]core.RetentionImpact `json:"impact"`
 	Error    string                          `json:"error"`

@@ -234,6 +234,10 @@ func (s *SettingsSource) update(ctx context.Context, values map[string]string, i
 			if errors.As(err, &fe) {
 				return nil, "", invalid(err)
 			}
+			if ifMatch != "" && s.changedOnDisk() {
+				// The file the ETag names is gone or cannot be read.
+				return nil, "", errChangedOnDisk()
+			}
 			return nil, "", err
 		}
 		s.file.Hash = h
@@ -395,6 +399,11 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 	}
 	changed, etag, err := s.settings.update(ctx, clean, ifMatch)
 	if err != nil {
+		if ErrorCategory(err) == "" {
+			// A failed write names config.json's path; keep it in the log.
+			s.logf("save settings to config.json: %v", err)
+			return SettingsUpdate{}, errors.New("could not save config.json; the Flats log has the details")
+		}
 		return SettingsUpdate{}, err
 	}
 	if _, ok := clean[SetRateLimit]; ok {
