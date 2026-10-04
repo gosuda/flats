@@ -3,29 +3,44 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 #
-# Builds the CGO-free flats binary from source with `go install`. If a
-# suitable Go toolchain is not on PATH, the official Go release for this
-# platform is downloaded into a temporary directory, verified against its
-# published SHA-256 checksum, used for the build and removed afterwards.
+# Downloads the prebuilt flats binary for this OS and CPU from the GitHub
+# release, verifies its SHA-256 checksum, installs it and runs Flats as a
+# background service that starts at login and restarts if it exits: a
+# launchd agent on macOS, a systemd user service on Linux.
 #
-# Options (flags take precedence over environment variables):
-#   --dir DIR          install directory     (FLATS_INSTALL_DIR, default ~/.local/bin)
-#   --version VERSION  module version or ref (FLATS_VERSION, default latest; e.g. main, v1.2.3)
+# A new service runs `flats serve` with its defaults (Local network, Portal
+# off) and an operator credential file. The installer creates that file with
+# a random credential when it does not exist and never prints the credential.
+# When the service is already installed, the installer replaces the binary
+# and restarts the service with its existing settings.
 #
-# The installer never uses sudo, never edits shell profiles and does not start
-# or install the Flats host service.
+# Options (pass them after `sh -s --` when piping):
+#   --dir DIR              install directory (FLATS_INSTALL_DIR, default ~/.local/bin)
+#   --version TAG          release to install (FLATS_VERSION, default latest)
+#   --credential-file PATH operator credential file for a new service
+#                          (FLATS_CREDENTIAL_FILE, default ~/.config/flats-operator/credential)
+#   --no-service           install only the binary (FLATS_NO_SERVICE=1)
+#   -- SERVE-FLAGS...      (re)install the service with these `flats serve` flags
+#
+# FLATS_DATA selects the service data directory. FLATS_DOWNLOAD_BASE replaces
+# the release download location with another https URL or a local directory
+# holding the release files (for mirrors and tests).
+#
+# The installer never uses sudo and never edits shell profiles.
 
 set -eu
 
-# Keep in sync with the go directive in go.mod.
-MIN_GO_VERSION=1.27.1
-MODULE=github.com/gosuda/flats
-GO_DOWNLOAD_BASE=https://dl.google.com/go
+REPO=gosuda/flats
+DEFAULT_LISTEN=127.0.0.1:7878
 
 tmp_dir=
 
 say() {
 	printf 'flats-install: %s\n' "$*"
+}
+
+warn() {
+	printf 'flats-install: warning: %s\n' "$*" >&2
 }
 
 die() {
@@ -35,21 +50,27 @@ die() {
 
 cleanup() {
 	if [ -n "$tmp_dir" ] && [ -d "$tmp_dir" ]; then
-		# The Go module cache is read-only by default.
-		chmod -R u+w "$tmp_dir" 2>/dev/null || true
 		rm -rf "$tmp_dir"
 	fi
 }
 
 usage() {
 	cat <<'EOF'
-Usage: install.sh [--dir DIR] [--version VERSION]
+Usage: install.sh [options] [-- serve-flags...]
 
-Installs the flats binary for macOS or Linux.
+Installs the prebuilt flats binary for macOS or Linux and runs it as a
+background service (launchd agent on macOS, systemd user service on Linux).
 
-  --dir DIR          install directory (default: ~/.local/bin, env FLATS_INSTALL_DIR)
-  --version VERSION  module version or ref to build (default: latest, env FLATS_VERSION)
-  -h, --help         show this help
+  --dir DIR               install directory (default: ~/.local/bin)
+  --version TAG           release tag to install (default: latest)
+  --credential-file PATH  operator credential file for a new service
+                          (default: ~/.config/flats-operator/credential)
+  --no-service            install only the binary
+  -- SERVE-FLAGS...       (re)install the service with these `flats serve` flags
+  -h, --help              show this help
+
+Environment: FLATS_INSTALL_DIR, FLATS_VERSION, FLATS_CREDENTIAL_FILE,
+FLATS_NO_SERVICE=1, FLATS_DATA, FLATS_DOWNLOAD_BASE.
 EOF
 }
 
@@ -57,7 +78,15 @@ has() {
 	command -v "$1" >/dev/null 2>&1
 }
 
-download() {
+# fetch SOURCE DEST copies a release file from https or a local directory.
+fetch() {
+	case "$1" in
+	https://*) ;;
+	*)
+		cp "$1" "$2"
+		return
+		;;
+	esac
 	if has curl; then
 		curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$2" "$1"
 	elif has wget; then
@@ -72,29 +101,25 @@ download() {
 	fi
 }
 
+# api_up URL succeeds when a Flats server answers at URL.
+api_up() {
+	if has curl; then
+		curl -fsS --max-time 3 -o /dev/null "$1/api/status" 2>/dev/null
+	elif has wget; then
+		wget -q -T 3 -O /dev/null "$1/api/status" 2>/dev/null
+	else
+		return 1
+	fi
+}
+
 sha256_of() {
 	if has sha256sum; then
 		sha256sum "$1" | awk '{print $1}'
 	elif has shasum; then
 		shasum -a 256 "$1" | awk '{print $1}'
 	else
-		die "sha256sum or shasum is required to verify the Go download"
+		die "sha256sum or shasum is required to verify the download"
 	fi
-}
-
-# version_ge A B: succeeds when dotted version A >= B. Missing parts count as 0.
-version_ge() {
-	awk -v a="$1" -v b="$2" 'BEGIN {
-		na = split(a, x, "."); nb = split(b, y, ".")
-		n = na > nb ? na : nb
-		for (i = 1; i <= n; i++) {
-			xi = (i <= na) ? x[i] + 0 : 0
-			yi = (i <= nb) ? y[i] + 0 : 0
-			if (xi > yi) exit 0
-			if (xi < yi) exit 1
-		}
-		exit 0
-	}'
 }
 
 detect_platform() {
@@ -103,84 +128,172 @@ detect_platform() {
 	Linux) os=linux ;;
 	*) die "unsupported operating system: $(uname -s) (Flats supports macOS and Linux)" ;;
 	esac
-	case "$(uname -m)" in
+	arch=$(uname -m)
+	case "$arch" in
 	x86_64 | amd64) arch=amd64 ;;
 	arm64 | aarch64) arch=arm64 ;;
-	*) die "unsupported CPU architecture: $(uname -m) (supported: amd64, arm64)" ;;
+	*) die "unsupported CPU architecture: $arch (supported: amd64, arm64)" ;;
 	esac
-}
-
-# Prints the release number (for example 1.27.1) of the go on PATH, or
-# nothing when go is missing or is not a release build.
-installed_go_version() {
-	has go || return 0
-	v=$(go env GOVERSION 2>/dev/null) || return 0
-	case "$v" in
-	go[0-9]*) ;;
-	*) return 0 ;;
-	esac
-	v=${v#go}
-	v=${v%%[!0-9.]*}
-	printf '%s\n' "$v"
-}
-
-bootstrap_go() {
-	latest=$(mktemp "$tmp_dir/version.XXXXXX")
-	download "https://go.dev/VERSION?m=text" "$latest"
-	go_release=$(head -n 1 "$latest")
-	case "$go_release" in
-	go[0-9]*) ;;
-	*) die "could not determine the latest Go release" ;;
-	esac
-	if ! version_ge "${go_release#go}" "$MIN_GO_VERSION"; then
-		go_release=go$MIN_GO_VERSION
+	# An x86_64 shell under Rosetta still runs on Apple silicon.
+	if [ "$os" = darwin ] && [ "$arch" = amd64 ] &&
+		[ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
+		arch=arm64
 	fi
+}
 
-	archive=$go_release.$os-$arch.tar.gz
-	say "downloading $go_release for $os/$arch (used only for this build)"
-	download "$GO_DOWNLOAD_BASE/$archive" "$tmp_dir/$archive"
-	download "$GO_DOWNLOAD_BASE/$archive.sha256" "$tmp_dir/$archive.sha256"
-	want=$(awk '{print $1; exit}' "$tmp_dir/$archive.sha256")
-	got=$(sha256_of "$tmp_dir/$archive")
-	[ -n "$want" ] && [ "$want" = "$got" ] || die "checksum mismatch for $archive"
+# service_file prints the launchd plist or systemd unit path.
+service_file() {
+	if [ "$os" = darwin ]; then
+		printf '%s\n' "$HOME/Library/LaunchAgents/dev.flats.serve.plist"
+	else
+		printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/flats.service"
+	fi
+}
 
-	tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
-	rm -f "$tmp_dir/$archive"
+# listen_url prints the console URL for the serve flags given as arguments.
+listen_url() {
+	listen=$DEFAULT_LISTEN
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--listen | -listen)
+			[ $# -ge 2 ] && listen=$2
+			;;
+		--listen=* | -listen=*) listen=${1#*=} ;;
+		esac
+		shift
+	done
+	printf 'http://%s\n' "$listen"
+}
 
-	# Keep every Go side effect inside the temporary directory.
-	PATH=$tmp_dir/go/bin:$PATH
-	GOROOT=$tmp_dir/go
-	GOPATH=$tmp_dir/gopath
-	GOMODCACHE=$tmp_dir/gopath/pkg/mod
-	GOCACHE=$tmp_dir/gocache
-	GOENV=off
-	GOFLAGS=-modcacherw
-	GOTOOLCHAIN=auto
-	export PATH GOROOT GOPATH GOMODCACHE GOCACHE GOENV GOFLAGS GOTOOLCHAIN
+# service_url prints the console URL of the installed service, read from the
+# words of its plist or unit file.
+service_url() {
+	# shellcheck disable=SC2046 # split the file into words on purpose.
+	listen_url $(sed -e 's/<[^>]*>/ /g' -e 's/"/ /g' -e 's/^ExecStart=//' "$(service_file)")
+}
+
+has_credential_flag() {
+	for a in "$@"; do
+		case "$a" in
+		--operator-credential-file | -operator-credential-file | \
+			--operator-credential-file=* | -operator-credential-file=*) return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# check_service_manager fails when the per-user service manager is unusable.
+check_service_manager() {
+	if [ "$os" = darwin ]; then
+		launchctl print "gui/$(id -u)" >/dev/null 2>&1 ||
+			die "no macOS login session for $(id -un) (launchd gui domain); log in on the Mac, or rerun with --no-service"
+	else
+		has systemctl ||
+			die "systemd is required to run the service; rerun with --no-service and run \`flats serve\` under your service manager"
+		systemctl --user show-environment >/dev/null 2>&1 ||
+			die "no systemd user manager for $(id -un) (a login session provides one; is XDG_RUNTIME_DIR set?); rerun with --no-service"
+	fi
+}
+
+ensure_credential() {
+	if [ -e "$credential_file" ] || [ -L "$credential_file" ]; then
+		[ -f "$credential_file" ] && [ ! -L "$credential_file" ] ||
+			die "$credential_file must be a regular file, not a link or directory"
+		# shellcheck disable=SC2046 # split ls output into fields on purpose.
+		set -- $(ls -ln "$credential_file")
+		# Drop the xattr/ACL/SELinux marker that ls may append to the mode.
+		[ "${1%[@+.]}" = "-rw-------" ] && [ "$3" = "$(id -u)" ] ||
+			die "$credential_file must be owned by $(id -un) with mode 0600 (chmod 600 it)"
+		say "using existing operator credential $credential_file"
+		return 0
+	fi
+	has od || die "od is required to generate the operator credential"
+	cred_dir=$(dirname "$credential_file")
+	(umask 077 && mkdir -p "$cred_dir") || die "cannot create $cred_dir"
+	staged=$credential_file.tmp.$$
+	(
+		umask 077
+		# 32 random bytes as 64 hex characters.
+		od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$staged"
+		printf '\n' >>"$staged"
+	) || die "cannot write $credential_file"
+	chmod 600 "$staged"
+	if [ "$(wc -c <"$staged" | tr -d ' ')" -ne 65 ]; then
+		rm -f "$staged"
+		die "could not read 32 random bytes from /dev/urandom"
+	fi
+	mv "$staged" "$credential_file" || die "cannot write $credential_file"
+	created_credential=1
+	say "created operator credential $credential_file (mode 0600)"
+}
+
+enable_linger() {
+	has loginctl || return 0
+	user=$(id -un)
+	[ "$(loginctl show-user "$user" -p Linger --value 2>/dev/null || true)" = yes ] && return 0
+	if loginctl --no-ask-password enable-linger "$user" >/dev/null 2>&1; then
+		say "enabled systemd lingering so Flats keeps running after you log out"
+	else
+		warn "Flats stops when you log out; to keep it running, run: sudo loginctl enable-linger $user"
+	fi
+}
+
+restart_service() {
+	if [ "$os" = darwin ]; then
+		launchctl kickstart -k "gui/$(id -u)/dev.flats.serve" >/dev/null ||
+			die "could not restart the launchd agent; reinstall it with: $binary install -- <serve flags>"
+	else
+		{ systemctl --user daemon-reload && systemctl --user restart flats.service; } ||
+			die "could not restart flats.service; see: systemctl --user status flats"
+	fi
+}
+
+# service_running succeeds when the service manager reports a running service.
+service_running() {
+	if [ "$os" = darwin ]; then
+		launchctl print "gui/$(id -u)/dev.flats.serve" 2>/dev/null | grep -q 'state = running'
+	else
+		[ "$(systemctl --user is-active flats.service 2>/dev/null || true)" = active ]
+	fi
+}
+
+wait_healthy() {
+	i=0
+	while [ $i -lt 30 ]; do
+		if service_running && api_up "$url"; then
+			return 0
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
 }
 
 main() {
 	install_dir=${FLATS_INSTALL_DIR:-}
 	version=${FLATS_VERSION:-latest}
+	credential_file=${FLATS_CREDENTIAL_FILE:-}
+	no_service=${FLATS_NO_SERVICE:-}
+	serve_args_given=
 	while [ $# -gt 0 ]; do
 		case "$1" in
-		--dir)
-			[ $# -ge 2 ] || die "--dir requires a value"
-			install_dir=$2
+		--dir | --version | --credential-file)
+			[ $# -ge 2 ] || die "$1 requires a value"
+			case "$1" in
+			--dir) install_dir=$2 ;;
+			--version) version=$2 ;;
+			--credential-file) credential_file=$2 ;;
+			esac
 			shift 2
 			;;
-		--dir=*)
-			install_dir=${1#--dir=}
+		--dir=*) install_dir=${1#*=} && shift ;;
+		--version=*) version=${1#*=} && shift ;;
+		--credential-file=*) credential_file=${1#*=} && shift ;;
+		--no-service) no_service=1 && shift ;;
+		--)
 			shift
-			;;
-		--version)
-			[ $# -ge 2 ] || die "--version requires a value"
-			version=$2
-			shift 2
-			;;
-		--version=*)
-			version=${1#--version=}
-			shift
+			serve_args_given=1
+			break
 			;;
 		-h | --help)
 			usage
@@ -192,51 +305,122 @@ main() {
 			;;
 		esac
 	done
-	if [ -z "$install_dir" ]; then
-		[ -n "${HOME:-}" ] || die "HOME is not set; pass --dir"
-		install_dir=$HOME/.local/bin
-	fi
-	[ -n "$version" ] || die "empty version"
+	# Everything left in "$@" is serve flags.
+	case "$no_service" in
+	"" | 0) no_service= ;;
+	*) no_service=1 ;;
+	esac
+	[ -z "$no_service" ] || [ -z "$serve_args_given" ] ||
+		die "serve flags after -- need the service; drop --no-service"
+
+	[ -n "${HOME:-}" ] || die "HOME is not set"
+	[ -n "$install_dir" ] || install_dir=$HOME/.local/bin
+	[ -n "$credential_file" ] || credential_file=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
+	case "$install_dir" in /*) ;; *) install_dir=$(pwd)/$install_dir ;; esac
+	case "$credential_file" in /*) ;; *) credential_file=$(pwd)/$credential_file ;; esac
+	binary=$install_dir/flats
+
+	case "$version" in
+	"") die "empty version" ;;
+	latest | v*) ;;
+	[0-9]*) version=v$version ;;
+	esac
 
 	detect_platform
 	has tar || die "tar is required"
 	has awk || die "awk is required"
+
+	# Decide what happens to the service before touching anything, so a
+	# conflict stops the installer with the old binary still in place.
+	mode=none
+	if [ -z "$no_service" ]; then
+		check_service_manager
+		if [ -f "$(service_file)" ] && [ -z "$serve_args_given" ]; then
+			mode=restart
+			url=$(service_url)
+			if ! grep -qF "$binary" "$(service_file)"; then
+				warn "the installed service does not run $binary and keeps its current binary"
+				warn "to switch it, rerun with: -- <flats serve flags>"
+			fi
+		else
+			mode=install
+			url=$(listen_url "$@")
+			if [ ! -f "$(service_file)" ] && api_up "$url"; then
+				die "a Flats server is already running at $url outside the service; stop it first, or rerun with --no-service"
+			fi
+		fi
+	fi
+
+	asset=flats_${os}_${arch}.tar.gz
+	if [ -n "${FLATS_DOWNLOAD_BASE:-}" ]; then
+		base=${FLATS_DOWNLOAD_BASE%/}
+	elif [ "$version" = latest ]; then
+		base=https://github.com/$REPO/releases/latest/download
+	else
+		base=https://github.com/$REPO/releases/download/$version
+	fi
 
 	tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/flats-install.XXXXXX")
 	trap cleanup EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 
-	current_go=$(installed_go_version)
-	if [ -n "$current_go" ] && version_ge "$current_go" "$MIN_GO_VERSION"; then
-		say "using installed Go $current_go"
-	elif [ -n "$current_go" ] && version_ge "$current_go" 1.21; then
-		say "installed Go $current_go is older than $MIN_GO_VERSION; Go will fetch a newer toolchain"
-		GOTOOLCHAIN=auto
-		export GOTOOLCHAIN
-	else
-		bootstrap_go
-	fi
-
-	say "building $MODULE/cmd/flats@$version"
-	GOBIN=$tmp_dir/bin CGO_ENABLED=0 go install "$MODULE/cmd/flats@$version" || die "build failed"
-	built=$tmp_dir/bin/flats
-	[ -x "$built" ] || die "build produced no flats binary"
-	resolved=$(go version -m "$built" 2>/dev/null | awk '$1 == "mod" { print $3; exit }')
+	say "downloading $asset ($version)"
+	fetch "$base/$asset" "$tmp_dir/$asset" ||
+		die "download failed: $base/$asset (does release $version exist?)"
+	fetch "$base/checksums.txt" "$tmp_dir/checksums.txt" ||
+		die "download failed: $base/checksums.txt"
+	want=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp_dir/checksums.txt")
+	[ -n "$want" ] || die "checksums.txt has no entry for $asset"
+	[ "$want" = "$(sha256_of "$tmp_dir/$asset")" ] || die "checksum mismatch for $asset"
+	tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" flats || die "cannot extract $asset"
+	[ -f "$tmp_dir/flats" ] || die "$asset has no flats binary"
+	chmod 0755 "$tmp_dir/flats"
+	new_version=$("$tmp_dir/flats" version 2>/dev/null) ||
+		die "the downloaded binary does not run on this system"
 
 	mkdir -p "$install_dir" || die "cannot create $install_dir; pass a writable --dir"
 	[ -w "$install_dir" ] || die "$install_dir is not writable; pass a writable --dir"
 	# Copy next to the target and rename, so a running flats keeps its old
 	# executable and nobody observes a partially written binary.
 	staged=$install_dir/.flats.install.$$
-	cp "$built" "$staged" || die "cannot write to $install_dir"
+	cp "$tmp_dir/flats" "$staged" || die "cannot write to $install_dir"
 	chmod 0755 "$staged"
-	mv -f "$staged" "$install_dir/flats" || {
+	mv -f "$staged" "$binary" || {
 		rm -f "$staged"
-		die "cannot install $install_dir/flats"
+		die "cannot install $binary"
 	}
+	say "installed $binary: $new_version"
 
-	say "installed $install_dir/flats (${resolved:-$version})"
+	created_credential=
+	case "$mode" in
+	restart)
+		say "restarting the existing Flats service"
+		restart_service
+		;;
+	install)
+		if ! has_credential_flag "$@"; then
+			ensure_credential
+			set -- "$@" --operator-credential-file "$credential_file"
+		fi
+		say "installing the Flats service"
+		"$binary" --url "$url" install --executable "$binary" -- "$@" ||
+			die "service installation failed"
+		;;
+	esac
+
+	if [ "$mode" != none ]; then
+		if [ "$os" = linux ]; then
+			enable_linger
+		fi
+		if wait_healthy; then
+			say "Flats is running at $url"
+		elif [ "$os" = darwin ]; then
+			die "the service did not become healthy; see the logs listed above and \`$binary status\`"
+		else
+			die "the service did not become healthy; see: journalctl --user -u flats.service"
+		fi
+	fi
 
 	case ":${PATH}:" in
 	*":$install_dir:"*) ;;
@@ -247,13 +431,37 @@ main() {
 		;;
 	esac
 
-	cat <<'EOF'
-Next steps:
-  flats serve --network local --portal=false --operator-credential-stdin
-  Then open http://127.0.0.1:7878. See https://github.com/gosuda/flats#readme.
+	if [ -n "$created_credential" ]; then
+		copy="cat '$credential_file'"
+		if [ "$os" = darwin ]; then
+			copy="pbcopy < '$credential_file'"
+		fi
+		cat <<EOF
 
-If a Flats host is already running, restart it to use the new binary.
+Operator credential: $credential_file (not shown here)
+  Save it in your password manager. Enter it in the console under
+  "Unlock decisions" to approve publishes. To copy it: $copy
+  Keep it away from agents: do not paste it into agent chats or logs.
 EOF
+	fi
+	if [ "$mode" = none ]; then
+		cat <<'EOF'
+
+Run a host in the foreground:  flats serve --operator-credential-stdin
+Or as a background service:    rerun this installer without --no-service
+EOF
+	else
+		status="flats status"
+		if [ "$url" != "http://$DEFAULT_LISTEN" ]; then
+			status="flats --url $url status"
+		fi
+		cat <<EOF
+
+Console:  $url
+Status:   $status
+Remove:   flats uninstall   (keeps your flats and data)
+EOF
+	fi
 }
 
 main "$@"

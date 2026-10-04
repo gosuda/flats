@@ -43,17 +43,28 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    env:
-      FLATS_REF: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Lint
         if: runner.os == 'Linux'
-        run: shellcheck -s sh install.sh
-      - name: Install without Go on PATH
-        # Fetch this commit straight from GitHub; the module proxy may not know it yet.
+        run: shellcheck -s sh install.sh scripts/build-release.sh scripts/install-smoke.sh
+      - name: Build release archives
         run: |
-          env PATH=/usr/bin:/bin:/usr/sbin:/sbin GOPRIVATE=github.com/gosuda/flats \
-            sh install.sh --dir "$RUNNER_TEMP/bin" --version "$FLATS_REF" | tee "$RUNNER_TEMP/install.log"
-          grep -F "installed $RUNNER_TEMP/bin/flats" "$RUNNER_TEMP/install.log" | grep -F -- "-$(printf %.12s "$FLATS_REF"))"
-          "$RUNNER_TEMP/bin/flats" --help
+          # Linux builds every platform to check the release build; macOS only its own.
+          if [ "$RUNNER_OS" = macOS ]; then
+            export FLATS_RELEASE_TARGETS="$(go env GOOS)/$(go env GOARCH)"
+          fi
+          scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Start the systemd user manager
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime=/run/user/$(id -u)
+          for i in $(seq 1 30); do [ -S "$runtime/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+      - name: Install, upgrade, crash and uninstall the service
+        run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci

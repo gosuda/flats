@@ -28,15 +28,23 @@ Agent / CLI / web console → Flats on your machine → version + local data
 
 ## Install and try a local flat
 
-On macOS or Linux, run the installer:
+On macOS or Linux (amd64 or arm64), run the installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
-It builds `flats` from source and installs it to `~/.local/bin`. Pass options after `sh -s --`: `--dir DIR` changes the install directory and `--version` selects a module version or ref, such as `main`. If Go 1.27.1 or newer is not on `PATH`, it downloads the official Go release for this build only, verifies its checksum and removes it afterwards. It does not use sudo, edit shell profiles or install the host service.
+It downloads the latest release binary for your platform, verifies its SHA-256 checksum, installs it to `~/.local/bin` and runs Flats as a background service: a launchd agent on macOS or a systemd user service on Linux. The service starts at login and restarts if it stops; on Linux the installer also enables lingering when allowed, so Flats keeps running after you log out. It runs `flats serve` with the defaults (Local network, Portal off) and the data directory described below.
 
-With Go 1.27.1 or newer, you can also install from the canonical module path:
+On first install it creates a random operator credential at `~/.config/flats-operator/credential` (mode 0600) and does not print it. Copy it into your password manager (on macOS: `pbcopy < ~/.config/flats-operator/credential`) and do not paste it into agent chat, commands or logs. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter it. Unlocking creates a browser session; each publish still needs a separate approval.
+
+Run the installer again to upgrade: it replaces the binary and restarts the service with its existing settings. Options go after `sh -s --`: `--version v1.2.3` installs a specific release, `--dir DIR` changes the install directory, `--no-service` installs only the binary, and `flats serve` flags after a second `--` reinstall the service with those flags:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
+```
+
+The installer does not use sudo or edit shell profiles. `flats status` shows whether the host answers, and `flats uninstall` removes the service while keeping your data. To build from source instead (Go 1.27.1 or newer):
 
 ```sh
 go install github.com/gosuda/flats/cmd/flats@latest
@@ -44,15 +52,19 @@ go install github.com/gosuda/flats/cmd/flats@latest
 CGO_ENABLED=0 go build -o flats ./cmd/flats
 ```
 
-Put the installed binary's directory on `PATH`. Provision a high-entropy operator credential (at least 32 bytes; for example, a password manager-generated random secret) through an operator-controlled channel. Keep it outside agent-readable files and do not paste it into agent chat, commands, or logs. Start a foreground host in one operator terminal:
+### Foreground host
+
+Without the service, provision a high-entropy operator credential (at least 32 bytes; for example, a password manager-generated random secret) through an operator-controlled channel. Keep it outside agent-readable files and do not paste it into agent chat, commands, or logs. Start a foreground host in one operator terminal:
 
 ```sh
 flats serve --data ./flats-demo-data --network local --portal=false --operator-credential-stdin
 ```
 
-Enter that credential at the hidden startup prompt and retain it in your password manager. Open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential. Unlocking creates a browser session; each publish still needs a separate approval.
+Enter that credential at the hidden startup prompt, open `http://127.0.0.1:7878`, choose **Unlock decisions**, and enter the same credential.
 
-In another terminal, request publication of a minimal static site:
+### First flat
+
+Request publication of a minimal static site:
 
 ```sh
 mkdir -p hello
