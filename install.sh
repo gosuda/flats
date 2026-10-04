@@ -257,19 +257,29 @@ config_url() {
 
 # install_url prints the console URL a service installed with the serve
 # flags given as arguments will answer on: --listen when given, else the
-# config.json that `flats install` keeps (the current service's, or the one
-# in the data directory).
+# config.json that `flats install` keeps, found the way it finds it:
+# FLATS_CONFIG, then the serve flag --data, then the current service's
+# config, then the data directory.
 install_url() {
-	for a in "$@"; do
-		case "$a" in
+	flag_data=
+	while [ $# -gt 0 ]; do
+		case "$1" in
 		--listen | -listen | --listen=* | -listen=*)
 			listen_url "$@"
 			return
 			;;
+		--data | -data)
+			[ $# -ge 2 ] && flag_data=$2
+			;;
+		--data=* | -data=*) flag_data=${1#*=} ;;
 		esac
+		shift
 	done
-	config=
-	if [ -f "$(service_file)" ]; then
+	config=${FLATS_CONFIG:-}
+	if [ -z "$config" ] && [ -n "$flag_data" ]; then
+		config=$flag_data/config.json
+	fi
+	if [ -z "$config" ] && [ -f "$(service_file)" ]; then
 		config=$(service_arg --config)
 	fi
 	config_url "${config:-$(data_dir)/config.json}"
