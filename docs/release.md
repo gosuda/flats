@@ -110,7 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
 The installer uses tools that macOS and common Linux distributions include:
-`sh`, `curl` (or `wget`), `tar`, `awk`, `od`, `sha256sum` or `shasum`, and
+`sh`, `curl` (or `wget`), `tar`, `awk`, `sha256sum` or `shasum`, and
 `launchctl` or `systemctl --user` for the service. It needs no Go toolchain.
 It:
 
@@ -119,15 +119,13 @@ It:
 2. Checks that the binary runs, then atomically installs it to
    `~/.local/bin/flats` (`--dir` changes this). It never uses sudo or edits
    shell profiles.
-3. On first install, creates a random operator credential at
-   `~/.config/flats-operator/credential` (mode 0600) without printing it.
-4. Registers the service with `flats install`: a launchd agent
+3. Registers the service with `flats install`: a launchd agent
    (`dev.flats.serve`) on macOS or a systemd user unit (`flats.service`) on
    Linux. It starts at login and restarts when it exits. The service runs
    `flats serve` with the defaults: Local network, Portal off, and the
    default data directory. On Linux the installer also enables lingering when
    polkit allows it.
-5. Waits until `http://127.0.0.1:7878` answers.
+4. Waits until `http://127.0.0.1:7878` answers.
 
 Service registration is the default because a host is meant to stay up.
 `--no-service` installs only the binary, for hosts that run `flats serve`
@@ -159,9 +157,7 @@ changes, back up first:
    It is `host.data_dir` in the service's `config.json`, or `FLATS_DATA` or
    the service's `--data` when set, otherwise
    `~/Library/Application Support/Flats` on macOS and
-   `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux. Keep the operator
-   credential (`~/.config/flats-operator/credential` by default) in your
-   password manager as well.
+   `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux.
 3. Run the installer, then start the service with the command it prints.
 
 Install a specific release with `--version v1.2.3`. Downgrading across a data

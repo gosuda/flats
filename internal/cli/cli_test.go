@@ -909,63 +909,6 @@ func TestUnknownFlatIsAnError(t *testing.T) {
 	}
 }
 
-func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
-	for _, goos := range []string{"darwin", "linux"} {
-		t.Run(goos, func(t *testing.T) {
-			t.Setenv("XDG_CONFIG_HOME", "")
-			_, srv := newFakeAPI(t)
-			home := t.TempDir()
-			hermeticInstall(t, home)
-			fl := &fakeLaunchctl{}
-			env := Env{Launchd: fl.run, Home: home, GOOS: goos, InstallWait: time.Second}
-			credential := filepath.Join(home, "operator credentials", "credential")
-			exe := filepath.Join(home, "flats")
-			if err := os.WriteFile(exe, []byte("x"), 0755); err != nil {
-				t.Fatal(err)
-			}
-			for _, args := range [][]string{
-				{"--operator-credential-file", "relative"}, {"--operator-credential-file=relative"}, {"-operator-credential-file", "relative"}, {"--operator-credential-file"},
-				{"--operator-credential-stdin"}, {"-operator-credential-stdin"}, {"--operator-credential-stdin=true"}, {"-operator-credential-stdin=false"},
-				{"--operator-credential-file", credential, "--operator-credential-stdin"},
-			} {
-				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
-				want := "absolute path"
-				if slices.ContainsFunc(args, func(arg string) bool {
-					return strings.HasPrefix(arg, "--operator-credential-stdin") || strings.HasPrefix(arg, "-operator-credential-stdin")
-				}) {
-					want = "cannot be used by an installed service"
-				}
-				if r.code == 0 || len(fl.calls) != 0 || !strings.Contains(r.stderr, want) {
-					t.Fatalf("invalid path installed: %+v calls=%v", r, fl.calls)
-				}
-			}
-			for _, args := range [][]string{{"--operator-credential-file", credential}, {"--operator-credential-file=" + credential}} {
-				r := runEnv(t, env, srv.URL, append([]string{"install", "--executable", exe, "--"}, args...)...)
-				if r.code != 0 {
-					t.Fatalf("documented install failed: %+v", r)
-				}
-				path := launchd.PlistPath(home)
-				if goos == "linux" {
-					path = filepath.Join(home, ".config", "systemd", "user", "flats.service")
-				}
-				raw, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				// The credential path moved into config.json; the service runs
-				// only `serve --config`.
-				config := filepath.Join(home, "data", "config.json")
-				if strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), config) {
-					t.Fatal("service does not run from config.json", string(raw))
-				}
-				if b, err := os.ReadFile(config); err != nil || !strings.Contains(string(b), "operator credentials/credential") {
-					t.Fatalf("credential passthrough missing from config.json: %s %v", b, err)
-				}
-			}
-		})
-	}
-}
-
 // hermeticInstall wires the real install config hook and keeps every
 // default data directory inside home, so install never touches the user's
 // own Flats data.

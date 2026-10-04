@@ -70,21 +70,15 @@ this core document does not assert those integrations already pass.
 
 ## Operator authority and frozen approvals
 
-`Config.ValidateOperatorDecision func(context.Context) error` is mandatory for
-`Decide` and per-flat provider-grant mutations: nil denies. A Console label or
-same-origin headers confer no decision authority. The transport must validate
-its operator credential/session and construct the private proof context consumed
-by this callback. App must wire the same authority instance to API and core.
-`Config.OperatorIdentity func(context.Context) string` supplies a nonsecret audit
-identity; validated decisions persist `decided_by` and `authorized_at` before
-execution. Without an identity callback, the audit actor is `validated operator`.
+`Decide` and per-flat provider-grant mutations are console operations: the
+transport exposes them only on console routes, and provider grants also require
+`ViaConsole`. Core has no separate operator credential check; a console request
+is the decision. Decisions persist `decided_by` and `authorized_at` before
+execution. `WithActor(ctx, actor)` supplies the audit actor (the API passes the
+tailnet login when one is known); otherwise it is `console`.
 
-The concrete transport authority is separately implemented and must be tested
-against forged-header HTTP decisions and MCP/CLI approval surfaces. Core tests
-prove callback enforcement; they do not prove a human was present or that a local
-process with operator credentials cannot decide. Operator credential/session and
-OS account protection remain privileged boundaries, separate from visitor ACLs.
-No operator credentials belong in source, logs or this document.
+This does not prove a human was present: a local process that can reach the
+console routes can decide. A separate operator credential is an open design item.
 
 All critical requests freeze the candidate, live version, visibility and sorted
 per-flat permissions plus the manager's stable host/configuration policy token.

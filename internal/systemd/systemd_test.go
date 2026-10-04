@@ -59,10 +59,10 @@ func TestInstallUninstall(t *testing.T) {
 	}
 }
 
-func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
+func TestInstallUpdateRetainsServeArgs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home := t.TempDir()
-	opts := Options{Home: home, DataDir: filepath.Join(home, "data"), Args: []string{"--operator-credential-file", filepath.Join(home, "operator credentials", "credential")}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, nil }}
+	opts := Options{Home: home, DataDir: filepath.Join(home, "data"), Args: []string{"--authkey-file", filepath.Join(home, "auth keys", "key")}, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, nil }}
 	for _, exe := range []string{"/opt/flats-v1", "/opt/flats-v2"} {
 		opts.Executable = exe
 		path, err := Install(t.Context(), opts)
@@ -73,8 +73,8 @@ func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(raw), "ExecStart="+exe) || !strings.Contains(string(raw), "--operator-credential-file "+quote(opts.Args[1])) {
-			t.Fatal("update lost noninteractive source")
+		if !strings.Contains(string(raw), "ExecStart="+exe) || !strings.Contains(string(raw), "--authkey-file "+quote(opts.Args[1])) {
+			t.Fatal("update lost serve arguments")
 		}
 	}
 }

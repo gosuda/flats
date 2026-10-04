@@ -21,9 +21,9 @@ directory for review. Raw execution logs must stay outside the public repo.
 
 The full source-bound launcher builds the candidate, pinned historical source, real Manager adapter and tagged crash adapter from the clean worktree. It rejects an unverified legacy-binary override. Run without `FLATS_BIN`, `FLATS_LIFECYCLE_LEGACY_BIN`, `FLATS_URL`, authkeys, live-provider opt-ins or fault variables. The private integration handoff records exact commands, exits, source/tree/binary hashes and rendered receipts; past pass counts below are historical only.
 
-The actual-binary lane checks Draft saves/conflicts/archive validation; private previews; pending HTTP/CLI/MCP requests and successful censused tools; separately provisioned operator authority, forged requests and retained-cookie revocation; frozen policy drift; health/data isolation; publish/rollback/restore; migrations; restart and four real SIGKILL publish phases. No SQL mutation substitutes for a crash.
+The actual-binary lane checks Draft saves/conflicts/archive validation; private previews; pending HTTP/CLI/MCP requests and successful censused tools; frozen policy drift; health/data isolation; publish/rollback/restore; migrations; restart and four real SIGKILL publish phases. No SQL mutation substitutes for a crash.
 
-The production-provider-manager lane links real core/API/CLI/MCP and Manager with disposable loopback backends. It checks host+flat grants, distinct Private Tailscale current/Draft URLs, independently controlled asynchronous Portal/Funnel readiness, approved Public Connecting followed by ready without reopening, in-use refusal and confirmed delete/rename/expiry teardown, Public-to-Private failures, current bytes and no fallback. Authentication uses real operator credential/session bootstrap and individual candidate decisions, not headers alone. This proves capability separation under the documented operator-secret/OS boundary, not identification of a human.
+The production-provider-manager lane links real core/API/CLI/MCP and Manager with disposable loopback backends. It checks host+flat grants, distinct Private Tailscale current/Draft URLs, independently controlled asynchronous Portal/Funnel readiness, approved Public Connecting followed by ready without reopening, in-use refusal and confirmed delete/rename/expiry teardown, Public-to-Private failures, current bytes and no fallback. Decisions use console routes with individual candidate decisions.
 
 `internal/console/testdata/browser_test.mjs` runs the production frozen binary on disposable loopback ports at desktop/mobile sizes, recording exact identity, pending/approved/rejected requests, real typed 409s, clearly marked response fixtures, consent/focus, page errors and overflow. Inspect screenshots and receipt. It does not prove live providers or restore execution (covered by the runtime gate).
 
@@ -180,11 +180,12 @@ ignored. The separate tagged binary pauses at four real core phases; SIGKILL
 and two subsequent process restarts observe exactly-once recovery. All binary
 identities, including tagged build metadata, are required for acceptance.
 
-Operator-boundary proof now requires forged console headers to fail, separately
-provisioned credential unlock to succeed, explicit candidate approval to succeed
-and session revocation to fail afterward. The behavioral census still tests
-HTTP/CLI/MCP surfaces. This proof assumes agents cannot read operator secrets or
-server/browser memory; it is not identification of an individual human.
+The operator credential and session were removed (2026-10-04) pending a better
+design. Console decisions now rely on CSRF headers only, so the gate no longer
+records `human_approval` as proven, and full-suite acceptance requires that
+field: the full gate does not accept until a new operator boundary exists or the
+acceptance criterion is changed by an explicit decision. The behavioral census
+still checks that agent HTTP/CLI/MCP surfaces cannot decide.
 
 The actual legacy fixture retains snapshot hashes. Migration restores a real
 legacy DB-only snapshot while checking current FILES and secrets remain intact.
@@ -197,7 +198,7 @@ Dual-provider fault coverage uses selective Funnel/Portal serve and stop failure
 checks confirmed and unconfirmed routes through actual HTTP, preserves current
 Private traffic and requires a fresh successful approval afterward.
 
-Rejected decisions persist validated actor/time but perform no apply operation.
+Rejected decisions persist actor/time but perform no apply operation.
 Their result_data must be empty/null; no execution/data-impact DTO is fabricated.
 The census checks unchanged current pointer, bytes, visibility, providers and
 version count. Approved/applied/failed executions still require actual typed DTOs.
@@ -221,14 +222,13 @@ provider cleanup, four real crash phases, migration and DB/FILES restore.
 
 Actual rendered desktop/mobile console checks use disposable production Local
 servers and real APIs, including consecutive source archive saves, revision/dirty
-status, current-preview selection, tabs, Access/Operations, credential unlock,
-separate publish confirmation, result/audit rendering, cancel focus and logout.
+status, current-preview selection, tabs, Access/Operations, credential unlock
+(all since replaced by the restored console), separate publish confirmation, result/audit rendering, cancel focus and logout.
 At 390 px, the checked page had no horizontal overflow. Evidence is retained
 privately outside this repository; no operator credentials or raw logs are public.
 
-The gate's human_approval verdict proves credential separation and explicit
-candidate decisions under its stated trust boundary. It does not identify an
-individual human or protect against operator-secret/server/browser/OS access.
+The gate's human_approval verdict was based on the removed operator credential
+and is OPEN for the current console.
 Injected provider faults prove loopback behavior, not live Funnel/Portal internet
 reachability or tailnet ACL enforcement. Independent Claude review is still
 required before product acceptance; no PR, push or merge is authorized here.

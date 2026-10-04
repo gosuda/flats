@@ -1,9 +1,9 @@
-// Settings: network status, config.json, limits, the approvals queue and
-// agent setup.
+// Settings: network providers, config.json, limits, the approvals queue
+// and agent setup.
 
 import { h, timeEl, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
-import { errorPanel, loading, toast, extLink, busy, fill, copyable } from './ui.js';
+import { errorPanel, loading, toast, extLink, busy, fill, copyable, confirmDialog, infoDialog } from './ui.js';
 import { describeApproval, statusBadge } from './approval.js';
 
 // Limits shown in human units; values are stored as integers in base units.
@@ -15,7 +15,7 @@ const FIELDS = [
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
   { key: 'redirect_days', label: 'Redirect after a slug rename', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect to the new ones.' },
   { key: 'events_keep', label: 'Log events kept per flat', unit: 'events', factor: 1, step: 1, min: 1, help: 'Older events are deleted.' },
-  { key: 'portal_max_relays', label: 'Active Portal relays', unit: 'relays', factor: 1, step: 1, min: 1, portal: true, help: 'How many discovered relays a public flat uses at once. Applies after Flats restarts.' },
+  { key: 'portal_max_relays', label: 'Active Portal relays', unit: 'relays', factor: 1, step: 1, min: 1, portal: true, help: 'How many discovered relays a public flat uses at once. Used when Portal starts.' },
 ];
 
 // LABELS names every setting in messages.
@@ -36,20 +36,16 @@ const CONFIG_GROUPS = [
     ['host.server_runtime', 'Server flats', (c) => (c.host.server_runtime ? 'on' : 'off')],
   ]],
   ['Network', [
-    ['network.permitted', 'Permitted providers', (c) => ((c.network.permitted || []).length ? c.network.permitted.join(', ') : 'none (Local only)')],
-    ['network.private_backend', 'Private network', (c) => c.network.private_backend],
+    ['network.private_backend', 'Console and private routes', (c) => c.network.private_backend],
   ]],
   ['Credentials', [
-    ['credentials.operator_file', 'Operator credential file', (c) => (c.credentials.operator_file ? 'configured' : 'not configured')],
     ['credentials.tailscale_authkey_file', 'Tailscale auth key file', (c) => (c.credentials.tailscale_authkey_file ? 'configured' : 'not configured')],
   ]],
 ];
 
-const NET_NAMES = { tsnet: 'Tailscale', tailscale: 'Tailscale', portal: 'Portal', local: 'Local (loopback, no Tailscale)', 'local-public': 'Local public stand-in' };
-
 export function mount(main, _params, ctx) {
   ctx.setTitle('Settings');
-  const netSlot = h('div', null, loading());
+  const providersSlot = h('div', null, loading());
   const noticeSlot = h('div');
   const configSlot = h('div', null, loading());
   const limitsSlot = h('div', null, loading());
@@ -61,72 +57,137 @@ export function mount(main, _params, ctx) {
   main.appendChild(h('section', { class: 'page' },
     h('div', { class: 'page-head' }, h('h1', { text: 'Settings' })),
     noticeSlot,
-    card('Networks', 'networks', netSlot),
+    card('Network providers', 'providers', providersSlot),
     card('Host configuration', 'configuration', configSlot),
-    card('Limits and Portal', 'limits', limitsSlot),
+    card('Limits', 'limits', limitsSlot),
     card('Approvals', 'approvals', approvalsSlot),
     card('Connect an agent', 'connect', connectAgent())));
 
-  api.status().then((s) => ctx.alive() && fill(netSlot, networks(s.system)))
-    .catch((err) => ctx.alive() && fill(netSlot, errorPanel(err, 'Cannot load network status')));
   loadSettings();
   api.approvals().then((r) => ctx.alive() && fill(approvalsSlot, approvals(r.approvals || [])))
     .catch((err) => ctx.alive() && fill(approvalsSlot, errorPanel(err, 'Cannot load approvals')));
 
-  // loadSettings renders config.json and the limits form; saved is the
-  // result of the save that triggered the reload, if any.
+  // loadSettings renders the providers, config.json and the limits form;
+  // saved is the result of the save that triggered the reload, if any.
   async function loadSettings(saved) {
+    let data;
     try {
-      const data = await api.settings();
-      if (!ctx.alive()) return;
-      const showNotice = (cfg) => fill(noticeSlot, changedNotice(cfg));
-      showNotice(data.config);
-      fill(configSlot, configView(data.config));
-      fill(limitsSlot, limitsForm(data, { reload: loadSettings, saved, showNotice }));
+      data = await api.settings();
     } catch (err) {
       if (!ctx.alive()) return;
       fill(configSlot, errorPanel(err, 'Cannot load settings'));
       fill(limitsSlot);
+      fill(providersSlot);
+      return;
+    }
+    if (!ctx.alive()) return;
+    const showNotice = (cfg) => fill(noticeSlot, changedNotice(cfg));
+    const opts = { reload: loadSettings, saved, showNotice };
+    showNotice(data.config);
+    fill(configSlot, configView(data.config));
+    fill(limitsSlot, limitsForm(data, { ...opts, group: 'system' }));
+    try {
+      const { providers } = await api.providers();
+      if (ctx.alive()) fill(providersSlot, providerGroups(providers || [], data, opts));
+    } catch (err) {
+      if (ctx.alive()) fill(providersSlot, errorPanel(err, 'Cannot load network providers'));
     }
   }
 }
 
-// --- networks ---
+// --- network providers ---
 
-// isNet matches core.NetStatus. Go encodes an empty host list as null, so a
-// network that serves nothing yet has "hosts": null.
-export function isNet(v) {
-  if (!v || typeof v !== 'object' || Array.isArray(v) || !('hosts' in v)) return false;
-  return Array.isArray(v.hosts) || (v.hosts === null && typeof v.kind === 'string');
+// PROVIDER_INFO describes each provider for the operator. Local is always on;
+// the others are off until turned on here, and a flat uses one only after it
+// is also allowed on that flat.
+export const PROVIDER_INFO = {
+  local: { label: 'Local', what: 'This device, through localhost.' },
+  tailscale: { label: 'Tailscale', what: 'Devices your tailnet ACL allows. Flats and previews get their own tailnet nodes.' },
+  'tailscale-funnel': { label: 'Tailscale Funnel', what: 'Anyone on the internet, through Tailscale Funnel on the flat’s tailnet node. Visitors do not need Tailscale.' },
+  portal: { label: 'Portal', what: 'Anyone on the internet, through Portal relays.' },
+};
+
+// providerGroups lists the providers as Private and Public groups. data is
+// the settings response: its ETag guards a change, and the Portal panel
+// holds the Portal settings.
+export function providerGroups(list, data, opts) {
+  const group = (scope, title, hint) => h('section', { class: 'provider-group', 'aria-labelledby': 'providers-' + scope },
+    h('h3', { id: 'providers-' + scope, text: title }),
+    h('p', { class: 'muted small', text: hint }),
+    list.filter((p) => p.scope === scope).map((p) => providerPanel(p, data, opts)));
+  return [
+    h('p', { class: 'muted', text: 'Local is always on. Turn on another provider to make it available, then allow it on each flat that should use it. Turning a provider on does not publish a flat or make it public.' }),
+    group('private', 'Private', 'Reachable from this device or your tailnet.'),
+    group('public', 'Public', 'Reachable from the internet. A flat goes public only after you approve it.'),
+  ];
 }
 
-// networks renders the server's system status. Objects with a hosts list
-// are drawn as networks; other fields as facts, so new fields still show.
-export function networks(sys) {
-  if (!sys || typeof sys !== 'object') return h('p', { class: 'muted', text: 'The server did not report network status.' });
-  const nets = [];
-  const facts = [];
-  for (const [k, v] of Object.entries(sys)) {
-    if (isNet(v)) nets.push([k, v]);
-    else if (Array.isArray(v) && v.length && v.every(isNet)) v.forEach((n, i) => nets.push([`${k} ${i + 1}`, n]));
-    else if (v !== null && v !== undefined && v !== '') facts.push([k, v]);
+function providerPanel(p, data, opts) {
+  const info = PROVIDER_INFO[p.id] || { label: p.id, what: '' };
+  const local = p.id === 'local';
+  const state = local ? h('span', { class: 'badge badge-ready', text: 'Always on' })
+    : h('span', { class: 'badge' + (p.enabled ? ' badge-ready' : ''), text: p.enabled ? 'On' : 'Off' });
+  let toggle = null;
+  if (!local) {
+    toggle = h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
+      disabled: !!p.locked, 'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
+    toggle.addEventListener('click', () => busy(toggle, async () => {
+      if (await setHostProvider(p, info, !p.enabled, data.config ? data.config.etag : '')) await opts.reload();
+    }));
   }
-  return [
-    facts.length ? h('dl', { class: 'facts' }, facts.map(([k, v]) => [h('dt', { text: humanKey(k) }), h('dd', null, factValue(v))])) : null,
-    ...nets.map(([k, n]) => network(k, n)),
-  ];
+  const used = p.flats.length
+    ? h('p', { class: 'small' }, 'Allowed on ', p.flats.map((slug, i) => [i ? ', ' : '', h('a', { href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: slug })]))
+    : (local ? null : h('p', { class: 'muted small', text: 'Not allowed on any flat yet.' }));
+  return h('article', { class: 'provider' + (p.enabled ? ' is-on' : ''), id: 'provider-' + p.id },
+    h('div', { class: 'provider-head' },
+      h('div', null, h('h4', null, info.label, state), h('p', { class: 'muted small', text: info.what })),
+      toggle),
+    p.locked ? h('p', { class: 'muted small', text: p.locked }) : null,
+    used,
+    providerDetails(p, data, opts));
+}
+
+function providerDetails(p, data, opts) {
+  if (p.id === 'local') return p.address ? h('dl', { class: 'facts' }, h('dt', { text: 'Address' }), h('dd', null, h('code', { text: p.address }))) : null;
+  if (p.id === 'portal') return [limitsForm(data, { ...opts, group: 'portal' }), p.enabled && p.status ? hostsTable(p.status) : null];
+  if (!p.enabled) return null;
+  if (p.id === 'tailscale') {
+    return [
+      h('dl', { class: 'facts' }, h('dt', { text: 'Auth key' }),
+        h('dd', { text: p.auth_key ? 'From credentials.tailscale_authkey_file.' : 'None. Each new node shows a login link below.' })),
+      p.status ? hostsTable(p.status) : null,
+    ];
+  }
+  if (p.id === 'tailscale-funnel') {
+    return h('p', { class: 'muted small', text: 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.' });
+  }
+  return null;
+}
+
+async function setHostProvider(p, info, enabled, etag) {
+  const ok = await confirmDialog({
+    title: `${enabled ? 'Turn on' : 'Turn off'} ${info.label}?`,
+    body: enabled ? [
+      h('p', { text: info.what }),
+      p.scope === 'public' ? h('p', { class: 'alert alert-warn', text: 'A flat made public through this provider can be opened by anyone on the internet. Making a flat public still needs your approval.' }) : null,
+      h('p', { class: 'muted', text: 'Saved to config.json and applied now. Nothing is served until you allow it on a flat.' }),
+    ] : [h('p', { text: `${info.label} stops being available. Flats that allow it must stop allowing it first.` })],
+    confirmLabel: enabled ? 'Turn on' : 'Turn off',
+  });
+  if (!ok) return false;
+  try {
+    await api.setProvider(p.id, enabled, etag);
+    toast(`${info.label} is ${enabled ? 'on' : 'off'}.`, 'success');
+    return true;
+  } catch (err) {
+    await infoDialog(`Cannot turn ${enabled ? 'on' : 'off'} ${info.label}`, errorPanel(err));
+    return false;
+  }
 }
 
 function humanKey(k) {
   const s = k.replace(/_/g, ' ');
   return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function factValue(v) {
-  if (Array.isArray(v)) return v.length ? h('ul', { class: 'compact' }, v.map((x) => h('li', null, factValue(x)))) : h('span', { class: 'muted', text: 'none' });
-  if (v && typeof v === 'object') return h('dl', { class: 'facts nested' }, Object.entries(v).map(([k, x]) => [h('dt', { text: humanKey(k) }), h('dd', null, factValue(x))]));
-  if (typeof v === 'boolean') return v ? 'yes' : 'no';
-  return linkify(String(v));
 }
 
 // linkify turns http(s) URLs in text into links (for login URLs in details).
@@ -141,8 +202,8 @@ function linkify(text) {
   return h('span', null, parts);
 }
 
-function network(key, n) {
-  const title = NET_NAMES[n.kind] || NET_NAMES[key] || humanKey(key);
+// hostsTable lists the hosts a provider backend serves (core.NetStatus).
+function hostsTable(n) {
   const hosts = n.hosts || [];
   const rows = hosts.map((x) => {
     // tsnet reports the login URL as the detail of a needs-login host.
@@ -154,18 +215,17 @@ function network(key, n) {
       h('td', null, h('span', { class: 'badge badge-' + x.state, text: x.state })),
       h('td', null, expiry),
       h('td', null,
-        login ? h('div', null, extLink(login, 'Log in again', 'btn btn-small btn-primary')) : null,
+        login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
         x.url ? extLink(x.url) : null,
         x.detail ? h('div', { class: 'muted small' }, linkify(x.detail)) : null));
   });
   return h('div', { class: 'net' },
-    h('h3', null, title, ' ', h('span', { class: 'badge ' + (n.enabled ? 'badge-ready' : ''), text: n.enabled ? 'enabled' : 'disabled' })),
-    n.detail ? h('p', { class: 'muted' }, linkify(n.detail)) : null,
+    n.detail ? h('p', { class: 'muted small' }, linkify(n.detail)) : null,
     hosts.length
       ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
         h('thead', null, h('tr', null, ['Host', 'State', 'Key expiry', 'Address'].map((t) => h('th', { scope: 'col', text: t })))),
         h('tbody', null, rows)))
-      : h('p', { class: 'muted', text: 'No hosts are served on this network.' }));
+      : h('p', { class: 'muted small', text: 'Nothing is served on this provider yet.' }));
 }
 
 // --- config.json ---
@@ -192,7 +252,7 @@ export function configView(cfg) {
       'This service starts without ', h('code', { text: '--config' }), '. Run ', h('code', { text: 'flats install' }),
       ' to switch it to config.json.') : null,
     h('p', { class: 'muted' }, 'Read only. Change these values in config.json, or with ', h('code', { text: 'flats config set' }),
-      ' while Flats is stopped. They apply after Flats restarts.'),
+      ' while Flats is stopped. They apply after Flats restarts. Turn network providers on or off above.'),
     ...CONFIG_GROUPS.flatMap(([title, rows]) => [
       h('h3', { text: title }),
       h('dl', { class: 'facts' }, rows.map(([key, label, value]) => [
@@ -217,9 +277,11 @@ export function isDecrease(key, current, next) {
   return n < cur;
 }
 
-// limitsForm edits the system and Portal settings. opts: reload(saved),
-// saved (the last save response), showNotice(config).
+// limitsForm edits the system settings (opts.group 'system') or the Portal
+// settings ('portal'). opts: reload(saved), saved (the last save response),
+// showNotice(config).
 function limitsForm(data, opts) {
+  const portal = opts.group === 'portal';
   const settings = data.settings || {};
   const defaults = data.defaults || {};
   const cfg = data.config || null;
@@ -271,21 +333,22 @@ function limitsForm(data, opts) {
   const discoverInitial = String(settings.portal_discovery ?? 'true') !== 'false';
   const discover = h('input', { id: discoverId, type: 'checkbox', checked: discoverInitial });
 
-  const save = h('button', { type: 'submit', id: 'settings-save', class: 'btn btn-primary', text: 'Save settings' });
+  const save = h('button', { type: 'submit', id: portal ? 'portal-save' : 'settings-save', class: 'btn btn-primary' + (portal ? ' btn-small' : ''),
+    text: portal ? 'Save Portal settings' : 'Save settings' });
   const result = h('div', { class: 'muted small', role: 'status' }, savedSummary(opts.saved));
   const errorSlot = h('div');
   const impactSlot = h('div');
-  const form = h('form', { class: 'settings-form', novalidate: true },
-    h('fieldset', { class: 'field-group' }, h('legend', { text: 'System' }),
+  const form = h('form', { class: 'settings-form' + (portal ? ' provider-form' : ''), novalidate: true },
+    portal ? null : h('fieldset', { class: 'field-group' }, h('legend', { text: 'System' }),
       h('div', { class: 'form-grid' }, FIELDS.filter((f) => !f.portal).map(numberField))),
-    h('fieldset', { class: 'field-group' }, h('legend', { text: 'Portal' }),
+    !portal ? null : h('fieldset', { class: 'field-group' }, h('legend', { text: 'Portal settings' }),
       h('div', { class: 'form-grid' },
         h('div', { class: 'field field-wide' },
           h('label', { for: relaysId, text: 'Portal relays' }), relays,
-          control('portal_relays', relays, 'One relay per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays). Applies after Flats restarts.')),
+          control('portal_relays', relays, 'One relay per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays). Used when Portal starts; restart Flats to apply a change while Portal runs.')),
         h('div', { class: 'field field-wide field-check' },
           discover, h('label', { for: discoverId, text: 'Discover Portal relays' }),
-          control('portal_discovery', discover, 'Find further relays automatically (Portal’s default). Applies after Flats restarts.')),
+          control('portal_discovery', discover, 'Find further relays automatically (Portal’s default). Used when Portal starts.')),
         FIELDS.filter((f) => f.portal).map(numberField))),
     impactSlot,
     errorSlot,
@@ -335,6 +398,7 @@ function limitsForm(data, opts) {
       }
       out[f.key] = String(Math.round(n * f.factor));
     }
+    if (!portal) return out;
     const relayList = relays.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
     if (!pinned.portal_relays && relayList.join('\n') !== relaysInitial) out.portal_relays = relayList.join(',');
     if (!pinned.portal_discovery && discover.checked !== discoverInitial) out.portal_discovery = String(discover.checked);

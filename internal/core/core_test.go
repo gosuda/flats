@@ -44,7 +44,7 @@ func newEnv(t *testing.T) *env {
 	}
 	pub := local.NewPublic(pubNet)
 	priv.Identity = func(*http.Request) (string, string) { return "op@example.com", "Operator" }
-	svc, err := core.New(context.Background(), core.Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: priv, Public: pub,
+	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)

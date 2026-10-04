@@ -319,12 +319,6 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 	if via != ViaConsole {
 		return forbiddenf("only the operator can permit a network provider")
 	}
-	if s.cfg.ValidateOperatorDecision == nil {
-		return forbiddenf("operator decision authority is not configured")
-	}
-	if err := s.cfg.ValidateOperatorDecision(ctx); err != nil {
-		return fmt.Errorf("%w: operator decision: %v", ErrForbidden, err)
-	}
 	switch provider {
 	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal:
 	case store.ProviderLocal:

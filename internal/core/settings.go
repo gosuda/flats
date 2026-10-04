@@ -206,46 +206,16 @@ func (s *SettingsSource) update(ctx context.Context, values map[string]string, i
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ifMatch != "" && ifMatch != "*" && ifMatch != s.etag() {
-		if s.changedOnDisk() {
-			return nil, "", errChangedOnDisk()
-		}
-		return nil, "", withKind(ErrConfigChanged, errors.New("the settings changed after this page loaded them; reload the page to see them, then retry"))
+	if err := s.checkMatch(ifMatch); err != nil {
+		return nil, "", err
 	}
 	for _, k := range slices.Sorted(maps.Keys(values)) {
 		if by, ok := s.pinned[k]; ok && values[k] != s.values[k] {
 			return nil, "", withKind(ErrConfigOverridden, fmt.Errorf("%s is set by %s; reinstall the service with `flats install` to manage it here", k, by))
 		}
 	}
-	next := s.doc.Clone()
-	if err := apply(next); err != nil {
-		return nil, "", invalid(err)
-	}
-	if s.file != nil {
-		h, err := s.file.Save(s.file.Hash, apply)
-		if err != nil {
-			if errors.Is(err, config.ErrConflict) {
-				if ifMatch != "" {
-					return nil, "", errChangedOnDisk()
-				}
-				return nil, "", withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; restart `flats serve` to load the file, then retry: %w", err))
-			}
-			var fe *config.FieldError
-			if errors.As(err, &fe) {
-				return nil, "", invalid(err)
-			}
-			if ifMatch != "" && s.changedOnDisk() {
-				// The file the ETag names is gone or cannot be read.
-				return nil, "", errChangedOnDisk()
-			}
-			return nil, "", err
-		}
-		s.file.Hash = h
-	}
-	prev, prevValues := s.doc, s.values
-	s.doc = next
-	if err := s.refresh(); err != nil {
-		s.doc = prev
+	prevValues := s.values
+	if err := s.commit(ifMatch, apply); err != nil {
 		return nil, "", err
 	}
 	var changed []string
@@ -255,6 +225,85 @@ func (s *SettingsSource) update(ctx context.Context, values map[string]string, i
 		}
 	}
 	return changed, s.etag(), nil
+}
+
+// checkMatch refuses a conditional change whose ETag is not current. s.mu
+// is held.
+func (s *SettingsSource) checkMatch(ifMatch string) error {
+	if ifMatch != "" && ifMatch != "*" && ifMatch != s.etag() {
+		if s.changedOnDisk() {
+			return errChangedOnDisk()
+		}
+		return withKind(ErrConfigChanged, errors.New("the settings changed after this page loaded them; reload the page to see them, then retry"))
+	}
+	return nil
+}
+
+// commit applies apply to a copy of the document, saves it to the file and
+// only then makes it current. s.mu is held.
+func (s *SettingsSource) commit(ifMatch string, apply func(*config.Document) error) error {
+	next := s.doc.Clone()
+	if err := apply(next); err != nil {
+		return invalid(err)
+	}
+	if s.file != nil {
+		h, err := s.file.Save(s.file.Hash, apply)
+		if err != nil {
+			if errors.Is(err, config.ErrConflict) {
+				if ifMatch != "" {
+					return errChangedOnDisk()
+				}
+				return withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; restart `flats serve` to load the file, then retry: %w", err))
+			}
+			var fe *config.FieldError
+			if errors.As(err, &fe) {
+				return invalid(err)
+			}
+			if ifMatch != "" && s.changedOnDisk() {
+				// The file the ETag names is gone or cannot be read.
+				return errChangedOnDisk()
+			}
+			return err
+		}
+		s.file.Hash = h
+	}
+	prev := s.doc
+	s.doc = next
+	if err := s.refresh(); err != nil {
+		s.doc = prev
+		return err
+	}
+	return nil
+}
+
+// permitted returns network.permitted in effect.
+func (s *SettingsSource) permitted() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.doc.Effective(nil)
+	if err != nil {
+		return nil
+	}
+	return slices.Clone(c.Network.Permitted)
+}
+
+// setPermitted saves network.permitted, as a settings change does.
+func (s *SettingsSource) setPermitted(ids []string, ifMatch string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkMatch(ifMatch); err != nil {
+		return "", err
+	}
+	apply := func(d *config.Document) error {
+		if err := d.Set("network.permitted", strings.Join(ids, ",")); err != nil {
+			return err
+		}
+		return d.Validate()
+	}
+	if err := s.commit(ifMatch, apply); err != nil {
+		return "", err
+	}
+	return s.etag(), nil
 }
 
 func errChangedOnDisk() error {
@@ -333,6 +382,16 @@ func (s *SettingsSource) view() (*ConfigView, error) {
 }
 
 func (s *Service) setting(key string) string { return s.settings.get(key) }
+
+// PermittedNetworks returns the host's network.permitted.
+func (s *Service) PermittedNetworks() []string { return s.settings.permitted() }
+
+// SetPermittedNetworks saves network.permitted to config.json. A non-empty
+// ifMatch must be the current settings ETag. It returns the new ETag. It
+// does not start, stop or permit a route by itself.
+func (s *Service) SetPermittedNetworks(ids []string, ifMatch string) (string, error) {
+	return s.settings.setPermitted(ids, ifMatch)
+}
 
 // clampInt converts a setting to int, saturating where int is narrower.
 func clampInt(n int64) int {

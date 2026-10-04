@@ -112,10 +112,13 @@ type Options struct {
 
 // Manager opens routes. It does not implement PrivateNet or PublicNet.
 type Manager struct {
-	dir           string
-	file          File
-	fixed         bool // grants came from Options.Grants
-	local         *local.Net
+	dir   string
+	file  File
+	fixed bool // grants came from Options.Grants
+	local *local.Net
+	// ts and portal may be attached after New (nil to set, never removed);
+	// read them through tailnet and portalNet.
+	bmu           sync.RWMutex
 	ts            Tailnet
 	portal        PortalNet
 	tailscaleDir  string
@@ -123,6 +126,7 @@ type Manager struct {
 	configuration string
 	permission    func(context.Context, string, ID) (bool, error)
 
+	gmu    sync.Mutex // serializes SetGrant's read-modify-write of the host file
 	mu     sync.Mutex
 	routes map[string]*route
 	states map[string][]observedEndpoint
@@ -186,6 +190,87 @@ func New(dir string, opts Options) (*Manager, error) {
 		pendingTailnet: map[string]map[string]struct{}{},
 	}, nil
 }
+
+func (m *Manager) tailnet() Tailnet {
+	m.bmu.RLock()
+	defer m.bmu.RUnlock()
+	return m.ts
+}
+
+func (m *Manager) portalNet() PortalNet {
+	m.bmu.RLock()
+	defer m.bmu.RUnlock()
+	return m.portal
+}
+
+// AttachTailnet configures the Tailscale backend once, for a provider the
+// operator enables while the host runs. It does not grant the provider.
+func (m *Manager) AttachTailnet(t Tailnet) {
+	m.bmu.Lock()
+	defer m.bmu.Unlock()
+	if m.ts == nil {
+		m.ts = t
+	}
+}
+
+// AttachPortal configures the Portal backend once. It does not grant Portal.
+func (m *Manager) AttachPortal(p PortalNet) {
+	m.bmu.Lock()
+	defer m.bmu.Unlock()
+	if m.portal == nil {
+		m.portal = p
+	}
+}
+
+// SetGrant records or removes a host grant. With Options.Grants (from
+// config.json) it changes only this process's grants; the caller saves
+// config.json. Otherwise it rewrites the host file. Local is always
+// permitted. Removing a grant does not tear routes down; callers refuse a
+// removal while flats still permit the provider.
+func (m *Manager) SetGrant(id ID, permitted bool) (File, error) {
+	if _, err := ParseID(string(id)); err != nil {
+		return File{}, err
+	}
+	if id == Local {
+		if !permitted {
+			return File{}, errors.New("provider: local is always permitted")
+		}
+		return m.File(), nil
+	}
+	m.gmu.Lock()
+	defer m.gmu.Unlock()
+	f := m.File()
+	if !m.fixed {
+		var err error
+		if f, err = Load(m.dir); err != nil {
+			return File{}, err
+		}
+	}
+	if permitted {
+		var err error
+		if f, err = f.Grant(id); err != nil {
+			return File{}, err
+		}
+	} else {
+		f.Permitted = slices.DeleteFunc(slices.Clone(f.Permitted), func(x ID) bool { return x == id })
+	}
+	if m.fixed {
+		m.mu.Lock()
+		m.file = f
+		m.mu.Unlock()
+		return m.File(), nil
+	}
+	if err := Save(m.dir, f); err != nil {
+		return File{}, err
+	}
+	if err := m.Reload(); err != nil {
+		return File{}, err
+	}
+	return m.File(), nil
+}
+
+// HostAllows reports the host grant for id.
+func (m *Manager) HostAllows(id ID) bool { return m.allows(id) }
 
 // File returns the host grants currently loaded.
 func (m *Manager) File() File {
@@ -254,9 +339,9 @@ func (m *Manager) configured(id ID) bool {
 	case Local:
 		return m.local != nil
 	case Tailscale, Funnel:
-		return m.ts != nil
+		return m.tailnet() != nil
 	case Portal:
-		return m.portal != nil
+		return m.portalNet() != nil
 	}
 	return false
 }
@@ -298,7 +383,7 @@ func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
 		PrivateBackend    string `json:"private_backend"`
 		Tailscale, Portal bool
 		Configuration     string
-	}{f.Permitted, f.PrivateBackend, m.ts != nil, m.portal != nil, m.configuration}
+	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.configuration}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -340,11 +425,11 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 			case Local:
 				fresh = fromStatus(Local, m.local.Status(), r.host, m.local.URL(r.host))
 			case Tailscale:
-				fresh = fromStatus(Tailscale, m.ts.Status(), r.host, m.ts.URL(r.host))
+				fresh = fromStatus(Tailscale, m.tailnet().Status(), r.host, m.tailnet().URL(r.host))
 			case Funnel:
-				fresh = m.ts.FunnelState(r.host)
+				fresh = m.tailnet().FunnelState(r.host)
 			case Portal:
-				fresh = fromStatus(Portal, m.portal.Status(), r.host, m.portal.URL(r.host))
+				fresh = fromStatus(Portal, m.portalNet().Status(), r.host, m.portalNet().URL(r.host))
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
 		} else if observed.registered {
@@ -474,7 +559,7 @@ func (m *Manager) retainPrivate(ctx context.Context, req ExposureRequest, id ID)
 		if id == Local {
 			return fromStatus(Local, m.local.Status(), host, m.local.URL(host)), nil
 		}
-		return fromStatus(Tailscale, m.ts.Status(), host, m.ts.URL(host)), nil
+		return fromStatus(Tailscale, m.tailnet().Status(), host, m.tailnet().URL(host)), nil
 	}
 	if id == Local {
 		return m.openLocal(ctx, req)
@@ -496,16 +581,16 @@ func (m *Manager) openTailscale(ctx context.Context, req ExposureRequest) (Expos
 	if !m.allows(Tailscale) {
 		return refused(Tailscale, "host permission absent"), fmt.Errorf("%w: tailscale", ErrProviderNotPermitted)
 	}
-	if m.ts == nil {
+	if m.tailnet() == nil {
 		return refused(Tailscale, "tailscale is permitted but not configured"), fmt.Errorf("%w: tailscale", ErrNotConfigured)
 	}
 	host := requestHost(req)
-	url, err := m.ts.Serve(ctx, host, req.Handler, req.Ephemeral)
+	url, err := m.tailnet().Serve(ctx, host, req.Handler, req.Ephemeral)
 	if err != nil {
 		return ExposureEndpoint{Provider: Tailscale, State: stateError, Detail: err.Error()}, err
 	}
 	m.track(req, Tailscale, host)
-	ep := fromStatus(Tailscale, m.ts.Status(), host, url)
+	ep := fromStatus(Tailscale, m.tailnet().Status(), host, url)
 	if ep.State == "" {
 		ep.State = stateStarting
 	}
@@ -518,7 +603,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 	}
 	switch id {
 	case Funnel:
-		if m.ts == nil {
+		if m.tailnet() == nil {
 			return refused(Funnel, "funnel is permitted but tailscale is not configured"), fmt.Errorf("%w: tailscale-funnel", ErrNotConfigured)
 		}
 		host := requestHost(req)
@@ -527,19 +612,19 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup state: %w", core.ErrProviderNotReady, err)
 		}
 		if pending {
-			if err := m.ts.Stop(host); err != nil {
+			if err := m.tailnet().Stop(host); err != nil {
 				return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: "previous Funnel identity retirement is still pending: " + err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup: %w", core.ErrProviderNotReady, err)
 			}
 			if err := m.clearPendingTailnet(req.Slug, host); err != nil {
 				return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup record: %w", core.ErrProviderNotReady, err)
 			}
 		}
-		url, err := m.ts.ServeFunnel(ctx, host, req.Handler)
+		url, err := m.tailnet().ServeFunnel(ctx, host, req.Handler)
 		if err != nil {
 			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel: %w", core.ErrProviderNotReady, err)
 		}
 		m.track(req, Funnel, host)
-		ep := m.ts.FunnelState(host)
+		ep := m.tailnet().FunnelState(host)
 		ep.Provider = Funnel
 		if ep.URL == "" {
 			ep.URL = url
@@ -549,15 +634,15 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		return ep, nil
 	case Portal:
-		if m.portal == nil {
+		if m.portalNet() == nil {
 			return refused(Portal, "portal is permitted but not configured"), fmt.Errorf("%w: portal", ErrNotConfigured)
 		}
-		url, err := m.portal.Serve(ctx, req.Slug, req.Handler, false)
+		url, err := m.portalNet().Serve(ctx, req.Slug, req.Handler, false)
 		if err != nil {
 			return ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: portal: %w", core.ErrProviderNotReady, err)
 		}
 		m.track(req, Portal, req.Slug)
-		ep := fromStatus(Portal, m.portal.Status(), req.Slug, url)
+		ep := fromStatus(Portal, m.portalNet().Status(), req.Slug, url)
 		if ep.URL == "" {
 			ep.URL = url
 		}
@@ -791,7 +876,7 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 	_, hadPortal := m.take(slug, Portal, false)
 	var res PublicStopResult
 	if hadFunnel {
-		if m.ts == nil {
+		if m.tailnet() == nil {
 			res.Unconfirmed = append(res.Unconfirmed, Funnel)
 		} else {
 			sharedPrivate := m.hasRoute(slug, funnelHost, Tailscale)
@@ -803,12 +888,12 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 			}
 			if !marked {
 				res.Unconfirmed = append(res.Unconfirmed, Funnel)
-			} else if err := m.ts.StopFunnel(funnelHost); err != nil {
+			} else if err := m.tailnet().StopFunnel(funnelHost); err != nil {
 				if !sharedPrivate {
 					_ = m.clearPendingTailnet(slug, funnelHost)
 				}
 				res.Unconfirmed = append(res.Unconfirmed, Funnel)
-			} else if st := m.ts.FunnelState(funnelHost); st.State == stateReady || st.State == stateStarting {
+			} else if st := m.tailnet().FunnelState(funnelHost); st.State == stateReady || st.State == stateStarting {
 				if !sharedPrivate {
 					_ = m.clearPendingTailnet(slug, funnelHost)
 				}
@@ -821,7 +906,7 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 					// Funnel is already unreachable. Identity retirement is a separate
 					// cleanup obligation: failure retains the durable marker but does
 					// not claim public access is still live.
-					if err := m.ts.Stop(funnelHost); err == nil {
+					if err := m.tailnet().Stop(funnelHost); err == nil {
 						_ = m.clearPendingTailnet(slug, funnelHost)
 					}
 				}
@@ -829,9 +914,9 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 		}
 	}
 	if hadPortal {
-		if m.portal == nil {
+		if m.portalNet() == nil {
 			res.Unconfirmed = append(res.Unconfirmed, Portal)
-		} else if err := m.portal.Stop(slug); err != nil {
+		} else if err := m.portalNet().Stop(slug); err != nil {
 			res.Unconfirmed = append(res.Unconfirmed, Portal)
 		} else {
 			m.take(slug, Portal, true)
@@ -926,11 +1011,11 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			break
 		}
 		if owned.funnel {
-			if m.ts == nil {
+			if m.tailnet() == nil {
 				errs = append(errs, fmt.Errorf("%w: funnel %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
-			} else if err := m.ts.StopFunnel(host); err != nil {
+			} else if err := m.tailnet().StopFunnel(host); err != nil {
 				errs = append(errs, fmt.Errorf("%w: funnel %s: %w", core.ErrPublicStopUnconfirmed, host, err))
-			} else if state := m.ts.FunnelState(host); state.State == stateReady || state.State == stateStarting {
+			} else if state := m.tailnet().FunnelState(host); state.State == stateReady || state.State == stateStarting {
 				errs = append(errs, fmt.Errorf("%w: funnel %s teardown remains %s", core.ErrPublicStopUnconfirmed, host, state.State))
 			}
 		}
@@ -949,7 +1034,7 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			errs = append(errs, err)
 			break
 		}
-		if m.ts == nil {
+		if m.tailnet() == nil {
 			if owned.tailscale || owned.funnel {
 				errs = append(errs, fmt.Errorf("tailscale %s: %w", host, ErrNotConfigured))
 				continue
@@ -964,7 +1049,7 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			}
 			continue
 		}
-		if err := m.ts.Stop(host); err != nil {
+		if err := m.tailnet().Stop(host); err != nil {
 			errs = append(errs, fmt.Errorf("tailscale %s: %w", host, err))
 		} else if err := m.clearPendingTailnet(slug, host); err != nil {
 			errs = append(errs, fmt.Errorf("tailscale %s cleanup record: %w", host, err))
@@ -979,9 +1064,9 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		if !owned.portal {
 			continue
 		}
-		if m.portal == nil {
+		if m.portalNet() == nil {
 			errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
-		} else if err := m.portal.Stop(host); err != nil {
+		} else if err := m.portalNet().Stop(host); err != nil {
 			errs = append(errs, fmt.Errorf("%w: portal %s: %w", core.ErrPublicStopUnconfirmed, host, err))
 		}
 	}
@@ -1041,12 +1126,12 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 			errs = append(errs, err)
 			break
 		}
-		if m.ts == nil {
+		if m.tailnet() == nil {
 			errs = append(errs, ErrNotConfigured)
 			continue
 		}
 		var stopErr error
-		if private, ok := m.ts.(interface{ StopPrivate(string) error }); ok {
+		if private, ok := m.tailnet().(interface{ StopPrivate(string) error }); ok {
 			stopErr = private.StopPrivate(r.host)
 		} else {
 			// A legacy backend Stop may retire a shared Funnel node. Refuse rather
@@ -1063,7 +1148,7 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 			if sharedFunnel {
 				stopErr = errors.New("private-only teardown is unavailable; approve Private access to stop Funnel first")
 			} else {
-				stopErr = m.ts.Stop(r.host)
+				stopErr = m.tailnet().Stop(r.host)
 			}
 		}
 		if err := stopErr; err != nil {
@@ -1099,8 +1184,8 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 		var err error
 		if r.provider == Local {
 			err = m.local.Stop(host)
-		} else if m.ts != nil {
-			err = m.ts.Stop(host)
+		} else if m.tailnet() != nil {
+			err = m.tailnet().Stop(host)
 		} else {
 			err = ErrNotConfigured
 		}
@@ -1273,10 +1358,10 @@ func (m *Manager) HasProviderRoute(ctx context.Context, slug string, id ID) (boo
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
-			if m.ts == nil {
+			if m.tailnet() == nil {
 				return false, fmt.Errorf("pending Funnel identity %s: %w", host, ErrNotConfigured)
 			}
-			if err := m.ts.Stop(host); err != nil {
+			if err := m.tailnet().Stop(host); err != nil {
 				return false, fmt.Errorf("pending Funnel identity %s: %w", host, err)
 			}
 			if err := m.clearPendingTailnet(slug, host); err != nil {

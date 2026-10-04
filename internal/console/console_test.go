@@ -240,7 +240,7 @@ func TestRequestsUseConsoleAPI(t *testing.T) {
 
 // Lifecycle copy must not promise owner-only access or present Serve as public.
 func TestLifecycleCopy(t *testing.T) {
-	src := strings.ToLower(readStatic(t, "assets/js/lifecycle.js") + readStatic(t, "assets/js/list.js") + readStatic(t, "assets/js/flat.js"))
+	src := strings.ToLower(readStatic(t, "assets/js/actions.js") + readStatic(t, "assets/js/list.js") + readStatic(t, "assets/js/flat.js"))
 	for _, banned := range []string{"only me", "only you", "tailscale serve", "this flat is public"} {
 		if strings.Contains(src, banned) {
 			t.Errorf("console lifecycle copy contains %q", banned)
@@ -255,7 +255,7 @@ func TestLifecycleCopy(t *testing.T) {
 // same text the API returns afterwards.
 func TestNoticesMatchCore(t *testing.T) {
 	dom := readStatic(t, "assets/js/dom.js")
-	for name, want := range map[string]string{"UNLISTED_NOTICE": core.UnlistedNotice, "LISTED_NOTICE": core.ListedNotice, "PUBLIC_ACCESS_NOTICE": core.PublicAccessNotice} {
+	for name, want := range map[string]string{"PUBLIC_ACCESS_NOTICE": core.PublicAccessNotice} {
 		decl := "export const " + name + " = '" + want + "';"
 		if !strings.Contains(dom, decl) {
 			t.Errorf("dom.js %s differs from internal/core; want %s", name, decl)
@@ -328,7 +328,6 @@ func TestJSHelpers(t *testing.T) {
 import assert from 'node:assert/strict';
 import { thumbPath } from './api.js';
 import { safeHref } from './ui.js';
-import { isNet } from './settings.js';
 
 assert.equal(thumbPath('/api/flats/blog/versions/2/files/shot.png'), '/flats/blog/versions/2/files/shot.png');
 assert.equal(thumbPath('/api/flats/blog/versions/2/files/shots/a #1?.png'), '/flats/blog/versions/2/files/shots/a%20%231%3F.png');
@@ -345,12 +344,6 @@ assert.equal(safeHref('data:text/html,hi'), null);
 assert.equal(safeHref('/relative'), null);
 assert.equal(safeHref(undefined), null);
 
-assert.equal(isNet({ kind: 'local', enabled: true, hosts: null }), true);
-assert.equal(isNet({ kind: 'tailscale', enabled: true, hosts: [] }), true);
-assert.equal(isNet({ hosts: null }), false);
-assert.equal(isNet({ version: '1' }), false);
-assert.equal(isNet([{ hosts: [] }]), false);
-assert.equal(isNet(null), false);
 console.log('ok');
 `
 	cmd := exec.Command(node, "--input-type=module", "-e", script)

@@ -7,12 +7,10 @@ JSON evidence is retained locally; do not commit raw server logs.
 import argparse
 import concurrent.futures
 import hashlib
-import http.cookiejar
 import io
 import json
 import os
 import re
-import secrets
 from pathlib import Path
 import socket
 import sqlite3
@@ -143,22 +141,17 @@ export default { async fetch(request, env) {
 
 
 class Host:
-    def __init__(self, binary, work, adapter=False, operator=True):
+    def __init__(self, binary, work, adapter=False):
         self.binary, self.work, self.adapter = str(binary), Path(work), adapter
         self.work.mkdir(parents=True, exist_ok=True)
         self.data = self.work / "data"
         self.proc = None
         self.serial = 0
         self.mcp_session = None
-        self.operator = operator
-        self.operator_file = False
-        self.credential = None
         self.phase = None
         self.phase_marker = None
         self.trace = []
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        self.cookies = http.cookiejar.CookieJar()
-        self.console_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(self.cookies))
 
     def start(self):
         # Reserve both ports until immediately before spawn. Bind-race failures
@@ -171,15 +164,6 @@ class Host:
         self.local = f"http://127.0.0.1:{ports[1]}"
         argv = [self.binary, "serve", "--data", str(self.data), "--listen", f"127.0.0.1:{ports[0]}",
                 "--network", "local", "--local-addr", f"127.0.0.1:{ports[1]}", "--portal=false"]
-        if self.operator:
-            self.credential = secrets.token_urlsafe(40)
-            if self.operator_file:
-                credential_path = self.work / 'operator-controlled-credential'
-                credential_path.write_text(self.credential + '\n')
-                credential_path.chmod(0o600)
-                argv.extend(['--operator-credential-file', str(credential_path)])
-            else:
-                argv.append("--operator-credential-stdin")
         for sock in reservations:
             sock.close()
         env = os.environ.copy()
@@ -192,13 +176,7 @@ class Host:
             env['FLATS_TEST_PHASE'] = self.phase
             env['FLATS_TEST_PHASE_MARKER'] = str(self.phase_marker)
         self.log = open(self.work / "serve.log", "ab")
-        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE if self.operator and not self.operator_file else subprocess.DEVNULL,
-                                     stdout=self.log, stderr=self.log, env=env)
-        if self.operator:
-            if not self.operator_file:
-                self.proc.stdin.write((self.credential + "\n").encode())
-                self.proc.stdin.close()
-            self.cookies.clear()
+        self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=self.log, stderr=self.log, env=env)
         self.trace.append({"argv": argv, "kind": "start"})
         until = time.monotonic() + 30
         while time.monotonic() < until:
@@ -206,8 +184,6 @@ class Host:
                 raise AssertionError(f"server exited {self.proc.returncode}; inspect disposable serve.log")
             try:
                 if self.request("GET", "/api/status")[0] == 200:
-                    if self.operator:
-                        self.authorize()
                     return
             except (OSError, urllib.error.URLError):
                 pass
@@ -230,7 +206,7 @@ class Host:
             require(not re.search(rb"panic:|fatal error:", (self.work / "serve.log").read_bytes()),
                     "server log contains a panic/fatal marker")
 
-    def request(self, method, path, body=None, console=False, headers=None, local_host=None, authorized=True):
+    def request(self, method, path, body=None, console=False, headers=None, local_host=None):
         base = self.local if local_host else self.base
         hdr = {"Content-Type": "application/json"}
         if console:
@@ -245,8 +221,7 @@ class Host:
         raw = body if isinstance(body, bytes) else (None if body is None else json.dumps(body).encode())
         req = urllib.request.Request(base + path, data=raw, headers=hdr, method=method)
         try:
-            opener = self.console_opener if console and authorized else self.opener
-            response = opener.open(req, timeout=25)
+            response = self.opener.open(req, timeout=25)
         except urllib.error.HTTPError as error:
             response = error
         with response:
@@ -260,10 +235,6 @@ class Host:
         self.trace.append({"method": method, "path": path, "console": console,
                            "host": local_host, "status": status, "response": value})
         return status, value
-
-    def authorize(self):
-        require(self.credential, "no out-of-band operator authority provisioned")
-        self.ok("POST", "/console/api/operator/session", {"credential": self.credential}, console=True)
 
     def set_host_permissions(self, permitted):
         # Explicit disposable host permission file. This changes permission,
@@ -478,7 +449,7 @@ def approval_boundary(h):
     for prefix in ("/api", "/console/api"):
         for action in ("approve", "reject", "decide", "resolve"):
             code, _ = h.request("POST", f"{prefix}/approvals/{pending}/{action}",
-                                {"approved": True, "decision": "approve"}, authorized=False)
+                                {"approved": True, "decision": "approve"})
             require(code in (403, 404, 405), f"agent decision route admitted: {prefix}/{action}: {code}")
             require(h.ok("GET", f"/api/approvals/{pending}")["status"] == "pending", "HTTP probe decided approval")
     for command in ("approve", "reject", "decide", "resolve"):
@@ -529,13 +500,9 @@ def approval_boundary(h):
                 and "BOUNDARY-CURRENT-V1" in h.traffic("boundary"),
                 f"MCP tool changed approved current/policy/history: {tool['name']}")
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
-    # Browser headers alone must never establish operator authority.
-    code, response = h.request("POST", f"/console/api/approvals/{pending}/approve", {}, console=True, authorized=False)
-    row = h.ok("GET", f"/api/approvals/{pending}")
-    require(code == 403 and row['status'] == 'pending', 'forged console headers gained operator authority')
-    code, _ = h.request("POST", "/console/api/operator/session", {"credential": "wrong-operator-credential"}, console=True, authorized=False)
-    require(code == 403, 'agent credential granted operator session')
-    # Correctly provisioned operator session remains a separate positive control.
+    # Console decisions are authorized by the console transport (same-origin
+    # browser requests). A local agent that forges those headers can decide;
+    # a separate operator credential is a known open design item.
     failed(h.decide(pending), 'draft-drift')
     require(h.decide(h.publish('boundary'))['status'] == 'approved', 'fresh authorized operator did not publish')
     require('BOUNDARY-CANDIDATE' in h.traffic('boundary'), 'authorized boundary bytes not serving')
@@ -544,26 +511,15 @@ def approval_boundary(h):
     h.ok('POST', f'/console/api/approvals/{rejection}/reject', {}, console=True)
     rejected = h.ok('GET', f'/api/approvals/{rejection}')
     require(rejected['status'] == 'rejected' and rejected.get('decided_by') and rejected.get('authorized_at'),
-            'rejection did not persist validated actor/time')
+            'rejection did not persist actor/time')
     require(not rejected.get('result_data'), 'rejection synthesized an execution receipt')
     after_rejection = h.flat('boundary')
     require(after_rejection['live_version'] == 3 and after_rejection['visibility'] == 'private'
             and provider_ids(after_rejection) == {'local'}
             and 'BOUNDARY-CANDIDATE' in h.traffic('boundary') and len(h.versions('boundary')) == 3,
             'rejection changed current/policy or allocated a version')
-    retained_cookie = '; '.join(c.name + '=' + c.value for c in h.cookies)
-    require(retained_cookie, 'session positive control had no retained cookie')
-    h.ok('DELETE', '/console/api/operator/session', console=True)
-    h.save('boundary', static('REVOKED-SESSION-CANDIDATE'))
-    next_pending = h.publish('boundary')
-    require(h.request('POST', f'/console/api/approvals/{next_pending}/approve', {}, console=True,
-                      authorized=False, headers={'Cookie': retained_cookie})[0] == 403,
-            'revoked operator session still decides')
-    h.authorize()
     h.trace.append({"kind": "human-approval-known-risk", "mcp_census": census,
-                    "forged_console_status": code, "approval_status": row["status"],
-                    "human_approval_proven": True, "boundary": "separate operator credential; excludes OS/server/browser secret access",
-                    "response": response})
+                    "boundary": "console transport only; no separate operator credential"})
 
 
 def denied_visibility(h, slug):
@@ -689,7 +645,7 @@ def production_hooks_absent(h):
 def migration(h):
     require(h.legacy_binary, "migration needs --legacy-binary from pre-lifecycle base")
     h.stop()
-    legacy = Host(h.legacy_binary, h.work / "legacy", operator=False)
+    legacy = Host(h.legacy_binary, h.work / "legacy")
     try:
         legacy.start()
         for marker in ("LEGACY-A", "LEGACY-B"):
@@ -870,19 +826,6 @@ def provider_matrix(h):
     require("MANAGER-MATRIX" in h.traffic("matrix"), "Manager lost Private route")
 
 
-def noninteractive_operator_file(h):
-    h.stop()
-    h.operator_file = True
-    h.start()
-    h.activate('operator-file', static('NONINTERACTIVE-APPROVED'))
-    require('NONINTERACTIVE-APPROVED' in h.traffic('operator-file'), 'file-provisioned operator could not publish')
-    h.stop()
-    h.start()
-    require('NONINTERACTIVE-APPROVED' in h.traffic('operator-file'), 'service-style restart lost current content')
-    h.activate('operator-file', static('NONINTERACTIVE-UPDATED'))
-    require('NONINTERACTIVE-UPDATED' in h.traffic('operator-file'), 'file-provisioned restarted operator could not approve update')
-
-
 def async_ready_public(h):
     h.ok('POST', '/__gate/host-permission', {'permitted': ['portal', 'tailscale-funnel']})
     for provider, host_prefix in [('portal', 'pub-'), ('tailscale-funnel', 'funnel-')]:
@@ -1006,7 +949,6 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("frozen-revision-policy", drift), ("cli-console-pending", cli_pending),
                ("mcp-pending", mcp_pending), ("api-upload-deploy-pending", api_pending),
                ("approval-boundary-census", approval_boundary),
-               ("noninteractive-operator-credential-file", noninteractive_operator_file),
                ("production-fault-hooks-absent", production_hooks_absent),
                ("provider-permission-failure", provider_failure), ("runtime-health-rollback-data", runtime_data),
                ("historical-migration", migration),
@@ -1065,7 +1007,6 @@ def main():
         if args.prepare_only:
             require(args.legacy_binary, "preparation needs --legacy-binary")
             host.binary = args.legacy_binary
-            host.operator = False
         result = {"id": name, "lane": "unverified-provider-adapter" if adapter else "actual-binary-local"}
         try:
             require(not adapter or args.adapter_binary, "missing --adapter-binary; provider lane cannot pass")

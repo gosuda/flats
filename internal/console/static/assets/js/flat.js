@@ -1,28 +1,16 @@
 // Flat page: addresses, visibility, versions, previews, logs, secrets,
 // usage, rename and delete.
 
-import { h, timeEl, dateTime, bytes, plural } from './dom.js';
+import { h, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
-import { deleteFlat, previewVersion, redeployLive } from './actions.js';
+import { deployVersion, publishDraft, previewVersion, deleteFlat, setVisibility, setProvider, redeployLive, PROVIDERS } from './actions.js';
 import { thumb } from './list.js';
+
 import { siteHeader } from './site.js';
-import {
-  activateVersion, changeVisibility, currentTarget, draftEditor, draftTarget, findDraftPreview,
-  openControl, pendingItems, publishDraft, renderAccess, renderCurrent, renderDraft, renderHistory,
-  saveProvider, statusLine, visibilitySettled, visibilityWord, PROVIDERS, permittedProviders,
-} from './lifecycle.js';
+import { shareDialog } from './share.js';
 
 const LOG_POLL_MS = 5000;
-
-function initialTab() {
-  try {
-    const id = String((globalThis.location && location.hash) || '#overview').replace(/^#/, '');
-    return ['overview', 'history', 'access', 'operations'].includes(id) ? id : 'overview';
-  } catch {
-    return 'overview';
-  }
-}
 const LOG_KEEP = 500;
 
 function card(title, id, ...children) {
@@ -37,17 +25,15 @@ export function mount(main, [slug], ctx, settings = false) {
   ctx.setTitle(slug);
   let flat = null;
   const timers = [];
+  let hostProviders = null; // provider id -> turned on for the host; null until loaded
 
   const headSlot = h('div', null, loading());
+  const visSlot = h('div');
+  const versionsSlot = h('div', null, loading());
   const previewsSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const usageSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
-  let previews = [];
-  let versions = [];
-  let approvals = [];
-  let tab = initialTab();
-  let draftSaveText = '';
 
   const page = h('section', { class: 'page' + (settings ? ' site-page' : '') },
     h('a', { class: 'back', href: '/', 'data-nav': true }, '← All flats'),
@@ -68,6 +54,7 @@ export function mount(main, [slug], ctx, settings = false) {
     if (!ctx.alive()) return false;
     ctx.setTitle(flat.name || flat.slug);
     drawHead();
+    drawVisibility();
     return true;
   }
 
@@ -76,7 +63,7 @@ export function mount(main, [slug], ctx, settings = false) {
     const ok = await loadFlat();
     if (ok) {
       loadSecrets();
-      if (!settings) { loadHistory(); loadPreviews(); loadUsage(); loadApprovals(); }
+      if (!settings) { loadVersions(); loadPreviews(); loadUsage(); loadHostProviders(); }
       logs.poll();
     }
     return ok;
@@ -85,191 +72,41 @@ export function mount(main, [slug], ctx, settings = false) {
   // --- header ---
 
   function drawHead() {
-    const activeId = headSlot.contains(document.activeElement) ? document.activeElement?.id : '';
     if (settings) { drawSettings(); return; }
     const nameEl = h('h1', { class: 'flat-title', text: flat.name || flat.slug });
     const edit = h('button', { type: 'button', class: 'btn btn-small', text: 'Edit name' });
     const titleRow = h('div', { class: 'title-row' }, nameEl, edit);
     edit.addEventListener('click', () => editName(titleRow));
-    const waiting = pendingItems(flat, approvals);
-    const draftUi = draftEditor(flat, (ev) => {
-      draftSaveText = ev.status;
-      const live = headSlot.querySelector('.draft-save');
-      if (live) live.textContent = ev.status;
-      if (ev.response?.draft) {
-        flat = { ...flat, draft: ev.response.draft };
-        const active = document.activeElement;
-        const focusId = active && headSlot.contains(active) ? active.id : '';
-        drawHead();
-        if (focusId) document.getElementById(focusId)?.focus();
-      }
-      else if (ev.conflict) draftSaveText = ev.status;
-    });
-    if (draftSaveText) draftUi.status = () => draftSaveText;
-    const publish = h('button', { id: 'publish-draft', type: 'button', class: 'btn btn-primary', text: flat.live_version ? `Publish the next version after v${flat.live_version}` : 'Publish v1' });
-    publish.addEventListener('click', () => busy(publish, async () => { if (await publishDraft(flat)) await refresh(); }));
-    const prepare = h('button', { id: 'prepare-draft', type: 'button', class: 'btn btn-small', text: 'Open draft (private)' });
-    prepare.addEventListener('click', () => busy(prepare, async () => {
-      try {
-        await api.openDraftPreview(slug);
-        toast('Draft preview is private. It is not a published version.', 'success');
-        await loadPreviews();
-        drawHead();
-      } catch (err) { toast(err.message, 'error'); }
-    }));
+
+    const urls = h('dl', { class: 'facts' });
+    const add = (k, v) => urls.append(h('dt', { text: k }), h('dd', null, v));
+    add('Slug', h('code', { text: flat.slug }));
+    const pending = flat.private_state && !['ready', 'key-expiring'].includes(flat.private_state);
+    add('Private URL', flat.live_version
+      ? h('div', null, extLink(flat.private_url),
+          pending ? h('div', { class: 'muted small' },
+            h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
+            flat.private_detail || 'not answering yet') : null)
+      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), ' (online after the first deploy)'));
+    const pub = publicURL(flat);
+    if (pub) {
+      add('Public URL', h('div', null,
+        flat.live_version ? extLink(pub) : h('code', { text: pub }),
+        h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
+    }
+    add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : 'Not published');
+    add('Created', dateTime(flat.created_at));
+    if (flat.old_slug && flat.old_slug_until) {
+      add('Redirect', `Old slug ${flat.old_slug} redirects here until ${dateTime(flat.old_slug_until)}`);
+    }
+
     fill(headSlot,
-      h('header', { class: 'flat-head' }, thumb(flat, true), h('div', { class: 'flat-head-main' },
-        titleRow,
-        h('p', { class: 'life-status', text: statusLine(flat) }),
-        flat.old_slug ? h('p', { class: 'muted small', text: `Old slug ${flat.old_slug} redirects until ${dateTime(flat.old_slug_until)}` }) : null)),
-      waiting.length ? h('div', { class: 'banner', role: 'region', 'aria-label': 'Pending approvals' },
-        h('div', null, h('strong', { text: 'Approval waiting' }),
-          h('ul', null, waiting.map((a) => h('li', null,
-            h('a', { href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: `${a.action} · ${a.status}` })))))) : null,
-      h('div', { class: 'life-grid' },
-        renderCurrent(flat, (btn) => busy(btn, async () => { if (await redeployLive(flat)) await refresh(); })),
-        renderDraft(flat, findDraftPreview(previews, flat.draft?.revision), {
-          editor: draftUi.editor,
-          saveState: draftSaveText || (flat.draft ? `Saved ${flat.draft.updated_at ? dateTime(flat.draft.updated_at) : ''}`.trim() : ''),
-          publishButton: flat.draft?.dirty ? publish : null,
-          previewButton: prepare,
-        })),
-      tabBar(),
-      tabPanel());
-    if (activeId) document.getElementById(activeId)?.focus();
-  }
-
-  function tabBar() {
-    const tabs = [
-      ['overview', 'Overview'],
-      ['history', 'Version history'],
-      ['access', 'Access'],
-      ['operations', 'Operations'],
-    ];
-    return h('div', { class: 'life-tabs', role: 'tablist', 'aria-label': 'Flat sections' }, tabs.map(([id, label]) => {
-      const btn = h('button', { type: 'button', role: 'tab', id: 'tab-' + id, 'aria-controls': 'panel-' + id, 'aria-selected': tab === id ? 'true' : 'false', tabindex: tab === id ? '0' : '-1', text: label });
-      btn.addEventListener('keydown', (ev) => {
-        const index = tabs.findIndex(([value]) => value === id);
-        const next = ev.key === 'Home' ? 0 : ev.key === 'End' ? tabs.length - 1
-          : ev.key === 'ArrowRight' ? (index + 1) % tabs.length
-            : ev.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : null;
-        if (next === null) return;
-        ev.preventDefault();
-        document.getElementById('tab-' + tabs[next][0])?.click();
-      });
-      btn.addEventListener('click', () => {
-        tab = id;
-        try { history.replaceState(null, '', `#${id}`); } catch { /* harness without history */ }
-        drawHead();
-        document.getElementById('tab-' + id)?.focus();
-      });
-      return btn;
-    }));
-  }
-
-  function tabPanel() {
-    const panel = h('div', { id: 'panel-' + tab, role: 'tabpanel', 'aria-labelledby': 'tab-' + tab });
-    if (tab === 'history') panel.appendChild(historyPanel());
-    else if (tab === 'access') panel.appendChild(accessPanel());
-    else if (tab === 'operations') panel.append(operationsPanel());
-    else panel.append(overviewPanel());
-    return panel;
-  }
-
-  function overviewPanel() {
-    const current = currentTarget(flat);
-    const draft = draftTarget(findDraftPreview(previews, flat.draft?.revision));
-    return h('div', null,
-      h('p', { text: `${flat.name || flat.slug} is ${publicationPhrase(flat)} and ${visibilityWord(flat.visibility)}.` }),
-      h('div', { class: 'life-actions' },
-        openControl(current, current.version ? `Open current version v${current.version}` : 'Open current version'),
-        openControl(draft.ready ? draft : { ...draft, ready: false }, 'Open draft (private)')),
-      h('p', { class: 'muted', text: 'Logs, the database, and environment variables are in Operations and in the site settings.' }));
-  }
-
-  function historyPanel() {
-    return renderHistory(flat, versions, approvals, {
-      versionActions(v, current) {
-        const preview = h('button', { type: 'button', class: 'btn btn-small', text: `Preview v${v.number} (private)`, disabled: v.pruned });
-        preview.addEventListener('click', () => busy(preview, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
-        if (current) return h('div', { class: 'cell-actions' }, preview, redeployButton());
-        const make = h('button', { type: 'button', class: 'btn btn-small', text: `Make v${v.number} current`, disabled: v.pruned });
-        make.addEventListener('click', () => busy(make, async () => {
-          if (await activateVersion(flat, v.number, { rollback: v.number < flat.live_version })) await refresh();
-        }));
-        return h('div', { class: 'cell-actions' }, preview, make);
-      },
-    });
-  }
-
-  function accessPanel() {
-    const select = h('select', { id: 'access-visibility', 'aria-describedby': 'access-hint' },
-      h('option', { value: 'private', selected: flat.visibility !== 'public', text: 'Private' }),
-      h('option', { value: 'public', selected: flat.visibility === 'public', disabled: flat.publication !== 'published', text: 'Public' }));
-    const apply = h('button', { id: 'apply-access', type: 'submit', class: 'btn btn-small', text: 'Apply access' });
-    const cancel = h('button', { type: 'button', class: 'btn btn-small', text: 'Cancel' });
-    const form = h('form', { class: 'inline-form' },
-      h('label', { for: 'access-visibility', text: 'Access' }), select, apply, cancel);
-    cancel.addEventListener('click', () => { select.value = flat.visibility === 'public' ? 'public' : 'private'; });
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const next = select.value;
-      busy(apply, async () => {
-        const outcome = await changeVisibility(flat, next);
-        if (!outcome) { select.value = flat.visibility === 'public' ? 'public' : 'private'; return; }
-        await refresh();
-        const settled = visibilitySettled(flat, next, outcome);
-        if (!settled.ok) toast(settled.text, 'error');
-      });
-    });
-    const providerRows = PROVIDERS.map((p) => providerRow(p));
-    const current = currentTarget(flat);
-    const draft = draftTarget(findDraftPreview(previews, flat.draft?.revision));
-    return renderAccess(flat, {
-      visibility: h('div', null,
-        h('p', { id: 'access-hint', class: 'muted small', text: flat.publication === 'published'
-          ? `Current access is ${visibilityWord(flat.visibility)}. Changing it does not publish a version.`
-          : 'Publish v1 before making this flat Public.' }),
-        form),
-      providers: h('div', null, providerRows),
-      addresses: h('ul', { class: 'plain-list' },
-        h('li', null, openControl(current, current.version ? `Open current version v${current.version}` : 'Open current version')),
-        h('li', null, openControl(draft, 'Open draft (private)'))),
-    }, previews);
-  }
-
-  function providerRow(p) {
-    const allowed = p.id === 'local' || permittedProviders(flat).some((x) => x.id === p.id);
-    const permit = h('input', { type: 'checkbox', id: 'permit-' + p.id, checked: allowed, disabled: p.id === 'local' });
-    const intent = h('input', { type: 'checkbox', id: 'intent-' + p.id, disabled: p.id === 'local' });
-    const save = h('button', { type: 'button', class: 'btn btn-small', text: p.id === 'local' ? 'Local stays on' : `Save ${p.label}`, disabled: p.id === 'local' });
-    function sync() { save.disabled = p.id !== 'local' && permit.checked && !intent.checked; }
-    permit.addEventListener('change', sync);
-    intent.addEventListener('change', sync);
-    sync();
-    save.addEventListener('click', () => busy(save, async () => {
-      if (p.id !== 'local' && permit.checked && !intent.checked) return;
-      if (await saveProvider(flat, p.id, permit.checked)) await refresh();
-    }));
-    return h('div', { class: 'provider-row' },
-      h('div', null, h('strong', { text: p.label }), h('div', { class: 'muted small', text: p.audience })),
-      p.id === 'local' ? h('p', { class: 'muted small', text: 'Local is always permitted. It does not need a separate opt-in.' }) : h('div', { class: 'provider-opts' },
-        h('label', { class: 'check', for: 'permit-' + p.id }, permit, ` Allow ${p.label}`),
-        h('label', { class: 'check', for: 'intent-' + p.id }, intent, ' This flat should use it')),
-      save);
-  }
-
-  function operationsPanel() {
-    return h('div', null,
-      h('p', { class: 'ops-links' },
-        h('a', { href: `/flats/${encodeURIComponent(slug)}/database`, 'data-nav': true, text: 'Database' }),
-        ' · ',
-        h('a', { href: `/flats/${encodeURIComponent(slug)}/analytics`, 'data-nav': true, text: 'Analytics' }),
-        ' · ',
-        h('a', { href: `/flats/${encodeURIComponent(slug)}/settings`, 'data-nav': true, text: 'Environment variables and settings' })),
+      h('header', { class: 'flat-head' }, thumb(flat, true), h('div', { class: 'flat-head-main' }, titleRow, urls)),
+      visSlot,
+      card('Versions', 'versions', versionsSlot),
+      card('Open previews', 'previews', previewsSlot),
       card('Logs', 'logs', logs.el),
       card('Secrets', 'secrets', secretsSlot),
-      card('Open previews', 'previews', previewsSlot),
       card('Usage', 'usage', usageSlot),
       card('Rename slug', 'rename', renameForm()),
       card('Delete flat', 'delete', deleteBlock()));
@@ -289,6 +126,8 @@ export function mount(main, [slug], ctx, settings = false) {
     const change = h('button', { class: 'btn btn-small', type: 'button', text: 'Change' });
     const rename = h('div', { class: 'site-rename', hidden: true }, renameForm());
     change.addEventListener('click', () => { rename.hidden = !rename.hidden; if (!rename.hidden) rename.querySelector('input').focus(); });
+    const manage = h('button', { class: 'btn btn-small', type: 'button', text: 'Manage' });
+    manage.addEventListener('click', () => shareDialog(flat, refresh));
     const row = (title, hint, control) => h('div', { class: 'setting-row' },
       h('div', null, h('label', { for: title === 'Name' ? 'site-name' : undefined, text: title }),
         hint ? h('div', { class: 'muted small', text: hint }) : null), control);
@@ -296,9 +135,9 @@ export function mount(main, [slug], ctx, settings = false) {
       h('section', { class: 'settings-section', 'aria-labelledby': 'general-title' },
         h('h2', { id: 'general-title', text: 'General' }),
         row('Name', 'Name for your site', nameForm),
-        row('Addresses', 'Current version and draft links are labeled on the flat page', h('div', { class: 'setting-control' }, h('a', { href: `/flats/${encodeURIComponent(slug)}#access`, 'data-nav': true, text: 'Open access' }), change)), rename,
+        row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
-        row('Access', 'Private or Public for the current version. Separate from publishing.', h('div', { class: 'setting-control' }, h('span', { text: visibilityWord(flat.visibility) }), h('a', { class: 'btn btn-small', href: `/flats/${encodeURIComponent(slug)}#access`, 'data-nav': true, text: 'Change access' })))),
+        row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       h('section', { class: 'settings-section', id: 'secrets' }, h('h2', { text: 'Environment variables' }), secretsSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()),
       h('a', { class: 'back', href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: 'Manage versions, previews and logs' }));
@@ -319,7 +158,7 @@ export function mount(main, [slug], ctx, settings = false) {
           await api.setName(flat.slug, input.value.trim());
           toast('Name saved.', 'success');
           await loadFlat();
-          loadHistory(); loadPreviews(); loadUsage();
+          loadVersions(); loadPreviews(); loadUsage();
         } catch (err) {
           toast(err.message, 'error');
         }
@@ -330,28 +169,132 @@ export function mount(main, [slug], ctx, settings = false) {
     input.select();
   }
 
-  function publicationPhrase(f) {
-    if (f.publication === 'published') return `Published, current v${f.live_version || 0}`;
-    if (f.publication === 'unpublished') return 'Unpublished';
-    return 'missing a publication field';
+  // --- visibility ---
+
+  function drawVisibility() {
+    const id = 'vis-select';
+    const current = visibilityOf(flat.visibility);
+    const select = h('select', { id }, Object.entries(VISIBILITY).map(([v, d]) =>
+      h('option', { value: v, selected: v === current, text: d.label })));
+    const apply = h('button', { type: 'submit', class: 'btn btn-small', text: 'Apply' });
+    const form = h('form', { class: 'inline-form' },
+      h('label', { for: id, text: 'Who can open it' }), select, apply);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (select.value === current) return;
+      busy(apply, async () => {
+        const res = await setVisibility(flat, select.value);
+        if (res) refresh(); else select.value = current;
+      });
+    });
+    fill(visSlot, card('Visibility', 'visibility',
+      h('p', { class: 'muted', text: 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel or Portal.' }),
+      form,
+      h('h3', { class: 'subhead', text: 'Networks' }),
+      h('p', { class: 'muted small' }, 'Allow the networks this flat may use. A network must first be turned on in ',
+        h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'),
+      h('div', { class: 'networks-group' }, h('h4', { text: 'Private' }),
+        h('ul', { class: 'networks' },
+          h('li', null, h('input', { type: 'checkbox', id: 'net-local', checked: true, disabled: true }),
+            h('label', { for: 'net-local' }, 'Local', h('span', { class: 'muted small', text: 'This device, always on' }))),
+          PROVIDERS.filter((p) => p.scope === 'private').map(networkRow))),
+      h('div', { class: 'networks-group' }, h('h4', { text: 'Public' }),
+        h('ul', { class: 'networks' }, PROVIDERS.filter((p) => p.scope === 'public').map(networkRow)))));
   }
 
-  async function loadHistory() {
+  function networkRow(p) {
+    const id = 'net-' + p.id;
+    const allowed = (flat.providers || []).includes(p.id);
+    // A provider that is off for the host can only be unchecked here.
+    const off = hostProviders !== null && !hostProviders[p.id];
+    const box = h('input', { type: 'checkbox', id, checked: allowed, disabled: off && !allowed });
+    box.addEventListener('change', async () => {
+      box.disabled = true;
+      const ok = await setProvider(flat, p.id, box.checked);
+      box.disabled = false;
+      if (ok) refresh(); else box.checked = allowed;
+    });
+    return h('li', null, box, h('label', { for: id }, p.label,
+      h('span', { class: 'muted small', text: off ? 'Off in Settings' : p.hint })));
+  }
+
+  async function loadHostProviders() {
     try {
-      const res = await api.versions(slug);
-      versions = (res.versions || []).slice().sort((a, b) => b.number - a.number);
+      const { providers } = await api.providers();
+      hostProviders = Object.fromEntries((providers || []).map((p) => [p.id, p.enabled]));
+      if (ctx.alive() && flat) drawVisibility();
+    } catch { /* keep every provider selectable; the server still enforces host grants */ }
+  }
+
+  // --- versions ---
+
+  async function loadVersions() {
+    try {
+      const { versions } = await api.versions(slug);
+      if (ctx.alive()) drawVersions((versions || []).slice().sort((a, b) => b.number - a.number));
     } catch (err) {
-      versions = [];
-      if (ctx.alive()) toast(err.message, 'error');
+      if (ctx.alive()) fill(versionsSlot, errorPanel(err, 'Cannot load versions'));
     }
   }
 
-  async function loadApprovals() {
-    try {
-      const res = await api.approvals();
-      approvals = res.approvals || [];
-      if (ctx.alive() && !settings) drawHead();
-    } catch { approvals = []; }
+  function drawVersions(vs) {
+    const draft = flat.draft && flat.draft.dirty ? flat.draft : null;
+    if (!vs.length && !draft) {
+      fill(versionsSlot, h('p', { class: 'muted', text: 'No saved versions yet. Agents save versions with save_version (MCP) or `flats deploy`.' }));
+      return;
+    }
+    const live = flat.live_version;
+    const rows = vs.map((v) => {
+      const actions = h('div', { class: 'cell-actions' });
+      const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', disabled: v.pruned, 'aria-label': `Preview version ${v.number}` });
+      prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
+      actions.appendChild(prev);
+      if (v.number === live) {
+        actions.appendChild(redeployButton());
+      } else {
+        const back = live && v.number < live;
+        const btn = h('button', {
+          type: 'button', class: 'btn btn-small' + (back ? '' : ' btn-primary'), disabled: v.pruned,
+          text: back ? 'Roll back' : 'Deploy', 'aria-label': `${back ? 'Roll back to' : 'Deploy'} version ${v.number}`,
+        });
+        btn.addEventListener('click', () => busy(btn, async () => {
+          if (await deployVersion(flat, v.number, back ? 'rollback' : 'deploy')) refresh();
+        }));
+        actions.appendChild(btn);
+      }
+      return h('tr', { class: v.number === live ? 'is-live' : '' },
+        h('th', { scope: 'row' }, `v${v.number}`, v.number === live ? h('span', { class: 'badge badge-live', text: 'Live' }) : null),
+        h('td', null, timeEl(v.created_at)),
+        h('td', null, h('code', { title: v.hash, text: shortHash(v.hash) })),
+        h('td', null, v.git_sha ? h('code', { title: v.git_sha, text: v.git_sha.slice(0, 7) }) : h('span', { class: 'muted', text: '—' }),
+          v.git_dirty ? h('span', { class: 'badge badge-warn', text: 'dirty', title: 'Uncommitted changes when saved' }) : null),
+        h('td', { class: 'msg' }, v.message || h('span', { class: 'muted', text: '—' })),
+        h('td', null, bytes(v.size), h('div', { class: 'muted small', text: `${plural(v.files, 'file')} · ${v.kind}` }),
+          v.pruned ? h('span', { class: 'badge', text: 'files pruned', title: 'Removed by retention; cannot be deployed or previewed' }) : null),
+        h('td', null, actions));
+    });
+    fill(versionsSlot, h('div', { class: 'table-wrap' },
+      h('table', { class: 'table table-versions' },
+        h('caption', { class: 'sr-only', text: 'Draft and published versions, newest first' }),
+        h('thead', null, h('tr', null, ['Version', 'Created', 'Hash', 'Git', 'Message', 'Size', 'Actions'].map((t) => h('th', { scope: 'col', text: t })))),
+        h('tbody', null, draft ? draftRow(draft) : null, rows))));
+  }
+
+  // draftRow is the agent's latest save that is not published yet.
+  function draftRow(d) {
+    const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': 'Preview the draft' });
+    prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, 0)) loadPreviews(); }));
+    const pub = h('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Publish', 'aria-label': 'Publish the draft' });
+    pub.addEventListener('click', () => busy(pub, async () => { if (await publishDraft(flat)) refresh(); }));
+    return h('tr', { class: 'is-draft' },
+      h('th', { scope: 'row' }, 'Draft', h('span', { class: 'badge badge-draft', text: 'New' })),
+      h('td', null, timeEl(d.updated_at)),
+      h('td', null, h('code', { title: d.hash, text: shortHash(d.hash) })),
+      h('td', null, d.git_sha ? h('code', { title: d.git_sha, text: d.git_sha.slice(0, 7) }) : h('span', { class: 'muted', text: '—' }),
+        d.git_dirty ? h('span', { class: 'badge badge-warn', text: 'dirty', title: 'Uncommitted changes when saved' }) : null),
+      h('td', { class: 'msg' }, d.message || h('span', { class: 'muted', text: '—' })),
+      h('td', null, bytes(d.size), h('div', { class: 'muted small', text: `${plural(d.files, 'file')} · ${d.kind}` })),
+      h('td', null, h('div', { class: 'cell-actions' }, prev, pub)));
   }
 
   // redeployButton restarts the live version, e.g. after a secret changed.
@@ -360,7 +303,7 @@ export function mount(main, [slug], ctx, settings = false) {
       type: 'button', class: 'btn btn-small', text: 'Redeploy (apply secrets)',
       'aria-label': `Redeploy live version ${flat.live_version} to apply secrets`,
     });
-    btn.addEventListener('click', () => busy(btn, async () => { if (await redeployLive(flat)) await refresh(); }));
+    btn.addEventListener('click', () => busy(btn, async () => { if (await redeployLive(flat)) refresh(); }));
     return btn;
   }
 
@@ -368,10 +311,9 @@ export function mount(main, [slug], ctx, settings = false) {
 
   async function loadPreviews() {
     try {
-      const res = await api.previews(slug);
-      previews = res.previews || [];
+      const { previews } = await api.previews(slug);
       if (!ctx.alive()) return;
-      if (!previews.length) {
+      if (!previews || !previews.length) {
         fill(previewsSlot, h('p', { class: 'muted', text: 'No open previews. Previews close when the flat is deployed or after a day without visits.' }));
         return;
       }
@@ -381,13 +323,11 @@ export function mount(main, [slug], ctx, settings = false) {
           try { await api.closePreview(p.host); toast('Preview closed.', 'success'); } catch (err) { toast(err.message, 'error'); }
           loadPreviews();
         }));
-        const label = p.target === 'draft' || p.version === 0 ? 'Draft preview (private)' : `Published v${p.version} (private preview)`;
         return h('li', { class: 'plain-row' },
-          h('div', null, h('strong', { text: label }), ' ', extLink(p.url, label),
+          h('div', null, h('strong', { text: p.version ? `v${p.version}` : 'Draft' }), ' ', extLink(p.url),
             h('div', { class: 'muted small' }, 'Opened ', timeEl(p.created_at), ` · closes if unvisited until ${dateTime(p.expires_at)}`)),
           close);
       })));
-      if (!settings) drawHead();
     } catch (err) {
       if (ctx.alive()) fill(previewsSlot, errorPanel(err, 'Cannot load previews'));
     }
@@ -644,3 +584,4 @@ function eventRow(e) {
     h('span', { class: 'log-msg', text: e.message }),
     data);
 }
+

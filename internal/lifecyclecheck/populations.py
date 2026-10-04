@@ -27,7 +27,7 @@ def seed_mixed(h):
     Host, _, require, _, static = helpers()
     require(h.legacy_binary and h.legacy_adapter_binary, 'mixed seed needs archived real binary and archived-core provider fixture')
     h.stop()
-    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed', operator=False)
+    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed')
     try:
         old.start()
         old.save('mixed', static('UNDEPLOYED-ONE'))

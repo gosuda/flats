@@ -140,7 +140,7 @@ func agentRequest(r *http.Request) (int, error) {
 // Requests carry
 // X-Flats-Console: 1 (a custom header, so cross-origin pages need a
 // preflight), never X-Flats-Client, and mutations come same-origin with the
-// browser's Origin header. OperatorAuthority separately validates decisions.
+// browser's Origin header.
 func consoleRequest(r *http.Request) error {
 	if r.Header.Get("X-Flats-Console") != "1" {
 		return errors.New("console endpoints only accept requests from the Flats web console")

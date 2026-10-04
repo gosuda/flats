@@ -99,26 +99,15 @@ func TestLifecycleDraftFreezeAndPositiveControl(t *testing.T) {
 	}
 }
 
-func TestLifecycleAuthorityDeniesLabelsAndMissingValidator(t *testing.T) {
+func TestLifecycleProviderPermissionIsConsoleOnly(t *testing.T) {
 	s, _ := newTestService(t)
 	lifecycleSave(t, s, "authority", "one")
+	for _, via := range []Via{ViaAPI, ViaCLI, ViaMCP, ViaSystem} {
+		if err := s.SetProviderPermission(t.Context(), "authority", store.ProviderPortal, true, via); !errors.Is(err, ErrForbidden) {
+			t.Fatalf("%s permitted a provider: %v", via, err)
+		}
+	}
 	p := lifecycleRequest(t, s, "authority")
-	s.cfg.ValidateOperatorDecision = nil
-	if _, err := s.Decide(t.Context(), p.Approval.ID, true); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("missing validator %v", err)
-	}
-	if err := s.SetProviderPermission(t.Context(), "authority", store.ProviderPortal, true, ViaConsole); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("via bypass %v", err)
-	}
-	s.cfg.ValidateOperatorDecision = func(context.Context) error { return errors.New("invalid proof") }
-	if _, err := s.Decide(t.Context(), p.Approval.ID, false); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("reject bypass %v", err)
-	}
-	a, _ := s.GetApproval(t.Context(), p.Approval.ID)
-	if a.Status != "pending" {
-		t.Fatal("unauthorized decision changed pending")
-	}
-	s.cfg.ValidateOperatorDecision = func(context.Context) error { return nil }
 	lifecycleApprove(t, s, p)
 }
 

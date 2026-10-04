@@ -76,14 +76,12 @@ type Instance interface {
 
 // Config wires a Service.
 type Config struct {
-	DataDir                  string
-	Store                    *store.Store
-	Private                  PrivateNet
-	Lifecycle                LifecycleNet                 // optional provider manager; independent of legacy adapters
-	Public                   PublicNet                    // nil disables public flats
-	OperatorIdentity         func(context.Context) string // nonsecret identity of validated operator
-	ValidateOperatorDecision func(context.Context) error  // required for approval decisions; nil denies
-	Runtime                  Runtime                      // nil disables server flats
+	DataDir   string
+	Store     *store.Store
+	Private   PrivateNet
+	Lifecycle LifecycleNet // optional provider manager; independent of legacy adapters
+	Public    PublicNet    // nil disables public flats
+	Runtime   Runtime      // nil disables server flats
 	// Settings holds the system settings (config.json). Nil keeps the
 	// frozen defaults in memory.
 	Settings   *SettingsSource
@@ -1465,16 +1463,18 @@ func (s *Service) GetApproval(ctx context.Context, id string) (store.Approval, e
 	return s.st.GetApproval(ctx, id)
 }
 
+type actorKey struct{}
+
+// WithActor records who decides an approval in the console (for example a
+// tailnet login); Decide stores it as decided_by. Without one it is "console".
+func WithActor(ctx context.Context, actor string) context.Context {
+	return context.WithValue(ctx, actorKey{}, actor)
+}
+
 // Decide approves or rejects a pending approval. Only the console calls it.
 // The approval is claimed before anything is applied, so of two concurrent
 // decisions exactly one acts and the other gets ErrConflict.
 func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Approval, error) {
-	if s.cfg.ValidateOperatorDecision == nil {
-		return store.Approval{}, forbiddenf("operator decision authority is not configured")
-	}
-	if err := s.cfg.ValidateOperatorDecision(ctx); err != nil {
-		return store.Approval{}, fmt.Errorf("%w: operator decision: %v", ErrForbidden, err)
-	}
 	unlock := s.lock("approval:" + id)
 	defer unlock()
 	a, err := s.st.GetApproval(ctx, id)
@@ -1492,12 +1492,9 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		}
 		return cur, fmt.Errorf("%w: approval is already %s", ErrConflict, cur.Status)
 	}
-	actor := "validated operator"
-	if a.Status == "pending" && s.cfg.OperatorIdentity != nil {
-		actor = s.cfg.OperatorIdentity(ctx)
-		if actor == "" {
-			return a, forbiddenf("operator identity missing")
-		}
+	actor := "console"
+	if who, _ := ctx.Value(actorKey{}).(string); who != "" {
+		actor = who
 	}
 	if !approve {
 		if a.Status == "rejected" {

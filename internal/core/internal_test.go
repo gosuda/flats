@@ -155,7 +155,7 @@ func newTestService(t *testing.T) (*Service, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(context.Background(), Config{ValidateOperatorDecision: func(context.Context) error { return nil }, DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
+	s, err := New(context.Background(), Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}

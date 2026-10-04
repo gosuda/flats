@@ -8,9 +8,6 @@ import * as approvalPage from './approval.js';
 import * as settingsPage from './settings.js';
 import * as analyticsPage from './analytics.js';
 import * as databasePage from './database.js';
-import { mountOperatorControls } from './operator.js';
-
-mountOperatorControls();
 
 const routes = [
   { re: /^\/$/, page: listPage, section: 'flats' },

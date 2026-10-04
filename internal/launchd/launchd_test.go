@@ -375,26 +375,26 @@ func TestBuildJobKeepsSymlinkedExecutable(t *testing.T) {
 	}
 }
 
-func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
+func TestInstallUpdateRetainsServeArgs(t *testing.T) {
 	fake := &fakeLaunchctl{}
 	opts := testOpts(t, fake)
-	credential := filepath.Join(opts.Home, "operator credentials", "credential")
-	opts.Args = append(opts.Args, "--operator-credential-file", credential)
+	keyFile := filepath.Join(opts.Home, "auth keys", "key")
+	opts.Args = append(opts.Args, "--authkey-file", keyFile)
 	for _, exe := range []string{opts.Executable, filepath.Join(opts.Home, "flats-updated")} {
 		opts.Executable = exe
 		res, err := Install(t.Context(), opts)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := res.Job.Program[len(res.Job.Program)-2:]; !reflect.DeepEqual(got, []string{"--operator-credential-file", credential}) {
+		if got := res.Job.Program[len(res.Job.Program)-2:]; !reflect.DeepEqual(got, []string{"--authkey-file", keyFile}) {
 			t.Fatal(got)
 		}
 		raw, err := os.ReadFile(res.PlistPath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
-			t.Fatal("installed configuration lost credential source")
+		if !strings.Contains(string(raw), "authkey-file") || !strings.Contains(string(raw), "auth keys/key") {
+			t.Fatal("installed configuration lost serve arguments")
 		}
 	}
 }

@@ -26,19 +26,25 @@ type System interface {
 	Status(ctx context.Context) any
 }
 
+// ProviderAdmin is a System that lets the console turn a network provider
+// on or off for the whole host (network.permitted in config.json). Local is
+// always on; every other provider stays off until the operator turns it on.
+type ProviderAdmin interface {
+	NetworkProviders(ctx context.Context) any // the provider list
+	// SetNetworkProvider saves the change; a non-empty ifMatch must be the
+	// current settings ETag. It returns the new ETag.
+	SetNetworkProvider(ctx context.Context, id string, enabled bool, ifMatch string) (string, error)
+}
+
 // Server serves /api and /console/api.
 type Server struct {
-	Svc      *core.Service
-	System   System
-	Operator *OperatorAuthority
+	Svc    *core.Service
+	System System
 }
 
 // Handler returns the API mux (mount at /).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /console/api/operator/session", s.operatorStatus)
-	mux.HandleFunc("POST /console/api/operator/session", s.operatorSession)
-	mux.HandleFunc("DELETE /console/api/operator/session", s.operatorLogout)
 	for _, prefix := range []string{"/api", "/console/api"} {
 		console := prefix == "/console/api"
 		h := func(pattern string, fn func(w http.ResponseWriter, r *http.Request, via core.Via)) {
@@ -48,9 +54,6 @@ func (s *Server) Handler() http.Handler {
 				if console {
 					if err := consoleRequest(r); err != nil {
 						writeErr(w, http.StatusForbidden, err)
-						return
-					}
-					if !safeMethod(r.Method) && !s.requireOperator(w, r) {
 						return
 					}
 					via = core.ViaConsole
@@ -99,6 +102,8 @@ func (s *Server) Handler() http.Handler {
 			h("POST /approvals/{id}/approve", s.decide(true))
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
+			h("GET /providers", s.hostProviders)
+			h("PUT /providers/{id}", s.setHostProvider)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
@@ -382,7 +387,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request, via core.Via) {
 }
 
 // ProviderPermissionRequest grants usage only; it never publishes or changes
-// visibility. Core independently validates the operator proof.
+// visibility.
 type ProviderPermissionRequest struct {
 	Provider  string `json:"provider"`
 	Permitted bool   `json:"permitted"`
@@ -390,7 +395,7 @@ type ProviderPermissionRequest struct {
 
 func (s *Server) providers(w http.ResponseWriter, r *http.Request, via core.Via) {
 	if via != core.ViaConsole {
-		operatorError(w, "operator_required", "provider permissions require a separately authorized operator")
+		writeErr(w, http.StatusForbidden, errors.New("provider permissions are set by the operator in the web console"))
 		return
 	}
 	var in ProviderPermissionRequest
@@ -735,18 +740,19 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, _ core.Vi
 
 func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Request, via core.Via) {
 	return func(w http.ResponseWriter, r *http.Request, _ core.Via) {
-		a, err := s.Svc.Decide(r.Context(), r.PathValue("id"), approve)
-		who := a.DecidedBy
-		if who == "" {
-			who = s.Operator.DecisionIdentity(r.Context())
+		who := approverOf(r.Context())
+		ctx := r.Context()
+		if who != "" {
+			ctx = core.WithActor(ctx, who)
 		}
+		a, err := s.Svc.Decide(ctx, r.PathValue("id"), approve)
 		decided := err == nil || (a.Status == "failed" && !errors.Is(err, core.ErrConflict))
 		// A deleted flat's events are gone with it, so an approved delete
 		// reports its approver only in the response.
 		if a.ID != "" && decided && !(a.Action == "delete" && a.Status == "approved") {
 			src := "tailnet user " + who
-			if approverOf(r.Context()) == "" {
-				src = "authorized operator " + who
+			if who == "" {
+				src = "the console on the loopback listener (no tailnet identity)"
 			}
 			s.Svc.Event(r.Context(), a.Flat, "info", "approval",
 				fmt.Sprintf("approval %s (%s) %s by %s", a.ID, a.Action, a.Status, src),
@@ -759,6 +765,43 @@ func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Reques
 		}
 		writeJSON(w, 200, out)
 	}
+}
+
+func (s *Server) providerAdmin(w http.ResponseWriter) (ProviderAdmin, bool) {
+	a, ok := s.System.(ProviderAdmin)
+	if !ok {
+		writeErr(w, http.StatusNotFound, errors.New("this host does not manage network providers"))
+	}
+	return a, ok
+}
+
+func (s *Server) hostProviders(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	if a, ok := s.providerAdmin(w); ok {
+		writeJSON(w, 200, map[string]any{"providers": a.NetworkProviders(r.Context())})
+	}
+}
+
+func (s *Server) setHostProvider(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	a, ok := s.providerAdmin(w)
+	if !ok {
+		return
+	}
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(r, &in); err != nil || in.Enabled == nil {
+		writeErr(w, 400, errors.New(`body must be {"enabled": true|false}`))
+		return
+	}
+	etag, err := a.SetNetworkProvider(r.Context(), r.PathValue("id"), *in.Enabled, ifMatch(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	if etag != "" {
+		w.Header().Set("ETag", strconv.Quote(etag))
+	}
+	writeJSON(w, 200, map[string]any{"providers": a.NetworkProviders(r.Context()), "etag": etag})
 }
 
 // restartKeys are settings `flats serve` reads only at startup.

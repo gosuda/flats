@@ -21,7 +21,7 @@ export function mount(main, [slug], ctx) {
             h('tbody', null, snapshots.map((s) => h('tr', null, h('th', { scope: 'row', text: s }))))))
             : h('p', { class: 'empty-small', text: 'No database snapshots yet. Static flats do not use a database.' }),
           h('p', { class: 'muted small', text: result.note || 'Use rollback with restore_data to restore a snapshot from before the current version.' }),
-          h('a', { class: 'btn btn-small', href: `/flats/${encodeURIComponent(slug)}#history`, 'data-nav': true, text: 'Manage versions and rollback' })));
+          h('a', { class: 'btn btn-small', href: `/flats/${encodeURIComponent(slug)}#versions`, 'data-nav': true, text: 'Manage deployments' })));
     } catch (err) { if (ctx.alive()) fill(slot, errorPanel(err, 'Cannot load database')); }
   }
   load();

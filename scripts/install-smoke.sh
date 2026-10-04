@@ -50,18 +50,10 @@ service_file() {
 	fi
 }
 
-operator_configured() {
-	curl -fsS -H 'X-Flats-Console: 1' -H "Origin: $url" -H 'Sec-Fetch-Site: same-origin' \
-		"$url/console/api/operator/session" | grep -q '"configured": *true'
-}
-
 step "fresh install"
 sh "$root/install.sh"
 "$flats" version | grep -qF "flats $version" || fail "installed binary is not $version"
 healthy || fail "service is not answering"
-operator_configured || fail "service has no operator credential"
-cred=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
-[ "$(wc -c <"$cred" | tr -d ' ')" -eq 65 ] || fail "unexpected credential size"
 grep -q -- '--config' "$(service_file)" || fail "service does not run from config.json"
 "$flats" config validate || fail "config.json does not validate"
 
@@ -75,7 +67,6 @@ new=$(main_pid)
 if [ -z "$new" ] || [ "$new" = "$pid" ]; then
 	fail "service was not restarted (pid $pid -> $new)"
 fi
-operator_configured || fail "restarted service lost its operator credential"
 grep -q -- '--config' "$(service_file)" || fail "rerun dropped --config from the service"
 
 step "service recovers from a crash"

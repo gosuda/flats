@@ -74,7 +74,7 @@ func setupConfig(t *testing.T, pin bool) *configHost {
 	if pin {
 		h.src.Pin(core.SetPortalRelays, "the service's --relays flag")
 	}
-	h.srv, h.svc, _ = setupWith(t, h.dir, func(c *core.Config) {
+	h.srv, h.svc = setupWith(t, h.dir, func(c *core.Config) {
 		c.Settings = h.src
 		c.Now = func() time.Time {
 			h.mu.Lock()

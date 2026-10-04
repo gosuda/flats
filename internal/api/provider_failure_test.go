@@ -46,7 +46,7 @@ func TestPendingPublicNoticeIsConditionalAtHTTPBoundary(t *testing.T) {
 
 func TestTypedProviderFailureCannotHideUnconfirmedPublicRollback(t *testing.T) {
 	network := &decisionNetwork{}
-	srv, _, _ := setupWithLifecycle(t, network)
+	srv, _ := setupWithLifecycle(t, network)
 	saveAndPublish(t, srv, "rollback-risk", "CURRENT")
 	code, out := req(t, "POST", srv.URL+"/console/api/flats/rollback-risk/providers", strings.NewReader(`{"provider":"tailscale-funnel","permitted":true}`), consoleHdr(t, srv))
 	if code != 200 {
@@ -85,7 +85,7 @@ func TestAuthorizedProviderApplyFailureAndPositiveControl(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			network := &decisionNetwork{}
-			srv, _, _ := setupWithLifecycle(t, network)
+			srv, _ := setupWithLifecycle(t, network)
 			saveAndPublish(t, srv, "policy", "CURRENT")
 			code, out := req(t, "POST", srv.URL+"/console/api/flats/policy/providers", strings.NewReader(`{"provider":"tailscale-funnel","permitted":true}`), consoleHdr(t, srv))
 			if code != 200 {
@@ -167,7 +167,7 @@ func (*uploadPolicyFailure) ExposureStatus(context.Context, string) (core.Exposu
 	return core.ExposureResult{}, nil
 }
 func TestUploadDeployErrorRetainsTypedCategoryAndSavedDraft(t *testing.T) {
-	srv, _, _ := setupWithLifecycle(t, &uploadPolicyFailure{})
+	srv, _ := setupWithLifecycle(t, &uploadPolicyFailure{})
 	code, out := req(t, "POST", srv.URL+"/api/flats/upload-failure/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "SAVED-DRAFT"})), nil)
 	if code != 409 || out["deploy_error"].(map[string]any)["category"] != "provider_unavailable" {
 		t.Fatalf("upload+deploy error: %d %v", code, out)

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -207,7 +206,6 @@ func serve(args []string) error {
 	localAddr := fs.String("local-addr", "127.0.0.1:0", "loopback flat listener")
 	fs.String("network", "local", "compatibility flag; only loopback is used")
 	fs.Bool("portal", false, "compatibility flag; no real Portal is used")
-	credentialInput := fs.Bool("operator-credential-stdin", false, "read disposable operator authority from out-of-band stdin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -219,18 +217,6 @@ func serve(args []string) error {
 	}
 	if *data == "" {
 		return errors.New("explicit disposable --data required")
-	}
-	var authority *api.OperatorAuthority
-	if *credentialInput {
-		credential, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil {
-			return errors.New("could not read test operator authority")
-		}
-		authority, err = api.NewOperatorAuthority(strings.TrimRight(credential, "\r\n"))
-		credential = ""
-		if err != nil {
-			return err
-		}
 	}
 	if err := os.MkdirAll(*data, 0o700); err != nil {
 		return err
@@ -267,16 +253,12 @@ func serve(args []string) error {
 	cfg := core.Config{Now: func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())).UTC() }, DataDir: *data, Store: st, Private: private, Lifecycle: manager,
 		Runtime: &runtime.Manager{DataDir: *data}, Reserved: []string{"flats"}, Logf: log.Printf,
 		ConsoleURL: func() string { return "http://" + *listen }}
-	if authority != nil {
-		cfg.ValidateOperatorDecision = authority.ValidateDecision
-		cfg.OperatorIdentity = authority.DecisionIdentity
-	}
 	svc, err := core.New(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer svc.Close()
-	apiServer := &api.Server{Svc: svc, Operator: authority, System: managerSystem{manager, private}}
+	apiServer := &api.Server{Svc: svc, System: managerSystem{manager, private}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__gate/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

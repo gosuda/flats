@@ -9,16 +9,14 @@
 # launchd agent on macOS, a systemd user service on Linux.
 #
 # A new service runs `flats serve` with its defaults (Local network, Portal
-# off) and an operator credential file. The installer creates that file with
-# a random credential when it does not exist and never prints the credential.
+# off).
 # When the service is already installed, the installer replaces the binary
 # and restarts the service with its existing settings.
 #
 # Options (pass them after `sh -s --` when piping):
 #   --dir DIR              install directory (FLATS_INSTALL_DIR, default ~/.local/bin)
 #   --version TAG          release to install (FLATS_VERSION, default latest)
-#   --credential-file PATH operator credential file for a new service
-#                          (FLATS_CREDENTIAL_FILE, default ~/.config/flats-operator/credential)
+#   --credential-file PATH ignored; the operator credential is no longer used
 #   --no-service           install only the binary (FLATS_NO_SERVICE=1)
 #   -- SERVE-FLAGS...      (re)install the service with these `flats serve` flags
 #
@@ -67,8 +65,7 @@ background service (launchd agent on macOS, systemd user service on Linux).
 
   --dir DIR               install directory (default: ~/.local/bin)
   --version TAG           release tag to install (default: latest)
-  --credential-file PATH  operator credential file for a new service
-                          (default: ~/.config/flats-operator/credential)
+  --credential-file PATH  ignored; the operator credential is no longer used
   --no-service            install only the binary
   -- SERVE-FLAGS...       (re)install the service with these `flats serve` flags
   -h, --help              show this help
@@ -296,16 +293,6 @@ data_dir() {
 	fi
 }
 
-has_credential_flag() {
-	for a in "$@"; do
-		case "$a" in
-		--operator-credential-file | -operator-credential-file | \
-			--operator-credential-file=* | -operator-credential-file=*) return 0 ;;
-		esac
-	done
-	return 1
-}
-
 # check_service_manager fails when the per-user service manager is unusable.
 check_service_manager() {
 	if [ "$os" = darwin ]; then
@@ -317,39 +304,6 @@ check_service_manager() {
 		systemctl --user show-environment >/dev/null 2>&1 ||
 			die "no systemd user manager for $(id -un) (a login session provides one; is XDG_RUNTIME_DIR set?); rerun with --no-service"
 	fi
-}
-
-ensure_credential() {
-	if [ -e "$credential_file" ] || [ -L "$credential_file" ]; then
-		if [ ! -f "$credential_file" ] || [ -L "$credential_file" ]; then
-			die "$credential_file must be a regular file, not a link or directory"
-		fi
-		# shellcheck disable=SC2046 # split ls output into fields on purpose.
-		set -- $(ls -ln "$credential_file")
-		# Drop the xattr/ACL/SELinux marker that ls may append to the mode.
-		if [ "${1%[@+.]}" != "-rw-------" ] || [ "$3" != "$(id -u)" ]; then
-			die "$credential_file must be owned by $(id -un) with mode 0600 (chmod 600 it)"
-		fi
-		say "using existing operator credential $credential_file"
-		return 0
-	fi
-	has od || die "od is required to generate the operator credential"
-	cred_dir=$(dirname "$credential_file")
-	(umask 077 && mkdir -p "$cred_dir") || die "cannot create $cred_dir"
-	staged=$credential_file.tmp.$$
-	(
-		umask 077
-		# 32 random bytes as 64 hex characters.
-		od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$staged"
-		printf '\n' >>"$staged"
-	) || die "cannot write $credential_file"
-	chmod 600 "$staged"
-	[ "$(wc -c <"$staged" | tr -d ' ')" -eq 65 ] ||
-		die "could not read 32 random bytes from /dev/urandom"
-	mv "$staged" "$credential_file" || die "cannot write $credential_file"
-	staged=
-	created_credential=1
-	say "created operator credential $credential_file (mode 0600)"
 }
 
 enable_linger() {
@@ -486,14 +440,11 @@ main() {
 	[ -z "$no_service" ] || [ -z "$serve_args_given" ] ||
 		die "serve flags after -- need the service; drop --no-service"
 
-	credential_given=$credential_file
+	[ -z "$credential_file" ] || warn "--credential-file is ignored: the operator credential is no longer used"
 	[ -n "${HOME:-}" ] || die "HOME is not set"
 	[ -n "$install_dir" ] || install_dir=$HOME/.local/bin
-	[ -n "$credential_file" ] || credential_file=${XDG_CONFIG_HOME:-$HOME/.config}/flats-operator/credential
 	case "$install_dir" in /*) ;; *) install_dir=$(pwd)/$install_dir ;; esac
-	case "$credential_file" in /*) ;; *) credential_file=$(pwd)/$credential_file ;; esac
 	install_dir=$(clean_path "$install_dir")
-	credential_file=$(clean_path "$credential_file")
 	binary=${install_dir%/}/flats
 
 	case "$version" in
@@ -531,8 +482,8 @@ main() {
 				warn "the installed service does not run $binary and keeps its current binary"
 				warn "to switch it, rerun with: -- <flats serve flags>"
 			fi
-			if [ -n "$credential_given" ] || [ -n "${FLATS_DATA:-}" ]; then
-				warn "--credential-file and FLATS_DATA apply only when the service is (re)installed with: -- <flats serve flags>"
+			if [ -n "${FLATS_DATA:-}" ]; then
+				warn "FLATS_DATA applies only when the service is (re)installed with: -- <flats serve flags>"
 			fi
 		else
 			mode=install
@@ -589,7 +540,6 @@ main() {
 	staged=
 	say "installed $binary: $new_version"
 
-	created_credential=
 	case "$mode" in
 	replace)
 		if [ -n "$service_uses_binary" ]; then
@@ -601,10 +551,6 @@ main() {
 		restart_service
 		;;
 	install)
-		if ! has_credential_flag "$@"; then
-			ensure_credential
-			set -- "$@" --operator-credential-file "$credential_file"
-		fi
 		say "installing the Flats service"
 		"$binary" --url "$url" install --executable "$binary" -- "$@" ||
 			die "service installation failed"
@@ -645,21 +591,6 @@ main() {
 		;;
 	esac
 
-	if [ -n "$created_credential" ]; then
-		copy="cat '$credential_file'"
-		if [ "$os" = darwin ]; then
-			copy="pbcopy < '$credential_file'"
-		fi
-		cat <<EOF
-
-Operator credential: $credential_file (not shown here)
-  Save it in your password manager. Enter it in the console under
-  "Unlock decisions" to approve publishes. To copy it: $copy
-  Keep it away from agents: do not paste it into agent chats or logs.
-  Agents running as your user can read this file despite mode 0600, so
-  deny it in their sandbox or file-access settings.
-EOF
-	fi
 	if [ "$mode" = none ] && [ -n "$service_uses_binary" ]; then
 		printf '\nIf the Flats service is running, restart it to use the new binary:  %s\n' "$(restart_command)"
 	elif [ "$mode" = replace ]; then
@@ -667,7 +598,7 @@ EOF
 	elif [ "$mode" = none ]; then
 		cat <<'EOF'
 
-Run a host in the foreground:  flats serve --operator-credential-stdin
+Run a host in the foreground:  flats serve
 Or as a background service:    rerun this installer without --no-service
 EOF
 	else

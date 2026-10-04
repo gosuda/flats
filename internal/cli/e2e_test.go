@@ -17,7 +17,7 @@ import (
 )
 
 // TestAgainstRealAPI runs CLI against actual core/API using disposable Local
-// listeners. Explicit operator sessions are separate from the CLI capability.
+// listeners. Decisions go through the console API, which the CLI cannot use.
 func TestAgainstRealAPI(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
@@ -32,18 +32,12 @@ func TestAgainstRealAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const credential = "separate-cli-test-operator-credential-32-bytes"
-	authority, err := api.NewOperatorAuthority(credential)
+	svc, err := core.New(context.Background(), core.Config{DataDir: filepath.Join(dir, "data"), Store: st, Private: priv, Public: local.NewPublic(pubNet), ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := core.New(context.Background(), core.Config{DataDir: filepath.Join(dir, "data"), Store: st, Private: priv, Public: local.NewPublic(pubNet), ConsoleURL: func() string { return "http://console.test" }, ValidateOperatorDecision: authority.ValidateDecision, OperatorIdentity: authority.DecisionIdentity, Logf: t.Logf})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer((&api.Server{Svc: svc, Operator: authority}).Handler())
+	srv := httptest.NewServer((&api.Server{Svc: svc}).Handler())
 	t.Cleanup(func() { srv.Close(); svc.Close(); priv.Close(); pubNet.Close(); st.Close() })
-	var cookie *http.Cookie
 	operatorCall := func(path, body string) map[string]any {
 		t.Helper()
 		request, _ := http.NewRequest("POST", srv.URL+"/console/api"+path, strings.NewReader(body))
@@ -51,9 +45,6 @@ func TestAgainstRealAPI(t *testing.T) {
 		request.Header.Set("Origin", srv.URL)
 		request.Header.Set("Sec-Fetch-Site", "same-origin")
 		request.Header.Set("Content-Type", "application/json")
-		if cookie != nil {
-			request.AddCookie(cookie)
-		}
 		resp, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatal(err)
@@ -66,12 +57,8 @@ func TestAgainstRealAPI(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Fatalf("operator %s: %d %v", path, resp.StatusCode, out)
 		}
-		if path == "/operator/session" {
-			cookie = resp.Cookies()[0]
-		}
 		return out
 	}
-	operatorCall("/operator/session", `{"credential":"`+credential+`"}`)
 	approvePending := func() {
 		t.Helper()
 		as, err := svc.ListApprovals(context.Background(), "pending")
