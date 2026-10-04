@@ -60,6 +60,7 @@ func TestOperatorCredentialFileFailClosed(t *testing.T) {
 	}
 	opts := localOptions(filepath.Join(dir, "data"))
 	opts.OperatorCredentialFile = target
+	opts.Set = map[string]bool{"operator-credential-file": true}
 	opts.OperatorCredential = "another source"
 	if h, err := Start(context.Background(), opts); err == nil {
 		h.Close()
@@ -76,6 +77,7 @@ func TestNoninteractiveCredentialFileEnablesOperatorSession(t *testing.T) {
 	}
 	opts := localOptions(filepath.Join(dir, "data"))
 	opts.OperatorCredentialFile = path
+	opts.Set = map[string]bool{"operator-credential-file": true}
 	h, err := Start(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -100,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 			h("POST /flats/{slug}/name", s.setName)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
+			h("POST /settings/impact", s.settingsImpact)
 		} else {
 			h("POST /flats", s.createFlat)
 			h("POST /flats/{slug}/versions", s.saveVersion)
@@ -166,6 +168,8 @@ func statusOf(err error) int {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, core.ErrConfigChanged):
+		return http.StatusPreconditionFailed
 	case errors.Is(err, core.ErrInvalid), errors.Is(err, slug.ErrInvalid):
 		return http.StatusBadRequest
 	case errors.Is(err, core.ErrForbidden):
@@ -760,15 +764,40 @@ func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Reques
 // restartKeys are settings `flats serve` reads only at startup.
 var restartKeys = []string{core.SetPortalRelays, core.SetPortalDiscover, core.SetPortalMaxRelay}
 
-const restartNote = "portal relay settings apply after `flats serve` restarts; a --relays flag overrides portal_relays"
+const restartNote = "portal relay settings are saved to config.json and apply after `flats serve` restarts"
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	// The ETag is read first: a save in between leaves it older than the
+	// settings, so a change based on them is refused rather than accepted.
+	cfg, err := s.Svc.SettingsConfig()
+	if err != nil {
+		fail(w, err)
+		return
+	}
 	st, err := s.Svc.Settings(r.Context())
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"settings": st, "defaults": core.Defaults, "apply_on_restart": restartKeys, "note": restartNote})
+	setETag(w, cfg)
+	writeJSON(w, 200, map[string]any{"settings": st, "defaults": core.Defaults, "apply_on_restart": restartKeys, "note": restartNote, "config": cfg})
+}
+
+// setETag sends the settings ETag, the hash of config.json as the host last
+// read or wrote it.
+func setETag(w http.ResponseWriter, cfg *core.ConfigView) {
+	if cfg != nil && cfg.ETag != "" {
+		w.Header().Set("ETag", strconv.Quote(cfg.ETag))
+	}
+}
+
+// ifMatch returns the If-Match entity tag without quotes; "" when absent.
+func ifMatch(r *http.Request) string {
+	v := strings.TrimSpace(r.Header.Get("If-Match"))
+	if u, err := strconv.Unquote(v); err == nil {
+		return u
+	}
+	return v
 }
 
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -777,29 +806,47 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, _ core.Via)
 		writeErr(w, 400, err)
 		return
 	}
-	before, err := s.Svc.Settings(r.Context())
+	u, err := s.Svc.UpdateSettingsMatch(r.Context(), in, ifMatch(r))
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	st, err := s.Svc.UpdateSettings(r.Context(), in)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	// restart_required lists the changed settings that take effect only
-	// after a restart, so the console can say so instead of "saved".
-	restart := []string{}
-	for _, k := range restartKeys {
-		if _, ok := in[k]; ok && st[k] != before[k] {
+	// applied lists the changed settings in effect now; restart_required
+	// those that take effect only after a restart, so the console can say
+	// which is which instead of "saved".
+	applied, restart := []string{}, []string{}
+	for _, k := range u.Changed {
+		if slices.Contains(restartKeys, k) {
 			restart = append(restart, k)
+		} else {
+			applied = append(applied, k)
 		}
 	}
-	out := map[string]any{"settings": st, "restart_required": restart}
+	out := map[string]any{"settings": u.Settings, "applied": applied, "restart_required": restart}
+	if u.ETag != "" {
+		out["etag"] = u.ETag
+		w.Header().Set("ETag", strconv.Quote(u.ETag))
+	}
 	if len(restart) > 0 {
 		out["note"] = restartNote
 	}
 	writeJSON(w, 200, out)
+}
+
+// settingsImpact reports what the next pruning would remove if the
+// candidate settings were saved. It changes nothing.
+func (s *Server) settingsImpact(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	var in map[string]string
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	impact, err := s.Svc.RetentionImpact(r.Context(), in)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"impact": impact})
 }
 
 var _ = time.Second

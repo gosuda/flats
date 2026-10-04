@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -293,4 +294,15 @@ func approvedInternalDeploy(t *testing.T, s *Service, ctx context.Context, slug 
 	}
 	f, err := s.GetFlat(ctx, slug)
 	return DeployResult{Flat: f, Version: f.LiveVersion}, err
+}
+
+func TestDurationOfSaturates(t *testing.T) {
+	if d := durationOf(2, 24*time.Hour); d != 48*time.Hour {
+		t.Fatalf("2 days = %s", d)
+	}
+	for _, n := range []int64{1<<53 - 1, math.MaxInt64 / int64(time.Second)} {
+		if d := durationOf(n+1, time.Second); d != math.MaxInt64 {
+			t.Fatalf("%d seconds = %s, want the longest duration", n+1, d)
+		}
+	}
 }

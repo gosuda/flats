@@ -84,7 +84,10 @@ type Config struct {
 	OperatorIdentity         func(context.Context) string // nonsecret identity of validated operator
 	ValidateOperatorDecision func(context.Context) error  // required for approval decisions; nil denies
 	Runtime                  Runtime                      // nil disables server flats
-	ConsoleURL               func() string
+	// Settings holds the system settings (config.json). Nil keeps the
+	// frozen defaults in memory.
+	Settings   *SettingsSource
+	ConsoleURL func() string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string
 	Now      func() time.Time
@@ -107,7 +110,7 @@ type Service struct {
 	stop        chan struct{}
 	wg          sync.WaitGroup
 	secretKey   []byte
-	settings    sync.Map // setting key -> value cache
+	settings    *SettingsSource
 	eventCount  sync.Map // slug -> *atomic.Int64, events since the last prune
 	logLimits   sync.Map // slug -> *logLimit
 }
@@ -161,9 +164,15 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.ConsoleURL == nil {
 		cfg.ConsoleURL = func() string { return "" }
 	}
-	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf,
+	if cfg.Settings == nil {
+		cfg.Settings = memorySettings()
+	}
+	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf, settings: cfg.Settings,
 		live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "flats"), 0o700); err != nil {
+		return nil, err
+	}
+	if err := CheckSecretKey(ctx, cfg.DataDir, cfg.Store); err != nil {
 		return nil, err
 	}
 	key, err := loadOrCreateKey(filepath.Join(cfg.DataDir, "secret.key"))
@@ -780,23 +789,43 @@ func (s *Service) VersionFile(slugName string, n int, rel string) (string, error
 
 func (s *Service) pruneVersions(ctx context.Context, slugName string) {
 	keep := s.keepVersions()
-	if keep <= 0 {
+	prune, err := s.prunableVersions(ctx, slugName, keep, true)
+	if err != nil {
 		return
+	}
+	for _, n := range prune {
+		if err := os.RemoveAll(s.versionDir(slugName, n)); err == nil {
+			_ = s.st.MarkPruned(ctx, slugName, n)
+			s.Event(ctx, slugName, "info", "retention", fmt.Sprintf("pruned files of version %d (keeping the newest %d plus the live version)", n, keep), nil)
+		}
+	}
+}
+
+// prunableVersions returns the versions of a flat whose files pruning
+// removes when keep_versions is keep, newest first. 0 prunes nothing. The
+// live version is kept on top of keep, and so are the versions of open
+// previews when keepPreviewed is set.
+func (s *Service) prunableVersions(ctx context.Context, slugName string, keep int, keepPreviewed bool) ([]int, error) {
+	if keep <= 0 {
+		return nil, nil
 	}
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
-		return
+		return nil, err
 	}
 	vs, err := s.st.ListVersions(ctx, slugName)
 	if err != nil {
-		return
+		return nil, err
 	}
 	inPreview := map[int]bool{}
-	if ps, err := s.st.ListPreviews(ctx, slugName); err == nil {
-		for _, p := range ps {
-			inPreview[p.Version] = true
+	if keepPreviewed {
+		if ps, err := s.st.ListPreviews(ctx, slugName); err == nil {
+			for _, p := range ps {
+				inPreview[p.Version] = true
+			}
 		}
 	}
+	var prune []int
 	kept := 0
 	for _, v := range vs { // newest first
 		// The live and previewed versions are kept on top of keep_versions.
@@ -807,11 +836,9 @@ func (s *Service) pruneVersions(ctx context.Context, slugName string) {
 			kept++
 			continue
 		}
-		if err := os.RemoveAll(s.versionDir(slugName, v.Number)); err == nil {
-			_ = s.st.MarkPruned(ctx, slugName, v.Number)
-			s.Event(ctx, slugName, "info", "retention", fmt.Sprintf("pruned files of version %d (keeping the newest %d plus the live version)", v.Number, keep), nil)
-		}
+		prune = append(prune, v.Number)
 	}
+	return prune, nil
 }
 
 // --- deploy ---
@@ -1767,13 +1794,8 @@ func (s *Service) sweeper() {
 func (s *Service) Sweep(ctx context.Context) {
 	ttl := s.previewTTL()
 	now := s.now()
+	expired := s.expiredPreviews(ttl, now)
 	s.mu.Lock()
-	var expired []*preview
-	for _, p := range s.prevs {
-		if now.Sub(time.UnixMilli(p.last.Load())) > ttl {
-			expired = append(expired, p)
-		}
-	}
 	live := make(map[string]*liveFlat, len(s.live))
 	for k, v := range s.live {
 		live[k] = v
@@ -1800,6 +1822,20 @@ func (s *Service) Sweep(ctx context.Context) {
 		}
 	}
 	s.checkQuotas(ctx, live, now)
+}
+
+// expiredPreviews returns the open previews without a visit for longer
+// than ttl at now: those Sweep closes.
+func (s *Service) expiredPreviews(ttl time.Duration, now time.Time) []*preview {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var expired []*preview
+	for _, p := range s.prevs {
+		if now.Sub(time.UnixMilli(p.last.Load())) > ttl {
+			expired = append(expired, p)
+		}
+	}
+	return expired
 }
 
 // checkQuotas warns (at most daily) about flats whose data grew past the

@@ -40,9 +40,26 @@ func (a *app) requireMacOS() error {
 	return errors.New("install/uninstall support macOS (launchd) and Linux (systemd user units); elsewhere run `flats serve` under your service manager")
 }
 
+// config runs `flats config` through the Config hook.
+func (a *app) config(args []string) error {
+	if Config == nil {
+		return errors.New("config is not wired")
+	}
+	err := Config(a.ctx, args, a.out)
+	var ec exitCoder
+	if errors.As(err, &ec) && ec.ExitCode() == ExitUsage {
+		return usageError{err.Error()}
+	}
+	return err
+}
+
+// install makes sure config.json exists and matches the given legacy serve
+// flags (creating it for a new host or migrating a legacy data directory),
+// then installs a service that runs only `flats serve --config <path>`.
 func (a *app) install(args []string) error {
 	fs := a.flags("install")
-	data := fs.String("data", "", "data directory (default: FLATS_DATA or ~/Library/Application Support/Flats)")
+	configPath := fs.String("config", "", "config.json for the service (default: FLATS_CONFIG, else <data>/config.json)")
+	data := fs.String("data", "", "data directory for a new host (default: FLATS_DATA or ~/Library/Application Support/Flats)")
 	exe := fs.String("executable", "", "flats binary to run (default: this executable)")
 	extra, err := a.parse(fs, args, 0, -1)
 	if err != nil {
@@ -51,24 +68,7 @@ func (a *app) install(args []string) error {
 	if err := a.requireMacOS(); err != nil {
 		return err
 	}
-	dataDir := *data
-	if dataDir == "" {
-		// launchd does not inherit the shell environment, so an explicit
-		// FLATS_DATA becomes a --data flag of the agent.
-		dataDir = a.env.Getenv("FLATS_DATA")
-	}
-	var serveArgs []string
-	if dataDir != "" {
-		abs, err := filepath.Abs(dataDir)
-		if err != nil {
-			return err
-		}
-		dataDir = abs
-		serveArgs = append(serveArgs, "--data", dataDir)
-	} else if dataDir, err = DefaultDataDir(a.env.Getenv); err != nil {
-		return err
-	}
-	// Validate the documented serve-argument passthrough before service writes.
+	// Validate the documented serve-argument passthrough before any write.
 	for i, arg := range extra {
 		if arg == "--operator-credential-stdin" || arg == "-operator-credential-stdin" ||
 			strings.HasPrefix(arg, "--operator-credential-stdin=") || strings.HasPrefix(arg, "-operator-credential-stdin=") {
@@ -89,19 +89,95 @@ func (a *app) install(args []string) error {
 			return errors.New("--operator-credential-file requires an absolute path")
 		}
 	}
-	serveArgs = append(serveArgs, extra...)
+	dataDir := *data
+	if dataDir == "" {
+		dataDir = a.env.Getenv("FLATS_DATA")
+	}
+	if a.goos() == "darwin" {
+		// Refuse a `go run` binary before config.json is written.
+		bin := *exe
+		if bin == "" {
+			if bin, err = os.Executable(); err != nil {
+				return err
+			}
+		}
+		if strings.Contains(bin, string(filepath.Separator)+"go-build") {
+			return fmt.Errorf("%s looks like a temporary `go run` build; install a built binary (go build -o /usr/local/bin/flats ./cmd/flats) and run its install, or pass --executable", bin)
+		}
+	}
+	if EnsureConfig == nil {
+		return errors.New("install is not wired")
+	}
+	cfgPath := *configPath
+	if cfgPath == "" {
+		if cfgPath = a.env.Getenv("FLATS_CONFIG"); cfgPath != "" && !filepath.IsAbs(cfgPath) {
+			return fmt.Errorf("FLATS_CONFIG must be an absolute path, not %q", cfgPath)
+		}
+	}
+	// A running service holds the data lock that preparing the config may
+	// need (install.sh reinstalls without stopping it). Stop it, keeping its
+	// definition, and start it again if the config cannot be prepared.
+	stopped, restart, err := a.stopService()
+	if err != nil {
+		return err
+	}
+	if stopped {
+		fmt.Fprintln(a.errw, "Stopped the running Flats service to prepare its config.")
+	}
+	cfgPath, dataDir, err = EnsureConfig(a.ctx, cfgPath, dataDir, extra, a.errw)
+	if err != nil {
+		if stopped {
+			if rerr := restart(); rerr != nil {
+				err = errors.Join(err, fmt.Errorf("could not start the previous service again: %w", rerr))
+			} else {
+				fmt.Fprintln(a.errw, "Started the previous Flats service again.")
+			}
+		}
+		return err
+	}
+	// launchd and systemd do not inherit the shell environment; the service
+	// runs from config.json alone.
+	serveArgs := []string{"--config", cfgPath}
+	// If writing or loading the new definition fails, put the previous one
+	// back and start it again, so a failed reinstall never leaves a
+	// previously running host stopped.
+	definition := launchd.PlistPath(a.env.Home)
+	if a.goos() == "linux" {
+		definition = systemd.UnitPath(a.env.Home)
+	}
+	previous, readErr := os.ReadFile(definition)
+	restore := func(err error) error {
+		if readErr != nil {
+			return err
+		}
+		if a.goos() == "darwin" {
+			_, _ = launchd.Stop(a.ctx, a.launchdOpts())
+		}
+		if werr := os.WriteFile(definition, previous, 0o644); werr != nil {
+			return errors.Join(err, fmt.Errorf("could not restore the previous service definition: %w", werr))
+		}
+		if !stopped {
+			return err
+		}
+		if rerr := restart(); rerr != nil {
+			return errors.Join(err, fmt.Errorf("could not start the previous service again: %w", rerr))
+		}
+		fmt.Fprintln(a.errw, "Restored and started the previous Flats service.")
+		return err
+	}
 
 	if a.goos() == "linux" {
-		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: extra, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
+		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: serveArgs, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
 		if err != nil {
-			return err
+			return restore(err)
 		}
 		up := a.waitForServer()
 		if a.jsonOut {
-			a.writeJSON(map[string]any{"unit": path, "url": a.url, "running": up})
+			a.writeJSON(map[string]any{"unit": path, "config": cfgPath, "url": a.url, "running": up})
 			return nil
 		}
 		fmt.Fprintf(a.out, "Installed systemd user service %s (%s)\n", systemd.Unit, path)
+		fmt.Fprintf(a.out, "  config: %s\n", cfgPath)
 		fmt.Fprintln(a.out, "  logs:   journalctl --user -u flats.service")
 		fmt.Fprintln(a.out, "  To keep Flats running while you are logged out: loginctl enable-linger $USER")
 		if up {
@@ -116,20 +192,13 @@ func (a *app) install(args []string) error {
 	opts.DataDir = dataDir
 	opts.Args = serveArgs
 	opts.Env = map[string]string{"PATH": a.env.Getenv("PATH")}
-	job, err := launchd.BuildJob(opts)
-	if err != nil {
-		return err
-	}
-	if strings.Contains(job.Program[0], string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s looks like a temporary `go run` build; install a built binary (go build -o /usr/local/bin/flats ./cmd/flats) and run its install, or pass --executable", job.Program[0])
-	}
 	res, err := launchd.Install(a.ctx, opts)
 	if err != nil {
-		return err
+		return restore(err)
 	}
 	up := a.waitForServer()
 	if a.jsonOut {
-		a.writeJSON(map[string]any{"plist": res.PlistPath, "method": res.Method, "program": res.Job.Program,
+		a.writeJSON(map[string]any{"plist": res.PlistPath, "method": res.Method, "program": res.Job.Program, "config": cfgPath,
 			"stdout": res.Job.Stdout, "stderr": res.Job.Stderr, "url": a.url, "running": up})
 		return nil
 	}
@@ -142,6 +211,19 @@ func (a *app) install(args []string) error {
 		fmt.Fprintf(a.out, "The agent is loaded but %s is not answering yet; check the logs above or run `flats status`.\n", a.url)
 	}
 	return nil
+}
+
+// stopService stops the installed Flats service if it runs, keeping its
+// plist or unit, and returns how to start it again.
+func (a *app) stopService() (bool, func() error, error) {
+	if a.goos() == "linux" {
+		opts := systemd.Options{Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)}
+		stopped, err := systemd.Stop(a.ctx, opts)
+		return stopped, func() error { return systemd.Start(a.ctx, opts) }, err
+	}
+	opts := a.launchdOpts()
+	stopped, err := launchd.Stop(a.ctx, opts)
+	return stopped, func() error { return launchd.Start(a.ctx, opts) }, err
 }
 
 // waitForServer polls /api/status until it answers or InstallWait passes.

@@ -39,7 +39,7 @@ func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error
 // Options configures Install, Uninstall and Status.
 type Options struct {
 	Executable string            // absolute path of the flats binary; default: the running executable
-	Args       []string          // extra `flats serve` flags
+	Args       []string          // `flats serve` flags; install passes --config PATH
 	DataDir    string            // logs go to DataDir/logs (required by Install)
 	Env        map[string]string // extra environment; PATH is always set
 	Home       string            // default: os.UserHomeDir
@@ -215,23 +215,56 @@ func Install(ctx context.Context, opts Options) (Result, error) {
 		// too early fails with "Bootstrap failed: 5: Input/output error".
 		waitGone(ctx, &opts)
 	}
-	_, _ = opts.Run(ctx, "launchctl", "enable", opts.service())
+	res.Method, err = load(ctx, &opts, path)
+	return res, err
+}
 
+// load enables the agent and loads the plist at path, returning the method
+// that worked.
+func load(ctx context.Context, opts *Options, path string) (string, error) {
+	_, _ = opts.Run(ctx, "launchctl", "enable", opts.service())
 	out, err := opts.Run(ctx, "launchctl", "bootstrap", opts.domain(), path)
 	if err != nil && sleepCtx(ctx, retryDelay) {
 		out, err = opts.Run(ctx, "launchctl", "bootstrap", opts.domain(), path)
 	}
 	if err == nil {
-		res.Method = "bootstrap"
-		return res, nil
+		return "bootstrap", nil
 	}
 	out2, err2 := opts.Run(ctx, "launchctl", "load", "-w", path)
 	if err2 == nil {
-		res.Method = "load"
-		return res, nil
+		return "load", nil
 	}
-	return res, fmt.Errorf("launchd: could not load %s: bootstrap: %v: %s; load -w: %v: %s",
+	return "", fmt.Errorf("launchd: could not load %s: bootstrap: %v: %s; load -w: %v: %s",
 		path, err, strings.TrimSpace(string(out)), err2, strings.TrimSpace(string(out2)))
+}
+
+// Stop unloads an installed, loaded agent and waits until launchd has let
+// it go. The plist stays, so Start can load it again. It reports whether
+// the agent was stopped.
+func Stop(ctx context.Context, opts Options) (bool, error) {
+	if err := opts.fill(); err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(PlistPath(opts.Home)); err != nil {
+		return false, nil
+	}
+	if _, err := opts.Run(ctx, "launchctl", "print", opts.service()); err != nil {
+		return false, nil
+	}
+	if out, err := opts.Run(ctx, "launchctl", "bootout", opts.service()); err != nil {
+		return false, fmt.Errorf("launchd: stop %s: %v: %s", Label, err, strings.TrimSpace(string(out)))
+	}
+	waitGone(ctx, &opts)
+	return true, nil
+}
+
+// Start loads the installed plist again, after Stop.
+func Start(ctx context.Context, opts Options) error {
+	if err := opts.fill(); err != nil {
+		return err
+	}
+	_, err := load(ctx, &opts, PlistPath(opts.Home))
+	return err
 }
 
 // Timings of the bootout/bootstrap handoff; tests shorten them.

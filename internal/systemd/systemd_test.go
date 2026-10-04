@@ -9,11 +9,13 @@ import (
 )
 
 func TestRenderQuotesAndRestarts(t *testing.T) {
-	u, err := Render(Options{Executable: "/opt/flats bin/flats", DataDir: "/var/lib/flats", Args: []string{"--network", "local"}, Env: map[string]string{"PATH": "/usr/bin"}})
+	u, err := Render(Options{Executable: "/opt/flats bin/flats", DataDir: "/var/lib/flats", Args: []string{"--config", "/etc/flats dir/config.json"}, Env: map[string]string{"PATH": "/usr/bin"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`ExecStart="/opt/flats bin/flats" serve --data /var/lib/flats --network local`, "Restart=always", "WantedBy=default.target", `Environment=PATH=/usr/bin`} {
+	// The unit runs from config.json alone, and exit 78 (fix the config)
+	// does not restart in a loop.
+	for _, want := range []string{"ExecStart=\"/opt/flats bin/flats\" serve --config \"/etc/flats dir/config.json\"\n", "Restart=always", "RestartPreventExitStatus=78", "WantedBy=default.target", `Environment=PATH=/usr/bin`} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit missing %q:\n%s", want, u)
 		}
@@ -74,5 +76,48 @@ func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
 		if !strings.Contains(string(raw), "ExecStart="+exe) || !strings.Contains(string(raw), "--operator-credential-file "+quote(opts.Args[1])) {
 			t.Fatal("update lost noninteractive source")
 		}
+	}
+}
+
+func TestStopKeepsUnitAndStartRuns(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	home := t.TempDir()
+	state := "active"
+	var calls []string
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		switch args[1] {
+		case "is-active":
+			return []byte(state + "\n"), nil
+		case "stop":
+			state = "inactive"
+		case "start", "restart":
+			state = "active"
+		}
+		return nil, nil
+	}
+	opts := Options{Executable: "/usr/local/bin/flats", DataDir: filepath.Join(home, "data"), Home: home, Run: run}
+	if stopped, err := Stop(context.Background(), opts); err != nil || stopped || len(calls) != 0 {
+		t.Fatalf("stop without a unit: %v %v %v", stopped, err, calls)
+	}
+	path, err := Install(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls = nil
+	if stopped, err := Stop(context.Background(), opts); err != nil || !stopped || state != "inactive" {
+		t.Fatalf("stop: %v %v %s", stopped, err, state)
+	}
+	if stopped, _ := Stop(context.Background(), opts); stopped {
+		t.Fatal("stopped an inactive unit")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("unit removed: %v", err)
+	}
+	if err := Start(context.Background(), opts); err != nil || state != "active" {
+		t.Fatalf("start: %v %s", err, state)
+	}
+	if strings.Join(calls, ";") != "--user is-active flats.service;--user stop flats.service;--user is-active flats.service;--user daemon-reload;--user start flats.service" {
+		t.Fatalf("calls %v", calls)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -89,7 +90,7 @@ func testOpts(t *testing.T, f *fakeLaunchctl) Options {
 	}
 	return Options{
 		Executable: exe,
-		Args:       []string{"--data", filepath.Join(home, "data & more")},
+		Args:       []string{"--config", filepath.Join(home, "data & more", "config.json")},
 		DataDir:    filepath.Join(home, "data & more"),
 		Env:        map[string]string{"PATH": "/usr/bin:/bin", "FLATS_X": "<a>"},
 		Home:       home,
@@ -104,7 +105,8 @@ func TestPlistContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Program[0] != opts.Executable || job.Program[1] != "serve" || job.Program[2] != "--data" {
+	// flats install runs the agent from config.json alone.
+	if !slices.Equal(job.Program, []string{opts.Executable, "serve", "--config", filepath.Join(opts.DataDir, "config.json")}) {
 		t.Fatalf("program = %q", job.Program)
 	}
 	p := string(job.Plist())
@@ -394,5 +396,31 @@ func TestInstallUpdateRetainsNoninteractiveCredentialFile(t *testing.T) {
 		if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
 			t.Fatal("installed configuration lost credential source")
 		}
+	}
+}
+
+func TestStopKeepsPlistAndStartReloads(t *testing.T) {
+	f := &fakeLaunchctl{}
+	opts := testOpts(t, f)
+	if stopped, err := Stop(context.Background(), opts); err != nil || stopped || len(f.calls) != 0 {
+		t.Fatalf("stop without an agent: %v %v calls=%v", stopped, err, f.calls)
+	}
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	f.calls, f.lingering = nil, 2
+	stopped, err := Stop(context.Background(), opts)
+	if err != nil || !stopped || f.loaded {
+		t.Fatalf("stop: %v %v loaded=%v", stopped, err, f.loaded)
+	}
+	// Stop waits until launchd no longer knows the job.
+	if got := f.subcommands(); !reflect.DeepEqual(got, []string{"print", "bootout", "print", "print", "print"}) {
+		t.Fatalf("calls = %v", got)
+	}
+	if _, err := os.Stat(PlistPath(opts.Home)); err != nil {
+		t.Fatalf("plist removed: %v", err)
+	}
+	if err := Start(context.Background(), opts); err != nil || !f.loaded {
+		t.Fatalf("start: %v loaded=%v", err, f.loaded)
 	}
 }

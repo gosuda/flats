@@ -27,8 +27,8 @@ func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error
 // Options configure the unit.
 type Options struct {
 	Executable string            // default: the running executable
-	Args       []string          // extra `flats serve` flags
-	DataDir    string            // required
+	Args       []string          // `flats serve` flags, such as --config PATH
+	DataDir    string            // required; created private before the unit starts
 	Env        map[string]string // extra environment
 	Home       string            // default: os.UserHomeDir
 	Run        Runner            // default: ExecRunner
@@ -82,11 +82,7 @@ func Render(opts Options) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := filepath.Abs(opts.DataDir)
-	if err != nil {
-		return "", err
-	}
-	words := []string{quote(exe), "serve", "--data", quote(data)}
+	words := []string{quote(exe), "serve"}
 	for _, a := range opts.Args {
 		words = append(words, quote(a))
 	}
@@ -102,7 +98,9 @@ func Render(opts Options) (string, error) {
 	for _, k := range keys {
 		b.WriteString("Environment=" + quote(k+"="+opts.Env[k]) + "\n")
 	}
-	b.WriteString("Restart=always\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
+	// Exit status 78 means the operator must fix the configuration, which a
+	// restart cannot do.
+	b.WriteString("Restart=always\nRestartSec=5\nRestartPreventExitStatus=78\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
 	return b.String(), nil
 }
 
@@ -161,4 +159,39 @@ func Active(ctx context.Context, opts Options) (string, error) {
 	}
 	out, _ := opts.Run(ctx, "systemctl", "--user", "is-active", Unit)
 	return strings.TrimSpace(string(out)), nil
+}
+
+// Stop stops the installed unit if it is active or starting, keeping the
+// unit file so Start can run it again. It reports whether it stopped it.
+// systemctl stop returns once the process has exited.
+func Stop(ctx context.Context, opts Options) (bool, error) {
+	if err := opts.fill(); err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(UnitPath(opts.Home)); err != nil {
+		return false, nil
+	}
+	switch state, _ := Active(ctx, opts); state {
+	case "active", "activating", "reloading", "deactivating":
+	default:
+		return false, nil
+	}
+	if out, err := opts.Run(ctx, "systemctl", "--user", "stop", Unit); err != nil {
+		return false, fmt.Errorf("systemctl --user stop %s: %v: %s", Unit, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
+// Start starts the installed unit again, after Stop.
+func Start(ctx context.Context, opts Options) error {
+	if err := opts.fill(); err != nil {
+		return err
+	}
+	// The unit file may have been rewritten since systemd last read it.
+	for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "start", Unit}} {
+		if out, err := opts.Run(ctx, "systemctl", args...); err != nil {
+			return fmt.Errorf("systemctl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	flatsapp "github.com/gosuda/flats/internal/app"
+	"golang.org/x/sys/unix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/launchd"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // fakeAPI serves canned replies keyed by "METHOD /path" and records requests.
@@ -480,6 +483,45 @@ func TestServeAndWorkerHooks(t *testing.T) {
 	}
 }
 
+type codedError struct{ code int }
+
+func (e codedError) Error() string { return "fix config.json" }
+func (e codedError) ExitCode() int { return e.code }
+
+// Operator-action failures exit 78, so a service manager stops restarting.
+func TestHooksMapExitCodes(t *testing.T) {
+	Serve = func([]string) error { return errors.Join(errors.New("start"), codedError{ExitConfig}) }
+	var got []string
+	Config = func(_ context.Context, args []string, out io.Writer) error {
+		got = args
+		switch args[0] {
+		case "bad":
+			return codedError{ExitUsage}
+		case "refuse":
+			return codedError{ExitConfig}
+		}
+		io.WriteString(out, "shown\n")
+		return nil
+	}
+	ConfigUsage = "config show [--config path]"
+	t.Cleanup(func() { Serve, Config, ConfigUsage = nil, nil, "config <subcommand> [args]" })
+	if r := run(t, "", "", "serve"); r.code != ExitConfig || !strings.Contains(r.stderr, "fix config.json") {
+		t.Fatalf("serve: %d %s", r.code, r.stderr)
+	}
+	if r := run(t, "", "", "config", "show", "--config", "/c.json"); r.code != 0 || r.stdout != "shown\n" || strings.Join(got, " ") != "show --config /c.json" {
+		t.Fatalf("config show: %d %q %v", r.code, r.stdout, got)
+	}
+	if r := run(t, "", "", "config", "refuse"); r.code != ExitConfig || !strings.Contains(r.stderr, "fix config.json") {
+		t.Fatalf("config refusal: %d %s", r.code, r.stderr)
+	}
+	if r := run(t, "", "", "config", "bad"); r.code != ExitUsage || !strings.Contains(r.stderr, "usage: flats config show") {
+		t.Fatalf("config usage: %d %s", r.code, r.stderr)
+	}
+	if r := run(t, "", "", "help", "config"); !strings.Contains(r.stdout, "usage: flats config show") {
+		t.Fatalf("help config: %s", r.stdout)
+	}
+}
+
 func TestUnreachableServer(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	u := srv.URL
@@ -529,16 +571,46 @@ func TestMCPConfig(t *testing.T) {
 
 // fakeLaunchctl stands in for launchctl: bootstrap loads the job, bootout
 // unloads it, and print fails while it is not loaded.
+// fakeLaunchctl fakes launchctl and, for systemctl, the active state of
+// the unit. onStop runs when a running service stops.
 type fakeLaunchctl struct {
 	mu     sync.Mutex
 	calls  [][]string
 	loaded bool
+	active bool
+	onStop func()
+	// fail makes the next n calls whose first argument (or, for systemctl,
+	// any argument) is the key fail.
+	fail map[string]int
 }
 
 func (f *fakeLaunchctl) run(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, append([]string{name}, args...))
+	for key, n := range f.fail {
+		if n > 0 && (args[0] == key || name == "systemctl" && slices.Contains(args, key)) {
+			f.fail[key] = n - 1
+			return []byte("injected failure"), errors.New("exit status 1")
+		}
+	}
+	if name == "systemctl" {
+		switch {
+		case slices.Contains(args, "is-active"):
+			if f.active {
+				return []byte("active\n"), nil
+			}
+			return []byte("inactive\n"), errors.New("exit status 3")
+		case slices.Contains(args, "stop"):
+			if f.active && f.onStop != nil {
+				f.onStop()
+			}
+			f.active = false
+		case slices.Contains(args, "start"), slices.Contains(args, "restart"):
+			f.active = true
+		}
+		return nil, nil
+	}
 	switch args[0] {
 	case "print":
 		if !f.loaded {
@@ -552,8 +624,127 @@ func (f *fakeLaunchctl) run(_ context.Context, name string, args ...string) ([]b
 			return nil, errors.New("exit status 3")
 		}
 		f.loaded = false
+		if f.onStop != nil {
+			f.onStop()
+		}
 	}
 	return nil, nil
+}
+
+// holdLock takes the data lock of dir the way a running host does.
+func holdLock(t *testing.T, dir string) *os.File {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "flats.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// install.sh reinstalls without stopping the service. install stops it
+// (keeping its definition) so the config can be prepared under the data
+// lock, and starts the old definition again when that fails.
+func TestInstallStopsRunningService(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", "")
+			_, srv := newFakeAPI(t)
+			home := t.TempDir()
+			hermeticInstall(t, home)
+			exe := filepath.Join(home, "flats")
+			if err := os.WriteFile(exe, []byte("x"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			data := filepath.Join(home, "data")
+			// A legacy host: an unbound database, run by the old service.
+			for _, dir := range []string{data, filepath.Join(home, "other")} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			st, err := store.Open(filepath.Join(data, "flats.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			st.Close()
+			definition := launchd.PlistPath(home)
+			if goos == "linux" {
+				definition = filepath.Join(home, ".config", "systemd", "user", "flats.service")
+			}
+			if err := os.MkdirAll(filepath.Dir(definition), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(definition, []byte("old serve --data "+data+" --permit portal"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			lock := holdLock(t, data)
+			fl := &fakeLaunchctl{loaded: true, active: true, onStop: func() { lock.Close() }}
+			env := Env{Launchd: fl.run, Home: home, GOOS: goos, InstallWait: time.Second}
+			running := func() bool { return fl.loaded && goos == "darwin" || fl.active && goos == "linux" }
+
+			r := runEnv(t, env, srv.URL, "install", "--executable", exe, "--", "--permit", "portal")
+			if r.code != 0 || !strings.Contains(r.stderr, "Stopped the running Flats service") {
+				t.Fatalf("install: %+v", r)
+			}
+			raw, _ := os.ReadFile(definition)
+			if !strings.Contains(string(raw), "--config") || !running() {
+				t.Fatalf("new definition %q running=%t", raw, running())
+			}
+			if b, err := os.ReadFile(filepath.Join(data, "config.json")); err != nil || !strings.Contains(string(b), `"portal"`) {
+				t.Fatalf("config.json = %s %v", b, err)
+			}
+
+			// A reinstall whose flags differ from the config fails and leaves
+			// the running definition as it was.
+			fl.mu.Lock()
+			fl.calls, fl.onStop = nil, nil
+			fl.mu.Unlock()
+			r = runEnv(t, env, srv.URL, "install", "--executable", exe, "--", "--permit", "tailscale")
+			if r.code != 78 || !strings.Contains(r.stderr, "Started the previous Flats service again") {
+				t.Fatalf("conflicting reinstall: %+v", r)
+			}
+			if again, _ := os.ReadFile(definition); string(again) != string(raw) || !running() {
+				t.Fatalf("definition changed or service left stopped: running=%t", running())
+			}
+
+			// Loading the new definition fails: the previous one is put back
+			// and started again.
+			fl.mu.Lock()
+			fl.calls = nil
+			fl.fail = map[string]int{"bootstrap": 2, "load": 1}
+			if goos == "linux" {
+				fl.fail = map[string]int{"enable": 1}
+			}
+			fl.mu.Unlock()
+			r = runEnv(t, env, srv.URL, "install", "--executable", exe)
+			if r.code == 0 || !strings.Contains(r.stderr, "Restored and started the previous Flats service") {
+				t.Fatalf("failed load: %+v", r)
+			}
+			if again, _ := os.ReadFile(definition); string(again) != string(raw) || !running() {
+				t.Fatalf("previous definition not restored and running: running=%t\n%s", running(), again)
+			}
+
+			// A foreground host keeps the lock after the service stopped.
+			other := filepath.Join(home, "other")
+			st, err = store.Open(filepath.Join(other, "flats.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			st.Close()
+			holdLock(t, other)
+			r = runEnv(t, env, srv.URL, "install", "--executable", exe, "--data", other)
+			if r.code != 78 || !strings.Contains(r.stderr, "stop the running Flats host") || !running() {
+				t.Fatalf("foreground host: %+v running=%t", r, running())
+			}
+		})
+	}
 }
 
 func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
@@ -564,6 +755,7 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 		t.Fatal(err)
 	}
 	fl := &fakeLaunchctl{}
+	hermeticInstall(t, home)
 	env := Env{Launchd: fl.run, Home: home, GOOS: "darwin", InstallWait: time.Second}
 	data := filepath.Join(home, "data")
 	r := runEnv(t, env, srv.URL, "install", "--executable", exe, "--data", data, "--", "--authkey-file", "/k")
@@ -574,10 +766,20 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<string>serve</string>", "<string>--data</string>", "<string>" + data + "</string>", "<string>--authkey-file</string>", "data/logs/serve.err.log"} {
+	// The service runs from config.json alone; install wrote the flags there.
+	config := filepath.Join(data, "config.json")
+	for _, want := range []string{"<string>serve</string>", "<string>--config</string>", "<string>" + config + "</string>", "data/logs/serve.err.log"} {
 		if !strings.Contains(string(plist), want) {
 			t.Errorf("plist missing %q", want)
 		}
+	}
+	for _, unwanted := range []string{"--data", "--authkey-file"} {
+		if strings.Contains(string(plist), unwanted) {
+			t.Errorf("plist still has %q:\n%s", unwanted, plist)
+		}
+	}
+	if raw, err := os.ReadFile(config); err != nil || !strings.Contains(string(raw), `"tailscale_authkey_file": "/k"`) {
+		t.Errorf("config.json = %s, %v", raw, err)
 	}
 	if !strings.Contains(r.stdout, "Flats is running at "+srv.URL) {
 		t.Errorf("stdout: %s", r.stdout)
@@ -713,6 +915,7 @@ func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", "")
 			_, srv := newFakeAPI(t)
 			home := t.TempDir()
+			hermeticInstall(t, home)
 			fl := &fakeLaunchctl{}
 			env := Env{Launchd: fl.run, Home: home, GOOS: goos, InstallWait: time.Second}
 			credential := filepath.Join(home, "operator credentials", "credential")
@@ -749,10 +952,28 @@ func TestInstallCredentialPassthroughAtCLIBoundary(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), "operator credentials/credential") {
-					t.Fatal("credential passthrough missing", string(raw))
+				// The credential path moved into config.json; the service runs
+				// only `serve --config`.
+				config := filepath.Join(home, "data", "config.json")
+				if strings.Contains(string(raw), "operator-credential-file") || !strings.Contains(string(raw), config) {
+					t.Fatal("service does not run from config.json", string(raw))
+				}
+				if b, err := os.ReadFile(config); err != nil || !strings.Contains(string(b), "operator credentials/credential") {
+					t.Fatalf("credential passthrough missing from config.json: %s %v", b, err)
 				}
 			}
 		})
 	}
+}
+
+// hermeticInstall wires the real install config hook and keeps every
+// default data directory inside home, so install never touches the user's
+// own Flats data.
+func hermeticInstall(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("FLATS_DATA", filepath.Join(home, "data"))
+	t.Setenv("FLATS_CONFIG", "")
+	EnsureConfig = flatsapp.EnsureConfig
+	t.Cleanup(func() { EnsureConfig = nil })
 }

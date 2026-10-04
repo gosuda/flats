@@ -280,99 +280,34 @@ CREATE TABLE IF NOT EXISTS secrets (
 );
 `
 
-// Open opens (and migrates) the database at path.
+// Open opens the database at path, migrating it to the latest schema first.
+//
+// It inspects the file read-only before anything is written: a database
+// from a newer Flats or a file that is not a Flats database is rejected
+// unchanged. An existing database that needs migration is backed up with
+// VACUUM INTO, then each pending step commits in its own transaction. The
+// returned store uses a separate connection opened after migration.
 func Open(path string) (*Store, error) {
-	dsn := "file:" + path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
-	db, err := sql.Open("sqlite", dsn)
+	ctx := context.Background()
+	info, err := Inspect(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if info.Version < info.Latest {
+		if err := migrate(ctx, path, info); err != nil {
+			return nil, fmt.Errorf("migrate %s: %w", path, err)
+		}
+	}
+	db, err := sql.Open("sqlite", fileURI(path)+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // serialize writers; metadata traffic is small
-	if _, err := db.Exec(schema); err != nil {
+	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate %s: %w", path, err)
-	}
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return &Store{db: db}, nil
-}
-
-// migrate upgrades data written by older versions (tracked in user_version).
-func migrate(db *sql.DB) error {
-	var ver int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
-		return err
-	}
-	if ver > 5 {
-		return fmt.Errorf("metadata schema %d is newer than supported schema 5", ver)
-	}
-	if ver < 1 {
-		// Before the redirects table only the latest rename was kept, on the
-		// flat row. A slug that a flat uses again is no longer a redirect.
-		if _, err := db.Exec(`INSERT OR IGNORE INTO redirects(old,flat,until)
-			SELECT old_slug, slug, old_slug_until FROM flats
-			WHERE old_slug IS NOT NULL AND old_slug_until IS NOT NULL AND old_slug NOT IN (SELECT slug FROM flats)`); err != nil {
-			return err
-		}
-	}
-	// Persist only eligibility here, never permission. The explicit operator
-	// network selection decides whether to retain legacy Private Tailscale.
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS legacy_private_upgrade (flat TEXT PRIMARY KEY REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE, pending INTEGER NOT NULL DEFAULT 1)`); err != nil {
-		return err
-	}
-	if ver < 2 {
-		if _, err := db.Exec(`INSERT OR IGNORE INTO legacy_private_upgrade(flat) SELECT slug FROM flats`); err != nil {
-			return err
-		}
-	}
-	if ver < 2 {
-		if err := migrateLifecycle(db); err != nil {
-			return err
-		}
-	}
-	if err := addColumn(db, "approvals", "result_data", "TEXT"); err != nil {
-		return err
-	}
-	if err := addColumn(db, "approvals", "decided_by", "TEXT"); err != nil {
-		return err
-	}
-	if err := addColumn(db, "approvals", "authorized_at", "INTEGER"); err != nil {
-		return err
-	}
-	_, err := db.Exec(`PRAGMA user_version = 5`)
-	return err
-}
-
-func hasColumn(db *sql.DB, table, col string) (bool, error) {
-	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == col {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
-}
-
-func addColumn(db *sql.DB, table, col, decl string) error {
-	ok, err := hasColumn(db, table, col)
-	if err != nil || ok {
-		return err
-	}
-	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + decl)
-	return err
 }
 
 // Close closes the database.
@@ -770,14 +705,25 @@ func (s *Store) ListEvents(ctx context.Context, flat, kind string, after int64, 
 // PruneEvents keeps the newest keep events of flat and returns how many
 // were deleted.
 func (s *Store) PruneEvents(ctx context.Context, flat string, keep int) (int64, error) {
-	if keep < 0 {
-		keep = 0
-	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE flat=? AND id <= (SELECT id FROM events WHERE flat=? ORDER BY id DESC LIMIT 1 OFFSET ?)`, flat, flat, keep)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE `+prunedEvents, prunedEventsArgs(flat, keep)...)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// PrunableEvents counts the events PruneEvents would delete with keep.
+func (s *Store) PrunableEvents(ctx context.Context, flat string, keep int) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE `+prunedEvents, prunedEventsArgs(flat, keep)...).Scan(&n)
+	return n, err
+}
+
+// prunedEvents selects the events of a flat older than its newest keep.
+const prunedEvents = `flat=? AND id <= (SELECT id FROM events WHERE flat=? ORDER BY id DESC LIMIT 1 OFFSET ?)`
+
+func prunedEventsArgs(flat string, keep int) []any {
+	return []any{flat, flat, max(keep, 0)}
 }
 
 // EventFlats returns every flat name that has events.

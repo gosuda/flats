@@ -21,6 +21,27 @@ import (
 
 var secretName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 
+// ErrSecretKeyMissing reports that secret.key is gone while the database
+// still holds secrets sealed with it. A new key could not open them.
+var ErrSecretKeyMissing = errors.New("secret.key is missing but the database holds encrypted secrets")
+
+// CheckSecretKey refuses to let a new key be created over existing secrets:
+// restore <dataDir>/secret.key together with flats.db from the same backup.
+func CheckSecretKey(ctx context.Context, dataDir string, st *store.Store) error {
+	path := filepath.Join(dataDir, "secret.key")
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	has, err := st.HasSecrets(ctx)
+	if err != nil {
+		return err
+	}
+	if has {
+		return fmt.Errorf("%w: restore %s from the backup of this database; Flats will not create a new key", ErrSecretKeyMissing, path)
+	}
+	return nil
+}
+
 func loadOrCreateKey(path string) ([]byte, error) {
 	if b, err := readSecretKey(path); err == nil {
 		return b, nil
