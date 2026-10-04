@@ -146,7 +146,9 @@ func fileURI(path string) string {
 // journal holds unapplied pages, the file is opened immutable so SQLite
 // creates no -wal or -shm file. Otherwise the pending pages must be read,
 // so it uses a plain read-only open; a hot rollback journal then fails
-// instead of being replayed.
+// instead of being replayed. That open never changes the database or its
+// WAL, but SQLite may create or update the -shm index it reads the WAL
+// through.
 func openReadOnly(path string) (*sql.DB, error) {
 	query := "?mode=ro&immutable=1"
 	if sidecarSize(path+"-wal") > 0 || sidecarSize(path+"-journal") > 0 {
@@ -211,10 +213,14 @@ func migrate(ctx context.Context, path string, info Info) error {
 			return fmt.Errorf("backup before migration: %w", err)
 		}
 	}
-	// No journal_mode here: the normal connection sets WAL after migration.
+	// WAL before the first step: a process killed mid-step then leaves
+	// uncommitted WAL frames, which a read-only Inspect can read past. In
+	// rollback-journal mode (a database restored from a VACUUM INTO backup)
+	// it would leave a hot journal that only a writer can recover, and every
+	// later start would fail its read-only probe.
 	// _txlock makes every BeginTx a BEGIN IMMEDIATE, so a concurrent opener
 	// waits for the write lock instead of failing halfway through a step.
-	db, err := sql.Open("sqlite", fileURI(path)+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	db, err := sql.Open("sqlite", fileURI(path)+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		return err
 	}

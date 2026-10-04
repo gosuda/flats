@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -766,5 +767,73 @@ func TestInspectDoesNotWrite(t *testing.T) {
 	}
 	if after := snapshot(t, path); after != before {
 		t.Fatalf("Inspect changed files:\n%s\n%s", before, after)
+	}
+}
+
+// TestMigrationCrashHelper is the child process of
+// TestKilledMigrationOfRestoredBackupStillOpens: it dies inside a step.
+func TestMigrationCrashHelper(t *testing.T) {
+	path := os.Getenv("FLATS_STORE_CRASH_DB")
+	if path == "" {
+		t.Skip("helper process only")
+	}
+	migrations = append(slices.Clone(migrations), migration{latestVersion() + 1, "crash", func(ctx context.Context, x executor) error {
+		if _, err := x.ExecContext(ctx, `UPDATE flats SET name='half'`); err != nil {
+			return err
+		}
+		os.Exit(3)
+		return nil
+	}})
+	_, err := Open(path)
+	t.Fatalf("migration returned: %v", err)
+}
+
+// A database restored from a VACUUM INTO backup is in rollback-journal
+// mode. A process killed in the middle of migrating it must not leave a hot
+// journal that the read-only probe cannot get past.
+func TestKilledMigrationOfRestoredBackupStillOpens(t *testing.T) {
+	dir := t.TempDir()
+	live := filepath.Join(dir, "live.db")
+	s, err := Open(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := s.CreateFlat(context.Background(), Flat{Slug: "blog", Name: "Blog", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`VACUUM INTO ?`, filepath.Join(dir, "flats.db")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	path := filepath.Join(dir, "flats.db")
+	var mode string
+	queryRO(t, path, `PRAGMA journal_mode`, &mode)
+	if mode != "delete" {
+		t.Fatalf("restored backup journal mode %q, want delete", mode)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMigrationCrashHelper$")
+	cmd.Env = append(os.Environ(), "FLATS_STORE_CRASH_DB="+path)
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 3 {
+		t.Fatalf("helper did not die in the step: %v\n%s", err, out)
+	}
+	if sidecarSize(path+"-journal") > 0 {
+		t.Fatal("killed migration left a hot rollback journal")
+	}
+	info, err := Inspect(path)
+	if err != nil || info.Version != latestVersion() {
+		t.Fatalf("inspect after killed migration: %+v %v", info, err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("open after killed migration: %v", err)
+	}
+	defer s.Close()
+	f, err := s.GetFlat(context.Background(), "blog")
+	if err != nil || f.Name != "Blog" {
+		t.Fatalf("killed step leaked: %+v %v", f, err)
 	}
 }
