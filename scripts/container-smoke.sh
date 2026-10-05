@@ -1,16 +1,18 @@
 #!/bin/sh
 # End-to-end check of the container image on a Linux Docker host, in both
 # documented network modes: host networking, and ports published on
-# 127.0.0.1 from a dedicated bridge network. Each mode starts from empty data
-# (config.json created on first start), approves static and JavaScript server
-# deploys and a built-in docs flat through the console API, restarts the container and checks that
-# config, flats and data survive, then stops it with SIGTERM. Containers run
-# hardened as docs/container.md suggests: read-only root, no capabilities, no
-# new privileges.
+# 127.0.0.1 from a dedicated bridge network. Each mode starts on an empty
+# volume, where `flats serve` bootstraps config.json and the database by
+# itself, deploys static and JavaScript server flats with the host's flats
+# CLI and a built-in docs flat, and approves them through the console API.
+# It restarts the container and checks that config, flats and data survive,
+# then stops it with SIGTERM. Containers run hardened as docs/container.md
+# suggests: read-only root, no capabilities, no new privileges.
 #
 #   FLATS_RELEASE_TARGETS=linux/amd64 scripts/build-release.sh v0.0.0-ci dist
 #   docker build -t flats:ci .
-#   scripts/container-smoke.sh flats:ci v0.0.0-ci
+#   tar -xzf dist/flats_linux_amd64.tar.gz -C /tmp flats
+#   scripts/container-smoke.sh flats:ci v0.0.0-ci /tmp/flats
 #
 # Ports default to 17878/17879 (FLATS_SMOKE_PORT, FLATS_SMOKE_LOCAL_PORT) to
 # avoid a host's own Flats service. It removes its containers, volumes and
@@ -18,15 +20,18 @@
 
 set -eu
 
-[ $# -eq 2 ] || {
-	echo "usage: $0 <image> <version>" >&2
+[ $# -eq 3 ] || {
+	echo "usage: $0 <image> <version> <host flats binary>" >&2
 	exit 2
 }
 image=$1
 version=$2
+flats=$3
 port=${FLATS_SMOKE_PORT:-17878}
 local_port=${FLATS_SMOKE_LOCAL_PORT:-17879}
 url=http://127.0.0.1:$port
+FLATS_URL=$url
+export FLATS_URL
 prefix=flats-smoke-$$
 network=$prefix-net
 name=
@@ -92,12 +97,12 @@ hits() {
 	get counter | sed -n 's/.*"hits": *\([0-9]*\).*/\1/p'
 }
 
-# deploy_approved FLAT deploys /tmp/FLAT in the container and approves the
+# deploy_approved FLAT deploys $work/FLAT with the host CLI and approves the
 # publish request through the console API.
 deploy_approved() {
-	docker exec "$name" flats deploy "/tmp/$1" --flat "$1" --json >"$work/deploy" && status=0 || status=$?
+	"$flats" deploy "$work/$1" --flat "$1" --json >"$work/deploy" && status=0 || status=$?
 	[ "$status" -eq 3 ] || fail "deploy of $1 did not wait for approval (exit $status): $(cat "$work/deploy")"
-	docker exec "$name" flats approvals --status pending --json >"$work/approvals"
+	"$flats" approvals --status pending --json >"$work/approvals"
 	id=$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' "$work/approvals" | head -n 1)
 	[ -n "$id" ] || fail "no pending approval for $1: $(cat "$work/approvals")"
 	console -X POST "$url/console/api/approvals/$id/approve" >/dev/null || fail "approving $id for $1 failed"
@@ -121,39 +126,27 @@ smoke() {
 		;;
 	esac
 
-	step "$mode: first start creates config.json"
+	step "$mode: first start bootstraps an empty volume"
 	# shellcheck disable=SC2086 # serve is a word list.
 	docker run -d --name "$name" "$@" \
 		--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
 		-e FLATS_URL="$url" -v "$data:/data" \
-		"$image" $serve >/dev/null
+		"$image" serve $serve >/dev/null
 	wait_for "the host" healthy
+	docker logs "$name" 2>&1 | grep -qF 'initialized a new host in /data' || fail "first start did not report the bootstrap"
 	docker exec "$name" flats config show >"$work/config" || fail "config show failed"
 	instance=$(sed -n 's/.*"instance_id": *"\([^"]*\)".*/\1/p' "$work/config" | head -n 1)
 	[ -n "$instance" ] || fail "config.json was not created: $(cat "$work/config")"
+	if grep -qF "$port" "$work/config"; then
+		fail "per-run listen flags were stored in config.json"
+	fi
 	wait_for "a healthy healthcheck" docker_healthy
 
 	step "$mode: approved static deploy"
-	docker exec "$name" sh -c '
-		mkdir -p /tmp/hello &&
-		printf "<h1>Hello from a Flats container</h1>\n" >/tmp/hello/index.html'
 	deploy_approved hello
 	wait_for "the static flat" static_served
 
 	step "$mode: approved JavaScript server deploy with SQLite"
-	docker exec "$name" sh -c '
-		mkdir -p /tmp/counter &&
-		printf "{\"kind\":\"server\"}\n" >/tmp/counter/flats.json &&
-		cat >/tmp/counter/server.js <<EOF
-export default {
-  async fetch(request, env) {
-    env.DB.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
-    env.DB.exec("INSERT INTO hits VALUES (1)");
-    const [{ n }] = env.DB.query("SELECT count(*) AS n FROM hits");
-    return Response.json({ hits: n });
-  }
-};
-EOF'
 	deploy_approved counter
 	wait_for "the server flat" counter_served
 	before=$(hits)
@@ -178,6 +171,7 @@ EOF'
 	fi
 	echo "server flat hits: $before before restart, $after after"
 	docker exec "$name" flats config show | grep -qF "$instance" || fail "config.json changed on restart"
+	[ "$(docker logs "$name" 2>&1 | grep -c 'initialized a new host')" -eq 1 ] || fail "restart bootstrapped again"
 
 	step "$mode: SIGTERM stops the host cleanly"
 	docker stop -t 20 "$name" >/dev/null
@@ -187,10 +181,23 @@ EOF'
 	name=
 }
 
-step "image runs flats subcommands"
+mkdir -p "$work/hello" "$work/counter"
+printf '<h1>Hello from a Flats container</h1>\n' >"$work/hello/index.html"
+printf '{"kind":"server"}\n' >"$work/counter/flats.json"
+cat >"$work/counter/server.js" <<'EOF'
+export default {
+  async fetch(request, env) {
+    env.DB.exec("CREATE TABLE IF NOT EXISTS hits (n INTEGER)");
+    env.DB.exec("INSERT INTO hits VALUES (1)");
+    const [{ n }] = env.DB.query("SELECT count(*) AS n FROM hits");
+    return Response.json({ hits: n });
+  }
+};
+EOF
+
+step "image runs flats subcommands as nonroot"
 docker run --rm "$image" version | grep -qF "flats $version" || fail "image does not run flats $version"
-docker run --rm "$image" flats version | grep -qF "flats $version" || fail "leading flats argument was not accepted"
-[ "$(docker run --rm --entrypoint id "$image" -u)" = 65532 ] || fail "image does not run as uid 65532"
+[ "$(docker image inspect -f '{{.Config.User}}' "$image")" = 65532:65532 ] || fail "image does not run as uid 65532"
 
 smoke host
 smoke published

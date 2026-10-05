@@ -62,8 +62,9 @@ Restore with the same or a newer Flats release: an older binary refuses a newer
 
 The file holds only what the operator set. A missing key uses the default
 below. Only `schema_version`, `host.instance_id` and `host.data_dir` are
-required; `flats config init` writes them. A value equal to its default stays
-in the file once written; `flats config unset KEY` removes it.
+required; `flats config init`, or the first `flats serve --config` of a new
+host, writes them. A value equal to its default stays in the file once
+written; `flats config unset KEY` removes it.
 
 ```json
 {
@@ -209,11 +210,39 @@ has checked read-only that the database belongs to this configuration:
 | present | bound to it | start | compare the given flags, then start |
 | present | bound elsewhere | refuse (`flats config rebind` for a copy) | refuse |
 | present | not bound | refuse (`flats config migrate`) | finish an interrupted migration |
-| present | absent | refuse: maybe the wrong directory | finish an interrupted init |
-| absent | any | refuse | new directory: init; existing data: migrate |
+| present | absent | `host.data_dir` beside the file and without Flats data: finish the init; otherwise refuse (maybe the wrong directory) | finish an interrupted init |
+| absent | absent | no Flats data in the file's directory: bootstrap; otherwise refuse | new directory: init; existing data: migrate |
+| absent | present | refuse (`flats config migrate`, or the config it is bound to) | new directory: init; existing data: migrate |
 
 Every refusal that needs the operator exits with status 78. The systemd unit
 sets `RestartPreventExitStatus=78` so it does not restart in a loop.
+
+### Bootstrapping a new host
+
+When the file named by `--config` does not exist, `flats serve` starts a new
+host instead of refusing, so a first start needs no separate `flats config
+init`. The data directory is the directory of that file. Flats writes
+`config.json` with a new `host.instance_id` and the defaults, creates and binds
+an empty `flats.db`, and logs `initialized a new host in DIR`. Per-run
+`--listen`, `--local-addr`, `--console-host` and `--runtime` values are not
+written to the file.
+
+It refuses, writing nothing but the lock, when the directory already holds
+Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
+or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `backups/`,
+`network-retirements/` or `network-provider.json` without a database (restore
+the database and config from the same backup). Other entries, such as a new
+volume's `lost+found`, are fine. A bootstrap interrupted after writing
+`config.json` finishes on the next start with the same instance id.
+
+A mistyped path or an unmounted volume therefore starts an empty host rather
+than failing. Check the log line on a first start, and keep the data directory
+where `--config` expects it.
+
+Existing files are upgraded and checked as described under
+[Versions](#versions): an older `schema_version` or database `user_version` is
+migrated at start (the database after a backup), and a newer one stops the
+start with status 78 without changing anything.
 
 When `network.permitted` includes `tailscale` or `tailscale-funnel`, a
 `--config` host refuses to start while `TS_AUTHKEY`, `TS_AUTH_KEY`,
