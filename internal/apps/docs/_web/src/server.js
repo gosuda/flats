@@ -163,26 +163,27 @@ function rate(c, size, type) {
   c.tokens--;
   c.input -= size;
   if (c.tokens < 0 || c.input < 0) throw new Error("rate limit");
-  if (type === "update") {
-    const r = c.room;
-    r.tokens = Math.min(
-      80,
-      (r.tokens ?? 80) + ((now - (r.last || now)) / 1000) * 40,
-    );
-    r.input =
-      Math.min(
-        512 * 1024,
-        (r.input ?? 512 * 1024) + ((now - (r.last || now)) / 1000) * 512 * 1024,
-      ) - size;
-    r.last = now;
-    r.tokens--;
-    if (r.tokens < 0 || r.input < 0) throw new Error("room rate limit");
-  }
   if (type === "aw") {
     c.awTokens = Math.min(20, c.awTokens + ((now - c.awLast) / 1000) * 20) - 1;
     c.awLast = now;
     if (c.awTokens < 0) throw new Error("awareness rate limit");
   }
+}
+// Only joined, authorized writers may consume the shared update budget.
+function rateUpdate(r, size) {
+  const now = Date.now();
+  r.tokens = Math.min(
+    80,
+    (r.tokens ?? 80) + ((now - (r.last || now)) / 1000) * 40,
+  );
+  r.input =
+    Math.min(
+      512 * 1024,
+      (r.input ?? 512 * 1024) + ((now - (r.last || now)) / 1000) * 512 * 1024,
+    ) - size;
+  r.last = now;
+  r.tokens--;
+  if (r.tokens < 0 || r.input < 0) throw new Error("room rate limit");
 }
 function presence(c, m) {
   if (c.readonly)
@@ -277,8 +278,9 @@ function joined(c, m, env) {
   if (!c.readonly && states.length)
     send(c, { t: "aw", u: base64(encodePresence(states)) });
 }
-function update(c, m, env) {
+function update(c, m, env, size) {
   if (c.readonly) return error(c, "readonly", "This connection is read-only");
+  rateUpdate(c.room, size);
   if (
     typeof m.id !== "string" ||
     !/^[A-Za-z0-9:_-]{1,128}$/.test(m.id) ||
@@ -569,8 +571,9 @@ export default {
       const c = connections.get(ws.id);
       if (!c || c.closed || c.diverged) return;
       try {
-        const m = parseFrame(data);
-        rate(c, utf8Bytes(data), m.t);
+        const m = parseFrame(data),
+          size = utf8Bytes(data);
+        rate(c, size, m.t);
         if (m.t === "received") {
           received(c, m.n);
           return;
@@ -580,7 +583,7 @@ export default {
           return;
         }
         if (!c.joined) throw new Error("hello required");
-        if (m.t === "update") update(c, m, env);
+        if (m.t === "update") update(c, m, env, size);
         else if (m.t === "aw") presence(c, m);
         else if (m.t === "ping") ping(c, env);
         else throw new Error("unknown message");

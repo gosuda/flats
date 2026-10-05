@@ -171,6 +171,73 @@ func TestPublicCapacityDoesNotConsumeEditors(t *testing.T) {
 	edit(t, editor, "editor", fixture(t).Independent)
 }
 
+// Large envelopes are within the frame and connection budgets, but two of
+// them exhaust the shared room budget if rejected writes are charged to it.
+func TestUnauthorizedUpdatesPreserveWriterBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, access, rejection string
+		joined                  bool
+	}{
+		{"public-before-hello", "public", "invalid_update", false},
+		{"private-before-hello", "private", "invalid_update", false},
+		{"joined-public", "public", "readonly", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := startApp(t, t.TempDir(), initialText, "v1")
+			editor := connect(t, a.srv.URL, "private")
+			editor.hello(t, nil)
+			attackers := []*socket{connect(t, a.srv.URL, tc.access), connect(t, a.srv.URL, tc.access)}
+			for _, attacker := range attackers {
+				if tc.joined {
+					attacker.hello(t, nil)
+				}
+			}
+			for _, attacker := range attackers {
+				attacker.send(t, map[string]any{"t": "update", "id": "unauthorized", "u": fixture(t).Independent, "padding": strings.Repeat("x", 500*1024)})
+				attacker.rejected(t, tc.rejection)
+			}
+			if a.document(t)["markdown"] != initialText {
+				t.Fatal("unauthorized update changed document")
+			}
+			edit(t, editor, "authorized", fixture(t).Independent)
+			if !strings.Contains(a.document(t)["markdown"].(string), "Person 한국어 🙂") {
+				t.Fatal("authorized edit was not persisted")
+			}
+		})
+	}
+}
+
+func TestConnectionInputLimitPreservesOtherWriter(t *testing.T) {
+	a := startApp(t, t.TempDir(), initialText, "v1")
+	bad := connect(t, a.srv.URL, "private")
+	bad.hello(t, nil)
+	good := connect(t, a.srv.URL, "private")
+	good.hello(t, nil)
+	// Non-update messages must still debit the early per-connection budget.
+	for i := 0; i < 2; i++ {
+		bad.send(t, map[string]any{"t": "ping", "padding": strings.Repeat("x", 500*1024)})
+		bad.next(t, "pong")
+	}
+	bad.send(t, map[string]any{"t": "ping", "padding": strings.Repeat("x", 500*1024)})
+	bad.rejected(t, "capacity")
+	edit(t, good, "other-editor", fixture(t).Independent)
+}
+
+func TestAuthorizedUpdatesConsumeWriterBudget(t *testing.T) {
+	a := startApp(t, t.TempDir(), initialText, "v1")
+	first := connect(t, a.srv.URL, "private")
+	first.hello(t, nil)
+	second := connect(t, a.srv.URL, "private")
+	second.hello(t, nil)
+	first.send(t, map[string]any{"t": "update", "id": "first", "u": fixture(t).Independent, "padding": strings.Repeat("x", 500*1024)})
+	first.next(t, "ack")
+	second.next(t, "update")
+	second.send(t, map[string]any{"t": "update", "id": "second", "u": fixture(t).Independent, "padding": strings.Repeat("x", 500*1024)})
+	second.rejected(t, "capacity")
+	first.send(t, map[string]any{"t": "ping"})
+	first.next(t, "pong")
+}
+
 func TestRejectedRoomOtherWorkerCompaction(t *testing.T) {
 	data := t.TempDir()
 	a := startApp(t, data, initialText, "v1")

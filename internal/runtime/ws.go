@@ -33,6 +33,10 @@ const (
 
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+// wsAccept implements RFC 6455 section 4.2.2: SHA-1 of the public handshake
+// nonce plus GUID, not credential hashing or authentication. Section 10.8
+// explains why collision resistance is not required here. Keep SHA-1 for
+// interoperability; see TestWSAcceptRFC6455 and docs/runtime-api-v1.md.
 func wsAccept(key string) string {
 	h := sha1.Sum([]byte(key + wsGUID))
 	return base64.StdEncoding.EncodeToString(h[:])
