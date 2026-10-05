@@ -153,12 +153,14 @@ smoke() {
 	[ -n "$before" ] || fail "server flat returned no hit count"
 
 	step "$mode: approved document deploy under the writable data volume"
-	docker exec "$name" sh -c '
-		mkdir -p /tmp/document &&
-		printf "# Container document\n\nPersistent Markdown.\n" >/tmp/document/index.md'
 	deploy_approved document
 	get document | grep -q 'Container document' || fail "built-in docs flat was not served"
-	docker exec "$name" test -d /data/runtime/docs || fail "docs modules are not under /data"
+	# Distroless has no shell or test utility. Inspect the generated modules
+	# through Docker rather than adding tools to the hardened image.
+	runtime_copy=$work/$mode-docs-runtime
+	docker cp "$name:/data/runtime/docs" "$runtime_copy" || fail "docs modules are not under /data"
+	find "$runtime_copy" -type f -name server.js | grep -q . || fail "docs server module was not materialized"
+	find "$runtime_copy" -type f -name content.js | grep -q . || fail "docs content module was not materialized"
 
 	step "$mode: restart keeps config, flats and data"
 	docker restart "$name" >/dev/null
@@ -181,7 +183,9 @@ smoke() {
 	name=
 }
 
-mkdir -p "$work/hello" "$work/counter"
+mkdir -p "$work/hello" "$work/counter" "$work/document"
+printf '# Container document\n\nPersistent Markdown.\n' >"$work/document/index.md"
+printf '{"type":"docs"}\n' >"$work/document/flats.json"
 printf '<h1>Hello from a Flats container</h1>\n' >"$work/hello/index.html"
 printf '{"kind":"server"}\n' >"$work/counter/flats.json"
 cat >"$work/counter/server.js" <<'EOF'
