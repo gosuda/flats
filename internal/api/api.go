@@ -91,6 +91,11 @@ func (s *Server) Handler() http.Handler {
 		h("POST /flats/{slug}/rename", s.rename)
 		h("DELETE /flats/{slug}", s.deleteFlat)
 		h("GET /flats/{slug}/logs", s.logs)
+		h("GET /flats/{slug}/env", s.listEnv)
+		h("PUT /flats/{slug}/env/{name}", s.putEnv)
+		h("DELETE /flats/{slug}/env/{name}", s.deleteEnv)
+		h("GET /flats/{slug}/network", s.networkPolicy)
+		h("PUT /flats/{slug}/network", s.putNetworkPolicy)
 		h("GET /flats/{slug}/secrets", s.secrets)
 		h("PUT /flats/{slug}/secrets/{name}", s.putSecret)
 		h("DELETE /flats/{slug}/secrets/{name}", s.deleteSecret)
@@ -639,7 +644,7 @@ func (s *Server) secrets(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"secrets": names, "note": "values are never returned; changes apply on the next deploy"})
+	writeJSON(w, 200, map[string]any{"secrets": names, "note": "values are never returned. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
 }
 
 // operatorVia allows secret writes from the console or the CLI on this host.
@@ -670,7 +675,7 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request, via core.Via)
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply"})
+	writeJSON(w, 200, map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply", "note": "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
 }
 
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request, via core.Via) {
@@ -683,7 +688,7 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request, via core.V
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"deleted": r.PathValue("name")})
+	writeJSON(w, 200, map[string]any{"deleted": r.PathValue("name"), "note": "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ core.Via) {

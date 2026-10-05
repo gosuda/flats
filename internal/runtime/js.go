@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/qjs"
 )
 
@@ -27,16 +28,18 @@ var preludeJS string
 // jsVM is one QuickJS runtime with the prelude and the flat's module loaded.
 // It is not goroutine-safe: a pool hands it to one request at a time.
 type jsVM struct {
-	w        *worker
-	ctx      *swapCtx // the qjs runtime's context; never replaced
-	rt       *qjs.Runtime
-	out      *lineWriter
-	errOut   *lineWriter
-	broken   bool
-	gc       *qjs.Value // native collector captured before guest code can replace it
-	gcBytes  uint64
-	gcCalls  uint32
-	gcMemory uint32
+	w             *worker
+	ctx           *swapCtx // the qjs runtime's context; never replaced
+	rt            *qjs.Runtime
+	out           *lineWriter
+	errOut        *lineWriter
+	broken        bool
+	gc            *qjs.Value // native collector captured before guest code can replace it
+	gcBytes       uint64
+	gcCalls       uint32
+	gcMemory      uint32
+	networkActive bool
+	networkCalls  int
 
 	db     *sql.Conn // per-VM connection (opened on first use)
 	dbUsed bool
@@ -201,6 +204,9 @@ func (vm *jsVM) guard(ctx context.Context, f func(*qjs.Context) error) (err erro
 // invoke calls a global JS function fn(arg) that returns a string (or a
 // promise of one) and awaits it.
 func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err error) {
+	vm.networkActive = fn == "__flats_dispatch" || fn == "__flats_ws"
+	vm.networkCalls = 0
+	defer func() { vm.networkActive = false }()
 	err = vm.guard(ctx, func(c *qjs.Context) (callErr error) {
 		// Register first so the returned value and original promise are freed
 		// before collecting request-local cycles, within the request deadline.
@@ -340,6 +346,24 @@ func (vm *jsVM) close() {
 	}
 }
 
+// The visitor's context is separate from the VM deadline: cancellation closes
+// the wazero VM, so a disconnect must cancel only the host-mediated HTTP call.
+type outboundRequestContextKey struct{}
+
+func outboundContext(ctx context.Context) (context.Context, func()) {
+	child, cancel := context.WithCancel(ctx)
+	original, ok := ctx.Value(outboundRequestContextKey{}).(context.Context)
+	if !ok {
+		return child, cancel
+	}
+	if original.Err() != nil {
+		cancel()
+		return child, cancel
+	}
+	stop := context.AfterFunc(original, cancel)
+	return child, func() { stop(); cancel() }
+}
+
 // hostCall implements __flats_host(op, argsJSON) -> resultJSON.
 func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
 	args := this.Args()
@@ -364,6 +388,10 @@ func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
 }
 
 func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (string, error) {
+	// Treat the guest ABI as untrusted, even if it replaces JSON.stringify.
+	if op == "fetch" && len(raw) > 2<<20 {
+		return "", egress.ErrLimit
+	}
 	var a []json.RawMessage
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", fmt.Errorf("%s: bad arguments", op)
@@ -395,6 +423,31 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 	switch op {
 	case "runtime.generation":
 		return jsonOf(vm.w.spec.Generation)
+	case "fetch":
+		if !vm.networkActive {
+			return "", errors.New("fetch is only available inside a request or WebSocket handler")
+		}
+		if vm.networkCalls >= 16 {
+			return "", egress.ErrLimit
+		}
+		vm.networkCalls++
+		if len(a) != 1 {
+			return "", egress.ErrInvalid
+		}
+		var req egress.Request
+		if err := json.Unmarshal(a[0], &req); err != nil {
+			return "", egress.ErrInvalid
+		}
+		if vm.w.network == nil {
+			return "", egress.ErrDenied
+		}
+		fetchCtx, cancel := outboundContext(ctx)
+		defer cancel()
+		res, err := vm.w.network.Fetch(fetchCtx, req)
+		if err != nil {
+			return "", err
+		}
+		return jsonOf(res)
 	case "env":
 		return jsonOf(vm.w.spec.Env)
 	case "log":
@@ -579,7 +632,7 @@ func (e *jsEngine) close() {
 }
 
 // docsCodec keeps bounded binary serialization out of the interpreted VM.
-// It has no I/O capabilities and is an internal helper for the embedded app.
+// It has no I/O capabilities. Fetch uses separate limits for its binary bridge.
 func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 	args := this.Args()
 	defer func() {
@@ -611,14 +664,21 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 	if args[1].IsByteArray() {
 		vm.gcBytes += uint64(args[1].ByteLen())
 	}
-	const max = 1536 * 1024
-	switch args[0].String() {
-	case "encode":
-		if !args[1].IsByteArray() || args[1].ByteLen() > max {
+	op := args[0].String()
+	max := 1536 * 1024
+	if op == "fetch.encode" {
+		max = egress.MaxRequestBody
+	}
+	if op == "fetch.decode" {
+		max = egress.MaxResponseBody
+	}
+	switch op {
+	case "encode", "fetch.encode":
+		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
 			return nil, errors.New("docs codec binary limit")
 		}
 		return newString(base64.StdEncoding.EncodeToString(args[1].ToByteArray())), nil
-	case "decode":
+	case "decode", "fetch.decode":
 		s, err := readString()
 		if err != nil {
 			return nil, err
@@ -644,7 +704,7 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		}
 		return newBuffer([]byte(s)), nil
 	case "textDecode":
-		if !args[1].IsByteArray() || args[1].ByteLen() > max {
+		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
 			return nil, errors.New("docs codec binary limit")
 		}
 		b := args[1].ToByteArray()

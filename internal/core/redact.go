@@ -17,8 +17,6 @@ const redacted = "[redacted]"
 // encodings of it, from output a flat's code produced (runtime logs, worker
 // stderr, health check bodies). Secrets reach a flat only through env, so
 // these are exactly the values its output can leak.
-// minRedactLen is the shortest secret value that is redacted.
-const minRedactLen = 6
 
 func newRedactor(env map[string]string) func(string) string {
 	seen := map[string]bool{}
@@ -29,12 +27,7 @@ func newRedactor(env map[string]string) func(string) string {
 			pats = append(pats, p)
 		}
 	}
-	for _, v := range env {
-		// Very short values ("1", "on") are not secrets in any useful sense
-		// and would shred unrelated log text.
-		if len(v) < minRedactLen {
-			continue
-		}
+	addEncoded := func(v string) {
 		add(v)
 		add(url.QueryEscape(v))
 		add(url.PathEscape(v))
@@ -44,8 +37,21 @@ func newRedactor(env map[string]string) func(string) string {
 		add(base64.RawURLEncoding.EncodeToString([]byte(v)))
 		add(hex.EncodeToString([]byte(v)))
 		add(strings.ToUpper(hex.EncodeToString([]byte(v))))
+	}
+	for _, v := range env {
+		addEncoded(v)
 		if q, err := json.Marshal(v); err == nil {
 			add(string(q[1 : len(q)-1]))
+			// Worker settings travel through JSON. Legacy invalid UTF-8 bytes
+			// normalize to replacement runes when decoded; output may contain
+			// that normalized value or an encoding of it instead of raw bytes.
+			var normalized string
+			if json.Unmarshal(q, &normalized) == nil && normalized != v {
+				addEncoded(normalized)
+				if normalizedJSON, err := json.Marshal(normalized); err == nil {
+					add(string(normalizedJSON[1 : len(normalizedJSON)-1]))
+				}
+			}
 		}
 	}
 	if len(pats) == 0 {
@@ -53,7 +59,7 @@ func newRedactor(env map[string]string) func(string) string {
 	}
 	// Longest first, so a value is never partly replaced by a shorter one.
 	slices.SortFunc(pats, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
-	args := make([]string, 0, 2*len(pats))
+	var args []string
 	for _, p := range pats {
 		args = append(args, p, redacted)
 	}

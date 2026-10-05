@@ -267,7 +267,11 @@ func TestDocsRestoreTrialAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, _ := s.st.GetFlat(ctx, "restored-doc")
-	if err := s.trialRun(ctx, f, v, filepath.Join(dir, "unused-snapshot")); err != nil {
+	env, err := s.captureEnvironment(ctx, f.Slug, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.trialRun(ctx, f, v, filepath.Join(dir, "unused-snapshot"), env); err != nil {
 		t.Fatal(err)
 	}
 	rt := s.cfg.Runtime.(*contentRuntime)
@@ -426,5 +430,68 @@ func TestHostHealthSignalIsTrusted(t *testing.T) {
 	}), "/_docs/healthz", func(s string) string { return s })
 	if result.Status != 200 || result.Error != "" {
 		t.Fatal(result)
+	}
+}
+
+func TestDocsEnvironmentSnapshotAndContentIsolation(t *testing.T) {
+	s, dir := newTestService(t)
+	rt := &contentRuntime{}
+	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
+	ctx := t.Context()
+	v := saveDocs(t, s, "configured-doc")
+	for _, err := range []error{
+		s.SetEnv(ctx, "configured-doc", "MODE", "ordinary-doc-setting", ViaAPI),
+		s.SetNetworkPolicy(ctx, "configured-doc", []string{"https://api.example.com"}, ViaCLI),
+		s.SetSecret(ctx, "configured-doc", "TOKEN", "secret-doc-setting", ViaCLI),
+	} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := s.captureEnvironment(ctx, "configured-doc", v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnv(ctx, "configured-doc", "MODE", "next-doc-setting", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "isolated")
+	d, err := s.buildWithEnvironment(ctx, "configured-doc", v, data, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.inst.Stop()
+	spec := rt.specs[0]
+	if len(spec.NetworkOrigins) != 0 {
+		t.Fatal("docs runtime received outbound grants")
+	}
+	if spec.Env["MODE"] != "ordinary-doc-setting" || spec.Env["TOKEN"] != "secret-doc-setting" || d.environment != snapshot {
+		t.Fatal("docs did not use captured environment")
+	}
+	if got := d.redact("ordinary-doc-setting secret-doc-setting"); got != "ordinary-doc-setting [redacted]" {
+		t.Fatalf("redaction: %s", got)
+	}
+	spec.Env["MODE"] = "worker mutation"
+	if snapshot.values["MODE"] != "ordinary-doc-setting" {
+		t.Fatal("worker mutated frozen environment")
+	}
+	b, err := os.ReadFile(filepath.Join(spec.Dir, "content.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"ordinary-doc-setting", "next-doc-setting", "secret-doc-setting"} {
+		if strings.Contains(string(b), value) {
+			t.Fatal("environment leaked into content module")
+		}
+	}
+	rt.fail = true
+	if _, err := s.buildWithEnvironment(ctx, "configured-doc", v, data, snapshot); err == nil {
+		t.Fatal("expected startup failure")
+	}
+	if err := s.restart(ctx, "configured-doc", d); err == nil {
+		t.Fatal("expected restart failure")
+	}
+	if rt.specs[len(rt.specs)-1].Env["MODE"] != "ordinary-doc-setting" {
+		t.Fatal("restart recaptured settings")
 	}
 }

@@ -147,7 +147,7 @@ A four-lens adversarial review (security, correctness, spec compliance,
 interfaces; every finding checked by two independent verifiers) confirmed 37
 findings. All were addressed; independent re-verification confirmed 32 fixed
 and the rest either fixed later in this session (snapshot eviction, repeated
-restore_data, over-redaction of short values, wording) or documented because
+restore_data, wording) or documented because
 they cannot be enforced without accounts:
 
 - an agent that can send arbitrary HTTP from the operator's own devices can
@@ -159,6 +159,11 @@ After the fixes: `go test ./...` and `-race` on core/api/app/mcpx/store pass;
 the MVP gate (10 MB upload→live 28 ms, rollback 2 ms), the server-flat gate
 and the three-agent gate (Claude Code 18 s, Codex 60 s, Cursor 31 s) pass
 again.
+
+Secret-output redaction now covers every nonempty secret, including short
+values, and their common encodings. Short secrets can therefore obscure unrelated
+log text. Ordinary environment variables are readable settings and are not added
+to the secret redaction set.
 
 ## Runtime API discovery and unfamiliar-agent gate (issue 9)
 

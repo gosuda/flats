@@ -221,6 +221,49 @@ Flats polls each node's `Self.KeyExpiry` and `BackendState` every 5 minutes.
   at startup. A host started with `--config` refuses the `TS_*` environment
   variables tsnet would otherwise read.
 
+## App environment variables
+
+Ordinary app-scoped strings are stored in `flats.db` separately from encrypted
+secrets. Management API, CLI, MCP and console clients can read and write these
+values; they are unsuitable for credentials. Names match `[A-Z_][A-Z0-9_]*`,
+with a maximum of 64 characters. `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are reserved for new writes in both namespaces.
+Values may be empty, are at most 64 KiB, and must be valid UTF-8 without NUL. Ordinary
+variables and secrets cannot share a name, even if their values match.
+
+`flats env set <slug> <name> <value>`, `flats env ls <slug>` and
+`flats env rm <slug> <name>` manage ordinary variables. JavaScript receives
+strings at `env.NAME`; WASI receives environment variables. No host environment
+is inherited and no values are substituted into static/frontend files or builds.
+Activation combines ordinary variables with decrypted secrets in one consistent
+store snapshot without exposing secret values through ordinary management responses.
+Historical secret records are retained without applying the new write validation
+at read time. JavaScript continues to expose `DB` and `FILES` as host bindings
+even if historical secrets have those names; WASI receives their historical
+string values. Other historical names and values keep their runtime behavior,
+including WASI rejecting NUL values as before. New writes must satisfy the
+current validation, even when replacing a historical secret.
+
+Settings are desired configuration, not code-version metadata. Saving or deleting
+a value leaves running workers and previews on their startup snapshot. An approved
+deployment, redeployment, rollback or standalone data snapshot restoration captures current variables and secrets when activation
+begins and uses that snapshot for both health checking and live startup. Settings
+are not pinned when approval is requested or to historical code versions. Writes
+after capture apply at the next activation. Preview creation and Flats host
+restart load current settings; automatic worker restarts reuse their captured
+snapshot. To apply a change intentionally, redeploy using the existing operator
+approval flow.
+
+## Outbound HTTP permissions
+
+App origin grants are separate from inbound network provider permissions. They
+default to deny and are operator-managed through console or local CLI; MCP can
+read them with `get_network`. Activation captures grants with env/secrets, and
+automatic worker replacement retains that snapshot. Clearing desired grants
+requires redeploy to revoke running access. The host validates public addresses,
+pins DNS results, ignores proxies and refuses automatic redirect following.
+See [external API setup and limits](external-api.md) for the complete contract
+and separate browser-side CORS/CSP behavior. WASI has no outbound HTTP ABI.
+
 ## Secrets
 
 Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
@@ -229,8 +272,9 @@ loopback only) can set or delete values; APIs and MCP return names and update
 times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
 with a shell on the Flats host (see Approvals). Values reach JavaScript as
-`env.NAME` and WASI as environment variables at worker start, so a change
-applies on the next deploy.
+`env.NAME` and WASI as environment variables from the captured activation
+snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
+or Flats host restart; automatic worker restarts reuse the captured settings.
 
 ## Approvals
 
@@ -284,7 +328,7 @@ or read-only tool `get_runtime_reference`. It requires no skill/source access.
 A server flat runs in a `flats worker` child process (one per running
 version, previews included). The parent proxies HTTP to the worker over a
 Unix socket; the worker gets the version directory, its data directory and
-its flat's secrets, and nothing else from the parent.
+its flat's configured environment variables and secrets, and nothing else from the parent.
 
 JavaScript (QuickJS via qjs on wazero), modelled on `wasi:http`/Workers:
 
@@ -298,7 +342,7 @@ export default {
 }
 ```
 
-* `env` holds the flat's secrets plus `env.DB` (`query(sql, ...params)` →
+* `env` holds the flat's ordinary environment variables and secrets plus `env.DB` (`query(sql, ...params)` →
   rows, `exec(sql, ...params)` → `{changes, last_insert_id}`) backed by
   `data/db.sqlite`, and `env.FILES` (`get(key)`, `put(key, data)`,
   `delete(key)`, `list(prefix)`) backed by `data/files/`, and
@@ -310,11 +354,10 @@ export default {
   and replaced. ATTACH, VACUUM INTO and extension loading are blocked;
   env.FILES is capped at 1 GiB. Database growth is not capped by SQLite; the
   per-flat disk quota refuses new uploads and the console reports flats over
-  quota. JS has no file system or network access except through `env`.
+  quota. JS has no general filesystem or socket access; outbound `fetch` is host-mediated and requires exact operator-granted origins.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing response JSON on stdout. Each request creates a fresh instance.
-  Environment includes only the flat's secrets, with no separate variable
-  configuration or inherited host process environment. Clocks, cancellable
+  Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment. Clocks, cancellable
   sleeps and CSPRNG are available. There are no preopened directories, filesystem/network
   mounts, SQLite/FILES host imports or WebSocket connection API. The worker's
   host-side data directory is **not** mounted into the WASI guest.
@@ -325,16 +368,16 @@ export default {
 | SQLite | `env.DB.query` / `exec` | Unavailable |
 | Persistent files | `env.FILES.get` / `put` / `delete` / `list` | Unavailable |
 | WebSocket | `websocket.open` / `message` / `close`, `ws.send` | Unavailable; Upgrade remains an ordinary HTTP request |
-| Outbound network | Unavailable (no `fetch` or sockets) | Unavailable |
+| Outbound network | Bounded HTTP(S) `fetch` to exact operator-granted origins; no sockets | Unavailable |
 | Filesystem | Read-only bundled modules; no arbitrary host filesystem; persistence via DB/FILES | No mounts or preopened directories |
-| Secrets | `env.NAME` | Only the flat's secrets as environment variables |
+| App environment variables and secrets | `env.NAME` (strings) | Only the flat's configured variables and secrets as environment variables |
 | Clocks/randomness | timers, `Date`, Web Crypto CSPRNG | WASI clocks, cancellable sleeps and CSPRNG |
 
 WASI request JSON is `{method, url, headers, body}` (body is a string or null).
 Response JSON is `{status, headers, body}` (body is a string); binary
 responses put base64 text in `body` and set `body_base64: true`. Stderr is forwarded as flat log lines.
 These are executable contracts in `internal/runtime` tests, including rejected
-JS host imports, absent filesystem/network access, secrets-only environment,
+JS host imports, absent arbitrary filesystem/socket access, bounded outbound fetch, app-scoped environment,
 clocks/randomness, and no WebSocket negotiation.
 
 ## HTTP API
@@ -374,6 +417,11 @@ answers:
 | POST | /api/flats/{slug}/rename | `{slug}` |
 | DELETE | /api/flats/{slug} | `?reason=` (returns pending_approval) |
 | GET | /api/flats/{slug}/logs | `?kind=&after=&limit=` |
+| GET | /api/flats/{slug}/network | `{origins, updated_at, note}`; desired server HTTP(S) grants |
+| PUT | /api/flats/{slug}/network | `{origins: [...]}`; operator console or local CLI on loopback; `[]` clears |
+| GET | /api/flats/{slug}/env | `{env: [{name, value, updated_at}], note}`; ordinary values only |
+| PUT | /api/flats/{slug}/env/{name} | `{value}` (string, including empty); save desired config |
+| DELETE | /api/flats/{slug}/env/{name} | remove ordinary variable |
 | GET | /api/flats/{slug}/secrets | names only |
 | PUT/DELETE | /api/flats/{slug}/secrets/{name} | CLI on loopback only (operator) |
 | GET | /api/flats/{slug}/stats | daily page views and top paths (`?days=7` or `30`, up to 365 UTC calendar days) |
@@ -381,7 +429,7 @@ answers:
 
 Console surface (`/console/api`, `via` = `console`, guarded as above): the same
 reads plus `POST /console/api/approvals/{id}/{approve|reject}`, deploy,
-rollback, visibility, rename, delete, preview, secrets, `GET/PUT settings`,
+rollback, visibility, rename, delete, preview, env, secrets, `GET/PUT settings`,
 `GET system`. Approve/reject return the approval plus `decided_by` (tailnet
 login, console node only). `GET settings` lists `apply_on_restart`; `PUT
 settings` saves to `config.json` and returns `applied` and
@@ -399,7 +447,7 @@ MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 `create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`
 (loopback callers only), `deploy`, `rollback`, `list_versions`,
 `open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
-`get_approval`, `list_secrets`, `save_draft`, `get_draft`, `publish`,
+`get_approval`, `get_network`, `list_env`, `set_env`, `delete_env`, `list_secrets`, `save_draft`, `get_draft`, `publish`,
 `save_document`, `get_document`, `get_runtime_reference`, `get_content_types`.
 Content type discovery: resource `flats://docs/content-types/v1`.
 
@@ -413,7 +461,7 @@ Email invitations, profile showcasing and custom domains are not supported.
 
 `/flats/{slug}/settings`, `/analytics` and `/database` share Settings, Analytics
 and Database navigation; there is no Scheduled tab. Settings manages the display
-name, slug, sharing, encrypted environment variables and deletion. The existing
+name, slug, sharing, ordinary environment variables, encrypted secrets and deletion. The existing
 `/flats/{slug}` page retains versions, previews, deployment and logs. Database
 lists actual pre-deploy snapshots and links to deployment/rollback controls.
 

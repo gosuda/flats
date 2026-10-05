@@ -7,6 +7,7 @@ import (
 
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/runtime"
 )
 
@@ -21,6 +22,15 @@ func TestDocumentedRuntimeLimits(t *testing.T) {
 		{"Handler, request and response", fmt.Sprintf("Decoded response max **%d MiB**.", runtime.MaxResponseBody>>20)},
 		{"Capabilities, limits and secrets", fmt.Sprintf("default **%d-second wall-clock deadline**, **%d MiB wasm memory per VM**", int(runtime.DefaultTimeout.Seconds()), runtime.DefaultMemoryPages*65536>>20)},
 		{"Capabilities, limits and secrets", fmt.Sprintf("max **%s upload files**,", "20,000")},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d exact origins**", egress.MaxOrigins)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d KiB URL**", egress.MaxURL>>10)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d KiB supplied request headers**", egress.MaxHeaders>>10)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d header names**", egress.MaxHeaderFields)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d values per name**", egress.MaxHeaderFields)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d MiB request body**", egress.MaxRequestBody>>20)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d KiB response headers**", egress.MaxHeaders>>10)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d MiB response body**", egress.MaxResponseBody>>20)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d-second deadline**", int(egress.Timeout.Seconds()))},
 	}
 	for _, c := range checks {
 		t.Run(c.section+"/"+c.claim, func(t *testing.T) {
@@ -50,5 +60,33 @@ func TestBuiltInHelpersAreOutsideRuntimeV1(t *testing.T) {
 	if !strings.Contains(runtimeref.Markdown, "explicitly outside runtime API v1") ||
 		!strings.Contains(runtimeref.ContentTypesMarkdown, "not part of runtime API\nv1") {
 		t.Fatal("built-in host internals must not silently extend v1")
+	}
+}
+
+// The embedded reference is also the agent-facing contract: distinguish a host
+// restart from automatic worker recovery, and explain approval-time settings.
+func TestDocumentedEnvironmentActivation(t *testing.T) {
+	_, body, ok := strings.Cut(runtimeref.Markdown, "Ordinary app environment variables and operator-managed secrets")
+	if !ok {
+		t.Fatal("missing environment contract")
+	}
+	body, _, _ = strings.Cut(body, "`list_secrets {slug}`")
+	body = strings.Join(strings.Fields(body), " ")
+	for _, claim := range []string{
+		"standalone data snapshot restoration captures current variables and secrets",
+		"when activation begins; the health check and live worker share that snapshot.",
+		"Settings are not pinned to the approval request or code version.",
+		"Writes after capture apply at the next activation.",
+		"a Flats host restart load current settings; automatic worker restarts reuse the captured snapshot.",
+		"JavaScript `DB`/`FILES` host bindings take precedence over historical secrets",
+		"WASI receives their stored strings.",
+		"Replacing a historical secret must pass the current write validation.",
+	} {
+		if !strings.Contains(body, claim) {
+			t.Errorf("missing environment behavior disclosure: %s", claim)
+		}
+	}
+	if strings.Contains(body, "runtime restart") {
+		t.Error("ambiguous runtime restart activation guidance")
 	}
 }

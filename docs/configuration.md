@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, credential file paths |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, encrypted secrets |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, ordinary app environment variables, encrypted secrets |
 | The flat | `flats/<slug>/` | uploaded code, the flat's SQLite database and FILES |
 | Nobody may read it in plain text | separate files | `secret.key`, the Tailscale auth key |
 
@@ -29,8 +29,8 @@ macOS, `$XDG_CONFIG_HOME/Flats` or `~/.config/Flats` on Linux).
   flats.db                    metadata database (+ -wal, -shm)
   secret.key                  key for flat secrets, 32 bytes, mode 0600
   backups/                    flats.db copies taken before a schema migration
-  runtime/docs/               generated read-only docs app modules (recreated as needed)
                               (newest 3) and the archived network-provider.json
+  runtime/docs/               generated read-only docs app modules (recreated as needed)
   flats/<slug>/
     draft-revs/ versions/     draft and published code
     data/db.sqlite data/files/  the flat's own data

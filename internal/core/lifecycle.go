@@ -501,7 +501,11 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string) (DeployResult, error) {
 	candidate := versionFromRevision(rev)
 	lifecyclePhase(ctx, "before_health", f.Slug, approvalID)
-	h, err := s.checkIsolated(ctx, f, candidate)
+	env, err := s.captureEnvironment(ctx, f.Slug, candidate)
+	if err != nil {
+		return DeployResult{}, &DeployError{Version: candidate.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched, DataImpact: "none", HealthData: "not_run", LiveData: "untouched"}
+	}
+	h, err := s.checkIsolated(ctx, f, candidate, env)
 	if err != nil {
 		return DeployResult{}, err
 	}
@@ -530,7 +534,7 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 	} else if snap != "" {
 		s.Event(ctx, f.Slug, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before publishing version %d", snap, n), nil)
 	}
-	d, err := s.build(ctx, f.Slug, v, s.dataDirOf(f.Slug))
+	d, err := s.buildWithEnvironment(ctx, f.Slug, v, s.dataDirOf(f.Slug), env)
 	if err != nil {
 		os.RemoveAll(dir)
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
@@ -879,7 +883,7 @@ func privateRegistrationOpened(res ExposureResult, host string, audience Exposur
 	return false
 }
 
-func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Version) (HealthResult, error) {
+func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Version, env *runtimeEnvironment) (HealthResult, error) {
 	scratch := filepath.Join(s.flatDir(f.Slug), "health-check")
 	_ = os.RemoveAll(scratch)
 	defer os.RemoveAll(scratch)
@@ -888,7 +892,7 @@ func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Versi
 			return HealthResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: fmt.Errorf("copy data for health check: %w", err), Data: dataUntouched}
 		}
 	}
-	d, err := s.build(ctx, f.Slug, v, scratch)
+	d, err := s.buildWithEnvironment(ctx, f.Slug, v, scratch, env)
 	if err != nil {
 		return HealthResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched}
 	}

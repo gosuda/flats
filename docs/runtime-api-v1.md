@@ -217,8 +217,9 @@ keys plus get/has/forEach/entries/keys/iterator helpers), and `request.body`
 and space; Cookie uses semicolon and space. `await request.text()` returns
 body or empty string; `await request.json()` parses it and throws for invalid
 or empty JSON. Body is buffered text, not a ReadableStream: arbitrary binary
-requests are not losslessly represented. No multipart/formData, clone or
-request.arrayBuffer contract. Incoming body max **10 MiB** (413 if exceeded).
+requests are not losslessly represented. `await request.arrayBuffer()` UTF-8
+encodes this buffered text; it does not recover original binary request bytes.
+No multipart/formData or clone API. Incoming body max **10 MiB** (413 if exceeded).
 
 Return `new Response(body, {status, headers})`, `Response.json(value, init)`,
 `Response.redirect(url, status = 302)`, a string, or `{status, headers, body}`.
@@ -229,8 +230,9 @@ a Response instance. Null body is empty; ArrayBuffer/typed-array response bodies
 are binary and preserve bytes. Plain headers may include arrays for repeated
 values (including Set-Cookie). Headers supports append/set/get/getSetCookie/
 has/delete/forEach/entries/keys/values/iterator. These are minimal web helpers,
-not full browser Fetch implementations; Response has text/json/ok/status,
-statusText/headers/body, no streaming/clone/blob API.
+not full browser Fetch implementations; Response has text/json/arrayBuffer,
+ok/status/statusText/headers/body/url/redirected, no streaming/clone/blob API.
+Body reads are reusable and there is no bodyUsed property.
 
 HTTP status defaults to 200 (serialized zero also becomes 200); final statuses
 must be 200–599. HEAD emits no body. Decoded response max **32 MiB**. Invalid
@@ -241,6 +243,53 @@ error does not undo already committed DB/FILES writes. console log/info/debug/
 trace/warn/error is supported; lines truncate at 8 KiB, rate limit 20/s with
 burst 100. Do not log secrets.
 
+## JavaScript outbound HTTP
+
+Global `fetch(urlOrRequest, options)` returns a Promise for a buffered Response.
+The supported options are `method`, `headers`, `body` and `redirect`; other
+options, including `signal`, are rejected. Methods are GET, HEAD, POST, PUT,
+PATCH, DELETE and OPTIONS. Bodies are strings, URLSearchParams, ArrayBuffers or
+typed-array views; GET/HEAD cannot have a body. Response readers `text()`,
+`json()` and `arrayBuffer()` are reusable; response metadata includes `status`,
+`ok`, `url`, `redirected`, `headers` and an empty `statusText`. There are no
+streams, cookie jar or automatic decompression. `Accept-Encoding`, host,
+hop-by-hop, proxy and security headers cannot be supplied. Host I/O blocks its
+VM while completing even though the result is a Promise; Promise.all does not
+parallelize calls within a VM. Calls outside a request/WebSocket callback fail.
+
+Server fetch defaults to denied. Only an operator can grant up to **32 exact
+origins**, through the console or local `flats network set <flat> <origins...>`.
+`flats network ls` and MCP `get_network {slug}` read desired grants; `flats
+network clear <flat>` clears them. Only HTTP port 80 and HTTPS port 443 are
+supported, with no wildcards, URL credentials or arbitrary ports. Private,
+loopback, link-local, metadata and other non-public targets are blocked. All
+resolved addresses must pass validation; connections use pinned addresses and
+the original TLS hostname. Ambient proxy settings are ignored. Redirects
+default to an error; `redirect: "manual"` returns the response without following.
+
+Limits: **8 KiB URL**, **16 KiB supplied request headers**, **1 MiB request
+body**, **16 KiB response headers** and **4 MiB response body**. Supplied
+request headers allow at most **128 header names** and **128 values per name**;
+empty value arrays are rejected. Header accounting
+counts UTF-8 bytes(name) + bytes(value) + 4 for each value, repeating the name; response header
+parsing is also bounded by the HTTP transport. Each call has a **5-second
+deadline** within the existing handler deadline. At most **16 calls per
+invocation**, **five concurrent calls per worker**, and **20 calls/second with
+burst 20** are allowed. Budgets belong to each worker; live and preview
+workers have independent allowances. Client disconnect cancels outbound I/O
+without immediately terminating the VM; the handler may catch it and continues
+under its deadline. Worker shutdown cancels outbound I/O. Host
+errors omit request URLs, credentials and upstream bodies.
+
+Grants are captured with env/secrets at approved deploy/redeploy, rollback,
+data restoration, host restart and new preview. Health checks and live startup
+share the capture. Automatic worker replacement keeps it. Changes and
+revocations require activation to affect a running worker: redeploy after
+clearing grants. Health checks/previews can call external services, so keep
+health paths local and avoid external mutations during checks. WASI still has
+no outbound network API. Browser fetch uses its own CORS/CSP/mixed-content
+rules, independent of server grants. Never put server secrets in frontend code.
+
 ## Capabilities, limits and secrets
 
 QuickJS on WebAssembly, default **10-second wall-clock deadline**, **64 MiB
@@ -250,15 +299,20 @@ not arbitrary manifest fields. Standard JS language/JSON/typed arrays,
 minimal URL/URLSearchParams, btoa/atob, console, Web Crypto randomness
 `crypto.getRandomValues` (integer typed arrays, max 65,536 bytes per call)
 and `crypto.randomUUID` are available. `TextEncoder`, `TextDecoder`,
-`structuredClone`, `Blob`, `AbortController`, `fetch` and `WebAssembly` globals
+`structuredClone`, `Blob`, `AbortController` and `WebAssembly` globals
 are absent; the host UTF-8 encodes response strings. QuickJS may expose sandboxed
 `os`/`std` helpers, but these have no supported Flats API contract. The capability
 list is not an exhaustive inventory of engine globals.
 No general Node.js process/fs/require,
-subprocesses, host environment, general filesystem access, outbound fetch,
+subprocesses, host environment, general filesystem access,
 TCP/UDP/client WebSocket, browser DOM or Web Crypto subtle API contract.
 Timers supplied by the engine are subject to the same deadline, not background
-jobs. Use browser-side network APIs when appropriate.
+jobs. Global `fetch` provides buffered HTTP(S) requests to exact operator-granted
+origins, with public-address enforcement, pinned DNS, no proxy inheritance and
+no automatic redirects. Requests default to denied. See [external API permissions,
+fetch subset and limits](external-api.md). Browser network APIs retain real
+CORS, CSP and mixed-content protections; server secrets never enter static
+frontend assets automatically.
 
 Optional export `websocket: {open(ws, env), message(ws, data, env), close(ws, env)}`
 accepts incoming WebSockets. Callbacks may be async, run serially in a separate
@@ -268,20 +322,48 @@ closeReason. Incoming text/binary messages are delivered as strings (not a
 lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
 send queue 256 messages, closes on overflow. Redeploy closes connections.
 
-Secrets are operator-managed strings injected as `env.NAME` at next deploy.
-`env` is frozen; injected DB/FILES names are overwritten by host objects.
-Operator secret names match `[A-Z_][A-Z0-9_]*`, at most 64 characters; values
-are at most 64 KiB. Missing secret properties are undefined. `list_secrets {slug}`
-shows names/update times only. Agent MCP cannot set/read secret values;
-operator uses console or `flats secret set`. No inherited host credentials.
-Secrets are encrypted on disk with local secret.key, but anyone with data-dir
-access can recover them; trust your handler, which can itself return secrets.
+Ordinary app environment variables and operator-managed secrets are strings
+injected as `env.NAME` when the worker starts. `env` is frozen; `env.DB` and
+`env.FILES` are reserved host bindings. New variable and secret writes require names matching
+`[A-Z_][A-Z0-9_]*`, at most 64 characters; `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are rejected for new writes.
+New values are at most 64 KiB and must be valid UTF-8 without NUL; empty strings are supported.
+A name cannot exist in both namespaces. Missing properties are undefined.
+Historical secrets remain stored and keep their runtime behavior: JavaScript
+`DB`/`FILES` host bindings take precedence over historical secrets with those
+names, while WASI receives their stored strings. Other historical names and
+values are preserved, including WASI rejecting NUL values as before. Replacing
+a historical secret must pass the current write validation.
+
+Manage ordinary values with `flats env set <slug> <name> <value>`,
+`flats env ls <slug>` and `flats env rm <slug> <name>`, the console Settings
+page, or MCP `list_env {slug}`, `set_env {slug, name, value}` and
+`delete_env {slug, name}`. `list_env` returns ordinary names, values and update
+times. HTTP API `GET /api/flats/{slug}/env` returns
+`{env: [{name, value, updated_at}], note}`; `PUT /api/flats/{slug}/env/{name}`
+accepts `{value}` and `DELETE` removes it. Ordinary values are readable by
+management clients and stored without secret encryption: use secrets for credentials.
+
+Changes leave running handlers and previews on their startup snapshot. Approved
+deployment, redeployment, rollback or standalone data snapshot restoration captures current variables and secrets
+when activation begins; the health check and live worker share that snapshot.
+Settings are not pinned to the approval request or code version. Writes after
+capture apply at the next activation. New previews and a Flats host restart load
+current settings; automatic worker restarts reuse the captured snapshot. Redeploy
+through the existing approval flow to apply changes. Neither
+ordinary variables nor secrets enter frontend bundles, static files or build
+substitution. There is no inherited host environment.
+
+`list_secrets {slug}` shows names/update times only. Agent MCP cannot set/read
+secret values; operators use the console or `flats secret set`. Secrets are
+encrypted on disk with local secret.key, but anyone with data-dir access can
+recover them; trust your handler, which can itself return secrets. Never log
+secret values or put credentials in ordinary variables.
 
 WASI `.wasm` is a fresh preview1 command per request: stdin JSON
 `{method,url,headers,body}`; stdout JSON `{status,headers,body}`, optional
 `body_base64: true` for base64-encoded binary response. Environment receives
-only the flat's configured secrets; clocks and CSPRNG are available separately.
-There is no separate variable configuration or inherited host environment.
+only the flat's configured environment variables and secrets; clocks and CSPRNG
+are available separately. There is no inherited host environment.
 It has **no DB/FILES host ABI**,
 filesystem mounts, outbound network, JS Web Crypto or WebSocket callbacks.
 Use JavaScript for persistent DB/FILES APIs.

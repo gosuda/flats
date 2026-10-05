@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -211,10 +212,12 @@ func TestConcurrentRenameSameTarget(t *testing.T) {
 	}
 }
 
-func TestShortSecretsAreNotRedacted(t *testing.T) {
-	r := newRedactor(map[string]string{"DEBUG": "1", "MODE": "on", "TOKEN": "tok-123456"})
-	got := r("worker started in 1ms; connection on port 8001; token tok-123456")
-	if got != "worker started in 1ms; connection on port 8001; token "+redacted {
+func TestShortSecretsAreRedacted(t *testing.T) {
+	r := newRedactor(map[string]string{"TOKEN": "s3c", "EMPTY": ""})
+	if got := r("token s3c"); got != "token "+redacted {
+		t.Fatalf("got %q", got)
+	}
+	if got := r("ordinary configuration"); got != "ordinary configuration" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -303,6 +306,59 @@ func TestDurationOfSaturates(t *testing.T) {
 	for _, n := range []int64{1<<53 - 1, math.MaxInt64 / int64(time.Second)} {
 		if d := durationOf(n+1, time.Second); d != math.MaxInt64 {
 			t.Fatalf("%d seconds = %s, want the longest duration", n+1, d)
+		}
+	}
+}
+
+func TestLegacySecretJSONNormalizationRedacted(t *testing.T) {
+	raw := "legacy-\xff\xfe-\xe2\x82-end"
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normalized string
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	// JSON replaces each invalid byte, including adjacent invalid bytes. A
+	// run-collapsing normalization would leave the worker value unprotected.
+	if normalized != "legacy-\ufffd\ufffd-\ufffd\ufffd-end" {
+		t.Fatalf("JSON normalization changed: %q", normalized)
+	}
+	redact := newRedactor(map[string]string{"LEGACY": raw})
+	for _, value := range []string{raw, normalized, base64.StdEncoding.EncodeToString([]byte(normalized)), string(encoded[1 : len(encoded)-1])} {
+		if got := redact("token: " + value); got != "token: "+redacted {
+			t.Fatalf("legacy secret survived: %q", got)
+		}
+	}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, normalized) })
+	if got := healthCheck(h, "/", redact).BodyHead; got != redacted {
+		t.Fatalf("health output leaked normalized legacy secret: %q", got)
+	}
+}
+
+func TestLegacySecretNormalizedJSONEscapesRedacted(t *testing.T) {
+	for _, raw := range []string{"<\xff>", "quoted\"\xff\\secret", "<\"\xff\xfe\\>"} {
+		originalJSON, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var normalized string
+		if err := json.Unmarshal(originalJSON, &normalized); err != nil {
+			t.Fatal(err)
+		}
+		normalizedJSON, err := json.Marshal(normalized)
+		if err != nil {
+			t.Fatal(err)
+		}
+		escaped := string(normalizedJSON[1 : len(normalizedJSON)-1])
+		redact := newRedactor(map[string]string{"LEGACY": raw})
+		if got := redact("token: " + escaped); got != "token: "+redacted {
+			t.Fatalf("normalized JSONescaped secret survived: %q", got)
+		}
+		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, escaped) })
+		if got := healthCheck(h, "/", redact).BodyHead; got != redacted {
+			t.Fatalf("health output leaked escaped normalized legacy secret: %q", got)
 		}
 	}
 }

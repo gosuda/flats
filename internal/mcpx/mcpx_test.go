@@ -148,8 +148,8 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"create_flat", "delete_flat", "deploy", "get_approval", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_runtime_reference", "list_flats",
-		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_version", "save_version_from_dir", "set_visibility"}
+	want := []string{"create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_runtime_reference", "list_env", "list_flats",
+		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_version", "save_version_from_dir", "set_env", "set_visibility"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)
@@ -225,6 +225,10 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 	call(t, e.local, "get_logs", map[string]any{"slug": "blog", "kind": "deploy"}, &logs)
 	if len(logs.Events) != 3 || logs.NextAfter != logs.Events[2].ID {
 		t.Fatalf("deploy events: %+v", logs)
+	}
+	var net NetworkOut
+	if text, failed := call(t, e.local, "get_network", map[string]any{"slug": "blog"}, &net); failed || len(net.Origins) != 0 || !strings.Contains(net.Note, "Only the operator") || !strings.Contains(net.Note, "redeploy to revoke") {
+		t.Fatalf("network: %s %+v", text, net)
 	}
 	var secs SecretsOut
 	if text, failed := call(t, e.local, "list_secrets", map[string]any{"slug": "blog"}, &secs); failed || len(secs.Secrets) != 0 || secs.Note == "" {

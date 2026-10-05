@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -68,6 +69,7 @@ type RuntimeSpec struct {
 	Entry          string
 	DataDir        string // per-flat data (SQLite, files); a copy for previews
 	Env            map[string]string
+	NetworkOrigins []string // operator-approved exact origins; JS only, default deny
 	Log            func(level, msg string)
 }
 
@@ -144,10 +146,11 @@ type liveFlat struct {
 }
 
 type deployed struct {
-	version store.Version
-	handler http.Handler
-	inst    Instance
-	redact  func(string) string // removes secret values from the flat's output
+	version     store.Version
+	handler     http.Handler
+	inst        Instance
+	redact      func(string) string // removes secret values from the flat's output
+	environment *runtimeEnvironment
 }
 
 type preview struct {
@@ -356,6 +359,14 @@ func (s *Service) state(slug string) *liveFlat {
 
 // build creates the handler for a version.
 func (s *Service) build(ctx context.Context, slugName string, v store.Version, dataDir string) (*deployed, error) {
+	env, err := s.captureEnvironment(ctx, slugName, v)
+	if err != nil {
+		return nil, err
+	}
+	return s.buildWithEnvironment(ctx, slugName, v, dataDir, env)
+}
+
+func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v store.Version, dataDir string, snapshot *runtimeEnvironment) (*deployed, error) {
 	if v.Pruned {
 		return nil, fmt.Errorf("version %d was pruned by the retention policy", v.Number)
 	}
@@ -367,11 +378,10 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 		if s.cfg.Runtime == nil {
 			return nil, fmt.Errorf("%w: server flats are not enabled on this host", ErrRuntimeUnavailable)
 		}
-		env, err := s.secretsFor(ctx, slugName)
-		if err != nil {
-			return nil, err
-		}
-		redact := newRedactor(env)
+		env := maps.Clone(snapshot.values)
+		redact := snapshot.redact
+		networkOrigins := slices.Clone(snapshot.networkOrigins)
+		var err error
 		runtimeDir, entry := dir, m.Entry
 		release := func() {}
 		var assets []string
@@ -381,13 +391,17 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 				return nil, err
 			}
 			entry = s.cfg.DocsApp.Entry
+			networkOrigins = nil // The embedded docs app has no outbound capability.
 		}
 		generation, nextGeneration, undoGeneration, err := s.runtimeGeneration(ctx, dataDir)
 		if err != nil {
 			release()
 			return nil, err
 		}
-		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{Flat: slugName, Version: v.Number, Generation: generation, NextGeneration: nextGeneration, Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env,
+		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{
+			Flat: slugName, Version: v.Number,
+			Generation: generation, NextGeneration: nextGeneration,
+			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins,
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))
 			}})
@@ -405,7 +419,7 @@ func (s *Service) build(ctx context.Context, slugName string, v store.Version, d
 		if assets != nil {
 			handler = docsAssets(managed, dir, assets)
 		}
-		return &deployed{version: v, handler: handler, inst: managed, redact: redact}, nil
+		return &deployed{version: v, handler: handler, inst: managed, redact: redact, environment: snapshot}, nil
 	default:
 		return &deployed{version: v, handler: &site.Static{Dir: dir, Entry: m.Entry, SPA: m.SPA, NotFound: m.NotFound, ModTime: v.CreatedAt},
 			redact: func(s string) string { return s }}, nil
@@ -1051,7 +1065,11 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	if err != nil {
 		return DeployResult{}, err
 	}
-	h, err := s.checkIsolated(ctx, f, v)
+	env, err := s.captureEnvironment(ctx, slugName, v)
+	if err != nil {
+		return DeployResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched, DataImpact: "none", HealthData: "not_run", LiveData: "untouched"}
+	}
+	h, err := s.checkIsolated(ctx, f, v, env)
 	if err != nil {
 		return DeployResult{}, err
 	}
@@ -1060,7 +1078,7 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	} else if snap != "" {
 		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
 	}
-	d, err := s.build(ctx, slugName, v, s.dataDirOf(slugName))
+	d, err := s.buildWithEnvironment(ctx, slugName, v, s.dataDirOf(slugName), env)
 	if err != nil {
 		s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("%s of version %d failed to start: %v", kind, n, err), nil)
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
@@ -1233,7 +1251,11 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 	if _, err := os.Stat(snapPath); err != nil {
 		return DeployResult{}, fmt.Errorf("database snapshot %s: %w", snap, store.ErrNotFound)
 	}
-	if err := s.trialRun(ctx, f, v, snapPath); err != nil {
+	env, err := s.captureEnvironment(ctx, slugName, v)
+	if err != nil {
+		return DeployResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched, DataImpact: "none", HealthData: "not_run", LiveData: "untouched"}
+	}
+	if err := s.trialRun(ctx, f, v, snapPath, env); err != nil {
 		return DeployResult{}, err
 	}
 
@@ -1287,7 +1309,7 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 	if err := s.installSnapshot(slugName, snapPath); err != nil {
 		return fail(&DeployError{Cause: fmt.Errorf("install snapshot %s: %w", snap, err)})
 	}
-	d, err := s.build(ctx, slugName, v, s.dataDirOf(slugName))
+	d, err := s.buildWithEnvironment(ctx, slugName, v, s.dataDirOf(slugName), env)
 	if err != nil {
 		return fail(&DeployError{Cause: err})
 	}
@@ -1307,7 +1329,7 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 
 // trialRun starts version v on a scratch copy of the data holding the
 // snapshot at snapPath and health-checks it.
-func (s *Service) trialRun(ctx context.Context, f store.Flat, v store.Version, snapPath string) error {
+func (s *Service) trialRun(ctx context.Context, f store.Flat, v store.Version, snapPath string, env *runtimeEnvironment) error {
 	dir := filepath.Join(s.flatDir(f.Slug), "restore-trial")
 	os.RemoveAll(dir)
 	defer os.RemoveAll(dir)
@@ -1332,7 +1354,7 @@ func (s *Service) trialRun(ctx context.Context, f store.Flat, v store.Version, s
 			return &DeployError{Cause: err, Data: untouched}
 		}
 	}
-	d, err := s.build(ctx, f.Slug, v, dir)
+	d, err := s.buildWithEnvironment(ctx, f.Slug, v, dir, env)
 	if err != nil {
 		return &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: untouched}
 	}
@@ -1357,7 +1379,7 @@ func (s *Service) restart(ctx context.Context, slugName string, old *deployed) e
 	d := old
 	if old.inst != nil {
 		var err error
-		if d, err = s.build(ctx, slugName, old.version, s.dataDirOf(slugName)); err != nil {
+		if d, err = s.buildWithEnvironment(ctx, slugName, old.version, s.dataDirOf(slugName), old.environment); err != nil {
 			s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("could not restart version %d: %v", old.version.Number, err), nil)
 			return fmt.Errorf("version %d could not be restarted (%v); the flat answers 503 until a version is deployed", old.version.Number, err)
 		}

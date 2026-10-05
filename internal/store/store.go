@@ -998,7 +998,7 @@ type SealedSecret struct {
 func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(flat,name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=excluded.updated_at`,
 		flat, sec.Name, sec.Nonce, sec.Ciphertext, unix(sec.UpdatedAt))
-	return err
+	return envWriteError(err)
 }
 
 // DeleteSecret removes a secret.

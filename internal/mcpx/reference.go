@@ -19,7 +19,7 @@ type referenceOut struct {
 func registerReference(s *mcp.Server, hostVersion string, uploadLimit int64) {
 	s.AddResource(&mcp.Resource{
 		URI: runtimeref.URI, Name: "runtime-api-v1", MIMEType: "text/markdown",
-		Description: "Complete Flats runtime API v1: FILES, SQLite, handler, limits, secrets and approvals.",
+		Description: "Complete Flats runtime API v1: FILES, SQLite, handler, limits, ordinary environment variables, secrets and approvals.",
 	}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{
 			URI: runtimeref.URI, MIMEType: "text/markdown", Text: runtimeref.Markdown,

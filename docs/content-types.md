@@ -383,3 +383,7 @@ last committed position, so another worker's compaction triggers a full reset.
 Comments, rich-text (WYSIWYG) editing, DOCX/PDF export, account management,
 offline editing beyond in-memory reconnect buffering, multi-host replication,
 and arbitrary HTML in Markdown (raw HTML is not rendered).
+
+Docs flats run the embedded app without outbound network permissions, even if
+the flat has saved origin grants. Those grants apply when running an ordinary
+JavaScript server flat; the docs app does not need external API access.

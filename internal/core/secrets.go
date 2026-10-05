@@ -115,16 +115,18 @@ type SecretInfo struct {
 }
 
 // SetSecret stores a secret value. Only the operator (console or local CLI)
-// may call it; the change applies on the next deploy.
+// may call it. Approved deployment activations (including rollback and data
+// restore), new previews, and Flats host restarts capture the change. Automatic
+// worker restarts retain the previously captured environment.
 func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, via Via) error {
 	if via != ViaConsole && via != ViaCLI {
 		return forbiddenf("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")
 	}
-	if !secretName.MatchString(name) {
-		return invalidf("secret name %q must match [A-Z_][A-Z0-9_]* (at most 64 characters)", name)
+	if err := validateEnvName(name, "secret"); err != nil {
+		return err
 	}
-	if len(value) > 64<<10 {
-		return invalidf("secret value is larger than 64 KiB")
+	if err := validateEnvValue(value, "secret"); err != nil {
+		return err
 	}
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return err
@@ -139,6 +141,9 @@ func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, v
 	}
 	ct := g.Seal(nil, nonce, []byte(value), []byte(name))
 	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, UpdatedAt: s.now()}); err != nil {
+		if errors.Is(err, store.ErrEnvCollision) {
+			return invalidf("secret %q conflicts with an existing environment variable", name)
+		}
 		return err
 	}
 	s.Event(ctx, slugName, "info", "secret", fmt.Sprintf("secret %s set via %s; redeploy to apply", name, via), nil)
@@ -173,11 +178,10 @@ func (s *Service) SecretNames(ctx context.Context, slugName string) ([]SecretInf
 	return out, nil
 }
 
-func (s *Service) secretsFor(ctx context.Context, slugName string) (map[string]string, error) {
-	secs, err := s.st.ListSecrets(ctx, slugName)
-	if err != nil {
-		return nil, err
-	}
+// Stored secrets predate ordinary env validation. Preserve their names and bytes;
+// each runtime retains its existing binding and value handling. New writes remain
+// strictly validated. Never silently remove legacy operator configuration.
+func (s *Service) decryptSecrets(secs []store.SealedSecret) (map[string]string, error) {
 	g, err := s.aead()
 	if err != nil {
 		return nil, err

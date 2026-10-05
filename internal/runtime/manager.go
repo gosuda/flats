@@ -129,7 +129,7 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		spec: spec,
 		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
-			DataDir: spec.DataDir, Env: spec.Env, CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds()},
+			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds()},
 	}
 	if in.ws.Env == nil {
 		in.ws.Env = map[string]string{}

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -44,6 +45,9 @@ func module(text, version string, removed ...bool) string {
 	return "export default " + string(b) + ";\n"
 }
 func startApp(t *testing.T, data, text, version string, removed ...bool) *app {
+	return startAppWithEnvironment(t, data, text, version, map[string]string{}, removed...)
+}
+func startAppWithEnvironment(t *testing.T, data, text, version string, environment map[string]string, removed ...bool) *app {
 	t.Helper()
 	dir := t.TempDir()
 	err := fs.WalkDir(FS(), ".", func(path string, d fs.DirEntry, err error) error {
@@ -70,7 +74,7 @@ func startApp(t *testing.T, data, text, version string, removed ...bool) *app {
 		number = n
 	}
 	var workerPID atomic.Int64
-	inst, err := manager(t).Start(context.Background(), core.RuntimeSpec{Flat: "docs", Version: number, Generation: appGeneration.Add(1), Dir: dir, Entry: Entry, DataDir: data, Log: func(level, msg string) {
+	inst, err := manager(t).Start(context.Background(), core.RuntimeSpec{Flat: "docs", Version: number, Generation: appGeneration.Add(1), Env: environment, Dir: dir, Entry: Entry, DataDir: data, Log: func(level, msg string) {
 		if raw, ok := strings.CutPrefix(msg, "docs test worker pid:"); ok {
 			if pid, err := strconv.Atoi(raw); err == nil {
 				workerPID.Store(int64(pid))
@@ -504,6 +508,27 @@ func TestRollbackReappliesObservedHashOnce(t *testing.T) {
 	for _, a := range []*app{v1, v2, rollback} {
 		if next := a.document(t); next["markdown"] != text || next["seq"] != got["seq"] {
 			t.Fatal("overlap applied source twice", next, got)
+		}
+	}
+}
+
+func TestDocsResponsesIgnoreApplicationEnvironment(t *testing.T) {
+	environment := map[string]string{"MODE": "ordinary-doc-canary", "TOKEN": "secret-doc-canary"}
+	a := startAppWithEnvironment(t, t.TempDir(), initialText, "env-v1", environment)
+	for _, access := range []string{"private", "public"} {
+		for _, path := range []string{"/", "/_docs/healthz", "/_docs/api/document", "/content.js"} {
+			status, body, headers := a.getHeaders(t, path, http.Header{"X-Flats-Access": {access}})
+			if path != "/content.js" && status != 200 {
+				t.Fatalf("%s: %d %s", path, status, body)
+			}
+			if path == "/content.js" && status != 404 {
+				t.Fatalf("content module exposed: %d", status)
+			}
+			for _, value := range environment {
+				if strings.Contains(body, value) || strings.Contains(fmt.Sprint(headers), value) {
+					t.Fatalf("environment leaked from %s", path)
+				}
+			}
 		}
 	}
 }

@@ -1,5 +1,5 @@
 // Flats server prelude: evaluated once per QuickJS runtime before the flat's
-// module. Provides Response, Headers, Request, URL, URLSearchParams,
+// module. Provides fetch, Response, Headers, Request, URL, URLSearchParams,
 // btoa/atob, console, the env object and the dispatch entry points the Go
 // side calls with JSON strings.
 (function () {
@@ -279,6 +279,55 @@
   // Trusted, read-only deployment metadata for apps coordinating overlapping
   // workers. The host generation orders activations, including previews and rollbacks.
   const runtimeGeneration = call("runtime.generation", []);
+  const utf8Bytes = (value) => {
+    const s = String(value), out = new Uint8Array(s.length * 3);
+    let used = 0;
+    const put = (...bytes) => { for (const b of bytes) out[used++] = b; };
+    for (let i = 0; i < s.length; i++) {
+      let cp = s.charCodeAt(i);
+      if (cp >= 0xd800 && cp <= 0xdbff) {
+        const lo = s.charCodeAt(i + 1);
+        if (lo >= 0xdc00 && lo <= 0xdfff) { cp = 0x10000 + ((cp - 0xd800) << 10) + lo - 0xdc00; i++; }
+        else cp = 0xfffd;
+      } else if (cp >= 0xdc00 && cp <= 0xdfff) cp = 0xfffd;
+      if (cp < 0x80) put(cp);
+      else if (cp < 0x800) put(0xc0 | cp >> 6, 0x80 | cp & 63);
+      else if (cp < 0x10000) put(0xe0 | cp >> 12, 0x80 | cp >> 6 & 63, 0x80 | cp & 63);
+      else put(0xf0 | cp >> 18, 0x80 | cp >> 12 & 63, 0x80 | cp >> 6 & 63, 0x80 | cp & 63);
+    }
+    return out.subarray(0, used);
+  };
+  const bufferedBytes = (b) => b == null ? new Uint8Array(0) : isBinary(b) ? toBytes(b) : utf8Bytes(bodyText(b));
+  const decodeB64 = (s) => new Uint8Array(docsCodec("fetch.decode", JSON.stringify(s || "")));
+  // UTF-8 decoding for buffered HTTP bodies, replacing malformed input.
+  const utf8Text = (bytes) => {
+    let out = "";
+    for (let i = 0; i < bytes.length;) {
+      const a = bytes[i];
+      if (a < 0x80) { out += String.fromCharCode(a); i++; continue; }
+      const n = a >= 0xc2 && a <= 0xdf ? 2 : a >= 0xe0 && a <= 0xef ? 3 : a >= 0xf0 && a <= 0xf4 ? 4 : 0;
+      let cp = n === 2 ? a & 31 : n === 3 ? a & 15 : a & 7;
+      let valid = n > 0 && i + n <= bytes.length;
+      for (let j = 1; valid && j < n; j++) {
+        const b = bytes[i + j];
+        valid = b >= 0x80 && b <= 0xbf;
+        cp = cp << 6 | b & 63;
+      }
+      if (!valid || (n === 3 && cp < 0x800) || (n === 4 && cp < 0x10000) || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+        out += "\ufffd"; i++; continue;
+      }
+      out += String.fromCodePoint(cp); i += n;
+    }
+    return out;
+  };
+  const requestInit = (init) => {
+    if (init == null) return {};
+    if (typeof init !== "object") throw new TypeError("fetch options must be an object");
+    for (const k of Object.keys(init)) {
+      if (!["method", "headers", "body", "redirect"].includes(k)) throw new TypeError("unsupported fetch option");
+    }
+    return init;
+  };
 
   // --- Request ---
   const headerHelpers = (o) => {
@@ -294,15 +343,33 @@
     return o;
   };
   class Request {
-    constructor(r) {
+    constructor(r, init) {
       Object.defineProperty(this, "runtimeGeneration", { value: runtimeGeneration });
-      this.method = r.method;
-      this.url = r.url;
-      this.headers = headerHelpers(r.headers || {});
-      this.body = r.body ?? null;
+      // Preserve the existing inbound request object's headers and body API.
+      if (init === undefined && r && typeof r === "object" && !(r instanceof Request) && !(r instanceof URL) && typeof r.url === "string") {
+        this.method = r.method;
+        this.url = r.url;
+        this.headers = headerHelpers(r.headers || {});
+        this.body = r.body ?? null;
+        this.redirect = "error";
+        return;
+      }
+      init = requestInit(init);
+      const source = r instanceof Request ? r : null;
+      this.url = source ? source.url : String(r);
+      this.method = String(init.method ?? (source && source.method) ?? "GET").toUpperCase();
+      this.headers = new Headers(init.headers ?? (source && source.headers));
+      this.body = init.body !== undefined ? init.body : source ? source.body : null;
+      this.redirect = init.redirect ?? (source && source.redirect) ?? "error";
+      if (this.redirect !== "error" && this.redirect !== "manual") throw new TypeError("fetch supports redirect error or manual only");
+      if ((this.method === "GET" || this.method === "HEAD") && this.body != null) throw new TypeError("GET and HEAD requests cannot have a body");
+      if (this.body != null && typeof this.body !== "string" && !isBinary(this.body) && !(this.body instanceof URLSearchParams)) throw new TypeError("fetch requires a buffered string, URLSearchParams or binary body");
+      if (!this.headers.has("content-type") && typeof this.body === "string") this.headers.set("content-type", "text/plain;charset=UTF-8");
+      if (!this.headers.has("content-type") && this.body instanceof URLSearchParams) this.headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
     }
-    text() { return Promise.resolve(this.body ?? ""); }
-    json() { return Promise.resolve(JSON.parse(this.body ?? "")); }
+    text() { return Promise.resolve(isBinary(this.body) ? utf8Text(toBytes(this.body)) : bodyText(this.body)); }
+    json() { return this.text().then(JSON.parse); }
+    arrayBuffer() { return Promise.resolve(bufferedBytes(this.body).slice().buffer); }
   }
   globalThis.Request = Request;
 
@@ -312,6 +379,8 @@
       init = init || {};
       this.status = init.status === undefined ? 200 : init.status | 0;
       this.statusText = init.statusText ?? "";
+      this.url = "";
+      this.redirected = false;
       this.headers = new Headers(init.headers);
       this.body = body;
       if (typeof body === "string" && !this.headers.has("content-type")) {
@@ -321,7 +390,8 @@
       }
     }
     get ok() { return this.status >= 200 && this.status < 300; }
-    text() { return Promise.resolve(bodyText(this.body)); }
+    text() { return Promise.resolve(isBinary(this.body) ? utf8Text(toBytes(this.body)) : bodyText(this.body)); }
+    arrayBuffer() { return Promise.resolve(bufferedBytes(this.body).slice().buffer); }
     json() { return this.text().then(JSON.parse); }
     static json(data, init = {}) {
       const h = new Headers(init && init.headers);
@@ -333,6 +403,20 @@
     }
   }
   globalThis.Response = Response;
+
+  // Host-mediated, buffered HTTP(S). Calls block this VM while the host I/O
+  // runs, but return a Promise and respect the enclosing handler's deadline.
+  globalThis.fetch = async (input, init) => {
+    const req = new Request(input, init === undefined ? {} : init);
+    if (req.url.length > 8192 || (typeof req.body === "string" && req.body.length > 1048576) || (isBinary(req.body) && toBytes(req.body).byteLength > 1048576)) throw new TypeError("outbound request limit exceeded");
+    const bytes = bufferedBytes(req.body);
+    if (bytes.byteLength > 1048576) throw new TypeError("outbound request limit exceeded");
+    const result = call("fetch", [{ url: req.url, method: req.method, headers: req.headers.__raw(), body: docsCodec("fetch.encode", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)), redirect: req.redirect }]);
+    const response = new Response(decodeB64(result.body), { status: result.status, headers: result.headers });
+    response.url = result.url;
+    response.redirected = result.redirected || false;
+    return response;
+  };
 
   const serialize = (res) => {
     if (res == null) throw new Error("fetch() returned nothing; return a Response or {status, headers, body}");

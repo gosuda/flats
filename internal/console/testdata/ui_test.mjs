@@ -111,6 +111,10 @@ const routes = {
   'GET /console/api/flats': { flats: [blog, shop, notes] },
   'GET /console/api/approvals?status=pending': { approvals: [] },
   'GET /console/api/flats/blog': blog,
+  'GET /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
+  'PUT /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
+  'GET /console/api/flats/blog/env': { env: [{ name: 'APP_MODE', value: '<script>demo</script>\nsecond line', updated_at: '2026-10-03T00:00:00Z' }, { name: 'EMPTY', value: '', updated_at: '2026-10-03T00:00:00Z' }] },
+  'GET /console/api/flats/blog/secrets': { secrets: [{ name: 'API_KEY', updated_at: '2026-10-03T00:00:00Z', value: 'SECRET_MUST_NEVER_RENDER' }] },
   'GET /console/api/flats/blog/versions': { versions: [
     { number: 2, kind: 'server', hash: 'b', size: 1, files: 1, created_at: '2026-10-02T00:00:00Z' },
     { number: 1, kind: 'server', hash: 'a', size: 1, files: 1, created_at: '2026-10-01T00:00:00Z' }] },
@@ -162,10 +166,10 @@ const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
 assert.equal(all(flatMain, (e) => e.className === "badge content-type")[0].textContent, "Document");
-const redeploys = byText(flatMain, 'Redeploy (apply secrets)');
-assert.equal(redeploys.length, 2, 'want a redeploy button on the live version row and in the secrets panel');
+const redeploys = byText(flatMain, 'Redeploy (apply environment)');
+assert.equal(redeploys.length, 4, 'want a redeploy button on the live version row and each environment panel');
 const liveRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-live')[0];
-assert.ok(liveRow && byText(liveRow, 'Redeploy (apply secrets)').length === 1, 'live version row has no redeploy action');
+assert.ok(liveRow && byText(liveRow, 'Redeploy (apply environment)').length === 1, 'live version row has no redeploy action');
 const secrets = all(flatMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'secrets')[0];
 assert.ok(secrets.textContent.includes('redeploy the live version 2'), 'secrets panel must mention redeploying: ' + secrets.textContent);
 
@@ -174,6 +178,10 @@ await tick();
 let dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
 assert.equal(dialogs.length, 1);
 assert.ok(dialogs[0].textContent.includes('Redeploy version 2?'));
+assert.ok(dialogs[0].textContent.includes('environment variables and secrets'));
+assert.ok(dialogs[0].textContent.includes('when approved activation begins'));
+assert.ok(dialogs[0].textContent.includes('health check and live worker use the same settings snapshot'));
+assert.ok(dialogs[0].textContent.includes('after capture apply at the next activation'));
 dialogs[0].close('ok');
 await tick();
 const deploy = calls.find((c) => c.key === 'POST /console/api/flats/blog/deploy');
@@ -221,9 +229,78 @@ assert.equal(all(management, (e) => e.tagName === 'A' && e.textContent === 'Sche
 for (const tab of ['Settings', 'Analytics', 'Database']) {
  assert.equal(all(management, (e) => e.tagName === 'A' && e.textContent === tab).length, 1);
 }
+const envPanel = all(management, (e) => e.getAttribute('id') === 'env')[0];
+const secretPanel = all(management, (e) => e.getAttribute('id') === 'secrets')[0];
+assert.ok(envPanel.textContent.includes('Ordinary environment variables'));
+for (const disclosure of ['plain text', 'readable by authorized agents', 'env.NAME', 'WASI', 'browser bundles', 'next approved activation or Flats host restart']) {
+  assert.ok(envPanel.textContent.includes(disclosure), `environment panel lacks ${disclosure}`);
+}
+assert.ok(envPanel.textContent.includes('<script>demo</script>\nsecond line'));
+assert.equal(all(envPanel, (e) => e.tagName === 'SCRIPT').length, 0, 'values must be text, never HTML');
+assert.ok(envPanel.textContent.includes('(empty)'));
+for (const panel of [envPanel, secretPanel]) {
+  assert.ok(panel.textContent.includes('next approved activation or Flats host restart'));
+  assert.ok(panel.textContent.includes('standalone data snapshot restoration capture current settings'));
+  assert.ok(panel.textContent.includes('Automatic worker restarts reuse the captured settings'));
+  assert.ok(panel.textContent.includes('New previews load current settings'));
+}
+assert.equal(secretPanel.textContent.includes('SECRET_MUST_NEVER_RENDER'), false);
+assert.equal(all(secretPanel, (e) => e.getAttribute('id') === 'secret-value')[0].getAttribute('type'), 'password');
+const field = (id) => all(envPanel, (e) => e.getAttribute('id') === id)[0];
+byText(envPanel, 'Edit')[0].dispatch('click');
+assert.equal(field('env-name').value, 'APP_MODE');
+assert.equal(field('env-value').value, '<script>demo</script>\nsecond line');
+assert.equal(field('env-form').hidden, false);
+assert.equal(byText(envPanel, 'Add variable')[0].getAttribute('aria-expanded'), 'true');
+// A refused save preserves both fields; ordinary errors never include values.
+routes['PUT /console/api/flats/blog/env/APP_MODE'] = { __status: 400, error: 'environment variable name is reserved' };
+field('env-value').value = 'keep this value';
+field('env-form').dispatch('submit');
+await tick();
+assert.equal(field('env-value').value, 'keep this value');
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/env/APP_MODE').at(-1).body), { value: 'keep this value' });
+routes['PUT /console/api/flats/blog/env/APP_MODE'] = {};
+field('env-value').value = '';
+field('env-form').dispatch('submit');
+await tick();
+const envPut = calls.filter((c) => c.key === 'PUT /console/api/flats/blog/env/APP_MODE').at(-1);
+assert.deepEqual(JSON.parse(envPut.body), { value: '' }, 'saving an empty value must not delete it');
+// Deleting is confirmed, and does not send the value or mutate secrets.
+byText(envPanel, 'Delete')[0].dispatch('click');
+await tick();
+let envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(envDelete.textContent.includes('Delete variable APP_MODE?'));
+assert.ok(envDelete.textContent.includes('next approved activation or Flats host restart'));
+assert.equal(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'), false);
+envDelete.close('cancel');
+await tick();
+assert.equal(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'), false);
+byText(envPanel, 'Delete')[0].dispatch('click');
+await tick();
+all(document.body, (e) => e.tagName === 'DIALOG')[0].close('ok');
+await tick();
+assert.ok(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'));
+assert.equal(calls.some((c) => /^(PUT|DELETE).*\/secrets\//.test(c.key)), false);
+assert.equal(byText(management, 'Add secret').length, 1);
 assert.equal(byText(management, 'Add variable').length, 1);
 byText(management, 'Add variable')[0].dispatch('click');
 assert.ok(all(management, (e) => e.tagName === 'FORM' && e.className === 'form-grid').some((e) => !e.hidden));
+const networkPanel = all(management, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'network')[0];
+assert.ok(networkPanel.textContent.includes('automatic restarts retain captured grants'));
+assert.ok(networkPanel.textContent.includes('Browser fetch follows browser CORS/CSP'));
+const originInput = all(networkPanel, (e) => e.tagName === 'TEXTAREA')[0];
+assert.equal(originInput.value, 'https://api.example.com');
+originInput.value = 'https://api.example.com\nhttps://other.example.com';
+all(networkPanel, (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/network').at(-1).body), { origins: ['https://api.example.com', 'https://other.example.com'] });
+byText(networkPanel, 'Clear server permissions')[0].dispatch('click');
+await tick();
+const clearDialog = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(clearDialog.textContent.includes('Redeploy the live version after clearing'));
+clearDialog.close('ok');
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/network').at(-1).body), { origins: [] });
 stopSettings();
 const analytics = await import('./analytics.js');
 assert.deepEqual(analytics.dailySeries([{ day: '2026-10-02', count: 4 }, { day: '2026-01-01', count: 99 }], 2, new Date('2026-10-03T12:00:00Z')),
