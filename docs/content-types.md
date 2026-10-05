@@ -215,7 +215,7 @@ rendered in the client; assets in `content.assets` are still the host's responsi
 * The host allocates a strictly increasing activation generation for each
   runtime start, including live/health/restore trials, Draft previews, host
   restart restore and worker crash recovery. The `runtime_generation` counter in
-  `flats.db` is created by schema migration 7, independently of host settings
+  `flats.db` is created by schema migration 9, independently of host settings
   in `config.json`, and is
   atomically committed before startup; failed starts consume a generation.
   Its initial value exceeds stored published version numbers (including the

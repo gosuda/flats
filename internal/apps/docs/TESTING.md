@@ -16,7 +16,9 @@ private temporary data and free loopback ports (the product test excludes
   still exercise repeated calls; runtime near-cap tests use 120 by default and
   600 HTTP/catch-all/WebSocket calls or 900 live-state calls in full mode.
   Docs full counts are 3,000 edits at 300 KiB, 200 near-1 MiB ASCII/Korean edits
-  each and 200 public 1 MiB reads.
+  each and 200 public 1 MiB reads. The runtime fetch soak runs 30 invocations (two
+  fetches each) per response size by default and 100 in full mode, at 1 MiB and
+  4 MiB responses.
 * The opt-in browser test uses separate Chromium contexts for collaboration,
   private conflict recovery, read-only/mobile views and synthetic composition.
 * The real-binary product test covers console draft preview, publication,
