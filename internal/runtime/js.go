@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/qjs"
 )
 
@@ -24,12 +25,14 @@ var preludeJS string
 // jsVM is one QuickJS runtime with the prelude and the flat's module loaded.
 // It is not goroutine-safe: a pool hands it to one request at a time.
 type jsVM struct {
-	w      *worker
-	ctx    *swapCtx // the qjs runtime's context; never replaced
-	rt     *qjs.Runtime
-	out    *lineWriter
-	errOut *lineWriter
-	broken bool
+	w             *worker
+	ctx           *swapCtx // the qjs runtime's context; never replaced
+	rt            *qjs.Runtime
+	out           *lineWriter
+	errOut        *lineWriter
+	broken        bool
+	networkActive bool
+	networkCalls  int
 
 	db     *sql.Conn // per-VM connection (opened on first use)
 	dbUsed bool
@@ -191,6 +194,9 @@ func (vm *jsVM) guard(ctx context.Context, f func(*qjs.Context) error) (err erro
 // invoke calls a global JS function fn(arg) that returns a string (or a
 // promise of one) and awaits it.
 func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err error) {
+	vm.networkActive = fn == "__flats_dispatch" || fn == "__flats_ws"
+	vm.networkCalls = 0
+	defer func() { vm.networkActive = false }()
 	err = vm.guard(ctx, func(c *qjs.Context) error {
 		a := c.NewString(arg)
 		p, err := c.Global().InvokeJS(fn, a)
@@ -271,6 +277,24 @@ func (vm *jsVM) close() {
 	}
 }
 
+// The visitor's context is separate from the VM deadline: cancellation closes
+// the wazero VM, so a disconnect must cancel only the host-mediated HTTP call.
+type outboundRequestContextKey struct{}
+
+func outboundContext(ctx context.Context) (context.Context, func()) {
+	child, cancel := context.WithCancel(ctx)
+	original, ok := ctx.Value(outboundRequestContextKey{}).(context.Context)
+	if !ok {
+		return child, cancel
+	}
+	if original.Err() != nil {
+		cancel()
+		return child, cancel
+	}
+	stop := context.AfterFunc(original, cancel)
+	return child, func() { stop(); cancel() }
+}
+
 // hostCall implements __flats_host(op, argsJSON) -> resultJSON.
 func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
 	args := this.Args()
@@ -293,6 +317,10 @@ func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
 }
 
 func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (string, error) {
+	// Treat the guest ABI as untrusted, even if it replaces JSON.stringify.
+	if op == "fetch" && len(raw) > 2<<20 {
+		return "", egress.ErrLimit
+	}
 	var a []json.RawMessage
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return "", fmt.Errorf("%s: bad arguments", op)
@@ -322,6 +350,31 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 		return string(b), err
 	}
 	switch op {
+	case "fetch":
+		if !vm.networkActive {
+			return "", errors.New("fetch is only available inside a request or WebSocket handler")
+		}
+		if vm.networkCalls >= 16 {
+			return "", egress.ErrLimit
+		}
+		vm.networkCalls++
+		if len(a) != 1 {
+			return "", egress.ErrInvalid
+		}
+		var req egress.Request
+		if err := json.Unmarshal(a[0], &req); err != nil {
+			return "", egress.ErrInvalid
+		}
+		if vm.w.network == nil {
+			return "", egress.ErrDenied
+		}
+		fetchCtx, cancel := outboundContext(ctx)
+		defer cancel()
+		res, err := vm.w.network.Fetch(fetchCtx, req)
+		if err != nil {
+			return "", err
+		}
+		return jsonOf(res)
 	case "env":
 		return jsonOf(vm.w.spec.Env)
 	case "log":

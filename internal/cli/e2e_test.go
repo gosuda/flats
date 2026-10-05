@@ -163,6 +163,18 @@ func TestAgainstRealAPI(t *testing.T) {
 	assertState(1, "public", "<h1>v1</h1>")
 	approvePending()
 	assertState(1, "private", "<h1>v1</h1>")
+	if r := run(t, srv.URL, "", "network", "set", "demo", "https://api.example.com"); r.code != 0 {
+		t.Fatalf("network set: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "network", "ls", "demo"); r.code != 0 || !strings.Contains(r.stdout, "https://api.example.com") || !strings.Contains(r.stdout, "redeploy to revoke") {
+		t.Fatalf("network ls: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "network", "set", "demo"); r.code != 2 {
+		t.Fatalf("empty set must require clear: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "network", "clear", "demo"); r.code != 0 || !strings.Contains(r.stdout, "No server HTTP(S) origins") {
+		t.Fatalf("network clear: %+v", r)
+	}
 	if r := run(t, srv.URL, "hunter2\n", "secret", "set", "demo", "API_KEY"); r.code != 0 {
 		t.Fatalf("secret set: %+v", r)
 	}

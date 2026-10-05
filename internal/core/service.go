@@ -60,13 +60,14 @@ type Runtime interface {
 
 // RuntimeSpec describes one server flat instance.
 type RuntimeSpec struct {
-	Flat    string
-	Version int
-	Dir     string // version files (read-only)
-	Entry   string
-	DataDir string // per-flat data (SQLite, files); a copy for previews
-	Env     map[string]string
-	Log     func(level, msg string)
+	Flat           string
+	Version        int
+	Dir            string // version files (read-only)
+	Entry          string
+	DataDir        string // per-flat data (SQLite, files); a copy for previews
+	Env            map[string]string
+	NetworkOrigins []string // operator-approved exact origins; JS only, default deny
+	Log            func(level, msg string)
 }
 
 // Instance is a running server flat.
@@ -368,7 +369,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		}
 		env := maps.Clone(snapshot.values)
 		redact := snapshot.redact
-		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{Flat: slugName, Version: v.Number, Dir: dir, Entry: m.Entry, DataDir: dataDir, Env: env,
+		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{Flat: slugName, Version: v.Number, Dir: dir, Entry: m.Entry, DataDir: dataDir, Env: env, NetworkOrigins: slices.Clone(snapshot.networkOrigins),
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))
 			}})

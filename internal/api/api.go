@@ -93,6 +93,8 @@ func (s *Server) Handler() http.Handler {
 		h("GET /flats/{slug}/env", s.listEnv)
 		h("PUT /flats/{slug}/env/{name}", s.putEnv)
 		h("DELETE /flats/{slug}/env/{name}", s.deleteEnv)
+		h("GET /flats/{slug}/network", s.networkPolicy)
+		h("PUT /flats/{slug}/network", s.putNetworkPolicy)
 		h("GET /flats/{slug}/secrets", s.secrets)
 		h("PUT /flats/{slug}/secrets/{name}", s.putSecret)
 		h("DELETE /flats/{slug}/secrets/{name}", s.deleteSecret)

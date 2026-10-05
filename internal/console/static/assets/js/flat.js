@@ -32,6 +32,7 @@ export function mount(main, [slug], ctx, settings = false) {
   const versionsSlot = h('div', null, loading());
   const previewsSlot = h('div', null, loading());
   const envSlot = h('div', null, loading());
+  const networkSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const usageSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
@@ -63,7 +64,7 @@ export function mount(main, [slug], ctx, settings = false) {
   async function refresh() {
     const ok = await loadFlat();
     if (ok) {
-      loadEnv(); loadSecrets();
+      loadEnv(); loadSecrets(); loadNetwork();
       if (!settings) { loadVersions(); loadPreviews(); loadUsage(); loadHostProviders(); }
       logs.poll();
     }
@@ -108,6 +109,7 @@ export function mount(main, [slug], ctx, settings = false) {
       card('Open previews', 'previews', previewsSlot),
       card('Logs', 'logs', logs.el),
       card('Ordinary environment variables', 'env', envSlot),
+      card('Server HTTP(S) permissions', 'network', networkSlot),
       card('Secrets', 'secrets', secretsSlot),
       card('Usage', 'usage', usageSlot),
       card('Rename slug', 'rename', renameForm()),
@@ -142,6 +144,7 @@ export function mount(main, [slug], ctx, settings = false) {
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
       h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
+      h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()),
       h('a', { class: 'back', href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: 'Manage versions, previews and logs' }));
   }
@@ -334,6 +337,38 @@ export function mount(main, [slug], ctx, settings = false) {
     } catch (err) {
       if (ctx.alive()) fill(previewsSlot, errorPanel(err, 'Cannot load previews'));
     }
+  }
+
+  // --- operator-managed outbound HTTP(S) origins ---
+
+  async function loadNetwork() {
+    try {
+      const policy = await api.network(slug);
+      if (!ctx.alive()) return;
+      const origins = h('textarea', { id: 'network-origins', rows: '5', spellcheck: 'false', placeholder: 'https://api.example.com', value: (policy.origins || []).join('\n') });
+      const save = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Save server origins' });
+      const clear = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Clear server permissions' });
+      const form = h('form', { class: 'form-grid' }, h('label', { for: 'network-origins', text: 'Allowed origins (one per line)' }), origins, h('div', { class: 'form-actions' }, save, clear));
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        busy(save, async () => {
+          const list = origins.value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+          if (!list.length) { toast('Use Clear server permissions to remove every origin.', 'error'); return; }
+          try { await api.setNetwork(slug, list); toast('Server origins saved. Redeploy to apply the changed permissions.', 'success'); loadNetwork(); }
+          catch (err) { toast(err.message, 'error'); }
+        });
+      });
+      clear.addEventListener('click', () => busy(clear, async () => {
+        if (!await confirmDialog({ title: 'Clear server permissions?', body: 'Running workers and automatic restarts retain their captured grants. Redeploy the live version after clearing to revoke its server access.', confirmLabel: 'Clear permissions', danger: true })) return;
+        try { await api.setNetwork(slug, []); toast('Server permissions cleared. Redeploy to revoke live access.', 'success'); loadNetwork(); }
+        catch (err) { toast(err.message, 'error'); }
+      }));
+      fill(networkSlot,
+        h('p', { class: 'muted', text: 'Only the operator grants JavaScript server fetch access. WASI receives no outbound network capability. Permit at most 32 exact public HTTP:80 or HTTPS:443 origins, one per line. No wildcards, paths, credentials or private targets. An empty list denies server fetch.' }),
+        form,
+        h('p', { class: 'muted small', text: 'Changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, Flats host restart, or new preview. Running workers and automatic restarts retain captured grants; after clearing, redeploy to revoke live access. Browser fetch follows browser CORS/CSP independently and receives no injected secrets.' }),
+        flat.live_version ? redeployButton() : h('p', { class: 'muted small', text: 'Applied when this flat is first published.' }));
+    } catch (err) { if (ctx.alive()) fill(networkSlot, errorPanel(err, 'Cannot load server network permissions')); }
   }
 
   // --- ordinary environment variables ---

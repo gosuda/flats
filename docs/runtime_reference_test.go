@@ -7,6 +7,7 @@ import (
 
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/runtime"
 )
 
@@ -21,6 +22,15 @@ func TestDocumentedRuntimeLimits(t *testing.T) {
 		{"Handler, request and response", fmt.Sprintf("Decoded response max **%d MiB**.", runtime.MaxResponseBody>>20)},
 		{"Capabilities, limits and secrets", fmt.Sprintf("default **%d-second wall-clock deadline**, **%d MiB wasm memory per VM**", int(runtime.DefaultTimeout.Seconds()), runtime.DefaultMemoryPages*65536>>20)},
 		{"Capabilities, limits and secrets", fmt.Sprintf("max **%s upload files**,", "20,000")},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d exact origins**", egress.MaxOrigins)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d KiB URL**", egress.MaxURL>>10)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d KiB supplied request headers**", egress.MaxHeaders>>10)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d header names**", egress.MaxHeaderFields)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d values per name**", egress.MaxHeaderFields)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d MiB request body**", egress.MaxRequestBody>>20)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d KiB response headers**", egress.MaxHeaders>>10)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d MiB response body**", egress.MaxResponseBody>>20)},
+		{"JavaScript outbound HTTP", fmt.Sprintf("**%d-second deadline**", int(egress.Timeout.Seconds()))},
 	}
 	for _, c := range checks {
 		t.Run(c.section+"/"+c.claim, func(t *testing.T) {

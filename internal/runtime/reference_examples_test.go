@@ -83,8 +83,8 @@ func TestRuntimeReferenceUnsupportedGlobals(t *testing.T) {
 } };`
 	f := mustStart(t, newManager(t), "ref-globals", map[string]string{"index.js": code}, "index.js", nil)
 	r := f.do(t, "GET", "/", "")
-	want := `["undefined","undefined","undefined","undefined","undefined","undefined","undefined"]`
+	want := `["undefined","undefined","undefined","undefined","undefined","function","undefined"]`
 	if r.status != 200 || r.body != want {
-		t.Fatalf("documented absent globals: %d %s", r.status, r.body)
+		t.Fatalf("documented runtime globals: %d %s", r.status, r.body)
 	}
 }

@@ -111,6 +111,8 @@ const routes = {
   'GET /console/api/flats': { flats: [blog, shop, notes] },
   'GET /console/api/approvals?status=pending': { approvals: [] },
   'GET /console/api/flats/blog': blog,
+  'GET /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
+  'PUT /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'GET /console/api/flats/blog/env': { env: [{ name: 'APP_MODE', value: '<script>demo</script>\nsecond line', updated_at: '2026-10-03T00:00:00Z' }, { name: 'EMPTY', value: '', updated_at: '2026-10-03T00:00:00Z' }] },
   'GET /console/api/flats/blog/secrets': { secrets: [{ name: 'API_KEY', updated_at: '2026-10-03T00:00:00Z', value: 'SECRET_MUST_NEVER_RENDER' }] },
   'GET /console/api/flats/blog/versions': { versions: [
@@ -163,7 +165,7 @@ const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
 const redeploys = byText(flatMain, 'Redeploy (apply environment)');
-assert.equal(redeploys.length, 3, 'want a redeploy button on the live version row and each environment panel');
+assert.equal(redeploys.length, 4, 'want a redeploy button on the live version row and each environment panel');
 const liveRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-live')[0];
 assert.ok(liveRow && byText(liveRow, 'Redeploy (apply environment)').length === 1, 'live version row has no redeploy action');
 const secrets = all(flatMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'secrets')[0];
@@ -281,6 +283,22 @@ assert.equal(byText(management, 'Add secret').length, 1);
 assert.equal(byText(management, 'Add variable').length, 1);
 byText(management, 'Add variable')[0].dispatch('click');
 assert.ok(all(management, (e) => e.tagName === 'FORM' && e.className === 'form-grid').some((e) => !e.hidden));
+const networkPanel = all(management, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'network')[0];
+assert.ok(networkPanel.textContent.includes('automatic restarts retain captured grants'));
+assert.ok(networkPanel.textContent.includes('Browser fetch follows browser CORS/CSP'));
+const originInput = all(networkPanel, (e) => e.tagName === 'TEXTAREA')[0];
+assert.equal(originInput.value, 'https://api.example.com');
+originInput.value = 'https://api.example.com\nhttps://other.example.com';
+all(networkPanel, (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/network').at(-1).body), { origins: ['https://api.example.com', 'https://other.example.com'] });
+byText(networkPanel, 'Clear server permissions')[0].dispatch('click');
+await tick();
+const clearDialog = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(clearDialog.textContent.includes('Redeploy the live version after clearing'));
+clearDialog.close('ok');
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/network').at(-1).body), { origins: [] });
 stopSettings();
 const analytics = await import('./analytics.js');
 assert.deepEqual(analytics.dailySeries([{ day: '2026-10-02', count: 4 }, { day: '2026-01-01', count: 99 }], 2, new Date('2026-10-03T12:00:00Z')),
