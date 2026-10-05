@@ -24,6 +24,35 @@ const client = await build({
 const js = client.outputFiles.find((f) => f.path.endsWith(".js")).text,
   css = client.outputFiles.find((f) => f.path.endsWith(".css")).text;
 const assets = `export const clientJS=${JSON.stringify(js)};\nexport const clientCSS=${JSON.stringify(css)};\n`;
+const docsUTF8 = {
+  // Keep lib0's public module intact while selecting the host's bounded
+  // UTF8 codecs in QuickJS. No TextEncoder/Decoder globals are introduced.
+  name: "docs-utf8",
+  setup(b) {
+    b.onLoad(
+      { filter: /node_modules[\\/]lib0[\\/]string\.js$/ },
+      async ({ path: file }) => {
+        let source = await readFile(file, "utf8");
+        const encoder =
+          "typeof TextEncoder !== 'undefined' ? new TextEncoder() : null";
+        const decoder =
+          "typeof TextDecoder === 'undefined' ? null : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })";
+        if (!source.includes(encoder) || !source.includes(decoder))
+          throw new Error("lib0 UTF8 codec binding changed");
+        source = source
+          .replace(
+            encoder,
+            `globalThis.__flats_docsCodec?.textEncoder || (${encoder})`,
+          )
+          .replace(
+            decoder,
+            `globalThis.__flats_docsCodec?.textDecoder || (${decoder})`,
+          );
+        return { contents: source, loader: "js" };
+      },
+    );
+  },
+};
 const server = await build({
   ...options,
   entryPoints: ["src/server.js"],
@@ -32,35 +61,7 @@ const server = await build({
   conditions: ["browser"],
   external: ["./content.js"],
   plugins: [
-    {
-      // Keep lib0's public module intact while selecting the host's bounded
-      // UTF8 codecs in QuickJS. No TextEncoder/Decoder globals are introduced.
-      name: "docs-utf8",
-      setup(b) {
-        b.onLoad(
-          { filter: /node_modules[\\/]lib0[\\/]string\.js$/ },
-          async ({ path: file }) => {
-            let source = await readFile(file, "utf8");
-            const encoder =
-              "typeof TextEncoder !== 'undefined' ? new TextEncoder() : null";
-            const decoder =
-              "typeof TextDecoder === 'undefined' ? null : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })";
-            if (!source.includes(encoder) || !source.includes(decoder))
-              throw new Error("lib0 UTF8 codec binding changed");
-            source = source
-              .replace(
-                encoder,
-                `globalThis.__flats_docsCodec?.textEncoder || (${encoder})`,
-              )
-              .replace(
-                decoder,
-                `globalThis.__flats_docsCodec?.textDecoder || (${decoder})`,
-              );
-            return { contents: source, loader: "js" };
-          },
-        );
-      },
-    },
+    docsUTF8,
     {
       name: "assets",
       setup(b) {
@@ -80,6 +81,14 @@ await build({
   ...options,
   entryPoints: ["src/spike.js"],
   outfile: "../testdata/spike.js",
+  platform: "neutral",
+  conditions: ["browser"],
+});
+await build({
+  ...options,
+  entryPoints: ["src/client-edits.js"],
+  outfile: "../testdata/client-edits.js",
+  plugins: [docsUTF8],
   platform: "neutral",
   conditions: ["browser"],
 });
@@ -117,6 +126,8 @@ const inputs = [
     "package.json",
     "package-lock.json",
     "build.mjs",
+    "../testdata/spike.js",
+    "../testdata/client-edits.js",
     ...(await walk(out)).filter((p) => !p.endsWith("/BUILD-INPUTS.sha256")),
   ].sort(),
   hash = createHash("sha256");

@@ -1,10 +1,12 @@
 package docs
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -13,17 +15,26 @@ import (
 // Generate actual single-character client edits against the server's random seed.
 func clientEdits(t *testing.T, welcome map[string]any, count int) []updateFixture {
 	t.Helper()
-	code := `import * as Y from 'yjs';const d=new Y.Doc();d.clientID=900;let input='';for await(const chunk of process.stdin)input+=chunk;Y.applyUpdate(d,Buffer.from(input,'base64')); const result=[];for(let i=0;i<Number(process.argv[1]);i++){const sv=Y.encodeStateVector(d);d.getText('markdown').insert(0,'x');result.push({id:'soak-'+i,u:Buffer.from(Y.encodeStateAsUpdate(d,sv)).toString('base64')});}console.log(JSON.stringify(result));`
-	cmd := exec.Command("node", "--input-type=module", "-e", code, fmt.Sprint(count))
-	cmd.Dir = "_web"
-	cmd.Stdin = strings.NewReader(welcome["u"].(string))
-	output, err := cmd.CombinedOutput()
+	srv := startYjsTestModule(t, "client-edits.js")
+	input, err := json.Marshal(map[string]any{"u": welcome["u"], "count": count})
 	if err != nil {
-		t.Fatal(err, string(output))
+		t.Fatal(err)
+	}
+	r, err := http.Post(srv.URL, "application/json", bytes.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	output, err := io.ReadAll(r.Body)
+	if err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("client edit generation: status %d, error %v: %s", r.StatusCode, err, output)
 	}
 	var result []updateFixture
 	if err = json.Unmarshal(output, &result); err != nil {
 		t.Fatal(err)
+	}
+	if len(result) != count {
+		t.Fatalf("generated %d updates, want %d", len(result), count)
 	}
 	return result
 }

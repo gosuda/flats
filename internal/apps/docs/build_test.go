@@ -25,7 +25,7 @@ func TestBuildInputs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths = append(paths, "package.json", "package-lock.json", "build.mjs")
+	paths = append(paths, "package.json", "package-lock.json", "build.mjs", "../testdata/spike.js", "../testdata/client-edits.js")
 	outputs, err := fs.ReadDir(FS(), ".")
 	if err != nil {
 		t.Fatal(err)
