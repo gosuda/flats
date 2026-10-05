@@ -140,15 +140,14 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # The Dockerfile and entrypoint come from the workflow's commit, like the
-      # release tooling. The binaries are the release's own attested archives,
-      # so the image runs exactly what the release published.
+      # The Dockerfile comes from the workflow's commit, like the release
+      # tooling. The binaries are the release's own attested archives, so the
+      # image runs exactly what the release published.
       - uses: actions/checkout@v4
         with:
           sparse-checkout: |
             Dockerfile
             .dockerignore
-            scripts/docker-entrypoint.sh
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Download and verify the Linux archives

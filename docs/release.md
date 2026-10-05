@@ -112,8 +112,8 @@ the leading `v`:
 
 A backfill (`workflow_dispatch`) pushes only the exact version, so it never
 moves `1.2` or `latest` back to an older release. Re-running the job rebuilds
-the version tag from the same archives. The Dockerfile and entrypoint come from
-the workflow's commit, like `build-release.sh`.
+the version tag from the same archives. The Dockerfile comes from the
+workflow's commit, like `build-release.sh`.
 
 The first push creates the package. An organization owner must make
 `ghcr.io/gosuda/flats` public once in the package settings; until then pulls

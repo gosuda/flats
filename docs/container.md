@@ -9,13 +9,20 @@ ghcr.io/gosuda/flats:latest    # newest stable release; prereleases never get it
 ```
 
 The image runs the same `flats` binary as that release's
-`flats_linux_<arch>.tar.gz`, on Alpine, as the unprivileged user `65532`.
-Everything Flats keeps lives in one volume, `/data`: `config.json`,
-`flats.db`, `secret.key`, the flats and their data, and Tailscale and Portal
-state (see [Configuration and storage](configuration.md)). The image sets
-`FLATS_DATA=/data` and `FLATS_CONFIG=/data/config.json`; on first start the
-entrypoint runs `flats config init`, so an empty volume starts with the
-defaults (Local network, Portal off).
+`flats_linux_<arch>.tar.gz`, on distroless (`gcr.io/distroless/static-debian12:nonroot`:
+CA certificates and tzdata, no shell or package manager), as the unprivileged
+user `65532`. Everything Flats keeps lives in one volume, `/data`:
+`config.json`, `flats.db`, `secret.key`, the flats and their data, and
+Tailscale and Portal state (see [Configuration and storage](configuration.md)).
+The image sets `FLATS_DATA=/data` and `FLATS_CONFIG=/data/config.json` and runs
+`flats serve`. On an empty volume, `flats serve` bootstraps a new host with the
+defaults (Local network, Portal off) and logs `initialized a new host in
+/data`; on later starts it reuses the volume, migrating older formats and
+refusing newer ones ([Bootstrapping a new host](configuration.md#bootstrapping-a-new-host)).
+
+Always mount a named volume (or a host directory) at `/data`. Without `-v`,
+Docker creates an anonymous volume, and recreating the container would start
+another empty host.
 
 Verify an image before you run it:
 
@@ -93,10 +100,12 @@ docker start flats
 docker exec flats flats config show
 ```
 
-Arguments after the image name go to `flats serve`. With `config.json`, only
-`--listen`, `--local-addr`, `--console-host` and `--runtime` can be overridden
-for a run; set everything else in the file. Any other subcommand runs instead
-of `serve`, for example `docker run --rm ghcr.io/gosuda/flats:latest version`.
+The image's entrypoint is `flats` and its default command is `serve`, so
+arguments after the image name replace the command: start them with `serve`
+to pass flags to the host, as in the published-ports example, or name another
+subcommand, for example `docker run --rm ghcr.io/gosuda/flats:latest version`.
+With `config.json`, only `--listen`, `--local-addr`, `--console-host` and
+`--runtime` can be overridden for a run; set everything else in the file.
 The console's Settings page can change the system and Portal settings and
 `network.permitted` while the host runs, as on a native host.
 
@@ -114,6 +123,10 @@ docker exec flats flats approvals
 files inside it as well; deploying from the host CLI or an agent is usually
 simpler. The image healthcheck runs `flats status`; if you move the listener
 to another port, also set `-e FLATS_URL=http://127.0.0.1:<port>`.
+
+The image has no shell. To look at the volume, stop the host and mount it in a
+one-off container, for example `docker run --rm -v flats-data:/data:ro alpine
+ls -la /data`, or use `docker debug flats` where available.
 
 ## Hardening
 
@@ -169,6 +182,8 @@ docker buildx build --platform linux/amd64,linux/arm64 -t flats:dev .
 ```
 
 A single-platform `docker build -t flats:dev .` needs only the archive for
-that platform. `--build-arg ALPINE_IMAGE=...` selects another Alpine image or
-mirror. See [Releases and installation](release.md#container-image) for how
-releases publish it.
+that platform. `--build-arg BASE_IMAGE=...` selects another base image and
+`--build-arg UNPACK_IMAGE=...` the image that checks and unpacks the archive
+(for example a registry mirror). See
+[Releases and installation](release.md#container-image) for how releases
+publish it.

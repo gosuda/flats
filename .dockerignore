@@ -3,4 +3,3 @@
 *
 !dist/checksums.txt
 !dist/flats_linux_*.tar.gz
-!scripts/docker-entrypoint.sh

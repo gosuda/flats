@@ -68,11 +68,10 @@ On macOS or other Docker hosts, publish the same ports on `127.0.0.1` only, or u
 Without the service, start a foreground host in one terminal:
 
 ```sh
-flats config init --data ./flats-demo-data
 flats serve --config ./flats-demo-data/config.json
 ```
 
-`flats config init` writes `config.json` with the defaults (Local network, Portal off) and creates the database. The console is at `http://127.0.0.1:7878`.
+The first start finds no `config.json`, so it creates one with the defaults (Local network, Portal off) and an empty database in `./flats-demo-data`, and logs that it initialized a new host. It never does that over a directory that already holds Flats data. The console is at `http://127.0.0.1:7878`.
 
 ### First flat
 
