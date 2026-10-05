@@ -420,23 +420,55 @@ func TestConfigModeRefusals(t *testing.T) {
 			t.Fatalf("err = %v, want exit 78 with %q", err, want)
 		}
 	}
-	t.Run("missing config", func(t *testing.T) {
-		dir := t.TempDir()
-		refused(t, configModeOptions(filepath.Join(dir, "config.json")), "does not exist")
-		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-			t.Fatal("wrote into the directory")
-		}
-	})
-	t.Run("config without database", func(t *testing.T) {
-		dir := t.TempDir()
-		doc, _ := config.New(config.NewInstanceID(), dir)
-		path := filepath.Join(dir, "config.json")
+	t.Run("config elsewhere without database", func(t *testing.T) {
+		// host.data_dir names another, empty directory: maybe the wrong path
+		// or an unmounted volume, so nothing is created there.
+		data := t.TempDir()
+		doc, _ := config.New(config.NewInstanceID(), data)
+		path := filepath.Join(t.TempDir(), "config.json")
 		if _, err := config.Create(path, doc); err != nil {
 			t.Fatal(err)
 		}
 		refused(t, configModeOptions(path), "config init")
-		if _, err := os.Stat(filepath.Join(dir, "flats.db")); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(data, "flats.db")); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatal("config mode created a database")
+		}
+	})
+	t.Run("missing config over a legacy host", func(t *testing.T) {
+		dir := legacyDir(t)
+		db := hashFile(t, filepath.Join(dir, "flats.db"))
+		refused(t, configModeOptions(filepath.Join(dir, "config.json")), "config migrate")
+		if _, err := os.Stat(filepath.Join(dir, "config.json")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal("bootstrap wrote a config over a legacy host")
+		}
+		if hashFile(t, filepath.Join(dir, "flats.db")) != db {
+			t.Fatal("database changed")
+		}
+	})
+	t.Run("missing config over leftover data", func(t *testing.T) {
+		for _, name := range []string{"secret.key", "flats", "tsnet"} {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			refused(t, configModeOptions(filepath.Join(dir, "config.json")), name)
+			for _, f := range []string{"config.json", "flats.db"} {
+				if _, err := os.Stat(filepath.Join(dir, f)); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("%s: bootstrap created %s", name, f)
+				}
+			}
+		}
+	})
+	t.Run("missing config for a bound database", func(t *testing.T) {
+		dir := t.TempDir()
+		path := initConfig(t, dir)
+		moved := filepath.Join(dir, "renamed.json")
+		if err := os.Rename(path, moved); err != nil {
+			t.Fatal(err)
+		}
+		refused(t, configModeOptions(path), "is bound to the config "+path)
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal("bootstrap replaced a bound host's config")
 		}
 	})
 	t.Run("unbound legacy database", func(t *testing.T) {
@@ -523,6 +555,95 @@ func TestConfigModeRefusals(t *testing.T) {
 			})
 		}
 	})
+}
+
+// A config-mode start with no config.json bootstraps a new host in the
+// config's directory, and later starts reuse it unchanged.
+func TestConfigModeBootstrap(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "new")
+	path := filepath.Join(dir, "config.json")
+	// A new volume's lost+found is not Flats data.
+	if err := os.MkdirAll(filepath.Join(dir, "lost+found"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h, err := Start(ctx, configModeOptions(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := h.Config.Host.InstanceID
+	if h.Config.Host.DataDir != dir {
+		t.Fatalf("data dir = %s, want %s", h.Config.Host.DataDir, dir)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := mustRead(t, path)
+	if bytes.Contains(raw, []byte("127.0.0.1:0")) || bytes.Contains(raw, []byte("server_runtime")) {
+		t.Fatalf("per-run overrides were stored:\n%s", raw)
+	}
+	if b := readBinding(t, dir); b == nil || b.InstanceID != id || b.ConfigPath != path || b.MigratedAt != nil {
+		t.Fatalf("binding = %+v, instance %s", b, id)
+	}
+	h, err = Start(ctx, configModeOptions(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if h.Config.Host.InstanceID != id {
+		t.Fatalf("second start instance %s, want %s", h.Config.Host.InstanceID, id)
+	}
+	if !bytes.Equal(raw, mustRead(t, path)) {
+		t.Fatal("second start rewrote config.json")
+	}
+}
+
+// A bootstrap interrupted after writing config.json finishes on the next
+// start with the instance id it wrote.
+func TestConfigModeBootstrapResumes(t *testing.T) {
+	ctx := context.Background()
+	for _, step := range []string{"config", "bind"} {
+		t.Run(step, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			interrupt = func(s string) error {
+				if s == step {
+					return errors.New("interrupted")
+				}
+				return nil
+			}
+			_, err := Start(ctx, configModeOptions(path))
+			interrupt = nil
+			if err == nil {
+				t.Fatal("interrupted bootstrap started")
+			}
+			l, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			written, _ := l.Doc.Effective(nil)
+			h, err := Start(ctx, configModeOptions(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+			if h.Config.Host.InstanceID != written.Host.InstanceID {
+				t.Fatalf("resumed instance %s, config %s", h.Config.Host.InstanceID, written.Host.InstanceID)
+			}
+			if b := readBinding(t, dir); b == nil || b.InstanceID != written.Host.InstanceID {
+				t.Fatalf("binding = %+v", b)
+			}
+		})
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func TestConfigInitIsIdempotent(t *testing.T) {

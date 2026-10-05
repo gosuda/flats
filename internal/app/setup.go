@@ -103,10 +103,12 @@ func prepare(ctx context.Context, s setup) (_ *prepared, err error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, &ActionError{fmt.Errorf("config %s: %w", s.configPath, err)}
 	}
-	if !exists && !s.legacy {
-		return nil, actionf("config %s does not exist; create it with `flats config init --config %s`, or convert a legacy data directory with `flats config migrate --data DIR`", s.configPath, s.configPath)
-	}
 	dataDir := s.dataDir
+	if !exists && !s.legacy {
+		// Config mode bootstraps a missing config.json: the new host keeps its
+		// data beside the file, as `flats config init` lays it out by default.
+		dataDir = filepath.Dir(s.configPath)
+	}
 	if exists {
 		if l.NeedsConfirm {
 			return nil, actionf("config %s uses schema_version %d and its conversion needs confirmation; run `flats config migrate --config %s --yes`", s.configPath, l.FileVersion, s.configPath)
@@ -204,7 +206,29 @@ func (p *prepared) decide(ctx context.Context, s setup, l *config.Loaded, info s
 		if info.HasData {
 			return actionf("%s is not bound to a config; convert the legacy data directory with `flats config migrate --data %s`", dbPath, p.dataDir)
 		}
-		return actionf("%s has no host database yet; Flats does not initialize a data directory from --config: run `flats config init --config %s` first", p.dataDir, s.configPath)
+		c, _ := p.doc.Effective(nil)
+		// Only a config beside its own data directory finishes an init here:
+		// that is an interrupted bootstrap, or a config written by hand. A
+		// config whose host.data_dir is elsewhere and empty may point at the
+		// wrong directory or at an unmounted volume.
+		if filepath.Clean(c.Host.DataDir) != filepath.Dir(s.configPath) {
+			return actionf("%s has no host database yet, and host.data_dir is not the directory of %s: check that host.data_dir is the right directory and is mounted, then run `flats config init --config %s`", p.dataDir, s.configPath, s.configPath)
+		}
+		if found := flatsLeftovers(p.dataDir); len(found) > 0 {
+			return leftoverErr(s.configPath, p.dataDir, found)
+		}
+		if s.dryRun {
+			p.notes = append(p.notes, "would create "+dbPath+" for "+s.configPath)
+			return nil
+		}
+		if err := p.open(l, dbPath); err != nil {
+			return err
+		}
+		if err := p.bind(ctx, c.Host.InstanceID, s.configPath, false); err != nil {
+			return err
+		}
+		p.notes = append(p.notes, fmt.Sprintf("created the host database in %s for %s (instance %s)", p.dataDir, s.configPath, c.Host.InstanceID))
+		return nil
 
 	case exists && info.HasData:
 		// Interrupted between writing config.json and binding the database.
@@ -242,6 +266,9 @@ func (p *prepared) decide(ctx context.Context, s setup, l *config.Loaded, info s
 		return actionf("%s is bound to the config %s (instance %s), but %s does not exist; run with --config %s",
 			dbPath, info.Binding.ConfigPath, info.Binding.InstanceID, s.configPath, info.Binding.ConfigPath)
 
+	case !s.legacy:
+		return p.bootstrap(ctx, s, info, dbPath)
+
 	default:
 		// A legacy data directory, or a new one: config.json from the flags.
 		plan, err := planLegacy(p.dataDir, info, s.flags, config.NewInstanceID())
@@ -254,6 +281,66 @@ func (p *prepared) decide(ctx context.Context, s setup, l *config.Loaded, info s
 		}
 		return p.migrate(ctx, nil, plan, dbPath, s.configPath, true)
 	}
+}
+
+// bootstrap starts a new host in config mode when config.json does not
+// exist: it writes the default config (per-run overrides are not stored),
+// creates the database and binds it, as `flats config init` does. A data
+// directory that already holds Flats data is refused, never replaced.
+func (p *prepared) bootstrap(ctx context.Context, s setup, info store.Info, dbPath string) error {
+	if info.HasData {
+		return actionf("%s does not exist, but %s holds a Flats host that is not bound to a config; convert it with `flats config migrate --data %s --config %s`", s.configPath, dbPath, p.dataDir, s.configPath)
+	}
+	if found := flatsLeftovers(p.dataDir); len(found) > 0 {
+		return leftoverErr(s.configPath, p.dataDir, found)
+	}
+	doc, err := config.New(config.NewInstanceID(), p.dataDir)
+	if err != nil {
+		return &ActionError{err}
+	}
+	c, err := doc.Effective(nil)
+	if err != nil {
+		return &ActionError{err}
+	}
+	p.doc = doc
+	if s.dryRun {
+		p.notes = append(p.notes, "would initialize a new host in "+p.dataDir)
+		return nil
+	}
+	if p.hash, err = config.Create(s.configPath, doc); err != nil {
+		return err
+	}
+	if err := stop("config"); err != nil {
+		return err
+	}
+	if err := p.open(nil, dbPath); err != nil {
+		return err
+	}
+	if err := p.bind(ctx, c.Host.InstanceID, s.configPath, false); err != nil {
+		return err
+	}
+	p.notes = append(p.notes, fmt.Sprintf("initialized a new host in %s (instance %s): %s did not exist, so Flats created it with the defaults and an empty database. If you expected existing data, stop the host and check the path or volume", p.dataDir, c.Host.InstanceID, s.configPath))
+	return nil
+}
+
+// leftoverNames are entries only a Flats host creates in its data directory.
+var leftoverNames = []string{"flats", "secret.key", "tsnet", "portal", "backups", "network-retirements", provider.FileName}
+
+// flatsLeftovers lists the Flats entries in dir. Other entries, such as a
+// new volume's lost+found, do not stop a bootstrap.
+func flatsLeftovers(dir string) []string {
+	var found []string
+	for _, name := range leftoverNames {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			found = append(found, name)
+		}
+	}
+	return found
+}
+
+func leftoverErr(configPath, dataDir string, found []string) error {
+	return actionf("%s has no host database, but %s already holds Flats data (%s): restore flats.db and %s from the same backup, or start a new host in an empty directory",
+		dataDir, dataDir, strings.Join(found, ", "), configPath)
 }
 
 // open persists a config schema migration, then opens (and migrates) the
