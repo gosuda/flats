@@ -248,6 +248,10 @@ CREATE TABLE IF NOT EXISTS flat_providers (
   permitted INTEGER NOT NULL,
   PRIMARY KEY (flat, provider)
 );
+CREATE TABLE IF NOT EXISTS runtime_generation (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  generation INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

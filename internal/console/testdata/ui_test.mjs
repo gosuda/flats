@@ -95,7 +95,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 // --- stubbed API ---
 const PUBLIC = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 const blog = {
-  slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
+  type: 'docs', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
   private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: PUBLIC,
   draft: { revision: 3, hash: 'c', dirty: true, size: 1, files: 1, kind: 'server', updated_at: '2026-10-03T00:00:00Z' },
   live: { number: 2, kind: 'server' }, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z', disk_bytes: 10,
@@ -144,6 +144,7 @@ const stopList = list.mount(listMain, [], ctx);
 await tick();
 const rows = all(listMain, (e) => e.tagName === 'LI' && e.className === 'flat');
 assert.equal(rows.length, 3);
+assert.equal(all(rows[0], (e) => e.className === "badge content-type")[0].textContent, "Document");
 for (const row of rows) {
   assert.equal(all(row, (e) => e.className.includes('notice-text')).length, 0);
 }
@@ -164,6 +165,7 @@ const flat = await import('./flat.js');
 const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
+assert.equal(all(flatMain, (e) => e.className === "badge content-type")[0].textContent, "Document");
 const redeploys = byText(flatMain, 'Redeploy (apply environment)');
 assert.equal(redeploys.length, 4, 'want a redeploy button on the live version row and each environment panel');
 const liveRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-live')[0];

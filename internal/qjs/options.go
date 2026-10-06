@@ -71,6 +71,7 @@ type EvalOption struct {
 	fileValue     *Value
 	codeValue     *Value
 	byteCodeValue *Value
+	optionValue   *Value
 }
 
 // EvalOptionFunc configures evaluation behavior using functional option pattern.
@@ -204,22 +205,17 @@ func (o *EvalOption) Handle() (handle uint64) {
 		o.flags,
 	)
 
+	o.optionValue = option
 	return option.Raw()
 }
 
 // Free releases QuickJS value handles to prevent memory leaks.
 // Must be called after Handle() to clean up WASM memory.
 func (o *EvalOption) Free() {
-	if o.fileValue.Raw() != 0 {
-		o.c.Call("JS_FreeValue", o.c.Raw(), o.fileValue.Raw())
-	}
-
-	if o.codeValue != nil && o.codeValue.Raw() != 0 {
-		o.c.Call("JS_FreeValue", o.c.Raw(), o.codeValue.Raw())
-	}
-
-	if o.byteCodeValue != nil && o.byteCodeValue.Raw() != 0 {
-		o.c.Call("JS_FreeValue", o.c.Raw(), o.byteCodeValue.Raw())
+	for _, value := range []*Value{o.fileValue, o.codeValue, o.byteCodeValue, o.optionValue} {
+		if value != nil && value.handle != nil {
+			value.handle.Free()
+		}
 	}
 }
 

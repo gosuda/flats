@@ -45,6 +45,7 @@ var migrations = []migration{
 	{6, "host binding", addHostBinding},
 	{7, "application environment variables", addEnvVars},
 	{8, "application network permissions", addNetworkSettings},
+	{9, "runtime generation", addRuntimeGeneration},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
@@ -448,5 +449,22 @@ func addColumn(ctx context.Context, x executor, table, col, decl string) error {
 		return err
 	}
 	_, err = x.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+col+` `+decl)
+	return err
+}
+
+// addRuntimeGeneration preserves the activation counter independently of config.json.
+// IF NOT EXISTS also preserves counters from the pre-registry docs branch.
+func addRuntimeGeneration(ctx context.Context, x executor) error {
+	// Ensure released schemas on databases from earlier docs migrations.
+	if err := addEnvVars(ctx, x); err != nil {
+		return err
+	}
+	if err := addNetworkSettings(ctx, x); err != nil {
+		return err
+	}
+	_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS runtime_generation (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  generation INTEGER NOT NULL
+)`)
 	return err
 }

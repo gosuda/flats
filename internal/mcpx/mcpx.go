@@ -70,6 +70,7 @@ func (c *serverCache) current() (*mcp.Server, int64) {
 			&mcp.ServerOptions{Instructions: instructions(limit)})
 		register(srv, &tools{svc: c.svc})
 		registerReference(srv, c.version, limit)
+		registerContentTypes(srv, c.version, limit)
 		c.srv, c.limit = srv, limit
 	}
 	return c.srv, c.limit
@@ -118,6 +119,9 @@ func loopbackAddr(addr string) bool {
 func instructions(uploadLimit int64) string {
 	return fmt.Sprintf(`Flats hosts websites ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a Private URL through Local loopback or explicitly permitted Tailscale.
 
+Content types
+Read flats://docs/content-types/v1 or get_content_types for flat (website) and docs (Markdown). For documents read live Markdown with get_document, save_document as a Draft, then publish with operator approval. save_version supports complete docs bundles.
+
 Runtime reference
 Before authoring a server app, read resource flats://docs/runtime-api/v1 (resources/read), or call the read-only get_runtime_reference tool with {}. It contains the complete versioned FILES/DB, handler/response, encoding, persistence, ordinary environment variables, secrets and limits contract; no installed skill or source checkout is needed. FILES methods and DB methods are synchronous.
 
@@ -130,11 +134,12 @@ Workflow
 Exposure
 - New flats are Unpublished and Private. Private uses loopback or the existing tailnet ACL; it does not promise owner-only access. publication, live_version, visibility, provider permission/configuration and connection state are separate fields, never inferred from a URL.
 - Visibility has only private/public; legacy public-listed/public-unlisted inputs normalize to public. BOTH transition directions require explicit operator approval. Same visibility is unchanged, and Unpublished cannot become Public. delete_flat also waits for approval.
-- Give approval_url to the operator exactly as returned; poll get_approval. Agents have no operator session, decision tool, or provider grant tool. Headers cannot confer approval authority. Connecting/configuring a provider grants no publish or visibility consent.
+- Give approval_url to the operator exactly as returned; poll get_approval. MCP exposes no approval decision or provider grant tool. Decisions use console routes with same-origin CSRF checks; the console has no separate authentication, and a local process can send those headers. Run only trusted local agents and do not use console routes to approve your own requests. Connecting/configuring a provider grants no publish or visibility consent.
 - Local is always permitted; nonlocal tailscale, tailscale-funnel and portal require explicit operator permission/configuration. Public Tailscale means Funnel (internet), not Serve (tailnet). Public is NOT access control: anyone on the internet can open a ready Public route.
 
 flats.json (optional, at the bundle root; unknown fields are rejected)
-  name, kind ("static" default or "server"), entry (static default index.html; server default server.js, index.js, main.wasm or server.wasm), spa (serve the entry for unknown paths), not_found (e.g. "404.html", served with status 404), health (default "/"), screenshot (thumbnail path).
+  type ("flat" default or "docs"), name, kind ("static" default or "server"), entry (static default index.html; server default server.js, index.js, main.wasm or server.wasm), spa (serve the entry for unknown paths), not_found (e.g. "404.html", served with status 404), health (default "/"), screenshot (thumbnail path).
+Docs: Markdown entry (default index.md, README.md, or the only Markdown file); omit kind, spa, not_found. health is /_docs/healthz. Read flats://docs/content-types/v1 for the complete contract. save_document saves a Draft; get_document reads live edits and may seed/activate state (idempotent, non-destructive). Conflict recovery metadata is private only, newest 8 records within 2 MiB per document; retrieve preserved text with get_document conflict=<generation> (optional doc), or private /_docs/api/conflict?doc=...&generation=... (view=1 for plain text with no-store, nosniff and CSP). Visitor health is cheap; only trusted host health trials activate every document on an isolated copy.
 Server flats: export default { async fetch(request, env) { return new Response("hi") } }. env.DB is SQLite (query/exec), env.FILES is a per-flat local-disk string key-value store (not S3), ordinary environment variables and secrets arrive as env values (WASI receives only these as environment variables). Use list_env/set_env/delete_env for readable ordinary configuration. Values are server-only, never bundled into frontend assets, and live changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, or Flats host restart. New previews capture current settings; running instances and automatic worker restarts keep their captured settings. Only the operator sets secret values; list_secrets shows names without values. Never put credentials in ordinary env variables. JavaScript server-side global fetch requires an operator-managed exact HTTP(S) origin allowlist; read get_network and ask the operator to grant origins in the console or with flats network set on the host. Agents cannot change it. Empty policy denies server fetch. Browser fetch uses the browser's real CORS/CSP protections and receives no injected secrets. Policy updates apply on the next approved activation, Flats host restart or new preview; running workers and automatic restarts retain captured grants. After clearing grants, redeploy to revoke live access.
 
 Limits: %d bytes total (uncompressed) per upload (operator-configurable), %d files, no symlinks or paths outside the root. A single wrapping directory such as dist/ is stripped; .git and .DS_Store are skipped (save_version_from_dir also skips node_modules). Do not upload sources or node_modules. Every validation problem comes with a fix hint.

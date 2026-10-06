@@ -26,13 +26,19 @@ type engine interface {
 	close()
 }
 
+// outboundClient keeps transport I/O separate from the VM boundary.
+type outboundClient interface {
+	Fetch(context.Context, egress.Request) (egress.Response, error)
+	Close()
+}
+
 type worker struct {
 	spec    workerSpec
 	log     *childLog
 	data    *dataStore
 	eng     engine
 	js      *jsEngine      // nil for WASI
-	network *egress.Client // shared by all JS request and WebSocket VMs
+	network outboundClient // shared by all JS request and WebSocket VMs
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).

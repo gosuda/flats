@@ -3,8 +3,10 @@ package runtime
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/qjs"
@@ -31,6 +34,10 @@ type jsVM struct {
 	out           *lineWriter
 	errOut        *lineWriter
 	broken        bool
+	gc            *qjs.Value // native collector captured before guest code can replace it
+	gcBytes       uint64
+	gcCalls       uint32
+	gcMemory      uint32
 	networkActive bool
 	networkCalls  int
 
@@ -95,7 +102,9 @@ func newJSVM(w *worker, ws wsSink) (*jsVM, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), w.spec.timeout())
 	defer cancel()
 	err = vm.guard(ctx, func(c *qjs.Context) error {
+		vm.gc = c.Global().GetPropertyStr("gc")
 		c.SetFunc("__flats_host", vm.hostCall)
+		c.SetFunc("__flats_docs_codec", vm.docsCodec)
 		v, err := c.Eval("flats:prelude.js", qjs.Code(preludeJS))
 		if err != nil {
 			return fmt.Errorf("prelude: %w", err)
@@ -122,6 +131,7 @@ func newJSVM(w *worker, ws wsSink) (*jsVM, error) {
 	if !vm.rt.StackIntact() {
 		return nil, fmt.Errorf("loading %s: maximum call stack size exceeded (recursion too deep)", w.spec.Entry)
 	}
+	vm.gcMemory = vm.rt.MemorySize()
 	ok = true
 	return vm, nil
 }
@@ -197,7 +207,11 @@ func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err err
 	vm.networkActive = fn == "__flats_dispatch" || fn == "__flats_ws"
 	vm.networkCalls = 0
 	defer func() { vm.networkActive = false }()
-	err = vm.guard(ctx, func(c *qjs.Context) error {
+	err = vm.guard(ctx, func(c *qjs.Context) (callErr error) {
+		// Register first so the returned value and original promise are freed
+		// before collecting request-local cycles, within the request deadline.
+		defer vm.collectCycles(c, &callErr)
+		vm.gcBytes += uint64(len(arg))
 		a := c.NewString(arg)
 		p, err := c.Global().InvokeJS(fn, a)
 		a.Free()
@@ -205,6 +219,7 @@ func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err err
 			vm.broken = true
 			return &errVMFailed{err: errors.New(trimStack(err.Error())), timedOut: ctx.Err() != nil}
 		}
+		defer p.Free()
 		r := p
 		if p.IsPromise() {
 			if r, err = p.Await(); err != nil {
@@ -212,8 +227,11 @@ func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err err
 				return &errVMFailed{err: errors.New(trimStack(err.Error())), timedOut: ctx.Err() != nil}
 			}
 		}
+		if r != p {
+			defer r.Free()
+		}
 		out = r.String()
-		r.Free()
+		vm.gcBytes += uint64(len(out))
 		return nil
 	})
 	if vm.rt != nil && !vm.broken && !vm.rt.StackIntact() {
@@ -251,6 +269,50 @@ func (vm *jsVM) afterCall() {
 	}
 }
 
+// WASI QuickJS reports zero malloc usable size, so automatic GC misses large
+// payloads. Collect after 4 MiB of boundary traffic, linear-memory growth, or
+// 32 calls; at >= 3/4 of the memory cap, collect every call because growth
+// eventually stops signalling guest-only garbage. MemorySize is an O(1)
+// high-water mark, not live usage; JS_ComputeMemoryUsage scans the heap.
+// Uncaught engine failures discard the VM. A guest-caught OOM clears QuickJS's
+// exception and has no persistent signal exposed by the binding, so it cannot
+// reliably trigger recovery or VM replacement (nor does cap-sized linear memory
+// prove exhaustion after GC, since linear memory never shrinks).
+func (vm *jsVM) collectCycles(c *qjs.Context, callErr *error) {
+	if vm.broken || vm.gc == nil {
+		return
+	}
+	vm.gcCalls++
+	memory := vm.rt.MemorySize()
+	trafficDue := vm.gcBytes >= 4*1024*1024
+	limit := uint32(32)
+	if capBytes := uint64(vm.w.spec.pages()) * 65536; uint64(memory) >= capBytes-capBytes/4 {
+		limit = 1
+	}
+	if !trafficDue && memory <= vm.gcMemory && vm.gcCalls < limit {
+		return
+	}
+	vm.gcBytes, vm.gcCalls, vm.gcMemory = 0, 0, memory
+	defer func() {
+		if r := recover(); r != nil {
+			vm.broken = true
+			if *callErr == nil {
+				*callErr = &errVMFailed{err: errors.New(trimStack(fmt.Sprint(r))), timedOut: vm.ctx.Err() != nil}
+			}
+		}
+	}()
+	v, err := c.Invoke(vm.gc, c.Global())
+	if v != nil {
+		v.Free()
+	}
+	if err != nil {
+		vm.broken = true
+		if *callErr == nil {
+			*callErr = &errVMFailed{err: errors.New(trimStack(err.Error())), timedOut: vm.ctx.Err() != nil}
+		}
+	}
+}
+
 func (vm *jsVM) info() (fetch, ws bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), vm.w.spec.timeout())
 	defer cancel()
@@ -269,6 +331,13 @@ func (vm *jsVM) close() {
 		vm.db = nil
 	}
 	if vm.rt != nil {
+		if vm.gc != nil {
+			func() {
+				defer func() { recover() }()
+				vm.gc.Free()
+			}()
+			vm.gc = nil
+		}
 		func() {
 			defer func() { recover() }() // Close panics on a module closed by a timeout
 			vm.rt.Close()
@@ -309,7 +378,9 @@ func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
 	op := args[0].String()
 	raw := args[1].String()
 	c := this.Context()
+	vm.gcBytes += uint64(len(op) + len(raw))
 	res, err := vm.host(vm.ctx.current(), op, json.RawMessage(raw))
+	vm.gcBytes += uint64(len(res))
 	if err != nil {
 		return nil, err
 	}
@@ -350,6 +421,8 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 		return string(b), err
 	}
 	switch op {
+	case "runtime.generation":
+		return jsonOf(vm.w.spec.Generation)
 	case "fetch":
 		if !vm.networkActive {
 			return "", errors.New("fetch is only available inside a request or WebSocket handler")
@@ -432,6 +505,13 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 			return "", errors.New("WebSocket send outside a websocket handler")
 		}
 		return "", vm.ws.send(num(0), str(1))
+	case "ws.limits":
+		if sink, ok := vm.ws.(interface {
+			setSendLimits(int64, int64, int64) error
+		}); ok {
+			return "", sink.setSendLimits(num(0), num(1), num(2))
+		}
+		return "", errors.New("WebSocket send limits unavailable")
 	case "ws.close":
 		if vm.ws == nil {
 			return "", errors.New("WebSocket close outside a websocket handler")
@@ -549,4 +629,114 @@ func (e *jsEngine) close() {
 		e.wsHub.shutdown()
 	}
 	e.pool.close()
+}
+
+// docsCodec keeps bounded binary serialization out of the interpreted VM.
+// It has no I/O capabilities. Fetch uses separate limits for its binary bridge.
+func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
+	args := this.Args()
+	defer func() {
+		for _, a := range args {
+			a.Free()
+		}
+	}()
+	if len(args) != 2 {
+		return nil, errors.New("invalid docs codec arguments")
+	}
+	c := this.Context()
+	readString := func() (string, error) {
+		// The JS wrapper supplies JSON to preserve NUL and lone surrogates across
+		// qjs's C-string bridge without percent-encoding allocations.
+		var value string
+		raw := args[1].String()
+		vm.gcBytes += uint64(len(raw))
+		err := json.Unmarshal([]byte(raw), &value)
+		return value, err
+	}
+	newString := func(s string) *qjs.Value {
+		vm.gcBytes += uint64(len(s))
+		return c.NewString(s)
+	}
+	newBuffer := func(b []byte) *qjs.Value {
+		vm.gcBytes += uint64(len(b))
+		return c.NewArrayBuffer(b)
+	}
+	if args[1].IsByteArray() {
+		vm.gcBytes += uint64(args[1].ByteLen())
+	}
+	op := args[0].String()
+	max := 1536 * 1024
+	if op == "fetch.encode" {
+		max = egress.MaxRequestBody
+	}
+	if op == "fetch.decode" {
+		max = egress.MaxResponseBody
+	}
+	switch op {
+	case "encode", "fetch.encode":
+		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
+			return nil, errors.New("docs codec binary limit")
+		}
+		return newString(base64.StdEncoding.EncodeToString(args[1].ToByteArray())), nil
+	case "decode", "fetch.decode":
+		s, err := readString()
+		if err != nil {
+			return nil, err
+		}
+		if len(s) > ((max+2)/3)*4 {
+			return nil, errors.New("docs codec base64 limit")
+		}
+		b, err := base64.StdEncoding.Strict().DecodeString(s)
+		if err != nil || len(b) > max || base64.StdEncoding.EncodeToString(b) != s {
+			return nil, errors.New("invalid canonical base64")
+		}
+		return newBuffer(b), nil
+	case "textEncode":
+		s, err := readString()
+		if err != nil {
+			return nil, err
+		}
+		if len(s) > max {
+			return nil, errors.New("docs codec text limit")
+		}
+		if !utf8.ValidString(s) {
+			s = strings.ToValidUTF8(s, "\ufffd")
+		}
+		return newBuffer([]byte(s)), nil
+	case "textDecode":
+		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
+			return nil, errors.New("docs codec binary limit")
+		}
+		b := args[1].ToByteArray()
+		if !utf8.Valid(b) {
+			return nil, errors.New("invalid UTF8")
+		}
+		raw, err := json.Marshal(string(b))
+		if err != nil {
+			return nil, err
+		}
+		return newString(string(raw)), nil
+	case "length":
+		s, err := readString()
+		if err != nil {
+			return nil, err
+		}
+		if len(s) > 4*1024*1024 {
+			return nil, errors.New("docs codec text limit")
+		}
+		vm.gcBytes += 4
+		return c.NewInt32(int32(len(s))), nil
+	case "digest":
+		s, err := readString()
+		if err != nil {
+			return nil, err
+		}
+		if len(s) > 4*1024*1024 {
+			return nil, errors.New("docs codec digest limit")
+		}
+		sum := sha256.Sum256([]byte(s))
+		return newString(hex.EncodeToString(sum[:])), nil
+	default:
+		return nil, errors.New("unknown docs codec")
+	}
 }

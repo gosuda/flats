@@ -33,7 +33,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 	}
 	for _, tool := range listed.Tools {
 		t.Run(tool.Name, func(t *testing.T) {
-			e := newEnv(t)
+			e := newEnvRuntime(t)
 			publishedFixture(t, e)
 			if code, _ := e.operatorCall(t, "POST", "/flats/census/providers", `{"provider":"portal","permitted":true}`); code != 200 {
 				t.Fatalf("fixture grant: %d", code)
@@ -57,8 +57,10 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"list_versions":         {"slug": "census"}, "deploy": {"slug": "census", "version": 1}, "publish": {"slug": "census", "revision": 3},
 				"rollback": {"slug": "census", "version": 1}, "open_preview": {"slug": "census", "target": "draft", "version": 0},
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
-				"get_network": {"slug": "census"}, "get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {},
-				"list_env": {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},
+				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {}, "get_content_types": {},
+				"save_document": {"slug": "separate-doc", "markdown": "# doc"}, "get_document": {"slug": "census"},
+				"get_network": {"slug": "census"},
+				"list_env":    {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},
 			}
 			if tool.Name == "delete_env" {
 				if err := e.svc.SetEnv(context.Background(), "census", "MODE", "test", core.ViaMCP); err != nil {
@@ -70,8 +72,11 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				t.Fatalf("new tool lacks authority behavior census: %s", tool.Name)
 			}
 			text, failed := call(t, e.local, tool.Name, input, nil)
-			if failed {
+			if failed && tool.Name != "get_document" {
 				t.Fatalf("valid census operation failed: %s", text)
+			}
+			if tool.Name == "get_document" && (!failed || !strings.Contains(text, `"category":"not_docs"`)) {
+				t.Fatal("website must reject document reads with a typed error")
 			}
 			a, err := e.svc.GetApproval(context.Background(), pending.ApprovalID)
 			if err != nil || a.Status != "pending" {

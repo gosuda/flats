@@ -11,6 +11,7 @@ import (
 
 func ToGoValue[T any](input *Value, samples ...T) (v T, err error) {
 	registryID := input.GetPropertyStr("__registry_id")
+	defer registryID.Free()
 	if !registryID.IsUndefined() && !registryID.IsNull() {
 		registryVal, ok := input.context.runtime.registry.Get(uint64(registryID.Int64()))
 		if ok {
@@ -50,6 +51,7 @@ func toGoValue[T any](
 	// If JS value is a QJSProxyValue, extract the Go value from the registry
 	if input.IsQJSProxyValue() {
 		proxyID := input.GetPropertyStr("proxyId")
+		defer proxyID.Free()
 		temp, _ = input.context.runtime.registry.Get(uint64(proxyID.Int64()))
 
 		return v, nil
@@ -214,8 +216,12 @@ func JsTypedArrayToGo(input *Value) ([]byte, error) {
 	}
 
 	if buffer.IsByteArray() {
-		offset := uint(input.GetPropertyStr("byteOffset").Int64())
-		length := uint(input.GetPropertyStr("byteLength").Int64())
+		offsetValue := input.GetPropertyStr("byteOffset")
+		defer offsetValue.Free()
+		lengthValue := input.GetPropertyStr("byteLength")
+		defer lengthValue.Free()
+		offset := uint(offsetValue.Int64())
+		length := uint(lengthValue.Int64())
 
 		fullBytes := buffer.ToByteArray()
 		if offset+length > uint(len(fullBytes)) {
@@ -583,6 +589,8 @@ func jsObjectToGo[T any](
 	return processTempValue("JsObjectToGo", temp, err, sample)
 }
 
+// JsFuncToGo converts a function, retaining its JS reference until Runtime.Close.
+// The returned Go function must only be called while that runtime is open.
 func JsFuncToGo[T any](input *Value, samples ...T) (v T, err error) {
 	return jsFuncToGo(NewTracker[uint64](), input, samples...)
 }
@@ -608,6 +616,7 @@ func jsFuncToGo[T any](
 	}
 
 	ctx := input.Context()
+	input = ctx.retainGoFunction(input)
 	goFunc := func(args []reflect.Value) (results []reflect.Value) {
 		return createJsFunctionHandler(ctx, input, tracker, fnType, args)
 	}

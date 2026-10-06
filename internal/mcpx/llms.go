@@ -18,14 +18,15 @@ const (
 	LLMsFullPath         = "/llms-full.txt"
 	AgentGuidePath       = "/docs/agent-guide.md"
 	RuntimeReferencePath = "/docs/runtime-api-v1.md"
+	ContentTypesPath     = "/docs/content-types.md"
 )
 
 // LLMsPaths lists every path LLMsHandler answers.
-var LLMsPaths = []string{LLMsPath, LLMsFullPath, AgentGuidePath, RuntimeReferencePath}
+var LLMsPaths = []string{LLMsPath, LLMsFullPath, AgentGuidePath, RuntimeReferencePath, ContentTypesPath}
 
 // LLMsHandler serves agent-oriented documentation in the llms.txt format
 // (https://llmstxt.org): the LLMsPath index, which links to the agent guide
-// and the runtime reference, and LLMsFullPath, which concatenates all three.
+// and the runtime/content-type references; LLMsFullPath concatenates all four.
 // Mount it on the management server next to /mcp. The agent guide is built by
 // the same code as the /mcp handler (on its own server instance), so its
 // instructions, upload limit and tool list match what an MCP client sees.
@@ -50,6 +51,9 @@ func LLMsHandler(svc *core.Service, opts Options) http.Handler {
 		}
 		writeText(w, "text/markdown; charset=utf-8", guide)
 	})
+	mux.HandleFunc("GET "+ContentTypesPath, func(w http.ResponseWriter, r *http.Request) {
+		writeText(w, "text/markdown; charset=utf-8", runtimeref.ContentTypesMarkdown)
+	})
 	mux.HandleFunc("GET "+RuntimeReferencePath, func(w http.ResponseWriter, r *http.Request) {
 		writeText(w, "text/markdown; charset=utf-8", runtimeref.Markdown)
 	})
@@ -61,7 +65,7 @@ func LLMsHandler(svc *core.Service, opts Options) http.Handler {
 			return
 		}
 		writeText(w, "text/plain; charset=utf-8",
-			llmsIndex(o, version)+"\n---\n\n"+guide+"\n---\n\n"+runtimeref.Markdown)
+			llmsIndex(o, version)+"\n---\n\n"+guide+"\n---\n\n"+runtimeref.Markdown+"\n---\n\n"+runtimeref.ContentTypesMarkdown)
 	})
 	return mux
 }
@@ -112,9 +116,9 @@ func llmsIndex(origin, version string) string {
 	endpoint := origin + "/mcp"
 	return fmt.Sprintf(`# Flats
 
-> Flats hosts websites and small server apps ("flats") on the operator's own machine. Agents save Private Draft content and request publication through MCP or the flats CLI; every publish, activation, rollback, deletion and visibility change waits for explicit operator approval.
+> Flats hosts collaborative Markdown documents, websites and small server apps ("flats") on the operator's own machine. Agents save Private Draft content and request publication through MCP or the flats CLI; every publish, activation, rollback, deletion and visibility change waits for explicit operator approval.
 
-This file is served by the Flats host at %s (version %s). Agents never hold operator authority: give the operator each approval_url exactly as returned, poll the approval, and report a version as live only after get_flat shows it current with a ready endpoint and you have fetched the page.
+This file is served by the Flats host at %s (version %s). Give the operator each approval_url exactly as returned, poll the approval, and report a version as live only after get_flat shows it current with a ready endpoint and you have fetched the page. Approval and provider decisions use the CSRF-protected console; it has no separate authentication, so only trusted local agents should run on the host.
 
 Connect over MCP (Streamable HTTP) at %s:
 
@@ -130,13 +134,15 @@ Read the agent guide before the first deploy, and the runtime API reference befo
 - [Agent guide](%s%s): deploy workflow, approvals, exposure rules, flats.json, upload limits, every MCP tool and the core CLI commands, as this host reports them.
 - [Runtime API v1](%s%s): complete server-flat contract (env.DB SQLite, env.FILES, handler and Response helpers, encoding, limits, ordinary environment variables, secrets, approvals). Also MCP resource %s and tool get_runtime_reference.
 
+- [Content types](%s%s): docs Markdown manifests, save_document, get_document and live activation; also flats://docs/content-types/v1 and get_content_types.
+
 ## Optional
 
-- [Full context](%s%s): this index, the agent guide and the runtime API reference in one file.
+- [Full context](%s%s): this index, the agent guide, runtime API and content-type references in one file.
 - [Source and README](https://github.com/gosuda/flats): install, operator setup, network providers and the trust model.
 - [Deployment skill](https://github.com/gosuda/flats/blob/main/plugins/flats/skills/flats-deploy/SKILL.md): step-by-step deploy, approval and verification workflow for coding agents.
 `, origin, version, endpoint, endpoint, endpoint, endpoint,
-		origin, AgentGuidePath, origin, RuntimeReferencePath, runtimeref.URI, origin, LLMsFullPath)
+		origin, AgentGuidePath, origin, RuntimeReferencePath, runtimeref.URI, origin, ContentTypesPath, origin, LLMsFullPath)
 }
 
 // agentGuide renders the MCP server's instructions and tools, plus the core

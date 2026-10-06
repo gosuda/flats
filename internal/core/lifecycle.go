@@ -800,6 +800,7 @@ func (s *Service) stopPublicRoutes(ctx context.Context, slugName string) error {
 			}
 			return fmt.Errorf("%w: %w: public routes still reachable: %s", ErrConflict, ErrPublicStopUnconfirmed, strings.Join(names, ", "))
 		}
+		s.revokeRoute("public:" + slugName)
 		s.state(slugName).publicServed = false
 		return nil
 	}
@@ -810,6 +811,7 @@ func (s *Service) stopPublicRoutes(ctx context.Context, slugName string) error {
 		}
 		lf.publicServed = false
 	}
+	s.revokeRoute("public:" + slugName)
 	return nil
 }
 
@@ -839,7 +841,7 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	}
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),
-		Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, f.Visibility.Public()),
+		Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, f.Visibility.Public()), PrivateHandler: s.siteHandler(f.Slug, false),
 		Permitted: permitted,
 	})
 	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
@@ -1054,11 +1056,7 @@ func (s *Service) openDraftPreviewLocked(ctx context.Context, slugName string) (
 	p := &preview{host: host, flat: slugName, version: 0, handler: built.handler, inst: built.inst, dataDir: dataDir}
 	now := s.now()
 	p.last.Store(now.UnixMilli())
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p.last.Store(s.now().UnixMilli())
-		w.Header().Set("X-Robots-Tag", "noindex")
-		p.handler.ServeHTTP(w, r)
-	})
+	h := s.previewHandler(p)
 	stop := func() {
 		if built.inst != nil {
 			built.inst.Stop()
@@ -1269,6 +1267,10 @@ func ErrorCategory(err error) string {
 		return "conflict"
 	case errors.Is(err, ErrForbidden):
 		return "forbidden"
+	case errors.Is(err, ErrNotDocs):
+		return "not_docs"
+	case errors.Is(err, ErrDocumentNotFound):
+		return "document_not_found"
 	case errors.Is(err, store.ErrNotFound):
 		return "not_found"
 	case errors.Is(err, ErrInvalid):
@@ -1353,10 +1355,16 @@ func snapshotHash(path string) (string, error) {
 }
 
 func (s *Service) stopPreviewExposure(ctx context.Context, host string) error {
+	var err error
 	if n, ok := s.cfg.Lifecycle.(LifecyclePreviewNet); ok {
-		return n.StopExposure(ctx, host)
+		err = n.StopExposure(ctx, host)
+	} else {
+		err = s.cfg.Private.Stop(host)
 	}
-	return s.cfg.Private.Stop(host)
+	if err == nil {
+		s.revokeRoute("preview:" + host)
+	}
+	return err
 }
 
 // stopSlugRoutes is the destructive teardown used by delete and redirect
@@ -1367,6 +1375,7 @@ func (s *Service) stopSlugRoutes(ctx context.Context, slugName string) error {
 		if err := n.StopSlug(ctx, slugName); err != nil {
 			return fmt.Errorf("%w: retire routes for %s: %w", ErrConflict, slugName, err)
 		}
+		s.revokeRoute("public:" + slugName)
 		return nil
 	}
 	if err := s.stopPublicRoutes(ctx, slugName); err != nil {
@@ -1420,11 +1429,7 @@ func (s *Service) restorePreviews(ctx context.Context) {
 		}
 		prev := &preview{host: p.Host, flat: p.Flat, version: p.Version, handler: built.handler, inst: built.inst, dataDir: data}
 		prev.last.Store(p.LastAccess.UnixMilli())
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			prev.last.Store(s.now().UnixMilli())
-			w.Header().Set("X-Robots-Tag", "noindex")
-			prev.handler.ServeHTTP(w, r)
-		})
+		handler := s.previewHandler(prev)
 		if _, err := s.servePreview(ctx, p.Flat, p.Host, handler); err != nil {
 			if built.inst != nil {
 				built.inst.Stop()

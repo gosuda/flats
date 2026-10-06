@@ -329,7 +329,7 @@ func TestManagementServerServesLLMsTxt(t *testing.T) {
 		if code != 200 {
 			t.Fatalf("%s = %d", path, code)
 		}
-		if path != mcpx.RuntimeReferencePath && !strings.Contains(body, "http://localhost:"+port+"/mcp") {
+		if path != mcpx.RuntimeReferencePath && path != mcpx.ContentTypesPath && !strings.Contains(body, "http://localhost:"+port+"/mcp") {
 			t.Errorf("%s does not name the MCP endpoint of the requested host", path)
 		}
 		// Other methods reach the documentation handler, not the console.

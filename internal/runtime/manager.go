@@ -128,7 +128,7 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		m:    m,
 		spec: spec,
 		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
-		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Dir: spec.Dir, Entry: spec.Entry,
+		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
 			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds()},
 	}
 	if in.ws.Env == nil {
@@ -473,7 +473,13 @@ func (in *instance) ensure(ctx context.Context) error {
 	in.mu.Unlock()
 	t0 := time.Now()
 	// Not the request's context: a restart serves every waiting request.
-	err := in.spawn(context.Background())
+	var err error
+	if in.spec.NextGeneration != nil {
+		in.ws.Generation, err = in.spec.NextGeneration(context.Background())
+	}
+	if err == nil {
+		err = in.spawn(context.Background())
+	}
 	in.mu.Lock()
 	in.starting = nil
 	in.lastErr = err

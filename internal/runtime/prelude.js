@@ -6,6 +6,34 @@
   "use strict";
   const host = globalThis.__flats_host;
   delete globalThis.__flats_host;
+  const docsCodec = globalThis.__flats_docs_codec;
+  delete globalThis.__flats_docs_codec;
+  Object.defineProperty(globalThis, "__flats_docsCodec", {value: Object.freeze({
+    encode(bytes) {
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength > 1536 * 1024) throw new Error("docs codec binary limit");
+      const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      return docsCodec("encode", buffer);
+    },
+    decode(s) { return new Uint8Array(docsCodec("decode", JSON.stringify(s))); },
+    digest(s) { return docsCodec("digest", JSON.stringify(s)); },
+    length(s) { return docsCodec("length", JSON.stringify(s)); },
+    textEncoder: Object.freeze({
+      encode(s) { return new Uint8Array(docsCodec("textEncode", JSON.stringify(s))); },
+      encodeInto(s, destination) {
+        const bytes = this.encode(s);
+        if (bytes.length > destination.length) throw new Error("docs codec destination too small");
+        destination.set(bytes);
+        return {read: s.length, written: bytes.length};
+      },
+    }),
+    textDecoder: Object.freeze({
+      decode(bytes) {
+        if (!(bytes instanceof Uint8Array) || bytes.byteLength > 1536 * 1024) throw new Error("docs codec binary limit");
+        return JSON.parse(docsCodec("textDecode", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)));
+      },
+    }),
+  })});
   const call = (op, args) => {
     const r = host(op, JSON.stringify(args));
     return r === "" ? undefined : JSON.parse(r);
@@ -248,6 +276,9 @@
     return String(b);
   };
 
+  // Trusted, read-only deployment metadata for apps coordinating overlapping
+  // workers. The host generation orders activations, including previews and rollbacks.
+  const runtimeGeneration = call("runtime.generation", []);
   const utf8Bytes = (value) => {
     const s = String(value), out = new Uint8Array(s.length * 3);
     let used = 0;
@@ -267,11 +298,7 @@
     return out.subarray(0, used);
   };
   const bufferedBytes = (b) => b == null ? new Uint8Array(0) : isBinary(b) ? toBytes(b) : utf8Bytes(bodyText(b));
-  const decodeB64 = (s) => {
-    const raw = atob(s || ""), bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    return bytes;
-  };
+  const decodeB64 = (s) => new Uint8Array(docsCodec("fetch.decode", JSON.stringify(s || "")));
   // UTF-8 decoding for buffered HTTP bodies, replacing malformed input.
   const utf8Text = (bytes) => {
     let out = "";
@@ -317,6 +344,7 @@
   };
   class Request {
     constructor(r, init) {
+      Object.defineProperty(this, "runtimeGeneration", { value: runtimeGeneration });
       // Preserve the existing inbound request object's headers and body API.
       if (init === undefined && r && typeof r === "object" && !(r instanceof Request) && !(r instanceof URL) && typeof r.url === "string") {
         this.method = r.method;
@@ -383,7 +411,7 @@
     if (req.url.length > 8192 || (typeof req.body === "string" && req.body.length > 1048576) || (isBinary(req.body) && toBytes(req.body).byteLength > 1048576)) throw new TypeError("outbound request limit exceeded");
     const bytes = bufferedBytes(req.body);
     if (bytes.byteLength > 1048576) throw new TypeError("outbound request limit exceeded");
-    const result = call("fetch", [{ url: req.url, method: req.method, headers: req.headers.__raw(), body: bytesToB64(bytes), redirect: req.redirect }]);
+    const result = call("fetch", [{ url: req.url, method: req.method, headers: req.headers.__raw(), body: docsCodec("fetch.encode", bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)), redirect: req.redirect }]);
     const response = new Response(decodeB64(result.body), { status: result.status, headers: result.headers });
     response.url = result.url;
     response.redirected = result.redirected || false;
@@ -463,6 +491,7 @@
   const sockets = new Map();
   class FlatsWebSocket {
     constructor(id, url, headers) {
+      Object.defineProperty(this, "runtimeGeneration", { value: runtimeGeneration });
       this.id = id;
       this.url = url;
       this.headers = headerHelpers(headers || {});
@@ -471,6 +500,11 @@
     send(data) {
       if (this.readyState !== 1) throw new Error("WebSocket is not open");
       call("ws.send", [this.id, bodyText(data)]);
+    }
+    // Optional byte budgets include queued and currently writing frames.
+    // Repeated calls may only lower either budget; existing apps opt out.
+    setSendLimits(connectionBytes, flatBytes) {
+      call("ws.limits", [this.id, connectionBytes, flatBytes]);
     }
     close(code = 1000, reason = "") {
       if (this.readyState >= 2) return;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,8 @@ func TestOutboundFetchPrelude(t *testing.T) {
 	}
 	defer rt.Close()
 	c := rt.Context()
+	codecVM := &jsVM{}
+	c.SetFunc("__flats_docs_codec", codecVM.docsCodec)
 	var requests []egress.Request
 	c.SetFunc("__flats_host", func(this *qjs.This) (*qjs.Value, error) {
 		args := this.Args()
@@ -40,6 +43,9 @@ func TestOutboundFetchPrelude(t *testing.T) {
 				arg.Free()
 			}
 		}()
+		if args[0].String() == "runtime.generation" {
+			return this.Context().NewString("0"), nil
+		}
 		if args[0].String() == "env" {
 			return this.Context().NewString("{}"), nil
 		}
@@ -402,5 +408,71 @@ func TestOutboundContextDisconnectAfterCallStarts(t *testing.T) {
 	}
 	if vmCtx.Err() != nil {
 		t.Fatalf("disconnect canceled VM: %v", vmCtx.Err())
+	}
+}
+
+// The transport fixture avoids external I/O while exercising the production
+// hostCall, QuickJS ownership, fetch prelude and end-of-invocation collector.
+type largeFetchFixture struct {
+	body  []byte
+	calls int
+}
+
+func (f *largeFetchFixture) Fetch(_ context.Context, req egress.Request) (egress.Response, error) {
+	if len(req.Body) != 512*1024 {
+		return egress.Response{}, errors.New("unexpected request body size")
+	}
+	f.calls++
+	return egress.Response{Status: 200, URL: req.URL, Body: f.body}, nil
+}
+func (*largeFetchFixture) Close() {}
+
+func TestOutboundFetchLoopOwnershipCycleCollection(t *testing.T) {
+	for _, size := range []int{1 << 20, 4 << 20} {
+		t.Run(fmt.Sprintf("response-%d-MiB", size>>20), func(t *testing.T) {
+			dir := t.TempDir()
+			writeFiles(t, dir, map[string]string{"index.js": strings.ReplaceAll(`let hits=0; export default {async fetch() {
+ const graph={}; graph.self=graph;
+ for(let i=0;i<2;i++) {
+  const response=await fetch("https://api.example.test/large", {method:"POST",body:new Uint8Array(524288)});
+  const bytes=new Uint8Array(await response.arrayBuffer());
+  if(bytes.length!==1048576 || bytes[0]!==120 || bytes[bytes.length-1]!==120) throw new Error("corrupt fetch body");
+  graph.response=response;
+ }
+ return new Response(String(++hits));
+}};`, "1048576", fmt.Sprint(size))})
+			fixture := &largeFetchFixture{body: []byte(strings.Repeat("x", size))}
+			w := &worker{spec: workerSpec{Dir: dir, Entry: "index.js", DataDir: t.TempDir(), TimeoutMS: 60000}, network: fixture, log: newChildLog(io.Discard)}
+			vm, err := newJSVM(w, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer vm.close()
+			count := 30
+			if os.Getenv("FLATS_FULL_SOAK") == "1" {
+				count = 100
+			}
+			for i := 1; i <= count; i++ {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				out, err := vm.invoke(ctx, "__flats_dispatch", `{"method":"GET","url":"http://flat.test/","headers":{}}`)
+				cancel()
+				if err != nil {
+					t.Fatalf("invocation %d: %v", i, err)
+				}
+				var response respPayload
+				if err = json.Unmarshal([]byte(out), &response); err != nil || response.Error != nil || response.Body != fmt.Sprint(i) {
+					t.Fatalf("invocation %d: %s %v", i, out, err)
+				}
+				// Two encoded response bodies plus request bodies exceed the traffic
+				// threshold even when linear memory has stopped growing.
+				if vm.gcBytes != 0 || vm.gcCalls != 0 {
+					t.Fatalf("fetch traffic failed to trigger collection: bytes=%d calls=%d", vm.gcBytes, vm.gcCalls)
+				}
+			}
+			if fixture.calls != 2*count {
+				t.Fatalf("fetch calls=%d", fixture.calls)
+			}
+			t.Logf("%d fetches with %d-byte responses and 512 KiB requests in one VM", fixture.calls, size)
+		})
 	}
 }

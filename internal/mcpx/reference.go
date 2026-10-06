@@ -40,3 +40,16 @@ func registerReference(s *mcp.Server, hostVersion string, uploadLimit int64) {
 		}}, out, nil
 	})
 }
+
+func registerContentTypes(s *mcp.Server, hostVersion string, uploadLimit int64) {
+	s.AddResource(&mcp.Resource{URI: runtimeref.ContentTypesURI, Name: "content-types-v1", MIMEType: "text/markdown",
+		Description: "Flats content types: websites and collaborative Markdown documents; manifests, access and agent workflow."},
+		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: runtimeref.ContentTypesURI, MIMEType: "text/markdown", Text: runtimeref.ContentTypesMarkdown}}}, nil
+		})
+	mcp.AddTool(s, &mcp.Tool{Name: "get_content_types", Description: "Read the versioned content-type contract before creating docs: save_document, get_document, bundle limits and approval-gated publication. Same as flats://docs/content-types/v1. No arguments.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}},
+		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, referenceOut, error) {
+			out := referenceOut{DocumentationVersion: runtimeref.ContentTypesVersion, URI: runtimeref.ContentTypesURI, Markdown: runtimeref.ContentTypesMarkdown, HostVersion: hostVersion, UploadLimitBytes: uploadLimit}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.Markdown}}}, out, nil
+		})
+}

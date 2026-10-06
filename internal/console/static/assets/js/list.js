@@ -129,6 +129,7 @@ export function mount(main, _params, ctx) {
       thumb(f),
       h('div', { class: 'flat-main' },
         extLink(publicURL(f) || f.private_url, f.name || f.slug, 'flat-name'),
+        typeBadge(f),
         h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
@@ -160,4 +161,8 @@ function emptyState() {
     h('h2', { text: 'No flats yet' }),
     h('p', { text: 'Agents create flats for you. Connect Claude Code, Codex, Cursor or any MCP client to this host, then ask it to build and publish a site; or use the flats CLI to deploy a folder.' }),
     h('p', null, h('a', { class: 'btn btn-primary', href: '/settings#connect', 'data-nav': true, text: 'Connect an agent' })));
+}
+
+export function typeBadge(flat) {
+  return h('span', { class: 'badge content-type', text: flat.type === 'docs' ? 'Document' : 'Website' });
 }

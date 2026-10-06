@@ -34,6 +34,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/gosuda/flats/internal/contenttype"
 )
 
 // ManifestName is the optional manifest at the bundle root.
@@ -44,6 +47,7 @@ const MaxFiles = 20000
 
 // Manifest describes a build.
 type Manifest struct {
+	Type       string `json:"type,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Kind       string `json:"kind"`
 	Entry      string `json:"entry"`
@@ -361,6 +365,7 @@ func ParseManifest(files []File) (Manifest, error) {
 		index[f.Path] = true
 	}
 	var m Manifest
+	fields := map[string]json.RawMessage{}
 	var verr ValidationError
 	// bad holds the fields (or "*" for the whole manifest) that could not be
 	// decoded, so their dependent checks don't report follow-on noise.
@@ -368,7 +373,33 @@ func ParseManifest(files []File) (Manifest, error) {
 	for _, f := range files {
 		if f.Path == ManifestName {
 			decodeManifest(f.Data, &m, &verr, bad)
+			_ = json.Unmarshal(f.Data, &fields)
 		}
+	}
+	_, hasKind := fields["kind"]
+	if _, explicit := fields["type"]; !explicit && !hasKind && m.Kind == "" && !bad["*"] && !bad["kind"] && !index["index.html"] {
+		hasServer := false
+		for _, candidate := range serverEntries {
+			hasServer = hasServer || index[candidate]
+		}
+		// A custom static entry that exists was already a valid upload.
+		entryPath, entryOK := cleanPath(m.Entry)
+		customStatic := m.Entry != "" && entryOK && index[entryPath]
+		if !hasServer && !customStatic && markdownEntry(files) != "" {
+			m.Type = contenttype.Docs
+		}
+	}
+	if m.Type == "" {
+		if _, explicit := fields["type"]; explicit && !bad["type"] {
+			verr.add(ManifestName, "type must be flat or docs", `use "flat" or "docs", or omit type`)
+		}
+		m.Type = contenttype.Flat
+	}
+	if m.Type != contenttype.Flat && m.Type != contenttype.Docs {
+		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat" or "docs"`)
+	}
+	if m.Type == contenttype.Docs {
+		return parseDocs(files, index, fields, m, &verr)
 	}
 	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
 		// Guess the kind so the entry checks below stay useful.
@@ -445,7 +476,7 @@ func ParseManifest(files []File) (Manifest, error) {
 var serverEntries = []string{"server.js", "index.js", "main.wasm", "server.wasm"}
 
 // manifestFields lists the manifest fields in documentation order.
-var manifestFields = []string{"name", "kind", "entry", "spa", "not_found", "health", "screenshot"}
+var manifestFields = []string{"type", "name", "kind", "entry", "spa", "not_found", "health", "screenshot"}
 
 const manifestExample = `{"kind":"static","entry":"index.html"}`
 
@@ -477,6 +508,8 @@ func decodeManifest(data []byte, m *Manifest, verr *ValidationError, bad map[str
 	for _, k := range keys {
 		var dst any
 		switch k {
+		case "type":
+			dst = &m.Type
 		case "name":
 			dst = &m.Name
 		case "kind":
@@ -514,6 +547,8 @@ func decodeManifest(data []byte, m *Manifest, verr *ValidationError, bad map[str
 
 func fieldExample(field string) string {
 	switch field {
+	case "type":
+		return "flat"
 	case "name":
 		return "My blog"
 	case "kind":
@@ -700,4 +735,85 @@ func IsValidation(err error) (*ValidationError, bool) {
 	var v *ValidationError
 	ok := errors.As(err, &v)
 	return v, ok
+}
+
+// IsMarkdown reports which uploaded files are documents.
+func IsMarkdown(p string) bool {
+	return strings.HasSuffix(p, ".md") || strings.HasSuffix(p, ".markdown")
+}
+
+func markdownEntry(files []File) string {
+	for _, candidate := range []string{"index.md", "README.md"} {
+		for _, f := range files {
+			if f.Path == candidate {
+				return candidate
+			}
+		}
+	}
+	entry := ""
+	for _, f := range files {
+		if IsMarkdown(f.Path) {
+			if entry != "" {
+				return ""
+			}
+			entry = f.Path
+		}
+	}
+	return entry
+}
+
+func parseDocs(files []File, index map[string]bool, fields map[string]json.RawMessage, m Manifest, verr *ValidationError) (Manifest, error) {
+	for _, field := range []string{"kind", "spa", "not_found"} {
+		if _, ok := fields[field]; ok {
+			verr.add(ManifestName, field+" is not allowed for docs", "remove "+field+"; the host selects the docs runtime")
+		}
+	}
+	m.Kind = "server"
+	if m.Entry == "" {
+		m.Entry = markdownEntry(files)
+	}
+	if m.Entry == "" || !IsMarkdown(m.Entry) || !index[m.Entry] {
+		verr.add(ManifestName, "docs entry must name an existing Markdown file", `add index.md or README.md, or set "entry" to a .md or .markdown file`)
+	}
+	if m.Health == "" {
+		m.Health = "/_docs/healthz"
+	}
+	if m.Health != "/_docs/healthz" {
+		verr.add(ManifestName, "docs health must be /_docs/healthz", `remove health or use "/_docs/healthz"`)
+	}
+	total, documents := 0, 0
+	for _, f := range files {
+		if f.Path == "_docs" || strings.HasPrefix(f.Path, "_docs/") {
+			verr.add(f.Path, "path is reserved for the docs app", "move the file outside _docs/")
+		}
+		if !IsMarkdown(f.Path) {
+			continue
+		}
+		documents++
+		total += len(f.Data)
+		if !utf8.Valid(f.Data) {
+			verr.add(f.Path, "Markdown must be valid UTF-8", "encode the document as UTF-8")
+		}
+		if len(f.Data) > 1<<20 {
+			verr.add(f.Path, "Markdown exceeds 1 MiB", "split or shorten the document to at most 1 MiB")
+		}
+	}
+	if documents > 128 {
+		verr.add(ManifestName, "docs bundle exceeds 128 documents", "reduce the bundle to at most 128 Markdown files")
+	}
+	if total > 4<<20 {
+		verr.add(ManifestName, "Markdown total exceeds 4 MiB", "reduce the documents to at most 4 MiB combined")
+	}
+	if m.Screenshot != "" {
+		cp, ok := cleanPath(m.Screenshot)
+		if !ok {
+			verr.add(ManifestName, "screenshot is not a relative path", "use a screenshot path inside the bundle")
+		} else if !index[cp] {
+			verr.add(cp, "screenshot file is missing", "add the screenshot or remove screenshot from flats.json")
+		}
+	}
+	if len(verr.Problems) > 0 {
+		return m, verr
+	}
+	return m, nil
 }

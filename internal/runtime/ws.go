@@ -33,6 +33,10 @@ const (
 
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+// wsAccept implements RFC 6455 section 4.2.2: SHA-1 of the public handshake
+// nonce plus GUID, not credential hashing or authentication. Section 10.8
+// explains why collision resistance is not required here. Keep SHA-1 for
+// interoperability; see TestWSAcceptRFC6455 and docs/runtime-api-v1.md.
 func wsAccept(key string) string {
 	h := sha1.Sum([]byte(key + wsGUID))
 	return base64.StdEncoding.EncodeToString(h[:])
@@ -60,18 +64,22 @@ type wsConn struct {
 	br     *bufio.Reader
 	client bool // client frames are masked
 
-	wmu     sync.Mutex
-	closed  atomic.Bool
-	sendQ   chan []byte
-	done    chan struct{}
-	gone    chan struct{} // closed once end has closed the connection
-	onceEnd sync.Once
-	endCode int // close code this side sent (set once in end)
-	endWhy  string
+	qmu          sync.Mutex // serializes enqueue and close; never held during socket writes
+	budget       wsByteBudget
+	sharedBudget *wsByteBudget
+	wmu          sync.Mutex
+	closed       atomic.Bool
+	sendQ        chan []byte
+	done         chan struct{}
+	gone         chan struct{} // closed once end has closed the connection
+	writerDone   chan struct{} // queued data has been sent or released
+	onceEnd      sync.Once
+	endCode      int // close code this side sent (set once in end)
+	endWhy       string
 }
 
 func newWSConn(c net.Conn, br *bufio.Reader, client bool) *wsConn {
-	return &wsConn{c: c, br: br, client: client, sendQ: make(chan []byte, 256), done: make(chan struct{}), gone: make(chan struct{})}
+	return &wsConn{c: c, br: br, client: client, sendQ: make(chan []byte, 256), done: make(chan struct{}), gone: make(chan struct{}), writerDone: make(chan struct{})}
 }
 
 // upgradeWS completes the server handshake.
@@ -248,29 +256,111 @@ func (ws *wsConn) readMessage() (string, error) {
 	}
 }
 
-// writer drains the send queue.
-func (ws *wsConn) writer() {
+// wsByteBudget accounts for queued and in-flight text payloads. A zero limit
+// preserves the original API's count-only queue behavior.
+type wsByteBudget struct {
+	used  atomic.Int64
+	limit atomic.Int64
+}
+
+func (b *wsByteBudget) reserve(n int64) bool {
 	for {
-		select {
-		case m := <-ws.sendQ:
-			if err := ws.writeFrame(opText, m); err != nil {
-				ws.end(1006, "")
-				return
-			}
-		case <-ws.done:
+		old := b.used.Load()
+		limit := b.limit.Load()
+		if limit > 0 && (n > limit || old > limit-n) {
+			return false
+		}
+		if b.used.CompareAndSwap(old, old+n) {
+			return true
+		}
+	}
+}
+func (b *wsByteBudget) lower(n int64) {
+	for {
+		old := b.limit.Load()
+		if old > 0 && old <= n {
+			return
+		}
+		if b.limit.CompareAndSwap(old, n) {
 			return
 		}
 	}
 }
+func (ws *wsConn) release(n int64) {
+	ws.budget.used.Add(-n)
+	if ws.sharedBudget != nil {
+		ws.sharedBudget.used.Add(-n)
+	}
+}
 
+// writer drains the send queue; bytes remain charged until the socket write
+// completes, including a stalled in-flight frame.
+func (ws *wsConn) writer() {
+	defer close(ws.writerDone)
+	defer func() {
+		ws.qmu.Lock()
+		defer ws.qmu.Unlock()
+		for {
+			select {
+			case m := <-ws.sendQ:
+				ws.release(int64(len(m)))
+			default:
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case m := <-ws.sendQ:
+			err := ws.writeFrame(opText, m)
+			ws.release(int64(len(m)))
+			if err != nil {
+				ws.end(1006, "")
+				return
+			}
+		case <-ws.done:
+			// enqueue and end share qmu, so no more messages can arrive.
+			// Drain accepted messages before end writes the close frame.
+			for {
+				select {
+				case m := <-ws.sendQ:
+					err := ws.writeFrame(opText, m)
+					ws.release(int64(len(m)))
+					if err != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
+		}
+	}
+}
 func (ws *wsConn) enqueue(text string) error {
+	ws.qmu.Lock()
 	if ws.closed.Load() {
+		ws.qmu.Unlock()
 		return errors.New("WebSocket is closed")
+	}
+	n := int64(len(text))
+	if !ws.budget.reserve(n) {
+		ws.qmu.Unlock()
+		ws.end(1008, "send byte limit")
+		return errors.New("WebSocket send byte limit exceeded")
+	}
+	if ws.sharedBudget != nil && !ws.sharedBudget.reserve(n) {
+		ws.budget.used.Add(-n)
+		ws.qmu.Unlock()
+		ws.end(1008, "flat send byte limit")
+		return errors.New("WebSocket flat send byte limit exceeded")
 	}
 	select {
 	case ws.sendQ <- []byte(text):
+		ws.qmu.Unlock()
 		return nil
 	default:
+		ws.release(n)
+		ws.qmu.Unlock()
 		ws.end(1008, "send queue full")
 		return errors.New("WebSocket send queue is full; the connection was closed")
 	}
@@ -286,14 +376,17 @@ const wsCloseGrace = 2 * time.Second
 // a peer that stopped reading. gone is closed when the connection is closed.
 func (ws *wsConn) end(code int, reason string) {
 	ws.onceEnd.Do(func() {
+		ws.qmu.Lock()
 		ws.endCode, ws.endWhy = code, reason
 		ws.closed.Store(true)
 		close(ws.done)
+		ws.qmu.Unlock()
 		go func() {
 			defer close(ws.gone)
 			t := time.AfterFunc(wsCloseGrace, func() { ws.c.Close() }) // unblocks a stuck writer
 			defer t.Stop()
 			if code != 1006 {
+				<-ws.writerDone
 				p := make([]byte, 2, 2+len(reason))
 				binary.BigEndian.PutUint16(p, uint16(code))
 				p = append(p, reason...)
@@ -323,6 +416,7 @@ type wsHub struct {
 	mu     sync.Mutex
 	conns  map[int64]*wsConn
 	next   atomic.Int64
+	budget wsByteBudget
 	events chan wsEvent
 	stop   chan struct{}
 	vm     *jsVM // owned by the loop goroutine
@@ -349,6 +443,22 @@ func (h *wsHub) send(id int64, text string) error {
 		return errors.New("WebSocket is closed")
 	}
 	return c.enqueue(text)
+}
+
+// setSendLimits is opt-in; subsequent calls may only lower limits.
+func (h *wsHub) setSendLimits(id, connectionBytes, flatBytes int64) error {
+	if connectionBytes < 1024 || connectionBytes > 32<<20 || flatBytes < connectionBytes || flatBytes > 256<<20 {
+		return errors.New("invalid WebSocket send limits")
+	}
+	h.mu.Lock()
+	c := h.conns[id]
+	h.mu.Unlock()
+	if c == nil {
+		return errors.New("WebSocket is closed")
+	}
+	c.budget.lower(connectionBytes)
+	h.budget.lower(flatBytes)
+	return nil
 }
 
 func (h *wsHub) close(id int64, code int, reason string) error {
@@ -428,6 +538,7 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 	h.mu.Lock()
 	h.conns[id] = c
 	h.mu.Unlock()
+	c.sharedBudget = &h.budget
 	go c.writer()
 	if !h.post(wsEvent{Type: "open", ID: id, URL: url, Headers: headers}) {
 		c.end(1001, "going away")

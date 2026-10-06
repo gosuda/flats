@@ -40,15 +40,16 @@ const (
 type workerSpec struct {
 	Flat           string            `json:"flat"`
 	Version        int               `json:"version"`
+	Generation     int64             `json:"generation"`
 	Dir            string            `json:"dir"`
 	Entry          string            `json:"entry"`
 	DataDir        string            `json:"data_dir"`
 	Env            map[string]string `json:"env"`
-	NetworkOrigins []string          `json:"network_origins,omitempty"`
 	CacheDir       string            `json:"cache_dir,omitempty"`
 	TimeoutMS      int64             `json:"timeout_ms,omitempty"`
 	MemoryPages    uint32            `json:"memory_pages,omitempty"`
 	PoolSize       int               `json:"pool_size,omitempty"`
+	NetworkOrigins []string          `json:"network_origins,omitempty"`
 }
 
 func (s *workerSpec) timeout() time.Duration {

@@ -399,7 +399,7 @@ func TestListInfoVersionsApprovals(t *testing.T) {
 		t.Errorf("list: %s", r.stdout)
 	}
 	r = run(t, srv.URL, "", "info", "blog")
-	if r.code != 0 || !strings.Contains(r.stdout, "version 2, static, 3 files, 1.2 kB, git deadbee") {
+	if r.code != 0 || !strings.Contains(r.stdout, "version 2, static, type flat, 3 files, 1.2 kB, git deadbee") {
 		t.Errorf("info: %s", r.stdout)
 	}
 	r = run(t, srv.URL, "", "versions", "blog")
@@ -919,4 +919,20 @@ func hermeticInstall(t *testing.T, home string) {
 	t.Setenv("FLATS_CONFIG", "")
 	EnsureConfig = flatsapp.EnsureConfig
 	t.Cleanup(func() { EnsureConfig = nil })
+}
+
+func TestDocsTypeOutput(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	flat := `{"slug":"notes","name":"Notes","type":"docs","visibility":"private","live_version":1,"versions":1,"live":{"number":1,"type":"docs","kind":"server","files":2,"size":100},"draft":{"revision":2,"type":"docs","base_version":1,"dirty":true}}`
+	api.handle("GET /api/flats", 200, `{"flats":[`+flat+`]}`)
+	api.handle("GET /api/flats/notes", 200, flat)
+	api.handle("GET /api/flats/notes/versions", 200, `{"versions":[{"number":1,"type":"docs","kind":"server","files":2,"size":100}]}`)
+	for _, args := range [][]string{{"list"}, {"info", "notes"}, {"versions", "notes"}} {
+		t.Run(args[0], func(t *testing.T) {
+			r := run(t, srv.URL, "", args...)
+			if r.code != 0 || !strings.Contains(r.stdout, "docs") {
+				t.Fatalf("%d %s %s", r.code, r.stdout, r.stderr)
+			}
+		})
+	}
 }

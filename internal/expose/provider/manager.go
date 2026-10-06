@@ -511,13 +511,17 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 	var errs []error
 	// Public current versions retain their independent Private route, including
 	// on restart when this manager has no previously tracked Local listener.
-	private, privateErr := m.retainPrivate(ctx, req, Local)
+	privateReq := req
+	if req.PrivateHandler != nil {
+		privateReq.Handler = req.PrivateHandler
+	}
+	private, privateErr := m.retainPrivate(ctx, privateReq, Local)
 	eps = append(eps, private)
 	if privateErr != nil {
 		errs = append(errs, privateErr)
 	}
 	if listed(req.Permitted, Tailscale) {
-		tail, err := m.retainPrivate(ctx, req, Tailscale)
+		tail, err := m.retainPrivate(ctx, privateReq, Tailscale)
 		eps = append(eps, tail)
 		if err != nil {
 			errs = append(errs, err)

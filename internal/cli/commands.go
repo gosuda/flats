@@ -166,9 +166,9 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 	w := a.out
 	if v := out.Version; v != nil {
 		if v.Number == 0 && v.Role == "draft" {
-			fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s\n", v.Revision, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty))
+			fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s (type %s)\n", v.Revision, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty), displayType(v.Type))
 		} else {
-			fmt.Fprintf(w, "Saved version %d of %s: %d files, %s%s\n", v.Number, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty))
+			fmt.Fprintf(w, "Saved version %d of %s: %d files, %s%s (type %s)\n", v.Number, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty), displayType(v.Type))
 		}
 	}
 	if info.IsDir() && ps.Skipped > 0 {
@@ -224,6 +224,7 @@ func printDeploy(w io.Writer, d deployResult) {
 	} else {
 		fmt.Fprintf(w, "Version %d is live.\n", d.Version)
 	}
+	fmt.Fprintf(w, "  type: %s\n", displayType(d.Flat.Type))
 	printHealth(w, d.Health)
 	printURLs(w, d.Flat)
 }
@@ -321,7 +322,7 @@ func (a *app) list(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SLUG\tVISIBILITY\tLIVE\tVERSIONS\tURL")
+	fmt.Fprintln(tw, "SLUG\tTYPE\tVISIBILITY\tLIVE\tVERSIONS\tURL")
 	var notes []string
 	for _, f := range out.Flats {
 		u := f.PrivateURL
@@ -329,7 +330,7 @@ func (a *app) list(args []string) error {
 			u = f.PublicURL + " (*)"
 			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", f.Slug, f.Visibility, liveLabel(f.LiveVersion), f.Versions, u)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", f.Slug, displayType(f.Type), f.Visibility, liveLabel(f.LiveVersion), f.Versions, u)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -360,10 +361,11 @@ func (a *app) info(args []string) error {
 	}
 	w := a.out
 	fmt.Fprintf(w, "%s (%s)\n", f.Slug, f.Name)
+	fmt.Fprintf(w, "  type:       %s\n", displayType(f.Type))
 	fmt.Fprintf(w, "  publication: %s\n", f.Publication)
 	fmt.Fprintf(w, "  visibility: %s\n", f.Visibility)
 	if f.Draft != nil {
-		fmt.Fprintf(w, "  Draft:      revision %d (base v%d), dirty=%t\n", f.Draft.Revision, f.Draft.BaseVersion, f.Draft.Dirty)
+		fmt.Fprintf(w, "  Draft:      revision %d (base v%d), dirty=%t, type=%s\n", f.Draft.Revision, f.Draft.BaseVersion, f.Draft.Dirty, displayType(f.Draft.Type))
 	}
 	if f.ConnectionState != "" {
 		fmt.Fprintf(w, "  connection: %s\n", f.ConnectionState)
@@ -372,7 +374,7 @@ func (a *app) info(args []string) error {
 		fmt.Fprintf(w, "  provider:   %s configured=%t permitted=%t ready=%t state=%s audience=%s %s\n", endpoint.Provider, endpoint.Configured, endpoint.Permitted, endpoint.Ready, endpoint.State, endpoint.Audience, endpoint.URL)
 	}
 	if lv := f.Live; lv != nil {
-		fmt.Fprintf(w, "  live:       version %d, %s, %d files, %s%s\n", lv.Number, lv.Kind, lv.Files, humanBytes(lv.Size), gitLabel(lv.GitSHA, lv.GitDirty))
+		fmt.Fprintf(w, "  live:       version %d, %s, type %s, %d files, %s%s\n", lv.Number, lv.Kind, displayType(lv.Type), lv.Files, humanBytes(lv.Size), gitLabel(lv.GitSHA, lv.GitDirty))
 	} else {
 		fmt.Fprintf(w, "  live:       not deployed\n")
 	}
@@ -411,7 +413,7 @@ func (a *app) versions(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "VERSION\t\tKIND\tFILES\tSIZE\tGIT\tCREATED\tMESSAGE")
+	fmt.Fprintln(tw, "VERSION\t\tTYPE\tKIND\tFILES\tSIZE\tGIT\tCREATED\tMESSAGE")
 	for _, v := range out.Versions {
 		mark := ""
 		switch {
@@ -424,7 +426,7 @@ func (a *app) versions(args []string) error {
 		if g != "" && v.GitDirty {
 			g += "+dirty"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", v.Number, mark, v.Kind, v.Files, humanBytes(v.Size), dash(g), v.CreatedAt.Local().Format(timeFmt), oneLine(v.Message))
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", v.Number, mark, displayType(v.Type), v.Kind, v.Files, humanBytes(v.Size), dash(g), v.CreatedAt.Local().Format(timeFmt), oneLine(v.Message))
 	}
 	return tw.Flush()
 }
@@ -978,6 +980,13 @@ func (a *app) draft(args []string) error {
 		a.emitRaw(resp)
 		return nil
 	}
-	fmt.Fprintf(a.out, "%s Private Draft revision %d (base v%d), %d files, %s; hash %s\n", pos[0], d.Revision, d.BaseVersion, d.Files, humanBytes(d.Size), d.Hash)
+	fmt.Fprintf(a.out, "%s Private Draft revision %d (base v%d), %d files, %s; hash %s; type %s\n", pos[0], d.Revision, d.BaseVersion, d.Files, humanBytes(d.Size), d.Hash, displayType(d.Type))
 	return nil
+}
+
+func displayType(t string) string {
+	if t == "" {
+		return "flat"
+	}
+	return t
 }

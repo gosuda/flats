@@ -173,7 +173,7 @@ func TestMigrationRegistryIsOrdered(t *testing.T) {
 			t.Fatalf("step %d after %d", m.version, migrations[i-1].version)
 		}
 	}
-	if latestVersion() != 8 {
+	if latestVersion() != 9 {
 		t.Fatalf("latest %d", latestVersion())
 	}
 }
@@ -835,5 +835,70 @@ func TestKilledMigrationOfRestoredBackupStillOpens(t *testing.T) {
 	f, err := s.GetFlat(context.Background(), "blog")
 	if err != nil || f.Name != "Blog" {
 		t.Fatalf("killed step leaked: %+v %v", f, err)
+	}
+}
+
+func TestMigrationNinePreservesReleasedAndDocsSchemas(t *testing.T) {
+	for _, baseline := range []string{"fresh", "legacy5", "main7", "main8", "docs7", "docs8"} {
+		t.Run(baseline, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "flats.db")
+			if baseline != "fresh" {
+				saved := migrations
+				switch baseline {
+				case "legacy5":
+					migrations = slices.Clone(saved[:1])
+				case "main7":
+					migrations = slices.Clone(saved[:3])
+				case "main8":
+					migrations = slices.Clone(saved[:4])
+				case "docs8":
+					migrations = append(slices.Clone(saved[:3]), migration{8, "runtime generation", addRuntimeGeneration})
+				case "docs7":
+					migrations = append(slices.Clone(saved[:2]), migration{7, "runtime generation", func(ctx context.Context, x executor) error {
+						_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS runtime_generation(id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL); INSERT INTO runtime_generation VALUES(1,42)`)
+						return err
+					}})
+				}
+				st, err := Open(path)
+				migrations = saved
+				if err != nil {
+					t.Fatal(err)
+				}
+				if baseline == "docs8" {
+					if _, err := st.db.Exec(`DROP TABLE network_settings; INSERT INTO runtime_generation VALUES(1,42)`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if baseline != "docs7" && baseline != "docs8" {
+					// The baseline helper uses current DDL; remove the later table
+					// to reproduce the released baseline schema faithfully.
+					if _, err := st.db.Exec(`DROP TABLE runtime_generation`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				st.Close()
+			}
+			st, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			info, err := Inspect(path)
+			if err != nil || info.Version != 9 {
+				t.Fatalf("schema: %+v %v", info, err)
+			}
+			var objects int
+			queryRO(t, path, `SELECT COUNT(*) FROM sqlite_master WHERE name IN ('network_settings','env_vars','runtime_generation','env_vars_secret_insert','env_vars_secret_update','secrets_env_insert','secrets_env_update')`, &objects)
+			if objects != 7 {
+				t.Fatalf("missing merged schema objects: %d", objects)
+			}
+			if baseline == "docs7" || baseline == "docs8" {
+				var generation int
+				queryRO(t, path, `SELECT generation FROM runtime_generation WHERE id=1`, &generation)
+				if generation != 42 {
+					t.Fatalf("generation lost: %d", generation)
+				}
+			}
+		})
 	}
 }

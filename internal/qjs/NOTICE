@@ -48,3 +48,21 @@ CloseOnContextDone wazero reads ctx.Done() from a per-call goroutine that may
 outlive the call. Assigning Runtime.Context().Context between calls is
 therefore a data race; pass a stable Option.Context whose Done/Err delegate to
 an atomically swapped per-request context instead (internal/runtime does).
+10. Go binding ownership: release JS C strings with exported JS_FreeCString;
+    free temporary input handles, atoms, callback argument clones and awaited
+    promises; copy borrowed ArrayBuffer stores without freeing them. Avoid
+    upstream QJS_JSONStringify's freed pointer and property enumeration's
+    unexported js_free path using JS-owned results. No wasm rebuild is needed.
+11. Capture JSON.stringify and Reflect enumeration intrinsics before guest code
+    can mutate globals. Enumeration cleans partial results and skips properties
+    removed by Proxy traps; ForEach releases borrowed keys/values after each
+    callback, including panic paths. Go-converted functions retain one owned
+    reference per distinct JS function until Runtime.Close, so they survive
+    borrowed callback cleanup. Converted Go functions must not be invoked after
+    closing their runtime. Array conversions release their borrowed inputs too.
+    Reflect enumeration returns public string/symbol keys; VM-internal private
+    atoms are not exposed through this binding.
+12. Runtime.Close always closes the native wazero runtime and clears handles,
+    even when timeout cancellation makes JS teardown fail. The original teardown
+    panic remains observable, and a subsequent Close is safe. ForEach propagates
+    throwing getters after clearing their pending JS exception and owned values.

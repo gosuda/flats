@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 		h("GET /status", s.status)
 		h("GET /flats", s.listFlats)
 		h("GET /flats/{slug}", s.getFlat)
+		h("GET /flats/{slug}/document", s.getDocument)
 		h("GET /flats/{slug}/draft", s.getDraft)
 		h("POST /flats/{slug}/draft", s.saveVersion)
 		h("PUT /flats/{slug}/draft", s.saveVersion)
@@ -898,3 +899,23 @@ func (s *Server) settingsImpact(w http.ResponseWriter, r *http.Request, _ core.V
 }
 
 var _ = time.Second
+
+func (s *Server) getDocument(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	var document core.Document
+	var err error
+	if raw := r.URL.Query().Get("conflict"); raw != "" {
+		generation, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || generation < 1 {
+			fail(w, core.ErrInvalid)
+			return
+		}
+		document, err = s.Svc.GetDocumentConflict(r.Context(), r.PathValue("slug"), r.URL.Query().Get("doc"), generation)
+	} else {
+		document, err = s.Svc.GetDocument(r.Context(), r.PathValue("slug"), r.URL.Query().Get("doc"))
+	}
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, document)
+}

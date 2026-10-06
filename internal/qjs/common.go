@@ -371,9 +371,7 @@ func (ac *JsArrayToGoConverter[T]) convertToInterface(jsArray *Array, jsLen int6
 
 		goElem, convErr := toGoValue[any](ac.tracker, jsElem)
 
-		if !jsElem.IsFunction() {
-			jsElem.Free()
-		}
+		jsElem.Free()
 
 		if convErr != nil {
 			return ac.sample, newJsToGoErr(
@@ -400,9 +398,7 @@ func (ac *JsArrayToGoConverter[T]) convertToSlice(jsArray *Array, jsLen int64) (
 		elemSample := reflect.New(elemType).Elem().Interface()
 		goElem, convErr := toGoValue(ac.tracker, jsElem, elemSample)
 
-		if !jsElem.IsFunction() {
-			jsElem.Free()
-		}
+		jsElem.Free()
 
 		if convErr != nil {
 			return ac.sample, newJsToGoErr(
@@ -435,9 +431,7 @@ func (ac *JsArrayToGoConverter[T]) convertToArray(jsArray *Array, jsLen int64) (
 		elemSample := reflect.New(elemType).Elem().Interface()
 		goElem, convErr := toGoValue(ac.tracker, jsElem, elemSample)
 
-		if !jsElem.IsFunction() {
-			jsElem.Free()
-		}
+		jsElem.Free()
 
 		if convErr != nil {
 			return ac.sample, newJsToGoErr(

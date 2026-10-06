@@ -4,10 +4,10 @@
 # 127.0.0.1 from a dedicated bridge network. Each mode starts on an empty
 # volume, where `flats serve` bootstraps config.json and the database by
 # itself, deploys static and JavaScript server flats with the host's flats
-# CLI and approves them through the console API, restarts the container and
-# checks that config, flats and data survive, then stops it with SIGTERM.
-# Containers run hardened as docs/container.md suggests: read-only root, no
-# capabilities, no new privileges.
+# CLI and a built-in docs flat, and approves them through the console API.
+# It restarts the container and checks that config, flats and data survive,
+# then stops it with SIGTERM. Containers run hardened as docs/container.md
+# suggests: read-only root, no capabilities, no new privileges.
 #
 #   FLATS_RELEASE_TARGETS=linux/amd64 scripts/build-release.sh v0.0.0-ci dist
 #   docker build -t flats:ci .
@@ -152,10 +152,21 @@ smoke() {
 	before=$(hits)
 	[ -n "$before" ] || fail "server flat returned no hit count"
 
+	step "$mode: approved document deploy under the writable data volume"
+	deploy_approved document
+	get document | grep -q 'Container document' || fail "built-in docs flat was not served"
+	# Distroless has no shell or test utility. Inspect the generated modules
+	# through Docker rather than adding tools to the hardened image.
+	runtime_copy=$work/$mode-docs-runtime
+	docker cp "$name:/data/runtime/docs" "$runtime_copy" || fail "docs modules are not under /data"
+	find "$runtime_copy" -type f -name server.js | grep -q . || fail "docs server module was not materialized"
+	find "$runtime_copy" -type f -name content.js | grep -q . || fail "docs content module was not materialized"
+
 	step "$mode: restart keeps config, flats and data"
 	docker restart "$name" >/dev/null
 	wait_for "the restarted host" healthy
 	wait_for "the static flat after restart" static_served
+	get document | grep -q 'Container document' || fail "docs flat did not survive restart"
 	after=$(hits)
 	if [ -z "$after" ] || [ "$after" -le "$before" ]; then
 		fail "server flat data did not survive the restart ($before then $after hits)"
@@ -172,7 +183,9 @@ smoke() {
 	name=
 }
 
-mkdir -p "$work/hello" "$work/counter"
+mkdir -p "$work/hello" "$work/counter" "$work/document"
+printf '# Container document\n\nPersistent Markdown.\n' >"$work/document/index.md"
+printf '{"type":"docs"}\n' >"$work/document/flats.json"
 printf '<h1>Hello from a Flats container</h1>\n' >"$work/hello/index.html"
 printf '{"kind":"server"}\n' >"$work/counter/flats.json"
 cat >"$work/counter/server.js" <<'EOF'

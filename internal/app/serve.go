@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/api"
+	docsapp "github.com/gosuda/flats/internal/apps/docs"
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/console"
 	"github.com/gosuda/flats/internal/core"
@@ -425,7 +426,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		h.networkPins = legacyNetworkPins(o)
 	}
 	h.console = "http://" + cfg.Host.ManagementAddr
-	coreCfg := core.Config{DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
+	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: func() string { return h.console }, Reserved: []string{cfg.Host.ConsoleHost}, Logf: logf}
 	svc, err := core.New(ctx, coreCfg)
 	if err != nil {
