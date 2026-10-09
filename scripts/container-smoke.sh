@@ -74,9 +74,16 @@ expected_version() {
 	*) printf '%s\n' "$1" ;;
 	esac
 }
-reported=$(expected_version "$version" "$flats")
-release=false
-[ "$reported" = "$version" ] && release=true
+# A binary from before internal/buildinfo, such as an older commit image built
+# by the Commit images workflow, reports the stamp itself and no system.build
+# in /api/status; its version --json has no release field.
+if "$flats" version --json | tr -d ' \n' | grep -qF '"release":'; then
+	reported=$(expected_version "$version" "$flats")
+	release=false
+	[ "$reported" = "$version" ] && release=true
+else
+	reported=$version release=
+fi
 
 wait_for() {
 	what=$1
@@ -154,8 +161,10 @@ smoke() {
 		-e FLATS_URL="$url" -v "$data:/data" \
 		"$image" serve $serve >/dev/null
 	wait_for "the host" healthy
-	curl -fsS --max-time 5 "$url/api/status" | tr -d ' \n' | grep -qF "\"build\":{\"version\":\"$reported\",\"release\":$release" ||
-		fail "the host does not report build $reported in /api/status"
+	if [ -n "$release" ]; then
+		curl -fsS --max-time 5 "$url/api/status" | tr -d ' \n' | grep -qF "\"build\":{\"version\":\"$reported\",\"release\":$release" ||
+			fail "the host does not report build $reported in /api/status"
+	fi
 	docker logs "$name" 2>&1 | grep -qF 'initialized a new host in /data' || fail "first start did not report the bootstrap"
 	docker exec "$name" flats config show >"$work/config" || fail "config show failed"
 	instance=$(sed -n 's/.*"instance_id": *"\([^"]*\)".*/\1/p' "$work/config" | head -n 1)
