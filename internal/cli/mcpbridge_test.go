@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -278,5 +279,70 @@ func TestMCPBridgeExitsWhileHostStalls(t *testing.T) {
 	case <-received:
 		t.Fatal("a message was sent before initialize answered")
 	default:
+	}
+}
+
+// TestMCPBridgeAnswersEveryRequest turns replies that are not the JSON-RPC
+// answer, such as a login page behind a proxy, into an error for the
+// request instead of leaving the agent waiting.
+func TestMCPBridgeAnswersEveryRequest(t *testing.T) {
+	replies := []struct{ ctype, body string }{
+		{"text/html", "<html>sign in</html>"},
+		{"application/json", `{"status": "ok"}`},
+		{"application/json", `{"jsonrpc":"2.0","id":99,"result":{}}`},
+		{"text/event-stream", "data: not json\n\n"},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m struct {
+			ID int `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		reply := replies[m.ID-1]
+		w.Header().Set("Content-Type", reply.ctype)
+		io.WriteString(w, reply.body)
+	}))
+	defer srv.Close()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(), []string{"mcp", "--url", srv.URL}, Env{Stdin: inR, Stdout: outW, ConfigDir: t.TempDir()})
+		outW.Close()
+	}()
+	go func() {
+		for i := range replies {
+			fmt.Fprintf(inW, `{"jsonrpc":"2.0","id":%d,"method":"tools/list"}`+"\n", i+1)
+		}
+	}()
+	got := map[int]string{}
+	sc := bufio.NewScanner(outR)
+	for len(got) < len(replies) && sc.Scan() {
+		var m struct {
+			ID    int `json:"id"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			t.Fatalf("stdout line is not JSON: %q", sc.Text())
+		}
+		if m.ID == 99 {
+			continue // a well-formed message is still relayed as it came
+		}
+		if m.Error == nil {
+			t.Fatalf("want an error reply, got %s", sc.Text())
+		}
+		got[m.ID] = m.Error.Message
+	}
+	inW.Close()
+	waitExit(t, done)
+	for i := range replies {
+		if msg := got[i+1]; msg == "" {
+			t.Errorf("request %d (%s) got no error reply", i+1, replies[i].ctype)
+		}
+	}
+	if !strings.Contains(got[1], "did not answer with JSON-RPC") || !strings.Contains(got[4], "event stream ended without a reply") {
+		t.Errorf("messages: %v", got)
 	}
 }

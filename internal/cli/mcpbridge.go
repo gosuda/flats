@@ -198,30 +198,33 @@ func (b *mcpBridge) forward(ctx context.Context, msg []byte, sent func()) {
 		b.mu.Unlock()
 	}
 
-	switch {
-	case resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent:
-		return
-	case resp.StatusCode < 200 || resp.StatusCode > 299:
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		// The SDK answers some failures with a JSON-RPC error body; relay it.
-		if isRequest && json.Valid(body) && bytes.Contains(body, []byte(`"jsonrpc"`)) {
-			b.emit(body, env.Method == "initialize")
-			return
-		}
-		fail("Flats at %s answered %s: %s", b.endpoint, resp.Status, strings.TrimSpace(string(body)))
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
 		return
 	}
-
+	// relay passes on JSON-RPC messages only and reports whether one of them
+	// answered this request; anything else, such as a login or proxy page,
+	// must not leave the request waiting.
+	answered := false
+	relay := func(data []byte) {
+		if !isJSONRPC(data) {
+			return
+		}
+		if replyTo(data, env.ID) {
+			answered = true
+		}
+		b.emit(data, env.Method == "initialize")
+	}
 	ctype, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	switch ctype {
-	case "text/event-stream":
-		answered := false
-		err := readSSE(resp.Body, func(data []byte) {
-			if replyTo(data, env.ID) {
-				answered = true
-			}
-			b.emit(data, env.Method == "initialize")
-		})
+	switch {
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		// The SDK answers some failures with a JSON-RPC error body.
+		relay(body)
+		if !answered {
+			fail("Flats at %s answered %s: %s", b.endpoint, resp.Status, strings.TrimSpace(string(body)))
+		}
+	case ctype == "text/event-stream":
+		err := readSSE(resp.Body, relay)
 		if !answered && ctx.Err() == nil {
 			if err == nil {
 				err = io.ErrUnexpectedEOF
@@ -229,19 +232,39 @@ func (b *mcpBridge) forward(ctx context.Context, msg []byte, sent func()) {
 			fail("Flats event stream ended without a reply: %v", err)
 		}
 	default:
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBridgeLine))
 		if err != nil {
 			if ctx.Err() == nil {
 				fail("reading the Flats reply: %v", err)
 			}
 			return
 		}
-		if len(bytes.TrimSpace(body)) == 0 {
-			fail("Flats sent an empty reply")
-			return
+		relay(body)
+		if !answered {
+			fail("Flats at %s did not answer with JSON-RPC (%s, %s); is the URL a Flats console address? Check it with `flats connect`", b.endpoint, resp.Status, resp.Header.Get("Content-Type"))
 		}
-		b.emit(body, env.Method == "initialize")
 	}
+}
+
+// isJSONRPC reports whether data is a JSON-RPC 2.0 message or batch.
+func isJSONRPC(data []byte) bool {
+	data = bytes.TrimSpace(data)
+	if len(data) > 0 && data[0] == '[' {
+		var batch []json.RawMessage
+		if json.Unmarshal(data, &batch) != nil || len(batch) == 0 {
+			return false
+		}
+		for _, m := range batch {
+			if !isJSONRPC(m) {
+				return false
+			}
+		}
+		return true
+	}
+	var m struct {
+		Version string `json:"jsonrpc"`
+	}
+	return json.Unmarshal(data, &m) == nil && m.Version == "2.0"
 }
 
 func (b *mcpBridge) setSessionHeaders(h http.Header) {
