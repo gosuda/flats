@@ -87,7 +87,7 @@ The deploy command saves Draft and returns a pending publish request (exit code 
 
 ## Private and public deployment
 
-The default network is Local; every other provider is off. Turn a provider on for the host in **Settings → Network providers**, grouped into Private (Local, Tailscale) and Public (Tailscale Funnel, Portal). That saves `network.permitted` in `config.json` and starts the provider's backend without a restart; nothing is served until you also allow the provider for a flat under Networks on the flat's page. Turning a provider off is refused while a flat still allows it. Permitting Tailscale does not permit Funnel. To run the console and private routes on your tailnet as well, set the private backend while the host is stopped:
+The default network is Local; every other provider is off. Turn a provider on for the host in **Settings → Network providers**, grouped into Private (Local, Tailscale) and Public (Tailscale Funnel, Portal). That saves `network.permitted` in `config.json` and starts the provider's backend without a restart; nothing is served until you also allow the provider for a flat under Networks on the flat's Settings tab. Turning a provider off is refused while a flat still allows it. Permitting Tailscale does not permit Funnel. To run the console and private routes on your tailnet as well, set the private backend while the host is stopped:
 
 ```sh
 flats config set network.permitted tailscale

@@ -484,6 +484,7 @@ td > .badge:first-child { margin-left: 0; }
 .analytics-panel { border: 1px solid var(--border); border-radius: 12px; padding: 18px 16px; margin-bottom: 24px; }
 .analytics-panel h2 { font-size: 14px; font-weight: 500; margin: 0; }
 .analytics-panel > p { margin: 0 0 12px; }
+.analytics-panel h2 + .facts { margin-top: 12px; }
 .traffic-chart { width: 100%; height: auto; display: block; overflow: visible; }
 .traffic-grid { stroke: var(--border); stroke-dasharray: 2 4; stroke-width: 1; }
 .traffic-label { fill: var(--muted); font: 12px var(--font); }

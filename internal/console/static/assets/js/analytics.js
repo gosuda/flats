@@ -1,4 +1,4 @@
-import { h, icon } from './dom.js';
+import { h, icon, bytes } from './dom.js';
 import { api } from './api.js';
 import { fill, loading, errorPanel } from './ui.js';
 import { siteHeader } from './site.js';
@@ -40,7 +40,11 @@ export function mount(main, [slug], ctx) {
             h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Top pages' }), h('th', { scope: 'col', text: 'Page Views' }))),
             h('tbody', null, rows.length ? rows.map((r) => h('tr', null, h('th', { scope: 'row', text: r.path }), h('td', { text: r.count.toLocaleString() })))
               : h('tr', null, h('td', { colspan: '2', class: 'muted', text: 'No per-page traffic recorded in this period.' })))))),
-        h('p', { class: 'muted small', text: stats.note || 'Page views count page requests. Unique visitors are not tracked.' }));
+        h('p', { class: 'muted small', text: stats.note || 'Page views count page requests. Unique visitors are not tracked.' }),
+        h('section', { class: 'analytics-panel' }, h('h2', { text: 'Storage' }),
+          h('dl', { class: 'facts' },
+            h('dt', { text: 'Disk' }), h('dd', { text: `${bytes(flat.disk_bytes)} (versions, data and previews)` }),
+            h('dt', { text: 'Versions' }), h('dd', { text: String(flat.versions) }))));
     } catch (err) { if (ctx.alive() && gen === generation) fill(content, errorPanel(err, 'Cannot load analytics')); }
   }
   load();
