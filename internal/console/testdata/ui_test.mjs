@@ -102,7 +102,7 @@ const blog = {
 };
 // An older server may omit the notice or report a legacy public value, and a
 // Funnel address comes from the flat's endpoints; the console still shows the notice.
-const shop = { ...blog, slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: undefined, public_notice: undefined,
+const shop = { ...blog, type: 'flat', slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: undefined, public_notice: undefined,
   endpoints: [{ provider: 'tailscale-funnel', audience: 'current', url: 'https://shop.tail.ts.net', state: 'ready' }] };
 const notes = { ...blog, slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null };
 const pending = (id) => ({ status: 'pending_approval', approval: { id, status: 'pending' } });
@@ -144,7 +144,15 @@ const stopList = list.mount(listMain, [], ctx);
 await tick();
 const rows = all(listMain, (e) => e.tagName === 'LI' && e.className === 'flat');
 assert.equal(rows.length, 3);
-assert.equal(all(rows[0], (e) => e.className === "badge content-type")[0].textContent, "Document");
+// The type shows as an icon left of the name, labelled for hover and screen
+// readers; there is no initials tile or text badge.
+const typeLabel = (root) => all(root, (e) => e.className.startsWith('type-icon'))
+  .map((e) => [e.getAttribute('role'), e.getAttribute('aria-label'), e.getAttribute('data-tip')]);
+assert.deepEqual(typeLabel(rows[0]), [['img', 'Document', 'Document']]);
+assert.deepEqual(typeLabel(rows[1]), [['img', 'Flat', 'Flat']]);
+for (const row of rows) {
+  assert.equal(all(row, (e) => /\b(thumb|content-type)\b/.test(e.className)).length, 0);
+}
 for (const row of rows) {
   assert.equal(all(row, (e) => e.className.includes('notice-text')).length, 0);
 }
@@ -167,7 +175,7 @@ const flat = await import('./flat.js');
 const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
-assert.equal(all(flatMain, (e) => e.className === "badge content-type")[0].textContent, "Document");
+assert.deepEqual(typeLabel(flatMain), [['img', 'Document', 'Document']]);
 const tabLinks = (root) => all(root, (e) => e.tagName === 'A' && e.parentNode?.className === 'site-tabs');
 assert.deepEqual(tabLinks(flatMain).map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('aria-current')]), [
   ['Deployments', '/flats/blog', 'page'], ['Analytics', '/flats/blog/analytics', null],

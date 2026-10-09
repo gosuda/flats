@@ -48,6 +48,8 @@ const ICONS = {
   alert: 'M12 3l10 18H2zM12 10v5M12 18h.01',
   back: 'M15 18l-6-6l6-6',
   close: 'M6 6l12 12M18 6L6 18',
+  home: 'M3.5 11.5L12 4l8.5 7.5M6 9.5V19a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5M10 20v-4.5a2 2 0 0 1 4 0V20',
+  doc: 'M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7zM14 3v4h4M9 12h6M9 16h4',
 };
 
 export function icon(name, label) {
@@ -150,18 +152,6 @@ export function visibilityBadge(vis) {
   return h('span', { class: 'vis vis-' + key }, icon(v.icon), h('span', { text: v.label }));
 }
 
-// slugColor derives a stable hue from the slug for initials tiles.
-export function slugHue(slug) {
-  let x = 0;
-  for (let i = 0; i < slug.length; i++) x = (x * 31 + slug.charCodeAt(i)) >>> 0;
-  return x % 360;
-}
-
-export function initials(name, slug) {
-  const words = (name || slug || '?').split(/[\s\-_]+/).filter(Boolean);
-  const s = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2);
-  return s.toUpperCase();
-}
 
 export function shortHash(s, n = 12) {
   return s ? s.replace(/^sha256:/, '').slice(0, n) : '';
