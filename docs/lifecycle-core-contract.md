@@ -72,7 +72,13 @@ this core document does not assert those integrations already pass.
 
 `Decide` and per-flat provider-grant mutations are console operations: the
 transport exposes them only on console routes, and provider grants also require
-`ViaConsole`. Core has no separate operator credential check; a console request
+`ViaConsole`. The one standing grant comes from host configuration: when
+`network.private_backend` is `tailscale`, creating a flat (through any `Via`,
+including an agent's first save) stores its Tailscale permission and a
+`provider` event in the creating transaction. Choosing that backend, which only
+the operator can do while the host is stopped, is the operator's consent for the
+Private Tailscale routes of every flat created afterwards. It never grants
+Funnel or Portal, and revoking it per flat is the ordinary console operation. Core has no separate operator credential check; a console request
 is the decision. Decisions persist `decided_by` and `authorized_at` before
 execution. `WithActor(ctx, actor)` supplies the audit actor (the API passes the
 tailnet login when one is known); otherwise it is `console`.

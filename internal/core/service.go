@@ -751,11 +751,16 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	now := s.now()
 	f := store.Flat{Slug: slugName, Name: name, Visibility: store.Private, CreatedAt: now, UpdatedAt: now}
-	var providers []string
+	// On a tailnet host the operator's choice of private backend is the grant
+	// for new flats' private Tailscale routes; it is recorded with the flat.
+	var grants []store.ProviderGrant
 	if s.cfg.PrivateBackend == "tailscale" {
-		providers = append(providers, store.ProviderTailscale)
+		grants = append(grants, store.ProviderGrant{Provider: store.ProviderTailscale, Event: store.Event{
+			Time: now, Level: "info", Kind: "provider",
+			Message: fmt.Sprintf("provider %s permitted=true by default (network.private_backend is %s)", store.ProviderTailscale, s.cfg.PrivateBackend),
+		}})
 	}
-	if err := s.st.CreateFlat(ctx, f, providers...); err != nil {
+	if err := s.st.CreateFlat(ctx, f, grants...); err != nil {
 		if errors.Is(err, store.ErrExists) {
 			return FlatView{}, withKind(ErrConflict, err)
 		}
@@ -763,9 +768,6 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	s.state(slugName)
 	s.Event(ctx, slugName, "info", "flat", "flat created via "+string(via), nil)
-	for _, p := range providers {
-		s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=true by default (network.private_backend is %s)", p, s.cfg.PrivateBackend), nil)
-	}
 	return s.view(ctx, f), nil
 }
 

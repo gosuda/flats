@@ -635,8 +635,12 @@ assert.equal(turnOnCall.headers['If-Match'], '"etag-9"', 'a provider change is g
 // the tailnet shows it as server-only text; on the host it stays a link.
 const ui = await import('./ui.js');
 const savedLocation = globalThis.location;
-for (const host of ['localhost', 'blog.localhost', '127.0.0.1', '[::1]']) assert.ok(ui.loopbackHost(host), host);
-for (const host of ['flats.tail1234.ts.net', 'example.com', '10.0.0.1', 'localhost.example.com']) assert.ok(!ui.loopbackHost(host), host);
+const hostOf = (url) => new URL(url).hostname;
+for (const url of ['http://localhost/', 'http://blog.localhost:7879/', 'http://BLOG.LOCALHOST/', 'http://blog.localhost.:7879/',
+  'http://127.0.0.1/', 'http://127.1/', 'http://2130706433/', 'http://[::1]/', 'http://[0:0:0:0:0:0:0:1]/', 'http://0.0.0.0:7879/',
+  'http://[::]/', 'http://[::ffff:127.0.0.1]/', 'http://[::ffff:0.0.0.0]/']) assert.ok(ui.loopbackHost(hostOf(url)), url);
+for (const url of ['https://flats.tail1234.ts.net/', 'https://example.com/', 'http://10.0.0.1/', 'http://localhost.example.com/',
+  'http://[::ffff:10.0.0.1]/', 'http://[2001:db8::1]/', 'http://128.0.0.1/']) assert.ok(!ui.loopbackHost(hostOf(url)), url);
 globalThis.location = { origin: 'https://flats.tail1234.ts.net', hostname: 'flats.tail1234.ts.net' };
 const remote = ui.extLink('http://blog.localhost:7879/', 'Open');
 assert.equal(remote.tagName, 'SPAN');
@@ -644,6 +648,21 @@ assert.equal(remote.getAttribute('aria-disabled'), 'true');
 assert.equal(remote.getAttribute('title'), ui.SERVER_ONLY);
 assert.ok(remote.textContent.includes('Open') && remote.textContent.includes('server only'));
 assert.equal(ui.extLink('https://blog.tail1234.ts.net/').tagName, 'A', 'tailnet links stay links');
+for (const url of ['http://blog.localhost.:7879/', 'http://[::ffff:127.0.0.1]:7879/', 'http://0.0.0.0:7879/']) {
+  assert.equal(ui.extLink(url).tagName, 'SPAN', url);
+}
+// The share dialog does not offer a server-only private link for copying.
+shareDialog({ ...blog, visibility: 'private', private_url: 'http://blog.localhost:7879', live_version: 1 });
+const remoteShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+const copyLink = all(remoteShare, (e) => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0];
+assert.equal(copyLink.getAttribute('disabled'), '', 'copying a server-only link is disabled');
+assert.ok(remoteShare.textContent.includes(ui.SERVER_ONLY));
+assert.equal(all(remoteShare, (e) => e.tagName === 'A' && e.textContent === 'Visit').length, 0);
+remoteShare.close();
+shareDialog({ ...blog, visibility: 'private', private_url: 'https://blog.tail1234.ts.net', live_version: 1 });
+const tailShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+assert.equal(all(tailShare, (e) => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0].getAttribute('disabled'), null);
+tailShare.close();
 globalThis.location = { origin: 'http://127.0.0.1:7878' };
 assert.equal(ui.extLink('http://blog.localhost:7879/').tagName, 'A', 'on the host a loopback link works');
 globalThis.location = savedLocation;

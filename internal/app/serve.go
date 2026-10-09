@@ -576,7 +576,8 @@ type SystemStatus struct {
 
 // Status implements api.System.
 func (h *Host) Status(ctx context.Context) any {
-	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: h.ConsoleURL(), MCPURL: strings.TrimSuffix(h.ConsoleURL(), "/") + "/mcp",
+	console := h.ConsoleURL() // read once so console_url and mcp_url agree
+	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: console, MCPURL: strings.TrimSuffix(console, "/") + "/mcp",
 		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
 		s.Providers = h.Providers.HostStatus()

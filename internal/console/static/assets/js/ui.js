@@ -194,10 +194,31 @@ export function safeHref(href) {
 }
 
 // loopbackHost reports whether a host name reaches only the machine it is
-// opened on (localhost, *.localhost, 127.0.0.0/8, ::1).
+// opened on: localhost and *.localhost (with or without a trailing dot),
+// 127.0.0.0/8, ::1, the unspecified 0.0.0.0 and ::, and their IPv4-mapped
+// IPv6 forms. It expects a URL hostname, which the URL parser has already
+// lowercased and normalized (127.1 and 2130706433 become 127.0.0.1, and
+// ::ffff:127.0.0.1 becomes ::ffff:7f00:1).
 export function loopbackHost(host) {
-  const name = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
-  return name === 'localhost' || name.endsWith('.localhost') || name === '::1' || /^127\./.test(name);
+  const name = String(host || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  if (name === 'localhost' || name.endsWith('.localhost')) return true;
+  if (name === '0.0.0.0' || /^127\.\d+\.\d+\.\d+$/.test(name)) return true;
+  if (name === '::1' || name === '::') return true;
+  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(.+)$/.exec(name);
+  if (!mapped) return false;
+  const v4 = mapped[1];
+  if (v4.includes('.')) return v4 === '0.0.0.0' || /^127\./.test(v4);
+  const [hi = '', lo = ''] = v4.split(':');
+  const high = parseInt(hi, 16), low = parseInt(lo, 16);
+  return (high >> 8) === 127 || (high === 0 && low === 0);
+}
+
+// serverOnly reports whether href opens only on the Flats host and this
+// console is being viewed from another device, where it would open that
+// device instead.
+export function serverOnly(href) {
+  const safe = safeHref(href);
+  return Boolean(safe) && !consoleOnServer() && loopbackHost(new URL(safe).hostname);
 }
 
 // consoleOnServer is true when this console was opened through a loopback
@@ -220,7 +241,7 @@ export const SERVER_ONLY = 'Opens only on the Flats host machine. Allow Tailscal
 export function extLink(href, text, cls) {
   const safe = safeHref(href);
   if (!safe) return h('span', { class: cls ? cls + ' is-disabled' : undefined }, text || String(href ?? ''));
-  if (!consoleOnServer() && loopbackHost(new URL(safe).hostname)) {
+  if (serverOnly(safe)) {
     return h('span', { class: (cls ? cls + ' ' : '') + 'is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' },
       text || href, h('span', { class: 'badge badge-warn', text: 'server only' }));
   }
