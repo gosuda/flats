@@ -98,6 +98,10 @@ func runEnv(t *testing.T, env Env, srvURL string, args ...string) result {
 	if env.Home == "" {
 		env.Home = t.TempDir()
 	}
+	// Never read or write the real saved connection.
+	if env.ConfigDir == "" {
+		env.ConfigDir = t.TempDir()
+	}
 	env.Getenv = func(k string) string {
 		if k == "FLATS_URL" {
 			return srvURL

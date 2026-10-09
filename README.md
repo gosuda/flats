@@ -146,9 +146,38 @@ Data survives deploys and ordinary rollbacks. `flats rollback hello` restores co
 
 ## Agent integration
 
-Run `flats mcp-config` for Claude Code, Codex and Cursor setup. For a host
-on a custom management port, use `flats mcp-config --url http://127.0.0.1:17878`.
-For example:
+The Flats plugin bundles the deployment skill and an MCP server for Claude
+Code, Codex and Cursor. Its MCP server runs `flats mcp`, which relays the
+host's MCP endpoint over stdio, so the plugin never names a host. Choose the
+host once per machine with `flats connect`; the CLI and every agent's plugin
+then use it:
+
+```sh
+flats connect https://flats.example.ts.net   # or skip it on the host itself: loopback is the default
+```
+
+```sh
+claude plugin marketplace add gosuda/flats && claude plugin install flats@flats
+codex plugin marketplace add gosuda/flats && codex plugin add flats@flats
+```
+
+In Claude Code you can also run `/plugin install flats --marketplace gosuda/flats`.
+For Cursor, add the marketplace with
+`cursor-agent plugin marketplace add https://github.com/gosuda/flats` and
+install Flats from Cursor's plugin list, or load a checkout with
+`cursor-agent --plugin-dir plugins/flats`. The agent must find `flats` on its `PATH`;
+on a client machine install only the CLI with the installer's `--no-service`
+option. `flats connect` saves the address in
+`<user config dir>/flats-client/connection.json` after checking that it answers
+as a Flats host; `flats connect` alone shows the current host and
+`flats connect --clear` returns to loopback. `--url` and `FLATS_URL` still
+override it for one command, but agents generally do not pass your shell
+environment to MCP servers, so use `flats connect` for plugins. Restart or
+reconnect an agent after changing the host.
+
+Without the plugin, register the HTTP endpoint directly. Run `flats mcp-config`
+for Claude Code, Codex and Cursor setup. For a host on a custom management
+port, use `flats mcp-config --url http://127.0.0.1:17878`. For example:
 
 ```sh
 claude mcp add --transport http flats http://127.0.0.1:7878/mcp

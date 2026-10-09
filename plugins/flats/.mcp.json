@@ -1,5 +1,5 @@
 {
   "mcpServers": {
-    "flats": { "type": "http", "url": "http://127.0.0.1:7878/mcp" }
+    "flats": { "command": "flats", "args": ["mcp"] }
   }
 }
