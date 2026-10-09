@@ -1,10 +1,16 @@
 # Refusals
 
-A refused tool call reports `category` in its error JSON and ends its hint
-with `See guide refusal.<category>`. Unless a section says otherwise, a
-refused call changed nothing. `get_approval` `result_data.failure_code` uses
-the same names, plus `apply_failed` for an unclassified failure while applying
-an approved action.
+A call that Flats refuses reports `category` in its error JSON and ends its
+hint with `See guide refusal.<category>`. Unless the section or the error's
+hint says otherwise, a refused call changed nothing; for example, a save with
+`deploy: true` whose publish request fails keeps the saved Draft and says so.
+`get_approval` `result_data.failure_code` uses the same names, plus
+`apply_failed` for an unclassified failure while applying an approved action.
+
+Arguments that do not match a tool's input schema (a missing required field
+or a wrong type) are rejected by the MCP layer before Flats runs the tool, so
+that error has no category: fix the arguments against the tool's input
+schema and call again.
 
 ## invalid
 

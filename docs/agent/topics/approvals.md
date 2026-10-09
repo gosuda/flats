@@ -1,10 +1,12 @@
 ## Approvals, visibility and exposure
 
 Agents never decide publication, exposure or deletion. These requests return
-`status: pending_approval` with `approval_id` and `approval_url`, and change
-nothing until the operator approves them in the Flats console:
+`status: pending_approval` with `approval_id` and `approval_url`. What they
+request changes nothing until the operator approves it in the Flats console:
 
-* `publish`, and `save_draft`/`save_version` with `deploy: true`;
+* `publish`, and the publish request made by `save_draft`/`save_version` with
+  `deploy: true` (the save itself updates the Private Draft immediately; only
+  the publication waits, and the Draft stays saved if that request fails);
 * `deploy {version}` (activation or redeploy of a published version);
 * `rollback`, with or without `restore_data`;
 * `set_visibility` in **both** directions, private to public and public to
@@ -22,7 +24,8 @@ Rules:
   can send those headers: run only trusted agents on the host. Client
   auto-approval of MCP calls does not bypass Flats approvals.
 * Ask the user before requesting `set_visibility`, `delete_flat` or a rollback
-  with `restore_data`; put their reason in `reason`.
+  with `restore_data`. `set_visibility` and `delete_flat` accept a `reason`
+  that the operator sees; `rollback` has none.
 * An approval freezes what it approves (Draft revision and hash, version,
   snapshot, visibility, providers). If that changes before the decision, it
   fails as `stale_approval`; request again. An identical pending request is
