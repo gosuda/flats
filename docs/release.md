@@ -109,13 +109,13 @@ the leading `v`:
 | `1.2.3`, `1.3.0-rc.1` | every release, including backfills and prereleases |
 | `1.2` | pushed stable tags |
 | `latest` | pushed stable tags |
-| `sha-1a2b3c4`, `sha-<40-hex commit>` | pushed tags: the released commit, short (7) and full |
 
 A backfill (`workflow_dispatch`) pushes only the exact version, so it never
-moves `1.2`, `latest` or a `sha-` tag back to an older release. A commit
-released under two tags (`v1.3.0-rc.1`, then `v1.3.0`) keeps its `sha-` tags
-on the later release. The `sha256-<digest>` tag next to them is not a commit:
-it holds the image's provenance attestation. Re-running the job rebuilds
+moves `1.2` or `latest` back to an older release. Releases do not write
+`sha-` tags: those identify the separate [commit builds](#commit-images).
+Previously published release `sha-` tags remain until a commit build replaces
+them. The `sha256-<digest>` tag is not a commit: it holds the image's
+provenance attestation. Re-running the job rebuilds
 the version tag from the same archives. The Dockerfile comes from the
 workflow's commit, like `build-release.sh`.
 
@@ -124,6 +124,42 @@ The first push creates the package. An organization owner must make
 need authentication. CI builds both platforms on every pull request and runs
 `scripts/container-smoke.sh` against the runner's image. How operators run the
 image is in [Running Flats in a container](container.md).
+
+## Commit images
+
+Pushes to `main` build and publish a separate multi-platform image for each
+new commit along its first-parent history, including intermediate commits in
+a batched push, under `sha-<7-character SHA>` and `sha-<40-hex commit>` tags.
+A merge builds the merge commit, not every commit on the merged branch.
+A newly created `main` branch builds its tip only. Existing historical commits
+are not automatically backfilled. Other branches do not publish images;
+pull requests, including forks, use CI's build-only checks.
+
+To build an older commit explicitly, run `Commit images`
+(`.github/workflows/commit-images.yml`) from `main` with its full SHA:
+
+```sh
+gh workflow run commit-images.yml --repo gosuda/flats --ref main \
+  -f commit=<40-hex commit>
+```
+
+The selected commit must be reachable from `origin/main`. The workflow uses
+its own build tooling and Dockerfile to package the selected source.
+
+Commit builds compile Linux archives from the selected commit with version
+`v0.0.0-sha-<7-character SHA>` and package them in the image. The build checks
+that binary metadata records that exact revision and clean source. These
+archives are build inputs, not GitHub release assets; only versioned release
+images promise the same binaries as the published release archives. Commit
+images never move the release version, minor or `latest` tags. Prefer the
+full SHA tag: a 7-character prefix is only a convenience and can collide.
+
+Commit images include unsigned BuildKit provenance, not the GitHub-signed
+attestation provided for release images. The build workflow's commit can
+differ from the selected source commit for an intermediate push commit or a
+manual build. Check `org.opencontainers.image.revision` and the binary's
+`vcs.revision` against the full source SHA; the workflow's source ref alone
+does not identify the selected source revision.
 
 ## Retracting a bad release
 

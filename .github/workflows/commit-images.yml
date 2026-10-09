@@ -1,0 +1,70 @@
+name: Commit images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full 40-character SHA reachable from origin/main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# No path filter or cancelling concurrency group: every introduced commit is
+# retained, including the intermediate main commits in a multi-commit push.
+jobs:
+  select:
+    if: github.event_name == 'workflow_dispatch' || !github.event.deleted
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.commits.outputs.matrix }}
+      count: ${{ steps.commits.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require main for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: test "$GITHUB_REF" = refs/heads/main
+      - name: Select commits
+        id: commits
+        env:
+          REQUESTED_COMMIT: ${{ inputs.commit }}
+        run: python3 scripts/image-commits.py
+
+  image:
+    needs: select
+    if: needs.select.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build, test and publish each commit
+        env:
+          COMMIT_BATCH: ${{ toJSON(matrix.commits) }}
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: scripts/build-commit-images.sh
