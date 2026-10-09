@@ -1,6 +1,6 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
 
-import { h, clear, icon, timeEl, visibilityBadge, slugHue, initials, publicURL } from './dom.js';
+import { h, clear, icon, timeEl, visibilityBadge, publicURL } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading, extLink, busy } from './ui.js';
 import { publishDraft } from './actions.js';
@@ -127,10 +127,10 @@ export function mount(main, _params, ctx) {
       { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
     ]));
     return h('li', { class: 'flat' },
-      thumb(f),
+      view === 'grid' ? preview(f) : null,
+      typeIcon(f),
       h('div', { class: 'flat-main' },
         extLink(publicURL(f) || f.private_url, f.name || f.slug, 'flat-name'),
-        typeBadge(f),
         h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
@@ -143,10 +143,10 @@ export function mount(main, _params, ctx) {
   return () => document.removeEventListener('visibilitychange', onVisible);
 }
 
-export function thumb(f, large) {
-  const tile = h('div', { class: 'thumb' + (large ? ' thumb-large' : ''), 'aria-hidden': 'true' },
-    h('span', { text: initials(f.name, f.slug) }));
-  tile.style.setProperty('--hue', String(slugHue(f.slug)));
+// preview is the grid card's picture: the flat's screenshot when it has one,
+// otherwise a quiet placeholder with its type glyph.
+function preview(f) {
+  const tile = h('div', { class: 'preview preview-' + typeOf(f).key, 'aria-hidden': 'true' }, icon(typeOf(f).icon));
   if (f.thumbnail) {
     thumbnail(f.thumbnail).then((src) => {
       if (!src) return;
@@ -164,6 +164,21 @@ function emptyState() {
     h('p', null, h('a', { class: 'btn btn-primary', href: '/settings#connect', 'data-nav': true, text: 'Connect an agent' })));
 }
 
-export function typeBadge(flat) {
-  return h('span', { class: 'badge content-type', text: flat.type === 'docs' ? 'Document' : 'Website' });
+// Content types as the console names them. Website flats are just "Flat".
+const TYPES = {
+  flat: { key: 'flat', label: 'Flat', icon: 'home' },
+  docs: { key: 'docs', label: 'Document', icon: 'doc' },
+};
+
+export const typeOf = (flat) => (flat.type === 'docs' ? TYPES.docs : TYPES.flat);
+
+// typeIcon is the tile left of a flat's name. Its label shows on hover, and on
+// focus for keyboard users and touch (a tap focuses it); screen readers
+// announce the same label.
+export function typeIcon(flat, large) {
+  const t = typeOf(flat);
+  return h('span', {
+    class: `type-icon type-${t.key}` + (large ? ' type-icon-large' : ''),
+    role: 'img', tabindex: '0', 'aria-label': t.label, 'data-tip': t.label,
+  }, icon(t.icon));
 }
