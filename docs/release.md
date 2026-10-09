@@ -127,7 +127,7 @@ image is in [Running Flats in a container](container.md).
 
 ## Commit images
 
-Pushes to `main` build and publish a separate multi-platform image for each
+Pushes to `main` attempt to build and publish a separate multi-platform image for each
 new commit along its first-parent history, including intermediate commits in
 a batched push, under `sha-<7-character SHA>` and `sha-<40-hex commit>` tags.
 A merge builds the merge commit, not every commit on the merged branch.
@@ -135,15 +135,27 @@ A newly created `main` branch builds its tip only. Existing historical commits
 are not automatically backfilled. Other branches do not publish images;
 pull requests, including forks, use CI's build-only checks.
 
+GitHub skips push workflows for commit messages containing `[skip ci]`,
+`[ci skip]`, `[no ci]`, `[skip actions]` or `[actions skip]`. A subsequent push
+only selects its own new range, so it does not recover those skipped commits;
+manually dispatch each missing SHA using the command below.
+
+A commit is published only after vet, tests, clean revision verification and
+the container smoke test succeed. A failure prevents that commit's publication;
+later commits in its build lane are still attempted and the lane reports failure.
+Each lane has a 360-minute timeout and remains subject to GitHub Actions runtime
+limits; a timeout can leave unattempted commits that need manual recovery.
+
 To build an older commit explicitly, run `Commit images`
 (`.github/workflows/commit-images.yml`) from `main` with its full SHA:
 
 ```sh
 gh workflow run commit-images.yml --repo gosuda/flats --ref main \
-  -f commit=<40-hex commit>
+  -f commit=<full-sha>
 ```
 
-The selected commit must be reachable from `origin/main`. The workflow uses
+Manual dispatch must run from `main`, and the selected commit must be
+reachable from `origin/main`. The workflow uses
 its own build tooling and Dockerfile to package the selected source.
 
 Commit builds compile Linux archives from the selected commit with version
@@ -159,7 +171,22 @@ attestation provided for release images. The build workflow's commit can
 differ from the selected source commit for an intermediate push commit or a
 manual build. Check `org.opencontainers.image.revision` and the binary's
 `vcs.revision` against the full source SHA; the workflow's source ref alone
-does not identify the selected source revision.
+does not identify the selected source revision. The image label
+`io.flats.image.tooling-revision` records the workflow/tooling commit separately
+from `org.opencontainers.image.revision`, which records the selected source.
+
+Check the binary identity and inspect the unsigned provenance:
+
+```sh
+docker run --rm ghcr.io/gosuda/flats:sha-<full-sha> version --json
+docker buildx imagetools inspect ghcr.io/gosuda/flats:sha-<full-sha> \
+  --format '{{json .Provenance}}'
+```
+
+The JSON version output's `commit` must equal the full selected SHA and `dirty`
+must be `false`. Provenance inspection is supported by
+[Docker Buildx](https://docs.docker.com/reference/cli/docker/buildx/imagetools/inspect/#format-the-output---format);
+it does not verify a GitHub signature.
 
 ## Retracting a bad release
 

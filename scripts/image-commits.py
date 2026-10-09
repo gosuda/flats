@@ -48,6 +48,7 @@ def select(event_name, event, requested):
 def matrix(commits):
     # The Actions matrix has a 256-job limit. Four serial lanes retain every
     # commit even for a large push, without truncating the event commit list.
+    # Execution still has the workflow's 360-minute per-lane time limit.
     return {"include": [{"lane": n, "commits": commits[n::4]}
                         for n in range(min(4, len(commits)))]}
 

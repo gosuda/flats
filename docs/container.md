@@ -6,7 +6,7 @@ Releases and commits pushed to `main` publish Linux images for `amd64` and `arm6
 ghcr.io/gosuda/flats:1.2.3     # one release (tags drop the leading v)
 ghcr.io/gosuda/flats:1.2       # newest patch of a minor release
 ghcr.io/gosuda/flats:latest    # newest stable release; prereleases never get it
-ghcr.io/gosuda/flats:sha-1a2b3c4  # an unreleased commit build (7-character SHA)
+ghcr.io/gosuda/flats:sha-1a2b3c4  # a development commit build (7-character SHA)
 ghcr.io/gosuda/flats:sha-<40-hex commit>  # the full commit identity
 ```
 
@@ -15,7 +15,8 @@ A versioned release image runs the same `flats` binary as that release's
 stamps `flats version` as `v0.0.0-sha-<7-character SHA>`, and does not publish
 a GitHub release or replace `latest`. Prefer the full SHA tag when pinning
 a commit; short SHAs can collide. See [Commit images](release.md#commit-images)
-for push coverage and provenance details.
+for push coverage and provenance details. Historical release `sha-` tags
+remain release images until an explicit commit build replaces them.
 
 Both kinds run on distroless (`gcr.io/distroless/static-debian12:nonroot`:
 CA certificates and tzdata, no shell or package manager), as the unprivileged

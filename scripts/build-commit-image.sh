@@ -22,7 +22,8 @@ for archive in "$work"/dist/*.tar.gz; do
 		exit 1
 	fi
 done
-# Smoke-test the actual amd64 image before publishing either architecture.
+# Smoke-test the amd64 filesystem layers before publishing either architecture.
+# The pushed image config additionally carries the source/tooling labels below.
 cp "$root/Dockerfile" "$root/.dockerignore" "$work/"
 docker buildx build --platform linux/amd64 --load -t "flats:sha-$commit" "$work"
 tar -xzf "$work/dist/flats_linux_amd64.tar.gz" -C "$work" flats

@@ -51,7 +51,7 @@ jobs:
           cache: true
       - name: Lint
         if: runner.os == 'Linux'
-        run: shellcheck -s sh install.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh
+        run: shellcheck -s sh install.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh
       - name: Build release archives
         run: |
           # Linux builds every platform to check the release build; macOS only its own.
