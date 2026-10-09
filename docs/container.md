@@ -1,16 +1,24 @@
 # Running Flats in a container
 
-Each release publishes a Linux image for `amd64` and `arm64`:
+Releases and commits pushed to `main` publish Linux images for `amd64` and `arm64`:
 
 ```text
 ghcr.io/gosuda/flats:1.2.3     # one release (tags drop the leading v)
 ghcr.io/gosuda/flats:1.2       # newest patch of a minor release
 ghcr.io/gosuda/flats:latest    # newest stable release; prereleases never get it
-ghcr.io/gosuda/flats:sha-1a2b3c4  # the release built from a commit (short or full SHA)
+ghcr.io/gosuda/flats:sha-1a2b3c4  # a development commit build (7-character SHA)
+ghcr.io/gosuda/flats:sha-<40-hex commit>  # the full commit identity
 ```
 
-The image runs the same `flats` binary as that release's
-`flats_linux_<arch>.tar.gz`, on distroless (`gcr.io/distroless/static-debian12:nonroot`:
+A versioned release image runs the same `flats` binary as that release's
+`flats_linux_<arch>.tar.gz`. A commit image builds that commit separately,
+stamps `flats version` as `v0.0.0-sha-<7-character SHA>`, and does not publish
+a GitHub release or replace `latest`. Prefer the full SHA tag when pinning
+a commit; short SHAs can collide. See [Commit images](release.md#commit-images)
+for push coverage and provenance details. Historical release `sha-` tags
+remain release images until an explicit commit build replaces them.
+
+Both kinds run on distroless (`gcr.io/distroless/static-debian12:nonroot`:
 CA certificates and tzdata, no shell or package manager), as the unprivileged
 user `65532`. Everything Flats keeps lives in one volume, `/data`:
 `config.json`, `flats.db`, `secret.key`, the flats and their data, and
@@ -25,7 +33,7 @@ Always mount a named volume (or a host directory) at `/data`. Without `-v`,
 Docker creates an anonymous volume, and recreating the container would start
 another empty host.
 
-Verify an image before you run it:
+Verify a release image before you run it:
 
 ```sh
 gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats

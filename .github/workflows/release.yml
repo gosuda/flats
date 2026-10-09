@@ -167,22 +167,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      # The commit is the one the test job checked and the archives were built
-      # from, not github.sha: a backfill runs on main's head.
-      - name: Commit tags
-        id: commit
-        env:
-          COMMIT: ${{ needs.test.outputs.commit }}
-        run: |
-          case "$COMMIT" in
-          *[!0-9a-f]* | '') echo "unexpected commit: $COMMIT"; exit 1 ;;
-          esac
-          [ "${#COMMIT}" -eq 40 ] || { echo "unexpected commit length: $COMMIT"; exit 1; }
-          echo "full=sha-$COMMIT" >>"$GITHUB_OUTPUT"
-          echo "short=sha-${COMMIT:0:7}" >>"$GITHUB_OUTPUT"
-      # Tags other than the exact version (1.2, latest, sha-<commit>) follow
-      # only newly pushed tags, so a backfill of an older release never moves
-      # them.
+      # Version aliases follow newly pushed release tags; backfilling an older
+      # release never moves them. SHA refs belong only to Commit images, whose
+      # development version differs from these release-stamped binaries.
       - name: Image tags and labels
         id: meta
         uses: docker/metadata-action@v5
@@ -193,8 +180,6 @@ jobs:
             type=semver,pattern={{version}},value=${{ env.TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ github.event_name == 'push' }}
             type=raw,value=latest,enable=${{ github.event_name == 'push' && !contains(env.TAG, '-') }}
-            type=raw,value=${{ steps.commit.outputs.short }},enable=${{ github.event_name == 'push' }}
-            type=raw,value=${{ steps.commit.outputs.full }},enable=${{ github.event_name == 'push' }}
           labels: |
             org.opencontainers.image.revision=${{ needs.test.outputs.commit }}
             org.opencontainers.image.version=${{ env.TAG }}
