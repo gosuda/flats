@@ -19,7 +19,8 @@ failed=0
 while IFS= read -r commit; do
 	# A failed historical commit must not stop later commits from being built.
 	# A separate shell preserves errexit inside the single-commit build.
-	if "$root/scripts/build-commit-image.sh" "$commit"; then
+	# Child tests/builds must not consume the remaining commit-list stdin.
+	if "$root/scripts/build-commit-image.sh" "$commit" </dev/null; then
 		echo "Published $commit"
 	else
 		echo "::error::Image build or publication failed for $commit" >&2
