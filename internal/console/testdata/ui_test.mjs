@@ -159,19 +159,30 @@ assert.equal(byText(rows[0], 'Publish').length, 1);
 assert.equal(byText(rows[2], 'Publish').length, 0);
 stopList();
 
-// The flat page offers a redeploy of the live version (and only of it), also
-// from the secrets panel, and the deploy result shows the notice.
+// The flat's own address is its Deployments tab: status, versions, previews
+// and logs under the same tabs as Settings, with no settings panels of its own.
+// It offers a redeploy of the live version (and only of it), and the deploy
+// result shows the notice.
 const flat = await import('./flat.js');
 const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
 assert.equal(all(flatMain, (e) => e.className === "badge content-type")[0].textContent, "Document");
+const tabLinks = (root) => all(root, (e) => e.tagName === 'A' && e.parentNode?.className === 'site-tabs');
+assert.deepEqual(tabLinks(flatMain).map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('aria-current')]), [
+  ['Deployments', '/flats/blog', 'page'], ['Analytics', '/flats/blog/analytics', null],
+  ['Database', '/flats/blog/database', null], ['Settings', '/flats/blog/settings', null]]);
+for (const id of ['status', 'versions', 'previews', 'logs']) {
+  assert.equal(all(flatMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `deployments tab lacks ${id}`);
+}
+for (const id of ['env', 'secrets', 'network', 'networks', 'delete', 'visibility', 'usage', 'rename']) {
+  assert.equal(all(flatMain, (e) => e.getAttribute('id') === id).length, 0, `deployments tab repeats settings section ${id}`);
+}
+assert.equal(all(flatMain, (e) => e.tagName === 'SELECT').length, 0, 'visibility changes only through the sharing dialog');
 const redeploys = byText(flatMain, 'Redeploy (apply environment)');
-assert.equal(redeploys.length, 4, 'want a redeploy button on the live version row and each environment panel');
+assert.equal(redeploys.length, 1, 'want a redeploy button on the live version row only');
 const liveRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-live')[0];
 assert.ok(liveRow && byText(liveRow, 'Redeploy (apply environment)').length === 1, 'live version row has no redeploy action');
-const secrets = all(flatMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'secrets')[0];
-assert.ok(secrets.textContent.includes('redeploy the live version 2'), 'secrets panel must mention redeploying: ' + secrets.textContent);
 
 redeploys[0].dispatch('click');
 await tick();
@@ -212,23 +223,29 @@ assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/a
 all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
 await tick();
 
-// Networks are per-flat permissions; Local is always on.
-const portal = all(flatMain, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-portal')[0];
-assert.equal(portal.checked, true);
-const funnel = all(flatMain, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-tailscale-funnel')[0];
-funnel.checked = true;
-funnel.dispatch('change');
-await tick();
-assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/providers').body), { provider: 'tailscale-funnel', permitted: true });
 stopFlat();
-// Management pages use real API data and preserve the deployment tools.
+// The Settings tab holds every setting once, and still offers the redeploy
+// that applies environment changes.
 const management = new Element('main');
 const stopSettings = flat.mountSettings(management, ['blog'], ctx);
 await tick();
 assert.equal(all(management, (e) => e.tagName === 'A' && e.textContent === 'Scheduled').length, 0);
-for (const tab of ['Settings', 'Analytics', 'Database']) {
- assert.equal(all(management, (e) => e.tagName === 'A' && e.textContent === tab).length, 1);
+assert.deepEqual(tabLinks(management).map((a) => [a.textContent, a.getAttribute('aria-current')]),
+  [['Deployments', null], ['Analytics', null], ['Database', null], ['Settings', 'page']]);
+for (const id of ['versions', 'previews', 'logs']) {
+  assert.equal(all(management, (e) => e.getAttribute('id') === id).length, 0, `settings tab repeats ${id}`);
 }
+assert.equal(byText(management, 'Redeploy (apply environment)').length, 3, 'want a redeploy button in each environment panel');
+const secrets = all(management, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'secrets')[0];
+assert.ok(secrets.textContent.includes('redeploy the live version 2'), 'secrets panel must mention redeploying: ' + secrets.textContent);
+// Networks are per-flat permissions; Local is always on.
+const portal = all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-portal')[0];
+assert.equal(portal.checked, true);
+const funnel = all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-tailscale-funnel')[0];
+funnel.checked = true;
+funnel.dispatch('change');
+await tick();
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/providers').body), { provider: 'tailscale-funnel', permitted: true });
 const envPanel = all(management, (e) => e.getAttribute('id') === 'env')[0];
 const secretPanel = all(management, (e) => e.getAttribute('id') === 'secrets')[0];
 assert.ok(envPanel.textContent.includes('Ordinary environment variables'));
@@ -309,6 +326,7 @@ const analyticsMain = new Element('main');
 analytics.mount(analyticsMain, ['blog'], ctx);
 await tick();
 assert.ok(analyticsMain.textContent.includes('Traffic over time'));
+assert.ok(analyticsMain.textContent.includes('(versions, data and previews)'), 'analytics shows the storage the flat page used to');
 byText(analyticsMain, '7d')[0].dispatch('click');
 await tick();
 assert.ok(calls.some((c) => c.key.endsWith('/stats?days=7')));
@@ -338,7 +356,7 @@ assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats
 assert.ok(share.textContent.includes('devices allowed by your tailnet'));
 assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0].getAttribute('href'), new URL(blog.private_url).href);
 share.close();
-for (const label of ['Share', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
+for (const label of ['Share', 'Deployments', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
 // --- settings page ---
 // The console never asks through window.confirm.

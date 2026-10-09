@@ -122,6 +122,7 @@ export function mount(main, _params, ctx) {
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
       { label: 'Share', onSelect: () => shareDialog(f, load) },
+      { label: 'Deployments', onSelect: () => ctx.navigate(href) },
       { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
       { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
     ]));

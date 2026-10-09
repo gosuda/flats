@@ -1,44 +1,44 @@
-// Flat page: addresses, visibility, versions, previews, logs, environment variables, secrets,
-// usage, rename and delete.
+// Flat management page. One page per flat with tabs (site.js): Deployments
+// (status, versions, previews and logs) and Settings (name, slug, sharing,
+// networks, environment variables, secrets, server permissions and delete).
+// Analytics and Database are their own modules under the same tabs.
 
-import { h, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
+import { h, icon, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
-import { deployVersion, publishDraft, previewVersion, deleteFlat, setVisibility, setProvider, redeployLive, PROVIDERS } from './actions.js';
-import { thumb, typeBadge } from './list.js';
-
+import { deployVersion, publishDraft, previewVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
 import { shareDialog } from './share.js';
 
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
 
-function card(title, id, ...children) {
+function section(title, id, ...children) {
   const hid = id + '-title';
-  return h('section', { class: 'card', id, 'aria-labelledby': hid },
+  return h('section', { class: 'settings-section', id, 'aria-labelledby': hid },
     h('h2', { id: hid, text: title }), ...children);
 }
 
-export function mountSettings(main, params, ctx) { return mount(main, params, ctx, true); }
+export function mountSettings(main, params, ctx) { return mount(main, params, ctx, 'settings'); }
 
-export function mount(main, [slug], ctx, settings = false) {
+export function mount(main, [slug], ctx, tab = 'deployments') {
+  const settings = tab === 'settings';
   ctx.setTitle(slug);
   let flat = null;
   const timers = [];
   let hostProviders = null; // provider id -> turned on for the host; null until loaded
 
   const headSlot = h('div', null, loading());
-  const visSlot = h('div');
+  const netSlot = h('div');
   const versionsSlot = h('div', null, loading());
   const previewsSlot = h('div', null, loading());
   const envSlot = h('div', null, loading());
   const networkSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
-  const usageSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
 
-  const page = h('section', { class: 'page' + (settings ? ' site-page' : '') },
-    h('a', { class: 'back', href: '/', 'data-nav': true }, '← All flats'),
+  const page = h('section', { class: 'page site-page' },
+    h('a', { class: 'back', href: '/', 'data-nav': true }, icon('back'), 'All flats'),
     headSlot);
   main.appendChild(page);
 
@@ -54,9 +54,9 @@ export function mount(main, [slug], ctx, settings = false) {
       return false;
     }
     if (!ctx.alive()) return false;
-    ctx.setTitle(flat.name || flat.slug);
+    ctx.setTitle(`${flat.name || flat.slug} · ${settings ? 'Settings' : 'Deployments'}`);
     drawHead();
-    drawVisibility();
+    if (settings) drawNetworks();
     return true;
   }
 
@@ -64,9 +64,8 @@ export function mount(main, [slug], ctx, settings = false) {
   async function refresh() {
     const ok = await loadFlat();
     if (ok) {
-      loadEnv(); loadSecrets(); loadNetwork();
-      if (!settings) { loadVersions(); loadPreviews(); loadUsage(); loadHostProviders(); }
-      logs.poll();
+      if (settings) { loadEnv(); loadSecrets(); loadNetwork(); loadHostProviders(); }
+      else { loadVersions(); loadPreviews(); logs.poll(); }
     }
     return ok;
   }
@@ -75,14 +74,8 @@ export function mount(main, [slug], ctx, settings = false) {
 
   function drawHead() {
     if (settings) { drawSettings(); return; }
-    const nameEl = h('h1', { class: 'flat-title', text: flat.name || flat.slug });
-    const edit = h('button', { type: 'button', class: 'btn btn-small', text: 'Edit name' });
-    const titleRow = h('div', { class: 'title-row' }, nameEl, edit);
-    edit.addEventListener('click', () => editName(titleRow));
-
     const urls = h('dl', { class: 'facts' });
     const add = (k, v) => urls.append(h('dt', { text: k }), h('dd', null, v));
-    add('Slug', h('code', { text: flat.slug }));
     const pending = flat.private_state && !['ready', 'key-expiring'].includes(flat.private_state);
     add('Private URL', flat.live_version
       ? h('div', null, extLink(flat.private_url),
@@ -102,18 +95,11 @@ export function mount(main, [slug], ctx, settings = false) {
       add('Redirect', `Old slug ${flat.old_slug} redirects here until ${dateTime(flat.old_slug_until)}`);
     }
 
-    fill(headSlot,
-      h('header', { class: 'flat-head' }, thumb(flat, true), h('div', { class: 'flat-head-main' }, titleRow, typeBadge(flat), urls)),
-      visSlot,
-      card('Versions', 'versions', versionsSlot),
-      card('Open previews', 'previews', previewsSlot),
-      card('Logs', 'logs', logs.el),
-      card('Ordinary environment variables', 'env', envSlot),
-      card('Server HTTP(S) permissions', 'network', networkSlot),
-      card('Secrets', 'secrets', secretsSlot),
-      card('Usage', 'usage', usageSlot),
-      card('Rename slug', 'rename', renameForm()),
-      card('Delete flat', 'delete', deleteBlock()));
+    fill(headSlot, siteHeader(flat, 'deployments'),
+      section('Status', 'status', urls),
+      section('Versions', 'versions', versionsSlot),
+      section('Open previews', 'previews', previewsSlot),
+      section('Logs', 'logs', logs.el));
   }
 
   function drawSettings() {
@@ -142,62 +128,20 @@ export function mount(main, [slug], ctx, settings = false) {
         row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
+      netSlot,
       h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
       h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
-      h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()),
-      h('a', { class: 'back', href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: 'Manage versions, previews and logs' }));
+      h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()));
   }
 
-  function editName(row) {
-    const id = 'name-input';
-    const input = h('input', { id, type: 'text', value: flat.name || '', maxlength: '200', required: true });
-    const save = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Save' });
-    const cancel = h('button', { type: 'button', class: 'btn btn-small', text: 'Cancel' });
-    const form = h('form', { class: 'inline-form' },
-      h('label', { for: id, class: 'sr-only', text: 'Display name' }), input, save, cancel);
-    cancel.addEventListener('click', drawHead);
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      busy(save, async () => {
-        try {
-          await api.setName(flat.slug, input.value.trim());
-          toast('Name saved.', 'success');
-          await loadFlat();
-          loadVersions(); loadPreviews(); loadUsage();
-        } catch (err) {
-          toast(err.message, 'error');
-        }
-      });
-    });
-    row.replaceWith(form);
-    input.focus();
-    input.select();
-  }
+  // --- networks ---
 
-  // --- visibility ---
-
-  function drawVisibility() {
-    const id = 'vis-select';
-    const current = visibilityOf(flat.visibility);
-    const select = h('select', { id }, Object.entries(VISIBILITY).map(([v, d]) =>
-      h('option', { value: v, selected: v === current, text: d.label })));
-    const apply = h('button', { type: 'submit', class: 'btn btn-small', text: 'Apply' });
-    const form = h('form', { class: 'inline-form' },
-      h('label', { for: id, text: 'Who can open it' }), select, apply);
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (select.value === current) return;
-      busy(apply, async () => {
-        const res = await setVisibility(flat, select.value);
-        if (res) refresh(); else select.value = current;
-      });
-    });
-    fill(visSlot, card('Visibility', 'visibility',
-      h('p', { class: 'muted', text: 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel or Portal.' }),
-      form,
-      h('h3', { class: 'subhead', text: 'Networks' }),
-      h('p', { class: 'muted small' }, 'Allow the networks this flat may use. A network must first be turned on in ',
+  // Who can open the flat is changed in the sharing dialog; this section
+  // lists the networks that serve it.
+  function drawNetworks() {
+    fill(netSlot, section('Networks', 'networks',
+      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel or Portal. A network must first be turned on in ',
         h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Private' }),
         h('ul', { class: 'networks' },
@@ -228,7 +172,7 @@ export function mount(main, [slug], ctx, settings = false) {
     try {
       const { providers } = await api.providers();
       hostProviders = Object.fromEntries((providers || []).map((p) => [p.id, p.enabled]));
-      if (ctx.alive() && flat) drawVisibility();
+      if (ctx.alive() && flat) drawNetworks();
     } catch { /* keep every provider selectable; the server still enforces host grants */ }
   }
 
@@ -406,19 +350,17 @@ export function mount(main, [slug], ctx, settings = false) {
         } catch (err) { toast(err.message, 'error'); }
       });
     });
-    const add = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add variable', 'aria-expanded': 'false', 'aria-controls': 'env-form' }) : null;
-    if (settings) {
-      form.hidden = true;
-      add.addEventListener('click', () => {
-        form.hidden = !form.hidden;
-        add.setAttribute('aria-expanded', String(!form.hidden));
-        if (!form.hidden) name.focus();
-      });
-    }
+    const add = h('button', { type: 'button', class: 'btn btn-small', text: 'Add variable', 'aria-expanded': 'false', 'aria-controls': 'env-form' });
+    form.hidden = true;
+    add.addEventListener('click', () => {
+      form.hidden = !form.hidden;
+      add.setAttribute('aria-expanded', String(!form.hidden));
+      if (!form.hidden) name.focus();
+    });
     const items = list.length ? h('ul', { class: 'plain-list' }, list.map((v) => {
       const edit = h('button', { type: 'button', class: 'btn btn-small', text: 'Edit', 'aria-label': `Edit variable ${v.name}` });
       edit.addEventListener('click', () => {
-        form.hidden = false; add?.setAttribute('aria-expanded', 'true');
+        form.hidden = false; add.setAttribute('aria-expanded', 'true');
         name.value = v.name; value.value = v.value; value.focus();
       });
       const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete variable ${v.name}` });
@@ -482,7 +424,7 @@ export function mount(main, [slug], ctx, settings = false) {
       const up = name.value.toUpperCase();
       if (up !== name.value) name.value = up;
     });
-    const form = h('form', { class: 'form-grid' },
+    const form = h('form', { class: 'form-grid', id: 'secret-form' },
       h('div', { class: 'field' }, h('label', { for: nameId, text: 'Name' }), name,
         h('span', { class: 'hint', text: 'Capital letters, digits and _' })),
       h('div', { class: 'field' }, h('label', { for: valueId, text: 'Value' }), value,
@@ -507,7 +449,7 @@ export function mount(main, [slug], ctx, settings = false) {
       ? h('ul', { class: 'plain-list' }, list.map((s) => {
         const replace = h('button', { type: 'button', class: 'btn btn-small', text: 'Replace', 'aria-label': `Replace value of ${s.name}` });
         const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete secret ${s.name}` });
-        replace.addEventListener('click', () => { form.hidden = false; addVariable?.setAttribute('aria-expanded', 'true'); name.value = s.name; value.value = ''; value.focus(); });
+        replace.addEventListener('click', () => { form.hidden = false; addSecret.setAttribute('aria-expanded', 'true'); name.value = s.name; value.value = ''; value.focus(); });
         del.addEventListener('click', () => busy(del, async () => {
           const ok = await confirmDialog({
             title: `Delete secret ${s.name}?`,
@@ -528,32 +470,17 @@ export function mount(main, [slug], ctx, settings = false) {
         h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }),
         redeployButton())
       : h('p', { class: 'muted', text: 'Secrets apply when a deployment is approved.' });
-    const addVariable = settings ? h('button', { type: 'button', class: 'btn btn-small', text: 'Add secret', 'aria-expanded': 'false' }) : null;
-    if (settings) {
-      form.hidden = true;
-      addVariable.addEventListener('click', () => {
-        form.hidden = !form.hidden;
-        addVariable.setAttribute('aria-expanded', String(!form.hidden));
-        if (!form.hidden) name.focus();
-      });
-    }
-    fill(secretsSlot, addVariable,
+    const addSecret = h('button', { type: 'button', class: 'btn btn-small', text: 'Add secret', 'aria-expanded': 'false', 'aria-controls': 'secret-form' });
+    form.hidden = true;
+    addSecret.addEventListener('click', () => {
+      form.hidden = !form.hidden;
+      addSecret.setAttribute('aria-expanded', String(!form.hidden));
+      if (!form.hidden) name.focus();
+    });
+    fill(secretsSlot, addSecret,
       h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
       items, form, apply,
       h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
-  }
-
-  // --- usage ---
-
-  async function loadUsage() {
-    let stats = null, err = null;
-    try { stats = await api.stats(slug, 30); } catch (e) { err = e; }
-    if (!ctx.alive() || !flat) return;
-    fill(usageSlot,
-      h('dl', { class: 'facts' },
-        h('dt', { text: 'Disk' }), h('dd', { text: `${bytes(flat.disk_bytes)} (versions, data and previews)` }),
-        h('dt', { text: 'Versions' }), h('dd', { text: String(flat.versions) })),
-      err ? errorPanel(err, 'Cannot load page views') : viewsChart(stats.page_views || [], stats.note));
   }
 
   // --- rename & delete ---
@@ -586,7 +513,7 @@ export function mount(main, [slug], ctx, settings = false) {
         try {
           const f = await api.rename(flat.slug, to);
           toast(`Renamed to ${f.slug}.`, 'success');
-          ctx.navigate(`/flats/${encodeURIComponent(f.slug)}${settings ? '/settings' : ''}`, { replace: true });
+          ctx.navigate(`/flats/${encodeURIComponent(f.slug)}/settings`, { replace: true });
         } catch (err) {
           toast(err.message, 'error');
         }
@@ -608,37 +535,6 @@ export function mount(main, [slug], ctx, settings = false) {
 
   refresh().then((ok) => { if (ok) logs.start(); });
   return () => { for (const t of timers) clearInterval(t); logs.stop(); };
-}
-
-// viewsChart draws daily page views as bars, filling missing days with zero.
-function viewsChart(rows, note) {
-  const counts = new Map(rows.map((r) => [r.day, r.count]));
-  const days = [];
-  const today = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
-    days.push(d.toISOString().slice(0, 10));
-  }
-  // Keep server days that do not fit the expected format.
-  for (const r of rows) if (!days.includes(r.day)) days.push(r.day);
-  const data = days.map((d) => ({ day: d, count: counts.get(d) || 0 }));
-  const total = data.reduce((s, d) => s + d.count, 0);
-  const max = Math.max(1, ...data.map((d) => d.count));
-  const peak = data.reduce((p, d) => (d.count > p.count ? d : p), data[0]);
-  const summary = total
-    ? `Page views, last 30 days: ${total} in total, peak ${peak.count} on ${peak.day}.`
-    : 'No page views in the last 30 days.';
-  const bars = h('div', { class: 'bars', role: 'img', 'aria-label': summary },
-    data.map((d) => {
-      const bar = h('div', { class: 'bar', title: `${d.day}: ${d.count}` }, h('span'));
-      bar.firstChild.style.setProperty('--h', `${(d.count / max) * 100}%`);
-      return bar;
-    }));
-  return h('div', { class: 'chart' },
-    h('div', { class: 'chart-head' }, h('strong', { text: 'Page views per day' }), h('span', { class: 'muted', text: total ? `${total} total · max ${max}/day` : 'none yet' })),
-    bars,
-    h('div', { class: 'chart-axis muted small' }, h('span', { text: data[0].day }), h('span', { text: data[data.length - 1].day })),
-    h('p', { class: 'muted small', text: note || 'Counts HTML page requests. Unique visitors are not counted.' }));
 }
 
 // logsPanel shows events newest first and polls for newer ones with ?after=.
