@@ -200,17 +200,33 @@ try {
     "public viewer has editor",
   );
   assert.equal(await publicPage.locator("#status").innerText(), "Read-only");
-  await publicPage.locator("#display-name").fill("Reader");
-  await publicPage.locator("#name-dialog button").click();
-  await wait(
-    async () =>
-      await publicPage.locator("#name-dialog").evaluate((el) => !el.open),
-    "name prompt did not close",
+  assert.equal(
+    await publicPage.locator("dialog").count(),
+    0,
+    "name prompt still rendered",
+  );
+  assert.equal(
+    await publicPage.locator(".brand, #path").count(),
+    0,
+    "brand or file name still rendered",
+  );
+  assert.equal(
+    await publicPage.locator(".toolbar").isVisible(),
+    false,
+    "public viewer shows an empty toolbar",
+  );
+  assert.equal(
+    await publicPage
+      .locator("#preview footer.powered a")
+      .getAttribute("href"),
+    "https://github.com/gosuda/flats",
   );
   await wait(
     async () =>
-      (await publicPage.locator("#presence").innerText()).includes("Reader"),
-    "chosen name did not reach server",
+      /^[A-Z][a-z]+ [A-Z][a-z]+$/m.test(
+        await publicPage.locator("#presence").innerText(),
+      ),
+    "random name was not assigned",
   );
   await b.locator(".cm-content").focus();
   await b.keyboard.press("ControlOrMeta+End");

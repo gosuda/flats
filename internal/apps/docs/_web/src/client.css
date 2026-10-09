@@ -35,13 +35,11 @@ body {
   display: flex;
   flex-direction: column;
 }
-button,
-input {
+button {
   font: inherit;
 }
 button,
-a,
-input {
+a {
   -webkit-tap-highlight-color: transparent;
 }
 a {
@@ -60,8 +58,7 @@ button:hover {
   background: var(--active);
 }
 button:focus-visible,
-a:focus-visible,
-input:focus-visible {
+a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -83,18 +80,6 @@ header {
   gap: 24px;
   padding: 0 28px;
   border-bottom: 1px solid var(--line);
-}
-.brand {
-  font-weight: 700;
-  text-decoration: none;
-  color: var(--ink);
-  white-space: nowrap;
-  font-size: 17px;
-}
-.brand span {
-  font-weight: 400;
-  color: var(--muted);
-  font-size: 13px;
 }
 header h1 {
   font-size: 17px;
@@ -182,17 +167,10 @@ main {
   height: 53px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   padding: 0 28px;
   border-bottom: 1px solid var(--line);
-}
-#path {
-  font-size: 12px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 #modes {
   display: flex;
@@ -225,8 +203,25 @@ main {
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
-#preview > :first-child {
+#preview {
+  display: flex;
+  flex-direction: column;
+}
+#content {
+  flex: 1 0 auto;
+}
+#content > :first-child {
   margin-top: 0;
+}
+/* Sits after the document inside the scrolling preview, so it only shows
+   once the reader reaches the end. */
+.powered {
+  margin-top: 64px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
 }
 #preview h1 {
   font-size: 2rem;
@@ -307,46 +302,6 @@ main {
 #notice button {
   margin-left: 8px;
 }
-dialog {
-  background: var(--paper);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 28px;
-  max-width: 380px;
-  width: calc(100% - 32px);
-}
-dialog::backdrop {
-  background: #0006;
-}
-dialog h2 {
-  font-size: 22px;
-  margin: 0 0 12px;
-}
-dialog p {
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-dialog label {
-  display: block;
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-dialog input {
-  width: 100%;
-  background: var(--canvas);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 10px;
-  margin-bottom: 18px;
-}
-dialog button {
-  background: var(--accent);
-  color: var(--paper);
-  width: 100%;
-}
 * {
   scrollbar-color: var(--line) var(--paper);
   scrollbar-width: thin;
@@ -358,9 +313,6 @@ dialog button {
     height: auto;
     min-height: 76px;
     flex-wrap: wrap;
-  }
-  .brand {
-    font-size: 15px;
   }
   header h1 {
     font-size: 15px;

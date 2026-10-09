@@ -12,7 +12,6 @@ import { markdown } from "@codemirror/lang-markdown";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import MarkdownIt from "markdown-it";
 import { Provider } from "./provider.js";
-import { cleanName } from "./protocol.js";
 import "./client.css";
 const $ = (s) => document.querySelector(s),
   path = document.body.dataset.doc,
@@ -48,14 +47,12 @@ md.renderer.rules.image = (tokens, i, options, env, self) => {
   tokens[i].attrSet("loading", "lazy");
   return defaultImage(tokens, i, options, env, self);
 };
-let view,
-  renderFrame,
-  asked = false;
+let view, renderFrame;
 const access = new Compartment();
 function render() {
   cancelAnimationFrame(renderFrame);
   renderFrame = requestAnimationFrame(() => {
-    $("#preview").innerHTML = md.render(text.toString());
+    $("#content").innerHTML = md.render(text.toString());
   });
 }
 text.observe(render);
@@ -75,10 +72,42 @@ setMode(
       ? "split"
       : "edit",
 );
-if (initialReadonly) $("#modes").hidden = true;
-let name = "Guest";
+// Collaborators get a random name instead of a join prompt; it is kept so
+// the same browser shows up under the same name after a reload.
+const adjectives = [
+    "Amber",
+    "Brave",
+    "Calm",
+    "Clever",
+    "Gentle",
+    "Happy",
+    "Kind",
+    "Lucky",
+    "Merry",
+    "Quiet",
+    "Swift",
+    "Witty",
+  ],
+  animals = [
+    "Badger",
+    "Crane",
+    "Dolphin",
+    "Falcon",
+    "Fox",
+    "Heron",
+    "Koala",
+    "Lynx",
+    "Otter",
+    "Owl",
+    "Panda",
+    "Robin",
+  ],
+  pick = (list) => list[Math.floor(Math.random() * list.length)];
+let name = pick(adjectives) + " " + pick(animals);
 try {
-  name = localStorage.getItem("flats-docs-name") || name;
+  const saved = localStorage.getItem("flats-docs-name");
+  if (saved) name = saved;
+  else localStorage.setItem("flats-docs-name", name);
 } catch {}
 function download() {
   const a = document.createElement("a"),
@@ -180,32 +209,14 @@ const provider = new Provider(doc, path, {
       });
     }
     if (m.readonly) {
-      $("#modes").hidden = true;
+      $(".toolbar").hidden = true;
       setMode("preview");
       view?.dispatch({
         effects: access.reconfigure(EditorState.readOnly.of(true)),
       });
     }
     render();
-    if (!m.you.verified && !asked) {
-      asked = true;
-      let saved = false;
-      try {
-        saved = !!localStorage.getItem("flats-docs-name");
-      } catch {}
-      if (!saved) {
-        $("#display-name").value = name === "Guest" ? "" : name;
-        $("#name-dialog").showModal();
-      }
-    }
   },
-});
-$("#name-dialog form").addEventListener("submit", () => {
-  name = cleanName($("#display-name").value);
-  try {
-    localStorage.setItem("flats-docs-name", name);
-  } catch {}
-  provider.rename(name);
 });
 function showPresence() {
   const el = $("#presence");
@@ -241,7 +252,6 @@ fetch("/_docs/api/documents")
         const a = document.createElement("a");
         a.href = "/" + d.path.split("/").map(encodeURIComponent).join("/");
         a.textContent = d.title;
-        a.title = d.path;
         if (d.path === path) a.setAttribute("aria-current", "page");
         nav.append(a);
       }
