@@ -133,6 +133,8 @@ smoke() {
 		-e FLATS_URL="$url" -v "$data:/data" \
 		"$image" serve $serve >/dev/null
 	wait_for "the host" healthy
+	curl -fsS --max-time 5 "$url/api/status" | tr -d ' \n' | grep -qF "\"build\":{\"version\":\"$version\",\"release\":true" ||
+		fail "the host does not report build $version in /api/status"
 	docker logs "$name" 2>&1 | grep -qF 'initialized a new host in /data' || fail "first start did not report the bootstrap"
 	docker exec "$name" flats config show >"$work/config" || fail "config show failed"
 	instance=$(sed -n 's/.*"instance_id": *"\([^"]*\)".*/\1/p' "$work/config" | head -n 1)
