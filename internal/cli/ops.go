@@ -409,6 +409,7 @@ Codex (~/.codex/config.toml):
 Cursor (.cursor/mcp.json in a project, or ~/.cursor/mcp.json for all projects):
 %s
 `, endpoint, claude, indent(codexTOML, "  "), codexCmd, indent(string(cursor)+"\n", "  "))
+	fmt.Fprintln(a.out, "\nThe Flats plugin for these clients runs `flats mcp` instead; choose its host with `flats connect <url>`.")
 	if !isLoopbackURL(a.url) {
 		fmt.Fprintln(a.out, "\nNote: save_version_from_dir only works for agents on the Flats host (loopback URL).")
 	}

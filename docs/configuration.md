@@ -13,6 +13,7 @@ The question "who decides this value?" picks the place:
 | Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, ordinary app environment variables, encrypted secrets |
 | The flat | `flats/<slug>/` | uploaded code, the flat's SQLite database and FILES |
 | Nobody may read it in plain text | separate files | `secret.key`, the Tailscale auth key |
+| A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
 
 No value is stored in two places. `flats.db` also holds `host_binding`, which
 records which `config.json` belongs to this data directory; it is a link, not a
@@ -21,6 +22,10 @@ copy of any setting.
 By default the configuration and the data share one directory: the OS user
 configuration directory plus `Flats` (`~/Library/Application Support/Flats` on
 macOS, `$XDG_CONFIG_HOME/Flats` or `~/.config/Flats` on Linux).
+
+The client connection is not part of the data directory. It lives in the same
+OS user configuration directory under `flats-client/`, only the CLI and
+`flats mcp` read it, and `flats serve` ignores it.
 
 ```text
 <data-dir>/

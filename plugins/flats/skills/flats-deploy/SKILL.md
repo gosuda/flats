@@ -9,6 +9,10 @@ Flats hosts sites on the operator’s own machine. Uploads save immutable Privat
 
 Use the Flats MCP tools or CLI on the host. Prefer CLI for build output on disk; use MCP `save_draft` with inline files otherwise. MCP and CLI requests wait for console approval. Console routes have CSRF protection but no separate authentication; local processes can send those headers, so run only trusted agents on the host. This workflow must leave approval decisions to the user.
 
+## Connecting to the host
+
+The plugin's MCP server runs `flats mcp`, which relays the host chosen on this machine: `--url`, else `FLATS_URL`, else the address saved by `flats connect`, else loopback `http://127.0.0.1:7878`. MCP servers usually do not receive the shell environment, so plugins rely on `flats connect`. If Flats tools are missing, fail with "cannot reach Flats", or show a different host than the user expects, run `flats connect` to see the current host. Ask the user for their console address and run `flats connect <url>`; never guess a host or switch hosts on your own. The agent must be restarted or reconnected after the host changes.
+
 ## Runtime API discovery
 
 Before authoring a server app, read MCP resource `flats://docs/runtime-api/v1`

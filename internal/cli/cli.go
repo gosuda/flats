@@ -68,6 +68,7 @@ type Env struct {
 	GOOS           string         // "" = runtime.GOOS
 	PollInterval   time.Duration  // logs --follow; 0 = 2s
 	InstallWait    time.Duration  // how long install waits for the server; 0 = 10s
+	ConfigDir      string         // client settings parent; "" = os.UserConfigDir
 }
 
 // OSEnv is the real process environment.
@@ -77,12 +78,14 @@ func OSEnv() Env {
 
 // app is one invocation.
 type app struct {
-	env     Env
-	ctx     context.Context
-	url     string
-	jsonOut bool
-	out     io.Writer
-	errw    io.Writer
+	env       Env
+	ctx       context.Context
+	url       string
+	urlSource string // "flag", "env", "saved" or "default"
+	warned    bool   // an unreadable saved connection was reported
+	jsonOut   bool
+	out       io.Writer
+	errw      io.Writer
 }
 
 type command struct {
@@ -115,6 +118,8 @@ func init() {
 		{"status", "show server and service status", "status", (*app).status},
 		{"install", "run `flats serve` at login (launchd/systemd)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
 		{"uninstall", "remove the launchd agent", "uninstall", (*app).uninstall},
+		{"connect", "choose the Flats host this CLI and `flats mcp` use", "connect [<url>] [--clear]", (*app).connect},
+		{"mcp", "serve the host's MCP tools over stdio (for agent plugins)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print MCP setup for agent tools", "mcp-config [--url url]", (*app).mcpConfig},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
 		{"version", "print the flats version", "version", (*app).version},
@@ -299,14 +304,10 @@ func printProblems(w io.Writer, ps []problem) {
 }
 
 func (a *app) globalFlags(fs *flag.FlagSet) {
-	def := a.env.Getenv("FLATS_URL")
-	if def == "" {
-		def = DefaultURL
-	}
 	if a.url == "" {
-		a.url = def
+		a.url, a.urlSource = a.defaultURL()
 	}
-	fs.StringVar(&a.url, "url", a.url, "Flats server URL (env FLATS_URL)")
+	fs.Var(urlFlag{a}, "url", "Flats server URL (env FLATS_URL, else the address saved by `flats connect`)")
 	fs.BoolVar(&a.jsonOut, "json", a.jsonOut, "machine-readable JSON output")
 }
 

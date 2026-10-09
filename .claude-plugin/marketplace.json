@@ -3,6 +3,6 @@
   "owner": { "name": "oesni" },
   "description": "Flats agent workflows.",
   "plugins": [
-    { "name": "flats", "source": "./plugins/flats", "description": "Deploy sites to your Flats host.", "version": "0.1.0", "author": { "name": "oesni" } }
+    { "name": "flats", "source": "./plugins/flats", "description": "Deploy sites to your Flats host.", "version": "0.2.0", "author": { "name": "oesni" } }
   ]
 }
