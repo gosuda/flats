@@ -27,13 +27,6 @@ set -eu
 image=$1
 version=$2
 flats=$3
-# A v0.0.0-… stamp is a development build (a main commit image is
-# v0.0.0-sha-<commit>), which reports the commit rather than the stamp.
-case $version in
-v0.0.0-sha-*) build="\"version\":\"${version#v0.0.0-sha-}\",\"release\":false" reported=${version#v0.0.0-sha-} ;;
-v0.0.0-*) build='' reported='' ;;
-*) build="\"version\":\"$version\",\"release\":true" reported=$version ;;
-esac
 port=${FLATS_SMOKE_PORT:-17878}
 local_port=${FLATS_SMOKE_LOCAL_PORT:-17879}
 url=http://127.0.0.1:$port
@@ -63,6 +56,27 @@ fail() {
 	[ -z "$name" ] || docker logs "$name" >&2 2>&1 || true
 	exit 1
 }
+
+# expected_version prints the version a binary built with the stamp $1
+# reports. A v0.0.0-… stamp is a development build (a main commit image is
+# v0.0.0-sha-<commit>), which reports the commit it was built from, read here
+# from the binary $2's own build information.
+expected_version() {
+	case $1 in
+	v0.0.0-*)
+		info=$(go version -m "$2") || fail "cannot read the build information of $2"
+		rev=$(printf '%s\n' "$info" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
+		[ -n "$rev" ] || fail "$2 records no commit"
+		dirty=
+		printf '%s\n' "$info" | grep -q 'vcs\.modified=true' && dirty=-dirty
+		printf '%.7s%s\n' "$rev" "$dirty"
+		;;
+	*) printf '%s\n' "$1" ;;
+	esac
+}
+reported=$(expected_version "$version" "$flats")
+release=false
+[ "$reported" = "$version" ] && release=true
 
 wait_for() {
 	what=$1
@@ -140,10 +154,8 @@ smoke() {
 		-e FLATS_URL="$url" -v "$data:/data" \
 		"$image" serve $serve >/dev/null
 	wait_for "the host" healthy
-	if [ -n "$build" ]; then
-		curl -fsS --max-time 5 "$url/api/status" | tr -d ' \n' | grep -qF "\"build\":{$build" ||
-			fail "the host does not report build $reported in /api/status"
-	fi
+	curl -fsS --max-time 5 "$url/api/status" | tr -d ' \n' | grep -qF "\"build\":{\"version\":\"$reported\",\"release\":$release" ||
+		fail "the host does not report build $reported in /api/status"
 	docker logs "$name" 2>&1 | grep -qF 'initialized a new host in /data' || fail "first start did not report the bootstrap"
 	docker exec "$name" flats config show >"$work/config" || fail "config show failed"
 	instance=$(sed -n 's/.*"instance_id": *"\([^"]*\)".*/\1/p' "$work/config" | head -n 1)
@@ -211,7 +223,7 @@ export default {
 EOF
 
 step "image runs flats subcommands as nonroot"
-docker run --rm "$image" version | grep -qF "flats $reported" || fail "image does not run flats $reported"
+docker run --rm "$image" version | grep -qF "flats $reported " || fail "image does not run flats $reported"
 [ "$(docker image inspect -f '{{.Config.User}}' "$image")" = 65532:65532 ] || fail "image does not run as uid 65532"
 
 smoke host

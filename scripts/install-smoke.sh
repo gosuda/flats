@@ -5,6 +5,9 @@
 #   scripts/build-release.sh v0.0.0-ci dist
 #   scripts/install-smoke.sh dist v0.0.0-ci
 #
+# A v0.0.0-… stamp is a development build, which reports its commit; the
+# check reads that from the installed binary with `go version -m`.
+#
 # It installs the real per-user service with default ports and paths, so run
 # it only on a disposable machine such as a CI runner.
 
@@ -30,6 +33,24 @@ fail() {
 	exit 1
 }
 
+# expected_version prints the version a binary built with the stamp $1
+# reports. A v0.0.0-… stamp is a development build (a main commit image is
+# v0.0.0-sha-<commit>), which reports the commit it was built from, read here
+# from the binary $2's own build information.
+expected_version() {
+	case $1 in
+	v0.0.0-*)
+		info=$(go version -m "$2") || fail "cannot read the build information of $2"
+		rev=$(printf '%s\n' "$info" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
+		[ -n "$rev" ] || fail "$2 records no commit"
+		dirty=
+		printf '%s\n' "$info" | grep -q 'vcs\.modified=true' && dirty=-dirty
+		printf '%.7s%s\n' "$rev" "$dirty"
+		;;
+	*) printf '%s\n' "$1" ;;
+	esac
+}
+
 main_pid() {
 	if [ "$(uname -s)" = Darwin ]; then
 		launchctl print "gui/$(id -u)/dev.flats.serve" 2>/dev/null | awk '$1 == "pid" { print $3 }'
@@ -52,7 +73,8 @@ service_file() {
 
 step "fresh install"
 sh "$root/install.sh"
-"$flats" version | grep -qF "flats $version" || fail "installed binary is not $version"
+reported=$(expected_version "$version" "$flats")
+"$flats" version | grep -qF "flats $reported " || fail "installed binary is not $reported"
 healthy || fail "service is not answering"
 grep -q -- '--config' "$(service_file)" || fail "service does not run from config.json"
 "$flats" config validate || fail "config.json does not validate"
