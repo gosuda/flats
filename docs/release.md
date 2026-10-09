@@ -109,9 +109,13 @@ the leading `v`:
 | `1.2.3`, `1.3.0-rc.1` | every release, including backfills and prereleases |
 | `1.2` | pushed stable tags |
 | `latest` | pushed stable tags |
+| `sha-1a2b3c4`, `sha-<40-hex commit>` | pushed tags: the released commit, short (7) and full |
 
 A backfill (`workflow_dispatch`) pushes only the exact version, so it never
-moves `1.2` or `latest` back to an older release. Re-running the job rebuilds
+moves `1.2`, `latest` or a `sha-` tag back to an older release. A commit
+released under two tags (`v1.3.0-rc.1`, then `v1.3.0`) keeps its `sha-` tags
+on the later release. The `sha256-<digest>` tag next to them is not a commit:
+it holds the image's provenance attestation. Re-running the job rebuilds
 the version tag from the same archives. The Dockerfile comes from the
 workflow's commit, like `build-release.sh`.
 
