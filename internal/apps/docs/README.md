@@ -69,8 +69,8 @@ retains pending edits, disables editing and offers a Markdown download. Light/da
 mobile gutters, Split/Edit/Preview, presence, save state and display-name
 entry are included. UI decisions are recorded in `_web/DESIGN.md`.
 
-The precise routes, schema, protocol and limits are specified in the three
-app-owned sections of [content-types.md](../../../docs/content-types.md).
+The precise routes, schema, protocol and limits are specified in
+[docs/internal/docs-app.md](../../../docs/internal/docs-app.md).
 
 ## Required host integration
 

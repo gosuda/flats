@@ -34,7 +34,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
 		Description: "Create an empty private flat. Optional: save_version creates the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version", Annotations: write,
-		Description: "For Markdown use save_document; read live edits with get_document and flats://docs/content-types/v1. Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval."}, t.saveVersion)
+		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval. For one Markdown document use save_document."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version_from_dir", Annotations: write,
 		Description: "Save a Private Draft from a directory on the Flats host (absolute path). " +
 			"Only works when the agent runs on the Flats host itself (loopback); otherwise use save_version or the flats CLI."}, t.saveVersionFromDir)
@@ -51,29 +51,29 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "save_document", Annotations: write,
 		Description: "Save one Markdown document as a docs Draft, creating the flat when absent. Never publishes. Read get_document first to preserve live edits; read flats://docs/content-types/v1 for docs bundles. Use save_version for multiple documents/assets."}, t.saveDocument)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_document", Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no},
-		Description: "Read exact live Markdown including people's edits from a docs flat, or Current Draft when no docs version runs. Default doc is the entry; doc is an exact Markdown path. Live reads may seed or activate state; idempotent and non-destructive. Use optional conflict (positive generation from conflict metadata) to retrieve preserved text through private host access. Missing/evicted generations fail. Read before save_document."}, t.getDocument)
-	// rollback can replace the flat's database (restore_data), so clients
-	// must treat it as destructive and ask before running it.
+		Description: "Read exact live Markdown including people's edits from a docs flat, or Current Draft when no docs version runs. doc is an exact Markdown path (default: the entry). May seed or activate live state; idempotent and non-destructive. conflict (a generation from conflict metadata) returns preserved text. Read before save_document."}, t.getDocument)
+	// rollback can replace the flat's data (restore_data), so clients must
+	// treat it as destructive and ask before running it.
 	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
 		Description: "Request operator approval to activate an earlier published version (default: previous live). " +
-			"Code only by default; restore_data=true also REPLACES the flat's current database with the snapshot taken before the current version was deployed. " +
-			"New snapshots restore captured DB and FILES; legacy DB-only snapshots preserve current FILES. Writes made since then are no longer live; current data is backed up first. Restoration occurs only after operator approval."}, t.rollback)
+			"Code only by default; restore_data=true also REPLACES the flat's current database and FILES with the snapshot taken before the current version was deployed " +
+			"(legacy DB-only snapshots keep current FILES); current data is backed up first. Ask the user before restore_data. Nothing changes before operator approval."}, t.rollback)
 	mcp.AddTool(s, &mcp.Tool{Name: "open_preview", Annotations: write,
 		Description: "Preview a published version, or current Private Draft with version 0, without changing live."}, t.openPreview)
 	mcp.AddTool(s, &mcp.Tool{Name: "set_visibility", Annotations: write,
-		Description: "Request visibility private or public. BOTH directions require explicit operator approval. Same visibility is unchanged; unpublished flats cannot be Public. Legacy listed/unlisted values normalize to public."}, t.setVisibility)
+		Description: "Request visibility private or public. BOTH directions require explicit operator approval; ask the user first. Same visibility is unchanged; unpublished flats cannot be Public. Public is not access control."}, t.setVisibility)
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_flat", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
 		Description: "Request permanent deletion of a flat. Always waits for the operator's approval (returns approval_url)."}, t.deleteFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_logs", Annotations: ro,
 		Description: "Read a flat's event log: saves, deploys, health checks, runtime output, approvals."}, t.getLogs)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_approval", Annotations: ro,
-		Description: "Poll an approval request (pending, approved, rejected or failed)."}, t.getApproval)
+		Description: "Poll an approval request: pending, applying, approved, rejected or failed. result_data reports failure_code and data impact."}, t.getApproval)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_env", Annotations: ro,
-		Description: "List ordinary app environment variables including values. Secret values are never returned. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.listEnv)
+		Description: "List ordinary app environment variables with values; secret values are never returned. Running workers keep captured values until the next approved activation, host restart or new preview (guide topic.env-secrets)."}, t.listEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "set_env", Annotations: write,
-		Description: "Set an ordinary server-only app environment variable. Values are readable by management clients; use operator-managed secrets for credentials. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.setEnv)
+		Description: "Set an ordinary server-only app environment variable. Values are readable by management clients: never store credentials here; secrets are operator-managed. Applies at the next approved activation, host restart or new preview (guide topic.env-secrets)."}, t.setEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_env", Annotations: write,
-		Description: "Delete an ordinary app environment variable. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}, t.deleteEnv)
+		Description: "Delete an ordinary app environment variable. Applies at the next approved activation, host restart or new preview (guide topic.env-secrets)."}, t.deleteEnv)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_network", Annotations: ro,
 		Description: "Read the operator-managed server HTTP(S) origin allowlist. Agents cannot grant network permissions; browser fetch follows browser CORS/CSP."}, t.getNetwork)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_secrets", Annotations: ro,
@@ -215,9 +215,8 @@ func toolErr(err error, hint string) error {
 	b.WriteString(err.Error())
 	detail := map[string]any{"error": err.Error()}
 	var de *core.DeployError
-	if category := core.ErrorCategory(err); category != "" {
-		detail["category"] = category
-	}
+	category := errorCategory(err)
+	detail["category"] = category
 
 	if v, ok := bundle.IsValidation(err); ok {
 		detail["problems"] = v.Problems
@@ -228,10 +227,15 @@ func toolErr(err error, hint string) error {
 			fmt.Fprintf(&b, "\nResponse body starts with: %q", de.Health.BodyHead)
 		}
 	}
-	if hint != "" {
-		b.WriteString("\nHint: " + hint)
-		detail["hint"] = hint
+	// Every refusal names its category and the guide page that explains it.
+	see := "See guide refusal." + category + "."
+	if hint == "" {
+		hint = see
+	} else {
+		hint = strings.TrimRight(hint, ". ") + ". " + see
 	}
+	b.WriteString("\nHint: " + hint)
+	detail["hint"] = hint
 	if raw, jerr := json.Marshal(detail); jerr == nil {
 		b.WriteString("\n" + string(raw))
 	}
@@ -456,20 +460,20 @@ func (t *tools) saveVersion(ctx context.Context, _ *mcp.CallToolRequest, in Save
 
 func (t *tools) saveVersionFromDir(ctx context.Context, _ *mcp.CallToolRequest, in SaveDirIn) (*mcp.CallToolResult, SaveOut, error) {
 	if !isLoopback(ctx) {
-		return nil, SaveOut{}, toolErr(errors.New("save_version_from_dir only accepts callers on the Flats host itself (loopback), and this request came over the network"),
+		return nil, SaveOut{}, toolErr(refuse(core.ErrForbidden, "save_version_from_dir only accepts callers on the Flats host itself (loopback), and this request came over the network"),
 			"send the files inline with save_version, or run `flats deploy <dir>` with the Flats CLI")
 	}
 	if !filepath.IsAbs(in.Dir) {
-		return nil, SaveOut{}, toolErr(fmt.Errorf("dir %q is not an absolute path", in.Dir), "pass the absolute path of the build output directory, e.g. /path/to/project/dist")
+		return nil, SaveOut{}, toolErr(refuse(core.ErrInvalid, "dir %q is not an absolute path", in.Dir), "pass the absolute path of the build output directory, e.g. /path/to/project/dist")
 	}
 	// Resolve a symlinked root (e.g. dist -> build); FromDir still refuses
 	// links inside the tree.
 	dir, err := filepath.EvalSymlinks(in.Dir)
 	if err != nil {
-		return nil, SaveOut{}, toolErr(fmt.Errorf("dir %q is not a readable directory: %w", in.Dir, err), "build the site first and pass its output directory")
+		return nil, SaveOut{}, toolErr(refuse(core.ErrInvalid, "dir %q is not a readable directory: %w", in.Dir, err), "build the site first and pass its output directory")
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return nil, SaveOut{}, toolErr(fmt.Errorf("dir %q is not a readable directory", in.Dir), "build the site first and pass its output directory")
+		return nil, SaveOut{}, toolErr(refuse(core.ErrInvalid, "dir %q is not a readable directory", in.Dir), "build the site first and pass its output directory")
 	}
 	files, err := bundle.FromDir(dir, bundle.Limits{MaxBytes: t.svc.UploadLimit()})
 	if err != nil {
@@ -481,7 +485,7 @@ func (t *tools) saveVersionFromDir(ctx context.Context, _ *mcp.CallToolRequest, 
 func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta core.SaveMeta, deploy bool, expected *int) (*mcp.CallToolResult, SaveOut, error) {
 	if expected != nil {
 		if *expected < 0 {
-			return nil, SaveOut{}, toolErr(errors.New("expected_revision must be nonnegative"), "read get_draft and retry with its revision")
+			return nil, SaveOut{}, toolErr(refuse(core.ErrInvalid, "expected_revision must be nonnegative"), "read get_draft and retry with its revision")
 		}
 		meta.ExpectedRevision, meta.CheckRevision = *expected, true
 	}
@@ -565,7 +569,7 @@ type DeployIn struct {
 type RollbackIn struct {
 	Slug        string `json:"slug" jsonschema:"flat slug"`
 	Version     int    `json:"version,omitempty" jsonschema:"version to go back to (default: the one live before the current one)"`
-	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"server flats: replace the current database with the snapshot taken before the current version was deployed, after backing the current database up; writes since that deploy stop being live. New snapshots also restore captured FILES; legacy DB-only snapshots preserve FILES. Default false keeps data as it is. This is frozen for explicit operator approval."`
+	RestoreData bool   `json:"restore_data,omitempty" jsonschema:"server and docs flats: replace the current database and FILES with the snapshot taken before the current version was deployed (legacy DB-only snapshots keep FILES), after backing the current data up; writes since that deploy stop being live. Default false keeps data as it is. Frozen for explicit operator approval."`
 }
 
 func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
@@ -589,7 +593,7 @@ func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
 
 func (t *tools) deploy(ctx context.Context, _ *mcp.CallToolRequest, in DeployIn) (*mcp.CallToolResult, DeployInfo, error) {
 	if in.Version < 0 {
-		return nil, DeployInfo{}, toolErr(errors.New("version must be nonnegative"), "0 requests current Draft publication; positive numbers activate published versions")
+		return nil, DeployInfo{}, toolErr(refuse(core.ErrInvalid, "version must be nonnegative"), "0 requests current Draft publication; positive numbers activate published versions")
 	}
 	res, err := t.svc.Deploy(ctx, in.Slug, in.Version, core.ViaMCP)
 	var pending *core.PendingApproval
@@ -606,7 +610,7 @@ func (t *tools) deploy(ctx context.Context, _ *mcp.CallToolRequest, in DeployIn)
 
 func (t *tools) rollback(ctx context.Context, _ *mcp.CallToolRequest, in RollbackIn) (*mcp.CallToolResult, DeployInfo, error) {
 	if in.Version < 0 {
-		return nil, DeployInfo{}, toolErr(errors.New("version must not be negative"), "omit version to roll back to the previous live version")
+		return nil, DeployInfo{}, toolErr(refuse(core.ErrInvalid, "version must not be negative"), "omit version to roll back to the previous live version")
 	}
 	res, err := t.svc.RollbackWithData(ctx, in.Slug, in.Version, in.RestoreData, core.ViaMCP)
 	var pending *core.PendingApproval
@@ -630,7 +634,7 @@ type PreviewIn struct {
 
 func (t *tools) openPreview(ctx context.Context, _ *mcp.CallToolRequest, in PreviewIn) (*mcp.CallToolResult, PreviewInfo, error) {
 	if in.Version < 0 || (in.Target != "" && in.Target != "draft" && in.Target != "version") || (in.Target == "draft" && in.Version != 0) || (in.Target == "version" && in.Version == 0) {
-		return nil, PreviewInfo{}, toolErr(errors.New("preview requires draft with version 0, or a positive published version"), "call get_draft or list_versions")
+		return nil, PreviewInfo{}, toolErr(refuse(core.ErrInvalid, "preview requires draft with version 0, or a positive published version"), "call get_draft or list_versions")
 	}
 	p, err := t.svc.OpenPreview(ctx, in.Slug, in.Version)
 	if err != nil {
@@ -654,7 +658,7 @@ func (t *tools) openPreview(ctx context.Context, _ *mcp.CallToolRequest, in Prev
 // VisibilityIn changes visibility.
 type VisibilityIn struct {
 	Slug       string `json:"slug" jsonschema:"flat slug"`
-	Visibility string `json:"visibility" jsonschema:"private or public; legacy public-listed/public-unlisted normalize to public"`
+	Visibility string `json:"visibility" jsonschema:"private or public"`
 	Reason     string `json:"reason,omitempty" jsonschema:"why, shown to the operator in the approval request"`
 }
 
@@ -916,7 +920,7 @@ type PublishIn struct {
 
 func (t *tools) publish(ctx context.Context, _ *mcp.CallToolRequest, in PublishIn) (*mcp.CallToolResult, ActionOut, error) {
 	if in.Revision < 0 {
-		return nil, ActionOut{}, toolErr(errors.New("revision must be nonnegative"), "read get_draft")
+		return nil, ActionOut{}, toolErr(refuse(core.ErrInvalid, "revision must be nonnegative"), "read get_draft")
 	}
 	r, err := t.svc.RequestPublish(ctx, in.Slug, in.Revision, in.Hash, core.ViaMCP)
 	if err != nil {

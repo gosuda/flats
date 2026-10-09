@@ -148,14 +148,14 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_runtime_reference", "list_env", "list_flats",
+	want := []string{"create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_runtime_reference", "guide", "list_env", "list_flats",
 		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_version", "save_version_from_dir", "set_env", "set_visibility"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
 	ins := e.local.InitializeResult().Instructions
-	for _, s := range []string{"approval_url", "NOT access control", "flats.json", "save_version_from_dir", "Local loopback or explicitly permitted Tailscale"} {
+	for _, s := range []string{"approval_url", "NOT access control", "topic.index", "Local loopback or explicitly permitted Tailscale"} {
 		if !strings.Contains(ins, s) {
 			t.Errorf("instructions do not mention %q", s)
 		}
@@ -556,7 +556,7 @@ func TestRollbackIsMarkedDestructive(t *testing.T) {
 			t.Errorf("description must say what restore_data does: %s", tool.Description)
 		}
 		schema, _ := json.Marshal(tool.InputSchema)
-		if !strings.Contains(string(schema), "replace the current database with the snapshot") || !strings.Contains(string(schema), "backing the current database up") {
+		if !strings.Contains(string(schema), "replace the current database and FILES with the snapshot") || !strings.Contains(string(schema), "backing the current data up") {
 			t.Errorf("restore_data schema must explain the replacement: %s", schema)
 		}
 		return

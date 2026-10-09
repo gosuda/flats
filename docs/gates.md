@@ -176,6 +176,10 @@ read-only behavior and current upload limits. Runtime tests execute the publishe
 JS and binary-encoding snippets. These are automated contract tests, **not
 end-to-end unfamiliar-agent usability evidence**.
 
+The same text is also split into task-sized topics served by the read-only
+`guide` tool (`topic.index` first), and the short MCP instructions point there.
+The 2026-10-03 run below predates `guide`; it used `get_runtime_reference`.
+
 The historical three-client static gate above supplies prepared HTML. Keep it
 as a static deployment regression; it does not establish source-free authoring.
 A genuine runtime authoring gate **passed on the pre-integration candidate**;

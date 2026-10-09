@@ -192,12 +192,21 @@ Cursor project `.cursor/mcp.json`:
 {"mcpServers":{"flats":{"url":"http://127.0.0.1:7878/mcp"}}}
 ```
 
-Restart/reconnect your client, list tools, then read resource
+Restart/reconnect your client and list tools. The MCP instructions stay short:
+they hold the always-on safety rules and send the agent to the read-only
+**`guide`** tool, which serves task-sized topics on demand
+(`guide {"items":["topic.index"]}` routes by task; `topic.server.db`,
+`topic.approvals`, `refusal.conflict` and so on). Every tool error names a
+`category`, and `refusal.<category>` explains the fix. The topics live in
+[`docs/agent/`](docs/agent) and are the single source for the guide, both
+references and the llms.txt documents.
+
+For the whole server contract in one document, read resource
 `flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.
 The [runtime API v1 reference](docs/runtime-api-v1.md) is embedded in the host
 and available through MCP without an installed skill or source checkout. It
 contains complete synchronous FILES/DB signatures, text/binary semantics,
-limits, handler examples and approvals. For a minimal MCP static walkthrough,
+limits, handler examples and approvals in one document. For a minimal MCP static walkthrough,
 call `save_version` with `{"slug":"hello","files":[{"path":"index.html",
 "content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}`. For a server,
 include the `flats.json` and `server.js` shown above in the same complete inline
@@ -207,10 +216,11 @@ save alone does not establish a live site, and requesting deploy still waits for
 Agents and tools that read [llms.txt](https://llmstxt.org) can start from
 `http://127.0.0.1:7878/llms.txt`. The host serves it on the management server
 with the MCP endpoint and client setup, and links `/docs/agent-guide.md` (the
-instructions and tool list the MCP server reports, plus core CLI commands) and
-`/docs/runtime-api-v1.md` and `/docs/content-types.md`; `/llms-full.txt` concatenates the discovery page and all three references.
+instructions and tool list the MCP server reports, core CLI commands and every
+guide topic) and `/docs/runtime-api-v1.md` and `/docs/content-types.md`;
+`/llms-full.txt` concatenates the discovery page and the agent guide.
 
-Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) describes the deploy and approval flow.
+Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp` on the host, or the console's Tailscale URL plus `/mcp` from another allowed device. The bundled [deployment skill](plugins/flats/skills/flats-deploy/SKILL.md) only connects an agent to the host and hands off to the MCP instructions and `guide`.
 
 ## App environment settings
 

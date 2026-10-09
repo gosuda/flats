@@ -26,7 +26,8 @@ var LLMsPaths = []string{LLMsPath, LLMsFullPath, AgentGuidePath, RuntimeReferenc
 
 // LLMsHandler serves agent-oriented documentation in the llms.txt format
 // (https://llmstxt.org): the LLMsPath index, which links to the agent guide
-// and the runtime/content-type references; LLMsFullPath concatenates all four.
+// and the runtime/content-type references; LLMsFullPath concatenates the index
+// and the agent guide, which already holds every guide topic.
 // Mount it on the management server next to /mcp. The agent guide is built by
 // the same code as the /mcp handler (on its own server instance), so its
 // instructions, upload limit and tool list match what an MCP client sees.
@@ -64,8 +65,7 @@ func LLMsHandler(svc *core.Service, opts Options) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeText(w, "text/plain; charset=utf-8",
-			llmsIndex(o, version)+"\n---\n\n"+guide+"\n---\n\n"+runtimeref.Markdown+"\n---\n\n"+runtimeref.ContentTypesMarkdown)
+		writeText(w, "text/plain; charset=utf-8", llmsIndex(o, version)+"\n---\n\n"+guide)
 	})
 	return mux
 }
@@ -127,26 +127,26 @@ Connect over MCP (Streamable HTTP) at %s:
 - Cursor (.cursor/mcp.json): `+"`"+`{"mcpServers":{"flats":{"url":"%s"}}}`+"`"+`
 - On the Flats host, `+"`flats mcp-config`"+` prints the same setup for the local management port.
 
-Read the agent guide before the first deploy, and the runtime API reference before authoring a server app.
+Over MCP, call the read-only guide tool with topic.index first; it routes each task to short topics. The agent guide below holds the same topics in one document.
 
 ## Docs
 
-- [Agent guide](%s%s): deploy workflow, approvals, exposure rules, flats.json, upload limits, every MCP tool and the core CLI commands, as this host reports them.
+- [Agent guide](%s%s): the MCP instructions and tools as this host reports them, the core CLI commands, and every guide topic and refusal page.
 - [Runtime API v1](%s%s): complete server-flat contract (env.DB SQLite, env.FILES, handler and Response helpers, encoding, limits, ordinary environment variables, secrets, approvals). Also MCP resource %s and tool get_runtime_reference.
 
 - [Content types](%s%s): docs Markdown manifests, save_document, get_document and live activation; also flats://docs/content-types/v1 and get_content_types.
 
 ## Optional
 
-- [Full context](%s%s): this index, the agent guide, runtime API and content-type references in one file.
+- [Full context](%s%s): this index and the agent guide in one file.
 - [Source and README](https://github.com/gosuda/flats): install, operator setup, network providers and the trust model.
-- [Deployment skill](https://github.com/gosuda/flats/blob/main/plugins/flats/skills/flats-deploy/SKILL.md): step-by-step deploy, approval and verification workflow for coding agents.
+- [Deployment skill](https://github.com/gosuda/flats/blob/main/plugins/flats/skills/flats-deploy/SKILL.md): plugin skill that connects coding agents to a Flats host and hands off to the MCP guide.
 `, origin, version, endpoint, endpoint, endpoint, endpoint,
 		origin, AgentGuidePath, origin, RuntimeReferencePath, runtimeref.URI, origin, ContentTypesPath, origin, LLMsFullPath)
 }
 
-// agentGuide renders the MCP server's instructions and tools, plus the core
-// CLI commands, as one Markdown document.
+// agentGuide renders the MCP server's instructions and tools, the core CLI
+// commands, and every guide topic and refusal page as one Markdown document.
 func agentGuide(ctx context.Context, origin string, servers *serverCache) (string, error) {
 	srv, limit := servers.current()
 	tools, err := listTools(ctx, srv)
@@ -189,6 +189,23 @@ On the Flats host, the flats CLI talks to the same server. Commands that request
 - ` + "`flats publish <slug> --revision N --hash HASH`" + `: request approval to publish a frozen Draft.
 - ` + "`flats approvals --json`" + `, ` + "`flats info <slug>`" + `, ` + "`flats logs <slug>`" + `: follow approvals, endpoints and events.
 - ` + "`flats help`" + ` lists every command.
+
+## Guide topics
+
+The MCP tool ` + "`guide`" + ` serves each section below on its own (` + "`topic.<name>`" + `).
+
 `)
+	for i, name := range runtimeref.TopicOrder {
+		md, _ := runtimeref.Topic(name)
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(md)
+	}
+	b.WriteString("\n## Refusals\n\n" + runtimeref.RefusalIntro)
+	for _, c := range runtimeref.RefusalCategories() {
+		md, _ := runtimeref.Refusal(c)
+		b.WriteString("\n#" + strings.Replace(md, "## ", "## refusal.", 1))
+	}
 	return b.String(), nil
 }

@@ -32,7 +32,7 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 	}
 	b, err := json.Marshal(manifest)
 	if err != nil {
-		return nil, SaveOut{}, err
+		return nil, SaveOut{}, toolErr(err, "")
 	}
 	return t.save(ctx, in.Slug, []bundle.File{{Path: in.Path, Data: []byte(in.Markdown)}, {Path: bundle.ManifestName, Data: b}}, core.SaveMeta{Message: in.Message}, false, nil)
 }

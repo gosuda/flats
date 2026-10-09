@@ -1240,6 +1240,15 @@ func failureCode(err error) string {
 	return "apply_failed"
 }
 
+// ErrorCategories lists every value ErrorCategory can return. Agent refusal
+// documentation (docs/agent/refusals.md) has one page per category.
+var ErrorCategories = []string{
+	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
+	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
+	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed",
+	"health_check_failed", "conflict", "forbidden", "not_docs", "document_not_found", "not_found", "invalid",
+}
+
 // ErrorCategory defines cause precedence for persisted failures and transports.
 func ErrorCategory(err error) string {
 	switch {
