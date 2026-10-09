@@ -6,6 +6,7 @@ Each release publishes a Linux image for `amd64` and `arm64`:
 ghcr.io/gosuda/flats:1.2.3     # one release (tags drop the leading v)
 ghcr.io/gosuda/flats:1.2       # newest patch of a minor release
 ghcr.io/gosuda/flats:latest    # newest stable release; prereleases never get it
+ghcr.io/gosuda/flats:sha-1a2b3c4  # the release built from a commit (short or full SHA)
 ```
 
 The image runs the same `flats` binary as that release's
