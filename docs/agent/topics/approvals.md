@@ -52,7 +52,12 @@ Rules:
   the public route stays reachable.
 * Local is always permitted. Nonlocal providers (`tailscale`,
   `tailscale-funnel`, `portal`) need host configuration and per-flat
-  operator permission; agents cannot grant either. Connecting Tailscale
+  operator permission; agents cannot grant either. One standing exception:
+  on a host whose private backend is Tailscale (`network.private_backend:
+  tailscale`), a new flat, including one an agent creates, starts with
+  `tailscale` permitted, so its private and preview links use the tailnet.
+  That grant never covers Funnel or Portal, and the operator can turn it off
+  per flat. Read the actual `providers` from `get_flat` instead of assuming. Connecting Tailscale
   grants no Funnel permission, and configuring a provider grants no publish or
   visibility consent. A provider failure never authorizes switching providers.
 * Never infer visibility, publication or readiness from a URL or domain.
