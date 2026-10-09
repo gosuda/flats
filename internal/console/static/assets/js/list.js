@@ -172,12 +172,13 @@ const TYPES = {
 
 export const typeOf = (flat) => (flat.type === 'docs' ? TYPES.docs : TYPES.flat);
 
-// typeIcon is the tile left of a flat's name. Its label shows on hover and is
-// what screen readers announce.
+// typeIcon is the tile left of a flat's name. Its label shows on hover, and on
+// focus for keyboard users and touch (a tap focuses it); screen readers
+// announce the same label.
 export function typeIcon(flat, large) {
   const t = typeOf(flat);
   return h('span', {
     class: `type-icon type-${t.key}` + (large ? ' type-icon-large' : ''),
-    role: 'img', 'aria-label': t.label, 'data-tip': t.label,
+    role: 'img', tabindex: '0', 'aria-label': t.label, 'data-tip': t.label,
   }, icon(t.icon));
 }

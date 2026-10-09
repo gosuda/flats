@@ -147,9 +147,9 @@ assert.equal(rows.length, 3);
 // The type shows as an icon left of the name, labelled for hover and screen
 // readers; there is no initials tile or text badge.
 const typeLabel = (root) => all(root, (e) => e.className.startsWith('type-icon'))
-  .map((e) => [e.getAttribute('role'), e.getAttribute('aria-label'), e.getAttribute('data-tip')]);
-assert.deepEqual(typeLabel(rows[0]), [['img', 'Document', 'Document']]);
-assert.deepEqual(typeLabel(rows[1]), [['img', 'Flat', 'Flat']]);
+  .map((e) => [e.getAttribute('role'), e.getAttribute('aria-label'), e.getAttribute('data-tip'), e.getAttribute('tabindex')]);
+assert.deepEqual(typeLabel(rows[0]), [['img', 'Document', 'Document', '0']]);
+assert.deepEqual(typeLabel(rows[1]), [['img', 'Flat', 'Flat', '0']]);
 for (const row of rows) {
   assert.equal(all(row, (e) => /\b(thumb|content-type)\b/.test(e.className)).length, 0);
 }
@@ -175,7 +175,7 @@ const flat = await import('./flat.js');
 const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
-assert.deepEqual(typeLabel(flatMain), [['img', 'Document', 'Document']]);
+assert.deepEqual(typeLabel(flatMain), [['img', 'Document', 'Document', '0']]);
 const tabLinks = (root) => all(root, (e) => e.tagName === 'A' && e.parentNode?.className === 'site-tabs');
 assert.deepEqual(tabLinks(flatMain).map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('aria-current')]), [
   ['Deployments', '/flats/blog', 'page'], ['Analytics', '/flats/blog/analytics', null],

@@ -274,7 +274,9 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   background: var(--text); color: var(--bg); font-size: 12px; font-weight: 500; line-height: 1.3; white-space: nowrap;
   opacity: 0; pointer-events: none; transition: opacity 0.12s, transform 0.12s;
 }
-.type-icon:hover::after { opacity: 1; transform: translate(-50%, 0); }
+.type-icon:hover::after, .type-icon:focus::after { opacity: 1; transform: translate(-50%, 0); }
+.type-icon:focus { outline: none; }
+.type-icon:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .preview {
   width: 100%; aspect-ratio: 16 / 10; border-radius: 8px; overflow: hidden;
