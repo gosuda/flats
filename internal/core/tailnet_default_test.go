@@ -111,12 +111,11 @@ func TestNewFlatsFollowTailscaleBackend(t *testing.T) {
 		if err != nil || !slices.Contains(v.Providers, store.ProviderTailscale) {
 			t.Fatalf("%s view providers %v %v", slugName, v.Providers, err)
 		}
-		// The grant is recorded with the flat.
-		events, err := st.ListEvents(ctx, slugName, "provider", 0, 20)
-		if err != nil || !slices.ContainsFunc(events, func(e store.Event) bool {
-			return strings.Contains(e.Message, "tailscale permitted=true by default")
-		}) {
-			t.Fatalf("%s: no default-permission event in %+v %v", slugName, events, err)
+		// The creation and the grant are recorded with the flat, in order.
+		events, err := st.ListEvents(ctx, slugName, "", 0, 20)
+		if err != nil || len(events) < 2 || events[0].Kind != "flat" || !strings.HasPrefix(events[0].Message, "flat created via ") ||
+			events[1].Kind != "provider" || !strings.Contains(events[1].Message, "tailscale permitted=true by default") {
+			t.Fatalf("%s: events %+v %v", slugName, events, err)
 		}
 	}
 
@@ -153,6 +152,29 @@ func TestNewFlatsStayLocalOnLoopbackBackend(t *testing.T) {
 		}
 		if got := openPreviewURL(t, s, st, "page"); !strings.HasSuffix(got, ".local.test") {
 			t.Fatalf("backend %q: preview %q", backend, got)
+		}
+	}
+}
+
+// A preview's event names a usable address: the tailnet URL when known,
+// otherwise the tailnet host rather than a <tailnet> placeholder, and the
+// loopback URL when the flat is not on the tailnet.
+func TestPreviewLocation(t *testing.T) {
+	local := ExposureEndpoint{Provider: ProviderLocal, URL: "http://p-1.localhost:7879"}
+	for _, c := range []struct {
+		name string
+		eps  []ExposureEndpoint
+		want string
+	}{
+		{"tailnet first", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}}, "https://p-1.tail1234.ts.net"},
+		{"tailnet listed first", []ExposureEndpoint{{Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}, local}, "https://p-1.tail1234.ts.net"},
+		{"placeholder", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.<tailnet>.ts.net"}}, "tailnet host p-1 (address pending)"},
+		{"loopback only", []ExposureEndpoint{local}, "http://p-1.localhost:7879"},
+		{"tailnet without URL", []ExposureEndpoint{local, {Provider: ProviderTailscale}}, "http://p-1.localhost:7879"},
+		{"none", nil, ""},
+	} {
+		if got := previewLocation(c.eps, "p-1"); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
 }

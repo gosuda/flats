@@ -324,17 +324,16 @@ func fromUnix(ms int64) time.Time {
 
 // --- flats ---
 
-// ProviderGrant is a non-local provider a new flat is allowed on from the
-// start, with the event that records why.
-type ProviderGrant struct {
-	Provider string
-	Event    Event
+// CreateFlat inserts a new flat. It fails if the slug exists.
+func (s *Store) CreateFlat(ctx context.Context, f Flat) error {
+	return s.CreateFlatRecorded(ctx, f, nil, nil)
 }
 
-// CreateFlat inserts a new flat, failing if the slug exists. Each grant's
-// permission and audit event are written in the same transaction, so a
-// flat never exists with a grant that has no record.
-func (s *Store) CreateFlat(ctx context.Context, f Flat, grants ...ProviderGrant) error {
+// CreateFlatRecorded inserts a new flat together with the non-local
+// providers it is allowed on from the start and the events that record its
+// creation, in that order and in one transaction, so a flat never exists
+// with a grant that has no record. It fails if the slug exists.
+func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []string, events []Event) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -348,15 +347,16 @@ func (s *Store) CreateFlat(ctx context.Context, f Flat, grants ...ProviderGrant)
 	if err != nil {
 		return err
 	}
-	for _, g := range grants {
-		if g.Provider == ProviderLocal {
+	for _, p := range providers {
+		if p == ProviderLocal {
 			continue // always permitted
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO flat_providers(flat, provider, permitted) VALUES(?,?,1)
-			ON CONFLICT(flat, provider) DO UPDATE SET permitted=1`, f.Slug, g.Provider); err != nil {
+			ON CONFLICT(flat, provider) DO UPDATE SET permitted=1`, f.Slug, p); err != nil {
 			return err
 		}
-		e := g.Event
+	}
+	for _, e := range events {
 		var data any
 		if len(e.Data) > 0 {
 			data = string(e.Data)
