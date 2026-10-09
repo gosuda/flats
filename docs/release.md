@@ -34,10 +34,12 @@ server info and next to the brand in the console:
 | --- | --- |
 | Release archive or image | the tag, stamped by `build-release.sh` (`v0.2.0`) |
 | `go install …@v0.2.0`, or `go build` of a clean tagged checkout | the module version (`v0.2.0`) |
+| Main commit image (`sha-<commit>`, stamped `v0.0.0-sha-<commit>`) | the commit (`dba5279`) |
 | `go build` of a checkout | the commit, 7 hex digits (`dba5279`), with `-dirty` for uncommitted changes |
 | `go install …@main` | the commit prefix of the pseudo-version (`dba5279`) |
 | none of these | `dev` |
 
+A `v0.0.0-…` stamp marks a development build, never a release.
 `internal/buildinfo` resolves it; `system.build` also carries the full commit
 when the build recorded one, whether the source was modified, and the Go
 version and platform. The console links a release to its release page and a

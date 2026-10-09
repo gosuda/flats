@@ -37,6 +37,10 @@ func TestResolve(t *testing.T) {
 		{"go install at a prerelease pseudo-version", "", module("v1.3.0-rc.1.0.20261006012941-dba5279b2505"), "dba5279", false, "", false},
 		{"go install at an untagged module", "", module("v0.0.0-20261006012941-dba5279b2505"), "dba5279", false, "", false},
 		{"stamped dev", "dev", vcs("(devel)", true), "dba5279-dirty", false, commit, true},
+		{"main commit image", "v0.0.0-sha-dba5279", vcs("v0.2.1-0.20261006012941-dba5279b2505", false), "dba5279", false, commit, false},
+		{"main commit image without VCS stamp", "v0.0.0-sha-dba5279", module("(devel)"), "dba5279", false, "", false},
+		{"local image build", "v0.0.0-dev", vcs("(devel)", false), "dba5279", false, commit, false},
+		{"stamped non-version", "nightly", vcs("(devel)", false), "dba5279", false, commit, false},
 		{"nothing known", "", module("(devel)"), "dev", false, "", false},
 		{"no build info", "", nil, "dev", false, "", false},
 	} {
