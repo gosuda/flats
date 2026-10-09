@@ -81,12 +81,20 @@ func TestConnectSavesAndIsUsedByLaterCommands(t *testing.T) {
 func TestConnectRefusesHostsThatDoNotAnswer(t *testing.T) {
 	dir := t.TempDir()
 	api, srv := newFakeAPI(t)
-	api.handle("GET /api/status", 404, `{"error": "not found"}`)
-	for _, target := range []string{srv.URL, "http://127.0.0.1:1"} {
-		r := runConn(t, dir, "", "connect", target)
+	// A catch-all page, an unrelated JSON API and a missing route all answer,
+	// but none of them is a Flats host.
+	for _, reply := range []struct {
+		code int
+		body string
+	}{{200, `<html>sign in</html>`}, {200, `{"status": "ok"}`}, {404, `{"error": "not found"}`}} {
+		api.handle("GET /api/status", reply.code, reply.body)
+		r := runConn(t, dir, "", "connect", srv.URL)
 		if r.code != ExitError || !strings.Contains(r.stderr, "nothing saved") {
-			t.Fatalf("%s: %+v", target, r)
+			t.Fatalf("%d %s: %+v", reply.code, reply.body, r)
 		}
+	}
+	if r := runConn(t, dir, "", "connect", "http://127.0.0.1:1"); r.code != ExitError || !strings.Contains(r.stderr, "cannot reach Flats") || !strings.Contains(r.stderr, "nothing saved") {
+		t.Fatalf("unreachable: %+v", r)
 	}
 	for _, bad := range []string{"flats.example.ts.net", "ftp://x", "https://u:p@x", "https://x/?a=1"} {
 		if r := runConn(t, dir, "", "connect", bad); r.code != ExitUsage {

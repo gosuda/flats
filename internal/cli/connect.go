@@ -141,14 +141,26 @@ func (a *app) connect(args []string) error {
 	if err != nil {
 		return usageError{err.Error()}
 	}
-	// Save only an address that answers as a Flats host.
+	// Save only an address that answers as a Flats host: a catch-all page or
+	// a login redirect can also answer 200.
 	c := &client{base: base, hc: a.env.HTTP}
-	if _, err := c.call(a.ctx, http.MethodGet, "/api/status", nil, nil, nil); err != nil {
+	var st struct {
+		OK             bool  `json:"ok"`
+		UploadMaxBytes int64 `json:"upload_max_bytes"`
+	}
+	if _, err := c.call(a.ctx, http.MethodGet, "/api/status", nil, nil, &st); err != nil {
 		var ae *apiError
-		if errors.As(err, &ae) {
+		var ue *unreachableError
+		switch {
+		case errors.As(err, &ae):
 			return fmt.Errorf("%s answered %d to /api/status; is it a Flats console address? (nothing saved)", base, ae.Status)
+		case errors.As(err, &ue), a.ctx.Err() != nil:
+			return fmt.Errorf("%w\n(nothing saved)", err)
 		}
-		return fmt.Errorf("%w\n(nothing saved)", err)
+		return fmt.Errorf("%s did not answer /api/status as a Flats host; is it the console address? (nothing saved)", base)
+	}
+	if !st.OK || st.UploadMaxBytes <= 0 {
+		return fmt.Errorf("%s did not answer /api/status as a Flats host; is it the console address? (nothing saved)", base)
 	}
 	b, _ := json.MarshalIndent(savedConnection{URL: base}, "", "  ")
 	if err := writeFileAtomic(p, append(b, '\n')); err != nil {

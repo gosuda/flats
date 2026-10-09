@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,13 @@ func (b *mcpBridge) run(ctx context.Context, stdin io.Reader) error {
 		inflight.Wait()
 		b.endSession()
 	}()
+	// Each message goes out once the previous one has been written to the
+	// host, so the host sees stdin order while replies stream back
+	// concurrently. Messages after initialize wait for its reply instead,
+	// which carries the session and protocol version. The loop itself never
+	// waits on the host, so stdin EOF always ends the bridge.
+	prev := make(chan struct{})
+	close(prev)
 	for {
 		select {
 		case <-ctx.Done():
@@ -102,16 +110,24 @@ func (b *mcpBridge) run(ctx context.Context, stdin io.Reader) error {
 				continue
 			}
 			msg := bytes.TrimSpace(line)
-			if isInitialize(msg) {
-				// Later messages need the session and protocol version that
-				// initialize negotiates, and clients wait for its reply anyway.
-				b.forward(ctx, msg)
-				continue
-			}
+			wait, turn := prev, make(chan struct{})
+			prev = turn
 			inflight.Add(1)
 			go func() {
 				defer inflight.Done()
-				b.forward(ctx, msg)
+				var once sync.Once
+				next := func() { once.Do(func() { close(turn) }) }
+				defer next()
+				select {
+				case <-wait:
+				case <-ctx.Done():
+					return
+				}
+				if isInitialize(msg) {
+					b.forward(ctx, msg, nil)
+				} else {
+					b.forward(ctx, msg, next)
+				}
 			}()
 		}
 	}
@@ -146,7 +162,8 @@ func isInitialize(msg []byte) bool {
 // forward POSTs one message and relays the reply. Failures that leave a
 // request unanswered become a JSON-RPC error for that request, so the agent
 // sees why instead of waiting.
-func (b *mcpBridge) forward(ctx context.Context, msg []byte) {
+// sent, when not nil, is called once the request has been written.
+func (b *mcpBridge) forward(ctx context.Context, msg []byte, sent func()) {
 	var env rpcEnvelope
 	_ = json.Unmarshal(msg, &env) // a batch array leaves env empty
 	isRequest := env.Method != "" && len(env.ID) > 0 && string(env.ID) != "null"
@@ -156,6 +173,9 @@ func (b *mcpBridge) forward(ctx context.Context, msg []byte) {
 		}
 	}
 
+	if sent != nil {
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { sent() }})
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.endpoint, bytes.NewReader(msg))
 	if err != nil {
 		fail("flats mcp: %v", err)

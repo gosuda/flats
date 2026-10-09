@@ -215,16 +215,20 @@ func TestMCPBridgeUnreachableHost(t *testing.T) {
 		io.WriteString(inW, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
 		io.WriteString(inW, "not json\n")
 		io.WriteString(inW, `{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}`+"\n")
-		inW.Close()
 	}()
+	// Closing stdin ends the bridge, so close it only after both replies.
 	var lines []map[string]any
 	sc := bufio.NewScanner(outR)
-	for sc.Scan() {
+	for len(lines) < 2 && sc.Scan() {
 		var m map[string]any
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			t.Fatalf("stdout line is not JSON: %q", sc.Text())
 		}
 		lines = append(lines, m)
+	}
+	inW.Close()
+	for sc.Scan() {
+		t.Errorf("unexpected output: %s", sc.Text())
 	}
 	if code := <-done; code != 0 {
 		t.Fatalf("exit %d", code)
@@ -242,5 +246,37 @@ func TestMCPBridgeUnreachableHost(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "relaying to http://127.0.0.1:1/mcp (env)") {
 		t.Errorf("stderr: %s", errb.String())
+	}
+}
+
+// TestMCPBridgeExitsWhileHostStalls ends the bridge when the client closes
+// stdin even if the host never answers initialize.
+func TestMCPBridgeExitsWhileHostStalls(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	inR, inW := io.Pipe()
+	done := make(chan int, 1)
+	go func() {
+		done <- Run(context.Background(), []string{"mcp", "--url", srv.URL}, Env{Stdin: inR, Stdout: io.Discard, ConfigDir: t.TempDir()})
+	}()
+	io.WriteString(inW, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
+	io.WriteString(inW, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
+	<-received
+	inW.Close()
+	waitExit(t, done)
+	select {
+	case <-received:
+		t.Fatal("a message was sent before initialize answered")
+	default:
 	}
 }
