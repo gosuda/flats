@@ -1094,14 +1094,30 @@ func (s *Service) servePreview(ctx context.Context, slugName, host string, h htt
 		if err != nil {
 			return "", err
 		}
-		for _, ep := range res.Endpoints {
-			if ep.URL != "" {
-				return ep.URL, nil
-			}
+		if where := previewLocation(res.Endpoints, host); where != "" {
+			return where, nil
 		}
 		return s.cfg.Private.URL(host), nil
 	}
 	return s.cfg.Private.Serve(ctx, host, h, true)
+}
+
+// previewLocation describes where a preview opened, for its event. It
+// prefers the tailnet address, as the flat's own private URL does, because a
+// loopback URL opens only on the host machine. A tailnet node that has not
+// yet learned its MagicDNS name reports a placeholder URL; the event then
+// names the host instead of keeping that placeholder.
+func previewLocation(endpoints []ExposureEndpoint, host string) string {
+	best, tailnet := "", false
+	for _, ep := range endpoints {
+		if ep.URL != "" && (best == "" || ep.Provider == ProviderTailscale) {
+			best, tailnet = ep.URL, ep.Provider == ProviderTailscale
+		}
+	}
+	if tailnet && strings.Contains(best, "<tailnet>") {
+		return "tailnet host " + host + " (address pending)"
+	}
+	return best
 }
 
 func copyTree(src, dst string) error {

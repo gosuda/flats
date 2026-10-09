@@ -7,7 +7,9 @@ routes require `X-Flats-Console: 1`, no `X-Flats-Client`, and for mutations a
 same-origin browser request with an Origin header. These checks are CSRF
 protection, not authentication: a local process that sends the same headers to
 the loopback listener can decide. Agent API, CLI and MCP surfaces offer no
-decision or grant operation. Deploy only trusted agents on the host and restrict
+decision or grant operation; on a host whose `network.private_backend` is
+`tailscale`, a flat they create starts with the Tailscale permission that host
+configuration grants (see the core contract). Deploy only trusted agents on the host and restrict
 the console node with tailnet ACLs. A separate operator credential is an open
 design item; the earlier session-based design was removed from the console.
 

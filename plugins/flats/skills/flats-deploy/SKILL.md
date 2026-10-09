@@ -97,7 +97,7 @@ or WebSocket callbacks; WASI does not share those JS host objects.
 - **Private** (default): Local on this device through localhost, or Tailscale for people/devices allowed by the existing tailnet ACL. This does not mean owner-only.
 - **Public**: anyone on the internet through explicitly permitted Portal or Tailscale Funnel; Funnel visitors do not need Tailscale. A URL or domain does not define visibility.
 
-Use only `private` / `public`. Both directions require explicit operator approval, as do publish, activation, rollback, data restore and deletion. Give the approval link and poll `get_approval`; never treat Public→Private as immediate. Public requires a published version. Nonlocal providers need a host grant/configuration plus per-flat operator permission; Tailscale connectivity does not grant Funnel. Agents cannot set those permissions. A provider failure never authorizes switching providers.
+Use only `private` / `public`. Both directions require explicit operator approval, as do publish, activation, rollback, data restore and deletion. Give the approval link and poll `get_approval`; never treat Public→Private as immediate. Public requires a published version. Nonlocal providers need a host grant/configuration plus per-flat operator permission (on a host whose private backend is Tailscale, new flats start with Tailscale permitted; read `get_flat` providers rather than assuming); Tailscale connectivity does not grant Funnel. Agents cannot set those permissions. A provider failure never authorizes switching providers.
 
 ## App environment variables
 

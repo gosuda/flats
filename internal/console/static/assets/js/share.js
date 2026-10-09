@@ -1,7 +1,7 @@
 import { h, icon, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { setVisibility } from './actions.js';
-import { busy, fill, toast, extLink } from './ui.js';
+import { busy, fill, toast, extLink, serverOnly, SERVER_ONLY } from './ui.js';
 
 export function shareDialog(initial, onChange = () => {}) {
   let flat = initial;
@@ -31,7 +31,11 @@ export function shareDialog(initial, onChange = () => {}) {
     notice.textContent = vis === 'private'
       ? 'Only this device and devices allowed by your tailnet can open the private URL.' : publicNoticeOf(flat);
     const url = vis === 'private' ? flat.private_url : publicURL(flat);
-    const copy = h('button', { type: 'button', class: 'btn btn-small', disabled: !url || !flat.live_version }, icon('copy'), 'Copy link');
+    // A loopback link copied from another device would open the recipient's
+    // own machine, so it is not offered for sharing there.
+    const local = serverOnly(url);
+    const copy = h('button', { type: 'button', class: 'btn btn-small', disabled: !url || !flat.live_version || local,
+      title: local ? SERVER_ONLY : undefined }, icon('copy'), 'Copy link');
     copy.addEventListener('click', () => busy(copy, async () => {
       try { await navigator.clipboard.writeText(url); toast('Link copied.', 'success'); }
       catch { toast('Could not copy the link. Select and copy the address below.', 'error'); }
@@ -39,6 +43,7 @@ export function shareDialog(initial, onChange = () => {}) {
     const done = h('button', { type: 'button', class: 'btn btn-primary', text: 'Done' });
     done.addEventListener('click', () => dlg.close());
     fill(footer, h('div', { class: 'share-link muted small', text: url || 'Public link is being prepared. Reopen Share to check.' }),
+      local ? h('p', { class: 'muted small share-server-only', text: SERVER_ONLY }) : null,
       h('div', { class: 'share-footer-actions' }, h('div', { class: 'cell-actions' },
         flat.live_version && url ? extLink(url, [icon('external'), 'Visit'], 'btn btn-small') : null, copy), done));
   }

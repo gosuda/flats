@@ -120,7 +120,9 @@ JavaScript client reads them exactly.
 
 Only providers listed in `network.permitted` start. Permitting `tailscale`
 does not permit Funnel, and Local needs no entry. `private_backend:
-"tailscale"` requires `tailscale` in `permitted`. Removing a provider from
+"tailscale"` requires `tailscale` in `permitted`, and also makes every new
+flat allowed on Tailscale when it is created (the operator can turn that off
+per flat); flats that already exist keep their providers. Removing a provider from
 `permitted` in the file takes its routes down at the next start but keeps each
 flat's provider permission and visibility in `flats.db`; it never publishes a
 flat or changes visibility. The console's Settings → Network providers turns a

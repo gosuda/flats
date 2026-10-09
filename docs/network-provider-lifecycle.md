@@ -305,6 +305,16 @@ preview and the current site remain reachable. Public opening preserves an
 independent Local route on a fresh Manager, and normal core rebinding refreshes
 both current handlers before each public activation.
 
+### Default Private Tailscale permission
+
+On a host whose `network.private_backend` is `tailscale`, creating a flat (by
+an agent, or by its first save) stores its Tailscale permission in the same
+transaction as the flat and logs a `provider` event. Choosing the tailnet for
+the console and private routes is the operator's grant for Private routes of
+new flats; Funnel and Portal still need their own per-flat permission. A host
+on the `local` backend keeps new flats Local-only. Existing flats are not
+changed.
+
 ### Per-flat Private Tailscale revocation
 
 An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route or race a second teardown. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure closes the consumed backend and preserves its persistent state; the next `StopPrivate` call starts a fresh backend over that state and performs a real logout retry in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.
