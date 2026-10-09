@@ -325,13 +325,32 @@ func fromUnix(ms int64) time.Time {
 // --- flats ---
 
 // CreateFlat inserts a new flat. It fails if the slug exists.
-func (s *Store) CreateFlat(ctx context.Context, f Flat) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
+// CreateFlat inserts a flat together with the non-local providers it is
+// allowed on from the start, in one transaction.
+func (s *Store) CreateFlat(ctx context.Context, f Flat, providers ...string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
 		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt))
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return fmt.Errorf("flat %q %w", f.Slug, ErrExists)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	for _, p := range providers {
+		if p == ProviderLocal {
+			continue // always permitted
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO flat_providers(flat, provider, permitted) VALUES(?,?,1)
+			ON CONFLICT(flat, provider) DO UPDATE SET permitted=1`, f.Slug, p); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until`

@@ -1094,10 +1094,16 @@ func (s *Service) servePreview(ctx context.Context, slugName, host string, h htt
 		if err != nil {
 			return "", err
 		}
+		// Prefer the tailnet address: a loopback URL opens only on the host
+		// machine, as for the flat's own private URL.
+		best := ""
 		for _, ep := range res.Endpoints {
-			if ep.URL != "" {
-				return ep.URL, nil
+			if ep.URL != "" && (best == "" || ep.Provider == ProviderTailscale) {
+				best = ep.URL
 			}
+		}
+		if best != "" {
+			return best, nil
 		}
 		return s.cfg.Private.URL(host), nil
 	}

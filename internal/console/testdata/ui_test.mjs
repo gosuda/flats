@@ -629,4 +629,22 @@ await tick();
 const turnOnCall = calls.find((c) => c.key === 'PUT /console/api/providers/tailscale');
 assert.deepEqual(JSON.parse(turnOnCall.body), { enabled: true });
 assert.equal(turnOnCall.headers['If-Match'], '"etag-9"', 'a provider change is guarded by the settings ETag');
+
+// --- loopback links seen from another device ---
+// A loopback URL opens the viewer's own machine, so a console opened over
+// the tailnet shows it as server-only text; on the host it stays a link.
+const ui = await import('./ui.js');
+const savedLocation = globalThis.location;
+for (const host of ['localhost', 'blog.localhost', '127.0.0.1', '[::1]']) assert.ok(ui.loopbackHost(host), host);
+for (const host of ['flats.tail1234.ts.net', 'example.com', '10.0.0.1', 'localhost.example.com']) assert.ok(!ui.loopbackHost(host), host);
+globalThis.location = { origin: 'https://flats.tail1234.ts.net', hostname: 'flats.tail1234.ts.net' };
+const remote = ui.extLink('http://blog.localhost:7879/', 'Open');
+assert.equal(remote.tagName, 'SPAN');
+assert.equal(remote.getAttribute('aria-disabled'), 'true');
+assert.equal(remote.getAttribute('title'), ui.SERVER_ONLY);
+assert.ok(remote.textContent.includes('Open') && remote.textContent.includes('server only'));
+assert.equal(ui.extLink('https://blog.tail1234.ts.net/').tagName, 'A', 'tailnet links stay links');
+globalThis.location = { origin: 'http://127.0.0.1:7878' };
+assert.equal(ui.extLink('http://blog.localhost:7879/').tagName, 'A', 'on the host a loopback link works');
+globalThis.location = savedLocation;
 console.log('ok');

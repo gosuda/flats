@@ -211,13 +211,22 @@ type Host struct {
 	portalOptions portal.Config
 	networkPins   map[provider.ID]string // provider -> service flag that fixes it
 	console       string
+	consoleNet    core.PrivateNet // set when the console runs on the tailnet
+	consoleHost   string
 	dataLock      *os.File
 	closeOnce     sync.Once
 	closeErr      error
 }
 
 // ConsoleURL is the operator console address (tailnet URL when available).
-func (h *Host) ConsoleURL() string { return h.console }
+func (h *Host) ConsoleURL() string {
+	// The tailnet name is learned after start, so ask the network each time
+	// rather than keeping the placeholder it returns before that.
+	if h.consoleNet != nil {
+		return h.consoleNet.URL(h.consoleHost)
+	}
+	return h.console
+}
 
 // Addr is the loopback management address actually bound.
 func (h *Host) Addr() string { return h.ln.Addr().String() }
@@ -424,8 +433,11 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		h.networkPins = legacyNetworkPins(o)
 	}
 	h.console = "http://" + cfg.Host.ManagementAddr
+	if useTailscale {
+		h.consoleNet, h.consoleHost = h.Private, cfg.Host.ConsoleHost
+	}
 	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
-		ConsoleURL: func() string { return h.console }, Reserved: []string{cfg.Host.ConsoleHost}, Logf: logf}
+		ConsoleURL: h.ConsoleURL, PrivateBackend: cfg.Network.PrivateBackend, Reserved: []string{cfg.Host.ConsoleHost}, Logf: logf}
 	svc, err := core.New(ctx, coreCfg)
 	if err != nil {
 		return nil, err
@@ -449,9 +461,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
 	}
-	if useTailscale {
-		h.console = h.Private.URL(cfg.Host.ConsoleHost)
-	} else {
+	if !useTailscale {
 		h.console = "http://" + h.ln.Addr().String()
 	}
 	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
@@ -566,7 +576,7 @@ type SystemStatus struct {
 
 // Status implements api.System.
 func (h *Host) Status(ctx context.Context) any {
-	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: h.console, MCPURL: strings.TrimSuffix(h.console, "/") + "/mcp",
+	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: h.ConsoleURL(), MCPURL: strings.TrimSuffix(h.ConsoleURL(), "/") + "/mcp",
 		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
 		s.Providers = h.Providers.HostStatus()

@@ -92,6 +92,10 @@ type Config struct {
 	// frozen defaults in memory.
 	Settings   *SettingsSource
 	ConsoleURL func() string
+	// PrivateBackend is network.private_backend. When it is "tailscale" the
+	// operator chose the tailnet for the console and private routes, so new
+	// flats are allowed on Tailscale from the start instead of loopback only.
+	PrivateBackend string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string
 	Now      func() time.Time
@@ -747,7 +751,11 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	now := s.now()
 	f := store.Flat{Slug: slugName, Name: name, Visibility: store.Private, CreatedAt: now, UpdatedAt: now}
-	if err := s.st.CreateFlat(ctx, f); err != nil {
+	var providers []string
+	if s.cfg.PrivateBackend == "tailscale" {
+		providers = append(providers, store.ProviderTailscale)
+	}
+	if err := s.st.CreateFlat(ctx, f, providers...); err != nil {
 		if errors.Is(err, store.ErrExists) {
 			return FlatView{}, withKind(ErrConflict, err)
 		}
@@ -755,6 +763,9 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	s.state(slugName)
 	s.Event(ctx, slugName, "info", "flat", "flat created via "+string(via), nil)
+	for _, p := range providers {
+		s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=true by default (network.private_backend is %s)", p, s.cfg.PrivateBackend), nil)
+	}
 	return s.view(ctx, f), nil
 }
 

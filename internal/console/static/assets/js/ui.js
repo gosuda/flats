@@ -193,11 +193,37 @@ export function safeHref(href) {
   }
 }
 
+// loopbackHost reports whether a host name reaches only the machine it is
+// opened on (localhost, *.localhost, 127.0.0.0/8, ::1).
+export function loopbackHost(host) {
+  const name = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+  return name === 'localhost' || name.endsWith('.localhost') || name === '::1' || /^127\./.test(name);
+}
+
+// consoleOnServer is true when this console was opened through a loopback
+// address, i.e. on the Flats host itself.
+export function consoleOnServer() {
+  const loc = globalThis.location;
+  let host = loc?.hostname;
+  if (!host && loc?.origin) {
+    try { host = new URL(loc.origin).hostname; } catch { host = ''; }
+  }
+  return !host || loopbackHost(host);
+}
+
+export const SERVER_ONLY = 'Opens only on the Flats host machine. Allow Tailscale for this flat to reach it from other devices.';
+
 // extLink is an external link that opens in a new tab without an opener. A
-// URL that is not http(s) is shown as text instead.
+// URL that is not http(s) is shown as text instead, and so is a loopback URL
+// when the console is viewed from another device: it would open that device,
+// not the Flats host.
 export function extLink(href, text, cls) {
   const safe = safeHref(href);
   if (!safe) return h('span', { class: cls ? cls + ' is-disabled' : undefined }, text || String(href ?? ''));
+  if (!consoleOnServer() && loopbackHost(new URL(safe).hostname)) {
+    return h('span', { class: (cls ? cls + ' ' : '') + 'is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' },
+      text || href, h('span', { class: 'badge badge-warn', text: 'server only' }));
+  }
   return h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer', class: cls }, text || href);
 }
 
