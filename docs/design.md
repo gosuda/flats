@@ -279,13 +279,14 @@ or Flats host restart; automatic worker restarts reuse the captured settings.
 
 ## Approvals
 
-Publish, activation, rollback, data restoration, visibility changes in both
-directions (private → public and public → private) and deletion never apply
-on request. Each request, from MCP, the CLI, the HTTP API or the console,
-freezes its parameters in a pending approval and returns
+Agents (MCP, CLI, HTTP API) cannot publish, activate, roll back, restore
+data, change visibility in either direction (private → public or public →
+private) or delete a flat on their own. Each such request freezes its
+parameters in a pending approval and returns
 `approval_url` = `<console>/approvals/<id>`. Nothing changes until the
 operator approves it in the console; a frozen parameter that changed before
-the decision makes the approval fail as `stale_approval`.
+the decision makes the approval fail as `stale_approval`. Deleting a flat
+from the console itself applies directly after its confirm dialog.
 
 There are no accounts, so operator authority rests on where a request comes
 from and what it carries. Enforced:

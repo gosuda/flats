@@ -30,8 +30,9 @@ overwrites nothing. Read `get_draft`, reconcile, then save again.
 
 On the Flats host itself, `save_version_from_dir {slug, dir}` uploads an
 absolute build directory (loopback callers only; it also skips
-`node_modules`), and the CLI `flats deploy <dir> --flat <slug>` does the same.
-Remote agents send files inline.
+`node_modules`). The CLI `flats deploy <dir> --flat <slug> --save-only` saves
+the Draft the same way; without `--save-only` it also requests publish
+approval. Remote agents send files inline.
 
 ### Upload limits
 
