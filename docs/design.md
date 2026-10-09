@@ -399,7 +399,7 @@ answers:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | /api/flats/{slug}/document?doc= | live docs Markdown, else Current Draft |
-| GET | /api/status | host, networks, limits |
+| GET | /api/status | host, networks, limits, build version |
 | GET | /api/flats | list |
 | POST | /api/flats | `{slug, name}` create |
 | GET | /api/flats/{slug} | details (URLs, live version, notice) |

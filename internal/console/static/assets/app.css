@@ -95,7 +95,11 @@ main:focus { outline: none; }
   padding: 12px 24px; border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10; background: var(--bg);
 }
+.topbar-start { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-weight: 600; }
+.build { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.build-dev { font-family: var(--mono); }
+a.build:hover { color: var(--text); }
 .brand:hover { text-decoration: none; }
 .brand-mark { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .topnav { display: flex; gap: 4px; }
@@ -456,6 +460,7 @@ td > .badge:first-child { margin-left: 0; }
 }
 
 @media (max-width: 400px) {
+  .build-dirty { display: none; }
   .flats-list .btn-pill { padding: 4px 10px; }
   .toolbar { gap: 8px; }
   .flats-grid { grid-template-columns: minmax(0, 1fr); }

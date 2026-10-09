@@ -2,6 +2,8 @@
 
 import { h, clear } from './dom.js';
 import { closeMenus } from './ui.js';
+import { api } from './api.js';
+import { buildOf, buildLabel } from './build.js';
 import * as listPage from './list.js';
 import * as flatPage from './flat.js';
 import * as approvalPage from './approval.js';
@@ -94,3 +96,9 @@ document.addEventListener('click', (e) => {
 window.addEventListener('popstate', render);
 
 render();
+
+// The running build is read once per page load; without it the slot stays empty.
+api.status().then((s) => {
+  const label = buildLabel(buildOf(s));
+  if (label) document.getElementById('build')?.appendChild(label);
+}).catch(() => {});

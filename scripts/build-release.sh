@@ -56,8 +56,11 @@ for target in ${FLATS_RELEASE_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 lin
 	stage=$work/$name
 	mkdir -p "$stage"
 	echo "building $name"
+	# internal/buildinfo holds the version. The release workflow also builds
+	# older tags with this script, whose source kept it in cli and app; the
+	# linker ignores -X for a variable a build does not have.
 	(cd "$root" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-		-ldflags "-s -w -X github.com/gosuda/flats/internal/cli.Version=$version -X github.com/gosuda/flats/internal/app.Version=$version" \
+		-ldflags "-s -w -X github.com/gosuda/flats/internal/buildinfo.Version=$version -X github.com/gosuda/flats/internal/cli.Version=$version -X github.com/gosuda/flats/internal/app.Version=$version" \
 		-o "$stage/flats" ./cmd/flats)
 	cp "$root/LICENSE" "$root/README.md" "$stage/"
 	# Record root ownership so archives do not carry the build user's name.

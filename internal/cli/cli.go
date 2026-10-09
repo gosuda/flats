@@ -12,11 +12,11 @@ import (
 	"net/http"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/gosuda/flats/internal/buildinfo"
 	"github.com/gosuda/flats/internal/launchd"
 )
 
@@ -43,10 +43,6 @@ var EnsureConfig func(ctx context.Context, configPath, dataDir string, serveArgs
 // exitCoder is an error that selects the exit code, such as 78 for a
 // configuration the operator must fix.
 type exitCoder interface{ ExitCode() int }
-
-// Version is the release version, set with
-// -ldflags "-X github.com/gosuda/flats/internal/cli.Version=v1.2.3".
-var Version = "dev"
 
 // Exit codes.
 const (
@@ -400,30 +396,21 @@ func (a *app) version(args []string) error {
 	if _, err := a.parse(fs, args, 0, 0); err != nil {
 		return err
 	}
-	rev, modified := "", false
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			switch s.Key {
-			case "vcs.revision":
-				rev = s.Value
-			case "vcs.modified":
-				modified = s.Value == "true"
-			}
-		}
-	}
+	b := buildinfo.Get()
 	if a.jsonOut {
-		a.writeJSON(map[string]any{"version": Version, "commit": rev, "dirty": modified, "go": runtime.Version(), "os": runtime.GOOS, "arch": runtime.GOARCH})
+		a.writeJSON(b)
 		return nil
 	}
-	line := "flats " + Version
-	if rev != "" {
-		line += " (" + shortSHA(rev)
-		if modified {
+	// A release names its commit; a development version already is one.
+	line := "flats " + b.Version
+	if b.Release && b.Commit != "" {
+		line += " (" + shortSHA(b.Commit)
+		if b.Dirty {
 			line += "+dirty"
 		}
 		line += ")"
 	}
-	fmt.Fprintf(a.out, "%s %s %s/%s\n", line, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(a.out, "%s %s %s/%s\n", line, b.Go, b.OS, b.Arch)
 	return nil
 }
 

@@ -24,6 +24,7 @@ import (
 
 	"github.com/gosuda/flats/internal/api"
 	docsapp "github.com/gosuda/flats/internal/apps/docs"
+	"github.com/gosuda/flats/internal/buildinfo"
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/console"
 	"github.com/gosuda/flats/internal/core"
@@ -37,9 +38,6 @@ import (
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
-
-// Version is set at build time with -ldflags "-X github.com/gosuda/flats/internal/app.Version=...".
-var Version = "dev"
 
 // Options configure `flats serve`.
 //
@@ -184,7 +182,7 @@ func Serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("flats %s serving; console %s (loopback http://%s)", Version, h.ConsoleURL(), h.Addr())
+	log.Printf("flats %s serving; console %s (loopback http://%s)", buildinfo.Get().Version, h.ConsoleURL(), h.Addr())
 	<-ctx.Done()
 	log.Printf("shutting down")
 	return h.Close()
@@ -439,8 +437,8 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	apiH := apiSrv.Handler()
 	mux.Handle("/api/", apiH)
 	mux.Handle("/console/api/", apiH)
-	mux.Handle("/mcp", mcpx.Handler(svc, mcpx.Options{Version: Version}))
-	llms := mcpx.LLMsHandler(svc, mcpx.Options{Version: Version})
+	mux.Handle("/mcp", mcpx.Handler(svc, mcpx.Options{Version: buildinfo.Get().Version}))
+	llms := mcpx.LLMsHandler(svc, mcpx.Options{Version: buildinfo.Get().Version})
 	for _, p := range mcpx.LLMsPaths {
 		mux.Handle(p, llms)
 	}
@@ -551,7 +549,9 @@ func (h *Host) consoleNames() []string {
 
 // SystemStatus is returned by /api/status and the console settings page.
 type SystemStatus struct {
+	// Version is Build.Version, kept for clients that read it here.
 	Version    string                  `json:"version"`
+	Build      buildinfo.Info          `json:"build"`
 	DataDir    string                  `json:"data_dir"`
 	ConsoleURL string                  `json:"console_url"`
 	MCPURL     string                  `json:"mcp_url"`
@@ -566,7 +566,7 @@ type SystemStatus struct {
 
 // Status implements api.System.
 func (h *Host) Status(ctx context.Context) any {
-	s := SystemStatus{Version: Version, DataDir: h.Config.Host.DataDir, ConsoleURL: h.console, MCPURL: strings.TrimSuffix(h.console, "/") + "/mcp",
+	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: h.console, MCPURL: strings.TrimSuffix(h.console, "/") + "/mcp",
 		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
 		s.Providers = h.Providers.HostStatus()

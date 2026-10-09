@@ -366,6 +366,36 @@ assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0
 share.close();
 for (const label of ['Share', 'Deployments', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
+// The build label next to the brand: a release links to its release page,
+// a clean development build to its commit, a modified one to nothing.
+const { buildOf, buildLabel } = await import('./build.js');
+const C = 'dba5279b25052e8b31a4fd15c6c3765de68fc497';
+let label = buildLabel({ version: 'v0.2.0', release: true, commit: C, dirty: false, go: 'go1.27.1', os: 'linux', arch: 'arm64' });
+assert.equal(label.tagName, 'A');
+assert.equal(label.textContent, 'v0.2.0');
+assert.equal(label.getAttribute('href'), 'https://github.com/gosuda/flats/releases/tag/v0.2.0');
+assert.equal(label.getAttribute('target'), '_blank');
+assert.ok(label.getAttribute('title').includes(`commit ${C}`) && label.getAttribute('title').includes('go1.27.1 · linux/arm64'));
+assert.equal(label.getAttribute('aria-label'), 'Flats version v0.2.0');
+label = buildLabel({ version: 'dba5279', release: false, commit: C, dirty: false, go: 'go1.27.1', os: 'darwin', arch: 'arm64' });
+assert.equal(label.getAttribute('href'), `https://github.com/gosuda/flats/commit/${C}`);
+assert.ok(label.className.includes('build-dev'));
+label = buildLabel({ version: 'dba5279-dirty', release: false, commit: C, dirty: true, go: 'go1.27.1', os: 'darwin', arch: 'arm64' });
+assert.equal(label.tagName, 'SPAN', 'a modified build has no commit on GitHub to link');
+assert.equal(label.textContent, 'dba5279-dirty');
+assert.equal(all(label, (e) => e.className === 'build-dirty').length, 1);
+assert.ok(label.getAttribute('title').includes('with uncommitted changes'));
+label = buildLabel({ version: 'dba5279', release: false, commit: '', dirty: false, go: 'go1.27.1' });
+assert.equal(label.tagName, 'SPAN', 'go install @main knows only the short commit');
+assert.equal(buildLabel(undefined), null, 'an older host without build info shows nothing');
+// /api/status nests the build under system, next to the older system.version.
+const reported = { version: 'dba5279', release: false, commit: C, dirty: false };
+assert.equal(buildOf({ ok: true, system: { version: 'dba5279', build: reported } }), reported);
+assert.equal(buildOf({ ok: true, system: { version: 'dev' } }), null);
+assert.equal(buildOf({ build: reported }), null, 'the build is read from system.build, not the top level');
+assert.equal(buildOf(null), null);
+assert.equal(buildLabel({ version: '' }), null);
+
 // --- settings page ---
 // The console never asks through window.confirm.
 globalThis.confirm = () => { throw new Error('window.confirm used'); };
