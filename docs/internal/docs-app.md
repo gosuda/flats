@@ -307,11 +307,14 @@ update operations. The agent contract is guide `topic.docs`.
   The receipt id prefix `agent:` identifies agent updates in the update log;
   WebSocket editors cannot use it. When the edit's response is lost (worker
   failure, timeout or an unreadable reply), core looks its receipt id up
-  through `/_docs/api/receipt` and always logs a `warn` event: committed at
-  seq N, or outcome unknown. A missing receipt is not conclusive (the worker
-  keeps working after a disconnect and may still commit), so the agent is
-  told to read before retrying. Core waits 20 s, longer than the worker's
-  10 s request deadline, so the worker normally ends a slow edit first.
+  through `/_docs/api/receipt` and always logs a `warn` event. The worker
+  keeps working after a disconnect, so a missing receipt is conclusive only
+  after the edit's commit deadline: core sends `deadline_ms` (12 s after
+  sending), the app rolls back instead of committing after it (checked
+  immediately before COMMIT), and core looks again once the deadline plus a
+  2 s margin has passed. The result is "committed at seq N", "did not apply"
+  or, only when the app cannot answer, "outcome unknown". Core waits up to
+  20 s for the edit itself.
   Pre-edit text is not retained separately: conflict records are keyed by
   activation generation and bounded to 8 per document, so sharing them would
   let routine agent edits evict human recovery text. Edits are small and

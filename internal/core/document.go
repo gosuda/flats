@@ -36,6 +36,14 @@ var (
 // receiptLookupTimeout bounds checking a live edit whose response was lost.
 var receiptLookupTimeout = 5 * time.Second
 
+// editCommitWindow is how long after it is sent a live edit may still
+// commit; the docs app rolls back instead after that. editSettleMargin
+// covers the COMMIT itself. A lost response is settled once both passed.
+var (
+	editCommitWindow = 12 * time.Second
+	editSettleMargin = 2 * time.Second
+)
+
 // documentEditRate bounds live edits per flat (per second, burst twice
 // that), well under the docs app's per-room human update rate.
 const documentEditRate = 10
@@ -269,11 +277,13 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	}
 	// The receipt id lets an edit whose response is lost be looked up.
 	id := "agent:" + hex.EncodeToString(nonce[:])
-	body, err := json.Marshal(struct {
-		Ops    []DocumentEditOp `json:"ops"`
-		IfHash *string          `json:"if_hash,omitempty"`
-		ID     string           `json:"id"`
-	}{ops, ifHash, id})
+	type editRequest struct {
+		Ops      []DocumentEditOp `json:"ops"`
+		IfHash   *string          `json:"if_hash,omitempty"`
+		ID       string           `json:"id"`
+		Deadline int64            `json:"deadline_ms"`
+	}
+	body, err := json.Marshal(editRequest{ops, ifHash, id, 0})
 	if err != nil {
 		return DocumentEdit{}, err
 	}
@@ -306,6 +316,10 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	// The audit record outlives the caller: a commit near the deadline or a
 	// cancelled request must still leave its event.
 	auditCtx := context.WithoutCancel(ctx)
+	deadline := time.Now().Add(editCommitWindow)
+	if body, err = json.Marshal(editRequest{ops, ifHash, id, deadline.UnixMilli()}); err != nil {
+		return DocumentEdit{}, err
+	}
 	// Longer than the worker's own request deadline, so the worker normally
 	// ends a slow edit (and rolls it back) before the host stops waiting.
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -341,11 +355,11 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 			return DocumentEdit{}, fmt.Errorf("%w: the docs app rolled the edit back; nothing changed, retry", ErrUnavailable)
 		}
 		// A timeout or worker failure can end the request after COMMIT.
-		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code))
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code), deadline)
 	}
 	var out DocumentEdit
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Format != 1 || !fs.ValidPath(out.Doc) || !bundle.IsMarkdown(out.Doc) {
-		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response")
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response", deadline)
 	}
 	out.Source = "live"
 	if f.Visibility.Public() {
@@ -363,21 +377,45 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 
 // uncertainEdit reconciles an edit whose outcome the response did not
 // report: it looks the receipt id up, records what it found in the event
-// log either way, and tells the caller whether the edit applied. Only a
-// committed receipt is conclusive: after a lost response the worker may
-// still be finishing, so a missing receipt leaves the outcome unknown.
-func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string) error {
-	// The lookup and the audit write have separate deadlines, so a lookup
-	// that times out still leaves its warning.
-	lookupCtx, cancelLookup := context.WithTimeout(auditCtx, receiptLookupTimeout)
-	defer cancelLookup()
+// log either way, and tells the caller whether the edit applied. The worker
+// may still be finishing after a lost response, so a missing receipt is
+// conclusive only after the edit's commit deadline has passed: until then
+// it waits and looks again.
+func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, deadline time.Time) error {
+	committed, seq, known := s.editReceipt(auditCtx, live, doc, id)
+	if known && !committed {
+		if wait := time.Until(deadline.Add(editSettleMargin)); wait > 0 {
+			time.Sleep(wait)
+		}
+		committed, seq, known = s.editReceipt(auditCtx, live, doc, id)
+	}
+	// The audit write has its own deadline, after any lookup timed out.
 	ctx, cancel := context.WithTimeout(auditCtx, 10*time.Second)
 	defer cancel()
 	name := doc
 	if name == "" {
 		name = "the entry document"
 	}
-	req := httptest.NewRequestWithContext(lookupCtx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)
+	data := map[string]any{"doc": doc, "id": id, "cause": cause}
+	if committed {
+		data["seq"] = seq
+		s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s committed at seq %d, but its response was lost (%s)", name, via, seq, cause), data)
+		return fmt.Errorf("%w: %s, but the edit was applied at seq %d; read get_document and do not repeat it", ErrUnavailable, cause, seq)
+	}
+	if known {
+		s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s did not apply (%s; no receipt after its commit deadline)", name, via, cause), data)
+		return fmt.Errorf("%w: %s; the edit did not apply and can no longer commit: retry", ErrUnavailable, cause)
+	}
+	s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s: outcome unknown (%s)", name, via, cause), data)
+	return fmt.Errorf("%w: %s; the edit may or may not have applied: read get_document before retrying", ErrUnavailable, cause)
+}
+
+// editReceipt asks the docs app whether a live edit committed. known is
+// false when the app could not answer.
+func (s *Service) editReceipt(ctx context.Context, live *deployed, doc, id string) (committed bool, seq int64, known bool) {
+	ctx, cancel := context.WithTimeout(ctx, receiptLookupTimeout)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)
 	req = trustedAccess(req, false)
 	req.Header.Set("X-Flats-Host-Op", "edit")
 	rec := httptest.NewRecorder()
@@ -386,17 +424,10 @@ func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugNa
 		Committed *bool `json:"committed"`
 		Seq       int64 `json:"seq"`
 	}
-	data := map[string]any{"doc": doc, "id": id, "cause": cause}
-	if rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &receipt) == nil && receipt.Committed != nil && *receipt.Committed {
-		data["seq"] = receipt.Seq
-		s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s committed at seq %d, but its response was lost (%s)", name, via, receipt.Seq, cause), data)
-		return fmt.Errorf("%w: %s, but the edit was applied at seq %d; read get_document and do not repeat it", ErrUnavailable, cause, receipt.Seq)
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &receipt) != nil || receipt.Committed == nil {
+		return false, 0, false
 	}
-	if receipt.Committed != nil {
-		cause += "; no receipt yet"
-	}
-	s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s: outcome unknown (%s)", name, via, cause), data)
-	return fmt.Errorf("%w: %s; the edit may or may not have applied: read get_document before retrying", ErrUnavailable, cause)
+	return *receipt.Committed, receipt.Seq, true
 }
 
 // editSummary describes a live edit for the event log without its text.

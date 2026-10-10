@@ -185,6 +185,18 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 		t.Fatal("receipt lookup without the host header", status)
 	}
 
+	// After its deadline an edit rolls back instead of committing.
+	late := a.document(t)
+	if status, m := a.postEdit(t, hostEdit, `{"deadline_ms":1,"ops":[{"op":"insert","at":"end","text":"Too late."}]}`); status != 503 || m["code"] != "unavailable" {
+		t.Fatal(status, m)
+	}
+	if now := a.document(t); now["seq"] != late["seq"] || strings.Contains(now["markdown"].(string), "Too late.") {
+		t.Fatal("an edit past its deadline committed")
+	}
+	if status, m := a.postEdit(t, hostEdit, `{"deadline_ms":-5,"ops":[{"op":"insert","at":"end","text":"x"}]}`); status != 400 || m["code"] != "invalid" {
+		t.Fatal(status, m)
+	}
+
 	// Limits: request size, single update size and the 1 MiB document limit.
 	if status, m := a.postEdit(t, hostEdit, ops(map[string]any{"op": "insert", "at": "end", "text": strings.Repeat("x", 513*1024)})); status != 413 || m["code"] != "capacity" {
 		t.Fatal(status, m)

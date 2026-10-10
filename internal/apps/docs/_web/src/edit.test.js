@@ -514,6 +514,18 @@ test("block operations are bounded by the block count", () => {
     "capacity",
     /50000/,
   );
+  // An earlier operation in the same call cannot lift the bound.
+  const edge = Array.from({ length: 50000 }, (_, i) => `b${i}`).join("\n\n");
+  rejects(
+    () =>
+      plan(edge, [
+        { op: "delete_block", block: hashOf(edge, "b5") },
+        { op: "replace", find: "b49999", with: "b49999\n\nnew\n\nmore" },
+        { op: "delete_block", block: hashOf(edge, "b7") },
+      ]),
+    "capacity",
+    /op 3/,
+  );
   // Text operations still work on such a document.
   assert.ok(
     plan(many, [{ op: "replace", find: "b50000", with: "end" }]).text.endsWith(

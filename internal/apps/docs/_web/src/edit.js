@@ -399,15 +399,15 @@ export function planEdit(text, request, hashText) {
       remove = find.length;
       insert = str(op.with, "with", i, { empty: true });
     } else {
-      if (!index) {
-        index = { list: blocks(text), byHash: null };
-        if (index.list.length > EDIT_LIMITS.blocks)
-          fail(
-            "capacity",
-            `op ${i + 1}: the document has ${index.list.length} blocks; block operations support at most ${EDIT_LIMITS.blocks}. Use replace with find text instead`,
-            i,
-          );
-      }
+      index ??= { list: blocks(text), byHash: null };
+      // Checked before every block operation: earlier operations in the
+      // same call may have added blocks.
+      if (index.list.length > EDIT_LIMITS.blocks)
+        fail(
+          "capacity",
+          `op ${i + 1}: the document has ${index.list.length} blocks; block operations support at most ${EDIT_LIMITS.blocks}. Use replace with find text instead`,
+          i,
+        );
       const list = index.list;
       if (op.op === "replace_block" || op.op === "delete_block") {
         const b = findBlock(text, index, op.block, nth, i, digest);

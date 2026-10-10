@@ -444,7 +444,18 @@ async function edit(request, env, d) {
   const id = body?.id === undefined ? "agent:" + crypto.randomUUID() : body.id;
   if (typeof id !== "string" || !/^agent:[A-Za-z0-9_-]{8,120}$/.test(id))
     return json(400, { code: "invalid", message: "invalid edit id" });
-  if (body && typeof body === "object") delete body.id;
+  // A host commit deadline (epoch ms): after it the edit rolls back instead
+  // of committing, so the host can settle a lost response conclusively.
+  const deadline = body?.deadline_ms;
+  if (
+    deadline !== undefined &&
+    (!Number.isSafeInteger(deadline) || deadline < 0)
+  )
+    return json(400, { code: "invalid", message: "invalid deadline" });
+  if (body && typeof body === "object") {
+    delete body.id;
+    delete body.deadline_ms;
+  }
   const db = env.DB;
   let result;
   try {
@@ -501,6 +512,11 @@ async function edit(request, env, d) {
           validateIncremental(s.doc, bytes.length);
           append(db, s, id, base64(bytes));
           compact(db, s);
+          // Checked last, immediately before COMMIT.
+          if (deadline !== undefined && Date.now() > deadline)
+            throw Object.assign(new Error("edit deadline passed"), {
+              code: "deadline",
+            });
         }
         return {
           format: 1,

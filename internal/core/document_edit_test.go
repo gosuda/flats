@@ -53,7 +53,8 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Ops    []DocumentEditOp `json:"ops"`
 		IfHash string           `json:"if_hash"`
-		ID     string           `json:"id"`
+		ID       string           `json:"id"`
+		Deadline int64            `json:"deadline_ms"`
 	}
 	b, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(b, &in); err != nil || len(in.Ops) == 0 {
@@ -78,12 +79,20 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 		// Committed, then the response was lost.
 		committedEdits.Store(in.ID, 9)
 		status = 502
+	case "late":
+		// The response is lost; the worker commits shortly afterwards,
+		// still before the edit's deadline.
+		go func(id string) {
+			time.Sleep(50 * time.Millisecond)
+			committedEdits.Store(id, 9)
+		}(in.ID)
+		status = 502
 	case "garbled":
 		committedEdits.Store(in.ID, 9)
 		_, _ = io.WriteString(w, "{not json")
 		return
 	}
-	if !strings.HasPrefix(in.ID, "agent:") || len(in.ID) != len("agent:")+32 {
+	if !strings.HasPrefix(in.ID, "agent:") || len(in.ID) != len("agent:")+32 || in.Deadline <= time.Now().UnixMilli() {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -97,6 +106,9 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
+	window, margin := editCommitWindow, editSettleMargin
+	editCommitWindow, editSettleMargin = 300*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { editCommitWindow, editSettleMargin = window, margin })
 	s, _ := newTestService(t)
 	s.cfg.Runtime = &contentRuntime{}
 	s.cfg.DocsApp = testDocsApp()
@@ -162,7 +174,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), nil, ViaMCP); err != nil || out.Changed {
 		t.Fatal(out, err)
 	}
-	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable"} {
+	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable", "late": "unavailable"} {
 		_, err := s.UpdateDocument(ctx, "notes", "", op(find), ptr(strings.Repeat("a", 64)), ViaMCP)
 		if ErrorCategory(err) != want {
 			t.Fatal(find, err)
@@ -170,7 +182,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		if want == "edit_conflict" && !strings.Contains(err.Error(), "op 1: conflict "+strings.Repeat("a", 64)) {
 			t.Fatal("app message or if_hash lost", err)
 		}
-		wantText := map[string]string{"boom": "may or may not have applied", "rolledback": "nothing changed", "lost": "applied at seq 9", "garbled": "applied at seq 9"}[find]
+		wantText := map[string]string{"boom": "did not apply and can no longer commit", "rolledback": "nothing changed", "lost": "applied at seq 9", "garbled": "applied at seq 9", "late": "applied at seq 9"}[find]
 		if wantText != "" && !strings.Contains(err.Error(), wantText) {
 			t.Fatal("outcome of a failed edit misstated", find, err)
 		}
@@ -201,7 +213,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		}
 	}
 	joined := strings.Join(warned, "\n")
-	if len(warned) != 5 || strings.Count(joined, "committed at seq 9, but its response was lost") != 2 || !strings.Contains(joined, "outcome unknown (docs app returned HTTP 500; no receipt yet)") || strings.Count(joined, "outcome unknown") != 3 {
+	if len(warned) != 6 || strings.Count(joined, "committed at seq 9, but its response was lost") != 3 || !strings.Contains(joined, "did not apply (docs app returned HTTP 500; no receipt after its commit deadline)") || strings.Count(joined, "outcome unknown") != 2 {
 		t.Fatal(warned)
 	}
 	// Changing edits are logged with a summary and never the text.
