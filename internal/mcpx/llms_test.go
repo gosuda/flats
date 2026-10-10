@@ -122,8 +122,20 @@ func TestLLMsTxt(t *testing.T) {
 	}
 
 	code, _, full := fetch(t, c, "GET", srv.URL+LLMsFullPath)
-	if code != 200 || full != index+"\n---\n\n"+guide+"\n---\n\n"+runtimeref.Markdown+"\n---\n\n"+runtimeref.ContentTypesMarkdown {
-		t.Fatalf("llms-full.txt must concatenate the index, agent guide and runtime reference (status %d)", code)
+	if code != 200 || full != index+"\n---\n\n"+guide {
+		t.Fatalf("llms-full.txt must concatenate the index and agent guide (status %d)", code)
+	}
+	// The agent guide carries every guide topic and refusal page, so llms-full
+	// covers both references without repeating them.
+	for _, name := range runtimeref.TopicOrder {
+		if md, _ := runtimeref.Topic(name); !strings.Contains(guide, md) {
+			t.Errorf("agent guide is missing topic.%s", name)
+		}
+	}
+	for _, c := range runtimeref.RefusalCategories() {
+		if !strings.Contains(guide, "### refusal."+c+"\n") {
+			t.Errorf("agent guide is missing refusal.%s", c)
+		}
 	}
 	code, h, md := fetch(t, c, "GET", srv.URL+RuntimeReferencePath)
 	if code != 200 || md != runtimeref.Markdown || h.Get("Content-Type") != "text/markdown; charset=utf-8" {
@@ -133,7 +145,7 @@ func TestLLMsTxt(t *testing.T) {
 	if code != 200 || contentTypes != runtimeref.ContentTypesMarkdown {
 		t.Fatal("content types reference missing")
 	}
-	for _, want := range []string{"save_document", "get_document", "flats://docs/content-types/v1", "type ("} {
+	for _, want := range []string{"save_document", "get_document", "flats://docs/content-types/v1", "| `type` |"} {
 		if !strings.Contains(guide, want) {
 			t.Errorf("guide missing %s", want)
 		}

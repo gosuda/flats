@@ -69,7 +69,7 @@ func TestContentTypesDiscovery(t *testing.T) {
 	e := newEnv(t)
 	for name, client := range map[string]*mcp.ClientSession{"local": e.local, "remote": e.remote} {
 		t.Run(name, func(t *testing.T) {
-			if ins := client.InitializeResult().Instructions; !strings.Contains(ins, runtimeref.ContentTypesURI) || !strings.Contains(ins, "save_document") || !strings.Contains(ins, "get_document") {
+			if ins := client.InitializeResult().Instructions; !strings.Contains(ins, runtimeref.ContentTypesURI) || !strings.Contains(ins, "guide topic.docs") || !strings.Contains(ins, "get_content_types") {
 				t.Fatal("missing discovery instructions")
 			}
 			read, err := client.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: runtimeref.ContentTypesURI})

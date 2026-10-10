@@ -91,8 +91,7 @@ func TestRuntimeReferenceFollowsUploadLimit(t *testing.T) {
 
 func TestRuntimeDocsDiscoveryConsistency(t *testing.T) {
 	checks := []struct{ path, section, paragraph string }{
-		{"../../README.md", "## Agent integration", "Restart/reconnect your client, list tools, then read resource\n`flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.\nThe [runtime API v1 reference](docs/runtime-api-v1.md) is embedded in the host\nand available through MCP without an installed skill or source checkout."},
-		{"../../plugins/flats/skills/flats-deploy/SKILL.md", "## Runtime API discovery", "Before authoring a server app, read MCP resource `flats://docs/runtime-api/v1`\nor call the read-only `get_runtime_reference` tool with `{}`. The complete\n[runtime API v1 reference](../../../../docs/runtime-api-v1.md) ships in the host;\nMCP clients do not need this skill installed."},
+		{"../../README.md", "## Agent integration", "For the whole server contract in one document, read resource\n`flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.\nThe [runtime API v1 reference](docs/runtime-api-v1.md) is embedded in the host\nand available through MCP without an installed skill or source checkout."},
 		{"../../docs/design.md", "## Server flats (handler ABI)", "The authoritative [runtime API v1 reference](runtime-api-v1.md) is embedded\nin the binary and discoverable as MCP resource `flats://docs/runtime-api/v1`\nor read-only tool `get_runtime_reference`. It requires no skill/source access."},
 	}
 	for _, c := range checks {
@@ -114,10 +113,12 @@ func TestRuntimeDocsDiscoveryConsistency(t *testing.T) {
 }
 
 func TestRuntimeDocsWASIEnvironmentConsistency(t *testing.T) {
+	if !strings.Contains(oneLine(runtimeref.Markdown), "Environment receives only the flat's configured environment variables and secrets") {
+		t.Error("runtime reference must describe the app-scoped WASI environment")
+	}
 	checks := []struct{ path, section, claim string }{
 		{"../../README.md", "## Static and server flats", "only the flat's configured environment variables and secrets, with no inherited host environment, plus clocks and randomness."},
 		{"../../docs/design.md", "## Server flats (handler ABI)", "Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment."},
-		{"../../plugins/flats/skills/flats-deploy/SKILL.md", "## Server flats", "Only the flat's configured environment variables and secrets are injected as environment variables; there is no inherited host environment."},
 	}
 	for _, c := range checks {
 		b, err := os.ReadFile(c.path)
@@ -132,5 +133,27 @@ func TestRuntimeDocsWASIEnvironmentConsistency(t *testing.T) {
 		if strings.Count(strings.Join(strings.Fields(section), " "), c.claim) != 1 {
 			t.Errorf("%s must describe the actual app-scoped WASI environment", c.path)
 		}
+	}
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// The plugin skill only connects agents; the server carries the guidance.
+func TestSkillHandsOffToGuide(t *testing.T) {
+	b, err := os.ReadFile("../../plugins/flats/skills/flats-deploy/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill := oneLine(string(b))
+	for _, s := range []string{"flats connect <url>", "flats mcp", "Never guess a host or switch hosts on your own", `{"items":["topic.index"]}`, "Never approve your own request"} {
+		if !strings.Contains(skill, s) {
+			t.Errorf("skill must say %q", s)
+		}
+	}
+	if n := strings.Count(string(b), "\n"); n > 45 {
+		t.Errorf("skill has %d lines; keep it a thin router", n)
+	}
+	if strings.Contains(string(b), "](../") {
+		t.Error("skill links outside the plugin; installed copies cannot resolve it")
 	}
 }

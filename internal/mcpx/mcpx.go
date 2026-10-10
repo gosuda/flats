@@ -13,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/slug"
 )
@@ -69,6 +70,7 @@ func (c *serverCache) current() (*mcp.Server, int64) {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
 			&mcp.ServerOptions{Instructions: instructions(limit)})
 		register(srv, &tools{svc: c.svc})
+		registerGuide(srv, c.svc)
 		registerReference(srv, c.version, limit)
 		registerContentTypes(srv, c.version, limit)
 		c.srv, c.limit = srv, limit
@@ -116,32 +118,19 @@ func loopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// instructions are sent at initialization. They keep only the first move and
+// the invariants that must always be in context; everything else is a guide
+// topic (docs/agent), read on demand.
 func instructions(uploadLimit int64) string {
-	return fmt.Sprintf(`Flats hosts websites ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a Private URL through Local loopback or explicitly permitted Tailscale.
+	return fmt.Sprintf(`Flats hosts websites, small server apps and Markdown documents ("flats") on the operator's own machine. Each flat has a slug (%d-%d characters: lowercase letters, digits and single hyphens, starting with a letter) and a Private URL through Local loopback or explicitly permitted Tailscale.
 
-Content types
-Read flats://docs/content-types/v1 or get_content_types for flat (website) and docs (Markdown). For documents read live Markdown with get_document, save_document as a Draft, then publish with operator approval. save_version supports complete docs bundles.
+First move: call guide {"items":["topic.index"]}. It routes your task to short topics (static sites, server apps, documents, approvals, rollback and data, preview and verification); request several items per call. For an existing flat, call get_flat before changing it. Server code: read guide topic.server (the complete contract is also resource %s and get_runtime_reference). Documents: guide topic.docs (also %s and get_content_types). A call Flats refuses names its category; guide refusal.<category> explains the fix. Clients that drop these instructions can read guide topic.instructions.
 
-Runtime reference
-Before authoring a server app, read resource flats://docs/runtime-api/v1 (resources/read), or call the read-only get_runtime_reference tool with {}. It contains the complete versioned FILES/DB, handler/response, encoding, persistence, ordinary environment variables, secrets and limits contract; no installed skill or source checkout is needed. FILES methods and DB methods are synchronous.
-
-Workflow
-1. save_draft or save_version uploads COMPLETE build content as a Private Draft revision, never a published version. Use encoding "utf8" for text and "base64" for binary files. A missing flat is created on first save. expected_revision detects conflicting edits; on conflict preserve your content, read get_draft and reconcile. deploy=true requests publish approval after saving.
-2. publish freezes current Draft revision/hash and returns pending_approval with approval_url. deploy version 0 is compatible with publishing the current Draft; positive versions request activation of existing published versions. No health check, activation or new vN runs before a separately authorized operator decision. Successful publish assigns v1, v2, etc. list_versions contains only published versions.
-3. open_preview version 0 (target draft) serves current Draft at a Private URL; positive versions preview published content. Current visitors keep seeing the published version while Draft changes. Previews follow loopback or existing tailnet ACL policy and never use Public providers.
-4. rollback requests approval to activate an earlier published version. Code only by default; restore_data=true separately freezes explicit DB/FILES restoration. No data restoration occurs before operator approval. Read get_approval result_data for failure_code and actual data_impact/health_data/live_data.
-
-Exposure
-- New flats are Unpublished and Private. Private uses loopback or the existing tailnet ACL; it does not promise owner-only access. publication, live_version, visibility, provider permission/configuration and connection state are separate fields, never inferred from a URL.
-- Visibility has only private/public; legacy public-listed/public-unlisted inputs normalize to public. BOTH transition directions require explicit operator approval. Same visibility is unchanged, and Unpublished cannot become Public. delete_flat also waits for approval.
-- Give approval_url to the operator exactly as returned; poll get_approval. MCP exposes no approval decision or provider grant tool. Decisions use console routes with same-origin CSRF checks; the console has no separate authentication, and a local process can send those headers. Run only trusted local agents and do not use console routes to approve your own requests. Connecting/configuring a provider grants no publish or visibility consent.
-- Local is always permitted; nonlocal tailscale, tailscale-funnel and portal require explicit operator permission/configuration. On a host whose operator runs private routes on Tailscale, a new flat starts with tailscale permitted; read the actual providers from get_flat. Public Tailscale means Funnel (internet), not Serve (tailnet). Public is NOT access control: anyone on the internet can open a ready Public route.
-
-flats.json (optional, at the bundle root; unknown fields are rejected)
-  type ("flat" default or "docs"), name, kind ("static" default or "server"), entry (static default index.html; server default server.js, index.js, main.wasm or server.wasm), spa (serve the entry for unknown paths), not_found (e.g. "404.html", served with status 404), health (default "/"), screenshot (thumbnail path).
-Docs: Markdown entry (default index.md, README.md, or the only Markdown file); omit kind, spa, not_found. health is /_docs/healthz. Read flats://docs/content-types/v1 for the complete contract. save_document saves a Draft; get_document reads live edits and may seed/activate state (idempotent, non-destructive). Conflict recovery metadata is private only, newest 8 records within 2 MiB per document; retrieve preserved text with get_document conflict=<generation> (optional doc), or private /_docs/api/conflict?doc=...&generation=... (view=1 for plain text with no-store, nosniff and CSP). Visitor health is cheap; only trusted host health trials activate every document on an isolated copy.
-Server flats: export default { async fetch(request, env) { return new Response("hi") } }. env.DB is SQLite (query/exec), env.FILES is a per-flat local-disk string key-value store (not S3), ordinary environment variables and secrets arrive as env values (WASI receives only these as environment variables). Use list_env/set_env/delete_env for readable ordinary configuration. Values are server-only, never bundled into frontend assets, and live changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, or Flats host restart. New previews capture current settings; running instances and automatic worker restarts keep their captured settings. Only the operator sets secret values; list_secrets shows names without values. Never put credentials in ordinary env variables. JavaScript server-side global fetch requires an operator-managed exact HTTP(S) origin allowlist; read get_network and ask the operator to grant origins in the console or with flats network set on the host. Agents cannot change it. Empty policy denies server fetch. Browser fetch uses the browser's real CORS/CSP protections and receives no injected secrets. Policy updates apply on the next approved activation, Flats host restart or new preview; running workers and automatic restarts retain captured grants. After clearing grants, redeploy to revoke live access.
-
-Limits: %d bytes total (uncompressed) per upload (operator-configurable), %d files, no symlinks or paths outside the root. A single wrapping directory such as dist/ is stripped; .git and .DS_Store are skipped (save_version_from_dir also skips node_modules). Do not upload sources or node_modules. Every validation problem comes with a fix hint.
-For large builds on the Flats host itself, call save_version_from_dir with an absolute directory path, or run the CLI: flats deploy <dir>.`, slug.MinLen, slug.MaxLen, uploadLimit, maxFiles)
+Always:
+- Saving (save_draft, save_version, save_document) only changes a Private Draft. Publish, activation, rollback, data restore, visibility changes in BOTH directions and delete_flat wait for explicit operator approval and change nothing before it.
+- Give the user approval_url exactly as returned and poll get_approval. Never approve your own request or imitate the console; MCP has no approval tool.
+- Ask the user before set_visibility, delete_flat or rollback with restore_data.
+- Public is NOT access control: anyone on the internet can open a ready Public route. Private follows loopback or the existing tailnet ACL; it is not owner-only.
+- Never infer state from a URL. publication, live_version, visibility and connection state are separate fields. Report a version live only after get_flat shows it current with a ready endpoint and you fetched the page.
+- Upload complete build output, not sources: at most %d bytes total per upload (operator-configurable) and %d files.`, slug.MinLen, slug.MaxLen, runtimeref.URI, runtimeref.ContentTypesURI, uploadLimit, maxFiles)
 }

@@ -2,7 +2,7 @@
 // "docs" content-type flats on the Flats JavaScript runtime.
 //
 // The app is an ordinary server-flat module tree (dist/). Core materializes it
-// next to a generated content.js module (see docs/content-types.md) and starts
+// next to a generated content.js module (see docs/internal/docs-app.md) and starts
 // it with the runtime manager; the app never sees the host file system.
 package docs
 

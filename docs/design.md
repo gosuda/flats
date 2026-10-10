@@ -145,8 +145,9 @@ connections when exposure is withdrawn.
   storage never mix (`<slug>` vs `<slug>-<8 random>`).
 * **Public.** One Portal exposure per public flat, using a persisted identity
   named `<slug>` (the relay rejects a name owned by another key: the console
-  shows the conflict). `public-unlisted` sets `LeaseMetadata.Hide`; the change
-  reaches relay listings at the next lease renewal (up to ~90 s). Relays: the
+  shows the conflict). Visibility is only `private` or `public`; older stored
+  `public-listed`/`public-unlisted` values read as `public`, and Flats always
+  serves public flats unhidden in relay listings. Relays: the
   Portal CLI default (discovery, up to 3 active relays) unless
   `portal.relays` in `config.json` lists explicit relays.
   `portal.discovery: false` uses only the explicit relays (it requires at
@@ -164,7 +165,7 @@ connections when exposure is withdrawn.
   ready for 24 hours while another relay is; other relays keep serving
   meanwhile.
   Discovery-only startup can take about
-  a minute; the API returns the public URL once a relay is ready. Unlisted is
+  a minute; the API returns the public URL once a relay is ready. Public is
   never described as access control; every API response that returns a public
   URL carries the notice. Identity headers are stripped on this path.
 * **Previews.** `open_preview(n)` creates an ephemeral tsnet node
@@ -278,11 +279,14 @@ or Flats host restart; automatic worker restarts reuse the captured settings.
 
 ## Approvals
 
-Agents (MCP, CLI, HTTP API) cannot widen exposure (private → unlisted →
-listed) or delete a flat. Those requests create a pending approval and return
-`approval_url` = `<console>/approvals/<id>`. Narrowing exposure applies
-immediately. The operator decides in the console; console actions apply
-directly after a confirm dialog.
+Agents (MCP, CLI, HTTP API) cannot publish, activate, roll back, restore
+data, change visibility in either direction (private → public or public →
+private) or delete a flat on their own. Each such request freezes its
+parameters in a pending approval and returns
+`approval_url` = `<console>/approvals/<id>`. Nothing changes until the
+operator approves it in the console; a frozen parameter that changed before
+the decision makes the approval fail as `stale_approval`. Deleting a flat
+from the console itself applies directly after its confirm dialog.
 
 There are no accounts, so operator authority rests on where a request comes
 from and what it carries. Enforced:
@@ -455,7 +459,7 @@ Content type discovery: resource `flats://docs/content-types/v1`.
 ## Per-flat console management
 
 The flat list's menu offers Share, Analytics and Settings. Share changes the
-existing private / public-unlisted / public-listed exposure and provides Visit
+private / public visibility (an approval request either way) and provides Visit
 and Copy link. Private means access through tailnet ACLs, not owner-only access.
 Email invitations, profile showcasing and custom domains are not supported.
 
