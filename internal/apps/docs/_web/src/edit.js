@@ -307,8 +307,7 @@ export function planEdit(text, request, hashText) {
               `op ${i + 1}: nth applies to block anchors only`,
               i,
             );
-          target = op.at === "start" ? list[0] : list[list.length - 1];
-          where = op.at === "start" ? "before" : "after";
+          where = op.at;
         } else {
           target = findBlock(text, list, op[anchor], nth, i, digest);
           where = anchor === "before" ? "before" : "after";
@@ -333,10 +332,18 @@ export function planEdit(text, request, hashText) {
           }
         }
         remove = 0;
-        if (!target) {
-          // An empty or blank document.
+        if (where === "start") {
+          // The very start of the text, before any leading blank lines.
+          at = 0;
+          insert = body + (text.startsWith("\n") ? "\n" : text ? "\n\n" : "\n");
+        } else if (where === "end") {
+          // The very end, after any trailing blank lines.
           at = text.length;
-          insert = (text && !text.endsWith("\n") ? "\n" : "") + body + "\n";
+          const trailing = text.length - text.replace(/\n+$/, "").length;
+          insert =
+            (!text.trim() ? "" : (["\n\n", "\n"][trailing] ?? "")) +
+            body +
+            "\n";
         } else {
           // Keep a blank line on both sides, also next to a heading or a
           // fence that has no blank line before its neighbour.

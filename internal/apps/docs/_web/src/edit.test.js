@@ -211,6 +211,20 @@ test("insert before, after, at the end of a section and of the document", () => 
   );
 });
 
+test("start and end inserts use the real text edges", () => {
+  const at = (text, where) =>
+    plan(text, [{ op: "insert", at: where, text: "Top" }]).text;
+  assert.equal(at("\n\n# H\n", "start"), "Top\n\n\n# H\n");
+  assert.equal(at("# H\n", "start"), "Top\n\n# H\n");
+  assert.equal(at("", "start"), "Top\n");
+  assert.equal(at("# H\n\n\n", "end"), "# H\n\n\nTop\n");
+  assert.equal(at("# H\n", "end"), "# H\n\nTop\n");
+  assert.equal(at("# H", "end"), "# H\n\nTop\n");
+  assert.equal(at("\n\n", "end"), "\n\nTop\n");
+  for (const t of ["\n\n# H\n", "# H\n\n\n", "# H"])
+    for (const w of ["start", "end"]) assert.equal(blocks(at(t, w)).length, 2);
+});
+
 test("inserts stay separate blocks next to headings and fences", () => {
   const tight = "# H\nParagraph\n";
   const h = hashOf(tight, "# H"),
