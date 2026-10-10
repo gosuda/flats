@@ -5,6 +5,9 @@ export const EDIT_LIMITS = Object.freeze({
   ops: 32,
   body: 512 * 1024,
   outline: 1000,
+  // Block operations index and hash every block, which costs about 30 µs
+  // per block in the worker; this keeps a call well inside its deadline.
+  blocks: 50000,
 });
 const fence = /^ {0,3}(`{3,}|~{3,})/,
   heading = /^ {0,3}(#{1,6})(?:[ \t]|$)/,
@@ -20,42 +23,63 @@ function fail(code, message, op) {
 // Blocks are maximal runs of non-blank lines. A fenced code block is one
 // block including its blank lines, and an ATX heading line is always its own
 // block. start/end are UTF-16 offsets; end excludes the trailing newline.
-export function blocks(text) {
+export const blocks = (text) => scan(text, 0).blocks;
+
+// scan parses blocks from pos, a line start outside any block. Before each
+// new block it asks stop(start); a non-negative answer ends the scan there
+// and is returned as next.
+function scan(text, pos, stop) {
   const out = [];
-  let pos = 0,
-    current = null,
+  let current = null,
     open = null;
   const close = () => {
     if (current) out.push(current);
     current = null;
   };
+  let end = 0;
+  const lineText = () => text.slice(pos, end);
   while (pos <= text.length) {
-    const nl = text.indexOf("\n", pos),
-      end = nl === -1 ? text.length : nl,
-      line = text.slice(pos, end);
+    const nl = text.indexOf("\n", pos);
+    end = nl === -1 ? text.length : nl;
     if (pos === text.length && nl === -1) break;
+    // Cheap character checks on the text itself; a line is sliced only for
+    // the rare regular expression, which keeps the split linear and fast.
+    let j = 0;
+    while (j < 3 && text.charCodeAt(pos + j) === 32) j++;
+    const c = text.charCodeAt(pos),
+      d = pos + j < end ? text.charCodeAt(pos + j) : -1,
+      line = lineText;
     if (open) {
       current.end = end;
-      const m = fence.exec(line);
+      const m = d === 96 || d === 126 ? fence.exec(line()) : null;
       if (
         m &&
         m[1][0] === open[0] &&
         m[1].length >= open.length &&
-        blank.test(line.slice(m[0].length))
+        blank.test(line().slice(m[0].length))
       ) {
         open = null;
         close();
       }
-    } else if (blank.test(line)) close();
+    } else if (
+      pos === end ||
+      ((c === 32 || c === 9 || c === 13) && blank.test(line()))
+    )
+      close();
     else {
-      const f = fence.exec(line),
-        h = heading.exec(line);
-      if (f && !(f[1][0] === "`" && line.slice(f[0].length).includes("`"))) {
+      const f = d === 96 || d === 126 ? fence.exec(line()) : null,
+        h = d === 35 ? heading.exec(line()) : null,
+        isFence =
+          f && !(f[1][0] === "`" && line().slice(f[0].length).includes("`"));
+      if (isFence || h || !current) {
         close();
+        const next = stop ? stop(pos) : -1;
+        if (next >= 0) return { blocks: out, next };
+      }
+      if (isFence) {
         current = { start: pos, end, kind: "code" };
         open = f[1];
       } else if (h) {
-        close();
         out.push({ start: pos, end, kind: "heading", level: h[1].length });
       } else if (current) current.end = end;
       else current = { start: pos, end, kind: "text" };
@@ -64,18 +88,96 @@ export function blocks(text) {
     pos = nl + 1;
   }
   close();
-  return out;
+  return { blocks: out, next: -1 };
 }
 
-const lineOf = (text, offset) => {
-  let n = 1;
-  for (
-    let i = text.indexOf("\n");
-    i !== -1 && i < offset;
-    i = text.indexOf("\n", i + 1)
-  )
-    n++;
-  return n;
+// reindex updates list (blocks of the text before splice s) for the text
+// after it. It re-parses from the block before the change only until a new
+// block starts where an unchanged old block started, then reuses and shifts
+// the rest, so each operation costs about the size of the changed region.
+export function reindex(index, text, s, digest) {
+  const list = index.list;
+  const delta = s.insert.length - s.remove,
+    changeEnd = s.at + s.insert.length;
+  // Last block starting at or before the change.
+  let lo = 0,
+    hi = list.length - 1,
+    idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].start <= s.at) {
+      idx = mid;
+      lo = mid + 1;
+    } else hi = mid - 1;
+  }
+  const k = idx >= 1 ? idx - 1 : 0,
+    from = idx >= 1 ? list[k].start : 0;
+  const oldAt = (start) => {
+    let lo = k,
+      hi = list.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid].start === start) return mid;
+      if (list[mid].start < start) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return -1;
+  };
+  const r = scan(text, from, (start) =>
+    start >= changeEnd ? oldAt(start - delta) : -1,
+  );
+  const next = r.next >= 0 ? r.next : list.length,
+    removed = list.splice(k, next - k, ...r.blocks);
+  if (delta)
+    for (let t = k + r.blocks.length; t < list.length; t++) {
+      list[t].start += delta;
+      list[t].end += delta;
+    }
+  if (index.byHash) {
+    for (const b of removed) {
+      const bucket = index.byHash.get(b.hash);
+      bucket.splice(bucket.indexOf(b), 1);
+    }
+    hashInto(r.blocks, text, digest);
+    for (const b of r.blocks) addHash(index.byHash, b);
+  }
+}
+
+// Hashing every block one host call at a time is slow in the worker, so
+// blocks are hashed in batches when the host codec is available.
+export function hashBlocks(bodies, digest) {
+  const codec = globalThis.__flats_docsCodec;
+  if (!codec?.digests) return bodies.map((b) => blockHash(b, digest));
+  const out = [];
+  for (let i = 0; i < bodies.length; ) {
+    let size = 0,
+      j = i;
+    while (j < bodies.length && (j === i || size + bodies[j].length < 1 << 20))
+      size += bodies[j++].length;
+    const all = codec.digests(bodies.slice(i, j));
+    for (let k = 0; k < j - i; k++) out.push(all.slice(k * 64, k * 64 + 16));
+    i = j;
+  }
+  return out;
+}
+function hashInto(list, text, digest) {
+  const need = list.filter((b) => b.hash === undefined),
+    hashes = hashBlocks(
+      need.map((b) => text.slice(b.start, b.end)),
+      digest,
+    );
+  need.forEach((b, i) => (b.hash = hashes[i]));
+}
+function addHash(map, b) {
+  const bucket = map.get(b.hash);
+  if (bucket) bucket.push(b);
+  else map.set(b.hash, [b]);
+}
+
+// Native string operations count newlines much faster than a loop.
+const newlines = (text, a, b) => {
+  const part = text.slice(a, b);
+  return part.length - part.replaceAll("\n", "").length;
 };
 
 // outline lists one page of blocks with the guard hash a caller passes
@@ -96,14 +198,21 @@ export function outline(text, digest, offset = 0, limit = EDIT_LIMITS.outline) {
     pos = b.start;
     const body = text.slice(b.start, b.end);
     page.push({
-      hash: blockHash(body, digest),
+      body,
       kind: b.kind,
       ...(b.level ? { level: b.level } : {}),
       line,
       preview: preview(body),
     });
   }
-  return { blocks: page, total: list.length };
+  const hashes = hashBlocks(
+    page.map((p) => p.body),
+    digest,
+  );
+  return {
+    blocks: page.map(({ body, ...p }, i) => ({ hash: hashes[i], ...p })),
+    total: list.length,
+  };
 }
 export const blockHash = (body, digest) => digest(body).slice(0, 16);
 function preview(body) {
@@ -153,15 +262,22 @@ function pick(list, nth, i, what, hint) {
   return list[0];
 }
 
-function findBlock(text, list, hash, nth, i, digest) {
+// Block hashes are memoized on the block objects reindex keeps, and looked
+// up through a hash map that reindex maintains.
+function findBlock(text, index, hash, nth, i, digest) {
   if (typeof hash !== "string" || !/^[0-9a-f]{16}$/.test(hash))
     fail(
       "invalid",
       `op ${i + 1}: block must be a 16-hex hash from get_document blocks`,
       i,
     );
+  if (!index.byHash) {
+    hashInto(index.list, text, digest);
+    index.byHash = new Map();
+    for (const b of index.list) addHash(index.byHash, b);
+  }
   return pick(
-    list.filter((b) => blockHash(text.slice(b.start, b.end), digest) === hash),
+    [...(index.byHash.get(hash) || [])].sort((a, b) => a.start - b.start),
     nth,
     i,
     `block ${hash}`,
@@ -194,15 +310,9 @@ function minimal(text, at, remove, insert) {
 // planEdit applies ops in order to text and returns the resulting text,
 // the splices to replay on Y.Text, and a per-operation summary.
 export function planEdit(text, request, hashText) {
-  const cache = new Map(),
-    digest = (s) => {
-      let h = cache.get(s);
-      if (h === undefined) {
-        h = hashText(s);
-        if (cache.size < 50000) cache.set(s, h);
-      }
-      return h;
-    };
+  const digest = hashText;
+  // The block index is built once, when an operation first needs it.
+  let index = null;
   if (!request || typeof request !== "object" || Array.isArray(request))
     fail("invalid", "body must be an object with ops");
   for (const key of Object.keys(request))
@@ -238,6 +348,17 @@ export function planEdit(text, request, hashText) {
   }
   const splices = [],
     summary = [];
+  // Line numbers count from the previous operation's position, which a
+  // later splice (always at or after it) does not move.
+  let mark = { at: 0, line: 1 };
+  const lineOf = (text, at) => {
+    const line =
+      at >= mark.at
+        ? mark.line + newlines(text, mark.at, at)
+        : mark.line - newlines(text, at, mark.at);
+    mark = { at, line };
+    return line;
+  };
   ops.forEach((op, i) => {
     if (!op || typeof op !== "object" || Array.isArray(op))
       fail("invalid", `op ${i + 1} must be an object`, i);
@@ -275,9 +396,18 @@ export function planEdit(text, request, hashText) {
       remove = find.length;
       insert = str(op.with, "with", i, { empty: true });
     } else {
-      const list = blocks(text);
+      if (!index) {
+        index = { list: blocks(text), byHash: null };
+        if (index.list.length > EDIT_LIMITS.blocks)
+          fail(
+            "capacity",
+            `op ${i + 1}: the document has ${index.list.length} blocks; block operations support at most ${EDIT_LIMITS.blocks}. Use replace with find text instead`,
+            i,
+          );
+      }
+      const list = index.list;
       if (op.op === "replace_block" || op.op === "delete_block") {
-        const b = findBlock(text, list, op.block, nth, i, digest);
+        const b = findBlock(text, index, op.block, nth, i, digest);
         if (op.op === "replace_block") {
           insert = str(op.with, "with", i).replace(/^\n+|\n+$/g, "");
           if (!insert.trim())
@@ -325,7 +455,7 @@ export function planEdit(text, request, hashText) {
             );
           where = op.at;
         } else {
-          target = findBlock(text, list, op[anchor], nth, i, digest);
+          target = findBlock(text, index, op[anchor], nth, i, digest);
           where = anchor === "before" ? "before" : "after";
           if (anchor === "section_end") {
             if (target.kind !== "heading")
@@ -387,7 +517,10 @@ export function planEdit(text, request, hashText) {
     const s = minimal(text, at, remove, insert);
     const line = lineOf(text, at);
     text = text.slice(0, s.at) + s.insert + text.slice(s.at + s.remove);
-    if (s.remove || s.insert) splices.push(s);
+    if (s.remove || s.insert) {
+      splices.push(s);
+      if (index) reindex(index, text, s, digest);
+    }
     summary.push({
       op: op.op,
       line,

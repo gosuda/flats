@@ -454,7 +454,10 @@ async function edit(request, env, d) {
       try {
         const text = s.doc.getText("markdown"),
           before = s.row.seq,
-          plan = planEdit(text.toString(), body, digest);
+          original = text.toString(),
+          plan = planEdit(original, body, digest);
+        // Operations that cancel out leave nothing to commit.
+        if (plan.text === original) plan.splices = [];
         if (plan.splices.length) {
           const sv = Y.encodeStateVector(s.doc);
           s.doc.transact(() => {

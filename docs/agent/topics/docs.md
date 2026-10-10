@@ -66,8 +66,9 @@ for a rewrite, several documents or assets, or when no docs version runs
    edit while the text is still there.
 
 Limits: a request of at most 512 KiB, one resulting update of at most
-256 KiB, Markdown up to 1 MiB per document and the document's stored history
-(`document_capacity`); about 10 edits per second per flat (`unavailable`
+256 KiB, Markdown up to 1 MiB per document, the document's stored history,
+and block operations only on documents of at most 50,000 blocks (use
+`replace` beyond that) (`document_capacity`); about 10 edits per second per flat (`unavailable`
 when exceeded: wait and retry). Any other `unavailable` says whether the edit
 was rolled back; if it may have applied, read `get_document` before retrying
 so an insert is not applied twice.

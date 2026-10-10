@@ -414,3 +414,106 @@ test("emoji and Korean text keep surrogate pairs whole", () => {
     assert.ok(!/[\uD800-\uDBFF]$/.test(s.insert));
   }
 });
+
+test("the incremental block index matches a full re-parse", async () => {
+  const { reindex } = await import("./edit.js");
+  let seed = 7;
+  const rand = (n) => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed % n;
+  };
+  const pieces = [
+    "",
+    "",
+    "# h",
+    "## h2",
+    "text",
+    "more text",
+    "```",
+    "```js",
+    "~~~",
+    "- item",
+    "    ",
+    "#tag",
+    "~~~~",
+  ];
+  const randomText = (lines) =>
+    Array.from({ length: lines }, () => pieces[rand(pieces.length)]).join(
+      "\n",
+    ) + (rand(2) ? "\n" : "");
+  for (let round = 0; round < 400; round++) {
+    let text = randomText(1 + rand(40));
+    const index = { list: blocks(text), byHash: new Map() };
+    const list = index.list;
+    for (const b of list) {
+      b.hash = blockHash(text.slice(b.start, b.end), digest);
+      index.byHash.set(b.hash, [...(index.byHash.get(b.hash) || []), b]);
+    }
+    for (let step = 0; step < 6; step++) {
+      const at = rand(text.length + 1),
+        remove = rand(Math.min(12, text.length - at) + 1),
+        insert = rand(3) ? randomText(rand(4)).slice(0, rand(30)) : "";
+      if (!remove && !insert) continue;
+      text = text.slice(0, at) + insert + text.slice(at + remove);
+      reindex(index, text, { at, remove, insert }, digest);
+      const expect = blocks(text);
+      assert.deepEqual(
+        list.map(({ start, end, kind, level }) => ({
+          start,
+          end,
+          kind,
+          level,
+        })),
+        expect.map(({ start, end, kind, level }) => ({
+          start,
+          end,
+          kind,
+          level,
+        })),
+        JSON.stringify({ round, step, text }),
+      );
+      const mapped = [...index.byHash.values()].flat();
+      assert.equal(mapped.length, list.length);
+      for (const b of list)
+        assert.equal(b.hash, blockHash(text.slice(b.start, b.end), digest));
+      for (const b of mapped) assert.ok(list.includes(b));
+    }
+  }
+});
+
+test("summary lines stay exact across operations in any order", () => {
+  const text =
+    Array.from({ length: 30 }, (_, i) => `p${i}`).join("\n\n") + "\n";
+  const naive = (t, at) => t.slice(0, at).split("\n").length;
+  const ops = [
+    { op: "replace", find: "p20", with: "P20\nmore" },
+    { op: "replace", find: "p3\n", with: "p3\n\nx\n" },
+    { op: "insert", at: "start", text: "Top" },
+    { op: "replace", find: "p29", with: "end" },
+    { op: "replace", find: "p10", with: "" },
+  ];
+  const r = plan(text, ops);
+  let t = text;
+  ops.forEach((op, i) => {
+    const one = plan(t, [op]);
+    assert.equal(r.summary[i].line, one.summary[0].line, `op ${i + 1}`);
+    t = one.text;
+  });
+  assert.equal(r.text, t);
+  assert.equal(naive(text, text.indexOf("p20")), r.summary[0].line);
+});
+
+test("block operations are bounded by the block count", () => {
+  const many = Array.from({ length: 50001 }, (_, i) => `b${i}`).join("\n\n");
+  rejects(
+    () => plan(many, [{ op: "delete_block", block: hashOf(many, "b7") }]),
+    "capacity",
+    /50000/,
+  );
+  // Text operations still work on such a document.
+  assert.ok(
+    plan(many, [{ op: "replace", find: "b50000", with: "end" }]).text.endsWith(
+      "end",
+    ),
+  );
+});

@@ -271,7 +271,12 @@ update operations. The agent contract is guide `topic.docs`.
   `replace_block {block, with, nth?}`, `delete_block {block, nth?}`,
   `insert {text, before|after|section_end: block | at: start|end, nth?}`.
   1–32 operations apply in order to the evolving text; the request is at most
-  512 KiB. Blocks are maximal runs of non-blank lines; a fenced code block
+  512 KiB. Block operations build one block index per call (split, then all
+  hashes in batched `digests` codec calls), keep it in step with each splice
+  by re-parsing only from the block before the change until old boundaries
+  line up, and look blocks up through a hash map. They are refused on
+  documents of more than 50,000 blocks (`capacity`): at roughly 30 µs per
+  block in the worker that keeps a call far inside the request deadline. Blocks are maximal runs of non-blank lines; a fenced code block
   (including blank lines) is one block and an ATX heading line is its own
   block. A section is a heading plus the blocks up to the next heading of the
   same or a higher level. Inserted text is trimmed of outer newlines and
@@ -322,7 +327,9 @@ globals. It has no I/O authority and is not a runtime API v1 capability.
 The built-in app requires read-only, non-enumerable `request.runtimeGeneration`
 and `ws.runtimeGeneration`, supplied from `RuntimeSpec.Generation`, and
 `ws.setSendLimits(connectionBytes, flatBytes)` (a non-enumerable prototype
-method). `globalThis.__flats_docsWake(doc)` (non-enumerable, every JS VM) and the
+method). The codec's `digests(list)` returns the concatenated SHA-256 hex digests of
+up to 1,048,576 strings (8 MiB of JSON input) in one host call.
+`globalThis.__flats_docsWake(doc)` (non-enumerable, every JS VM) and the
 `wake` WebSocket event it produces are internal in the same way.
 These are host internals for built-in apps, **not part of runtime API
 v1** and not supported APIs for agent-authored server flats. They are visible

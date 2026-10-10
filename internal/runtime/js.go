@@ -743,6 +743,27 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		}
 		sum := sha256.Sum256([]byte(s))
 		return newString(hex.EncodeToString(sum[:])), nil
+	case "digests":
+		// Many SHA-256 digests in one call: the hex digests concatenated,
+		// 64 characters each, in input order.
+		raw := args[1].String()
+		vm.gcBytes += uint64(len(raw))
+		if len(raw) > 8*1024*1024 {
+			return nil, errors.New("docs codec digest limit")
+		}
+		var list []string
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			return nil, err
+		}
+		if len(list) > 1<<20 {
+			return nil, errors.New("docs codec digest limit")
+		}
+		out := make([]byte, 0, len(list)*sha256.Size*2)
+		for _, s := range list {
+			sum := sha256.Sum256([]byte(s))
+			out = hex.AppendEncode(out, sum[:])
+		}
+		return newString(string(out)), nil
 	default:
 		return nil, errors.New("unknown docs codec")
 	}

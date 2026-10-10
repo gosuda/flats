@@ -45,8 +45,9 @@ document to win.
 ## document_capacity
 
 `update_document` would exceed a document limit: the request is larger than
-512 KiB, the single update larger than 256 KiB, the Markdown above 1 MiB, or
-the document's stored history is full. Nothing changed. Split a large edit
+512 KiB, the single update larger than 256 KiB, the Markdown above 1 MiB, a
+block operation on a document of more than 50,000 blocks (use `replace` with
+`find` there), or the document's stored history is full. Nothing changed. Split a large edit
 into several calls or make the document smaller. Full history needs the
 operator; tell the user.
 

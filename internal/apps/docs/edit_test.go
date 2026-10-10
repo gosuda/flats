@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
@@ -350,5 +352,46 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	}
 	if _, err := s.UpdateDocument(t.Context(), "host-doc", "", nil, nil, core.ViaMCP); core.ErrorCategory(err) != "invalid" {
 		t.Fatal(err)
+	}
+}
+
+// Block operations on a document at the block bound stay well within the
+// worker's request deadline: the block index is built and hashed once.
+// Beyond the bound they are refused; text operations still work.
+func TestAgentEditManyBlocksWithinDeadline(t *testing.T) {
+	var b strings.Builder
+	for i := range 50000 {
+		fmt.Fprintf(&b, "b%d\n\n", i)
+	}
+	a := startApp(t, t.TempDir(), b.String(), "v1")
+	if status, body, _ := a.getHeaders(t, "/_docs/api/document?blocks=1&block_offset=49999", http.Header{"X-Flats-Access": {"private"}}); status != 200 || !strings.Contains(body, `"blocks_total":50000`) || !strings.Contains(body, `"preview":"b49999"`) {
+		t.Fatal(status, len(body))
+	}
+	var list []any
+	for i := range 32 {
+		from, to := "b25000", "c25000"
+		if i%2 == 1 {
+			from, to = to, from
+		}
+		list = append(list, map[string]any{"op": "replace_block", "block": blockHash(from), "with": to})
+	}
+	body, _ := json.Marshal(map[string]any{"ops": list})
+	started := time.Now()
+	status, m := a.postEdit(t, hostEdit, string(body))
+	if status != 200 || m["changed"] != false || len(m["ops"].([]any)) != 32 {
+		t.Fatal(status, m)
+	}
+	if elapsed := time.Since(started); elapsed > 6*time.Second {
+		t.Fatal("block operations near the bound are too slow:", elapsed)
+	} else {
+		t.Logf("32 block ops on 50,000 blocks: %s", elapsed)
+	}
+	// One more block crosses the bound: block ops are refused, replace works.
+	more := startApp(t, t.TempDir(), b.String()+"extra\n", "v1")
+	if status, m := more.postEdit(t, hostEdit, ops(map[string]any{"op": "delete_block", "block": blockHash("b7")})); status != 422 || m["code"] != "capacity" || !strings.Contains(m["message"].(string), "replace") {
+		t.Fatal(status, m)
+	}
+	if status, m := more.postEdit(t, hostEdit, ops(map[string]any{"op": "replace", "find": "extra", "with": "last"})); status != 200 || m["changed"] != true {
+		t.Fatal(status, m)
 	}
 }

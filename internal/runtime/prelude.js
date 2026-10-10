@@ -17,6 +17,7 @@
     },
     decode(s) { return new Uint8Array(docsCodec("decode", JSON.stringify(s))); },
     digest(s) { return docsCodec("digest", JSON.stringify(s)); },
+    digests(list) { return docsCodec("digests", JSON.stringify(list)); },
     length(s) { return docsCodec("length", JSON.stringify(s)); },
     textEncoder: Object.freeze({
       encode(s) { return new Uint8Array(docsCodec("textEncode", JSON.stringify(s))); },
