@@ -182,8 +182,24 @@ export function liveDecorations(
           case "Blockquote":
             line(node.from, node.to, "cm-quote");
             return;
+          case "CodeBlock": {
+            // Indented code: the indent markdown-it strips is hidden on
+            // lines away from the cursor.
+            line(node.from, node.to, "cm-codeblock");
+            const width = node.from - doc.lineAt(node.from).from;
+            for (const n of lineNumbers(
+              doc,
+              Math.max(node.from, visible.from),
+              Math.min(node.to, visible.to),
+            )) {
+              const l = doc.line(n),
+                indent = /^[ \t]*/.exec(l.text)[0].length;
+              if (!isActive(l.from, l.to))
+                hide(l.from, l.from + Math.min(width, indent));
+            }
+            return false;
+          }
           case "FencedCode":
-          case "CodeBlock":
             line(node.from, node.to, "cm-codeblock");
             // Fence lines stay as empty padding rows of the code block, and
             // container marks (a quote's ">") inside it are hidden; each
@@ -230,6 +246,14 @@ export function liveDecorations(
             }
             return false;
           }
+          case "HardBreak":
+            // "\" at a line end breaks the line; only the backslash hides.
+            if (
+              doc.sliceString(node.from, node.from + 1) === "\\" &&
+              !isActive(node.from, node.from)
+            )
+              hide(node.from, node.from + 1);
+            return;
           case "Escape":
             // "\*" reads as "*".
             if (!isActive(node.from, node.to)) hide(node.from, node.from + 1);
@@ -422,6 +446,9 @@ export function tableBlocks(state, focused, refs = new Map()) {
   return out;
 }
 
+// A fence line, possibly inside quotes: its fence run and what follows it.
+const fenceLine = /^ {0,3}(?:> ?)*(`{3,}|~{3,})(.*)$/;
+
 // A single-line reference definition, possibly inside quotes: "[label]: url".
 const definition =
   /^ {0,3}(?:> ?)*\[((?:[^\]\\\n]|\\.)+)\]:[ \t]*(<[^>\n]*>|\S+)/;
@@ -435,7 +462,24 @@ const definition =
 // as source in the editor.
 export function referenceDefinitions(doc, links) {
   const refs = new Map();
+  // Text inside a fenced code block is code, not a definition.
+  let fence = null;
   for (const text of doc.iterLines()) {
+    const f = fenceLine.exec(text);
+    if (fence) {
+      if (
+        f &&
+        f[1][0] === fence[0] &&
+        f[1].length >= fence.length &&
+        !f[2].trim()
+      )
+        fence = null;
+      continue;
+    }
+    if (f) {
+      fence = f[1];
+      continue;
+    }
     if (!text.includes("]:")) continue;
     const m = definition.exec(text);
     if (!m) continue;

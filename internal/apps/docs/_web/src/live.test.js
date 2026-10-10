@@ -368,3 +368,21 @@ test("definitions are found beyond the parsed tree", () => {
     "[far]: https://far.example",
   );
 });
+
+test("text in a code fence is not a reference definition", () => {
+  const text = "[x][id]\n\n```\n[id]: https://e.example\n```\n";
+  const s = EditorState.create({ doc: text });
+  assert.equal(referenceDefinitions(s.doc, links).size, 0);
+  assert.ok(!decorate(text).some((d) => d.cls === "cm-link"));
+});
+
+test("a backslash hard break hides only its backslash", () => {
+  assert.deepEqual(hidden(decorate("a\\\nb\n\nx")), ["\\"]);
+  assert.deepEqual(hidden(decorate("a\\\nb\n\nx", 0)), []);
+});
+
+test("indented code hides its indent away from the cursor", () => {
+  const text = "x\n\n    code\n      more\n\ny";
+  assert.deepEqual(hidden(decorate(text)), ["    ", "    "]);
+  assert.deepEqual(hidden(decorate(text, 9)), ["    "]);
+});
