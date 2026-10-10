@@ -11,6 +11,7 @@ package zrok
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -187,34 +188,70 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		return e.url, nil
 	}
 
+	ns := n.cfg.Namespace
+	rec, known, err := n.readRecord(slug)
+	if err != nil {
+		return "", fmt.Errorf("zrok: %s: %w", slug, err)
+	}
+	if known && rec.Namespace != ns {
+		// zrok.namespace changed: release what this host holds in the old
+		// namespace before reserving in the new one.
+		if err := n.release(ctx, slug, rec); err != nil {
+			return "", fmt.Errorf("zrok: %s: release the name in namespace %q first: %w", slug, rec.Namespace, err)
+		}
+		known = false
+	}
+	if !known {
+		rec = record{Namespace: ns}
+	}
 	// Record the name before reserving it, so a reservation is never
-	// untracked; Retire drops a record whose name the account does not own.
-	if err := n.mark(slug); err != nil {
+	// untracked.
+	if err := n.writeRecord(slug, rec); err != nil {
 		return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
 	}
-	holder, err := n.b.ReserveName(ctx, slug)
+	holder, created, err := n.b.ReserveName(ctx, ns, slug)
 	if err != nil {
 		if errors.Is(err, errNameTaken) {
+			if !known {
+				_ = n.dropRecord(slug)
+			}
 			return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
 		}
 		return "", fmt.Errorf("zrok: %s: %w", slug, err)
 	}
+	if created {
+		rec.Created = true
+		if err := n.writeRecord(slug, rec); err != nil {
+			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
+		}
+	}
 	if holder != "" {
-		// A share this environment left behind (a crash, or a shutdown that
-		// could not unshare) still holds the name. Deleting a share of
-		// another environment fails, so this never takes a name over.
+		// Only a share this host created and could not delete (a crash, or
+		// a shutdown whose unshare failed) is removed. Any other share, such
+		// as one the operator runs under this name, is left alone.
+		if holder != rec.Token {
+			return "", fmt.Errorf("zrok: %s: the name is held by share %s, which Flats did not create; stop that share or rename the flat", slug, holder)
+		}
 		if err := n.b.Unshare(ctx, holder); err != nil {
-			return "", fmt.Errorf("zrok: %s: the name is held by share %s, which could not be removed: %w", slug, holder, err)
+			return "", fmt.Errorf("zrok: %s: remove stale share %s: %w", slug, holder, err)
 		}
 		n.logf("zrok: %s: removed stale share %s", slug, holder)
+		rec.Token = ""
+		_ = n.writeRecord(slug, rec)
 	}
-	token, endpoints, err := n.b.Share(ctx, slug)
+	token, endpoints, err := n.b.Share(ctx, ns, slug)
 	if err != nil {
 		return "", fmt.Errorf("zrok: %w", err)
 	}
+	rec.Token = token
+	if err := n.writeRecord(slug, rec); err != nil {
+		// An unrecorded share could never be cleaned up after a crash.
+		_ = n.b.Unshare(ctx, token)
+		return "", fmt.Errorf("zrok: %s: record share: %w", slug, err)
+	}
 	url := ""
 	if len(endpoints) > 0 {
-		url = endpoints[0]
+		url = absoluteURL(endpoints[0])
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	e = &entry{slug: slug, token: token, url: url, handler: &handlerBox{h: h},
@@ -370,6 +407,8 @@ func (n *Net) stopEntry(e *entry) error {
 	// Unshare even if draining failed: the share is what keeps the URL up.
 	if err := n.b.Unshare(ctx, e.token); err != nil {
 		errs = append(errs, fmt.Errorf("zrok: %s: %w", e.slug, err))
+	} else {
+		n.forgetToken(e.slug, e.token)
 	}
 	if len(errs) > 0 {
 		e.mu.Lock()
@@ -380,8 +419,10 @@ func (n *Net) stopEntry(e *entry) error {
 }
 
 // Retire stops slug's share and releases its name, for a deleted flat or an
-// expired rename redirect. It releases the name even when no share is
-// served, so a name left by an earlier process is not kept forever.
+// expired rename redirect. It acts on the name this host recorded, so a name
+// kept while the flat was private, or after a restart, is released too. A
+// name Flats did not create, or one another share now uses, is left in the
+// account; only the record is dropped.
 func (n *Net) Retire(slug string) error {
 	if !n.beginOp() {
 		return errors.New("zrok: closed")
@@ -393,32 +434,54 @@ func (n *Net) Retire(slug string) error {
 	if err := n.stop(slug); err != nil {
 		return err
 	}
+	rec, known, err := n.readRecord(slug)
+	if err != nil || !known {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
 	defer cancel()
-	holder, found, err := n.b.NameHolder(ctx, slug)
-	if err != nil {
+	if err := n.release(ctx, slug, rec); err != nil {
 		return fmt.Errorf("zrok: %s: %w", slug, err)
-	}
-	if found {
-		if holder != "" {
-			if err := n.b.Unshare(ctx, holder); err != nil {
-				return fmt.Errorf("zrok: %s: remove share %s: %w", slug, holder, err)
-			}
-		}
-		if err := n.b.ReleaseName(ctx, slug); err != nil {
-			return fmt.Errorf("zrok: %s: %w", slug, err)
-		}
-	}
-	if err := n.unmark(slug); err != nil {
-		return fmt.Errorf("zrok: %s: drop name record: %w", slug, err)
 	}
 	return nil
 }
 
+// release undoes what rec says this host holds for slug and drops rec.
+func (n *Net) release(ctx context.Context, slug string, rec record) error {
+	holder, found, err := n.b.NameHolder(ctx, rec.Namespace, slug)
+	if err != nil {
+		return err
+	}
+	if found {
+		switch {
+		case holder != "" && holder == rec.Token:
+			if err := n.b.Unshare(ctx, holder); err != nil {
+				return fmt.Errorf("remove share %s: %w", holder, err)
+			}
+			if rec.Created {
+				if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
+					return err
+				}
+			}
+		case holder != "":
+			// Another share uses the name now; leave it.
+		case rec.Created:
+			if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
+				return err
+			}
+		}
+	}
+	return n.dropRecord(slug)
+}
+
 // Reserved reports whether this host recorded reserving slug's name and has
 // not released it yet.
-func (n *Net) Reserved(slug string) bool {
-	path, err := n.markPath(slug)
+func (n *Net) Reserved(slug string) bool { return HasRecord(n.cfg.Dir, slug) }
+
+// HasRecord reports whether dir records a zrok name for slug. It reads only
+// the local record, for callers without a zrok backend.
+func HasRecord(dir, slug string) bool {
+	path, err := recordPath(dir, slug)
 	if err != nil {
 		return false
 	}
@@ -426,31 +489,76 @@ func (n *Net) Reserved(slug string) bool {
 	return err == nil
 }
 
+// record is what this host knows about a name it reserved, kept as JSON in
+// <Dir>/<slug>.
+type record struct {
+	Namespace string `json:"namespace"`
+	Created   bool   `json:"created"`         // Flats created the name, so it may release it
+	Token     string `json:"token,omitempty"` // a share Flats created and has not deleted yet
+}
+
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-func (n *Net) markPath(slug string) (string, error) {
-	if n.cfg.Dir == "" {
+func recordPath(dir, slug string) (string, error) {
+	if dir == "" {
 		return "", errors.New("no name directory")
 	}
 	if !nameRE.MatchString(slug) {
 		return "", fmt.Errorf("invalid name %q", slug)
 	}
-	return filepath.Join(n.cfg.Dir, slug), nil
+	return filepath.Join(dir, slug), nil
 }
 
-func (n *Net) mark(slug string) error {
-	path, err := n.markPath(slug)
+func (n *Net) readRecord(slug string) (record, bool, error) {
+	path, err := recordPath(n.cfg.Dir, slug)
+	if err != nil {
+		return record{}, false, err
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return record{}, false, nil
+	}
+	if err != nil {
+		return record{}, false, err
+	}
+	var rec record
+	if err := json.Unmarshal(b, &rec); err != nil || rec.Namespace == "" {
+		return record{}, false, fmt.Errorf("unreadable name record %s", path)
+	}
+	return rec, true, nil
+}
+
+func (n *Net) writeRecord(slug string, rec record) error {
+	path, err := recordPath(n.cfg.Dir, slug)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(n.cfg.Dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(n.cfg.Namespace+"\n"), 0o600)
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(n.cfg.Dir, "."+slug+".tmp*")
+	if err != nil {
+		return err
+	}
+	_, werr := tmp.Write(append(b, '\n'))
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o600)); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }
 
-func (n *Net) unmark(slug string) error {
-	path, err := n.markPath(slug)
+func (n *Net) dropRecord(slug string) error {
+	path, err := recordPath(n.cfg.Dir, slug)
 	if err != nil {
 		return err
 	}
@@ -458,6 +566,24 @@ func (n *Net) unmark(slug string) error {
 		return err
 	}
 	return nil
+}
+
+// forgetToken clears a deleted share from slug's record. A failure only
+// leaves a token that no share has any more.
+func (n *Net) forgetToken(slug, token string) {
+	if rec, ok, err := n.readRecord(slug); err == nil && ok && rec.Token == token {
+		rec.Token = ""
+		_ = n.writeRecord(slug, rec)
+	}
+}
+
+// absoluteURL turns a zrok frontend endpoint, which the controller returns
+// as a bare host name (<name>.<namespace host>), into an https URL.
+func absoluteURL(endpoint string) string {
+	if endpoint == "" || strings.Contains(endpoint, "://") {
+		return endpoint
+	}
+	return "https://" + endpoint
 }
 
 // URL returns slug's public URL, or "" when it is not served.

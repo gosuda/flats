@@ -199,7 +199,14 @@ expired redirect, also releases the name. `Serve` records each name in
 after a restart, while the flat was private or after its zrok permission was
 revoked. A failed release keeps the record and fails `StopSlug` for retry;
 it is a cleanup obligation, not a public route. With no zrok backend
-configured, records stay until zrok is turned on again.
+configured, `StopSlug` refuses while a record exists, so the operator turns
+zrok on again before deleting the flat. Records also carry the namespace,
+whether Flats created the name and the token of any share Flats created:
+`Serve` removes only a share whose token Flats recorded, `Retire` releases
+only a name Flats created and leaves a name another share now uses, and a
+changed `zrok.namespace` releases the old namespace's name first. The
+controller returns frontend endpoints as bare host names; Flats reports them
+as `https://` URLs.
 
 A listener the overlay closes is rebound with backoff (2 s, doubling to
 60 s). Requests that the lost listener already accepted are drained before

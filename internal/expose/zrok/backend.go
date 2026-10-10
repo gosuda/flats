@@ -23,18 +23,19 @@ var errNameTaken = errors.New("another zrok account owns this name")
 // backend is the zrok account and overlay operations Net uses. Tests
 // substitute a fake; the real one is sdkBackend.
 type backend interface {
-	// ReserveName makes sure the account owns name in the namespace. It
-	// returns the token of the share that currently holds the name, or "".
-	ReserveName(ctx context.Context, name string) (holder string, err error)
-	// NameHolder reports whether the account holds name, and the token of
-	// the share that currently holds it, or "".
-	NameHolder(ctx context.Context, name string) (holder string, found bool, err error)
-	// ReleaseName deletes the account's reservation of name. A name the
-	// account does not hold is not an error.
-	ReleaseName(ctx context.Context, name string) error
-	// Share creates a public share under name and returns its token and
-	// frontend endpoints.
-	Share(ctx context.Context, name string) (token string, endpoints []string, err error)
+	// ReserveName makes sure the account owns name in namespace. It returns
+	// the token of the share that currently holds the name, or "", and
+	// whether this call created the name.
+	ReserveName(ctx context.Context, namespace, name string) (holder string, created bool, err error)
+	// NameHolder reports whether the account holds name in namespace, and
+	// the token of the share that currently holds it, or "".
+	NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error)
+	// ReleaseName deletes the account's reservation of name in namespace. A
+	// name the account does not hold is not an error.
+	ReleaseName(ctx context.Context, namespace, name string) error
+	// Share creates a public share under name in namespace and returns its
+	// token and frontend endpoints.
+	Share(ctx context.Context, namespace, name string) (token string, endpoints []string, err error)
 	// Unshare deletes a share of this environment. An unknown share is not
 	// an error.
 	Unshare(ctx context.Context, token string) error
@@ -45,8 +46,7 @@ type backend interface {
 
 // sdkBackend talks to the zrok controller of an enabled environment.
 type sdkBackend struct {
-	root      env_core.Root
-	namespace string
+	root env_core.Root
 
 	mu   sync.Mutex
 	zctx ziti.Context // created on the first Listen
@@ -80,36 +80,36 @@ func newSDKBackend(cfg Config) (*sdkBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sdkBackend{root: root, namespace: cfg.Namespace}, nil
+	return &sdkBackend{root: root}, nil
 }
 
 func (b *sdkBackend) auth() runtime.ClientAuthInfoWriter {
 	return httptransport.APIKeyAuth("X-TOKEN", "header", b.root.Environment().AccountToken)
 }
 
-func (b *sdkBackend) ReserveName(ctx context.Context, name string) (string, error) {
+func (b *sdkBackend) ReserveName(ctx context.Context, namespace, name string) (string, bool, error) {
 	c, err := b.root.Client()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	holder, found, err := b.NameHolder(ctx, name)
+	holder, found, err := b.NameHolder(ctx, namespace, name)
 	if err != nil || found {
-		return holder, err
+		return holder, false, err
 	}
 	req := share.NewCreateShareNameParamsWithContext(ctx)
-	req.Body = share.CreateShareNameBody{NamespaceToken: b.namespace, Name: name}
+	req.Body = share.CreateShareNameBody{NamespaceToken: namespace, Name: name}
 	if _, err := c.Share.CreateShareName(req, b.auth()); err != nil {
 		var conflict *share.CreateShareNameConflict
 		if errors.As(err, &conflict) {
 			// Lost a race with ourselves, or the name exists already.
-			if holder, found, ferr := b.NameHolder(ctx, name); ferr == nil && found {
-				return holder, nil
+			if holder, found, ferr := b.NameHolder(ctx, namespace, name); ferr == nil && found {
+				return holder, false, nil
 			}
-			return "", nameConflict(name, b.namespace, string(conflict.GetPayload()))
+			return "", false, nameConflict(name, namespace, string(conflict.GetPayload()))
 		}
-		return "", fmt.Errorf("reserve name %q: %w", name, err)
+		return "", false, fmt.Errorf("reserve name %q: %w", name, err)
 	}
-	return "", nil
+	return "", true, nil
 }
 
 // nameConflict explains a CreateShareName conflict for a name the account
@@ -123,16 +123,16 @@ func nameConflict(name, namespace, reason string) error {
 }
 
 // NameHolder looks name up among the account's names in the namespace.
-func (b *sdkBackend) NameHolder(ctx context.Context, name string) (holder string, found bool, err error) {
+func (b *sdkBackend) NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error) {
 	c, err := b.root.Client()
 	if err != nil {
 		return "", false, err
 	}
 	req := share.NewListNamesForNamespaceParamsWithContext(ctx)
-	req.NamespaceToken = b.namespace
+	req.NamespaceToken = namespace
 	resp, err := c.Share.ListNamesForNamespace(req, b.auth())
 	if err != nil {
-		return "", false, fmt.Errorf("list names in namespace %q: %w", b.namespace, err)
+		return "", false, fmt.Errorf("list names in namespace %q: %w", namespace, err)
 	}
 	for _, n := range resp.Payload {
 		if n != nil && n.Name == name {
@@ -142,8 +142,8 @@ func (b *sdkBackend) NameHolder(ctx context.Context, name string) (holder string
 	return "", false, nil
 }
 
-func (b *sdkBackend) ReleaseName(ctx context.Context, name string) error {
-	_, found, err := b.NameHolder(ctx, name)
+func (b *sdkBackend) ReleaseName(ctx context.Context, namespace, name string) error {
+	_, found, err := b.NameHolder(ctx, namespace, name)
 	if err != nil || !found {
 		return err
 	}
@@ -152,7 +152,7 @@ func (b *sdkBackend) ReleaseName(ctx context.Context, name string) error {
 		return err
 	}
 	req := share.NewDeleteShareNameParamsWithContext(ctx)
-	req.Body = share.DeleteShareNameBody{NamespaceToken: b.namespace, Name: name}
+	req.Body = share.DeleteShareNameBody{NamespaceToken: namespace, Name: name}
 	if _, err := c.Share.DeleteShareName(req, b.auth()); err != nil {
 		var missing *share.DeleteShareNameNotFound
 		if errors.As(err, &missing) {
@@ -163,7 +163,7 @@ func (b *sdkBackend) ReleaseName(ctx context.Context, name string) error {
 	return nil
 }
 
-func (b *sdkBackend) Share(ctx context.Context, name string) (string, []string, error) {
+func (b *sdkBackend) Share(ctx context.Context, namespace, name string) (string, []string, error) {
 	c, err := b.root.Client()
 	if err != nil {
 		return "", nil, err
@@ -176,7 +176,7 @@ func (b *sdkBackend) Share(ctx context.Context, name string) (string, []string, 
 		Target:         "flats:" + name,
 		AuthScheme:     "none",
 		PermissionMode: "closed",
-		NameSelections: []*rest_model_zrok.NameSelection{{NamespaceToken: b.namespace, Name: name}},
+		NameSelections: []*rest_model_zrok.NameSelection{{NamespaceToken: namespace, Name: name}},
 	}
 	resp, err := c.Share.Share(req, b.auth())
 	if err != nil {

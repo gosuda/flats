@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -35,48 +36,53 @@ func newFake() *fakeBackend {
 	return &fakeBackend{names: map[string]string{}, foreign: map[string]bool{}, shares: map[string]string{}, lns: map[string]net.Listener{}}
 }
 
-func (f *fakeBackend) ReserveName(_ context.Context, name string) (string, error) {
+// key is how the fake stores a name: "<namespace>/<name>".
+func key(namespace, name string) string { return namespace + "/" + name }
+
+func (f *fakeBackend) ReserveName(_ context.Context, namespace, name string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.foreign[name] {
-		return "", fmt.Errorf("%w: %q", errNameTaken, name)
+		return "", false, fmt.Errorf("%w: %q", errNameTaken, name)
 	}
-	holder, ok := f.names[name]
+	holder, ok := f.names[key(namespace, name)]
 	if !ok {
-		f.names[name] = ""
+		f.names[key(namespace, name)] = ""
 	}
-	return holder, nil
+	return holder, !ok, nil
 }
 
-func (f *fakeBackend) NameHolder(_ context.Context, name string) (string, bool, error) {
+func (f *fakeBackend) NameHolder(_ context.Context, namespace, name string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	holder, ok := f.names[name]
+	holder, ok := f.names[key(namespace, name)]
 	return holder, ok, nil
 }
 
-func (f *fakeBackend) ReleaseName(_ context.Context, name string) error {
+func (f *fakeBackend) ReleaseName(_ context.Context, namespace, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.names, name)
-	f.released = append(f.released, name)
+	delete(f.names, key(namespace, name))
+	f.released = append(f.released, key(namespace, name))
 	return nil
 }
 
-func (f *fakeBackend) Share(_ context.Context, name string) (string, []string, error) {
+// Share returns a bare host name as the zrok controller does.
+func (f *fakeBackend) Share(_ context.Context, namespace, name string) (string, []string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.shareErr != nil {
 		return "", nil, f.shareErr
 	}
-	if holder := f.names[name]; holder != "" {
+	k := key(namespace, name)
+	if holder := f.names[k]; holder != "" {
 		return "", nil, fmt.Errorf("name %q is held by share %s", name, holder)
 	}
 	f.next++
 	token := fmt.Sprintf("tok%d", f.next)
-	f.shares[token] = name
-	f.names[name] = token
-	return token, []string{"https://" + name + ".share.example"}, nil
+	f.shares[token] = k
+	f.names[k] = token
+	return token, []string{name + "." + namespace + ".example"}, nil
 }
 
 func (f *fakeBackend) Unshare(_ context.Context, token string) error {
@@ -86,10 +92,10 @@ func (f *fakeBackend) Unshare(_ context.Context, token string) error {
 		return f.unshareErr
 	}
 	f.unshared = append(f.unshared, token)
-	if name, ok := f.shares[token]; ok {
+	if k, ok := f.shares[token]; ok {
 		delete(f.shares, token)
-		if f.names[name] == token {
-			f.names[name] = ""
+		if f.names[k] == token {
+			f.names[k] = ""
 		}
 	}
 	return nil
@@ -166,7 +172,7 @@ func TestServeReservesNameAndServes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if url != "https://blog.share.example" || n.URL("blog") != url {
+	if url != "https://blog.public.example" || n.URL("blog") != url {
 		t.Fatalf("url = %q, URL() = %q", url, n.URL("blog"))
 	}
 	waitState(t, n, "blog", stateReady)
@@ -203,7 +209,7 @@ func TestStopKeepsNameAndReservesSameURL(t *testing.T) {
 	if _, ok := f.shares["tok1"]; ok {
 		t.Fatal("share was not deleted")
 	}
-	if _, ok := f.names["blog"]; !ok {
+	if _, ok := f.names["public/blog"]; !ok {
 		t.Fatal("Stop released the name")
 	}
 	if n.URL("blog") != "" || len(n.Status().Hosts) != 0 {
@@ -213,7 +219,7 @@ func TestStopKeepsNameAndReservesSameURL(t *testing.T) {
 		t.Fatal("listener still serves after Stop")
 	}
 	url, err := n.Serve(context.Background(), "blog", hello("v1"))
-	if err != nil || url != "https://blog.share.example" {
+	if err != nil || url != "https://blog.public.example" {
 		t.Fatalf("reserve again: %q, %v", url, err)
 	}
 	if err := n.Stop("missing"); err != nil {
@@ -221,32 +227,40 @@ func TestStopKeepsNameAndReservesSameURL(t *testing.T) {
 	}
 }
 
-func TestServeRemovesStaleShareHoldingName(t *testing.T) {
+func TestServeRemovesStaleShareItCreated(t *testing.T) {
 	f := newFake()
-	f.names["blog"] = "old"
-	f.shares["old"] = "blog"
+	f.names["public/blog"] = "old"
+	f.shares["old"] = "public/blog"
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
+	// A crashed process recorded the share it created.
+	if err := n.writeRecord("blog", record{Namespace: "public", Created: true, Token: "old"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.unshared) != 1 || f.unshared[0] != "old" {
 		t.Fatalf("unshared = %v", f.unshared)
 	}
+	rec, _, _ := n.readRecord("blog")
+	if !rec.Created || rec.Token != "tok1" {
+		t.Fatalf("record = %+v", rec)
+	}
 }
 
-func TestServeRefusesStaleShareItCannotRemove(t *testing.T) {
+func TestServeLeavesShareFlatsDidNotCreate(t *testing.T) {
 	f := newFake()
-	f.names["blog"] = "other-env"
-	f.unshareErr = errors.New("share belongs to another environment")
+	f.names["public/blog"] = "operator"
+	f.shares["operator"] = "public/blog"
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	_, err := n.Serve(context.Background(), "blog", hello("v1"))
-	if err == nil || !strings.Contains(err.Error(), "could not be removed") {
+	if err == nil || !strings.Contains(err.Error(), "Flats did not create") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(f.shares) != 0 || n.URL("blog") != "" {
-		t.Fatal("a share was created over a held name")
+	if len(f.unshared) != 0 || f.names["public/blog"] != "operator" || n.URL("blog") != "" {
+		t.Fatalf("an operator's share was touched: unshared=%v names=%v", f.unshared, f.names)
 	}
 }
 
@@ -393,17 +407,20 @@ func TestRetireReleasesName(t *testing.T) {
 	if err := n.Retire("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["blog"]; ok || len(f.shares) != 0 {
+	if _, ok := f.names["public/blog"]; ok || len(f.shares) != 0 {
 		t.Fatalf("names = %v shares = %v", f.names, f.shares)
 	}
-	// A name left by an earlier process, still held by its share, is
+	// A name an earlier process recorded, still held by its share, is
 	// released too.
-	f.names["old"] = "tok-old"
-	f.shares["tok-old"] = "old"
+	f.names["public/old"] = "tok-old"
+	f.shares["tok-old"] = "public/old"
+	if err := n.writeRecord("old", record{Namespace: "public", Created: true, Token: "tok-old"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := n.Retire("old"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["old"]; ok || len(f.shares) != 0 {
+	if _, ok := f.names["public/old"]; ok || len(f.shares) != 0 {
 		t.Fatalf("names = %v shares = %v", f.names, f.shares)
 	}
 	if err := n.Retire("never"); err != nil {
@@ -476,12 +493,12 @@ func TestReservedNameRecordOutlivesRestartUntilRetire(t *testing.T) {
 	if err := n.Retire("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["blog"]; ok || n.Reserved("blog") {
+	if _, ok := f.names["public/blog"]; ok || n.Reserved("blog") {
 		t.Fatalf("name or record kept after Retire: names=%v", f.names)
 	}
 }
 
-func TestRetireDropsRecordOfNameNeverReserved(t *testing.T) {
+func TestFailedReservationLeavesNoRecord(t *testing.T) {
 	f := newFake()
 	f.foreign["blog"] = true
 	n := newNet(Config{Dir: t.TempDir()}, f)
@@ -489,14 +506,88 @@ func TestRetireDropsRecordOfNameNeverReserved(t *testing.T) {
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
 		t.Fatal("served a name another account owns")
 	}
-	if !n.Reserved("blog") {
-		t.Fatal("the attempt was not recorded before reserving")
+	if n.Reserved("blog") {
+		t.Fatal("a name another account owns was recorded as reserved")
+	}
+	if err := n.Retire("blog"); err != nil || len(f.released) != 0 {
+		t.Fatalf("Retire: %v, released %v", err, f.released)
+	}
+}
+
+func TestRetireKeepsNamesFlatsDidNotCreate(t *testing.T) {
+	f := newFake()
+	f.names["public/blog"] = "" // the operator created it with zrok2 create name
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
 	}
 	if err := n.Retire("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if n.Reserved("blog") || len(f.released) != 0 {
-		t.Fatalf("record kept or a foreign name released: %v", f.released)
+	if _, ok := f.names["public/blog"]; !ok || len(f.released) != 0 || n.Reserved("blog") {
+		t.Fatalf("names=%v released=%v reserved=%t", f.names, f.released, n.Reserved("blog"))
+	}
+}
+
+func TestRetireLeavesNameAnotherShareUses(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Stop("blog"); err != nil {
+		t.Fatal(err)
+	}
+	// The operator then shares something else under the name.
+	f.names["public/blog"] = "operator"
+	f.shares["operator"] = "public/blog"
+	if err := n.Retire("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if f.names["public/blog"] != "operator" || len(f.released) != 0 || slices.Contains(f.unshared, "operator") {
+		t.Fatalf("names=%v released=%v unshared=%v", f.names, f.released, f.unshared)
+	}
+}
+
+func TestNamespaceChangeReleasesOldName(t *testing.T) {
+	f := newFake()
+	dir := t.TempDir()
+	n := newNet(Config{Dir: dir, Namespace: "old-ns"}, f)
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n = newNet(Config{Dir: dir, Namespace: "new-ns"}, f)
+	defer n.Close()
+	url, err := n.Serve(context.Background(), "blog", hello("v1"))
+	if err != nil || url != "https://blog.new-ns.example" {
+		t.Fatalf("serve in the new namespace: %q, %v", url, err)
+	}
+	if _, ok := f.names["old-ns/blog"]; ok || !slices.Equal(f.released, []string{"old-ns/blog"}) {
+		t.Fatalf("old name kept: names=%v released=%v", f.names, f.released)
+	}
+	if err := n.Retire("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.names["new-ns/blog"]; ok {
+		t.Fatalf("new name kept: %v", f.names)
+	}
+}
+
+func TestAbsoluteURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"blog.share.zrok.io":         "https://blog.share.zrok.io",
+		"https://blog.share.zrok.io": "https://blog.share.zrok.io",
+		"http://blog.zrok.test:8080": "http://blog.zrok.test:8080",
+		"":                           "",
+	} {
+		if got := absoluteURL(in); got != want {
+			t.Errorf("absoluteURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

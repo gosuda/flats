@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -259,5 +261,32 @@ func TestExposurePolicyTokenUnchangedWithoutZrok(t *testing.T) {
 	after, err := m.ExposurePolicy(context.Background())
 	if err != nil || after == before {
 		t.Fatal("attaching zrok did not change the policy token")
+	}
+}
+
+func TestStopSlugRefusesWhileNameRecordedAndZrokOff(t *testing.T) {
+	ln, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	dir := t.TempDir()
+	zdir := filepath.Join(dir, "zrok")
+	if err := os.MkdirAll(zdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(zdir, "was-public"), []byte(`{"namespace":"public","created":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(dir, Options{Local: ln, Grants: &File{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := m.StopSlug(ctx, "was-public"); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("deleted a flat whose zrok name is still reserved: %v", err)
+	}
+	if err := m.StopSlug(ctx, "never-zrok"); err != nil {
+		t.Fatalf("a flat without a zrok record: %v", err)
 	}
 }

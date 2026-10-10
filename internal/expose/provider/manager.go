@@ -117,6 +117,10 @@ type Options struct {
 	// when no tailnet backend is configured, so deleting a legacy Local-only
 	// flat can discard its old identity without contacting control.
 	TailscaleStateDir string
+	// ZrokStateDir holds the zrok name records (default <dir>/zrok). Manager
+	// reads it when no zrok backend is configured, so deleting a flat whose
+	// name is still reserved is refused instead of leaving the name behind.
+	ZrokStateDir string
 	// Configuration is a canonical, non-secret desired backend configuration.
 	// It must exclude credentials and transient connection readiness.
 	Configuration string
@@ -142,6 +146,7 @@ type Manager struct {
 	portal        PortalNet
 	zrok          ZrokNet
 	tailscaleDir  string
+	zrokDir       string
 	retirementDir string
 	configuration string
 	permission    func(context.Context, string, ID) (bool, error)
@@ -194,8 +199,13 @@ func New(dir string, opts Options) (*Manager, error) {
 	if tailscaleDir == "" {
 		tailscaleDir = filepath.Join(dir, "tsnet")
 	}
+	zrokDir := opts.ZrokStateDir
+	if zrokDir == "" {
+		zrokDir = filepath.Join(dir, "zrok")
+	}
 	return &Manager{
 		dir:            dir,
+		zrokDir:        zrokDir,
 		file:           f,
 		fixed:          opts.Grants != nil,
 		local:          opts.Local,
@@ -1183,6 +1193,8 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			if err := z.Retire(host); err != nil {
 				errs = append(errs, fmt.Errorf("zrok name %s: %w", host, err))
 			}
+		case z == nil && zrok.HasRecord(m.zrokDir, host):
+			errs = append(errs, fmt.Errorf("zrok name %s is still reserved; turn zrok on so Flats can release it: %w", host, ErrNotConfigured))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
