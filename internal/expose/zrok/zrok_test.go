@@ -279,12 +279,31 @@ func TestServeLeavesShareFlatsDidNotCreate(t *testing.T) {
 	f.shares["operator"] = "public/blog"
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
+	// This host reserved the name earlier, but the operator now runs a share
+	// under it.
+	if err := n.writeRecord("blog", record{Account: "acct", Namespace: "public", Created: true}); err != nil {
+		t.Fatal(err)
+	}
 	_, err := n.Serve(context.Background(), "blog", hello("v1"))
 	if err == nil || !strings.Contains(err.Error(), "Flats did not create") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(f.unshared) != 0 || f.names["public/blog"] != "operator" || n.URL("blog") != "" {
 		t.Fatalf("an operator's share was touched: unshared=%v names=%v", f.unshared, f.names)
+	}
+}
+
+func TestServeRefusesNameReservedElsewhere(t *testing.T) {
+	f := newFake()
+	f.names["public/blog"] = "" // reserved by the operator or another Flats host
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	_, err := n.Serve(context.Background(), "blog", hello("v1"))
+	if err == nil || !strings.Contains(err.Error(), "not by this Flats host") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.shares) != 0 || reserved(t, n, "blog") {
+		t.Fatalf("used a name reserved elsewhere: shares=%v", f.shares)
 	}
 }
 
@@ -535,22 +554,6 @@ func TestFailedReservationLeavesNoRecord(t *testing.T) {
 	}
 	if err := n.Retire("blog"); err != nil || len(f.released) != 0 {
 		t.Fatalf("Retire: %v, released %v", err, f.released)
-	}
-}
-
-func TestRetireKeepsNamesFlatsDidNotCreate(t *testing.T) {
-	f := newFake()
-	f.names["public/blog"] = "" // the operator created it with zrok2 create name
-	n := newNet(Config{Dir: t.TempDir()}, f)
-	defer n.Close()
-	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
-		t.Fatal(err)
-	}
-	if err := n.Retire("blog"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := f.names["public/blog"]; !ok || len(f.released) != 0 || reserved(t, n, "blog") {
-		t.Fatalf("names=%v released=%v reserved=%t", f.names, f.released, reserved(t, n, "blog"))
 	}
 }
 
@@ -805,10 +808,10 @@ func TestRecordOfAnotherAccountIsKept(t *testing.T) {
 	if err := n.writeRecord("blog", record{Account: "old-account", Namespace: "public", Created: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "another zrok account") {
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "cannot see") {
 		t.Fatalf("Serve: %v", err)
 	}
-	if err := n.Retire("blog"); err == nil || !strings.Contains(err.Error(), "another zrok account") {
+	if err := n.Retire("blog"); err == nil || !strings.Contains(err.Error(), "cannot see") {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !reserved(t, n, "blog") {
@@ -861,10 +864,57 @@ func TestShareOfAnotherHostIsNotReclaimed(t *testing.T) {
 	// A second host on the same zrok environment publishes the same slug.
 	second := newNet(Config{Dir: t.TempDir(), Instance: "host-b"}, f)
 	defer second.Close()
-	if _, err := second.Serve(context.Background(), "blog", hello("b")); err == nil || !strings.Contains(err.Error(), "Flats did not create") {
+	if _, err := second.Serve(context.Background(), "blog", hello("b")); err == nil || !strings.Contains(err.Error(), "not by this Flats host") {
 		t.Fatalf("second host: %v", err)
 	}
 	if slices.Contains(f.unshared, "tok1") || f.names["public/blog"] != "tok1" {
 		t.Fatalf("the first host's share was taken: unshared=%v names=%v", f.unshared, f.names)
+	}
+	// Nor after the first host stopped and keeps the name idle.
+	if err := first.Stop("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Serve(context.Background(), "blog", hello("b")); err == nil {
+		t.Fatal("the second host took the first host's idle name")
+	}
+}
+
+func TestRegeneratedAccountTokenKeepsRecords(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	f.names["public/blog"] = ""
+	if err := n.writeRecord("blog", record{Account: "old-token-fingerprint", Namespace: "public", Created: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatalf("same account after a token change: %v", err)
+	}
+	rec, _, _ := n.readRecord("blog")
+	if rec.Account != "acct" {
+		t.Fatalf("record not moved to the current fingerprint: %+v", rec)
+	}
+}
+
+func TestPendingNameIsSettledByLaterServe(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	f.createErr = errors.New("response lost")
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+		t.Fatal("Serve succeeded without a name")
+	}
+	rec, _, _ := n.readRecord("blog")
+	if !rec.Pending || rec.Created {
+		t.Fatalf("record = %+v", rec)
+	}
+	f.createErr = nil
+	f.names["public/blog"] = "" // the lost request did create it
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ = n.readRecord("blog")
+	if rec.Pending || !rec.Created {
+		t.Fatalf("record = %+v", rec)
 	}
 }

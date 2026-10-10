@@ -208,8 +208,10 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	if err != nil {
 		return "", fmt.Errorf("zrok: %s: %w", slug, err)
 	}
-	if known && rec.Account != n.b.Account() {
-		return "", fmt.Errorf("zrok: %s: %w", slug, n.otherAccount(slug))
+	if known {
+		if rec, err = n.sameAccount(ctx, slug, rec); err != nil {
+			return "", fmt.Errorf("zrok: %s: %w", slug, err)
+		}
 	}
 	if known && rec.Namespace != ns {
 		// zrok.namespace changed: release what this host holds in the old
@@ -226,36 +228,38 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	if err != nil {
 		return "", fmt.Errorf("zrok: %s: %w", slug, err)
 	}
-	if !found {
+	switch {
+	case found && !known:
+		// Reserved in this account, but not by this host: by the operator
+		// or by another Flats host. Using it would take over its URL.
+		return "", fmt.Errorf("zrok: %s: the name is reserved in this zrok account, but not by this Flats host; release it (zrok2 delete name) or rename the flat", slug)
+	case found && rec.Pending:
+		// An earlier attempt to create it lost its response.
+		rec.Created, rec.Pending = true, false
+		if err := n.writeRecord(slug, rec); err != nil {
+			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
+		}
+	case !found:
 		// Record the intent before creating the name, so a name this host
-		// creates is never untracked. A record whose name does not exist is
-		// dropped by Retire.
-		rec.Created = true
+		// creates is never untracked.
+		rec.Created, rec.Pending = false, true
 		if err := n.writeRecord(slug, rec); err != nil {
 			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
 		}
 		switch err := n.b.CreateName(ctx, ns, slug); {
 		case errors.Is(err, errNameExists):
-			// Created meanwhile: by this account outside Flats, or by
-			// another account.
-			holder, found, err = n.b.NameHolder(ctx, ns, slug)
-			if err != nil {
-				return "", fmt.Errorf("zrok: %s: %w", slug, err)
-			}
-			if !found {
-				if !known {
-					_ = n.dropRecord(slug)
-				}
-				return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
-			}
-			rec.Created = false
-			if err := n.writeRecord(slug, rec); err != nil {
-				return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
-			}
+			// This attempt created nothing, and the account does not hold
+			// the name: another account owns it.
+			_ = n.dropRecord(slug)
+			return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
 		case err != nil:
-			// The name may or may not exist; the record keeps the intent so
-			// Retire can release it.
+			// The name may or may not exist; the pending record lets the
+			// next Serve or Retire settle it.
 			return "", fmt.Errorf("zrok: %s: %w", slug, err)
+		}
+		rec.Created, rec.Pending = true, false
+		if err := n.writeRecord(slug, rec); err != nil {
+			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
 		}
 	}
 	if holder != "" {
@@ -500,10 +504,9 @@ func (n *Net) Retire(slug string) error {
 
 // release undoes what rec says this host holds for slug and drops rec.
 func (n *Net) release(ctx context.Context, slug string, rec record) error {
-	if rec.Account != n.b.Account() {
-		// This environment cannot see or release the other account's names;
-		// keep the record so the cleanup is not lost.
-		return n.otherAccount(slug)
+	rec, err := n.sameAccount(ctx, slug, rec)
+	if err != nil {
+		return err
 	}
 	holder, found, err := n.b.NameHolder(ctx, rec.Namespace, slug)
 	if err != nil {
@@ -522,14 +525,16 @@ func (n *Net) release(ctx context.Context, slug string, rec record) error {
 				return fmt.Errorf("remove share %s: %w", holder, err)
 			}
 			n.forgetOrphan(slug, holder)
-			if rec.Created {
+			if rec.Created || rec.Pending {
 				if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 					return err
 				}
 			}
 		case holder != "":
 			// Another share uses the name now; leave it.
-		case rec.Created:
+		case rec.Created || rec.Pending:
+			// A pending name found in this account is the one an attempt
+			// created before its response was lost.
 			if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 				return err
 			}
@@ -570,9 +575,31 @@ func (n *Net) ownsShare(ctx context.Context, slug string, rec record, token stri
 	return n.b.ShareOwned(ctx, token, shareTarget(n.cfg.Instance, slug))
 }
 
+// sameAccount checks that rec was made with this environment's account. A
+// different fingerprint can also mean a regenerated account token: when this
+// account holds the recorded name, the record is updated to it. Otherwise the
+// record is kept, because only the original account can release the name.
+func (n *Net) sameAccount(ctx context.Context, slug string, rec record) (record, error) {
+	if rec.Account == n.b.Account() {
+		return rec, nil
+	}
+	_, found, err := n.b.NameHolder(ctx, rec.Namespace, slug)
+	if err != nil {
+		return rec, err
+	}
+	if !found {
+		return rec, n.otherAccount(slug)
+	}
+	rec.Account = n.b.Account()
+	if err := n.writeRecord(slug, rec); err != nil {
+		return rec, err
+	}
+	return rec, nil
+}
+
 func (n *Net) otherAccount(slug string) error {
 	path, _ := recordPath(n.cfg.Dir, slug)
-	return fmt.Errorf("the name was reserved with another zrok account; set zrok.environment back to that account to release it, or remove %s to forget the reservation", path)
+	return fmt.Errorf("the name was reserved with a zrok account this environment cannot see; set zrok.environment back to that account to release it, or remove %s if the name is gone", path)
 }
 
 func (n *Net) forgetOrphan(slug, token string) {
@@ -588,8 +615,9 @@ func (n *Net) forgetOrphan(slug, token string) {
 type record struct {
 	Account   string `json:"account"` // backend.Account of the environment that reserved it
 	Namespace string `json:"namespace"`
-	Created   bool   `json:"created"`         // Flats created the name, so it may release it
-	Token     string `json:"token,omitempty"` // a share Flats created and has not deleted yet
+	Created   bool   `json:"created"`           // Flats created the name, so it may release it
+	Pending   bool   `json:"pending,omitempty"` // a creation attempt whose outcome is unknown
+	Token     string `json:"token,omitempty"`   // a share Flats created and has not deleted yet
 }
 
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
