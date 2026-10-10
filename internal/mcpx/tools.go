@@ -100,6 +100,8 @@ type FlatInfo struct {
 	PrivateDetail   string                  `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
 	PublicURL       string                  `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
 	PublicNotice    string                  `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
+	PortalListing   string                  `json:"portal_listing" jsonschema:"the flat's Portal relay listing choice set by the operator: default (follow the host setting), hidden or listed"`
+	PortalHidden    bool                    `json:"portal_hidden" jsonschema:"true when the Portal route is kept out of relay listings; not access control, anyone with the URL can still open a public flat"`
 	DiskBytes       int64                   `json:"disk_bytes" jsonschema:"disk used by versions and data"`
 	UpdatedAt       time.Time               `json:"updated_at" jsonschema:"last change"`
 }
@@ -107,7 +109,8 @@ type FlatInfo struct {
 func flatInfo(v core.FlatView) FlatInfo {
 	return FlatInfo{Type: v.Type, Publication: v.Publication, Draft: draftPointer(v.Draft), Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints, Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,
 		Versions: v.Versions, PrivateURL: v.PrivateURL, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail,
-		PublicURL: v.PublicURL, PublicNotice: v.PublicNotice, DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
+		PublicURL: v.PublicURL, PublicNotice: v.PublicNotice, PortalListing: v.PortalListing, PortalHidden: v.PortalHidden,
+		DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
 }
 
 // VersionInfo describes a saved version.

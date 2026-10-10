@@ -31,6 +31,7 @@ const (
 	SetPortalDiscover = "portal_discovery"  // "true" (Portal CLI default) or "false"
 	SetPortalMaxRelay = "portal_max_relays" // active relays chosen by discovery (default 3)
 	SetEventsKeep     = "events_keep"       // log events kept per flat
+	SetPortalHide     = "portal_hide"       // "true" keeps public flats out of relay listings by default
 )
 
 // settingKeys maps each setting to its config.json key.
@@ -45,6 +46,7 @@ var settingKeys = map[string]string{
 	SetPortalRelays:   "portal.relays",
 	SetPortalDiscover: "portal.discovery",
 	SetPortalMaxRelay: "portal.max_active_relays",
+	SetPortalHide:     "portal.hide",
 }
 
 // SettingConfigKey returns the config.json key of a setting.
@@ -452,8 +454,8 @@ type SettingsUpdate struct {
 }
 
 // UpdateSettings validates and stores settings. Only the console calls it.
-// Nothing is stored unless every value is valid. The Portal settings are
-// read when `flats serve` starts.
+// Nothing is stored unless every value is valid. The Portal relay settings
+// are read when `flats serve` starts; portal_hide applies at once.
 func (s *Service) UpdateSettings(ctx context.Context, in map[string]string) (map[string]string, error) {
 	u, err := s.UpdateSettingsMatch(ctx, in, "")
 	return u.Settings, err
@@ -482,6 +484,9 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 			lf.limiter.setRate(s.rateLimit())
 		}
 		s.mu.Unlock()
+	}
+	if slices.Contains(changed, SetPortalHide) {
+		s.applyHostListing(ctx)
 	}
 	all, _ := s.Settings(ctx)
 	return SettingsUpdate{Settings: all, Changed: changed, ETag: etag}, nil
@@ -521,7 +526,7 @@ func normalizeSetting(k, v string) (string, error) {
 			}
 		}
 		return strings.Join(relays, ","), nil
-	case SetPortalDiscover:
+	case SetPortalDiscover, SetPortalHide:
 		b, err := strconv.ParseBool(v)
 		if err != nil {
 			return "", fmt.Errorf("setting %s must be true or false", k)

@@ -102,6 +102,10 @@ var specs = []spec{
 	{key: "portal.discovery", kind: kindBool, def: true,
 		hint: "use true or false"},
 	intSpec("portal.max_active_relays", 3, 1, 1<<31-1),
+	// hide keeps public flats out of relay listings unless a flat overrides
+	// it. It is not access control: the URL still opens the flat.
+	{key: "portal.hide", kind: kindBool, def: false,
+		hint: "use true or false"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
 	{key: "credentials.tailscale_authkey_file", kind: kindString, check: checkAbsPath,
@@ -468,6 +472,7 @@ type PortalConfig struct {
 	Relays          []string // empty = Portal defaults
 	Discovery       bool
 	MaxActiveRelays int64
+	Hide            bool // default relay listing of public flats
 }
 
 // CredentialsConfig holds paths only; "" means none.
@@ -544,7 +549,7 @@ func (c *Config) fill() error {
 	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.keep_versions"),
 		num("system.disk_quota_bytes"), num("system.preview_ttl_seconds"), num("system.rate_limit_rps"),
 		num("system.redirect_days"), num("system.events_keep")}
-	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays")}
+	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error

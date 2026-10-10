@@ -149,7 +149,43 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
             h('label', { for: 'net-local' }, 'Local', h('span', { class: 'muted small', text: 'This device, always on' }))),
           PROVIDERS.filter((p) => p.scope === 'private').map(networkRow))),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Public' }),
-        h('ul', { class: 'networks' }, PROVIDERS.filter((p) => p.scope === 'public').map(networkRow)))));
+        h('ul', { class: 'networks' }, PROVIDERS.filter((p) => p.scope === 'public').map(networkRow))),
+      (flat.providers || []).includes('portal') ? listingField() : null));
+  }
+
+  // Whether the Portal route appears in relay listings. Hiding is not access
+  // control: anyone with the URL can still open the flat.
+  function listingField() {
+    const id = 'portal-listing';
+    const mode = flat.portal_listing || 'default';
+    const select = h('select', { id, 'aria-describedby': id + '-help' },
+      [['default', 'Follow the host setting'], ['hidden', 'Hidden'], ['listed', 'Listed']].map(([value, text]) =>
+        h('option', { value, text, selected: value === mode })));
+    select.value = mode;
+    select.addEventListener('change', async () => {
+      const next = select.value;
+      select.disabled = true;
+      try {
+        flat = await api.setListing(slug, next);
+        toast(flat.portal_hidden ? 'Portal relay listing set to hidden.' : 'Portal relay listing set to listed.', 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+        // The choice may be saved even when applying it failed: show the stored one.
+        try { flat = await api.flat(slug); } catch { select.value = mode; }
+      } finally {
+        select.disabled = false;
+      }
+      if (ctx.alive() && flat) drawNetworks();
+    });
+    const isPublic = visibilityOf(flat.visibility) === 'public';
+    const state = isPublic
+      ? (flat.portal_hidden ? 'Hidden from relay listings now.' : 'Shown in relay listings now.')
+      : (flat.portal_hidden ? 'Will be hidden from relay listings when public.' : 'Will be shown in relay listings when public.');
+    return h('div', { class: 'networks-group field' },
+      h('label', { for: id, text: 'Portal relay listing' }), select,
+      h('span', { class: 'muted small', id: id + '-help' },
+        `${state} Hiding keeps the public URL out of the relay’s list of sites; anyone with the URL can still open it. The host setting is in `,
+        h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'));
   }
 
   function networkRow(p) {

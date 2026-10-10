@@ -173,7 +173,7 @@ func TestMigrationRegistryIsOrdered(t *testing.T) {
 			t.Fatalf("step %d after %d", m.version, migrations[i-1].version)
 		}
 	}
-	if latestVersion() != 9 {
+	if latestVersion() != 10 {
 		t.Fatalf("latest %d", latestVersion())
 	}
 }
@@ -884,7 +884,7 @@ func TestMigrationNinePreservesReleasedAndDocsSchemas(t *testing.T) {
 			}
 			defer st.Close()
 			info, err := Inspect(path)
-			if err != nil || info.Version != 9 {
+			if err != nil || info.Version != latestVersion() {
 				t.Fatalf("schema: %+v %v", info, err)
 			}
 			var objects int

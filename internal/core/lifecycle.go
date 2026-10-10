@@ -839,10 +839,16 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 			return fmt.Errorf("private exposure: %w", err)
 		}
 	}
+	hidden := false
+	if f.Visibility.Public() {
+		if hidden, err = s.portalHidden(ctx, f.Slug); err != nil {
+			return err
+		}
+	}
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),
 		Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, f.Visibility.Public()), PrivateHandler: s.siteHandler(f.Slug, false),
-		Permitted: permitted,
+		Permitted: permitted, Hidden: hidden,
 	})
 	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
 		lf.privateServed = true

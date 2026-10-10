@@ -146,8 +146,14 @@ connections when exposure is withdrawn.
 * **Public.** One Portal exposure per public flat, using a persisted identity
   named `<slug>` (the relay rejects a name owned by another key: the console
   shows the conflict). Visibility is only `private` or `public`; older stored
-  `public-listed`/`public-unlisted` values read as `public`, and Flats always
-  serves public flats unhidden in relay listings. Relays: the
+  `public-listed`/`public-unlisted` values read as `public`. Whether a public
+  flat appears in relay listings is a separate operator choice: the
+  `portal.hide` host default (off, so flats are listed) and a per-flat
+  override (`default`, `hidden` or `listed`, stored in `portal_listing`).
+  Changing either updates a served route with `UpdateMetadata` at once;
+  relays pick it up at their next lease renewal. Hiding is not access
+  control: anyone with the URL can still open the flat. Rename redirect
+  aliases are always hidden. Relays: the
   Portal CLI default (discovery, up to 3 active relays) unless
   `portal.relays` in `config.json` lists explicit relays.
   `portal.discovery: false` uses only the explicit relays (it requires at

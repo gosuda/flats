@@ -46,6 +46,7 @@ var migrations = []migration{
 	{7, "application environment variables", addEnvVars},
 	{8, "application network permissions", addNetworkSettings},
 	{9, "runtime generation", addRuntimeGeneration},
+	{10, "portal relay listing", addPortalListing},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
