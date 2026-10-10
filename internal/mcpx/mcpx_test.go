@@ -190,6 +190,9 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 	if text, failed := call(t, e.local, "get_flat", map[string]any{"slug": "blog"}, &flat); failed || flat.Flat.Name != "My Blog" || flat.Flat.LiveVersion != 1 || flat.Flat.Publication != "published" || flat.Flat.Draft.Revision != 1 {
 		t.Fatalf("flat: %s %+v", text, flat)
 	}
+	if !strings.Contains(getFlatText(t, e, "blog"), `"portal_listing":"default"`) || flat.Flat.PortalListing != "default" || flat.Flat.PortalHidden {
+		t.Fatalf("relay listing missing from get_flat: %+v", flat.Flat)
+	}
 	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "blog", "expected_revision": 1, "files": []any{file("index.html", "two", "")}}, nil); failed {
 		t.Fatal(text)
 	}
@@ -621,4 +624,14 @@ func (e *env) approve(t *testing.T, id string) {
 	if code != 200 || a.Status != "approved" {
 		t.Fatalf("authorized approval: %d %+v", code, a)
 	}
+}
+
+// getFlatText returns the raw get_flat result text.
+func getFlatText(t *testing.T, e *env, slug string) string {
+	t.Helper()
+	text, failed := call(t, e.local, "get_flat", map[string]any{"slug": slug}, nil)
+	if failed {
+		t.Fatal(text)
+	}
+	return text
 }

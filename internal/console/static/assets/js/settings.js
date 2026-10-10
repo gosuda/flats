@@ -20,7 +20,7 @@ const FIELDS = [
 
 // LABELS names every setting in messages.
 const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
-  ['portal_relays', 'Portal relays'], ['portal_discovery', 'Discover Portal relays']]);
+  ['portal_relays', 'Portal relays'], ['portal_discovery', 'Discover Portal relays'], ['portal_hide', 'Hide public flats from relay listings']]);
 
 // Lower values of these settings remove data at the next pruning.
 const RETENTION = ['keep_versions', 'events_keep', 'preview_ttl_seconds'];
@@ -332,6 +332,9 @@ function limitsForm(data, opts) {
   const discoverId = 'set-portal_discovery';
   const discoverInitial = String(settings.portal_discovery ?? 'true') !== 'false';
   const discover = h('input', { id: discoverId, type: 'checkbox', checked: discoverInitial });
+  const hideId = 'set-portal_hide';
+  const hideInitial = String(settings.portal_hide ?? 'false') === 'true';
+  const hide = h('input', { id: hideId, type: 'checkbox', checked: hideInitial });
 
   const save = h('button', { type: 'submit', id: portal ? 'portal-save' : 'settings-save', class: 'btn btn-primary' + (portal ? ' btn-small' : ''),
     text: portal ? 'Save Portal settings' : 'Save settings' });
@@ -349,6 +352,9 @@ function limitsForm(data, opts) {
         h('div', { class: 'field field-wide field-check' },
           discover, h('label', { for: discoverId, text: 'Discover Portal relays' }),
           control('portal_discovery', discover, 'Find further relays automatically (Portal’s default). Used when Portal starts.')),
+        h('div', { class: 'field field-wide field-check' },
+          hide, h('label', { for: hideId, text: 'Hide public flats from relay listings' }),
+          control('portal_hide', hide, 'Keeps public URLs out of the relays’ lists of sites. It is not access control: anyone with a URL can still open the flat. Applies at once; a flat can override it under its Settings → Networks.')),
         FIELDS.filter((f) => f.portal).map(numberField))),
     impactSlot,
     errorSlot,
@@ -402,6 +408,7 @@ function limitsForm(data, opts) {
     const relayList = relays.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
     if (!pinned.portal_relays && relayList.join('\n') !== relaysInitial) out.portal_relays = relayList.join(',');
     if (!pinned.portal_discovery && discover.checked !== discoverInitial) out.portal_discovery = String(discover.checked);
+    if (!pinned.portal_hide && !!hide.checked !== hideInitial) out.portal_hide = String(!!hide.checked);
     return out;
   };
 

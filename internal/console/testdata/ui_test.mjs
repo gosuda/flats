@@ -96,6 +96,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 const PUBLIC = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 const blog = {
   type: 'docs', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
+  portal_listing: 'default', portal_hidden: false,
   private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: PUBLIC,
   draft: { revision: 3, hash: 'c', dirty: true, size: 1, files: 1, kind: 'server', updated_at: '2026-10-03T00:00:00Z' },
   live: { number: 2, kind: 'server' }, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-02T00:00:00Z', disk_bytes: 10,
@@ -113,6 +114,7 @@ const routes = {
   'GET /console/api/flats/blog': blog,
   'GET /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'PUT /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
+  'PUT /console/api/flats/blog/listing': { ...blog, portal_listing: 'hidden', portal_hidden: true },
   'GET /console/api/flats/blog/env': { env: [{ name: 'APP_MODE', value: '<script>demo</script>\nsecond line', updated_at: '2026-10-03T00:00:00Z' }, { name: 'EMPTY', value: '', updated_at: '2026-10-03T00:00:00Z' }] },
   'GET /console/api/flats/blog/secrets': { secrets: [{ name: 'API_KEY', updated_at: '2026-10-03T00:00:00Z', value: 'SECRET_MUST_NEVER_RENDER' }] },
   'GET /console/api/flats/blog/versions': { versions: [
@@ -326,6 +328,18 @@ assert.ok(clearDialog.textContent.includes('Redeploy the live version after clea
 clearDialog.close('ok');
 await tick();
 assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/network').at(-1).body), { origins: [] });
+// A Portal flat chooses its relay listing; hiding says it is not access control.
+let listingSelect = all(management, (e) => e.getAttribute('id') === 'portal-listing')[0];
+assert.ok(listingSelect, 'a Portal flat shows its relay listing');
+assert.equal(listingSelect.value, 'default');
+assert.ok(listingSelect.parentNode.textContent.includes('anyone with the URL can still open it'));
+listingSelect.value = 'hidden';
+listingSelect.dispatch('change');
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/listing').at(-1).body), { listing: 'hidden' });
+listingSelect = all(management, (e) => e.getAttribute('id') === 'portal-listing')[0];
+assert.equal(listingSelect.value, 'hidden');
+assert.ok(listingSelect.parentNode.textContent.includes('Hidden from relay listings now.'));
 stopSettings();
 const analytics = await import('./analytics.js');
 assert.deepEqual(analytics.dailySeries([{ day: '2026-10-02', count: 4 }, { day: '2026-01-01', count: 99 }], 2, new Date('2026-10-03T12:00:00Z')),
@@ -403,7 +417,7 @@ globalThis.location = { origin: 'http://127.0.0.1:7878' };
 const settingsPage = await import('./settings.js');
 const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
 const SETTINGS = { upload_max_bytes: '20971520', keep_versions: '10', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
-  rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://relay.example.com', portal_discovery: 'true', portal_max_relays: '3' };
+  rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://relay.example.com', portal_discovery: 'true', portal_max_relays: '3', portal_hide: 'false' };
 const CONFIG = {
   mode: 'config', schema_version: 1, etag: 'etag-1', changed_on_disk: false,
   host: { management_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', console_host: 'flats', server_runtime: true },
@@ -411,7 +425,7 @@ const CONFIG = {
   credentials: { operator_file: true, tailscale_authkey_file: false },
   keys: { upload_max_bytes: 'system.upload_max_bytes', keep_versions: 'system.keep_versions', disk_quota_bytes: 'system.disk_quota_bytes',
     preview_ttl_seconds: 'system.preview_ttl_seconds', rate_limit_rps: 'system.rate_limit_rps', redirect_days: 'system.redirect_days',
-    events_keep: 'system.events_keep', portal_relays: 'portal.relays', portal_discovery: 'portal.discovery', portal_max_relays: 'portal.max_active_relays' },
+    events_keep: 'system.events_keep', portal_relays: 'portal.relays', portal_discovery: 'portal.discovery', portal_max_relays: 'portal.max_active_relays', portal_hide: 'portal.hide' },
   sources: { 'host.management_addr': 'flag', 'host.local_addr': 'default', 'host.console_host': 'default', 'host.server_runtime': 'default',
     'network.permitted': 'file', 'network.private_backend': 'default', 'credentials.operator_file': 'file', 'credentials.tailscale_authkey_file': 'default',
     'system.keep_versions': 'file', 'system.events_keep': 'default', 'portal.relays': 'file' },
@@ -606,6 +620,15 @@ portalForm.dispatch('submit');
 await tick();
 assert.equal(puts().length, putCount + 1);
 assert.deepEqual(JSON.parse(puts().at(-1).body), { portal_max_relays: '5' });
+page = await mountSettings();
+const hideBox = byId(page, 'set-portal_hide');
+assert.ok(hideBox && byId(page, 'set-portal_hide-help').textContent.includes('not access control'));
+hideBox.checked = true;
+putCount = puts().length;
+all(byId(page, 'provider-portal'), (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { portal_hide: 'true' });
 
 // Settings group providers into Private and Public; only Local is always on,
 // and turning a provider on is an explicit host request.

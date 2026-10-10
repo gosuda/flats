@@ -60,6 +60,7 @@ export const api = {
   deleteEnv: (slug, name) => request('DELETE', `/flats/${enc(slug)}/env/${enc(name)}`),
   network: (slug) => get(`/flats/${enc(slug)}/network`),
   setNetwork: (slug, origins) => request('PUT', `/flats/${enc(slug)}/network`, { origins }),
+  setListing: (slug, listing) => request('PUT', `/flats/${enc(slug)}/listing`, { listing }),
   secrets: (slug) => get(`/flats/${enc(slug)}/secrets`),
   putSecret: (slug, name, value) => request('PUT', `/flats/${enc(slug)}/secrets/${enc(name)}`, { value }),
   deleteSecret: (slug, name) => request('DELETE', `/flats/${enc(slug)}/secrets/${enc(name)}`),

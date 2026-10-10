@@ -64,3 +64,7 @@ Rules:
   `get_flat` reports `publication`, `live_version`, `visibility`, `providers`,
   `connection_state` and `endpoints` as separate fields. Repeat
   `public_notice` whenever you report a public URL.
+* `portal_hidden` reports whether a public flat is kept out of Portal relay
+  listings (`portal_listing` is the flat's own choice: `default`, `hidden` or
+  `listed`). Only the operator changes it, in the console. Hidden is not
+  access control: never describe a hidden public flat as private.

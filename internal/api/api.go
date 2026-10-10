@@ -108,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 			h("POST /approvals/{id}/approve", s.decide(true))
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
+			h("PUT /flats/{slug}/listing", s.setListing)
 			h("GET /providers", s.hostProviders)
 			h("PUT /providers/{id}", s.setHostProvider)
 			h("GET /settings", s.getSettings)
@@ -414,6 +415,24 @@ func (s *Server) providers(w http.ResponseWriter, r *http.Request, via core.Via)
 		return
 	}
 	s.getFlat(w, r, via)
+}
+
+// setListing changes whether the flat's Portal route appears in relay
+// listings: {"listing": "default"|"hidden"|"listed"}. Console only.
+func (s *Server) setListing(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in struct {
+		Listing string `json:"listing"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	fv, err := s.Svc.SetPortalListing(r.Context(), r.PathValue("slug"), in.Listing, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, fv)
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request, _ core.Via) {

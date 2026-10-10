@@ -516,16 +516,22 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 		return err
 	}
 	wantPublic := f.Visibility.Canonical().Public() && portal && s.cfg.Public != nil
+	hidden := false
+	if wantPublic {
+		if hidden, err = s.portalHidden(ctx, f.Slug); err != nil {
+			return err
+		}
+	}
 	switch {
 	case f.Visibility.Public() && portal && s.cfg.Public == nil:
 		return errPublicDisabled()
 	case wantPublic && !lf.publicServed:
-		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), false); err != nil {
+		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), hidden); err != nil {
 			return fmt.Errorf("public exposure: %w", err)
 		}
 		lf.publicServed = true
 	case wantPublic && lf.publicServed:
-		if err := s.cfg.Public.SetHidden(f.Slug, false); err != nil {
+		if err := s.cfg.Public.SetHidden(f.Slug, hidden); err != nil {
 			return fmt.Errorf("public listing: %w", err)
 		}
 	case !wantPublic && lf.publicServed:
@@ -579,6 +585,11 @@ type FlatView struct {
 	Providers       []string           `json:"providers,omitempty"`
 	ConnectionState string             `json:"connection_state,omitempty"`
 	Endpoints       []ExposureEndpoint `json:"endpoints"`
+	// PortalListing is the flat's own relay listing choice: default (follow
+	// the host's portal_hide setting), hidden or listed. PortalHidden is
+	// the listing in effect. Neither is access control.
+	PortalListing string `json:"portal_listing"`
+	PortalHidden  bool   `json:"portal_hidden"`
 }
 
 // UnlistedNotice is attached to every public-unlisted response.
@@ -600,6 +611,11 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	if f.Visibility.Public() {
 		v.PublicNotice = PublicAccessNotice
 	}
+	v.PortalListing = store.ListingDefault
+	if mode, err := s.st.PortalListing(ctx, f.Slug); err == nil {
+		v.PortalListing = mode
+	}
+	v.PortalHidden = s.listingHidden(v.PortalListing)
 	if f.Visibility.Canonical().Public() && s.cfg.Public != nil {
 		if ok, _ := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal); ok {
 			v.PublicURL = s.cfg.Public.URL(f.Slug)

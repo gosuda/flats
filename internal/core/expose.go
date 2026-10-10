@@ -83,6 +83,9 @@ type ExposureRequest struct {
 	Handler        http.Handler
 	Ephemeral      bool
 	Permitted      []ProviderID
+	// Hidden keeps a Portal route out of relay listings. It is not access
+	// control: anyone with the URL can still open it.
+	Hidden bool
 }
 
 // ExposureEndpoint is one route the network actually opened.
@@ -126,6 +129,12 @@ var ErrProviderNotPermitted = errors.New("provider not permitted")
 type LifecycleObserver interface {
 	ExposurePolicy(context.Context) (string, error)
 	ExposureStatus(context.Context, string) (ExposureResult, error)
+}
+
+// LifecycleListingNet changes the relay listing of a registered Portal route
+// without reopening it. A slug without one is a no-op.
+type LifecycleListingNet interface {
+	SetPortalHidden(slug string, hidden bool) error
 }
 
 // LifecyclePreviewNet stops only an exact isolated host and its private routes.

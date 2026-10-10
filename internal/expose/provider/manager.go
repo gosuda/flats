@@ -69,6 +69,8 @@ type Tailnet interface {
 // PortalNet is the public Portal backend. A non-nil value is not permission.
 type PortalNet interface {
 	Serve(ctx context.Context, slug string, h http.Handler, hidden bool) (string, error)
+	// SetHidden changes the relay listing of a served slug.
+	SetHidden(slug string, hidden bool) error
 	Stop(slug string) error
 	URL(slug string) string
 	Status() core.NetStatus
@@ -641,7 +643,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if m.portalNet() == nil {
 			return refused(Portal, "portal is permitted but not configured"), fmt.Errorf("%w: portal", ErrNotConfigured)
 		}
-		url, err := m.portalNet().Serve(ctx, req.Slug, req.Handler, false)
+		url, err := m.portalNet().Serve(ctx, req.Slug, req.Handler, req.Hidden)
 		if err != nil {
 			return ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: portal: %w", core.ErrProviderNotReady, err)
 		}
@@ -936,6 +938,19 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 	}
 	return res, nil
 }
+
+// SetPortalHidden changes the relay listing of slug's registered Portal
+// route at once. Without one it does nothing; the next public Serve carries
+// the listing in its request.
+func (m *Manager) SetPortalHidden(slug string, hidden bool) error {
+	p := m.portalNet()
+	if p == nil || !m.hasRoute(slug, slug, Portal) {
+		return nil
+	}
+	return p.SetHidden(slug, hidden)
+}
+
+var _ core.LifecycleListingNet = (*Manager)(nil)
 
 func (m *Manager) hasRoute(slug, host string, id ID) bool {
 	m.mu.Lock()
