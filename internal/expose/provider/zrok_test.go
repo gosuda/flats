@@ -250,17 +250,27 @@ func TestStopSlugReleasesReservedNameWithoutRoute(t *testing.T) {
 	}
 }
 
-func TestExposurePolicyTokenUnchangedWithoutZrok(t *testing.T) {
+func TestExposurePolicyCountsZrokOnlyWhileGranted(t *testing.T) {
+	ctx := context.Background()
 	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Portal}})
 	defer ln.Close()
-	before, err := m.ExposurePolicy(context.Background())
+	before, err := m.ExposurePolicy(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.AttachZrok(newFakeZrok(t))
-	after, err := m.ExposurePolicy(context.Background())
-	if err != nil || after == before {
-		t.Fatal("attaching zrok did not change the policy token")
+	if after, err := m.ExposurePolicy(ctx); err != nil || after != before {
+		t.Fatal("an attached but ungranted zrok backend changed the policy token")
+	}
+	granted, ln2 := managerWith(t, File{Version: 1, Permitted: []ID{Portal, Zrok}})
+	defer ln2.Close()
+	without, err := granted.ExposurePolicy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	granted.AttachZrok(newFakeZrok(t))
+	if with, err := granted.ExposurePolicy(ctx); err != nil || with == without {
+		t.Fatal("attaching a granted zrok backend did not change the policy token")
 	}
 }
 
