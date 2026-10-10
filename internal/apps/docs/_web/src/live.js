@@ -179,6 +179,9 @@ export function liveDecorations(state, ranges, active) {
               });
               return false;
             }
+            // An empty label has nothing to render, so it keeps its source;
+            // CodeMirror also rejects an empty mark.
+            if (textTo <= textFrom) return;
             out.push({
               kind: "mark",
               from: textFrom,
@@ -196,9 +199,11 @@ export function liveDecorations(state, ranges, active) {
       },
     });
   }
-  // A node that spans two visible ranges is visited twice.
+  // A node that spans two visible ranges is visited twice. CodeMirror
+  // rejects empty marks, which would disable the whole plugin.
   const seen = new Set();
   return out.filter((d) => {
+    if (d.kind === "mark" && d.to <= d.from) return false;
     const key = `${d.kind} ${d.from} ${d.to} ${d.cls}`;
     if (seen.has(key)) return false;
     seen.add(key);

@@ -111,3 +111,9 @@ test("tables are found as whole lines and reveal under the selection", () => {
   assert.equal(table.active, false);
   assert.equal(tableBlocks(state(text.indexOf("1 |"))).at(0).active, true);
 });
+
+test("an empty link label keeps its source and adds no empty mark", () => {
+  const ds = decorate("see [](guide.md) and [](<>)\n\nx");
+  assert.deepEqual(hidden(ds), []);
+  for (const d of ds) if (d.kind === "mark") assert.ok(d.to > d.from);
+});
