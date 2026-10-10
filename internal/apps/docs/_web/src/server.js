@@ -417,6 +417,20 @@ export default {
       });
       return new Response("ok");
     }
+    // Mermaid is a large separate module, loaded only by the worker that
+    // serves it. Its path carries its content hash (FLATS_MERMAID_URL, set by
+    // build.mjs), so browsers keep it.
+    if (path === FLATS_MERMAID_URL)
+      return import("./mermaid-asset.js").then(
+        (m) =>
+          new Response(m.default, {
+            headers: {
+              "content-type": "text/javascript; charset=utf-8",
+              "x-content-type-options": "nosniff",
+              "cache-control": "public, max-age=31536000, immutable",
+            },
+          }),
+      );
     if (
       path === "/_docs/assets/client.js" ||
       path === "/_docs/assets/client.css"

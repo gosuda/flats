@@ -8,7 +8,23 @@ export function createMarkdown() {
     defaultValidate = md.validateLink,
     unsafeScheme = /^\s*(?:javascript|vbscript|file|data):/i;
   md.validateLink = (link) => defaultValidate(link) && !unsafeScheme.test(link);
+  // A ```mermaid fence becomes a diagram placeholder holding its source as
+  // escaped text; the client draws it (diagrams.js) and the source shows
+  // until then, or when the diagram has an error.
+  const defaultFence = md.renderer.rules.fence;
+  md.renderer.rules.fence = (tokens, i, options, env, self) => {
+    const t = tokens[i];
+    if (!isDiagram(md.utils.unescapeAll(t.info)))
+      return defaultFence(tokens, i, options, env, self);
+    return `<div class="mermaid-diagram"><pre class="mermaid-source"><code>${md.utils.escapeHtml(t.content)}</code></pre></div>\n`;
+  };
   return md;
+}
+
+// isDiagram reports whether a fence info string, unescaped, names a Mermaid
+// diagram. Like the language markdown-it reads, it is the first word.
+export function isDiagram(info) {
+  return info.trim().split(/\s+/)[0] === "mermaid";
 }
 
 // linkRules answers the editor's link questions the way md renders them.

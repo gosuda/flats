@@ -75,8 +75,10 @@ stripping client headers. Private access by itself does not authorize health act
 The app owns the flat's whole origin. Reserved paths start with `/_docs/`.
 `FS()`, `Entry = "server.js"`, `ContentModule = "content.js"` and `Hash()`
 remain the host interface. The committed `dist/server.js` is one ESM bundle,
-including the client JavaScript and CSS as strings; its only external import
-is the host-generated `./content.js`. No Node, CDN or outbound network is used
+including the client JavaScript and CSS as strings; its only static external
+import is the host-generated `./content.js`. `dist/mermaid-asset.js` exports
+the Mermaid browser bundle as a string and is dynamically imported only to
+serve the Mermaid route. No Node, CDN or outbound network is used
 at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 `dist/BUILD-INPUTS.sha256` binds the source inputs and every other dist file; a Go test verifies both.
 
@@ -90,6 +92,7 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /_docs/api/conflict?doc=<path>&generation=<id>` | Private only: `{generation,markdown}`; `view=1` returns `text/plain; charset=utf-8` with nosniff, restrictive CSP and no-store for viewing/copying; public receives 403, evicted/missing id 404 |
 | `GET /_docs/assets/client.js` | self-contained browser ESM bundle |
 | `GET /_docs/assets/client.css` | workspace CSS |
+| `GET /_docs/assets/mermaid-<hash>.js` | Mermaid browser ESM, loaded by the client only for documents with diagrams; `<hash>` is the first 16 hex digits of its SHA-256, and it is served `immutable` |
 | `GET /_docs/ws?doc=<path>` | collaboration WebSocket; default doc is entry |
 
 HEAD has GET semantics without a response body. Other HTTP methods receive

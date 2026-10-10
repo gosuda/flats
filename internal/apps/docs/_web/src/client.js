@@ -7,6 +7,7 @@ import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { Provider } from "./provider.js";
 import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
+import { onThemeChange, redrawDiagrams, renderDiagrams } from "./diagrams.js";
 import "./client.css";
 const $ = (s) => document.querySelector(s),
   path = document.body.dataset.doc,
@@ -50,6 +51,7 @@ const access = new Compartment();
 function renderNow() {
   cancelAnimationFrame(renderFrame);
   $("#content").innerHTML = md.render(text.toString());
+  renderDiagrams($("#content"));
 }
 function render() {
   if ($("#content").hidden) return;
@@ -57,6 +59,10 @@ function render() {
   renderFrame = requestAnimationFrame(renderNow);
 }
 text.observe(render);
+// Diagrams are drawn in the color scheme's theme, in both views.
+onThemeChange(() =>
+  redrawDiagrams(document).then(() => view?.requestMeasure()),
+);
 // The rendered document is not kept current while hidden, so it is filled
 // once, before it is shown, rather than a frame later.
 function showRendered(rendered) {

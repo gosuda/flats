@@ -4,6 +4,7 @@
 // it can be edited where it is written.
 import { syntaxTree } from "@codemirror/language";
 import MarkdownIt from "markdown-it";
+import { isDiagram } from "./markdown.js";
 
 // Link and image destinations decode escapes and entities as markdown-it
 // does, so the editor opens the same URL the rendered view links to.
@@ -443,6 +444,37 @@ export function tableBlocks(state, focused, refs = new Map()) {
   });
   const context = [...refs.values()].map((r) => r.source).join("\n");
   for (const t of out) t.context = context;
+  return out;
+}
+
+// diagramBlocks returns every top-level ```mermaid block as whole lines, as
+// tableBlocks returns tables: one a selection touches while the editor has
+// focus shows its source, and every other one is drawn. edit is where a click
+// on a drawn diagram puts the cursor: the first line of its source. Blocks
+// inside quotes and lists stay code while editing; the rendered view draws
+// them.
+export function diagramBlocks(state, focused) {
+  const doc = state.doc,
+    out = [];
+  for (let n = syntaxTree(state).topNode.firstChild; n; n = n.nextSibling) {
+    if (n.name !== "FencedCode") continue;
+    const info = n.getChild("CodeInfo");
+    if (!info || !isDiagram(unescapeAll(doc.sliceString(info.from, info.to))))
+      continue;
+    const first = doc.lineAt(n.from),
+      from = first.from,
+      to = doc.lineAt(n.to).to,
+      active =
+        focused &&
+        state.selection.ranges.some((r) => r.from <= to && r.to >= from);
+    out.push({
+      from,
+      to,
+      active,
+      edit: Math.min(first.to + 1, to),
+      source: doc.sliceString(from, to),
+    });
+  }
   return out;
 }
 

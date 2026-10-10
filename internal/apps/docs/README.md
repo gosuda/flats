@@ -17,9 +17,11 @@ go test ./internal/apps/docs/... ./internal/runtime/...
 
 Dependencies are pinned in `_web/package.json` and its lockfile. The build
 produces one minified server ESM bundle, embedding the client JavaScript and
-CSS as strings. No Node, network, WebAssembly, TextEncoder, or TextDecoder
-is needed at deployment time. Third-party license texts cover the 32 packages
-actually bundled, as determined by esbuild's input graph.
+CSS as strings, plus `mermaid-asset.js`, a module exporting the minified
+Mermaid browser bundle as a string. No Node, network, WebAssembly, TextEncoder, or TextDecoder
+is needed at deployment time. Third-party license texts cover the 90 packages
+actually bundled, as determined by esbuild's input graph (a package whose
+license is only a README section, such as fastdom, contributes that section).
 
 `dist/BUILD-INPUTS.sha256` covers sorted `_web/src/**`, package metadata and
 the build script and every other dist output (server and licenses). `TestBuildInputs` recomputes it without Node. Changing a
@@ -56,7 +58,13 @@ The browser uses CodeMirror 6, Markdown language support and y-codemirror.next
 with local-origin undo. A custom provider keeps pending ids/bytes through
 reconnect, clears them only on ACK, relays awareness, and stops with a local
 download on divergent history or fatal rejection. Markdown-it disables raw
-HTML and validates links. Public viewers construct no editor, cannot send presence and receive no
+HTML and validates links. A ```` ```mermaid ```` fence renders as a placeholder that
+Mermaid 11.17.2 (strict security level, light/dark theme from the color scheme)
+draws in the browser. Mermaid (3.4 MB) is fetched only for documents with diagrams,
+from `/_docs/assets/mermaid-<sha256[:16]>.js` with immutable caching; the worker
+dynamically imports `mermaid-asset.js` only when that path is requested, so
+other workers never load it. Drawings are cached by theme and source, and the
+live-preview editor draws top-level diagrams in place like tables. Public viewers construct no editor, cannot send presence and receive no
 private identities/cursors. Public connections/rooms have separate smaller
 budgets. Already activated API reads and heartbeats use deferred read snapshots.
 Rooms catch up from their cached Y.Doc, validating once after replay. Unchanged
