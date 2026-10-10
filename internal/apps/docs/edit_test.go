@@ -81,6 +81,12 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 		t.Fatal("block paging", body)
 	}
 
+	// A requested outline of an empty document keeps its (zero) metadata.
+	empty := startApp(t, t.TempDir(), "", "v1")
+	if _, body, _ := empty.getHeaders(t, "/_docs/api/document?blocks=1", http.Header{"X-Flats-Access": {"private"}}); !strings.Contains(body, `"blocks":[]`) || !strings.Contains(body, `"blocks_total":0`) || !strings.Contains(body, `"block_offset":0`) {
+		t.Fatal("empty outline", body)
+	}
+
 	// Only the host management channel may edit; browsers (even private) and
 	// public routes are refused, and nothing changes.
 	attempt := ops(map[string]any{"op": "replace", "find": "Base line", "with": "Base line (agent)"})
@@ -230,17 +236,21 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	editor.hello(t, nil)
 
 	var read core.Document
-	if text, failed := callTool(t, session, "get_document", map[string]any{"slug": "host-doc", "blocks": true}, &read); failed || len(read.Blocks) != 2 || read.Hash == "" {
+	if text, failed := callTool(t, session, "get_document", map[string]any{"slug": "host-doc", "blocks": true}, &read); failed || read.Blocks == nil || len(*read.Blocks) != 2 || read.Hash == "" || *read.BlocksTotal != 2 || *read.BlockOffset != 0 {
 		t.Fatal(text, read)
 	}
-	if read.Blocks[1].Hash != blockHash("Base line\nAgent line") || read.Blocks[0].Kind != "heading" || read.Blocks[0].Level != 1 {
-		t.Fatal(read.Blocks)
+	if blocks := *read.Blocks; blocks[1].Hash != blockHash("Base line\nAgent line") || blocks[0].Kind != "heading" || blocks[0].Level != 1 {
+		t.Fatal(blocks)
+	}
+	var plain core.Document
+	if text, failed := callTool(t, session, "get_document", map[string]any{"slug": "host-doc"}, &plain); failed || plain.Blocks != nil || strings.Contains(text, "blocks_total") {
+		t.Fatal("outline without blocks: true", text)
 	}
 	// A person edits while the agent prepares its edit.
 	edit(t, editor, "human", fixture(t).Independent)
 	var out core.DocumentEdit
 	args := map[string]any{"slug": "host-doc", "ops": []any{
-		map[string]any{"op": "replace_block", "block": read.Blocks[1].Hash, "with": "Base line\nAgent line, revised live"},
+		map[string]any{"op": "replace_block", "block": blockHash("Base line\nAgent line"), "with": "Base line\nAgent line, revised live"},
 		map[string]any{"op": "insert", "at": "end", "text": "Agent note."},
 	}}
 	text, failed = callTool(t, session, "update_document", args, &out)

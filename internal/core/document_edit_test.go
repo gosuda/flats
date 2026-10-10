@@ -199,3 +199,22 @@ func TestUpdateDocumentKeepsExplicitEmptyGuards(t *testing.T) {
 		t.Fatal(string(body), err)
 	}
 }
+
+// A requested but empty outline survives decoding and encoding with its
+// zero metadata, so callers can tell it from no outline.
+func TestEmptyOutlineRoundTrip(t *testing.T) {
+	var d Document
+	if err := json.Unmarshal([]byte(`{"format":1,"doc":"index.md","markdown":"","blocks":[],"blocks_total":0,"block_offset":0}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(d)
+	for _, want := range []string{`"blocks":[]`, `"blocks_total":0`, `"block_offset":0`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatal(string(b))
+		}
+	}
+	b, _ = json.Marshal(Document{Format: 1, Doc: "index.md"})
+	if strings.Contains(string(b), "blocks") {
+		t.Fatal(string(b))
+	}
+}

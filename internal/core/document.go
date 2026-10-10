@@ -56,15 +56,16 @@ type Document struct {
 	Doc        string             `json:"doc"`
 	Markdown   string             `json:"markdown"`
 	Hash       string             `json:"hash,omitempty"`
-	Blocks     []DocumentBlock    `json:"blocks,omitempty"`
-	// BlocksTotal and BlockOffset page the outline: one page holds at most
-	// 1,000 blocks.
-	BlocksTotal int    `json:"blocks_total,omitempty"`
-	BlockOffset int    `json:"block_offset,omitempty"`
-	Epoch       string `json:"epoch,omitempty"`
-	Chain       string `json:"chain,omitempty"`
-	Seq         int64  `json:"seq"`
-	Source      string `json:"source"`
+	// Blocks, BlocksTotal and BlockOffset are present (also when empty or
+	// zero) exactly when an outline of live text was requested. One page
+	// holds at most 1,000 blocks.
+	Blocks      *[]DocumentBlock `json:"blocks,omitempty"`
+	BlocksTotal *int             `json:"blocks_total,omitempty"`
+	BlockOffset *int             `json:"block_offset,omitempty"`
+	Epoch       string           `json:"epoch,omitempty"`
+	Chain       string           `json:"chain,omitempty"`
+	Seq         int64            `json:"seq"`
+	Source      string           `json:"source"`
 }
 
 // DocumentBlock is one Markdown block of live text with the guard hash a
