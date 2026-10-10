@@ -75,7 +75,7 @@ func (f *fakeBackend) ReleaseName(_ context.Context, namespace, name string) err
 }
 
 // Share returns a bare host name as the zrok controller does.
-func (f *fakeBackend) Share(_ context.Context, namespace, name string) (string, []string, error) {
+func (f *fakeBackend) Share(_ context.Context, namespace, name, target string) (string, []string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.shareErr != nil {
@@ -89,7 +89,7 @@ func (f *fakeBackend) Share(_ context.Context, namespace, name string) (string, 
 	token := fmt.Sprintf("tok%d", f.next)
 	f.shares[token] = k
 	f.names[k] = token
-	f.targets[token] = shareTarget(name)
+	f.targets[token] = target
 	if f.loseShare {
 		f.loseShare = false
 		return "", nil, errors.New("share response timed out")
@@ -779,7 +779,7 @@ func TestHasRecordFailsClosed(t *testing.T) {
 
 func TestShareWithLostResponseIsReconciled(t *testing.T) {
 	f := newFake()
-	n := newNet(Config{Dir: t.TempDir()}, f)
+	n := newNet(Config{Dir: t.TempDir(), Instance: "host-a"}, f)
 	defer n.Close()
 	f.loseShare = true
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
@@ -848,5 +848,23 @@ func TestServeFinishesFailedStopAndReopens(t *testing.T) {
 	}
 	if !slices.Contains(f.unshared, "tok1") {
 		t.Fatalf("the failed stop was not finished: unshared = %v", f.unshared)
+	}
+}
+
+func TestShareOfAnotherHostIsNotReclaimed(t *testing.T) {
+	f := newFake()
+	first := newNet(Config{Dir: t.TempDir(), Instance: "host-a"}, f)
+	defer first.Close()
+	if _, err := first.Serve(context.Background(), "blog", hello("a")); err != nil {
+		t.Fatal(err)
+	}
+	// A second host on the same zrok environment publishes the same slug.
+	second := newNet(Config{Dir: t.TempDir(), Instance: "host-b"}, f)
+	defer second.Close()
+	if _, err := second.Serve(context.Background(), "blog", hello("b")); err == nil || !strings.Contains(err.Error(), "Flats did not create") {
+		t.Fatalf("second host: %v", err)
+	}
+	if slices.Contains(f.unshared, "tok1") || f.names["public/blog"] != "tok1" {
+		t.Fatalf("the first host's share was taken: unshared=%v names=%v", f.unshared, f.names)
 	}
 }

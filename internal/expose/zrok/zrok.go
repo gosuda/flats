@@ -44,6 +44,10 @@ type Config struct {
 	Environment string
 	// Namespace is the zrok namespace for names (default "public").
 	Namespace string
+	// Instance is the Flats host instance id. It marks the shares this host
+	// creates, so another host on the same zrok environment never removes
+	// them.
+	Instance string
 	// ShutdownTimeout bounds HTTP drain and unsharing (default 30s).
 	ShutdownTimeout time.Duration
 	// Logf receives share state changes. Nil discards them.
@@ -273,7 +277,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		rec.Token = ""
 		_ = n.writeRecord(slug, rec)
 	}
-	token, endpoints, err := n.b.Share(ctx, ns, slug)
+	token, endpoints, err := n.b.Share(ctx, ns, slug, shareTarget(n.cfg.Instance, slug))
 	if err != nil {
 		return "", fmt.Errorf("zrok: %w", err)
 	}
@@ -554,8 +558,8 @@ func HasRecord(dir, slug string) (bool, error) {
 }
 
 // ownsShare reports whether token is a share this host created for slug:
-// one it recorded, or one of this environment that carries Flats' target,
-// such as a share whose creation response was lost.
+// one it recorded, or one of this environment that carries this host's
+// target, such as a share whose creation response was lost.
 func (n *Net) ownsShare(ctx context.Context, slug string, rec record, token string) (bool, error) {
 	n.mu.Lock()
 	known := token == rec.Token || token == n.orphans[slug]
@@ -563,7 +567,7 @@ func (n *Net) ownsShare(ctx context.Context, slug string, rec record, token stri
 	if known {
 		return true, nil
 	}
-	return n.b.ShareOwned(ctx, token, shareTarget(slug))
+	return n.b.ShareOwned(ctx, token, shareTarget(n.cfg.Instance, slug))
 }
 
 func (n *Net) otherAccount(slug string) error {

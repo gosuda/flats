@@ -46,9 +46,9 @@ type backend interface {
 	// ReleaseName deletes the account's reservation of name in namespace. A
 	// name the account does not hold is not an error.
 	ReleaseName(ctx context.Context, namespace, name string) error
-	// Share creates a public share under name in namespace and returns its
-	// token and frontend endpoints.
-	Share(ctx context.Context, namespace, name string) (token string, endpoints []string, err error)
+	// Share creates a public share under name in namespace with target, and
+	// returns its token and frontend endpoints.
+	Share(ctx context.Context, namespace, name, target string) (token string, endpoints []string, err error)
 	// Unshare deletes a share of this environment. An unknown share is not
 	// an error.
 	Unshare(ctx context.Context, token string) error
@@ -204,7 +204,7 @@ func (b *sdkBackend) ReleaseName(ctx context.Context, namespace, name string) er
 	return nil
 }
 
-func (b *sdkBackend) Share(ctx context.Context, namespace, name string) (string, []string, error) {
+func (b *sdkBackend) Share(ctx context.Context, namespace, name, target string) (string, []string, error) {
 	c, err := b.zrokClient(ctx)
 	if err != nil {
 		return "", nil, err
@@ -214,7 +214,7 @@ func (b *sdkBackend) Share(ctx context.Context, namespace, name string) (string,
 		EnvZID:         b.root.Environment().ZitiIdentity,
 		ShareMode:      "public",
 		BackendMode:    "proxy",
-		Target:         shareTarget(name),
+		Target:         target,
 		AuthScheme:     "none",
 		PermissionMode: "closed",
 		NameSelections: []*rest_model_zrok.NameSelection{{NamespaceToken: namespace, Name: name}},
@@ -262,8 +262,9 @@ func (b *sdkBackend) Unshare(ctx context.Context, token string) error {
 	return nil
 }
 
-// shareTarget marks a share Flats created for name.
-func shareTarget(name string) string { return "flats:" + name }
+// shareTarget marks a share the Flats host instance created for name, so
+// hosts sharing one zrok environment never take each other's shares.
+func shareTarget(instance, name string) string { return "flats:" + instance + ":" + name }
 
 func (b *sdkBackend) ShareOwned(ctx context.Context, token, target string) (bool, error) {
 	c, err := b.zrokClient(ctx)

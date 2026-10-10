@@ -55,7 +55,7 @@ func (c *controller) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"shareToken": token, "envZId": env, "target": "flats:blog", "frontendEndpoints": []string{}})
+		json.NewEncoder(w).Encode(map[string]any{"shareToken": token, "envZId": env, "target": "flats:host-a:blog", "frontendEndpoints": []string{}})
 	case r.Method == "POST" && r.URL.Path == "/api/v2/share/name":
 		if c.nameConflict == "" {
 			w.WriteHeader(http.StatusCreated)
@@ -104,12 +104,12 @@ func TestShareOwnedNeedsEnvironmentAndTarget(t *testing.T) {
 	b := newTestBackend(t, c)
 	ctx := context.Background()
 	for token, want := range map[string]bool{"mine": true, "old": false, "gone": false} {
-		got, err := b.ShareOwned(ctx, token, "flats:blog")
+		got, err := b.ShareOwned(ctx, token, shareTarget("host-a", "blog"))
 		if err != nil || got != want {
 			t.Errorf("ShareOwned(%s) = %v, %v; want %v", token, got, err, want)
 		}
 	}
-	if got, _ := b.ShareOwned(ctx, "mine", "flats:other"); got {
+	if got, _ := b.ShareOwned(ctx, "mine", shareTarget("host-b", "blog")); got {
 		t.Error("a share with another target was owned")
 	}
 }

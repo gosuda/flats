@@ -379,7 +379,8 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		h.portalNet = pn
 	}
-	zrokOptions := zrok.Config{Dir: filepath.Join(dataDir, "zrok"), Environment: cfg.Zrok.Environment, Namespace: cfg.Zrok.Namespace, Logf: logf}
+	zrokOptions := zrok.Config{Dir: filepath.Join(dataDir, "zrok"), Environment: cfg.Zrok.Environment, Namespace: cfg.Zrok.Namespace,
+		Instance: cfg.Host.InstanceID, Logf: logf}
 	h.zrokOptions = zrokOptions
 	if permits(provider.Zrok) {
 		zn, err := zrok.New(zrokOptions)
