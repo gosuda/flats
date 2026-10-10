@@ -51,16 +51,17 @@ polish is for the user to ask for.
 | `background` | Nothing paints `body`, so the viewer's default shows through and the page can be unreadable in one scheme. |
 | `overflow` | The page scrolls sideways at this width. `elements` lists the outermost offenders outside any scrolling box. |
 | `image`, `stylesheet`, `resource` | A broken image, an unloaded stylesheet, or a request that failed with HTTP 400 or above (`status`). |
-| `lazy-image` | A `loading="lazy"` image the browser has not requested yet, so it is unchecked: scroll to it or fetch its URL. |
+| `lazy-image` | One entry for all `loading="lazy"` images the browser has not requested yet (`count`, first five `src`): they are unchecked, so scroll to them or fetch their URLs. |
 | `hidden-text` | Text that is invisible at rest (`opacity: 0` on it or an ancestor, or `visibility: hidden`), usually content waiting for a scroll observer. Closed menus and tooltips are fine. |
 | `contrast` | Text below 4.5:1 against its background in this scheme (3:1 for large text), counting translucent backgrounds and `opacity`. |
 
-`problems` is empty when nothing was found; it lists at most 40 entries.
+`problems` is empty when nothing was found. It lists at most 40 entries; `truncated: true` means more were found, so fix these and run it again.
 
 The script is a fast heuristic, not proof that a page is fine. It skips
 text over background images and gradients, reads at most 500 text nodes,
-ignores CSS transforms, blend modes and filters, and does not see content
-that appears only after interaction. Your own look at each view stays the
+looks inside open shadow roots but not closed ones, ignores CSS transforms,
+blend modes and filters, and does not see content that appears only after
+interaction. Your own look at each view stays the
 real check.
 
 ### Thumbnail

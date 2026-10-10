@@ -14,7 +14,14 @@
     problems: [],
     consoleErrors: "read them from your browser tool; this script cannot see them",
   };
-  const add = (check, detail) => { if (out.problems.length < 40) out.problems.push({ check, ...detail }); };
+  const add = (check, detail) => {
+    if (out.problems.length < 40) out.problems.push({ check, ...detail });
+    else out.truncated = true;
+  };
+  const up = (e) => e.parentElement ?? e.getRootNode().host ?? null; // crosses open shadow roots
+  const roots = [];
+  const collect = (r) => { roots.push(r); for (const el of r.querySelectorAll("*")) if (el.shadowRoot) collect(el.shadowRoot); };
+  collect(document);
   const name = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") +
     [...el.classList].slice(0, 2).map((c) => "." + c).join("");
   const style = (el) => getComputedStyle(el);
@@ -34,7 +41,7 @@
   // image is in the way or no element in the chain paints an opaque background.
   const colors = (el, text) => {
     const chain = [];
-    for (let e = el; e; e = e.parentElement) {
+    for (let e = el; e; e = up(e)) {
       const s = style(e);
       if (s.backgroundImage !== "none") return null;
       chain.push({ bg: rgba(s.backgroundColor), opacity: Number(s.opacity) });
@@ -68,10 +75,10 @@
       fix: "let rows wrap, give text children min-width: 0, put wide tables/code in an overflow-x: auto box" });
   }
 
-  for (const img of document.images) {
+  const lazy = [];
+  for (const img of roots.flatMap((r) => [...r.querySelectorAll("img")])) {
     if (img.complete && img.naturalWidth === 0 && img.currentSrc) add("image", { src: img.currentSrc });
-    else if (!img.complete && img.loading === "lazy") add("lazy-image", { src: img.getAttribute("src") ?? img.getAttribute("srcset"),
-      fix: "not requested yet: scroll to it, or fetch its URL, before calling images fine" });
+    else if (!img.complete && img.loading === "lazy") lazy.push(img.getAttribute("src") ?? img.getAttribute("srcset"));
   }
   for (const link of document.querySelectorAll('link[rel~="stylesheet"][href]')) {
     if (!link.sheet && !link.disabled) add("stylesheet", { href: link.href });
@@ -81,20 +88,28 @@
   }
 
   const faded = (el) => { // opacity does not inherit, so check every ancestor
-    for (let e = el; e; e = e.parentElement) if (Number(style(e).opacity) === 0) return e;
+    for (let e = el; e; e = up(e)) if (Number(style(e).opacity) === 0) return e;
     return null;
   };
   const hidden = new Set();
   const pairs = new Set();
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT,
-    { acceptNode: (n) => n.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
-  for (let n, i = 0; (n = walker.nextNode()) && i < 500; i++) {
-    const el = n.parentElement;
+  const texts = function* () {
+    for (const r of roots) {
+      const walker = document.createTreeWalker(r === document ? document.body : r, NodeFilter.SHOW_TEXT,
+        { acceptNode: (n) => n.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+      for (let n; (n = walker.nextNode());) yield n;
+    }
+  };
+  let i = 0;
+  for (const n of texts()) {
+    if (i++ >= 500) break;
+    const el = n.parentElement ?? n.getRootNode().host;
+    if (!el || ["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT"].includes(el.tagName)) continue;
     const s = style(el);
     const range = document.createRange();
     range.selectNodeContents(n);
-    const rect = range.getBoundingClientRect(); // the text's own box: display: contents wrappers have none
-    if (rect.width === 0 || rect.height === 0 || el.closest("[hidden], [aria-hidden=true]")) continue;
+    const rect = range.getBoundingClientRect(); // the text's own box: display: contents wrappers have none;
+    if (rect.width === 0 || rect.height === 0) continue; // hidden or display: none text has none either
     const parked = s.visibility === "hidden" ? el : faded(el);
     if (parked) {
       if (!hidden.has(parked)) { hidden.add(parked); add("hidden-text", { element: name(parked), text: n.data.trim().slice(0, 40),
@@ -114,5 +129,7 @@
         fix: "use color tokens that keep 4.5:1 (3:1 for large text) in this scheme" });
     }
   }
+  if (lazy.length) add("lazy-image", { count: lazy.length, src: lazy.slice(0, 5),
+    fix: "not requested yet: scroll to them, or fetch their URLs, before calling images fine" });
   return out;
 })()
