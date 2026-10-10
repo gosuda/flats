@@ -62,7 +62,9 @@ type Net struct {
 	b    backend
 	logf func(string, ...any)
 
-	retryMin, retryMax time.Duration // bind retry backoff
+	retryMin, retryMax time.Duration      // bind retry backoff
+	orphans            map[string]string  // slug -> share created but neither recorded nor deleted
+	failWrite          func(record) error // test hook: fail a record write
 
 	mu      sync.Mutex
 	closed  bool
@@ -137,7 +139,7 @@ func newNet(cfg Config, b backend) *Net {
 		logf = func(string, ...any) {}
 	}
 	return &Net{cfg: cfg, b: b, logf: logf, retryMin: 2 * time.Second, retryMax: time.Minute,
-		entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}}
+		orphans: map[string]string{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}}
 }
 
 func (n *Net) slugLock(slug string) *sync.Mutex {
@@ -204,38 +206,54 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	if !known {
 		rec = record{Namespace: ns}
 	}
-	// Record the name before reserving it, so a reservation is never
-	// untracked.
-	if err := n.writeRecord(slug, rec); err != nil {
-		return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
-	}
-	holder, created, err := n.b.ReserveName(ctx, ns, slug)
+	holder, found, err := n.b.NameHolder(ctx, ns, slug)
 	if err != nil {
-		if errors.Is(err, errNameTaken) {
-			if !known {
-				_ = n.dropRecord(slug)
-			}
-			return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
-		}
 		return "", fmt.Errorf("zrok: %s: %w", slug, err)
 	}
-	if created {
+	if !found {
+		// Record the intent before creating the name, so a name this host
+		// creates is never untracked. A record whose name does not exist is
+		// dropped by Retire.
 		rec.Created = true
 		if err := n.writeRecord(slug, rec); err != nil {
 			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
+		}
+		switch err := n.b.CreateName(ctx, ns, slug); {
+		case errors.Is(err, errNameExists):
+			// Created meanwhile: by this account outside Flats, or by
+			// another account.
+			holder, found, err = n.b.NameHolder(ctx, ns, slug)
+			if err != nil {
+				return "", fmt.Errorf("zrok: %s: %w", slug, err)
+			}
+			if !found {
+				if !known {
+					_ = n.dropRecord(slug)
+				}
+				return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
+			}
+			rec.Created = false
+			if err := n.writeRecord(slug, rec); err != nil {
+				return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
+			}
+		case err != nil:
+			// The name may or may not exist; the record keeps the intent so
+			// Retire can release it.
+			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		}
 	}
 	if holder != "" {
 		// Only a share this host created and could not delete (a crash, or
 		// a shutdown whose unshare failed) is removed. Any other share, such
 		// as one the operator runs under this name, is left alone.
-		if holder != rec.Token {
+		if !n.ownsShare(slug, rec, holder) {
 			return "", fmt.Errorf("zrok: %s: the name is held by share %s, which Flats did not create; stop that share or rename the flat", slug, holder)
 		}
 		if err := n.b.Unshare(ctx, holder); err != nil {
 			return "", fmt.Errorf("zrok: %s: remove stale share %s: %w", slug, holder, err)
 		}
 		n.logf("zrok: %s: removed stale share %s", slug, holder)
+		n.forgetOrphan(slug, holder)
 		rec.Token = ""
 		_ = n.writeRecord(slug, rec)
 	}
@@ -246,7 +264,13 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	rec.Token = token
 	if err := n.writeRecord(slug, rec); err != nil {
 		// An unrecorded share could never be cleaned up after a crash.
-		_ = n.b.Unshare(ctx, token)
+		if uerr := n.b.Unshare(ctx, token); uerr != nil {
+			// Keep it in memory so a later Serve or Retire still removes it.
+			n.mu.Lock()
+			n.orphans[slug] = token
+			n.mu.Unlock()
+			return "", fmt.Errorf("zrok: %s: record share: %w (and removing share %s failed: %v)", slug, err, token, uerr)
+		}
 		return "", fmt.Errorf("zrok: %s: record share: %w", slug, err)
 	}
 	url := ""
@@ -404,8 +428,11 @@ func (n *Net) stopEntry(e *entry) error {
 	case <-ctx.Done():
 		errs = append(errs, fmt.Errorf("zrok: %s overlay binding did not stop within %s", e.slug, n.cfg.ShutdownTimeout))
 	}
-	// Unshare even if draining failed: the share is what keeps the URL up.
-	if err := n.b.Unshare(ctx, e.token); err != nil {
+	// Unshare even if draining failed, with its own deadline: the share is
+	// what keeps the URL up.
+	uctx, ucancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
+	defer ucancel()
+	if err := n.b.Unshare(uctx, e.token); err != nil {
 		errs = append(errs, fmt.Errorf("zrok: %s: %w", e.slug, err))
 	} else {
 		n.forgetToken(e.slug, e.token)
@@ -454,10 +481,11 @@ func (n *Net) release(ctx context.Context, slug string, rec record) error {
 	}
 	if found {
 		switch {
-		case holder != "" && holder == rec.Token:
+		case holder != "" && n.ownsShare(slug, rec, holder):
 			if err := n.b.Unshare(ctx, holder); err != nil {
 				return fmt.Errorf("remove share %s: %w", holder, err)
 			}
+			n.forgetOrphan(slug, holder)
 			if rec.Created {
 				if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 					return err
@@ -475,18 +503,37 @@ func (n *Net) release(ctx context.Context, slug string, rec record) error {
 }
 
 // Reserved reports whether this host recorded reserving slug's name and has
-// not released it yet.
-func (n *Net) Reserved(slug string) bool { return HasRecord(n.cfg.Dir, slug) }
+// not released it yet. An error means the record could not be inspected.
+func (n *Net) Reserved(slug string) (bool, error) { return HasRecord(n.cfg.Dir, slug) }
 
 // HasRecord reports whether dir records a zrok name for slug. It reads only
-// the local record, for callers without a zrok backend.
-func HasRecord(dir, slug string) bool {
+// the local record, for callers without a zrok backend. An error means the
+// record could not be inspected, which callers treat as possibly present.
+func HasRecord(dir, slug string) (bool, error) {
 	path, err := recordPath(dir, slug)
 	if err != nil {
-		return false
+		return false, err
 	}
 	_, err = os.Stat(path)
-	return err == nil
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// ownsShare reports whether token is a share this host created for slug.
+func (n *Net) ownsShare(slug string, rec record, token string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return token == rec.Token || token == n.orphans[slug]
+}
+
+func (n *Net) forgetOrphan(slug, token string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.orphans[slug] == token {
+		delete(n.orphans, slug)
+	}
 }
 
 // record is what this host knows about a name it reserved, kept as JSON in
@@ -529,6 +576,11 @@ func (n *Net) readRecord(slug string) (record, bool, error) {
 }
 
 func (n *Net) writeRecord(slug string, rec record) error {
+	if n.failWrite != nil {
+		if err := n.failWrite(rec); err != nil {
+			return err
+		}
+	}
 	path, err := recordPath(n.cfg.Dir, slug)
 	if err != nil {
 		return err

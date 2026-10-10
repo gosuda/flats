@@ -23,7 +23,7 @@ type fakeZrok struct {
 	reserved           map[string]bool
 }
 
-func (f *fakeZrok) Reserved(slug string) bool { return f.reserved[slug] }
+func (f *fakeZrok) Reserved(slug string) (bool, error) { return f.reserved[slug], nil }
 
 func (f *fakeZrok) Serve(ctx context.Context, slug string, h http.Handler) (string, error) {
 	f.serve++

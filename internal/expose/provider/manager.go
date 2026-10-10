@@ -86,8 +86,9 @@ type ZrokNet interface {
 	// Retire deletes slug's share and releases its name.
 	Retire(slug string) error
 	// Reserved reports whether this host reserved slug's name and has not
-	// released it, independently of current permissions or routes.
-	Reserved(slug string) bool
+	// released it, independently of current permissions or routes. An error
+	// means the record could not be inspected.
+	Reserved(slug string) (bool, error)
 	URL(slug string) string
 	Status() core.NetStatus
 	Close() error
@@ -1182,19 +1183,31 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	for _, host := range hosts {
 		owned := byHost[host]
 		z := m.zrokNet()
-		switch {
-		case owned.zrok && z == nil:
-			errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
-		case owned.zrok:
-			if err := z.Retire(host); err != nil {
+		if owned.zrok {
+			if z == nil {
+				errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
+			} else if err := z.Retire(host); err != nil {
 				errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, err))
 			}
-		case z != nil && z.Reserved(host):
+			continue
+		}
+		var reserved bool
+		var err error
+		if z != nil {
+			reserved, err = z.Reserved(host)
+		} else {
+			reserved, err = zrok.HasRecord(m.zrokDir, host)
+		}
+		switch {
+		case err != nil:
+			// Fail closed: an unreadable record may still name a reservation.
+			errs = append(errs, fmt.Errorf("zrok name %s: inspect the record: %w", host, err))
+		case reserved && z == nil:
+			errs = append(errs, fmt.Errorf("zrok name %s is still reserved; turn zrok on so Flats can release it: %w", host, ErrNotConfigured))
+		case reserved:
 			if err := z.Retire(host); err != nil {
 				errs = append(errs, fmt.Errorf("zrok name %s: %w", host, err))
 			}
-		case z == nil && zrok.HasRecord(m.zrokDir, host):
-			errs = append(errs, fmt.Errorf("zrok name %s is still reserved; turn zrok on so Flats can release it: %w", host, ErrNotConfigured))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {

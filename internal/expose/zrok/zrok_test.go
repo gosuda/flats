@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -27,6 +29,7 @@ type fakeBackend struct {
 
 	unshareErr error
 	shareErr   error
+	createErr  error
 	unshared   []string
 	released   []string
 	closed     bool
@@ -39,17 +42,17 @@ func newFake() *fakeBackend {
 // key is how the fake stores a name: "<namespace>/<name>".
 func key(namespace, name string) string { return namespace + "/" + name }
 
-func (f *fakeBackend) ReserveName(_ context.Context, namespace, name string) (string, bool, error) {
+func (f *fakeBackend) CreateName(_ context.Context, namespace, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.foreign[name] {
-		return "", false, fmt.Errorf("%w: %q", errNameTaken, name)
+	if f.createErr != nil {
+		return f.createErr
 	}
-	holder, ok := f.names[key(namespace, name)]
-	if !ok {
-		f.names[key(namespace, name)] = ""
+	if _, ok := f.names[key(namespace, name)]; ok || f.foreign[name] {
+		return errNameExists
 	}
-	return holder, !ok, nil
+	f.names[key(namespace, name)] = ""
+	return nil
 }
 
 func (f *fakeBackend) NameHolder(_ context.Context, namespace, name string) (string, bool, error) {
@@ -85,9 +88,12 @@ func (f *fakeBackend) Share(_ context.Context, namespace, name string) (string, 
 	return token, []string{name + "." + namespace + ".example"}, nil
 }
 
-func (f *fakeBackend) Unshare(_ context.Context, token string) error {
+func (f *fakeBackend) Unshare(ctx context.Context, token string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("unshare %s: %w", token, err)
+	}
 	if f.unshareErr != nil {
 		return f.unshareErr
 	}
@@ -477,7 +483,7 @@ func TestReservedNameRecordOutlivesRestartUntilRetire(t *testing.T) {
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
 	}
-	if !n.Reserved("blog") || n.Reserved("other") {
+	if !reserved(t, n, "blog") || reserved(t, n, "other") {
 		t.Fatal("reservation record missing")
 	}
 	if err := n.Close(); err != nil {
@@ -487,13 +493,13 @@ func TestReservedNameRecordOutlivesRestartUntilRetire(t *testing.T) {
 	// still knows it reserved the name and releases it.
 	n = newNet(Config{Dir: dir}, f)
 	defer n.Close()
-	if !n.Reserved("blog") {
+	if !reserved(t, n, "blog") {
 		t.Fatal("record did not survive a restart")
 	}
 	if err := n.Retire("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["public/blog"]; ok || n.Reserved("blog") {
+	if _, ok := f.names["public/blog"]; ok || reserved(t, n, "blog") {
 		t.Fatalf("name or record kept after Retire: names=%v", f.names)
 	}
 }
@@ -506,7 +512,7 @@ func TestFailedReservationLeavesNoRecord(t *testing.T) {
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
 		t.Fatal("served a name another account owns")
 	}
-	if n.Reserved("blog") {
+	if reserved(t, n, "blog") {
 		t.Fatal("a name another account owns was recorded as reserved")
 	}
 	if err := n.Retire("blog"); err != nil || len(f.released) != 0 {
@@ -525,8 +531,8 @@ func TestRetireKeepsNamesFlatsDidNotCreate(t *testing.T) {
 	if err := n.Retire("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["public/blog"]; !ok || len(f.released) != 0 || n.Reserved("blog") {
-		t.Fatalf("names=%v released=%v reserved=%t", f.names, f.released, n.Reserved("blog"))
+	if _, ok := f.names["public/blog"]; !ok || len(f.released) != 0 || reserved(t, n, "blog") {
+		t.Fatalf("names=%v released=%v reserved=%t", f.names, f.released, reserved(t, n, "blog"))
 	}
 }
 
@@ -640,11 +646,115 @@ func TestStopDrainsRequestFromLostListener(t *testing.T) {
 }
 
 func TestNameConflictKeepsControllerReason(t *testing.T) {
-	if err := nameConflict("blog", "public", ""); !errors.Is(err, errNameTaken) {
+	if err := nameConflict("blog", ""); !errors.Is(err, errNameExists) {
 		t.Fatalf("existing name: %v", err)
 	}
-	err := nameConflict("blog", "public", "names limit reached; cannot reserve additional names")
-	if errors.Is(err, errNameTaken) || !strings.Contains(err.Error(), "names limit reached") {
+	err := nameConflict("blog", "names limit reached; cannot reserve additional names")
+	if errors.Is(err, errNameExists) || !strings.Contains(err.Error(), "names limit reached") {
 		t.Fatalf("limit: %v", err)
+	}
+}
+
+func reserved(t *testing.T, n *Net, slug string) bool {
+	t.Helper()
+	ok, err := n.Reserved(slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+func TestAmbiguousNameCreationStaysRecorded(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	f.createErr = errors.New("controller timed out")
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+		t.Fatal("Serve succeeded without a name")
+	}
+	if !reserved(t, n, "blog") {
+		t.Fatal("an attempted creation was not recorded")
+	}
+	// The controller did create it after all.
+	f.names["public/blog"] = ""
+	if err := n.Retire("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.names["public/blog"]; ok || reserved(t, n, "blog") {
+		t.Fatalf("name kept: %v", f.names)
+	}
+}
+
+func TestUnrecordedShareIsRemovedLater(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	n.failWrite = func(rec record) error {
+		if rec.Token != "" {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	f.unshareErr = errors.New("controller unavailable")
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("err = %v", err)
+	}
+	if f.names["public/blog"] != "tok1" {
+		t.Fatalf("names = %v", f.names)
+	}
+	n.failWrite, f.unshareErr = nil, nil
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatalf("the share left by the failed rollback blocked Serve: %v", err)
+	}
+	if !slices.Contains(f.unshared, "tok1") {
+		t.Fatalf("unshared = %v", f.unshared)
+	}
+}
+
+func TestUnshareGetsItsOwnDeadlineAfterDrainTimeout(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir(), ShutdownTimeout: 200 * time.Millisecond}, f)
+	defer n.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+	})
+	if _, err := n.Serve(context.Background(), "blog", slow); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, n, "blog", stateReady)
+	go http.Get("http://" + f.addr("tok1") + "/")
+	<-started
+	if err := n.Stop("blog"); err == nil {
+		t.Fatal("Stop hid the drain timeout")
+	}
+	if !slices.Contains(f.unshared, "tok1") {
+		t.Fatalf("share kept after the drain timed out: unshared = %v", f.unshared)
+	}
+}
+
+func TestHasRecordFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if ok, err := HasRecord(dir, "blog"); ok || err != nil {
+		t.Fatalf("missing record: %v %v", ok, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "blog"), []byte(`{"namespace":"public"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := HasRecord(dir, "blog"); !ok || err != nil {
+		t.Fatalf("present record: %v %v", ok, err)
+	}
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any directory")
+	}
+	if _, err := HasRecord(dir, "other"); err == nil {
+		t.Fatal("an unreadable record directory was reported as no record")
 	}
 }

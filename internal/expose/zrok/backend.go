@@ -5,14 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/go-openapi/runtime"
 	httptransport "github.com/go-openapi/runtime/client"
+	"github.com/go-openapi/strfmt"
 	"github.com/openziti/sdk-golang/ziti"
+	"github.com/openziti/zrok/v2/build"
 	"github.com/openziti/zrok/v2/environment"
 	"github.com/openziti/zrok/v2/environment/env_core"
+	"github.com/openziti/zrok/v2/rest_client_zrok"
+	"github.com/openziti/zrok/v2/rest_client_zrok/metadata"
 	"github.com/openziti/zrok/v2/rest_client_zrok/share"
 	"github.com/openziti/zrok/v2/rest_model_zrok"
 )
@@ -20,16 +25,19 @@ import (
 // errNameTaken reports a name another zrok account already owns.
 var errNameTaken = errors.New("another zrok account owns this name")
 
+// errNameExists reports that CreateName found the name already existing.
+var errNameExists = errors.New("the name exists")
+
 // backend is the zrok account and overlay operations Net uses. Tests
 // substitute a fake; the real one is sdkBackend.
 type backend interface {
-	// ReserveName makes sure the account owns name in namespace. It returns
-	// the token of the share that currently holds the name, or "", and
-	// whether this call created the name.
-	ReserveName(ctx context.Context, namespace, name string) (holder string, created bool, err error)
 	// NameHolder reports whether the account holds name in namespace, and
 	// the token of the share that currently holds it, or "".
 	NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error)
+	// CreateName reserves name in namespace for the account. It returns
+	// errNameExists when the name exists already, or the controller's
+	// reason for another conflict, such as the account's name limit.
+	CreateName(ctx context.Context, namespace, name string) error
 	// ReleaseName deletes the account's reservation of name in namespace. A
 	// name the account does not hold is not an error.
 	ReleaseName(ctx context.Context, namespace, name string) error
@@ -48,8 +56,9 @@ type backend interface {
 type sdkBackend struct {
 	root env_core.Root
 
-	mu   sync.Mutex
-	zctx ziti.Context // created on the first Listen
+	mu     sync.Mutex
+	client *rest_client_zrok.Zrok // set after the first successful version check
+	zctx   ziti.Context           // created on the first Listen
 }
 
 // envMu serializes environment loading: zrok selects the environment
@@ -87,44 +96,69 @@ func (b *sdkBackend) auth() runtime.ClientAuthInfoWriter {
 	return httptransport.APIKeyAuth("X-TOKEN", "header", b.root.Environment().AccountToken)
 }
 
-func (b *sdkBackend) ReserveName(ctx context.Context, namespace, name string) (string, bool, error) {
-	c, err := b.root.Client()
-	if err != nil {
-		return "", false, err
+// zrokClient returns the controller client. Like env_core.Root.Client it
+// checks the client version first, but under ctx, and only once: Root.Client
+// repeats that check on every call with its own timeout.
+func (b *sdkBackend) zrokClient(ctx context.Context) (*rest_client_zrok.Zrok, error) {
+	b.mu.Lock()
+	c := b.client
+	b.mu.Unlock()
+	if c != nil {
+		return c, nil
 	}
-	holder, found, err := b.NameHolder(ctx, namespace, name)
-	if err != nil || found {
-		return holder, false, err
+	endpoint, _ := b.root.ApiEndpoint()
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("zrok api endpoint %q: %w", endpoint, err)
+	}
+	transport := httptransport.New(u.Host, "/api/v2", []string{u.Scheme})
+	transport.Producers["application/zrok.v1+json"] = runtime.JSONProducer()
+	transport.Consumers["application/zrok.v1+json"] = runtime.JSONConsumer()
+	c = rest_client_zrok.New(transport, strfmt.Default)
+	req := metadata.NewClientVersionCheckParamsWithContext(ctx)
+	req.Body = metadata.ClientVersionCheckBody{ClientVersion: build.String()}
+	if _, err := c.Metadata.ClientVersionCheck(req); err != nil {
+		return nil, fmt.Errorf("zrok api endpoint %q: %w", endpoint, err)
+	}
+	b.mu.Lock()
+	if b.client == nil {
+		b.client = c
+	}
+	c = b.client
+	b.mu.Unlock()
+	return c, nil
+}
+
+// nameConflict explains a CreateShareName conflict. The controller sends no
+// reason only when the name exists; a reason means another conflict, such as
+// the account's name limit.
+func nameConflict(name, reason string) error {
+	if reason != "" {
+		return fmt.Errorf("reserve name %q: %s", name, reason)
+	}
+	return errNameExists
+}
+
+func (b *sdkBackend) CreateName(ctx context.Context, namespace, name string) error {
+	c, err := b.zrokClient(ctx)
+	if err != nil {
+		return err
 	}
 	req := share.NewCreateShareNameParamsWithContext(ctx)
 	req.Body = share.CreateShareNameBody{NamespaceToken: namespace, Name: name}
 	if _, err := c.Share.CreateShareName(req, b.auth()); err != nil {
 		var conflict *share.CreateShareNameConflict
 		if errors.As(err, &conflict) {
-			// Lost a race with ourselves, or the name exists already.
-			if holder, found, ferr := b.NameHolder(ctx, namespace, name); ferr == nil && found {
-				return holder, false, nil
-			}
-			return "", false, nameConflict(name, namespace, string(conflict.GetPayload()))
+			return nameConflict(name, string(conflict.GetPayload()))
 		}
-		return "", false, fmt.Errorf("reserve name %q: %w", name, err)
+		return fmt.Errorf("reserve name %q: %w", name, err)
 	}
-	return "", true, nil
-}
-
-// nameConflict explains a CreateShareName conflict for a name the account
-// does not hold. The controller sends no reason only when the name exists;
-// a reason means another conflict, such as the account's name limit.
-func nameConflict(name, namespace, reason string) error {
-	if reason != "" {
-		return fmt.Errorf("reserve name %q: %s", name, reason)
-	}
-	return fmt.Errorf("%w: %q in namespace %q", errNameTaken, name, namespace)
+	return nil
 }
 
 // NameHolder looks name up among the account's names in the namespace.
 func (b *sdkBackend) NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error) {
-	c, err := b.root.Client()
+	c, err := b.zrokClient(ctx)
 	if err != nil {
 		return "", false, err
 	}
@@ -143,11 +177,7 @@ func (b *sdkBackend) NameHolder(ctx context.Context, namespace, name string) (ho
 }
 
 func (b *sdkBackend) ReleaseName(ctx context.Context, namespace, name string) error {
-	_, found, err := b.NameHolder(ctx, namespace, name)
-	if err != nil || !found {
-		return err
-	}
-	c, err := b.root.Client()
+	c, err := b.zrokClient(ctx)
 	if err != nil {
 		return err
 	}
@@ -164,7 +194,7 @@ func (b *sdkBackend) ReleaseName(ctx context.Context, namespace, name string) er
 }
 
 func (b *sdkBackend) Share(ctx context.Context, namespace, name string) (string, []string, error) {
-	c, err := b.root.Client()
+	c, err := b.zrokClient(ctx)
 	if err != nil {
 		return "", nil, err
 	}
@@ -190,7 +220,7 @@ func (b *sdkBackend) Share(ctx context.Context, namespace, name string) (string,
 }
 
 func (b *sdkBackend) Unshare(ctx context.Context, token string) error {
-	c, err := b.root.Client()
+	c, err := b.zrokClient(ctx)
 	if err != nil {
 		return err
 	}

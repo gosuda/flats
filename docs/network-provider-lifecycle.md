@@ -208,6 +208,15 @@ changed `zrok.namespace` releases the old namespace's name first. The
 controller returns frontend endpoints as bare host names; Flats reports them
 as `https://` URLs.
 
+`Serve` writes the record with the intent to create a name before asking the
+controller, so a name created by a request whose response was lost is still
+released later. A share whose token cannot be recorded is deleted at once;
+if that also fails, its token is kept in memory so the next `Serve` or
+`Retire` of the slug removes it. `Stop` unshares with its own deadline after
+the HTTP drain, so a drain timeout does not leave the share behind. A record
+that cannot be inspected makes `StopSlug` fail instead of skipping it. The
+controller client checks its version once, under the operation's context.
+
 A listener the overlay closes is rebound with backoff (2 s, doubling to
 60 s). Requests that the lost listener already accepted are drained before
 rebinding, and `Stop` drains every server that may still hold connections
