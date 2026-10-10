@@ -40,10 +40,12 @@
   // and content form a group that is faded onto its backdrop by its opacity. The walk stops at an
   // opaque background that nothing above fades, since what lies behind it cannot show through.
   // null when a background image is in the way first, or nothing paints an opaque background.
-  const unfaded = (el) => { for (let e = el; e; e = up(e)) if (Number(style(e).opacity) < 1) return false; return true; };
+  const boxless = (e) => style(e).display === "contents"; // paints no background and applies no opacity
+  const unfaded = (el) => { for (let e = el; e; e = up(e)) if (!boxless(e) && Number(style(e).opacity) < 1) return false; return true; };
   const colors = (el, text) => {
     const chain = [];
     for (let e = el; e; e = up(e)) {
+      if (boxless(e)) continue;
       const s = style(e);
       if (s.backgroundImage !== "none") return null;
       const bg = rgba(s.backgroundColor);
@@ -94,7 +96,7 @@
   }
 
   const faded = (el) => { // opacity does not inherit, so check every ancestor
-    for (let e = el; e; e = up(e)) if (Number(style(e).opacity) === 0) return e;
+    for (let e = el; e; e = up(e)) if (style(e).display !== "contents" && Number(style(e).opacity) === 0) return e;
     return null;
   };
   const hidden = new Set();
@@ -122,7 +124,9 @@
         fix: "readable content should be visible at rest, not parked for a scroll observer; ignore closed menus and tooltips" }); }
       continue;
     }
-    const px = colors(el, rgba(s.color));
+    const ink = el instanceof SVGElement ? s.fill : s.color; // SVG text is painted with fill
+    if (ink.startsWith("url(") || ink === "none") continue;
+    const px = colors(el, rgba(ink));
     if (!px) continue;
     const bg = px.bg;
     const [hi, lo] = [lum(px.fg), lum(bg)].sort((a, b) => b - a);
