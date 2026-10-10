@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/store"
@@ -21,10 +22,15 @@ import (
 var (
 	committedEdits sync.Map
 	receiptsDown   atomic.Bool
+	receiptsStall  atomic.Bool
 )
 
 // receiptResponse is the fake docs app's host-only receipt lookup.
 func receiptResponse(w http.ResponseWriter, r *http.Request) {
+	if receiptsStall.Load() {
+		<-r.Context().Done()
+		return
+	}
 	if r.Header.Get("X-Flats-Host-Op") != "edit" || receiptsDown.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -175,6 +181,14 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	receiptsDown.Store(false)
+	// A receipt lookup that runs out of time still leaves its warning.
+	receiptsStall.Store(true)
+	receiptLookupTimeout = 50 * time.Millisecond
+	if _, err := s.UpdateDocument(ctx, "notes", "", op("dark"), nil, ViaMCP); !strings.Contains(fmt.Sprint(err), "may or may not have applied") {
+		t.Fatal(err)
+	}
+	receiptsStall.Store(false)
+	receiptLookupTimeout = 5 * time.Second
 	// Uncertain outcomes are always logged, with what the receipt showed.
 	events, err := s.Events(ctx, "notes", "document", 0, 20)
 	if err != nil {
@@ -187,7 +201,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		}
 	}
 	joined := strings.Join(warned, "\n")
-	if len(warned) != 4 || strings.Count(joined, "committed at seq 9, but its response was lost") != 2 || !strings.Contains(joined, "did not apply (docs app returned HTTP 500)") || !strings.Contains(joined, "outcome unknown") {
+	if len(warned) != 5 || strings.Count(joined, "committed at seq 9, but its response was lost") != 2 || !strings.Contains(joined, "did not apply (docs app returned HTTP 500)") || strings.Count(joined, "outcome unknown") != 2 {
 		t.Fatal(warned)
 	}
 	// Changing edits are logged with a summary and never the text.

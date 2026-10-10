@@ -33,6 +33,9 @@ var (
 	ErrDocumentCapacity = errors.New("document capacity")
 )
 
+// receiptLookupTimeout bounds checking a live edit whose response was lost.
+var receiptLookupTimeout = 5 * time.Second
+
 // documentEditRate bounds live edits per flat (per second, burst twice
 // that), well under the docs app's per-room human update rate.
 const documentEditRate = 10
@@ -363,14 +366,18 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 // log either way, and tells the caller whether the edit applied. A missing
 // receipt proves nothing when the host stopped waiting first (answered is
 // false): the worker may still commit.
-func (s *Service) uncertainEdit(ctx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, answered bool) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, answered bool) error {
+	// The lookup and the audit write have separate deadlines, so a lookup
+	// that times out still leaves its warning.
+	lookupCtx, cancelLookup := context.WithTimeout(auditCtx, receiptLookupTimeout)
+	defer cancelLookup()
+	ctx, cancel := context.WithTimeout(auditCtx, 10*time.Second)
 	defer cancel()
 	name := doc
 	if name == "" {
 		name = "the entry document"
 	}
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)
+	req := httptest.NewRequestWithContext(lookupCtx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)
 	req = trustedAccess(req, false)
 	req.Header.Set("X-Flats-Host-Op", "edit")
 	rec := httptest.NewRecorder()
