@@ -1,0 +1,239 @@
+// Live preview for the single-view editor. The document stays plain Markdown
+// in one Y.Text; this only decorates it. Formatting is shown rendered, and the
+// Markdown syntax reappears on the lines the cursor or selection touches, so
+// it can be edited where it is written.
+import { syntaxTree } from "@codemirror/language";
+
+// Kinds of decoration. `line` styles a whole line, `mark` styles a range,
+// `hide` removes syntax from view, and `bullet`, `rule` and `image` replace
+// syntax with a widget.
+const headings = {
+  ATXHeading1: "h1",
+  ATXHeading2: "h2",
+  ATXHeading3: "h3",
+  ATXHeading4: "h4",
+  ATXHeading5: "h5",
+  ATXHeading6: "h6",
+  SetextHeading1: "h1",
+  SetextHeading2: "h2",
+};
+const marks = {
+  Emphasis: "em",
+  StrongEmphasis: "strong",
+  Strikethrough: "strike",
+  InlineCode: "code",
+};
+const syntax = new Set([
+  "EmphasisMark",
+  "CodeMark",
+  "StrikethroughMark",
+  "QuoteMark",
+]);
+
+// lineNumbers returns the 1-based numbers of every line from..to touches.
+function lineNumbers(doc, from, to) {
+  const first = doc.lineAt(from).number,
+    last = doc.lineAt(to).number,
+    out = [];
+  for (let n = first; n <= last; n++) out.push(n);
+  return out;
+}
+
+// activeLines is the set of line numbers whose syntax is shown: every line a
+// selection range touches while the editor has focus, and none otherwise.
+export function activeLines(state, focused) {
+  const lines = new Set();
+  if (!focused) return lines;
+  for (const r of state.selection.ranges)
+    for (const n of lineNumbers(state.doc, r.from, r.to)) lines.add(n);
+  return lines;
+}
+
+// liveDecorations returns unsorted decoration descriptors for the given
+// visible ranges. It is pure so it can be tested without a DOM.
+export function liveDecorations(state, ranges, active) {
+  const doc = state.doc,
+    out = [],
+    lined = new Set();
+  const isActive = (from, to) =>
+    lineNumbers(doc, from, to).some((n) => active.has(n));
+  const line = (from, to, cls) => {
+    for (const n of lineNumbers(doc, from, to)) {
+      const key = n + " " + cls;
+      if (lined.has(key)) continue;
+      lined.add(key);
+      out.push({ kind: "line", from: doc.line(n).from, cls });
+    }
+  };
+  // Replacements must stay on one line: a plugin may not hide line breaks.
+  const hide = (from, to) => {
+    if (to > from && !doc.sliceString(from, to).includes("\n"))
+      out.push({ kind: "hide", from, to });
+  };
+  for (const { from, to } of ranges) {
+    syntaxTree(state).iterate({
+      from,
+      to,
+      enter(node) {
+        const name = node.name;
+        if (headings[name]) {
+          line(node.from, node.to, "cm-" + headings[name]);
+          if (isActive(node.from, node.to)) return;
+          const c = node.node.cursor();
+          if (c.firstChild())
+            do {
+              if (c.name !== "HeaderMark") continue;
+              // Hide "# " with its space, a closing "#" run, or a setext
+              // underline (its own line, hidden in full).
+              let end = c.to;
+              if (doc.sliceString(end, end + 1) === " ") end++;
+              let start = c.from;
+              if (
+                start > node.from &&
+                doc.sliceString(start - 1, start) === " "
+              )
+                start--;
+              hide(start, end);
+            } while (c.nextSibling());
+          return;
+        }
+        if (marks[name]) {
+          out.push({
+            kind: "mark",
+            from: node.from,
+            to: node.to,
+            cls: "cm-" + marks[name],
+          });
+          return;
+        }
+        if (syntax.has(name)) {
+          if (!isActive(node.from, node.to)) {
+            // A quote mark takes the space after it with it.
+            let end = node.to;
+            if (name === "QuoteMark" && doc.sliceString(end, end + 1) === " ")
+              end++;
+            hide(node.from, end);
+          }
+          return;
+        }
+        switch (name) {
+          case "Blockquote":
+            line(node.from, node.to, "cm-quote");
+            return;
+          case "FencedCode":
+          case "CodeBlock":
+            line(node.from, node.to, "cm-codeblock");
+            if (name === "FencedCode" && !isActive(node.from, node.to)) {
+              // Fence lines stay as empty padding rows of the code block.
+              const first = doc.lineAt(node.from),
+                last = doc.lineAt(node.to);
+              hide(first.from, first.to);
+              if (
+                last.number !== first.number &&
+                /^\s*(`{3,}|~{3,})\s*$/.test(last.text)
+              )
+                hide(last.from, last.to);
+            }
+            return false;
+          case "Table":
+            line(node.from, node.to, "cm-table");
+            return false;
+          case "HorizontalRule":
+            if (!isActive(node.from, node.to))
+              out.push({ kind: "rule", from: node.from, to: node.to });
+            return;
+          case "ListMark": {
+            if (isActive(node.from, node.to)) return;
+            const text = doc.sliceString(node.from, node.to);
+            if (/^[-*+]$/.test(text))
+              out.push({ kind: "bullet", from: node.from, to: node.to });
+            return;
+          }
+          case "Link":
+          case "Image": {
+            const c = node.node.cursor(),
+              parts = [];
+            if (c.firstChild())
+              do parts.push({ name: c.name, from: c.from, to: c.to });
+              while (c.nextSibling());
+            const url = parts.find((p) => p.name === "URL"),
+              href = url
+                ? doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1")
+                : "";
+            const lm = parts.filter((p) => p.name === "LinkMark");
+            // Only inline links and images with a destination are rendered;
+            // reference links keep their source.
+            if (!url || lm.length < 2) return;
+            const textFrom = lm[0].to,
+              textTo = lm[1].from;
+            if (name === "Image") {
+              if (isActive(node.from, node.to)) return false;
+              if (doc.sliceString(node.from, node.to).includes("\n"))
+                return false;
+              out.push({
+                kind: "image",
+                from: node.from,
+                to: node.to,
+                src: href,
+                alt: doc.sliceString(textFrom, textTo),
+              });
+              return false;
+            }
+            out.push({
+              kind: "mark",
+              from: textFrom,
+              to: textTo,
+              cls: "cm-link",
+              href,
+            });
+            if (!isActive(node.from, node.to)) {
+              hide(node.from, textFrom);
+              hide(textTo, node.to);
+            }
+            return;
+          }
+        }
+      },
+    });
+  }
+  // A node that spans two visible ranges is visited twice.
+  const seen = new Set();
+  return out.filter((d) => {
+    const key = `${d.kind} ${d.from} ${d.to} ${d.cls}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// Blocks that contain no tables; tables are never inside these.
+const leaves = new Set([
+  "Paragraph",
+  "FencedCode",
+  "CodeBlock",
+  "HTMLBlock",
+  "HorizontalRule",
+  "LinkReference",
+  ...Object.keys(headings),
+]);
+
+// tableBlocks returns every table as whole lines, with whether a selection
+// touches it. A table the selection touches shows its Markdown source.
+export function tableBlocks(state) {
+  const doc = state.doc,
+    out = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (leaves.has(node.name)) return false;
+      if (node.name !== "Table") return;
+      const from = doc.lineAt(node.from).from,
+        to = doc.lineAt(node.to).to,
+        active = state.selection.ranges.some(
+          (r) => r.from <= to && r.to >= from,
+        );
+      out.push({ from, to, active, source: doc.sliceString(from, to) });
+      return false;
+    },
+  });
+  return out;
+}

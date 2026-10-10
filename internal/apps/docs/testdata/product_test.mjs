@@ -103,12 +103,9 @@ async function approve(page, request, label) {
   assert.equal((res.body.approval || res.body).status, 'approved', JSON.stringify(res));
   receipt.cases.push({ approval: label, id: approval.id, status: 'approved' });
 }
+// The live preview hides Markdown syntax in the DOM; read the editor's document.
 async function editorText(page) {
-  return page.locator('.cm-content').evaluate(el => {
-    const copy = el.cloneNode(true);
-    for (const c of copy.querySelectorAll('.cm-ySelectionCaret')) c.remove();
-    return [...copy.querySelectorAll('.cm-line')].map(l => l.textContent).join('\n');
-  });
+  return page.locator('.cm-content').evaluate(el => el.cmTile.root.view.state.doc.toString());
 }
 async function open(name, url) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });

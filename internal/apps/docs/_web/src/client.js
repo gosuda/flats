@@ -1,17 +1,12 @@
 import * as Y from "yjs";
 import { EditorState, Compartment } from "@codemirror/state";
-import {
-  EditorView,
-  keymap,
-  lineNumbers,
-  highlightActiveLine,
-  drawSelection,
-} from "@codemirror/view";
+import { EditorView, keymap, drawSelection } from "@codemirror/view";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import MarkdownIt from "markdown-it";
 import { Provider } from "./provider.js";
+import { livePreview } from "./live-view.js";
 import "./client.css";
 const $ = (s) => document.querySelector(s),
   path = document.body.dataset.doc,
@@ -19,10 +14,9 @@ const $ = (s) => document.querySelector(s),
 const doc = new Y.Doc(),
   text = doc.getText("markdown"),
   md = new MarkdownIt({ html: false, linkify: true, typographer: false });
-const defaultValidate = md.validateLink;
-md.validateLink = (link) =>
-  defaultValidate(link) &&
-  !/^\s*(?:javascript|vbscript|file|data):/i.test(link);
+const defaultValidate = md.validateLink,
+  unsafeScheme = /^\s*(?:javascript|vbscript|file|data):/i;
+md.validateLink = (link) => defaultValidate(link) && !unsafeScheme.test(link);
 // Assets and relative links resolve against the Markdown file's own directory.
 const resolveURL = (value) => {
   try {
@@ -31,6 +25,9 @@ const resolveURL = (value) => {
     return "";
   }
 };
+// The editor applies the same link rules as the rendered view.
+const safeURL = (value) =>
+  value && md.validateLink(md.normalizeLink(value)) ? resolveURL(value) : "";
 const defaultLink =
   md.renderer.rules.link_open ||
   ((tokens, i, options, env, self) => self.renderToken(tokens, i, options));
@@ -47,31 +44,23 @@ md.renderer.rules.image = (tokens, i, options, env, self) => {
   tokens[i].attrSet("loading", "lazy");
   return defaultImage(tokens, i, options, env, self);
 };
+// One view: editors get the live-preview editor, read-only viewers (and
+// everyone until the editor exists) get the rendered document.
 let view, renderFrame;
 const access = new Compartment();
 function render() {
+  if ($("#content").hidden) return;
   cancelAnimationFrame(renderFrame);
   renderFrame = requestAnimationFrame(() => {
     $("#content").innerHTML = md.render(text.toString());
   });
 }
 text.observe(render);
-function setMode(mode) {
-  if (initialReadonly) mode = "preview";
-  $("#panes").dataset.mode = mode;
-  for (const b of document.querySelectorAll("[data-mode]"))
-    b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
-  view?.requestMeasure();
+function showRendered(rendered) {
+  $("#editor").hidden = rendered;
+  $("#content").hidden = !rendered;
+  render();
 }
-for (const b of document.querySelectorAll("[data-mode]"))
-  b.addEventListener("click", () => setMode(b.dataset.mode));
-setMode(
-  initialReadonly
-    ? "preview"
-    : matchMedia("(min-width: 900px)").matches
-      ? "split"
-      : "edit",
-);
 // Collaborators get a random name instead of a join prompt; it is kept so
 // the same browser shows up under the same name after a reload.
 const adjectives = [
@@ -170,35 +159,28 @@ const provider = new Provider(doc, path, {
         state: EditorState.create({
           doc: text.toString(),
           extensions: [
-            lineNumbers(),
-            highlightActiveLine(),
             drawSelection(),
             EditorView.lineWrapping,
-            markdown(),
+            markdown({ base: markdownLanguage }),
+            livePreview(safeURL, (source) => md.render(source)),
             access.of(EditorState.readOnly.of(false)),
             keymap.of([...yUndoManagerKeymap, ...defaultKeymap, indentWithTab]),
             yCollab(text, provider.awareness, { undoManager }),
             EditorView.contentAttributes.of({
-              "aria-label": "Markdown source",
-              spellcheck: "false",
+              "aria-label": "Document",
+              spellcheck: "true",
             }),
             EditorView.theme({
-              "&": { height: "100%" },
+              // The page scrolls, not the editor, so the footer follows the
+              // document.
               ".cm-scroller": {
-                overflow: "auto",
-                fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace",
-                fontSize: "14px",
-                lineHeight: "1.75",
+                overflow: "visible",
+                fontFamily: "inherit",
+                lineHeight: "inherit",
               },
-              ".cm-content": { padding: "28px 0" },
-              ".cm-line": { padding: "0 24px" },
-              ".cm-gutters": {
-                backgroundColor: "var(--paper)",
-                color: "var(--muted)",
-                border: "none",
-                paddingLeft: "12px",
-              },
-              ".cm-activeLine": { backgroundColor: "var(--active)" },
+              ".cm-content": { padding: "0" },
+              ".cm-line": { padding: "0" },
+              "&.cm-focused": { outline: "none" },
               ".cm-cursor": { borderLeftColor: "var(--ink)" },
               ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
                 backgroundColor: "var(--selection)",
@@ -209,13 +191,11 @@ const provider = new Provider(doc, path, {
       });
     }
     if (m.readonly) {
-      $(".toolbar").hidden = true;
-      setMode("preview");
       view?.dispatch({
         effects: access.reconfigure(EditorState.readOnly.of(true)),
       });
     }
-    render();
+    showRendered(!view || !!m.readonly);
   },
 });
 function showPresence() {
