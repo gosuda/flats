@@ -25,7 +25,8 @@ a server does not automatically serve it. Pages the handler returns follow the
 page contract in `topic.design`; saves check uploaded HTML documents for a
 title, viewport and pinned external assets.
 
-Related topics: `topic.server.db` (`env.DB` SQLite), `topic.server.files`
+Related topics: `topic.server.types` (TypeScript declarations of the whole
+runtime API), `topic.server.db` (`env.DB` SQLite), `topic.server.files`
 (`env.FILES` text storage), `topic.server.fetch` (outbound HTTP),
 `topic.server.limits` (sandbox, globals and limits), `topic.env-secrets`
 (`env.NAME` settings) and `topic.rollback-data` (what happens to live data).
@@ -50,8 +51,8 @@ libraries that need npm/Node resolution. Four request VMs by default may run
 concurrently and are reused; module globals are neither durable nor shared
 across all requests. Store state in DB/FILES. Do not block top-level loading.
 
-`request.method`, absolute `request.url`, `request.headers` (lowercase string
-keys plus get/has/forEach/entries/keys/iterator helpers), and `request.body`
+`request.method` (as the client sent it), absolute `request.url`,
+`request.headers` (lowercase string keys plus get/has/forEach/entries/keys/iterator helpers), and `request.body`
 (string or null) are provided. Duplicate header values are joined with comma
 and space; Cookie uses semicolon and space. `await request.text()` returns
 body or empty string; `await request.json()` parses it and throws for invalid
@@ -87,9 +88,10 @@ burst 100. Do not log secrets.
 Optional export `websocket: {open(ws, env), message(ws, data, env), close(ws, env)}`
 accepts incoming WebSockets. Callbacks may be async, run serially in a separate
 VM and share its module state. ws has id/url/headers/readyState; send(data)
-converts to text; close(code=1000, reason=""); close callback gets closeCode/
-closeReason. Incoming text/binary messages are delivered as strings (not a
-lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
+converts to text; close(code=1000, reason=""); close callback gets closeCode
+(1005 when the peer sent none, 1006 when the connection dropped) and
+closeReason (undefined when empty). Incoming text/binary messages are
+delivered as strings (not a lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
 send queue 256 messages, closes on overflow. Redeploy closes connections.
 
 ### WASI

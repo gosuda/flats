@@ -204,6 +204,12 @@ references and the llms.txt documents. `topic.design` holds the page contract
 accessibility), design defaults and the asset policy: bundle scripts, styles
 and fonts by default; load from a CDN only with an exact version. Saves return
 non-blocking `warnings` for the parts of that contract a static check can see.
+`topic.server.types` serves
+[`flats-runtime-v1.d.ts`](docs/agent/types/flats-runtime-v1.d.ts), the
+TypeScript declarations of the server runtime: handler, request and response,
+`env.DB`, `env.FILES`, environment strings, outbound `fetch` and the other
+globals, with absent globals listed. Host tests check the declarations against
+the real runtime.
 
 For the whole server contract in one document, read resource
 `flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.

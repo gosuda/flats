@@ -22,15 +22,22 @@ const ContentTypesURI = "flats://docs/content-types/v1"
 //go:embed agent/topics/*.md agent/references/*.md agent/refusals.md
 var agentFS embed.FS
 
+// Types is flats-runtime-v1.d.ts, the TypeScript declarations of runtime API
+// v1 for JavaScript server flats. topic.server.types serves it after its
+// introduction.
+//
+//go:embed agent/types/flats-runtime-v1.d.ts
+var Types string
+
 // TopicOrder lists every topic file under agent/topics in guide order.
 var TopicOrder = []string{
-	"index", "static", "design", "server", "server.files", "server.db", "server.fetch", "server.limits",
+	"index", "static", "design", "server", "server.types", "server.files", "server.db", "server.fetch", "server.limits",
 	"docs", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify",
 }
 
 // Sections of each reference, in order, after its header.
 var (
-	runtimeSections      = []string{"static", "manifest", "server", "server.files", "server.db", "server.fetch", "server.limits", "env-secrets", "preview-verify", "rollback-data", "approvals"}
+	runtimeSections      = []string{"static", "manifest", "server", "server.files", "server.db", "server.fetch", "server.limits", "server.types", "env-secrets", "preview-verify", "rollback-data", "approvals"}
 	contentTypesSections = []string{"docs"}
 )
 
@@ -62,6 +69,7 @@ func init() {
 			panic(fmt.Sprintf("runtimeref: TopicOrder names missing topic %s", name))
 		}
 	}
+	topics["server.types"] += "\n```ts\n" + Types + "```\n"
 	Markdown = assemble("agent/references/runtime-api-v1.md", runtimeSections)
 	ContentTypesMarkdown = assemble("agent/references/content-types.md", contentTypesSections)
 

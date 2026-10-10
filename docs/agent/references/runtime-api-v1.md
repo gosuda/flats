@@ -11,7 +11,9 @@ not change behavior may revise v1. Record the document hash with gate evidence.
 
 The sections below are also served one at a time by the read-only MCP tool
 `guide` (for example `guide {"items":["topic.server","topic.server.db"]}`);
-`topic.index` routes by task.
+`topic.index` routes by task. TypeScript declarations of the server runtime
+(`flats-runtime-v1.d.ts`) are in the "Server flat types" section and
+`topic.server.types`.
 
 Non-website content types are described in `flats://docs/content-types/v1`.
 Built-in app host internals (`runtimeGeneration`, `ws.setSendLimits` and
