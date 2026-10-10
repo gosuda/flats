@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -69,6 +70,7 @@ type Net struct {
 
 	retryMin, retryMax time.Duration      // bind retry backoff
 	orphans            map[string]string  // slug -> share created but neither recorded nor deleted
+	unsettled          map[string]string  // slug -> namespace of a share that may exist without an entry
 	failWrite          func(record) error // test hook: fail a record write
 
 	mu      sync.Mutex
@@ -145,7 +147,7 @@ func newNet(cfg Config, b backend) *Net {
 		logf = func(string, ...any) {}
 	}
 	return &Net{cfg: cfg, b: b, logf: logf, retryMin: 2 * time.Second, retryMax: time.Minute,
-		orphans: map[string]string{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}}
+		orphans: map[string]string{}, unsettled: map[string]string{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}}
 }
 
 func (n *Net) slugLock(slug string) *sync.Mutex {
@@ -283,6 +285,9 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	}
 	token, endpoints, err := n.b.Share(ctx, ns, slug, shareTarget(n.cfg.Instance, slug))
 	if err != nil {
+		// The controller may have created the share before the error, for
+		// example when the response was lost; Stop and Close settle it.
+		n.setUnsettled(slug, ns)
 		return "", fmt.Errorf("zrok: %w", err)
 	}
 	rec.Token = token
@@ -292,6 +297,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 			// Keep it in memory so a later Serve or Retire still removes it.
 			n.mu.Lock()
 			n.orphans[slug] = token
+			n.unsettled[slug] = ns
 			n.mu.Unlock()
 			return "", fmt.Errorf("zrok: %s: record share: %w (and removing share %s failed: %v)", slug, err, token, uerr)
 		}
@@ -306,6 +312,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		cancel: cancel, done: make(chan struct{}), state: stateStarting, servers: map[*http.Server]struct{}{}}
 	n.mu.Lock()
 	n.entries[slug] = e
+	delete(n.unsettled, slug)
 	n.mu.Unlock()
 	go n.run(runCtx, e)
 	return url, nil
@@ -410,8 +417,12 @@ func (n *Net) Stop(slug string) error {
 func (n *Net) stop(slug string) error {
 	n.mu.Lock()
 	e := n.entries[slug]
+	ns, unsettled := n.unsettled[slug]
 	n.mu.Unlock()
 	if e == nil {
+		if unsettled {
+			return n.settle(slug, ns)
+		}
 		return nil
 	}
 	if err := n.stopEntry(e); err != nil {
@@ -472,6 +483,41 @@ func (n *Net) stopEntry(e *entry) error {
 		e.mu.Unlock()
 	}
 	return errors.Join(errs...)
+}
+
+func (n *Net) setUnsettled(slug, ns string) {
+	n.mu.Lock()
+	n.unsettled[slug] = ns
+	n.mu.Unlock()
+}
+
+// settle removes a share of slug that a failed Serve may have left without
+// an entry: one whose creation response was lost, or whose rollback failed.
+func (n *Net) settle(slug, ns string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
+	defer cancel()
+	holder, found, err := n.b.NameHolder(ctx, ns, slug)
+	if err != nil {
+		return fmt.Errorf("zrok: %s: %w", slug, err)
+	}
+	if found && holder != "" {
+		rec, _, _ := n.readRecord(slug)
+		owned, err := n.ownsShare(ctx, slug, rec, holder)
+		if err != nil {
+			return fmt.Errorf("zrok: %s: %w", slug, err)
+		}
+		if owned {
+			if err := n.b.Unshare(ctx, holder); err != nil {
+				return fmt.Errorf("zrok: %s: remove share %s: %w", slug, holder, err)
+			}
+			n.forgetOrphan(slug, holder)
+			n.forgetToken(slug, holder)
+		}
+	}
+	n.mu.Lock()
+	delete(n.unsettled, slug)
+	n.mu.Unlock()
+	return nil
 }
 
 // Retire stops slug's share and releases its name, for a deleted flat or an
@@ -764,6 +810,14 @@ func (n *Net) Close() error {
 	var errs []error
 	for _, e := range entries {
 		if err := n.stopEntry(e); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	n.mu.Lock()
+	unsettled := maps.Clone(n.unsettled)
+	n.mu.Unlock()
+	for slug, ns := range unsettled {
+		if err := n.settle(slug, ns); err != nil {
 			errs = append(errs, err)
 		}
 	}

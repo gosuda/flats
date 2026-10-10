@@ -231,7 +231,10 @@ existing name only with this host's record: a name reserved in the account by
 the zrok CLI or another Flats host is refused. A creation attempt is recorded
 as pending; the next `Serve` adopts the name if the account holds it, an
 `errNameExists` answer drops the record (another account owns the name), and
-`Retire` releases a pending name the account holds. An
+`Retire` releases a pending name the account holds. A share whose creation
+failed, or whose rollback failed, is kept as unsettled: `Stop` (for example
+when a failed Public approval rolls back) and process shutdown remove it
+when this host owns it. An
 unshare the controller answers with "not found" is confirmed through the
 account-wide share detail: a share another environment of the account still
 holds is reported, not treated as gone. A `Serve` after a failed `Stop`

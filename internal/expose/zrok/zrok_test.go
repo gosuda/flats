@@ -918,3 +918,57 @@ func TestPendingNameIsSettledByLaterServe(t *testing.T) {
 		t.Fatalf("record = %+v", rec)
 	}
 }
+
+func TestStopAndCloseSettleShareWithLostResponse(t *testing.T) {
+	for _, via := range []string{"stop", "close"} {
+		t.Run(via, func(t *testing.T) {
+			f := newFake()
+			n := newNet(Config{Dir: t.TempDir(), Instance: "host-a"}, f)
+			defer n.Close()
+			f.loseShare = true
+			if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+				t.Fatal("Serve succeeded although the share response was lost")
+			}
+			if len(f.shares) != 1 {
+				t.Fatalf("shares = %v", f.shares)
+			}
+			// A Public approval that failed now rolls back, or the host stops.
+			var err error
+			if via == "stop" {
+				err = n.Stop("blog")
+			} else {
+				err = n.Close()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(f.shares) != 0 {
+				t.Fatalf("share left behind: %v", f.shares)
+			}
+		})
+	}
+}
+
+func TestCloseSettlesOrphanedShare(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	n.failWrite = func(rec record) error {
+		if rec.Token != "" {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	f.unshareErr = errors.New("controller unavailable")
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+		t.Fatal("Serve succeeded")
+	}
+	f.mu.Lock()
+	f.unshareErr = nil
+	f.mu.Unlock()
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.shares) != 0 {
+		t.Fatalf("orphaned share left behind: %v", f.shares)
+	}
+}
