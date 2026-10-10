@@ -276,10 +276,6 @@ export class Provider {
     if (Number.isSafeInteger(m.n)) this.send({ t: "received", n: m.n });
     this.state();
   }
-  rename(name) {
-    this.name = cleanName(name);
-    this.socket?.close();
-  }
   stop(message) {
     this.model.stopped = true;
     this.model.connected = false;

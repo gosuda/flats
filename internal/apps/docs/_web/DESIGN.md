@@ -43,7 +43,6 @@ typography:
     lineHeight: 1.75
 rounded:
   control: "5px"
-  dialog: "10px"
   avatar: "50%"
 spacing:
   compact: "8px"
@@ -57,22 +56,12 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
     padding: "7px 13px"
-  button-join:
-    backgroundColor: "{colors.accent}"
-    textColor: "{colors.paper}"
-    rounded: "{rounded.control}"
-    padding: "7px 13px"
   mode-selected:
     backgroundColor: "{colors.active}"
     textColor: "{colors.accent}"
     typography: "{typography.label}"
     rounded: "{rounded.control}"
     padding: "6px 11px"
-  name-input:
-    backgroundColor: "{colors.canvas}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.control}"
-    padding: "10px"
   document-current:
     backgroundColor: "{colors.paper}"
     textColor: "{colors.ink}"
@@ -99,13 +88,13 @@ Operate / Read is a quiet document workspace: compact controls frame a spacious 
 
 ### Primary
 
-Restrained green (`accent`) marks links, saved state, selected modes, keyboard focus, and the join action. Warm earth (`error`) marks interruption notices.
+Restrained green (`accent`) marks links, saved state, selected modes and keyboard focus. Warm earth (`error`) marks interruption notices.
 
 ### Neutral
 
-`paper` holds the main workspace; `canvas` distinguishes document navigation, code blocks, and inputs. `ink` carries content, `muted` carries supporting labels, and `line` separates regions. `active` and `selection` distinguish interaction states. The paired `-dark` tokens replace the corresponding light values under `prefers-color-scheme: dark`; CSS custom properties remain the implementation authority.
+`paper` holds the main workspace; `canvas` distinguishes document navigation, and code blocks. `ink` carries content, `muted` carries supporting labels, and `line` separates regions. `active` and `selection` distinguish interaction states. The paired `-dark` tokens replace the corresponding light values under `prefers-color-scheme: dark`; CSS custom properties remain the implementation authority.
 
-**The Restrained Accent Rule.** Use green for links, saved state, selected modes, focus, and the join action; keep document text neutral.
+**The Restrained Accent Rule.** Use green for links, saved state, selected modes and focus; keep document text neutral.
 
 ## Typography
 
@@ -121,19 +110,20 @@ At widths up to 899px, the header wraps, collaboration names collapse to initial
 
 ## Elevation & Depth
 
-The workspace has no decorative shadows. Borders and tonal surfaces establish regions. The native name dialog uses a translucent black backdrop (`#0006`) and a paper surface, with no custom shadow or animation.
+The workspace has no decorative shadows. Borders and tonal surfaces establish regions.
 
 ## Shapes
 
-Controls, navigation items, and code blocks share gently curved corners. The dialog has a larger radius; collaboration initials sit in circular 25px avatars with explicit 12px type. Dividers and input borders are 1px.
+Controls, navigation items, and code blocks share gently curved corners. Collaboration initials sit in circular 25px avatars with explicit 12px type. Dividers and borders are 1px.
 
 ## Components
 
-- **Header:** brand, ellipsized document title, live save/connection state, and collaborator presence. Saved state combines text with accent color; presence retains accessible names and verification descriptions.
+- **Header:** ellipsized document title (no brand, no file path), live save/connection state, and collaborator presence. Saved state combines text with accent color; presence retains accessible names and verification descriptions.
 - **Modes:** Edit, Split, and Preview are a compact button group with `aria-pressed` selection. Selected mode uses the active surface and green text.
 - **Document navigation:** muted links on canvas; the current document uses a paper surface, ink text, semibold weight, and `aria-current`.
-- **Buttons and input:** restrained borders; hover uses the active surface. Keyboard focus is a 2px accent outline offset by 3px. Disabled buttons have 0.55 opacity.
-- **Name dialog:** an explicitly named native dialog with a labeled display-name input and full-width Join document button. Copy identifies collaboration without implying verification.
+- **Buttons:** restrained borders; hover uses the active surface. Keyboard focus is a 2px accent outline offset by 3px. Disabled buttons have 0.55 opacity.
+- **Collaborator name:** no join prompt. Each browser gets a random two-word name (for example "Quiet Otter"), kept in local storage; a verified tailnet identity replaces it.
+- **Footer:** "Powered by Flats" with a GitHub link, placed after the document inside the scrolling preview, so it appears only at the end of the document. It is not fixed to the viewport.
 - **Interruption notice:** earth-colored text on canvas, with Download local text and Reload actions. Keep state copy concrete.
 - **Reading surface:** responsive images, horizontally scrollable code and tables, a muted blockquote rule, and thin horizontal dividers.
 
