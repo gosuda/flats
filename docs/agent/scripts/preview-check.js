@@ -1,0 +1,98 @@
+// Flats preview check. Run it in your browser tool's JavaScript runner (or the
+// DevTools console) on a Draft preview, once per width and color scheme. It
+// only reads the rendered page; it cannot see console errors logged earlier.
+(() => {
+  const root = document.documentElement;
+  const vw = root.clientWidth;
+  const out = {
+    url: location.href,
+    viewport: { width: vw, height: root.clientHeight }, // layout viewport in CSS px
+    scheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+    title: document.title.trim(),
+    viewportMeta: !!document.querySelector('meta[name="viewport"]'),
+    icon: !!document.querySelector('link[rel~="icon"][href]'),
+    problems: [],
+    consoleErrors: "read them from your browser tool; this script cannot see them",
+  };
+  const add = (check, detail) => { if (out.problems.length < 40) out.problems.push({ check, ...detail }); };
+  const name = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") +
+    [...el.classList].slice(0, 2).map((c) => "." + c).join("");
+  const style = (el) => getComputedStyle(el);
+  const canvas = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  const rgba = (color) => { // any CSS color (oklch, color(), named) to [r, g, b, a]
+    canvas.clearRect(0, 0, 1, 1);
+    canvas.fillStyle = "#000"; canvas.fillStyle = color; canvas.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = canvas.getImageData(0, 0, 1, 1).data;
+    return [r, g, b, a / 255];
+  };
+  const lum = ([r, g, b]) => [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+    .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const background = (el) => { // first opaque background behind el; null if an image or nothing paints it
+    for (let e = el; e; e = e.parentElement) {
+      const s = style(e);
+      if (s.backgroundImage !== "none") return null;
+      const c = rgba(s.backgroundColor);
+      if (c[3] > 0.95) return c;
+    }
+    return null;
+  };
+
+  if (!out.title) add("title", { fix: "name the page in <title>" });
+  if (!out.viewportMeta) add("viewport", { fix: 'add <meta name="viewport" content="width=device-width, initial-scale=1">; without it a phone lays the page out about 980px wide, so the overflow check below does not apply' });
+  if (!background(document.body)) add("background", { fix: "paint body from a color token in both schemes" });
+
+  if (root.scrollWidth > vw + 1) {
+    const clipped = (el) => { for (let e = el.parentElement; e && e !== root; e = e.parentElement) {
+      if (["auto", "scroll", "hidden", "clip"].includes(style(e).overflowX)) return true; } return false; };
+    const wide = [...document.body.querySelectorAll("*")].slice(0, 3000)
+      .filter((el) => el.getBoundingClientRect().right > vw + 1 && !clipped(el));
+    const outer = wide.filter((el) => !wide.includes(el.parentElement)).slice(0, 8);
+    add("overflow", { scrollWidth: root.scrollWidth, width: vw, elements: outer.map(name),
+      fix: "let rows wrap, give text children min-width: 0, put wide tables/code in an overflow-x: auto box" });
+  }
+
+  for (const img of document.images) {
+    if (img.complete && img.naturalWidth === 0 && img.currentSrc) add("image", { src: img.currentSrc });
+  }
+  for (const link of document.querySelectorAll('link[rel~="stylesheet"][href]')) {
+    if (!link.sheet && !link.disabled) add("stylesheet", { href: link.href });
+  }
+  for (const r of performance.getEntriesByType("resource")) {
+    if (r.responseStatus >= 400) add("resource", { url: r.name, status: r.responseStatus });
+  }
+
+  const faded = (el) => { // opacity does not inherit, so check every ancestor
+    for (let e = el; e; e = e.parentElement) if (Number(style(e).opacity) === 0) return e;
+    return null;
+  };
+  const hidden = new Set();
+  const pairs = new Set();
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT,
+    { acceptNode: (n) => n.data.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT });
+  for (let n, i = 0; (n = walker.nextNode()) && i < 500; i++) {
+    const el = n.parentElement;
+    const s = style(el);
+    const rect = el.getBoundingClientRect();
+    if (s.display === "none" || rect.width === 0 || rect.height === 0 || el.closest("[hidden], [aria-hidden=true]")) continue;
+    const parked = s.visibility === "hidden" ? el : faded(el);
+    if (parked) {
+      if (!hidden.has(parked)) { hidden.add(parked); add("hidden-text", { element: name(parked), text: n.data.trim().slice(0, 40),
+        fix: "readable content should be visible at rest, not parked for a scroll observer; ignore closed menus and tooltips" }); }
+      continue;
+    }
+    const bg = background(el);
+    if (!bg) continue;
+    const fg = rgba(s.color);
+    const mix = fg.slice(0, 3).map((v, k) => v * fg[3] + bg[k] * (1 - fg[3]));
+    const [hi, lo] = [lum(mix), lum(bg)].sort((a, b) => b - a);
+    const ratio = (hi + 0.05) / (lo + 0.05);
+    const large = parseFloat(s.fontSize) >= 24 || (parseFloat(s.fontSize) >= 18.66 && Number(s.fontWeight) >= 700);
+    const key = s.color + "|" + bg.join();
+    if (ratio < (large ? 3 : 4.5) && !pairs.has(key)) {
+      pairs.add(key);
+      add("contrast", { element: name(el), text: n.data.trim().slice(0, 40), ratio: Math.round(ratio * 100) / 100,
+        fix: "use color tokens that keep 4.5:1 (3:1 for large text) in this scheme" });
+    }
+  }
+  return out;
+})()

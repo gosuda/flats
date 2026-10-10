@@ -29,10 +29,17 @@ var agentFS embed.FS
 //go:embed agent/types/flats-runtime-v1.d.ts
 var Types string
 
+// PreviewCheck is a read-only browser script that checks a rendered Draft
+// preview for overflow, contrast, hidden text and failed loads.
+// topic.preview-check serves it after its introduction.
+//
+//go:embed agent/scripts/preview-check.js
+var PreviewCheck string
+
 // TopicOrder lists every topic file under agent/topics in guide order.
 var TopicOrder = []string{
 	"index", "static", "design", "server", "server.types", "server.files", "server.db", "server.fetch", "server.limits",
-	"docs", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify",
+	"docs", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify", "preview-check",
 }
 
 // Sections of each reference, in order, after its header.
@@ -70,6 +77,7 @@ func init() {
 		}
 	}
 	topics["server.types"] += "\n```ts\n" + Types + "```\n"
+	topics["preview-check"] += "\n```javascript\n" + PreviewCheck + "```\n"
 	Markdown = assemble("agent/references/runtime-api-v1.md", runtimeSections)
 	ContentTypesMarkdown = assemble("agent/references/content-types.md", contentTypesSections)
 
