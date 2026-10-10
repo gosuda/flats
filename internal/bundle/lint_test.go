@@ -54,6 +54,11 @@ func without(files []File, p string) []File {
 	return out
 }
 
+// rootPage is page with a root-relative icon, as an SPA entry needs.
+func rootPage(head, body string) []byte {
+	return bytes.Replace(page(head, body), []byte(`href="favicon.svg"`), []byte(`href="/favicon.svg"`), 1)
+}
+
 func page(head, body string) []byte {
 	return []byte(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Lunch Poll</title><link rel="icon" href="favicon.svg">` +
 		head + `</head><body>` + body + `</body></html>`)
@@ -213,7 +218,7 @@ func TestLintHTMLFallbacksOnlyForPages(t *testing.T) {
 
 func TestLintMissingReferencesSPAAndServer(t *testing.T) {
 	spa := with(File{Path: "flats.json", Data: []byte(`{"spa":true,"screenshot":"screenshot.png"}`)},
-		File{Path: "index.html", Data: page("", `<iframe src="/settings"></iframe><script src="/assets/gone.js"></script>`)})
+		File{Path: "index.html", Data: rootPage("", `<iframe src="/settings"></iframe><script src="/assets/gone.js"></script>`)})
 	ws := Lint(spa)
 	if len(ws) != 1 || !strings.Contains(ws[0].Message, "assets/gone.js") {
 		t.Fatalf("SPA serves its entry for extensionless paths, files are still required:\n%s", render(ws))
@@ -246,10 +251,38 @@ func TestLintEntryInSubdirectory(t *testing.T) {
 
 func TestLintSPAFallbackOnlyForFrames(t *testing.T) {
 	spa := with(File{Path: "flats.json", Data: []byte(`{"spa":true,"screenshot":"screenshot.png"}`)},
-		File{Path: "index.html", Data: page(`<script src="/runtime"></script>`, `<img src="/avatar"><iframe src="/settings"></iframe>`)})
+		File{Path: "index.html", Data: rootPage(`<script src="/runtime"></script>`, `<img src="/avatar"><iframe src="/settings"></iframe>`)})
 	ws := Lint(spa)
 	if len(ws) != 2 || !strings.Contains(ws[0].Message, "no file runtime") || !strings.Contains(ws[1].Message, "no file avatar") {
 		t.Fatalf("the SPA entry HTML is no script or image:\n%s", render(ws))
+	}
+}
+
+func TestLintNestedURLPages(t *testing.T) {
+	spa := func(b string) []File {
+		return with(File{Path: "flats.json", Data: []byte(`{"spa":true,"screenshot":"screenshot.png"}`)}, File{Path: "index.html", Data: rootPage(b, "")})
+	}
+	expectWarning(t, spa(`<script src="app.js"></script>`), "index.html", "relative reference app.js breaks")
+	expectWarning(t, spa(`<link rel="stylesheet" href="./app.css">`), "index.html", "relative reference ./app.css breaks")
+	expectClean(t, spa(`<script src="/app.js"></script><link rel="stylesheet" href="/app.css">`))
+	// Without spa the entry is served only at /.
+	expectClean(t, with(File{Path: "index.html", Data: page(`<script src="app.js"></script>`, "")}))
+	// The 404 page answers any missing URL.
+	notFound := with(File{Path: "flats.json", Data: []byte(`{"not_found":"404.html","screenshot":"screenshot.png"}`)},
+		File{Path: "404.html", Data: []byte(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Not Found</title><link rel="stylesheet" href="app.css"></head></html>`)})
+	expectWarning(t, notFound, "404.html", "relative reference app.css breaks")
+}
+
+func TestLintTruncatesLongReferences(t *testing.T) {
+	long := strings.Repeat("é", 1<<20)
+	ws := Lint(with(File{Path: "index.html", Data: page(`<script src="`+long+`.js"></script><script src="https://cdn.example.com/x@`+long+`/x.js"></script>`, "")}))
+	if len(ws) != 2 {
+		t.Fatalf("want 2 warnings, got:\n%.400s", render(ws))
+	}
+	for _, w := range ws {
+		if len(w.Message)+len(w.Fix) > 4*maxShown+400 || !strings.Contains(w.Message, "…") {
+			t.Fatalf("warning not truncated: %d bytes", len(w.Message)+len(w.Fix))
+		}
 	}
 }
 

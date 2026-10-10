@@ -8,6 +8,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 
@@ -32,7 +33,7 @@ func Lint(files []File) []Problem {
 	if err != nil || m.Type == contenttype.Docs {
 		return nil
 	}
-	l := linter{index: make(map[string]bool, len(files)), static: m.Kind == "static", spa: m.SPA}
+	l := linter{index: make(map[string]bool, len(files)), static: m.Kind == "static", spa: m.SPA, notFound: m.NotFound}
 	for _, f := range files {
 		l.index[f.Path] = true
 	}
@@ -61,11 +62,12 @@ func Lint(files []File) []Problem {
 }
 
 type linter struct {
-	index  map[string]bool
-	static bool
-	spa    bool
-	out    []Problem // at most maxWarnings
-	total  int       // every warning found, including those not kept
+	index    map[string]bool
+	static   bool
+	spa      bool
+	notFound string
+	out      []Problem // at most maxWarnings
+	total    int       // every warning found, including those not kept
 }
 
 func (l *linter) add(p, msg, fix string) {
@@ -298,9 +300,9 @@ func (l *linter) external(page string, r ref) Problem {
 	}
 	what := "has no version"
 	if tag != "" {
-		what = fmt.Sprintf("uses version %q, which is not exact and can change under you", tag)
+		what = fmt.Sprintf("uses version %q, which is not exact and can change under you", short(tag))
 	}
-	return warn(page, fmt.Sprintf("external script or stylesheet %s %s", raw, what),
+	return warn(page, fmt.Sprintf("external script or stylesheet %s %s", short(raw), what),
 		"bundle the file into the upload (preferred), or pin an exact version such as @18.3.1 and add an integrity hash")
 }
 
@@ -392,16 +394,35 @@ func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 		from = "/"
 	}
 	rel := resolve(from)
-	if l.resolves(rel, dir, r.kind == pageRef) {
-		return Problem{}
-	}
 	// A single-page app serves its entry HTML for unknown extensionless
 	// paths: fine for a frame, but not as a script, stylesheet or image.
-	if l.spa && r.kind == pageRef && !strings.Contains(path.Base(rel), ".") {
-		return Problem{}
+	spaFrame := l.spa && r.kind == pageRef && !strings.Contains(path.Base(rel), ".")
+	if !l.resolves(rel, dir, r.kind == pageRef) && !spaFrame {
+		return warn(page, fmt.Sprintf("references %s, but the bundle has no file %s", short(raw), short(displayPath(rel))),
+			"add the file to the upload, or fix the path (paths are relative to the page; a leading / starts at the flat root)")
 	}
-	return warn(page, fmt.Sprintf("references %s, but the bundle has no file %s", raw, displayPath(rel)),
-		"add the file to the upload, or fix the path (paths are relative to the page; a leading / starts at the flat root)")
+	// A single-page app's entry and the 404 page are also served at nested
+	// URLs such as /a/b, where a relative path resolves under /a/.
+	if (entry && l.spa || page == l.notFound) && !strings.HasPrefix(target, "/") {
+		return warn(page, fmt.Sprintf("relative reference %s breaks where this page is served at a nested URL (an app route or a 404 such as /a/b)", short(raw)),
+			fmt.Sprintf("use a root-relative path such as /%s", short(rel)))
+	}
+	return Problem{}
+}
+
+// maxShown bounds how much of a reference a warning repeats.
+const maxShown = 200
+
+// short truncates s for display, keeping UTF-8 intact.
+func short(s string) string {
+	if len(s) <= maxShown {
+		return s
+	}
+	cut := maxShown
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // resolves reports whether the static server answers rel with a file. Its

@@ -124,6 +124,7 @@ them too. They never block or change the save. Docs bundles are not checked.
 | no viewport meta tag | same |
 | external `<script src>`, stylesheet, `modulepreload`, script or style `preload`, or import-map URL without an exact version; hosted font stylesheets | same |
 | a relative or root-relative asset reference (script, stylesheet, icon, manifest, img/srcset, video/poster, audio, source, track, iframe, embed, object) that names no file in the bundle | static flats; the entry's references resolve from the flat root, where visitors open it. The server's HTML answers (the entry at `/`, `dir/index.html`, `about` → `about.html`, a single-page app's fallback) count only for an iframe, since a browser refuses HTML as a script, stylesheet or image. Import-map prefixes (`"lib/"`) are not files. Skipped for server flats (the handler owns routing) and pages with `<base href>`; an external base still gets the version check |
+| a relative (not root-relative) asset path, which breaks at nested URLs | a single-page app's entry and the `not_found` page, which are served at any path |
 | image file larger than 1 MiB | every image in the bundle |
 | no `<link rel="icon" href>` and no root `favicon.ico` (an Apple touch icon is not a tab favicon) | a static flat's HTML entry |
 | no `screenshot` in `flats.json` | static flats with an HTML entry |
@@ -131,4 +132,4 @@ them too. They never block or change the save. Docs bundles are not checked.
 A single-page app without its entry file is already a validation error. The
 checks read HTML tokens, not a rendered page: they do not see URLs that
 scripts or CSS load, layout, color or contrast. At most 50 warnings are
-listed per save.
+listed per save, and long references are shortened.
