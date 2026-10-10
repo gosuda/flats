@@ -403,6 +403,34 @@ func TestLintCapsWarnings(t *testing.T) {
 	}
 }
 
+func TestExactVersionOnNPMCDNs(t *testing.T) {
+	for u, want := range map[string]bool{
+		"https://cdn.jsdelivr.net/npm/pkg/dist/widget-1.2.3.js":    false,
+		"https://cdn.jsdelivr.net/npm/pkg@1.2.3/dist/widget.js":    true,
+		"https://cdn.jsdelivr.net/npm/@scope/pkg@1.2.3/x.js":       true,
+		"https://cdn.jsdelivr.net/npm/@scope/pkg/dist/x-1.2.3.js":  false,
+		"https://cdn.jsdelivr.net/gh/user/repo@v1.2.3/x.js":        true,
+		"https://cdn.jsdelivr.net/gh/user/repo/x-1.2.3.js":         false,
+		"https://unpkg.com/pkg/dist/pkg-1.2.3.min.js":              false,
+		"https://unpkg.com/pkg@1.2.3/dist/pkg.min.js":              true,
+		"https://esm.sh/v135/preact@10.24.3/es2022/preact.mjs":     true,
+		"https://esm.sh/v135/preact/es2022/preact-10.24.3.mjs":     false,
+		"https://ga.jspm.io/npm:react@18.3.1/index.js":             true,
+		"https://ga.jspm.io/npm:react@18/index.js":                 false,
+		"https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.12/vue.js": true,
+		"https://code.jquery.com/jquery-3.7.1.min.js":              true,
+		"https://cdn.jsdelivr.net/combine/npm/a@1.0.0":             true,
+	} {
+		parsed, ok := externalURL(u)
+		if !ok {
+			t.Fatalf("not external: %s", u)
+		}
+		if got, _ := exactVersion(parsed.Hostname(), parsed.EscapedPath()); got != want {
+			t.Errorf("exactVersion(%s) = %v, want %v", u, got, want)
+		}
+	}
+}
+
 func TestExactVersion(t *testing.T) {
 	for p, want := range map[string]bool{
 		"/npm/react@18.3.1/umd/react.js":      true,
@@ -418,7 +446,7 @@ func TestExactVersion(t *testing.T) {
 		"/app.3f9a1c2b.js":                    false,
 		"/react%4018.3.1/x.js":                true,
 	} {
-		if got, _ := exactVersion(p); got != want {
+		if got, _ := exactVersion("", p); got != want {
 			t.Errorf("exactVersion(%q) = %v, want %v", p, got, want)
 		}
 	}

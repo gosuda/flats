@@ -305,7 +305,7 @@ func (l *linter) external(page string, r ref) Problem {
 		return warn(page, fmt.Sprintf("font stylesheet loads from %s on every visit and cannot be pinned to a version", u.Hostname()),
 			"bundle the font files (.woff2) and declare them with @font-face, so the page also works offline and without third-party requests")
 	}
-	pinned, tag := exactVersion(u.EscapedPath())
+	pinned, tag := exactVersion(strings.ToLower(u.Hostname()), u.EscapedPath())
 	if pinned {
 		return Problem{}
 	}
@@ -339,15 +339,29 @@ var (
 	semverInSeg = regexp.MustCompile(`(?:^|[-_.@])v?\d+\.\d+\.\d+(?:$|[-_.+])`)
 )
 
-// exactVersion reports whether a CDN path names an exact version. An
-// npm-style "pkg@version" marker decides on its own: @18.3.1 passes, while
-// @latest, @18, @^18 or @~18.3.1 fail and are returned as tag. Without a
-// marker, a path segment such as /18.3.1/ or a file name such as
-// jquery-3.7.1.min.js counts as pinned.
-func exactVersion(escapedPath string) (pinned bool, tag string) {
+// exactVersion reports whether a CDN URL names an exact version. On npm
+// package CDNs (jsDelivr /npm/ and /gh/, unpkg, esm.sh, Skypack, JSPM) the
+// package segment itself needs "@version": a versioned file name inside an
+// unversioned package still follows the latest release. Elsewhere an
+// npm-style "pkg@version" marker decides on its own; without one, a path
+// segment such as /18.3.1/ or a file name such as jquery-3.7.1.min.js
+// counts as pinned. @18.3.1 passes, while @latest, @18, @^18 or @~18.3.1
+// fail and are returned as tag.
+func exactVersion(host, escapedPath string) (pinned bool, tag string) {
 	p, err := url.PathUnescape(escapedPath)
 	if err != nil {
 		p = escapedPath
+	}
+	if pkg, ok := npmPackage(host, p); ok {
+		i := strings.LastIndex(pkg, "@")
+		if i <= 0 {
+			return false, ""
+		}
+		v := pkg[i+1:]
+		if semver.MatchString(v) {
+			return true, ""
+		}
+		return false, v
 	}
 	marker := false
 	for _, seg := range strings.Split(p, "/") {
@@ -369,6 +383,37 @@ func exactVersion(escapedPath string) (pinned bool, tag string) {
 		}
 	}
 	return false, ""
+}
+
+var esmBuild = regexp.MustCompile(`^v\d+$`)
+
+// npmPackage returns the package segment ("react@18.3.1", "repo@v1") of
+// a URL path on an npm package CDN.
+func npmPackage(host, p string) (string, bool) {
+	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	switch host {
+	case "cdn.jsdelivr.net", "fastly.jsdelivr.net", "gcore.jsdelivr.net":
+		if len(segs) >= 3 && segs[0] == "gh" {
+			return segs[2], true // gh/<user>/<repo>@<version>
+		}
+		if segs[0] != "npm" {
+			return "", false
+		}
+		segs = segs[1:]
+	case "ga.jspm.io":
+		return segs[0], strings.HasPrefix(segs[0], "npm:") // npm:react@18.3.1
+	case "esm.sh":
+		for len(segs) > 1 && (segs[0] == "stable" || esmBuild.MatchString(segs[0])) {
+			segs = segs[1:] // build prefixes such as /v135/
+		}
+	case "unpkg.com", "cdn.skypack.dev":
+	default:
+		return "", false
+	}
+	if len(segs) >= 2 && strings.HasPrefix(segs[0], "@") {
+		return segs[1], true // @scope/pkg@version
+	}
+	return segs[0], len(segs) > 0 && segs[0] != ""
 }
 
 // missing warns when a relative reference names no file in the bundle,
