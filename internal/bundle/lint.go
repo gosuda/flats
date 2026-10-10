@@ -1,0 +1,409 @@
+package bundle
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"path"
+	"regexp"
+	"strings"
+
+	"golang.org/x/net/html"
+
+	"github.com/gosuda/flats/internal/contenttype"
+)
+
+// MaxImageBytes is the image size above which Lint suggests compressing.
+const MaxImageBytes = 1 << 20
+
+// maxWarnings bounds the warnings of one save so a large site with one
+// systematic mistake does not flood the agent's context.
+const maxWarnings = 50
+
+// Lint reports non-blocking page-quality warnings for a valid flat bundle:
+// HTML documents without a title or viewport, external scripts and styles
+// without an exact version, references to files missing from the bundle,
+// large images, and a missing favicon or console thumbnail. It never fails:
+// docs bundles and bundles that do not validate return nil. The checks are
+// heuristics over tokens, not a browser render (guide topic.design).
+func Lint(files []File) []Problem {
+	m, err := ParseManifest(files)
+	if err != nil || m.Type == contenttype.Docs {
+		return nil
+	}
+	l := linter{index: make(map[string]bool, len(files)), static: m.Kind == "static", spa: m.SPA}
+	for _, f := range files {
+		l.index[f.Path] = true
+	}
+	htmlEntry := l.static && isHTML(m.Entry)
+	if htmlEntry && m.Screenshot == "" {
+		l.add(ManifestName, "flats.json has no screenshot, so the console shows no thumbnail for this flat",
+			`capture the page at desktop width, add it as e.g. screenshot.png and set "screenshot": "screenshot.png" in flats.json`)
+	}
+	for _, f := range files {
+		switch {
+		case isHTML(f.Path):
+			entry := l.static && f.Path == m.Entry
+			if entry || looksLikeDocument(f.Data) {
+				l.document(f, entry)
+			}
+		case isImage(f.Path) && len(f.Data) > MaxImageBytes:
+			l.add(f.Path, fmt.Sprintf("image is %.1f MiB; pages load it on every visit", float64(len(f.Data))/(1<<20)),
+				"resize it to the largest size it is displayed at and re-encode it (WebP or AVIF for photos), ideally below 500 KiB")
+		}
+	}
+	if len(l.out) > maxWarnings {
+		more := len(l.out) - maxWarnings
+		l.out = append(l.out[:maxWarnings], Problem{Message: fmt.Sprintf("%d more warnings not shown", more),
+			Fix: "fix the warnings above and save again to see the rest"})
+	}
+	return l.out
+}
+
+type linter struct {
+	index  map[string]bool
+	static bool
+	spa    bool
+	out    []Problem
+}
+
+func (l *linter) add(p, msg, fix string) {
+	l.out = append(l.out, Problem{Path: p, Message: msg, Fix: fix})
+}
+
+// document checks one HTML document. Only static flats get reference
+// checks: a server handler owns its routes, so a path need not be a file.
+func (l *linter) document(f File, entry bool) {
+	var (
+		title, viewport, icon, base bool
+		titleText                   strings.Builder
+		inTitle, inImportMap        bool
+		refs                        []ref
+	)
+	z := html.NewTokenizer(bytes.NewReader(f.Data))
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		switch tt {
+		case html.TextToken:
+			if inTitle {
+				titleText.Write(z.Text())
+			}
+			if inImportMap {
+				refs = append(refs, importMapRefs(z.Text())...)
+			}
+			continue
+		case html.EndTagToken:
+			inTitle, inImportMap = false, false
+			continue
+		case html.StartTagToken, html.SelfClosingTagToken:
+		default:
+			continue
+		}
+		inTitle, inImportMap = false, false
+		name, hasAttr := z.TagName()
+		attrs := map[string]string{}
+		for hasAttr {
+			var k, v []byte
+			k, v, hasAttr = z.TagAttr()
+			if _, dup := attrs[string(k)]; !dup {
+				attrs[string(k)] = string(v)
+			}
+		}
+		rel := relTokens(attrs["rel"])
+		switch tag := string(name); tag {
+		case "title":
+			title, inTitle = true, tt == html.StartTagToken
+		case "base":
+			base = base || attrs["href"] != ""
+		case "meta":
+			viewport = viewport || strings.EqualFold(strings.TrimSpace(attrs["name"]), "viewport")
+		case "script":
+			if strings.EqualFold(strings.TrimSpace(attrs["type"]), "importmap") {
+				inImportMap = tt == html.StartTagToken
+			}
+			refs = append(refs, ref{attrs["src"], codeAsset})
+		case "link":
+			icon = icon || rel["icon"] || rel["apple-touch-icon"]
+			kind := plainAsset
+			as := strings.ToLower(strings.TrimSpace(attrs["as"]))
+			if rel["stylesheet"] || rel["modulepreload"] || (rel["preload"] && (as == "script" || as == "style")) {
+				kind = codeAsset
+			}
+			if rel["stylesheet"] || rel["icon"] || rel["apple-touch-icon"] || rel["manifest"] || rel["preload"] || rel["modulepreload"] || rel["mask-icon"] {
+				refs = append(refs, ref{attrs["href"], kind})
+			}
+		case "img", "source", "video", "audio", "track", "iframe", "embed", "input":
+			if tag != "input" || strings.EqualFold(attrs["type"], "image") {
+				refs = append(refs, ref{attrs["src"], plainAsset})
+			}
+			for _, u := range srcset(attrs["srcset"]) {
+				refs = append(refs, ref{u, plainAsset})
+			}
+			if tag == "video" {
+				refs = append(refs, ref{attrs["poster"], plainAsset})
+			}
+		case "object":
+			refs = append(refs, ref{attrs["data"], plainAsset})
+		}
+	}
+	switch t := strings.Join(strings.Fields(titleText.String()), " "); {
+	case !title || t == "":
+		l.add(f.Path, "page has no <title>, so browser tabs, history and shared links show the raw address",
+			"add <title> with a short noun phrase that names the page, e.g. <title>Team Lunch Poll</title>")
+	case placeholderTitles[strings.ToLower(t)]:
+		l.add(f.Path, fmt.Sprintf("<title> %q is a template placeholder", t),
+			"replace it with a short noun phrase that names this page")
+	}
+	if !viewport {
+		l.add(f.Path, "page has no viewport meta tag, so phones render it as a zoomed-out desktop page",
+			`add <meta name="viewport" content="width=device-width, initial-scale=1"> to <head>`)
+	}
+	if entry && !icon && !l.index["favicon.ico"] {
+		l.add(f.Path, "page has no favicon, so browsers request /favicon.ico and get 404",
+			`add <link rel="icon" href="favicon.svg"> with the icon file in the bundle, or add favicon.ico at the root`)
+	}
+	seen := map[ref]bool{}
+	for _, r := range refs {
+		r.url = strings.TrimSpace(r.url)
+		if r.url == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		if r.kind == codeAsset {
+			l.external(f.Path, r.url)
+		}
+		if l.static && !base {
+			l.missing(f.Path, r.url, entry)
+		}
+	}
+}
+
+type assetKind int
+
+const (
+	plainAsset assetKind = iota // image, icon, frame: only checked for existence
+	codeAsset                   // script or stylesheet: also checked for a pinned version
+)
+
+type ref struct {
+	url  string
+	kind assetKind
+}
+
+// placeholderTitles are scaffold defaults that do not name a page.
+var placeholderTitles = map[string]bool{
+	"document": true, "untitled": true, "untitled document": true, "index": true, "home page": true,
+	"vite app": true, "vite + react": true, "vite + react + ts": true, "vite + vue": true, "vite + vue + ts": true,
+	"vite + svelte": true, "vite + svelte + ts": true, "react app": true, "my app": true, "app": true,
+	"svelte app": true, "vue app": true, "next.js app": true, "create next app": true,
+}
+
+// fontCSSHosts serve generated font stylesheets that have no version to pin.
+var fontCSSHosts = map[string]bool{"fonts.googleapis.com": true, "fonts.bunny.net": true, "use.typekit.net": true}
+
+// external warns when a script or stylesheet loads from another origin
+// without an exact version (bundle by default; CDN only when pinned).
+func (l *linter) external(page, raw string) {
+	u, ok := externalURL(raw)
+	if !ok {
+		return
+	}
+	if fontCSSHosts[strings.ToLower(u.Hostname())] {
+		l.add(page, fmt.Sprintf("font stylesheet loads from %s on every visit and cannot be pinned to a version", u.Hostname()),
+			"bundle the font files (.woff2) and declare them with @font-face, so the page also works offline and without third-party requests")
+		return
+	}
+	pinned, tag := exactVersion(u.EscapedPath())
+	if pinned {
+		return
+	}
+	what := "has no version"
+	if tag != "" {
+		what = fmt.Sprintf("uses version %q, which is not exact and can change under you", tag)
+	}
+	l.add(page, fmt.Sprintf("external script or stylesheet %s %s", raw, what),
+		"bundle the file into the upload (preferred), or pin an exact version such as @18.3.1 and add an integrity hash")
+}
+
+// externalURL parses an absolute http(s) or protocol-relative URL.
+func externalURL(raw string) (*url.URL, bool) {
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return nil, false
+	}
+	if s := strings.ToLower(u.Scheme); s != "http" && s != "https" {
+		return nil, false
+	}
+	return u, true
+}
+
+var (
+	semver      = regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$`)
+	semverInSeg = regexp.MustCompile(`(?:^|[-_.@])v?\d+\.\d+\.\d+(?:$|[-_.+])`)
+)
+
+// exactVersion reports whether a CDN path names an exact version. An
+// npm-style "pkg@version" marker decides on its own: @18.3.1 passes, while
+// @latest, @18, @^18 or @~18.3.1 fail and are returned as tag. Without a
+// marker, a path segment such as /18.3.1/ or a file name such as
+// jquery-3.7.1.min.js counts as pinned.
+func exactVersion(escapedPath string) (pinned bool, tag string) {
+	p, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		p = escapedPath
+	}
+	marker := false
+	for _, seg := range strings.Split(p, "/") {
+		i := strings.LastIndex(seg, "@")
+		if i <= 0 { // no marker, or the "@scope" of a scoped package
+			continue
+		}
+		marker = true
+		if v := seg[i+1:]; !semver.MatchString(v) {
+			return false, v
+		}
+	}
+	if marker {
+		return true, ""
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if semver.MatchString(seg) || semverInSeg.MatchString(seg) {
+			return true, ""
+		}
+	}
+	return false, ""
+}
+
+// missing warns when a relative reference names no file in the bundle,
+// resolving it the way the static server does. The entry is also served at
+// the flat root, so its relative references may resolve from there.
+func (l *linter) missing(page, raw string, entry bool) {
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
+		return
+	}
+	if u, err := url.Parse(raw); err != nil || u.Scheme != "" || strings.HasPrefix(lower, "data:") {
+		return
+	}
+	target := raw
+	if i := strings.IndexAny(target, "?#"); i >= 0 {
+		target = target[:i]
+	}
+	if target == "" {
+		return
+	}
+	if dec, err := url.PathUnescape(target); err == nil {
+		target = dec
+	}
+	dir := strings.HasSuffix(target, "/")
+	resolve := func(from string) string {
+		if strings.HasPrefix(target, "/") {
+			from = "/"
+		}
+		return strings.TrimPrefix(path.Clean("/"+path.Join(from, target)), "/")
+	}
+	rel := resolve(path.Dir(page))
+	if l.resolves(rel, dir) || (entry && l.resolves(resolve("/"), dir)) {
+		return
+	}
+	// A single-page app serves its entry for unknown extensionless paths.
+	if l.spa && !strings.Contains(path.Base(rel), ".") {
+		return
+	}
+	l.add(page, fmt.Sprintf("references %s, but the bundle has no file %s", raw, displayPath(rel)),
+		"add the file to the upload, or fix the path (paths are relative to the page; a leading / starts at the flat root)")
+}
+
+func (l *linter) resolves(rel string, dir bool) bool {
+	if rel == "" || rel == "." {
+		return true // the flat root serves the entry
+	}
+	if rel == ManifestName {
+		return false // flats.json is never served
+	}
+	if !dir && l.index[rel] {
+		return true
+	}
+	if l.index[path.Join(rel, "index.html")] {
+		return true
+	}
+	return !dir && !strings.Contains(path.Base(rel), ".") && l.index[rel+".html"]
+}
+
+func displayPath(rel string) string {
+	if rel == "" {
+		return "/"
+	}
+	return rel
+}
+
+// importMapRefs returns the URLs of an import map's imports and scopes.
+func importMapRefs(data []byte) []ref {
+	var m struct {
+		Imports map[string]string            `json:"imports"`
+		Scopes  map[string]map[string]string `json:"scopes"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	var out []ref
+	for _, v := range m.Imports {
+		out = append(out, ref{v, codeAsset})
+	}
+	for _, s := range m.Scopes {
+		for _, v := range s {
+			out = append(out, ref{v, codeAsset})
+		}
+	}
+	return out
+}
+
+// srcset returns the URLs of a srcset attribute ("a.png 1x, b.png 2x").
+func srcset(v string) []string {
+	var out []string
+	for _, cand := range strings.Split(v, ",") {
+		if f := strings.Fields(cand); len(f) > 0 {
+			out = append(out, f[0])
+		}
+	}
+	return out
+}
+
+func relTokens(v string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range strings.Fields(strings.ToLower(v)) {
+		out[t] = true
+	}
+	return out
+}
+
+// looksLikeDocument tells full pages from HTML fragments (templates,
+// partials), which have no head to put a title or viewport in.
+func looksLikeDocument(data []byte) bool {
+	head := data
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	lower := bytes.ToLower(head)
+	return bytes.Contains(lower, []byte("<!doctype html")) || bytes.Contains(lower, []byte("<html")) || bytes.Contains(lower, []byte("<head"))
+}
+
+func isHTML(p string) bool {
+	ext := strings.ToLower(path.Ext(p))
+	return ext == ".html" || ext == ".htm"
+}
+
+func isImage(p string) bool {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".tif", ".tiff", ".svg", ".ico", ".heic":
+		return true
+	}
+	return false
+}

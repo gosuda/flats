@@ -199,7 +199,11 @@ they hold the always-on safety rules and send the agent to the read-only
 `topic.approvals`, `refusal.conflict` and so on). Every tool error names a
 `category`, and `refusal.<category>` explains the fix. The topics live in
 [`docs/agent/`](docs/agent) and are the single source for the guide, both
-references and the llms.txt documents.
+references and the llms.txt documents. `topic.design` holds the page contract
+(title, viewport, icon and thumbnail, light and dark colors, phone width,
+accessibility), design defaults and the asset policy: bundle scripts, styles
+and fonts by default; load from a CDN only with an exact version. Saves return
+non-blocking `warnings` for the parts of that contract a static check can see.
 
 For the whole server contract in one document, read resource
 `flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.
@@ -208,7 +212,8 @@ and available through MCP without an installed skill or source checkout. It
 contains complete synchronous FILES/DB signatures, text/binary semantics,
 limits, handler examples and approvals in one document. For a minimal MCP static walkthrough,
 call `save_version` with `{"slug":"hello","files":[{"path":"index.html",
-"content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}`. For a server,
+"content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}` (its result
+warns that this bare page has no title or viewport). For a server,
 include the `flats.json` and `server.js` shown above in the same complete inline
 file list. Fetch the returned URL and check `get_flat`/`get_logs`; a successful
 save alone does not establish a live site, and requesting deploy still waits for operator approval.

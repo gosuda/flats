@@ -24,7 +24,7 @@ var agentFS embed.FS
 
 // TopicOrder lists every topic file under agent/topics in guide order.
 var TopicOrder = []string{
-	"index", "static", "server", "server.files", "server.db", "server.fetch", "server.limits",
+	"index", "static", "design", "server", "server.files", "server.db", "server.fetch", "server.limits",
 	"docs", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify",
 }
 

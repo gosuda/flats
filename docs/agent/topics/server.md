@@ -21,7 +21,9 @@ export default {
 
 Set manifest `health: "/healthz"` for a side-effect-free check. Server handlers
 own routing and must explicitly serve their UI/assets; uploading index.html with
-a server does not automatically serve it.
+a server does not automatically serve it. Pages the handler returns follow the
+page contract in `topic.design`; saves check uploaded HTML documents for a
+title, viewport and pinned external assets.
 
 Related topics: `topic.server.db` (`env.DB` SQLite), `topic.server.files`
 (`env.FILES` text storage), `topic.server.fetch` (outbound HTTP),
