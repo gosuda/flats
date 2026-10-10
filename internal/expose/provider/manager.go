@@ -448,7 +448,7 @@ func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
 		Tailscale, Portal bool
 		Zrok              bool `json:",omitempty"`
 		Configuration     string
-	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil, m.config()}
+	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil && f.Allows(Zrok), m.config()}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err

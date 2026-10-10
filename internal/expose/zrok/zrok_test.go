@@ -686,7 +686,7 @@ func reserved(t *testing.T, n *Net, slug string) bool {
 	return ok
 }
 
-func TestAmbiguousNameCreationStaysRecorded(t *testing.T) {
+func TestAmbiguousNameCreationIsNotReleased(t *testing.T) {
 	f := newFake()
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
@@ -697,13 +697,13 @@ func TestAmbiguousNameCreationStaysRecorded(t *testing.T) {
 	if !reserved(t, n, "blog") {
 		t.Fatal("an attempted creation was not recorded")
 	}
-	// The controller did create it after all.
+	// A name now exists, but nothing proves this host created it.
 	f.names["public/blog"] = ""
 	if err := n.Retire("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.names["public/blog"]; ok || reserved(t, n, "blog") {
-		t.Fatalf("name kept: %v", f.names)
+	if _, ok := f.names["public/blog"]; !ok || reserved(t, n, "blog") || len(f.released) != 0 {
+		t.Fatalf("released a name of unknown ownership: names=%v released=%v", f.names, f.released)
 	}
 }
 
@@ -899,7 +899,7 @@ func TestDifferentAccountTokenIsNotAdopted(t *testing.T) {
 	}
 }
 
-func TestPendingNameIsSettledByLaterServe(t *testing.T) {
+func TestPendingNameIsNotAdopted(t *testing.T) {
 	f := newFake()
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
@@ -912,13 +912,12 @@ func TestPendingNameIsSettledByLaterServe(t *testing.T) {
 		t.Fatalf("record = %+v", rec)
 	}
 	f.createErr = nil
-	f.names["public/blog"] = "" // the lost request did create it
-	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
-		t.Fatal(err)
+	f.names["public/blog"] = "" // created by the lost request, or by another client
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "got no answer") {
+		t.Fatalf("adopted a name of unknown ownership: %v", err)
 	}
-	rec, _, _ = n.readRecord("blog")
-	if rec.Pending || !rec.Created {
-		t.Fatalf("record = %+v", rec)
+	if len(f.shares) != 0 {
+		t.Fatalf("shares = %v", f.shares)
 	}
 }
 

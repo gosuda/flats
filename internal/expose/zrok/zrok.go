@@ -236,11 +236,11 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		// or by another Flats host. Using it would take over its URL.
 		return "", fmt.Errorf("zrok: %s: the name is reserved in this zrok account, but not by this Flats host; release it (zrok2 delete name) or rename the flat", slug)
 	case found && rec.Pending:
-		// An earlier attempt to create it lost its response.
-		rec.Created, rec.Pending = true, false
-		if err := n.writeRecord(slug, rec); err != nil {
-			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
-		}
+		// An earlier attempt to create it got no answer. The name may be the
+		// one it created, or one another client reserved since; zrok cannot
+		// tell them apart, so neither is used.
+		path, _ := recordPath(n.cfg.Dir, slug)
+		return "", fmt.Errorf("zrok: %s: an earlier attempt to reserve the name got no answer, and the name now exists; Flats cannot tell who created it. Release it with `zrok2 delete name` and remove %s, or rename the flat", slug, path)
 	case !found:
 		// Record the intent before creating the name, so a name this host
 		// creates is never untracked.
@@ -265,8 +265,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		case err != nil:
 			// No answer: the name may or may not exist. The pending record
-			// lets the next Serve or Retire settle it; a name the account
-			// holds then is taken to be the one this attempt created.
+			// keeps that fact; a later Serve that finds the name refuses it.
 			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		}
 		rec.Created, rec.Pending = true, false
@@ -593,19 +592,18 @@ func (n *Net) release(ctx context.Context, slug string, rec record) error {
 				return fmt.Errorf("remove share %s: %w", holder, err)
 			}
 			n.forgetOrphan(slug, holder)
-			if rec.Created || rec.Pending {
+			if rec.Created {
 				if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 					return err
 				}
 			}
 		case holder != "":
 			// Another share uses the name now; leave it.
-		case rec.Created || rec.Pending:
-			// A pending name found in this account is the one an attempt
-			// created before its response was lost.
+		case rec.Created:
 			if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 				return err
 			}
+			// A pending name is left: it may be another client's.
 		}
 	}
 	return n.dropRecord(slug)
@@ -673,7 +671,7 @@ type record struct {
 	Account   string `json:"account"` // backend.Account of the environment that reserved it
 	Namespace string `json:"namespace"`
 	Created   bool   `json:"created"`           // Flats created the name, so it may release it
-	Pending   bool   `json:"pending,omitempty"` // a creation attempt whose outcome is unknown
+	Pending   bool   `json:"pending,omitempty"` // a creation attempt got no answer; ownership unknown
 	Token     string `json:"token,omitempty"`   // a share Flats created and has not deleted yet
 }
 

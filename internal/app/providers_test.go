@@ -285,3 +285,34 @@ func TestConsoleZrokPolicyMatchesRestart(t *testing.T) {
 		t.Fatal("the policy token after a restart differs from the one after turning zrok on")
 	}
 }
+
+// Turning zrok off from the console also gives the policy token of the next
+// start, which has no zrok grant.
+func TestConsoleZrokOffPolicyMatchesRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fakeZrokEnvironment(t, home)
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
+		t.Fatalf("turn on zrok: %d %v", code, out)
+	}
+	if code, out := setHost(t, h, client, "zrok", false); code != 200 {
+		t.Fatalf("turn off zrok: %d %v", code, out)
+	}
+	live, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = consoleHostWith(t, dir, nil)
+	restarted, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != restarted {
+		t.Fatal("the policy token after a restart differs from the one after turning zrok off")
+	}
+}

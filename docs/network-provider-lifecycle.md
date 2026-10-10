@@ -229,19 +229,20 @@ zrok exposes no account identity apart from the token, so a regenerated token
 is treated like another account. `Serve` uses an
 existing name only with this host's record: a name reserved in the account by
 the zrok CLI or another Flats host is refused. A creation attempt is recorded
-as pending; the next `Serve` adopts the name if the account holds it, an
-`errNameExists` answer drops the record (another account owns the name), and
-`Retire` releases a pending name the account holds. A share whose creation
+as pending. An `errNameExists` answer or another refusal drops the record.
+If the request got no answer and the name exists later, zrok cannot tell
+whether this attempt or another client created it: `Serve` refuses it and
+asks the operator to release it, and `Retire` leaves the name and drops only
+the record. A share whose creation
 failed, or whose rollback failed, is kept as unsettled: `Stop` and process
 shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
 `Stop` even without a registered zrok route, so the rollback of a failed
 Public approval settles such a share and reports zrok unconfirmed if it
 cannot. The approval policy token includes the zrok environment directory,
 account fingerprint and namespace when zrok is permitted, so a pending
-approval does not carry over to another zrok account. Turning zrok on from
-the console sets the same configuration the next start computes. A name
-creation the controller refused (such as the account's name limit) leaves
-no pending record; only an unanswered request stays pending. An
+approval does not carry over to another zrok account. Turning zrok on or off
+from the console sets the configuration the next start computes, and the
+token counts the zrok backend only while zrok is granted. An
 unshare the controller answers with "not found" is confirmed through the
 account-wide share detail: a share another environment of the account still
 holds is reported, not treated as gone. A `Serve` after a failed `Stop`

@@ -163,6 +163,15 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 	if _, err := h.Providers.SetGrant(id, enabled); err != nil {
 		return "", err
 	}
+	if id == provider.Zrok {
+		// The next start includes zrok in the policy token only while it is
+		// granted; match that now, in both directions.
+		zc := ""
+		if enabled && h.zrokNet != nil {
+			zc = zrokConfigurationOf(h.Config.Zrok.Environment, h.zrokNet.Account(), h.zrokOptions.Namespace)
+		}
+		h.Providers.SetConfiguration(providerConfiguration(h.portalOptions, zc))
+	}
 	h.logf("provider %s enabled=%t from the console", id, enabled)
 	return etag, nil
 }
@@ -205,9 +214,6 @@ func (h *Host) attachLocked(id provider.ID) error {
 		}
 		h.zrokNet = z
 		h.Providers.AttachZrok(z)
-		// The next start includes zrok in the policy token; match it now.
-		h.Providers.SetConfiguration(providerConfiguration(h.portalOptions,
-			zrokConfigurationOf(h.Config.Zrok.Environment, z.Account(), h.zrokOptions.Namespace)))
 	}
 	return nil
 }
