@@ -27,19 +27,26 @@
   };
   const lum = ([r, g, b]) => [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
     .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
-  const background = (el) => { // first opaque background behind el; null if an image or nothing paints it
+  const background = (el) => { // the color behind el's text, compositing translucent layers;
+    const layers = [];             // null if an image is in the way or nothing opaque paints it
     for (let e = el; e; e = e.parentElement) {
       const s = style(e);
       if (s.backgroundImage !== "none") return null;
       const c = rgba(s.backgroundColor);
-      if (c[3] > 0.95) return c;
+      if (c[3] === 0) continue;
+      layers.push(c);
+      if (c[3] > 0.99) {
+        return layers.reverse().reduce((under, [r, g, b, a]) =>
+          [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a), 1]);
+      }
     }
     return null;
   };
+  const painted = (el) => { const s = style(el); return s.backgroundImage !== "none" || rgba(s.backgroundColor)[3] > 0.99; };
 
   if (!out.title) add("title", { fix: "name the page in <title>" });
   if (!out.viewportMeta) add("viewport", { fix: 'add <meta name="viewport" content="width=device-width, initial-scale=1">; without it a phone lays the page out about 980px wide, so the overflow check below does not apply' });
-  if (!background(document.body)) add("background", { fix: "paint body from a color token in both schemes" });
+  if (!painted(document.body) && !painted(root)) add("background", { fix: "paint body from a color token in both schemes" });
 
   if (root.scrollWidth > vw + 1) {
     const clipped = (el) => { for (let e = el.parentElement; e && e !== root; e = e.parentElement) {
