@@ -2,6 +2,9 @@
 
 ### Preview
 
+Before previewing, read the `warnings` of the save result (`topic.design`);
+they are cheap static checks, not a render.
+
 `open_preview {slug, version: 0}` serves the current Private Draft; a positive
 `version` previews that published version. Live is unchanged. Server and docs
 flats get an isolated copy of the live DB/FILES: preview writes never reach
@@ -27,6 +30,10 @@ one from a pattern. A Local link (`*.localhost`) opens on the machine where it
 is clicked, so it reaches the flat only from the Flats host itself. On a host
 whose private backend is Tailscale, new flats and Draft previews use the
 tailnet address, which other allowed devices can open.
+
+For a page, look at the Draft preview once at desktop width and at about
+400px, in light and dark, fix what you see in one pass, then publish
+(`topic.design`). Do not repeat the look in a loop.
 
 ### Verify
 

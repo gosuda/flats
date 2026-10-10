@@ -29,6 +29,9 @@ host/tailnet. See the README for installation and host/client setup.
 
 A static flat serves the uploaded files as they are. Build first, then upload
 the build output (`dist/`, `out/`, `build/`), never sources or `node_modules`.
+Before writing pages, read `topic.design`: the page contract (title,
+viewport, icon, both color schemes, phone width), design defaults and the
+asset policy (bundle by default; CDN only with an exact version).
 
 * The entry defaults to `index.html` at the bundle root. One wrapping
   directory such as `dist/` is stripped.
@@ -54,6 +57,11 @@ Saving never publishes: `deploy: true` only requests publish approval after
 the save (`topic.approvals`). `expected_revision` is the Draft revision you
 expect (0 when no Draft exists); a mismatch is refused as `conflict` and
 overwrites nothing. Read `get_draft`, reconcile, then save again.
+
+A successful save may return `warnings: [{path, message, fix}]`: a missing
+title or viewport, an unpinned external script, a reference to a file that is
+not in the upload, a large image, no favicon or screenshot. They never block
+the save; fix them and save again (`topic.design` lists every check).
 
 On the Flats host itself, `save_version_from_dir {slug, dir}` uploads an
 absolute build directory (loopback callers only; it also skips
@@ -119,7 +127,9 @@ export default {
 
 Set manifest `health: "/healthz"` for a side-effect-free check. Server handlers
 own routing and must explicitly serve their UI/assets; uploading index.html with
-a server does not automatically serve it.
+a server does not automatically serve it. Pages the handler returns follow the
+page contract in `topic.design`; saves check uploaded HTML documents for a
+title, viewport and pinned external assets.
 
 Related topics: `topic.server.db` (`env.DB` SQLite), `topic.server.files`
 (`env.FILES` text storage), `topic.server.fetch` (outbound HTTP),
@@ -457,6 +467,9 @@ ask the user to use **Redeploy (apply environment)** in the console.
 
 ### Preview
 
+Before previewing, read the `warnings` of the save result (`topic.design`);
+they are cheap static checks, not a render.
+
 `open_preview {slug, version: 0}` serves the current Private Draft; a positive
 `version` previews that published version. Live is unchanged. Server and docs
 flats get an isolated copy of the live DB/FILES: preview writes never reach
@@ -482,6 +495,10 @@ one from a pattern. A Local link (`*.localhost`) opens on the machine where it
 is clicked, so it reaches the flat only from the Flats host itself. On a host
 whose private backend is Tailscale, new flats and Draft previews use the
 tailnet address, which other allowed devices can open.
+
+For a page, look at the Draft preview once at desktop width and at about
+400px, in light and dark, fix what you see in one pass, then publish
+(`topic.design`). Do not repeat the look in a loop.
 
 ### Verify
 

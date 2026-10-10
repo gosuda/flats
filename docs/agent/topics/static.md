@@ -2,6 +2,9 @@
 
 A static flat serves the uploaded files as they are. Build first, then upload
 the build output (`dist/`, `out/`, `build/`), never sources or `node_modules`.
+Before writing pages, read `topic.design`: the page contract (title,
+viewport, icon, both color schemes, phone width), design defaults and the
+asset policy (bundle by default; CDN only with an exact version).
 
 * The entry defaults to `index.html` at the bundle root. One wrapping
   directory such as `dist/` is stripped.
@@ -27,6 +30,11 @@ Saving never publishes: `deploy: true` only requests publish approval after
 the save (`topic.approvals`). `expected_revision` is the Draft revision you
 expect (0 when no Draft exists); a mismatch is refused as `conflict` and
 overwrites nothing. Read `get_draft`, reconcile, then save again.
+
+A successful save may return `warnings: [{path, message, fix}]`: a missing
+title or viewport, an unpinned external script, a reference to a file that is
+not in the upload, a large image, no favicon or screenshot. They never block
+the save; fix them and save again (`topic.design` lists every check).
 
 On the Flats host itself, `save_version_from_dir {slug, dir}` uploads an
 absolute build directory (loopback callers only; it also skips

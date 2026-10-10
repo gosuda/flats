@@ -8,7 +8,8 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 
 | You want to | Read | Main tools |
 |---|---|---|
-| Publish a static site or single-page app build | `topic.static`, `topic.manifest` | `save_draft`, `open_preview`, `publish` |
+| Publish a static site or single-page app build | `topic.static`, `topic.manifest`, `topic.design` | `save_draft`, `open_preview`, `publish` |
+| Make a page look and read right (title, themes, phone width, assets) | `topic.design` | `save_draft` warnings, `open_preview` |
 | Build a server app (HTTP API, SQLite, file storage) | `topic.server`, then `topic.server.db`, `topic.server.files`, `topic.server.fetch` as needed, and `topic.server.limits` | same as static |
 | Write or edit a Markdown document | `topic.docs` | `get_document`, `save_document`, `publish` |
 | Give an app settings, credentials or API access | `topic.env-secrets`, `topic.server.fetch` | `list_env`, `set_env`, `list_secrets`, `get_network` |
@@ -24,7 +25,8 @@ For an existing flat, call `get_flat` before changing anything.
 1. **Draft.** `save_draft` (or `save_version`) uploads the complete build;
    `save_document` saves one Markdown document. Saving creates a missing flat
    and only changes its Private Draft. Nothing is published.
-2. **Review.** `open_preview {slug, version: 0}` serves the Draft privately.
+2. **Review.** Read the save `warnings`, then `open_preview {slug, version:
+   0}` serves the Draft privately; look once and fix (`topic.design`).
 3. **Request.** `publish` (or `deploy: true` on a save) returns
    `pending_approval` with `approval_url`. Give that URL to the user exactly
    as returned.
