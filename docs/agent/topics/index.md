@@ -18,6 +18,7 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 | Make a flat public or private, or delete it | `topic.approvals` | `set_visibility`, `delete_flat` (ask the user first) |
 | Roll back code or restore data | `topic.rollback-data` | `rollback` |
 | Check a Draft or a published version | `topic.preview-verify` | `open_preview`, `get_flat`, `get_logs` |
+| Look at a rendered preview in your browser (overflow, contrast, failed loads, thumbnail) | `topic.preview-check` | your browser tool, `open_preview` |
 | Understand a refused call | `refusal.<category>` named in the error | |
 
 For an existing flat, call `get_flat` before changing anything.
@@ -28,7 +29,8 @@ For an existing flat, call `get_flat` before changing anything.
    `save_document` saves one Markdown document. Saving creates a missing flat
    and only changes its Private Draft. Nothing is published.
 2. **Review.** Read the save `warnings`, then `open_preview {slug, version:
-   0}` serves the Draft privately; look once and fix (`topic.design`).
+   0}` serves the Draft privately; look once in your browser and fix
+   (`topic.design`, `topic.preview-check`).
 3. **Request.** `publish` (or `deploy: true` on a save) returns
    `pending_approval` with `approval_url`. Give that URL to the user exactly
    as returned.
