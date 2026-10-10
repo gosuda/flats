@@ -15,11 +15,13 @@ import {
 import { syntaxTree } from "@codemirror/language";
 import {
   activeLines,
+  diagramBlocks,
   linkAt,
   liveDecorations,
   referenceDefinitions,
   tableBlocks,
 } from "./live.js";
+import { renderDiagrams } from "./diagrams.js";
 
 class Bullet extends WidgetType {
   eq() {
@@ -135,9 +137,44 @@ class TableWidget extends WidgetType {
   }
 }
 
-// Tables span lines, so they are replaced from a state field: a view plugin
-// may not replace line breaks. The field tracks focus through an effect, so a
-// table renders again when the editor loses focus.
+// A drawn Mermaid diagram. Clicking it puts the cursor on its source, which
+// then shows for editing. Its position is read from the DOM on click, so
+// text typed above it does not draw it again.
+class DiagramWidget extends WidgetType {
+  constructor(source, render) {
+    super();
+    this.source = source;
+    this.render = render;
+  }
+  eq(other) {
+    return other.source === this.source;
+  }
+  toDOM(view) {
+    const div = document.createElement("div");
+    div.className = "cm-diagram-widget";
+    // render is markdown-it with raw HTML disabled; a mermaid fence becomes
+    // a placeholder that renderDiagrams draws.
+    div.innerHTML = this.render(this.source);
+    renderDiagrams(div).then(() => view.requestMeasure());
+    div.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      const block = diagramBlocks(view.state, false).find(
+        (b) => b.from === view.posAtDOM(div),
+      );
+      if (!block) return;
+      view.focus();
+      view.dispatch({ selection: EditorSelection.cursor(block.edit) });
+    });
+    return div;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// Tables and diagrams span lines, so they are replaced from a state field: a
+// view plugin may not replace line breaks. The field tracks focus through an
+// effect, so a block renders again when the editor loses focus.
 const setFocus = StateEffect.define();
 // The document's reference definitions, rescanned when the text changes.
 function definitions(links) {
@@ -148,17 +185,28 @@ function definitions(links) {
   });
 }
 
-function tables(render, refs) {
+function blocks(render, refs) {
   const build = (state, focused) =>
     Decoration.set(
-      tableBlocks(state, focused, state.field(refs))
-        .filter((t) => !t.active)
-        .map((t) =>
-          Decoration.replace({
-            widget: new TableWidget(t.source, t.context, t.from, render),
-            block: true,
-          }).range(t.from, t.to),
-        ),
+      [
+        ...tableBlocks(state, focused, state.field(refs))
+          .filter((t) => !t.active)
+          .map((t) =>
+            Decoration.replace({
+              widget: new TableWidget(t.source, t.context, t.from, render),
+              block: true,
+            }).range(t.from, t.to),
+          ),
+        ...diagramBlocks(state, focused)
+          .filter((d) => !d.active)
+          .map((d) =>
+            Decoration.replace({
+              widget: new DiagramWidget(d.source, render),
+              block: true,
+            }).range(d.from, d.to),
+          ),
+      ],
+      true,
     );
   const field = StateField.define({
     create: (state) => ({ focused: false, decorations: build(state, false) }),
@@ -188,7 +236,7 @@ const hidden = Decoration.replace({}),
 
 // livePreview renders Markdown in place. links holds the renderer's link
 // rules (markdown.js), resolve makes an accepted URL absolute against the
-// document, and render turns a Markdown table into safe HTML.
+// document, and render turns a Markdown table or diagram into safe HTML.
 export function livePreview(links, resolve, render) {
   const refs = definitions(links);
   const build = (view) => {
@@ -251,7 +299,7 @@ export function livePreview(links, resolve, render) {
   };
   return [
     refs,
-    tables(render, refs),
+    blocks(render, refs),
     ViewPlugin.fromClass(
       class {
         constructor(view) {
