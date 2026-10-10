@@ -112,6 +112,13 @@ The host could not complete the operation now (for example the docs app
 returned an error). Retry once later; if it persists, show the user the error
 and `get_logs`.
 
+For `update_document` the error says which case applies:
+
+* The edit was applied at a given seq: do not repeat it.
+* It did not apply: retry.
+* The outcome is unknown: read `get_document` first, so an insert is not applied twice.
+* Too many live edits: wait a second.
+
 ## provider_not_permitted
 
 The flat needs a network provider the operator has not permitted, typically

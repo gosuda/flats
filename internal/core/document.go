@@ -33,6 +33,25 @@ var (
 	ErrDocumentCapacity = errors.New("document capacity")
 )
 
+// Outcomes of a live edit whose response was lost, after the host checked
+// its receipt.
+const (
+	EditApplied    = "applied"
+	EditNotApplied = "not_applied"
+	EditUnknown    = "unknown"
+)
+
+// EditOutcomeError reports a live edit whose response was lost. Its
+// category is unavailable; Outcome says whether the edit is live.
+type EditOutcomeError struct {
+	Outcome string
+	Seq     int64
+	msg     string
+}
+
+func (e *EditOutcomeError) Error() string { return e.msg }
+func (e *EditOutcomeError) Unwrap() error { return ErrUnavailable }
+
 // receiptLookupTimeout bounds checking a live edit whose response was lost.
 var receiptLookupTimeout = 5 * time.Second
 
@@ -355,11 +374,11 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 			return DocumentEdit{}, fmt.Errorf("%w: the docs app rolled the edit back; nothing changed, retry", ErrUnavailable)
 		}
 		// A timeout or worker failure can end the request after COMMIT.
-		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code), deadline)
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code), deadline, f.Visibility.Public())
 	}
 	var out DocumentEdit
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Format != 1 || !fs.ValidPath(out.Doc) || !bundle.IsMarkdown(out.Doc) {
-		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response", deadline)
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response", deadline, f.Visibility.Public())
 	}
 	out.Source = "live"
 	if f.Visibility.Public() {
@@ -381,7 +400,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 // may still be finishing after a lost response, so a missing receipt is
 // conclusive only after the edit's commit deadline has passed: until then
 // it waits and looks again.
-func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, deadline time.Time) error {
+func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, deadline time.Time, public bool) error {
 	committed, seq, known := s.editReceipt(auditCtx, live, doc, id)
 	if known && !committed {
 		if wait := time.Until(deadline.Add(editSettleMargin)); wait > 0 {
@@ -396,18 +415,22 @@ func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugNa
 	if name == "" {
 		name = "the entry document"
 	}
+	notice := ""
+	if public {
+		notice = " " + LiveEditPublicNotice
+	}
 	data := map[string]any{"doc": doc, "id": id, "cause": cause}
 	if committed {
 		data["seq"] = seq
 		s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s committed at seq %d, but its response was lost (%s)", name, via, seq, cause), data)
-		return fmt.Errorf("%w: %s, but the edit was applied at seq %d; read get_document and do not repeat it", ErrUnavailable, cause, seq)
+		return &EditOutcomeError{Outcome: EditApplied, Seq: seq, msg: fmt.Sprintf("%v: %s, but the edit was applied at seq %d; read get_document and do not repeat it.%s", ErrUnavailable, cause, seq, notice)}
 	}
 	if known {
 		s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s did not apply (%s; no receipt after its commit deadline)", name, via, cause), data)
-		return fmt.Errorf("%w: %s; the edit did not apply and can no longer commit: retry", ErrUnavailable, cause)
+		return &EditOutcomeError{Outcome: EditNotApplied, msg: fmt.Sprintf("%v: %s; the edit did not apply and can no longer commit: retry", ErrUnavailable, cause)}
 	}
 	s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s: outcome unknown (%s)", name, via, cause), data)
-	return fmt.Errorf("%w: %s; the edit may or may not have applied: read get_document before retrying", ErrUnavailable, cause)
+	return &EditOutcomeError{Outcome: EditUnknown, msg: fmt.Sprintf("%v: %s; the edit may or may not have applied: read get_document before retrying.%s", ErrUnavailable, cause, notice)}
 }
 
 // editReceipt asks the docs app whether a live edit committed. known is

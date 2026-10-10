@@ -3,6 +3,7 @@ package mcpx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -72,20 +73,7 @@ type UpdateDocumentIn struct {
 func (t *tools) updateDocument(ctx context.Context, _ *mcp.CallToolRequest, in UpdateDocumentIn) (*mcp.CallToolResult, core.DocumentEdit, error) {
 	out, err := t.svc.UpdateDocument(ctx, in.Slug, in.Doc, in.Ops, in.IfHash, core.ViaMCP)
 	if err != nil {
-		hint := "read get_document {slug, doc, blocks: true} again and retry against the current text"
-		switch core.ErrorCategory(err) {
-		case "not_deployed":
-			hint = "no docs version is running; use save_document and publish (topic.docs)"
-		case "not_docs":
-			hint = "update_document edits docs flats only; check get_flat"
-		case "invalid":
-			hint = "fix the operation named in the error (topic.docs)"
-		case "document_capacity":
-			hint = "make the edit smaller or split it into several calls"
-		case "not_found", "document_not_found":
-			hint = notFoundHint(err, in.Slug)
-		}
-		return nil, core.DocumentEdit{}, toolErr(err, hint)
+		return nil, core.DocumentEdit{}, toolErr(err, editHint(err, in.Slug))
 	}
 	var b strings.Builder
 	if out.Changed {
@@ -98,4 +86,33 @@ func (t *tools) updateDocument(ctx context.Context, _ *mcp.CallToolRequest, in U
 	}
 	writePublic(&b, "", out.PublicNotice)
 	return result(b.String(), out), out, nil
+}
+
+// editHint tells the caller what to do after a refused or failed live edit.
+// After a lost response it depends on whether the edit is live.
+func editHint(err error, slug string) string {
+	hint := "read get_document {slug, doc, blocks: true} again and retry against the current text"
+	switch core.ErrorCategory(err) {
+	case "not_deployed":
+		hint = "no docs version is running; use save_document and publish (topic.docs)"
+	case "not_docs":
+		hint = "update_document edits docs flats only; check get_flat"
+	case "invalid":
+		hint = "fix the operation named in the error (topic.docs)"
+	case "document_capacity":
+		hint = "make the edit smaller or split it into several calls"
+	case "unavailable":
+		hint = "wait a second and retry"
+		var outcome *core.EditOutcomeError
+		if errors.As(err, &outcome) {
+			hint = map[string]string{
+				core.EditApplied:    fmt.Sprintf("the edit is live at seq %d; do not repeat it; read get_document to continue", outcome.Seq),
+				core.EditNotApplied: "nothing changed; send the same call again",
+				core.EditUnknown:    "read get_document and check whether the edit is there before retrying",
+			}[outcome.Outcome]
+		}
+	case "not_found", "document_not_found":
+		hint = notFoundHint(err, slug)
+	}
+	return hint
 }

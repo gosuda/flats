@@ -51,8 +51,8 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Ops    []DocumentEditOp `json:"ops"`
-		IfHash string           `json:"if_hash"`
+		Ops      []DocumentEditOp `json:"ops"`
+		IfHash   string           `json:"if_hash"`
 		ID       string           `json:"id"`
 		Deadline int64            `json:"deadline_ms"`
 	}
@@ -239,6 +239,12 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	}
 	if out, err := s.UpdateDocument(ctx, "notes", "", op("ok"), nil, ViaMCP); err != nil || out.PublicNotice != LiveEditPublicNotice {
 		t.Fatal(out, err)
+	}
+	// A lost response on a Public flat still says the change may be public.
+	_, err = s.UpdateDocument(ctx, "notes", "", op("lost"), nil, ViaMCP)
+	var outcome *EditOutcomeError
+	if !errors.As(err, &outcome) || outcome.Outcome != EditApplied || outcome.Seq != 9 || !strings.Contains(err.Error(), LiveEditPublicNotice) || ErrorCategory(err) != "unavailable" {
+		t.Fatal(err)
 	}
 }
 
