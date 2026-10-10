@@ -79,6 +79,7 @@ func (l *linter) document(f File, entry bool) {
 		title, viewport, icon, base bool
 		titleText                   strings.Builder
 		inTitle, inImportMap        bool
+		foreign                     int // depth inside <svg> or <math>, whose <title> is not the page's
 		refs                        []ref
 	)
 	z := html.NewTokenizer(bytes.NewReader(f.Data))
@@ -98,6 +99,9 @@ func (l *linter) document(f File, entry bool) {
 			continue
 		case html.EndTagToken:
 			inTitle, inImportMap = false, false
+			if name, _ := z.TagName(); foreign > 0 && (string(name) == "svg" || string(name) == "math") {
+				foreign--
+			}
 			continue
 		case html.StartTagToken, html.SelfClosingTagToken:
 		default:
@@ -115,8 +119,14 @@ func (l *linter) document(f File, entry bool) {
 		}
 		rel := relTokens(attrs["rel"])
 		switch tag := string(name); tag {
+		case "svg", "math":
+			if tt == html.StartTagToken {
+				foreign++
+			}
 		case "title":
-			title, inTitle = true, tt == html.StartTagToken
+			if foreign == 0 {
+				title, inTitle = true, tt == html.StartTagToken
+			}
 		case "base":
 			base = base || attrs["href"] != ""
 		case "meta":
@@ -127,7 +137,7 @@ func (l *linter) document(f File, entry bool) {
 			}
 			refs = append(refs, ref{attrs["src"], codeAsset})
 		case "link":
-			icon = icon || rel["icon"] || rel["apple-touch-icon"]
+			icon = icon || ((rel["icon"] || rel["apple-touch-icon"]) && strings.TrimSpace(attrs["href"]) != "")
 			kind := plainAsset
 			as := strings.ToLower(strings.TrimSpace(attrs["as"]))
 			if rel["stylesheet"] || rel["modulepreload"] || (rel["preload"] && (as == "script" || as == "style")) {
@@ -136,7 +146,9 @@ func (l *linter) document(f File, entry bool) {
 			if rel["stylesheet"] || rel["icon"] || rel["apple-touch-icon"] || rel["manifest"] || rel["preload"] || rel["modulepreload"] || rel["mask-icon"] {
 				refs = append(refs, ref{attrs["href"], kind})
 			}
-		case "img", "source", "video", "audio", "track", "iframe", "embed", "input":
+		case "iframe":
+			refs = append(refs, ref{attrs["src"], pageRef})
+		case "img", "source", "video", "audio", "track", "embed", "input":
 			if tag != "input" || strings.EqualFold(attrs["type"], "image") {
 				refs = append(refs, ref{attrs["src"], plainAsset})
 			}
@@ -177,7 +189,7 @@ func (l *linter) document(f File, entry bool) {
 			l.external(f.Path, r.url)
 		}
 		if l.static && !base {
-			l.missing(f.Path, r.url, entry)
+			l.missing(f.Path, r, entry)
 		}
 	}
 }
@@ -185,8 +197,9 @@ func (l *linter) document(f File, entry bool) {
 type assetKind int
 
 const (
-	plainAsset assetKind = iota // image, icon, frame: only checked for existence
+	plainAsset assetKind = iota // image, icon, media: only checked for existence
 	codeAsset                   // script or stylesheet: also checked for a pinned version
+	pageRef                     // a frame showing a page: an SPA serves its entry there
 )
 
 type ref struct {
@@ -282,9 +295,10 @@ func exactVersion(escapedPath string) (pinned bool, tag string) {
 }
 
 // missing warns when a relative reference names no file in the bundle,
-// resolving it the way the static server does. The entry is also served at
-// the flat root, so its relative references may resolve from there.
-func (l *linter) missing(page, raw string, entry bool) {
+// resolving it the way the static server does. Visitors open the entry at
+// the flat root, so its relative references resolve from there.
+func (l *linter) missing(page string, r ref, entry bool) {
+	raw := r.url
 	lower := strings.ToLower(raw)
 	if strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
 		return
@@ -309,12 +323,17 @@ func (l *linter) missing(page, raw string, entry bool) {
 		}
 		return strings.TrimPrefix(path.Clean("/"+path.Join(from, target)), "/")
 	}
-	rel := resolve(path.Dir(page))
-	if l.resolves(rel, dir) || (entry && l.resolves(resolve("/"), dir)) {
+	from := path.Dir(page)
+	if entry {
+		from = "/"
+	}
+	rel := resolve(from)
+	if l.resolves(rel, dir) {
 		return
 	}
-	// A single-page app serves its entry for unknown extensionless paths.
-	if l.spa && !strings.Contains(path.Base(rel), ".") {
+	// A single-page app serves its entry HTML for unknown extensionless
+	// paths: fine for a frame, but not as a script, stylesheet or image.
+	if l.spa && r.kind == pageRef && !strings.Contains(path.Base(rel), ".") {
 		return
 	}
 	l.add(page, fmt.Sprintf("references %s, but the bundle has no file %s", raw, displayPath(rel)),
@@ -365,12 +384,41 @@ func importMapRefs(data []byte) []ref {
 	return out
 }
 
-// srcset returns the URLs of a srcset attribute ("a.png 1x, b.png 2x").
+// srcset returns the URLs of a srcset attribute ("a.png 1x, b.png 2x"),
+// following the HTML candidate parsing rules: a URL runs to whitespace, so a
+// data: URL keeps its commas, and descriptors end at a comma outside
+// parentheses.
 func srcset(v string) []string {
 	var out []string
-	for _, cand := range strings.Split(v, ",") {
-		if f := strings.Fields(cand); len(f) > 0 {
-			out = append(out, f[0])
+	space := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+	for i := 0; i < len(v); {
+		for i < len(v) && (space(v[i]) || v[i] == ',') {
+			i++
+		}
+		start := i
+		for i < len(v) && !space(v[i]) {
+			i++
+		}
+		u := v[start:i]
+		if u == "" {
+			break
+		}
+		if trimmed := strings.TrimRight(u, ","); trimmed != u {
+			out = append(out, trimmed) // "a.png," ends the candidate
+			continue
+		}
+		out = append(out, u)
+		for depth := 0; i < len(v); i++ {
+			switch v[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			if v[i] == ',' && depth <= 0 {
+				i++
+				break
+			}
 		}
 	}
 	return out

@@ -214,14 +214,50 @@ func TestLintEntryInSubdirectory(t *testing.T) {
 		{Path: "public/main.js", Data: []byte("")},
 		{Path: "favicon.svg", Data: []byte("")},
 	}
-	// public/main.js resolves from the page's directory, main.js... also from
-	// the root where the entry is served; both forms point at existing files.
+	// Visitors open the entry at the flat root, so "main.js" means /main.js.
 	ws := Lint(files)
-	for _, w := range ws {
-		if strings.Contains(w.Message, "main.js") {
-			t.Fatalf("entry served at the root and at its own path: %s", render(ws))
+	if len(ws) != 1 || ws[0].Path != "public/index.html" || !strings.Contains(ws[0].Message, "references main.js, but the bundle has no file main.js") {
+		t.Fatalf("entry references resolve from the root:\n%s", render(ws))
+	}
+}
+
+func TestLintSPAFallbackOnlyForFrames(t *testing.T) {
+	spa := with(File{Path: "flats.json", Data: []byte(`{"spa":true,"screenshot":"screenshot.png"}`)},
+		File{Path: "index.html", Data: page(`<script src="/runtime"></script>`, `<img src="/avatar"><iframe src="/settings"></iframe>`)})
+	ws := Lint(spa)
+	if len(ws) != 2 || !strings.Contains(ws[0].Message, "no file runtime") || !strings.Contains(ws[1].Message, "no file avatar") {
+		t.Fatalf("the SPA entry HTML is no script or image:\n%s", render(ws))
+	}
+}
+
+func TestLintIgnoresForeignTitles(t *testing.T) {
+	svgTitle := []byte(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="icon" href="favicon.svg"></head>` +
+		`<body><svg viewBox="0 0 10 10"><title>Logo</title><circle r="4"/></svg><math><title>x</title></math></body></html>`)
+	expectWarning(t, with(File{Path: "index.html", Data: svgTitle}), "index.html", "no <title>")
+	after := bytes.Replace(svgTitle, []byte("</svg>"), []byte("</svg><title>Lunch Poll</title>"), 1)
+	expectClean(t, with(File{Path: "index.html", Data: after}))
+}
+
+func TestLintIconNeedsHref(t *testing.T) {
+	empty := bytes.Replace([]byte(goodPage), []byte(`<link rel="icon" href="/favicon.svg">`), []byte(`<link rel="icon">`), 1)
+	expectWarning(t, with(File{Path: "index.html", Data: empty}), "index.html", "favicon")
+}
+
+func TestSrcset(t *testing.T) {
+	for in, want := range map[string]string{
+		"a.png 1x, b.png 2x":                           "a.png|b.png",
+		"a.png,b.png":                                  "a.png,b.png", // one URL, as in browsers
+		" a.png 480w,\n  b.png 800w ":                  "a.png|b.png",
+		"data:image/png;base64,iVBO,Rw0K 1x, b.png 2x": "data:image/png;base64,iVBO,Rw0K|b.png",
+		"a.png (max-width: 1px, x) 1x, b.png":          "a.png|b.png",
+		"":                                             "",
+	} {
+		if got := strings.Join(srcset(in), "|"); got != want {
+			t.Errorf("srcset(%q) = %q, want %q", in, got, want)
 		}
 	}
+	files := with(File{Path: "index.html", Data: page("", `<img srcset="data:image/png;base64,iVBORw0KGgo=,AAAA 1x, img/a.png 2x">`)})
+	expectClean(t, files)
 }
 
 func TestLintLargeImages(t *testing.T) {

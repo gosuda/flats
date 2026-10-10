@@ -123,7 +123,7 @@ them too. They never block or change the save. Docs bundles are not checked.
 | no `<title>`, an empty one, or a scaffold placeholder ("Document", "Vite App") | the entry and every HTML file that is a full document (has a doctype, `<html>` or `<head>`) |
 | no viewport meta tag | same |
 | external `<script src>`, stylesheet, `modulepreload`, script or style `preload`, or import-map URL without an exact version; hosted font stylesheets | same |
-| a relative or root-relative asset reference (script, stylesheet, icon, manifest, img/srcset, video/poster, audio, source, track, iframe, embed, object) that names no file in the bundle | static flats; skipped for server flats (the handler owns routing) and for pages with `<base href>`; a single-page app's extensionless paths count as served |
+| a relative or root-relative asset reference (script, stylesheet, icon, manifest, img/srcset, video/poster, audio, source, track, iframe, embed, object) that names no file in the bundle | static flats; the entry's references resolve from the flat root, where visitors open it; skipped for server flats (the handler owns routing) and pages with `<base href>`; a single-page app's entry counts as served only for an extensionless iframe |
 | image file larger than 1 MiB | every image in the bundle |
 | no favicon link and no root `favicon.ico` | a static flat's HTML entry |
 | no `screenshot` in `flats.json` | static flats with an HTML entry |
