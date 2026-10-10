@@ -397,7 +397,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, id := range cfg.Network.Permitted {
 		grants.Permitted = append(grants.Permitted, provider.ID(id))
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}}
 	if h.portalNet != nil {
@@ -526,15 +526,22 @@ func storedPrivateBackend(c *config.Config) string {
 }
 
 // zrokConfiguration is zrok's part of the provider configuration token, or
-// "" when zrok is not permitted, so hosts without zrok keep their token.
-func zrokConfiguration(cfg *config.Config) string {
+// "" when zrok is not permitted, so hosts without zrok keep their token. It
+// names the environment directory, the account (a hash of its token, never
+// the token) and the namespace, so an approval granted for one zrok account
+// does not apply to another.
+func zrokConfiguration(cfg *config.Config, zn *zrok.Net) string {
 	if !slices.Contains(cfg.Network.Permitted, string(provider.Zrok)) {
 		return ""
 	}
-	return cfg.Zrok.Namespace
+	account := ""
+	if zn != nil {
+		account = zn.Account()
+	}
+	return strings.Join([]string{cfg.Zrok.Environment, account, cfg.Zrok.Namespace}, "\x00")
 }
 
-func providerConfiguration(cfg portal.Config, zrokNamespace string) string {
+func providerConfiguration(cfg portal.Config, zrokConfig string) string {
 	// Only public relay origins and non-secret desired settings participate.
 	// Do not include userinfo, query strings, identities, keys or readiness.
 	origins := make([]string, 0, len(cfg.Relays))
@@ -548,8 +555,8 @@ func providerConfiguration(cfg portal.Config, zrokNamespace string) string {
 		Relays          []string
 		Discovery       bool
 		MaxActiveRelays int
-		ZrokNamespace   string `json:",omitempty"`
-	}{origins, cfg.Discovery, cfg.MaxActiveRelays, zrokNamespace})
+		Zrok            string `json:",omitempty"`
+	}{origins, cfg.Discovery, cfg.MaxActiveRelays, zrokConfig})
 	return string(raw)
 }
 

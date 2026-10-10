@@ -212,3 +212,26 @@ func TestConsoleZrokNeedsEnabledEnvironment(t *testing.T) {
 		t.Fatalf("zrok after refused turn-on: %+v", p)
 	}
 }
+
+// The zrok part of the provider configuration token changes with the
+// environment and namespace, and is empty without a zrok grant, so hosts
+// without zrok keep their token.
+func TestZrokConfigurationToken(t *testing.T) {
+	base := &config.Config{}
+	base.Zrok = config.ZrokConfig{Environment: "/a", Namespace: "public"}
+	if got := zrokConfiguration(base, nil); got != "" {
+		t.Fatalf("without a grant: %q", got)
+	}
+	base.Network.Permitted = []string{"zrok"}
+	first := zrokConfiguration(base, nil)
+	other := *base
+	other.Zrok.Environment = "/b"
+	if first == "" || zrokConfiguration(&other, nil) == first {
+		t.Fatal("changing zrok.environment did not change the token")
+	}
+	other = *base
+	other.Zrok.Namespace = "flats"
+	if zrokConfiguration(&other, nil) == first {
+		t.Fatal("changing zrok.namespace did not change the token")
+	}
+}

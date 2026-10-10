@@ -236,7 +236,9 @@ failed, or whose rollback failed, is kept as unsettled: `Stop` and process
 shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
 `Stop` even without a registered zrok route, so the rollback of a failed
 Public approval settles such a share and reports zrok unconfirmed if it
-cannot. An
+cannot. The approval policy token includes the zrok environment directory,
+account fingerprint and namespace when zrok is permitted, so a pending
+approval does not carry over to another zrok account. An
 unshare the controller answers with "not found" is confirmed through the
 account-wide share detail: a share another environment of the account still
 holds is reported, not treated as gone. A `Serve` after a failed `Stop`

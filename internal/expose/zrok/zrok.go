@@ -391,13 +391,25 @@ func (n *Net) bindAndServe(ctx context.Context, e *entry) error {
 func publicHandler(b *handlerBox) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k := range r.Header {
-			if strings.HasPrefix(k, "Tailscale-User-") {
-				r.Header.Del(k)
+			if isIdentityHeader(k) {
+				delete(r.Header, k)
 			}
 		}
 		b.get().ServeHTTP(w, r)
 	})
 }
+
+// isIdentityHeader reports whether a request header name could be read as a
+// Tailscale-User-* identity header, ignoring case and treating "_" as "-"
+// (CGI-style servers and some proxies fold the two together).
+func isIdentityHeader(name string) bool {
+	const prefix = "tailscale-user-"
+	return len(name) >= len(prefix) && strings.EqualFold(strings.ReplaceAll(name[:len(prefix)], "_", "-"), prefix)
+}
+
+// Account identifies the zrok account of the environment without revealing
+// its token.
+func (n *Net) Account() string { return n.b.Account() }
 
 // Stop shuts slug's share down and deletes it. The name stays reserved so
 // a later Serve gets the same URL. Unknown slugs are a no-op. A failure

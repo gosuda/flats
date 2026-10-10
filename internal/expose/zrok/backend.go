@@ -65,7 +65,8 @@ type backend interface {
 
 // sdkBackend talks to the zrok controller of an enabled environment.
 type sdkBackend struct {
-	root env_core.Root
+	root     env_core.Root
+	identity string // ziti identity file, resolved while this environment was selected
 
 	mu     sync.Mutex
 	client *rest_client_zrok.Zrok // set after the first successful version check
@@ -77,8 +78,10 @@ type sdkBackend struct {
 var envMu sync.Mutex
 
 // loadRoot reads the zrok environment in dir ("" is the zrok default,
-// ~/.zrok2). It reads files only.
-func loadRoot(dir string) (env_core.Root, error) {
+// ~/.zrok2) and resolves its identity file while that directory is selected:
+// zrok resolves paths through the package-level setting, which a later load
+// changes. It reads files only.
+func loadRoot(dir string) (env_core.Root, string, error) {
 	envMu.Lock()
 	defer envMu.Unlock()
 	if dir == "" {
@@ -87,20 +90,24 @@ func loadRoot(dir string) (env_core.Root, error) {
 	environment.SetRootDirName(dir)
 	root, err := environment.LoadRoot()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !root.IsEnabled() {
-		return nil, errors.New("the zrok environment is not enabled; run `zrok2 enable <account token>` as the user that runs flats")
+		return nil, "", errors.New("the zrok environment is not enabled; run `zrok2 enable <account token>` as the user that runs flats")
 	}
-	return root, nil
+	identity, err := root.ZitiIdentityNamed(root.EnvironmentIdentityName())
+	if err != nil {
+		return nil, "", fmt.Errorf("zrok identity: %w", err)
+	}
+	return root, identity, nil
 }
 
 func newSDKBackend(cfg Config) (*sdkBackend, error) {
-	root, err := loadRoot(cfg.Environment)
+	root, identity, err := loadRoot(cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
-	return &sdkBackend{root: root}, nil
+	return &sdkBackend{root: root, identity: identity}, nil
 }
 
 func (b *sdkBackend) auth() runtime.ClientAuthInfoWriter {
@@ -295,11 +302,7 @@ func (b *sdkBackend) context() (ziti.Context, error) {
 	if b.zctx != nil {
 		return b.zctx, nil
 	}
-	path, err := b.root.ZitiIdentityNamed(b.root.EnvironmentIdentityName())
-	if err != nil {
-		return nil, fmt.Errorf("zrok identity: %w", err)
-	}
-	cfg, err := ziti.NewConfigFromFile(path)
+	cfg, err := ziti.NewConfigFromFile(b.identity)
 	if err != nil {
 		return nil, fmt.Errorf("zrok identity: %w", err)
 	}

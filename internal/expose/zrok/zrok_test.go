@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -507,7 +508,7 @@ func TestShareFailureLeavesNothingServed(t *testing.T) {
 }
 
 func TestLoadRootRequiresEnabledEnvironment(t *testing.T) {
-	_, err := loadRoot(t.TempDir())
+	_, _, err := loadRoot(t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "zrok2 enable") {
 		t.Fatalf("err = %v", err)
 	}
@@ -972,5 +973,24 @@ func TestCloseSettlesOrphanedShare(t *testing.T) {
 	}
 	if len(f.shares) != 0 {
 		t.Fatalf("orphaned share left behind: %v", f.shares)
+	}
+}
+
+func TestPublicHandlerStripsIdentityHeaderAliases(t *testing.T) {
+	var seen http.Header
+	h := publicHandler(&handlerBox{h: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = r.Header.Clone() })})
+	req := httptest.NewRequest("GET", "/", nil)
+	for _, k := range []string{"Tailscale-User-Login", "Tailscale_User_Login", "tailscale_user-name"} {
+		req.Header[k] = []string{"forged"}
+	}
+	req.Header.Set("X-Other", "kept")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	for k := range seen {
+		if isIdentityHeader(k) {
+			t.Fatalf("identity header %q reached the flat", k)
+		}
+	}
+	if seen.Get("X-Other") != "kept" {
+		t.Fatal("an ordinary header was dropped")
 	}
 }
