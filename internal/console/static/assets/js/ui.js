@@ -232,16 +232,26 @@ export function consoleOnServer() {
   return !host || loopbackHost(host);
 }
 
-export const SERVER_ONLY = 'Opens only on the Flats host machine. Allow Tailscale for this flat to reach it from other devices.';
+export const SERVER_ONLY = 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale in this flat’s Settings → Networks → Private (turning Tailscale on in host Settings is not enough).';
 
 // extLink is an external link that opens in a new tab without an opener. A
 // URL that is not http(s) is shown as text instead, and so is a loopback URL
 // when the console is viewed from another device: it would open that device,
-// not the Flats host.
+// not the Flats host. An icon-only link (class icon-btn) keeps its fixed
+// size: instead of a text badge that would overflow into its neighbours it
+// becomes a disabled-looking button that explains itself in its tooltip, its
+// accessible name and, on click or tap, a toast.
 export function extLink(href, text, cls) {
   const safe = safeHref(href);
   if (!safe) return h('span', { class: cls ? cls + ' is-disabled' : undefined }, text || String(href ?? ''));
   if (serverOnly(safe)) {
+    if ((cls || '').split(/\s+/).includes('icon-btn')) {
+      const label = text?.getAttribute?.('aria-label');
+      if (label) text.setAttribute('aria-label', `${label}, server only. ${SERVER_ONLY}`);
+      const btn = h('button', { type: 'button', class: cls + ' is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' }, text || href);
+      btn.addEventListener('click', () => toast(SERVER_ONLY));
+      return btn;
+    }
     return h('span', { class: (cls ? cls + ' ' : '') + 'is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' },
       text || href, h('span', { class: 'badge badge-warn', text: 'server only' }));
   }

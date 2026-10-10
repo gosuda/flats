@@ -313,6 +313,14 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 
 // SetProviderPermission records an explicit non-local provider permission.
 // Only the console may call it. It does not publish the flat or change visibility.
+//
+// A revocation stops the provider's routes before the permission is removed.
+// A grant is committed first; a Tailscale grant is then applied to the live
+// runtime (see applyProviderGrant), so its route opens without a deploy or
+// restart. If that route fails to open, the grant stays recorded (a repeated
+// grant, the next deploy, visibility change or restart retries it), an
+// exposure error event is logged and the returned error wraps
+// ErrProviderNotReady.
 func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider string, permitted bool, via Via) error {
 	unlock := s.lock(slugName)
 	defer unlock()
@@ -326,7 +334,8 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 	default:
 		return invalidf("unknown provider %q", provider)
 	}
-	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
 		return err
 	}
 	if !permitted {
@@ -338,7 +347,93 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return err
 	}
 	s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=%t via %s", provider, permitted, via), nil)
+	if !permitted {
+		return nil
+	}
+	if err := s.applyProviderGrant(ctx, f, ProviderID(provider)); err != nil {
+		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but its route did not open: %v", provider, err), nil)
+		return fmt.Errorf("%w: %s is permitted, but its route did not open (retried on the next deploy, visibility change or restart): %v", ErrProviderNotReady, provider, err)
+	}
 	return nil
+}
+
+// applyProviderGrant opens the current route a fresh grant adds without a new
+// approval: Private Tailscale for a flat with a live runtime. Granting Portal
+// or Funnel opens nothing here, so a grant alone never widens public
+// exposure; on a Private flat they cannot serve, and on a Public flat they are
+// served when ensureExposure next runs (redeploy, approved transition or host
+// restart). The legacy backend serves its private host whatever the grant, so
+// it needs no re-run. Only the Tailscale endpoint decides success; a sibling
+// route's error is logged, not returned. Rename aliases keep their routes
+// until the next restart re-serves them.
+func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
+	ln, ok := s.lifecycleNet()
+	if !ok || provider != ProviderTailscale || s.state(f.Slug).cur.Load() == nil {
+		return nil
+	}
+	permitted, err := s.permittedIDs(ctx, f.Slug)
+	if err != nil {
+		return err
+	}
+	req := ExposureRequest{
+		Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent,
+		Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted),
+	}
+	if f.Visibility.Public() {
+		// The provider manager records one status per host, so re-issue the
+		// public request to keep the public endpoints observable, limited to
+		// the public providers the last exposure already used. Degraded,
+		// unavailable and failed endpoints stay in that request: re-serving a
+		// registered route is idempotent, and a provider whose last open
+		// failed is retried as part of the approved exposure, as a redeploy
+		// or restart would. Only a stopped route is left out, so a grant
+		// never reopens one.
+		observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
+		if !ok {
+			return errors.New("cannot read the current public routes")
+		}
+		status, err := observer.ExposureStatus(ctx, f.Slug)
+		if err != nil {
+			return fmt.Errorf("read current routes: %w", err)
+		}
+		serving := req.Permitted
+		for _, ep := range status.Endpoints {
+			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
+				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) &&
+				ep.State != "" && ep.State != "stopped" {
+				serving = append(serving, ep.Provider)
+			}
+		}
+		if len(serving) > len(req.Permitted) {
+			req.Visibility, req.Handler, req.PrivateHandler, req.Permitted = "public", s.siteHandler(f.Slug, true), s.siteHandler(f.Slug, false), serving
+		}
+	}
+	res, err := ln.ServeExposure(ctx, req)
+	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
+		s.state(f.Slug).privateServed = true
+	}
+	for _, ep := range res.Endpoints {
+		if ep.Provider == ProviderTailscale && ep.Host == f.Slug && ep.Audience == AudienceCurrent && ep.Configured && ep.Permitted && privateRouteOpen(ep.State) {
+			if err != nil {
+				s.Event(ctx, f.Slug, "warn", "exposure", "tailscale route opened; another route reported: "+err.Error(), nil)
+			}
+			return nil
+		}
+	}
+	if err == nil {
+		err = errors.New("no tailscale route opened")
+	}
+	return err
+}
+
+// privateRouteOpen recognizes the states of a registered private route, as
+// privateRegistrationOpened does.
+func privateRouteOpen(state string) bool {
+	switch state {
+	case "ready", "starting", "needs-login", "key-expiring":
+		return true
+	}
+	return false
 }
 
 func (s *Service) resumeApplying(ctx context.Context) {
@@ -879,11 +974,8 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 // error when a sibling provider failed.
 func privateRegistrationOpened(res ExposureResult, host string, audience ExposureAudience) bool {
 	for _, ep := range res.Endpoints {
-		if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted {
-			switch ep.State {
-			case "ready", "starting", "needs-login", "key-expiring":
-				return true
-			}
+		if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted && privateRouteOpen(ep.State) {
+			return true
 		}
 	}
 	return false

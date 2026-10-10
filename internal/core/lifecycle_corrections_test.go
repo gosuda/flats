@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,14 @@ func TestLifecycleVisibilityDefersProviderChecksToAuthorizedApply(t *testing.T) 
 				if err := s.SetProviderPermission(t.Context(), "visibility", store.ProviderPortal, true, ViaConsole); err != nil {
 					t.Fatal(err)
 				}
+				// The grant re-applies the live Private exposure; it must not
+				// register a public provider before the approved transition.
+				for _, req := range n.requests[count:] {
+					if req.Visibility != "private" || slices.Contains(req.Permitted, ProviderPortal) || n.public != nil {
+						t.Fatalf("grant opened a public route before approval: %+v", req)
+					}
+				}
+				count = len(n.requests)
 				r, err = s.SetVisibility(t.Context(), "visibility", store.Public, via, "fresh")
 				if err != nil || r.Approval == nil {
 					t.Fatalf("fresh request %+v %v", r, err)
