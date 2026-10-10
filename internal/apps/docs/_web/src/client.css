@@ -285,6 +285,46 @@ main {
   padding: 0 16px !important;
   line-height: 1.6;
 }
+/* A Mermaid diagram replaces its source once drawn; the source shows while
+   it loads and below an error. */
+.mermaid-diagram {
+  margin: 16px 0;
+}
+.mermaid-diagram[data-state="drawn"] .mermaid-source {
+  display: none;
+}
+.mermaid-svg {
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+.mermaid-error {
+  margin: 0 0 8px;
+  color: var(--error);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cm-diagram-widget {
+  cursor: text;
+  padding: 4px 0;
+  white-space: normal;
+}
+.cm-diagram-widget pre {
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  background: var(--canvas);
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+}
 #content blockquote {
   margin-left: 0;
   padding-left: 18px;

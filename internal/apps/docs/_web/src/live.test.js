@@ -5,6 +5,7 @@ import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import {
   activeLines,
+  diagramBlocks,
   linkAt,
   liveDecorations,
   referenceDefinitions,
@@ -130,6 +131,44 @@ test("tables are found as whole lines and reveal under the selection", () => {
   assert.equal(tableBlocks(inside, true).at(0).active, true);
   // Without focus the table renders even with the cursor inside it.
   assert.equal(tableBlocks(inside, false).at(0).active, false);
+});
+
+test("mermaid fences are found as whole lines and reveal under the selection", () => {
+  const text =
+    "x\n\n```mermaid\ngraph TD\n  A --> B\n```\n\n```js\nmermaid\n```\n\n> ```mermaid\n> graph LR\n> ```";
+  const state = (cursor) => {
+    const s = EditorState.create({
+      doc: text,
+      selection: EditorSelection.cursor(cursor),
+      extensions: [markdown({ base: markdownLanguage })],
+    });
+    ensureSyntaxTree(s, s.doc.length, 5000);
+    return s;
+  };
+  // Other languages and diagrams inside quotes stay code while editing.
+  const blocks = diagramBlocks(state(0), true);
+  assert.equal(blocks.length, 1);
+  const [diagram] = blocks;
+  assert.equal(diagram.source, "```mermaid\ngraph TD\n  A --> B\n```");
+  assert.equal(diagram.active, false);
+  assert.equal(diagram.edit, text.indexOf("graph TD"));
+  const inside = state(text.indexOf("A -->"));
+  assert.equal(diagramBlocks(inside, true).at(0).active, true);
+  assert.equal(diagramBlocks(inside, false).at(0).active, false);
+});
+
+test("the renderer turns mermaid fences into diagram placeholders", () => {
+  const md = createMarkdown();
+  assert.equal(
+    md.render("```mermaid extra\nA --> B & <C>\n```"),
+    '<div class="mermaid-diagram"><pre class="mermaid-source"><code>A --&gt; B &amp; &lt;C&gt;\n</code></pre></div>\n',
+  );
+  // Only the exact first word names a diagram.
+  assert.match(
+    md.render("```Mermaid\nx\n```"),
+    /^<pre><code class="language-Mermaid">/,
+  );
+  assert.match(md.render("~~~mermaid\nx\n~~~"), /mermaid-diagram/);
 });
 
 test("an empty link label keeps its source and adds no empty mark", () => {
