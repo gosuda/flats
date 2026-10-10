@@ -21,7 +21,8 @@ class Bullet extends WidgetType {
   }
 }
 
-class ListNumber extends WidgetType {
+// Shows a label in place of syntax: a list number or a decoded entity.
+class Label extends WidgetType {
   constructor(text) {
     super();
     this.text = text;
@@ -31,7 +32,6 @@ class ListNumber extends WidgetType {
   }
   toDOM() {
     const span = document.createElement("span");
-    span.className = "cm-list-number";
     span.textContent = this.text;
     return span;
   }
@@ -78,20 +78,27 @@ class ImageWidget extends WidgetType {
 // A rendered table. Clicking it moves the cursor into the table, which then
 // shows its Markdown source for editing.
 class TableWidget extends WidgetType {
-  constructor(source, from, render) {
+  constructor(source, context, from, render) {
     super();
     this.source = source;
+    this.context = context;
     this.from = from;
     this.render = render;
   }
   eq(other) {
-    return other.source === this.source && other.from === this.from;
+    return (
+      other.source === this.source &&
+      other.context === this.context &&
+      other.from === this.from
+    );
   }
   toDOM(view) {
     const div = document.createElement("div");
     div.className = "cm-table-widget";
     // render is markdown-it with raw HTML disabled.
-    div.innerHTML = this.render(this.source);
+    // Rendering with the document's reference definitions resolves its
+    // reference links; definitions themselves render nothing.
+    div.innerHTML = this.render(this.source + "\n\n" + this.context);
     // Links follow the editor's policy: Cmd/Ctrl-click opens one (its href
     // was already resolved and validated by the renderer), and any other
     // click edits the table.
@@ -127,7 +134,7 @@ function tables(render) {
         .filter((t) => !t.active)
         .map((t) =>
           Decoration.replace({
-            widget: new TableWidget(t.source, t.from, render),
+            widget: new TableWidget(t.source, t.context, t.from, render),
             block: true,
           }).range(t.from, t.to),
         ),
@@ -191,8 +198,9 @@ export function livePreview(links, resolve, render) {
           ranges.push(bullet.range(d.from, d.to));
           break;
         case "number":
+        case "text":
           ranges.push(
-            Decoration.replace({ widget: new ListNumber(d.label) }).range(
+            Decoration.replace({ widget: new Label(d.label) }).range(
               d.from,
               d.to,
             ),

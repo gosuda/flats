@@ -241,3 +241,37 @@ test("image alt text is the label as the renderer writes it", () => {
   const ds = decorate("![**Revenue** &amp; costs](chart.png)\n\nx");
   assert.equal(ds.find((d) => d.kind === "image").alt, "Revenue & costs");
 });
+
+test("escapes and entities read as the renderer writes them", () => {
+  const ds = decorate("\\* &copy; &bogus;\n\nx");
+  assert.deepEqual(hidden(ds), ["\\"]);
+  assert.deepEqual(
+    ds.filter((d) => d.kind === "text").map((d) => [d.text, d.label]),
+    [["&copy;", "©"]],
+  );
+  assert.deepEqual(hidden(decorate("\\* &copy;\n\nx", 0)), []);
+});
+
+test("fenced code in a quote hides its quote marks and both fences", () => {
+  const text = "> ```js\n> hi\n> ```\n\nx";
+  const ds = decorate(text);
+  assert.deepEqual(hidden(ds), ["> ", "```js", "> ", "> ", "```"]);
+  const hides = ds.filter((d) => d.kind === "hide");
+  for (let i = 1; i < hides.length; i++)
+    assert.ok(hides[i].from >= hides[i - 1].to, "hidden ranges overlap");
+  // The cursor on the code line shows only that line's quote mark.
+  assert.deepEqual(hidden(decorate(text, 11)), ["> ", "```js", "> ", "```"]);
+});
+
+test("tables carry the document's reference definitions", () => {
+  const text = "| a |\n| - |\n| [docs][id] |\n\n[id]: https://e.example\n";
+  const s = EditorState.create({
+    doc: text,
+    extensions: [markdown({ base: markdownLanguage })],
+  });
+  ensureSyntaxTree(s, s.doc.length, 5000);
+  const [table] = tableBlocks(s, false);
+  assert.equal(table.context, "[id]: https://e.example");
+  const html = createMarkdown().render(table.source + "\n\n" + table.context);
+  assert.match(html, /<a href="https:\/\/e\.example">docs<\/a>/);
+});

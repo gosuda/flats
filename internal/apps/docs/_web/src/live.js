@@ -161,23 +161,46 @@ export function liveDecorations(state, ranges, active, links) {
           case "FencedCode":
           case "CodeBlock":
             line(node.from, node.to, "cm-codeblock");
-            if (name === "FencedCode") {
-              // Fence lines stay as empty padding rows of the code block,
-              // each shown only while the cursor is on it.
-              const first = doc.lineAt(node.from),
-                last = doc.lineAt(node.to);
-              if (!isActive(first.from, first.to)) hide(first.from, first.to);
-              if (
-                last.number !== first.number &&
-                /^\s*(`{3,}|~{3,})\s*$/.test(last.text) &&
-                !isActive(last.from, last.to)
-              )
-                hide(last.from, last.to);
+            // Fence lines stay as empty padding rows of the code block, and
+            // container marks (a quote's ">") inside it are hidden; each
+            // shows only while the cursor is on its line.
+            const marks = [];
+            const c = node.node.cursor();
+            if (c.firstChild())
+              do {
+                if (c.name === "QuoteMark") {
+                  if (isActive(c.from, c.to)) continue;
+                  let end = c.to;
+                  if (doc.sliceString(end, end + 1) === " ") end++;
+                  hide(c.from, end);
+                } else if (c.name === "CodeMark") marks.push([c.from, c.to]);
+              } while (c.nextSibling());
+            const fences = marks.length > 1 ? [marks[0], marks.at(-1)] : marks;
+            for (const [from] of fences) {
+              const end = doc.lineAt(from).to;
+              if (!isActive(from, end)) hide(from, end);
             }
             return false;
           case "Table":
             line(node.from, node.to, "cm-table");
             return false;
+          case "Escape":
+            // "\*" reads as "*".
+            if (!isActive(node.from, node.to)) hide(node.from, node.from + 1);
+            return;
+          case "Entity": {
+            // "&copy;" reads as "©"; an unknown entity stays as written.
+            const source = doc.sliceString(node.from, node.to),
+              decoded = unescapeAll(source);
+            if (decoded !== source && !isActive(node.from, node.to))
+              out.push({
+                kind: "text",
+                from: node.from,
+                to: node.to,
+                label: decoded,
+              });
+            return;
+          }
           case "HorizontalRule":
             if (!isActive(node.from, node.to))
               out.push({ kind: "rule", from: node.from, to: node.to });
@@ -321,12 +344,18 @@ const leaves = new Set([
 
 // tableBlocks returns every table as whole lines, with whether a selection
 // touches it while the editor has focus. Such a table shows its Markdown
-// source; every other table is rendered.
+// source; every other table is rendered. context holds the document's link
+// reference definitions, which a table's reference links need to render.
 export function tableBlocks(state, focused) {
   const doc = state.doc,
-    out = [];
+    out = [],
+    definitions = [];
   syntaxTree(state).iterate({
     enter(node) {
+      if (node.name === "LinkReference") {
+        definitions.push(doc.sliceString(node.from, node.to));
+        return false;
+      }
       if (leaves.has(node.name)) return false;
       if (node.name !== "Table") return;
       const from = doc.lineAt(node.from).from,
@@ -338,5 +367,7 @@ export function tableBlocks(state, focused) {
       return false;
     },
   });
+  const context = definitions.join("\n");
+  for (const t of out) t.context = context;
   return out;
 }
