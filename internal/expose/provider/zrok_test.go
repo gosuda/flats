@@ -307,3 +307,17 @@ func TestPublicStopSettlesFailedZrokOpen(t *testing.T) {
 		t.Fatalf("failed settle = %+v, %v", stop, err)
 	}
 }
+
+func TestSetConfigurationChangesPolicy(t *testing.T) {
+	m, ln := managerWith(t, File{Version: 1, Permitted: []ID{Zrok}})
+	defer ln.Close()
+	before, err := m.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetConfiguration("zrok configuration")
+	after, err := m.ExposurePolicy(context.Background())
+	if err != nil || after == before {
+		t.Fatal("SetConfiguration did not change the policy token")
+	}
+}

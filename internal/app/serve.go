@@ -538,7 +538,11 @@ func zrokConfiguration(cfg *config.Config, zn *zrok.Net) string {
 	if zn != nil {
 		account = zn.Account()
 	}
-	return strings.Join([]string{cfg.Zrok.Environment, account, cfg.Zrok.Namespace}, "\x00")
+	return zrokConfigurationOf(cfg.Zrok.Environment, account, cfg.Zrok.Namespace)
+}
+
+func zrokConfigurationOf(environment, account, namespace string) string {
+	return strings.Join([]string{environment, account, namespace}, "\x00")
 }
 
 func providerConfiguration(cfg portal.Config, zrokConfig string) string {

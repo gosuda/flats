@@ -238,7 +238,10 @@ shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
 Public approval settles such a share and reports zrok unconfirmed if it
 cannot. The approval policy token includes the zrok environment directory,
 account fingerprint and namespace when zrok is permitted, so a pending
-approval does not carry over to another zrok account. An
+approval does not carry over to another zrok account. Turning zrok on from
+the console sets the same configuration the next start computes. A name
+creation the controller refused (such as the account's name limit) leaves
+no pending record; only an unanswered request stays pending. An
 unshare the controller answers with "not found" is confirmed through the
 account-wide share detail: a share another environment of the account still
 holds is reported, not treated as gone. A `Serve` after a failed `Stop`

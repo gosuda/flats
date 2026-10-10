@@ -121,7 +121,7 @@ func TestCreateNameConflicts(t *testing.T) {
 		t.Fatalf("existing name: %v", err)
 	}
 	b = newTestBackend(t, &controller{nameConflict: "names limit reached; cannot reserve additional names"})
-	if err := b.CreateName(ctx, "public", "blog"); err == nil || errors.Is(err, errNameExists) || !strings.Contains(err.Error(), "names limit") {
+	if err := b.CreateName(ctx, "public", "blog"); !errors.Is(err, errNotCreated) || errors.Is(err, errNameExists) || !strings.Contains(err.Error(), "names limit") {
 		t.Fatalf("limit: %v", err)
 	}
 	b = newTestBackend(t, &controller{})

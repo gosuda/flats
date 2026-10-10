@@ -260,6 +260,21 @@ func (m *Manager) AttachPortal(p PortalNet) {
 	}
 }
 
+func (m *Manager) config() string {
+	m.bmu.RLock()
+	defer m.bmu.RUnlock()
+	return m.configuration
+}
+
+// SetConfiguration replaces the backend configuration part of the policy
+// token, for a backend attached while the host runs, so the token matches the
+// one the next start computes.
+func (m *Manager) SetConfiguration(c string) {
+	m.bmu.Lock()
+	m.configuration = c
+	m.bmu.Unlock()
+}
+
 // AttachZrok configures the zrok backend once. It does not grant zrok.
 func (m *Manager) AttachZrok(z ZrokNet) {
 	m.bmu.Lock()
@@ -433,7 +448,7 @@ func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
 		Tailscale, Portal bool
 		Zrok              bool `json:",omitempty"`
 		Configuration     string
-	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil, m.configuration}
+	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil, m.config()}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err

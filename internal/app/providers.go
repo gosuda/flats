@@ -205,6 +205,9 @@ func (h *Host) attachLocked(id provider.ID) error {
 		}
 		h.zrokNet = z
 		h.Providers.AttachZrok(z)
+		// The next start includes zrok in the policy token; match it now.
+		h.Providers.SetConfiguration(providerConfiguration(h.portalOptions,
+			zrokConfigurationOf(h.Config.Zrok.Environment, z.Account(), h.zrokOptions.Namespace)))
 	}
 	return nil
 }

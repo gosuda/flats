@@ -30,6 +30,10 @@ var errNameTaken = errors.New("another zrok account owns this name")
 // errOtherEnvironment reports a share of another environment of the account.
 var errOtherEnvironment = errors.New("the share belongs to zrok environment")
 
+// errNotCreated marks a CreateName failure that certainly created nothing:
+// the controller answered with a refusal rather than failing to answer.
+var errNotCreated = errors.New("the name was not created")
+
 // errNameExists reports that CreateName found the name already existing.
 var errNameExists = errors.New("the name exists")
 
@@ -40,8 +44,9 @@ type backend interface {
 	// the token of the share that currently holds it, or "".
 	NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error)
 	// CreateName reserves name in namespace for the account. It returns
-	// errNameExists when the name exists already, or the controller's
-	// reason for another conflict, such as the account's name limit.
+	// errNameExists when the name exists already, an errNotCreated error
+	// when the controller refused (such as the account's name limit), or
+	// another error when the outcome is unknown.
 	CreateName(ctx context.Context, namespace, name string) error
 	// ReleaseName deletes the account's reservation of name in namespace. A
 	// name the account does not hold is not an error.
@@ -152,7 +157,7 @@ func (b *sdkBackend) zrokClient(ctx context.Context) (*rest_client_zrok.Zrok, er
 // the account's name limit.
 func nameConflict(name, reason string) error {
 	if reason != "" {
-		return fmt.Errorf("reserve name %q: %s", name, reason)
+		return fmt.Errorf("%w: reserve name %q: %s", errNotCreated, name, reason)
 	}
 	return errNameExists
 }
@@ -169,6 +174,12 @@ func (b *sdkBackend) CreateName(ctx context.Context, namespace, name string) err
 		if errors.As(err, &conflict) {
 			return nameConflict(name, string(conflict.GetPayload()))
 		}
+		var unauthorized *share.CreateShareNameUnauthorized
+		var missing *share.CreateShareNameNotFound
+		if errors.As(err, &unauthorized) || errors.As(err, &missing) {
+			return fmt.Errorf("%w: reserve name %q: %w", errNotCreated, name, err)
+		}
+		// No answer, or a server error: the name may exist now.
 		return fmt.Errorf("reserve name %q: %w", name, err)
 	}
 	return nil

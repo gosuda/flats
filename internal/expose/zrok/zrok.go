@@ -254,9 +254,19 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 			// the name: another account owns it.
 			_ = n.dropRecord(slug)
 			return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
+		case errors.Is(err, errNotCreated):
+			// Refused: nothing was created, so nothing is pending.
+			if known {
+				rec.Pending = false
+				_ = n.writeRecord(slug, rec)
+			} else {
+				_ = n.dropRecord(slug)
+			}
+			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		case err != nil:
-			// The name may or may not exist; the pending record lets the
-			// next Serve or Retire settle it.
+			// No answer: the name may or may not exist. The pending record
+			// lets the next Serve or Retire settle it; a name the account
+			// holds then is taken to be the one this attempt created.
 			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		}
 		rec.Created, rec.Pending = true, false

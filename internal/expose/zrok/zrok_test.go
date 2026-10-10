@@ -994,3 +994,22 @@ func TestPublicHandlerStripsIdentityHeaderAliases(t *testing.T) {
 		t.Fatal("an ordinary header was dropped")
 	}
 }
+
+func TestRefusedNameCreationLeavesNoPendingRecord(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	f.createErr = fmt.Errorf("%w: names limit reached", errNotCreated)
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "names limit") {
+		t.Fatalf("err = %v", err)
+	}
+	if reserved(t, n, "blog") {
+		t.Fatal("a refused creation stayed pending")
+	}
+	// The operator later reserves the name: it is not adopted.
+	f.createErr = nil
+	f.names["public/blog"] = ""
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "not by this Flats host") {
+		t.Fatalf("adopted an operator's name: %v", err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -233,5 +234,54 @@ func TestZrokConfigurationToken(t *testing.T) {
 	other.Zrok.Namespace = "flats"
 	if zrokConfiguration(&other, nil) == first {
 		t.Fatal("changing zrok.namespace did not change the token")
+	}
+}
+
+// fakeZrokEnvironment writes an enabled zrok environment under home. Loading
+// it contacts nothing.
+func fakeZrokEnvironment(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".zrok2")
+	if err := os.MkdirAll(filepath.Join(dir, "identities"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"metadata.json":    `{"v":"v0.4"}`,
+		"environment.json": `{"zrok_token":"test-token","ziti_identity":"test-env","api_endpoint":"https://127.0.0.1:1"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Turning zrok on from the console gives the policy token the next start
+// computes, so an approval requested meanwhile is not stale after a restart.
+func TestConsoleZrokPolicyMatchesRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fakeZrokEnvironment(t, home)
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
+		t.Fatalf("turn on zrok: %d %v", code, out)
+	}
+	if p := providerByID(t, h, client, "zrok"); !p.Enabled || !p.Configured {
+		t.Fatalf("zrok after turning on: %+v", p)
+	}
+	live, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = consoleHostWith(t, dir, nil)
+	restarted, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != restarted {
+		t.Fatal("the policy token after a restart differs from the one after turning zrok on")
 	}
 }
