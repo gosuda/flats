@@ -262,7 +262,22 @@ Service registration is the default because a host is meant to stay up.
 `--no-service` installs only the binary, for hosts that run `flats serve`
 under another supervisor or in the foreground. Non-local providers
 (Tailscale, Funnel, Portal) are never enabled by the installer; pass `flats
-serve` flags after a second `--` to choose them explicitly.
+serve` flags after a second `--` to choose them explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
+```
+
+| Option (after `sh -s --`) | Effect |
+| --- | --- |
+| `--version v1.2.3` | Install a specific release |
+| `--dir DIR` | Install the binary somewhere other than `~/.local/bin` |
+| `--no-service` | Install only the binary |
+| `-- <serve flags>` | Reinstall the service with those flags written into `config.json` |
+
+`flats status` shows whether the host answers. To check an archive you
+downloaded yourself, run
+`gh attestation verify flats_<os>_<arch>.tar.gz --repo gosuda/flats`.
 
 ## Upgrading a host
 
@@ -290,6 +305,11 @@ changes, back up first:
    `~/Library/Application Support/Flats` on macOS and
    `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux.
 3. Run the installer, then start the service with the command it prints.
+
+Published versions keep their numbers across the upgrade; versions that were
+saved but never published become Private Draft revisions. Network grants are
+not carried over from historical defaults; see
+[Private and public access](networking.md#upgrading-provider-grants-from-an-older-host).
 
 Install a specific release with `--version v1.2.3`. Downgrading across a data
 migration is not supported; restore the backup taken before the upgrade.
