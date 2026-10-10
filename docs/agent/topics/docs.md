@@ -66,7 +66,9 @@ for a rewrite, several documents or assets, or when no docs version runs
 Limits: a request of at most 512 KiB, one resulting update of at most
 256 KiB, Markdown up to 1 MiB per document and the document's stored history
 (`document_capacity`); about 10 edits per second per flat (`unavailable`
-when exceeded: wait and retry).
+when exceeded: wait and retry). Any other `unavailable` says whether the edit
+was rolled back; if it may have applied, read `get_document` before retrying
+so an insert is not applied twice.
 
 Live edits are not part of any published version: `list_versions` and the
 Current Draft do not change. `get_document` returns them because it reads

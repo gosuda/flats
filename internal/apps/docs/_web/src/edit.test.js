@@ -87,7 +87,7 @@ test("replace finds exact text, requires uniqueness and honours nth", () => {
   rejects(
     () => plan(doc, [{ op: "replace", find: "step", with: "x" }]),
     "edit_conflict",
-    /occurs 2 times/,
+    /more than once/,
   );
   const nth = plan(doc, [
     { op: "replace", find: "step", with: "Step", nth: 2 },
@@ -139,7 +139,7 @@ test("block operations are guarded by the content hash", () => {
   rejects(
     () => plan(dup, [{ op: "delete_block", block: same }]),
     "edit_conflict",
-    /occurs 2 times/,
+    /more than once/,
   );
   assert.equal(
     plan(dup, [{ op: "delete_block", block: same, nth: 2 }]).text,
@@ -209,6 +209,42 @@ test("insert before, after, at the end of a section and of the document", () => 
     () => plan(doc, [{ op: "insert", at: "end", text: "\n\n" }]),
     "invalid",
   );
+});
+
+test("inserts stay separate blocks next to headings and fences", () => {
+  const tight = "# H\nParagraph\n";
+  const h = hashOf(tight, "# H"),
+    p = hashOf(tight, "Paragraph");
+  const after = plan(tight, [{ op: "insert", after: h, text: "Inserted." }]);
+  assert.equal(after.text, "# H\n\nInserted.\n\nParagraph\n");
+  const before = plan(tight, [{ op: "insert", before: p, text: "Inserted." }]);
+  assert.equal(before.text, "# H\n\nInserted.\n\nParagraph\n");
+  const section = plan(tight, [{ op: "insert", section_end: h, text: "End." }]);
+  assert.equal(section.text, "# H\nParagraph\n\nEnd.\n");
+  const fenced = "```\ncode\n```\nAfter\n";
+  const f = hashOf(fenced, "```\ncode\n```");
+  assert.equal(
+    plan(fenced, [{ op: "insert", after: f, text: "X" }]).text,
+    "```\ncode\n```\n\nX\n\nAfter\n",
+  );
+  for (const r of [after, before, section])
+    assert.equal(blocks(r.text).length, 3);
+});
+
+test("nth reaches any occurrence and line numbers stay linear", () => {
+  const many = "a".repeat(1500);
+  const r = plan(many, [{ op: "replace", find: "a", with: "z", nth: 1200 }]);
+  assert.equal(r.text[1199], "z");
+  rejects(
+    () => plan(many, [{ op: "replace", find: "a", with: "z", nth: 1501 }]),
+    "edit_conflict",
+    /occurs 1500 time/,
+  );
+  const paras = Array.from({ length: 20000 }, (_, i) => "p" + i).join("\n\n");
+  const started = Date.now();
+  const o = outline(paras, (s) => s);
+  assert.equal(o[19999].line, 39999);
+  assert.ok(Date.now() - started < 2000, "outline is not linear");
 });
 
 test("operations apply in order and the whole call is all-or-nothing", () => {

@@ -78,14 +78,24 @@ const lineOf = (text, offset) => {
 };
 
 // outline lists blocks with the guard hash a caller passes back.
+// Line numbers are counted in one pass over the text.
 export function outline(text, digest) {
+  let pos = 0,
+    line = 1;
   return blocks(text).map((b) => {
+    for (
+      let i = text.indexOf("\n", pos);
+      i !== -1 && i < b.start;
+      i = text.indexOf("\n", i + 1)
+    )
+      line++;
+    pos = b.start;
     const body = text.slice(b.start, b.end);
     return {
       hash: blockHash(body, digest),
       kind: b.kind,
       ...(b.level ? { level: b.level } : {}),
-      line: lineOf(text, b.start),
+      line,
       preview: preview(body),
     };
   });
@@ -132,7 +142,7 @@ function pick(list, nth, i, what, hint) {
   if (list.length > 1)
     fail(
       "edit_conflict",
-      `op ${i + 1}: ${what} occurs ${list.length} times; add nth or make it unique`,
+      `op ${i + 1}: ${what} occurs more than once; add nth or make it unique`,
       i,
     );
   return list[0];
@@ -236,7 +246,8 @@ export function planEdit(text, request, hashText) {
         p = text.indexOf(find, p + 1)
       ) {
         found.push(p);
-        if (found.length > 1000) break;
+        // Scan only as far as needed: through nth, or to a second match.
+        if (found.length >= (nth || 2)) break;
       }
       at = pick(
         found,
@@ -326,13 +337,27 @@ export function planEdit(text, request, hashText) {
           // An empty or blank document.
           at = text.length;
           insert = (text && !text.endsWith("\n") ? "\n" : "") + body + "\n";
-        } else if (where === "before") {
-          at = target.start;
-          insert = body + "\n\n";
         } else {
-          at = target.end;
-          insert = "\n\n" + body;
-          if (target.end === text.length) insert += "\n";
+          // Keep a blank line on both sides, also next to a heading or a
+          // fence that has no blank line before its neighbour.
+          const k = list.indexOf(target),
+            separated = (a, b) => text.slice(a, b).split("\n").length - 1 >= 2;
+          if (where === "before") {
+            const prev = list[k - 1];
+            at = target.start;
+            insert =
+              (prev && !separated(prev.end, target.start) ? "\n" : "") +
+              body +
+              "\n\n";
+          } else {
+            const next = list[k + 1];
+            at = target.end;
+            insert =
+              "\n\n" +
+              body +
+              (next && !separated(target.end, next.start) ? "\n" : "");
+            if (target.end === text.length) insert += "\n";
+          }
         }
       }
     }

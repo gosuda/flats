@@ -279,6 +279,9 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	if !lf.editLimiter.allow() {
 		return DocumentEdit{}, fmt.Errorf("%w: too many live edits of this flat; wait a second and retry", ErrUnavailable)
 	}
+	// The audit record outlives the caller: a commit near the deadline or a
+	// cancelled request must still leave its event.
+	auditCtx := context.WithoutCancel(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://docs.internal/_docs/api/edit?doc="+url.QueryEscape(doc), bytes.NewReader(body))
@@ -308,8 +311,11 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 			return DocumentEdit{}, fmt.Errorf("%w: %s", ErrDocumentCapacity, msg)
 		case rec.Code == http.StatusForbidden:
 			return DocumentEdit{}, fmt.Errorf("%w: the docs app refused the host edit", ErrForbidden)
+		case refusal.Code == "unavailable":
+			return DocumentEdit{}, fmt.Errorf("%w: the docs app rolled the edit back; nothing changed, retry", ErrUnavailable)
 		}
-		return DocumentEdit{}, fmt.Errorf("%w: docs app returned HTTP %d; the edit was not applied", ErrUnavailable, rec.Code)
+		// A timeout or worker failure can end the request after COMMIT.
+		return DocumentEdit{}, fmt.Errorf("%w: docs app returned HTTP %d; the edit may or may not have applied: read get_document before retrying", ErrUnavailable, rec.Code)
 	}
 	var out DocumentEdit
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -323,7 +329,9 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 		out.PublicNotice = LiveEditPublicNotice
 	}
 	if out.Changed {
-		s.Event(ctx, slugName, "info", "document", editSummary(out, via), map[string]any{
+		auditCtx, cancelAudit := context.WithTimeout(auditCtx, 10*time.Second)
+		defer cancelAudit()
+		s.Event(auditCtx, slugName, "info", "document", editSummary(out, via), map[string]any{
 			"doc": out.Doc, "id": out.ID, "seq_before": out.SeqBefore, "seq": out.Seq, "hash": out.Hash, "ops": out.Ops,
 		})
 	}

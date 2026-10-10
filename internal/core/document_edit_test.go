@@ -40,6 +40,8 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 		status, code = 422, "capacity"
 	case "boom":
 		status = 500
+	case "rolledback":
+		status, code = 503, "unavailable"
 	case "missing":
 		status = 404
 	}
@@ -104,6 +106,13 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if _, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "insert", At: "end", Text: strings.Repeat("x", maxDocumentEditBody)}}, "", ViaMCP); !errors.Is(err, ErrDocumentCapacity) {
 		t.Fatal("oversized request", err)
 	}
+	// A caller whose context ends right after the commit still gets the audit.
+	cancelled, cancelNow := context.WithCancel(ctx)
+	s.cfg.Runtime.(*contentRuntime).afterEdit = cancelNow
+	if _, err := s.UpdateDocument(cancelled, "notes", "", op("ok"), "", ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Runtime.(*contentRuntime).afterEdit = nil
 	out, err := s.UpdateDocument(ctx, "notes", "", op("ok"), "", ViaMCP)
 	if err != nil || out.Seq != 8 || out.Source != "live" || out.PublicNotice != "" || !out.Changed {
 		t.Fatal(out, err)
@@ -111,7 +120,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), "", ViaMCP); err != nil || out.Changed {
 		t.Fatal(out, err)
 	}
-	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "missing": "document_not_found"} {
+	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found"} {
 		_, err := s.UpdateDocument(ctx, "notes", "", op(find), strings.Repeat("a", 64), ViaMCP)
 		if ErrorCategory(err) != want {
 			t.Fatal(find, err)
@@ -119,10 +128,13 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		if want == "edit_conflict" && !strings.Contains(err.Error(), "op 1: conflict "+strings.Repeat("a", 64)) {
 			t.Fatal("app message or if_hash lost", err)
 		}
+		if find == "boom" && !strings.Contains(err.Error(), "may or may not have applied") || find == "rolledback" && !strings.Contains(err.Error(), "nothing changed") {
+			t.Fatal("outcome of a failed edit misstated", err)
+		}
 	}
 	// Only changing edits are logged, with a summary and never the text.
 	events, err := s.Events(ctx, "notes", "document", 0, 10)
-	if err != nil || len(events) != 1 || events[0].Message != "live edit of index.md via mcp: 1 op(s) (replace at line 3 -4/+9); seq 7 -> 8; now 42 bytes" {
+	if err != nil || len(events) != 2 || events[0].Message != "live edit of index.md via mcp: 1 op(s) (replace at line 3 -4/+9); seq 7 -> 8; now 42 bytes" {
 		t.Fatal(events, err)
 	}
 	// Public flats carry the live public notice.

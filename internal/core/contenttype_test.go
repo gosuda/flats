@@ -20,8 +20,9 @@ import (
 )
 
 type contentRuntime struct {
-	specs []RuntimeSpec
-	fail  bool
+	specs     []RuntimeSpec
+	fail      bool
+	afterEdit func() // runs after the fake app answers a live edit
 }
 type contentInstance struct{ http.Handler }
 
@@ -34,6 +35,9 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 	return contentInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/_docs/api/edit" {
 			editResponse(w, r)
+			if rt.afterEdit != nil {
+				rt.afterEdit()
+			}
 			return
 		}
 		if r.URL.Path == "/_docs/api/document" {
