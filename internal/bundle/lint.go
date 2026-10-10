@@ -33,7 +33,13 @@ func Lint(files []File) []Problem {
 	if err != nil || m.Type == contenttype.Docs {
 		return nil
 	}
-	l := linter{index: make(map[string]bool, len(files)), static: m.Kind == "static", spa: m.SPA, notFound: m.NotFound}
+	// Manifest paths may be written as "./404.html"; files never are.
+	canonical := func(p string) string {
+		c, _ := cleanPath(p)
+		return c
+	}
+	m.Entry = canonical(m.Entry)
+	l := linter{index: make(map[string]bool, len(files)), static: m.Kind == "static", spa: m.SPA, notFound: canonical(m.NotFound)}
 	for _, f := range files {
 		l.index[f.Path] = true
 	}
@@ -92,7 +98,9 @@ func (l *linter) document(f File, entry bool) {
 		title, viewport, icon bool
 		titleText             strings.Builder
 		inTitle, inImportMap  bool
-		foreign               int // depth inside <svg> or <math>, whose <title> is not the page's
+		// inert is the depth inside <svg> or <math>, whose <title> is not
+		// the page's, and <template>, whose content the browser ignores.
+		inert int
 		// Reference warnings are checked while scanning, so memory stays
 		// bounded however many references a page has; they are reported
 		// after the page-level warnings.
@@ -147,8 +155,8 @@ func (l *linter) document(f File, entry bool) {
 			continue
 		case html.EndTagToken:
 			inTitle, inImportMap = false, false
-			if name, _ := z.TagName(); foreign > 0 && (string(name) == "svg" || string(name) == "math") {
-				foreign--
+			if name, _ := z.TagName(); inert > 0 && inertTags[string(name)] {
+				inert--
 			}
 			continue
 		case html.StartTagToken, html.SelfClosingTagToken:
@@ -167,23 +175,24 @@ func (l *linter) document(f File, entry bool) {
 		}
 		rel := relTokens(attrs["rel"])
 		switch tag := string(name); tag {
-		case "svg", "math":
+		case "svg", "math", "template":
 			if tt == html.StartTagToken {
-				foreign++
+				inert++
 			}
 		case "title":
-			if foreign == 0 {
+			// The browser shows the first title only.
+			if inert == 0 && !title {
 				title, inTitle = true, tt == html.StartTagToken
 			}
 		case "meta":
-			viewport = viewport || strings.EqualFold(strings.TrimSpace(attrs["name"]), "viewport")
+			viewport = viewport || (inert == 0 && strings.EqualFold(strings.TrimSpace(attrs["name"]), "viewport"))
 		case "script":
 			if strings.EqualFold(strings.TrimSpace(attrs["type"]), "importmap") {
 				inImportMap = tt == html.StartTagToken
 			}
 			check(ref{url: attrs["src"], kind: codeAsset})
 		case "link":
-			icon = icon || (rel["icon"] && strings.TrimSpace(attrs["href"]) != "")
+			icon = icon || (inert == 0 && rel["icon"] && strings.TrimSpace(attrs["href"]) != "")
 			kind := plainAsset
 			as := strings.ToLower(strings.TrimSpace(attrs["as"]))
 			if rel["stylesheet"] || rel["modulepreload"] || (rel["preload"] && (as == "script" || as == "style")) {
@@ -256,6 +265,8 @@ func baseHref(data []byte) (ext *url.URL, found bool) {
 		}
 	}
 }
+
+var inertTags = map[string]bool{"svg": true, "math": true, "template": true}
 
 type assetKind int
 

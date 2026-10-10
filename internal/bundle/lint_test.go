@@ -286,6 +286,27 @@ func TestLintTruncatesLongReferences(t *testing.T) {
 	}
 }
 
+func TestLintCanonicalManifestPaths(t *testing.T) {
+	files := with(File{Path: "flats.json", Data: []byte(`{"entry":"./index.html","spa":true,"not_found":"./404.html","screenshot":"screenshot.png"}`)},
+		File{Path: "index.html", Data: page(`<script src="app.js"></script>`, "")},
+		File{Path: "404.html", Data: []byte(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Not Found</title><link rel="stylesheet" href="app.css"></head></html>`)})
+	expectWarning(t, files, "index.html", "relative reference app.js breaks")
+	expectWarning(t, files, "404.html", "relative reference app.css breaks")
+	noIcon := with(File{Path: "flats.json", Data: []byte(`{"entry":"./index.html","screenshot":"screenshot.png"}`)},
+		File{Path: "index.html", Data: bytes.Replace([]byte(goodPage), []byte(`<link rel="icon" href="/favicon.svg">`), nil, 1)})
+	expectWarning(t, noIcon, "index.html", "favicon")
+}
+
+func TestLintIgnoresTemplatesAndLaterTitles(t *testing.T) {
+	templated := []byte(`<!doctype html><html><head><template><title>Lunch Poll</title><meta name="viewport" content="width=device-width"><link rel="icon" href="favicon.svg"></template></head></html>`)
+	files := with(File{Path: "index.html", Data: templated})
+	expectWarning(t, files, "index.html", "no <title>")
+	expectWarning(t, files, "index.html", "viewport")
+	expectWarning(t, files, "index.html", "favicon")
+	twice := bytes.Replace(page("", ""), []byte("<title>Lunch Poll</title>"), []byte("<title>Document</title><title>Lunch Poll</title>"), 1)
+	expectWarning(t, with(File{Path: "index.html", Data: twice}), "index.html", `"Document" is a template placeholder`)
+}
+
 func TestLintIgnoresForeignTitles(t *testing.T) {
 	svgTitle := []byte(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><link rel="icon" href="favicon.svg"></head>` +
 		`<body><svg viewBox="0 0 10 10"><title>Logo</title><circle r="4"/></svg><math><title>x</title></math></body></html>`)
