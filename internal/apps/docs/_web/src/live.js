@@ -45,9 +45,9 @@ function acceptedDestination(doc, url, links) {
 
 // linkAt returns the href of the rendered link at pos, or "". It lets the
 // keyboard open the link under the cursor.
-export function linkAt(state, pos, links) {
+export function linkAt(state, pos, links, refs) {
   const line = state.doc.lineAt(pos);
-  const link = liveDecorations(state, [line], [], links).find(
+  const link = liveDecorations(state, [line], [], links, refs).find(
     (d) => d.cls === "cm-link" && d.from <= pos && pos <= d.to,
   );
   return link ? link.href : "";
@@ -80,7 +80,13 @@ export function activeLines(state, focused) {
 // visible ranges. It is pure so it can be tested without a DOM. links holds
 // the renderer's link rules (markdown.js): syntax the renderer leaves as text
 // keeps its source here too, and a link's href is the URL the renderer uses.
-export function liveDecorations(state, ranges, active, links) {
+export function liveDecorations(
+  state,
+  ranges,
+  active,
+  links,
+  refs = new Map(),
+) {
   const doc = state.doc,
     out = [],
     lined = new Set();
@@ -317,22 +323,24 @@ export function liveDecorations(state, ranges, active, links) {
               do parts.push({ name: c.name, from: c.from, to: c.to });
               while (c.nextSibling());
             const url = parts.find((p) => p.name === "URL"),
-              href = url
-                ? links.destination(
-                    unescapeAll(
-                      doc
-                        .sliceString(url.from, url.to)
-                        .replace(/^<(.*)>$/, "$1"),
-                    ),
-                  )
-                : "";
-            const lm = parts.filter((p) => p.name === "LinkMark");
-            // Only inline links and images with a destination the renderer
-            // accepts are rendered; reference links and rejected ones keep
-            // their source.
-            if (!href || lm.length < 2) return;
+              lm = parts.filter((p) => p.name === "LinkMark");
+            if (lm.length < 2) return;
             const textFrom = lm[0].to,
               textTo = lm[1].from;
+            let href = "";
+            if (url) href = acceptedDestination(doc, url, links);
+            else {
+              // A reference link: [text][label], [label][] or [label].
+              const label = parts.find((p) => p.name === "LinkLabel");
+              let key = label
+                ? doc.sliceString(label.from + 1, label.to - 1)
+                : "";
+              if (!key.trim()) key = doc.sliceString(textFrom, textTo);
+              href = refs.get(links.label(key))?.href || "";
+            }
+            // Only links and images whose destination the renderer accepts
+            // are rendered; anything else keeps its source, as it reads.
+            if (!href) return;
             if (name === "Image") {
               if (isActive(node.from, node.to)) return false;
               if (doc.sliceString(node.from, node.to).includes("\n"))
@@ -391,21 +399,13 @@ const leaves = new Set([
 // tableBlocks returns every table as whole lines, with whether a selection
 // touches it while the editor has focus. Such a table shows its Markdown
 // source; every other table is rendered. context holds the document's link
-// reference definitions, which a table's reference links need to render.
-export function tableBlocks(state, focused, links) {
+// reference definitions (see referenceDefinitions), which a table's
+// reference links need to render.
+export function tableBlocks(state, focused, refs = new Map()) {
   const doc = state.doc,
-    out = [],
-    definitions = [];
+    out = [];
   syntaxTree(state).iterate({
     enter(node) {
-      if (node.name === "LinkReference") {
-        // Only definitions the renderer accepts; a rejected one renders as
-        // text where it is written and must not repeat under every table.
-        const url = node.node.getChild("URL");
-        if (url && acceptedDestination(doc, url, links))
-          definitions.push(doc.sliceString(node.from, node.to));
-        return false;
-      }
       if (leaves.has(node.name)) return false;
       if (node.name !== "Table") return;
       const from = doc.lineAt(node.from).from,
@@ -417,7 +417,32 @@ export function tableBlocks(state, focused, links) {
       return false;
     },
   });
-  const context = definitions.join("\n");
+  const context = [...refs.values()].map((r) => r.source).join("\n");
   for (const t of out) t.context = context;
   return out;
+}
+
+// A single-line reference definition, possibly inside quotes: "[label]: url".
+const definition =
+  /^ {0,3}(?:> ?)*\[((?:[^\]\\\n]|\\.)+)\]:[ \t]*(<[^>\n]*>|\S+)/;
+
+// referenceDefinitions scans the whole document for link reference
+// definitions, so reference links resolve even where CodeMirror has not
+// parsed yet. It returns normalized label -> {href, source}, keeping the
+// first definition of a label as the renderer does and only those whose
+// destination it accepts; source is the definition as top-level Markdown.
+// Definitions split over several lines are not found and keep their links
+// as source in the editor.
+export function referenceDefinitions(doc, links) {
+  const refs = new Map();
+  for (const text of doc.iterLines()) {
+    if (!text.includes("]:")) continue;
+    const m = definition.exec(text);
+    if (!m) continue;
+    const key = links.label(m[1]);
+    if (!key || refs.has(key)) continue;
+    const href = links.destination(unescapeAll(m[2].replace(/^<(.*)>$/, "$1")));
+    if (href) refs.set(key, { href, source: `[${m[1]}]: ${m[2]}` });
+  }
+  return refs;
 }

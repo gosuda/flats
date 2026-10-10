@@ -20,6 +20,10 @@ export function linkRules(md) {
       const normalized = md.normalizeLink(href);
       return md.validateLink(normalized) ? normalized : "";
     },
+    // label normalizes a reference label as the renderer matches it.
+    label(text) {
+      return md.utils.normalizeReference(text);
+    },
     // plainText is a Markdown label as the renderer writes it into alt.
     plainText(label) {
       const tokens = md.parseInline(label, {})[0]?.children || [];

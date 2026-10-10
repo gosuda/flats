@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { activeLines, linkAt, liveDecorations, tableBlocks } from "./live.js";
+import {
+  activeLines,
+  linkAt,
+  liveDecorations,
+  referenceDefinitions,
+  tableBlocks,
+} from "./live.js";
 import { createMarkdown, linkRules } from "./markdown.js";
 
 const links = linkRules(createMarkdown());
@@ -22,6 +28,7 @@ function decorate(text, cursor) {
     [{ from: 0, to: state.doc.length }],
     active,
     links,
+    referenceDefinitions(state.doc, links),
   )
     .map((d) => ({ ...d, text: text.slice(d.from, d.to) }))
     .sort((a, b) => a.from - b.from || a.kind.localeCompare(b.kind));
@@ -116,13 +123,13 @@ test("tables are found as whole lines and reveal under the selection", () => {
     ensureSyntaxTree(s, s.doc.length, 5000);
     return s;
   };
-  const [table] = tableBlocks(state(0), true, links);
+  const [table] = tableBlocks(state(0), true);
   assert.equal(table.source, "| a | b |\n| - | - |\n| 1 | 2 |");
   assert.equal(table.active, false);
   const inside = state(text.indexOf("1 |"));
-  assert.equal(tableBlocks(inside, true, links).at(0).active, true);
+  assert.equal(tableBlocks(inside, true).at(0).active, true);
   // Without focus the table renders even with the cursor inside it.
-  assert.equal(tableBlocks(inside, false, links).at(0).active, false);
+  assert.equal(tableBlocks(inside, false).at(0).active, false);
 });
 
 test("an empty link label keeps its source and adds no empty mark", () => {
@@ -270,7 +277,7 @@ test("tables carry the document's reference definitions", () => {
     extensions: [markdown({ base: markdownLanguage })],
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
-  const [table] = tableBlocks(s, false, links);
+  const [table] = tableBlocks(s, false, referenceDefinitions(s.doc, links));
   assert.equal(table.context, "[id]: https://e.example");
   const html = createMarkdown().render(table.source + "\n\n" + table.context);
   assert.match(html, /<a href="https:\/\/e\.example">docs<\/a>/);
@@ -279,9 +286,11 @@ test("tables carry the document's reference definitions", () => {
 test("reference definitions collapse away from the cursor", () => {
   const text = "[a][r]\n\n[r]: https://e.example\n";
   const ds = decorate(text);
-  assert.deepEqual(hidden(ds), ["[r]: https://e.example"]);
+  // The reference link renders too, hiding its brackets and label.
+  assert.deepEqual(hidden(ds), ["[", "][r]", "[r]: https://e.example"]);
   assert.ok(ds.some((d) => d.cls === "cm-collapsed" && d.from === 8));
-  assert.deepEqual(hidden(decorate(text, 10)), []);
+  // On the definition's line, only the definition shows its source.
+  assert.deepEqual(hidden(decorate(text, 10)), ["[", "][r]"]);
 });
 
 test("rejected reference definitions stay visible", () => {
@@ -304,7 +313,7 @@ test("tables carry only the definitions the renderer accepts", () => {
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
   assert.equal(
-    tableBlocks(s, false, links)[0].context,
+    tableBlocks(s, false, referenceDefinitions(s.doc, links))[0].context,
     "[ok]: https://e.example",
   );
 });
@@ -316,10 +325,46 @@ test("linkAt finds the link under the cursor for the keyboard", () => {
     extensions: [markdown({ base: markdownLanguage })],
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
-  assert.equal(linkAt(s, text.indexOf("docs") + 1, links), "guide.md");
+  const refs = referenceDefinitions(s.doc, links);
+  assert.equal(linkAt(s, text.indexOf("docs") + 1, links, refs), "guide.md");
   assert.equal(
-    linkAt(s, text.indexOf("e.example"), links),
+    linkAt(s, text.indexOf("e.example"), links, refs),
     "https://e.example",
   );
-  assert.equal(linkAt(s, 1, links), "");
+  assert.equal(linkAt(s, 1, links, refs), "");
+});
+
+test("reference links resolve against the document's definitions", () => {
+  const text =
+    'a [docs][ID] b [id][] c [Id] d [none] ![pic][id]\n\n> [id]: <https://e.example/x> "T"\n';
+  const ds = decorate(text);
+  assert.deepEqual(
+    ds.filter((d) => d.cls === "cm-link").map((d) => [d.text, d.href]),
+    [
+      ["docs", "https://e.example/x"],
+      ["id", "https://e.example/x"],
+      ["Id", "https://e.example/x"],
+    ],
+  );
+  assert.equal(ds.find((d) => d.kind === "image").src, "https://e.example/x");
+  // "[none]" has no definition and keeps its brackets.
+  const none = text.indexOf("[none]");
+  assert.ok(!ds.some((d) => d.kind === "hide" && d.from === none));
+});
+
+test("definitions are found beyond the parsed tree", () => {
+  const filler = Array.from({ length: 3000 }, (_, i) => "line " + i).join(
+    "\n\n",
+  );
+  const text =
+    "| a |\n| - |\n| [x][far] |\n\n" +
+    filler +
+    "\n\n[far]: https://far.example\n";
+  // No syntax tree is forced: the scan reads the text itself.
+  const s = EditorState.create({ doc: text });
+  const refs = referenceDefinitions(s.doc, links);
+  assert.equal(
+    refs.get(links.label("far")).source,
+    "[far]: https://far.example",
+  );
 });

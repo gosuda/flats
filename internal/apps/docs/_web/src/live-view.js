@@ -13,7 +13,13 @@ import {
   StateField,
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
-import { activeLines, linkAt, liveDecorations, tableBlocks } from "./live.js";
+import {
+  activeLines,
+  linkAt,
+  liveDecorations,
+  referenceDefinitions,
+  tableBlocks,
+} from "./live.js";
 
 class Bullet extends WidgetType {
   eq() {
@@ -133,10 +139,19 @@ class TableWidget extends WidgetType {
 // may not replace line breaks. The field tracks focus through an effect, so a
 // table renders again when the editor loses focus.
 const setFocus = StateEffect.define();
-function tables(render, links) {
+// The document's reference definitions, rescanned when the text changes.
+function definitions(links) {
+  return StateField.define({
+    create: (state) => referenceDefinitions(state.doc, links),
+    update: (value, tr) =>
+      tr.docChanged ? referenceDefinitions(tr.state.doc, links) : value,
+  });
+}
+
+function tables(render, refs) {
   const build = (state, focused) =>
     Decoration.set(
-      tableBlocks(state, focused, links)
+      tableBlocks(state, focused, state.field(refs))
         .filter((t) => !t.active)
         .map((t) =>
           Decoration.replace({
@@ -175,6 +190,7 @@ const hidden = Decoration.replace({}),
 // rules (markdown.js), resolve makes an accepted URL absolute against the
 // document, and render turns a Markdown table into safe HTML.
 export function livePreview(links, resolve, render) {
+  const refs = definitions(links);
   const build = (view) => {
     const active = activeLines(view.state, view.hasFocus),
       ranges = [];
@@ -183,6 +199,7 @@ export function livePreview(links, resolve, render) {
       view.visibleRanges,
       active,
       links,
+      view.state.field(refs),
     )) {
       switch (d.kind) {
         case "line":
@@ -233,7 +250,8 @@ export function livePreview(links, resolve, render) {
     return Decoration.set(ranges, true);
   };
   return [
-    tables(render, links),
+    refs,
+    tables(render, refs),
     ViewPlugin.fromClass(
       class {
         constructor(view) {
@@ -261,7 +279,9 @@ export function livePreview(links, resolve, render) {
           run(view) {
             const sel = view.state.selection.main;
             if (!sel.empty) return false;
-            const href = resolve(linkAt(view.state, sel.head, links));
+            const href = resolve(
+              linkAt(view.state, sel.head, links, view.state.field(refs)),
+            );
             if (!href) return false;
             window.open(href, "_blank", "noopener,noreferrer");
             return true;
