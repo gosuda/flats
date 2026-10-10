@@ -313,6 +313,15 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 
 // SetProviderPermission records an explicit non-local provider permission.
 // Only the console may call it. It does not publish the flat or change visibility.
+//
+// A revocation stops the provider's routes before the permission is removed.
+// A grant is committed first and then applied to the live runtime, so a newly
+// permitted Tailscale route opens without a deploy or restart. The re-run uses
+// the flat's current visibility: a private flat only ever registers private
+// providers, so granting Portal or Funnel to it opens no public route. If the
+// route fails to open, the grant stays recorded (the next deploy, visibility
+// change or restart retries it), an exposure error event is logged and the
+// returned error wraps ErrProviderNotReady.
 func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider string, permitted bool, via Via) error {
 	unlock := s.lock(slugName)
 	defer unlock()
@@ -326,7 +335,8 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 	default:
 		return invalidf("unknown provider %q", provider)
 	}
-	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
 		return err
 	}
 	if !permitted {
@@ -338,6 +348,13 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return err
 	}
 	s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=%t via %s", provider, permitted, via), nil)
+	if !permitted || s.state(slugName).cur.Load() == nil {
+		return nil
+	}
+	if err := s.ensureExposure(ctx, f); err != nil {
+		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but exposure failed: %v", provider, err), nil)
+		return fmt.Errorf("%w: %s is permitted, but its route did not open (retried on the next deploy, visibility change or restart): %w", ErrProviderNotReady, provider, err)
+	}
 	return nil
 }
 

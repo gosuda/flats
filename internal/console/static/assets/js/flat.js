@@ -162,7 +162,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       box.disabled = true;
       const ok = await setProvider(flat, p.id, box.checked);
       box.disabled = false;
-      if (ok) refresh(); else box.checked = allowed;
+      // A grant whose route failed to open is still recorded, so redraw
+      // from the server after a failure as well.
+      if (!(await refresh()) && !ok) box.checked = allowed;
     });
     return h('li', null, box, h('label', { for: id }, p.label,
       h('span', { class: 'muted small', text: off ? 'Off in Settings' : p.hint })));
