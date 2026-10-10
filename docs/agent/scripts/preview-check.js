@@ -81,7 +81,9 @@
 
   const pending = [];
   for (const img of roots.flatMap((r) => [...r.querySelectorAll("img")])) {
-    if (img.complete && img.naturalWidth === 0 && img.currentSrc) add("image", { src: img.currentSrc });
+    if (!img.currentSrc && !img.getAttribute("src") && !img.getAttribute("srcset")) add("image", { src: "", element: name(img),
+      fix: "the image has no source; set src (an unset asset binding often causes this)" });
+    else if (img.complete && img.naturalWidth === 0) add("image", { src: img.currentSrc || img.getAttribute("src") });
     else if (!img.complete) pending.push(img);
   }
   for (const link of document.querySelectorAll('link[rel~="stylesheet"][href]')) {

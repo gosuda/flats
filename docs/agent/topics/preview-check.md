@@ -39,9 +39,11 @@ In each view:
 3. Read the browser's console log through your tool for script errors and
    failed requests. The script cannot see messages logged before it ran.
 
-Then fix everything you found in one pass, save the Draft again and
-`publish` (`topic.approvals`). Do not repeat the four views in a loop. Further
-polish is for the user to ask for.
+Then fix everything you found in one pass and add the thumbnail (below) in
+the same change, save the Draft once more and `publish` (`topic.approvals`):
+publishing freezes the saved Draft, so anything added after it is not in that
+version. Do not repeat the four views in a loop. Further polish is for the
+user to ask for.
 
 ### What the script reports
 
@@ -66,7 +68,8 @@ real check.
 
 ### Thumbnail
 
-Take one more screenshot at desktop width in light mode, save it in the
+Before that final save, take a screenshot at desktop width in light mode
+(of the fixed page, if your fixes changed what it looks like), add it to the
 bundle (PNG or WebP, well under 500 KiB) and name it as `screenshot` in
 `flats.json` (`topic.manifest`). The operator's console shows it as the
 flat's thumbnail, and the save warning about a missing screenshot goes away.
