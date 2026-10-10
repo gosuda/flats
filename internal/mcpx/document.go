@@ -66,7 +66,7 @@ type UpdateDocumentIn struct {
 	Slug   string                `json:"slug"`
 	Doc    string                `json:"doc,omitempty" jsonschema:"exact Markdown path, default entry"`
 	Ops    []core.DocumentEditOp `json:"ops" jsonschema:"1 to 32 operations, applied in order to the live text; all apply or none do"`
-	IfHash string                `json:"if_hash,omitempty" jsonschema:"the whole-document hash from get_document; any change since refuses the edit. Required when an op uses nth"`
+	IfHash *string               `json:"if_hash,omitempty" jsonschema:"the whole-document hash from get_document; any change since refuses the edit. Required when an op uses nth"`
 }
 
 func (t *tools) updateDocument(ctx context.Context, _ *mcp.CallToolRequest, in UpdateDocumentIn) (*mcp.CallToolResult, core.DocumentEdit, error) {

@@ -216,7 +216,7 @@ type DocumentEditOp struct {
 	After      string  `json:"after,omitempty" jsonschema:"insert: put text after this block hash"`
 	SectionEnd string  `json:"section_end,omitempty" jsonschema:"insert: put text at the end of the section this heading block hash starts"`
 	At         string  `json:"at,omitempty" jsonschema:"insert: start or end of the document"`
-	Nth        int     `json:"nth,omitempty" jsonschema:"pick the nth (1-based) match when the find text or block hash occurs more than once; requires if_hash"`
+	Nth        *int    `json:"nth,omitempty" jsonschema:"pick the nth (1-based) match when the find text or block hash occurs more than once; requires if_hash"`
 }
 
 // DocumentEditChange summarizes one applied operation, without its text.
@@ -249,7 +249,9 @@ const LiveEditPublicNotice = PublicAccessNotice + " This edit is already live th
 // UpdateDocument applies guarded operations to the live Markdown of a
 // running docs version, through the same committed path as people's edits.
 // All operations apply or none do. It never publishes a version.
-func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops []DocumentEditOp, ifHash string, via Via) (DocumentEdit, error) {
+// ifHash and each op's Nth are pointers so an explicit but empty guard is
+// passed on and refused, never silently dropped.
+func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops []DocumentEditOp, ifHash *string, via Via) (DocumentEdit, error) {
 	if len(ops) == 0 || len(ops) > MaxDocumentEditOps {
 		return DocumentEdit{}, invalidf("ops must hold 1 to %d operations", MaxDocumentEditOps)
 	}
@@ -258,7 +260,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	}
 	body, err := json.Marshal(struct {
 		Ops    []DocumentEditOp `json:"ops"`
-		IfHash string           `json:"if_hash,omitempty"`
+		IfHash *string          `json:"if_hash,omitempty"`
 	}{ops, ifHash})
 	if err != nil {
 		return DocumentEdit{}, err

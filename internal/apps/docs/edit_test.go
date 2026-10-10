@@ -297,6 +297,18 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 		t.Fatal("discarded agent edit not recoverable", kept, err)
 	}
 
+	// An explicit empty guard is refused, not dropped into an unguarded edit.
+	for _, bad := range []map[string]any{
+		{"slug": "host-doc", "if_hash": "", "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "unguarded"}}},
+		{"slug": "host-doc", "if_hash": v3.Hash, "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "unguarded", "nth": 0}}},
+	} {
+		if text, failed := callTool(t, session, "update_document", bad, nil); !failed || !strings.Contains(text, `"category":"invalid"`) {
+			t.Fatal(text)
+		}
+	}
+	if again, _ := s.GetDocument(t.Context(), "host-doc", ""); strings.Contains(again.Markdown, "unguarded") {
+		t.Fatal("empty guard applied an edit")
+	}
 	// Public flats: every result says the change is already public.
 	if err := s.SetProviderPermission(t.Context(), "host-doc", store.ProviderPortal, true, core.ViaConsole); err != nil {
 		t.Fatal(err)
@@ -333,10 +345,10 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	}
 
 	// Website flats refuse with not_docs; a missing document with document_not_found.
-	if _, err := s.UpdateDocument(t.Context(), "host-doc", "absent.md", []core.DocumentEditOp{{Op: "insert", At: "end", Text: "x"}}, "", core.ViaMCP); !errors.Is(err, core.ErrDocumentNotFound) {
+	if _, err := s.UpdateDocument(t.Context(), "host-doc", "absent.md", []core.DocumentEditOp{{Op: "insert", At: "end", Text: "x"}}, nil, core.ViaMCP); !errors.Is(err, core.ErrDocumentNotFound) {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateDocument(t.Context(), "host-doc", "", nil, "", core.ViaMCP); core.ErrorCategory(err) != "invalid" {
+	if _, err := s.UpdateDocument(t.Context(), "host-doc", "", nil, nil, core.ViaMCP); core.ErrorCategory(err) != "invalid" {
 		t.Fatal(err)
 	}
 }

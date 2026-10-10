@@ -63,65 +63,65 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		with := "x"
 		return []DocumentEditOp{{Op: "replace", Find: find, With: &with}}
 	}
-	if _, err := s.UpdateDocument(ctx, "absent", "", op("a"), "", ViaMCP); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.UpdateDocument(ctx, "absent", "", op("a"), nil, ViaMCP); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal(err)
 	}
 	if _, err := s.CreateFlat(ctx, "empty", "", ViaAPI); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateDocument(ctx, "empty", "", op("a"), "", ViaMCP); !errors.Is(err, ErrNotDeployed) {
+	if _, err := s.UpdateDocument(ctx, "empty", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDeployed) {
 		t.Fatal(err)
 	}
 	if _, err := s.SaveVersion(ctx, "website", []bundle.File{{Path: "index.html", Data: []byte("web")}}, SaveMeta{}, ViaAPI); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), "", ViaMCP); !errors.Is(err, ErrNotDocs) {
+	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDocs) {
 		t.Fatal("website Draft", err)
 	}
 	if _, err := approvedInternalDeploy(t, s, ctx, "website", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), "", ViaMCP); !errors.Is(err, ErrNotDocs) {
+	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDocs) {
 		t.Fatal("live website", err)
 	}
 	saveDocs(t, s, "website")
-	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), "", ViaMCP); !errors.Is(err, ErrNotDeployed) || !strings.Contains(err.Error(), "save_document and publish") {
+	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDeployed) || !strings.Contains(err.Error(), "save_document and publish") {
 		t.Fatal("docs Draft over a live website", err)
 	}
 	saveDocs(t, s, "notes")
-	if _, err := s.UpdateDocument(ctx, "notes", "", op("a"), "", ViaMCP); !errors.Is(err, ErrNotDeployed) {
+	if _, err := s.UpdateDocument(ctx, "notes", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDeployed) {
 		t.Fatal("unpublished docs", err)
 	}
 	if _, err := approvedInternalDeploy(t, s, ctx, "notes", 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range [][]DocumentEditOp{nil, make([]DocumentEditOp, MaxDocumentEditOps+1)} {
-		if _, err := s.UpdateDocument(ctx, "notes", "", bad, "", ViaMCP); !errors.Is(err, ErrInvalid) {
+		if _, err := s.UpdateDocument(ctx, "notes", "", bad, nil, ViaMCP); !errors.Is(err, ErrInvalid) {
 			t.Fatal(len(bad), err)
 		}
 	}
-	if _, err := s.UpdateDocument(ctx, "notes", "../x.md", op("a"), "", ViaMCP); !errors.Is(err, ErrInvalid) {
+	if _, err := s.UpdateDocument(ctx, "notes", "../x.md", op("a"), nil, ViaMCP); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "insert", At: "end", Text: strings.Repeat("x", maxDocumentEditBody)}}, "", ViaMCP); !errors.Is(err, ErrDocumentCapacity) {
+	if _, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "insert", At: "end", Text: strings.Repeat("x", maxDocumentEditBody)}}, nil, ViaMCP); !errors.Is(err, ErrDocumentCapacity) {
 		t.Fatal("oversized request", err)
 	}
 	// A caller whose context ends right after the commit still gets the audit.
 	cancelled, cancelNow := context.WithCancel(ctx)
 	s.cfg.Runtime.(*contentRuntime).afterEdit = cancelNow
-	if _, err := s.UpdateDocument(cancelled, "notes", "", op("ok"), "", ViaMCP); err != nil {
+	if _, err := s.UpdateDocument(cancelled, "notes", "", op("ok"), nil, ViaMCP); err != nil {
 		t.Fatal(err)
 	}
 	s.cfg.Runtime.(*contentRuntime).afterEdit = nil
-	out, err := s.UpdateDocument(ctx, "notes", "", op("ok"), "", ViaMCP)
+	out, err := s.UpdateDocument(ctx, "notes", "", op("ok"), nil, ViaMCP)
 	if err != nil || out.Seq != 8 || out.Source != "live" || out.PublicNotice != "" || !out.Changed {
 		t.Fatal(out, err)
 	}
-	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), "", ViaMCP); err != nil || out.Changed {
+	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), nil, ViaMCP); err != nil || out.Changed {
 		t.Fatal(out, err)
 	}
 	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found"} {
-		_, err := s.UpdateDocument(ctx, "notes", "", op(find), strings.Repeat("a", 64), ViaMCP)
+		_, err := s.UpdateDocument(ctx, "notes", "", op(find), ptr(strings.Repeat("a", 64)), ViaMCP)
 		if ErrorCategory(err) != want {
 			t.Fatal(find, err)
 		}
@@ -146,7 +146,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if err := s.st.UpdateFlat(ctx, f); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := s.UpdateDocument(ctx, "notes", "", op("ok"), "", ViaMCP); err != nil || out.PublicNotice != LiveEditPublicNotice {
+	if out, err := s.UpdateDocument(ctx, "notes", "", op("ok"), nil, ViaMCP); err != nil || out.PublicNotice != LiveEditPublicNotice {
 		t.Fatal(out, err)
 	}
 }
@@ -163,7 +163,7 @@ func TestUpdateDocumentRateLimit(t *testing.T) {
 	with := "x"
 	limited := 0
 	for range 3 * documentEditRate {
-		if _, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "replace", Find: "ok", With: &with}}, "", ViaMCP); errors.Is(err, ErrUnavailable) {
+		if _, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "replace", Find: "ok", With: &with}}, nil, ViaMCP); errors.Is(err, ErrUnavailable) {
 			limited++
 		} else if err != nil {
 			t.Fatal(err)
@@ -182,5 +182,20 @@ func TestEditSummaryIsBounded(t *testing.T) {
 	got := editSummary(e, ViaMCP)
 	if strings.Count(got, "insert at line") != 8 || !strings.Contains(got, ", …); seq 1 -> 2; now 3 bytes") {
 		t.Fatal(got)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// Explicit empty guards reach the docs app (which refuses them) instead of
+// being dropped into an unguarded edit.
+func TestUpdateDocumentKeepsExplicitEmptyGuards(t *testing.T) {
+	ops := []DocumentEditOp{{Op: "insert", At: "end", Text: "x", Nth: ptr(0)}}
+	body, err := json.Marshal(struct {
+		Ops    []DocumentEditOp `json:"ops"`
+		IfHash *string          `json:"if_hash,omitempty"`
+	}{ops, ptr("")})
+	if err != nil || !strings.Contains(string(body), `"if_hash":""`) || !strings.Contains(string(body), `"nth":0`) {
+		t.Fatal(string(body), err)
 	}
 }
