@@ -10,6 +10,9 @@
 //   tsconfig: "lib": ["ES2022"], "types": [], with this file in "include".
 // Upload compiled JavaScript ES modules, never TypeScript source.
 // All environment bindings are synchronous; none of them returns a Promise.
+// Parameters are typed with the supported input types only. Where the runtime
+// converts other values with String() or similar, that conversion is not part
+// of the contract; pass the declared type.
 //
 // Not in v1 and absent at runtime (`typeof name === "undefined"`):
 // @absent TextEncoder TextDecoder structuredClone Blob File FormData ReadableStream WritableStream TransformStream AbortController AbortSignal Event EventTarget WebAssembly WebSocket XMLHttpRequest EventSource require process Buffer module exports window document self setImmediate
@@ -173,21 +176,24 @@ declare namespace Flats {
    * Keys for get/put/delete: nonempty UTF-8, at most 512 bytes, relative
    * slash-separated paths; no leading or trailing slash, empty, "." or ".."
    * segments, backslash or control characters; no segment starting
-   * ".flats-tmp-". Key identity follows the host filesystem (case and Unicode
-   * normalization may be folded). Values are text, at most 10 MiB each; the
-   * flat's total is 1 GiB. Calls are not transactions.
+   * ".flats-tmp-". The 512 bytes limit the whole key only: each segment must
+   * also fit the host filesystem's name limit (ext4: typically 255 bytes), or
+   * get/put/delete throw a filesystem error. Keep segments short. A path
+   * through a regular-file parent ("a/b" when "a" is a value) also throws,
+   * for get and delete too. Key identity follows the host filesystem (case and
+   * Unicode normalization may be folded). Values are text, at most 10 MiB
+   * each; the flat's total is 1 GiB. Calls are not transactions.
    */
   interface Files {
-    /** The stored text, or null for an absent key, absent store or directory key. */
+    /** The stored text, or null for an absent key, absent store or directory key; other failures throw. */
     get(key: string): string | null;
     /**
      * Replaces the whole value atomically, creating parent directories.
-     * Store text: other values are coerced (null/undefined to "", objects to
-     * "[object Object]"; binary is decoded as UTF-8, not stored as bytes).
-     * Encode binary as base64 yourself.
+     * Values are text only: JSON.stringify objects and base64-encode binary
+     * yourself. Binary input is not stored as bytes.
      */
     put(key: string, value: string): void;
-    /** true when a file was removed; false when absent or not a regular file. */
+    /** true when a file was removed; false when absent or not a regular file; other failures throw. */
     delete(key: string): boolean;
     /**
      * Sorted full keys that start with the literal prefix (default ""). Regular
@@ -223,8 +229,9 @@ declare namespace Flats {
     /** Set before the close callback runs; undefined when the reason was empty. */
     readonly closeReason?: string;
     /**
-     * Sends a text message; other values are converted to text. Throws when
-     * not open. At most 256 queued messages; overflow closes the connection.
+     * Sends a text message. There is no binary send: base64-encode binary
+     * yourself. Throws when not open. At most 256 queued messages; overflow
+     * closes the connection.
      */
     send(data: string): void;
     /** Starts closing; does nothing when already closing or closed. */
