@@ -91,8 +91,8 @@ test("no hidden range spans a line break", () => {
 
 test("an unfocused editor shows every line rendered", () => {
   const state = EditorState.create({ doc: "a\nb" });
-  assert.equal(activeLines(state, false).size, 0);
-  assert.deepEqual([...activeLines(state, true)], [1]);
+  assert.deepEqual(activeLines(state, false), []);
+  assert.deepEqual(activeLines(state, true), [[1, 1]]);
 });
 
 test("tables are found as whole lines and reveal under the selection", () => {
@@ -106,14 +106,57 @@ test("tables are found as whole lines and reveal under the selection", () => {
     ensureSyntaxTree(s, s.doc.length, 5000);
     return s;
   };
-  const [table] = tableBlocks(state(0));
+  const [table] = tableBlocks(state(0), true);
   assert.equal(table.source, "| a | b |\n| - | - |\n| 1 | 2 |");
   assert.equal(table.active, false);
-  assert.equal(tableBlocks(state(text.indexOf("1 |"))).at(0).active, true);
+  const inside = state(text.indexOf("1 |"));
+  assert.equal(tableBlocks(inside, true).at(0).active, true);
+  // Without focus the table renders even with the cursor inside it.
+  assert.equal(tableBlocks(inside, false).at(0).active, false);
 });
 
 test("an empty link label keeps its source and adds no empty mark", () => {
   const ds = decorate("see [](guide.md) and [](<>)\n\nx");
   assert.deepEqual(hidden(ds), []);
   for (const d of ds) if (d.kind === "mark") assert.ok(d.to > d.from);
+});
+
+test("autolinks and bare URLs become links", () => {
+  const ds = decorate(
+    "<https://a.example> and https://b.example/x and www.c.example\n\nz",
+  );
+  const links = ds.filter((d) => d.cls === "cm-link");
+  assert.deepEqual(
+    links.map((d) => [d.text, d.href]),
+    [
+      ["https://a.example", "https://a.example"],
+      ["https://b.example/x", "https://b.example/x"],
+      ["www.c.example", "http://www.c.example"],
+    ],
+  );
+  assert.deepEqual(hidden(ds), ["<", ">"]);
+});
+
+test("line decorations stay within the visible range", () => {
+  const body = Array.from({ length: 5000 }, (_, i) => "x" + i).join("\n");
+  const text = "```\n" + body + "\n```\n";
+  const state = EditorState.create({
+    doc: text,
+    extensions: [markdown({ base: markdownLanguage })],
+  });
+  ensureSyntaxTree(state, state.doc.length, 5000);
+  const visible = {
+    from: state.doc.line(100).from,
+    to: state.doc.line(120).to,
+  };
+  const lines = liveDecorations(state, [visible], []).filter(
+    (d) => d.kind === "line",
+  );
+  assert.equal(lines.length, 21);
+  // A selection over everything is two numbers, not one entry per line.
+  const all = EditorState.create({
+    doc: text,
+    selection: EditorSelection.range(0, text.length),
+  });
+  assert.deepEqual(activeLines(all, true), [[1, 5003]]);
 });

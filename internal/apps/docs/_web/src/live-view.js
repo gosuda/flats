@@ -5,7 +5,7 @@ import {
   ViewPlugin,
   WidgetType,
 } from "@codemirror/view";
-import { EditorSelection, StateField } from "@codemirror/state";
+import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { activeLines, liveDecorations, tableBlocks } from "./live.js";
 
@@ -89,11 +89,13 @@ class TableWidget extends WidgetType {
 }
 
 // Tables span lines, so they are replaced from a state field: a view plugin
-// may not replace line breaks.
+// may not replace line breaks. The field tracks focus through an effect, so a
+// table renders again when the editor loses focus.
+const setFocus = StateEffect.define();
 function tables(render) {
-  const build = (state) =>
+  const build = (state, focused) =>
     Decoration.set(
-      tableBlocks(state)
+      tableBlocks(state, focused)
         .filter((t) => !t.active)
         .map((t) =>
           Decoration.replace({
@@ -102,19 +104,26 @@ function tables(render) {
           }).range(t.from, t.to),
         ),
     );
-  return StateField.define({
-    create: build,
+  const field = StateField.define({
+    create: (state) => ({ focused: false, decorations: build(state, false) }),
     update(value, tr) {
+      let focused = value.focused;
+      for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
       if (
+        focused !== value.focused ||
         tr.docChanged ||
         tr.selection ||
         syntaxTree(tr.startState) !== syntaxTree(tr.state)
       )
-        return build(tr.state);
+        return { focused, decorations: build(tr.state, focused) };
       return value;
     },
-    provide: (f) => EditorView.decorations.from(f),
+    provide: (f) => EditorView.decorations.from(f, (v) => v.decorations),
   });
+  return [
+    field,
+    EditorView.focusChangeEffect.of((state, focusing) => setFocus.of(focusing)),
+  ];
 }
 
 const hidden = Decoration.replace({}),

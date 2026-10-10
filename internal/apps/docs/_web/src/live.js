@@ -30,6 +30,9 @@ const syntax = new Set([
   "QuoteMark",
 ]);
 
+// Nodes whose URL child is not a bare address.
+const linkParents = new Set(["Link", "Image", "Autolink", "LinkReference"]);
+
 // lineNumbers returns the 1-based numbers of every line from..to touches.
 function lineNumbers(doc, from, to) {
   const first = doc.lineAt(from).number,
@@ -39,14 +42,15 @@ function lineNumbers(doc, from, to) {
   return out;
 }
 
-// activeLines is the set of line numbers whose syntax is shown: every line a
-// selection range touches while the editor has focus, and none otherwise.
+// activeLines lists the [first, last] line-number spans whose syntax is
+// shown: the lines each selection range touches while the editor has focus,
+// and none otherwise. Spans keep a whole-document selection cheap.
 export function activeLines(state, focused) {
-  const lines = new Set();
-  if (!focused) return lines;
-  for (const r of state.selection.ranges)
-    for (const n of lineNumbers(state.doc, r.from, r.to)) lines.add(n);
-  return lines;
+  if (!focused) return [];
+  return state.selection.ranges.map((r) => [
+    state.doc.lineAt(r.from).number,
+    state.doc.lineAt(r.to).number,
+  ]);
 }
 
 // liveDecorations returns unsorted decoration descriptors for the given
@@ -55,9 +59,18 @@ export function liveDecorations(state, ranges, active) {
   const doc = state.doc,
     out = [],
     lined = new Set();
-  const isActive = (from, to) =>
-    lineNumbers(doc, from, to).some((n) => active.has(n));
+  const isActive = (from, to) => {
+    const first = doc.lineAt(from).number,
+      last = doc.lineAt(to).number;
+    return active.some(([a, b]) => a <= last && b >= first);
+  };
+  // Only lines inside the visible range being walked are decorated, so a
+  // long block costs no more than the part on screen.
+  let visible;
   const line = (from, to, cls) => {
+    from = Math.max(from, visible.from);
+    to = Math.min(to, visible.to);
+    if (to < from) return;
     for (const n of lineNumbers(doc, from, to)) {
       const key = n + " " + cls;
       if (lined.has(key)) continue;
@@ -65,12 +78,20 @@ export function liveDecorations(state, ranges, active) {
       out.push({ kind: "line", from: doc.line(n).from, cls });
     }
   };
+  // A bare address gets the scheme a renderer would give it.
+  const linkMark = (from, to) => {
+    let href = doc.sliceString(from, to);
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(href))
+      href = (href.includes("@") ? "mailto:" : "http://") + href;
+    return { kind: "mark", from, to, cls: "cm-link", href };
+  };
   // Replacements must stay on one line: a plugin may not hide line breaks.
   const hide = (from, to) => {
     if (to > from && !doc.sliceString(from, to).includes("\n"))
       out.push({ kind: "hide", from, to });
   };
   for (const { from, to } of ranges) {
+    visible = { from, to };
     syntaxTree(state).iterate({
       from,
       to,
@@ -149,6 +170,22 @@ export function liveDecorations(state, ranges, active) {
               out.push({ kind: "bullet", from: node.from, to: node.to });
             return;
           }
+          case "Autolink": {
+            // <https://example.com>: the URL between its angle brackets.
+            const url = node.node.getChild("URL");
+            if (!url) return false;
+            out.push(linkMark(url.from, url.to));
+            if (!isActive(node.from, node.to)) {
+              hide(node.from, url.from);
+              hide(url.to, node.to);
+            }
+            return false;
+          }
+          case "URL":
+            // A bare URL; one inside a link or image is handled there.
+            if (!linkParents.has(node.node.parent?.name))
+              out.push(linkMark(node.from, node.to));
+            return;
           case "Link":
           case "Image": {
             const c = node.node.cursor(),
@@ -223,8 +260,9 @@ const leaves = new Set([
 ]);
 
 // tableBlocks returns every table as whole lines, with whether a selection
-// touches it. A table the selection touches shows its Markdown source.
-export function tableBlocks(state) {
+// touches it while the editor has focus. Such a table shows its Markdown
+// source; every other table is rendered.
+export function tableBlocks(state, focused) {
   const doc = state.doc,
     out = [];
   syntaxTree(state).iterate({
@@ -233,9 +271,9 @@ export function tableBlocks(state) {
       if (node.name !== "Table") return;
       const from = doc.lineAt(node.from).from,
         to = doc.lineAt(node.to).to,
-        active = state.selection.ranges.some(
-          (r) => r.from <= to && r.to >= from,
-        );
+        active =
+          focused &&
+          state.selection.ranges.some((r) => r.from <= to && r.to >= from);
       out.push({ from, to, active, source: doc.sliceString(from, to) });
       return false;
     },
