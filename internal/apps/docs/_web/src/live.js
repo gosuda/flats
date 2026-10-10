@@ -59,8 +59,10 @@ export function activeLines(state, focused) {
 }
 
 // liveDecorations returns unsorted decoration descriptors for the given
-// visible ranges. It is pure so it can be tested without a DOM.
-export function liveDecorations(state, ranges, active) {
+// visible ranges. It is pure so it can be tested without a DOM. links holds
+// the renderer's link rules (markdown.js): syntax the renderer leaves as text
+// keeps its source here too, and a link's href is the URL the renderer uses.
+export function liveDecorations(state, ranges, active, links) {
   const doc = state.doc,
     out = [],
     lined = new Set();
@@ -83,13 +85,13 @@ export function liveDecorations(state, ranges, active) {
       out.push({ kind: "line", from: doc.line(n).from, cls });
     }
   };
-  // A bare address gets the scheme a renderer would give it.
-  const linkMark = (from, to) => {
-    let href = doc.sliceString(from, to);
-    if (!/^[a-z][a-z0-9+.-]*:/i.test(href))
-      href = (href.includes("@") ? "mailto:" : "http://") + href;
-    return { kind: "mark", from, to, cls: "cm-link", href };
-  };
+  const linkMark = (from, to, href) => ({
+    kind: "mark",
+    from,
+    to,
+    cls: "cm-link",
+    href,
+  });
   // Replacements must stay on one line: a plugin may not hide line breaks.
   const hide = (from, to) => {
     if (to > from && !doc.sliceString(from, to).includes("\n"))
@@ -191,7 +193,12 @@ export function liveDecorations(state, ranges, active) {
             // <https://example.com>: the URL between its angle brackets.
             const url = node.node.getChild("URL");
             if (!url) return false;
-            out.push(linkMark(url.from, url.to));
+            const raw = doc.sliceString(url.from, url.to),
+              href = links.destination(
+                /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : "mailto:" + raw,
+              );
+            if (!href) return false;
+            out.push(linkMark(url.from, url.to, href));
             if (!isActive(node.from, node.to)) {
               hide(node.from, url.from);
               hide(url.to, node.to);
@@ -200,8 +207,10 @@ export function liveDecorations(state, ranges, active) {
           }
           case "URL":
             // A bare URL; one inside a link or image is handled there.
-            if (!linkParents.has(node.node.parent?.name))
-              out.push(linkMark(node.from, node.to));
+            if (!linkParents.has(node.node.parent?.name)) {
+              const href = links.bare(doc.sliceString(node.from, node.to));
+              if (href) out.push(linkMark(node.from, node.to, href));
+            }
             return;
           case "Link":
           case "Image": {
@@ -212,14 +221,19 @@ export function liveDecorations(state, ranges, active) {
               while (c.nextSibling());
             const url = parts.find((p) => p.name === "URL"),
               href = url
-                ? unescapeAll(
-                    doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1"),
+                ? links.destination(
+                    unescapeAll(
+                      doc
+                        .sliceString(url.from, url.to)
+                        .replace(/^<(.*)>$/, "$1"),
+                    ),
                   )
                 : "";
             const lm = parts.filter((p) => p.name === "LinkMark");
-            // Only inline links and images with a destination are rendered;
-            // reference links keep their source.
-            if (!url || lm.length < 2) return;
+            // Only inline links and images with a destination the renderer
+            // accepts are rendered; reference links and rejected ones keep
+            // their source.
+            if (!href || lm.length < 2) return;
             const textFrom = lm[0].to,
               textTo = lm[1].from;
             if (name === "Image") {

@@ -4,6 +4,9 @@ import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { activeLines, liveDecorations, tableBlocks } from "./live.js";
+import { createMarkdown, linkRules } from "./markdown.js";
+
+const links = linkRules(createMarkdown());
 
 function decorate(text, cursor) {
   const state = EditorState.create({
@@ -14,7 +17,12 @@ function decorate(text, cursor) {
   });
   ensureSyntaxTree(state, state.doc.length, 5000);
   const active = activeLines(state, cursor !== undefined);
-  return liveDecorations(state, [{ from: 0, to: state.doc.length }], active)
+  return liveDecorations(
+    state,
+    [{ from: 0, to: state.doc.length }],
+    active,
+    links,
+  )
     .map((d) => ({ ...d, text: text.slice(d.from, d.to) }))
     .sort((a, b) => a.from - b.from || a.kind.localeCompare(b.kind));
 }
@@ -123,17 +131,17 @@ test("an empty link label keeps its source and adds no empty mark", () => {
   for (const d of ds) if (d.kind === "mark") assert.ok(d.to > d.from);
 });
 
-test("autolinks and bare URLs become links", () => {
+test("autolinks and bare URLs become links as the renderer links them", () => {
   const ds = decorate(
     "<https://a.example> and https://b.example/x and www.c.example\n\nz",
   );
-  const links = ds.filter((d) => d.cls === "cm-link");
+  const found = ds.filter((d) => d.cls === "cm-link");
+  // markdown-it does not linkify a bare www. address, so neither do we.
   assert.deepEqual(
-    links.map((d) => [d.text, d.href]),
+    found.map((d) => [d.text, d.href]),
     [
       ["https://a.example", "https://a.example"],
       ["https://b.example/x", "https://b.example/x"],
-      ["www.c.example", "http://www.c.example"],
     ],
   );
   assert.deepEqual(hidden(ds), ["<", ">"]);
@@ -151,7 +159,7 @@ test("line decorations stay within the visible range", () => {
     from: state.doc.line(100).from,
     to: state.doc.line(120).to,
   };
-  const lines = liveDecorations(state, [visible], []).filter(
+  const lines = liveDecorations(state, [visible], [], links).filter(
     (d) => d.kind === "line",
   );
   assert.equal(lines.length, 21);
@@ -193,4 +201,21 @@ test("destinations decode escapes and entities like the renderer", () => {
     "https://e.test/?a=1&b=_2",
   );
   assert.equal(ds.find((d) => d.kind === "image").src, "a_b.png");
+});
+
+test("links and images the renderer rejects keep their source", () => {
+  const ds = decorate(
+    "[x](javascript:alert(1)) ![a](data:image/png;base64,AA) <javascript:x>\n\nz",
+  );
+  assert.deepEqual(hidden(ds), []);
+  assert.equal(ds.filter((d) => d.kind === "image").length, 0);
+  assert.equal(ds.filter((d) => d.cls === "cm-link").length, 0);
+});
+
+test("destinations are the normalized URL the renderer links to", () => {
+  const ds = decorate("[x](foo\\bar) [y](a b) <a@b.example>\n\nz");
+  assert.deepEqual(
+    ds.filter((d) => d.cls === "cm-link").map((d) => d.href),
+    ["foo%5Cbar", "mailto:a@b.example"],
+  );
 });

@@ -142,14 +142,19 @@ const hidden = Decoration.replace({}),
   bullet = Decoration.replace({ widget: new Bullet() }),
   rule = Decoration.replace({ widget: new Rule() });
 
-// livePreview renders Markdown in place. resolve maps a link or image
-// destination to a safe absolute URL, or "" to refuse it; render turns a
-// Markdown table into safe HTML.
-export function livePreview(resolve, render) {
+// livePreview renders Markdown in place. links holds the renderer's link
+// rules (markdown.js), resolve makes an accepted URL absolute against the
+// document, and render turns a Markdown table into safe HTML.
+export function livePreview(links, resolve, render) {
   const build = (view) => {
     const active = activeLines(view.state, view.hasFocus),
       ranges = [];
-    for (const d of liveDecorations(view.state, view.visibleRanges, active)) {
+    for (const d of liveDecorations(
+      view.state,
+      view.visibleRanges,
+      active,
+      links,
+    )) {
       switch (d.kind) {
         case "line":
           ranges.push(Decoration.line({ class: d.cls }).range(d.from));

@@ -4,19 +4,17 @@ import { EditorView, keymap, drawSelection } from "@codemirror/view";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
-import MarkdownIt from "markdown-it";
 import { Provider } from "./provider.js";
 import { livePreview } from "./live-view.js";
+import { createMarkdown, linkRules } from "./markdown.js";
 import "./client.css";
 const $ = (s) => document.querySelector(s),
   path = document.body.dataset.doc,
   initialReadonly = document.body.dataset.readonly === "true";
 const doc = new Y.Doc(),
   text = doc.getText("markdown"),
-  md = new MarkdownIt({ html: false, linkify: true, typographer: false });
-const defaultValidate = md.validateLink,
-  unsafeScheme = /^\s*(?:javascript|vbscript|file|data):/i;
-md.validateLink = (link) => defaultValidate(link) && !unsafeScheme.test(link);
+  md = createMarkdown(),
+  links = linkRules(md);
 // Assets and relative links resolve against the Markdown file's own directory.
 const resolveURL = (value) => {
   try {
@@ -25,9 +23,6 @@ const resolveURL = (value) => {
     return "";
   }
 };
-// The editor applies the same link rules as the rendered view.
-const safeURL = (value) =>
-  value && md.validateLink(md.normalizeLink(value)) ? resolveURL(value) : "";
 const defaultLink =
   md.renderer.rules.link_open ||
   ((tokens, i, options, env, self) => self.renderToken(tokens, i, options));
@@ -162,7 +157,7 @@ const provider = new Provider(doc, path, {
             drawSelection(),
             EditorView.lineWrapping,
             markdown({ base: markdownLanguage }),
-            livePreview(safeURL, (source) => md.render(source)),
+            livePreview(links, resolveURL, (source) => md.render(source)),
             access.of(EditorState.readOnly.of(false)),
             keymap.of([...yUndoManagerKeymap, ...defaultKeymap, indentWithTab]),
             yCollab(text, provider.awareness, { undoManager }),
