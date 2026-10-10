@@ -37,7 +37,7 @@
     --border: #e3e3e6;
     --border-strong: #cfcfd4;
     --text: #0d0d0d;
-    --muted: #6b6b70;
+    --muted: #66666b;
     --accent: #0d0d0d;
     --accent-text: #ffffff;
     --link: #1d5bd8;
@@ -174,6 +174,7 @@ label { font-weight: 500; }
 .unit { color: var(--muted); font-size: 13.5px; white-space: nowrap; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 12px; }
 .form-grid .actions { flex-direction: row; align-items: center; justify-content: flex-end; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .field-group { border: 0; margin: 0 0 20px; padding: 0; min-width: 0; }
 .field-group legend { padding: 0; font-size: 15px; font-weight: 600; }
 .field-error { color: var(--danger); font-size: 13px; }
@@ -442,14 +443,32 @@ td > .badge:first-child { margin-left: 0; }
 
 @media (max-width: 720px) {
   .topbar { padding: 10px 16px; }
+  .topnav a { display: inline-flex; align-items: center; min-height: 44px; }
   .page { padding: 20px 16px 48px; }
   h1 { font-size: 24px; }
+  .btn, .btn-small, .btn-pill { min-height: 44px; }
+  .icon-btn, .icon-btn.small { width: 44px; height: 44px; }
+  .toolbar, .search { min-width: 0; }
+  .search input { min-height: 44px; }
+  .segmented { flex: none; }
+  .seg { min-width: 44px; min-height: 44px; }
   .list-head { display: none; }
-  .flats-list .flat { grid-template-columns: 40px minmax(0, 1fr) auto; grid-template-areas: "type main actions" "type vis actions"; gap: 2px 12px; padding: 10px 8px; }
-  .flats-list .type-icon { grid-area: type; }
+  .flats-list .flat {
+    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-areas: "type main" ". vis" ". actions";
+    align-items: start; gap: 6px 12px; padding: 12px 8px;
+  }
+  .flats-list .type-icon { grid-area: type; width: 44px; height: 44px; }
   .flats-list .flat-main { grid-area: main; }
+  .flats-list .flat-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
   .flats-list .flat-vis { grid-area: vis; font-size: 13px; }
-  .flats-list .row-actions { grid-area: actions; }
+  .flats-list .row-actions { grid-area: actions; justify-content: flex-start; flex-wrap: wrap; min-width: 0; }
+  .flats-grid .flat {
+    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-areas: "preview preview" "type main" "vis vis" "actions actions";
+  }
+  .flats-grid .type-icon { width: 44px; height: 44px; }
+  .flats-grid .row-actions { justify-content: flex-start; flex-wrap: wrap; }
   .flat-head { flex-direction: column; gap: 12px; }
   .card { padding: 16px; }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
@@ -457,6 +476,9 @@ td > .badge:first-child { margin-left: 0; }
   .log-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
   .log-row .log-msg, .log-row details { flex-basis: 100%; }
   .flat-sub { white-space: normal; }
+  .plain-row { align-items: flex-start; flex-direction: column; }
+  .copy-row { flex-wrap: wrap; }
+  .form-actions .btn { white-space: normal; text-align: center; }
 }
 
 @media (max-width: 400px) {
@@ -545,17 +567,28 @@ input::placeholder { color: var(--muted); opacity: 1; }
   .site-head h1 { font-size: 26px; }
   .site-head .type-icon-large { width: 48px; height: 48px; border-radius: 12px; }
   .site-tabs { margin-bottom: 32px; gap: 4px; }
-  .site-tabs a { padding: 8px 12px; }
+  .site-tabs a { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 12px; }
   .setting-row { align-items: flex-start; flex-direction: column; gap: 12px; }
-  .setting-control { justify-content: flex-start; width: 100%; }
+  .setting-control { justify-content: flex-start; flex-wrap: wrap; width: 100%; }
+  .provider-head { flex-direction: column; }
   .site-name-form { width: 100%; }
   .analytics-panel { padding: 14px 12px; }
   .analytics-metrics { gap: 20px; }
   .traffic-chart { min-height: 180px; }
   .traffic-label { font-size: 20px; }
   .share-content { padding: 18px; }
+  .share-footer-actions { flex-wrap: wrap; }
 }
 .site-page #env form[hidden], .site-page #secrets form[hidden] { display: none; }
 .site-page #secrets > div > .btn:first-child { float: right; margin-top: -40px; }
 
 .env-value { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
+
+@media (max-width: 600px) {
+  .site-page #secrets > div > .btn:first-child { float: none; margin: 0 0 16px; }
+}
+
+@media (max-width: 460px) {
+  .site-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .site-tabs a { justify-content: center; }
+}
