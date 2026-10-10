@@ -185,8 +185,36 @@ export function liveDecorations(state, ranges, active, links) {
           case "ListMark": {
             if (isActive(node.from, node.to)) return;
             const text = doc.sliceString(node.from, node.to);
-            if (/^[-*+]$/.test(text))
+            if (/^[-*+]$/.test(text)) {
               out.push({ kind: "bullet", from: node.from, to: node.to });
+              return;
+            }
+            // An ordered item shows the number the renderer gives it: the
+            // list's first number plus the item's position, so lazy
+            // "1. 1. 1." numbering reads 1, 2, 3.
+            const item = node.node.parent,
+              list = item?.parent;
+            if (item?.name !== "ListItem" || list?.name !== "OrderedList")
+              return;
+            let start = null,
+              index = 0;
+            for (let c = list.firstChild; c; c = c.nextSibling) {
+              if (c.name !== "ListItem") continue;
+              if (start === null) {
+                const mark = c.getChild("ListMark");
+                start = mark
+                  ? parseInt(doc.sliceString(mark.from, mark.to), 10)
+                  : 1;
+              }
+              if (c.from === item.from) break;
+              index++;
+            }
+            out.push({
+              kind: "number",
+              from: node.from,
+              to: node.to,
+              label: start + index + ".",
+            });
             return;
           }
           case "Autolink": {
@@ -245,7 +273,7 @@ export function liveDecorations(state, ranges, active, links) {
                 from: node.from,
                 to: node.to,
                 src: href,
-                alt: doc.sliceString(textFrom, textTo),
+                alt: links.plainText(doc.sliceString(textFrom, textTo)),
               });
               return false;
             }

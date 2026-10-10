@@ -21,6 +21,22 @@ class Bullet extends WidgetType {
   }
 }
 
+class ListNumber extends WidgetType {
+  constructor(text) {
+    super();
+    this.text = text;
+  }
+  eq(other) {
+    return other.text === this.text;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-list-number";
+    span.textContent = this.text;
+    return span;
+  }
+}
+
 class Rule extends WidgetType {
   eq() {
     return true;
@@ -173,6 +189,14 @@ export function livePreview(links, resolve, render) {
           break;
         case "bullet":
           ranges.push(bullet.range(d.from, d.to));
+          break;
+        case "number":
+          ranges.push(
+            Decoration.replace({ widget: new ListNumber(d.label) }).range(
+              d.from,
+              d.to,
+            ),
+          );
           break;
         case "rule":
           ranges.push(rule.range(d.from, d.to));

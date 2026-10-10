@@ -21,6 +21,11 @@ export function linkRules(md) {
       const normalized = md.normalizeLink(href);
       return md.validateLink(normalized) ? normalized : "";
     },
+    // plainText is a Markdown label as the renderer writes it into alt.
+    plainText(label) {
+      const tokens = md.parseInline(label, {})[0]?.children || [];
+      return md.renderer.renderInlineAsText(tokens, md.options, {});
+    },
     bare(text) {
       const m = md.linkify.match(text);
       if (

@@ -219,3 +219,25 @@ test("destinations are the normalized URL the renderer links to", () => {
     ["foo%5Cbar", "mailto:a@b.example"],
   );
 });
+
+test("ordered items show the number the renderer gives them", () => {
+  const ds = decorate("3. a\n1. b\n1. c\n\nx");
+  assert.deepEqual(
+    ds.filter((d) => d.kind === "number").map((d) => [d.label, d.from]),
+    [
+      ["3.", 0],
+      ["4.", 5],
+      ["5.", 10],
+    ],
+  );
+  // The cursor's line shows the stored marker.
+  assert.equal(
+    decorate("1. a\n1. b\n\nx", 6).filter((d) => d.kind === "number").length,
+    1,
+  );
+});
+
+test("image alt text is the label as the renderer writes it", () => {
+  const ds = decorate("![**Revenue** &amp; costs](chart.png)\n\nx");
+  assert.equal(ds.find((d) => d.kind === "image").alt, "Revenue & costs");
+});
