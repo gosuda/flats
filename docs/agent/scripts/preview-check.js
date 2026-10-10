@@ -27,20 +27,30 @@
   };
   const lum = ([r, g, b]) => [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
     .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
-  const fade = (el) => { let f = 1; for (let e = el; e; e = e.parentElement) f *= Number(style(e).opacity); return f; };
   const over = (under, [r, g, b, a]) => [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a), 1];
-  const background = (el) => { // the color behind el's text: background layers composited with
-    const layers = [];             // their opacity; null if an image is in the way or nothing opaque
+  const mixed = (a, b, t) => a.map((v, k) => v * (1 - t) + b[k] * t);
+  // The pixel colors behind and of el's text, composed the way CSS does: each element's background
+  // and content form a group that is faded onto its backdrop by its opacity. null when a background
+  // image is in the way or no element in the chain paints an opaque background.
+  const colors = (el, text) => {
+    const chain = [];
     for (let e = el; e; e = e.parentElement) {
       const s = style(e);
       if (s.backgroundImage !== "none") return null;
-      const c = rgba(s.backgroundColor);
-      c[3] *= fade(e);
-      if (c[3] === 0) continue;
-      layers.push(c);
-      if (c[3] > 0.99) return layers.reverse().reduce(over);
+      chain.push({ bg: rgba(s.backgroundColor), opacity: Number(s.opacity) });
     }
-    return null;
+    if (!chain.some((c) => c.bg[3] > 0.99)) return null;
+    const dark = /dark/.test(style(root).colorScheme) && out.scheme === "dark";
+    const canvasColor = dark ? [18, 18, 18, 1] : [255, 255, 255, 1];
+    const render = (withText) => {
+      const paint = (i, backdrop) => {
+        const base = over(backdrop, chain[i].bg);
+        const content = i > 0 ? paint(i - 1, base) : withText ? over(base, text) : base;
+        return mixed(backdrop, content, chain[i].opacity);
+      };
+      return paint(chain.length - 1, canvasColor);
+    };
+    return { bg: render(false), fg: render(true) };
   };
   const painted = (el) => { const s = style(el); return s.backgroundImage !== "none" || rgba(s.backgroundColor)[3] > 0.99; };
 
@@ -91,15 +101,13 @@
         fix: "readable content should be visible at rest, not parked for a scroll observer; ignore closed menus and tooltips" }); }
       continue;
     }
-    const bg = background(el);
-    if (!bg) continue;
-    const fg = rgba(s.color);
-    fg[3] *= fade(el);
-    const mix = over(bg, fg);
-    const [hi, lo] = [lum(mix), lum(bg)].sort((a, b) => b - a);
+    const px = colors(el, rgba(s.color));
+    if (!px) continue;
+    const bg = px.bg;
+    const [hi, lo] = [lum(px.fg), lum(bg)].sort((a, b) => b - a);
     const ratio = (hi + 0.05) / (lo + 0.05);
     const large = parseFloat(s.fontSize) >= 24 || (parseFloat(s.fontSize) >= 18.66 && Number(s.fontWeight) >= 700);
-    const key = s.color + "|" + bg.join();
+    const key = s.color + "|" + bg.map(Math.round).join();
     if (ratio < (large ? 3 : 4.5) && !pairs.has(key)) {
       pairs.add(key);
       add("contrast", { element: name(el), text: n.data.trim().slice(0, 40), ratio: Math.round(ratio * 100) / 100,
