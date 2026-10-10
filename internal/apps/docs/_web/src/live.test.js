@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { activeLines, liveDecorations, tableBlocks } from "./live.js";
+import { activeLines, linkAt, liveDecorations, tableBlocks } from "./live.js";
 import { createMarkdown, linkRules } from "./markdown.js";
 
 const links = linkRules(createMarkdown());
@@ -116,13 +116,13 @@ test("tables are found as whole lines and reveal under the selection", () => {
     ensureSyntaxTree(s, s.doc.length, 5000);
     return s;
   };
-  const [table] = tableBlocks(state(0), true);
+  const [table] = tableBlocks(state(0), true, links);
   assert.equal(table.source, "| a | b |\n| - | - |\n| 1 | 2 |");
   assert.equal(table.active, false);
   const inside = state(text.indexOf("1 |"));
-  assert.equal(tableBlocks(inside, true).at(0).active, true);
+  assert.equal(tableBlocks(inside, true, links).at(0).active, true);
   // Without focus the table renders even with the cursor inside it.
-  assert.equal(tableBlocks(inside, false).at(0).active, false);
+  assert.equal(tableBlocks(inside, false, links).at(0).active, false);
 });
 
 test("an empty link label keeps its source and adds no empty mark", () => {
@@ -270,7 +270,7 @@ test("tables carry the document's reference definitions", () => {
     extensions: [markdown({ base: markdownLanguage })],
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
-  const [table] = tableBlocks(s, false);
+  const [table] = tableBlocks(s, false, links);
   assert.equal(table.context, "[id]: https://e.example");
   const html = createMarkdown().render(table.source + "\n\n" + table.context);
   assert.match(html, /<a href="https:\/\/e\.example">docs<\/a>/);
@@ -293,4 +293,33 @@ test("a bare URL links as far as the renderer links it", () => {
   const link = ds.find((d) => d.cls === "cm-link");
   assert.equal(link.text, "https://example.com?x=1");
   assert.equal(link.href, "https://example.com?x=1");
+});
+
+test("tables carry only the definitions the renderer accepts", () => {
+  const text =
+    "| a |\n| - |\n| [x][ok] |\n\n[ok]: https://e.example\n[bad]: javascript:alert(1)\n";
+  const s = EditorState.create({
+    doc: text,
+    extensions: [markdown({ base: markdownLanguage })],
+  });
+  ensureSyntaxTree(s, s.doc.length, 5000);
+  assert.equal(
+    tableBlocks(s, false, links)[0].context,
+    "[ok]: https://e.example",
+  );
+});
+
+test("linkAt finds the link under the cursor for the keyboard", () => {
+  const text = "see [docs](guide.md) and https://e.example\n\nz";
+  const s = EditorState.create({
+    doc: text,
+    extensions: [markdown({ base: markdownLanguage })],
+  });
+  ensureSyntaxTree(s, s.doc.length, 5000);
+  assert.equal(linkAt(s, text.indexOf("docs") + 1, links), "guide.md");
+  assert.equal(
+    linkAt(s, text.indexOf("e.example"), links),
+    "https://e.example",
+  );
+  assert.equal(linkAt(s, 1, links), "");
 });

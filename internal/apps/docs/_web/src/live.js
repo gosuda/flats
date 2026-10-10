@@ -35,6 +35,24 @@ const syntax = new Set([
   "QuoteMark",
 ]);
 
+// acceptedDestination is the URL the renderer links a destination node to,
+// or "" when it rejects it.
+function acceptedDestination(doc, url, links) {
+  return links.destination(
+    unescapeAll(doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1")),
+  );
+}
+
+// linkAt returns the href of the rendered link at pos, or "". It lets the
+// keyboard open the link under the cursor.
+export function linkAt(state, pos, links) {
+  const line = state.doc.lineAt(pos);
+  const link = liveDecorations(state, [line], [], links).find(
+    (d) => d.cls === "cm-link" && d.from <= pos && pos <= d.to,
+  );
+  return link ? link.href : "";
+}
+
 // Nodes whose URL child is not a bare address.
 const linkParents = new Set(["Link", "Image", "Autolink", "LinkReference"]);
 
@@ -192,11 +210,7 @@ export function liveDecorations(state, ranges, active, links) {
             if (
               isActive(node.from, node.to) ||
               !url ||
-              !links.destination(
-                unescapeAll(
-                  doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1"),
-                ),
-              )
+              !acceptedDestination(doc, url, links)
             )
               return false;
             line(node.from, node.to, "cm-collapsed");
@@ -378,14 +392,18 @@ const leaves = new Set([
 // touches it while the editor has focus. Such a table shows its Markdown
 // source; every other table is rendered. context holds the document's link
 // reference definitions, which a table's reference links need to render.
-export function tableBlocks(state, focused) {
+export function tableBlocks(state, focused, links) {
   const doc = state.doc,
     out = [],
     definitions = [];
   syntaxTree(state).iterate({
     enter(node) {
       if (node.name === "LinkReference") {
-        definitions.push(doc.sliceString(node.from, node.to));
+        // Only definitions the renderer accepts; a rejected one renders as
+        // text where it is written and must not repeat under every table.
+        const url = node.node.getChild("URL");
+        if (url && acceptedDestination(doc, url, links))
+          definitions.push(doc.sliceString(node.from, node.to));
         return false;
       }
       if (leaves.has(node.name)) return false;

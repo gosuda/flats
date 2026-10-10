@@ -2,12 +2,18 @@
 import {
   Decoration,
   EditorView,
+  keymap,
   ViewPlugin,
   WidgetType,
 } from "@codemirror/view";
-import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
+import {
+  EditorSelection,
+  Prec,
+  StateEffect,
+  StateField,
+} from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
-import { activeLines, liveDecorations, tableBlocks } from "./live.js";
+import { activeLines, linkAt, liveDecorations, tableBlocks } from "./live.js";
 
 class Bullet extends WidgetType {
   eq() {
@@ -127,10 +133,10 @@ class TableWidget extends WidgetType {
 // may not replace line breaks. The field tracks focus through an effect, so a
 // table renders again when the editor loses focus.
 const setFocus = StateEffect.define();
-function tables(render) {
+function tables(render, links) {
   const build = (state, focused) =>
     Decoration.set(
-      tableBlocks(state, focused)
+      tableBlocks(state, focused, links)
         .filter((t) => !t.active)
         .map((t) =>
           Decoration.replace({
@@ -187,7 +193,13 @@ export function livePreview(links, resolve, render) {
             Decoration.mark(
               d.href === undefined
                 ? { class: d.cls }
-                : { class: d.cls, attributes: { "data-href": d.href } },
+                : {
+                    class: d.cls,
+                    attributes: {
+                      "data-href": d.href,
+                      title: "Open: Ctrl/⌘-click, or Ctrl/⌘-Enter",
+                    },
+                  },
             ).range(d.from, d.to),
           );
           break;
@@ -221,7 +233,7 @@ export function livePreview(links, resolve, render) {
     return Decoration.set(ranges, true);
   };
   return [
-    tables(render),
+    tables(render, links),
     ViewPlugin.fromClass(
       class {
         constructor(view) {
@@ -239,6 +251,23 @@ export function livePreview(links, resolve, render) {
         }
       },
       { decorations: (p) => p.decorations },
+    ),
+    // Ctrl/Cmd-Enter opens the link under the cursor, for keyboard users;
+    // elsewhere it keeps its usual meaning.
+    Prec.high(
+      keymap.of([
+        {
+          key: "Mod-Enter",
+          run(view) {
+            const sel = view.state.selection.main;
+            if (!sel.empty) return false;
+            const href = resolve(linkAt(view.state, sel.head, links));
+            if (!href) return false;
+            window.open(href, "_blank", "noopener,noreferrer");
+            return true;
+          },
+        },
+      ]),
     ),
     // Cmd/Ctrl-click opens a link; a plain click places the cursor to edit it.
     EditorView.domEventHandlers({
