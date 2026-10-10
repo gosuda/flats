@@ -40,9 +40,10 @@ var errNameExists = errors.New("the name exists")
 // backend is the zrok account and overlay operations Net uses. Tests
 // substitute a fake; the real one is sdkBackend.
 type backend interface {
-	// NameHolder reports whether the account holds name in namespace, and
-	// the token of the share that currently holds it, or "".
-	NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error)
+	// LookupName reports whether the account holds name in namespace, the
+	// token of the share that currently holds it ("" for none) and when the
+	// reservation was created.
+	LookupName(ctx context.Context, namespace, name string) (info nameInfo, found bool, err error)
 	// CreateName reserves name in namespace for the account. It returns
 	// errNameExists when the name exists already, an errNotCreated error
 	// when the controller refused (such as the account's name limit), or
@@ -185,24 +186,30 @@ func (b *sdkBackend) CreateName(ctx context.Context, namespace, name string) err
 	return nil
 }
 
-// NameHolder looks name up among the account's names in the namespace.
-func (b *sdkBackend) NameHolder(ctx context.Context, namespace, name string) (holder string, found bool, err error) {
+// nameInfo is what the controller reports about one of the account's names.
+type nameInfo struct {
+	Holder    string // token of the share holding the name, or ""
+	CreatedAt int64  // when this reservation was created; a recreated name differs
+}
+
+// LookupName looks name up among the account's names in the namespace.
+func (b *sdkBackend) LookupName(ctx context.Context, namespace, name string) (nameInfo, bool, error) {
 	c, err := b.zrokClient(ctx)
 	if err != nil {
-		return "", false, err
+		return nameInfo{}, false, err
 	}
 	req := share.NewListNamesForNamespaceParamsWithContext(ctx)
 	req.NamespaceToken = namespace
 	resp, err := c.Share.ListNamesForNamespace(req, b.auth())
 	if err != nil {
-		return "", false, fmt.Errorf("list names in namespace %q: %w", namespace, err)
+		return nameInfo{}, false, fmt.Errorf("list names in namespace %q: %w", namespace, err)
 	}
 	for _, n := range resp.Payload {
 		if n != nil && n.Name == name {
-			return n.ShareToken, true, nil
+			return nameInfo{Holder: n.ShareToken, CreatedAt: n.CreatedAt}, true, nil
 		}
 	}
-	return "", false, nil
+	return nameInfo{}, false, nil
 }
 
 func (b *sdkBackend) ReleaseName(ctx context.Context, namespace, name string) error {

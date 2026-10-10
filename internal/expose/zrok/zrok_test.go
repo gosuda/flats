@@ -33,6 +33,9 @@ type fakeBackend struct {
 	createErr  error
 	loseShare  bool              // Share creates the share, then fails as if its response was lost
 	targets    map[string]string // token -> share target
+	createdAt  map[string]int64  // name key -> creation time
+	clock      int64
+	noEndpoint bool
 	account    string
 	unshared   []string
 	released   []string
@@ -41,7 +44,7 @@ type fakeBackend struct {
 
 func newFake() *fakeBackend {
 	return &fakeBackend{names: map[string]string{}, foreign: map[string]bool{}, shares: map[string]string{},
-		lns: map[string]net.Listener{}, targets: map[string]string{}, account: "acct"}
+		lns: map[string]net.Listener{}, targets: map[string]string{}, createdAt: map[string]int64{}, account: "acct"}
 }
 
 // key is how the fake stores a name: "<namespace>/<name>".
@@ -57,14 +60,16 @@ func (f *fakeBackend) CreateName(_ context.Context, namespace, name string) erro
 		return errNameExists
 	}
 	f.names[key(namespace, name)] = ""
+	f.clock++
+	f.createdAt[key(namespace, name)] = f.clock
 	return nil
 }
 
-func (f *fakeBackend) NameHolder(_ context.Context, namespace, name string) (string, bool, error) {
+func (f *fakeBackend) LookupName(_ context.Context, namespace, name string) (nameInfo, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	holder, ok := f.names[key(namespace, name)]
-	return holder, ok, nil
+	return nameInfo{Holder: holder, CreatedAt: f.createdAt[key(namespace, name)]}, ok, nil
 }
 
 func (f *fakeBackend) ReleaseName(_ context.Context, namespace, name string) error {
@@ -94,6 +99,9 @@ func (f *fakeBackend) Share(_ context.Context, namespace, name, target string) (
 	if f.loseShare {
 		f.loseShare = false
 		return "", nil, errors.New("share response timed out")
+	}
+	if f.noEndpoint {
+		return token, nil, nil
 	}
 	return token, []string{name + "." + namespace + ".example"}, nil
 }
@@ -1010,5 +1018,62 @@ func TestRefusedNameCreationLeavesNoPendingRecord(t *testing.T) {
 	f.names["public/blog"] = ""
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "not by this Flats host") {
 		t.Fatalf("adopted an operator's name: %v", err)
+	}
+}
+
+func TestRecreatedNameIsNeitherUsedNorReleased(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Stop("blog"); err != nil {
+		t.Fatal(err)
+	}
+	// The operator deletes the name and reserves the spelling again.
+	f.mu.Lock()
+	f.clock++
+	f.createdAt["public/blog"] = f.clock
+	f.mu.Unlock()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "reserved again") {
+		t.Fatalf("Serve: %v", err)
+	}
+	if err := n.Retire("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.names["public/blog"]; !ok || len(f.released) != 0 {
+		t.Fatalf("released a recreated name: names=%v released=%v", f.names, f.released)
+	}
+}
+
+func TestUnrecordedNameCreationIsRolledBack(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	n.failWrite = func(rec record) error {
+		if rec.Created {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok := f.names["public/blog"]; ok || reserved(t, n, "blog") {
+		t.Fatalf("created name kept without a record: names=%v", f.names)
+	}
+}
+
+func TestShareWithoutEndpointIsNotServed(t *testing.T) {
+	f := newFake()
+	f.noEndpoint = true
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "no frontend endpoint") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(f.shares) != 0 || n.URL("blog") != "" {
+		t.Fatalf("share without an address kept: %v", f.shares)
 	}
 }

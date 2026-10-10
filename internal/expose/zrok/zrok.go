@@ -226,15 +226,20 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	if !known {
 		rec = record{Account: n.b.Account(), Namespace: ns}
 	}
-	holder, found, err := n.b.NameHolder(ctx, ns, slug)
+	info, found, err := n.b.LookupName(ctx, ns, slug)
 	if err != nil {
 		return "", fmt.Errorf("zrok: %s: %w", slug, err)
 	}
+	holder := info.Holder
 	switch {
 	case found && !known:
 		// Reserved in this account, but not by this host: by the operator
 		// or by another Flats host. Using it would take over its URL.
 		return "", fmt.Errorf("zrok: %s: the name is reserved in this zrok account, but not by this Flats host; release it (zrok2 delete name) or rename the flat", slug)
+	case found && rec.Created && info.CreatedAt != rec.NameCreatedAt:
+		// The name this host created was deleted and reserved again elsewhere.
+		path, _ := recordPath(n.cfg.Dir, slug)
+		return "", fmt.Errorf("zrok: %s: the name was deleted and reserved again outside this Flats host; release it with `zrok2 delete name` and remove %s, or rename the flat", slug, path)
 	case found && rec.Pending:
 		// An earlier attempt to create it got no answer. The name may be the
 		// one it created, or one another client reserved since; zrok cannot
@@ -268,8 +273,22 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 			// keeps that fact; a later Serve that finds the name refuses it.
 			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		}
-		rec.Created, rec.Pending = true, false
-		if err := n.writeRecord(slug, rec); err != nil {
+		// This attempt created the name: record when, so a later deletion and
+		// re-reservation elsewhere is told apart. Undo the creation if that
+		// cannot be recorded.
+		created, ok, err := n.b.LookupName(ctx, ns, slug)
+		if err == nil && !ok {
+			err = errors.New("the created name is not listed")
+		}
+		if err == nil {
+			rec.Created, rec.Pending, rec.NameCreatedAt = true, false, created.CreatedAt
+			err = n.writeRecord(slug, rec)
+		}
+		if err != nil {
+			if rerr := n.b.ReleaseName(ctx, ns, slug); rerr != nil {
+				return "", fmt.Errorf("zrok: %s: record name: %w (and releasing it failed: %v)", slug, err, rerr)
+			}
+			_ = n.dropRecord(slug)
 			return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
 		}
 	}
@@ -312,10 +331,18 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		}
 		return "", fmt.Errorf("zrok: %s: record share: %w", slug, err)
 	}
-	url := ""
-	if len(endpoints) > 0 {
-		url = absoluteURL(endpoints[0])
+	if len(endpoints) == 0 || endpoints[0] == "" {
+		// Visitors would have no address; do not report the route as open.
+		if err := n.b.Unshare(ctx, token); err != nil {
+			n.mu.Lock()
+			n.orphans[slug], n.unsettled[slug] = token, ns
+			n.mu.Unlock()
+		} else {
+			n.forgetToken(slug, token)
+		}
+		return "", fmt.Errorf("zrok: %s: the controller returned no frontend endpoint for the share", slug)
 	}
+	url := absoluteURL(endpoints[0])
 	runCtx, cancel := context.WithCancel(context.Background())
 	e = &entry{slug: slug, token: token, url: url, handler: &handlerBox{h: h},
 		cancel: cancel, done: make(chan struct{}), state: stateStarting, servers: map[*http.Server]struct{}{}}
@@ -517,10 +544,11 @@ func (n *Net) setUnsettled(slug, ns string) {
 func (n *Net) settle(slug, ns string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
 	defer cancel()
-	holder, found, err := n.b.NameHolder(ctx, ns, slug)
+	info, found, err := n.b.LookupName(ctx, ns, slug)
 	if err != nil {
 		return fmt.Errorf("zrok: %s: %w", slug, err)
 	}
+	holder := info.Holder
 	if found && holder != "" {
 		rec, _, _ := n.readRecord(slug)
 		owned, err := n.ownsShare(ctx, slug, rec, holder)
@@ -575,10 +603,14 @@ func (n *Net) release(ctx context.Context, slug string, rec record) error {
 	if err != nil {
 		return err
 	}
-	holder, found, err := n.b.NameHolder(ctx, rec.Namespace, slug)
+	info, found, err := n.b.LookupName(ctx, rec.Namespace, slug)
 	if err != nil {
 		return err
 	}
+	holder := info.Holder
+	// Release only the reservation this host created, not one made again
+	// under the same spelling after it was deleted.
+	ours := rec.Created && info.CreatedAt == rec.NameCreatedAt
 	owned := false
 	if found && holder != "" {
 		if owned, err = n.ownsShare(ctx, slug, rec, holder); err != nil {
@@ -592,18 +624,18 @@ func (n *Net) release(ctx context.Context, slug string, rec record) error {
 				return fmt.Errorf("remove share %s: %w", holder, err)
 			}
 			n.forgetOrphan(slug, holder)
-			if rec.Created {
+			if ours {
 				if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 					return err
 				}
 			}
 		case holder != "":
 			// Another share uses the name now; leave it.
-		case rec.Created:
+		case ours:
 			if err := n.b.ReleaseName(ctx, rec.Namespace, slug); err != nil {
 				return err
 			}
-			// A pending name is left: it may be another client's.
+			// A pending or recreated name is left: it may be another client's.
 		}
 	}
 	return n.dropRecord(slug)
@@ -672,7 +704,10 @@ type record struct {
 	Namespace string `json:"namespace"`
 	Created   bool   `json:"created"`           // Flats created the name, so it may release it
 	Pending   bool   `json:"pending,omitempty"` // a creation attempt got no answer; ownership unknown
-	Token     string `json:"token,omitempty"`   // a share Flats created and has not deleted yet
+	// NameCreatedAt is the controller's creation time of the reservation
+	// Flats created, to tell it from one made again after a deletion.
+	NameCreatedAt int64  `json:"name_created_at,omitempty"`
+	Token         string `json:"token,omitempty"` // a share Flats created and has not deleted yet
 }
 
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)

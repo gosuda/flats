@@ -233,7 +233,11 @@ as pending. An `errNameExists` answer or another refusal drops the record.
 If the request got no answer and the name exists later, zrok cannot tell
 whether this attempt or another client created it: `Serve` refuses it and
 asks the operator to release it, and `Retire` leaves the name and drops only
-the record. A share whose creation
+the record. A created name is recorded with the controller's creation time;
+if it cannot be recorded, the name is released again. A name deleted and
+reserved again under the same spelling has another creation time, so it is
+neither used nor released. A share the controller returns without a
+frontend endpoint is deleted and the open fails. A share whose creation
 failed, or whose rollback failed, is kept as unsettled: `Stop` and process
 shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
 `Stop` even without a registered zrok route, so the rollback of a failed
