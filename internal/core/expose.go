@@ -61,7 +61,14 @@ const (
 	ProviderTailscale ProviderID = "tailscale"
 	ProviderFunnel    ProviderID = "tailscale-funnel"
 	ProviderPortal    ProviderID = "portal"
+	ProviderZrok      ProviderID = "zrok"
 )
+
+// PublicProvider reports whether id serves visitors on the internet
+// (Tailscale Funnel, Portal or zrok).
+func PublicProvider(id ProviderID) bool {
+	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok
+}
 
 // ExposureAudience selects the content a provider serves.
 type ExposureAudience string

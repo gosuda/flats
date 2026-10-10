@@ -41,7 +41,7 @@ const (
 
 // Network providers that network.permitted may name, in canonical order.
 // Local is always available and is not listed.
-var providers = []string{"tailscale", "tailscale-funnel", "portal"}
+var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok"}
 
 type kind int
 
@@ -66,7 +66,7 @@ type spec struct {
 }
 
 // sections lists the top-level objects in file order.
-var sections = []string{"host", "network", "system", "portal", "credentials"}
+var sections = []string{"host", "network", "system", "portal", "zrok", "credentials"}
 
 // specs lists every key in file order. The defaults are frozen.
 var specs = []spec{
@@ -85,7 +85,7 @@ var specs = []spec{
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
-		hint: `list any of "tailscale", "tailscale-funnel" and "portal" once each; local is always available`},
+		hint: `list any of "tailscale", "tailscale-funnel", "portal" and "zrok" once each; local is always available`},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
@@ -106,6 +106,12 @@ var specs = []spec{
 	// it. It is not access control: the URL still opens the flat.
 	{key: "portal.hide", kind: kindBool, def: false,
 		hint: "use true or false"},
+	// zrok reads an environment the operator enabled with `zrok2 enable`;
+	// Flats never stores the zrok account token.
+	{key: "zrok.environment", kind: kindString, check: checkAbsPath,
+		hint: "use the absolute path of a zrok environment directory, or unset the key for ~/.zrok2"},
+	{key: "zrok.namespace", kind: kindString, def: "public", check: checkNamespace,
+		hint: "use a zrok namespace token such as public"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
 	{key: "credentials.tailscale_authkey_file", kind: kindString, check: checkAbsPath,
@@ -396,7 +402,7 @@ func checkPermitted(v any) (any, error) {
 			return nil, fieldErr(path, "remove it; local is always available", "local is not a grant")
 		}
 		if !slices.Contains(providers, p) {
-			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel" or "portal"`, "unknown provider %q", p)
+			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal" or "zrok"`, "unknown provider %q", p)
 		}
 		if slices.Contains(list[:i], p) {
 			return nil, fieldErr(path, "list each provider once", "duplicate provider %q", p)
@@ -409,6 +415,21 @@ func checkPermitted(v any) (any, error) {
 		}
 	}
 	return out, nil
+}
+
+// checkNamespace accepts a zrok namespace token: letters, digits, '-' and
+// '_', up to 64 characters.
+func checkNamespace(v any) (any, error) {
+	s := v.(string)
+	if s == "" || len(s) > 64 {
+		return nil, fmt.Errorf("namespace %q must be 1 to 64 characters", s)
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return nil, fmt.Errorf("namespace %q may contain only letters, digits, '-' and '_'", s)
+		}
+	}
+	return s, nil
 }
 
 // checkRelays normalizes each relay like the Portal CLI and rejects
@@ -438,6 +459,7 @@ type Config struct {
 	Network       NetworkConfig
 	System        SystemConfig
 	Portal        PortalConfig
+	Zrok          ZrokConfig
 	Credentials   CredentialsConfig
 
 	values  map[string]any
@@ -473,6 +495,11 @@ type PortalConfig struct {
 	Discovery       bool
 	MaxActiveRelays int64
 	Hide            bool // default relay listing of public flats
+}
+
+type ZrokConfig struct {
+	Environment string // "" = the zrok default, ~/.zrok2
+	Namespace   string
 }
 
 // CredentialsConfig holds paths only; "" means none.
@@ -550,6 +577,7 @@ func (c *Config) fill() error {
 		num("system.disk_quota_bytes"), num("system.preview_ttl_seconds"), num("system.rate_limit_rps"),
 		num("system.redirect_days"), num("system.events_keep")}
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
+	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error

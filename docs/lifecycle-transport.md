@@ -54,7 +54,7 @@ The concrete flat response exposes `publication`, `live_version`, nullable
 state). Each endpoint uses
 exact lowercase JSON tags: `provider`, `url`, `state`, `detail`, `configured`,
 `permitted`, `ready`, `audience`, `host`. Provider IDs are `local`, `tailscale`,
-`tailscale-funnel`, `portal`. Visibility outputs are `private`/`public`; legacy
+`tailscale-funnel`, `portal`, `zrok`. Visibility outputs are `private`/`public`; legacy
 listed/unlisted inputs normalize to public. The provider manager supplies actual
 configuration/readiness; URLs are never treated as authorization or publication.
 

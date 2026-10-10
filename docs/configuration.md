@@ -44,6 +44,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
     restore-journal.json      present only while a data restore is unfinished
     health-check/ restore-trial/  temporary copies
   tsnet/ portal/              provider node identities
+  zrok/                       zrok names this host reserved, until released
   network-retirements/        unfinished tailnet node cleanup
   logs/ cache/ run/ flats.lock  logs, caches, sockets, the host lock
 ```
@@ -57,7 +58,8 @@ Required: `config.json`, `flats.db` (with `VACUUM INTO` or while the host is
 stopped, never a plain copy of a live database), `secret.key` together with
 `flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`
 and `network-retirements/` when present, and `tsnet/` and `portal/` (without
-them new node names and certificates are issued). Back up the credential files
+them new node names and certificates are issued), and `zrok/` (without it a
+deleted flat no longer releases its zrok name). Back up the credential files
 separately. Logs, caches, sockets and the lock are rebuilt.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
@@ -111,6 +113,8 @@ written; `flats config unset KEY` removes it.
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
+| `zrok.environment` | none (`~/.zrok2` of the user that runs Flats) | restart, or when zrok is turned on from the console |
+| `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | none (interactive login) | restart |
 
@@ -142,6 +146,33 @@ what Flats asks the relays for: a served route's lease metadata changes at
 once, and relays apply it at their next lease renewal (up to about 90
 seconds). If that update fails, the choice stays saved, the flat logs the
 error and the next activation of the route retries it.
+
+zrok serves public flats as zrok public shares on the operator's zrok
+account. Flats never stores the account token: enable a zrok environment for
+the user that runs Flats first (`zrok2 enable <account token>`), and set
+`zrok.environment` when it is not that user's `~/.zrok2`, for example for a
+service whose home directory differs. With `zrok` in `network.permitted`, a
+start fails while that environment is missing or not enabled. Each flat
+served through zrok reserves its slug as a name in `zrok.namespace`, so its
+public URL stays the same across restarts and Private↔Public changes; the
+share itself exists only while the flat is public and the host runs.
+Deleting a flat, or the expiry of a rename redirect, releases the name, also
+when the flat went private or lost its zrok permission earlier: `zrok/` in
+the data directory records every name the host reserved, and deleting such a
+flat while zrok is turned off is refused until zrok is on again. Flats only
+uses, removes and releases names and shares it created itself: a name already
+reserved in your account by the zrok CLI or another Flats host is refused
+(release it with `zrok2 delete name` or rename the flat), and a share you run
+under a name Flats reserved is left alone. Changing `zrok.environment` to
+another zrok account keeps the old account's records: flats using them report
+the conflict until you switch back, or remove the record in `zrok/`. zrok
+identifies an account only by its token, so after regenerating the token of
+the same account, release such names with `zrok2 delete name` and remove
+their records. A name another zrok
+account already owns cannot be used; rename the flat. When the account's
+name limit is reached, the route reports the zrok controller's reason. The
+zrok client also honors its own `ZROK2_*` environment variables, such as
+`ZROK2_API_ENDPOINT` for a self-hosted zrok instance.
 
 Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole
@@ -249,7 +280,7 @@ written to the file.
 
 It refuses, writing nothing but the lock, when the directory already holds
 Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
-or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `backups/`,
+or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `zrok/`, `backups/`,
 `network-retirements/` or `network-provider.json` without a database (restore
 the database and config from the same backup). Other entries, such as a new
 volume's `lost+found`, are fine. A bootstrap interrupted after writing

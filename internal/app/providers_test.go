@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -188,5 +190,129 @@ func TestConsoleHostProviderPinnedByLegacyFlag(t *testing.T) {
 	}
 	if !slices.Equal(configPermitted(t, h), []string{"portal"}) {
 		t.Fatal("config.json changed")
+	}
+}
+
+// zrok is off by default and public. Turning it on needs an enabled zrok
+// environment; without one the console refuses and config.json is unchanged.
+func TestConsoleZrokNeedsEnabledEnvironment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h, client := consoleHost(t)
+	p := providerByID(t, h, client, "zrok")
+	if p.Enabled || p.Configured || p.Scope != "public" || p.Namespace != "public" {
+		t.Fatalf("zrok by default: %+v", p)
+	}
+	code, out := setHost(t, h, client, "zrok", true)
+	if code == 200 || !strings.Contains(fmt.Sprint(out["error"]), "zrok2 enable") {
+		t.Fatalf("turned on zrok without an environment: %d %v", code, out)
+	}
+	if got := configPermitted(t, h); len(got) != 0 {
+		t.Fatalf("config.json network.permitted = %v", got)
+	}
+	if p := providerByID(t, h, client, "zrok"); p.Enabled || p.Configured {
+		t.Fatalf("zrok after refused turn-on: %+v", p)
+	}
+}
+
+// The zrok part of the provider configuration token changes with the
+// environment and namespace, and is empty without a zrok grant, so hosts
+// without zrok keep their token.
+func TestZrokConfigurationToken(t *testing.T) {
+	base := &config.Config{}
+	base.Zrok = config.ZrokConfig{Environment: "/a", Namespace: "public"}
+	if got := zrokConfiguration(base, nil); got != "" {
+		t.Fatalf("without a grant: %q", got)
+	}
+	base.Network.Permitted = []string{"zrok"}
+	first := zrokConfiguration(base, nil)
+	other := *base
+	other.Zrok.Environment = "/b"
+	if first == "" || zrokConfiguration(&other, nil) == first {
+		t.Fatal("changing zrok.environment did not change the token")
+	}
+	other = *base
+	other.Zrok.Namespace = "flats"
+	if zrokConfiguration(&other, nil) == first {
+		t.Fatal("changing zrok.namespace did not change the token")
+	}
+}
+
+// fakeZrokEnvironment writes an enabled zrok environment under home. Loading
+// it contacts nothing.
+func fakeZrokEnvironment(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".zrok2")
+	if err := os.MkdirAll(filepath.Join(dir, "identities"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"metadata.json":    `{"v":"v0.4"}`,
+		"environment.json": `{"zrok_token":"test-token","ziti_identity":"test-env","api_endpoint":"https://127.0.0.1:1"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Turning zrok on from the console gives the policy token the next start
+// computes, so an approval requested meanwhile is not stale after a restart.
+func TestConsoleZrokPolicyMatchesRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fakeZrokEnvironment(t, home)
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
+		t.Fatalf("turn on zrok: %d %v", code, out)
+	}
+	if p := providerByID(t, h, client, "zrok"); !p.Enabled || !p.Configured {
+		t.Fatalf("zrok after turning on: %+v", p)
+	}
+	live, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = consoleHostWith(t, dir, nil)
+	restarted, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != restarted {
+		t.Fatal("the policy token after a restart differs from the one after turning zrok on")
+	}
+}
+
+// Turning zrok off from the console also gives the policy token of the next
+// start, which has no zrok grant.
+func TestConsoleZrokOffPolicyMatchesRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fakeZrokEnvironment(t, home)
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
+		t.Fatalf("turn on zrok: %d %v", code, out)
+	}
+	if code, out := setHost(t, h, client, "zrok", false); code != 200 {
+		t.Fatalf("turn off zrok: %d %v", code, out)
+	}
+	live, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = consoleHostWith(t, dir, nil)
+	restarted, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != restarted {
+		t.Fatal("the policy token after a restart differs from the one after turning zrok off")
 	}
 }

@@ -13,28 +13,28 @@ This document describes the integrated provider Manager. Production app and disp
 ## Contract
 
 Provider choice stays separate from visibility and version. Local loopback is
-available with no grant. Tailscale, Tailscale Funnel, and Portal start only
-when both of these are true:
+available with no grant. Tailscale, Tailscale Funnel, Portal and zrok start
+only when both of these are true:
 
 1. The host file grants that provider.
 2. The exposure request lists it in `Permitted`.
 
 A grant, a tailnet login, or a running node does not publish a flat. `"funnel"`
 is not an alias of `tailscale-funnel`. A failed provider is not replaced by
-another one. Both requested public providers are attempted independently; that
+another one. Every requested public provider is attempted independently; that
 is not a fallback.
 
 | Request | Providers that may open |
 | --- | --- |
 | Draft, or visibility private | `local` always. `tailscale` only when both gates allow it. |
-| Audience current and visibility public | `tailscale-funnel` and/or `portal`, each only when both gates allow it. |
+| Audience current and visibility public | `tailscale-funnel`, `portal` and/or `zrok`, each only when both gates allow it. |
 | Ephemeral preview | Private paths only. Public providers return `provider not permitted`. |
 
 If a public request lists no permitted public provider, or none of the
 requested public routes open, `ServeExposure` returns an error. If some open
 and some fail, the result and the joined error are both returned.
 
-`StopPublicRoutes` closes Funnel and Portal for that slug. Local and tailscale
+`StopPublicRoutes` closes Funnel, Portal and zrok for that slug. Local and tailscale
 routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later
 call can retry. Unconfirmed means the caller must not treat the flat as
@@ -175,6 +175,93 @@ already present is left alone. Funnel stays `starting` until the
 certificate fetch succeeds, unless a test certificate source is installed, in
 which case it is `ready` immediately. Funnel strips `Tailscale-User-*` headers
 and does not set identity.
+
+## zrok
+
+`zrok.Net` (`internal/expose/zrok`) serves a slug as a zrok public share of
+the operator's enabled zrok environment. Constructing it reads that
+environment from disk and contacts nothing. `Serve` reserves the name
+`<slug>` in `zrok.namespace` when the account does not own it yet, removes a
+share of this environment that still holds the name (a crash leaves one
+behind; unsharing another environment's share fails, so a name is never taken
+over), creates the share and returns its frontend URL. Binding the share on
+the zrok overlay is asynchronous: the route is `starting` until the listener
+is established, then `ready`, or `error` with the reason. A name another
+account owns is refused with a rename hint.
+
+`Stop`, used by `StopPublicRoutes`, drains HTTP, closes the overlay listener
+and deletes the share; the name stays reserved, so a later Public transition
+gets the same URL. A failed unshare keeps the route registered and reports
+zrok in `Unconfirmed`. `Retire`, used by `StopSlug` for a deleted flat or an
+expired redirect, also releases the name. `Serve` records each name in
+`<data>/zrok/<slug>` before reserving it and `Retire` removes the record, so
+`StopSlug` releases a name the host still holds even without a route record:
+after a restart, while the flat was private or after its zrok permission was
+revoked. A failed release keeps the record and fails `StopSlug` for retry;
+it is a cleanup obligation, not a public route. With no zrok backend
+configured, `StopSlug` refuses while a record exists, so the operator turns
+zrok on again before deleting the flat. Records also carry the namespace,
+whether Flats created the name and the token of any share Flats created:
+`Serve` removes only a share whose token Flats recorded, `Retire` releases
+only a name Flats created and leaves a name another share now uses, and a
+changed `zrok.namespace` releases the old namespace's name first. The
+controller returns frontend endpoints as bare host names; Flats reports them
+as `https://` URLs.
+
+`Serve` writes the record with the intent to create a name before asking the
+controller, so a name created by a request whose response was lost is still
+released later. A share whose token cannot be recorded is deleted at once;
+if that also fails, its token is kept in memory so the next `Serve` or
+`Retire` of the slug removes it. `Stop` unshares with its own deadline after
+the HTTP drain, so a drain timeout does not leave the share behind. A record
+that cannot be inspected makes `StopSlug` fail instead of skipping it. The
+controller client checks its version once, under the operation's context.
+
+A share is Flats' own when its token is recorded or when the controller
+reports it belongs to this environment with this host's target
+`flats:<instance id>:<slug>`, which also covers a share whose creation
+response was lost; another Flats host on the same zrok environment never
+takes it. Records name the
+account (a hash of its token, not the token): after `zrok.environment` moves
+to another account, `Serve` and `Retire` refuse and keep the record until the
+original account is configured again or the operator removes the record.
+zrok exposes no account identity apart from the token, so a regenerated token
+is treated like another account. `Serve` uses an
+existing name only with this host's record: a name reserved in the account by
+the zrok CLI or another Flats host is refused. A creation attempt is recorded
+as pending. An `errNameExists` answer or another refusal drops the record.
+If the request got no answer and the name exists later, zrok cannot tell
+whether this attempt or another client created it: `Serve` refuses it and
+asks the operator to release it, and `Retire` leaves the name and drops only
+the record. A created name is recorded with the controller's creation time;
+if it cannot be recorded, the name is released again. A name deleted and
+reserved again under the same spelling has another creation time, so it is
+neither used nor released. A share the controller returns without a
+frontend endpoint is deleted and the open fails. A refused creation drops
+any record, and an existing name is used only with a record of its creation
+by this host. zrok reports creation times in whole seconds and offers no
+other identity for a name, so a name deleted and reserved again by another
+client of the same account within the same second cannot be told apart;
+that window is a known limit. A share whose creation
+failed, or whose rollback failed, is kept as unsettled: `Stop` and process
+shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
+`Stop` even without a registered zrok route, so the rollback of a failed
+Public approval settles such a share and reports zrok unconfirmed if it
+cannot. The approval policy token includes the zrok environment directory,
+account fingerprint and namespace when zrok is permitted, so a pending
+approval does not carry over to another zrok account. Turning zrok on or off
+from the console sets the configuration the next start computes, and the
+token counts the zrok backend only while zrok is granted. An
+unshare the controller answers with "not found" is confirmed through the
+account-wide share detail: a share another environment of the account still
+holds is reported, not treated as gone. A `Serve` after a failed `Stop`
+finishes that stop before opening a fresh share.
+
+A listener the overlay closes is rebound with backoff (2 s, doubling to
+60 s). Requests that the lost listener already accepted are drained before
+rebinding, and `Stop` drains every server that may still hold connections
+before deleting the share. Process shutdown deletes every share and keeps
+the names.
 
 ## Shutdown
 

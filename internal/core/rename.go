@@ -190,7 +190,7 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 			})
 			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: target, PrivateHandler: s.redirectHandler(func() string { fv, _ := s.GetFlat(context.Background(), cur); return fv.PrivateURL }), Permitted: ids, Hidden: true})
 			for _, ep := range res.Endpoints {
-				if ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal {
+				if PublicProvider(ep.Provider) {
 					public = true
 				}
 			}

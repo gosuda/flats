@@ -299,7 +299,11 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := s.lifecycleNet(); ok && (portal || funnel) {
+	zrok, err := s.st.ProviderPermitted(ctx, slugName, store.ProviderZrok)
+	if err != nil {
+		return err
+	}
+	if _, ok := s.lifecycleNet(); ok && (portal || funnel || zrok) {
 		return nil
 	}
 	if portal && s.cfg.Public != nil {
@@ -308,7 +312,7 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if portal && s.cfg.Public == nil {
 		return errPublicDisabled()
 	}
-	return fmt.Errorf("%w: %w: permit portal or tailscale-funnel before making this flat public", ErrConflict, ErrProviderNotPermitted)
+	return fmt.Errorf("%w: %w: permit tailscale-funnel, portal or zrok before making this flat public", ErrConflict, ErrProviderNotPermitted)
 }
 
 // SetProviderPermission records an explicit non-local provider permission.
@@ -328,7 +332,7 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return forbiddenf("only the operator can permit a network provider")
 	}
 	switch provider {
-	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal:
+	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal, store.ProviderZrok:
 	case store.ProviderLocal:
 		return invalidf("local is always permitted")
 	default:
@@ -398,7 +402,7 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 		}
 		serving := req.Permitted
 		for _, ep := range status.Endpoints {
-			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
+			if PublicProvider(ep.Provider) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
 				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) &&
 				ep.State != "" && ep.State != "stopped" {
 				serving = append(serving, ep.Provider)
@@ -954,8 +958,8 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	if f.Visibility.Public() {
 		opened := false
 		for _, ep := range res.Endpoints {
-			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && slices.Contains(permitted, ep.Provider) && ep.Audience == AudienceCurrent && ep.Host == f.Slug && ep.Configured && ep.Permitted {
-				// Serve registers Portal/Funnel before asynchronous readiness. The
+			if PublicProvider(ep.Provider) && slices.Contains(permitted, ep.Provider) && ep.Audience == AudienceCurrent && ep.Host == f.Slug && ep.Configured && ep.Permitted {
+				// Serve registers public routes before asynchronous readiness. The
 				// approved policy can commit now; Ready remains false while connecting.
 				opened = opened || ep.State == "starting" || ((ep.State == "ready" || ep.State == "key-expiring") && ep.Ready)
 			}
@@ -1631,7 +1635,7 @@ func (s *Service) providerNotInUse(ctx context.Context, slug string, id Provider
 	}
 	// An adapter without route inspection cannot prove a running provider idle.
 	lf := s.state(slug)
-	if (id == ProviderPortal && lf.publicServed) || (id == ProviderTailscale && lf.privateServed) || s.cfg.Lifecycle != nil {
+	if ((id == ProviderPortal || id == ProviderZrok) && lf.publicServed) || (id == ProviderTailscale && lf.privateServed) || s.cfg.Lifecycle != nil {
 		return fmt.Errorf("%w: cannot confirm %s routes are stopped", ErrProviderInUse, id)
 	}
 	return nil

@@ -163,7 +163,7 @@ action; it is not silently published onto a new provider.
 
 Core never imports expose. Legacy `PrivateNet` and `PublicNet` are unchanged;
 `Config.Lifecycle LifecycleNet` is the dedicated manager field. Canonical IDs:
-`local`, `tailscale`, `tailscale-funnel`, `portal`. The manager cannot implement
+`local`, `tailscale`, `tailscale-funnel`, `portal`, `zrok`. The manager cannot implement
 both legacy conflicting `Serve` methods.
 
 ```go

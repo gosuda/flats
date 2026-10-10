@@ -370,3 +370,37 @@ func TestProviderGrantRetriesFailedApprovedPublicRoute(t *testing.T) {
 		t.Fatal("grant did not retry the approved Portal route")
 	}
 }
+
+// zrok is a public provider like Portal and Funnel: a flat that permits only
+// zrok can be made public after approval, and its public URL comes from the
+// zrok route.
+func TestZrokOnlyFlatGoesPublic(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "share", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "share"))
+	if err := s.SetProviderPermission(t.Context(), "share", store.ProviderZrok, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if network.serves("share", ProviderZrok) {
+		t.Fatal("granting zrok to a private flat opened a public route")
+	}
+	req, err := s.SetVisibility(t.Context(), "share", store.Public, ViaAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(t.Context(), req.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if !network.serves("share", ProviderZrok) {
+		t.Fatal("approved public flat is not served through zrok")
+	}
+	fv, err := s.GetFlat(t.Context(), "share")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://share.zrok.test"; fv.PublicURL != want {
+		t.Fatalf("public_url = %q, want %q", fv.PublicURL, want)
+	}
+}

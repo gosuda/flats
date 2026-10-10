@@ -15,6 +15,7 @@ const (
 	ProviderTailscale = "tailscale"
 	ProviderFunnel    = "tailscale-funnel"
 	ProviderPortal    = "portal"
+	ProviderZrok      = "zrok"
 )
 
 // Draft is the single mutable working copy of a flat.

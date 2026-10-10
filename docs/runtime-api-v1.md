@@ -1067,20 +1067,21 @@ Rules:
   `<slug>.localhost:<port>`) or Tailscale for people and devices the existing
   tailnet ACL allows. It is not owner-only access.
 * **Public** means anyone on the internet, through a provider the operator
-  permitted for this flat: Portal relay or Tailscale Funnel (Funnel visitors
-  do not need Tailscale; Tailscale Serve is tailnet-only and is not Public).
+  permitted for this flat: Portal relay, zrok public share or Tailscale
+  Funnel (Funnel visitors do not need Tailscale; Tailscale Serve is
+  tailnet-only and is not Public).
   Public is NOT access control: anyone can open a ready Public route.
 * An Unpublished flat cannot become Public. Requesting the current
   visibility changes nothing.
 * Going Private also waits for approval. Until the approved change applies,
   the public route stays reachable.
 * Local is always permitted. Nonlocal providers (`tailscale`,
-  `tailscale-funnel`, `portal`) need host configuration and per-flat
+  `tailscale-funnel`, `portal`, `zrok`) need host configuration and per-flat
   operator permission; agents cannot grant either. One standing exception:
   on a host whose private backend is Tailscale (`network.private_backend:
   tailscale`), a new flat, including one an agent creates, starts with
   `tailscale` permitted, so its private and preview links use the tailnet.
-  That grant never covers Funnel or Portal, and the operator can turn it off
+  That grant never covers Funnel, Portal or zrok, and the operator can turn it off
   per flat. Read the actual `providers` from `get_flat` instead of assuming. Connecting Tailscale
   grants no Funnel permission, and configuring a provider grants no publish or
   visibility consent. A provider failure never authorizes switching providers.

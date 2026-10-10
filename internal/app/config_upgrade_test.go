@@ -123,7 +123,7 @@ func legacyPolicyToken(t *testing.T, file provider.File, cfg portal.Config) stri
 		t.Fatal(err)
 	}
 	defer pn.Close()
-	m, err := provider.New(dir, provider.Options{Local: loop, Portal: pn, Configuration: providerConfiguration(cfg)})
+	m, err := provider.New(dir, provider.Options{Local: loop, Portal: pn, Configuration: providerConfiguration(cfg, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
