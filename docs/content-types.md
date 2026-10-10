@@ -24,8 +24,9 @@ and are not supported for agent-authored server flats.
 ## Markdown documents (`type: "docs"`)
 
 A docs flat runs the built-in collaborative editor: people edit live Markdown
-in the browser, and your published versions merge into their edits. Private
-visitors can edit; Public visitors get a read-only rendered view.
+in the browser, and your published versions merge into their edits. A
+Private link opens the editor and can toggle between Edit and View; a Public
+link is view only (a read-only rendered document).
 
 ### Write and edit
 

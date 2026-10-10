@@ -217,7 +217,9 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   once per visit when no saved name exists; localStorage is best-effort.
 * Only `x-flats-access: private` may submit document updates. Missing,
   unknown, or public values are read-only. Public viewers receive live
-  Markdown rendering without constructing an editor. Authorization remains
+  Markdown rendering without constructing an editor. Private pages open in
+  Edit and can toggle to View, the same rendered surface, without
+  reconnecting; View is presentation only and the socket stays writable. Authorization remains
   the host's trusted route decision for the lifetime of that connection;
   core cancels the public route epoch when exposure is withdrawn, including
   Private transitions, route stops, deletion and rename. The runtime proxy

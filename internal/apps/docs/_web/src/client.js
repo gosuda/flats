@@ -39,23 +39,67 @@ md.renderer.rules.image = (tokens, i, options, env, self) => {
   tokens[i].attrSet("loading", "lazy");
   return defaultImage(tokens, i, options, env, self);
 };
-// One view: editors get the live-preview editor, read-only viewers (and
-// everyone until the editor exists) get the rendered document.
-let view, renderFrame;
+// Private links open in Edit, the live-preview editor, and can switch to
+// View, the rendered document Public visitors get. Read-only viewers (and
+// everyone until the editor exists) get the rendered document only.
+let view,
+  renderFrame,
+  mode = "edit",
+  writable = false;
 const access = new Compartment();
+function renderNow() {
+  cancelAnimationFrame(renderFrame);
+  $("#content").innerHTML = md.render(text.toString());
+}
 function render() {
   if ($("#content").hidden) return;
   cancelAnimationFrame(renderFrame);
-  renderFrame = requestAnimationFrame(() => {
-    $("#content").innerHTML = md.render(text.toString());
-  });
+  renderFrame = requestAnimationFrame(renderNow);
 }
 text.observe(render);
+// The rendered document is not kept current while hidden, so it is filled
+// once, before it is shown, rather than a frame later.
 function showRendered(rendered) {
+  const stale = rendered && $("#content").hidden;
   $("#editor").hidden = rendered;
   $("#content").hidden = !rendered;
-  render();
+  if (stale) renderNow();
+  else render();
 }
+// Private HTML includes the Edit | View group; a page first served
+// read-only gets one when a later connection is writable.
+function modesGroup() {
+  let group = $("#modes");
+  if (!group) {
+    group = document.createElement("div");
+    group.id = "modes";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Document mode");
+    for (const [value, label] of [
+      ["edit", "Edit"],
+      ["view", "View"],
+    ]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.mode = value;
+      b.textContent = label;
+      group.append(b);
+    }
+    $("header h1").after(group);
+  }
+  return group;
+}
+function setMode(next) {
+  mode = next;
+  for (const b of document.querySelectorAll("#modes [data-mode]"))
+    b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  showRendered(!view || !writable || mode === "view");
+  if (view && writable && mode === "edit") view.requestMeasure();
+}
+document.addEventListener("click", (event) => {
+  const b = event.target.closest?.("#modes [data-mode]");
+  if (b) setMode(b.dataset.mode);
+});
 // Collaborators get a random name instead of a join prompt; it is kept so
 // the same browser shows up under the same name after a reload.
 const adjectives = [
@@ -185,12 +229,18 @@ const provider = new Provider(doc, path, {
         }),
       });
     }
-    if (m.readonly) {
-      view?.dispatch({
-        effects: access.reconfigure(EditorState.readOnly.of(true)),
-      });
-    }
-    showRendered(!view || !!m.readonly);
+    // Each welcome carries this connection's access. A read-only one hides
+    // the controls and shows the rendered document; a later writable one
+    // restores them, the chosen mode and editing.
+    writable = !m.readonly;
+    const group = writable ? modesGroup() : $("#modes");
+    if (group) group.hidden = !writable;
+    view?.dispatch({
+      effects: access.reconfigure(
+        EditorState.readOnly.of(!writable || provider.model.stopped),
+      ),
+    });
+    setMode(mode);
   },
 });
 function showPresence() {

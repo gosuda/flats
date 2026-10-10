@@ -90,11 +90,29 @@ header h1 {
   white-space: nowrap;
   min-width: 0;
 }
+#modes {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+#modes button {
+  font-size: 12px;
+  border-color: transparent;
+  padding: 6px 11px;
+}
+#modes [aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--active);
+}
 #status {
   font-size: 12px;
   white-space: nowrap;
   margin-left: auto;
   color: var(--muted);
+}
+/* Private pages put Edit | View on the right, next to save state. */
+#modes:not([hidden]) ~ #status {
+  margin-left: 0;
 }
 #status[data-state="Saved"] {
   color: var(--accent);
@@ -162,7 +180,7 @@ main {
   display: flex;
   flex-direction: column;
 }
-/* One view for reading and editing. The page scrolls; the editor and the
+/* One surface for Edit and View. The page scrolls; the editor and the
    rendered document share the same reading surface and typography. */
 #page {
   flex: 1;
