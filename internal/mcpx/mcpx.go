@@ -127,7 +127,7 @@ func instructions(uploadLimit int64) string {
 First move: call guide {"items":["topic.index"]}. It routes your task to short topics (static sites, page design, server apps, documents, approvals, rollback and data, preview and verification); request several items per call. For an existing flat, call get_flat before changing it. Server code: read guide topic.server (the complete contract is also resource %s and get_runtime_reference). Documents: guide topic.docs (also %s and get_content_types). A call Flats refuses names its category; guide refusal.<category> explains the fix. Clients that drop these instructions can read guide topic.instructions.
 
 Always:
-- Saving (save_draft, save_version, save_document) only changes a Private Draft. Publish, activation, rollback, data restore, visibility changes in BOTH directions and delete_flat wait for explicit operator approval and change nothing before it.
+- Saving (save_draft, save_version, save_document) only changes a Private Draft. Publish, activation, rollback, data restore, visibility changes in BOTH directions and delete_flat wait for explicit operator approval and change nothing before it. Exception: update_document edits a running docs flat's live text at once, without approval; on a Public flat everyone sees it immediately.
 - Give the user approval_url exactly as returned and poll get_approval. Never approve your own request or imitate the console; MCP has no approval tool.
 - Ask the user before set_visibility, delete_flat or rollback with restore_data.
 - Public is NOT access control: anyone on the internet can open a ready Public route. Private follows loopback or the existing tailnet ACL; it is not owner-only.

@@ -134,7 +134,7 @@ Over MCP, call the read-only guide tool with topic.index first; it routes each t
 - [Agent guide](%s%s): the MCP instructions and tools as this host reports them, the core CLI commands, and every guide topic and refusal page.
 - [Runtime API v1](%s%s): complete server-flat contract (env.DB SQLite, env.FILES, handler and Response helpers, encoding, limits, ordinary environment variables, secrets, approvals). Also MCP resource %s and tool get_runtime_reference.
 
-- [Content types](%s%s): docs Markdown manifests, save_document, get_document and live activation; also flats://docs/content-types/v1 and get_content_types.
+- [Content types](%s%s): docs Markdown manifests, save_document, get_document, update_document and live activation; also flats://docs/content-types/v1 and get_content_types.
 
 ## Optional
 

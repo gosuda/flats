@@ -512,6 +512,13 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 			return "", sink.setSendLimits(num(0), num(1), num(2))
 		}
 		return "", errors.New("WebSocket send limits unavailable")
+	case "ws.wake":
+		// Best effort and never blocking: a full queue or a worker without
+		// WebSocket support drops it, and rooms catch up at the next heartbeat.
+		if doc := str(0); len(doc) <= 4096 && vm.w.js != nil && vm.w.js.wsHub != nil {
+			vm.w.js.wsHub.wake(doc)
+		}
+		return "", nil
 	case "ws.close":
 		if vm.ws == nil {
 			return "", errors.New("WebSocket close outside a websocket handler")
@@ -736,6 +743,27 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		}
 		sum := sha256.Sum256([]byte(s))
 		return newString(hex.EncodeToString(sum[:])), nil
+	case "digests":
+		// Many SHA-256 digests in one call: the hex digests concatenated,
+		// 64 characters each, in input order.
+		raw := args[1].String()
+		vm.gcBytes += uint64(len(raw))
+		if len(raw) > 8*1024*1024 {
+			return nil, errors.New("docs codec digest limit")
+		}
+		var list []string
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			return nil, err
+		}
+		if len(list) > 1<<20 {
+			return nil, errors.New("docs codec digest limit")
+		}
+		out := make([]byte, 0, len(list)*sha256.Size*2)
+		for _, s := range list {
+			sum := sha256.Sum256([]byte(s))
+			out = hex.AppendEncode(out, sum[:])
+		}
+		return newString(string(out)), nil
 	default:
 		return nil, errors.New("unknown docs codec")
 	}

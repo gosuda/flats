@@ -59,7 +59,8 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
 				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {}, "get_content_types": {},
 				"save_document": {"slug": "separate-doc", "markdown": "# doc"}, "get_document": {"slug": "census"},
-				"get_network": {"slug": "census"}, "guide": {"items": []string{"topic.index", "refusal.conflict"}},
+				"update_document": {"slug": "census", "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "x"}}},
+				"get_network":     {"slug": "census"}, "guide": {"items": []string{"topic.index", "refusal.conflict"}},
 				"list_env": {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},
 			}
 			if tool.Name == "delete_env" {
@@ -72,11 +73,12 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				t.Fatalf("new tool lacks authority behavior census: %s", tool.Name)
 			}
 			text, failed := call(t, e.local, tool.Name, input, nil)
-			if failed && tool.Name != "get_document" {
+			docTool := tool.Name == "get_document" || tool.Name == "update_document"
+			if failed && !docTool {
 				t.Fatalf("valid census operation failed: %s", text)
 			}
-			if tool.Name == "get_document" && (!failed || !strings.Contains(text, `"category":"not_docs"`)) {
-				t.Fatal("website must reject document reads with a typed error")
+			if docTool && (!failed || !strings.Contains(text, `"category":"not_docs"`)) {
+				t.Fatal("website must reject document reads and edits with a typed error", text)
 			}
 			a, err := e.svc.GetApproval(context.Background(), pending.ApprovalID)
 			if err != nil || a.Status != "pending" {

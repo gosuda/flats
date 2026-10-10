@@ -114,7 +114,10 @@ Local loopback also binds in Tailscale mode: concurrent hosts need distinct `hos
 Flats also supports Markdown documents with `type: "docs"`. The embedded
 collaborative editor runs on the server-flat runtime with private editing and
 public reading. Agents read live edits with `get_document`, save a Draft with
-`save_document`, then request operator approval to publish. Agent publications
+`save_document`, then request operator approval to publish. For small changes,
+`update_document` edits the live text of a running document directly with
+guarded find/replace and block operations, like a private editor and without
+approval (on a Public flat the change is visible at once). Agent publications
 and code rollbacks merge into live Markdown while keeping independent human
 edits (conflicting lines prefer the target version). Read the
 [content types contract](docs/content-types.md) through MCP resource

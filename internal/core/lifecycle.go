@@ -1344,7 +1344,7 @@ var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
 	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed",
-	"health_check_failed", "conflict", "forbidden", "not_docs", "document_not_found", "not_found", "invalid",
+	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "document_not_found", "not_found", "invalid",
 }
 
 // ErrorCategory defines cause precedence for persisted failures and transports.
@@ -1386,6 +1386,10 @@ func ErrorCategory(err error) string {
 		return "health_check_failed"
 	}
 	switch {
+	case errors.Is(err, ErrEditConflict):
+		return "edit_conflict"
+	case errors.Is(err, ErrDocumentCapacity):
+		return "document_capacity"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
 	case errors.Is(err, ErrForbidden):

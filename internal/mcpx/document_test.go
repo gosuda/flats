@@ -2,6 +2,7 @@ package mcpx
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -95,5 +96,24 @@ func TestContentTypesDiscovery(t *testing.T) {
 	f, _ := e.svc.ListFlats(context.Background())
 	if len(f) != 0 {
 		t.Fatal("reference mutated state")
+	}
+}
+
+// After a lost response the hint depends on whether the edit is live; it
+// never tells the caller to repeat an edit that applied.
+func TestEditHintFollowsOutcome(t *testing.T) {
+	for err, want := range map[error]string{
+		&core.EditOutcomeError{Outcome: core.EditApplied, Seq: 7}:  "live at seq 7; do not repeat it",
+		&core.EditOutcomeError{Outcome: core.EditNotApplied}:       "send the same call again",
+		&core.EditOutcomeError{Outcome: core.EditUnknown}:          "check whether the edit is there before retrying",
+		fmt.Errorf("%w: too many live edits", core.ErrUnavailable): "wait a second and retry",
+		fmt.Errorf("%w: stale", core.ErrEditConflict):              "read get_document {slug, doc, blocks: true} again",
+	} {
+		if got := editHint(err, "doc"); !strings.Contains(got, want) {
+			t.Errorf("%v: hint %q, want %q", err, got, want)
+		}
+	}
+	if h := editHint(&core.EditOutcomeError{Outcome: core.EditApplied, Seq: 7}, "doc"); strings.Contains(h, "retry") {
+		t.Fatal("applied edit hint suggests a retry:", h)
 	}
 }
