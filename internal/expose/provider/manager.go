@@ -998,16 +998,18 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 			res.Stopped = append(res.Stopped, Portal)
 		}
 	}
-	if hadZrok {
-		if m.zrokNet() == nil {
-			res.Unconfirmed = append(res.Unconfirmed, Zrok)
-		} else if err := m.zrokNet().Stop(slug); err != nil {
-			res.Unconfirmed = append(res.Unconfirmed, Zrok)
-		} else {
-			m.take(slug, Zrok, true)
-			m.pruneState(slug, Zrok)
-			res.Stopped = append(res.Stopped, Zrok)
-		}
+	switch z := m.zrokNet(); {
+	case hadZrok && z == nil:
+		res.Unconfirmed = append(res.Unconfirmed, Zrok)
+	case z == nil:
+	case z.Stop(slug) != nil:
+		// Also without a route: a failed open may have left a share the
+		// backend has to settle, such as one whose creation response was lost.
+		res.Unconfirmed = append(res.Unconfirmed, Zrok)
+	case hadZrok:
+		m.take(slug, Zrok, true)
+		m.pruneState(slug, Zrok)
+		res.Stopped = append(res.Stopped, Zrok)
 	}
 	if res.Stopped == nil {
 		res.Stopped = []ID{}

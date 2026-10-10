@@ -290,3 +290,20 @@ func TestStopSlugRefusesWhileNameRecordedAndZrokOff(t *testing.T) {
 		t.Fatalf("a flat without a zrok record: %v", err)
 	}
 }
+
+func TestPublicStopSettlesFailedZrokOpen(t *testing.T) {
+	z := newFakeZrok(t)
+	m := zrokManager(t, []ID{Zrok}, z)
+	ctx := context.Background()
+	// No zrok route was registered (the open failed), yet the rollback asks
+	// the backend to settle whatever that open may have left.
+	stop, err := m.StopPublicRoutes(ctx, "notes")
+	if err != nil || len(stop.Stopped) != 0 || len(stop.Unconfirmed) != 0 || !slices.Equal(z.stopped, []string{"notes"}) {
+		t.Fatalf("stop = %+v, err = %v, stopped = %v", stop, err, z.stopped)
+	}
+	z.stopErr = errors.New("controller unavailable")
+	stop, err = m.StopPublicRoutes(ctx, "notes")
+	if err != nil || !slices.Equal(stop.Unconfirmed, []ID{Zrok}) {
+		t.Fatalf("failed settle = %+v, %v", stop, err)
+	}
+}

@@ -225,16 +225,18 @@ takes it. Records name the
 account (a hash of its token, not the token): after `zrok.environment` moves
 to another account, `Serve` and `Retire` refuse and keep the record until the
 original account is configured again or the operator removes the record.
-A different fingerprint whose account still holds the recorded name, as after
-a regenerated account token, updates the record instead. `Serve` uses an
+zrok exposes no account identity apart from the token, so a regenerated token
+is treated like another account. `Serve` uses an
 existing name only with this host's record: a name reserved in the account by
 the zrok CLI or another Flats host is refused. A creation attempt is recorded
 as pending; the next `Serve` adopts the name if the account holds it, an
 `errNameExists` answer drops the record (another account owns the name), and
 `Retire` releases a pending name the account holds. A share whose creation
-failed, or whose rollback failed, is kept as unsettled: `Stop` (for example
-when a failed Public approval rolls back) and process shutdown remove it
-when this host owns it. An
+failed, or whose rollback failed, is kept as unsettled: `Stop` and process
+shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
+`Stop` even without a registered zrok route, so the rollback of a failed
+Public approval settles such a share and reports zrok unconfirmed if it
+cannot. An
 unshare the controller answers with "not found" is confirmed through the
 account-wide share detail: a share another environment of the account still
 holds is reported, not treated as gone. A `Serve` after a failed `Stop`

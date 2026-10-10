@@ -621,31 +621,20 @@ func (n *Net) ownsShare(ctx context.Context, slug string, rec record, token stri
 	return n.b.ShareOwned(ctx, token, shareTarget(n.cfg.Instance, slug))
 }
 
-// sameAccount checks that rec was made with this environment's account. A
-// different fingerprint can also mean a regenerated account token: when this
-// account holds the recorded name, the record is updated to it. Otherwise the
-// record is kept, because only the original account can release the name.
-func (n *Net) sameAccount(ctx context.Context, slug string, rec record) (record, error) {
-	if rec.Account == n.b.Account() {
-		return rec, nil
-	}
-	_, found, err := n.b.NameHolder(ctx, rec.Namespace, slug)
-	if err != nil {
-		return rec, err
-	}
-	if !found {
+// sameAccount checks that rec was made with this environment's account
+// token. zrok exposes no account identity apart from the token, so a
+// different fingerprint is refused and the record kept: finding a name of
+// the same spelling does not prove the same account.
+func (n *Net) sameAccount(_ context.Context, slug string, rec record) (record, error) {
+	if rec.Account != n.b.Account() {
 		return rec, n.otherAccount(slug)
-	}
-	rec.Account = n.b.Account()
-	if err := n.writeRecord(slug, rec); err != nil {
-		return rec, err
 	}
 	return rec, nil
 }
 
 func (n *Net) otherAccount(slug string) error {
 	path, _ := recordPath(n.cfg.Dir, slug)
-	return fmt.Errorf("the name was reserved with a zrok account this environment cannot see; set zrok.environment back to that account to release it, or remove %s if the name is gone", path)
+	return fmt.Errorf("the name was reserved with a different zrok account token; set zrok.environment back to that account to release it. If you regenerated the token of the same account, release the name with `zrok2 delete name` and remove %s", path)
 }
 
 func (n *Net) forgetOrphan(slug, token string) {

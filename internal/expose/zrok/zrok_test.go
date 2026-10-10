@@ -808,10 +808,10 @@ func TestRecordOfAnotherAccountIsKept(t *testing.T) {
 	if err := n.writeRecord("blog", record{Account: "old-account", Namespace: "public", Created: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "cannot see") {
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "different zrok account token") {
 		t.Fatalf("Serve: %v", err)
 	}
-	if err := n.Retire("blog"); err == nil || !strings.Contains(err.Error(), "cannot see") {
+	if err := n.Retire("blog"); err == nil || !strings.Contains(err.Error(), "different zrok account token") {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !reserved(t, n, "blog") {
@@ -879,20 +879,22 @@ func TestShareOfAnotherHostIsNotReclaimed(t *testing.T) {
 	}
 }
 
-func TestRegeneratedAccountTokenKeepsRecords(t *testing.T) {
+func TestDifferentAccountTokenIsNotAdopted(t *testing.T) {
 	f := newFake()
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
-	f.names["public/blog"] = ""
+	f.names["public/blog"] = "" // same spelling, but no proof of the same account
 	if err := n.writeRecord("blog", record{Account: "old-token-fingerprint", Namespace: "public", Created: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
-		t.Fatalf("same account after a token change: %v", err)
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "different zrok account token") {
+		t.Fatalf("Serve: %v", err)
 	}
-	rec, _, _ := n.readRecord("blog")
-	if rec.Account != "acct" {
-		t.Fatalf("record not moved to the current fingerprint: %+v", rec)
+	if err := n.Retire("blog"); err == nil {
+		t.Fatal("Retire released a name of an unproven account")
+	}
+	if _, ok := f.names["public/blog"]; !ok || !reserved(t, n, "blog") {
+		t.Fatal("name or record changed")
 	}
 }
 
