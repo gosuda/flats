@@ -51,7 +51,7 @@ polish is for the user to ask for.
 | `background` | Nothing paints `body`, so the viewer's default shows through and the page can be unreadable in one scheme. |
 | `overflow` | The page scrolls sideways at this width. `elements` lists the outermost offenders outside any scrolling box. |
 | `image`, `stylesheet`, `resource` | A broken image, an unloaded stylesheet, or a request that failed with HTTP 400 or above (`status`). |
-| `lazy-image` | One entry for all `loading="lazy"` images the browser has not requested yet (`count`, first five `src`): they are unchecked, so scroll to them or fetch their URLs. |
+| `pending-image` | One entry for images that have not finished loading: still in flight, or `loading="lazy"` and not requested yet (`count`, `lazy`, first five `src`). They are unchecked, so scroll to them and run the script again, or fetch their URLs. |
 | `hidden-text` | Text that is invisible at rest (`opacity: 0` on it or an ancestor, or `visibility: hidden`), usually content waiting for a scroll observer. Closed menus and tooltips are fine. |
 | `contrast` | Text below 4.5:1 against its background in this scheme (3:1 for large text), counting translucent backgrounds and `opacity`. |
 

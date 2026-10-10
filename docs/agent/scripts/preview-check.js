@@ -70,19 +70,19 @@
   if (!painted(document.body) && !painted(root)) add("background", { fix: "paint body from a color token in both schemes" });
 
   if (root.scrollWidth > vw + 1) {
-    const clipped = (el) => { for (let e = el.parentElement; e && e !== root; e = e.parentElement) {
+    const clipped = (el) => { for (let e = up(el); e && e !== root; e = up(e)) {
       if (["auto", "scroll", "hidden", "clip"].includes(style(e).overflowX)) return true; } return false; };
-    const wide = [...document.body.querySelectorAll("*")].slice(0, 3000)
+    const wide = roots.flatMap((r) => [...(r === document ? document.body : r).querySelectorAll("*")]).slice(0, 3000)
       .filter((el) => el.getBoundingClientRect().right > vw + 1 && !clipped(el));
-    const outer = wide.filter((el) => !wide.includes(el.parentElement)).slice(0, 8);
+    const outer = wide.filter((el) => !wide.includes(up(el))).slice(0, 8);
     add("overflow", { scrollWidth: root.scrollWidth, width: vw, elements: outer.map(name),
       fix: "let rows wrap, give text children min-width: 0, put wide tables/code in an overflow-x: auto box" });
   }
 
-  const lazy = [];
+  const pending = [];
   for (const img of roots.flatMap((r) => [...r.querySelectorAll("img")])) {
     if (img.complete && img.naturalWidth === 0 && img.currentSrc) add("image", { src: img.currentSrc });
-    else if (!img.complete && img.loading === "lazy") lazy.push(img.getAttribute("src") ?? img.getAttribute("srcset"));
+    else if (!img.complete) pending.push(img);
   }
   for (const link of document.querySelectorAll('link[rel~="stylesheet"][href]')) {
     if (!link.sheet && !link.disabled) add("stylesheet", { href: link.href });
@@ -133,7 +133,8 @@
         fix: "use color tokens that keep 4.5:1 (3:1 for large text) in this scheme" });
     }
   }
-  if (lazy.length) add("lazy-image", { count: lazy.length, src: lazy.slice(0, 5),
-    fix: "not requested yet: scroll to them, or fetch their URLs, before calling images fine" });
+  if (pending.length) add("pending-image", { count: pending.length, lazy: pending.filter((img) => img.loading === "lazy").length,
+    src: pending.slice(0, 5).map((img) => img.currentSrc || img.getAttribute("src") || img.getAttribute("srcset")),
+    fix: "still loading or not requested yet (lazy): scroll to them and run again, or fetch their URLs, before calling images fine" });
   return out;
 })()
