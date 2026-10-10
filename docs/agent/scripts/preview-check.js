@@ -37,14 +37,18 @@
   const over = (under, [r, g, b, a]) => [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a), 1];
   const mixed = (a, b, t) => a.map((v, k) => v * (1 - t) + b[k] * t);
   // The pixel colors behind and of el's text, composed the way CSS does: each element's background
-  // and content form a group that is faded onto its backdrop by its opacity. null when a background
-  // image is in the way or no element in the chain paints an opaque background.
+  // and content form a group that is faded onto its backdrop by its opacity. The walk stops at an
+  // opaque background that nothing above fades, since what lies behind it cannot show through.
+  // null when a background image is in the way first, or nothing paints an opaque background.
+  const unfaded = (el) => { for (let e = el; e; e = up(e)) if (Number(style(e).opacity) < 1) return false; return true; };
   const colors = (el, text) => {
     const chain = [];
     for (let e = el; e; e = up(e)) {
       const s = style(e);
       if (s.backgroundImage !== "none") return null;
-      chain.push({ bg: rgba(s.backgroundColor), opacity: Number(s.opacity) });
+      const bg = rgba(s.backgroundColor);
+      chain.push({ bg, opacity: Number(s.opacity) });
+      if (bg[3] > 0.99 && unfaded(e)) break;
     }
     if (!chain.some((c) => c.bg[3] > 0.99)) return null;
     const dark = /dark/.test(style(root).colorScheme) && out.scheme === "dark";
@@ -122,7 +126,7 @@
     const [hi, lo] = [lum(px.fg), lum(bg)].sort((a, b) => b - a);
     const ratio = (hi + 0.05) / (lo + 0.05);
     const large = parseFloat(s.fontSize) >= 24 || (parseFloat(s.fontSize) >= 18.66 && Number(s.fontWeight) >= 700);
-    const key = s.color + "|" + bg.map(Math.round).join();
+    const key = px.fg.map(Math.round).join() + "|" + bg.map(Math.round).join(); // rendered colors
     if (ratio < (large ? 3 : 4.5) && !pairs.has(key)) {
       pairs.add(key);
       add("contrast", { element: name(el), text: n.data.trim().slice(0, 40), ratio: Math.round(ratio * 100) / 100,
