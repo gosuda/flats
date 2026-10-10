@@ -446,11 +446,13 @@ How to use it:
 - Save the block as `flats-runtime-v1.d.ts` in your project. Type-check
   with `"lib": ["ES2022"]` and `"types": []`, without the DOM library. Its
   Request, Response, Headers, URL and fetch are smaller than the browser ones.
-- In JavaScript, add `// @ts-check` and `/** @type {Flats.ServerModule} */`
-  above `export default {...}`. In TypeScript, write
-  `export default {...} satisfies Flats.ServerModule`.
-- Declare your environment names with `Flats.Env<"API_KEY" | "MODE">`;
-  each is `string | undefined`.
+- Name your environment variables and secrets in the module type, e.g.
+  `Flats.ServerModule<Flats.Env<"API_KEY" | "MODE">>`; each is
+  `string | undefined`. Without names, only `env.DB` and `env.FILES` type-check.
+- In JavaScript, add `// @ts-check` and
+  `/** @type {Flats.ServerModule<Flats.Env<"API_KEY">>} */` above
+  `export default {...}`. In TypeScript, write
+  `export default {...} satisfies Flats.ServerModule<Flats.Env<"API_KEY">>`.
 - Upload only compiled JavaScript ES modules. The declaration file itself is
   not needed on the host.
 
@@ -855,7 +857,12 @@ declare class URLSearchParams {
 
 /** Base64-encodes a string of characters U+0000–U+00FF; throws otherwise. */
 declare function btoa(data: string): string;
-/** Decodes base64 to a string of characters U+0000–U+00FF; throws on invalid input. */
+/**
+ * Decodes base64 to a string of characters U+0000–U+00FF. Whitespace and every
+ * "=" are removed first; other characters outside the base64 alphabet throw.
+ * Padding and length are not validated (atob("Y=Q==") is "a"), so validate
+ * untrusted input yourself.
+ */
 declare function atob(data: string): string;
 
 declare var console: Flats.Console;

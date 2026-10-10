@@ -395,7 +395,12 @@ declare class URLSearchParams {
 
 /** Base64-encodes a string of characters U+0000–U+00FF; throws otherwise. */
 declare function btoa(data: string): string;
-/** Decodes base64 to a string of characters U+0000–U+00FF; throws on invalid input. */
+/**
+ * Decodes base64 to a string of characters U+0000–U+00FF. Whitespace and every
+ * "=" are removed first; other characters outside the base64 alphabet throw.
+ * Padding and length are not validated (atob("Y=Q==") is "a"), so validate
+ * untrusted input yourself.
+ */
 declare function atob(data: string): string;
 
 declare var console: Flats.Console;

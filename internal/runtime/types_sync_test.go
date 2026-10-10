@@ -202,7 +202,8 @@ export default { async fetch(request, env) {
     clearInterval(iv); clearTimeout(undefined);
     return [typeof id, typeof iv, args, micro];
   })();
-  c.base64 = [btoa("\u00ff"), atob("/w=="), (() => { try { btoa("\u0100"); return false; } catch (_) { return true; } })()];
+  const throws = (f) => { try { f(); return false; } catch (_) { return true; } };
+  c.base64 = [btoa("\u00ff"), atob("/w=="), throws(() => btoa("\u0100")), atob("Y=Q=="), atob(" YQ "), throws(() => atob("Y!Q"))];
   return Response.json(out);
 },
 websocket: {
@@ -295,7 +296,7 @@ func TestTypesMatchRuntime(t *testing.T) {
 		"url":         `["https://a.example:8080/x/b?q=a+b#h","https:","a.example","8080","/x/b","?q=a+b","#h","","","https://a.example:8080",true]`,
 		"crypto":      `[true,true,true]`,
 		"timers":      `["number","number",[],true]`,
-		"base64":      `["/w==","ÿ",true]`,
+		"base64":      `["/w==","ÿ",true,"a","a",true]`,
 	}
 	for k, v := range want {
 		if got := string(out.Checks[k]); got != v {
