@@ -125,7 +125,7 @@ them too. They never block or change the save. Docs bundles are not checked.
 | external `<script src>`, stylesheet, `modulepreload`, script or style `preload`, or import-map URL without an exact version; hosted font stylesheets | same |
 | a relative or root-relative asset reference (script, stylesheet, icon, manifest, img/srcset, video/poster, audio, source, track, iframe, embed, object) that names no file in the bundle | static flats; the entry's references resolve from the flat root, where visitors open it; skipped for server flats (the handler owns routing) and pages with `<base href>`; a single-page app's entry counts as served only for an extensionless iframe |
 | image file larger than 1 MiB | every image in the bundle |
-| no favicon link and no root `favicon.ico` | a static flat's HTML entry |
+| no `<link rel="icon" href>` and no root `favicon.ico` (an Apple touch icon is not a tab favicon) | a static flat's HTML entry |
 | no `screenshot` in `flats.json` | static flats with an HTML entry |
 
 A single-page app without its entry file is already a validation error. The

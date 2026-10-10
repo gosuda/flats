@@ -53,9 +53,8 @@ func Lint(files []File) []Problem {
 				"resize it to the largest size it is displayed at and re-encode it (WebP or AVIF for photos), ideally below 500 KiB")
 		}
 	}
-	if len(l.out) > maxWarnings {
-		more := len(l.out) - maxWarnings
-		l.out = append(l.out[:maxWarnings], Problem{Message: fmt.Sprintf("%d more warnings not shown", more),
+	if more := l.total - len(l.out); more > 0 {
+		l.out = append(l.out, Problem{Message: fmt.Sprintf("%d more warnings not shown", more),
 			Fix: "fix the warnings above and save again to see the rest"})
 	}
 	return l.out
@@ -65,23 +64,60 @@ type linter struct {
 	index  map[string]bool
 	static bool
 	spa    bool
-	out    []Problem
+	out    []Problem // at most maxWarnings
+	total  int       // every warning found, including those not kept
 }
 
 func (l *linter) add(p, msg, fix string) {
-	l.out = append(l.out, Problem{Path: p, Message: msg, Fix: fix})
+	l.keep(Problem{Path: p, Message: msg, Fix: fix})
 }
+
+func (l *linter) keep(w Problem) {
+	l.total++
+	if len(l.out) < maxWarnings {
+		l.out = append(l.out, w)
+	}
+}
+
+// maxSeen bounds the per-document set of references already checked; past
+// it, a repeated reference may be counted twice.
+const maxSeen = 4096
 
 // document checks one HTML document. Only static flats get reference
 // checks: a server handler owns its routes, so a path need not be a file.
 func (l *linter) document(f File, entry bool) {
 	var (
-		title, viewport, icon, base bool
-		titleText                   strings.Builder
-		inTitle, inImportMap        bool
-		foreign                     int // depth inside <svg> or <math>, whose <title> is not the page's
-		refs                        []ref
+		title, viewport, icon bool
+		titleText             strings.Builder
+		inTitle, inImportMap  bool
+		foreign               int // depth inside <svg> or <math>, whose <title> is not the page's
+		// Reference warnings are checked while scanning, so memory stays
+		// bounded however many references a page has; they are reported
+		// after the page-level warnings.
+		refWarn []Problem
+		refMore int
+		seen    = map[ref]bool{}
 	)
+	// A <base href> changes how every reference resolves; skip those checks.
+	checkFiles := l.static && !hasBase(f.Data)
+	check := func(r ref) {
+		r.url = strings.TrimSpace(r.url)
+		if r.url == "" || seen[r] {
+			return
+		}
+		if len(seen) < maxSeen {
+			seen[r] = true
+		}
+		for _, w := range []Problem{l.external(f.Path, r), l.missing(f.Path, r, entry, checkFiles)} {
+			switch {
+			case w.Message == "":
+			case len(refWarn) < maxWarnings:
+				refWarn = append(refWarn, w)
+			default:
+				refMore++
+			}
+		}
+	}
 	z := html.NewTokenizer(bytes.NewReader(f.Data))
 	for {
 		tt := z.Next()
@@ -94,7 +130,9 @@ func (l *linter) document(f File, entry bool) {
 				titleText.Write(z.Text())
 			}
 			if inImportMap {
-				refs = append(refs, importMapRefs(z.Text())...)
+				for _, r := range importMapRefs(z.Text()) {
+					check(r)
+				}
 			}
 			continue
 		case html.EndTagToken:
@@ -127,39 +165,37 @@ func (l *linter) document(f File, entry bool) {
 			if foreign == 0 {
 				title, inTitle = true, tt == html.StartTagToken
 			}
-		case "base":
-			base = base || attrs["href"] != ""
 		case "meta":
 			viewport = viewport || strings.EqualFold(strings.TrimSpace(attrs["name"]), "viewport")
 		case "script":
 			if strings.EqualFold(strings.TrimSpace(attrs["type"]), "importmap") {
 				inImportMap = tt == html.StartTagToken
 			}
-			refs = append(refs, ref{attrs["src"], codeAsset})
+			check(ref{attrs["src"], codeAsset})
 		case "link":
-			icon = icon || ((rel["icon"] || rel["apple-touch-icon"]) && strings.TrimSpace(attrs["href"]) != "")
+			icon = icon || (rel["icon"] && strings.TrimSpace(attrs["href"]) != "")
 			kind := plainAsset
 			as := strings.ToLower(strings.TrimSpace(attrs["as"]))
 			if rel["stylesheet"] || rel["modulepreload"] || (rel["preload"] && (as == "script" || as == "style")) {
 				kind = codeAsset
 			}
 			if rel["stylesheet"] || rel["icon"] || rel["apple-touch-icon"] || rel["manifest"] || rel["preload"] || rel["modulepreload"] || rel["mask-icon"] {
-				refs = append(refs, ref{attrs["href"], kind})
+				check(ref{attrs["href"], kind})
 			}
 		case "iframe":
-			refs = append(refs, ref{attrs["src"], pageRef})
+			check(ref{attrs["src"], pageRef})
 		case "img", "source", "video", "audio", "track", "embed", "input":
 			if tag != "input" || strings.EqualFold(attrs["type"], "image") {
-				refs = append(refs, ref{attrs["src"], plainAsset})
+				check(ref{attrs["src"], plainAsset})
 			}
 			for _, u := range srcset(attrs["srcset"]) {
-				refs = append(refs, ref{u, plainAsset})
+				check(ref{u, plainAsset})
 			}
 			if tag == "video" {
-				refs = append(refs, ref{attrs["poster"], plainAsset})
+				check(ref{attrs["poster"], plainAsset})
 			}
 		case "object":
-			refs = append(refs, ref{attrs["data"], plainAsset})
+			check(ref{attrs["data"], plainAsset})
 		}
 	}
 	switch t := strings.Join(strings.Fields(titleText.String()), " "); {
@@ -178,18 +214,33 @@ func (l *linter) document(f File, entry bool) {
 		l.add(f.Path, "page has no favicon, so browsers request /favicon.ico and get 404",
 			`add <link rel="icon" href="favicon.svg"> with the icon file in the bundle, or add favicon.ico at the root`)
 	}
-	seen := map[ref]bool{}
-	for _, r := range refs {
-		r.url = strings.TrimSpace(r.url)
-		if r.url == "" || seen[r] {
-			continue
-		}
-		seen[r] = true
-		if r.kind == codeAsset {
-			l.external(f.Path, r.url)
-		}
-		if l.static && !base {
-			l.missing(f.Path, r, entry)
+	for _, w := range refWarn {
+		l.keep(w)
+	}
+	l.total += refMore
+}
+
+var baseTag = regexp.MustCompile(`(?i)<base[\s/>]`)
+
+// hasBase reports whether a document has a <base> element with an href.
+func hasBase(data []byte) bool {
+	if !baseTag.Match(data) {
+		return false
+	}
+	z := html.NewTokenizer(bytes.NewReader(data))
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return false
+		case html.StartTagToken, html.SelfClosingTagToken:
+			name, hasAttr := z.TagName()
+			for string(name) == "base" && hasAttr {
+				var k, v []byte
+				k, v, hasAttr = z.TagAttr()
+				if string(k) == "href" && strings.TrimSpace(string(v)) != "" {
+					return true
+				}
+			}
 		}
 	}
 }
@@ -220,27 +271,29 @@ var fontCSSHosts = map[string]bool{"fonts.googleapis.com": true, "fonts.bunny.ne
 
 // external warns when a script or stylesheet loads from another origin
 // without an exact version (bundle by default; CDN only when pinned).
-func (l *linter) external(page, raw string) {
+func (l *linter) external(page string, r ref) Problem {
+	raw := r.url
 	u, ok := externalURL(raw)
-	if !ok {
-		return
+	if r.kind != codeAsset || !ok {
+		return Problem{}
 	}
 	if fontCSSHosts[strings.ToLower(u.Hostname())] {
-		l.add(page, fmt.Sprintf("font stylesheet loads from %s on every visit and cannot be pinned to a version", u.Hostname()),
+		return warn(page, fmt.Sprintf("font stylesheet loads from %s on every visit and cannot be pinned to a version", u.Hostname()),
 			"bundle the font files (.woff2) and declare them with @font-face, so the page also works offline and without third-party requests")
-		return
 	}
 	pinned, tag := exactVersion(u.EscapedPath())
 	if pinned {
-		return
+		return Problem{}
 	}
 	what := "has no version"
 	if tag != "" {
 		what = fmt.Sprintf("uses version %q, which is not exact and can change under you", tag)
 	}
-	l.add(page, fmt.Sprintf("external script or stylesheet %s %s", raw, what),
+	return warn(page, fmt.Sprintf("external script or stylesheet %s %s", raw, what),
 		"bundle the file into the upload (preferred), or pin an exact version such as @18.3.1 and add an integrity hash")
 }
+
+func warn(p, msg, fix string) Problem { return Problem{Path: p, Message: msg, Fix: fix} }
 
 // externalURL parses an absolute http(s) or protocol-relative URL.
 func externalURL(raw string) (*url.URL, bool) {
@@ -297,21 +350,21 @@ func exactVersion(escapedPath string) (pinned bool, tag string) {
 // missing warns when a relative reference names no file in the bundle,
 // resolving it the way the static server does. Visitors open the entry at
 // the flat root, so its relative references resolve from there.
-func (l *linter) missing(page string, r ref, entry bool) {
+func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 	raw := r.url
 	lower := strings.ToLower(raw)
-	if strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
-		return
+	if !enabled || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
+		return Problem{}
 	}
 	if u, err := url.Parse(raw); err != nil || u.Scheme != "" || strings.HasPrefix(lower, "data:") {
-		return
+		return Problem{}
 	}
 	target := raw
 	if i := strings.IndexAny(target, "?#"); i >= 0 {
 		target = target[:i]
 	}
 	if target == "" {
-		return
+		return Problem{}
 	}
 	if dec, err := url.PathUnescape(target); err == nil {
 		target = dec
@@ -329,14 +382,14 @@ func (l *linter) missing(page string, r ref, entry bool) {
 	}
 	rel := resolve(from)
 	if l.resolves(rel, dir) {
-		return
+		return Problem{}
 	}
 	// A single-page app serves its entry HTML for unknown extensionless
 	// paths: fine for a frame, but not as a script, stylesheet or image.
 	if l.spa && r.kind == pageRef && !strings.Contains(path.Base(rel), ".") {
-		return
+		return Problem{}
 	}
-	l.add(page, fmt.Sprintf("references %s, but the bundle has no file %s", raw, displayPath(rel)),
+	return warn(page, fmt.Sprintf("references %s, but the bundle has no file %s", raw, displayPath(rel)),
 		"add the file to the upload, or fix the path (paths are relative to the page; a leading / starts at the flat root)")
 }
 

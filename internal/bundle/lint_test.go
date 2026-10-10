@@ -274,8 +274,11 @@ func TestLintScreenshotAndFavicon(t *testing.T) {
 	noIcon := bytes.Replace([]byte(goodPage), []byte(`<link rel="icon" href="/favicon.svg">`), nil, 1)
 	expectWarning(t, with(File{Path: "index.html", Data: noIcon}), "index.html", "favicon")
 	expectClean(t, with(File{Path: "index.html", Data: noIcon}, File{Path: "favicon.ico", Data: []byte("ico")}))
+	// Desktop browsers do not use an Apple touch icon as the tab favicon.
 	touch := bytes.Replace([]byte(goodPage), []byte(`rel="icon" href="/favicon.svg"`), []byte(`rel="apple-touch-icon" href="favicon.svg"`), 1)
-	expectClean(t, with(File{Path: "index.html", Data: touch}))
+	expectWarning(t, with(File{Path: "index.html", Data: touch}), "index.html", "favicon")
+	shortcut := bytes.Replace([]byte(goodPage), []byte(`rel="icon"`), []byte(`rel="shortcut icon"`), 1)
+	expectClean(t, with(File{Path: "index.html", Data: shortcut}))
 }
 
 func TestLintSkipsDocsAndInvalid(t *testing.T) {
@@ -290,6 +293,25 @@ func TestLintSkipsDocsAndInvalid(t *testing.T) {
 	}
 	if ws := Lint(spa); ws != nil {
 		t.Fatalf("invalid bundles are not linted: %s", render(ws))
+	}
+}
+
+func TestLintBoundsCollection(t *testing.T) {
+	// Page-level warnings come first, then reference warnings; the rest are
+	// counted, not kept.
+	var body strings.Builder
+	body.WriteString(`<!doctype html><html><head></head><body>`)
+	const n = 200000
+	for i := range n {
+		fmt.Fprintf(&body, `<img src="m%d.png">`, i)
+	}
+	ws := Lint(with(File{Path: "index.html", Data: []byte(body.String())}))
+	if len(ws) != maxWarnings+1 || !strings.Contains(ws[0].Message, "no <title>") || !strings.Contains(ws[1].Message, "viewport") {
+		t.Fatalf("order and cap: %d warnings, first %+v", len(ws), ws[0])
+	}
+	// title, viewport and favicon plus n missing images.
+	if want := fmt.Sprintf("%d more warnings", n+3-maxWarnings); !strings.Contains(ws[maxWarnings].Message, want) {
+		t.Fatalf("want %q, got %+v", want, ws[maxWarnings])
 	}
 }
 
