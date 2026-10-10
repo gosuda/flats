@@ -160,7 +160,7 @@ func get(t *testing.T, addr string) string {
 
 func TestServeReservesNameAndServes(t *testing.T) {
 	f := newFake()
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	url, err := n.Serve(context.Background(), "blog", hello("v1"))
 	if err != nil {
@@ -190,7 +190,7 @@ func TestServeReservesNameAndServes(t *testing.T) {
 
 func TestStopKeepsNameAndReservesSameURL(t *testing.T) {
 	f := newFake()
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestServeRemovesStaleShareHoldingName(t *testing.T) {
 	f := newFake()
 	f.names["blog"] = "old"
 	f.shares["old"] = "blog"
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestServeRefusesStaleShareItCannotRemove(t *testing.T) {
 	f := newFake()
 	f.names["blog"] = "other-env"
 	f.unshareErr = errors.New("share belongs to another environment")
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	_, err := n.Serve(context.Background(), "blog", hello("v1"))
 	if err == nil || !strings.Contains(err.Error(), "could not be removed") {
@@ -253,7 +253,7 @@ func TestServeRefusesStaleShareItCannotRemove(t *testing.T) {
 func TestServeNameOwnedByAnotherAccount(t *testing.T) {
 	f := newFake()
 	f.foreign["blog"] = true
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	_, err := n.Serve(context.Background(), "blog", hello("v1"))
 	if err == nil || !strings.Contains(err.Error(), TakenHint) {
@@ -261,24 +261,67 @@ func TestServeNameOwnedByAnotherAccount(t *testing.T) {
 	}
 }
 
-func TestListenFailureReportsError(t *testing.T) {
+func TestListenFailureReportsErrorAndRetries(t *testing.T) {
 	f := newFake()
-	f.listenFn = func(string) (net.Listener, error) { return nil, errors.New("no edge routers") }
-	n := newNet(Config{}, f)
+	var mu sync.Mutex
+	fails := 2
+	f.listenFn = func(string) (net.Listener, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if fails > 0 {
+			fails--
+			return nil, errors.New("no edge routers")
+		}
+		return net.Listen("tcp", "127.0.0.1:0")
+	}
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	n.retryMin, n.retryMax = 50*time.Millisecond, 100*time.Millisecond
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
 	}
 	waitState(t, n, "blog", stateError)
-	if d := n.Status().Hosts[0].Detail; !strings.Contains(d, "no edge routers") {
+	if d := n.Status().Hosts[0].Detail; !strings.Contains(d, "no edge routers") || !strings.Contains(d, "retrying") {
 		t.Fatalf("detail = %q", d)
 	}
-	// The share still exists until Stop removes it.
+	waitState(t, n, "blog", stateReady)
 	if err := n.Stop("blog"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.shares) != 0 {
 		t.Fatalf("shares = %v", f.shares)
+	}
+}
+
+func TestClosedListenerIsRebound(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	n.retryMin, n.retryMax = 10*time.Millisecond, 10*time.Millisecond
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, n, "blog", stateReady)
+	f.mu.Lock()
+	first := f.lns["tok1"]
+	f.mu.Unlock()
+	first.Close() // the overlay drops the binding
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		f.mu.Lock()
+		again := f.lns["tok1"]
+		f.mu.Unlock()
+		if again != first {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("share was not rebound")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitState(t, n, "blog", stateReady)
+	if got := get(t, f.addr("tok1")); got != "v1|" {
+		t.Fatalf("body = %q", got)
 	}
 }
 
@@ -292,7 +335,7 @@ func TestStopDuringSlowBindDoesNotLeaveListener(t *testing.T) {
 		got = ln
 		return ln, err
 	}
-	n := newNet(Config{ShutdownTimeout: 5 * time.Second}, f)
+	n := newNet(Config{Dir: t.TempDir(), ShutdownTimeout: 5 * time.Second}, f)
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
@@ -314,7 +357,7 @@ func TestStopDuringSlowBindDoesNotLeaveListener(t *testing.T) {
 
 func TestStopFailureKeepsEntryForRetry(t *testing.T) {
 	f := newFake()
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
@@ -342,7 +385,7 @@ func TestStopFailureKeepsEntryForRetry(t *testing.T) {
 
 func TestRetireReleasesName(t *testing.T) {
 	f := newFake()
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
 		t.Fatal(err)
@@ -370,7 +413,7 @@ func TestRetireReleasesName(t *testing.T) {
 
 func TestCloseUnsharesAndKeepsNames(t *testing.T) {
 	f := newFake()
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	for _, slug := range []string{"a", "b"} {
 		if _, err := n.Serve(context.Background(), slug, hello(slug)); err != nil {
 			t.Fatal(err)
@@ -393,7 +436,7 @@ func TestCloseUnsharesAndKeepsNames(t *testing.T) {
 func TestShareFailureLeavesNothingServed(t *testing.T) {
 	f := newFake()
 	f.shareErr = errors.New("share limit reached")
-	n := newNet(Config{}, f)
+	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "share limit reached") {
 		t.Fatalf("err = %v", err)
@@ -407,5 +450,110 @@ func TestLoadRootRequiresEnabledEnvironment(t *testing.T) {
 	_, err := loadRoot(t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "zrok2 enable") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReservedNameRecordOutlivesRestartUntilRetire(t *testing.T) {
+	f := newFake()
+	dir := t.TempDir()
+	n := newNet(Config{Dir: dir}, f)
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if !n.Reserved("blog") || n.Reserved("other") {
+		t.Fatal("reservation record missing")
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A new process, for example after the flat lost its zrok permission,
+	// still knows it reserved the name and releases it.
+	n = newNet(Config{Dir: dir}, f)
+	defer n.Close()
+	if !n.Reserved("blog") {
+		t.Fatal("record did not survive a restart")
+	}
+	if err := n.Retire("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.names["blog"]; ok || n.Reserved("blog") {
+		t.Fatalf("name or record kept after Retire: names=%v", f.names)
+	}
+}
+
+func TestRetireDropsRecordOfNameNeverReserved(t *testing.T) {
+	f := newFake()
+	f.foreign["blog"] = true
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+		t.Fatal("served a name another account owns")
+	}
+	if !n.Reserved("blog") {
+		t.Fatal("the attempt was not recorded before reserving")
+	}
+	if err := n.Retire("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if n.Reserved("blog") || len(f.released) != 0 {
+		t.Fatalf("record kept or a foreign name released: %v", f.released)
+	}
+}
+
+func TestStopDrainsRequestFromLostListener(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir(), ShutdownTimeout: 5 * time.Second}, f)
+	n.retryMin, n.retryMax = 10*time.Millisecond, 10*time.Millisecond
+	defer n.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		io.WriteString(w, "done")
+	})
+	if _, err := n.Serve(context.Background(), "blog", slow); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, n, "blog", stateReady)
+	f.mu.Lock()
+	first := f.lns["tok1"]
+	f.mu.Unlock()
+	body := make(chan string, 1)
+	go func() {
+		resp, err := http.Get("http://" + first.Addr().String() + "/")
+		if err != nil {
+			body <- err.Error()
+			return
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		body <- string(b)
+	}()
+	<-started
+	first.Close() // the overlay drops the binding mid-request
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.Stop("blog") }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("Stop returned while a request was in flight: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-body; got != "done" {
+		t.Fatalf("in-flight request = %q", got)
+	}
+}
+
+func TestNameConflictKeepsControllerReason(t *testing.T) {
+	if err := nameConflict("blog", "public", ""); !errors.Is(err, errNameTaken) {
+		t.Fatalf("existing name: %v", err)
+	}
+	err := nameConflict("blog", "public", "names limit reached; cannot reserve additional names")
+	if errors.Is(err, errNameTaken) || !strings.Contains(err.Error(), "names limit reached") {
+		t.Fatalf("limit: %v", err)
 	}
 }

@@ -324,7 +324,7 @@ func (p *prepared) bootstrap(ctx context.Context, s setup, info store.Info, dbPa
 }
 
 // leftoverNames are entries only a Flats host creates in its data directory.
-var leftoverNames = []string{"flats", "secret.key", "tsnet", "portal", "backups", "network-retirements", provider.FileName}
+var leftoverNames = []string{"flats", "secret.key", "tsnet", "portal", "zrok", "backups", "network-retirements", provider.FileName}
 
 // flatsLeftovers lists the Flats entries in dir. Other entries, such as a
 // new volume's lost+found, do not stop a bootstrap.

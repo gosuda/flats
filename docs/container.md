@@ -96,6 +96,12 @@ and set `credentials.tailscale_authkey_file` to
 `/run/secrets/tailscale-authkey`. A host started from `config.json` refuses
 `TS_AUTHKEY` and other `TS_*` variables.
 
+For zrok, enable a zrok environment outside the container (`zrok2 enable
+<account token>`), mount its directory where uid `65532` can read it, for
+example `-v "$HOME/.zrok2:/run/zrok2"`, set `zrok.environment` to
+`/run/zrok2` and add `zrok` to `network.permitted`. Flats reads the
+environment and never stores the account token.
+
 ## Configuration
 
 `flats config set` and `unset` work offline and refuse while the host runs.

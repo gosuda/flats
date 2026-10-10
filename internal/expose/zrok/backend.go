@@ -101,15 +101,25 @@ func (b *sdkBackend) ReserveName(ctx context.Context, name string) (string, erro
 	if _, err := c.Share.CreateShareName(req, b.auth()); err != nil {
 		var conflict *share.CreateShareNameConflict
 		if errors.As(err, &conflict) {
-			// Lost a race with ourselves, or another account owns it.
+			// Lost a race with ourselves, or the name exists already.
 			if holder, found, ferr := b.NameHolder(ctx, name); ferr == nil && found {
 				return holder, nil
 			}
-			return "", fmt.Errorf("%w: %q in namespace %q", errNameTaken, name, b.namespace)
+			return "", nameConflict(name, b.namespace, string(conflict.GetPayload()))
 		}
 		return "", fmt.Errorf("reserve name %q: %w", name, err)
 	}
 	return "", nil
+}
+
+// nameConflict explains a CreateShareName conflict for a name the account
+// does not hold. The controller sends no reason only when the name exists;
+// a reason means another conflict, such as the account's name limit.
+func nameConflict(name, namespace, reason string) error {
+	if reason != "" {
+		return fmt.Errorf("reserve name %q: %s", name, reason)
+	}
+	return fmt.Errorf("%w: %q in namespace %q", errNameTaken, name, namespace)
 }
 
 // NameHolder looks name up among the account's names in the namespace.
@@ -225,7 +235,7 @@ func (b *sdkBackend) Listen(token string) (net.Listener, error) {
 		return nil, err
 	}
 	return zctx.ListenWithOptions(token, &ziti.ListenOptions{
-		ConnectTimeout:               30 * time.Second,
+		ConnectTimeout:               20 * time.Second, // below the 30s shutdown bound
 		WaitForNEstablishedListeners: 1,
 	})
 }

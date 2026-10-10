@@ -85,6 +85,9 @@ type ZrokNet interface {
 	Stop(slug string) error
 	// Retire deletes slug's share and releases its name.
 	Retire(slug string) error
+	// Reserved reports whether this host reserved slug's name and has not
+	// released it, independently of current permissions or routes.
+	Reserved(slug string) bool
 	URL(slug string) string
 	Status() core.NetStatus
 	Close() error
@@ -1161,25 +1164,25 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	}
 
 	// zrok shares are retired with their names: a deleted flat or an
-	// expired redirect does not keep its name reserved in the account. A
-	// flat that permits zrok but has no route record (after a restart, or
-	// while private) may still own a name a previous process reserved; that
-	// release is best effort, because no share of it is bound and reachable.
+	// expired redirect does not keep its name reserved in the account. The
+	// backend records every name it reserved, so a name kept while the flat
+	// was private, after a restart or after its zrok permission was revoked
+	// is released too. That release is a cleanup obligation, not a public
+	// route: no share of it is bound.
 	for _, host := range hosts {
 		owned := byHost[host]
-		if owned.zrok {
-			if m.zrokNet() == nil {
-				errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
-			} else if err := m.zrokNet().Retire(host); err != nil {
+		z := m.zrokNet()
+		switch {
+		case owned.zrok && z == nil:
+			errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
+		case owned.zrok:
+			if err := z.Retire(host); err != nil {
 				errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, err))
 			}
-			continue
-		}
-		if host != slug || m.zrokNet() == nil || m.permission == nil {
-			continue
-		}
-		if permitted, err := m.permission(ctx, slug, Zrok); err == nil && permitted {
-			_ = m.zrokNet().Retire(host)
+		case z != nil && z.Reserved(host):
+			if err := z.Retire(host); err != nil {
+				errs = append(errs, fmt.Errorf("zrok name %s: %w", host, err))
+			}
 		}
 	}
 	if err := errors.Join(errs...); err != nil {

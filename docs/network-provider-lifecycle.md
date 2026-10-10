@@ -193,10 +193,19 @@ account owns is refused with a rename hint.
 and deletes the share; the name stays reserved, so a later Public transition
 gets the same URL. A failed unshare keeps the route registered and reports
 zrok in `Unconfirmed`. `Retire`, used by `StopSlug` for a deleted flat or an
-expired redirect, also releases the name. `StopSlug` retires a registered
-zrok route with confirmation; for a flat that permits zrok but has no route
-record it releases the name on a best-effort basis, because no share of that
-name is bound. Process shutdown deletes every share and keeps the names.
+expired redirect, also releases the name. `Serve` records each name in
+`<data>/zrok/<slug>` before reserving it and `Retire` removes the record, so
+`StopSlug` releases a name the host still holds even without a route record:
+after a restart, while the flat was private or after its zrok permission was
+revoked. A failed release keeps the record and fails `StopSlug` for retry;
+it is a cleanup obligation, not a public route. With no zrok backend
+configured, records stay until zrok is turned on again.
+
+A listener the overlay closes is rebound with backoff (2 s, doubling to
+60 s). Requests that the lost listener already accepted are drained before
+rebinding, and `Stop` drains every server that may still hold connections
+before deleting the share. Process shutdown deletes every share and keeps
+the names.
 
 ## Shutdown
 

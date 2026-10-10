@@ -15,6 +15,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -31,6 +34,9 @@ const TakenHint = "another zrok account owns this name in the namespace; rename 
 
 // Config configures a Net.
 type Config struct {
+	// Dir records the names this host reserved (one file per name), so a
+	// deleted flat releases its name even after its zrok permission is gone.
+	Dir string
 	// Environment is the zrok environment directory. "" is the zrok
 	// default, ~/.zrok2 of the user that runs flats.
 	Environment string
@@ -55,6 +61,8 @@ type Net struct {
 	b    backend
 	logf func(string, ...any)
 
+	retryMin, retryMax time.Duration // bind retry backoff
+
 	mu      sync.Mutex
 	closed  bool
 	entries map[string]*entry
@@ -70,11 +78,11 @@ type entry struct {
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when the listener goroutine returned
 
-	mu     sync.Mutex
-	state  string
-	detail string
-	ln     net.Listener
-	srv    *http.Server
+	mu      sync.Mutex
+	state   string
+	detail  string
+	ln      net.Listener
+	servers map[*http.Server]struct{} // every server that may still hold connections
 }
 
 type handlerBox struct {
@@ -98,6 +106,12 @@ func (b *handlerBox) set(h http.Handler) {
 // or overlay; that happens on the first Serve.
 func New(cfg Config) (*Net, error) {
 	cfg = withDefaults(cfg)
+	if cfg.Dir == "" {
+		return nil, errors.New("zrok: name directory is required")
+	}
+	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
+		return nil, fmt.Errorf("zrok: name directory: %w", err)
+	}
 	b, err := newSDKBackend(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("zrok: %w", err)
@@ -121,7 +135,8 @@ func newNet(cfg Config, b backend) *Net {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Net{cfg: cfg, b: b, logf: logf, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}}
+	return &Net{cfg: cfg, b: b, logf: logf, retryMin: 2 * time.Second, retryMax: time.Minute,
+		entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}}
 }
 
 func (n *Net) slugLock(slug string) *sync.Mutex {
@@ -172,6 +187,11 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		return e.url, nil
 	}
 
+	// Record the name before reserving it, so a reservation is never
+	// untracked; Retire drops a record whose name the account does not own.
+	if err := n.mark(slug); err != nil {
+		return "", fmt.Errorf("zrok: %s: record name: %w", slug, err)
+	}
 	holder, err := n.b.ReserveName(ctx, slug)
 	if err != nil {
 		if errors.Is(err, errNameTaken) {
@@ -198,7 +218,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	e = &entry{slug: slug, token: token, url: url, handler: &handlerBox{h: h},
-		cancel: cancel, done: make(chan struct{}), state: stateStarting}
+		cancel: cancel, done: make(chan struct{}), state: stateStarting, servers: map[*http.Server]struct{}{}}
 	n.mu.Lock()
 	n.entries[slug] = e
 	n.mu.Unlock()
@@ -206,34 +226,69 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	return url, nil
 }
 
-// run binds the share and serves it until Stop cancels ctx.
+// run binds the share and serves it until Stop cancels ctx. A failed bind,
+// or a listener the overlay closes, is retried with backoff, so a route that
+// failed recovers without a new approval.
 func (n *Net) run(ctx context.Context, e *entry) {
 	defer close(e.done)
+	delay := n.retryMin
+	for {
+		err := n.bindAndServe(ctx, e)
+		if ctx.Err() != nil {
+			return
+		}
+		e.mu.Lock()
+		e.state, e.detail = stateError, err.Error()+fmt.Sprintf("; retrying in %s", delay)
+		e.mu.Unlock()
+		n.logf("zrok: %s: %v; retrying in %s", e.slug, err, delay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(2*delay, n.retryMax)
+	}
+}
+
+// bindAndServe binds the share once and serves it until the listener stops.
+// It returns why serving ended; after Stop the error is irrelevant.
+func (n *Net) bindAndServe(ctx context.Context, e *entry) error {
 	ln, err := n.b.Listen(e.token)
 	if err != nil {
-		e.mu.Lock()
-		e.state, e.detail = stateError, "bind the share on the zrok overlay: "+err.Error()
-		e.mu.Unlock()
-		n.logf("zrok: %s: %v", e.slug, err)
-		return
+		return fmt.Errorf("bind the share on the zrok overlay: %w", err)
 	}
 	srv := &http.Server{Handler: publicHandler(e.handler), ReadHeaderTimeout: 30 * time.Second}
 	e.mu.Lock()
 	if ctx.Err() != nil {
 		e.mu.Unlock()
 		ln.Close()
-		return
+		return ctx.Err()
 	}
-	e.ln, e.srv = ln, srv
+	e.ln = ln
+	e.servers[srv] = struct{}{}
 	e.state, e.detail = stateReady, ""
 	e.mu.Unlock()
 	n.logf("zrok: %s: ready at %s", e.slug, e.url)
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) && ctx.Err() == nil {
-		e.mu.Lock()
-		e.state, e.detail = stateError, "zrok share stopped serving: "+err.Error()
-		e.mu.Unlock()
-		n.logf("zrok: %s: http server stopped: %v", e.slug, err)
+	err = srv.Serve(ln)
+	ln.Close()
+	// Serve returns when the listener closes, while requests already
+	// accepted keep running. Drain them before binding again; Stop drains
+	// every server still in the set.
+	dctx, cancel := context.WithTimeout(ctx, n.cfg.ShutdownTimeout)
+	derr := srv.Shutdown(dctx)
+	cancel()
+	e.mu.Lock()
+	if e.ln == ln {
+		e.ln = nil
 	}
+	if derr == nil {
+		delete(e.servers, srv)
+	}
+	e.mu.Unlock()
+	if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		err = errors.New("the zrok overlay closed the share's listener")
+	}
+	return fmt.Errorf("zrok share stopped serving: %w", err)
 }
 
 // publicHandler strips identity headers a visitor could forge; the public
@@ -288,16 +343,24 @@ func (n *Net) stopEntry(e *entry) error {
 	var errs []error
 	e.cancel()
 	e.mu.Lock()
-	srv, ln := e.srv, e.ln
+	ln := e.ln
+	servers := make([]*http.Server, 0, len(e.servers))
+	for srv := range e.servers {
+		servers = append(servers, srv)
+	}
 	e.mu.Unlock()
-	if srv != nil {
+	if ln != nil {
+		ln.Close()
+	}
+	for _, srv := range servers {
 		if err := srv.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("zrok: %s HTTP shutdown: %w", e.slug, err))
 			srv.Close()
+			continue
 		}
-	}
-	if ln != nil {
-		ln.Close()
+		e.mu.Lock()
+		delete(e.servers, srv)
+		e.mu.Unlock()
 	}
 	select {
 	case <-e.done:
@@ -336,16 +399,63 @@ func (n *Net) Retire(slug string) error {
 	if err != nil {
 		return fmt.Errorf("zrok: %s: %w", slug, err)
 	}
-	if !found {
-		return nil
-	}
-	if holder != "" {
-		if err := n.b.Unshare(ctx, holder); err != nil {
-			return fmt.Errorf("zrok: %s: remove share %s: %w", slug, holder, err)
+	if found {
+		if holder != "" {
+			if err := n.b.Unshare(ctx, holder); err != nil {
+				return fmt.Errorf("zrok: %s: remove share %s: %w", slug, holder, err)
+			}
+		}
+		if err := n.b.ReleaseName(ctx, slug); err != nil {
+			return fmt.Errorf("zrok: %s: %w", slug, err)
 		}
 	}
-	if err := n.b.ReleaseName(ctx, slug); err != nil {
-		return fmt.Errorf("zrok: %s: %w", slug, err)
+	if err := n.unmark(slug); err != nil {
+		return fmt.Errorf("zrok: %s: drop name record: %w", slug, err)
+	}
+	return nil
+}
+
+// Reserved reports whether this host recorded reserving slug's name and has
+// not released it yet.
+func (n *Net) Reserved(slug string) bool {
+	path, err := n.markPath(slug)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+func (n *Net) markPath(slug string) (string, error) {
+	if n.cfg.Dir == "" {
+		return "", errors.New("no name directory")
+	}
+	if !nameRE.MatchString(slug) {
+		return "", fmt.Errorf("invalid name %q", slug)
+	}
+	return filepath.Join(n.cfg.Dir, slug), nil
+}
+
+func (n *Net) mark(slug string) error {
+	path, err := n.markPath(slug)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(n.cfg.Dir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(n.cfg.Namespace+"\n"), 0o600)
+}
+
+func (n *Net) unmark(slug string) error {
+	path, err := n.markPath(slug)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }

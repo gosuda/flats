@@ -18,7 +18,10 @@ type fakeZrok struct {
 	serve              int
 	stopped, retired   []string
 	stopErr, retireErr error
+	reserved           map[string]bool
 }
+
+func (f *fakeZrok) Reserved(slug string) bool { return f.reserved[slug] }
 
 func (f *fakeZrok) Serve(ctx context.Context, slug string, h http.Handler) (string, error) {
 	f.serve++
@@ -225,30 +228,23 @@ func TestStopSlugRetiresZrokName(t *testing.T) {
 	}
 }
 
-func TestStopSlugReleasesUntrackedZrokNameBestEffort(t *testing.T) {
+func TestStopSlugReleasesReservedNameWithoutRoute(t *testing.T) {
 	z := newFakeZrok(t)
-	ln, err := local.Listen("127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	permits := map[string]bool{"zrok-flat": true}
-	m, err := New(t.TempDir(), Options{Local: ln, Zrok: z, Grants: &File{Permitted: []ID{Zrok}},
-		Permission: func(_ context.Context, slug string, id ID) (bool, error) { return id == Zrok && permits[slug], nil }})
-	if err != nil {
-		t.Fatal(err)
-	}
+	z.reserved = map[string]bool{"was-public": true}
+	// The flat no longer permits zrok and has no route: the backend's own
+	// reservation record decides.
+	m := zrokManager(t, []ID{Zrok}, z)
 	ctx := context.Background()
-	if err := m.StopSlug(ctx, "other-flat"); err != nil || len(z.retired) != 0 {
-		t.Fatalf("a flat without zrok touched zrok: %v %v", err, z.retired)
+	if err := m.StopSlug(ctx, "never-zrok"); err != nil || len(z.retired) != 0 {
+		t.Fatalf("a flat without a zrok name touched zrok: %v %v", err, z.retired)
 	}
-	if err := m.StopSlug(ctx, "zrok-flat"); err != nil || !slices.Equal(z.retired, []string{"zrok-flat"}) {
-		t.Fatalf("retired = %v, err = %v", z.retired, err)
-	}
-	// Without a route, a failed release does not block deleting the flat.
 	z.retireErr = errors.New("controller unavailable")
-	if err := m.StopSlug(ctx, "zrok-flat"); err != nil {
-		t.Fatalf("best-effort release blocked delete: %v", err)
+	if err := m.StopSlug(ctx, "was-public"); err == nil || errors.Is(err, core.ErrPublicStopUnconfirmed) {
+		t.Fatalf("failed name release: %v", err)
+	}
+	z.retireErr = nil
+	if err := m.StopSlug(ctx, "was-public"); err != nil || !slices.Equal(z.retired, []string{"was-public"}) {
+		t.Fatalf("retired = %v, err = %v", z.retired, err)
 	}
 }
 

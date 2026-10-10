@@ -44,6 +44,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
     restore-journal.json      present only while a data restore is unfinished
     health-check/ restore-trial/  temporary copies
   tsnet/ portal/              provider node identities
+  zrok/                       zrok names this host reserved, until released
   network-retirements/        unfinished tailnet node cleanup
   logs/ cache/ run/ flats.lock  logs, caches, sockets, the host lock
 ```
@@ -57,7 +58,8 @@ Required: `config.json`, `flats.db` (with `VACUUM INTO` or while the host is
 stopped, never a plain copy of a live database), `secret.key` together with
 `flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`
 and `network-retirements/` when present, and `tsnet/` and `portal/` (without
-them new node names and certificates are issued). Back up the credential files
+them new node names and certificates are issued), and `zrok/` (without it a
+deleted flat no longer releases its zrok name). Back up the credential files
 separately. Logs, caches, sockets and the lock are rebuilt.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
@@ -154,8 +156,11 @@ start fails while that environment is missing or not enabled. Each flat
 served through zrok reserves its slug as a name in `zrok.namespace`, so its
 public URL stays the same across restarts and Private↔Public changes; the
 share itself exists only while the flat is public and the host runs.
-Deleting a flat, or the expiry of a rename redirect, releases the name. A
-name another zrok account already owns cannot be used; rename the flat. The
+Deleting a flat, or the expiry of a rename redirect, releases the name, also
+when the flat went private or lost its zrok permission earlier: `zrok/` in
+the data directory records every name the host reserved. A name another zrok
+account already owns cannot be used; rename the flat. When the account's
+name limit is reached, the route reports the zrok controller's reason. The
 zrok client also honors its own `ZROK2_*` environment variables, such as
 `ZROK2_API_ENDPOINT` for a self-hosted zrok instance.
 
@@ -265,7 +270,7 @@ written to the file.
 
 It refuses, writing nothing but the lock, when the directory already holds
 Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
-or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `backups/`,
+or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `zrok/`, `backups/`,
 `network-retirements/` or `network-provider.json` without a database (restore
 the database and config from the same backup). Other entries, such as a new
 volume's `lost+found`, are fine. A bootstrap interrupted after writing
