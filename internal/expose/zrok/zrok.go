@@ -195,6 +195,9 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	if err != nil {
 		return "", fmt.Errorf("zrok: %s: %w", slug, err)
 	}
+	if known && rec.Account != n.b.Account() {
+		return "", fmt.Errorf("zrok: %s: %w", slug, n.otherAccount(slug))
+	}
 	if known && rec.Namespace != ns {
 		// zrok.namespace changed: release what this host holds in the old
 		// namespace before reserving in the new one.
@@ -204,7 +207,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		known = false
 	}
 	if !known {
-		rec = record{Namespace: ns}
+		rec = record{Account: n.b.Account(), Namespace: ns}
 	}
 	holder, found, err := n.b.NameHolder(ctx, ns, slug)
 	if err != nil {
@@ -246,7 +249,11 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		// Only a share this host created and could not delete (a crash, or
 		// a shutdown whose unshare failed) is removed. Any other share, such
 		// as one the operator runs under this name, is left alone.
-		if !n.ownsShare(slug, rec, holder) {
+		owned, err := n.ownsShare(ctx, slug, rec, holder)
+		if err != nil {
+			return "", fmt.Errorf("zrok: %s: %w", slug, err)
+		}
+		if !owned {
 			return "", fmt.Errorf("zrok: %s: the name is held by share %s, which Flats did not create; stop that share or rename the flat", slug, holder)
 		}
 		if err := n.b.Unshare(ctx, holder); err != nil {
@@ -475,13 +482,24 @@ func (n *Net) Retire(slug string) error {
 
 // release undoes what rec says this host holds for slug and drops rec.
 func (n *Net) release(ctx context.Context, slug string, rec record) error {
+	if rec.Account != n.b.Account() {
+		// This environment cannot see or release the other account's names;
+		// keep the record so the cleanup is not lost.
+		return n.otherAccount(slug)
+	}
 	holder, found, err := n.b.NameHolder(ctx, rec.Namespace, slug)
 	if err != nil {
 		return err
 	}
+	owned := false
+	if found && holder != "" {
+		if owned, err = n.ownsShare(ctx, slug, rec, holder); err != nil {
+			return err
+		}
+	}
 	if found {
 		switch {
-		case holder != "" && n.ownsShare(slug, rec, holder):
+		case owned:
 			if err := n.b.Unshare(ctx, holder); err != nil {
 				return fmt.Errorf("remove share %s: %w", holder, err)
 			}
@@ -521,11 +539,22 @@ func HasRecord(dir, slug string) (bool, error) {
 	return err == nil, err
 }
 
-// ownsShare reports whether token is a share this host created for slug.
-func (n *Net) ownsShare(slug string, rec record, token string) bool {
+// ownsShare reports whether token is a share this host created for slug:
+// one it recorded, or one of this environment that carries Flats' target,
+// such as a share whose creation response was lost.
+func (n *Net) ownsShare(ctx context.Context, slug string, rec record, token string) (bool, error) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	return token == rec.Token || token == n.orphans[slug]
+	known := token == rec.Token || token == n.orphans[slug]
+	n.mu.Unlock()
+	if known {
+		return true, nil
+	}
+	return n.b.ShareOwned(ctx, token, shareTarget(slug))
+}
+
+func (n *Net) otherAccount(slug string) error {
+	path, _ := recordPath(n.cfg.Dir, slug)
+	return fmt.Errorf("the name was reserved with another zrok account; set zrok.environment back to that account to release it, or remove %s to forget the reservation", path)
 }
 
 func (n *Net) forgetOrphan(slug, token string) {
@@ -539,6 +568,7 @@ func (n *Net) forgetOrphan(slug, token string) {
 // record is what this host knows about a name it reserved, kept as JSON in
 // <Dir>/<slug>.
 type record struct {
+	Account   string `json:"account"` // backend.Account of the environment that reserved it
 	Namespace string `json:"namespace"`
 	Created   bool   `json:"created"`         // Flats created the name, so it may release it
 	Token     string `json:"token,omitempty"` // a share Flats created and has not deleted yet
@@ -569,7 +599,7 @@ func (n *Net) readRecord(slug string) (record, bool, error) {
 		return record{}, false, err
 	}
 	var rec record
-	if err := json.Unmarshal(b, &rec); err != nil || rec.Namespace == "" {
+	if err := json.Unmarshal(b, &rec); err != nil || rec.Namespace == "" || rec.Account == "" {
 		return record{}, false, fmt.Errorf("unreadable name record %s", path)
 	}
 	return rec, true, nil

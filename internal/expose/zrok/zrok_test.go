@@ -30,13 +30,17 @@ type fakeBackend struct {
 	unshareErr error
 	shareErr   error
 	createErr  error
+	loseShare  bool              // Share creates the share, then fails as if its response was lost
+	targets    map[string]string // token -> share target
+	account    string
 	unshared   []string
 	released   []string
 	closed     bool
 }
 
 func newFake() *fakeBackend {
-	return &fakeBackend{names: map[string]string{}, foreign: map[string]bool{}, shares: map[string]string{}, lns: map[string]net.Listener{}}
+	return &fakeBackend{names: map[string]string{}, foreign: map[string]bool{}, shares: map[string]string{},
+		lns: map[string]net.Listener{}, targets: map[string]string{}, account: "acct"}
 }
 
 // key is how the fake stores a name: "<namespace>/<name>".
@@ -85,6 +89,11 @@ func (f *fakeBackend) Share(_ context.Context, namespace, name string) (string, 
 	token := fmt.Sprintf("tok%d", f.next)
 	f.shares[token] = k
 	f.names[k] = token
+	f.targets[token] = shareTarget(name)
+	if f.loseShare {
+		f.loseShare = false
+		return "", nil, errors.New("share response timed out")
+	}
 	return token, []string{name + "." + namespace + ".example"}, nil
 }
 
@@ -106,6 +115,15 @@ func (f *fakeBackend) Unshare(ctx context.Context, token string) error {
 	}
 	return nil
 }
+
+func (f *fakeBackend) ShareOwned(_ context.Context, token, target string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.shares[token]
+	return ok && f.targets[token] == target, nil
+}
+
+func (f *fakeBackend) Account() string { return f.account }
 
 func (f *fakeBackend) Listen(token string) (net.Listener, error) {
 	if f.listenFn != nil {
@@ -240,7 +258,7 @@ func TestServeRemovesStaleShareItCreated(t *testing.T) {
 	n := newNet(Config{Dir: t.TempDir()}, f)
 	defer n.Close()
 	// A crashed process recorded the share it created.
-	if err := n.writeRecord("blog", record{Namespace: "public", Created: true, Token: "old"}); err != nil {
+	if err := n.writeRecord("blog", record{Account: "acct", Namespace: "public", Created: true, Token: "old"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
@@ -420,7 +438,7 @@ func TestRetireReleasesName(t *testing.T) {
 	// released too.
 	f.names["public/old"] = "tok-old"
 	f.shares["tok-old"] = "public/old"
-	if err := n.writeRecord("old", record{Namespace: "public", Created: true, Token: "tok-old"}); err != nil {
+	if err := n.writeRecord("old", record{Account: "acct", Namespace: "public", Created: true, Token: "tok-old"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Retire("old"); err != nil {
@@ -756,5 +774,44 @@ func TestHasRecordFailsClosed(t *testing.T) {
 	}
 	if _, err := HasRecord(dir, "other"); err == nil {
 		t.Fatal("an unreadable record directory was reported as no record")
+	}
+}
+
+func TestShareWithLostResponseIsReconciled(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	f.loseShare = true
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+		t.Fatal("Serve succeeded although the share response was lost")
+	}
+	// The share exists and holds the name, but Flats never learned its token.
+	if f.names["public/blog"] != "tok1" {
+		t.Fatalf("names = %v", f.names)
+	}
+	url, err := n.Serve(context.Background(), "blog", hello("v1"))
+	if err != nil || url != "https://blog.public.example" {
+		t.Fatalf("retry: %q, %v", url, err)
+	}
+	if !slices.Contains(f.unshared, "tok1") {
+		t.Fatalf("the share Flats created was not reconciled: unshared = %v", f.unshared)
+	}
+}
+
+func TestRecordOfAnotherAccountIsKept(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if err := n.writeRecord("blog", record{Account: "old-account", Namespace: "public", Created: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "another zrok account") {
+		t.Fatalf("Serve: %v", err)
+	}
+	if err := n.Retire("blog"); err == nil || !strings.Contains(err.Error(), "another zrok account") {
+		t.Fatalf("Retire: %v", err)
+	}
+	if !reserved(t, n, "blog") {
+		t.Fatal("the other account's record was dropped")
 	}
 }

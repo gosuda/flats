@@ -2,6 +2,8 @@ package zrok
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -47,6 +49,12 @@ type backend interface {
 	// Unshare deletes a share of this environment. An unknown share is not
 	// an error.
 	Unshare(ctx context.Context, token string) error
+	// ShareOwned reports whether token is a share of this environment with
+	// target, which is how Flats marks the shares it creates.
+	ShareOwned(ctx context.Context, token, target string) (bool, error)
+	// Account identifies the zrok account of the environment without
+	// revealing its token.
+	Account() string
 	// Listen binds the share on the zrok overlay.
 	Listen(token string) (net.Listener, error)
 	Close() error
@@ -203,7 +211,7 @@ func (b *sdkBackend) Share(ctx context.Context, namespace, name string) (string,
 		EnvZID:         b.root.Environment().ZitiIdentity,
 		ShareMode:      "public",
 		BackendMode:    "proxy",
-		Target:         "flats:" + name,
+		Target:         shareTarget(name),
 		AuthScheme:     "none",
 		PermissionMode: "closed",
 		NameSelections: []*rest_model_zrok.NameSelection{{NamespaceToken: namespace, Name: name}},
@@ -235,6 +243,32 @@ func (b *sdkBackend) Unshare(ctx context.Context, token string) error {
 		return fmt.Errorf("unshare %s: %w", token, err)
 	}
 	return nil
+}
+
+// shareTarget marks a share Flats created for name.
+func shareTarget(name string) string { return "flats:" + name }
+
+func (b *sdkBackend) ShareOwned(ctx context.Context, token, target string) (bool, error) {
+	c, err := b.zrokClient(ctx)
+	if err != nil {
+		return false, err
+	}
+	req := metadata.NewGetShareDetailParamsWithContext(ctx)
+	req.ShareToken = token
+	resp, err := c.Metadata.GetShareDetail(req, b.auth())
+	if err != nil {
+		var missing *metadata.GetShareDetailNotFound
+		if errors.As(err, &missing) {
+			return false, nil
+		}
+		return false, fmt.Errorf("share %s detail: %w", token, err)
+	}
+	return resp.Payload.EnvZID == b.root.Environment().ZitiIdentity && resp.Payload.Target == target, nil
+}
+
+func (b *sdkBackend) Account() string {
+	sum := sha256.Sum256([]byte(b.root.Environment().AccountToken))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (b *sdkBackend) context() (ziti.Context, error) {

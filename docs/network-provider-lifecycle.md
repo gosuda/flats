@@ -217,6 +217,13 @@ the HTTP drain, so a drain timeout does not leave the share behind. A record
 that cannot be inspected makes `StopSlug` fail instead of skipping it. The
 controller client checks its version once, under the operation's context.
 
+A share is Flats' own when its token is recorded or when the controller
+reports it belongs to this environment with the target `flats:<slug>`, which
+also covers a share whose creation response was lost. Records name the
+account (a hash of its token, not the token): after `zrok.environment` moves
+to another account, `Serve` and `Retire` refuse and keep the record until the
+original account is configured again or the operator removes the record.
+
 A listener the overlay closes is rebound with backoff (2 s, doubling to
 60 s). Requests that the lost listener already accepted are drained before
 rebinding, and `Stop` drains every server that may still hold connections

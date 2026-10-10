@@ -161,7 +161,9 @@ when the flat went private or lost its zrok permission earlier: `zrok/` in
 the data directory records every name the host reserved, and deleting such a
 flat while zrok is turned off is refused until zrok is on again. Flats only
 removes shares and names it created itself; a share or name you created with
-the zrok CLI under the same name is left alone. A name another zrok
+the zrok CLI under the same name is left alone. Changing `zrok.environment` to
+another zrok account keeps the old account's records: flats using them report
+the conflict until you switch back, or remove the record in `zrok/`. A name another zrok
 account already owns cannot be used; rename the flat. When the account's
 name limit is reached, the route reports the zrok controller's reason. The
 zrok client also honors its own `ZROK2_*` environment variables, such as
