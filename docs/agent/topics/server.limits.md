@@ -8,15 +8,19 @@ minimal URL/URLSearchParams, btoa/atob, console, Web Crypto randomness
 `crypto.getRandomValues` (integer typed arrays, max 65,536 bytes per call)
 and `crypto.randomUUID` are available. `TextEncoder`, `TextDecoder`,
 `structuredClone`, `Blob`, `AbortController` and `WebAssembly` globals
-are absent; the host UTF-8 encodes response strings. QuickJS may expose sandboxed
+are absent; the host UTF-8 encodes response strings. QuickJS exposes sandboxed
 `os`/`std` helpers, but these have no supported Flats API contract. The capability
 list is not an exhaustive inventory of engine globals.
 No general Node.js process/fs/require,
 subprocesses, host environment, general filesystem access,
 TCP/UDP/client WebSocket, browser DOM or Web Crypto subtle API contract.
-Timers supplied by the engine are subject to the same deadline, not background
-jobs. Global `fetch` provides buffered HTTP(S) requests to exact operator-granted
-origins, with public-address enforcement, pinned DNS, no proxy inheritance and
+`setTimeout`, `setInterval`, their clear functions and `queueMicrotask` come
+from the engine: they fire only while the current invocation awaits, within
+its deadline, and are not background jobs. Extra timer arguments are not
+passed to the callback; clear pending timers before returning. Other engine
+extras such as `performance` and `navigator` have no contract;
+`topic.server.types` lists them. Global `fetch` provides buffered HTTP(S)
+requests to exact operator-granted origins, with public-address enforcement, pinned DNS, no proxy inheritance and
 no automatic redirects. Requests default to denied (`topic.server.fetch`).
 Browser network APIs retain real CORS, CSP and mixed-content protections;
 server secrets never enter static frontend assets automatically.

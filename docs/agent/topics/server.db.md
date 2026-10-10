@@ -10,7 +10,10 @@ Do not interpolate untrusted input. No prepared-statement object or ORM API.
 `[]`. Alias columns uniquely. SQL NULL becomes null; numbers become JS numbers
 (large integers can lose precision), text becomes strings, BLOB results become
 text through JSON/UTF-8 rather than typed arrays. Use SQL/application encoding
-for binary. `exec` returns `{changes, last_insert_id}` numbers from SQLite
+for binary. Text in a column declared DATE, DATETIME or TIMESTAMP that parses
+as a time comes back reformatted as RFC 3339 (`2024-01-02 03:04:05` becomes
+`2024-01-02T03:04:05Z`); declare the column TEXT to read stored text
+unchanged. `exec` returns `{changes, last_insert_id}` numbers from SQLite
 RowsAffected/LastInsertId (not meaningful new insert IDs for every statement).
 
 Parameters: null, string, number; booleans become 1/0; objects/arrays become

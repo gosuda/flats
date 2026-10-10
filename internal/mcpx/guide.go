@@ -37,7 +37,7 @@ func registerGuide(s *mcp.Server, svc *core.Service) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "guide",
 		Description: "Read Flats guidance on demand. topic.index routes by task; other items: topic.static, topic.server, " +
-			"topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.manifest, " +
+			"topic.server.types, topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.manifest, " +
 			"topic.env-secrets, topic.approvals, topic.rollback-data, topic.preview-verify, topic.instructions, and " +
 			"refusal.<category> for a refused call. Pass several items at once. No side effects.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},

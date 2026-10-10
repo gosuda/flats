@@ -11,6 +11,7 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 | Publish a static site or single-page app build | `topic.static`, `topic.manifest`, `topic.design` | `save_draft`, `open_preview`, `publish` |
 | Make a page look and read right (title, themes, phone width, assets) | `topic.design` | `save_draft` warnings, `open_preview` |
 | Build a server app (HTTP API, SQLite, file storage) | `topic.server`, then `topic.server.db`, `topic.server.files`, `topic.server.fetch` as needed, and `topic.server.limits` | same as static |
+| Type-check server code against the exact runtime API | `topic.server.types` | |
 | Write or edit a Markdown document | `topic.docs` | `get_document`, `save_document`, `publish` |
 | Give an app settings, credentials or API access | `topic.env-secrets`, `topic.server.fetch` | `list_env`, `set_env`, `list_secrets`, `get_network` |
 | Make a flat public or private, or delete it | `topic.approvals` | `set_visibility`, `delete_flat` (ask the user first) |
