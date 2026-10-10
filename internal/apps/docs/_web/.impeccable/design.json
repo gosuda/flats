@@ -287,6 +287,14 @@
       "css": ".ds-button{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;font-size:16px;color:var(--ink,#242924);background:transparent;border:1px solid var(--line,#dfe3dc);border-radius:5px;padding:7px 13px;cursor:pointer;}.ds-button:hover{background:var(--active,#f3f6f1)}.ds-button:focus-visible{outline:2px solid var(--accent,#356649);outline-offset:3px;}.ds-button:disabled{opacity:.55;cursor:default}"
     },
     {
+      "name": "Edit | View",
+      "kind": "nav",
+      "refersTo": "mode-selected",
+      "description": "Private Edit/View toggle with a pressed selection; not rendered on public links.",
+      "html": "<div class=\"ds-modes\" role=\"group\" aria-label=\"Document mode\"><button aria-pressed=\"true\">Edit</button><button aria-pressed=\"false\">View</button></div>",
+      "css": ".ds-modes{display:flex;gap:4px}.ds-modes button{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;font-size:16px;color:var(--ink,#242924);background:transparent;border:1px solid var(--line,#dfe3dc);border-radius:5px;padding:7px 13px;cursor:pointer;font-size:12px;border-color:transparent;padding:6px 11px}.ds-modes button:hover{background:var(--active,#f3f6f1)}.ds-modes button[aria-pressed=\"true\"]{color:var(--accent,#356649);background:var(--active,#f3f6f1)}.ds-modes button:focus-visible{outline:2px solid var(--accent,#356649);outline-offset:3px;}"
+    },
+    {
       "name": "Current document",
       "kind": "nav",
       "refersTo": "document-current",
@@ -297,7 +305,7 @@
   ],
   "narrative": {
     "northStar": "Operate / Read",
-    "overview": "Operate / Read is a quiet document workspace: compact controls frame a spacious reading surface. System typography, restrained green, and thin dividers keep Markdown and collaboration state legible. Editing and reading share one view: editors edit the rendered document in place, and the public read-only view shows the same surface without an editor.",
+    "overview": "Operate / Read is a quiet document workspace: compact controls frame a spacious reading surface. System typography, restrained green, and thin dividers keep Markdown and collaboration state legible. Editing and reading share one document surface: private links open in Edit, where editors edit the rendered document in place, and can switch to View to read it rendered; the public read-only view shows only that rendered surface, without an editor or mode controls.",
     "keyCharacteristics": [
       "System typography and a restrained green accent.",
       "Flat surfaces separated by borders and tonal contrast.",
@@ -307,12 +315,12 @@
     "rules": [
       {
         "name": "Restrained Accent",
-        "body": "Use green for links, saved state and focus; keep document text neutral.",
+        "body": "Use green for links, saved state, the selected mode and focus; keep document text neutral.",
         "section": "colors"
       },
       {
-        "name": "Single View",
-        "body": "Keep the header stable while one document surface consumes the remaining viewport height. There are no view modes: editors edit the rendered document in place.",
+        "name": "Single Surface",
+        "body": "Keep the header stable while one document surface consumes the remaining viewport height. Edit is the rendered document edited in place; View and the public page show the same surface rendered. Never show source and rendered output in separate panes.",
         "section": "layout"
       }
     ],
@@ -324,8 +332,9 @@
     ],
     "donts": [
       "Don't add decorative shadows or a display font to the document workspace.",
-      "Don't communicate saved state through color alone.",
-      "Don't reintroduce separate edit, split or preview modes."
+      "Don't communicate saved state or the selected mode through color alone.",
+      "Don't reintroduce split or source-only panes, or more modes than Edit and View.",
+      "Don't expose mode controls in the public read-only view."
     ]
   }
 }

@@ -159,12 +159,20 @@ try {
       (await a.locator("#status").innerText()) === "Saved",
     "offline changes not synchronized",
   );
-  // One view: no mode controls, and the heading renders in place. Its "# "
-  // is hidden away from the cursor and shown on the cursor's line.
+  // Private links open in Edit, the live preview: the heading renders in
+  // place. Its "# " is hidden away from the cursor and shown on the
+  // cursor's line.
+  const pressed = (page, mode) =>
+    page.locator(`#modes [data-mode="${mode}"]`).getAttribute("aria-pressed");
+  assert.equal(await a.locator("#modes button").count(), 2);
+  assert.equal(await pressed(a, "edit"), "true", "private link not in Edit");
+  assert.equal(await pressed(a, "view"), "false");
+  assert.equal(await a.locator("#editor").isVisible(), true);
+  assert.equal(await a.locator("#content").isVisible(), false);
   assert.equal(
-    await a.locator("[data-mode], #modes, .toolbar, #preview").count(),
+    await a.locator(".toolbar, #preview").count(),
     0,
-    "mode controls still rendered",
+    "split-era panes still rendered",
   );
   const heading = a.locator(".cm-line.cm-h1");
   await a.locator(".cm-content").blur();
@@ -186,9 +194,53 @@ try {
     path: path.join(screenshots, "desktop.png"),
     fullPage: true,
   });
+  // View shows the rendered document Public visitors get, live, and Edit
+  // returns to the same editor without reconnecting.
+  await a.locator('#modes [data-mode="view"]').click();
+  assert.equal(await pressed(a, "view"), "true");
+  assert.equal(await pressed(a, "edit"), "false");
+  assert.equal(
+    await a.locator("#editor").isVisible(),
+    false,
+    "View shows the editor",
+  );
+  assert.equal(await a.locator("#content").isVisible(), true);
+  assert.ok(
+    (await a.locator("#content").innerText()).includes("Offline kept"),
+    "View did not show the rendered document at once",
+  );
+  await b.locator(".cm-content").focus();
+  await b.keyboard.press("ControlOrMeta+End");
+  await b.keyboard.insertText("\nWhile viewing");
+  await wait(
+    async () =>
+      (await a.locator("#content").innerText()).includes("While viewing"),
+    "View did not render a live edit",
+  );
+  await a.screenshot({
+    path: path.join(screenshots, "private-view.png"),
+    fullPage: true,
+  });
+  await a.locator('#modes [data-mode="edit"]').click();
+  assert.equal(await pressed(a, "edit"), "true");
+  assert.equal(await a.locator("#editor").isVisible(), true);
+  assert.equal(await a.locator("#content").isVisible(), false);
+  assert.ok((await editorText(a)).includes("While viewing"));
+  await a.locator(".cm-content").click();
+  await a.keyboard.press("ControlOrMeta+End");
+  await a.keyboard.insertText("\nAfter toggle");
+  await wait(
+    async () =>
+      (await editorText(b)).includes("After toggle") &&
+      (await a.locator("#status").innerText()) === "Saved",
+    "edit after View toggle not synchronized",
+  );
+  await a.locator(".cm-content").blur();
   const mobile = await open("Mobile", {
     viewport: { width: 390, height: 844 },
   });
+  assert.equal(await mobile.locator("#modes").isVisible(), true);
+  assert.equal(await pressed(mobile, "edit"), "true");
   await mobile.screenshot({
     path: path.join(screenshots, "mobile.png"),
     fullPage: true,
@@ -234,6 +286,7 @@ try {
     0,
     "public viewer shows mode controls",
   );
+  assert.equal(await publicPage.locator("#editor").isVisible(), false);
   assert.equal(
     await publicPage.locator("#page footer.powered a").getAttribute("href"),
     "https://github.com/gosuda/flats",
@@ -255,6 +308,72 @@ try {
       ),
     "public viewer did not receive new edit",
   );
+  // Access follows each welcome: a reconnect that is read-only hides the
+  // controls and shows the rendered document; regaining write access
+  // restores Edit and editing without a reload.
+  const flip = await open("Flip");
+  const reconnect = async (page, privateAccess) => {
+    const value = privateAccess ? "1" : "0";
+    await page
+      .context()
+      .addCookies([{ name: "flats-test-private", value, url }]);
+    await page.context().setOffline(true);
+    await wait(
+      async () => !(await page.evaluate(() => navigator.onLine)),
+      "page did not go offline",
+    );
+    await page.context().setOffline(false);
+  };
+  await reconnect(flip, false);
+  await wait(
+    async () => (await flip.locator("#status").innerText()) === "Read-only",
+    "read-only reconnect not applied",
+  );
+  assert.equal(await flip.locator("#modes").isVisible(), false);
+  assert.equal(await flip.locator("#editor").isVisible(), false);
+  assert.equal(await flip.locator("#content").isVisible(), true);
+  const statusBox = await flip.locator("#status").boundingBox();
+  assert.ok(statusBox.x > 1440 / 2, "status lost its right alignment");
+  await reconnect(flip, true);
+  await wait(
+    async () => (await flip.locator("#status").innerText()) === "Saved",
+    "writable reconnect not applied",
+  );
+  assert.equal(await flip.locator("#modes").isVisible(), true);
+  assert.equal(await pressed(flip, "edit"), "true");
+  assert.equal(await flip.locator("#editor").isVisible(), true);
+  await flip.locator(".cm-content").click();
+  await flip.keyboard.press("ControlOrMeta+End");
+  await flip.keyboard.insertText("\nWrite access back");
+  await wait(
+    async () =>
+      (await editorText(b)).includes("Write access back") &&
+      (await flip.locator("#status").innerText()) === "Saved",
+    "edit after regaining write access not synchronized",
+  );
+  // A page first served read-only gets the controls once it is writable.
+  const upgradeContext = await browser.newContext({
+    viewport: { width: 1000, height: 800 },
+  });
+  contexts.push(upgradeContext);
+  const upgrade = await upgradeContext.newPage();
+  await upgrade.goto(url);
+  await wait(
+    async () => (await upgrade.locator("#status").innerText()) === "Read-only",
+    "upgrade page not read-only",
+  );
+  assert.equal(await upgrade.locator("#modes").count(), 0);
+  await reconnect(upgrade, true);
+  await wait(
+    async () => (await upgrade.locator("#status").innerText()) === "Saved",
+    "upgrade page did not become writable",
+  );
+  assert.equal(await upgrade.locator("#modes").isVisible(), true);
+  assert.equal(await pressed(upgrade, "edit"), "true");
+  assert.equal(await upgrade.locator("#editor").isVisible(), true);
+  await upgrade.locator('#modes [data-mode="view"]').click();
+  assert.equal(await upgrade.locator("#editor").isVisible(), false);
+  assert.equal(await upgrade.locator("#content").isVisible(), true);
   const dark = await open("Dark reader", { colorScheme: "dark" });
   await dark.screenshot({
     path: path.join(screenshots, "dark.png"),
@@ -284,7 +403,7 @@ try {
   await a.screenshot({path: path.join(screenshots, "conflict-notice.png"),fullPage: true});
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: independent contexts, concurrent convergence, remote cursors, Korean composition/emoji, local undo, persistence, offline reconnect, single live-preview view, mobile, public read-only.",
+    "PASS: independent contexts, concurrent convergence, remote cursors, Korean composition/emoji, local undo, persistence, offline reconnect, live-preview Edit and View toggle, mobile, public read-only.",
   );
 } catch (error) {
   for (const [label, page] of [
