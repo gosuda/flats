@@ -238,8 +238,9 @@ export const SERVER_ONLY = 'Opens only on the Flats host machine. To open it fro
 // URL that is not http(s) is shown as text instead, and so is a loopback URL
 // when the console is viewed from another device: it would open that device,
 // not the Flats host. An icon-only link (class icon-btn) keeps its fixed
-// size: it is disabled with the explanation in its tooltip and accessible
-// name instead of a text badge that would overflow into its neighbours.
+// size: instead of a text badge that would overflow into its neighbours it
+// becomes a disabled-looking button that explains itself in its tooltip, its
+// accessible name and, on click or tap, a toast.
 export function extLink(href, text, cls) {
   const safe = safeHref(href);
   if (!safe) return h('span', { class: cls ? cls + ' is-disabled' : undefined }, text || String(href ?? ''));
@@ -247,7 +248,9 @@ export function extLink(href, text, cls) {
     if ((cls || '').split(/\s+/).includes('icon-btn')) {
       const label = text?.getAttribute?.('aria-label');
       if (label) text.setAttribute('aria-label', `${label}, server only. ${SERVER_ONLY}`);
-      return h('span', { class: cls + ' is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' }, text || href);
+      const btn = h('button', { type: 'button', class: cls + ' is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' }, text || href);
+      btn.addEventListener('click', () => toast(SERVER_ONLY));
+      return btn;
     }
     return h('span', { class: (cls ? cls + ' ' : '') + 'is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' },
       text || href, h('span', { class: 'badge badge-warn', text: 'server only' }));

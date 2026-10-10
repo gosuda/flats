@@ -209,7 +209,9 @@ export async function setProvider(flat, provider, permitted) {
     toast(`${p.label} ${permitted ? 'allowed' : 'no longer allowed'} for ${label(flat)}.`, 'success');
     return true;
   } catch (err) {
-    await report(`Cannot change ${p.label}`, err);
+    // provider_not_ready on a grant: the permission is saved, its route is not open yet.
+    const saved = permitted && err?.body?.category === 'provider_not_ready';
+    await report(saved ? `${p.label} allowed, but its route did not open` : `Cannot change ${p.label}`, err);
     return false;
   }
 }

@@ -256,17 +256,21 @@ await tick();
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/providers').body), { provider: 'tailscale-funnel', permitted: true });
 // A grant whose route did not open is still recorded by the server, so the
 // page reloads the flat instead of only unticking the box.
-routes['POST /console/api/flats/blog/providers'] = { __status: 409, category: 'conflict', error: 'provider not ready: tailscale is permitted, but its route did not open' };
+routes['POST /console/api/flats/blog/providers'] = { __status: 409, category: 'provider_not_ready', error: 'provider not ready: tailscale is permitted, but its route did not open' };
 const tailscaleBox = all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-tailscale')[0];
 const flatLoads = calls.filter((c) => c.key === 'GET /console/api/flats/blog').length;
+routes['GET /console/api/flats/blog'] = { ...blog, providers: ['portal', 'tailscale'] };
 tailscaleBox.checked = true;
 tailscaleBox.dispatch('change');
 await tick();
 const grantError = all(document.body, (e) => e.tagName === 'DIALOG').pop();
-assert.ok(grantError.textContent.includes('its route did not open'), 'the failed grant is reported');
+assert.ok(grantError.textContent.includes('Tailscale allowed, but its route did not open'), 'a saved grant is not reported as unchanged: ' + grantError.textContent);
+assert.ok(!grantError.textContent.includes('Cannot change'));
 grantError.close();
 await tick();
 assert.ok(calls.filter((c) => c.key === 'GET /console/api/flats/blog').length > flatLoads, 'a failed grant must reload the flat');
+assert.equal(all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-tailscale')[0].checked, true, 'the redrawn box shows the saved grant');
+routes['GET /console/api/flats/blog'] = blog;
 delete routes['POST /console/api/flats/blog/providers'];
 const envPanel = all(management, (e) => e.getAttribute('id') === 'env')[0];
 const secretPanel = all(management, (e) => e.getAttribute('id') === 'secrets')[0];
@@ -666,13 +670,21 @@ assert.ok(ui.SERVER_ONLY.includes('Settings → Networks → Private'), 'the too
 // in the tooltip and the icon's accessible name.
 const { icon } = await import('./dom.js');
 const remoteIcon = ui.extLink('http://blog.localhost:7879/', icon('external', 'Open Blog (private URL)'), 'icon-btn');
-assert.equal(remoteIcon.tagName, 'SPAN');
+assert.equal(remoteIcon.tagName, 'BUTTON', 'reachable by keyboard and touch');
 assert.equal(remoteIcon.getAttribute('aria-disabled'), 'true');
+assert.equal(remoteIcon.getAttribute('href'), null);
 assert.equal(remoteIcon.getAttribute('title'), ui.SERVER_ONLY);
 assert.ok(!remoteIcon.textContent.includes('server only'), 'icon button must not carry a text badge');
 assert.equal(all(remoteIcon, (e) => (e.getAttribute('class') || '').includes('badge')).length, 0);
 assert.equal(remoteIcon.childElementCount, 1);
 assert.ok(remoteIcon.childNodes[0].getAttribute('aria-label').startsWith('Open Blog (private URL), server only.'));
+const toastBox = new Element('div');
+toastBox.setAttribute('id', 'toasts');
+const savedGetById = document.getElementById;
+document.getElementById = (id) => (id === 'toasts' ? toastBox : savedGetById?.(id));
+remoteIcon.dispatch('click');
+assert.ok(toastBox.textContent.includes(ui.SERVER_ONLY), 'tapping the icon explains why it is disabled');
+document.getElementById = savedGetById;
 assert.equal(ui.extLink('https://blog.tail1234.ts.net/').tagName, 'A', 'tailnet links stay links');
 for (const url of ['http://blog.localhost.:7879/', 'http://[::ffff:127.0.0.1]:7879/', 'http://0.0.0.0:7879/']) {
   assert.equal(ui.extLink(url).tagName, 'SPAN', url);

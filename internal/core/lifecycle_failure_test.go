@@ -34,6 +34,7 @@ type lifecycleRouteNet struct {
 	failPublic            error
 	failPrivate           error
 	failPrivateAfterLocal error
+	failOpen              map[ProviderID]error // per-provider open failure; siblings still open
 	stopPublic            error
 	stopExposure          map[string]error
 	stopSlug              map[string]error
@@ -58,6 +59,12 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 	}
 	var ids []ProviderID
 	if req.Visibility == "public" {
+		// Like provider.Manager.servePublic, a public request also keeps the
+		// flat's private routes.
+		ids = append(ids, ProviderLocal)
+		if slices.Contains(req.Permitted, ProviderTailscale) {
+			ids = append(ids, ProviderTailscale)
+		}
 		for _, id := range req.Permitted {
 			if id == ProviderPortal || id == ProviderFunnel {
 				ids = append(ids, id)
@@ -70,13 +77,22 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 		}
 	}
 	res := ExposureResult{}
+	var openErrs []error
 	for _, id := range ids {
 		if id == ProviderTailscale && n.failPrivateAfterLocal != nil {
 			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, State: "unavailable", Detail: n.failPrivateAfterLocal.Error(), Audience: req.Audience, Host: req.Host})
 			continue
 		}
+		if err := n.failOpen[id]; err != nil {
+			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, State: "error", Detail: err.Error(), Configured: true, Permitted: true, Audience: req.Audience, Host: req.Host})
+			openErrs = append(openErrs, err)
+			continue
+		}
 		key := lifecycleRouteKey{host: req.Host, provider: id}
 		n.routes[key] = req.Handler
+		if req.PrivateHandler != nil && (id == ProviderLocal || id == ProviderTailscale) {
+			n.routes[key] = req.PrivateHandler
+		}
 		n.owners[key] = req.Slug
 		if id == ProviderFunnel && n.identities[req.Host] == 0 {
 			n.nextIdentity++
@@ -87,7 +103,7 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 	if req.Visibility == "private" && n.failPrivateAfterLocal != nil && slices.Contains(req.Permitted, ProviderTailscale) {
 		return res, n.failPrivateAfterLocal
 	}
-	return res, nil
+	return res, errors.Join(openErrs...)
 }
 
 func (n *lifecycleRouteNet) StopPublicRoutes(_ context.Context, host string) (PublicStopResult, error) {

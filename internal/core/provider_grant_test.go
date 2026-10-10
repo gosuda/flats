@@ -157,3 +157,133 @@ func TestProviderGrantExposureFailureKeepsPermission(t *testing.T) {
 		t.Fatal("re-grant did not retry the route")
 	}
 }
+
+func publicLifecycleFlat(t *testing.T, s *Service, slugName string, providers ...string) {
+	t.Helper()
+	lifecycleSave(t, s, slugName, "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, slugName))
+	for _, p := range providers {
+		if err := s.SetProviderPermission(t.Context(), slugName, p, true, ViaConsole); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req, err := s.SetVisibility(t.Context(), slugName, store.Public, ViaAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(t.Context(), req.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A grant must not widen public exposure: a public provider granted to a
+// flat that is already Public waits for the next approved transition, and a
+// later Tailscale grant does not open it through the back door either.
+func TestProviderGrantDoesNotWidenPublicExposure(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	publicLifecycleFlat(t, s, "wide", store.ProviderFunnel)
+	if !network.serves("wide", ProviderFunnel) {
+		t.Fatal("approved Funnel route not serving")
+	}
+	if err := s.SetProviderPermission(t.Context(), "wide", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if network.serves("wide", ProviderPortal) {
+		t.Fatal("Portal grant opened a new public route without approval")
+	}
+	if err := s.SetProviderPermission(t.Context(), "wide", store.ProviderTailscale, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if !network.serves("wide", ProviderTailscale) {
+		t.Fatal("Tailscale grant did not open its route")
+	}
+	if network.serves("wide", ProviderPortal) {
+		t.Fatal("Tailscale grant opened the unapproved Portal route")
+	}
+	if !network.serves("wide", ProviderFunnel) {
+		t.Fatal("Tailscale grant dropped the approved Funnel route")
+	}
+	fv, err := s.GetFlat(t.Context(), "wide")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fv.PublicURL != "https://wide.tailscale-funnel.test" || fv.PrivateURL != "https://wide.tailscale.test" {
+		t.Fatalf("status lost an endpoint: public=%q private=%q", fv.PublicURL, fv.PrivateURL)
+	}
+}
+
+// Only the granted provider's own route decides the outcome: a broken
+// sibling neither fails a grant nor is blamed on it.
+func TestProviderGrantIgnoresSiblingFailures(t *testing.T) {
+	t.Run("public sibling", func(t *testing.T) {
+		s, _ := newTestService(t)
+		network := newLifecycleRouteNet()
+		s.cfg.Lifecycle = network
+		publicLifecycleFlat(t, s, "sib", store.ProviderPortal, store.ProviderFunnel)
+		network.failOpen = map[ProviderID]error{ProviderFunnel: fmt.Errorf("funnel down: %w", ErrProviderUnavailable)}
+		if err := s.SetProviderPermission(t.Context(), "sib", store.ProviderTailscale, true, ViaConsole); err != nil {
+			t.Fatalf("Tailscale grant failed for a Funnel error: %v", err)
+		}
+		if !network.serves("sib", ProviderTailscale) {
+			t.Fatal("Tailscale route not opened")
+		}
+		evs, err := s.st.ListEvents(t.Context(), "sib", "exposure", 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		warned := false
+		for _, e := range evs {
+			warned = warned || (e.Level == "warn" && strings.Contains(e.Message, "funnel down"))
+		}
+		if !warned {
+			t.Fatal("sibling error was not logged")
+		}
+	})
+	t.Run("public grant on private flat", func(t *testing.T) {
+		s, _ := newTestService(t)
+		network := newLifecycleRouteNet()
+		s.cfg.Lifecycle = network
+		lifecycleSave(t, s, "priv", "one")
+		lifecycleApprove(t, s, lifecycleRequest(t, s, "priv"))
+		if err := s.SetProviderPermission(t.Context(), "priv", store.ProviderTailscale, true, ViaConsole); err != nil {
+			t.Fatal(err)
+		}
+		network.failPrivateAfterLocal = fmt.Errorf("tailnet down: %w", ErrProviderNotPermitted)
+		if err := s.SetProviderPermission(t.Context(), "priv", store.ProviderPortal, true, ViaConsole); err != nil {
+			t.Fatalf("Portal grant on a private flat failed for a Tailscale error: %v", err)
+		}
+	})
+}
+
+// A failed Tailscale grant is categorized as not ready, never as "not
+// permitted", even when the backend reports ErrProviderNotPermitted.
+func TestProviderGrantFailureCategory(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "cat", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "cat"))
+	network.failPrivateAfterLocal = fmt.Errorf("host provider: %w", ErrProviderNotPermitted)
+	err := s.SetProviderPermission(t.Context(), "cat", store.ProviderTailscale, true, ViaConsole)
+	if got := ErrorCategory(err); got != "provider_not_ready" {
+		t.Fatalf("category = %q (%v)", got, err)
+	}
+}
+
+// The legacy backend serves its private host whatever the grant, so a grant
+// there only records the permission.
+func TestProviderGrantLegacyBackendRecordsOnly(t *testing.T) {
+	s, _ := newTestService(t)
+	lifecycleSave(t, s, "legacy-grant", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "legacy-grant"))
+	for _, p := range []string{store.ProviderTailscale, store.ProviderPortal} {
+		if err := s.SetProviderPermission(t.Context(), "legacy-grant", p, true, ViaConsole); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.state("legacy-grant").publicServed {
+		t.Fatal("legacy grant opened a public route")
+	}
+}

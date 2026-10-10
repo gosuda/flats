@@ -315,13 +315,12 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 // Only the console may call it. It does not publish the flat or change visibility.
 //
 // A revocation stops the provider's routes before the permission is removed.
-// A grant is committed first and then applied to the live runtime, so a newly
-// permitted Tailscale route opens without a deploy or restart. The re-run uses
-// the flat's current visibility: a private flat only ever registers private
-// providers, so granting Portal or Funnel to it opens no public route. If the
-// route fails to open, the grant stays recorded (the next deploy, visibility
-// change or restart retries it), an exposure error event is logged and the
-// returned error wraps ErrProviderNotReady.
+// A grant is committed first; a Tailscale grant is then applied to the live
+// runtime (see applyProviderGrant), so its route opens without a deploy or
+// restart. If that route fails to open, the grant stays recorded (a repeated
+// grant, the next deploy, visibility change or restart retries it), an
+// exposure error event is logged and the returned error wraps
+// ErrProviderNotReady.
 func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider string, permitted bool, via Via) error {
 	unlock := s.lock(slugName)
 	defer unlock()
@@ -348,14 +347,80 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return err
 	}
 	s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=%t via %s", provider, permitted, via), nil)
-	if !permitted || s.state(slugName).cur.Load() == nil {
+	if !permitted {
 		return nil
 	}
-	if err := s.ensureExposure(ctx, f); err != nil {
-		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but exposure failed: %v", provider, err), nil)
-		return fmt.Errorf("%w: %s is permitted, but its route did not open (retried on the next deploy, visibility change or restart): %w", ErrProviderNotReady, provider, err)
+	if err := s.applyProviderGrant(ctx, f, ProviderID(provider)); err != nil {
+		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but its route did not open: %v", provider, err), nil)
+		return fmt.Errorf("%w: %s is permitted, but its route did not open (retried on the next deploy, visibility change or restart): %v", ErrProviderNotReady, provider, err)
 	}
 	return nil
+}
+
+// applyProviderGrant opens the current route a fresh grant adds without a new
+// approval: Private Tailscale for a flat with a live runtime. Granting Portal
+// or Funnel opens nothing here; on a Private flat they cannot serve, and on a
+// Public flat a new public route waits for the next approved transition so a
+// grant never widens public exposure. The legacy backend serves its private
+// host whatever the grant, so it needs no re-run. Only the Tailscale endpoint
+// decides success; a sibling route's error is logged, not returned.
+func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
+	ln, ok := s.lifecycleNet()
+	if !ok || provider != ProviderTailscale || s.state(f.Slug).cur.Load() == nil {
+		return nil
+	}
+	permitted, err := s.permittedIDs(ctx, f.Slug)
+	if err != nil {
+		return err
+	}
+	req := ExposureRequest{
+		Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent,
+		Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted),
+	}
+	if f.Visibility.Public() {
+		// The provider manager records one status per host, so re-issue the
+		// public request to keep the public endpoints observable, limited to
+		// the public providers that already serve this flat.
+		observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
+		if !ok {
+			return nil
+		}
+		status, err := observer.ExposureStatus(ctx, f.Slug)
+		if err != nil {
+			return err
+		}
+		serving := req.Permitted
+		for _, ep := range status.Endpoints {
+			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
+				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) && routeOpen(ep.State) {
+				serving = append(serving, ep.Provider)
+			}
+		}
+		if len(serving) > len(req.Permitted) {
+			req.Visibility, req.Handler, req.PrivateHandler, req.Permitted = "public", s.siteHandler(f.Slug, true), s.siteHandler(f.Slug, false), serving
+		}
+	}
+	res, err := ln.ServeExposure(ctx, req)
+	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
+		s.state(f.Slug).privateServed = true
+	}
+	for _, ep := range res.Endpoints {
+		if ep.Provider == ProviderTailscale && ep.Host == f.Slug && ep.Audience == AudienceCurrent && ep.Configured && ep.Permitted && (routeOpen(ep.State) || ep.State == "needs-login") {
+			if err != nil {
+				s.Event(ctx, f.Slug, "warn", "exposure", "tailscale route opened; another route reported: "+err.Error(), nil)
+			}
+			return nil
+		}
+	}
+	if err == nil {
+		err = errors.New("no tailscale route opened")
+	}
+	return err
+}
+
+// routeOpen reports whether an endpoint state is a registered, serving route.
+func routeOpen(state string) bool {
+	return state == "ready" || state == "starting" || state == "key-expiring"
 }
 
 func (s *Service) resumeApplying(ctx context.Context) {
