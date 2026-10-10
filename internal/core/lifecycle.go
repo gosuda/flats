@@ -382,9 +382,12 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 	if f.Visibility.Public() {
 		// The provider manager records one status per host, so re-issue the
 		// public request to keep the public endpoints observable, limited to
-		// the public providers the last exposure already used. A degraded
-		// route (needs-login, error) is still registered and may recover, so
-		// only stopped and unavailable endpoints are left out.
+		// the public providers the last exposure already used. Degraded,
+		// unavailable and failed endpoints stay in that request: re-serving a
+		// registered route is idempotent, and a provider whose last open
+		// failed is retried as part of the approved exposure, as a redeploy
+		// or restart would. Only a stopped route is left out, so a grant
+		// never reopens one.
 		observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
 		if !ok {
 			return errors.New("cannot read the current public routes")
@@ -397,7 +400,7 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 		for _, ep := range status.Endpoints {
 			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
 				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) &&
-				ep.State != "" && ep.State != "stopped" && ep.State != "unavailable" {
+				ep.State != "" && ep.State != "stopped" {
 				serving = append(serving, ep.Provider)
 			}
 		}

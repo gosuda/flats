@@ -293,7 +293,7 @@ func TestProviderGrantLegacyBackendRecordsOnly(t *testing.T) {
 // provider manager keeps one status per host, so a private-only request
 // would hide them.
 func TestProviderGrantKeepsPublicStatus(t *testing.T) {
-	for _, state := range []string{"ready", "needs-login", "error"} {
+	for _, state := range []string{"ready", "needs-login", "error", "unavailable"} {
 		t.Run(state, func(t *testing.T) {
 			s, _ := newTestService(t)
 			network := newLifecycleRouteNet()
@@ -336,5 +336,37 @@ func TestProviderGrantDoesNotReopenStoppedPublicRoute(t *testing.T) {
 	}
 	if !network.serves("halt", ProviderFunnel) || !network.serves("halt", ProviderTailscale) {
 		t.Fatal("grant lost a serving route")
+	}
+}
+
+// A public provider of the approved exposure whose last open failed is
+// retried by a Tailscale grant, as a redeploy or restart would retry it.
+func TestProviderGrantRetriesFailedApprovedPublicRoute(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	publicLifecycleFlat(t, s, "retry", store.ProviderFunnel, store.ProviderPortal)
+	// As after a host restart: the manager starts empty and Portal fails to
+	// open while Funnel comes back.
+	network.mu.Lock()
+	clear(network.routes)
+	network.mu.Unlock()
+	network.failOpen = map[ProviderID]error{ProviderPortal: fmt.Errorf("relay down: %w", ErrProviderUnavailable)}
+	f, err := s.st.GetFlat(t.Context(), "retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ensureExposure(t.Context(), f); err == nil {
+		t.Fatal("restart exposure hid the Portal failure")
+	}
+	if network.serves("retry", ProviderPortal) || !network.serves("retry", ProviderFunnel) {
+		t.Fatal("restart did not leave Funnel up and Portal unregistered")
+	}
+	network.failOpen = nil
+	if err := s.SetProviderPermission(t.Context(), "retry", store.ProviderTailscale, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if !network.serves("retry", ProviderPortal) || !network.serves("retry", ProviderTailscale) {
+		t.Fatal("grant did not retry the approved Portal route")
 	}
 }
