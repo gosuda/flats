@@ -60,7 +60,8 @@ for a rewrite, several documents or assets, or when no docs version runs
 1. Read `get_document {slug, doc?, blocks: true}`. It returns `hash` (of the
    whole document) and `blocks: [{hash, kind, level?, line, preview}]`. A
    block is a run of non-blank lines; a fenced code block is one block and a
-   `#` heading line is always its own block.
+   `#` heading line is always its own block. One read lists at most 1,000
+   blocks; `blocks_total` gives the count and `block_offset` the next page.
 2. Send 1–32 `ops`. They apply in order, each to the result of the previous
    one, and **all apply or none do**:
    * `{op: "replace", find, with, nth?}` replaces exact text. `find` must occur
@@ -73,7 +74,8 @@ for a rewrite, several documents or assets, or when no docs version runs
      same or a higher level. Inserted text becomes its own block(s): Flats
      adds the blank lines around it. To add a list item or a sentence to an
      existing block, use `replace` on its last line instead.
-   * `nth` also picks among identical blocks with the same hash.
+   * `nth` also picks among identical blocks with the same hash. Because it
+     selects by position, any op with `nth` needs `if_hash`.
 3. The guards are the text itself: if someone changed the `find` text or the
    block since you read it, the hash no longer matches and the whole call is
    refused with `edit_conflict` and **changes nothing** (their edit wins).

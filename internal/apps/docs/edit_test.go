@@ -75,6 +75,9 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 	if _, body, _ := a.getHeaders(t, "/_docs/api/document?blocks=1", http.Header{"X-Flats-Access": {"public"}}); strings.Contains(body, `"blocks"`) {
 		t.Fatal("public read listed blocks")
 	}
+	if _, body, _ := a.getHeaders(t, "/_docs/api/document?blocks=1&block_offset=1", http.Header{"X-Flats-Access": {"private"}}); !strings.Contains(body, `"blocks_total":2`) || !strings.Contains(body, `"block_offset":1`) || strings.Contains(body, blockHash("# Shared")) {
+		t.Fatal("block paging", body)
+	}
 
 	// Only the host management channel may edit; browsers (even private) and
 	// public routes are refused, and nothing changes.
@@ -131,7 +134,8 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 			t.Fatal(body, status, m)
 		}
 	}
-	for _, body := range []string{"not json", `{"ops":[]}`, ops(map[string]any{"op": "rewrite"}), `{"ops":[{"op":"insert","at":"end","text":"x"}],"extra":1}`} {
+	for _, body := range []string{"not json", `{"ops":[]}`, ops(map[string]any{"op": "rewrite"}), `{"ops":[{"op":"insert","at":"end","text":"x"}],"extra":1}`,
+		ops(map[string]any{"op": "replace", "find": "Agent line", "with": "x", "nth": 1})} {
 		if status, m := a.postEdit(t, hostEdit, body); status != 400 || m["code"] != "invalid" {
 			t.Fatal(body, status, m)
 		}

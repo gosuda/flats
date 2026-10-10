@@ -57,10 +57,14 @@ type Document struct {
 	Markdown   string             `json:"markdown"`
 	Hash       string             `json:"hash,omitempty"`
 	Blocks     []DocumentBlock    `json:"blocks,omitempty"`
-	Epoch      string             `json:"epoch,omitempty"`
-	Chain      string             `json:"chain,omitempty"`
-	Seq        int64              `json:"seq"`
-	Source     string             `json:"source"`
+	// BlocksTotal and BlockOffset page the outline: one page holds at most
+	// 1,000 blocks.
+	BlocksTotal int    `json:"blocks_total,omitempty"`
+	BlockOffset int    `json:"block_offset,omitempty"`
+	Epoch       string `json:"epoch,omitempty"`
+	Chain       string `json:"chain,omitempty"`
+	Seq         int64  `json:"seq"`
+	Source      string `json:"source"`
 }
 
 // DocumentBlock is one Markdown block of live text with the guard hash a
@@ -76,13 +80,17 @@ type DocumentBlock struct {
 // GetDocument prefers the running docs version, including collaborative edits.
 // It never starts a worker just to read an unpublished Draft.
 func (s *Service) GetDocument(ctx context.Context, slugName, doc string) (Document, error) {
-	return s.getDocument(ctx, slugName, doc, 0, false)
+	return s.getDocument(ctx, slugName, doc, 0, -1)
 }
 
-// GetDocumentBlocks is GetDocument plus the live block outline used to guard
-// live edits. A Draft has no blocks: it cannot be edited live.
-func (s *Service) GetDocumentBlocks(ctx context.Context, slugName, doc string) (Document, error) {
-	return s.getDocument(ctx, slugName, doc, 0, true)
+// GetDocumentBlocks is GetDocument plus one page of the live block outline
+// used to guard live edits, starting at block index offset. A Draft has no
+// blocks: it cannot be edited live.
+func (s *Service) GetDocumentBlocks(ctx context.Context, slugName, doc string, offset int) (Document, error) {
+	if offset < 0 {
+		return Document{}, invalidf("block_offset must not be negative")
+	}
+	return s.getDocument(ctx, slugName, doc, 0, offset)
 }
 
 // GetDocumentConflict reads preserved text through the trusted host route only.
@@ -90,10 +98,12 @@ func (s *Service) GetDocumentConflict(ctx context.Context, slugName, doc string,
 	if generation < 1 {
 		return Document{}, invalidf("conflict must be a positive generation")
 	}
-	return s.getDocument(ctx, slugName, doc, generation, false)
+	return s.getDocument(ctx, slugName, doc, generation, -1)
 }
 
-func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflict int64, blocks bool) (Document, error) {
+// getDocument reads live or Draft text; blockOffset >= 0 also requests a
+// page of the live block outline.
+func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflict int64, blockOffset int) (Document, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
@@ -110,8 +120,8 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflic
 		path := "/_docs/api/document?doc=" + url.QueryEscape(doc)
 		if conflict != 0 {
 			path = fmt.Sprintf("/_docs/api/conflict?doc=%s&generation=%d", url.QueryEscape(doc), conflict)
-		} else if blocks {
-			path += "&blocks=1"
+		} else if blockOffset >= 0 {
+			path += fmt.Sprintf("&blocks=1&block_offset=%d", blockOffset)
 		}
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal"+path, nil)
 		rec := httptest.NewRecorder()
@@ -206,7 +216,7 @@ type DocumentEditOp struct {
 	After      string  `json:"after,omitempty" jsonschema:"insert: put text after this block hash"`
 	SectionEnd string  `json:"section_end,omitempty" jsonschema:"insert: put text at the end of the section this heading block hash starts"`
 	At         string  `json:"at,omitempty" jsonschema:"insert: start or end of the document"`
-	Nth        int     `json:"nth,omitempty" jsonschema:"pick the nth (1-based) match when the find text or block hash occurs more than once"`
+	Nth        int     `json:"nth,omitempty" jsonschema:"pick the nth (1-based) match when the find text or block hash occurs more than once; requires if_hash"`
 }
 
 // DocumentEditChange summarizes one applied operation, without its text.

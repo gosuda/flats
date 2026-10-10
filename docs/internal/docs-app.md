@@ -88,7 +88,7 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /<path>` | exact Markdown path, or `<path>.md` / `<path>.markdown` |
 | `GET /_docs/healthz` | Cheap `200 ok` without DB access for visitors; only trusted host health trials activate all documents atomically |
 | `GET /_docs/api/documents` | `{format:1, entry, title, documents: [{path, title}]}` |
-| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads additionally include `conflicts:[{generation,bytes}]`, and with `blocks=1` the block outline `blocks:[{hash,kind,level?,line,preview}]`; default doc is entry |
+| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads additionally include `conflicts:[{generation,bytes}]`, and with `blocks=1` one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
 | `POST /_docs/api/edit?doc=<path>` | Host management only (`private` plus `X-Flats-Host-Op: edit`, see below): guarded live edit; others receive 403 |
 | `GET /_docs/api/conflict?doc=<path>&generation=<id>` | Private only: `{generation,markdown}`; `view=1` returns `text/plain; charset=utf-8` with nosniff, restrictive CSP and no-store for viewing/copying; public receives 403, evicted/missing id 404 |
 | `GET /_docs/assets/client.js` | self-contained browser ESM bundle |
@@ -279,7 +279,10 @@ update operations. The agent contract is guide `topic.docs`.
 * **Guards** ("their edit wins"). A block is named by the first 16 hex digits
   of SHA-256 of its exact text, from `get_document {blocks: true}`; a human
   edit changes the hash. `find` must match exactly and uniquely unless `nth`
-  is given. Optional `if_hash` (SHA-256 of the whole live Markdown, returned
+  is given. `nth` is positional, so a concurrent identical insertion before
+  the target would move it: any op with `nth` requires `if_hash`. The block
+  outline is paged (1,000 blocks) so a 1 MiB document of one-line blocks
+  stays within response limits. Optional `if_hash` (SHA-256 of the whole live Markdown, returned
   by every `get_document`) refuses any intervening change. A missing,
   changed or ambiguous target returns 409 `edit_conflict` with the operation
   index; malformed input 400 `invalid`; limits 413/422 `capacity`, mapped to

@@ -39,10 +39,11 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 }
 
 type GetDocumentIn struct {
-	Conflict int64  `json:"conflict,omitempty" jsonschema:"positive generation from private conflict metadata; retrieve preserved Markdown"`
-	Slug     string `json:"slug"`
-	Doc      string `json:"doc,omitempty" jsonschema:"exact Markdown path, default entry"`
-	Blocks   bool   `json:"blocks,omitempty" jsonschema:"also list live Markdown blocks with the hashes update_document guards on"`
+	Conflict    int64  `json:"conflict,omitempty" jsonschema:"positive generation from private conflict metadata; retrieve preserved Markdown"`
+	Slug        string `json:"slug"`
+	Doc         string `json:"doc,omitempty" jsonschema:"exact Markdown path, default entry"`
+	Blocks      bool   `json:"blocks,omitempty" jsonschema:"also list live Markdown blocks with the hashes update_document guards on, 1,000 per page"`
+	BlockOffset int    `json:"block_offset,omitempty" jsonschema:"with blocks: first block index of the page (blocks_total says how many exist)"`
 }
 
 func (t *tools) getDocument(ctx context.Context, _ *mcp.CallToolRequest, in GetDocumentIn) (*mcp.CallToolResult, core.Document, error) {
@@ -51,7 +52,7 @@ func (t *tools) getDocument(ctx context.Context, _ *mcp.CallToolRequest, in GetD
 	if in.Conflict != 0 {
 		out, err = t.svc.GetDocumentConflict(ctx, in.Slug, in.Doc, in.Conflict)
 	} else if in.Blocks {
-		out, err = t.svc.GetDocumentBlocks(ctx, in.Slug, in.Doc)
+		out, err = t.svc.GetDocumentBlocks(ctx, in.Slug, in.Doc, in.BlockOffset)
 	} else {
 		out, err = t.svc.GetDocument(ctx, in.Slug, in.Doc)
 	}
@@ -65,7 +66,7 @@ type UpdateDocumentIn struct {
 	Slug   string                `json:"slug"`
 	Doc    string                `json:"doc,omitempty" jsonschema:"exact Markdown path, default entry"`
 	Ops    []core.DocumentEditOp `json:"ops" jsonschema:"1 to 32 operations, applied in order to the live text; all apply or none do"`
-	IfHash string                `json:"if_hash,omitempty" jsonschema:"optional: the whole-document hash from get_document; any change since refuses the edit"`
+	IfHash string                `json:"if_hash,omitempty" jsonschema:"the whole-document hash from get_document; any change since refuses the edit. Required when an op uses nth"`
 }
 
 func (t *tools) updateDocument(ctx context.Context, _ *mcp.CallToolRequest, in UpdateDocumentIn) (*mcp.CallToolResult, core.DocumentEdit, error) {

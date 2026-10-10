@@ -4,6 +4,7 @@
 export const EDIT_LIMITS = Object.freeze({
   ops: 32,
   body: 512 * 1024,
+  outline: 1000,
 });
 const fence = /^ {0,3}(`{3,}|~{3,})/,
   heading = /^ {0,3}(#{1,6})(?:[ \t]|$)/,
@@ -77,12 +78,15 @@ const lineOf = (text, offset) => {
   return n;
 };
 
-// outline lists blocks with the guard hash a caller passes back.
-// Line numbers are counted in one pass over the text.
-export function outline(text, digest) {
+// outline lists one page of blocks with the guard hash a caller passes
+// back, and the total block count. Line numbers are counted in one pass.
+export function outline(text, digest, offset = 0, limit = EDIT_LIMITS.outline) {
+  const list = blocks(text),
+    page = [];
   let pos = 0,
     line = 1;
-  return blocks(text).map((b) => {
+  for (let k = offset; k < list.length && page.length < limit; k++) {
+    const b = list[k];
     for (
       let i = text.indexOf("\n", pos);
       i !== -1 && i < b.start;
@@ -91,14 +95,15 @@ export function outline(text, digest) {
       line++;
     pos = b.start;
     const body = text.slice(b.start, b.end);
-    return {
+    page.push({
       hash: blockHash(body, digest),
       kind: b.kind,
       ...(b.level ? { level: b.level } : {}),
       line,
       preview: preview(body),
-    };
-  });
+    });
+  }
+  return { blocks: page, total: list.length };
 }
 export const blockHash = (body, digest) => digest(body).slice(0, 16);
 function preview(body) {
@@ -208,6 +213,17 @@ export function planEdit(text, request, hashText) {
     fail("invalid", "ops must be a non-empty array");
   if (ops.length > EDIT_LIMITS.ops)
     fail("invalid", `at most ${EDIT_LIMITS.ops} ops per call`);
+  // nth is positional: a concurrent insertion of the same text earlier in
+  // the document would silently move it, so it must be pinned to the text
+  // that was read.
+  if (
+    request.if_hash === undefined &&
+    ops.some((op) => op && op.nth !== undefined && op.nth !== null)
+  )
+    fail(
+      "invalid",
+      "nth selects by position; also send if_hash from get_document so a concurrent edit cannot move the match",
+    );
   if (request.if_hash !== undefined) {
     if (
       typeof request.if_hash !== "string" ||

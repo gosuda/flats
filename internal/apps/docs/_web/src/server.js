@@ -398,6 +398,20 @@ function html(d, readonly, url) {
     },
   );
 }
+// One page of the block outline; a large document needs several reads.
+function blockPage(markdown, raw) {
+  const offset = Number(raw || 0),
+    page = outline(
+      markdown,
+      digest,
+      Number.isSafeInteger(offset) && offset >= 0 ? offset : 0,
+    );
+  return {
+    blocks: page.blocks,
+    blocks_total: page.total,
+    block_offset: Number.isSafeInteger(offset) && offset >= 0 ? offset : 0,
+  };
+}
 const json = (status, body) =>
   Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const editStatus = { invalid: 400, edit_conflict: 409, capacity: 422 };
@@ -632,7 +646,7 @@ export default {
       source: "live",
       ...(privateAccess ? { conflicts: conflictList(env.DB, d.path) } : {}),
       ...(privateAccess && url.searchParams.get("blocks") === "1"
-        ? { blocks: outline(markdown, digest) }
+        ? blockPage(markdown, url.searchParams.get("block_offset"))
         : {}),
     };
     s.doc.destroy();

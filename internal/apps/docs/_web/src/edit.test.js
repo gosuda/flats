@@ -8,8 +8,19 @@ const hashOf = (text, body) => {
   assert.ok(text.includes(body), body);
   return blockHash(body, digest);
 };
+// Positional nth needs if_hash; pin it to the text unless a test sets it.
 const plan = (text, ops, extra = {}) =>
-  planEdit(text, { ops, ...extra }, digest);
+  planEdit(
+    text,
+    {
+      ops,
+      ...(ops.some?.((op) => op?.nth !== undefined)
+        ? { if_hash: digest(text) }
+        : {}),
+      ...extra,
+    },
+    digest,
+  );
 const rejects = (fn, code, pattern) =>
   assert.throws(
     fn,
@@ -59,7 +70,7 @@ test("blocks split on blank lines, keep fences whole and isolate headings", () =
 });
 
 test("outline reports hash, kind, level, line and a short preview", () => {
-  const o = outline(doc, digest);
+  const o = outline(doc, digest).blocks;
   assert.equal(o.length, 7);
   assert.deepEqual(o[2], {
     hash: hashOf(doc, "## Plan"),
@@ -70,7 +81,7 @@ test("outline reports hash, kind, level, line and a short preview", () => {
   });
   assert.equal(o[4].line, 11);
   assert.match(o[0].hash, /^[0-9a-f]{16}$/);
-  const long = outline("x".repeat(100), digest)[0].preview;
+  const long = outline("x".repeat(100), digest).blocks[0].preview;
   assert.equal(long, "x".repeat(60) + "…");
 });
 
@@ -211,6 +222,24 @@ test("insert before, after, at the end of a section and of the document", () => 
   );
 });
 
+test("nth is positional and must be pinned with if_hash", () => {
+  const text = "# A\n\nfoo\n\n# B\n\nfoo\n";
+  const foo = hashOf(text, "foo"),
+    op = { op: "replace_block", block: foo, with: "bar", nth: 2 };
+  rejects(() => planEdit(text, { ops: [op] }, digest), "invalid", /if_hash/);
+  const pinned = { ops: [op], if_hash: digest(text) };
+  assert.equal(
+    planEdit(text, pinned, digest).text,
+    "# A\n\nfoo\n\n# B\n\nbar\n",
+  );
+  // A person prepends another identical block: the edit cannot move to # A.
+  rejects(
+    () => planEdit("# New\n\nfoo\n\n" + text, pinned, digest),
+    "edit_conflict",
+    /if_hash/,
+  );
+});
+
 test("start and end inserts use the real text edges", () => {
   const at = (text, where) =>
     plan(text, [{ op: "insert", at: where, text: "Top" }]).text;
@@ -256,8 +285,11 @@ test("nth reaches any occurrence and line numbers stay linear", () => {
   );
   const paras = Array.from({ length: 20000 }, (_, i) => "p" + i).join("\n\n");
   const started = Date.now();
-  const o = outline(paras, (s) => s);
-  assert.equal(o[19999].line, 39999);
+  const o = outline(paras, (s) => s, 19000);
+  assert.equal(o.total, 20000);
+  assert.equal(o.blocks.length, 1000);
+  assert.equal(o.blocks[999].line, 39999);
+  assert.equal(outline(paras, (s) => s, 20000).blocks.length, 0);
   assert.ok(Date.now() - started < 2000, "outline is not linear");
 });
 
