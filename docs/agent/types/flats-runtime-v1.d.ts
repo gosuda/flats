@@ -87,11 +87,17 @@ declare namespace Flats {
   }
 
   /**
-   * Incoming request and WebSocket headers. Header names are lowercase own
-   * properties; duplicate values are joined with ", " (Cookie with "; ").
-   * Read them with get(); there is no append/set/delete/values.
+   * Incoming request and WebSocket headers: every header is an own property
+   * under its lowercase name (`headers["content-type"]`), plus non-enumerable
+   * helpers. Duplicate values are joined with ", " (Cookie with "; "). There
+   * is no append/set/delete/values.
    */
-  interface IncomingHeaders {
+  type IncomingHeaders = IncomingHeaderHelpers & {
+    readonly [lowercaseName: string]: string | undefined;
+  };
+
+  /** The helper methods of IncomingHeaders. */
+  interface IncomingHeaderHelpers {
     /** The value, or null when absent. Names are case-insensitive. */
     get(name: string): string | null;
     has(name: string): boolean;

@@ -140,7 +140,7 @@ export default { async fetch(request, env) {
     Env: names(env).filter(n => n === "DB" || n === "FILES"),
     ExecResult: Object.keys(env.DB.exec("SELECT 1")),
     IncomingRequest: members(request, ["runtimeGeneration"]),
-    IncomingHeaders: [...hidden(request.headers), ...iter(request.headers)],
+    IncomingHeaderHelpers: [...hidden(request.headers), ...iter(request.headers)],
     Headers: members(new Headers(), ["__raw"]),
     Request: members(new Request("https://a.example/"), ["runtimeGeneration"]),
     Response: [...members(new Response()), ...statics(Response)],
@@ -183,7 +183,8 @@ export default { async fetch(request, env) {
     return [r.method, r.url === request.url, r.body, r.headers.get("x-copy"), s.headers.get("x-probe"), s.body, s instanceof Request];
   })();
   c.incoming = [request.method, request.url, request.body, request.redirect, await request.text(),
-    request.headers.get("X-Probe"), request.headers.has("x-probe")];
+    request.headers.get("X-Probe"), request.headers.has("x-probe"), request.headers["x-probe"],
+    Object.keys(request.headers).every(k => k === k.toLowerCase() && typeof request.headers[k] === "string")];
   c.url = (() => {
     const u = new URL("../b?q=a b#h", "https://User:pw@A.Example:8080/x/y/z");
     return [u.href, u.protocol, u.hostname, u.port, u.pathname, u.search, u.hash, u.username, u.password, u.origin,
@@ -294,7 +295,7 @@ func TestTypesMatchRuntime(t *testing.T) {
 		"response":    `[201,"made","1, 2",true,"",false,null,"application/json",{"x":1},302,"https://a.example/x"]`,
 		"requestInit": `["method","headers","body","redirect"]`,
 		"copied":      `["POST",true,"hello","1","p","hello",true]`,
-		"incoming":    `["POST","` + f.srv.URL + `/x?y=1","hello","error","hello","p",true]`,
+		"incoming":    `["POST","` + f.srv.URL + `/x?y=1","hello","error","hello","p",true,"p",true]`,
 		"url":         `["https://a.example:8080/x/b?q=a+b#h","https:","a.example","8080","/x/b","?q=a+b","#h","","","https://a.example:8080",true]`,
 		"crypto":      `[true,true,true]`,
 		"timers":      `["number","number",[],true]`,
@@ -342,7 +343,7 @@ func TestTypesMatchRuntime(t *testing.T) {
 	}
 	// closeCode and closeReason are set only when the connection closes.
 	sameSet(t, "WebSocket", d.members["WebSocket"], append(open.Members, "closeCode", "closeReason"))
-	sameSet(t, "WebSocket headers", d.members["IncomingHeaders"], open.Headers)
+	sameSet(t, "WebSocket headers", d.members["IncomingHeaderHelpers"], open.Headers)
 	if open.ReadyState != 1 || open.ID != "number" {
 		t.Errorf("WebSocket at open: %+v", open)
 	}
