@@ -360,16 +360,17 @@ func exactVersion(host, escapedPath string) (pinned bool, tag string) {
 	if err != nil {
 		p = escapedPath
 	}
-	if pkg, ok := npmPackage(host, p); ok {
-		i := strings.LastIndex(pkg, "@")
-		if i <= 0 {
-			return false, ""
+	if pkgs, ok := npmPackages(host, p); ok {
+		for _, pkg := range pkgs {
+			i := strings.LastIndex(pkg, "@")
+			if i <= 0 {
+				return false, ""
+			}
+			if v := pkg[i+1:]; !semver.MatchString(v) {
+				return false, v
+			}
 		}
-		v := pkg[i+1:]
-		if semver.MatchString(v) {
-			return true, ""
-		}
-		return false, v
+		return len(pkgs) > 0, ""
 	}
 	marker := false
 	for _, seg := range strings.Split(p, "/") {
@@ -395,33 +396,56 @@ func exactVersion(host, escapedPath string) (pinned bool, tag string) {
 
 var esmBuild = regexp.MustCompile(`^v\d+$`)
 
-// npmPackage returns the package segment ("react@18.3.1", "repo@v1") of
-// a URL path on an npm package CDN.
-func npmPackage(host, p string) (string, bool) {
+// npmPackages returns the package segments ("react@18.3.1", "repo@v1") of
+// a URL path on an npm package CDN; a jsDelivr /combine/ URL has several.
+func npmPackages(host, p string) ([]string, bool) {
 	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
 	switch host {
 	case "cdn.jsdelivr.net", "fastly.jsdelivr.net", "gcore.jsdelivr.net":
-		if len(segs) >= 3 && segs[0] == "gh" {
-			return segs[2], true // gh/<user>/<repo>@<version>
+		switch segs[0] {
+		case "combine": // combine/npm/a@1.0.0,npm/b@2.0.0
+			var pkgs []string
+			for _, entry := range strings.Split(strings.TrimPrefix(p, "/combine/"), ",") {
+				sub, ok := npmPackages(host, "/"+entry)
+				if !ok {
+					return []string{""}, true
+				}
+				pkgs = append(pkgs, sub...)
+			}
+			return pkgs, true
+		case "gh":
+			if len(segs) >= 3 {
+				return []string{segs[2]}, true // gh/<user>/<repo>@<version>
+			}
+			return []string{""}, true
+		case "npm":
+			segs = segs[1:]
+		default:
+			return nil, false
 		}
-		if segs[0] != "npm" {
-			return "", false
-		}
-		segs = segs[1:]
 	case "ga.jspm.io":
-		return segs[0], strings.HasPrefix(segs[0], "npm:") // npm:react@18.3.1
+		if !strings.HasPrefix(segs[0], "npm:") {
+			return nil, false
+		}
+		if strings.HasPrefix(segs[0], "npm:@") {
+			if len(segs) < 2 {
+				return []string{""}, true
+			}
+			return []string{segs[1]}, true // npm:@scope/pkg@version
+		}
+		return []string{segs[0]}, true // npm:react@18.3.1
 	case "esm.sh":
 		for len(segs) > 1 && (segs[0] == "stable" || esmBuild.MatchString(segs[0])) {
 			segs = segs[1:] // build prefixes such as /v135/
 		}
 	case "unpkg.com", "cdn.skypack.dev":
 	default:
-		return "", false
+		return nil, false
 	}
 	if len(segs) >= 2 && strings.HasPrefix(segs[0], "@") {
-		return segs[1], true // @scope/pkg@version
+		return []string{segs[1]}, true // @scope/pkg@version
 	}
-	return segs[0], len(segs) > 0 && segs[0] != ""
+	return []string{segs[0]}, true
 }
 
 // missing warns when a relative reference names no file in the bundle,
