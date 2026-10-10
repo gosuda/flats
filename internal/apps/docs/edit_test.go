@@ -123,6 +123,11 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 	if a.document(t)["hash"] != m["hash"] {
 		t.Fatal("result hash differs from the live hash")
 	}
+	// Editors cannot claim the agent receipt prefix.
+	spoof := connect(t, a.srv.URL, "private")
+	spoof.hello(t, nil)
+	spoof.send(t, map[string]any{"t": "update", "id": "agent:spoof", "u": f.Updates[1].U})
+	spoof.rejected(t, "invalid_update")
 	// The editor keeps working on top of the agent edit.
 	edit(t, x, "peer", f.Updates[1].U)
 	if !strings.Contains(a.document(t)["markdown"].(string), "Peer 🌍") {

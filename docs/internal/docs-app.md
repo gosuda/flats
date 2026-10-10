@@ -148,8 +148,8 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   stored base64 bytes. Receipts retain SHA-256 of canonical update data,
   exact ids and chain history after log compaction. They are bounded and
   never silently discarded. An identical retry returns its original ACK;
-  the same id with different bytes is rejected. `seed:` and `activation:`
-  id prefixes are reserved. Initial seq is 0 and chain is SHA-256 of the
+  the same id with different bytes is rejected. `seed:`, `activation:` and
+  `agent:` (host live edits) id prefixes are reserved. Initial seq is 0 and chain is SHA-256 of the
   random epoch; each subsequent chain is SHA-256 of
   `previousChain + "\n" + updateId` (UTF-8).
 * At 64 log rows or 512 KiB of base64 log data, compaction encodes the Yjs

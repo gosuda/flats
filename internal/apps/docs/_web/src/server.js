@@ -286,7 +286,8 @@ function update(c, m, env, size) {
     typeof m.id !== "string" ||
     !/^[A-Za-z0-9:_-]{1,128}$/.test(m.id) ||
     m.id.startsWith("activation:") ||
-    m.id.startsWith("seed:")
+    m.id.startsWith("seed:") ||
+    m.id.startsWith("agent:")
   )
     throw new Error("invalid update id");
   const bytes = unbase64(m.u);
