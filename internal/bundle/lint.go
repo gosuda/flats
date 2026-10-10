@@ -470,7 +470,6 @@ func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 	if dec, err := url.PathUnescape(target); err == nil {
 		target = dec
 	}
-	dir := strings.HasSuffix(target, "/")
 	resolve := func(from string) string {
 		if strings.HasPrefix(target, "/") {
 			from = "/"
@@ -485,7 +484,7 @@ func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 	// A single-page app serves its entry HTML for unknown extensionless
 	// paths: fine for a frame, but not as a script, stylesheet or image.
 	spaFrame := l.spa && r.kind == pageRef && !strings.Contains(path.Base(rel), ".")
-	if !l.resolves(rel, dir, r.kind == pageRef) && !spaFrame {
+	if !l.resolves(rel, r.kind == pageRef) && !spaFrame {
 		return warn(page, fmt.Sprintf("references %s, but the bundle has no file %s", short(raw), short(displayPath(rel))),
 			"add the file to the upload, or fix the path (paths are relative to the page; a leading / starts at the flat root)")
 	}
@@ -513,15 +512,16 @@ func short(s string) string {
 	return s[:cut] + "…"
 }
 
-// resolves reports whether the static server answers rel with a file. Its
-// HTML fallbacks (the entry at the root, dir/index.html, pretty .html URLs)
+// resolves reports whether the static server answers rel with a file. Like
+// the server it ignores a trailing slash (rel is already cleaned). Its HTML
+// fallbacks (the entry at the root, dir/index.html, pretty .html URLs)
 // count only for page references: served as a script, stylesheet or image,
 // HTML is refused by the browser.
-func (l *linter) resolves(rel string, dir, page bool) bool {
+func (l *linter) resolves(rel string, page bool) bool {
 	if rel == ManifestName {
 		return false // flats.json is never served
 	}
-	if !dir && rel != "" && rel != "." && l.index[rel] {
+	if rel != "" && rel != "." && l.index[rel] {
 		return true
 	}
 	if !page {
@@ -530,7 +530,7 @@ func (l *linter) resolves(rel string, dir, page bool) bool {
 	if rel == "" || rel == "." || l.index[path.Join(rel, "index.html")] {
 		return true
 	}
-	return !dir && !strings.Contains(path.Base(rel), ".") && l.index[rel+".html"]
+	return !strings.Contains(path.Base(rel), ".") && l.index[rel+".html"]
 }
 
 func displayPath(rel string) string {

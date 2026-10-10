@@ -216,7 +216,9 @@ func TestLintHTMLFallbacksOnlyForPages(t *testing.T) {
 	expectWarning(t, files(`<script src="/about"></script>`), "index.html", "no file about")
 	expectWarning(t, files(`<img src="docs/">`), "index.html", "no file docs")
 	expectWarning(t, files(`<img src="/">`), "index.html", "no file /")
-	expectClean(t, files(`<iframe src="/about"></iframe><iframe src="docs/"></iframe><iframe src="/"></iframe><script src="/about.html" type="text/plain"></script>`))
+	expectClean(t, files(`<iframe src="/about"></iframe><iframe src="/about/"></iframe><iframe src="docs/"></iframe><iframe src="docs"></iframe><iframe src="/"></iframe><script src="/about.html" type="text/plain"></script>`))
+	// The server cleans a trailing slash, so a file still answers.
+	expectClean(t, files(`<script src="/app.js/"></script>`))
 }
 
 func TestLintMissingReferencesSPAAndServer(t *testing.T) {
