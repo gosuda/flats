@@ -586,8 +586,11 @@ type FlatView struct {
 	ConnectionState string             `json:"connection_state,omitempty"`
 	Endpoints       []ExposureEndpoint `json:"endpoints"`
 	// PortalListing is the flat's own relay listing choice: default (follow
-	// the host's portal_hide setting), hidden or listed. PortalHidden is
-	// the listing in effect. Neither is access control.
+	// the host's portal_hide setting), hidden or listed. PortalHidden is the
+	// resolved choice, the listing Flats asks the relays for. It is not the
+	// relays' observed state: they apply a change at their next lease
+	// renewal, and a failed apply leaves the served route as it was. Neither
+	// is access control.
 	PortalListing string `json:"portal_listing"`
 	PortalHidden  bool   `json:"portal_hidden"`
 }

@@ -46,11 +46,12 @@ checks. Console requests never skip the core approval request. Existing unrelate
 | GET `versions` | None | Published versions only, including empty `[]` |
 | POST console `providers` | `{provider, permitted}` | Console only; 200 flat view, no publish or visibility change |
 | GET/PUT console `/providers[/{id}]` (host, not flat-relative) | `{enabled}` | Console only; host grants and backend status per provider; turning off is refused while a flat allows it |
-| PUT console `listing` | `{listing}`: `default`, `hidden` or `listed` | Console only; 200 flat view. Relay listing of the Portal route, applied at once; no publish, visibility or access change |
+| PUT console `listing` | `{listing}`: `default`, `hidden` or `listed` | Console only; 200 flat view. Requested relay listing of the Portal route; the served route's lease metadata is updated at once and relays apply it at their next lease renewal; no publish, visibility or access change |
 
 The concrete flat response exposes `publication`, `live_version`, nullable
 `draft`, `providers`, `connection_state`, `endpoints`, `portal_listing` and
-`portal_hidden`. Each endpoint uses
+`portal_hidden` (the requested relay listing, not the relays' observed
+state). Each endpoint uses
 exact lowercase JSON tags: `provider`, `url`, `state`, `detail`, `configured`,
 `permitted`, `ready`, `audience`, `host`. Provider IDs are `local`, `tailscale`,
 `tailscale-funnel`, `portal`. Visibility outputs are `private`/`public`; legacy

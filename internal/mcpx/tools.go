@@ -101,7 +101,7 @@ type FlatInfo struct {
 	PublicURL       string                  `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
 	PublicNotice    string                  `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
 	PortalListing   string                  `json:"portal_listing" jsonschema:"the flat's Portal relay listing choice set by the operator: default (follow the host setting), hidden or listed"`
-	PortalHidden    bool                    `json:"portal_hidden" jsonschema:"true when the Portal route is kept out of relay listings; not access control, anyone with the URL can still open a public flat"`
+	PortalHidden    bool                    `json:"portal_hidden" jsonschema:"true when Flats asks the Portal relays to keep this flat out of their listings (the resolved operator choice, not the relays' observed state; relays apply a change at their next lease renewal, up to about 90 s). Not access control: anyone with the URL can still open a public flat"`
 	DiskBytes       int64                   `json:"disk_bytes" jsonschema:"disk used by versions and data"`
 	UpdatedAt       time.Time               `json:"updated_at" jsonschema:"last change"`
 }
