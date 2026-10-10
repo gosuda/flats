@@ -9,7 +9,7 @@
     viewport: { width: vw, height: root.clientHeight }, // layout viewport in CSS px
     scheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
     title: document.title.trim(),
-    viewportMeta: !!document.querySelector('meta[name="viewport"]'),
+    viewportMeta: /width\s*=\s*device-width/i.test(document.querySelector('meta[name="viewport"]')?.content ?? ""),
     icon: !!document.querySelector('link[rel~="icon"][href]'),
     problems: [],
     consoleErrors: "read them from your browser tool; this script cannot see them",
@@ -27,25 +27,25 @@
   };
   const lum = ([r, g, b]) => [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
     .reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
-  const background = (el) => { // the color behind el's text, compositing translucent layers;
-    const layers = [];             // null if an image is in the way or nothing opaque paints it
+  const fade = (el) => { let f = 1; for (let e = el; e; e = e.parentElement) f *= Number(style(e).opacity); return f; };
+  const over = (under, [r, g, b, a]) => [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a), 1];
+  const background = (el) => { // the color behind el's text: background layers composited with
+    const layers = [];             // their opacity; null if an image is in the way or nothing opaque
     for (let e = el; e; e = e.parentElement) {
       const s = style(e);
       if (s.backgroundImage !== "none") return null;
       const c = rgba(s.backgroundColor);
+      c[3] *= fade(e);
       if (c[3] === 0) continue;
       layers.push(c);
-      if (c[3] > 0.99) {
-        return layers.reverse().reduce((under, [r, g, b, a]) =>
-          [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a), 1]);
-      }
+      if (c[3] > 0.99) return layers.reverse().reduce(over);
     }
     return null;
   };
   const painted = (el) => { const s = style(el); return s.backgroundImage !== "none" || rgba(s.backgroundColor)[3] > 0.99; };
 
   if (!out.title) add("title", { fix: "name the page in <title>" });
-  if (!out.viewportMeta) add("viewport", { fix: 'add <meta name="viewport" content="width=device-width, initial-scale=1">; without it a phone lays the page out about 980px wide, so the overflow check below does not apply' });
+  if (!out.viewportMeta) add("viewport", { fix: 'use <meta name="viewport" content="width=device-width, initial-scale=1">; without width=device-width a phone lays the page out at a fixed width (about 980px), so the overflow check below does not apply' });
   if (!painted(document.body) && !painted(root)) add("background", { fix: "paint body from a color token in both schemes" });
 
   if (root.scrollWidth > vw + 1) {
@@ -60,6 +60,8 @@
 
   for (const img of document.images) {
     if (img.complete && img.naturalWidth === 0 && img.currentSrc) add("image", { src: img.currentSrc });
+    else if (!img.complete && img.loading === "lazy") add("lazy-image", { src: img.getAttribute("src") ?? img.getAttribute("srcset"),
+      fix: "not requested yet: scroll to it, or fetch its URL, before calling images fine" });
   }
   for (const link of document.querySelectorAll('link[rel~="stylesheet"][href]')) {
     if (!link.sheet && !link.disabled) add("stylesheet", { href: link.href });
@@ -79,8 +81,10 @@
   for (let n, i = 0; (n = walker.nextNode()) && i < 500; i++) {
     const el = n.parentElement;
     const s = style(el);
-    const rect = el.getBoundingClientRect();
-    if (s.display === "none" || rect.width === 0 || rect.height === 0 || el.closest("[hidden], [aria-hidden=true]")) continue;
+    const range = document.createRange();
+    range.selectNodeContents(n);
+    const rect = range.getBoundingClientRect(); // the text's own box: display: contents wrappers have none
+    if (rect.width === 0 || rect.height === 0 || el.closest("[hidden], [aria-hidden=true]")) continue;
     const parked = s.visibility === "hidden" ? el : faded(el);
     if (parked) {
       if (!hidden.has(parked)) { hidden.add(parked); add("hidden-text", { element: name(parked), text: n.data.trim().slice(0, 40),
@@ -90,7 +94,8 @@
     const bg = background(el);
     if (!bg) continue;
     const fg = rgba(s.color);
-    const mix = fg.slice(0, 3).map((v, k) => v * fg[3] + bg[k] * (1 - fg[3]));
+    fg[3] *= fade(el);
+    const mix = over(bg, fg);
     const [hi, lo] = [lum(mix), lum(bg)].sort((a, b) => b - a);
     const ratio = (hi + 0.05) / (lo + 0.05);
     const large = parseFloat(s.fontSize) >= 24 || (parseFloat(s.fontSize) >= 18.66 && Number(s.fontWeight) >= 700);

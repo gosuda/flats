@@ -47,14 +47,21 @@ polish is for the user to ask for.
 
 | `check` | Meaning |
 |---|---|
-| `title`, `viewport` | No `<title>` or viewport meta in the rendered page. Without the viewport meta a phone lays the page out about 980px wide, so overflow is not checked meaningfully. |
+| `title`, `viewport` | No `<title>`, or no viewport meta with `width=device-width`, in the rendered page. Without it a phone lays the page out at a fixed width (about 980px), so overflow is not checked meaningfully. |
 | `background` | Nothing paints `body`, so the viewer's default shows through and the page can be unreadable in one scheme. |
 | `overflow` | The page scrolls sideways at this width. `elements` lists the outermost offenders outside any scrolling box. |
 | `image`, `stylesheet`, `resource` | A broken image, an unloaded stylesheet, or a request that failed with HTTP 400 or above (`status`). |
+| `lazy-image` | A `loading="lazy"` image the browser has not requested yet, so it is unchecked: scroll to it or fetch its URL. |
 | `hidden-text` | Text that is invisible at rest (`opacity: 0` on it or an ancestor, or `visibility: hidden`), usually content waiting for a scroll observer. Closed menus and tooltips are fine. |
-| `contrast` | Text below 4.5:1 against its background in this scheme (3:1 for large text). Text over a background image is skipped. |
+| `contrast` | Text below 4.5:1 against its background in this scheme (3:1 for large text), counting translucent backgrounds and `opacity`. |
 
 `problems` is empty when nothing was found; it lists at most 40 entries.
+
+The script is a fast heuristic, not proof that a page is fine. It skips
+text over background images and gradients, reads at most 500 text nodes,
+ignores CSS transforms, blend modes and filters, and does not see content
+that appears only after interaction. Your own look at each view stays the
+real check.
 
 ### Thumbnail
 

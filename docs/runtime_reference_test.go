@@ -157,7 +157,7 @@ func TestPreviewCheckTopic(t *testing.T) {
 	if strings.Contains(runtimeref.Markdown, "preview-check.js") || strings.Contains(runtimeref.Markdown, "```javascript") {
 		t.Fatal("the browser script must stay out of the runtime reference")
 	}
-	for _, check := range []string{"title", "viewport", "background", "overflow", "image", "stylesheet", "resource", "hidden-text", "contrast"} {
+	for _, check := range []string{"title", "viewport", "background", "overflow", "image", "lazy-image", "stylesheet", "resource", "hidden-text", "contrast"} {
 		if !strings.Contains(runtimeref.PreviewCheck, `add("`+check+`"`) || !strings.Contains(md, "`"+check+"`") {
 			t.Errorf("check %q must be both emitted by the script and documented in the topic", check)
 		}
