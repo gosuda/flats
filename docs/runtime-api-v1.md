@@ -780,9 +780,12 @@ declare class Response {
   static redirect(url: string | URL, status?: number): Response;
 }
 
-/** An outbound request for fetch(). */
+/**
+ * An outbound request for fetch(). Passing a Request or the incoming request
+ * copies its method, URL, headers and body; init overrides them.
+ */
 declare class Request {
-  constructor(input: string | URL | Request, init?: Flats.RequestInit);
+  constructor(input: string | URL | Request | Flats.IncomingRequest, init?: Flats.RequestInit);
   url: string;
   /** Uppercased. */
   method: string;
@@ -802,7 +805,7 @@ declare class Request {
  * body, 5 seconds per call, 16 calls per invocation. No cookie jar, streams or
  * automatic decompression.
  */
-declare function fetch(input: string | URL | Request, init?: Flats.RequestInit): Promise<Response>;
+declare function fetch(input: string | URL | Request | Flats.IncomingRequest, init?: Flats.RequestInit): Promise<Response>;
 
 /**
  * A minimal URL parser: lowercases scheme and host, resolves "." and ".."

@@ -176,6 +176,10 @@ export default { async fetch(request, env) {
     try { new Request("https://a.example/", {method: "POST", [k]: {method: "PUT", headers: {}, body: "x", redirect: "manual"}[k]}); return k; } catch (e) { return "throws " + k; }
   });
   try { new Request("https://a.example/", {signal: null}); c.requestInit.push("signal accepted"); } catch (_) {}
+  c.copied = (() => {
+    const r = new Request(request, {headers: {"x-copy": "1"}}), s = new Request(request);
+    return [r.method, r.url === request.url, r.body, r.headers.get("x-copy"), s.headers.get("x-probe"), s.body, s instanceof Request];
+  })();
   c.incoming = [request.method, request.url, request.body, request.redirect, await request.text(),
     request.headers.get("X-Probe"), request.headers.has("x-probe")];
   c.url = (() => {
@@ -286,6 +290,7 @@ func TestTypesMatchRuntime(t *testing.T) {
 		"files":       `{"sync":true,"results":[null,true,"v",null,["a/b"],["a/b"],true,false]}`,
 		"response":    `[201,"made","1, 2",true,"",false,null,"application/json",{"x":1},302,"https://a.example/x"]`,
 		"requestInit": `["method","headers","body","redirect"]`,
+		"copied":      `["POST",true,"hello","1","p","hello",true]`,
 		"incoming":    `["POST","` + f.srv.URL + `/x?y=1","hello","error","hello","p",true]`,
 		"url":         `["https://a.example:8080/x/b?q=a+b#h","https:","a.example","8080","/x/b","?q=a+b","#h","","","https://a.example:8080",true]`,
 		"crypto":      `[true,true,true]`,
