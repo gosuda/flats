@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -259,10 +260,17 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	if doc != "" && (!fs.ValidPath(doc) || !bundle.IsMarkdown(doc)) {
 		return DocumentEdit{}, invalidf("doc must be a relative .md or .markdown path")
 	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return DocumentEdit{}, err
+	}
+	// The receipt id lets an edit whose response is lost be looked up.
+	id := "agent:" + hex.EncodeToString(nonce[:])
 	body, err := json.Marshal(struct {
 		Ops    []DocumentEditOp `json:"ops"`
 		IfHash *string          `json:"if_hash,omitempty"`
-	}{ops, ifHash})
+		ID     string           `json:"id"`
+	}{ops, ifHash, id})
 	if err != nil {
 		return DocumentEdit{}, err
 	}
@@ -295,7 +303,9 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	// The audit record outlives the caller: a commit near the deadline or a
 	// cancelled request must still leave its event.
 	auditCtx := context.WithoutCancel(ctx)
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Longer than the worker's own request deadline, so the worker normally
+	// ends a slow edit (and rolls it back) before the host stops waiting.
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://docs.internal/_docs/api/edit?doc="+url.QueryEscape(doc), bytes.NewReader(body))
 	req = trustedAccess(req, false)
@@ -328,14 +338,11 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 			return DocumentEdit{}, fmt.Errorf("%w: the docs app rolled the edit back; nothing changed, retry", ErrUnavailable)
 		}
 		// A timeout or worker failure can end the request after COMMIT.
-		return DocumentEdit{}, fmt.Errorf("%w: docs app returned HTTP %d; the edit may or may not have applied: read get_document before retrying", ErrUnavailable, rec.Code)
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code), ctx.Err() == nil)
 	}
 	var out DocumentEdit
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		return DocumentEdit{}, fmt.Errorf("docs app edit response: %w", err)
-	}
-	if out.Format != 1 || !fs.ValidPath(out.Doc) || !bundle.IsMarkdown(out.Doc) {
-		return DocumentEdit{}, fmt.Errorf("docs app returned an invalid edit response")
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Format != 1 || !fs.ValidPath(out.Doc) || !bundle.IsMarkdown(out.Doc) {
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response", true)
 	}
 	out.Source = "live"
 	if f.Visibility.Public() {
@@ -349,6 +356,43 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 		})
 	}
 	return out, nil
+}
+
+// uncertainEdit reconciles an edit whose outcome the response did not
+// report: it looks the receipt id up, records what it found in the event
+// log either way, and tells the caller whether the edit applied. A missing
+// receipt proves nothing when the host stopped waiting first (answered is
+// false): the worker may still commit.
+func (s *Service) uncertainEdit(ctx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, answered bool) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	name := doc
+	if name == "" {
+		name = "the entry document"
+	}
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)
+	req = trustedAccess(req, false)
+	req.Header.Set("X-Flats-Host-Op", "edit")
+	rec := httptest.NewRecorder()
+	live.handler.ServeHTTP(rec, req)
+	var receipt struct {
+		Committed *bool `json:"committed"`
+		Seq       int64 `json:"seq"`
+	}
+	data := map[string]any{"doc": doc, "id": id, "cause": cause}
+	if rec.Code == http.StatusOK && json.Unmarshal(rec.Body.Bytes(), &receipt) == nil && receipt.Committed != nil {
+		if *receipt.Committed {
+			data["seq"] = receipt.Seq
+			s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s committed at seq %d, but its response was lost (%s)", name, via, receipt.Seq, cause), data)
+			return fmt.Errorf("%w: %s, but the edit was applied at seq %d; read get_document and do not repeat it", ErrUnavailable, cause, receipt.Seq)
+		}
+		if answered {
+			s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s did not apply (%s)", name, via, cause), data)
+			return fmt.Errorf("%w: %s; the edit did not apply, retry", ErrUnavailable, cause)
+		}
+	}
+	s.Event(ctx, slugName, "warn", "document", fmt.Sprintf("live edit of %s via %s: outcome unknown (%s)", name, via, cause), data)
+	return fmt.Errorf("%w: %s; the edit may or may not have applied: read get_document before retrying", ErrUnavailable, cause)
 }
 
 // editSummary describes a live edit for the event log without its text.

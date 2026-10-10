@@ -4,14 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/store"
 )
+
+// committedEdits are receipt ids the fake app committed; receiptsDown makes
+// its receipt lookup fail.
+var (
+	committedEdits sync.Map
+	receiptsDown   atomic.Bool
+)
+
+// receiptResponse is the fake docs app's host-only receipt lookup.
+func receiptResponse(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Flats-Host-Op") != "edit" || receiptsDown.Load() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if v, ok := committedEdits.Load(r.URL.Query().Get("id")); ok {
+		_ = json.NewEncoder(w).Encode(map[string]any{"committed": true, "seq": v})
+		return
+	}
+	_, _ = io.WriteString(w, `{"committed":false}`)
+}
 
 // editResponse is the fake docs app's edit route: the find text selects the
 // outcome, so the host's routing and error mapping are tested in isolation.
@@ -24,6 +47,7 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Ops    []DocumentEditOp `json:"ops"`
 		IfHash string           `json:"if_hash"`
+		ID     string           `json:"id"`
 	}
 	b, _ := io.ReadAll(r.Body)
 	if err := json.Unmarshal(b, &in); err != nil || len(in.Ops) == 0 {
@@ -44,6 +68,18 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 		status, code = 503, "unavailable"
 	case "missing":
 		status = 404
+	case "lost", "dark":
+		// Committed, then the response was lost.
+		committedEdits.Store(in.ID, 9)
+		status = 502
+	case "garbled":
+		committedEdits.Store(in.ID, 9)
+		_, _ = io.WriteString(w, "{not json")
+		return
+	}
+	if !strings.HasPrefix(in.ID, "agent:") || len(in.ID) != len("agent:")+32 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 	w.WriteHeader(status)
 	if status != 200 {
@@ -120,7 +156,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), nil, ViaMCP); err != nil || out.Changed {
 		t.Fatal(out, err)
 	}
-	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found"} {
+	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable"} {
 		_, err := s.UpdateDocument(ctx, "notes", "", op(find), ptr(strings.Repeat("a", 64)), ViaMCP)
 		if ErrorCategory(err) != want {
 			t.Fatal(find, err)
@@ -128,12 +164,41 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		if want == "edit_conflict" && !strings.Contains(err.Error(), "op 1: conflict "+strings.Repeat("a", 64)) {
 			t.Fatal("app message or if_hash lost", err)
 		}
-		if find == "boom" && !strings.Contains(err.Error(), "may or may not have applied") || find == "rolledback" && !strings.Contains(err.Error(), "nothing changed") {
-			t.Fatal("outcome of a failed edit misstated", err)
+		wantText := map[string]string{"boom": "did not apply", "rolledback": "nothing changed", "lost": "applied at seq 9", "garbled": "applied at seq 9"}[find]
+		if wantText != "" && !strings.Contains(err.Error(), wantText) {
+			t.Fatal("outcome of a failed edit misstated", find, err)
 		}
 	}
-	// Only changing edits are logged, with a summary and never the text.
-	events, err := s.Events(ctx, "notes", "document", 0, 10)
+	// A lost response whose receipt cannot be checked is reported as unknown.
+	receiptsDown.Store(true)
+	if _, err := s.UpdateDocument(ctx, "notes", "", op("dark"), nil, ViaMCP); !strings.Contains(fmt.Sprint(err), "may or may not have applied") {
+		t.Fatal(err)
+	}
+	receiptsDown.Store(false)
+	// Uncertain outcomes are always logged, with what the receipt showed.
+	events, err := s.Events(ctx, "notes", "document", 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warned []string
+	for _, e := range events {
+		if e.Level == "warn" {
+			warned = append(warned, e.Message)
+		}
+	}
+	joined := strings.Join(warned, "\n")
+	if len(warned) != 4 || strings.Count(joined, "committed at seq 9, but its response was lost") != 2 || !strings.Contains(joined, "did not apply (docs app returned HTTP 500)") || !strings.Contains(joined, "outcome unknown") {
+		t.Fatal(warned)
+	}
+	// Changing edits are logged with a summary and never the text.
+	events, err = s.Events(ctx, "notes", "document", 0, 20)
+	var infos []store.Event
+	for _, e := range events {
+		if e.Level == "info" {
+			infos = append(infos, e)
+		}
+	}
+	events = infos
 	if err != nil || len(events) != 2 || events[0].Message != "live edit of index.md via mcp: 1 op(s) (replace at line 3 -4/+9); seq 7 -> 8; now 42 bytes" {
 		t.Fatal(events, err)
 	}

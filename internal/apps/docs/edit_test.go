@@ -162,6 +162,29 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 		t.Fatal("no-op edit", status, m)
 	}
 
+	// The host's receipt id is honoured, refused when reused or malformed,
+	// and can be looked up only through the host channel.
+	idEdit := `{"id":"agent:fixed-id-0001","ops":[{"op":"insert","at":"end","text":"With id."}]}`
+	if status, m := a.postEdit(t, hostEdit, idEdit); status != 200 || m["id"] != "agent:fixed-id-0001" {
+		t.Fatal(status, m)
+	}
+	if status, m := a.postEdit(t, hostEdit, idEdit); status != 409 || m["code"] != "edit_conflict" || !strings.Contains(m["message"].(string), "already applied") {
+		t.Fatal("reused id", status, m)
+	}
+	for _, bad := range []string{`"x"`, `"agent:"`, `"seed:abcdefgh"`, `7`} {
+		if status, m := a.postEdit(t, hostEdit, `{"id":`+bad+`,"ops":[{"op":"insert","at":"end","text":"x"}]}`); status != 400 || m["code"] != "invalid" {
+			t.Fatal(bad, status, m)
+		}
+	}
+	for id, want := range map[string]string{"agent:fixed-id-0001": `"committed":true`, "agent:never-applied": `"committed":false`} {
+		if status, body, _ := a.getHeaders(t, "/_docs/api/receipt?doc=index.md&id="+id, hostEdit); status != 200 || !strings.Contains(body, want) {
+			t.Fatal(id, status, body)
+		}
+	}
+	if status, _, _ := a.getHeaders(t, "/_docs/api/receipt?doc=index.md&id=agent:fixed-id-0001", http.Header{"X-Flats-Access": {"private"}}); status != 403 {
+		t.Fatal("receipt lookup without the host header", status)
+	}
+
 	// Limits: request size, single update size and the 1 MiB document limit.
 	if status, m := a.postEdit(t, hostEdit, ops(map[string]any{"op": "insert", "at": "end", "text": strings.Repeat("x", 513*1024)})); status != 413 || m["code"] != "capacity" {
 		t.Fatal(status, m)
@@ -190,7 +213,7 @@ func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
 	}
 	defer db.Close()
 	var n int
-	if err := db.QueryRow("SELECT count(*) FROM flats_docs_receipts WHERE doc='index.md' AND id LIKE 'agent:%'").Scan(&n); err != nil || n != 5 {
+	if err := db.QueryRow("SELECT count(*) FROM flats_docs_receipts WHERE doc='index.md' AND id LIKE 'agent:%'").Scan(&n); err != nil || n != 6 {
 		t.Fatal("agent receipts", n, err)
 	}
 }

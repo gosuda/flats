@@ -90,6 +90,7 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /_docs/api/documents` | `{format:1, entry, title, documents: [{path, title}]}` |
 | `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads additionally include `conflicts:[{generation,bytes}]`, and with `blocks=1` one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
 | `POST /_docs/api/edit?doc=<path>` | Host management only (`private` plus `X-Flats-Host-Op: edit`, see below): guarded live edit; others receive 403 |
+| `GET /_docs/api/receipt?doc=<path>&id=<id>` | Host management only: `{committed, seq?, chain?}` for a live-edit receipt id |
 | `GET /_docs/api/conflict?doc=<path>&generation=<id>` | Private only: `{generation,markdown}`; `view=1` returns `text/plain; charset=utf-8` with nosniff, restrictive CSP and no-store for viewing/copying; public receives 403, evicted/missing id 404 |
 | `GET /_docs/assets/client.js` | self-contained browser ESM bundle |
 | `GET /_docs/assets/client.css` | workspace CSS |
@@ -255,7 +256,8 @@ update operations. The agent contract is guide `topic.docs`.
   deletes/inserts in one Yjs transaction, checks `validateUpdate`, the
   256 KiB decoded update limit and `validateIncremental` (1 MiB Markdown,
   state and structure limits), `append`s one update with a unique
-  `agent:<uuid>` receipt id, and `compact`s. Nothing is reported before
+  `agent:<random>` receipt id chosen by core (a reused id is refused), and
+  `compact`s. Nothing is reported before
   COMMIT; any refusal rolls the whole transaction back. The CRDT is never
   rebuilt from Markdown, so concurrent edits elsewhere keep their positions.
   Splices are trimmed to the characters that actually change, without
@@ -302,7 +304,14 @@ update operations. The agent contract is guide `topic.docs`.
 * **Audit and recovery.** Core records each applied edit in the flat event
   log (kind `document`): document, operation, line and removed/inserted
   counts, seq before/after, receipt id and resulting hash, never the text.
-  The receipt id prefix `agent:` identifies agent updates in the update log.
+  The receipt id prefix `agent:` identifies agent updates in the update log;
+  WebSocket editors cannot use it. When the edit's response is lost (worker
+  failure, timeout or an unreadable reply), core looks its receipt id up
+  through `/_docs/api/receipt` and always logs a `warn` event: committed at
+  seq N, did not apply, or outcome unknown. The agent's error says which.
+  Core waits 20 s, longer than the worker's 10 s request deadline, so the
+  worker normally interrupts and rolls back a slow edit first; when core
+  stopped waiting first, a missing receipt is reported as unknown.
   Pre-edit text is not retained separately: conflict records are keyed by
   activation generation and bounded to 8 per document, so sharing them would
   let routine agent edits evict human recovery text. Edits are small and
@@ -312,9 +321,10 @@ update operations. The agent contract is guide `topic.docs`.
   MCP instructions, `topic.docs` and every result on a Public flat
   (`public_notice`) say so; there is deliberately no approval step, matching
   private human editing.
-* **Not done.** Idempotency keys (a retry after a lost response may apply an
-  insert twice; guards make repeated replacements fail instead), and a
-  console/HTTP management API for the same operation.
+* **Not done.** Caller-supplied idempotency keys (each MCP call gets a new
+  receipt id; a lost response is reconciled as above, so the agent learns
+  whether to repeat), and a console/HTTP management API for the same
+  operation.
 
 ### Built-in host internals (outside runtime API v1)
 

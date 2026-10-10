@@ -33,6 +33,10 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 		return nil, errors.New("start failed")
 	}
 	return contentInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_docs/api/receipt" {
+			receiptResponse(w, r)
+			return
+		}
 		if r.URL.Path == "/_docs/api/edit" {
 			editResponse(w, r)
 			if rt.afterEdit != nil {

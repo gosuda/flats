@@ -439,12 +439,26 @@ async function edit(request, env, d) {
   } catch {
     return json(400, { code: "invalid", message: "body must be JSON" });
   }
-  const db = env.DB,
-    id = "agent:" + crypto.randomUUID();
+  // The host chooses the receipt id so it can look the edit up when the
+  // response is lost.
+  const id = body?.id === undefined ? "agent:" + crypto.randomUUID() : body.id;
+  if (typeof id !== "string" || !/^agent:[A-Za-z0-9_-]{8,120}$/.test(id))
+    return json(400, { code: "invalid", message: "invalid edit id" });
+  if (body && typeof body === "object") delete body.id;
+  const db = env.DB;
   let result;
   try {
     schema(db);
     result = transaction(db, () => {
+      const applied = db.query(
+        "SELECT seq FROM flats_docs_receipts WHERE doc=? AND id=?",
+        [d.path, id],
+      )[0];
+      if (applied)
+        throw Object.assign(
+          new Error(`this edit was already applied at seq ${applied.seq}`),
+          { code: "edit_conflict" },
+        );
       const s = activate(
         db,
         d,
@@ -531,6 +545,30 @@ export default {
   fetch(request, env) {
     const url = new URL(request.url),
       path = url.pathname;
+    // Host only: whether a live edit with this receipt id committed.
+    if (path === "/_docs/api/receipt" && request.method === "GET") {
+      const d = sourceFor(url.searchParams.get("doc") || content.entry);
+      if (
+        request.headers.get("x-flats-access") !== "private" ||
+        request.headers.get("x-flats-host-op") !== "edit"
+      )
+        return json(403, { code: "readonly", message: "host only" });
+      if (!d)
+        return json(404, { code: "not_found", message: "unknown document" });
+      let row;
+      try {
+        row = env.DB.query(
+          "SELECT seq,chain FROM flats_docs_receipts WHERE doc=? AND id=?",
+          [d.path, url.searchParams.get("id") || ""],
+        )[0];
+      } catch (e) {
+        // A database without the docs schema holds no receipts.
+        if (!String(e?.message).includes("no such table")) throw e;
+      }
+      return row
+        ? json(200, { committed: true, seq: row.seq, chain: row.chain })
+        : json(200, { committed: false });
+    }
     if (path === "/_docs/api/edit" && request.method === "POST") {
       const d = sourceFor(url.searchParams.get("doc") || content.entry);
       if (!d)
