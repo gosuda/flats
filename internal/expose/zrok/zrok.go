@@ -246,6 +246,9 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 		// tell them apart, so neither is used.
 		path, _ := recordPath(n.cfg.Dir, slug)
 		return "", fmt.Errorf("zrok: %s: an earlier attempt to reserve the name got no answer, and the name now exists; Flats cannot tell who created it. Release it with `zrok2 delete name` and remove %s, or rename the flat", slug, path)
+	case found && !rec.Created:
+		// No record proves this host created the name.
+		return "", fmt.Errorf("zrok: %s: the name is reserved in this zrok account, but not by this Flats host; release it (zrok2 delete name) or rename the flat", slug)
 	case !found:
 		// Record the intent before creating the name, so a name this host
 		// creates is never untracked.
@@ -260,13 +263,9 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 			_ = n.dropRecord(slug)
 			return "", fmt.Errorf("zrok: %s: %s", slug, TakenHint)
 		case errors.Is(err, errNotCreated):
-			// Refused: nothing was created, so nothing is pending.
-			if known {
-				rec.Pending = false
-				_ = n.writeRecord(slug, rec)
-			} else {
-				_ = n.dropRecord(slug)
-			}
+			// Refused: nothing was created, and any earlier record was for a
+			// name that no longer exists, so no record is kept.
+			_ = n.dropRecord(slug)
 			return "", fmt.Errorf("zrok: %s: %w", slug, err)
 		case err != nil:
 			// No answer: the name may or may not exist. The pending record

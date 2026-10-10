@@ -237,7 +237,12 @@ the record. A created name is recorded with the controller's creation time;
 if it cannot be recorded, the name is released again. A name deleted and
 reserved again under the same spelling has another creation time, so it is
 neither used nor released. A share the controller returns without a
-frontend endpoint is deleted and the open fails. A share whose creation
+frontend endpoint is deleted and the open fails. A refused creation drops
+any record, and an existing name is used only with a record of its creation
+by this host. zrok reports creation times in whole seconds and offers no
+other identity for a name, so a name deleted and reserved again by another
+client of the same account within the same second cannot be told apart;
+that window is a known limit. A share whose creation
 failed, or whose rollback failed, is kept as unsettled: `Stop` and process
 shutdown remove it when this host owns it. `StopPublicRoutes` calls zrok's
 `Stop` even without a registered zrok route, so the rollback of a failed

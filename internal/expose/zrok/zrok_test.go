@@ -1077,3 +1077,30 @@ func TestShareWithoutEndpointIsNotServed(t *testing.T) {
 		t.Fatalf("share without an address kept: %v", f.shares)
 	}
 }
+
+func TestRefusalAfterDeletedNameDropsRecord(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Stop("blog"); err != nil {
+		t.Fatal(err)
+	}
+	// The name is deleted outside Flats, and recreating it is refused.
+	delete(f.names, "public/blog")
+	f.createErr = fmt.Errorf("%w: names limit reached", errNotCreated)
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil {
+		t.Fatal("Serve succeeded without a name")
+	}
+	if reserved(t, n, "blog") {
+		t.Fatal("a record of a vanished name was kept")
+	}
+	// Another client reserves the spelling: it is not used.
+	f.createErr = nil
+	f.names["public/blog"] = ""
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "not by this Flats host") {
+		t.Fatalf("used another client's name: %v", err)
+	}
+}
