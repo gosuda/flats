@@ -134,7 +134,10 @@ pre-deploy DB and FILES snapshot. Preview data is isolated from live data.
 
 Ordinary environment variables (`flats env set hello GREETING 'Hello'`) and
 encrypted secrets reach server code as `env.NAME`, or as environment variables
-for WASI. Changes apply at the next approved activation; see
+for WASI. Saving a value leaves running workers on their snapshot. The live
+worker picks up current values at the next approved deployment, redeployment,
+rollback or data restore, or when the Flats host restarts; a newly created
+preview also loads them. See
 [App environment variables](docs/design.md#app-environment-variables) and
 [Secrets](docs/design.md#secrets).
 
