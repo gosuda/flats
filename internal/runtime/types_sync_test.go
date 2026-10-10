@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"regexp"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	runtimeref "github.com/gosuda/flats/docs"
+	"github.com/gosuda/flats/internal/egress"
 )
 
 // declarations is what flats-runtime-v1.d.ts declares, parsed just enough to
@@ -384,5 +386,45 @@ func sameSet(t *testing.T, what string, declared, actual []string) {
 	a, b := slices.Sorted(slices.Values(declared)), slices.Sorted(slices.Values(actual))
 	if !slices.Equal(slices.Compact(a), slices.Compact(b)) {
 		t.Errorf("%s: declared %v, runtime %v", what, a, b)
+	}
+}
+
+type recordingFetch struct{ got []egress.Request }
+
+func (f *recordingFetch) Fetch(_ context.Context, req egress.Request) (egress.Response, error) {
+	f.got = append(f.got, req)
+	return egress.Response{Status: 200, URL: req.URL}, nil
+}
+func (*recordingFetch) Close() {}
+
+// The declarations accept the incoming request as a fetch input: it is a
+// Request instance, so fetch copies its method, URL, headers and body.
+func TestTypesIncomingRequestAsFetchInput(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"index.js": `export default { async fetch(request) {
+ const a = await fetch(request), b = await fetch(request, {method: "PUT", headers: {"x-b": "1"}});
+ return new Response(String(request instanceof Request) + a.status + b.status);
+} };`})
+	network := &recordingFetch{}
+	w := &worker{spec: workerSpec{Dir: dir, Entry: "index.js", DataDir: t.TempDir(), TimeoutMS: 10000}, network: network, log: newChildLog(io.Discard)}
+	vm, err := newJSVM(w, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vm.close()
+	out, err := vm.invoke(t.Context(), "__flats_dispatch",
+		`{"method":"POST","url":"https://api.example.test/in?q=1","headers":{"x-a":"v"},"body":"hi"}`)
+	var res respPayload
+	if err != nil || json.Unmarshal([]byte(out), &res) != nil || res.Error != nil || res.Body != "true200200" {
+		t.Fatalf("dispatch: %s %v", out, err)
+	}
+	if len(network.got) != 2 {
+		t.Fatalf("fetch calls: %+v", network.got)
+	}
+	for i, want := range []struct{ method, header string }{{"POST", "x-a"}, {"PUT", "x-b"}} {
+		g := network.got[i]
+		if g.URL != "https://api.example.test/in?q=1" || g.Method != want.method || len(g.Headers[want.header]) != 1 || string(g.Body) != "hi" {
+			t.Errorf("call %d: %+v", i, g)
+		}
 	}
 }
