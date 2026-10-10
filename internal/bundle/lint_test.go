@@ -191,6 +191,9 @@ func TestLintMissingReferences(t *testing.T) {
 	expectWarning(t, with(File{Path: "index.html", Data: page(`<link rel="manifest" href="flats.json">`, "")}), "index.html", "no file flats.json")
 	// A <base> changes resolution; references are not checked.
 	expectClean(t, with(File{Path: "index.html", Data: page(`<base href="/v2/"><script src="main.js"></script>`, "")}))
+	// ...unless the <base> is inert.
+	expectWarning(t, with(File{Path: "index.html", Data: page(`<template><base href="/v2/"></template><script src="main.js"></script>`, "")}), "index.html", "no file main.js")
+	expectWarning(t, with(File{Path: "index.html", Data: page(`<svg><base href="/v2/"/></svg><script src="main.js"></script>`, "")}), "index.html", "no file main.js")
 }
 
 func TestLintBaseAndImportMapPrefixes(t *testing.T) {

@@ -248,13 +248,21 @@ func baseHref(data []byte) (ext *url.URL, found bool) {
 		return nil, false
 	}
 	z := html.NewTokenizer(bytes.NewReader(data))
+	inert := 0 // a <base> inside <template>, <svg> or <math> does nothing
 	for {
-		switch z.Next() {
+		switch tt := z.Next(); tt {
 		case html.ErrorToken:
 			return nil, false
+		case html.EndTagToken:
+			if name, _ := z.TagName(); inert > 0 && inertTags[string(name)] {
+				inert--
+			}
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, hasAttr := z.TagName()
-			for string(name) == "base" && hasAttr {
+			if inertTags[string(name)] && tt == html.StartTagToken {
+				inert++
+			}
+			for string(name) == "base" && inert == 0 && hasAttr {
 				var k, v []byte
 				k, v, hasAttr = z.TagAttr()
 				if href := strings.TrimSpace(string(v)); string(k) == "href" && href != "" {
