@@ -66,9 +66,11 @@ Apps must treat a missing or unknown value as `public`. Identity headers
 (`Tailscale-User-Login`, `Tailscale-User-Name`) keep their existing meaning:
 set from WhoIs on Tailscale, stripped on public routes.
 
-Core also strips every client spelling of `X-Flats-Health` on private, public,
-and preview routes. Only its own health trial sets `X-Flats-Health: 1`, after
-stripping client headers. Private access by itself does not authorize health activation.
+Core also strips every client spelling of `X-Flats-Health` and
+`X-Flats-Host-Op` on private, public, and preview routes. Only its own health
+trial sets `X-Flats-Health: 1`, and only `Service.UpdateDocument` sets
+`X-Flats-Host-Op: edit`, after stripping client headers. Private access by
+itself authorizes neither health activation nor a host edit.
 
 ## Docs app contract (internal/apps/docs)
 
@@ -86,14 +88,15 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /<path>` | exact Markdown path, or `<path>.md` / `<path>.markdown` |
 | `GET /_docs/healthz` | Cheap `200 ok` without DB access for visitors; only trusted host health trials activate all documents atomically |
 | `GET /_docs/api/documents` | `{format:1, entry, title, documents: [{path, title}]}` |
-| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, epoch, seq, chain, source:"live"}`; private/host reads additionally include `conflicts:[{generation,bytes}]`; default doc is entry |
+| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads additionally include `conflicts:[{generation,bytes}]`, and with `blocks=1` the block outline `blocks:[{hash,kind,level?,line,preview}]`; default doc is entry |
+| `POST /_docs/api/edit?doc=<path>` | Host management only (`private` plus `X-Flats-Host-Op: edit`, see below): guarded live edit; others receive 403 |
 | `GET /_docs/api/conflict?doc=<path>&generation=<id>` | Private only: `{generation,markdown}`; `view=1` returns `text/plain; charset=utf-8` with nosniff, restrictive CSP and no-store for viewing/copying; public receives 403, evicted/missing id 404 |
 | `GET /_docs/assets/client.js` | self-contained browser ESM bundle |
 | `GET /_docs/assets/client.css` | workspace CSS |
 | `GET /_docs/ws?doc=<path>` | collaboration WebSocket; default doc is entry |
 
 HEAD has GET semantics without a response body. Other HTTP methods receive
-405. Unknown/removed documents and reserved routes receive 404. WebSocket
+405, except `POST /_docs/api/edit`. Unknown/removed documents and reserved routes receive 404. WebSocket
 admission happens in `open`, after the runtime handshake; invalid paths or
 cross-origin browser connections are closed with 1008. Private hostnames are
 validated at ingress: Local routes require `<flat>.localhost`; Tailscale
@@ -233,6 +236,78 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   Divergence or an unrecoverable rejection stops sync, disables editing and
   offers local Markdown download and reload; buffered edits are retained.
 
+### Agent live edits (MCP `update_document`)
+
+Design for guarded agent edits of live Markdown, modelled on Claude Docs'
+update operations. The agent contract is guide `topic.docs`.
+
+* **Path.** MCP `update_document` → `Service.UpdateDocument` (per-flat lock,
+  10 edits/s burst 20 per flat) → in-process `POST /_docs/api/edit` on the
+  running docs handler with trusted `private` access and
+  `X-Flats-Host-Op: edit`. Only a running docs version is edited; without one
+  the call refuses with `not_deployed` and a hint to use `save_document` and
+  `publish`. Agent-authored server flats never see the header, and a
+  browser on a private route cannot add it (core strips it), so the endpoint
+  is not a cross-site write path.
+* **Same authority as people's edits.** One `BEGIN IMMEDIATE` transaction runs
+  `activate` (catch-up and any pending activation merge), resolves the
+  operations against the committed text, applies them as minimal `Y.Text`
+  deletes/inserts in one Yjs transaction, checks `validateUpdate`, the
+  256 KiB decoded update limit and `validateIncremental` (1 MiB Markdown,
+  state and structure limits), `append`s one update with a unique
+  `agent:<uuid>` receipt id, and `compact`s. Nothing is reported before
+  COMMIT; any refusal rolls the whole transaction back. The CRDT is never
+  rebuilt from Markdown, so concurrent edits elsewhere keep their positions.
+  Splices are trimmed to the characters that actually change, without
+  splitting surrogate pairs.
+* **Broadcast.** The edit runs in an HTTP VM, which holds no rooms. After
+  COMMIT it calls the non-enumerable `globalThis.__flats_docsWake(doc)`; the
+  runtime posts a `wake` event to the worker's WebSocket VM without blocking
+  (dropped when its queue is full), and the app's `websocket.wake` handler
+  catches the room up exactly like a heartbeat and broadcasts the committed
+  rows. A dropped wake, or a room in an overlapping worker, catches up at the
+  next heartbeat (about 15 s).
+* **Operations** (`edit.js`, pure): `replace {find, with, nth?}`,
+  `replace_block {block, with, nth?}`, `delete_block {block, nth?}`,
+  `insert {text, before|after|section_end: block | at: start|end, nth?}`.
+  1–32 operations apply in order to the evolving text; the request is at most
+  512 KiB. Blocks are maximal runs of non-blank lines; a fenced code block
+  (including blank lines) is one block and an ATX heading line is its own
+  block. A section is a heading plus the blocks up to the next heading of the
+  same or a higher level. Inserted text is trimmed of outer newlines and
+  separated from neighbours by one blank line.
+* **Guards** ("their edit wins"). A block is named by the first 16 hex digits
+  of SHA-256 of its exact text, from `get_document {blocks: true}`; a human
+  edit changes the hash. `find` must match exactly and uniquely unless `nth`
+  is given. Optional `if_hash` (SHA-256 of the whole live Markdown, returned
+  by every `get_document`) refuses any intervening change. A missing,
+  changed or ambiguous target returns 409 `edit_conflict` with the operation
+  index; malformed input 400 `invalid`; limits 413/422 `capacity`, mapped to
+  `document_capacity`. All refusals change nothing. Content-addressed guards
+  replace Claude Docs' block ids and revisions, which this CRDT text has no
+  stable equivalent of: an unchanged block keeps its hash even while people
+  edit other blocks, so independent work does not invalidate the guard.
+* **Versions.** Live edits are not part of a published version or the Draft.
+  The next activation merges `seed_text` → live → version exactly as for
+  human edits: disjoint agent edits survive, overlapping ones prefer the
+  version and the discarded live text goes to `flats_docs_conflicts`.
+* **Audit and recovery.** Core records each applied edit in the flat event
+  log (kind `document`): document, operation, line and removed/inserted
+  counts, seq before/after, receipt id and resulting hash, never the text.
+  The receipt id prefix `agent:` identifies agent updates in the update log.
+  Pre-edit text is not retained separately: conflict records are keyed by
+  activation generation and bounded to 8 per document, so sharing them would
+  let routine agent edits evict human recovery text. Edits are small and
+  guarded, the agent read the text it changed, and the result reports what
+  changed, so the reverse edit restores it.
+* **Public flats.** Live text is public at once. The tool description,
+  MCP instructions, `topic.docs` and every result on a Public flat
+  (`public_notice`) say so; there is deliberately no approval step, matching
+  private human editing.
+* **Not done.** Idempotency keys (a retry after a lost response may apply an
+  insert twice; guards make repeated replacements fail instead), and a
+  console/HTTP management API for the same operation.
+
 ### Built-in host internals (outside runtime API v1)
 
 The built-in app also selects non-enumerable `globalThis.__flats_docsCodec`
@@ -244,7 +319,9 @@ globals. It has no I/O authority and is not a runtime API v1 capability.
 The built-in app requires read-only, non-enumerable `request.runtimeGeneration`
 and `ws.runtimeGeneration`, supplied from `RuntimeSpec.Generation`, and
 `ws.setSendLimits(connectionBytes, flatBytes)` (a non-enumerable prototype
-method). These are host internals for built-in apps, **not part of runtime API
+method). `globalThis.__flats_docsWake(doc)` (non-enumerable, every JS VM) and the
+`wake` WebSocket event it produces are internal in the same way.
+These are host internals for built-in apps, **not part of runtime API
 v1** and not supported APIs for agent-authored server flats. They are visible
 in JavaScript but do not change existing v1 request fields or queue defaults.
 The byte helper bounds actual queued **and in-flight** Go text payload bytes,

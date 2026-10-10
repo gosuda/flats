@@ -512,6 +512,13 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 			return "", sink.setSendLimits(num(0), num(1), num(2))
 		}
 		return "", errors.New("WebSocket send limits unavailable")
+	case "ws.wake":
+		// Best effort and never blocking: a full queue or a worker without
+		// WebSocket support drops it, and rooms catch up at the next heartbeat.
+		if doc := str(0); len(doc) <= 4096 && vm.w.js != nil && vm.w.js.wsHub != nil {
+			vm.w.js.wsHub.wake(doc)
+		}
+		return "", nil
 	case "ws.close":
 		if vm.ws == nil {
 			return "", errors.New("WebSocket close outside a websocket handler")

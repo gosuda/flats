@@ -42,7 +42,7 @@ type docsDocument struct {
 func trustedAccess(r *http.Request, public bool) *http.Request {
 	r = r.Clone(r.Context())
 	for key := range r.Header {
-		if strings.EqualFold(key, "X-Flats-Access") || strings.EqualFold(key, "X-Flats-Health") {
+		if strings.EqualFold(key, "X-Flats-Access") || strings.EqualFold(key, "X-Flats-Health") || strings.EqualFold(key, "X-Flats-Host-Op") {
 			delete(r.Header, key)
 		}
 	}

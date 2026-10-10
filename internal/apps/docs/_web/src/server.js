@@ -28,6 +28,7 @@ import {
   structureCount,
   validateIncremental,
 } from "./storage.js";
+import { EDIT_LIMITS, outline, planEdit } from "./edit.js";
 const rooms = new Map(),
   connections = new Map();
 let queued = 0;
@@ -345,8 +346,8 @@ function update(c, m, env, size) {
   if (result.event) broadcast(room, result.event, c);
   send(c, { t: "ack", id: m.id, seq: result.ack.seq, chain: result.ack.chain });
 }
-function ping(c, env) {
-  const room = c.room;
+// catchUp replays committed rows into the room and broadcasts them.
+function catchUp(room, env, generation, readonly) {
   let s;
   try {
     s = current(
@@ -354,9 +355,9 @@ function ping(c, env) {
       sourceFor(room.path),
       content.hash,
       room.row ? room : undefined,
-      c.ws.runtimeGeneration,
+      generation,
     );
-    roomBudget(room, { length: s.doc._flatsStateSize }, s.doc, c.readonly);
+    roomBudget(room, { length: s.doc._flatsStateSize }, s.doc, readonly);
   } catch (e) {
     if (!rejectionCode(e)) drop(room);
     else {
@@ -368,6 +369,10 @@ function ping(c, env) {
   if (s.row.seq !== room.row?.seq)
     s.conflicts = conflictList(env.DB, room.path);
   committed(room, s);
+  return s;
+}
+function ping(c, env) {
+  const s = catchUp(c.room, env, c.ws.runtimeGeneration, c.readonly);
   send(c, {
     t: "pong",
     epoch: s.row.epoch,
@@ -393,10 +398,127 @@ function html(d, readonly, url) {
     },
   );
 }
+const json = (status, body) =>
+  Response.json(body, { status, headers: { "cache-control": "no-store" } });
+const editStatus = { invalid: 400, edit_conflict: 409, capacity: 422 };
+// A host management edit: guarded operations resolved against committed
+// text and appended as one Yjs update in the same transaction as human edits.
+async function edit(request, env, d) {
+  if (
+    request.headers.get("x-flats-access") !== "private" ||
+    request.headers.get("x-flats-host-op") !== "edit"
+  )
+    return json(403, {
+      code: "readonly",
+      message: "live edits need the host management channel",
+    });
+  const raw = await request.text();
+  if (raw.length > EDIT_LIMITS.body || utf8Bytes(raw) > EDIT_LIMITS.body)
+    return json(413, {
+      code: "capacity",
+      message: `edit request larger than ${EDIT_LIMITS.body} bytes; split it`,
+    });
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return json(400, { code: "invalid", message: "body must be JSON" });
+  }
+  const db = env.DB,
+    id = "agent:" + crypto.randomUUID();
+  let result;
+  try {
+    schema(db);
+    result = transaction(db, () => {
+      const s = activate(
+        db,
+        d,
+        content.hash,
+        undefined,
+        request.runtimeGeneration,
+      );
+      try {
+        const text = s.doc.getText("markdown"),
+          before = s.row.seq,
+          plan = planEdit(text.toString(), body, digest);
+        if (plan.splices.length) {
+          const sv = Y.encodeStateVector(s.doc);
+          s.doc.transact(() => {
+            for (const p of plan.splices) {
+              if (p.remove) text.delete(p.at, p.remove);
+              if (p.insert) text.insert(p.at, p.insert);
+            }
+          }, "agent");
+          if (text.toString() !== plan.text)
+            throw new Error("edit replay mismatch");
+          const bytes = Y.encodeStateAsUpdate(s.doc, sv);
+          if (bytes.length > LIMITS.update)
+            throw Object.assign(
+              new Error(
+                `edit update is ${bytes.length} bytes, above ${LIMITS.update}; split it into smaller calls`,
+              ),
+              { code: "capacity" },
+            );
+          try {
+            validateUpdate(bytes);
+          } catch (e) {
+            // Structure and delete-range bounds: smaller edits fit.
+            e.code = "capacity";
+            throw e;
+          }
+          validateIncremental(s.doc, bytes.length);
+          append(db, s, id, base64(bytes));
+          compact(db, s);
+        }
+        return {
+          format: 1,
+          doc: d.path,
+          seq_before: before,
+          seq: s.row.seq,
+          chain: s.row.chain,
+          hash: digest(plan.text),
+          bytes: utf8Bytes(plan.text),
+          changed: plan.splices.length > 0,
+          ...(plan.splices.length ? { id } : {}),
+          ops: plan.summary,
+        };
+      } finally {
+        s.doc.destroy();
+      }
+    });
+  } catch (e) {
+    if (
+      e?.name === "InternalError" ||
+      /out of memory/i.test(String(e?.message))
+    )
+      throw e;
+    const code = rejectionCode(e);
+    if (editStatus[code])
+      return json(editStatus[code], {
+        code,
+        message: String(e.message),
+        ...(e.op === undefined ? {} : { op: e.op }),
+      });
+    console.warn("docs edit failed:", String(e?.message));
+    return json(503, {
+      code: "unavailable",
+      message: "edit not applied; retry",
+    });
+  }
+  // Connected editors catch up now rather than at their next heartbeat.
+  if (result.changed) globalThis.__flats_docsWake?.(d.path);
+  return json(200, result);
+}
 export default {
   fetch(request, env) {
     const url = new URL(request.url),
       path = url.pathname;
+    if (path === "/_docs/api/edit" && request.method === "POST") {
+      const d = sourceFor(url.searchParams.get("doc") || content.entry);
+      if (!d)
+        return json(404, { code: "not_found", message: "unknown document" });
+      return edit(request, env, d);
+    }
     if (request.method !== "GET" && request.method !== "HEAD")
       return new Response("Method not allowed", { status: 405 });
     if (path === "/_docs/healthz") {
@@ -498,15 +620,20 @@ export default {
       undefined,
       request.runtimeGeneration,
     );
+    const markdown = s.doc.getText("markdown").toString();
     const result = {
       format: 1,
       doc: d.path,
-      markdown: s.doc.getText("markdown").toString(),
+      markdown,
+      hash: digest(markdown),
       epoch: s.row.epoch,
       seq: s.row.seq,
       chain: s.row.chain,
       source: "live",
       ...(privateAccess ? { conflicts: conflictList(env.DB, d.path) } : {}),
+      ...(privateAccess && url.searchParams.get("blocks") === "1"
+        ? { blocks: outline(markdown, digest) }
+        : {}),
     };
     s.doc.destroy();
     return Response.json(result);
@@ -605,6 +732,27 @@ export default {
             "Sync stopped; download your local Markdown and reload",
           );
         console.warn("docs rejected:", String(e.message));
+      }
+    },
+    // Host-internal: another VM of this worker committed an agent edit.
+    wake(doc, env) {
+      const room = rooms.get(doc);
+      if (!room?.row || !room.peers.size) return;
+      const peers = [...room.peers];
+      try {
+        catchUp(
+          room,
+          env,
+          peers[0].ws.runtimeGeneration,
+          !peers.some((c) => !c.readonly),
+        );
+      } catch (e) {
+        if (
+          e?.name === "InternalError" ||
+          /out of memory/i.test(String(e?.message))
+        )
+          throw e;
+        console.warn("docs wake failed:", String(e?.message));
       }
     },
     close(ws) {

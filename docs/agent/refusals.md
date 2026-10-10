@@ -32,6 +32,24 @@ The docs flat has no such Markdown path, or the requested conflict generation
 is missing or was evicted. Read `get_document` without `doc` for the entry,
 or use a generation from the current `conflicts` list.
 
+## edit_conflict
+
+`update_document` did not apply: a `find` text or block hash no longer
+matches the live text (someone edited or removed it), occurs more than once
+without `nth`, `nth` is past the last match, or `if_hash` differs. Their edit
+wins: none of the operations in the call changed anything. Read
+`get_document {slug, doc, blocks: true}` again, rebuild the operations
+against the current text and retry. Never retry by replacing the whole
+document to win.
+
+## document_capacity
+
+`update_document` would exceed a document limit: the request is larger than
+512 KiB, the single update larger than 256 KiB, the Markdown above 1 MiB, or
+the document's stored history is full. Nothing changed. Split a large edit
+into several calls or make the document smaller. Full history needs the
+operator; tell the user.
+
 ## not_docs
 
 The tool needs a docs flat (`type: "docs"`), and this flat is a website.

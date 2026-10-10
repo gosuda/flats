@@ -38,6 +38,11 @@
     const r = host(op, JSON.stringify(args));
     return r === "" ? undefined : JSON.parse(r);
   };
+  // Built-in docs app internal (not runtime API v1): ask this worker's
+  // WebSocket VM to catch up a document's connected room. Best effort.
+  Object.defineProperty(globalThis, "__flats_docsWake", {value: Object.freeze((doc) => {
+    call("ws.wake", [String(doc)]);
+  })});
 
   // --- console ---
   const fmt = (a) => {
@@ -523,6 +528,8 @@
         if (h && typeof h.open === "function") await h.open(ws, env);
       } else if (ev.type === "message") {
         if (ws && h && typeof h.message === "function") await h.message(ws, ev.data, env);
+      } else if (ev.type === "wake") {
+        if (h && typeof h.wake === "function") await h.wake(ev.data, env);
       } else if (ev.type === "close") {
         sockets.delete(ev.id);
         if (ws) {

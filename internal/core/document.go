@@ -1,7 +1,10 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
@@ -20,7 +24,23 @@ import (
 var (
 	ErrNotDocs          = fmt.Errorf("%w: flat is not a docs flat", ErrInvalid)
 	ErrDocumentNotFound = fmt.Errorf("%w: no such document", store.ErrNotFound)
+	// ErrEditConflict refuses a live edit whose guard no longer matches: the
+	// find text or block changed, is missing or ambiguous. Nothing changed.
+	ErrEditConflict = errors.New("live edit not applied")
+	// ErrDocumentCapacity refuses a live edit that would exceed a document
+	// or history limit. Nothing changed.
+	ErrDocumentCapacity = errors.New("document capacity")
 )
+
+// documentEditRate bounds live edits per flat (per second, burst twice
+// that), well under the docs app's per-room human update rate.
+const documentEditRate = 10
+
+// MaxDocumentEditOps is the largest number of operations in one live edit.
+const MaxDocumentEditOps = 32
+
+// maxDocumentEditBody matches the docs app's edit request limit.
+const maxDocumentEditBody = 512 << 10
 
 // DocumentConflict describes retained private recovery text without including it.
 type DocumentConflict struct {
@@ -35,16 +55,34 @@ type Document struct {
 	Format     int                `json:"format"`
 	Doc        string             `json:"doc"`
 	Markdown   string             `json:"markdown"`
+	Hash       string             `json:"hash,omitempty"`
+	Blocks     []DocumentBlock    `json:"blocks,omitempty"`
 	Epoch      string             `json:"epoch,omitempty"`
 	Chain      string             `json:"chain,omitempty"`
 	Seq        int64              `json:"seq"`
 	Source     string             `json:"source"`
 }
 
+// DocumentBlock is one Markdown block of live text with the guard hash a
+// live edit names it by.
+type DocumentBlock struct {
+	Hash    string `json:"hash"`
+	Kind    string `json:"kind"`
+	Level   int    `json:"level,omitempty"`
+	Line    int    `json:"line"`
+	Preview string `json:"preview"`
+}
+
 // GetDocument prefers the running docs version, including collaborative edits.
 // It never starts a worker just to read an unpublished Draft.
 func (s *Service) GetDocument(ctx context.Context, slugName, doc string) (Document, error) {
-	return s.getDocument(ctx, slugName, doc, 0)
+	return s.getDocument(ctx, slugName, doc, 0, false)
+}
+
+// GetDocumentBlocks is GetDocument plus the live block outline used to guard
+// live edits. A Draft has no blocks: it cannot be edited live.
+func (s *Service) GetDocumentBlocks(ctx context.Context, slugName, doc string) (Document, error) {
+	return s.getDocument(ctx, slugName, doc, 0, true)
 }
 
 // GetDocumentConflict reads preserved text through the trusted host route only.
@@ -52,10 +90,10 @@ func (s *Service) GetDocumentConflict(ctx context.Context, slugName, doc string,
 	if generation < 1 {
 		return Document{}, invalidf("conflict must be a positive generation")
 	}
-	return s.getDocument(ctx, slugName, doc, generation)
+	return s.getDocument(ctx, slugName, doc, generation, false)
 }
 
-func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflict int64) (Document, error) {
+func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflict int64, blocks bool) (Document, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
@@ -72,6 +110,8 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflic
 		path := "/_docs/api/document?doc=" + url.QueryEscape(doc)
 		if conflict != 0 {
 			path = fmt.Sprintf("/_docs/api/conflict?doc=%s&generation=%d", url.QueryEscape(doc), conflict)
+		} else if blocks {
+			path += "&blocks=1"
 		}
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal"+path, nil)
 		rec := httptest.NewRecorder()
@@ -150,5 +190,164 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflic
 	if err != nil {
 		return Document{}, err
 	}
-	return Document{Format: 1, Doc: doc, Markdown: string(b), Source: "draft"}, nil
+	sum := sha256.Sum256(b)
+	return Document{Format: 1, Doc: doc, Markdown: string(b), Hash: hex.EncodeToString(sum[:]), Source: "draft"}, nil
+}
+
+// DocumentEditOp is one guarded live edit operation. The docs app validates
+// and resolves it; see guide topic.docs.
+type DocumentEditOp struct {
+	Op         string  `json:"op" jsonschema:"replace, replace_block, delete_block or insert"`
+	Find       string  `json:"find,omitempty" jsonschema:"replace: exact text to find; must occur once unless nth is given"`
+	With       *string `json:"with,omitempty" jsonschema:"replace: replacement text (empty deletes the found text); replace_block: new Markdown for the block"`
+	Block      string  `json:"block,omitempty" jsonschema:"replace_block, delete_block: a block hash from get_document blocks"`
+	Text       string  `json:"text,omitempty" jsonschema:"insert: Markdown to insert as one or more blocks"`
+	Before     string  `json:"before,omitempty" jsonschema:"insert: put text before this block hash"`
+	After      string  `json:"after,omitempty" jsonschema:"insert: put text after this block hash"`
+	SectionEnd string  `json:"section_end,omitempty" jsonschema:"insert: put text at the end of the section this heading block hash starts"`
+	At         string  `json:"at,omitempty" jsonschema:"insert: start or end of the document"`
+	Nth        int     `json:"nth,omitempty" jsonschema:"pick the nth (1-based) match when the find text or block hash occurs more than once"`
+}
+
+// DocumentEditChange summarizes one applied operation, without its text.
+type DocumentEditChange struct {
+	Op       string `json:"op"`
+	Line     int    `json:"line" jsonschema:"line where the operation applied, in the text before it"`
+	Removed  int    `json:"removed" jsonschema:"characters removed (UTF-16 code units)"`
+	Inserted int    `json:"inserted" jsonschema:"characters inserted (UTF-16 code units)"`
+}
+
+// DocumentEdit is the result of a live edit.
+type DocumentEdit struct {
+	Format       int                  `json:"format"`
+	Doc          string               `json:"doc"`
+	SeqBefore    int64                `json:"seq_before"`
+	Seq          int64                `json:"seq"`
+	Chain        string               `json:"chain"`
+	Hash         string               `json:"hash"`
+	Bytes        int64                `json:"bytes"`
+	Changed      bool                 `json:"changed"`
+	ID           string               `json:"id,omitempty"`
+	Ops          []DocumentEditChange `json:"ops"`
+	Source       string               `json:"source"`
+	PublicNotice string               `json:"public_notice,omitempty"`
+}
+
+// LiveEditPublicNotice is attached to every live edit result of a Public flat.
+const LiveEditPublicNotice = PublicAccessNotice + " This edit is already live there."
+
+// UpdateDocument applies guarded operations to the live Markdown of a
+// running docs version, through the same committed path as people's edits.
+// All operations apply or none do. It never publishes a version.
+func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops []DocumentEditOp, ifHash string, via Via) (DocumentEdit, error) {
+	if len(ops) == 0 || len(ops) > MaxDocumentEditOps {
+		return DocumentEdit{}, invalidf("ops must hold 1 to %d operations", MaxDocumentEditOps)
+	}
+	if doc != "" && (!fs.ValidPath(doc) || !bundle.IsMarkdown(doc)) {
+		return DocumentEdit{}, invalidf("doc must be a relative .md or .markdown path")
+	}
+	body, err := json.Marshal(struct {
+		Ops    []DocumentEditOp `json:"ops"`
+		IfHash string           `json:"if_hash,omitempty"`
+	}{ops, ifHash})
+	if err != nil {
+		return DocumentEdit{}, err
+	}
+	if len(body) > maxDocumentEditBody {
+		return DocumentEdit{}, fmt.Errorf("%w: edit request is %d bytes, above %d; split it into smaller calls", ErrDocumentCapacity, len(body), maxDocumentEditBody)
+	}
+	unlock := s.lock(slugName)
+	defer unlock()
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
+		return DocumentEdit{}, err
+	}
+	lf := s.state(slugName)
+	live := lf.cur.Load()
+	if live == nil || contenttype.FromManifest(live.version.Manifest) != contenttype.Docs {
+		draft, err := s.st.GetDraft(ctx, slugName)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return DocumentEdit{}, err
+		}
+		// A website (live or Draft) is not a document; a docs Draft or an
+		// empty flat only lacks a running docs version.
+		if docsDraft := err == nil && contenttype.FromManifest(draft.Manifest) == contenttype.Docs; !docsDraft && (live != nil || err == nil) {
+			return DocumentEdit{}, ErrNotDocs
+		}
+		return DocumentEdit{}, fmt.Errorf("%w: no docs version is running, so there is no live text to edit; use save_document and publish", ErrNotDeployed)
+	}
+	if !lf.editLimiter.allow() {
+		return DocumentEdit{}, fmt.Errorf("%w: too many live edits of this flat; wait a second and retry", ErrUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://docs.internal/_docs/api/edit?doc="+url.QueryEscape(doc), bytes.NewReader(body))
+	req = trustedAccess(req, false)
+	req.Header.Set("X-Flats-Host-Op", "edit")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	live.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		var refusal struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &refusal)
+		msg := strings.TrimSpace(refusal.Message)
+		if len(msg) > 500 {
+			msg = msg[:500]
+		}
+		switch {
+		case rec.Code == http.StatusNotFound:
+			return DocumentEdit{}, ErrDocumentNotFound
+		case refusal.Code == "edit_conflict":
+			return DocumentEdit{}, fmt.Errorf("%w: %s", ErrEditConflict, msg)
+		case refusal.Code == "invalid":
+			return DocumentEdit{}, invalidf("%s", msg)
+		case refusal.Code == "capacity":
+			return DocumentEdit{}, fmt.Errorf("%w: %s", ErrDocumentCapacity, msg)
+		case rec.Code == http.StatusForbidden:
+			return DocumentEdit{}, fmt.Errorf("%w: the docs app refused the host edit", ErrForbidden)
+		}
+		return DocumentEdit{}, fmt.Errorf("%w: docs app returned HTTP %d; the edit was not applied", ErrUnavailable, rec.Code)
+	}
+	var out DocumentEdit
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		return DocumentEdit{}, fmt.Errorf("docs app edit response: %w", err)
+	}
+	if out.Format != 1 || !fs.ValidPath(out.Doc) || !bundle.IsMarkdown(out.Doc) {
+		return DocumentEdit{}, fmt.Errorf("docs app returned an invalid edit response")
+	}
+	out.Source = "live"
+	if f.Visibility.Public() {
+		out.PublicNotice = LiveEditPublicNotice
+	}
+	if out.Changed {
+		s.Event(ctx, slugName, "info", "document", editSummary(out, via), map[string]any{
+			"doc": out.Doc, "id": out.ID, "seq_before": out.SeqBefore, "seq": out.Seq, "hash": out.Hash, "ops": out.Ops,
+		})
+	}
+	return out, nil
+}
+
+// editSummary describes a live edit for the event log without its text.
+func editSummary(e DocumentEdit, via Via) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "live edit of %s via %s: %d op(s)", e.Doc, via, len(e.Ops))
+	for i, op := range e.Ops {
+		if i == 8 {
+			fmt.Fprintf(&b, ", …")
+			break
+		}
+		sep := ", "
+		if i == 0 {
+			sep = " ("
+		}
+		fmt.Fprintf(&b, "%s%s at line %d -%d/+%d", sep, op.Op, op.Line, op.Removed, op.Inserted)
+	}
+	if len(e.Ops) > 0 {
+		b.WriteString(")")
+	}
+	fmt.Fprintf(&b, "; seq %d -> %d; now %d bytes", e.SeqBefore, e.Seq, e.Bytes)
+	return b.String()
 }
