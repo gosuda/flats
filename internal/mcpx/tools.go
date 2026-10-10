@@ -504,7 +504,7 @@ func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta
 	if err != nil {
 		return nil, SaveOut{}, toolErr(err, "read get_draft to inspect the saved content")
 	}
-	out := SaveOut{Version: versionInfo(v, f.LiveVersion), Draft: draftInfo(draft), Warnings: bundle.Lint(files)}
+	out := SaveOut{Version: versionInfo(v, f.LiveVersion), Draft: draftInfo(draft), Warnings: t.lint(files)}
 	text := fmt.Sprintf("Saved Private Draft revision %d of %s (%d files, %d bytes). Current version is unchanged (%s).", v.Revision, slug, v.Files, v.Size, liveText(f.LiveVersion))
 	warnings := warningsText(out.Warnings)
 	if !deploy {
@@ -517,6 +517,16 @@ func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta
 	d := pendingDeploy(res)
 	out.Deploy = &d
 	return result(text+"\n"+deployText(slug, d, "Publish requested")+warnings, out), out, nil
+}
+
+// lint checks the files as SaveVersion stored them: it normalizes its input
+// with bundle.FromFiles again, which can strip a second wrapping directory.
+func (t *tools) lint(files []bundle.File) []bundle.Problem {
+	saved, err := bundle.FromFiles(files, bundle.Limits{MaxBytes: t.svc.UploadLimit()})
+	if err != nil {
+		return nil
+	}
+	return bundle.Lint(saved)
 }
 
 // warningsText lists save warnings after the save summary.

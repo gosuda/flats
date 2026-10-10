@@ -188,6 +188,29 @@ func TestLintMissingReferences(t *testing.T) {
 	expectClean(t, with(File{Path: "index.html", Data: page(`<base href="/v2/"><script src="main.js"></script>`, "")}))
 }
 
+func TestLintBaseAndImportMapPrefixes(t *testing.T) {
+	// An external <base> makes relative scripts third-party.
+	expectWarning(t, with(File{Path: "index.html", Data: page(`<base href="https://cdn.example.com/"><script src="app.js"></script>`, "")}),
+		"index.html", "https://cdn.example.com/app.js has no version")
+	expectClean(t, with(File{Path: "index.html", Data: page(`<base href="https://cdn.jsdelivr.net/npm/lit@3.2.1/"><script src="index.js"></script>`, "")}))
+	// An import-map prefix is not a fetched file; its exact targets are.
+	prefix := `<script type="importmap">{"imports":{"lib/":"/vendor/lib/","app":"/vendor/app.js"}}</script>`
+	expectClean(t, with(File{Path: "index.html", Data: page(prefix, "")}, File{Path: "vendor/lib/main.js"}, File{Path: "vendor/app.js"}))
+	expectWarning(t, with(File{Path: "index.html", Data: page(prefix, "")}, File{Path: "vendor/lib/main.js"}), "index.html", "no file vendor/app.js")
+	expectWarning(t, with(File{Path: "index.html", Data: page(`<script type="importmap">{"imports":{"cdn/":"https://esm.sh/"}}</script>`, "")}),
+		"index.html", "https://esm.sh/ has no version")
+}
+
+func TestLintHTMLFallbacksOnlyForPages(t *testing.T) {
+	files := func(b string) []File {
+		return with(File{Path: "index.html", Data: page("", b)}, File{Path: "about.html", Data: []byte("<p>About</p>")}, File{Path: "docs/index.html", Data: []byte("<p>Docs</p>")})
+	}
+	expectWarning(t, files(`<script src="/about"></script>`), "index.html", "no file about")
+	expectWarning(t, files(`<img src="docs/">`), "index.html", "no file docs")
+	expectWarning(t, files(`<img src="/">`), "index.html", "no file /")
+	expectClean(t, files(`<iframe src="/about"></iframe><iframe src="docs/"></iframe><iframe src="/"></iframe><script src="/about.html" type="text/plain"></script>`))
+}
+
 func TestLintMissingReferencesSPAAndServer(t *testing.T) {
 	spa := with(File{Path: "flats.json", Data: []byte(`{"spa":true,"screenshot":"screenshot.png"}`)},
 		File{Path: "index.html", Data: page("", `<iframe src="/settings"></iframe><script src="/assets/gone.js"></script>`)})

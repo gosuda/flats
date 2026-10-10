@@ -57,6 +57,13 @@ func TestSaveWarningsDoNotBlock(t *testing.T) {
 		t.Fatalf("docs bundle: %s %+v", text, out.Warnings)
 	}
 
+	// Saving strips up to two wrapping directories; the warnings describe
+	// the files as saved.
+	out = SaveOut{}
+	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "wrapped", "files": []any{file("dist/site/index.html", sloppy, "")}}, &out); failed || len(out.Warnings) == 0 || out.Warnings[1].Path != "index.html" {
+		t.Fatalf("doubly wrapped upload: %s %+v", text, out.Warnings)
+	}
+
 	dir := filepath.Join(t.TempDir(), "dist")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

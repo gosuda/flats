@@ -98,8 +98,10 @@ func (l *linter) document(f File, entry bool) {
 		refMore int
 		seen    = map[ref]bool{}
 	)
-	// A <base href> changes how every reference resolves; skip those checks.
-	checkFiles := l.static && !hasBase(f.Data)
+	// A <base href> changes how every reference resolves: skip the file
+	// checks, and resolve code URLs against an external base.
+	base, hasBase := baseHref(f.Data)
+	checkFiles := l.static && !hasBase
 	check := func(r ref) {
 		r.url = strings.TrimSpace(r.url)
 		if r.url == "" || seen[r] {
@@ -108,7 +110,13 @@ func (l *linter) document(f File, entry bool) {
 		if len(seen) < maxSeen {
 			seen[r] = true
 		}
-		for _, w := range []Problem{l.external(f.Path, r), l.missing(f.Path, r, entry, checkFiles)} {
+		code := r
+		if base != nil {
+			if u, err := url.Parse(r.url); err == nil {
+				code.url = base.ResolveReference(u).String()
+			}
+		}
+		for _, w := range []Problem{l.external(f.Path, code), l.missing(f.Path, r, entry, checkFiles)} {
 			switch {
 			case w.Message == "":
 			case len(refWarn) < maxWarnings:
@@ -171,7 +179,7 @@ func (l *linter) document(f File, entry bool) {
 			if strings.EqualFold(strings.TrimSpace(attrs["type"]), "importmap") {
 				inImportMap = tt == html.StartTagToken
 			}
-			check(ref{attrs["src"], codeAsset})
+			check(ref{url: attrs["src"], kind: codeAsset})
 		case "link":
 			icon = icon || (rel["icon"] && strings.TrimSpace(attrs["href"]) != "")
 			kind := plainAsset
@@ -180,22 +188,22 @@ func (l *linter) document(f File, entry bool) {
 				kind = codeAsset
 			}
 			if rel["stylesheet"] || rel["icon"] || rel["apple-touch-icon"] || rel["manifest"] || rel["preload"] || rel["modulepreload"] || rel["mask-icon"] {
-				check(ref{attrs["href"], kind})
+				check(ref{url: attrs["href"], kind: kind})
 			}
 		case "iframe":
-			check(ref{attrs["src"], pageRef})
+			check(ref{url: attrs["src"], kind: pageRef})
 		case "img", "source", "video", "audio", "track", "embed", "input":
 			if tag != "input" || strings.EqualFold(attrs["type"], "image") {
-				check(ref{attrs["src"], plainAsset})
+				check(ref{url: attrs["src"], kind: plainAsset})
 			}
 			for _, u := range srcset(attrs["srcset"]) {
-				check(ref{u, plainAsset})
+				check(ref{url: u, kind: plainAsset})
 			}
 			if tag == "video" {
-				check(ref{attrs["poster"], plainAsset})
+				check(ref{url: attrs["poster"], kind: plainAsset})
 			}
 		case "object":
-			check(ref{attrs["data"], plainAsset})
+			check(ref{url: attrs["data"], kind: plainAsset})
 		}
 	}
 	switch t := strings.Join(strings.Fields(titleText.String()), " "); {
@@ -222,23 +230,25 @@ func (l *linter) document(f File, entry bool) {
 
 var baseTag = regexp.MustCompile(`(?i)<base[\s/>]`)
 
-// hasBase reports whether a document has a <base> element with an href.
-func hasBase(data []byte) bool {
+// baseHref finds the first <base> element with an href. found reports
+// whether there is one; ext is its URL when it points at another origin.
+func baseHref(data []byte) (ext *url.URL, found bool) {
 	if !baseTag.Match(data) {
-		return false
+		return nil, false
 	}
 	z := html.NewTokenizer(bytes.NewReader(data))
 	for {
 		switch z.Next() {
 		case html.ErrorToken:
-			return false
+			return nil, false
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, hasAttr := z.TagName()
 			for string(name) == "base" && hasAttr {
 				var k, v []byte
 				k, v, hasAttr = z.TagAttr()
-				if string(k) == "href" && strings.TrimSpace(string(v)) != "" {
-					return true
+				if href := strings.TrimSpace(string(v)); string(k) == "href" && href != "" {
+					u, _ := externalURL(href)
+					return u, true
 				}
 			}
 		}
@@ -254,8 +264,9 @@ const (
 )
 
 type ref struct {
-	url  string
-	kind assetKind
+	url    string
+	kind   assetKind
+	prefix bool // an import-map prefix ("lib/"), not a fetched file
 }
 
 // placeholderTitles are scaffold defaults that do not name a page.
@@ -353,7 +364,7 @@ func exactVersion(escapedPath string) (pinned bool, tag string) {
 func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 	raw := r.url
 	lower := strings.ToLower(raw)
-	if !enabled || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
+	if !enabled || r.prefix || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
 		return Problem{}
 	}
 	if u, err := url.Parse(raw); err != nil || u.Scheme != "" || strings.HasPrefix(lower, "data:") {
@@ -381,7 +392,7 @@ func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 		from = "/"
 	}
 	rel := resolve(from)
-	if l.resolves(rel, dir) {
+	if l.resolves(rel, dir, r.kind == pageRef) {
 		return Problem{}
 	}
 	// A single-page app serves its entry HTML for unknown extensionless
@@ -393,17 +404,21 @@ func (l *linter) missing(page string, r ref, entry, enabled bool) Problem {
 		"add the file to the upload, or fix the path (paths are relative to the page; a leading / starts at the flat root)")
 }
 
-func (l *linter) resolves(rel string, dir bool) bool {
-	if rel == "" || rel == "." {
-		return true // the flat root serves the entry
-	}
+// resolves reports whether the static server answers rel with a file. Its
+// HTML fallbacks (the entry at the root, dir/index.html, pretty .html URLs)
+// count only for page references: served as a script, stylesheet or image,
+// HTML is refused by the browser.
+func (l *linter) resolves(rel string, dir, page bool) bool {
 	if rel == ManifestName {
 		return false // flats.json is never served
 	}
-	if !dir && l.index[rel] {
+	if !dir && rel != "" && rel != "." && l.index[rel] {
 		return true
 	}
-	if l.index[path.Join(rel, "index.html")] {
+	if !page {
+		return false
+	}
+	if rel == "" || rel == "." || l.index[path.Join(rel, "index.html")] {
 		return true
 	}
 	return !dir && !strings.Contains(path.Base(rel), ".") && l.index[rel+".html"]
@@ -426,12 +441,15 @@ func importMapRefs(data []byte) []ref {
 		return nil
 	}
 	var out []ref
-	for _, v := range m.Imports {
-		out = append(out, ref{v, codeAsset})
+	add := func(specifier, v string) {
+		out = append(out, ref{url: v, kind: codeAsset, prefix: strings.HasSuffix(specifier, "/")})
+	}
+	for k, v := range m.Imports {
+		add(k, v)
 	}
 	for _, s := range m.Scopes {
-		for _, v := range s {
-			out = append(out, ref{v, codeAsset})
+		for k, v := range s {
+			add(k, v)
 		}
 	}
 	return out
