@@ -263,8 +263,8 @@
         "purpose": "Reading surface."
       },
       "source": {
-        "displayName": "Markdown source",
-        "purpose": "CodeMirror editing pane."
+        "displayName": "Code",
+        "purpose": "Inline code, code blocks and table source while editing."
       }
     },
     "shadows": [],
@@ -287,14 +287,6 @@
       "css": ".ds-button{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;font-size:16px;color:var(--ink,#242924);background:transparent;border:1px solid var(--line,#dfe3dc);border-radius:5px;padding:7px 13px;cursor:pointer;}.ds-button:hover{background:var(--active,#f3f6f1)}.ds-button:focus-visible{outline:2px solid var(--accent,#356649);outline-offset:3px;}.ds-button:disabled{opacity:.55;cursor:default}"
     },
     {
-      "name": "View modes",
-      "kind": "nav",
-      "refersTo": "mode-selected",
-      "description": "Three explicit views with a pressed selection.",
-      "html": "<div class=\"ds-modes\" role=\"group\" aria-label=\"Document view\"><button aria-pressed=\"false\">Edit</button><button aria-pressed=\"true\">Split</button><button aria-pressed=\"false\">Preview</button></div>",
-      "css": ".ds-modes{display:flex;gap:4px}.ds-modes button{font-family:-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;font-size:16px;color:var(--ink,#242924);background:transparent;border:1px solid var(--line,#dfe3dc);border-radius:5px;padding:7px 13px;cursor:pointer;font-size:12px;border-color:transparent;padding:6px 11px}.ds-modes button:hover{background:var(--active,#f3f6f1)}.ds-modes button[aria-pressed=\"true\"]{color:var(--accent,#356649);background:var(--active,#f3f6f1)}.ds-modes button:focus-visible{outline:2px solid var(--accent,#356649);outline-offset:3px;}"
-    },
-    {
       "name": "Current document",
       "kind": "nav",
       "refersTo": "document-current",
@@ -305,22 +297,22 @@
   ],
   "narrative": {
     "northStar": "Operate / Read",
-    "overview": "Operate / Read is a quiet document workspace: compact controls frame a spacious reading surface. System typography, restrained green, and thin dividers keep Markdown and collaboration state legible. The same visual language serves editing and the public rendered read-only view.",
+    "overview": "Operate / Read is a quiet document workspace: compact controls frame a spacious reading surface. System typography, restrained green, and thin dividers keep Markdown and collaboration state legible. Editing and reading share one view: editors edit the rendered document in place, and the public read-only view shows the same surface without an editor.",
     "keyCharacteristics": [
       "System typography and a restrained green accent.",
       "Flat surfaces separated by borders and tonal contrast.",
       "Persistent collaboration and save state above the document.",
-      "Responsive panes with a 16px mobile gutter."
+      "A single centered reading surface with a 16px mobile gutter."
     ],
     "rules": [
       {
         "name": "Restrained Accent",
-        "body": "Use green for links, saved state, selected modes and focus; keep document text neutral.",
+        "body": "Use green for links, saved state and focus; keep document text neutral.",
         "section": "colors"
       },
       {
-        "name": "Remaining Height",
-        "body": "Keep the header and toolbar stable while the document panes consume the remaining viewport height.",
+        "name": "Single View",
+        "body": "Keep the header stable while one document surface consumes the remaining viewport height. There are no view modes: editors edit the rendered document in place.",
         "section": "layout"
       }
     ],
@@ -328,12 +320,12 @@
       "Do retain system fonts and automatic light/dark color-scheme support.",
       "Do keep mobile content gutters at 16px and avatar initials legible.",
       "Do use named controls, visible keyboard focus, and explicit selected states.",
-      "Do let editor and preview fill the remaining viewport height and scroll within their panes."
+      "Do let the document surface fill the remaining viewport height and scroll as one page, with the footer after the document."
     ],
     "donts": [
       "Don't add decorative shadows or a display font to the document workspace.",
-      "Don't communicate saved state or selected mode through color alone.",
-      "Don't expose editing modes in the public read-only view."
+      "Don't communicate saved state through color alone.",
+      "Don't reintroduce separate edit, split or preview modes."
     ]
   }
 }

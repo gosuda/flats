@@ -1,0 +1,306 @@
+// Turns the descriptors from live.js into CodeMirror decorations.
+import {
+  Decoration,
+  EditorView,
+  keymap,
+  ViewPlugin,
+  WidgetType,
+} from "@codemirror/view";
+import {
+  EditorSelection,
+  Prec,
+  StateEffect,
+  StateField,
+} from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
+import {
+  activeLines,
+  linkAt,
+  liveDecorations,
+  referenceDefinitions,
+  tableBlocks,
+} from "./live.js";
+
+class Bullet extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-bullet";
+    span.textContent = "•";
+    return span;
+  }
+}
+
+// Shows a label in place of syntax: a list number or a decoded entity.
+class Label extends WidgetType {
+  constructor(text) {
+    super();
+    this.text = text;
+  }
+  eq(other) {
+    return other.text === this.text;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.textContent = this.text;
+    return span;
+  }
+}
+
+class Rule extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-rule";
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+}
+
+class ImageWidget extends WidgetType {
+  constructor(src, alt) {
+    super();
+    this.src = src;
+    this.alt = alt;
+  }
+  eq(other) {
+    return other.src === this.src && other.alt === this.alt;
+  }
+  toDOM() {
+    // An unsafe or unresolvable source keeps its alt text instead.
+    if (!this.src) {
+      const span = document.createElement("span");
+      span.className = "cm-image-missing";
+      span.textContent = this.alt || "image";
+      return span;
+    }
+    const img = document.createElement("img");
+    img.className = "cm-image";
+    img.src = this.src;
+    img.alt = this.alt;
+    img.loading = "lazy";
+    return img;
+  }
+}
+
+// A rendered table. Clicking it moves the cursor into the table, which then
+// shows its Markdown source for editing.
+class TableWidget extends WidgetType {
+  constructor(source, context, from, render) {
+    super();
+    this.source = source;
+    this.context = context;
+    this.from = from;
+    this.render = render;
+  }
+  eq(other) {
+    return (
+      other.source === this.source &&
+      other.context === this.context &&
+      other.from === this.from
+    );
+  }
+  toDOM(view) {
+    const div = document.createElement("div");
+    div.className = "cm-table-widget";
+    // render is markdown-it with raw HTML disabled.
+    // Rendering with the document's reference definitions resolves its
+    // reference links; definitions themselves render nothing.
+    div.innerHTML = this.render(this.source + "\n\n" + this.context);
+    // Links follow the editor's policy: Cmd/Ctrl-click opens one (its href
+    // was already resolved and validated by the renderer), and any other
+    // click edits the table.
+    div.addEventListener("click", (event) => {
+      const link = event.target.closest?.("a[href]");
+      if (!link) return;
+      event.preventDefault();
+      if (event.metaKey || event.ctrlKey)
+        window.open(link.href, "_blank", "noopener,noreferrer");
+    });
+    div.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      if ((event.metaKey || event.ctrlKey) && event.target.closest?.("a[href]"))
+        return;
+      view.focus();
+      view.dispatch({ selection: EditorSelection.cursor(this.from) });
+    });
+    return div;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+// Tables span lines, so they are replaced from a state field: a view plugin
+// may not replace line breaks. The field tracks focus through an effect, so a
+// table renders again when the editor loses focus.
+const setFocus = StateEffect.define();
+// The document's reference definitions, rescanned when the text changes.
+function definitions(links) {
+  return StateField.define({
+    create: (state) => referenceDefinitions(state.doc, links),
+    update: (value, tr) =>
+      tr.docChanged ? referenceDefinitions(tr.state.doc, links) : value,
+  });
+}
+
+function tables(render, refs) {
+  const build = (state, focused) =>
+    Decoration.set(
+      tableBlocks(state, focused, state.field(refs))
+        .filter((t) => !t.active)
+        .map((t) =>
+          Decoration.replace({
+            widget: new TableWidget(t.source, t.context, t.from, render),
+            block: true,
+          }).range(t.from, t.to),
+        ),
+    );
+  const field = StateField.define({
+    create: (state) => ({ focused: false, decorations: build(state, false) }),
+    update(value, tr) {
+      let focused = value.focused;
+      for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
+      if (
+        focused !== value.focused ||
+        tr.docChanged ||
+        tr.selection ||
+        syntaxTree(tr.startState) !== syntaxTree(tr.state)
+      )
+        return { focused, decorations: build(tr.state, focused) };
+      return value;
+    },
+    provide: (f) => EditorView.decorations.from(f, (v) => v.decorations),
+  });
+  return [
+    field,
+    EditorView.focusChangeEffect.of((state, focusing) => setFocus.of(focusing)),
+  ];
+}
+
+const hidden = Decoration.replace({}),
+  bullet = Decoration.replace({ widget: new Bullet() }),
+  rule = Decoration.replace({ widget: new Rule() });
+
+// livePreview renders Markdown in place. links holds the renderer's link
+// rules (markdown.js), resolve makes an accepted URL absolute against the
+// document, and render turns a Markdown table into safe HTML.
+export function livePreview(links, resolve, render) {
+  const refs = definitions(links);
+  const build = (view) => {
+    const active = activeLines(view.state, view.hasFocus),
+      ranges = [];
+    for (const d of liveDecorations(
+      view.state,
+      view.visibleRanges,
+      active,
+      links,
+      view.state.field(refs),
+    )) {
+      switch (d.kind) {
+        case "line":
+          ranges.push(Decoration.line({ class: d.cls }).range(d.from));
+          break;
+        case "mark":
+          ranges.push(
+            Decoration.mark(
+              d.href === undefined
+                ? { class: d.cls }
+                : {
+                    class: d.cls,
+                    attributes: {
+                      "data-href": d.href,
+                      title: "Open: Ctrl/⌘-click, or Ctrl/⌘-Enter",
+                    },
+                  },
+            ).range(d.from, d.to),
+          );
+          break;
+        case "hide":
+          ranges.push(hidden.range(d.from, d.to));
+          break;
+        case "bullet":
+          ranges.push(bullet.range(d.from, d.to));
+          break;
+        case "number":
+        case "text":
+          ranges.push(
+            Decoration.replace({ widget: new Label(d.label) }).range(
+              d.from,
+              d.to,
+            ),
+          );
+          break;
+        case "rule":
+          ranges.push(rule.range(d.from, d.to));
+          break;
+        case "image":
+          ranges.push(
+            Decoration.replace({
+              widget: new ImageWidget(resolve(d.src), d.alt),
+            }).range(d.from, d.to),
+          );
+          break;
+      }
+    }
+    return Decoration.set(ranges, true);
+  };
+  return [
+    refs,
+    tables(render, refs),
+    ViewPlugin.fromClass(
+      class {
+        constructor(view) {
+          this.decorations = build(view);
+        }
+        update(u) {
+          if (
+            u.docChanged ||
+            u.viewportChanged ||
+            u.selectionSet ||
+            u.focusChanged ||
+            syntaxTree(u.startState) !== syntaxTree(u.state)
+          )
+            this.decorations = build(u.view);
+        }
+      },
+      { decorations: (p) => p.decorations },
+    ),
+    // Ctrl/Cmd-Enter opens the link under the cursor, for keyboard users;
+    // elsewhere it keeps its usual meaning.
+    Prec.high(
+      keymap.of([
+        {
+          key: "Mod-Enter",
+          run(view) {
+            const sel = view.state.selection.main;
+            if (!sel.empty) return false;
+            const href = resolve(
+              linkAt(view.state, sel.head, links, view.state.field(refs)),
+            );
+            if (!href) return false;
+            window.open(href, "_blank", "noopener,noreferrer");
+            return true;
+          },
+        },
+      ]),
+    ),
+    // Cmd/Ctrl-click opens a link; a plain click places the cursor to edit it.
+    EditorView.domEventHandlers({
+      click(event) {
+        if (!(event.metaKey || event.ctrlKey)) return false;
+        const link = event.target.closest?.("[data-href]");
+        if (!link) return false;
+        const href = resolve(link.dataset.href);
+        if (!href) return false;
+        event.preventDefault();
+        window.open(href, "_blank", "noopener,noreferrer");
+        return true;
+      },
+    }),
+  ];
+}

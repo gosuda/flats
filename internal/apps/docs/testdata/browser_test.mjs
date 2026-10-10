@@ -18,15 +18,12 @@ async function wait(check, message) {
   }
   throw new Error(message);
 }
+// The live preview hides Markdown syntax in the DOM, so read the editor's
+// own document (EditorView.findFromDOM, without importing the bundle).
 async function editorText(page) {
-  return page.locator(".cm-content").evaluate((el) => {
-    const copy = el.cloneNode(true);
-    for (const cursor of copy.querySelectorAll(".cm-ySelectionCaret"))
-      cursor.remove();
-    return [...copy.querySelectorAll(".cm-line")]
-      .map((line) => line.textContent)
-      .join("\n");
-  });
+  return page
+    .locator(".cm-content")
+    .evaluate((el) => el.cmTile.root.view.state.doc.toString());
 }
 async function open(name, options = {}) {
   const context = await browser.newContext({
@@ -162,6 +159,29 @@ try {
       (await a.locator("#status").innerText()) === "Saved",
     "offline changes not synchronized",
   );
+  // One view: no mode controls, and the heading renders in place. Its "# "
+  // is hidden away from the cursor and shown on the cursor's line.
+  assert.equal(
+    await a.locator("[data-mode], #modes, .toolbar, #preview").count(),
+    0,
+    "mode controls still rendered",
+  );
+  const heading = a.locator(".cm-line.cm-h1");
+  await a.locator(".cm-content").blur();
+  await wait(
+    async () => (await heading.innerText()) === "Shared",
+    "heading syntax not hidden",
+  );
+  await heading.click();
+  await wait(
+    async () => (await heading.innerText()) === "# Shared",
+    "heading syntax not revealed on the cursor line",
+  );
+  assert.equal(
+    await a.locator("#page footer.powered a").getAttribute("href"),
+    "https://github.com/gosuda/flats",
+  );
+  await a.locator(".cm-content").blur();
   await a.screenshot({
     path: path.join(screenshots, "desktop.png"),
     fullPage: true,
@@ -169,7 +189,6 @@ try {
   const mobile = await open("Mobile", {
     viewport: { width: 390, height: 844 },
   });
-  await mobile.locator('[data-mode="preview"]').click();
   await mobile.screenshot({
     path: path.join(screenshots, "mobile.png"),
     fullPage: true,
@@ -189,7 +208,7 @@ try {
   await publicPage.goto(url);
   await wait(
     async () =>
-      (await publicPage.locator("#preview").innerText()).includes(
+      (await publicPage.locator("#content").innerText()).includes(
         "Offline kept",
       ),
     "public live view missing",
@@ -211,14 +230,12 @@ try {
     "brand or file name still rendered",
   );
   assert.equal(
-    await publicPage.locator(".toolbar").isVisible(),
-    false,
-    "public viewer shows an empty toolbar",
+    await publicPage.locator("[data-mode], #modes, .toolbar").count(),
+    0,
+    "public viewer shows mode controls",
   );
   assert.equal(
-    await publicPage
-      .locator("#preview footer.powered a")
-      .getAttribute("href"),
+    await publicPage.locator("#page footer.powered a").getAttribute("href"),
     "https://github.com/gosuda/flats",
   );
   await wait(
@@ -233,7 +250,7 @@ try {
   await b.keyboard.insertText("\nPublic live change");
   await wait(
     async () =>
-      (await publicPage.locator("#preview").innerText()).includes(
+      (await publicPage.locator("#content").innerText()).includes(
         "Public live change",
       ),
     "public viewer did not receive new edit",
@@ -243,17 +260,12 @@ try {
     path: path.join(screenshots, "dark.png"),
     fullPage: true,
   });
-  await mobile.locator('[data-mode="split"]').click();
-  await mobile.screenshot({
-    path: path.join(screenshots, "mobile-split.png"),
-    fullPage: true,
-  });
   assert.equal(
     await mobile.evaluate(
       () => document.documentElement.scrollHeight <= innerHeight,
     ),
     true,
-    "mobile panels overrun viewport",
+    "mobile page overruns viewport",
   );
   await publicPage.screenshot({
     path: path.join(screenshots, "readonly.png"),
@@ -272,7 +284,7 @@ try {
   await a.screenshot({path: path.join(screenshots, "conflict-notice.png"),fullPage: true});
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: independent contexts, concurrent convergence, remote cursors, Korean composition/emoji, local undo, persistence, offline reconnect, mobile, public read-only.",
+    "PASS: independent contexts, concurrent convergence, remote cursors, Korean composition/emoji, local undo, persistence, offline reconnect, single live-preview view, mobile, public read-only.",
   );
 } catch (error) {
   for (const [label, page] of [

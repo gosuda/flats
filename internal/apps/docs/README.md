@@ -66,7 +66,8 @@ A rejected mutation invalidates the cache for reload while keeping peers connect
 Permanent rejections send stable error codes and close only the sender with
 1008; transient failures drop the room with 1012. The provider stops retries,
 retains pending edits, disables editing and offers a Markdown download. Light/dark,
-mobile gutters, Split/Edit/Preview, presence, save state, a random
+mobile gutters, a single live-preview view (Markdown renders in place while
+editing; its syntax shows only on the cursor's lines), presence, save state, a random
 collaborator name (no join prompt) and a "Powered by Flats" footer at the end
 of the rendered document are included. The page shows document titles only,
 never file paths. UI decisions are recorded in `_web/DESIGN.md`.

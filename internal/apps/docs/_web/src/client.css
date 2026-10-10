@@ -162,58 +162,34 @@ main {
   display: flex;
   flex-direction: column;
 }
-.toolbar {
-  flex-shrink: 0;
-  height: 53px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  padding: 0 28px;
-  border-bottom: 1px solid var(--line);
-}
-#modes {
-  display: flex;
-  gap: 4px;
-}
-#modes button {
-  font-size: 12px;
-  border-color: transparent;
-  padding: 6px 11px;
-}
-#modes [aria-pressed="true"] {
-  color: var(--accent);
-  background: var(--active);
-}
-#panes {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+/* One view for reading and editing. The page scrolls; the editor and the
+   rendered document share the same reading surface and typography. */
+#page {
   flex: 1;
   min-height: 0;
-}
-#editor {
-  min-width: 0;
-  border-right: 1px solid var(--line);
-}
-#preview {
-  min-width: 0;
   overflow: auto;
+}
+.surface {
+  width: 100%;
+  max-width: 900px;
+  min-height: 100%;
+  margin: 0 auto;
   padding: 32px clamp(24px, 4vw, 64px) 72px;
+  display: flex;
+  flex-direction: column;
   font-size: 16px;
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
-#preview {
-  display: flex;
-  flex-direction: column;
-}
+#editor,
 #content {
   flex: 1 0 auto;
+  min-width: 0;
 }
 #content > :first-child {
   margin-top: 0;
 }
-/* Sits after the document inside the scrolling preview, so it only shows
+/* Sits after the document inside the scrolling page, so it only shows
    once the reader reaches the end. */
 .powered {
   margin-top: 64px;
@@ -223,30 +199,50 @@ main {
   color: var(--muted);
   text-align: center;
 }
-#preview h1 {
+#content h1,
+.cm-line.cm-h1 {
   font-size: 2rem;
   line-height: 1.25;
   letter-spacing: -0.025em;
+  font-weight: 700;
 }
-#preview h2 {
+#content h2,
+.cm-line.cm-h2 {
   font-size: 1.5rem;
   line-height: 1.35;
+  font-weight: 700;
+}
+#content h2 {
   margin-top: 1.8em;
 }
-#preview h3 {
+#content h3,
+.cm-line.cm-h3 {
   font-size: 1.15rem;
+  font-weight: 700;
+}
+#content h3 {
   margin-top: 1.6em;
 }
-#preview p,
-#preview ul,
-#preview ol {
+.cm-line.cm-h4,
+.cm-line.cm-h5,
+.cm-line.cm-h6 {
+  font-weight: 700;
+}
+#content p,
+#content ul,
+#content ol {
   max-width: 72ch;
 }
-#preview img {
+#content img,
+.cm-image {
   max-width: 100%;
   height: auto;
 }
-#preview pre {
+.cm-image {
+  display: inline-block;
+  vertical-align: bottom;
+}
+#content pre {
   padding: 16px;
   overflow: auto;
   background: var(--canvas);
@@ -254,43 +250,92 @@ main {
   font-size: 13px;
   line-height: 1.6;
 }
-#preview code {
+#content code,
+.cm-code,
+.cm-line.cm-codeblock,
+.cm-line.cm-table {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.88em;
 }
-#preview blockquote {
+.cm-code {
+  background: var(--canvas);
+  border-radius: 3px;
+  padding: 1px 3px;
+}
+.cm-line.cm-codeblock {
+  background: var(--canvas);
+  padding: 0 16px !important;
+  line-height: 1.6;
+}
+#content blockquote {
   margin-left: 0;
   padding-left: 18px;
   border-left: 1px solid var(--muted);
   color: var(--muted);
 }
-#preview table {
+.cm-line.cm-quote {
+  padding-left: 18px !important;
+  border-left: 1px solid var(--muted);
+  color: var(--muted);
+}
+#content table,
+.cm-table-widget table {
   border-collapse: collapse;
   display: block;
   overflow: auto;
 }
-#preview th,
-#preview td {
+/* The editor keeps whitespace; the rendered table must not. */
+.cm-table-widget {
+  cursor: text;
+  padding: 4px 0;
+  white-space: normal;
+}
+.cm-table-widget table {
+  margin: 0;
+}
+#content th,
+#content td,
+.cm-table-widget th,
+.cm-table-widget td {
   border: 1px solid var(--line);
   padding: 6px 12px;
 }
-#preview hr {
+#content hr {
   border: 0;
   border-top: 1px solid var(--line);
   margin: 32px 0;
 }
-#panes[data-mode="edit"],
-#panes[data-mode="preview"] {
-  grid-template-columns: 1fr;
-}
-#panes[data-mode="edit"] #preview,
-#panes[data-mode="preview"] #editor {
-  display: none;
-}
-#panes[data-mode="preview"] #preview {
-  max-width: 900px;
+.cm-rule {
+  display: inline-block;
   width: 100%;
-  margin: 0 auto;
+  vertical-align: middle;
+  border-top: 1px solid var(--line);
+}
+.cm-strong {
+  font-weight: 700;
+}
+.cm-em {
+  font-style: italic;
+}
+.cm-strike {
+  text-decoration: line-through;
+}
+.cm-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* A setext heading's hidden underline row takes no space. */
+.cm-line.cm-collapsed {
+  font-size: 0;
+  line-height: 0;
+}
+.cm-bullet {
+  color: var(--muted);
+}
+.cm-image-missing {
+  color: var(--muted);
+  font-style: italic;
 }
 #notice {
   padding: 16px 28px;
@@ -347,25 +392,8 @@ main {
     font-size: 13px;
     padding: 8px 10px;
   }
-  .toolbar {
-    padding: 0 16px;
-  }
-  #preview {
+  .surface {
     padding: 24px 16px 60px;
-  }
-  #panes[data-mode="split"] {
-    grid-template-columns: 1fr;
-    grid-template-rows: 1fr 1fr;
-  }
-  #panes[data-mode="split"] #editor {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .cm-editor .cm-line {
-    padding: 0 16px !important;
-  }
-  .cm-editor .cm-gutters {
-    padding-left: 4px !important;
   }
   #notice {
     padding: 16px;
