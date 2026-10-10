@@ -170,7 +170,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		if want == "edit_conflict" && !strings.Contains(err.Error(), "op 1: conflict "+strings.Repeat("a", 64)) {
 			t.Fatal("app message or if_hash lost", err)
 		}
-		wantText := map[string]string{"boom": "did not apply", "rolledback": "nothing changed", "lost": "applied at seq 9", "garbled": "applied at seq 9"}[find]
+		wantText := map[string]string{"boom": "may or may not have applied", "rolledback": "nothing changed", "lost": "applied at seq 9", "garbled": "applied at seq 9"}[find]
 		if wantText != "" && !strings.Contains(err.Error(), wantText) {
 			t.Fatal("outcome of a failed edit misstated", find, err)
 		}
@@ -201,7 +201,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		}
 	}
 	joined := strings.Join(warned, "\n")
-	if len(warned) != 5 || strings.Count(joined, "committed at seq 9, but its response was lost") != 2 || !strings.Contains(joined, "did not apply (docs app returned HTTP 500)") || strings.Count(joined, "outcome unknown") != 2 {
+	if len(warned) != 5 || strings.Count(joined, "committed at seq 9, but its response was lost") != 2 || !strings.Contains(joined, "outcome unknown (docs app returned HTTP 500; no receipt yet)") || strings.Count(joined, "outcome unknown") != 3 {
 		t.Fatal(warned)
 	}
 	// Changing edits are logged with a summary and never the text.

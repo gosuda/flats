@@ -308,10 +308,10 @@ update operations. The agent contract is guide `topic.docs`.
   WebSocket editors cannot use it. When the edit's response is lost (worker
   failure, timeout or an unreadable reply), core looks its receipt id up
   through `/_docs/api/receipt` and always logs a `warn` event: committed at
-  seq N, did not apply, or outcome unknown. The agent's error says which.
-  Core waits 20 s, longer than the worker's 10 s request deadline, so the
-  worker normally interrupts and rolls back a slow edit first; when core
-  stopped waiting first, a missing receipt is reported as unknown.
+  seq N, or outcome unknown. A missing receipt is not conclusive (the worker
+  keeps working after a disconnect and may still commit), so the agent is
+  told to read before retrying. Core waits 20 s, longer than the worker's
+  10 s request deadline, so the worker normally ends a slow edit first.
   Pre-edit text is not retained separately: conflict records are keyed by
   activation generation and bounded to 8 per document, so sharing them would
   let routine agent edits evict human recovery text. Edits are small and
