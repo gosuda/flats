@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
@@ -74,12 +75,13 @@ type Net struct {
 }
 
 type entry struct {
-	slug    string
-	token   string
-	url     string
-	handler *handlerBox
-	cancel  context.CancelFunc
-	done    chan struct{} // closed when the listener goroutine returned
+	slug     string
+	token    string
+	url      string
+	handler  *handlerBox
+	cancel   context.CancelFunc
+	done     chan struct{} // closed when the listener goroutine returned
+	stopping atomic.Bool   // set once a stop began; the entry no longer serves
 
 	mu      sync.Mutex
 	state   string
@@ -185,9 +187,16 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	n.mu.Lock()
 	e := n.entries[slug]
 	n.mu.Unlock()
-	if e != nil {
+	if e != nil && !e.stopping.Load() {
 		e.handler.set(h)
 		return e.url, nil
+	}
+	if e != nil {
+		// A failed Stop left this share canceled. Finish the stop before
+		// opening a fresh share, so the route can recover.
+		if err := n.stop(slug); err != nil {
+			return "", fmt.Errorf("zrok: %s: finish the earlier stop: %w", slug, err)
+		}
 	}
 
 	ns := n.cfg.Namespace
@@ -344,6 +353,9 @@ func (n *Net) bindAndServe(ctx context.Context, e *entry) error {
 	// every server still in the set.
 	dctx, cancel := context.WithTimeout(ctx, n.cfg.ShutdownTimeout)
 	derr := srv.Shutdown(dctx)
+	if errors.Is(derr, net.ErrClosed) {
+		derr = nil
+	}
 	cancel()
 	e.mu.Lock()
 	if e.ln == ln {
@@ -409,6 +421,7 @@ func (n *Net) stopEntry(e *entry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
 	defer cancel()
 	var errs []error
+	e.stopping.Store(true)
 	e.cancel()
 	e.mu.Lock()
 	ln := e.ln
@@ -421,7 +434,8 @@ func (n *Net) stopEntry(e *entry) error {
 		ln.Close()
 	}
 	for _, srv := range servers {
-		if err := srv.Shutdown(ctx); err != nil {
+		// The listener is closed already; Shutdown closing it again is fine.
+		if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
 			errs = append(errs, fmt.Errorf("zrok: %s HTTP shutdown: %w", e.slug, err))
 			srv.Close()
 			continue

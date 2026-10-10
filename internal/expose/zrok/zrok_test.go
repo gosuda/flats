@@ -815,3 +815,38 @@ func TestRecordOfAnotherAccountIsKept(t *testing.T) {
 		t.Fatal("the other account's record was dropped")
 	}
 }
+
+func TestServeFinishesFailedStopAndReopens(t *testing.T) {
+	f := newFake()
+	n := newNet(Config{Dir: t.TempDir()}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, n, "blog", stateReady)
+	f.mu.Lock()
+	f.unshareErr = errors.New("controller unavailable")
+	f.mu.Unlock()
+	if err := n.Stop("blog"); err == nil {
+		t.Fatal("Stop reported success while the share remains")
+	}
+	// A redeploy while the flat is still public must not reuse the
+	// canceled share.
+	if _, err := n.Serve(context.Background(), "blog", hello("v2")); err == nil {
+		t.Fatal("Serve reused a share whose stop failed")
+	}
+	f.mu.Lock()
+	f.unshareErr = nil
+	f.mu.Unlock()
+	url, err := n.Serve(context.Background(), "blog", hello("v2"))
+	if err != nil || url != "https://blog.public.example" {
+		t.Fatalf("reopen: %q, %v", url, err)
+	}
+	waitState(t, n, "blog", stateReady)
+	if got := get(t, f.addr("tok2")); got != "v2|" {
+		t.Fatalf("body = %q", got)
+	}
+	if !slices.Contains(f.unshared, "tok1") {
+		t.Fatalf("the failed stop was not finished: unshared = %v", f.unshared)
+	}
+}

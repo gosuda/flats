@@ -222,7 +222,11 @@ reports it belongs to this environment with the target `flats:<slug>`, which
 also covers a share whose creation response was lost. Records name the
 account (a hash of its token, not the token): after `zrok.environment` moves
 to another account, `Serve` and `Retire` refuse and keep the record until the
-original account is configured again or the operator removes the record.
+original account is configured again or the operator removes the record. An
+unshare the controller answers with "not found" is confirmed through the
+account-wide share detail: a share another environment of the account still
+holds is reported, not treated as gone. A `Serve` after a failed `Stop`
+finishes that stop before opening a fresh share.
 
 A listener the overlay closes is rebound with backoff (2 s, doubling to
 60 s). Requests that the lost listener already accepted are drained before

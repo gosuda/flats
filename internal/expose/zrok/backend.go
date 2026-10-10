@@ -27,6 +27,9 @@ import (
 // errNameTaken reports a name another zrok account already owns.
 var errNameTaken = errors.New("another zrok account owns this name")
 
+// errOtherEnvironment reports a share of another environment of the account.
+var errOtherEnvironment = errors.New("the share belongs to zrok environment")
+
 // errNameExists reports that CreateName found the name already existing.
 var errNameExists = errors.New("the name exists")
 
@@ -237,10 +240,24 @@ func (b *sdkBackend) Unshare(ctx context.Context, token string) error {
 	req.Body.ShareToken = token
 	if _, err := c.Share.Unshare(req, b.auth()); err != nil {
 		var missing *share.UnshareNotFound
-		if errors.As(err, &missing) {
-			return nil
+		if !errors.As(err, &missing) {
+			return fmt.Errorf("unshare %s: %w", token, err)
 		}
-		return fmt.Errorf("unshare %s: %w", token, err)
+		// Not found in this environment: deleted already, or a share of
+		// another environment of the account, which only that environment
+		// can delete.
+		detail := metadata.NewGetShareDetailParamsWithContext(ctx)
+		detail.ShareToken = token
+		resp, derr := c.Metadata.GetShareDetail(detail, b.auth())
+		var gone *metadata.GetShareDetailNotFound
+		switch {
+		case errors.As(derr, &gone):
+			return nil
+		case derr != nil:
+			return fmt.Errorf("unshare %s: confirm it is gone: %w", token, derr)
+		default:
+			return fmt.Errorf("unshare %s: %w %s; remove it from that environment", token, errOtherEnvironment, resp.Payload.EnvZID)
+		}
 	}
 	return nil
 }
