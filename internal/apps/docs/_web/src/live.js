@@ -184,6 +184,32 @@ export function liveDecorations(state, ranges, active, links) {
           case "Table":
             line(node.from, node.to, "cm-table");
             return false;
+          case "LinkReference": {
+            // A reference definition renders nothing, so its lines collapse
+            // away from the cursor.
+            // One the renderer rejects stays visible as text, as it reads.
+            const url = node.node.getChild("URL");
+            if (
+              isActive(node.from, node.to) ||
+              !url ||
+              !links.destination(
+                unescapeAll(
+                  doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1"),
+                ),
+              )
+            )
+              return false;
+            line(node.from, node.to, "cm-collapsed");
+            for (const n of lineNumbers(
+              doc,
+              Math.max(node.from, visible.from),
+              Math.min(node.to, visible.to),
+            )) {
+              const l = doc.line(n);
+              hide(Math.max(l.from, node.from), Math.min(l.to, node.to));
+            }
+            return false;
+          }
           case "Escape":
             // "\*" reads as "*".
             if (!isActive(node.from, node.to)) hide(node.from, node.from + 1);
@@ -259,8 +285,14 @@ export function liveDecorations(state, ranges, active, links) {
           case "URL":
             // A bare URL; one inside a link or image is handled there.
             if (!linkParents.has(node.node.parent?.name)) {
-              const href = links.bare(doc.sliceString(node.from, node.to));
-              if (href) out.push(linkMark(node.from, node.to, href));
+              const found = links.bare(
+                doc.sliceString(node.from, doc.lineAt(node.from).to),
+                node.to - node.from,
+              );
+              if (found)
+                out.push(
+                  linkMark(node.from, node.from + found.length, found.href),
+                );
             }
             return;
           case "Link":

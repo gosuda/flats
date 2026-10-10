@@ -275,3 +275,22 @@ test("tables carry the document's reference definitions", () => {
   const html = createMarkdown().render(table.source + "\n\n" + table.context);
   assert.match(html, /<a href="https:\/\/e\.example">docs<\/a>/);
 });
+
+test("reference definitions collapse away from the cursor", () => {
+  const text = "[a][r]\n\n[r]: https://e.example\n";
+  const ds = decorate(text);
+  assert.deepEqual(hidden(ds), ["[r]: https://e.example"]);
+  assert.ok(ds.some((d) => d.cls === "cm-collapsed" && d.from === 8));
+  assert.deepEqual(hidden(decorate(text, 10)), []);
+});
+
+test("rejected reference definitions stay visible", () => {
+  assert.deepEqual(hidden(decorate("[r]: javascript:alert(1)\n\nx")), []);
+});
+
+test("a bare URL links as far as the renderer links it", () => {
+  const ds = decorate("go https://example.com?x=1 now\n\nz");
+  const link = ds.find((d) => d.cls === "cm-link");
+  assert.equal(link.text, "https://example.com?x=1");
+  assert.equal(link.href, "https://example.com?x=1");
+});

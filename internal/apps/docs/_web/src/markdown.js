@@ -13,8 +13,7 @@ export function createMarkdown() {
 
 // linkRules answers the editor's link questions the way md renders them.
 // destination maps a decoded link or image destination to the normalized URL
-// md would link to, or "" when md leaves the syntax as text. bare maps a bare
-// address to its link URL, or "" when md does not linkify it.
+// md would link to, or "" when md leaves the syntax as text.
 export function linkRules(md) {
   return {
     destination(href) {
@@ -26,16 +25,22 @@ export function linkRules(md) {
       const tokens = md.parseInline(label, {})[0]?.children || [];
       return md.renderer.renderInlineAsText(tokens, md.options, {});
     },
-    bare(text) {
-      const m = md.linkify.match(text);
-      if (
-        !m ||
-        m.length !== 1 ||
-        m[0].index !== 0 ||
-        m[0].lastIndex !== text.length
-      )
-        return "";
-      return this.destination(m[0].url);
+    // bare takes the line from a bare address onward and the length the
+    // editor's parser gave the address. It returns the link markdown-it
+    // makes there, {href, length}, or null when it leaves the text plain.
+    bare(rest, length) {
+      // A scheme link may run past the parser's end, e.g. a query string.
+      const atStart = md.linkify.matchAtStart(rest);
+      if (atStart) {
+        const href = this.destination(atStart.url);
+        return href ? { href, length: atStart.lastIndex } : null;
+      }
+      const text = rest.slice(0, length),
+        m = md.linkify.match(text);
+      if (!m || m.length !== 1 || m[0].index !== 0 || m[0].lastIndex !== length)
+        return null;
+      const href = this.destination(m[0].url);
+      return href ? { href, length } : null;
     },
   };
 }
