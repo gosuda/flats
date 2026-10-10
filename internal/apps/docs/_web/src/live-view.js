@@ -76,8 +76,20 @@ class TableWidget extends WidgetType {
     div.className = "cm-table-widget";
     // render is markdown-it with raw HTML disabled.
     div.innerHTML = this.render(this.source);
+    // Links follow the editor's policy: Cmd/Ctrl-click opens one (its href
+    // was already resolved and validated by the renderer), and any other
+    // click edits the table.
+    div.addEventListener("click", (event) => {
+      const link = event.target.closest?.("a[href]");
+      if (!link) return;
+      event.preventDefault();
+      if (event.metaKey || event.ctrlKey)
+        window.open(link.href, "_blank", "noopener,noreferrer");
+    });
     div.addEventListener("mousedown", (event) => {
       event.preventDefault();
+      if ((event.metaKey || event.ctrlKey) && event.target.closest?.("a[href]"))
+        return;
       view.focus();
       view.dispatch({ selection: EditorSelection.cursor(this.from) });
     });

@@ -325,6 +325,11 @@ main {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* A setext heading's hidden underline row takes no space. */
+.cm-line.cm-collapsed {
+  font-size: 0;
+  line-height: 0;
+}
 .cm-bullet {
   color: var(--muted);
 }

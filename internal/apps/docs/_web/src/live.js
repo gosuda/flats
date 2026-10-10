@@ -3,6 +3,11 @@
 // Markdown syntax reappears on the lines the cursor or selection touches, so
 // it can be edited where it is written.
 import { syntaxTree } from "@codemirror/language";
+import MarkdownIt from "markdown-it";
+
+// Link and image destinations decode escapes and entities as markdown-it
+// does, so the editor opens the same URL the rendered view links to.
+const { unescapeAll } = new MarkdownIt().utils;
 
 // Kinds of decoration. `line` styles a whole line, `mark` styles a range,
 // `hide` removes syntax from view, and `bullet`, `rule` and `image` replace
@@ -98,14 +103,24 @@ export function liveDecorations(state, ranges, active) {
       enter(node) {
         const name = node.name;
         if (headings[name]) {
-          line(node.from, node.to, "cm-" + headings[name]);
-          if (isActive(node.from, node.to)) return;
+          const cls = "cm-" + headings[name];
+          if (name.startsWith("ATXHeading")) line(node.from, node.to, cls);
           const c = node.node.cursor();
           if (c.firstChild())
             do {
               if (c.name !== "HeaderMark") continue;
-              // Hide "# " with its space, a closing "#" run, or a setext
-              // underline (its own line, hidden in full).
+              if (name.startsWith("SetextHeading")) {
+                // The text lines are the heading; the underline row
+                // collapses unless the cursor is on it.
+                line(node.from, c.from - 1, cls);
+                if (!isActive(c.from, c.to)) {
+                  line(c.from, c.to, "cm-collapsed");
+                  hide(doc.lineAt(c.from).from, c.to);
+                }
+                continue;
+              }
+              if (isActive(c.from, c.to)) continue;
+              // Hide "# " with its space, or a closing "#" run.
               let end = c.to;
               if (doc.sliceString(end, end + 1) === " ") end++;
               let start = c.from;
@@ -144,14 +159,16 @@ export function liveDecorations(state, ranges, active) {
           case "FencedCode":
           case "CodeBlock":
             line(node.from, node.to, "cm-codeblock");
-            if (name === "FencedCode" && !isActive(node.from, node.to)) {
-              // Fence lines stay as empty padding rows of the code block.
+            if (name === "FencedCode") {
+              // Fence lines stay as empty padding rows of the code block,
+              // each shown only while the cursor is on it.
               const first = doc.lineAt(node.from),
                 last = doc.lineAt(node.to);
-              hide(first.from, first.to);
+              if (!isActive(first.from, first.to)) hide(first.from, first.to);
               if (
                 last.number !== first.number &&
-                /^\s*(`{3,}|~{3,})\s*$/.test(last.text)
+                /^\s*(`{3,}|~{3,})\s*$/.test(last.text) &&
+                !isActive(last.from, last.to)
               )
                 hide(last.from, last.to);
             }
@@ -195,7 +212,9 @@ export function liveDecorations(state, ranges, active) {
               while (c.nextSibling());
             const url = parts.find((p) => p.name === "URL"),
               href = url
-                ? doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1")
+                ? unescapeAll(
+                    doc.sliceString(url.from, url.to).replace(/^<(.*)>$/, "$1"),
+                  )
                 : "";
             const lm = parts.filter((p) => p.name === "LinkMark");
             // Only inline links and images with a destination are rendered;
@@ -226,10 +245,9 @@ export function liveDecorations(state, ranges, active) {
               cls: "cm-link",
               href,
             });
-            if (!isActive(node.from, node.to)) {
-              hide(node.from, textFrom);
-              hide(textTo, node.to);
-            }
+            // Each delimiter shows only while the cursor is on its line.
+            if (!isActive(node.from, textFrom)) hide(node.from, textFrom);
+            if (!isActive(textTo, node.to)) hide(textTo, node.to);
             return;
           }
         }

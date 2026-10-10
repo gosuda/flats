@@ -71,7 +71,9 @@ test("fenced code keeps its lines and hides the fences", () => {
   const ds = decorate(text);
   assert.equal(ds.filter((d) => d.cls === "cm-codeblock").length, 3);
   assert.deepEqual(hidden(ds), ["```js", "```"]);
-  assert.deepEqual(hidden(decorate(text, 8)), []);
+  // A cursor inside the code shows neither fence; one on a fence shows it.
+  assert.deepEqual(hidden(decorate(text, 8)), ["```js", "```"]);
+  assert.deepEqual(hidden(decorate(text, 2)), ["```"]);
 });
 
 test("quotes hide their marks and nested syntax never overlaps", () => {
@@ -159,4 +161,36 @@ test("line decorations stay within the visible range", () => {
     selection: EditorSelection.range(0, text.length),
   });
   assert.deepEqual(activeLines(all, true), [[1, 5003]]);
+});
+
+test("setext headings style their text and collapse the underline", () => {
+  const ds = decorate("Title\n=====\n\nx");
+  assert.deepEqual(
+    ds.filter((d) => d.kind === "line").map((d) => [d.from, d.cls]),
+    [
+      [0, "cm-h1"],
+      [6, "cm-collapsed"],
+    ],
+  );
+  assert.deepEqual(hidden(ds), ["====="]);
+  const onUnderline = decorate("Title\n=====\n\nx", 8);
+  assert.deepEqual(hidden(onUnderline), []);
+  assert.ok(!onUnderline.some((d) => d.cls === "cm-collapsed"));
+});
+
+test("multiline links reveal only the delimiter on the cursor line", () => {
+  const text = "[a\nb](u)\n\nz";
+  assert.deepEqual(hidden(decorate(text, 0)), ["](u)"]);
+  assert.deepEqual(hidden(decorate(text, 4)), ["["]);
+});
+
+test("destinations decode escapes and entities like the renderer", () => {
+  const ds = decorate(
+    "[x](https://e.test/?a=1&amp;b=\\_2) ![i](a\\_b.png)\n\nz",
+  );
+  assert.equal(
+    ds.find((d) => d.cls === "cm-link").href,
+    "https://e.test/?a=1&b=_2",
+  );
+  assert.equal(ds.find((d) => d.kind === "image").src, "a_b.png");
 });
