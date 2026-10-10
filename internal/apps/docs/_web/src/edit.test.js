@@ -250,6 +250,8 @@ test("start and end inserts use the real text edges", () => {
   assert.equal(at("# H\n", "end"), "# H\n\nTop\n");
   assert.equal(at("# H", "end"), "# H\n\nTop\n");
   assert.equal(at("\n\n", "end"), "\n\nTop\n");
+  assert.equal(at("    ", "end"), "    \nTop\n");
+  assert.equal(at("  \n", "end"), "  \nTop\n");
   for (const t of ["\n\n# H\n", "# H\n\n\n", "# H"])
     for (const w of ["start", "end"]) assert.equal(blocks(at(t, w)).length, 2);
 });
@@ -361,6 +363,8 @@ test("malformed requests are invalid", () => {
     /at most 32/,
   );
   rejects(() => plan(doc, [{ op: "rewrite" }]), "invalid");
+  for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"])
+    rejects(() => plan(doc, [{ op: name, find: "x", with: "y" }]), "invalid");
   rejects(() => plan(doc, [{ op: "replace", find: "", with: "x" }]), "invalid");
   rejects(
     () => plan(doc, [{ op: "replace", find: "Title", with: 1 }]),

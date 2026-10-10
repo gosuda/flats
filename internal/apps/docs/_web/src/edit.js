@@ -362,7 +362,10 @@ export function planEdit(text, request, hashText) {
   ops.forEach((op, i) => {
     if (!op || typeof op !== "object" || Array.isArray(op))
       fail("invalid", `op ${i + 1} must be an object`, i);
-    const keys = allowed[op.op];
+    const keys =
+      typeof op.op === "string" && Object.hasOwn(allowed, op.op)
+        ? allowed[op.op]
+        : null;
     if (!keys)
       fail(
         "invalid",
@@ -486,8 +489,15 @@ export function planEdit(text, request, hashText) {
           // The very end, after any trailing blank lines.
           at = text.length;
           const trailing = text.length - text.replace(/\n+$/, "").length;
+          // Always start on a new line; leave a blank line after content.
           insert =
-            (!text.trim() ? "" : (["\n\n", "\n"][trailing] ?? "")) +
+            (!text
+              ? ""
+              : !text.trim()
+                ? trailing
+                  ? ""
+                  : "\n"
+                : (["\n\n", "\n"][trailing] ?? "")) +
             body +
             "\n";
         } else {

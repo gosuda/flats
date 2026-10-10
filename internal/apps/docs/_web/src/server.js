@@ -525,7 +525,7 @@ async function edit(request, env, d) {
     )
       throw e;
     const code = rejectionCode(e);
-    if (editStatus[code])
+    if (code && Object.hasOwn(editStatus, code))
       return json(editStatus[code], {
         code,
         message: String(e.message),
