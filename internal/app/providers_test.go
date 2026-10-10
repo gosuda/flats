@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"slices"
@@ -188,5 +189,26 @@ func TestConsoleHostProviderPinnedByLegacyFlag(t *testing.T) {
 	}
 	if !slices.Equal(configPermitted(t, h), []string{"portal"}) {
 		t.Fatal("config.json changed")
+	}
+}
+
+// zrok is off by default and public. Turning it on needs an enabled zrok
+// environment; without one the console refuses and config.json is unchanged.
+func TestConsoleZrokNeedsEnabledEnvironment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h, client := consoleHost(t)
+	p := providerByID(t, h, client, "zrok")
+	if p.Enabled || p.Configured || p.Scope != "public" || p.Namespace != "public" {
+		t.Fatalf("zrok by default: %+v", p)
+	}
+	code, out := setHost(t, h, client, "zrok", true)
+	if code == 200 || !strings.Contains(fmt.Sprint(out["error"]), "zrok2 enable") {
+		t.Fatalf("turned on zrok without an environment: %d %v", code, out)
+	}
+	if got := configPermitted(t, h); len(got) != 0 {
+		t.Fatalf("config.json network.permitted = %v", got)
+	}
+	if p := providerByID(t, h, client, "zrok"); p.Enabled || p.Configured {
+		t.Fatalf("zrok after refused turn-on: %+v", p)
 	}
 }

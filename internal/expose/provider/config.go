@@ -1,6 +1,6 @@
 // Package provider serves flats on explicitly permitted networks.
-// Local loopback needs no grant. Tailscale, Tailscale Funnel and Portal
-// start only when the host file grants them and a caller passes the same
+// Local loopback needs no grant. Tailscale, Tailscale Funnel, Portal and
+// zrok start only when the host file grants them and a caller passes the same
 // provider in ExposureRequest.Permitted.
 package provider
 
@@ -26,6 +26,7 @@ const (
 	Tailscale = core.ProviderTailscale
 	Funnel    = core.ProviderFunnel
 	Portal    = core.ProviderPortal
+	Zrok      = core.ProviderZrok
 )
 
 // Audience selects draft or current content.
@@ -59,10 +60,10 @@ type Migration struct {
 	Note             string `json:"note,omitempty"`
 }
 
-// ParseID accepts only the four canonical ids.
+// ParseID accepts only the canonical ids.
 func ParseID(s string) (ID, error) {
 	switch ID(s) {
-	case Local, Tailscale, Funnel, Portal:
+	case Local, Tailscale, Funnel, Portal, Zrok:
 		return ID(s), nil
 	default:
 		return "", fmt.Errorf("unknown provider %q", s)

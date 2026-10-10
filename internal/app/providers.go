@@ -12,6 +12,7 @@ import (
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/provider"
 	tsnetx "github.com/gosuda/flats/internal/expose/tsnet"
+	"github.com/gosuda/flats/internal/expose/zrok"
 )
 
 // ProviderInfo is one network provider as the console's settings show it.
@@ -29,6 +30,7 @@ type ProviderInfo struct {
 	Address    string          `json:"address,omitempty"`    // local listener
 	AuthKey    bool            `json:"auth_key,omitempty"`   // tailscale: an auth key file is configured
 	ConsoleOn  bool            `json:"console_on,omitempty"` // tailscale: the console and private routes use it
+	Namespace  string          `json:"namespace,omitempty"`  // zrok: the namespace names are reserved in
 }
 
 // legacyNetworkPins names the legacy service flags that fix a provider's
@@ -53,14 +55,14 @@ func legacyNetworkPins(o Options) map[provider.ID]string {
 func (h *Host) NetworkProviders(ctx context.Context) any {
 	flats := h.flatsAllowing(ctx)
 	h.pmu.Lock()
-	ts, pn := h.tsNet, h.portalNet
+	ts, pn, zn := h.tsNet, h.portalNet, h.zrokNet
 	h.pmu.Unlock()
 	var grants provider.File
 	if h.Providers != nil {
 		grants = h.Providers.File()
 	}
-	out := make([]ProviderInfo, 0, 4)
-	for _, id := range []provider.ID{provider.Local, provider.Tailscale, provider.Funnel, provider.Portal} {
+	out := make([]ProviderInfo, 0, 5)
+	for _, id := range []provider.ID{provider.Local, provider.Tailscale, provider.Funnel, provider.Portal, provider.Zrok} {
 		p := ProviderInfo{ID: string(id), Scope: "private", Enabled: grants.Allows(id), Flats: flats[id]}
 		if p.Flats == nil {
 			p.Flats = []string{}
@@ -97,6 +99,14 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 			p.Configured = pn != nil
 			if pn != nil {
 				st := pn.Status()
+				p.Status = &st
+			}
+		case provider.Zrok:
+			p.Scope = "public"
+			p.Configured = zn != nil
+			p.Namespace = h.zrokOptions.Namespace
+			if zn != nil {
+				st := zn.Status()
 				p.Status = &st
 			}
 		}
@@ -185,6 +195,16 @@ func (h *Host) attachLocked(id provider.ID) error {
 		}
 		h.portalNet = p
 		h.Providers.AttachPortal(p)
+	case provider.Zrok:
+		if h.zrokNet != nil {
+			return nil
+		}
+		z, err := zrok.New(h.zrokOptions)
+		if err != nil {
+			return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+		}
+		h.zrokNet = z
+		h.Providers.AttachZrok(z)
 	}
 	return nil
 }

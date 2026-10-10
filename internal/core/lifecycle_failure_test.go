@@ -92,7 +92,7 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 			ids = append(ids, ProviderTailscale)
 		}
 		for _, id := range req.Permitted {
-			if id == ProviderPortal || id == ProviderFunnel {
+			if PublicProvider(id) {
 				ids = append(ids, id)
 			}
 		}
@@ -138,7 +138,7 @@ func (n *lifecycleRouteNet) StopPublicRoutes(_ context.Context, host string) (Pu
 		return PublicStopResult{}, n.stopPublic
 	}
 	var stopped []ProviderID
-	for _, id := range []ProviderID{ProviderPortal, ProviderFunnel} {
+	for _, id := range []ProviderID{ProviderPortal, ProviderFunnel, ProviderZrok} {
 		key := lifecycleRouteKey{host: host, provider: id}
 		if _, ok := n.routes[key]; ok {
 			delete(n.routes, key)

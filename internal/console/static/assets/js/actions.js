@@ -166,7 +166,7 @@ export async function setVisibility(flat, vis) {
     return null;
   }
   if (widening && !PUBLIC_PROVIDERS.some((p) => (flat.providers || []).includes(p))) {
-    await infoDialog('Allow a public network first', `Allow Tailscale Funnel or Portal for ${label(flat)} under Networks, then make it public.`);
+    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal or zrok for ${label(flat)} under Networks, then make it public.`);
     return null;
   }
   const notice = noticeFor(vis);
@@ -198,8 +198,9 @@ export const PROVIDERS = [
   { id: 'tailscale', scope: 'private', label: 'Tailscale', hint: 'Devices your tailnet ACL allows' },
   { id: 'tailscale-funnel', scope: 'public', label: 'Tailscale Funnel', hint: 'Anyone on the internet' },
   { id: 'portal', scope: 'public', label: 'Portal', hint: 'Anyone on the internet, through Portal relays' },
+  { id: 'zrok', scope: 'public', label: 'zrok', hint: 'Anyone on the internet, through zrok public shares' },
 ];
-const PUBLIC_PROVIDERS = ['tailscale-funnel', 'portal'];
+const PUBLIC_PROVIDERS = ['tailscale-funnel', 'portal', 'zrok'];
 
 // setProvider allows or stops a network for one flat; resolves true on success.
 export async function setProvider(flat, provider, permitted) {

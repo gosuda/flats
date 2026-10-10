@@ -665,7 +665,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 						v.PrivateURL, v.PrivateState, v.PrivateDetail = ep.URL, ep.State, ep.Detail
 					}
 				}
-				if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && f.Visibility.Public() && ep.Permitted {
+				if PublicProvider(ep.Provider) && f.Visibility.Public() && ep.Permitted {
 					if v.ConnectionState == "unavailable" || ep.Ready {
 						v.PublicURL, v.ConnectionState = ep.URL, ep.State
 					}

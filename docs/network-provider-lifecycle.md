@@ -13,28 +13,28 @@ This document describes the integrated provider Manager. Production app and disp
 ## Contract
 
 Provider choice stays separate from visibility and version. Local loopback is
-available with no grant. Tailscale, Tailscale Funnel, and Portal start only
-when both of these are true:
+available with no grant. Tailscale, Tailscale Funnel, Portal and zrok start
+only when both of these are true:
 
 1. The host file grants that provider.
 2. The exposure request lists it in `Permitted`.
 
 A grant, a tailnet login, or a running node does not publish a flat. `"funnel"`
 is not an alias of `tailscale-funnel`. A failed provider is not replaced by
-another one. Both requested public providers are attempted independently; that
+another one. Every requested public provider is attempted independently; that
 is not a fallback.
 
 | Request | Providers that may open |
 | --- | --- |
 | Draft, or visibility private | `local` always. `tailscale` only when both gates allow it. |
-| Audience current and visibility public | `tailscale-funnel` and/or `portal`, each only when both gates allow it. |
+| Audience current and visibility public | `tailscale-funnel`, `portal` and/or `zrok`, each only when both gates allow it. |
 | Ephemeral preview | Private paths only. Public providers return `provider not permitted`. |
 
 If a public request lists no permitted public provider, or none of the
 requested public routes open, `ServeExposure` returns an error. If some open
 and some fail, the result and the joined error are both returned.
 
-`StopPublicRoutes` closes Funnel and Portal for that slug. Local and tailscale
+`StopPublicRoutes` closes Funnel, Portal and zrok for that slug. Local and tailscale
 routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later
 call can retry. Unconfirmed means the caller must not treat the flat as
@@ -175,6 +175,28 @@ already present is left alone. Funnel stays `starting` until the
 certificate fetch succeeds, unless a test certificate source is installed, in
 which case it is `ready` immediately. Funnel strips `Tailscale-User-*` headers
 and does not set identity.
+
+## zrok
+
+`zrok.Net` (`internal/expose/zrok`) serves a slug as a zrok public share of
+the operator's enabled zrok environment. Constructing it reads that
+environment from disk and contacts nothing. `Serve` reserves the name
+`<slug>` in `zrok.namespace` when the account does not own it yet, removes a
+share of this environment that still holds the name (a crash leaves one
+behind; unsharing another environment's share fails, so a name is never taken
+over), creates the share and returns its frontend URL. Binding the share on
+the zrok overlay is asynchronous: the route is `starting` until the listener
+is established, then `ready`, or `error` with the reason. A name another
+account owns is refused with a rename hint.
+
+`Stop`, used by `StopPublicRoutes`, drains HTTP, closes the overlay listener
+and deletes the share; the name stays reserved, so a later Public transition
+gets the same URL. A failed unshare keeps the route registered and reports
+zrok in `Unconfirmed`. `Retire`, used by `StopSlug` for a deleted flat or an
+expired redirect, also releases the name. `StopSlug` retires a registered
+zrok route with confirmation; for a flat that permits zrok but has no route
+record it releases the name on a best-effort basis, because no share of that
+name is bound. Process shutdown deletes every share and keeps the names.
 
 ## Shutdown
 

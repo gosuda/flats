@@ -20,6 +20,7 @@ import (
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/tsnet"
+	"github.com/gosuda/flats/internal/expose/zrok"
 )
 
 const (
@@ -48,7 +49,7 @@ type ExposureEndpoint = core.ExposureEndpoint
 // ExposureResult is every route considered for one request.
 type ExposureResult = core.ExposureResult
 
-// PublicStopResult reports Funnel and Portal after a public route is removed.
+// PublicStopResult reports Funnel, Portal and zrok after a public route is removed.
 // Unconfirmed entries may still be reachable. Private routes are not listed
 // because they are left up.
 type PublicStopResult = core.PublicStopResult
@@ -77,6 +78,18 @@ type PortalNet interface {
 	Close() error
 }
 
+// ZrokNet is the public zrok backend. A non-nil value is not permission.
+type ZrokNet interface {
+	Serve(ctx context.Context, slug string, h http.Handler) (string, error)
+	// Stop deletes slug's share and keeps its name reserved.
+	Stop(slug string) error
+	// Retire deletes slug's share and releases its name.
+	Retire(slug string) error
+	URL(slug string) string
+	Status() core.NetStatus
+	Close() error
+}
+
 // TSNet adapts the concrete tailnet so callers outside this module can pass
 // *tsnet.Net without a second implementation.
 type TSNet struct{ *tsnet.Net }
@@ -90,12 +103,13 @@ func (t TSNet) FunnelState(host string) ExposureEndpoint {
 	return ExposureEndpoint{Provider: Funnel, URL: r.URL, State: r.State, Detail: r.Detail}
 }
 
-// Options selects backends. Nil Tailscale or Portal leaves that provider
+// Options selects backends. Nil Tailscale, Portal or Zrok leaves that provider
 // unconfigured even when the host file grants it.
 type Options struct {
 	Local     *local.Net
 	Tailscale Tailnet
 	Portal    PortalNet
+	Zrok      ZrokNet
 	// TailscaleStateDir is the local tsnet state root. Manager uses it only
 	// when no tailnet backend is configured, so deleting a legacy Local-only
 	// flat can discard its old identity without contacting control.
@@ -118,11 +132,12 @@ type Manager struct {
 	file  File
 	fixed bool // grants came from Options.Grants
 	local *local.Net
-	// ts and portal may be attached after New (nil to set, never removed);
-	// read them through tailnet and portalNet.
+	// ts, portal and zrok may be attached after New (nil to set, never
+	// removed); read them through tailnet, portalNet and zrokNet.
 	bmu           sync.RWMutex
 	ts            Tailnet
 	portal        PortalNet
+	zrok          ZrokNet
 	tailscaleDir  string
 	retirementDir string
 	configuration string
@@ -183,6 +198,7 @@ func New(dir string, opts Options) (*Manager, error) {
 		local:          opts.Local,
 		ts:             opts.Tailscale,
 		portal:         opts.Portal,
+		zrok:           opts.Zrok,
 		tailscaleDir:   tailscaleDir,
 		retirementDir:  filepath.Join(dir, "network-retirements"),
 		configuration:  opts.Configuration,
@@ -205,6 +221,12 @@ func (m *Manager) portalNet() PortalNet {
 	return m.portal
 }
 
+func (m *Manager) zrokNet() ZrokNet {
+	m.bmu.RLock()
+	defer m.bmu.RUnlock()
+	return m.zrok
+}
+
 // AttachTailnet configures the Tailscale backend once, for a provider the
 // operator enables while the host runs. It does not grant the provider.
 func (m *Manager) AttachTailnet(t Tailnet) {
@@ -221,6 +243,15 @@ func (m *Manager) AttachPortal(p PortalNet) {
 	defer m.bmu.Unlock()
 	if m.portal == nil {
 		m.portal = p
+	}
+}
+
+// AttachZrok configures the zrok backend once. It does not grant zrok.
+func (m *Manager) AttachZrok(z ZrokNet) {
+	m.bmu.Lock()
+	defer m.bmu.Unlock()
+	if m.zrok == nil {
+		m.zrok = z
 	}
 }
 
@@ -310,7 +341,7 @@ func (m *Manager) Reload() error {
 
 // ServeExposure opens every provider this request is allowed to use.
 // Draft and private requests use local and, when both gates allow it, tailscale.
-// Current public requests use tailscale-funnel and portal the same way.
+// Current public requests use tailscale-funnel, portal and zrok the same way.
 // A provider that fails is not replaced by another one.
 func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (res ExposureResult, err error) {
 	defer m.observe(req, &res)
@@ -344,6 +375,8 @@ func (m *Manager) configured(id ID) bool {
 		return m.tailnet() != nil
 	case Portal:
 		return m.portalNet() != nil
+	case Zrok:
+		return m.zrokNet() != nil
 	}
 	return false
 }
@@ -384,8 +417,9 @@ func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
 		Permitted         []ID   `json:"permitted"`
 		PrivateBackend    string `json:"private_backend"`
 		Tailscale, Portal bool
+		Zrok              bool `json:",omitempty"`
 		Configuration     string
-	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.configuration}
+	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil, m.configuration}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -432,6 +466,8 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 				fresh = m.tailnet().FunnelState(r.host)
 			case Portal:
 				fresh = fromStatus(Portal, m.portalNet().Status(), r.host, m.portalNet().URL(r.host))
+			case Zrok:
+				fresh = fromStatus(Zrok, m.zrokNet().Status(), r.host, m.zrokNet().URL(r.host))
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
 		} else if observed.registered {
@@ -459,8 +495,8 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 // opt-in and actual route readiness. Setup alone never opens a route.
 func (m *Manager) HostStatus() []ExposureEndpoint {
 	f := m.File()
-	out := make([]ExposureEndpoint, 0, 4)
-	for _, id := range []ID{Local, Tailscale, Funnel, Portal} {
+	out := make([]ExposureEndpoint, 0, 5)
+	for _, id := range []ID{Local, Tailscale, Funnel, Portal, Zrok} {
 		configured := m.configured(id)
 		detail := "backend is not configured for this process"
 		if configured {
@@ -487,7 +523,7 @@ func (m *Manager) servePrivate(ctx context.Context, req ExposureRequest) (Exposu
 			errs = append(errs, err)
 		}
 	}
-	for _, id := range []ID{Funnel, Portal} {
+	for _, id := range []ID{Funnel, Portal, Zrok} {
 		if listed(req.Permitted, id) {
 			eps = append(eps, refused(id, "drafts and private routes cannot use a public provider"))
 			errs = append(errs, fmt.Errorf("%w: %s", ErrProviderNotPermitted, id))
@@ -501,7 +537,7 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 		return ExposureResult{}, fmt.Errorf("%w: previews cannot use a public provider", ErrProviderNotPermitted)
 	}
 	var want []ID
-	for _, id := range []ID{Funnel, Portal} {
+	for _, id := range []ID{Funnel, Portal, Zrok} {
 		if listed(req.Permitted, id) {
 			want = append(want, id)
 		}
@@ -649,6 +685,23 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		m.track(req, Portal, req.Slug)
 		ep := fromStatus(Portal, m.portalNet().Status(), req.Slug, url)
+		if ep.URL == "" {
+			ep.URL = url
+		}
+		if ep.State == "" {
+			ep.State = stateStarting
+		}
+		return ep, nil
+	case Zrok:
+		if m.zrokNet() == nil {
+			return refused(Zrok, "zrok is permitted but not configured"), fmt.Errorf("%w: zrok", ErrNotConfigured)
+		}
+		url, err := m.zrokNet().Serve(ctx, req.Slug, req.Handler)
+		if err != nil {
+			return ExposureEndpoint{Provider: Zrok, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: zrok: %w", core.ErrProviderNotReady, err)
+		}
+		m.track(req, Zrok, req.Slug)
+		ep := fromStatus(Zrok, m.zrokNet().Status(), req.Slug, url)
 		if ep.URL == "" {
 			ep.URL = url
 		}
@@ -872,7 +925,7 @@ func sortedKeys(set map[string]struct{}) []string {
 	return hosts
 }
 
-// StopPublicRoutes closes Funnel and Portal for slug. Local and tailscale
+// StopPublicRoutes closes Funnel, Portal and zrok for slug. Local and tailscale
 // routes for that slug keep serving. Listener stop failures are Unconfirmed
 // and stay tracked. Once Funnel is confirmed closed, a failed node retirement
 // is retained separately for StopSlug or a later Funnel activation to retry;
@@ -880,6 +933,7 @@ func sortedKeys(set map[string]struct{}) []string {
 func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStopResult, error) {
 	funnelHost, hadFunnel := m.take(slug, Funnel, false)
 	_, hadPortal := m.take(slug, Portal, false)
+	_, hadZrok := m.take(slug, Zrok, false)
 	var res PublicStopResult
 	if hadFunnel {
 		if m.tailnet() == nil {
@@ -928,6 +982,17 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 			m.take(slug, Portal, true)
 			m.pruneState(slug, Portal)
 			res.Stopped = append(res.Stopped, Portal)
+		}
+	}
+	if hadZrok {
+		if m.zrokNet() == nil {
+			res.Unconfirmed = append(res.Unconfirmed, Zrok)
+		} else if err := m.zrokNet().Stop(slug); err != nil {
+			res.Unconfirmed = append(res.Unconfirmed, Zrok)
+		} else {
+			m.take(slug, Zrok, true)
+			m.pruneState(slug, Zrok)
+			res.Stopped = append(res.Stopped, Zrok)
 		}
 	}
 	if res.Stopped == nil {
@@ -982,7 +1047,7 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	m.mu.Unlock()
 
 	type hostRoutes struct {
-		local, tailscale, funnel, portal bool
+		local, tailscale, funnel, portal, zrok bool
 	}
 	byHost := make(map[string]*hostRoutes)
 	// Current and redirect tsnet identities use the exact lifecycle slug as
@@ -1011,6 +1076,8 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			h.funnel = true
 		case Portal:
 			h.portal = true
+		case Zrok:
+			h.zrok = true
 		}
 	}
 	hosts := make([]string, 0, len(byHost))
@@ -1093,8 +1160,34 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		return err
 	}
 
+	// zrok shares are retired with their names: a deleted flat or an
+	// expired redirect does not keep its name reserved in the account. A
+	// flat that permits zrok but has no route record (after a restart, or
+	// while private) may still own a name a previous process reserved; that
+	// release is best effort, because no share of it is bound and reachable.
 	for _, host := range hosts {
-		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal)
+		owned := byHost[host]
+		if owned.zrok {
+			if m.zrokNet() == nil {
+				errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
+			} else if err := m.zrokNet().Retire(host); err != nil {
+				errs = append(errs, fmt.Errorf("%w: zrok %s: %w", core.ErrPublicStopUnconfirmed, host, err))
+			}
+			continue
+		}
+		if host != slug || m.zrokNet() == nil || m.permission == nil {
+			continue
+		}
+		if permitted, err := m.permission(ctx, slug, Zrok); err == nil && permitted {
+			_ = m.zrokNet().Retire(host)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	for _, host := range hosts {
+		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal, Zrok)
 	}
 	for _, host := range hosts {
 		owned := byHost[host]
@@ -1341,10 +1434,11 @@ func fromStatus(id ID, st core.NetStatus, host, url string) ExposureEndpoint {
 	return ExposureEndpoint{Provider: id, URL: url, State: state}
 }
 
-// Compile-time checks for the real backends. Portal's concrete type is
-// assigned below; TSNet covers Funnel.
+// Compile-time checks for the real backends. Portal's and zrok's concrete
+// types are assigned below; TSNet covers Funnel.
 var (
 	_ PortalNet              = (*portal.Net)(nil)
+	_ ZrokNet                = (*zrok.Net)(nil)
 	_ Tailnet                = TSNet{}
 	_ core.LifecycleNet      = (*Manager)(nil)
 	_ core.LifecycleObserver = (*Manager)(nil)

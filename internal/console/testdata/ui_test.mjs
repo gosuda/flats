@@ -251,6 +251,9 @@ assert.ok(secrets.textContent.includes('redeploy the live version 2'), 'secrets 
 // Networks are per-flat permissions; Local is always on.
 const portal = all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-portal')[0];
 assert.equal(portal.checked, true);
+const zrokBox = all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-zrok')[0];
+assert.ok(zrokBox, 'zrok is listed among the public networks');
+assert.ok(!zrokBox.checked);
 const funnel = all(management, (e) => e.tagName === 'INPUT' && e.getAttribute('id') === 'net-tailscale-funnel')[0];
 funnel.checked = true;
 funnel.dispatch('change');
@@ -454,7 +457,8 @@ const settingsRoute = (config) => ({ settings: SETTINGS, defaults: SETTINGS, app
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 const provider = (id, scope, enabled, flats = []) => ({ id, scope, enabled, configured: enabled, flats });
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true), provider('tailscale', 'private', false),
-  provider('tailscale-funnel', 'public', false), provider('portal', 'public', true, ['blog'])] };
+  provider('tailscale-funnel', 'public', false), provider('portal', 'public', true, ['blog']),
+  { ...provider('zrok', 'public', true), namespace: 'flats-ns', status: { kind: 'zrok', enabled: true, hosts: [] } }] };
 const mountSettings = async () => {
   const main = new Element('main');
   settingsPage.mount(main, [], ctx);
@@ -659,7 +663,8 @@ await tick();
 const groups = all(settingsMain, (e) => e.className === 'provider-group');
 assert.deepEqual(groups.map((g) => all(g, (e) => e.tagName === 'H3')[0].textContent), ['Private', 'Public']);
 assert.deepEqual(all(groups[0], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-local', 'provider-tailscale']);
-assert.deepEqual(all(groups[1], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-tailscale-funnel', 'provider-portal']);
+assert.deepEqual(all(groups[1], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-tailscale-funnel', 'provider-portal', 'provider-zrok']);
+assert.ok(byId(settingsMain, 'provider-zrok').textContent.includes('flats-ns'), 'the zrok panel shows its namespace');
 assert.equal(all(groups[0], (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 1, 'Local has no switch');
 assert.ok(groups[1].textContent.includes('Portal relays'), 'Portal settings belong to the Portal provider');
 byText(groups[0], 'Turn on')[0].dispatch('click');

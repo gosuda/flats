@@ -32,6 +32,7 @@ import (
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/provider"
 	tsnetx "github.com/gosuda/flats/internal/expose/tsnet"
+	"github.com/gosuda/flats/internal/expose/zrok"
 	"github.com/gosuda/flats/internal/forkwatch"
 	"github.com/gosuda/flats/internal/mcpx"
 	"github.com/gosuda/flats/internal/runtime"
@@ -102,7 +103,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "legacy mode: file holding a reusable, untagged Tailscale auth key for new nodes (else TS_AUTHKEY or interactive login)")
 	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console")
 	fs.BoolVar(&o.Portal, "portal", false, "legacy mode: grant Portal and attach it as the legacy public network")
-	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal. Local needs no grant. Recorded in config.json and does not publish a flat")
+	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal, zrok. Local needs no grant. Recorded in config.json and does not publish a flat")
 	fs.StringVar(&relays, "relays", "", "legacy mode: comma-separated Portal relays (default: Portal CLI default discovery)")
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
 	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "ignored: the operator credential is no longer used")
@@ -202,13 +203,15 @@ type Host struct {
 	srv        *http.Server
 	ln         net.Listener
 	localNet   *local.Net
-	pmu        sync.Mutex // guards tsNet and portalNet, which the console can attach
+	pmu        sync.Mutex // guards tsNet, portalNet and zrokNet, which the console can attach
 	tsNet      *tsnetx.Net
 	portalNet  *portal.Net
+	zrokNet    *zrok.Net
 	// For providers the console turns on while the host runs.
 	logf          func(string, ...any)
 	legacy        bool
 	portalOptions portal.Config
+	zrokOptions   zrok.Config
 	networkPins   map[provider.ID]string // provider -> service flag that fixes it
 	console       string
 	consoleNet    core.PrivateNet // set when the console runs on the tailnet
@@ -376,6 +379,15 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		h.portalNet = pn
 	}
+	zrokOptions := zrok.Config{Environment: cfg.Zrok.Environment, Namespace: cfg.Zrok.Namespace, Logf: logf}
+	h.zrokOptions = zrokOptions
+	if permits(provider.Zrok) {
+		zn, err := zrok.New(zrokOptions)
+		if err != nil {
+			return nil, err
+		}
+		h.zrokNet = zn
+	}
 	var tail provider.Tailnet
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
@@ -384,11 +396,14 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, id := range cfg.Network.Permitted {
 		grants.Permitted = append(grants.Permitted, provider.ID(id))
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}}
 	if h.portalNet != nil {
 		backends.Portal = h.portalNet
+	}
+	if h.zrokNet != nil {
+		backends.Zrok = h.zrokNet
 	}
 	mgr, err := provider.New(dataDir, backends)
 	if err != nil {
@@ -509,7 +524,16 @@ func storedPrivateBackend(c *config.Config) string {
 	return v.(string)
 }
 
-func providerConfiguration(cfg portal.Config) string {
+// zrokConfiguration is zrok's part of the provider configuration token, or
+// "" when zrok is not permitted, so hosts without zrok keep their token.
+func zrokConfiguration(cfg *config.Config) string {
+	if !slices.Contains(cfg.Network.Permitted, string(provider.Zrok)) {
+		return ""
+	}
+	return cfg.Zrok.Namespace
+}
+
+func providerConfiguration(cfg portal.Config, zrokNamespace string) string {
 	// Only public relay origins and non-secret desired settings participate.
 	// Do not include userinfo, query strings, identities, keys or readiness.
 	origins := make([]string, 0, len(cfg.Relays))
@@ -523,7 +547,8 @@ func providerConfiguration(cfg portal.Config) string {
 		Relays          []string
 		Discovery       bool
 		MaxActiveRelays int
-	}{origins, cfg.Discovery, cfg.MaxActiveRelays})
+		ZrokNamespace   string `json:",omitempty"`
+	}{origins, cfg.Discovery, cfg.MaxActiveRelays, zrokNamespace})
 	return string(raw)
 }
 
@@ -621,12 +646,15 @@ func (h *Host) Close() error {
 			collect("provider routes", h.Providers.Close())
 		}
 		h.pmu.Lock()
-		tsNet, portalNet := h.tsNet, h.portalNet
+		tsNet, portalNet, zrokNet := h.tsNet, h.portalNet, h.zrokNet
 		h.pmu.Unlock()
 		if h.Public != nil {
 			collect("public network shutdown", h.Public.Close())
 		} else if portalNet != nil {
 			collect("portal shutdown", portalNet.Close())
+		}
+		if zrokNet != nil {
+			collect("zrok shutdown", zrokNet.Close())
 		}
 		if h.Private != nil {
 			collect("private network shutdown", h.Private.Close())

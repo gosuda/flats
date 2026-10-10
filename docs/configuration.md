@@ -111,6 +111,8 @@ written; `flats config unset KEY` removes it.
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
+| `zrok.environment` | none (`~/.zrok2` of the user that runs Flats) | restart, or when zrok is turned on from the console |
+| `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | none (interactive login) | restart |
 
@@ -142,6 +144,20 @@ what Flats asks the relays for: a served route's lease metadata changes at
 once, and relays apply it at their next lease renewal (up to about 90
 seconds). If that update fails, the choice stays saved, the flat logs the
 error and the next activation of the route retries it.
+
+zrok serves public flats as zrok public shares on the operator's zrok
+account. Flats never stores the account token: enable a zrok environment for
+the user that runs Flats first (`zrok2 enable <account token>`), and set
+`zrok.environment` when it is not that user's `~/.zrok2`, for example for a
+service whose home directory differs. With `zrok` in `network.permitted`, a
+start fails while that environment is missing or not enabled. Each flat
+served through zrok reserves its slug as a name in `zrok.namespace`, so its
+public URL stays the same across restarts and Private↔Public changes; the
+share itself exists only while the flat is public and the host runs.
+Deleting a flat, or the expiry of a rename redirect, releases the name. A
+name another zrok account already owns cannot be used; rename the flat. The
+zrok client also honors its own `ZROK2_*` environment variables, such as
+`ZROK2_API_ENDPOINT` for a self-hosted zrok instance.
 
 Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole

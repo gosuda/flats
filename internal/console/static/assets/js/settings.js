@@ -105,6 +105,7 @@ export const PROVIDER_INFO = {
   tailscale: { label: 'Tailscale', what: 'Devices your tailnet ACL allows. Flats and previews get their own tailnet nodes.' },
   'tailscale-funnel': { label: 'Tailscale Funnel', what: 'Anyone on the internet, through Tailscale Funnel on the flat’s tailnet node. Visitors do not need Tailscale.' },
   portal: { label: 'Portal', what: 'Anyone on the internet, through Portal relays.' },
+  zrok: { label: 'zrok', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
 };
 
 // providerGroups lists the providers as Private and Public groups. data is
@@ -160,6 +161,13 @@ function providerDetails(p, data, opts) {
   }
   if (p.id === 'tailscale-funnel') {
     return h('p', { class: 'muted small', text: 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.' });
+  }
+  if (p.id === 'zrok') {
+    return [
+      h('dl', { class: 'facts' }, h('dt', { text: 'Namespace' }), h('dd', null, h('code', { text: p.namespace || 'public' }))),
+      h('p', { class: 'muted small', text: 'Uses the zrok environment enabled with zrok2 enable for the user that runs Flats. Each public flat reserves its slug as a name in this namespace.' }),
+      p.status ? hostsTable(p.status) : null,
+    ];
   }
   return null;
 }
