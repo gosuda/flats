@@ -52,7 +52,9 @@ func Lint(files []File) []Problem {
 		switch {
 		case isHTML(f.Path):
 			entry := l.static && f.Path == m.Entry
-			if entry || looksLikeDocument(f.Data) {
+			// The entry and the 404 page are served as pages even when
+			// they are bare HTML; other fragments (partials) are skipped.
+			if entry || (l.static && f.Path == l.notFound) || looksLikeDocument(f.Data) {
 				l.document(f, entry)
 			}
 		case isImage(f.Path) && len(f.Data) > MaxImageBytes:

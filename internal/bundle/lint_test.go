@@ -276,6 +276,10 @@ func TestLintNestedURLPages(t *testing.T) {
 	notFound := with(File{Path: "flats.json", Data: []byte(`{"not_found":"404.html","screenshot":"screenshot.png"}`)},
 		File{Path: "404.html", Data: []byte(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Not Found</title><link rel="stylesheet" href="app.css"></head></html>`)})
 	expectWarning(t, notFound, "404.html", "relative reference app.css breaks")
+	bare := with(File{Path: "flats.json", Data: []byte(`{"not_found":"404.html","screenshot":"screenshot.png"}`)},
+		File{Path: "404.html", Data: []byte(`<h1>Not found</h1><img src="/missing.png">`)})
+	expectWarning(t, bare, "404.html", "no <title>")
+	expectWarning(t, bare, "404.html", "no file missing.png")
 }
 
 func TestLintTruncatesLongReferences(t *testing.T) {
