@@ -357,7 +357,8 @@ await tick();
 assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/listing').at(-1).body), { listing: 'hidden' });
 listingSelect = all(management, (e) => e.getAttribute('id') === 'portal-listing')[0];
 assert.equal(listingSelect.value, 'hidden');
-assert.ok(listingSelect.parentNode.textContent.includes('Hidden from relay listings now.'));
+assert.ok(listingSelect.parentNode.textContent.includes('Relays are asked to hide this flat'));
+assert.ok(!listingSelect.parentNode.textContent.includes('now.'), 'the console must not claim relays already changed');
 stopSettings();
 const analytics = await import('./analytics.js');
 assert.deepEqual(analytics.dailySeries([{ day: '2026-10-02', count: 4 }, { day: '2026-01-01', count: 99 }], 2, new Date('2026-10-03T12:00:00Z')),

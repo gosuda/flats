@@ -167,7 +167,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       select.disabled = true;
       try {
         flat = await api.setListing(slug, next);
-        toast(flat.portal_hidden ? 'Portal relay listing set to hidden.' : 'Portal relay listing set to listed.', 'success');
+        toast(flat.portal_hidden ? 'Saved: Portal relays are asked to hide this flat.' : 'Saved: Portal relays are asked to list this flat.', 'success');
       } catch (err) {
         toast(err.message, 'error');
         // The choice may be saved even when applying it failed: show the stored one.
@@ -178,8 +178,10 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       if (ctx.alive() && flat) drawNetworks();
     });
     const isPublic = visibilityOf(flat.visibility) === 'public';
+    // portal_hidden is what Flats asks the relays for, not what they show yet.
     const state = isPublic
-      ? (flat.portal_hidden ? 'Hidden from relay listings now.' : 'Shown in relay listings now.')
+      ? (flat.portal_hidden ? 'Relays are asked to hide this flat; they drop it at their next lease renewal (up to about 90 seconds).'
+        : 'Relays are asked to list this flat; they add it at their next lease renewal (up to about 90 seconds).')
       : (flat.portal_hidden ? 'Will be hidden from relay listings when public.' : 'Will be shown in relay listings when public.');
     return h('div', { class: 'networks-group field' },
       h('label', { for: id, text: 'Portal relay listing' }), select,

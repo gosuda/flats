@@ -151,7 +151,8 @@ connections when exposure is withdrawn.
   `portal.hide` host default (off, so flats are listed) and a per-flat
   override (`default`, `hidden` or `listed`, stored in `portal_listing`).
   Changing either updates a served route with `UpdateMetadata` at once;
-  relays pick it up at their next lease renewal. Hiding is not access
+  relays pick it up at their next lease renewal. `portal_hidden` on the flat
+  view is that requested listing, not the relays' observed state. Hiding is not access
   control: anyone with the URL can still open the flat. Rename redirect
   aliases are always hidden. Relays: the
   Portal CLI default (discovery, up to 3 active relays) unless

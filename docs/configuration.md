@@ -110,7 +110,7 @@ written; `flats config unset KEY` removes it.
 | `portal.relays` | `[]` (Portal defaults) | restart |
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
-| `portal.hide` | `false` (public flats appear in relay listings) | immediately |
+| `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | none (interactive login) | restart |
 
@@ -137,7 +137,11 @@ Each flat can override it in the console (Settings → Networks → Portal relay
 listing: follow the host setting, hidden or listed); the override is kept in
 `flats.db`, survives renames and Private↔Public changes, and is removed with
 the flat. Only the operator changes either, from the console; agents read the
-result as `portal_listing` and `portal_hidden` on the flat.
+result as `portal_listing` and `portal_hidden` on the flat. `portal_hidden` is
+what Flats asks the relays for: a served route's lease metadata changes at
+once, and relays apply it at their next lease renewal (up to about 90
+seconds). If that update fails, the choice stays saved, the flat logs the
+error and the next activation of the route retries it.
 
 Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole

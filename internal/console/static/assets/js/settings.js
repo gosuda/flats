@@ -354,7 +354,7 @@ function limitsForm(data, opts) {
           control('portal_discovery', discover, 'Find further relays automatically (Portal’s default). Used when Portal starts.')),
         h('div', { class: 'field field-wide field-check' },
           hide, h('label', { for: hideId, text: 'Hide public flats from relay listings' }),
-          control('portal_hide', hide, 'Keeps public URLs out of the relays’ lists of sites. It is not access control: anyone with a URL can still open the flat. Applies at once; a flat can override it under its Settings → Networks.')),
+          control('portal_hide', hide, 'Keeps public URLs out of the relays’ lists of sites. It is not access control: anyone with a URL can still open the flat. Saving updates public flats at once; relays apply it at their next lease renewal (up to about 90 seconds). A flat can override it under its Settings → Networks.')),
         FIELDS.filter((f) => f.portal).map(numberField))),
     impactSlot,
     errorSlot,
