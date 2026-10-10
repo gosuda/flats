@@ -335,7 +335,8 @@ declare class Response {
 
 /**
  * An outbound request for fetch(). Passing a Request or the incoming request
- * copies its method, URL, headers and body; init overrides them.
+ * copies its method, URL and body, and its headers into a new Headers; init
+ * overrides them. The source request is not changed.
  */
 declare class Request {
   constructor(input: string | URL | Request | Flats.IncomingRequest, init?: Flats.RequestInit);
