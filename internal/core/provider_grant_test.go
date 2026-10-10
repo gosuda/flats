@@ -287,3 +287,54 @@ func TestProviderGrantLegacyBackendRecordsOnly(t *testing.T) {
 		t.Fatal("legacy grant opened a public route")
 	}
 }
+
+// A Tailscale grant on a Public flat must keep its public endpoints visible,
+// including a registered route that is degraded and may still recover: the
+// provider manager keeps one status per host, so a private-only request
+// would hide them.
+func TestProviderGrantKeepsPublicStatus(t *testing.T) {
+	for _, state := range []string{"ready", "needs-login", "error"} {
+		t.Run(state, func(t *testing.T) {
+			s, _ := newTestService(t)
+			network := newLifecycleRouteNet()
+			s.cfg.Lifecycle = network
+			publicLifecycleFlat(t, s, "keep", store.ProviderFunnel)
+			if state != "ready" {
+				network.degraded = map[ProviderID]string{ProviderFunnel: state}
+			}
+			if err := s.SetProviderPermission(t.Context(), "keep", store.ProviderTailscale, true, ViaConsole); err != nil {
+				t.Fatal(err)
+			}
+			fv, err := s.GetFlat(t.Context(), "keep")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fv.PublicURL != "https://keep.tailscale-funnel.test" || fv.ConnectionState != state {
+				t.Fatalf("public status lost after grant: public_url=%q state=%q", fv.PublicURL, fv.ConnectionState)
+			}
+			if fv.PrivateURL != "https://keep.tailscale.test" {
+				t.Fatalf("private_url = %q", fv.PrivateURL)
+			}
+		})
+	}
+}
+
+// A public route that was stopped is not reopened by a later grant.
+func TestProviderGrantDoesNotReopenStoppedPublicRoute(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	publicLifecycleFlat(t, s, "halt", store.ProviderPortal, store.ProviderFunnel)
+	if err := network.StopProviderRoutes(t.Context(), "halt", ProviderPortal); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetProviderPermission(t.Context(), "halt", store.ProviderTailscale, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if network.serves("halt", ProviderPortal) {
+		t.Fatal("grant reopened a stopped public route")
+	}
+	if !network.serves("halt", ProviderFunnel) || !network.serves("halt", ProviderTailscale) {
+		t.Fatal("grant lost a serving route")
+	}
+}

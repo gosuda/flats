@@ -359,11 +359,13 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 
 // applyProviderGrant opens the current route a fresh grant adds without a new
 // approval: Private Tailscale for a flat with a live runtime. Granting Portal
-// or Funnel opens nothing here; on a Private flat they cannot serve, and on a
-// Public flat a new public route waits for the next approved transition so a
-// grant never widens public exposure. The legacy backend serves its private
-// host whatever the grant, so it needs no re-run. Only the Tailscale endpoint
-// decides success; a sibling route's error is logged, not returned.
+// or Funnel opens nothing here, so a grant alone never widens public
+// exposure; on a Private flat they cannot serve, and on a Public flat they are
+// served when ensureExposure next runs (redeploy, approved transition or host
+// restart). The legacy backend serves its private host whatever the grant, so
+// it needs no re-run. Only the Tailscale endpoint decides success; a sibling
+// route's error is logged, not returned. Rename aliases keep their routes
+// until the next restart re-serves them.
 func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
 	ln, ok := s.lifecycleNet()
 	if !ok || provider != ProviderTailscale || s.state(f.Slug).cur.Load() == nil {
@@ -380,19 +382,22 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 	if f.Visibility.Public() {
 		// The provider manager records one status per host, so re-issue the
 		// public request to keep the public endpoints observable, limited to
-		// the public providers that already serve this flat.
+		// the public providers the last exposure already used. A degraded
+		// route (needs-login, error) is still registered and may recover, so
+		// only stopped and unavailable endpoints are left out.
 		observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
 		if !ok {
-			return nil
+			return errors.New("cannot read the current public routes")
 		}
 		status, err := observer.ExposureStatus(ctx, f.Slug)
 		if err != nil {
-			return err
+			return fmt.Errorf("read current routes: %w", err)
 		}
 		serving := req.Permitted
 		for _, ep := range status.Endpoints {
 			if (ep.Provider == ProviderFunnel || ep.Provider == ProviderPortal) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
-				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) && routeOpen(ep.State) {
+				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) &&
+				ep.State != "" && ep.State != "stopped" && ep.State != "unavailable" {
 				serving = append(serving, ep.Provider)
 			}
 		}
@@ -405,7 +410,7 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 		s.state(f.Slug).privateServed = true
 	}
 	for _, ep := range res.Endpoints {
-		if ep.Provider == ProviderTailscale && ep.Host == f.Slug && ep.Audience == AudienceCurrent && ep.Configured && ep.Permitted && (routeOpen(ep.State) || ep.State == "needs-login") {
+		if ep.Provider == ProviderTailscale && ep.Host == f.Slug && ep.Audience == AudienceCurrent && ep.Configured && ep.Permitted && privateRouteOpen(ep.State) {
 			if err != nil {
 				s.Event(ctx, f.Slug, "warn", "exposure", "tailscale route opened; another route reported: "+err.Error(), nil)
 			}
@@ -418,9 +423,14 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 	return err
 }
 
-// routeOpen reports whether an endpoint state is a registered, serving route.
-func routeOpen(state string) bool {
-	return state == "ready" || state == "starting" || state == "key-expiring"
+// privateRouteOpen recognizes the states of a registered private route, as
+// privateRegistrationOpened does.
+func privateRouteOpen(state string) bool {
+	switch state {
+	case "ready", "starting", "needs-login", "key-expiring":
+		return true
+	}
+	return false
 }
 
 func (s *Service) resumeApplying(ctx context.Context) {
@@ -955,11 +965,8 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 // error when a sibling provider failed.
 func privateRegistrationOpened(res ExposureResult, host string, audience ExposureAudience) bool {
 	for _, ep := range res.Endpoints {
-		if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted {
-			switch ep.State {
-			case "ready", "starting", "needs-login", "key-expiring":
-				return true
-			}
+		if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted && privateRouteOpen(ep.State) {
+			return true
 		}
 	}
 	return false

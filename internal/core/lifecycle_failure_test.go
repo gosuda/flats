@@ -25,6 +25,11 @@ type lifecycleRouteKey struct {
 
 // lifecycleRouteNet keeps exact route registrations so partial exposure and
 // teardown failures can be exercised without touching a live provider.
+type lifecycleObserved struct {
+	ep         ExposureEndpoint
+	registered bool
+}
+
 type lifecycleRouteNet struct {
 	mu                    sync.Mutex
 	routes                map[lifecycleRouteKey]http.Handler
@@ -34,11 +39,15 @@ type lifecycleRouteNet struct {
 	failPublic            error
 	failPrivate           error
 	failPrivateAfterLocal error
-	failOpen              map[ProviderID]error // per-provider open failure; siblings still open
-	stopPublic            error
-	stopExposure          map[string]error
-	stopSlug              map[string]error
-	stopSlugCalls         map[string]int
+	failOpen              map[ProviderID]error  // per-provider open failure; siblings still open
+	degraded              map[ProviderID]string // status state of a registered route
+	// observed mirrors provider.Manager.observe: one endpoint list per host,
+	// replaced by every request for that host.
+	observed      map[string][]lifecycleObserved
+	stopPublic    error
+	stopExposure  map[string]error
+	stopSlug      map[string]error
+	stopSlugCalls map[string]int
 }
 
 func newLifecycleRouteNet() *lifecycleRouteNet {
@@ -48,9 +57,26 @@ func newLifecycleRouteNet() *lifecycleRouteNet {
 	}
 }
 
-func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest) (ExposureResult, error) {
+func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest) (res ExposureResult, err error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	defer func() {
+		// The synthetic failPublic/failPrivate errors return no endpoints,
+		// which the real manager never does for a route failure; keep the
+		// previous observation for them.
+		if len(res.Endpoints) == 0 {
+			return
+		}
+		if n.observed == nil {
+			n.observed = make(map[string][]lifecycleObserved)
+		}
+		obs := make([]lifecycleObserved, len(res.Endpoints))
+		for i, ep := range res.Endpoints {
+			_, registered := n.routes[lifecycleRouteKey{host: req.Host, provider: ep.Provider}]
+			obs[i] = lifecycleObserved{ep: ep, registered: registered}
+		}
+		n.observed[req.Host] = obs
+	}()
 	if req.Visibility == "public" && n.failPublic != nil {
 		return ExposureResult{}, n.failPublic
 	}
@@ -76,7 +102,6 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 			ids = append(ids, ProviderTailscale)
 		}
 	}
-	res := ExposureResult{}
 	var openErrs []error
 	for _, id := range ids {
 		if id == ProviderTailscale && n.failPrivateAfterLocal != nil {
@@ -189,6 +214,24 @@ func (n *lifecycleRouteNet) ExposureStatus(_ context.Context, host string) (Expo
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	res := ExposureResult{}
+	if obs, ok := n.observed[host]; ok {
+		// Like provider.Manager.ExposureStatus: only the last request's
+		// endpoints are visible, refreshed from the registered routes.
+		for _, o := range obs {
+			ep := o.ep
+			if _, ok := n.routes[lifecycleRouteKey{host: host, provider: ep.Provider}]; ok {
+				ep.URL, ep.State = fmt.Sprintf("https://%s.%s.test", host, ep.Provider), "ready"
+				if st := n.degraded[ep.Provider]; st != "" {
+					ep.State = st
+				}
+				ep.Ready = ep.State == "ready"
+			} else if o.registered {
+				ep.URL, ep.State, ep.Ready = "", "stopped", false
+			}
+			res.Endpoints = append(res.Endpoints, ep)
+		}
+		return res, nil
+	}
 	for key := range n.routes {
 		if key.host == host {
 			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: key.provider, URL: fmt.Sprintf("https://%s.%s.test", host, key.provider), State: "ready", Configured: true, Permitted: true, Ready: true, Audience: AudienceCurrent, Host: host})
