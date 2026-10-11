@@ -60,11 +60,13 @@ clean development build to its commit.
    ```
 
 4. The `Release` workflow (`.github/workflows/release.yml`) refuses tags that
-   are not on `main` and runs `go vet` and `go test` in a read-only job. A
-   second job builds the archives with `scripts/build-release.sh`, refuses
+   are not on `main`, then runs `go vet` and `go test` in read-only jobs split
+   into the same shards as CI (`scripts/ci-test.sh`), so the docs tests'
+   wall-clock budgets run alone rather than beside every other package. The
+   release job builds the archives with `scripts/build-release.sh`, refuses
    binaries whose build info is not clean tagged source, attests the archives
    and creates the release with generated notes. A stable tag becomes latest.
-   A third job pushes and attests the container image.
+   A last job pushes and attests the container image.
 5. Verify the published release before announcing it:
 
    ```sh
@@ -96,8 +98,9 @@ to such a release by running the workflow manually from `main` with its tag:
 gh workflow run release.yml --repo gosuda/flats --ref main -f tag=v0.1.0
 ```
 
-The workflow tests the tag's source, builds it with the tooling from the
-workflow's commit and uploads the archives, then `checksums.txt`. The upload
+The workflow tests the tag's source with the shard script and builds it with
+the tooling, both from the workflow's commit, and uploads the archives, then
+`checksums.txt`. The upload
 fails if an asset with the same name already exists; published assets are
 never replaced. If a backfill fails partway, delete every asset it uploaded
 and run it again: rebuilt archives are not byte-identical, so never mix

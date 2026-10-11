@@ -27,9 +27,9 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  test:
+  resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     outputs:
       commit: ${{ steps.resolve.outputs.commit }}
     steps:
@@ -48,23 +48,52 @@ jobs:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
       - name: Require a commit on main
         id: resolve
         run: |
           commit=$(git rev-parse "$TAG^{commit}")
           git merge-base --is-ancestor "$commit" origin/main
           echo "commit=$commit" >>"$GITHUB_OUTPUT"
+
+  # go test ./... split into the same parallel shards as CI. A single runner
+  # running every package at once misses the wall-clock budgets of the docs
+  # tests that CI runs alone; see scripts/ci-test.sh.
+  test:
+    name: test (${{ matrix.shard }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, other]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      # The shard script comes from the workflow's commit, like the release
+      # tooling, so a tag cut before it existed can still be tested. Each
+      # package's shards complement each other, so the shards still cover
+      # exactly go test ./... of the tag's source.
+      - uses: actions/checkout@v4
+        with:
+          path: .release-tools
+          sparse-checkout: scripts/ci-test.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        if: matrix.shard == 'other'
+        run: go vet ./...
       - name: Test
-        run: |
-          go vet ./...
-          go test ./...
+        run: .release-tools/scripts/ci-test.sh "${{ matrix.shard }}"
 
   release:
-    needs: test
+    needs: [resolve, test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -72,10 +101,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # Build the exact commit the test job checked, even if the tag moved.
+      # Build the exact commit the resolve job checked, even if the tag moved.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.test.outputs.commit }}
+          ref: ${{ needs.resolve.outputs.commit }}
           persist-credentials: false
       # The release tooling comes from the workflow's own commit, so a tag cut
       # before the tooling existed can still be built.
@@ -94,7 +123,7 @@ jobs:
           cache: true
       - name: Build archives
         env:
-          COMMIT: ${{ needs.test.outputs.commit }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           FLATS_SOURCE_DIR="$PWD" .release-tools/scripts/build-release.sh "$TAG" "$RUNNER_TEMP/dist"
           for archive in "$RUNNER_TEMP"/dist/*.tar.gz; do
@@ -131,7 +160,7 @@ jobs:
           gh release create "$TAG" "$RUNNER_TEMP"/dist/* --verify-tag --generate-notes --title "$TAG" "$@"
 
   image:
-    needs: [test, release]
+    needs: [resolve, release]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -181,7 +210,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }},enable=${{ github.event_name == 'push' }}
             type=raw,value=latest,enable=${{ github.event_name == 'push' && !contains(env.TAG, '-') }}
           labels: |
-            org.opencontainers.image.revision=${{ needs.test.outputs.commit }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.commit }}
             org.opencontainers.image.version=${{ env.TAG }}
       - name: Build and push
         id: push
