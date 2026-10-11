@@ -8,17 +8,23 @@ available.
 ## Pull-request baseline
 
 `.github/workflows/ci.yml` runs on every PR and push to main, with read-only
-repository permission and no secrets. It uses the Go version from `go.mod`:
+repository permission and no secrets. It uses the Go version from `go.mod`
+and runs these checks in parallel jobs:
 
 ```sh
 go mod tidy                         # CI requires no go.mod/go.sum diff
-go test ./...
 go vet ./...
+go test ./...                       # as five shards: scripts/ci-test.sh <shard>
 go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
 go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/flats-linux-amd64 ./cmd/flats
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/flats-linux-arm64 ./cmd/flats
 ```
+
+`scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into
+their long soak tests (`-run`) and everything else (`-skip` on the same
+pattern), so together the shards always run the whole suite. The
+`install-script` and `container` jobs build every release archive CGO-free:
+darwin/amd64 and darwin/arm64 on macOS, linux/amd64 and linux/arm64 in the
+container job.
 
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the

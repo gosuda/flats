@@ -1,0 +1,58 @@
+name: Set up Go
+description: >
+  Installs the Go version from go.mod and restores the Go caches. Each job has
+  its own build cache: setup-go's cache shares one key across all jobs, so the
+  first job to finish decided what every job restored. The module cache is
+  shared and saved by one job per OS. Caches are saved only by pushes to main,
+  which pull requests can restore, to stay within the repository's cache quota.
+
+inputs:
+  cache-key:
+    description: Distinct name for the calling job's build cache.
+    required: true
+  save-modules:
+    description: Whether this job saves the shared module cache on main.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: false
+    - id: go
+      shell: bash
+      run: |
+        echo "build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
+        echo "mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
+        echo "hash=${{ hashFiles('go.mod', 'go.sum') }}" >>"$GITHUB_OUTPUT"
+        if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+          echo "save=true" >>"$GITHUB_OUTPUT"
+        fi
+
+    - if: steps.go.outputs.save == 'true' && inputs.save-modules == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.go.outputs.mod }}
+        key: go-mod-${{ runner.os }}-${{ steps.go.outputs.hash }}
+        restore-keys: go-mod-${{ runner.os }}-
+    - if: steps.go.outputs.save != 'true' || inputs.save-modules != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.go.outputs.mod }}
+        key: go-mod-${{ runner.os }}-${{ steps.go.outputs.hash }}
+        restore-keys: go-mod-${{ runner.os }}-
+
+    - if: steps.go.outputs.save == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.go.outputs.build }}
+        key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}--${{ steps.go.outputs.hash }}
+        restore-keys: go-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}--
+    - if: steps.go.outputs.save != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.go.outputs.build }}
+        key: go-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}--${{ steps.go.outputs.hash }}
+        restore-keys: go-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}--
