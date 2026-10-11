@@ -771,15 +771,18 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	now := s.now()
 	f := store.Flat{Slug: slugName, Name: name, Visibility: store.Private, CreatedAt: now, UpdatedAt: now}
-	// On a tailnet host the operator's choice of private backend is the grant
-	// for new flats' private Tailscale routes. The flat, the grant and the
-	// events recording both are written together.
+	// A new flat inherits the host's default providers: the private default
+	// (network.default_private, else network.private_backend) and the public
+	// default (network.default_public). It stays Private either way: a public
+	// grant is only a permission and opens nothing until an approved
+	// visibility change. The flat, the grants and the events recording them
+	// are written together.
 	var providers []string
 	events := []store.Event{{Time: now, Level: "info", Kind: "flat", Message: "flat created via " + string(via)}}
-	if s.cfg.PrivateBackend == "tailscale" {
-		providers = append(providers, store.ProviderTailscale)
+	for _, d := range s.newFlatProviders() {
+		providers = append(providers, d.provider)
 		events = append(events, store.Event{Time: now, Level: "info", Kind: "provider",
-			Message: fmt.Sprintf("provider %s permitted=true by default (network.private_backend is %s)", store.ProviderTailscale, s.cfg.PrivateBackend)})
+			Message: fmt.Sprintf("provider %s permitted=true by default (%s)", d.provider, d.why)})
 	}
 	if err := s.st.CreateFlatRecorded(ctx, f, providers, events); err != nil {
 		if errors.Is(err, store.ErrExists) {
@@ -789,6 +792,39 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	s.state(slugName)
 	return s.view(ctx, f), nil
+}
+
+type defaultGrant struct{ provider, why string }
+
+// newFlatProviders returns the providers a new flat is allowed on from the
+// start. A configured default that the host no longer permits is skipped.
+func (s *Service) newFlatProviders() []defaultGrant {
+	n := s.settings.network()
+	permitted := s.settings.permitted()
+	var out []defaultGrant
+	switch {
+	case n.DefaultPrivate == store.ProviderTailscale && slices.Contains(permitted, store.ProviderTailscale):
+		out = append(out, defaultGrant{store.ProviderTailscale, "network.default_private is tailscale"})
+	case n.DefaultPrivate == "" && s.cfg.PrivateBackend == "tailscale":
+		out = append(out, defaultGrant{store.ProviderTailscale, "network.private_backend is tailscale"})
+	}
+	if p := n.DefaultPublic; p != "" && slices.Contains(permitted, p) {
+		out = append(out, defaultGrant{p, "network.default_public is " + p})
+	}
+	return out
+}
+
+// DefaultProviders reports the providers new flats inherit, for the console.
+func (s *Service) DefaultProviders() (private, public string) {
+	n := s.settings.network()
+	private = n.DefaultPrivate
+	if private == "" {
+		private = s.cfg.PrivateBackend
+	}
+	if private == "" {
+		private = "local"
+	}
+	return private, n.DefaultPublic
 }
 
 // RenameDisplay changes the display name.

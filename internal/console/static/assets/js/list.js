@@ -2,7 +2,7 @@
 
 import { h, clear, icon, timeEl, visibilityBadge, publicURL } from './dom.js';
 import { api, thumbnail } from './api.js';
-import { menu, errorPanel, loading, extLink, busy } from './ui.js';
+import { menu, errorPanel, loading, extLink, busy, openLinks } from './ui.js';
 import { publishDraft } from './actions.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
@@ -115,10 +115,8 @@ export function mount(main, _params, ctx) {
       actions.appendChild(pub);
     }
     if (f.live_version) {
-      actions.appendChild(extLink(f.private_url, icon('external', `Open ${f.name || f.slug} (private URL)`), 'icon-btn'));
-      if (publicURL(f)) {
-        actions.appendChild(extLink(publicURL(f), icon('globe', `Open ${f.name || f.slug} (public URL: anyone with it can open the flat)`), 'icon-btn'));
-      }
+      const open = openLinks(f);
+      if (open) actions.appendChild(open);
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
       { label: 'Share', onSelect: () => shareDialog(f, load) },

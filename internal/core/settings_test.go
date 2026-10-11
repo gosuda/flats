@@ -59,6 +59,8 @@ func formatDefault(v any) string {
 		if len(v) == 0 {
 			return ""
 		}
+	case string:
+		return v
 	}
 	return "?"
 }

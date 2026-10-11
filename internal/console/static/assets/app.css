@@ -206,6 +206,13 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .provider.is-on { border-color: var(--border-strong); }
 .provider-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .provider-head h4 { font-size: 15px; margin: 0; }
+.provider-head h4 .badge { margin-left: 6px; }
+.badge-default { border-style: dashed; }
+.provider-default { display: grid; gap: 4px; margin: 10px 0 4px; max-width: 420px; }
+.menu-item .menu-label { display: block; }
+.menu-item .menu-detail { display: block; font-family: var(--mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+a.menu-item { text-decoration: none; color: inherit; display: block; }
+.site-address .menu-wrap { display: inline-flex; vertical-align: middle; }
 .provider-head p { margin: 2px 0 0; }
 .provider > p { margin: 8px 0 0; }
 .provider .facts, .provider .net, .provider-form { margin-top: 10px; }

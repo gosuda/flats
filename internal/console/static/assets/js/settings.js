@@ -115,12 +115,57 @@ export function providerGroups(list, data, opts) {
   const group = (scope, title, hint) => h('section', { class: 'provider-group', 'aria-labelledby': 'providers-' + scope },
     h('h3', { id: 'providers-' + scope, text: title }),
     h('p', { class: 'muted small', text: hint }),
+    defaultField(scope, list, data, opts),
     list.filter((p) => p.scope === scope).map((p) => providerPanel(p, data, opts)));
   return [
-    h('p', { class: 'muted', text: 'Local is always on. Turn on another provider to make it available, then allow it on each flat that should use it. Turning a provider on does not publish a flat or make it public.' }),
+    h('p', { class: 'muted', text: 'Local is always on. Turn on another provider to make it available, then allow it on each flat that should use it. Each mode has a default: a new flat starts allowed on the defaults only, and is always created Private. Turning a provider on does not publish a flat or make it public.' }),
     group('private', 'Private', 'Reachable from this device or your tailnet.'),
     group('public', 'Public', 'Reachable from the internet. A flat goes public only after you approve it.'),
   ];
+}
+
+// DEFAULT_KEYS are the settings naming the provider new flats inherit.
+const DEFAULT_KEYS = { private: 'default_private_provider', public: 'default_public_provider' };
+
+// effectiveDefault is the provider new flats inherit in scope ('' = none).
+export function effectiveDefault(scope, data) {
+  const v = (data.settings || {})[DEFAULT_KEYS[scope]] || '';
+  if (scope === 'private' && !v) return (data.config && data.config.network.private_backend) || 'local';
+  return v;
+}
+
+// defaultField picks the provider every new flat is allowed on for scope.
+// Only providers turned on for the host can be the default.
+function defaultField(scope, list, data, opts) {
+  const key = DEFAULT_KEYS[scope];
+  const id = 'default-' + scope;
+  const current = effectiveDefault(scope, data);
+  const choices = list.filter((p) => p.scope === scope && (p.id === 'local' || p.enabled));
+  const options = scope === 'public' ? [['', 'None (new flats get no public provider)']] : [];
+  for (const p of choices) options.push([p.id, (PROVIDER_INFO[p.id] || { label: p.id }).label]);
+  const select = h('select', { id, 'aria-describedby': id + '-help' },
+    options.map(([value, text]) => h('option', { value, text, selected: value === current })));
+  select.value = current;
+  select.addEventListener('change', async () => {
+    const next = select.value;
+    select.disabled = true;
+    try {
+      await api.saveSettings({ [key]: next }, data.config ? data.config.etag : '');
+      const label = next ? (PROVIDER_INFO[next] || { label: next }).label : 'none';
+      toast(`New flats now start with ${label} as the ${scope} provider.`, 'success');
+      await opts.reload();
+    } catch (err) {
+      select.value = current;
+      select.disabled = false;
+      await infoDialog('Cannot change the default provider', errorPanel(err));
+    }
+  });
+  const help = scope === 'public'
+    ? 'New flats are allowed on this provider only, and stay Private until you approve making them public. Turn more public providers on to choose among them.'
+    : 'New flats are allowed on this provider. Local is always allowed as well.';
+  return h('div', { class: 'field provider-default' },
+    h('label', { for: id, text: 'Default for new flats' }), select,
+    h('span', { class: 'muted small', id: id + '-help', text: help }));
 }
 
 function providerPanel(p, data, opts) {
@@ -128,6 +173,8 @@ function providerPanel(p, data, opts) {
   const local = p.id === 'local';
   const state = local ? h('span', { class: 'badge badge-ready', text: 'Always on' })
     : h('span', { class: 'badge' + (p.enabled ? ' badge-ready' : ''), text: p.enabled ? 'On' : 'Off' });
+  const isDefault = effectiveDefault(p.scope, data) === p.id;
+  const defBadge = isDefault ? h('span', { class: 'badge badge-default', text: 'Default' }) : null;
   let toggle = null;
   if (!local) {
     // zrok can be turned on only once an account is connected.
@@ -143,7 +190,7 @@ function providerPanel(p, data, opts) {
     : (local ? null : h('p', { class: 'muted small', text: 'Not allowed on any flat yet.' }));
   return h('article', { class: 'provider' + (p.enabled ? ' is-on' : ''), id: 'provider-' + p.id },
     h('div', { class: 'provider-head' },
-      h('div', null, h('h4', null, info.label, state), h('p', { class: 'muted small', text: info.what })),
+      h('div', null, h('h4', null, info.label, state, defBadge), h('p', { class: 'muted small', text: info.what })),
       toggle),
     p.locked ? h('p', { class: 'muted small', text: p.locked }) : null,
     used,
@@ -275,7 +322,7 @@ async function setHostProvider(p, info, enabled, etag) {
       h('p', { text: info.what }),
       p.scope === 'public' ? h('p', { class: 'alert alert-warn', text: 'A flat made public through this provider can be opened by anyone on the internet. Making a flat public still needs your approval.' }) : null,
       h('p', { class: 'muted', text: 'Saved to config.json and applied now. Nothing is served until you allow it on a flat.' }),
-    ] : [h('p', { text: `${info.label} stops being available. Flats that allow it must stop allowing it first.` })],
+    ] : [h('p', { text: `${info.label} stops being available. Flats that allow it must stop allowing it first. If it is the default for new flats, the default is cleared.` })],
     confirmLabel: enabled ? 'Turn on' : 'Turn off',
   });
   if (!ok) return false;
