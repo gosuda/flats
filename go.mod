@@ -7,7 +7,7 @@ require (
 	github.com/go-openapi/strfmt v0.24.0
 	github.com/gosuda/portal-tunnel/v2 v2.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/oesni/libtunnel v0.0.0-20261011192333-2521d0537b48
+	github.com/oesni/libtunnel v0.0.0-20261011195643-61501adfbebe
 	github.com/openziti/sdk-golang v1.2.8
 	github.com/openziti/zrok/v2 v2.0.8
 	github.com/rs/zerolog v1.35.1

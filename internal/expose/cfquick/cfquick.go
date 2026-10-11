@@ -288,19 +288,41 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 // ctx. On failure the session is cancelled.
 func (n *Net) resolve(ctx context.Context, e *entry, spec string) (session, string, error) {
 	sess := n.open(spec, n.tunnelLogger(e.slug))
-	got := make(chan string, 1)
-	go func() { got <- sess.Hostname() }()
+	// A spec that could not even be parsed yields a tunnel that has already
+	// failed: report that instead of resolving it.
+	if err := sess.Err(); err != nil {
+		sess.Cancel()
+		return nil, "", err
+	}
+	type result struct {
+		host string
+		err  error
+	}
+	got := make(chan result, 1)
+	go func() {
+		// A panic here would take the whole host down; make it this
+		// tunnel's failure instead.
+		defer func() {
+			if r := recover(); r != nil {
+				got <- result{err: fmt.Errorf("tunnel failed: %v", r)}
+			}
+		}()
+		got <- result{host: sess.Hostname()}
+	}()
 	select {
-	case host := <-got:
-		if host == "" {
-			err := sess.Err()
+	case r := <-got:
+		if r.host == "" {
+			err := r.err
+			if err == nil {
+				err = sess.Err()
+			}
 			if err == nil {
 				err = errors.New("no hostname")
 			}
 			sess.Cancel()
 			return nil, "", err
 		}
-		return sess, host, nil
+		return sess, r.host, nil
 	case <-ctx.Done():
 		sess.Cancel()
 		return nil, "", ctx.Err()

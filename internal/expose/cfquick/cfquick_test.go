@@ -452,3 +452,32 @@ func TestStopDuringReplacementClosesTheReplacement(t *testing.T) {
 		t.Error("Stop left the slug served")
 	}
 }
+
+// A corrupt record must not crash the host: through the real libtunnel
+// adapter, replaying it fails as an error, which Serve answers with a fresh
+// mint. Only the replay is exercised here, so nothing contacts Cloudflare.
+func TestCorruptRecordFailsWithoutPanic(t *testing.T) {
+	n := newTestNet(t, t.TempDir(), &fakeOpener{})
+	n.open = libtunnelOpener
+	e := &entry{slug: "demo", stop: make(chan struct{})}
+	for _, spec := range []string{`{"stale":true}`, "{not json", `{"backend":"other","spec":{}}`} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _, err := n.resolve(ctx, e, spec)
+		cancel()
+		if err == nil {
+			t.Errorf("replaying %q succeeded", spec)
+		}
+	}
+}
+
+// A session whose hostname resolution panics fails that tunnel instead of
+// the process.
+func TestHostnamePanicBecomesAnError(t *testing.T) {
+	o := &fakeOpener{next: func(int, string) *fakeSession {
+		return &fakeSession{mintFn: func() (string, error) { panic("boom") }}
+	}}
+	n := newTestNet(t, t.TempDir(), o)
+	if _, err := n.Serve(context.Background(), "demo", http.NotFoundHandler()); err == nil {
+		t.Fatal("Serve succeeded after a panicking mint")
+	}
+}
