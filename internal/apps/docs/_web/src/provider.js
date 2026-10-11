@@ -1,4 +1,5 @@
 import * as Y from "yjs";
+import { randomUUID } from "./uuid.js";
 import {
   Awareness,
   encodeAwarenessUpdate,
@@ -90,7 +91,7 @@ export class Provider {
           throw new Error(
             "This edit is too large to sync. Download your text before reloading.",
           );
-        const id = crypto.randomUUID();
+        const id = randomUUID();
         this.model.add(id, base64(u));
         if (this.model.connected) this.send({ t: "update", id, u: base64(u) });
         this.state();
