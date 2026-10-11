@@ -18,9 +18,10 @@ import (
 )
 
 type fakeSession struct {
-	host   string
-	spec   string
-	mintFn func() (string, error) // overrides host when set
+	host        string
+	spec        string
+	mintFn      func() (string, error) // overrides host when set
+	serializeFn func() string          // overrides spec when set
 
 	mu       sync.Mutex
 	origin   *url.URL
@@ -42,7 +43,17 @@ func (s *fakeSession) Hostname() string {
 	}
 	return s.host
 }
-func (s *fakeSession) Serialize() string { return s.spec }
+func (s *fakeSession) Serialize() string {
+	if s.serializeFn != nil {
+		return s.serializeFn()
+	}
+	return s.spec
+}
+func (s *fakeSession) isCanceled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.canceled
+}
 func (s *fakeSession) Err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -402,5 +413,42 @@ func TestNewIsolatesTheLibtunnelEnvironment(t *testing.T) {
 	newTestNet(t, t.TempDir(), &fakeOpener{})
 	if _, ok := v1.LookupEnv(v1.LocalURLEnv); ok {
 		t.Error("libtunnel still reads the process environment after New")
+	}
+}
+
+// A Stop that overlaps a replacement must close the replacement too: the
+// supervisor may install it after Stop began, and Stop must not report the
+// tunnel closed while that one runs.
+func TestStopDuringReplacementClosesTheReplacement(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	o := &fakeOpener{next: func(i int, spec string) *fakeSession {
+		if i == 0 {
+			return &fakeSession{host: "t0.trycloudflare.com", spec: `{"tunnel":0}`}
+		}
+		return &fakeSession{host: "t1.trycloudflare.com", serializeFn: func() string {
+			close(entered)
+			<-release
+			return `{"tunnel":1}`
+		}}
+	}}
+	n := newTestNet(t, t.TempDir(), o)
+	if _, err := n.Serve(context.Background(), "demo", http.NotFoundHandler()); err != nil {
+		t.Fatal(err)
+	}
+	o.session(0).emit(v1.EventGone)
+	<-entered // the replacement is minted and being recorded
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.Stop("demo") }()
+	time.Sleep(50 * time.Millisecond) // let Stop begin before the replacement is installed
+	close(release)
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	if !o.session(1).isCanceled() {
+		t.Fatal("Stop reported success while the replacement tunnel still runs")
+	}
+	if n.URL("demo") != "" {
+		t.Error("Stop left the slug served")
 	}
 }

@@ -279,7 +279,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler) (string, e
 	n.entries[slug] = e
 	n.mu.Unlock()
 
-	n.start(e, sess, host)
+	n.start(e, sess, host) // e is new and unstopped; the slug lock excludes Stop
 	go n.supervise(e)
 	return "https://" + host, nil
 }
@@ -310,13 +310,21 @@ func (n *Net) resolve(ctx context.Context, e *entry, spec string) (session, stri
 	}
 }
 
-// start makes sess the entry's tunnel and connects it to the origin.
-func (n *Net) start(e *entry, sess session, host string) {
+// start makes sess the entry's tunnel and connects it to the origin. Once a
+// Stop has begun it cancels sess instead and reports false, so a replacement
+// minted while stopping never runs untracked.
+func (n *Net) start(e *entry, sess session, host string) bool {
 	e.mu.Lock()
+	if e.stopping {
+		e.mu.Unlock()
+		sess.Cancel()
+		return false
+	}
 	e.sess, e.hostname, e.gone = sess, host, false
 	e.state, e.detail = "starting", "connecting to the Cloudflare edge"
 	e.mu.Unlock()
 	sess.Start(e.origin, func(ev v1.Event) { n.event(e, sess, ev) })
+	return true
 }
 
 func (n *Net) event(e *entry, sess session, ev v1.Event) {
@@ -396,7 +404,9 @@ func (n *Net) supervise(e *entry) {
 					n.logf("cloudflare-quick: %s: new public URL https://%s (was https://%s)", e.slug, host, old)
 				}
 				n.recordSpec(e.slug, spec, next)
-				n.start(e, next, host)
+				if !n.start(e, next, host) {
+					return
+				}
 				break
 			}
 			e.mu.Lock()
@@ -475,7 +485,6 @@ func (n *Net) stopEntry(e *entry) error {
 		e.stopping = true
 		close(e.stop)
 	}
-	sess := e.sess
 	e.mu.Unlock()
 	timeout := time.NewTimer(n.cfg.ShutdownTimeout)
 	defer timeout.Stop()
@@ -484,6 +493,11 @@ func (n *Net) stopEntry(e *entry) error {
 	case <-timeout.C:
 		return fmt.Errorf("cloudflare-quick: %s: tunnel supervisor did not stop within %s", e.slug, n.cfg.ShutdownTimeout)
 	}
+	// Read the tunnel only after supervise returned: a replacement it
+	// installed before seeing the stop is the one to close.
+	e.mu.Lock()
+	sess := e.sess
+	e.mu.Unlock()
 	if sess != nil {
 		sess.Cancel()
 		select {
