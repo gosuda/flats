@@ -24,6 +24,10 @@ import (
 	"github.com/openziti/zrok/v2/rest_model_zrok"
 )
 
+// errNotEnabled reports a zrok environment directory without a connected
+// account.
+var errNotEnabled = errors.New("no zrok account is connected; enter the account token under Settings → Network providers → zrok")
+
 // errNameTaken reports a name another zrok account already owns.
 var errNameTaken = errors.New("another zrok account owns this name")
 
@@ -99,7 +103,7 @@ func loadRoot(dir string) (env_core.Root, string, error) {
 		return nil, "", err
 	}
 	if !root.IsEnabled() {
-		return nil, "", errors.New("the zrok environment is not enabled; run `zrok2 enable <account token>` as the user that runs flats")
+		return nil, "", errNotEnabled
 	}
 	identity, err := root.ZitiIdentityNamed(root.EnvironmentIdentityName())
 	if err != nil {
@@ -131,18 +135,9 @@ func (b *sdkBackend) zrokClient(ctx context.Context) (*rest_client_zrok.Zrok, er
 		return c, nil
 	}
 	endpoint, _ := b.root.ApiEndpoint()
-	u, err := url.Parse(endpoint)
+	c, err := controllerClient(ctx, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("zrok api endpoint %q: %w", endpoint, err)
-	}
-	transport := httptransport.New(u.Host, "/api/v2", []string{u.Scheme})
-	transport.Producers["application/zrok.v1+json"] = runtime.JSONProducer()
-	transport.Consumers["application/zrok.v1+json"] = runtime.JSONConsumer()
-	c = rest_client_zrok.New(transport, strfmt.Default)
-	req := metadata.NewClientVersionCheckParamsWithContext(ctx)
-	req.Body = metadata.ClientVersionCheckBody{ClientVersion: build.String()}
-	if _, err := c.Metadata.ClientVersionCheck(req); err != nil {
-		return nil, fmt.Errorf("zrok api endpoint %q: %w", endpoint, err)
+		return nil, err
 	}
 	b.mu.Lock()
 	if b.client == nil {
@@ -150,6 +145,25 @@ func (b *sdkBackend) zrokClient(ctx context.Context) (*rest_client_zrok.Zrok, er
 	}
 	c = b.client
 	b.mu.Unlock()
+	return c, nil
+}
+
+// controllerClient connects to the zrok controller at endpoint and checks
+// the client version under ctx.
+func controllerClient(ctx context.Context, endpoint string) (*rest_client_zrok.Zrok, error) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("zrok api endpoint %q: %w", endpoint, err)
+	}
+	transport := httptransport.New(u.Host, "/api/v2", []string{u.Scheme})
+	transport.Producers["application/zrok.v1+json"] = runtime.JSONProducer()
+	transport.Consumers["application/zrok.v1+json"] = runtime.JSONConsumer()
+	c := rest_client_zrok.New(transport, strfmt.Default)
+	req := metadata.NewClientVersionCheckParamsWithContext(ctx)
+	req.Body = metadata.ClientVersionCheckBody{ClientVersion: build.String()}
+	if _, err := c.Metadata.ClientVersionCheck(req); err != nil {
+		return nil, fmt.Errorf("zrok api endpoint %q: %w", endpoint, err)
+	}
 	return c, nil
 }
 
@@ -336,6 +350,14 @@ func (b *sdkBackend) Listen(token string) (net.Listener, error) {
 	zctx, err := b.context()
 	if err != nil {
 		return nil, err
+	}
+	// The shared context caches the service list and refreshes it only every
+	// few minutes, so a share created after the context does not show up in
+	// it yet. Fetch this share's service first.
+	if _, ok := zctx.GetService(token); !ok {
+		if _, err := zctx.RefreshService(token); err != nil {
+			return nil, fmt.Errorf("look up the share's service: %w", err)
+		}
 	}
 	return zctx.ListenWithOptions(token, &ziti.ListenOptions{
 		ConnectTimeout:               20 * time.Second, // below the 30s shutdown bound

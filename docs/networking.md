@@ -80,13 +80,23 @@ device rather than the Flats host.
 
 ## Publishing through zrok
 
-Enable a zrok environment for the user that runs Flats with
-`zrok2 enable <account token>`; Flats reads that environment and never stores
-the token. Then turn zrok on under **Settings → Network providers** and allow
-it on a flat. Each flat served through zrok reserves its slug as a name in
+Under **Settings → Network providers → zrok**, paste your zrok account token
+and choose **Connect**. The token is on myzrok.io: open the zrok API console
+and copy it from the getting-started wizard. Flats registers this machine as
+an environment of the account and keeps the token in its data directory; no
+zrok CLI is needed. The panel then shows the connected environment's ID and
+zrok service, and **Turn on** makes zrok available; allow it on a flat to use
+it. To switch to another token, for example after regenerating it, enter it
+under **Replace with a new account token**: the current account stays
+connected if the new token is refused, and replacing is refused while a flat
+is public through zrok. **Disconnect account** unregisters the environment
+and deletes the token; turn zrok off first. Each flat served through zrok reserves its slug as a name in
 `zrok.namespace` (default `public`), so its URL survives restarts, and the
 share exists only while the flat is public. A name already reserved in your
-zrok account by something other than this host is refused. See
+zrok account by something other than this host is refused. On the free zrok
+plan, a visitor's browser first sees a zrok warning page with a **Visit
+Share** button, once per visitor; programs can skip it with a
+`skip_zrok_interstitial` request header. See
 [Configuration and storage](configuration.md) for `zrok.environment` and
 `zrok.namespace`.
 

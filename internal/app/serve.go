@@ -379,15 +379,17 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		h.portalNet = pn
 	}
-	zrokOptions := zrok.Config{Dir: filepath.Join(dataDir, "zrok"), Environment: cfg.Zrok.Environment, Namespace: cfg.Zrok.Namespace,
+	zrokOptions := zrok.Config{Dir: filepath.Join(dataDir, "zrok"), Environment: zrokEnvironment(cfg), Namespace: cfg.Zrok.Namespace,
 		Instance: cfg.Host.InstanceID, Logf: logf}
 	h.zrokOptions = zrokOptions
 	if permits(provider.Zrok) {
-		zn, err := zrok.New(zrokOptions)
-		if err != nil {
-			return nil, err
+		// A missing account must not keep the console down: the operator
+		// connects one there. zrok stays unconfigured until then.
+		if zn, err := zrok.New(zrokOptions); err != nil {
+			logf("warning: zrok is permitted but not started: %v", err)
+		} else {
+			h.zrokNet = zn
 		}
-		h.zrokNet = zn
 	}
 	var tail provider.Tailnet
 	if h.tsNet != nil {
@@ -523,6 +525,16 @@ func storedPrivateBackend(c *config.Config) string {
 		return ""
 	}
 	return v.(string)
+}
+
+// zrokEnvironment is the zrok environment directory: zrok.environment, or the
+// one Flats manages in the data directory when the operator connects an
+// account in the console.
+func zrokEnvironment(cfg *config.Config) string {
+	if cfg.Zrok.Environment != "" {
+		return cfg.Zrok.Environment
+	}
+	return filepath.Join(cfg.Host.DataDir, "zrok-environment")
 }
 
 // zrokConfiguration is zrok's part of the provider configuration token, or

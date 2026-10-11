@@ -284,6 +284,23 @@ func (m *Manager) AttachZrok(z ZrokNet) {
 	}
 }
 
+// DetachZrok removes the zrok backend, for an account disconnected while the
+// host runs. It refuses while any zrok route is registered.
+func (m *Manager) DetachZrok() bool {
+	m.mu.Lock()
+	for _, r := range m.routes {
+		if r.provider == Zrok {
+			m.mu.Unlock()
+			return false
+		}
+	}
+	m.mu.Unlock()
+	m.bmu.Lock()
+	m.zrok = nil
+	m.bmu.Unlock()
+	return true
+}
+
 // SetGrant records or removes a host grant. With Options.Grants (from
 // config.json) it changes only this process's grants; the caller saves
 // config.json. Otherwise it rewrites the host file. Local is always

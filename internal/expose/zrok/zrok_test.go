@@ -517,7 +517,7 @@ func TestShareFailureLeavesNothingServed(t *testing.T) {
 
 func TestLoadRootRequiresEnabledEnvironment(t *testing.T) {
 	_, _, err := loadRoot(t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "zrok2 enable") {
+	if !errors.Is(err, errNotEnabled) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -1102,5 +1102,36 @@ func TestRefusalAfterDeletedNameDropsRecord(t *testing.T) {
 	f.names["public/blog"] = ""
 	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err == nil || !strings.Contains(err.Error(), "not by this Flats host") {
 		t.Fatalf("used another client's name: %v", err)
+	}
+}
+
+func TestAdoptMovesRecordsOfTheSameReservation(t *testing.T) {
+	f := newFake()
+	dir := t.TempDir()
+	n := newNet(Config{Dir: dir}, f)
+	defer n.Close()
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Stop("blog"); err != nil {
+		t.Fatal(err)
+	}
+	// Another record names a reservation this account does not hold.
+	if err := n.writeRecord("gone", record{Account: "old", Namespace: "public", Created: true, NameCreatedAt: 99}); err != nil {
+		t.Fatal(err)
+	}
+	f.account = "rotated" // the account's token was replaced
+	kept, err := n.Adopt(context.Background())
+	if err != nil || !slices.Equal(kept, []string{"gone"}) {
+		t.Fatalf("kept = %v, err = %v", kept, err)
+	}
+	if rec, _, _ := n.readRecord("blog"); rec.Account != "rotated" {
+		t.Fatalf("record not adopted: %+v", rec)
+	}
+	if rec, _, _ := n.readRecord("gone"); rec.Account != "old" {
+		t.Fatalf("an unproven record was adopted: %+v", rec)
+	}
+	if _, err := n.Serve(context.Background(), "blog", hello("v1")); err != nil {
+		t.Fatalf("serve after adoption: %v", err)
 	}
 }

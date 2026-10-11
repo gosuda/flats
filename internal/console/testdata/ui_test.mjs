@@ -458,7 +458,7 @@ routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 const provider = (id, scope, enabled, flats = []) => ({ id, scope, enabled, configured: enabled, flats });
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true), provider('tailscale', 'private', false),
   provider('tailscale-funnel', 'public', false), provider('portal', 'public', true, ['blog']),
-  { ...provider('zrok', 'public', true), namespace: 'flats-ns', status: { kind: 'zrok', enabled: true, hosts: [] } }] };
+  { ...provider('zrok', 'public', true), namespace: 'flats-ns', managed: true, connected: true, environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io', status: { kind: 'zrok', enabled: true, hosts: [] } }] };
 const mountSettings = async () => {
   const main = new Element('main');
   settingsPage.mount(main, [], ctx);
@@ -665,6 +665,12 @@ assert.deepEqual(groups.map((g) => all(g, (e) => e.tagName === 'H3')[0].textCont
 assert.deepEqual(all(groups[0], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-local', 'provider-tailscale']);
 assert.deepEqual(all(groups[1], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-tailscale-funnel', 'provider-portal', 'provider-zrok']);
 assert.ok(byId(settingsMain, 'provider-zrok').textContent.includes('flats-ns'), 'the zrok panel shows its namespace');
+const zrokPanel = byId(settingsMain, 'provider-zrok');
+assert.ok(zrokPanel.textContent.includes('Connected'), 'a connected zrok account is shown');
+assert.equal(byText(zrokPanel, 'Disconnect account').length, 1, 'a connected zrok account can be disconnected');
+assert.ok(zrokPanel.textContent.includes('zenv-123') && zrokPanel.textContent.includes('https://api-v2.zrok.io'), 'the connected environment is identified');
+assert.equal(byText(zrokPanel, 'Replace account').length, 1, 'a connected account can be replaced with a new token');
+assert.equal(byText(zrokPanel, 'Turn off').length, 1, 'a connected zrok can be turned off');
 assert.equal(all(groups[0], (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 1, 'Local has no switch');
 assert.ok(groups[1].textContent.includes('Portal relays'), 'Portal settings belong to the Portal provider');
 byText(groups[0], 'Turn on')[0].dispatch('click');
@@ -676,6 +682,28 @@ await tick();
 const turnOnCall = calls.find((c) => c.key === 'PUT /console/api/providers/tailscale');
 assert.deepEqual(JSON.parse(turnOnCall.body), { enabled: true });
 assert.equal(turnOnCall.headers['If-Match'], '"etag-9"', 'a provider change is guarded by the settings ETag');
+
+// zrok without a connected account offers the account token form instead of
+// a switch; connecting it does not turn zrok on by itself.
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
+  { ...provider('zrok', 'public', false), namespace: 'public', managed: true, connected: false }] };
+routes['PUT /console/api/providers/zrok/account'] = { providers: [] };
+routes['PUT /console/api/providers/zrok'] = { providers: [], etag: 'etag-10' };
+const zrokMain = new Element('main');
+settingsPage.mount(zrokMain, [], ctx);
+await tick();
+const zrokForm = byId(zrokMain, 'provider-zrok');
+assert.equal(byText(zrokForm, 'Turn on').length, 0, 'zrok without an account has no switch');
+const tokenInput = byId(zrokForm, 'zrok-token');
+assert.equal(tokenInput.getAttribute('type'), 'password', 'the account token is typed into a password field');
+tokenInput.value = '  test-token  ';
+all(zrokForm, (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+await tick();
+const connectCall = calls.find((c) => c.key === 'PUT /console/api/providers/zrok/account');
+assert.deepEqual(JSON.parse(connectCall.body), { token: 'test-token' });
+assert.ok(!calls.some((c) => c.key === 'PUT /console/api/providers/zrok'), 'connecting does not turn zrok on');
+assert.equal(tokenInput.value, '', 'the token is cleared from the form');
 
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over

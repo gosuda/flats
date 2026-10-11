@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -21,16 +23,20 @@ import (
 // for that flat.
 type ProviderInfo struct {
 	ID         string          `json:"id"`
-	Scope      string          `json:"scope"`                // private or public
-	Enabled    bool            `json:"enabled"`              // in network.permitted
-	Configured bool            `json:"configured"`           // backend exists in this process
-	Locked     string          `json:"locked,omitempty"`     // why the console cannot change it
-	Flats      []string        `json:"flats"`                // flats that allow it
-	Status     *core.NetStatus `json:"status,omitempty"`     // backend hosts
-	Address    string          `json:"address,omitempty"`    // local listener
-	AuthKey    bool            `json:"auth_key,omitempty"`   // tailscale: an auth key file is configured
-	ConsoleOn  bool            `json:"console_on,omitempty"` // tailscale: the console and private routes use it
-	Namespace  string          `json:"namespace,omitempty"`  // zrok: the namespace names are reserved in
+	Scope      string          `json:"scope"`                    // private or public
+	Enabled    bool            `json:"enabled"`                  // in network.permitted
+	Configured bool            `json:"configured"`               // backend exists in this process
+	Locked     string          `json:"locked,omitempty"`         // why the console cannot change it
+	Flats      []string        `json:"flats"`                    // flats that allow it
+	Status     *core.NetStatus `json:"status,omitempty"`         // backend hosts
+	Address    string          `json:"address,omitempty"`        // local listener
+	AuthKey    bool            `json:"auth_key,omitempty"`       // tailscale: an auth key file is configured
+	ConsoleOn  bool            `json:"console_on,omitempty"`     // tailscale: the console and private routes use it
+	Namespace  string          `json:"namespace,omitempty"`      // zrok: the namespace names are reserved in
+	Connected  bool            `json:"connected,omitempty"`      // zrok: an account is connected
+	Managed    bool            `json:"managed,omitempty"`        // zrok: Flats manages the environment (connect in the console)
+	EnvID      string          `json:"environment_id,omitempty"` // zrok: the connected environment's identity
+	APIURL     string          `json:"api_endpoint,omitempty"`   // zrok: the zrok service the account belongs to
 }
 
 // legacyNetworkPins names the legacy service flags that fix a provider's
@@ -105,6 +111,10 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 			p.Scope = "public"
 			p.Configured = zn != nil
 			p.Namespace = h.zrokOptions.Namespace
+			p.Managed = h.Config.Zrok.Environment == ""
+			if a, err := zrok.Describe(h.zrokOptions.Environment); err == nil {
+				p.Connected, p.EnvID, p.APIURL = a.Connected, a.EnvironmentID, a.APIEndpoint
+			}
 			if zn != nil {
 				st := zn.Status()
 				p.Status = &st
@@ -164,13 +174,7 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 		return "", err
 	}
 	if id == provider.Zrok {
-		// The next start includes zrok in the policy token only while it is
-		// granted; match that now, in both directions.
-		zc := ""
-		if enabled && h.zrokNet != nil {
-			zc = zrokConfigurationOf(h.Config.Zrok.Environment, h.zrokNet.Account(), h.zrokOptions.Namespace)
-		}
-		h.Providers.SetConfiguration(providerConfiguration(h.portalOptions, zc))
+		h.syncZrokConfigurationLocked()
 	}
 	h.logf("provider %s enabled=%t from the console", id, enabled)
 	return etag, nil
@@ -261,4 +265,122 @@ func (h *Host) flatsAllowing(ctx context.Context) map[provider.ID][]string {
 		}
 	}
 	return out
+}
+
+// syncZrokConfigurationLocked sets the zrok part of the policy token to what
+// the next start computes: present only while zrok is granted and its backend
+// runs. h.pmu is held.
+func (h *Host) syncZrokConfigurationLocked() {
+	zc := ""
+	if h.zrokNet != nil && h.Providers.HostAllows(provider.Zrok) {
+		zc = zrokConfigurationOf(h.Config.Zrok.Environment, h.zrokNet.Account(), h.zrokOptions.Namespace)
+	}
+	h.Providers.SetConfiguration(providerConfiguration(h.portalOptions, zc))
+}
+
+// ConnectZrok implements api.ZrokAccountAdmin. Without a connected account it
+// enables a zrok environment for the account of token in the data directory;
+// with one, it replaces that account. The token is stored only there, as zrok
+// stores it, and never logged or returned. Replacing is refused while a flat
+// is public through zrok. When zrok is granted, its backend runs on the new
+// account afterwards.
+func (h *Host) ConnectZrok(ctx context.Context, token string) error {
+	if h.Config.Zrok.Environment != "" {
+		return fmt.Errorf("%w: zrok.environment points to an environment managed outside Flats; enable it with the zrok CLI", core.ErrConflict)
+	}
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	dir := h.zrokOptions.Environment
+	current, err := zrok.Describe(dir)
+	if err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	host, _ := os.Hostname()
+	description := "flats@" + host
+	if !current.Connected {
+		if err := zrok.Connect(ctx, dir, token, description); err != nil {
+			return zrokAccountError(err)
+		}
+		h.logf("zrok account connected from the console")
+		return h.startZrokLocked(ctx)
+	}
+	// Replace: the running backend holds the old account; take it down first.
+	wasRunning := h.zrokNet != nil
+	if wasRunning {
+		if !h.Providers.DetachZrok() {
+			return fmt.Errorf("%w: a flat is public through zrok; make it private before replacing the zrok account", core.ErrProviderInUse)
+		}
+		if err := h.zrokNet.Close(); err != nil {
+			h.logf("zrok shutdown before replacing the account: %v", err)
+		}
+		h.zrokNet = nil
+	}
+	if err := zrok.Replace(ctx, dir, token, description); err != nil {
+		if wasRunning {
+			if serr := h.startZrokLocked(ctx); serr != nil {
+				h.logf("zrok restart on the previous account: %v", serr)
+			}
+		}
+		return zrokAccountError(err)
+	}
+	h.logf("zrok account replaced from the console")
+	return h.startZrokLocked(ctx)
+}
+
+// startZrokLocked moves name records made with an earlier token of the same
+// account to the connected one, and starts the zrok backend when zrok is
+// granted and not running. h.pmu is held.
+func (h *Host) startZrokLocked(ctx context.Context) error {
+	z, err := zrok.New(h.zrokOptions)
+	if err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	if kept, err := z.Adopt(ctx); err != nil || len(kept) > 0 {
+		h.logf("zrok: name records not moved to the connected account: %v %v", kept, err)
+	}
+	if h.zrokNet != nil || h.Providers == nil || !h.Providers.HostAllows(provider.Zrok) {
+		return z.Close()
+	}
+	h.zrokNet = z
+	h.Providers.AttachZrok(z)
+	h.syncZrokConfigurationLocked()
+	return nil
+}
+
+func zrokAccountError(err error) error {
+	switch {
+	case errors.Is(err, zrok.ErrConnected):
+		return fmt.Errorf("%w: %v", core.ErrConflict, err)
+	case errors.Is(err, zrok.ErrRejected):
+		return fmt.Errorf("%w: %v", core.ErrInvalid, err)
+	default:
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+}
+
+// DisconnectZrok implements api.ZrokAccountAdmin. It unregisters the
+// environment and removes it with the account token. zrok must be off.
+func (h *Host) DisconnectZrok(ctx context.Context) error {
+	if h.Config.Zrok.Environment != "" {
+		return fmt.Errorf("%w: zrok.environment points to an environment managed outside Flats; disable it with the zrok CLI", core.ErrConflict)
+	}
+	if h.Providers != nil && h.Providers.HostAllows(provider.Zrok) {
+		return fmt.Errorf("%w: turn zrok off before disconnecting its account", core.ErrConflict)
+	}
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	if h.zrokNet != nil {
+		if h.Providers != nil && !h.Providers.DetachZrok() {
+			return fmt.Errorf("%w: zrok routes are still registered; stop them first", core.ErrProviderInUse)
+		}
+		if err := h.zrokNet.Close(); err != nil {
+			h.logf("zrok shutdown before disconnect: %v", err)
+		}
+		h.zrokNet = nil
+	}
+	if err := zrok.Disconnect(ctx, h.zrokOptions.Environment); err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	h.logf("zrok account disconnected from the console")
+	return nil
 }

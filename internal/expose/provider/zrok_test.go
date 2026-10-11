@@ -331,3 +331,22 @@ func TestSetConfigurationChangesPolicy(t *testing.T) {
 		t.Fatal("SetConfiguration did not change the policy token")
 	}
 }
+
+func TestDetachZrokRefusesWhileRouted(t *testing.T) {
+	z := newFakeZrok(t)
+	m := zrokManager(t, []ID{Zrok}, z)
+	ctx := context.Background()
+	if _, err := m.ServeExposure(ctx, ExposureRequest{Slug: "notes", Host: "notes", Visibility: "public",
+		Audience: AudienceCurrent, Handler: text("public"), Permitted: []ID{Zrok}}); err != nil {
+		t.Fatal(err)
+	}
+	if m.DetachZrok() {
+		t.Fatal("detached zrok while a flat is public through it")
+	}
+	if _, err := m.StopPublicRoutes(ctx, "notes"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.DetachZrok() || m.zrokNet() != nil {
+		t.Fatal("zrok was not detached after its routes stopped")
+	}
+}

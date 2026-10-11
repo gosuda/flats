@@ -130,9 +130,11 @@ function providerPanel(p, data, opts) {
     : h('span', { class: 'badge' + (p.enabled ? ' badge-ready' : ''), text: p.enabled ? 'On' : 'Off' });
   let toggle = null;
   if (!local) {
-    toggle = h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
+    // zrok can be turned on only once an account is connected.
+    const needsAccount = p.id === 'zrok' && !p.enabled && !p.connected;
+    toggle = needsAccount ? null : h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
       disabled: !!p.locked, 'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
-    toggle.addEventListener('click', () => busy(toggle, async () => {
+    if (toggle) toggle.addEventListener('click', () => busy(toggle, async () => {
       if (await setHostProvider(p, info, !p.enabled, data.config ? data.config.etag : '')) await opts.reload();
     }));
   }
@@ -149,6 +151,7 @@ function providerPanel(p, data, opts) {
 }
 
 function providerDetails(p, data, opts) {
+  if (p.id === 'zrok') return zrokDetails(p, data, opts);
   if (p.id === 'local') return p.address ? h('dl', { class: 'facts' }, h('dt', { text: 'Address' }), h('dd', null, h('code', { text: p.address }))) : null;
   if (p.id === 'portal') return [limitsForm(data, { ...opts, group: 'portal' }), p.enabled && p.status ? hostsTable(p.status) : null];
   if (!p.enabled) return null;
@@ -162,14 +165,93 @@ function providerDetails(p, data, opts) {
   if (p.id === 'tailscale-funnel') {
     return h('p', { class: 'muted small', text: 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.' });
   }
-  if (p.id === 'zrok') {
-    return [
-      h('dl', { class: 'facts' }, h('dt', { text: 'Namespace' }), h('dd', null, h('code', { text: p.namespace || 'public' }))),
-      h('p', { class: 'muted small', text: 'Uses the zrok environment enabled with zrok2 enable for the user that runs Flats. Each public flat reserves its slug as a name in this namespace.' }),
-      p.status ? hostsTable(p.status) : null,
-    ];
-  }
   return null;
+}
+
+// zrokDetails shows the zrok account: who is connected, and a form to connect
+// one or replace it with a new account token. With zrok.environment set in
+// config.json the account is managed outside Flats, with the zrok CLI.
+function zrokDetails(p, data, opts) {
+  const facts = h('dl', { class: 'facts' },
+    p.connected ? [
+      h('dt', { text: 'Account' }), h('dd', { text: 'Connected' }),
+      h('dt', { text: 'Environment ID' }), h('dd', null, h('code', { text: p.environment_id || '' })),
+      h('dt', { text: 'zrok service' }), h('dd', null, h('code', { text: p.api_endpoint || '' })),
+    ] : [h('dt', { text: 'Account' }), h('dd', { text: 'Not connected' })],
+    h('dt', { text: 'Namespace' }), h('dd', null, h('code', { text: p.namespace || 'public' })));
+  const hosts = p.enabled && p.status ? hostsTable(p.status) : null;
+  if (!p.managed) {
+    return [facts,
+      h('p', { class: 'muted small', text: 'Uses the zrok environment set as zrok.environment in config.json; manage its account with the zrok CLI. Each public flat reserves its slug as a name in this namespace.' }),
+      hosts];
+  }
+  if (!p.connected) {
+    return [facts, zrokTokenForm(opts, {
+      label: 'Account token', submit: 'Connect',
+      help: 'Sign in at myzrok.io, open the zrok API console and copy the account token from its getting-started wizard. Flats registers this machine as an environment of that account and keeps the token in its data directory; it is never shown again. Turn zrok on once the account is connected.',
+      done: 'zrok account connected. Turn zrok on to use it.',
+    })];
+  }
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect account', disabled: !!p.enabled,
+    title: p.enabled ? 'Turn zrok off first' : '' });
+  disconnect.addEventListener('click', () => busy(disconnect, async () => {
+    const ok = await confirmDialog({
+      title: 'Disconnect the zrok account?',
+      body: [h('p', { text: 'Flats unregisters this machine from the zrok account and deletes the stored account token. Names this host reserved stay in the account; delete flats first to release them.' })],
+      confirmLabel: 'Disconnect',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.disconnectZrok();
+      toast('zrok account disconnected.', 'success');
+      await opts.reload();
+    } catch (err) {
+      await infoDialog('Cannot disconnect the zrok account', errorPanel(err));
+    }
+  }));
+  return [
+    facts,
+    h('p', { class: 'muted small', text: 'Each public flat reserves its slug as a name in this namespace, so its URL stays the same.' }),
+    hosts,
+    zrokTokenForm(opts, {
+      label: 'Replace with a new account token', submit: 'Replace account',
+      help: 'Connects the account of the new token in place of this one, for example after regenerating the token. The current account stays connected if the new token is refused. Refused while a flat is public through zrok.',
+      done: 'zrok account replaced.',
+      confirm: { title: 'Replace the zrok account?', body: 'Flats registers this machine with the account of the new token, then unregisters the current environment and deletes its token.' },
+    }),
+    h('div', { class: 'form-actions' }, disconnect),
+  ];
+}
+
+// zrokTokenForm sends an account token to connect or replace the zrok account.
+function zrokTokenForm(opts, o) {
+  const id = 'zrok-token';
+  const input = h('input', { type: 'password', id, name: 'token', autocomplete: 'off', spellcheck: 'false', required: true,
+    placeholder: 'zrok account token' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: o.submit });
+  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
+    h('label', { for: id, text: o.label }), input,
+    h('p', { class: 'muted small', text: o.help }),
+    h('div', { class: 'form-actions' }, submit));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const token = input.value.trim();
+    if (!token) { input.focus(); return; }
+    busy(submit, async () => {
+      if (o.confirm && !(await confirmDialog({ title: o.confirm.title, body: [h('p', { text: o.confirm.body })], confirmLabel: o.submit }))) return;
+      try {
+        await api.connectZrok(token);
+      } catch (err) {
+        await infoDialog('Cannot connect the zrok account', errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast(o.done, 'success');
+      await opts.reload();
+    });
+  });
+  return form;
 }
 
 async function setHostProvider(p, info, enabled, etag) {

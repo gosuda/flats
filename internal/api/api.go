@@ -36,6 +36,14 @@ type ProviderAdmin interface {
 	SetNetworkProvider(ctx context.Context, id string, enabled bool, ifMatch string) (string, error)
 }
 
+// ZrokAccountAdmin is a System that lets the console connect the host to a
+// zrok account with an account token, and disconnect it. The token is sent
+// once and never returned.
+type ZrokAccountAdmin interface {
+	ConnectZrok(ctx context.Context, token string) error
+	DisconnectZrok(ctx context.Context) error
+}
+
 // Server serves /api and /console/api.
 type Server struct {
 	Svc    *core.Service
@@ -111,6 +119,8 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /flats/{slug}/listing", s.setListing)
 			h("GET /providers", s.hostProviders)
 			h("PUT /providers/{id}", s.setHostProvider)
+			h("PUT /providers/zrok/account", s.connectZrok)
+			h("DELETE /providers/zrok/account", s.disconnectZrok)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
@@ -827,6 +837,49 @@ func (s *Server) setHostProvider(w http.ResponseWriter, r *http.Request, _ core.
 		w.Header().Set("ETag", strconv.Quote(etag))
 	}
 	writeJSON(w, 200, map[string]any{"providers": a.NetworkProviders(r.Context()), "etag": etag})
+}
+
+func (s *Server) zrokAccountAdmin(w http.ResponseWriter) (ZrokAccountAdmin, ProviderAdmin, bool) {
+	z, ok := s.System.(ZrokAccountAdmin)
+	p, pok := s.System.(ProviderAdmin)
+	if !ok || !pok {
+		writeErr(w, http.StatusNotFound, errors.New("this host does not manage a zrok account"))
+		return nil, nil, false
+	}
+	return z, p, true
+}
+
+// connectZrok enables a zrok environment with the operator's account token.
+func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	z, p, ok := s.zrokAccountAdmin(w)
+	if !ok {
+		return
+	}
+	var in struct {
+		Token string `json:"token"`
+	}
+	if err := decode(r, &in); err != nil || strings.TrimSpace(in.Token) == "" {
+		writeErr(w, 400, errors.New(`body must be {"token": "<zrok account token>"}`))
+		return
+	}
+	if err := z.ConnectZrok(r.Context(), strings.TrimSpace(in.Token)); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
+}
+
+// disconnectZrok unregisters the host's zrok environment.
+func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	z, p, ok := s.zrokAccountAdmin(w)
+	if !ok {
+		return
+	}
+	if err := z.DisconnectZrok(r.Context()); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
 }
 
 // restartKeys are settings `flats serve` reads only at startup.

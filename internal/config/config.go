@@ -106,10 +106,11 @@ var specs = []spec{
 	// it. It is not access control: the URL still opens the flat.
 	{key: "portal.hide", kind: kindBool, def: false,
 		hint: "use true or false"},
-	// zrok reads an environment the operator enabled with `zrok2 enable`;
-	// Flats never stores the zrok account token.
+	// Unset, zrok uses the environment Flats manages in the data directory,
+	// connected from the console with the account token. Set, it names an
+	// environment managed with the zrok CLI.
 	{key: "zrok.environment", kind: kindString, check: checkAbsPath,
-		hint: "use the absolute path of a zrok environment directory, or unset the key for ~/.zrok2"},
+		hint: "use the absolute path of a zrok environment directory, or unset the key to connect the account in the console"},
 	{key: "zrok.namespace", kind: kindString, def: "public", check: checkNamespace,
 		hint: "use a zrok namespace token such as public"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,

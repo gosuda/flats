@@ -72,6 +72,9 @@ export const api = {
   providers: () => get('/providers'),
   // etag is config.etag from settings(), as for saveSettings.
   setProvider: (id, enabled, etag) => request('PUT', `/providers/${enc(id)}`, { enabled }, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  // The token is sent once and never returned.
+  connectZrok: (token) => request('PUT', '/providers/zrok/account', { token }),
+  disconnectZrok: () => request('DELETE', '/providers/zrok/account'),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another
   // save since then makes the server refuse with 412.

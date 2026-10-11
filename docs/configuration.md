@@ -45,6 +45,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
     health-check/ restore-trial/  temporary copies
   tsnet/ portal/              provider node identities
   zrok/                       zrok names this host reserved, until released
+  zrok-environment/           the connected zrok account: token and identity (mode 0600)
   network-retirements/        unfinished tailnet node cleanup
   logs/ cache/ run/ flats.lock  logs, caches, sockets, the host lock
 ```
@@ -113,7 +114,7 @@ written; `flats config unset KEY` removes it.
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
-| `zrok.environment` | none (`~/.zrok2` of the user that runs Flats) | restart, or when zrok is turned on from the console |
+| `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | none (interactive login) | restart |
@@ -148,11 +149,20 @@ seconds). If that update fails, the choice stays saved, the flat logs the
 error and the next activation of the route retries it.
 
 zrok serves public flats as zrok public shares on the operator's zrok
-account. Flats never stores the account token: enable a zrok environment for
-the user that runs Flats first (`zrok2 enable <account token>`), and set
-`zrok.environment` when it is not that user's `~/.zrok2`, for example for a
-service whose home directory differs. With `zrok` in `network.permitted`, a
-start fails while that environment is missing or not enabled. Each flat
+account. Connect the account in the console (Settings → Network providers →
+zrok) with its account token: Flats registers this machine as an environment
+of the account, as `zrok2 enable` would, and keeps the token and identity in
+`zrok-environment/` in the data directory (mode 0600). The token is never
+shown again, logged or written to `config.json`; the console shows only the
+environment ID and zrok service. A new token replaces the account (staged
+next to the directory, so a refused token keeps the current one; refused
+while a flat is public through zrok), and name records whose reservation the
+new account holds with the same creation time move to it. Disconnect
+unregisters the environment and deletes it. To use an environment managed with the zrok CLI
+instead, set `zrok.environment` to its directory; the console then cannot
+connect or disconnect it. With `zrok` in `network.permitted` and no connected
+account, the host still starts and zrok stays unconfigured until one is
+connected. Each flat
 served through zrok reserves its slug as a name in `zrok.namespace`, so its
 public URL stays the same across restarts and Private↔Public changes; the
 share itself exists only while the flat is public and the host runs.

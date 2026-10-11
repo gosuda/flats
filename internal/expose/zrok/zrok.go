@@ -4,9 +4,9 @@
 // hostname stays stable across restarts, and binds an ephemeral public
 // share under that name while the flat is public.
 //
-// Flats does not hold the zrok account token: the operator enables a zrok
-// environment (`zrok2 enable`) for the user that runs flats, and Flats reads
-// that environment.
+// The zrok environment (the account token and this machine's overlay
+// identity) is either one Flats creates with Connect from a token the
+// operator enters in the console, or one enabled with the zrok CLI.
 package zrok
 
 import (
@@ -41,7 +41,8 @@ type Config struct {
 	// deleted flat releases its name even after its zrok permission is gone.
 	Dir string
 	// Environment is the zrok environment directory. "" is the zrok
-	// default, ~/.zrok2 of the user that runs flats.
+	// default, ~/.zrok2 of the user that runs flats; Flats passes the
+	// directory it manages unless zrok.environment is set.
 	Environment string
 	// Namespace is the zrok namespace for names (default "public").
 	Namespace string
@@ -866,4 +867,43 @@ func (n *Net) Close() error {
 	}
 	errs = append(errs, n.b.Close())
 	return errors.Join(errs...)
+}
+
+// Adopt moves the name records of an earlier account to this environment's
+// account when this account holds the same reservation: the name exists here
+// with the creation time the record holds. That is the case after the
+// account's token was replaced. It returns the slugs it could not adopt.
+func (n *Net) Adopt(ctx context.Context) (kept []string, err error) {
+	entries, err := os.ReadDir(n.cfg.Dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	account := n.b.Account()
+	for _, e := range entries {
+		slug := e.Name()
+		if e.IsDir() || !nameRE.MatchString(slug) {
+			continue
+		}
+		l := n.slugLock(slug)
+		l.Lock()
+		rec, ok, rerr := n.readRecord(slug)
+		if rerr == nil && ok && rec.Account != account {
+			info, found, lerr := n.b.LookupName(ctx, rec.Namespace, slug)
+			switch {
+			case lerr != nil:
+				err = errors.Join(err, lerr)
+				kept = append(kept, slug)
+			case found && rec.Created && info.CreatedAt == rec.NameCreatedAt:
+				rec.Account = account
+				err = errors.Join(err, n.writeRecord(slug, rec))
+			default:
+				kept = append(kept, slug)
+			}
+		}
+		l.Unlock()
+	}
+	return kept, err
 }

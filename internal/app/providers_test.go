@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -203,7 +204,7 @@ func TestConsoleZrokNeedsEnabledEnvironment(t *testing.T) {
 		t.Fatalf("zrok by default: %+v", p)
 	}
 	code, out := setHost(t, h, client, "zrok", true)
-	if code == 200 || !strings.Contains(fmt.Sprint(out["error"]), "zrok2 enable") {
+	if code == 200 || !strings.Contains(fmt.Sprint(out["error"]), "account token") {
 		t.Fatalf("turned on zrok without an environment: %d %v", code, out)
 	}
 	if got := configPermitted(t, h); len(got) != 0 {
@@ -237,11 +238,11 @@ func TestZrokConfigurationToken(t *testing.T) {
 	}
 }
 
-// fakeZrokEnvironment writes an enabled zrok environment under home. Loading
-// it contacts nothing.
-func fakeZrokEnvironment(t *testing.T, home string) {
+// fakeZrokEnvironment writes an enabled zrok environment where Flats manages
+// it for the host in dataDir. Loading it contacts nothing.
+func fakeZrokEnvironment(t *testing.T, dataDir string) {
 	t.Helper()
-	dir := filepath.Join(home, ".zrok2")
+	dir := filepath.Join(dataDir, "zrok-environment")
 	if err := os.MkdirAll(filepath.Join(dir, "identities"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -258,10 +259,8 @@ func fakeZrokEnvironment(t *testing.T, home string) {
 // Turning zrok on from the console gives the policy token the next start
 // computes, so an approval requested meanwhile is not stale after a restart.
 func TestConsoleZrokPolicyMatchesRestart(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	fakeZrokEnvironment(t, home)
 	dir := t.TempDir()
+	fakeZrokEnvironment(t, dir)
 	h, client := consoleHostWith(t, dir, nil)
 	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
 		t.Fatalf("turn on zrok: %d %v", code, out)
@@ -289,10 +288,8 @@ func TestConsoleZrokPolicyMatchesRestart(t *testing.T) {
 // Turning zrok off from the console also gives the policy token of the next
 // start, which has no zrok grant.
 func TestConsoleZrokOffPolicyMatchesRestart(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	fakeZrokEnvironment(t, home)
 	dir := t.TempDir()
+	fakeZrokEnvironment(t, dir)
 	h, client := consoleHostWith(t, dir, nil)
 	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
 		t.Fatalf("turn on zrok: %d %v", code, out)
@@ -314,5 +311,124 @@ func TestConsoleZrokOffPolicyMatchesRestart(t *testing.T) {
 	}
 	if live != restarted {
 		t.Fatal("the policy token after a restart differs from the one after turning zrok off")
+	}
+}
+
+// zrokController emulates the zrok v2 endpoints Connect and Disconnect use.
+func zrokController(t *testing.T, tokens ...string) *[]string {
+	t.Helper()
+	var calls []string
+	next := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zrok.v1+json")
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v2/clientVersionCheck":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v2/enable":
+			if !slices.Contains(tokens, r.Header.Get("X-TOKEN")) {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			next++
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"identity":"env-%d","cfg":"{}"}`, next)
+		case "/api/v2/disable":
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("ZROK2_API_ENDPOINT", srv.URL)
+	return &calls
+}
+
+// The operator connects a zrok account in the console with its token, and
+// Flats does the rest: no zrok CLI is needed.
+func TestConsoleConnectsZrokAccount(t *testing.T) {
+	calls := zrokController(t, "good-token", "new-token")
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if p := providerByID(t, h, client, "zrok"); p.Connected || !p.Managed {
+		t.Fatalf("zrok before connecting: %+v", p)
+	}
+	connect := func(token string) (int, map[string]any) {
+		var out map[string]any
+		code := consoleCall(t, h, client, "PUT", "/console/api/providers/zrok/account", strings.NewReader(`{"token":"`+token+`"}`), &out)
+		return code, out
+	}
+	if code, out := connect("bad-token"); code != http.StatusBadRequest || strings.Contains(fmt.Sprint(out), "bad-token") {
+		t.Fatalf("rejected token: %d %v", code, out)
+	}
+	code, out := connect("good-token")
+	if code != 200 || strings.Contains(fmt.Sprint(out), "good-token") {
+		t.Fatalf("connect: %d %v", code, out)
+	}
+	first := providerByID(t, h, client, "zrok")
+	if !first.Connected || first.EnvID != "env-1" || first.APIURL == "" || first.Enabled {
+		t.Fatalf("zrok after connecting (connecting does not turn it on): %+v", first)
+	}
+	env, err := os.ReadFile(filepath.Join(dir, "zrok-environment", "environment.json"))
+	if err != nil || !strings.Contains(string(env), "good-token") {
+		t.Fatalf("the token is kept in the managed environment: %v", err)
+	}
+	if b, _ := os.ReadFile(h.ConfigPath); strings.Contains(string(b), "good-token") {
+		t.Fatal("the token leaked into config.json")
+	}
+	if code, out := setHost(t, h, client, "zrok", true); code != 200 {
+		t.Fatalf("turn on zrok: %d %v", code, out)
+	}
+	// Replace the account with a new token while zrok is on and no flat is
+	// public through it; the backend runs on the new account afterwards.
+	if code, out := connect("bad-token"); code != http.StatusBadRequest {
+		t.Fatalf("rejected replacement: %d %v", code, out)
+	}
+	if p := providerByID(t, h, client, "zrok"); p.EnvID != "env-1" || !p.Configured {
+		t.Fatalf("a rejected replacement changed the account: %+v", p)
+	}
+	if code, out := connect("new-token"); code != 200 {
+		t.Fatalf("replace: %d %v", code, out)
+	}
+	if p := providerByID(t, h, client, "zrok"); p.EnvID == "env-1" || !p.Connected || !p.Enabled || !p.Configured {
+		t.Fatalf("zrok after replacing the account: %+v", p)
+	}
+	disconnect := func() int {
+		var out map[string]any
+		return consoleCall(t, h, client, "DELETE", "/console/api/providers/zrok/account", nil, &out)
+	}
+	if code := disconnect(); code != http.StatusConflict {
+		t.Fatalf("disconnect while zrok is on: %d", code)
+	}
+	if code, out := setHost(t, h, client, "zrok", false); code != 200 {
+		t.Fatalf("turn off zrok: %d %v", code, out)
+	}
+	if code := disconnect(); code != 200 {
+		t.Fatalf("disconnect: %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "zrok-environment")); !os.IsNotExist(err) {
+		t.Fatalf("managed environment kept: %v", err)
+	}
+	if !slices.Contains(*calls, "POST /api/v2/disable") {
+		t.Fatalf("the environment was not unregistered: %v", *calls)
+	}
+	if p := providerByID(t, h, client, "zrok"); p.Connected || p.Configured {
+		t.Fatalf("zrok after disconnecting: %+v", p)
+	}
+}
+
+// A host whose zrok grant has no connected account still starts, so the
+// operator can connect one in the console.
+func TestHostStartsWithZrokGrantAndNoAccount(t *testing.T) {
+	h, client := consoleHostWith(t, t.TempDir(), func(o *Options) {
+		o.Permit = []string{"zrok"}
+		if o.Set == nil {
+			o.Set = map[string]bool{}
+		}
+		o.Set["permit"] = true
+	})
+	p := providerByID(t, h, client, "zrok")
+	if !p.Enabled || p.Configured || p.Connected {
+		t.Fatalf("zrok granted without an account: %+v", p)
 	}
 }

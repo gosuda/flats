@@ -179,7 +179,18 @@ and does not set identity.
 ## zrok
 
 `zrok.Net` (`internal/expose/zrok`) serves a slug as a zrok public share of
-the operator's enabled zrok environment. Constructing it reads that
+the operator's enabled zrok environment: by default the one Flats manages in
+`<data>/zrok-environment`, which `zrok.Connect` creates from the account token
+the operator enters in the console (`PUT /console/api/providers/zrok/account`)
+and `zrok.Disconnect` unregisters and removes (`DELETE`, only while zrok is
+off; the backend is detached first). The same `PUT` with an account already
+connected calls `zrok.Replace`: the new environment is enabled in
+`<dir>.next`, then the old one is unregistered and the new one moved into
+place. The running backend is detached first, which `Manager.DetachZrok`
+refuses while a zrok route is registered, and restarted on the new account,
+or on the old one if the replacement fails. `Net.Adopt` then moves name
+records to the new account fingerprint when the new account holds the same
+reservation (same name and creation time). Constructing a `Net` reads that
 environment from disk and contacts nothing. `Serve` reserves the name
 `<slug>` in `zrok.namespace` when the account does not own it yet, removes a
 share of this environment that still holds the name (a crash leaves one
