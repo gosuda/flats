@@ -21,7 +21,11 @@ import {
   referenceDefinitions,
   tableBlocks,
 } from "./live.js";
-import { diagramKeys, updatePreview } from "./diagram-preview.js";
+import {
+  diagramKeys,
+  updatePreview,
+  trackFocusExit,
+} from "./diagram-preview.js";
 import {
   renderDiagrams,
   updateDiagram,
@@ -162,6 +166,7 @@ class DiagramWidget extends WidgetType {
   toDOM(view) {
     const div = document.createElement("div");
     div.className = "cm-diagram-widget";
+    div.dataset.active = String(this.active);
     div.addEventListener("diagram-rendered", () => view.requestMeasure());
     // Pointer actions keep the caret/source stable. Keyboard focus remains
     // native and is included by the focus-change handler below.
@@ -285,6 +290,19 @@ function blocks(render, refs) {
   });
   return [
     field,
+    ViewPlugin.fromClass(
+      class {
+        constructor(view) {
+          this.cleanup = trackFocusExit(view.dom, () => {
+            if (view.state.field(field).focused)
+              view.dispatch({ effects: setFocus.of(false) });
+          });
+        }
+        destroy() {
+          this.cleanup();
+        }
+      },
+    ),
     EditorView.focusChangeEffect.of((state, focusing) =>
       setFocus.of(
         focusing ||

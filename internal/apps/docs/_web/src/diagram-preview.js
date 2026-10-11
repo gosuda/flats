@@ -14,6 +14,7 @@ export function diagramKeys(blocks, previous = new Map(), changes) {
 
 export function updatePreview(div, widget, previous, invalidate, draw) {
   if (widget.key !== previous.key) return false;
+  div.dataset.active = String(widget.active);
   div.querySelector(".mermaid-edit").hidden = widget.active;
   if (div.dataset.code !== widget.code) {
     div.dataset.code = widget.code;
@@ -47,4 +48,21 @@ export function replaceRendered(root, html, dispose) {
     for (const diagram of diagrams) dispose(diagram);
   root.replaceChildren(...next.childNodes);
   if (focused && root.contains(focused)) focused.focus({ preventScroll: true });
+}
+
+// CodeMirror observes contentDOM focus, but native toolbar buttons can lose
+// focus without a contentDOM blur. Settle that transition after DOM events.
+export function trackFocusExit(root, onExit) {
+  let timer;
+  const leave = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!root.contains(root.ownerDocument.activeElement)) onExit();
+    }, 0);
+  };
+  root.addEventListener("focusout", leave);
+  return () => {
+    clearTimeout(timer);
+    root.removeEventListener("focusout", leave);
+  };
 }

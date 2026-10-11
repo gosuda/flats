@@ -292,7 +292,7 @@ main {
 }
 .mermaid-diagram:has(.mermaid-svg):not([data-source-visible="true"])
   .mermaid-source,
-.cm-diagram-widget
+.cm-diagram-widget[data-active="true"]
   .mermaid-diagram:not([data-source-visible="true"])
   .mermaid-source {
   display: none;

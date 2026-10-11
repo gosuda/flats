@@ -40,6 +40,11 @@ function button(label, action) {
   return el;
 }
 function expand(el, trigger) {
+  // Pointer toolbar actions retain contentDOM focus. Remember it before the
+  // modal blurs the editor so closing resumes the existing CM selection.
+  const priorEditor = document.activeElement?.closest(
+    '.cm-content[contenteditable="true"]',
+  );
   const sourceText = el.querySelector(".mermaid-source")?.textContent;
   const peers = [...document.querySelectorAll(".mermaid-diagram")].filter(
     (node) => node.querySelector(".mermaid-source")?.textContent === sourceText,
@@ -169,7 +174,8 @@ function expand(el, trigger) {
   document.body.append(dialog);
   dialog.addEventListener("close", () => {
     dialog.remove();
-    if (trigger.isConnected) trigger.focus();
+    if (priorEditor?.isConnected) priorEditor.focus({ preventScroll: true });
+    else if (trigger.isConnected) trigger.focus();
     else {
       const replacements = [
         ...document.querySelectorAll(".mermaid-diagram"),

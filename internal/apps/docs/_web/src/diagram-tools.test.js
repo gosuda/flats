@@ -184,3 +184,70 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
     URL.revokeObjectURL = oldRevoke;
   }
 });
+
+test("closing an expanded editing preview returns focus to the editor, with opener fallback", () => {
+  const priorDocument = globalThis.document;
+  const body = new Node("body");
+  const create = (tag) => {
+    const node = new Node(tag);
+    node.clientWidth = 800;
+    node.clientHeight = 600;
+    node.getBoundingClientRect = () => ({ width: 400, height: 300 });
+    node.cloneNode = () => create(tag);
+    node.showModal = () => {};
+    node.close = () => node.events.close();
+    Object.defineProperty(node, "isConnected", {
+      get: () => {
+        let n = node;
+        while (n.parent) n = n.parent;
+        return n === body;
+      },
+    });
+    return node;
+  };
+  const doc = {
+    body,
+    createElement: create,
+    querySelectorAll: (s) => body.querySelectorAll(s),
+    querySelector: (s) => body.querySelector(s),
+  };
+  globalThis.document = doc;
+  try {
+    const editor = create("div");
+    editor.className = "cm-content";
+    editor.closest = () => editor;
+    const diagram = create("div");
+    diagram.className = "mermaid-diagram";
+    const source = create("pre");
+    source.className = "mermaid-source";
+    source.textContent = "graph TD; A-->B";
+    const figure = create("div");
+    figure.className = "mermaid-svg";
+    figure.append(create("svg"));
+    diagram.append(source, figure);
+    body.append(editor, diagram);
+    doc.activeElement = editor;
+    diagramTools(diagram, () => {});
+    const open = diagram
+      .querySelectorAll("button")
+      .find((n) => n.textContent === "Expand");
+    open.click();
+    const dialog = body.querySelector("dialog");
+    assert.ok(dialog, "missing viewBox does not prevent opening");
+    dialog.close();
+    assert.equal(doc.activeElement, editor);
+    doc.activeElement = editor;
+    open.click();
+    const second = body.querySelector("dialog");
+    editor.remove();
+    editor.parent = null;
+    second.close();
+    assert.equal(
+      doc.activeElement,
+      open,
+      "removed editor falls back to attached opener",
+    );
+  } finally {
+    globalThis.document = priorDocument;
+  }
+});

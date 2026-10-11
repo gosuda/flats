@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ChangeSet } from "@codemirror/state";
-import { diagramKeys, updatePreview } from "./diagram-preview.js";
+import {
+  diagramKeys,
+  updatePreview,
+  trackFocusExit,
+} from "./diagram-preview.js";
 
 test("diagram identity survives shifts but never follows a deleted block", () => {
   const initial = diagramKeys([{ from: 10 }, { from: 30 }]);
@@ -82,7 +86,43 @@ test("preview rejects foreign DOM; same-block edits cancel immediately and debou
     draw,
   );
   assert.equal(edit.hidden, false);
+  assert.equal(div.dataset.active, "false");
   clearTimeout(div.diagramTimer); // Widget.destroy cancels a detached preview.
   t.mock.timers.tick(1000);
   assert.deepEqual(drawn, ["C"]);
+});
+
+test("toolbar focus exit settles outside the editor and cancels on destruction", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let listener,
+    exits = 0;
+  const inside = {},
+    outside = {};
+  const root = {
+    ownerDocument: { activeElement: inside },
+    contains: (element) => element === inside,
+    addEventListener(type, fn) {
+      assert.equal(type, "focusout");
+      listener = fn;
+    },
+    removeEventListener(type, fn) {
+      assert.equal(type, "focusout");
+      assert.equal(fn, listener);
+      listener = null;
+    },
+  };
+  const cleanup = trackFocusExit(root, () => exits++);
+  listener();
+  t.mock.timers.tick(0);
+  assert.equal(exits, 0, "moving between toolbar controls keeps editing");
+  root.ownerDocument.activeElement = outside;
+  listener();
+  assert.equal(exits, 0, "no synchronous dispatch during focus event");
+  t.mock.timers.tick(0);
+  assert.equal(exits, 1);
+  listener();
+  cleanup();
+  t.mock.timers.tick(1);
+  assert.equal(exits, 1, "destroyed editors do not dispatch");
+  assert.equal(listener, null);
 });
