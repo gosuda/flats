@@ -45,6 +45,13 @@ class Node {
   click() {
     return this.events.click?.({});
   }
+  matches(selector) {
+    return (
+      selector === '.cm-content[contenteditable="true"]' &&
+      this.className.split(" ").includes("cm-content") &&
+      this.attrs.contenteditable === "true"
+    );
+  }
   focus() {
     document.activeElement = this;
   }
@@ -215,7 +222,7 @@ test("closing an expanded editing preview returns focus to the editor, with open
   try {
     const editor = create("div");
     editor.className = "cm-content";
-    editor.closest = () => editor;
+    editor.setAttribute("contenteditable", "true");
     const diagram = create("div");
     diagram.className = "mermaid-diagram";
     const source = create("pre");
@@ -236,6 +243,17 @@ test("closing an expanded editing preview returns focus to the editor, with open
     assert.ok(dialog, "missing viewBox does not prevent opening");
     dialog.close();
     assert.equal(doc.activeElement, editor);
+    // A keyboard-focused toolbar button is inside contentDOM, but is not
+    // contentDOM itself. Closing must return to that exact native control.
+    diagram.remove();
+    editor.append(diagram);
+    open.closest = () => editor;
+    doc.activeElement = open;
+    open.click();
+    body.querySelector("dialog").close();
+    assert.equal(doc.activeElement, open, "keyboard opener retains focus");
+    diagram.remove();
+    body.append(diagram);
     doc.activeElement = editor;
     open.click();
     const second = body.querySelector("dialog");
