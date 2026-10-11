@@ -562,10 +562,10 @@ func normalizeSetting(k, v string) (string, error) {
 		switch v {
 		case "", "none":
 			return "", nil
-		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok):
+		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok), string(ProviderCloudflareQuick):
 			return v, nil
 		}
-		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal or zrok, or empty for none", k)
+		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal, zrok or cloudflare-quick, or empty for none", k)
 	case SetPortalDiscover, SetPortalHide:
 		b, err := strconv.ParseBool(v)
 		if err != nil {

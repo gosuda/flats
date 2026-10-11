@@ -56,3 +56,31 @@ func TestDefaultPublicMustBePermitted(t *testing.T) {
 		t.Fatal("portal accepted as the default without being turned on")
 	}
 }
+
+// A Cloudflare quick tunnel can be the public default like the other public
+// providers: a new flat is allowed on it and stays Private.
+func TestCloudflareQuickCanBeTheDefaultPublic(t *testing.T) {
+	s, st := newBackendService(t, "local")
+	ctx := t.Context()
+	if _, err := s.SetPermittedNetworks([]string{"cloudflare-quick"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDefaultPublic: "cloudflare-quick"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.CreateFlat(ctx, "quick-default", "", ViaMCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Visibility != store.Private {
+		t.Fatalf("visibility = %q, want private", f.Visibility)
+	}
+	got, err := st.PermittedProviders(ctx, "quick-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(got)
+	if want := []string{"cloudflare-quick", "local"}; !slices.Equal(got, want) {
+		t.Fatalf("providers = %v, want %v", got, want)
+	}
+}

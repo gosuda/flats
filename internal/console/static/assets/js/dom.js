@@ -139,8 +139,8 @@ export function publicURL(f) {
   return ep ? ep.url : '';
 }
 
-const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok' };
-const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok'];
+const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok', 'cloudflare-quick': 'Cloudflare Quick Tunnel' };
+const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick'];
 
 // openTargets lists the addresses that open a flat's live version, one per
 // allowed network that has a route: private networks first, then public

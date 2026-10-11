@@ -95,7 +95,7 @@ var specs = []spec{
 	{key: "network.default_private", kind: kindString, def: "", check: checkDefaultPrivate,
 		hint: `use "local" or "tailscale", or "" to follow network.private_backend`},
 	{key: "network.default_public", kind: kindString, def: "", check: checkDefaultPublic,
-		hint: `use "tailscale-funnel", "portal" or "zrok", or "" for none`},
+		hint: `use "tailscale-funnel", "portal", "zrok" or "cloudflare-quick", or "" for none`},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
 	// numbers everywhere), as the settings table did.
 	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
@@ -409,7 +409,7 @@ func checkDefaultPrivate(v any) (any, error) {
 
 func checkDefaultPublic(v any) (any, error) {
 	switch s := v.(string); s {
-	case "", "tailscale-funnel", "portal", "zrok":
+	case "", "tailscale-funnel", "portal", "zrok", "cloudflare-quick":
 		return s, nil
 	default:
 		return nil, fmt.Errorf("%q is not a public provider", s)

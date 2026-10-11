@@ -136,7 +136,7 @@ flat allowed on Tailscale when it is created (the operator can turn that off
 per flat); flats that already exist keep their providers.
 
 `default_private` (`local` or `tailscale`) and `default_public`
-(`tailscale-funnel`, `portal` or `zrok`) choose the one provider per mode that
+(`tailscale-funnel`, `portal`, `zrok` or `cloudflare-quick`) choose the one provider per mode that
 a new flat is allowed on when it is created, besides Local. Each must be in
 `permitted`; other permitted providers are not granted to new flats. An empty
 `default_private` follows `private_backend`, and an empty `default_public`
