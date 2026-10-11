@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -537,5 +538,34 @@ func TestDocsEnvironmentSnapshotAndContentIsolation(t *testing.T) {
 	}
 	if rt.specs[len(rt.specs)-1].Env["MODE"] != "ordinary-doc-setting" {
 		t.Fatal("restart recaptured settings")
+	}
+}
+
+// A document keeps no data snapshots: saving it again leaves none behind.
+func TestDocumentSavesKeepNoSnapshots(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime = &contentRuntime{}
+	s.cfg.DocsApp = testDocsApp()
+	ctx := t.Context()
+	saveDocs(t, s, "unsnapshotted")
+	db := filepath.Join(s.dataDirOf("unsnapshotted"), dbName)
+	if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := sql.Open("sqlite", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`CREATE TABLE t (v TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	for _, text := range []string{"# second", "# third"} {
+		if _, err := s.SaveVersion(ctx, "unsnapshotted", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(text)}}, SaveMeta{}, ViaAPI); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if snaps, err := s.Snapshots("unsnapshotted"); err != nil || len(snaps) != 0 {
+		t.Fatalf("document saves took snapshots: %v %v", snaps, err)
 	}
 }

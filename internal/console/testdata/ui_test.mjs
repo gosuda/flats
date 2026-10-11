@@ -244,7 +244,7 @@ stopFlat();
 const docMain = new Element('main');
 const stopDoc = flat.mount(docMain, ['notes'], ctx);
 await tick();
-assert.deepEqual(tabLinks(docMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Database', 'Settings']);
+assert.deepEqual(tabLinks(docMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Settings']);
 for (const id of ['versions', 'previews']) {
   assert.equal(all(docMain, (e) => e.getAttribute('id') === id).length, 0, `document page shows ${id}`);
 }

@@ -15,7 +15,8 @@ export function siteHeader(flat, active) {
         h('div', { class: 'site-address muted' }, icon(flat.visibility === 'private' ? 'lock' : 'globe'),
           extLink(flat.public_url || flat.private_url)))),
     h('nav', { class: 'site-tabs', 'aria-label': 'Site management' },
-      TABS.map(([tab, path]) => h('a', {
+      // A document has no database snapshots, so no Database tab.
+      TABS.filter(([tab]) => !(tab === 'database' && flat.type === 'docs')).map(([tab, path]) => h('a', {
         href: base + path, 'data-nav': true, 'aria-current': active === tab ? 'page' : undefined,
         text: tabLabel(flat, tab),
       }))));

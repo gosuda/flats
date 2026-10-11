@@ -636,10 +636,13 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 	v.Role = "published"
 	v.Revision = 0
 	v.CreatedAt = s.now()
-	if snap, serr := s.snapshotDB(f.Slug, n, f.LiveVersion); serr != nil {
-		s.Event(ctx, f.Slug, "warn", "snapshot", "could not snapshot the database before publish: "+serr.Error(), nil)
-	} else if snap != "" {
-		s.Event(ctx, f.Slug, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before publishing version %d", snap, n), nil)
+	// A document keeps no data snapshots: it has no rollback or restore.
+	if kind != "save" {
+		if snap, serr := s.snapshotDB(f.Slug, n, f.LiveVersion); serr != nil {
+			s.Event(ctx, f.Slug, "warn", "snapshot", "could not snapshot the database before publish: "+serr.Error(), nil)
+		} else if snap != "" {
+			s.Event(ctx, f.Slug, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before publishing version %d", snap, n), nil)
+		}
 	}
 	d, err := s.buildWithEnvironment(ctx, f.Slug, v, s.dataDirOf(f.Slug), env)
 	if err != nil {

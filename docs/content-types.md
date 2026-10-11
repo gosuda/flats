@@ -150,10 +150,9 @@ Each document keeps the newest 8 records within 2 MiB; older ones are gone.
   While editing a diagram's source, an optional preview updates after typing
   pauses. In Edit mode, Edit source opens the editable fence and Done returns
   to its diagram. View mode retains a read-only Source toggle.
-* A document runs as kind `server`: Flats snapshots its live data before
-  each save starts (`topic.rollback-data`), and the operator can restore a
-  snapshot in the console. Docs flats get no outbound network, even with saved
-  origin grants, and do not use environment variables or secrets.
+* A document runs as kind `server` but keeps no data snapshots: it has no
+  rollback or data restore. Docs flats get no outbound network, even with
+  saved origin grants, and do not use environment variables or secrets.
 
 The editor's runtime layout, storage schema and wire protocol are host
 internals, not part of this contract or of runtime API v1.
