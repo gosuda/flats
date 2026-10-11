@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -1014,7 +1015,9 @@ func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Versi
 		d.inst.Stop()
 	}
 	what := fmt.Sprintf("version %d", v.Number)
-	if !v.Published && v.Revision > 0 {
+	if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
+		what = "the saved document" // a document has no versions or Draft
+	} else if !v.Published && v.Revision > 0 {
 		what = fmt.Sprintf("draft revision %d", v.Revision)
 	}
 	s.Event(ctx, f.Slug, map[bool]string{true: "info", false: "error"}[h.OK], "health",
