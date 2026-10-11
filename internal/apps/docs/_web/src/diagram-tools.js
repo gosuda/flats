@@ -1,3 +1,4 @@
+import { pngBlob, saveBlob } from "./diagram-export.js";
 let cloneID = 0;
 // Marker, title and description IDs must also be unique across cached copies.
 export function uniqueSVG(container) {
@@ -219,6 +220,7 @@ export function diagramTools(el, retry) {
       const visible = el.dataset.sourceVisible !== "true";
       el.dataset.sourceVisible = String(visible);
       source.setAttribute("aria-pressed", String(visible));
+      source.textContent = visible ? "Hide source" : "Source";
     });
     source.setAttribute("aria-pressed", "false");
     const copy = button("Copy source", async () => {
@@ -244,8 +246,11 @@ export function diagramTools(el, retry) {
         copy.textContent = "Copied";
       } catch {
         copy.textContent = "Copy unavailable";
-        el.dataset.sourceVisible = "true";
-        source.setAttribute("aria-pressed", "true");
+        if (el.dataset.editable !== "true") {
+          el.dataset.sourceVisible = "true";
+          source.setAttribute("aria-pressed", "true");
+          source.textContent = "Hide source";
+        }
       }
       setTimeout(() => {
         copy.textContent = "Copy source";
@@ -254,28 +259,53 @@ export function diagramTools(el, retry) {
     const download = button("Save SVG", () => {
       const svg = el.querySelector(".mermaid-svg svg");
       if (!svg) return;
-      const url = URL.createObjectURL(
+      saveBlob(
         new Blob([new XMLSerializer().serializeToString(svg)], {
           type: "image/svg+xml;charset=utf-8",
         }),
+        "diagram.svg",
       );
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "diagram.svg";
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     download.dataset.diagramAction = "svg";
+    const png = button("Save PNG", async () => {
+      const svg = el.querySelector(".mermaid-svg svg");
+      if (!svg || png.dataset.busy === "true") return;
+      png.dataset.busy = "true";
+      png.disabled = true;
+      png.textContent = "Saving PNG…";
+      let note = el.querySelector(".mermaid-export-status");
+      if (!note) {
+        note = document.createElement("p");
+        note.className = "mermaid-export-status mermaid-status";
+        note.setAttribute("role", "status");
+        el.append(note);
+      }
+      note.className = "mermaid-export-status mermaid-status";
+      note.textContent = "Preparing PNG…";
+      try {
+        saveBlob(await pngBlob(svg), "diagram.png");
+        note.textContent = "PNG download started.";
+      } catch (error) {
+        note.className = "mermaid-export-status mermaid-status mermaid-error";
+        note.textContent =
+          "PNG export failed: " + (error?.message || "Try Save SVG instead.");
+      } finally {
+        delete png.dataset.busy;
+        png.disabled = !el.querySelector(".mermaid-svg svg");
+        png.textContent = "Save PNG";
+      }
+    });
+    png.dataset.diagramAction = "png";
     const open = button("Expand", () => expand(el, open));
     open.dataset.diagramAction = "expand";
     const retryButton = button("Retry", () => retry());
     retryButton.className = "mermaid-retry";
-    bar.append(source, copy, download, open, retryButton);
+    if (el.dataset.editable !== "true") bar.append(source);
+    bar.append(copy, download, png, open, retryButton);
     el.prepend(bar);
   }
   for (const control of bar.querySelectorAll("[data-diagram-action]"))
-    control.disabled = !el.querySelector(".mermaid-svg svg");
+    control.disabled =
+      control.dataset.busy === "true" || !el.querySelector(".mermaid-svg svg");
   bar.querySelector(".mermaid-retry").hidden = el.dataset.error !== "load";
 }

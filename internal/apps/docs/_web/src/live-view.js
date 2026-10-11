@@ -23,6 +23,9 @@ import {
 } from "./live.js";
 import {
   diagramKeys,
+  diagramClosures,
+  setDiagramEditing,
+  sourceAction,
   updatePreview,
   trackFocusExit,
 } from "./diagram-preview.js";
@@ -167,6 +170,7 @@ class DiagramWidget extends WidgetType {
     const div = document.createElement("div");
     div.className = "cm-diagram-widget";
     div.dataset.active = String(this.active);
+    div.diagramKey = this.key;
     div.addEventListener("diagram-rendered", () => view.requestMeasure());
     // Pointer actions keep the caret/source stable. Keyboard focus remains
     // native and is included by the focus-change handler below.
@@ -179,6 +183,7 @@ class DiagramWidget extends WidgetType {
     );
     const diagram = document.createElement("div");
     diagram.className = "mermaid-diagram";
+    diagram.dataset.editable = "true";
     const pre = document.createElement("pre");
     pre.className = "mermaid-source";
     const code = document.createElement("code");
@@ -189,15 +194,30 @@ class DiagramWidget extends WidgetType {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "mermaid-edit";
-    edit.textContent = "Edit source";
+    sourceAction(edit, this.active);
     edit.addEventListener("click", (event) => {
       event.preventDefault();
+      const key = div.diagramKey;
+      if (div.dataset.active === "true") {
+        view.dispatch({ effects: setDiagramEditing.of({ key, open: false }) });
+        // CM may replace the tile when source collapses. Find the retained
+        // block by identity and focus its Edit source control after layout.
+        view.requestMeasure({
+          read: () =>
+            [...view.dom.querySelectorAll(".cm-diagram-widget")]
+              .find((widget) => widget.diagramKey === key)
+              ?.querySelector(".mermaid-edit"),
+          write: (button) => button?.focus({ preventScroll: true }),
+        });
+        return;
+      }
       const pos = view.posAtDOM(div);
       const block = diagramBlocks(view.state, false).find(
         (b) => b.from <= pos && pos <= b.to,
       );
       if (!block) return;
       view.dispatch({
+        effects: [setDiagramEditing.of({ key, open: true }), setFocus.of(true)],
         selection: EditorSelection.cursor(block.edit),
         scrollIntoView: true,
       });
@@ -205,7 +225,6 @@ class DiagramWidget extends WidgetType {
     });
     div.append(edit);
     div.dataset.code = this.code;
-    edit.hidden = this.active;
     renderDiagrams(div).then(() => view.requestMeasure());
     diagram.querySelector(".mermaid-tools")?.append(edit);
     return div;
@@ -243,7 +262,7 @@ function definitions(links) {
 }
 
 function blocks(render, refs) {
-  const build = (state, focused, keys) =>
+  const build = (state, focused, keys, closed) =>
     Decoration.set(
       [
         ...tableBlocks(state, focused, state.field(refs))
@@ -255,8 +274,10 @@ function blocks(render, refs) {
             }).range(t.from, t.to),
           ),
         ...diagramBlocks(state, focused).map((d) => {
-          const widget = new DiagramWidget(d.code, d.active, keys.get(d.from));
-          return d.active
+          const key = keys.get(d.from);
+          const active = d.active && !closed.has(key);
+          const widget = new DiagramWidget(d.code, active, key);
+          return active
             ? Decoration.widget({ widget, block: true, side: 1 }).range(d.to)
             : Decoration.replace({ widget, block: true }).range(d.from, d.to);
         }),
@@ -266,12 +287,19 @@ function blocks(render, refs) {
   const field = StateField.define({
     create: (state) => {
       const keys = diagramKeys(diagramBlocks(state, false));
-      return { focused: false, keys, decorations: build(state, false, keys) };
+      const closed = new Set();
+      return {
+        focused: false,
+        keys,
+        closed,
+        decorations: build(state, false, keys, closed),
+      };
     },
     update(value, tr) {
       let focused = value.focused;
       for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
       if (
+        tr.effects.some((effect) => effect.is(setDiagramEditing)) ||
         focused !== value.focused ||
         tr.docChanged ||
         tr.selection ||
@@ -282,7 +310,18 @@ function blocks(render, refs) {
           value.keys,
           tr.changes,
         );
-        return { focused, keys, decorations: build(tr.state, focused, keys) };
+        const closed = diagramClosures(
+          diagramBlocks(tr.state, focused),
+          keys,
+          value.closed,
+          tr,
+        );
+        return {
+          focused,
+          keys,
+          closed,
+          decorations: build(tr.state, focused, keys, closed),
+        };
       }
       return value;
     },

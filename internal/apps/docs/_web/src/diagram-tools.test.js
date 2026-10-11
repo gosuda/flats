@@ -163,6 +163,26 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
     el.append(source, figure);
     diagramTools(el, () => {});
     const controls = el.querySelectorAll("button");
+    const toggle = controls.find((n) => n.textContent === "Source");
+    toggle.click();
+    assert.equal(toggle.textContent, "Hide source");
+    assert.equal(el.dataset.sourceVisible, "true");
+    toggle.click();
+    assert.equal(toggle.textContent, "Source");
+    assert.equal(el.dataset.sourceVisible, "false");
+    const editable = new Node();
+    editable.dataset.editable = "true";
+    const editSource = new Node("pre");
+    editSource.className = "mermaid-source";
+    editSource.textContent = "graph TD";
+    editable.append(editSource);
+    diagramTools(editable, () => {});
+    assert.equal(
+      editable
+        .querySelectorAll("button")
+        .some((n) => n.textContent === "Source"),
+      false,
+    );
     const copy = controls.find((n) => n.textContent === "Copy source");
     await copy.click();
     assert.equal(document.selection, source.textContent);

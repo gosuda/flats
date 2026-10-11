@@ -75,14 +75,18 @@ cannot overwrite a newer theme or source. Diagrams near the viewport render
 first, and work for removed placeholders is discarded.
 
 Diagram controls provide an expanded view with zoom, pan and fit, source
-viewing/copying, and SVG download. The expanded view supports keyboard use,
-Escape to close, and restoring focus to its opener; source editing has a
-separate control. Loading and syntax errors are distinguished, source is
+viewing/copying, and SVG or PNG download. The expanded view supports keyboard use,
+Escape to close, and restoring focus to its opener. In Edit mode, Edit source
+opens the editable fence and Done returns to the rendered diagram; there is
+no duplicate read-only Source toggle. View mode keeps that Source toggle. Loading and syntax errors are distinguished, source is
 preserved on failure, and failed loads can be retried. The live-preview editor
 also handles diagrams inside quotes and lists. While source is being edited,
-an optional preview refreshes after typing pauses.
+an optional preview refreshes after typing pauses. PNG export snapshots the
+current appearance onto the document background at up to 2× resolution,
+bounded by 8,192 pixels per side and 16 megapixels. Unsupported external
+resources or oversized diagrams report an error and leave SVG export available.
 
- Public viewers construct no editor, cannot send presence and receive no
+Public viewers construct no editor, cannot send presence and receive no
 private identities/cursors. Public connections/rooms have separate smaller
 budgets. Already activated API reads and heartbeats use deferred read snapshots.
 Rooms catch up from their cached Y.Doc, validating once after replay. Unchanged

@@ -1,3 +1,34 @@
+import { StateEffect } from "@codemirror/state";
+
+export const setDiagramEditing = StateEffect.define();
+
+// Closing is explicit even when the caret remains inside a replaced fence.
+// Leaving that block releases the override so normal caret entry works again.
+export function diagramClosures(blocks, keys, previous, transaction) {
+  const live = new Set(keys.values());
+  const closed = new Set([...previous].filter((key) => live.has(key)));
+  if (transaction.selection) {
+    for (const block of blocks) {
+      const touches = transaction.state.selection.ranges.some(
+        (range) => range.from <= block.to && range.to >= block.from,
+      );
+      if (!touches) closed.delete(keys.get(block.from));
+    }
+  }
+  for (const effect of transaction.effects)
+    if (effect.is(setDiagramEditing)) {
+      const { key, open } = effect.value;
+      if (open) closed.delete(key);
+      else if (live.has(key)) closed.add(key);
+    }
+  return closed;
+}
+
+export function sourceAction(button, active) {
+  button.textContent = active ? "Done" : "Edit source";
+  button.setAttribute("aria-expanded", String(active));
+}
+
 // Keep identities through position shifts, but never transfer a deleted
 // block's DOM (and last valid SVG) to another diagram at the same position.
 export function diagramKeys(blocks, previous = new Map(), changes) {
@@ -15,7 +46,7 @@ export function diagramKeys(blocks, previous = new Map(), changes) {
 export function updatePreview(div, widget, previous, invalidate, draw) {
   if (widget.key !== previous.key) return false;
   div.dataset.active = String(widget.active);
-  div.querySelector(".mermaid-edit").hidden = widget.active;
+  sourceAction(div.querySelector(".mermaid-edit"), widget.active);
   if (div.dataset.code !== widget.code) {
     div.dataset.code = widget.code;
     clearTimeout(div.diagramTimer);

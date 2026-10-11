@@ -1,10 +1,14 @@
 import { test } from "node:test";
+import { diagramBlocks } from "./live.js";
 import assert from "node:assert/strict";
-import { ChangeSet } from "@codemirror/state";
+import { ChangeSet, EditorState } from "@codemirror/state";
 import {
   diagramKeys,
   updatePreview,
   trackFocusExit,
+  diagramClosures,
+  setDiagramEditing,
+  sourceAction,
 } from "./diagram-preview.js";
 
 test("diagram identity survives shifts but never follows a deleted block", () => {
@@ -22,7 +26,11 @@ test("diagram identity survives shifts but never follows a deleted block", () =>
 test("preview rejects foreign DOM; same-block edits cancel immediately and debounce only drawing", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const key = {},
-    edit = {},
+    edit = {
+      setAttribute(name, value) {
+        this[name] = value;
+      },
+    },
     diagram = { source: "A", current: true };
   const div = {
     dataset: { code: "A" },
@@ -85,7 +93,8 @@ test("preview rejects foreign DOM; same-block edits cancel immediately and debou
     invalidate,
     draw,
   );
-  assert.equal(edit.hidden, false);
+  assert.equal(edit.textContent, "Edit source");
+  assert.equal(edit["aria-expanded"], "false");
   assert.equal(div.dataset.active, "false");
   clearTimeout(div.diagramTimer); // Widget.destroy cancels a detached preview.
   t.mock.timers.tick(1000);
@@ -125,4 +134,61 @@ test("toolbar focus exit settles outside the editor and cancels on destruction",
   t.mock.timers.tick(1);
   assert.equal(exits, 1, "destroyed editors do not dispatch");
   assert.equal(listener, null);
+});
+
+test("Done closes and Edit source reopens nested and EOF fences without changing text", () => {
+  for (const text of [
+    "```mermaid\ngraph TD; A-->B\n```",
+    "> - ```mermaid\n>   graph TD; A-->B\n>   ```",
+  ]) {
+    let state = EditorState.create({ doc: text });
+    let blocks = diagramBlocks(state, true);
+    let keys = diagramKeys(blocks);
+    const key = keys.get(blocks[0].from);
+    state = state.update({ selection: { anchor: blocks[0].edit } }).state;
+    const close = state.update({
+      effects: setDiagramEditing.of({ key, open: false }),
+    });
+    let closed = diagramClosures(
+      diagramBlocks(close.state, true),
+      keys,
+      new Set(),
+      close,
+    );
+    assert.ok(closed.has(key), "caret inside the fence must not reopen Done");
+    assert.equal(
+      close.state.doc.toString(),
+      text,
+      "Done preserves Markdown and undo history",
+    );
+    assert.equal(close.state.selection.main.head, state.selection.main.head);
+    const focusOnly = close.state.update({});
+    closed = diagramClosures(
+      diagramBlocks(focusOnly.state, true),
+      keys,
+      closed,
+      focusOnly,
+    );
+    assert.ok(closed.has(key), "toolbar focus alone keeps source closed");
+    const reopen = focusOnly.state.update({
+      effects: setDiagramEditing.of({ key, open: true }),
+      selection: { anchor: blocks[0].edit },
+    });
+    closed = diagramClosures(
+      diagramBlocks(reopen.state, true),
+      keys,
+      closed,
+      reopen,
+    );
+    assert.equal(closed.has(key), false);
+    assert.equal(reopen.state.doc.toString(), text);
+    const button = {
+      setAttribute(name, value) {
+        this[name] = value;
+      },
+    };
+    sourceAction(button, true);
+    assert.equal(button.textContent, "Done");
+    assert.equal(button["aria-expanded"], "true");
+  }
 });
