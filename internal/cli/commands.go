@@ -345,7 +345,12 @@ func (a *app) list(args []string) error {
 			u = f.PublicURL + " (*)"
 			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", f.Slug, displayType(f.Type), f.Visibility, liveLabel(f.LiveVersion), f.Versions, u)
+		live, versions := liveLabel(f.LiveVersion), strconv.Itoa(f.Versions)
+		if f.Type == "docs" {
+			// A document has no versions: it runs once saved.
+			live, versions = documentState(f.LiveVersion), "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", f.Slug, displayType(f.Type), f.Visibility, live, versions, u)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -375,11 +380,16 @@ func (a *app) info(args []string) error {
 		return nil
 	}
 	w := a.out
+	docs := f.Type == "docs"
 	fmt.Fprintf(w, "%s (%s)\n", f.Slug, f.Name)
 	fmt.Fprintf(w, "  type:       %s\n", displayType(f.Type))
-	fmt.Fprintf(w, "  publication: %s\n", f.Publication)
+	if docs {
+		fmt.Fprintf(w, "  document:   %s (no Draft, versions or publish step)\n", documentState(f.LiveVersion))
+	} else {
+		fmt.Fprintf(w, "  publication: %s\n", f.Publication)
+	}
 	fmt.Fprintf(w, "  visibility: %s\n", f.Visibility)
-	if f.Draft != nil {
+	if f.Draft != nil && !docs {
 		fmt.Fprintf(w, "  Draft:      revision %d (base v%d), dirty=%t, type=%s\n", f.Draft.Revision, f.Draft.BaseVersion, f.Draft.Dirty, displayType(f.Draft.Type))
 	}
 	if f.ConnectionState != "" {
@@ -388,17 +398,29 @@ func (a *app) info(args []string) error {
 	for _, endpoint := range f.Endpoints {
 		fmt.Fprintf(w, "  provider:   %s configured=%t permitted=%t ready=%t state=%s audience=%s %s\n", endpoint.Provider, endpoint.Configured, endpoint.Permitted, endpoint.Ready, endpoint.State, endpoint.Audience, endpoint.URL)
 	}
-	if lv := f.Live; lv != nil {
+	if docs {
+		fmt.Fprintf(w, "  disk:       %s\n", humanBytes(f.DiskBytes))
+	} else if lv := f.Live; lv != nil {
 		fmt.Fprintf(w, "  live:       version %d, %s, type %s, %d files, %s%s\n", lv.Number, lv.Kind, displayType(lv.Type), lv.Files, humanBytes(lv.Size), gitLabel(lv.GitSHA, lv.GitDirty))
 	} else {
 		fmt.Fprintf(w, "  live:       not deployed\n")
 	}
-	fmt.Fprintf(w, "  versions:   %d (%s on disk)\n", f.Versions, humanBytes(f.DiskBytes))
+	if !docs {
+		fmt.Fprintf(w, "  versions:   %d (%s on disk)\n", f.Versions, humanBytes(f.DiskBytes))
+	}
 	if f.OldSlug != "" && f.OldSlugTill != nil {
 		fmt.Fprintf(w, "  old slug:   %s redirects until %s\n", f.OldSlug, f.OldSlugTill.Local().Format(timeFmt))
 	}
 	printURLs(w, f)
 	return nil
+}
+
+// documentState is "running" or "not running" for a document.
+func documentState(live int) string {
+	if live > 0 {
+		return "running"
+	}
+	return "not running"
 }
 
 func (a *app) versions(args []string) error {

@@ -955,3 +955,24 @@ func TestDeployDocumentRunsAtOnce(t *testing.T) {
 		t.Fatalf("stdout:\n%s", r.stdout)
 	}
 }
+
+func TestInfoAndListDocument(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	doc := `{"slug": "notes", "name": "Notes", "type": "docs", "visibility": "private", "publication": "published", "live_version": 3, "versions": 3,
+  "draft": {"revision": 3, "base_version": 3, "type": "docs"}, "live": {"number": 3, "kind": "server", "type": "docs"}, "private_url": "http://notes.localhost:7878", "disk_bytes": 900}`
+	api.handle("GET /api/flats/notes", 200, doc)
+	api.handle("GET /api/flats", 200, `{"flats": [`+doc+`]}`)
+	r := run(t, srv.URL, "", "info", "notes")
+	if r.code != 0 || !strings.Contains(r.stdout, "document:   running (no Draft, versions or publish step)") {
+		t.Fatalf("info: %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	for _, hidden := range []string{"publication:", "Draft:", "version 3", "versions:"} {
+		if strings.Contains(r.stdout, hidden) {
+			t.Errorf("document info shows %q:\n%s", hidden, r.stdout)
+		}
+	}
+	r = run(t, srv.URL, "", "list")
+	if r.code != 0 || !strings.Contains(r.stdout, "running") || strings.Contains(r.stdout, "v3") {
+		t.Fatalf("list: %d %s", r.code, r.stdout)
+	}
+}
