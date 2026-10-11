@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/go-openapi/runtime v0.29.0
+	github.com/go-openapi/strfmt v0.24.0
 	github.com/gosuda/portal-tunnel/v2 v2.6.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/openziti/sdk-golang v1.2.8
@@ -50,7 +51,6 @@ require (
 	github.com/go-openapi/jsonreference v1.0.0 // indirect
 	github.com/go-openapi/loads v0.23.1 // indirect
 	github.com/go-openapi/spec v0.22.0 // indirect
-	github.com/go-openapi/strfmt v0.24.0 // indirect
 	github.com/go-openapi/swag v0.27.1 // indirect
 	github.com/go-openapi/swag/cmdutils v0.27.1 // indirect
 	github.com/go-openapi/swag/conv v0.27.1 // indirect
