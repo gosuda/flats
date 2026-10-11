@@ -823,7 +823,8 @@ func (n *Net) Status() core.NetStatus {
 	}
 	closed := n.closed
 	n.mu.Unlock()
-	st := core.NetStatus{Kind: "zrok", Enabled: !closed, Detail: "namespace " + n.cfg.Namespace, Hosts: []core.HostInfo{}}
+	// The console shows the namespace with the account; no detail repeats it.
+	st := core.NetStatus{Kind: "zrok", Enabled: !closed, Hosts: []core.HostInfo{}}
 	for _, e := range entries {
 		e.mu.Lock()
 		st.Hosts = append(st.Hosts, core.HostInfo{Host: e.slug, URL: e.url, State: e.state, Detail: e.detail})

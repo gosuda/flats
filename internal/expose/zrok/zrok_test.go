@@ -222,7 +222,7 @@ func TestServeReservesNameAndServes(t *testing.T) {
 	if len(f.shares) != 1 {
 		t.Fatalf("shares = %v", f.shares)
 	}
-	if st := n.Status(); st.Kind != "zrok" || st.Detail != "namespace public" {
+	if st := n.Status(); st.Kind != "zrok" || st.Detail != "" {
 		t.Fatalf("status = %+v", st)
 	}
 }
