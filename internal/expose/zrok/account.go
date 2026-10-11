@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	httptransport "github.com/go-openapi/runtime/client"
 	"github.com/openziti/zrok/v2/environment"
@@ -159,6 +160,23 @@ func unregisterLocked(ctx context.Context, dir string, extra ...string) error {
 	return fmt.Errorf("zrok: environment %s: %w", env.ZitiIdentity, ErrStale)
 }
 
+// discardStaged unregisters and removes a staged environment, keeping it when
+// zrok does not confirm the unregistration.
+func discardStaged(ctx context.Context, next string) error {
+	envMu.Lock()
+	defer envMu.Unlock()
+	if _, err := os.Stat(next); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err := unregisterLocked(ctx, next); err != nil {
+		return fmt.Errorf("zrok: a staged environment from an earlier replacement is still registered: %w", err)
+	}
+	if err := os.RemoveAll(next); err != nil {
+		return fmt.Errorf("zrok: %w", err)
+	}
+	return nil
+}
+
 // Account describes the zrok environment in a directory without its token.
 type Account struct {
 	Connected     bool   `json:"connected"`
@@ -191,8 +209,10 @@ func Describe(dir string) (Account, error) {
 // current account connected.
 func Replace(ctx context.Context, dir, token, description string) error {
 	next := dir + ".next"
-	if err := os.RemoveAll(next); err != nil {
-		return fmt.Errorf("zrok: %w", err)
+	// A staged environment left by an earlier replacement may still be
+	// registered; unregister it before its credentials are deleted.
+	if err := discardStaged(ctx, next); err != nil {
+		return err
 	}
 	if err := Connect(ctx, next, token, description); err != nil {
 		return err
@@ -202,7 +222,11 @@ func Replace(ctx context.Context, dir, token, description string) error {
 	// The old token may have been regenerated: then the new token, of the
 	// same account, unregisters the old environment.
 	if err := unregisterLocked(ctx, dir, token); err != nil {
-		if uerr := unregisterLocked(ctx, next); uerr == nil {
+		// Roll the staged environment back even if ctx was cancelled; if
+		// that fails too, it stays for the next replacement to retry.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if uerr := unregisterLocked(rctx, next); uerr == nil {
 			_ = os.RemoveAll(next)
 		}
 		return err

@@ -516,7 +516,12 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 			case Portal:
 				fresh = fromStatus(Portal, m.portalNet().Status(), r.host, m.portalNet().URL(r.host))
 			case Zrok:
-				fresh = fromStatus(Zrok, m.zrokNet().Status(), r.host, m.zrokNet().URL(r.host))
+				// zrok can be detached (account replaced) after the snapshot.
+				if z := m.zrokNet(); z != nil {
+					fresh = fromStatus(Zrok, z.Status(), r.host, z.URL(r.host))
+				} else {
+					fresh = ExposureEndpoint{Provider: Zrok, State: stateUnavailable, Detail: "zrok is not configured"}
+				}
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
 		} else if observed.registered {

@@ -206,3 +206,27 @@ func TestReplaceRefusesWhenTheOldEnvironmentCannotBeUnregistered(t *testing.T) {
 		t.Fatalf("the staged environment stayed registered: %v", c.envs)
 	}
 }
+
+func TestReplaceUnregistersALeftoverStagedEnvironment(t *testing.T) {
+	c := newAccountController(t)
+	dir := filepath.Join(t.TempDir(), "zrok-environment")
+	ctx := context.Background()
+	if err := Connect(ctx, dir, "good-token", "flats@test"); err != nil {
+		t.Fatal(err)
+	}
+	// An earlier replacement registered a staged environment and could not
+	// roll it back.
+	if err := Connect(ctx, dir+".next", "good-token", "flats@test"); err != nil {
+		t.Fatal(err)
+	}
+	staged, _ := Describe(dir + ".next")
+	if err := Replace(ctx, dir, "good-token", "flats@test"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(c.disabled, staged.EnvironmentID) {
+		t.Fatalf("the leftover staged environment was not unregistered: %v", c.disabled)
+	}
+	if len(c.envs) != 1 {
+		t.Fatalf("registered environments = %v", c.envs)
+	}
+}
