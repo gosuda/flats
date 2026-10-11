@@ -243,6 +243,15 @@ func TestGetDocumentAndFlatType(t *testing.T) {
 	if _, err := s.SaveVersion(ctx, "website", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# doc")}}, SaveMeta{}, ViaAPI); !errors.Is(err, ErrTypeChange) {
 		t.Fatal("website to document:", err)
 	}
+	// A docs Draft left over a running website by an older release does not
+	// make it a document: the running version decides the type.
+	saveDocsDraft(t, s, "website")
+	if f, _ := s.GetFlat(ctx, "website"); f.Type != "flat" {
+		t.Fatalf("legacy docs Draft over a running website: %+v", f.Type)
+	}
+	if _, err := s.GetDraft(ctx, "website"); err != nil {
+		t.Fatal("website Draft:", err)
+	}
 	// Saving a document runs it at once, Private, without approval.
 	saveDocs(t, s, "notes")
 	f, _ := s.GetFlat(ctx, "notes")
@@ -268,6 +277,9 @@ func TestGetDocumentAndFlatType(t *testing.T) {
 	// A document cannot become a website, and has no versions or publishing.
 	if _, err := s.SaveVersion(ctx, "notes", []bundle.File{{Path: "index.html", Data: []byte("website draft")}}, SaveMeta{}, ViaAPI); !errors.Is(err, ErrTypeChange) {
 		t.Fatal("document to website:", err)
+	}
+	if _, err := s.GetDraft(ctx, "notes"); !errors.Is(err, ErrDocsUnversioned) {
+		t.Fatal(err)
 	}
 	if _, err := s.ListVersions(ctx, "notes"); !errors.Is(err, ErrDocsUnversioned) {
 		t.Fatal(err)

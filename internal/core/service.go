@@ -711,11 +711,12 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 			}
 		}
 	}
+	// The running version decides the type, as in isDocs; the Draft only
+	// while nothing runs.
 	v.Type = contenttype.Flat
 	if v.Live != nil {
 		v.Type = contenttype.FromManifest(v.Live.Manifest)
-	}
-	if v.Draft != nil {
+	} else if v.Draft != nil {
 		v.Type = contenttype.FromManifest(v.Draft.Manifest)
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))

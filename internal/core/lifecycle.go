@@ -1421,8 +1421,15 @@ func ErrorCategory(err error) string {
 	return ""
 }
 
-// GetDraft returns the current mutable Draft pointer.
+// GetDraft returns the current mutable Draft pointer. A document has none.
 func (s *Service) GetDraft(ctx context.Context, flat string) (store.Draft, error) {
+	f, err := s.st.GetFlat(ctx, flat)
+	if err != nil {
+		return store.Draft{}, err
+	}
+	if err := s.refuseDocs(ctx, f); err != nil {
+		return store.Draft{}, err
+	}
 	return s.st.GetDraft(ctx, flat)
 }
 

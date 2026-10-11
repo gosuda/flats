@@ -81,7 +81,17 @@ func TestDocumentAPIAndTypeViews(t *testing.T) {
 					}
 				})
 			}
-			for _, path := range []string{"/flats/document", "/flats/document/draft", "/flats"} {
+			// A document has no Draft over any surface.
+			r := httptest.NewRequest("GET", prefix+"/flats/document/draft", nil)
+			r.Header.Set("X-Flats-Console", "1")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			var refused api.ErrorBody
+			_ = json.Unmarshal(w.Body.Bytes(), &refused)
+			if w.Code != http.StatusBadRequest || refused.Category != "invalid" {
+				t.Fatalf("document draft: %d %s", w.Code, w.Body.String())
+			}
+			for _, path := range []string{"/flats/document", "/flats"} {
 				r := httptest.NewRequest("GET", prefix+path, nil)
 				r.Header.Set("X-Flats-Console", "1")
 				w := httptest.NewRecorder()

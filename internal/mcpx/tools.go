@@ -1007,9 +1007,6 @@ func draftPointer(d *store.Draft) *DraftInfo {
 	return &out
 }
 func (t *tools) getDraft(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) (*mcp.CallToolResult, DraftInfo, error) {
-	if f, err := t.svc.GetFlat(ctx, in.Slug); err == nil && f.Type == contenttype.Docs {
-		return nil, DraftInfo{}, toolErr(core.ErrDocsUnversioned, "")
-	}
 	d, err := t.svc.GetDraft(ctx, in.Slug)
 	if err != nil {
 		return nil, DraftInfo{}, toolErr(err, "save complete build content with save_draft first")
