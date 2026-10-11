@@ -1,7 +1,7 @@
 {
   "name": "flats",
   "displayName": "Flats",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Deploy agent-built websites to your own Flats host: versions, previews, rollback, private (Tailscale) or public (Portal) flats.",
   "author": { "name": "oesni" },
   "license": "MIT",

@@ -4,6 +4,7 @@
 // it can be edited where it is written.
 import { syntaxTree } from "@codemirror/language";
 import MarkdownIt from "markdown-it";
+import { isDiagram } from "./markdown.js";
 
 // Link and image destinations decode escapes and entities as markdown-it
 // does, so the editor opens the same URL the rendered view links to.
@@ -444,6 +445,53 @@ export function tableBlocks(state, focused, refs = new Map()) {
   const context = [...refs.values()].map((r) => r.source).join("\n");
   for (const t of out) t.context = context;
   return out;
+}
+
+// Use the same parser and line maps as View. In particular, a nested fence's
+// content excludes quote/list prefixes while its editable range keeps them.
+const diagramParser = new MarkdownIt({ html: false });
+const diagramCache = new WeakMap();
+export function diagramBlocks(state, focused) {
+  const doc = state.doc;
+  let blocks = diagramCache.get(doc);
+  if (!blocks) {
+    const tokens = [];
+    // Only block rules are needed: skip inline parsing of the whole document.
+    // Rechecking containers conservatively also handles remote prefix/fence edits.
+    diagramParser.block.parse(doc.toString(), diagramParser, {}, tokens);
+    blocks = tokens
+      .filter(
+        (token) => token.type === "fence" && isDiagram(unescapeAll(token.info)),
+      )
+      .map((token) => {
+        const first = doc.line(token.map[0] + 1);
+        const last = doc.line(Math.min(token.map[1], doc.lines));
+        const contentLine = doc.line(Math.min(first.number + 1, doc.lines));
+        const firstContent = token.content.split("\n")[0];
+        // markdown-it strips container prefixes and fence indentation. Match
+        // the remaining suffix, rather than searching for a repeated label.
+        const prefix = contentLine.text.endsWith(firstContent)
+          ? contentLine.length - firstContent.length
+          : 0;
+        return {
+          from: first.from,
+          to: last.to,
+          edit: Math.min(contentLine.from + prefix, last.to),
+          code: token.content,
+          source:
+            token.markup + token.info + "\n" + token.content + token.markup,
+        };
+      });
+    diagramCache.set(doc, blocks);
+  }
+  return blocks.map((block) => ({
+    ...block,
+    active:
+      focused &&
+      state.selection.ranges.some(
+        (r) => r.from <= block.to && r.to >= block.from,
+      ),
+  }));
 }
 
 // A fence line, possibly inside quotes: its fence run and what follows it.

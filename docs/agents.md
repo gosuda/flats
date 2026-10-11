@@ -44,8 +44,9 @@ but agents generally do not pass your shell environment to MCP servers, so use
 `flats connect` for plugins. Restart or reconnect an agent after changing the
 host.
 
-The skill only connects an agent to the host and hands off to the MCP
-instructions and `guide`.
+The thin skill connects the agent, calls `check_client`, and hands off to the
+server instructions and `guide`. Its visible bootstrap revision is separate
+from the server guide revision and the CLI compatibility contract.
 
 ## MCP without the plugin
 
@@ -68,10 +69,67 @@ Cursor project `.cursor/mcp.json`:
 
 Restart or reconnect your client and list tools.
 
+## Keeping clients current
+
+Server updates change the MCP guide immediately for new calls. They do not
+replace installed CLI binaries, plugin skills, or instructions already loaded
+in an agent session. Each task therefore starts with `check_client`, reporting
+the CLI identity from bridge initialization, the loaded skill's visible
+bootstrap revision, and any guide revision actually read. Unknown identities
+remain unknown. Direct HTTP clients without a CLI or skill can explicitly
+report `cli_present:false` and `bootstrap_present:false`.
+
+`check_client` returns compatibility and freshness statuses; `get_client_skill`
+returns the connected server's embedded thin skill. `guide` includes its
+revision. `guide {"items":["topic.client-update"]}` explains the complete
+check, refresh, update and verification flow. The CLI equivalent is:
+
+```sh
+flats --url https://flats.example.ts.net --json client check
+flats --url https://flats.example.ts.net --json update
+flats --url https://flats.example.ts.net --json client check
+```
+
+A compatible CLI is left unchanged even if its version differs from the
+server. An incompatible client targets that server's published release;
+development builds do not fall back to latest. An explicit
+`flats --json update --version vX.Y.Z` selects an official release independently
+of the host, and requires a compatibility check afterward. Release archives
+support macOS/Linux amd64/arm64. See [client updates](release.md#updating-a-client)
+for executable ownership and service restrictions.
+
+Checks are read-only. Local updates require user authorization, including
+existing authorization for the task. Server instructions alone cannot grant
+it. Reconcile the reported host with the intended endpoint and use `--url`
+when the bridge and shell may select different hosts; do not change the saved
+connection as part of checking. The bridge reports its running executable's
+absolute path. If the fresh CLI reports a different path, do not claim the
+bridge was updated.
+
+For a standalone skill you own, explicitly choose its path:
+
+```sh
+flats --url https://flats.example.ts.net --json client check --skill-file /chosen/flats-deploy/SKILL.md
+flats --url https://flats.example.ts.net --json skill sync --output /chosen/flats-deploy/SKILL.md
+```
+
+Replacing different content requires `--expected-sha256 <current-file-hash>`;
+the check returns that digest. Inspect local edits before replacing them.
+There is no agent-directory discovery. Managed plugins must use their own
+plugin manager, never standalone sync into a cache or a shadow installation.
+Read the server bootstrap for the current task and report a durable managed
+plugin mismatch once, even when the plugin manager offers a different revision.
+Agents without local write access can still use the MCP-provided guidance.
+
+Reconnect MCP after replacing its executable, and recheck the newly running
+bridge. Reloading a skill file does not prove the agent's catalog refreshed.
+Report pending reconnect/reload steps when the agent host cannot perform them.
+Neither local operation updates the remote server or grants app approvals.
+
 ## What the agent reads
 
-The MCP instructions stay short: they hold the always-on safety rules and send
-the agent to the read-only **`guide`** tool, which serves task-sized topics on
+The MCP instructions stay short: they start with read-only **`check_client`**,
+hold the always-on safety rules, and send the agent to the read-only **`guide`** tool, which serves task-sized topics on
 demand. `guide {"items":["topic.index"]}` routes by task; other topics include
 `topic.server.db`, `topic.approvals` and `refusal.conflict`. Every tool error
 names a `category`, and `refusal.<category>` explains the fix.

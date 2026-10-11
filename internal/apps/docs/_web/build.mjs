@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 process.chdir(path.dirname(fileURLToPath(import.meta.url)));
 const out = "../dist";
@@ -14,8 +15,29 @@ const options = {
   legalComments: "none",
   metafile: true,
 };
+// Mermaid is served as its own module from a content-hashed path, so it is
+// fetched only for documents with diagrams and cached by browsers. It is
+// wrapped as a string module the worker imports when the path is requested.
+const mermaid = await build({
+  ...options,
+  stdin: { contents: 'export { default } from "mermaid";', resolveDir: "." },
+  write: false,
+  platform: "browser",
+});
+const mermaidJS = mermaid.outputFiles[0].text,
+  mermaidURL = `/_docs/assets/mermaid-${createHash("sha256").update(mermaidJS).digest("hex").slice(0, 16)}.js`,
+  mermaidDefine = { FLATS_MERMAID_URL: JSON.stringify(mermaidURL) };
+const mermaidGzip = gzipSync(mermaidJS, { level: 9 });
+// The deployed QuickJS host codec accepts at most 1.5 MiB of decoded bytes.
+if (mermaidGzip.length > 1536 * 1024)
+  throw new Error("Compressed Mermaid exceeds the host codec limit");
+await writeFile(
+  out + "/mermaid-asset.js",
+  `export default ${JSON.stringify(mermaidJS)};\nexport const gzip = ${JSON.stringify(mermaidGzip.toString("base64"))};\n`,
+);
 const client = await build({
   ...options,
+  define: mermaidDefine,
   entryPoints: ["src/client.js"],
   outfile: "client.js",
   write: false,
@@ -59,7 +81,8 @@ const server = await build({
   outfile: out + "/server.js",
   platform: "neutral",
   conditions: ["browser"],
-  external: ["./content.js"],
+  define: mermaidDefine,
+  external: ["./content.js", "./mermaid-asset.js"],
   plugins: [
     docsUTF8,
     {
@@ -94,6 +117,7 @@ await build({
 });
 const packages = new Set();
 for (const input of [
+  ...Object.keys(mermaid.metafile.inputs),
   ...Object.keys(client.metafile.inputs),
   ...Object.keys(server.metafile.inputs),
 ]) {
@@ -107,10 +131,19 @@ for (const name of [...packages].sort()) {
   const files = (await readdir(dir)).filter((f) =>
     /^(license|licence|copying)([.-]|$)/i.test(f),
   );
-  if (!files.length) throw new Error("Missing license text for " + name);
+  // A few packages (fastdom) carry their license only as a README section.
+  let readmeLicense = "";
+  if (!files.length) {
+    const readme = await readFile(dir + "/README.md", "utf8").catch(() => ""),
+      m = readme.match(/^##+ *Licen[cs]e *\n([\s\S]*?)(?=^#|(?![\s\S]))/m);
+    if (!m || !/permission is hereby granted/i.test(m[1]))
+      throw new Error("Missing license text for " + name);
+    readmeLicense = m[1].trim() + "\n";
+  }
   licenses += `===== ${name} ${pkg.version} (${pkg.license}) =====\n`;
   for (const f of files.sort())
     licenses += (await readFile(dir + "/" + f, "utf8")) + "\n";
+  if (readmeLicense) licenses += readmeLicense + "\n";
   licenses += "\n";
 }
 await writeFile(out + "/THIRD_PARTY_LICENSES.txt", licenses);
@@ -143,5 +176,5 @@ for (const p of inputs) {
 }
 await writeFile(out + "/BUILD-INPUTS.sha256", hash.digest("hex") + "\n");
 console.log(
-  `Client JS ${Buffer.byteLength(js)} bytes; CSS ${Buffer.byteLength(css)} bytes; server (includes client assets) ${(await readFile(out + "/server.js")).length} bytes; ${packages.size} bundled packages.`,
+  `Client JS ${Buffer.byteLength(js)} bytes; Mermaid ${Buffer.byteLength(mermaidJS)} bytes (${mermaidGzip.length} gzip); CSS ${Buffer.byteLength(css)} bytes; server (includes client assets) ${(await readFile(out + "/server.js")).length} bytes; ${packages.size} bundled packages.`,
 );
