@@ -215,6 +215,17 @@ export default {
     if (u.pathname === "/echo") return Response.json({ method: request.method, url: request.url,
         ct: request.headers["content-type"], viaGet: request.headers.get("X-Test"), body: request.body, text: await request.text() });
     if (u.pathname === "/bin") return new Response(new Uint8Array([0, 1, 2, 255]), { headers: { "content-type": "application/octet-stream" } });
+    if (u.pathname === "/bigbin") {
+      const b = new Uint8Array((2 << 20) + 5);
+      for (let i = 0; i < 256; i++) b[i] = (i * 7) & 255;
+      for (let n = 256; n < b.length; n *= 2) b.copyWithin(n, 0, n);
+      return new Response(b.subarray(3, b.length - 2), { headers: { "content-type": "application/octet-stream" } });
+    }
+    if (u.pathname === "/sharedbin") {
+      const b = new Uint8Array(new SharedArrayBuffer(8));
+      b.set([9, 8, 7, 6, 5, 4, 3, 2]);
+      return new Response(b.subarray(1, 6), { headers: { "content-type": "application/octet-stream" } });
+    }
     if (u.pathname === "/redirect") return Response.redirect("/plain", 307);
     if (u.pathname === "/throw") throw new Error("boom secret detail");
     const h = new Headers({ "Content-Type": "text/html; charset=utf-8" });
@@ -250,6 +261,20 @@ export default {
 	r = f.get(t, "/bin")
 	if r.body != "\x00\x01\x02\xff" {
 		t.Fatalf("bin = %q", r.body)
+	}
+	r = f.get(t, "/bigbin")
+	// 2 MiB is not a multiple of 3, so the encoding ends in padding.
+	if r.status != 200 || len(r.body) != 2<<20 {
+		t.Fatalf("bigbin = %d, %d bytes", r.status, len(r.body))
+	}
+	for i := range len(r.body) {
+		if r.body[i] != byte((i+3)*7) {
+			t.Fatalf("bigbin byte %d = %d", i, r.body[i])
+		}
+	}
+	r = f.get(t, "/sharedbin")
+	if r.status != 200 || r.body != "\x08\x07\x06\x05\x04" {
+		t.Fatalf("sharedbin = %d %q", r.status, r.body)
 	}
 	req, _ := http.NewRequest("GET", f.srv.URL+"/redirect", nil)
 	resp, err := http.DefaultTransport.RoundTrip(req)

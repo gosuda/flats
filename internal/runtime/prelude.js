@@ -444,7 +444,15 @@
     }
     const out = { status, headers: headers.__raw() };
     if (body == null) out.body = "";
-    else if (isBinary(body)) { out.body = bytesToB64(toBytes(body)); out.b64 = true; }
+    else if (isBinary(body)) {
+      // Encode on the host: an interpreted loop over a ~1 MB body can exceed
+      // the request deadline on a slow machine.
+      // The codec takes a plain ArrayBuffer; copy only partial and shared views.
+      const u8 = toBytes(body);
+      out.body = docsCodec("response.encode", u8.buffer instanceof ArrayBuffer && u8.byteOffset === 0 &&
+        u8.byteLength === u8.buffer.byteLength ? u8.buffer : u8.slice().buffer);
+      out.b64 = true;
+    }
     else out.body = String(body);
     return out;
   };

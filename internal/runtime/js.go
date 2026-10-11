@@ -639,7 +639,8 @@ func (e *jsEngine) close() {
 }
 
 // docsCodec keeps bounded binary serialization out of the interpreted VM.
-// It has no I/O capabilities. Fetch uses separate limits for its binary bridge.
+// It has no I/O capabilities. Fetch and binary response bodies use separate
+// limits for their binary bridges.
 func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 	args := this.Args()
 	defer func() {
@@ -679,7 +680,18 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 	if op == "fetch.decode" {
 		max = egress.MaxResponseBody
 	}
+	if op == "response.encode" {
+		max = MaxResponseBody
+	}
 	switch op {
+	case "response.encode":
+		if !args[1].IsByteArray() {
+			return nil, errors.New("docs codec binary limit")
+		}
+		if args[1].ByteLen() > int64(max) {
+			return nil, fmt.Errorf("response body larger than %d MiB", MaxResponseBody>>20)
+		}
+		return newString(base64.StdEncoding.EncodeToString(args[1].ToByteArray())), nil
 	case "encode", "fetch.encode":
 		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
 			return nil, errors.New("docs codec binary limit")
