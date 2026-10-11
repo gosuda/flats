@@ -933,12 +933,20 @@ func (s *Service) pruneVersions(ctx context.Context, slugName string) {
 // live version is kept on top of keep, and so are the versions of open
 // previews when keepPreviewed is set.
 func (s *Service) prunableVersions(ctx context.Context, slugName string, keep int, keepPreviewed bool) ([]int, error) {
-	if keep <= 0 {
-		return nil, nil
-	}
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return nil, err
+	}
+	// A document has no versions to go back to, so keep_versions does not
+	// apply: keep the running bundle and the one before it, which a draining
+	// runtime may still serve assets from.
+	if docs, err := s.isDocs(ctx, f); err != nil {
+		return nil, err
+	} else if docs {
+		keep = 1
+	}
+	if keep <= 0 {
+		return nil, nil
 	}
 	vs, err := s.st.ListVersions(ctx, slugName)
 	if err != nil {

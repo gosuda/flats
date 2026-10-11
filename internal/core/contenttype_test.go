@@ -600,3 +600,34 @@ func TestDocumentRunningFollowsRuntime(t *testing.T) {
 		t.Fatalf("document without a runtime: running=%t live=%d", f.Running, f.LiveVersion)
 	}
 }
+
+// Document saves keep only the running bundle and the one before it, not
+// keep_versions copies the document can never go back to.
+func TestDocumentSavesPruneOldBundles(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime = &contentRuntime{}
+	s.cfg.DocsApp = testDocsApp()
+	ctx := t.Context()
+	for i := range 4 {
+		if _, err := s.SaveVersion(ctx, "pruned-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(fmt.Sprintf("# save %d", i))}}, SaveMeta{}, ViaAPI); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, _ := s.st.GetFlat(ctx, "pruned-doc")
+	vs, err := s.st.ListVersions(ctx, "pruned-doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []int
+	for _, v := range vs {
+		_, statErr := os.Stat(s.versionDir("pruned-doc", v.Number))
+		if !v.Pruned && statErr == nil {
+			kept = append(kept, v.Number)
+		} else if statErr == nil {
+			t.Fatalf("pruned bundle %d is still on disk", v.Number)
+		}
+	}
+	if len(vs) != 4 || len(kept) != 2 || kept[0] != f.LiveVersion || kept[1] != f.LiveVersion-1 {
+		t.Fatalf("kept bundles %v of %d (live %d)", kept, len(vs), f.LiveVersion)
+	}
+}
