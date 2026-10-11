@@ -2,7 +2,7 @@
 
 import { h, clear, icon, timeEl, visibilityBadge, publicURL } from './dom.js';
 import { api, thumbnail } from './api.js';
-import { menu, errorPanel, loading, extLink, busy } from './ui.js';
+import { menu, errorPanel, loading, extLink, busy, openLinks } from './ui.js';
 import { publishDraft } from './actions.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
@@ -102,10 +102,13 @@ export function mount(main, _params, ctx) {
 
   function row(f) {
     const href = `/flats/${encodeURIComponent(f.slug)}`;
-    const draft = f.draft && f.draft.dirty;
-    const status = (f.live_version ? `Live v${f.live_version}` : 'Not published') + (f.live_version && draft ? ' · draft changes' : '');
+    // A document has no versions or publishing: it runs once it is saved.
+    const docs = f.type === 'docs';
+    const draft = !docs && f.draft && f.draft.dirty;
+    const status = docs ? (f.running ? 'Running' : 'Not running')
+      : (f.live_version ? `Live v${f.live_version}` : 'Not published') + (f.live_version && draft ? ' · draft changes' : '');
     const actions = h('div', { class: 'row-actions' });
-    if (!f.live_version || draft) {
+    if (!docs && (!f.live_version || draft)) {
       const pub = h('button', {
         type: 'button', class: 'btn btn-pill', text: 'Publish', disabled: !draft,
         title: draft ? 'Publish the draft' : 'No draft saved yet',
@@ -115,14 +118,12 @@ export function mount(main, _params, ctx) {
       actions.appendChild(pub);
     }
     if (f.live_version) {
-      actions.appendChild(extLink(f.private_url, icon('external', `Open ${f.name || f.slug} (private URL)`), 'icon-btn'));
-      if (publicURL(f)) {
-        actions.appendChild(extLink(publicURL(f), icon('globe', `Open ${f.name || f.slug} (public URL: anyone with it can open the flat)`), 'icon-btn'));
-      }
+      const open = openLinks(f);
+      if (open) actions.appendChild(open);
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
       { label: 'Share', onSelect: () => shareDialog(f, load) },
-      { label: 'Deployments', onSelect: () => ctx.navigate(href) },
+      { label: docs ? 'Overview' : 'Deployments', onSelect: () => ctx.navigate(href) },
       { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
       { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
     ]));

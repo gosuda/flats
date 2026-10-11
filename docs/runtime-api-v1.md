@@ -945,7 +945,8 @@ Before previewing, read the `warnings` of the save result (`topic.design`);
 they are cheap static checks, not a render.
 
 `open_preview {slug, version: 0}` serves the current Private Draft; a positive
-`version` previews that published version. Live is unchanged. Server and docs
+`version` previews that published version. Live is unchanged. Documents have
+no previews: they run at once, so open their private URL instead. Server
 flats get an isolated copy of the live DB/FILES: preview writes never reach
 live. New previews capture current environment variables, secrets and network
 grants. At most **5 open previews per flat**; a preview closes on the next
@@ -991,7 +992,8 @@ notice and recheck shared links over time.
 ### Live data
 
 Server and docs flats keep live data: `env.DB` and `env.FILES` for server
-flats, the collaborative document state for docs flats. Live data belongs to
+flats, the collaborative document state for docs flats (which Flats does not
+snapshot). Live data belongs to
 the flat and survives successful redeploy, ordinary rollback and host restart.
 Deleting the flat deletes its data. Previews work on isolated copies. Versions
 are code, not data backups.
@@ -1020,9 +1022,10 @@ A rollback to the version that is already live, or with nothing live yet, is
 refused (`refusal.conflict`, `refusal.not_deployed`). Restoring a named
 snapshot without changing code is an operator console action.
 
-For docs flats, a code rollback merges the target version's Markdown into the
-live text: independent human edits are kept and overlapping lines prefer the
-target (`topic.docs`).
+Documents have no versions or data snapshots, so they have no rollback or
+data restore (`refusal.invalid`). To
+undo a change, apply the reverse edit with `update_document` or save the
+earlier text with `save_document` (`topic.docs`).
 
 ## Approvals, visibility and exposure
 
@@ -1080,11 +1083,12 @@ Rules:
 * Local is always permitted. Nonlocal providers (`tailscale`,
   `tailscale-funnel`, `portal`, `zrok`) need host configuration and per-flat
   operator permission; agents cannot grant either. One standing exception:
-  on a host whose private backend is Tailscale (`network.private_backend:
-  tailscale`), a new flat, including one an agent creates, starts with
-  `tailscale` permitted, so its private and preview links use the tailnet.
-  That grant never covers Funnel, Portal or zrok, and the operator can turn it off
-  per flat. Read the actual `providers` from `get_flat` instead of assuming. Connecting Tailscale
+  the operator can set one default provider per mode for new flats. A new
+  flat, including one an agent creates, starts with those defaults permitted
+  (for example `tailscale` for private links, or `zrok` for public). It is
+  still created Private: a public default never publishes it or changes
+  visibility, which still needs approval. The operator can turn a default
+  grant off per flat. Read the actual `providers` from `get_flat` instead of assuming. Connecting Tailscale
   grants no Funnel permission, and configuring a provider grants no publish or
   visibility consent. A provider failure never authorizes switching providers.
 * Never infer visibility, publication or readiness from a URL or domain.

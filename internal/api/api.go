@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
@@ -325,6 +326,9 @@ type SaveResponse struct {
 	Version store.Version      `json:"version"`
 	Draft   store.Draft        `json:"draft"`
 	Deploy  *core.ActionResult `json:"deploy,omitempty"`
+	// Flat is set for a document, which runs at once: it has no Draft or
+	// publish step, so deploy is ignored.
+	Flat *core.FlatView `json:"flat,omitempty"`
 	core.ActionResult
 }
 
@@ -352,6 +356,10 @@ func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Vi
 	v, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
 	if err != nil {
 		fail(w, err)
+		return
+	}
+	if f, err := s.Svc.GetFlat(r.Context(), r.PathValue("slug")); err == nil && f.Type == contenttype.Docs {
+		writeJSON(w, http.StatusCreated, SaveResponse{Version: v, Flat: &f})
 		return
 	}
 	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))

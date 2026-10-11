@@ -32,6 +32,10 @@ const (
 	SetPortalMaxRelay = "portal_max_relays" // active relays chosen by discovery (default 3)
 	SetEventsKeep     = "events_keep"       // log events kept per flat
 	SetPortalHide     = "portal_hide"       // "true" keeps public flats out of relay listings by default
+	// The providers new flats inherit, one per mode. "" for private follows
+	// network.private_backend; "" for public grants none.
+	SetDefaultPrivate = "default_private_provider"
+	SetDefaultPublic  = "default_public_provider"
 )
 
 // settingKeys maps each setting to its config.json key.
@@ -47,6 +51,8 @@ var settingKeys = map[string]string{
 	SetPortalDiscover: "portal.discovery",
 	SetPortalMaxRelay: "portal.max_active_relays",
 	SetPortalHide:     "portal.hide",
+	SetDefaultPrivate: "network.default_private",
+	SetDefaultPublic:  "network.default_public",
 }
 
 // SettingConfigKey returns the config.json key of a setting.
@@ -278,6 +284,17 @@ func (s *SettingsSource) commit(ifMatch string, apply func(*config.Document) err
 	return nil
 }
 
+// network returns the network section in effect.
+func (s *SettingsSource) network() config.NetworkConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.doc.Effective(nil)
+	if err != nil {
+		return config.NetworkConfig{}
+	}
+	return c.Network
+}
+
 // permitted returns network.permitted in effect.
 func (s *SettingsSource) permitted() []string {
 	s.mu.Lock()
@@ -299,6 +316,15 @@ func (s *SettingsSource) setPermitted(ids []string, ifMatch string) (string, err
 	apply := func(d *config.Document) error {
 		if err := d.Set("network.permitted", strings.Join(ids, ",")); err != nil {
 			return err
+		}
+		// A provider turned off stops being the default for new flats.
+		for _, k := range []string{"network.default_private", "network.default_public"} {
+			v, _ := d.Stored(k)
+			if p, _ := v.(string); p != "" && p != "local" && !slices.Contains(ids, p) {
+				if err := d.Unset(k); err != nil {
+					return err
+				}
+			}
 		}
 		return d.Validate()
 	}
@@ -526,6 +552,20 @@ func normalizeSetting(k, v string) (string, error) {
 			}
 		}
 		return strings.Join(relays, ","), nil
+	case SetDefaultPrivate:
+		switch v {
+		case "", "local", string(ProviderTailscale):
+			return v, nil
+		}
+		return "", fmt.Errorf("setting %s must be local or tailscale, or empty to follow network.private_backend", k)
+	case SetDefaultPublic:
+		switch v {
+		case "", "none":
+			return "", nil
+		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok):
+			return v, nil
+		}
+		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal or zrok, or empty for none", k)
 	case SetPortalDiscover, SetPortalHide:
 		b, err := strconv.ParseBool(v)
 		if err != nil {

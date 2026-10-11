@@ -126,10 +126,12 @@ Deploy that directory with the same `flats deploy` command.
   [capability table and response format](docs/design.md#server-flats-handler-abi).
 - **Markdown documents.** A flat with `type: "docs"` runs the built-in
   collaborative editor: private visitors edit live Markdown, public visitors
-  read it, and agent publications merge into human edits. For small changes,
-  agents can edit the live text of a running document with `update_document`
-  (guarded find/replace and block operations, no approval; on a Public flat
-  the change is visible at once). See [Content types](docs/content-types.md).
+  read it. Documents have no Draft, versions or publishing: creating or
+  saving one runs it at once, Private, and an agent's save merges into human
+  edits. For small changes, agents can edit the live text with
+  `update_document` (guarded find/replace and block operations, no approval;
+  on a Public flat the change is visible at once). Making a document Public
+  still waits for approval. See [Content types](docs/content-types.md).
 
 Data survives deploys and ordinary rollbacks. `flats rollback hello` restores
 code; `--restore-data` requests a separately approved restore of the

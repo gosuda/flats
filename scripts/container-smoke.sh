@@ -136,6 +136,15 @@ deploy_approved() {
 	console -X POST "$url/console/api/approvals/$id/approve" >/dev/null || fail "approving $id for $1 failed"
 }
 
+# deploy_document FLAT deploys the document $work/FLAT with the host CLI. A
+# document runs at once: there is no publish request to approve.
+deploy_document() {
+	"$flats" deploy "$work/$1" --flat "$1" --json >"$work/deploy" && status=0 || status=$?
+	[ "$status" -eq 0 ] || fail "deploy of document $1 failed (exit $status): $(cat "$work/deploy")"
+	"$flats" approvals --status pending --json >"$work/approvals"
+	! grep -q '"id"' "$work/approvals" || fail "deploy of document $1 requested approval: $(cat "$work/approvals")"
+}
+
 # smoke MODE runs the whole check with host networking (host) or published
 # loopback ports on a dedicated network (published).
 smoke() {
@@ -184,8 +193,8 @@ smoke() {
 	before=$(hits)
 	[ -n "$before" ] || fail "server flat returned no hit count"
 
-	step "$mode: approved document deploy under the writable data volume"
-	deploy_approved document
+	step "$mode: document deploy (no approval) under the writable data volume"
+	deploy_document document
 	get document | grep -q 'Container document' || fail "built-in docs flat was not served"
 	# Distroless has no shell or test utility. Inspect the generated modules
 	# through Docker rather than adding tools to the hardened image.

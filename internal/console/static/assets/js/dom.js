@@ -139,6 +139,30 @@ export function publicURL(f) {
   return ep ? ep.url : '';
 }
 
+const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok' };
+const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok'];
+
+// openTargets lists the addresses that open a flat's live version, one per
+// allowed network that has a route: private networks first, then public
+// ones. Without route details it falls back to the private and public URL.
+export function openTargets(f) {
+  if (!f) return [];
+  const out = [];
+  const add = (provider, url, isPublic) => {
+    if (url && !out.some((t) => t.url === url)) out.push({ provider, url, public: isPublic, label: NETWORK_LABELS[provider] || provider });
+  };
+  const eps = (f.endpoints || []).filter((e) => e.audience === 'current' && e.url && e.permitted &&
+    (!e.host || e.host === f.slug) && e.state !== 'stopped' &&
+    (!PUBLIC_NETWORKS.includes(e.provider) || f.visibility !== 'private'));
+  eps.sort((a, b) => Number(PUBLIC_NETWORKS.includes(a.provider)) - Number(PUBLIC_NETWORKS.includes(b.provider)));
+  for (const e of eps) add(e.provider, e.url, PUBLIC_NETWORKS.includes(e.provider));
+  if (!out.length) {
+    add('local', f.private_url, false);
+    add('portal', publicURL(f), true);
+  }
+  return out;
+}
+
 // publicNoticeOf returns the warning to show next to a flat's public URL
 // ('' when it has none). Every public URL in the console carries one.
 export function publicNoticeOf(f) {

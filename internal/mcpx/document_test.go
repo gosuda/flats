@@ -2,19 +2,68 @@ package mcpx
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// documentRuntime is a fake docs app: it serves the entry document of the
+// content module it was started with as live text.
 type documentRuntime struct{}
 
-func (documentRuntime) Start(context.Context, core.RuntimeSpec) (core.Instance, error) {
-	panic("Draft save must not start runtime")
+type documentInstance struct{ http.Handler }
+
+func (documentInstance) Stop() {}
+
+func (documentRuntime) Start(_ context.Context, spec core.RuntimeSpec) (core.Instance, error) {
+	b, err := os.ReadFile(filepath.Join(spec.Dir, testDocsApp().ContentModule))
+	if err != nil {
+		return nil, err
+	}
+	var content struct {
+		Entry     string `json:"entry"`
+		Documents []struct {
+			Path string `json:"path"`
+			Text string `json:"text"`
+		} `json:"documents"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(string(b), "export default "), ";\n")), &content); err != nil {
+		return nil, err
+	}
+	return documentInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/_docs/api/") && r.URL.Path != "/_docs/api/document" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path != "/_docs/api/document" {
+			fmt.Fprint(w, "ok")
+			return
+		}
+		doc := r.URL.Query().Get("doc")
+		if doc == "" {
+			doc = content.Entry
+		}
+		for _, d := range content.Documents {
+			if d.Path == doc {
+				_ = json.NewEncoder(w).Encode(core.Document{Format: 1, Doc: d.Path, Markdown: d.Text, Source: "live", Seq: 1})
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})}, nil
+}
+
+func testDocsApp() core.DocsApp {
+	return core.DocsApp{FS: fstest.MapFS{"server.js": &fstest.MapFile{Data: []byte("export default {}")}}, Hash: strings.Repeat("a", 64), Entry: "server.js", ContentModule: "content.js"}
 }
 
 func TestDocumentTools(t *testing.T) {
@@ -25,23 +74,48 @@ func TestDocumentTools(t *testing.T) {
 			for i, path := range []string{"", "notes/chapter.markdown"} {
 				var saved SaveOut
 				text, failed := call(t, client, "save_document", map[string]any{"slug": slug, "markdown": "# Hello\n한글 😀", "title": "Title", "path": path, "message": "edit"}, &saved)
-				if failed || saved.Version.Type != "docs" || saved.Draft.Type != "docs" || saved.Draft.Revision != i+1 || saved.Version.Number != 0 || saved.Version.Published || saved.Deploy != nil {
-					t.Fatalf("save: %s %+v", text, saved)
+				if failed || saved.Flat == nil || saved.Flat.Type != "docs" || !saved.Flat.Running || saved.Flat.Visibility != "private" || saved.Flat.LiveVersion != 0 || saved.Flat.Publication != "" || saved.Flat.Draft != nil || saved.Draft.Revision != 0 || saved.Deploy != nil || !strings.Contains(text, "running now") {
+					t.Fatalf("save %d: %s %+v", i, text, saved)
+				}
+				if strings.Contains(text, `"draft":{`) || strings.Contains(text, `"version":{`) {
+					t.Fatalf("document save reports a Draft or version: %s", text)
 				}
 				var out core.Document
-				text, failed = call(t, client, "get_document", map[string]any{"slug": slug}, &out)
-				if failed || out.Source != "draft" || out.Markdown != "# Hello\n한글 😀" {
+				text, failed = call(t, client, "get_document", map[string]any{"slug": slug, "doc": map[bool]string{true: "index.md", false: path}[path == ""]}, &out)
+				if failed || out.Source != "live" || out.Markdown != "# Hello\n한글 😀" {
 					t.Fatalf("read: %s %+v", text, out)
 				}
-				flat, _ := e.svc.GetFlat(context.Background(), slug)
-				if flat.LiveVersion != 0 || flat.Type != "docs" {
-					t.Fatalf("flat: %+v", flat)
-				}
-				versions, _ := e.svc.ListVersions(context.Background(), slug)
 				approvals, _ := e.svc.ListApprovals(context.Background(), "pending")
-				if len(versions) != 0 || len(approvals) != 0 {
-					t.Fatal("document save published or requested approval")
+				if len(approvals) != 0 {
+					t.Fatal("document save requested approval")
 				}
+				for _, tool := range []struct {
+					name string
+					args map[string]any
+				}{{"list_versions", nil}, {"get_draft", nil}, {"publish", nil}, {"deploy", map[string]any{"version": 0}}, {"rollback", nil}, {"open_preview", map[string]any{"version": 0}}} {
+					args := map[string]any{"slug": slug}
+					for k, v := range tool.args {
+						args[k] = v
+					}
+					if text, failed := call(t, client, tool.name, args, nil); !failed || !strings.Contains(text, "this flat is a document") {
+						t.Fatalf("%s on a document: %s", tool.name, text)
+					}
+				}
+			}
+			var created FlatInfo
+			text, failed := call(t, client, "create_flat", map[string]any{"slug": "new-" + name, "name": "Meeting notes", "type": "docs"}, &created)
+			if failed || created.Type != "docs" || !created.Running || created.Visibility != "private" || !strings.Contains(text, "running now") {
+				t.Fatalf("create document: %s %+v", text, created)
+			}
+			var fresh core.Document
+			if text, failed := call(t, client, "get_document", map[string]any{"slug": "new-" + name}, &fresh); failed || fresh.Markdown != "# Meeting notes\n" {
+				t.Fatalf("created document text: %s %+v", text, fresh)
+			}
+			if text, failed := call(t, client, "create_flat", map[string]any{"slug": "new-" + name, "type": "docs"}, nil); !failed {
+				t.Fatalf("existing slug: %s", text)
+			}
+			if text, failed := call(t, client, "create_flat", map[string]any{"slug": "bad-type-" + name, "type": "wiki"}, nil); !failed || !strings.Contains(text, `"category":"invalid"`) {
+				t.Fatalf("bad type: %s", text)
 			}
 			for _, path := range []string{"../x.md", "x.txt", "_docs/a.md"} {
 				if text, failed := call(t, client, "save_document", map[string]any{"slug": slug, "markdown": "bad", "path": path}, nil); !failed || !strings.Contains(text, "fix") && !strings.Contains(text, "Hint") {
@@ -58,7 +132,7 @@ func TestDocumentTools(t *testing.T) {
 					t.Fatal(text)
 				}
 			}
-			text, failed := call(t, client, "get_document", map[string]any{"slug": slug, "doc": "absent.md"}, nil)
+			text, failed = call(t, client, "get_document", map[string]any{"slug": slug, "doc": "absent.md"}, nil)
 			if !failed || !strings.Contains(text, `"category":"document_not_found"`) {
 				t.Fatalf("missing document: %s", text)
 			}

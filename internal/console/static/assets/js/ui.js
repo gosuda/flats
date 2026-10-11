@@ -1,7 +1,7 @@
 // Shared UI pieces: confirm dialogs, popup menus, toasts, error panels and
 // copyable snippets.
 
-import { h, clear, icon } from './dom.js';
+import { h, clear, icon, openTargets } from './dom.js';
 
 // confirmDialog opens a modal <dialog> and resolves true when confirmed.
 // opts: title, body (string | Node | array), confirmLabel, danger,
@@ -54,19 +54,26 @@ export function infoDialog(title, body) {
 // items: [{label, onSelect, danger, disabled}]
 let openMenu = null;
 
-export function menu(label, items) {
+export function menu(label, items, iconName) {
   const id = 'menu-' + Math.random().toString(36).slice(2);
   const btn = h('button', {
     type: 'button', class: 'icon-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
     'aria-controls': id, 'aria-label': label, title: label,
-  }, icon('more'));
+  }, icon(iconName || 'more'));
   const list = h('div', { class: 'menu', role: 'menu', id, hidden: true });
   for (const it of items) {
-    const mi = h('button', {
-      type: 'button', role: 'menuitem', tabindex: '-1',
-      class: 'menu-item' + (it.danger ? ' danger' : ''), disabled: !!it.disabled, text: it.label,
-    });
-    mi.addEventListener('click', () => { close(true); it.onSelect(); });
+    // An item with href is an external link (opened like extLink); one the
+    // console cannot open from this device is shown disabled.
+    const href = it.href ? safeHref(it.href) : '';
+    const blocked = it.href && (!href || serverOnly(href));
+    const content = it.detail ? [h('span', { class: 'menu-label', text: it.label }), h('span', { class: 'menu-detail muted small', text: it.detail })] : null;
+    const mi = href && !blocked
+      ? h('a', { role: 'menuitem', tabindex: '-1', class: 'menu-item', href, target: '_blank', rel: 'noopener noreferrer' }, content || it.label)
+      : h('button', {
+        type: 'button', role: 'menuitem', tabindex: '-1', title: blocked ? SERVER_ONLY : undefined,
+        class: 'menu-item' + (it.danger ? ' danger' : ''), disabled: !!it.disabled || !!blocked,
+      }, content || it.label);
+    mi.addEventListener('click', () => { close(!href); if (it.onSelect) it.onSelect(); });
     list.appendChild(mi);
   }
   const wrap = h('div', { class: 'menu-wrap' }, btn, list);
@@ -267,4 +274,21 @@ export async function busy(btn, fn) {
     btn.disabled = was;
     btn.removeAttribute('aria-busy');
   }
+}
+
+// openLinks is a flat's open shortcut. With one address it is a plain icon
+// link; when several networks serve the flat it opens a list of them, each
+// labelled with its network (public ones say anyone can open them).
+export function openLinks(f) {
+  const name = f.name || f.slug;
+  const targets = openTargets(f);
+  if (!targets.length) return null;
+  if (targets.length === 1) {
+    const t = targets[0];
+    return extLink(t.url, icon(t.public ? 'globe' : 'external',
+      `Open ${name} through ${t.label}` + (t.public ? ' (public URL: anyone with it can open the flat)' : '')), 'icon-btn');
+  }
+  return menu(`Open ${name}: choose a network`, targets.map((t) => ({
+    label: t.label + (t.public ? ' · public' : ''), detail: t.url.replace(/^https?:\/\//, ''), href: t.url,
+  })), 'external');
 }

@@ -940,3 +940,39 @@ func TestDocsTypeOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployDocumentRunsAtOnce(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	api.handle("POST /api/flats/notes/versions", 201, `{"version": {"flat": "notes", "number": 0, "role": "draft", "revision": 2, "files": 2, "kind": "server", "type": "docs"},
+  "flat": {"slug": "notes", "type": "docs", "visibility": "private", "live_version": 3, "running": true, "private_url": "http://notes.localhost:7878"}}`)
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"index.md": "# Notes", "flats.json": `{"type":"docs"}`})
+	r := run(t, srv.URL, "", "deploy", dir, "--flat", "notes")
+	if r.code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+	}
+	if want := "Saved document notes; it is running now (private) at http://notes.localhost:7878. Documents have no publish step."; !strings.Contains(r.stdout, want) || strings.Contains(r.stdout, "Draft") || strings.Contains(r.stdout, "publish`") {
+		t.Fatalf("stdout:\n%s", r.stdout)
+	}
+}
+
+func TestInfoAndListDocument(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	doc := `{"slug": "notes", "name": "Notes", "type": "docs", "running": true, "visibility": "private", "publication": "published", "live_version": 3, "versions": 3,
+  "draft": {"revision": 3, "base_version": 3, "type": "docs"}, "live": {"number": 3, "kind": "server", "type": "docs"}, "private_url": "http://notes.localhost:7878", "disk_bytes": 900}`
+	api.handle("GET /api/flats/notes", 200, doc)
+	api.handle("GET /api/flats", 200, `{"flats": [`+doc+`]}`)
+	r := run(t, srv.URL, "", "info", "notes")
+	if r.code != 0 || !strings.Contains(r.stdout, "document:   running (no Draft, versions or publish step)") {
+		t.Fatalf("info: %d %s %s", r.code, r.stdout, r.stderr)
+	}
+	for _, hidden := range []string{"publication:", "Draft:", "version 3", "versions:"} {
+		if strings.Contains(r.stdout, hidden) {
+			t.Errorf("document info shows %q:\n%s", hidden, r.stdout)
+		}
+	}
+	r = run(t, srv.URL, "", "list")
+	if r.code != 0 || !strings.Contains(r.stdout, "running") || strings.Contains(r.stdout, "v3") {
+		t.Fatalf("list: %d %s", r.code, r.stdout)
+	}
+}

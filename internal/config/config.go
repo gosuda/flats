@@ -88,6 +88,14 @@ var specs = []spec{
 		hint: `list any of "tailscale", "tailscale-funnel", "portal" and "zrok" once each; local is always available`},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
+	// The providers a new flat is allowed on from the start, one per mode.
+	// Unset, the private default follows network.private_backend and new
+	// flats get no public provider. A new flat is always Private: a public
+	// default is only a permission, never exposure.
+	{key: "network.default_private", kind: kindString, def: "", check: checkDefaultPrivate,
+		hint: `use "local" or "tailscale", or "" to follow network.private_backend`},
+	{key: "network.default_public", kind: kindString, def: "", check: checkDefaultPublic,
+		hint: `use "tailscale-funnel", "portal" or "zrok", or "" for none`},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
 	// numbers everywhere), as the settings table did.
 	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
@@ -208,6 +216,12 @@ func (d *Document) Clone() *Document {
 		c.values[k] = v
 	}
 	return c
+}
+
+// Stored returns the value key holds in the document itself (no default).
+func (d *Document) Stored(key string) (any, bool) {
+	v, ok := d.values[key]
+	return v, ok
 }
 
 // SchemaVersion is the document's schema_version.
@@ -384,6 +398,24 @@ func ephemeralPort(addr string) bool {
 	return err == nil && strings.TrimLeft(port, "0") == ""
 }
 
+func checkDefaultPrivate(v any) (any, error) {
+	switch s := v.(string); s {
+	case "", "local", "tailscale":
+		return s, nil
+	default:
+		return nil, fmt.Errorf("%q is not a private provider", s)
+	}
+}
+
+func checkDefaultPublic(v any) (any, error) {
+	switch s := v.(string); s {
+	case "", "tailscale-funnel", "portal", "zrok":
+		return s, nil
+	default:
+		return nil, fmt.Errorf("%q is not a public provider", s)
+	}
+}
+
 func checkBackend(v any) (any, error) {
 	switch s := v.(string); s {
 	case "local", "tailscale":
@@ -479,6 +511,30 @@ type HostConfig struct {
 type NetworkConfig struct {
 	Permitted      []string // canonical order; never contains "local"
 	PrivateBackend string   // "local" or "tailscale"
+	DefaultPrivate string   // "", "local" or "tailscale"; "" follows PrivateBackend
+	DefaultPublic  string   // "" or a public provider in Permitted
+}
+
+// NewFlatProviders returns the providers a new flat is allowed on: the
+// effective private default (unless it is local, which needs no grant) and
+// the public default, if any.
+func (n NetworkConfig) NewFlatProviders() []string {
+	var out []string
+	if p := n.EffectiveDefaultPrivate(); p != "local" {
+		out = append(out, p)
+	}
+	if n.DefaultPublic != "" {
+		out = append(out, n.DefaultPublic)
+	}
+	return out
+}
+
+// EffectiveDefaultPrivate is DefaultPrivate, or PrivateBackend when unset.
+func (n NetworkConfig) EffectiveDefaultPrivate() string {
+	if n.DefaultPrivate != "" {
+		return n.DefaultPrivate
+	}
+	return n.PrivateBackend
 }
 
 type SystemConfig struct {
@@ -573,7 +629,8 @@ func (c *Config) fill() error {
 
 	c.Host = HostConfig{str("host.instance_id"), str("host.data_dir"), str("host.management_addr"),
 		str("host.local_addr"), str("host.console_host"), flag("host.server_runtime")}
-	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend")}
+	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
+		str("network.default_private"), str("network.default_public")}
 	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.keep_versions"),
 		num("system.disk_quota_bytes"), num("system.preview_ttl_seconds"), num("system.rate_limit_rps"),
 		num("system.redirect_days"), num("system.events_keep")}
@@ -590,6 +647,14 @@ func (c *Config) fill() error {
 	if c.Network.PrivateBackend == "tailscale" && !slices.Contains(c.Network.Permitted, "tailscale") {
 		errs = append(errs, fieldErr("network.private_backend", `add "tailscale" to network.permitted or use "local"`,
 			"tailscale is not permitted"))
+	}
+	if c.Network.DefaultPrivate == "tailscale" && !slices.Contains(c.Network.Permitted, "tailscale") {
+		errs = append(errs, fieldErr("network.default_private", `add "tailscale" to network.permitted or use "local"`,
+			"tailscale is not permitted"))
+	}
+	if p := c.Network.DefaultPublic; p != "" && !slices.Contains(c.Network.Permitted, p) {
+		errs = append(errs, fieldErr("network.default_public", fmt.Sprintf(`add %q to network.permitted or clear the default`, p),
+			"%s is not permitted", p))
 	}
 	if !c.Portal.Discovery && len(c.Portal.Relays) == 0 {
 		errs = append(errs, fieldErr("portal.discovery", "list portal.relays or set discovery to true",

@@ -95,7 +95,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 // --- stubbed API ---
 const PUBLIC = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 const blog = {
-  type: 'docs', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
+  type: 'flat', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
   portal_listing: 'default', portal_hidden: false,
   private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: PUBLIC,
   draft: { revision: 3, hash: 'c', dirty: true, size: 1, files: 1, kind: 'server', updated_at: '2026-10-03T00:00:00Z' },
@@ -105,13 +105,15 @@ const blog = {
 // Funnel address comes from the flat's endpoints; the console still shows the notice.
 const shop = { ...blog, type: 'flat', slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: undefined, public_notice: undefined,
   endpoints: [{ provider: 'tailscale-funnel', audience: 'current', url: 'https://shop.tail.ts.net', state: 'ready' }] };
-const notes = { ...blog, slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null };
+// A document runs once saved: it has no versions, Draft or publishing.
+const notes = { ...blog, type: 'docs', running: true, slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null, versions: 0, providers: [] };
 const pending = (id) => ({ status: 'pending_approval', approval: { id, status: 'pending' } });
 const calls = [];
 const routes = {
   'GET /console/api/flats': { flats: [blog, shop, notes] },
   'GET /console/api/approvals?status=pending': { approvals: [] },
   'GET /console/api/flats/blog': blog,
+  'GET /console/api/flats/notes': notes,
   'GET /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'PUT /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'PUT /console/api/flats/blog/listing': { ...blog, portal_listing: 'hidden', portal_hidden: true },
@@ -150,8 +152,9 @@ assert.equal(rows.length, 3);
 // readers; there is no initials tile or text badge.
 const typeLabel = (root) => all(root, (e) => e.className.startsWith('type-icon'))
   .map((e) => [e.getAttribute('role'), e.getAttribute('aria-label'), e.getAttribute('data-tip'), e.getAttribute('tabindex')]);
-assert.deepEqual(typeLabel(rows[0]), [['img', 'Document', 'Document', '0']]);
+assert.deepEqual(typeLabel(rows[0]), [['img', 'Flat', 'Flat', '0']]);
 assert.deepEqual(typeLabel(rows[1]), [['img', 'Flat', 'Flat', '0']]);
+assert.deepEqual(typeLabel(rows[2]), [['img', 'Document', 'Document', '0']]);
 for (const row of rows) {
   assert.equal(all(row, (e) => /\b(thumb|content-type)\b/.test(e.className)).length, 0);
 }
@@ -164,9 +167,11 @@ for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
  assert.equal(name.getAttribute('target'), '_blank');
  assert.equal(name.getAttribute('data-nav'), null);
 }
-// A flat with draft changes offers Publish; one without does not.
+// A flat with draft changes offers Publish; a document never does.
 assert.equal(byText(rows[0], 'Publish').length, 1);
 assert.equal(byText(rows[2], 'Publish').length, 0);
+assert.ok(rows[2].textContent.includes('Running') && !rows[2].textContent.includes('Live v'), 'a document row shows no version: ' + rows[2].textContent);
+assert.equal(byText(rows[2], 'Overview').length, 1);
 stopList();
 
 // The flat's own address is its Deployments tab: status, versions, previews
@@ -177,7 +182,7 @@ const flat = await import('./flat.js');
 const flatMain = new Element('main');
 const stopFlat = flat.mount(flatMain, ['blog'], ctx);
 await tick();
-assert.deepEqual(typeLabel(flatMain), [['img', 'Document', 'Document', '0']]);
+assert.deepEqual(typeLabel(flatMain), [['img', 'Flat', 'Flat', '0']]);
 const tabLinks = (root) => all(root, (e) => e.tagName === 'A' && e.parentNode?.className === 'site-tabs');
 assert.deepEqual(tabLinks(flatMain).map((a) => [a.textContent, a.getAttribute('href'), a.getAttribute('aria-current')]), [
   ['Deployments', '/flats/blog', 'page'], ['Analytics', '/flats/blog/analytics', null],
@@ -234,6 +239,32 @@ all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
 await tick();
 
 stopFlat();
+// A document's page has an Overview with status and logs but no versions,
+// previews, Draft or publishing, and its settings no environment panels.
+const docMain = new Element('main');
+const stopDoc = flat.mount(docMain, ['notes'], ctx);
+await tick();
+assert.deepEqual(tabLinks(docMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Settings']);
+for (const id of ['versions', 'previews']) {
+  assert.equal(all(docMain, (e) => e.getAttribute('id') === id).length, 0, `document page shows ${id}`);
+}
+for (const id of ['status', 'logs']) {
+  assert.equal(all(docMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `document page lacks ${id}`);
+}
+for (const text of ['Publish', 'Redeploy (apply environment)', 'Preview', 'Roll back', 'Deploy']) {
+  assert.equal(byText(docMain, text).length, 0, `document page offers ${text}`);
+}
+assert.ok(docMain.textContent.includes('Running') && !docMain.textContent.includes('Not published'));
+assert.equal(calls.some((c) => c.key.startsWith('GET /console/api/flats/notes/versions') || c.key.startsWith('GET /console/api/flats/notes/previews')), false, 'a document loads no versions or previews');
+stopDoc();
+const docSettings = new Element('main');
+const stopDocSettings = flat.mountSettings(docSettings, ['notes'], ctx);
+await tick();
+for (const id of ['env', 'secrets', 'network']) {
+  assert.equal(all(docSettings, (e) => e.getAttribute('id') === id).length, 0, `document settings show ${id}`);
+}
+assert.equal(all(docSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
+stopDocSettings();
 // The Settings tab holds every setting once, and still offers the redeploy
 // that applies environment changes.
 const management = new Element('main');

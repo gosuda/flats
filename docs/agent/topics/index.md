@@ -13,8 +13,8 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 | Make a page look and read right (title, themes, phone width, assets) | `topic.design` | `save_draft` warnings, `open_preview` |
 | Build a server app (HTTP API, SQLite, file storage) | `topic.server`, then `topic.server.db`, `topic.server.files`, `topic.server.fetch` as needed, and `topic.server.limits` | same as static |
 | Type-check server code against the exact runtime API | `topic.server.types` | |
-| Write or edit a Markdown document | `topic.docs` | `get_document`, `save_document`, `publish` |
-| Fix or add to a live Markdown document now (no approval; Public is visible at once) | `topic.docs` | `get_document`, `update_document` |
+| Write a Markdown document (runs Private at once; no publish or approval) | `topic.docs` | `create_flat {type: "docs"}`, `save_document` |
+| Fix or add to a Markdown document (no approval; Public is visible at once) | `topic.docs` | `get_document`, `update_document` |
 | Give an app settings, credentials or API access | `topic.env-secrets`, `topic.server.fetch` | `list_env`, `set_env`, `list_secrets`, `get_network` |
 | Make a flat public or private, or delete it | `topic.approvals` | `set_visibility`, `delete_flat` (ask the user first) |
 | Roll back code or restore data | `topic.rollback-data` | `rollback` |
@@ -26,9 +26,12 @@ For an existing flat, call `get_flat` before changing anything.
 
 ### Workflow map
 
+Websites follow these steps. Documents do not: they have no Draft, versions,
+previews or publish, and every save runs at once (`topic.docs`).
+
 1. **Draft.** `save_draft` (or `save_version`) uploads the complete build;
-   `save_document` saves one Markdown document. Saving creates a missing flat
-   and only changes its Private Draft. Nothing is published.
+   saving creates a missing flat and only changes its Private Draft. Nothing
+   is published.
 2. **Review.** Read the save `warnings`, then `open_preview {slug, version:
    0}` serves the Draft privately; look once in your browser and fix
    (`topic.design`, `topic.preview-check`).

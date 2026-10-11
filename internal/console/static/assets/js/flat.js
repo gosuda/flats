@@ -1,6 +1,9 @@
 // Flat management page. One page per flat with tabs (site.js): Deployments
 // (status, versions, previews and logs) and Settings (name, slug, sharing,
 // networks, environment variables, secrets, server permissions and delete).
+// A document has no versions, previews or publishing: it runs once saved, so
+// its first tab (Overview) shows only status and logs, and its settings have
+// no environment or server permissions.
 // Analytics and Database are their own modules under the same tabs.
 
 import { h, icon, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
@@ -36,6 +39,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   const networkSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
+  const isDocs = () => flat && flat.type === 'docs';
 
   const page = h('section', { class: 'page site-page' },
     h('a', { class: 'back', href: '/', 'data-nav': true }, icon('back'), 'All flats'),
@@ -54,7 +58,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       return false;
     }
     if (!ctx.alive()) return false;
-    ctx.setTitle(`${flat.name || flat.slug} · ${settings ? 'Settings' : 'Deployments'}`);
+    ctx.setTitle(`${flat.name || flat.slug} · ${settings ? 'Settings' : isDocs() ? 'Overview' : 'Deployments'}`);
     drawHead();
     if (settings) drawNetworks();
     return true;
@@ -64,8 +68,13 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   async function refresh() {
     const ok = await loadFlat();
     if (ok) {
-      if (settings) { loadEnv(); loadSecrets(); loadNetwork(); loadHostProviders(); }
-      else { loadVersions(); loadPreviews(); logs.poll(); }
+      if (settings) {
+        if (!isDocs()) { loadEnv(); loadSecrets(); loadNetwork(); }
+        loadHostProviders();
+      } else {
+        if (!isDocs()) { loadVersions(); loadPreviews(); }
+        logs.poll();
+      }
     }
     return ok;
   }
@@ -82,14 +91,15 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
             flat.private_detail || 'not answering yet') : null)
-      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), ' (online after the first deploy)'));
+      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ' (online once the document starts)' : ' (online after the first deploy)'));
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
         flat.live_version ? extLink(pub) : h('code', { text: pub }),
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
-    add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : 'Not published');
+    if (isDocs()) add('Document', flat.running ? 'Running' : 'Not running');
+    else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : 'Not published');
     add('Created', dateTime(flat.created_at));
     if (flat.old_slug && flat.old_slug_until) {
       add('Redirect', `Old slug ${flat.old_slug} redirects here until ${dateTime(flat.old_slug_until)}`);
@@ -97,8 +107,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
 
     fill(headSlot, siteHeader(flat, 'deployments'),
       section('Status', 'status', urls),
-      section('Versions', 'versions', versionsSlot),
-      section('Open previews', 'previews', previewsSlot),
+      isDocs() ? null : section('Versions', 'versions', versionsSlot),
+      isDocs() ? null : section('Open previews', 'previews', previewsSlot),
       section('Logs', 'logs', logs.el));
   }
 
@@ -129,9 +139,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       netSlot,
-      h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
-      h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
-      h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
+      isDocs() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
+      isDocs() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
+      isDocs() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()));
   }
 
@@ -141,7 +151,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // lists the networks that serve it.
   function drawNetworks() {
     fill(netSlot, section('Networks', 'networks',
-      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel, Portal or zrok. A network must first be turned on in ',
+      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel, Portal or zrok. A new flat starts allowed on the host’s default providers; allow more here to offer several addresses, listed under the flat’s open button. A network must first be turned on in ',
         h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Private' }),
         h('ul', { class: 'networks' },

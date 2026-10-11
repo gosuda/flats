@@ -103,6 +103,8 @@ written; `flats config unset KEY` removes it.
 | `host.server_runtime` | `true` | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
+| `network.default_private` | `""` (follow `private_backend`) | immediately, for flats created afterwards |
+| `network.default_public` | `""` (no public provider) | immediately, for flats created afterwards |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.keep_versions` | `10` per flat, `0` = never prune | next pruning |
 | `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately |
@@ -128,7 +130,16 @@ Only providers listed in `network.permitted` start. Permitting `tailscale`
 does not permit Funnel, and Local needs no entry. `private_backend:
 "tailscale"` requires `tailscale` in `permitted`, and also makes every new
 flat allowed on Tailscale when it is created (the operator can turn that off
-per flat); flats that already exist keep their providers. Removing a provider from
+per flat); flats that already exist keep their providers.
+
+`default_private` (`local` or `tailscale`) and `default_public`
+(`tailscale-funnel`, `portal` or `zrok`) choose the one provider per mode that
+a new flat is allowed on when it is created, besides Local. Each must be in
+`permitted`; other permitted providers are not granted to new flats. An empty
+`default_private` follows `private_backend`, and an empty `default_public`
+grants no public provider. A new flat is always Private: a public default is a
+permission only and opens nothing until the operator approves making the flat
+public. Turning a provider off in the console clears a default that names it. Removing a provider from
 `permitted` in the file takes its routes down at the next start but keeps each
 flat's provider permission and visibility in `flats.db`; it never publishes a
 flat or changes visibility. The console's Settings → Network providers turns a
@@ -190,8 +201,9 @@ file, and the error names its JSON path.
 
 ### Editing
 
-- **Console**: the system and Portal keys, and `network.permitted` through
-  Network providers. A save rereads the file under a lock and fails if it
+- **Console**: the system and Portal keys, and `network.permitted`,
+  `network.default_private` and `network.default_public` through Network
+  providers. A save rereads the file under a lock and fails if it
   changed on disk since the host read it; restart to pick up an outside edit.
   Host, `network.private_backend` and credential keys are read-only there. A
   service that still passes `--relays` pins the relays, and one that passes

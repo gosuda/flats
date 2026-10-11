@@ -6,7 +6,8 @@ Before previewing, read the `warnings` of the save result (`topic.design`);
 they are cheap static checks, not a render.
 
 `open_preview {slug, version: 0}` serves the current Private Draft; a positive
-`version` previews that published version. Live is unchanged. Server and docs
+`version` previews that published version. Live is unchanged. Documents have
+no previews: they run at once, so open their private URL instead. Server
 flats get an isolated copy of the live DB/FILES: preview writes never reach
 live. New previews capture current environment variables, secrets and network
 grants. At most **5 open previews per flat**; a preview closes on the next

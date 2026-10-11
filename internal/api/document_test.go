@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 type draftOnlyRuntime struct{}
 
 func (draftOnlyRuntime) Start(context.Context, core.RuntimeSpec) (core.Instance, error) {
-	panic("reading or saving Draft must not start a runtime")
+	panic("the docs app is not configured, so no runtime may start")
 }
 
 func TestDocumentAPIAndTypeViews(t *testing.T) {
@@ -39,7 +40,9 @@ func TestDocumentAPIAndTypeViews(t *testing.T) {
 	}
 	defer svc.Close()
 	ctx := context.Background()
-	if _, err := svc.SaveVersion(ctx, "document", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# 한국어 😀")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
+	// Without a docs app the saved document cannot start; its saved text
+	// stays readable.
+	if _, err := svc.SaveVersion(ctx, "document", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# 한국어 😀")}}, core.SaveMeta{}, core.ViaAPI); !errors.Is(err, core.ErrRuntimeUnavailable) {
 		t.Fatal(err)
 	}
 	if _, err := svc.SaveVersion(ctx, "website", []bundle.File{{Path: "index.html", Data: []byte("website")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
@@ -78,7 +81,17 @@ func TestDocumentAPIAndTypeViews(t *testing.T) {
 					}
 				})
 			}
-			for _, path := range []string{"/flats/document", "/flats/document/draft", "/flats"} {
+			// A document has no Draft over any surface.
+			r := httptest.NewRequest("GET", prefix+"/flats/document/draft", nil)
+			r.Header.Set("X-Flats-Console", "1")
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			var refused api.ErrorBody
+			_ = json.Unmarshal(w.Body.Bytes(), &refused)
+			if w.Code != http.StatusBadRequest || refused.Category != "invalid" {
+				t.Fatalf("document draft: %d %s", w.Code, w.Body.String())
+			}
+			for _, path := range []string{"/flats/document", "/flats"} {
 				r := httptest.NewRequest("GET", prefix+path, nil)
 				r.Header.Set("X-Flats-Console", "1")
 				w := httptest.NewRecorder()

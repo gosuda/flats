@@ -27,6 +27,12 @@ flat only when both of these are on:
 Permitting Tailscale does not permit Funnel. Neither permission publishes a
 version or changes visibility.
 
+Each mode has a **default for new flats** in Settings → Network providers. A
+new flat starts allowed on Local plus the private and public defaults only,
+even when more providers are on for the host, and it is always created
+Private. Allow more providers on a flat to serve it on several networks; the
+console's open button then lists every address.
+
 ## Running the console on Tailscale
 
 To run the console and private routes on your tailnet as well, set the private

@@ -24,37 +24,52 @@ and are not supported for agent-authored server flats.
 ## Markdown documents (`type: "docs"`)
 
 A docs flat runs the built-in collaborative editor: people edit live Markdown
-in the browser, and your published versions merge into their edits. A
-Private link opens the editor and can toggle between Edit and View; a Public
-link is view only (a read-only rendered document).
+in the browser. A Private link opens the editor and can toggle between Edit
+and View; a Public link is view only (a read-only rendered document).
 
-### Write and edit
+A document has **no Draft, versions, previews, publish or rollback**: those
+are for websites. Creating or saving a document runs it at once, Private, with
+no approval, and its Private URL serves it as soon as the host is ready.
+Visibility still works as for websites: making it Public (or Private again)
+and deleting it wait for the operator's approval (`topic.approvals`). On
+documents, `list_versions`, `get_draft`, `publish`, `deploy`, `open_preview`
+and `rollback` are refused (`refusal.invalid`).
 
-1. For an existing docs flat, call `get_document {slug, doc?}` first. It
-   returns the **live** Markdown including people's edits, or the Current
-   Draft's file (`source: "draft"`) when no docs version runs. It is
-   idempotent and non-destructive but may seed or activate live state.
-   For a small change to a running document, prefer `update_document`
-   (below) over replacing the whole Draft.
-2. `save_document {slug, markdown, title?, path?, message?}` saves a Draft
-   holding one Markdown document (`index.md` by default) plus a `flats.json`
-   with `type: "docs"` and `name` from `title`. It replaces the complete
-   Current Draft, creates a missing flat and never publishes.
-3. For several documents or assets, use `save_version` with the complete
-   bundle and a `flats.json` of `{"type":"docs"}`.
-4. Review with `open_preview` version 0, then `publish` and wait for approval
-   (`topic.approvals`).
+### Create and write
+
+1. `create_flat {slug, name?, type: "docs"}` creates a document holding
+   `index.md` with a `# <name>` heading and starts it. Report its
+   `private_url` once `get_flat` shows `private_state: ready`.
+2. For an existing docs flat, call `get_document {slug, doc?}` first. It
+   returns the **live** Markdown including people's edits. It is idempotent
+   and non-destructive but may seed or activate live state. For a small
+   change, prefer `update_document` (below) over saving the whole document.
+3. `save_document {slug, markdown, title?, path?, message?}` saves one
+   Markdown document (`index.md` by default) plus a `flats.json` with
+   `type: "docs"` and `name` from `title`, creating a missing flat, and runs it
+   at once. It replaces the document's files; people's concurrent edits are
+   merged as described below. The result's `flat` shows `running`.
+4. For several documents or assets, use `save_version` with the complete
+   bundle and a `flats.json` of `{"type":"docs"}`. A docs bundle is not a
+   Draft either: it runs at once.
+5. A slug keeps its type: saving a document into a running website, or a
+   website into a document, is refused (`refusal.conflict`); use another slug.
+
+If a saved document cannot start (for example its health check fails), the
+save is refused and the document keeps running its previous text; the next
+successful save starts it. **On a Public document a save, like a live edit,
+is visible to everyone at once**; tell the user.
 
 ### Edit live text
 
 `update_document {slug, doc?, ops, if_hash?}` edits the **live** Markdown of a
-running docs version directly, the way a person edits in the Private editor:
-there is no Draft, no publish and **no approval**. Connected editors see the
+running document directly, the way a person edits in the Private editor: there
+is no publish and **no approval**. Connected editors see the
 change at once and their own concurrent edits elsewhere are kept.
 **On a Public flat the change is visible to everyone on the internet as soon
 as the call returns**; such results carry `public_notice`, so tell the user.
-Use it for small corrections and additions; use `save_document` + `publish`
-for a rewrite, several documents or assets, or when no docs version runs
+Use it for small corrections and additions; use `save_document` for a
+rewrite, several documents or assets, or when the document is not running
 (that refuses with `not_deployed`).
 
 1. Read `get_document {slug, doc?, blocks: true}`. It returns `hash` (of the
@@ -97,16 +112,15 @@ applied (at which seq; do not repeat it) or did not apply (retry). Only if
 Flats could not check is the outcome unknown: then read `get_document`
 before retrying so an insert is not applied twice.
 
-Live edits are not part of any published version: `list_versions` and the
-Current Draft do not change. `get_document` returns them because it reads
-live text. The next published version merges into them exactly as into
-people's edits (below): where the version changes the same lines, the
-version wins and the discarded live text is kept for recovery. To keep a live edit in a
-future version, copy the live text from `get_document` into your next Draft.
+Live edits change only the live text, not the files the document was last
+saved with. The next `save_document` merges into them exactly as into
+people's edits (below): where the save changes the same lines, the save wins
+and the discarded live text is kept for recovery. To keep a live edit in a
+save, start from the live text that `get_document` returns.
 
-When a version activates, its Markdown is merged line by line into the live
+When a document is saved, its Markdown is merged line by line into the live
 text: disjoint and adjacent human edits survive; overlapping lines prefer the
-version. When a merge discards human text, the previous live Markdown is kept
+saved text. When a merge discards human text, the previous live Markdown is kept
 for private recovery: responses list `conflicts: [{generation, bytes}]`, and
 `get_document {slug, doc?, conflict: <generation>}` returns the preserved text.
 Each document keeps the newest 8 records within 2 MiB; older ones are gone.
@@ -136,9 +150,9 @@ Each document keeps the newest 8 records within 2 MiB; older ones are gone.
   While editing a diagram's source, an optional preview updates after typing
   pauses. In Edit mode, Edit source opens the editable fence and Done returns
   to its diagram. View mode retains a read-only Source toggle.
-* A docs version is recorded as kind `server`: snapshots, isolated previews
-  and rollback behave as for server flats (`topic.rollback-data`). Docs flats
-  get no outbound network, even with saved origin grants.
+* A document runs as kind `server` but keeps no data snapshots: it has no
+  rollback or data restore. Docs flats get no outbound network, even with
+  saved origin grants, and do not use environment variables or secrets.
 
 The editor's runtime layout, storage schema and wire protocol are host
 internals, not part of this contract or of runtime API v1.

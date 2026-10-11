@@ -53,7 +53,7 @@ func newEnvWithRuntime(t *testing.T, rt core.Runtime) *env {
 		t.Fatal(err)
 	}
 	pub := local.NewPublic(pubNet)
-	svc, err := core.New(context.Background(), core.Config{Runtime: rt, DataDir: dir, Store: st, Private: priv, Public: pub,
+	svc, err := core.New(context.Background(), core.Config{Runtime: rt, DocsApp: testDocsApp(), DataDir: dir, Store: st, Private: priv, Public: pub,
 		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
