@@ -944,7 +944,7 @@ func TestDocsTypeOutput(t *testing.T) {
 func TestDeployDocumentRunsAtOnce(t *testing.T) {
 	api, srv := newFakeAPI(t)
 	api.handle("POST /api/flats/notes/versions", 201, `{"version": {"flat": "notes", "number": 0, "role": "draft", "revision": 2, "files": 2, "kind": "server", "type": "docs"},
-  "flat": {"slug": "notes", "type": "docs", "visibility": "private", "live_version": 3, "private_url": "http://notes.localhost:7878"}}`)
+  "flat": {"slug": "notes", "type": "docs", "visibility": "private", "live_version": 3, "running": true, "private_url": "http://notes.localhost:7878"}}`)
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{"index.md": "# Notes", "flats.json": `{"type":"docs"}`})
 	r := run(t, srv.URL, "", "deploy", dir, "--flat", "notes")
@@ -958,7 +958,7 @@ func TestDeployDocumentRunsAtOnce(t *testing.T) {
 
 func TestInfoAndListDocument(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	doc := `{"slug": "notes", "name": "Notes", "type": "docs", "visibility": "private", "publication": "published", "live_version": 3, "versions": 3,
+	doc := `{"slug": "notes", "name": "Notes", "type": "docs", "running": true, "visibility": "private", "publication": "published", "live_version": 3, "versions": 3,
   "draft": {"revision": 3, "base_version": 3, "type": "docs"}, "live": {"number": 3, "kind": "server", "type": "docs"}, "private_url": "http://notes.localhost:7878", "disk_bytes": 900}`
 	api.handle("GET /api/flats/notes", 200, doc)
 	api.handle("GET /api/flats", 200, `{"flats": [`+doc+`]}`)

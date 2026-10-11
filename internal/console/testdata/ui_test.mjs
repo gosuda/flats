@@ -106,7 +106,7 @@ const blog = {
 const shop = { ...blog, type: 'flat', slug: 'shop', name: 'Shop', visibility: 'public-listed', public_url: undefined, public_notice: undefined,
   endpoints: [{ provider: 'tailscale-funnel', audience: 'current', url: 'https://shop.tail.ts.net', state: 'ready' }] };
 // A document runs once saved: it has no versions, Draft or publishing.
-const notes = { ...blog, type: 'docs', slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null, versions: 0, providers: [] };
+const notes = { ...blog, type: 'docs', running: true, slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null, versions: 0, providers: [] };
 const pending = (id) => ({ status: 'pending_approval', approval: { id, status: 'pending' } });
 const calls = [];
 const routes = {

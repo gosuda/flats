@@ -580,6 +580,10 @@ type FlatView struct {
 	Versions      int            `json:"versions"`
 	DiskBytes     int64          `json:"disk_bytes"`
 	Thumbnail     string         `json:"thumbnail,omitempty"`
+	// Running reports whether a version is serving now on this host: false
+	// when the live version could not start (for example after a restart),
+	// even though LiveVersion still names it.
+	Running bool `json:"running"`
 	// Publication is unpublished until the first successful activation, then
 	// published. It does not follow connection state.
 	Publication     string             `json:"publication"`
@@ -612,6 +616,10 @@ const PendingPublicAccessNotice = "If approved, this flat becomes Public: anyone
 
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
+	s.mu.Lock()
+	lf := s.live[f.Slug]
+	s.mu.Unlock()
+	v.Running = lf != nil && lf.cur.Load() != nil
 	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)
 	if f.Visibility.Public() {
 		v.PublicNotice = PublicAccessNotice

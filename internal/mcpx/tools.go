@@ -117,7 +117,7 @@ func flatInfo(v core.FlatView) FlatInfo {
 		fi := flatInfo(core.FlatView{Flat: v.Flat, Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints,
 			PrivateURL: v.PrivateURL, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail, PublicURL: v.PublicURL, PublicNotice: v.PublicNotice,
 			PortalListing: v.PortalListing, PortalHidden: v.PortalHidden, DiskBytes: v.DiskBytes})
-		fi.Type, fi.Publication, fi.Running, fi.LiveVersion = contenttype.Docs, "", v.LiveVersion > 0, 0
+		fi.Type, fi.Publication, fi.Running, fi.LiveVersion = contenttype.Docs, "", v.Running, 0
 		return fi
 	}
 	return FlatInfo{Type: v.Type, Publication: v.Publication, Draft: draftPointer(v.Draft), Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints, Slug: v.Slug, Name: v.Name, Visibility: string(v.Visibility), LiveVersion: v.LiveVersion,

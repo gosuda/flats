@@ -98,7 +98,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         flat.live_version ? extLink(pub) : h('code', { text: pub }),
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
-    if (isDocs()) add('Document', flat.live_version ? 'Running' : 'Not running');
+    if (isDocs()) add('Document', flat.running ? 'Running' : 'Not running');
     else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : 'Not published');
     add('Created', dateTime(flat.created_at));
     if (flat.old_slug && flat.old_slug_until) {

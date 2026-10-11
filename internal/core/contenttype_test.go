@@ -581,3 +581,22 @@ func TestDocumentSavesKeepNoSnapshots(t *testing.T) {
 		t.Fatalf("document saves took snapshots: %v %v", snaps, err)
 	}
 }
+
+// Running follows the active runtime, not the stored live version: a
+// document whose runtime is gone (say, it failed to start after a restart)
+// is not running.
+func TestDocumentRunningFollowsRuntime(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime = &contentRuntime{}
+	s.cfg.DocsApp = testDocsApp()
+	saveDocs(t, s, "fragile")
+	if f, _ := s.GetFlat(t.Context(), "fragile"); !f.Running {
+		t.Fatal("saved document is not running")
+	}
+	if old := s.state("fragile").cur.Swap(nil); old != nil && old.inst != nil {
+		old.inst.Stop()
+	}
+	if f, _ := s.GetFlat(t.Context(), "fragile"); f.Running || f.LiveVersion == 0 {
+		t.Fatalf("document without a runtime: running=%t live=%d", f.Running, f.LiveVersion)
+	}
+}

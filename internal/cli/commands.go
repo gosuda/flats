@@ -138,10 +138,10 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 		Deploy      *deployResult `json:"deploy"`
 		DeployError *errorBody    `json:"deploy_error"`
 		Flat        *struct {
-			Type        string `json:"type"`
-			LiveVersion int    `json:"live_version"`
-			Visibility  string `json:"visibility"`
-			PrivateURL  string `json:"private_url"`
+			Type       string `json:"type"`
+			Running    bool   `json:"running"`
+			Visibility string `json:"visibility"`
+			PrivateURL string `json:"private_url"`
 		} `json:"flat"`
 		actionResult
 	}
@@ -172,7 +172,7 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 	w := a.out
 	if f := out.Flat; f != nil && f.Type == "docs" {
 		// A document has no Draft or publish step: the save runs it.
-		if f.LiveVersion > 0 {
+		if f.Running {
 			fmt.Fprintf(w, "Saved document %s; it is running now (%s) at %s. Documents have no publish step.\n", slug, f.Visibility, f.PrivateURL)
 		} else {
 			fmt.Fprintf(w, "Saved document %s, but it is not running; `flats logs %s` has details.\n", slug, slug)
@@ -348,7 +348,7 @@ func (a *app) list(args []string) error {
 		live, versions := liveLabel(f.LiveVersion), strconv.Itoa(f.Versions)
 		if f.Type == "docs" {
 			// A document has no versions: it runs once saved.
-			live, versions = documentState(f.LiveVersion), "-"
+			live, versions = documentState(f.Running), "-"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", f.Slug, displayType(f.Type), f.Visibility, live, versions, u)
 	}
@@ -384,7 +384,7 @@ func (a *app) info(args []string) error {
 	fmt.Fprintf(w, "%s (%s)\n", f.Slug, f.Name)
 	fmt.Fprintf(w, "  type:       %s\n", displayType(f.Type))
 	if docs {
-		fmt.Fprintf(w, "  document:   %s (no Draft, versions or publish step)\n", documentState(f.LiveVersion))
+		fmt.Fprintf(w, "  document:   %s (no Draft, versions or publish step)\n", documentState(f.Running))
 	} else {
 		fmt.Fprintf(w, "  publication: %s\n", f.Publication)
 	}
@@ -416,8 +416,8 @@ func (a *app) info(args []string) error {
 }
 
 // documentState is "running" or "not running" for a document.
-func documentState(live int) string {
-	if live > 0 {
+func documentState(running bool) string {
+	if running {
 		return "running"
 	}
 	return "not running"

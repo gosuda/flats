@@ -149,6 +149,7 @@ type version struct {
 
 type flatView struct {
 	Type            string         `json:"type"`
+	Running         bool           `json:"running"`
 	Publication     string         `json:"publication"`
 	Draft           *draftView     `json:"draft"`
 	Providers       []string       `json:"providers"`

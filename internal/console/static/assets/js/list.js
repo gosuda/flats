@@ -105,7 +105,7 @@ export function mount(main, _params, ctx) {
     // A document has no versions or publishing: it runs once it is saved.
     const docs = f.type === 'docs';
     const draft = !docs && f.draft && f.draft.dirty;
-    const status = docs ? (f.live_version ? 'Running' : 'Not running')
+    const status = docs ? (f.running ? 'Running' : 'Not running')
       : (f.live_version ? `Live v${f.live_version}` : 'Not published') + (f.live_version && draft ? ' · draft changes' : '');
     const actions = h('div', { class: 'row-actions' });
     if (!docs && (!f.live_version || draft)) {
