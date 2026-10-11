@@ -85,9 +85,9 @@ func TestDocsRealRuntimeEndToEnd(t *testing.T) {
 	if saved.Number != 0 || saved.Kind != "server" {
 		t.Fatalf("save: %+v", saved)
 	}
-	draft, err := svc.GetDocument(ctx, "documents", "")
-	if err != nil || draft.Source != "draft" || draft.Markdown != "# Initial\n한글 😀" {
-		t.Fatalf("draft: %+v %v", draft, err)
+	running, err := svc.GetDocument(ctx, "documents", "")
+	if err != nil || running.Source != "live" || running.Markdown != "# Initial\n한글 😀" {
+		t.Fatalf("saved document is not running: %+v %v", running, err)
 	}
 	fetchRoute := func(base, path, forged string) (int, string, http.Header) {
 		t.Helper()
@@ -101,25 +101,14 @@ func TestDocsRealRuntimeEndToEnd(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b), resp.Header
 	}
-	preview, err := svc.OpenPreview(ctx, "documents", 0)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := svc.OpenPreview(ctx, "documents", 0); !errors.Is(err, core.ErrDocsUnversioned) {
+		t.Fatalf("document preview: %v", err)
 	}
-	for _, forged := range []string{"public", "private"} {
-		if code, body, _ := fetchRoute(preview.URL, "/", forged); code != 200 || !strings.Contains(body, "worker:private:# Initial") {
-			t.Fatalf("Draft preview %d %s", code, body)
-		}
-	}
-	_, err = svc.Deploy(ctx, "documents", 0, core.ViaAPI)
-	var pending *core.PendingApproval
-	if !errors.As(err, &pending) {
-		t.Fatalf("approval: %v", err)
-	}
-	if _, err := svc.Decide(ctx, pending.Approval.ID, true); err != nil {
-		t.Fatal(err)
+	if as, _ := svc.ListApprovals(ctx, "pending"); len(as) != 0 {
+		t.Fatalf("document save requested approval: %+v", as)
 	}
 	flat, err := svc.GetFlat(ctx, "documents")
-	if err != nil || flat.Type != "docs" || flat.LiveVersion != 1 {
+	if err != nil || flat.Type != "docs" || flat.LiveVersion != 1 || flat.Visibility.Public() {
 		t.Fatalf("flat: %+v %v", flat, err)
 	}
 	for _, forged := range []string{"public", "private"} {
@@ -176,19 +165,19 @@ func TestDocsRealRuntimeEndToEnd(t *testing.T) {
 	if _, err := svc.GetDocument(ctx, "documents", "missing.md"); !errors.Is(err, core.ErrDocumentNotFound) {
 		t.Fatal(err)
 	}
-	files[1].Data = []byte("# Current Draft")
+	// Saving again runs the new text at once; the document keeps its data.
+	files[1].Data = []byte("# Saved again")
 	if _, err := svc.SaveVersion(ctx, "documents", files, core.SaveMeta{}, core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
-	preview, err = svc.OpenPreview(ctx, "documents", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code, body, _ := fetchRoute(preview.URL, "/", "public"); code != 200 || !strings.Contains(body, "worker:private:# Current Draft") {
-		t.Fatalf("new Draft preview %d %s", code, body)
+	if code, body, _ := fetchRoute(flat.PrivateURL, "/", "public"); code != 200 || !strings.Contains(body, "worker:private:# Saved again") {
+		t.Fatalf("saved text is not running %d %s", code, body)
 	}
 	live, err = svc.GetDocument(ctx, "documents", "")
 	if err != nil || live.Markdown != "# People's live edits\n한글 😀" {
-		t.Fatalf("Draft affected live: %+v %v", live, err)
+		t.Fatalf("save lost the document data: %+v %v", live, err)
+	}
+	if as, _ := svc.ListApprovals(ctx, "pending"); len(as) != 0 {
+		t.Fatalf("document save requested approval: %+v", as)
 	}
 }

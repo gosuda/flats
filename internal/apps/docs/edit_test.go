@@ -263,13 +263,7 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	defer session.Close()
 	insert := map[string]any{"slug": "host-doc", "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "Agent note."}}}
 
-	// No docs version runs yet: refuse with the save_document + publish hint.
-	text, failed := callTool(t, session, "update_document", insert, nil)
-	if !failed || !strings.Contains(text, `"category":"not_deployed"`) || !strings.Contains(text, "save_document and publish") {
-		t.Fatal(text)
-	}
-	_, err = s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
-	approveHost(t, s, err)
+	// The saved document runs at once: no publish or approval comes first.
 	srv := httptest.NewServer(private.handler("host-doc"))
 	defer srv.Close()
 	editor := connect(t, srv.URL, "private")
@@ -293,7 +287,7 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 		map[string]any{"op": "replace_block", "block": blockHash("Base line\nAgent line"), "with": "Base line\nAgent line, revised live"},
 		map[string]any{"op": "insert", "at": "end", "text": "Agent note."},
 	}}
-	text, failed = callTool(t, session, "update_document", args, &out)
+	text, failed := callTool(t, session, "update_document", args, &out)
 	if failed || !out.Changed || out.Source != "live" || out.PublicNotice != "" || len(out.Ops) != 2 || out.Ops[0].Op != "replace_block" {
 		t.Fatal(text, out)
 	}
@@ -317,20 +311,12 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	if err != nil || len(events) != 1 || !strings.Contains(events[0].Message, "live edit of index.md via mcp: 2 op(s)") || strings.Contains(events[0].Message, "revised") || strings.Contains(string(events[0].Data), "revised") {
 		t.Fatal(events, err)
 	}
-	// Not a publish: versions and Draft are unchanged.
-	versions, _ := s.ListVersions(t.Context(), "host-doc")
-	if len(versions) != 1 {
-		t.Fatal("live edit published a version", versions)
-	}
-
-	// A later version changing other lines keeps the agent edit; one changing
+	// A later save changing other lines keeps the agent edit; one changing
 	// the same line wins and keeps the discarded live text for recovery.
 	next := strings.Replace(initialText, "# Shared", "# Shared v2", 1)
 	if _, err = s.SaveVersion(t.Context(), "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(next)}}, core.SaveMeta{}, core.ViaMCP); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
-	approveHost(t, s, err)
 	merged, err := s.GetDocument(t.Context(), "host-doc", "")
 	if err != nil || !strings.Contains(merged.Markdown, "# Shared v2") || !strings.Contains(merged.Markdown, "Agent line, revised live") || !strings.Contains(merged.Markdown, "Agent note.") || len(merged.Conflicts) != 0 {
 		t.Fatal(merged, err)
@@ -339,8 +325,6 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	if _, err = s.SaveVersion(t.Context(), "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(overlap)}}, core.SaveMeta{}, core.ViaMCP); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
-	approveHost(t, s, err)
 	v3, err := s.GetDocument(t.Context(), "host-doc", "")
 	if err != nil || !strings.Contains(v3.Markdown, "Agent line from v3") || strings.Contains(v3.Markdown, "revised live") || len(v3.Conflicts) != 1 {
 		t.Fatal(v3, err)

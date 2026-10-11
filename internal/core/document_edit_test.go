@@ -138,17 +138,11 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDocs) {
 		t.Fatal("live website", err)
 	}
-	saveDocs(t, s, "website")
-	if _, err := s.UpdateDocument(ctx, "website", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDeployed) || !strings.Contains(err.Error(), "save_document and publish") {
-		t.Fatal("docs Draft over a live website", err)
+	saveDocsDraft(t, s, "stopped")
+	if _, err := s.UpdateDocument(ctx, "stopped", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDeployed) || !strings.Contains(err.Error(), "save_document") {
+		t.Fatal("document that is not running", err)
 	}
 	saveDocs(t, s, "notes")
-	if _, err := s.UpdateDocument(ctx, "notes", "", op("a"), nil, ViaMCP); !errors.Is(err, ErrNotDeployed) {
-		t.Fatal("unpublished docs", err)
-	}
-	if _, err := approvedInternalDeploy(t, s, ctx, "notes", 0); err != nil {
-		t.Fatal(err)
-	}
 	for _, bad := range [][]DocumentEditOp{nil, make([]DocumentEditOp, MaxDocumentEditOps+1)} {
 		if _, err := s.UpdateDocument(ctx, "notes", "", bad, nil, ViaMCP); !errors.Is(err, ErrInvalid) {
 			t.Fatal(len(bad), err)
@@ -254,9 +248,6 @@ func TestUpdateDocumentRateLimit(t *testing.T) {
 	s.cfg.DocsApp = testDocsApp()
 	ctx := context.Background()
 	saveDocs(t, s, "notes")
-	if _, err := approvedInternalDeploy(t, s, ctx, "notes", 0); err != nil {
-		t.Fatal(err)
-	}
 	with := "x"
 	limited := 0
 	for range 3 * documentEditRate {

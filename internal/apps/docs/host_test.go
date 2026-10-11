@@ -79,16 +79,6 @@ func hostService(t *testing.T) (*core.Service, *captureNet, *captureNet) {
 	}
 	return s, private, public
 }
-func approveHost(t *testing.T, s *core.Service, err error) {
-	t.Helper()
-	var pending *core.PendingApproval
-	if !errors.As(err, &pending) {
-		t.Fatal("expected approval", err)
-	}
-	if _, err := s.Decide(t.Context(), pending.Approval.ID, true); err != nil {
-		t.Fatal(err)
-	}
-}
 func approveAction(t *testing.T, s *core.Service, action core.ActionResult, err error) {
 	t.Helper()
 	if err != nil || action.Approval == nil {
@@ -110,45 +100,34 @@ func closedSocket(t *testing.T, x *socket) {
 		t.Fatal("revoked upgraded connection did not close")
 	}
 }
-func TestHostDraftPreviewAndRevocation(t *testing.T) {
+func TestHostSavedDocumentRunsAtOnce(t *testing.T) {
 	s, private, _ := hostService(t)
-	p, err := s.OpenPreview(t.Context(), "host-doc", 0)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := s.OpenPreview(t.Context(), "host-doc", 0); !errors.Is(err, core.ErrDocsUnversioned) {
+		t.Fatal("document preview:", err)
 	}
-	srv := httptest.NewServer(private.handler(p.Host))
+	if as, _ := s.ListApprovals(t.Context(), "pending"); len(as) != 0 {
+		t.Fatal("document save requested approval", as)
+	}
+	srv := httptest.NewServer(private.handler("host-doc"))
 	defer srv.Close()
 	x := connect(t, srv.URL, "public") // forged access is overwritten by host
 	if welcome := x.hello(t, nil); welcome["readonly"] != false {
 		t.Fatal(welcome)
 	}
+	x.Close()
 	resp, err := http.Get(srv.URL + "/_docs/api/document")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatal("Draft generation 0 rejected", resp.StatusCode)
-	}
-	if err := s.ClosePreview(t.Context(), p.Host); err != nil {
-		t.Fatal(err)
-	}
-	closedSocket(t, x)
-	resp, err = http.Get(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 503 {
-		t.Fatal("stale preview handler admitted request", resp.StatusCode)
+		t.Fatal("saved document is not running", resp.StatusCode)
 	}
 }
 func TestHostPublicSocketRevocation(t *testing.T) {
 	for _, action := range []string{"private", "delete", "rename"} {
 		t.Run(action, func(t *testing.T) {
 			s, private, public := hostService(t)
-			_, err := s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
-			approveHost(t, s, err)
 			if err := s.SetProviderPermission(t.Context(), "host-doc", store.ProviderPortal, true, core.ViaConsole); err != nil {
 				t.Fatal(err)
 			}
@@ -191,8 +170,6 @@ func TestHostPublicSocketRevocation(t *testing.T) {
 
 func TestHostAPIAndMCPConflictRecovery(t *testing.T) {
 	s, private, _ := hostService(t)
-	_, err := s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
-	approveHost(t, s, err)
 	srv := httptest.NewServer(private.handler("host-doc"))
 	defer srv.Close()
 	editor := connect(t, srv.URL, "private")
@@ -208,8 +185,6 @@ func TestHostAPIAndMCPConflictRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
-	approveHost(t, s, err)
 	live, err := s.GetDocument(t.Context(), "host-doc", "")
 	if err != nil || len(live.Conflicts) != 1 || live.Conflicts[0].Bytes != int64(len(preserved.Markdown)) {
 		t.Fatal(live, err)

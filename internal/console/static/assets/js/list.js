@@ -102,10 +102,13 @@ export function mount(main, _params, ctx) {
 
   function row(f) {
     const href = `/flats/${encodeURIComponent(f.slug)}`;
-    const draft = f.draft && f.draft.dirty;
-    const status = (f.live_version ? `Live v${f.live_version}` : 'Not published') + (f.live_version && draft ? ' · draft changes' : '');
+    // A document has no versions or publishing: it runs once it is saved.
+    const docs = f.type === 'docs';
+    const draft = !docs && f.draft && f.draft.dirty;
+    const status = docs ? (f.live_version ? 'Running' : 'Not running')
+      : (f.live_version ? `Live v${f.live_version}` : 'Not published') + (f.live_version && draft ? ' · draft changes' : '');
     const actions = h('div', { class: 'row-actions' });
-    if (!f.live_version || draft) {
+    if (!docs && (!f.live_version || draft)) {
       const pub = h('button', {
         type: 'button', class: 'btn btn-pill', text: 'Publish', disabled: !draft,
         title: draft ? 'Publish the draft' : 'No draft saved yet',
@@ -122,7 +125,7 @@ export function mount(main, _params, ctx) {
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
       { label: 'Share', onSelect: () => shareDialog(f, load) },
-      { label: 'Deployments', onSelect: () => ctx.navigate(href) },
+      { label: docs ? 'Overview' : 'Deployments', onSelect: () => ctx.navigate(href) },
       { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
       { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
     ]));

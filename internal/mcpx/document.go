@@ -94,7 +94,7 @@ func editHint(err error, slug string) string {
 	hint := "read get_document {slug, doc, blocks: true} again and retry against the current text"
 	switch core.ErrorCategory(err) {
 	case "not_deployed":
-		hint = "no docs version is running; use save_document and publish (topic.docs)"
+		hint = "the document is not running; save it with save_document, which starts it at once (topic.docs)"
 	case "not_docs":
 		hint = "update_document edits docs flats only; check get_flat"
 	case "invalid":

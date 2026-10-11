@@ -63,12 +63,34 @@ func saveDocs(t *testing.T, s *Service, slug string) store.Version {
 	return v
 }
 
+// saveDocsDraft saves the saveDocs bundle as a Draft without starting it,
+// for tests of the docs runtime itself.
+func saveDocsDraft(t *testing.T, s *Service, slug string) store.Version {
+	t.Helper()
+	files, err := bundle.FromFiles([]bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs","name":"Title"}`)}, {Path: "index.md", Data: []byte("# main\n한글 😀")}, {Path: "a.md", Data: []byte("# second")}, {Path: "images/a.txt", Data: []byte("asset")}}, bundle.Limits{MaxBytes: s.UploadLimit()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.st.GetFlat(t.Context(), slug); errors.Is(err, store.ErrNotFound) {
+		if _, err := s.CreateFlat(t.Context(), slug, "", ViaAPI); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock := s.lock(slug)
+	defer unlock()
+	v, err := s.saveDraftLocked(t.Context(), slug, files, SaveMeta{}, ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
 func TestDocsRuntimeLayoutReuseAndCleanup(t *testing.T) {
 	s, dir := newTestService(t)
 	rt := &contentRuntime{}
 	s.cfg.Runtime = rt
 	s.cfg.DocsApp = testDocsApp()
-	v := saveDocs(t, s, "notes")
+	v := saveDocsDraft(t, s, "notes")
 	d, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "isolated"))
 	if err != nil {
 		t.Fatal(err)
@@ -170,22 +192,17 @@ func TestTrustedAccessLiveAndPreview(t *testing.T) {
 	s.cfg.Runtime = rt
 	s.cfg.DocsApp = testDocsApp()
 	saveDocs(t, s, "access")
-	if _, err := approvedInternalDeploy(t, s, context.Background(), "access", 0); err != nil {
-		t.Fatal(err)
-	}
-	p, err := s.OpenPreview(context.Background(), "access", 0)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := s.OpenPreview(context.Background(), "access", 0); !errors.Is(err, ErrDocsUnversioned) {
+		t.Fatal("document preview:", err)
 	}
 	flat, _ := s.st.GetFlat(context.Background(), "access")
 	flat.Visibility = store.Public
 	_ = s.st.UpdateFlat(context.Background(), flat)
-	net := s.cfg.Private.(*memNet)
 	for _, tt := range []struct {
 		name string
 		h    http.Handler
 		want string
-	}{{"private", s.siteHandler("access", false), "private"}, {"public", s.siteHandler("access", true), "public"}, {"draft preview", net.hosts[p.Host], "private"}} {
+	}{{"private", s.siteHandler("access", false), "private"}, {"public", s.siteHandler("access", true), "public"}} {
 		t.Run(tt.name, func(t *testing.T) {
 			for _, forged := range []string{"public", "private"} {
 				r := httptest.NewRequest("GET", "/", nil)
@@ -221,47 +238,69 @@ func TestGetDocumentAndFlatType(t *testing.T) {
 	if _, err := approvedInternalDeploy(t, s, ctx, "website", 0); err != nil {
 		t.Fatal(err)
 	}
-	saveDocs(t, s, "website")
-	fallback, err := s.GetDocument(ctx, "website", "")
-	if err != nil || fallback.Source != "draft" {
-		t.Fatalf("docs Draft above live website: %+v %v", fallback, err)
+	// A running website cannot become a document.
+	if _, err := s.SaveVersion(ctx, "website", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# doc")}}, SaveMeta{}, ViaAPI); !errors.Is(err, ErrTypeChange) {
+		t.Fatal("website to document:", err)
 	}
-	v := saveDocs(t, s, "notes")
+	// Saving a document runs it at once, Private, without approval.
+	saveDocs(t, s, "notes")
+	f, _ := s.GetFlat(ctx, "notes")
+	if f.Type != "docs" || f.LiveVersion == 0 || f.Visibility.Public() {
+		t.Fatalf("saved document is not running privately: %+v", f)
+	}
+	if as, _ := s.st.ListApprovals(ctx, "pending"); len(as) != 0 {
+		t.Fatalf("document save requested approval: %+v", as)
+	}
 	out, err := s.GetDocument(ctx, "notes", "")
-	if err != nil || out.Source != "draft" || out.Markdown != "# main\n한글 😀" {
+	if err != nil || out.Source != "live" || out.Markdown != "live people's edits" || out.Seq != 7 || len(out.Conflicts) != 1 || out.Conflicts[0].Bytes != 27 {
 		t.Fatalf("%+v %v", out, err)
-	}
-	out, err = s.GetDocument(ctx, "notes", "a.md")
-	if err != nil || out.Markdown != "# second" {
-		t.Fatalf("%+v %v", out, err)
-	}
-	if _, err := s.GetDocument(ctx, "notes", "missing.md"); !errors.Is(err, ErrDocumentNotFound) {
-		t.Fatal(err)
 	}
 	if _, err := s.GetDocument(ctx, "notes", "../index.md"); !errors.Is(err, ErrInvalid) {
 		t.Fatal(err)
 	}
-	if _, err := approvedInternalDeploy(t, s, ctx, "notes", 0); err != nil {
+	// Saving the same content again keeps the running document.
+	live := f.LiveVersion
+	saveDocs(t, s, "notes")
+	if f, _ := s.GetFlat(ctx, "notes"); f.LiveVersion != live {
+		t.Fatalf("unchanged save restarted the document: %d -> %d", live, f.LiveVersion)
+	}
+	// A document cannot become a website, and has no versions or publishing.
+	if _, err := s.SaveVersion(ctx, "notes", []bundle.File{{Path: "index.html", Data: []byte("website draft")}}, SaveMeta{}, ViaAPI); !errors.Is(err, ErrTypeChange) {
+		t.Fatal("document to website:", err)
+	}
+	if _, err := s.ListVersions(ctx, "notes"); !errors.Is(err, ErrDocsUnversioned) {
 		t.Fatal(err)
 	}
-	out, err = s.GetDocument(ctx, "notes", "")
-	if err != nil || out.Source != "live" || out.Markdown != "live people's edits" || out.Seq != 7 || len(out.Conflicts) != 1 || out.Conflicts[0].Bytes != 27 {
+	if _, err := s.Publish(ctx, "notes", 0, "", ViaAPI); !errors.Is(err, ErrDocsUnversioned) {
+		t.Fatal(err)
+	}
+	if _, err := s.Deploy(ctx, "notes", 0, ViaAPI); !errors.Is(err, ErrDocsUnversioned) {
+		t.Fatal(err)
+	}
+	if _, err := s.Rollback(ctx, "notes", 0, ViaAPI); !errors.Is(err, ErrDocsUnversioned) {
+		t.Fatal(err)
+	}
+	if _, err := s.ListVersions(ctx, "website"); err != nil {
+		t.Fatal("website versions:", err)
+	}
+}
+
+func TestSavedDocumentDraftStartsOnRestart(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime = &contentRuntime{}
+	s.cfg.DocsApp = testDocsApp()
+	ctx := t.Context()
+	saveDocsDraft(t, s, "legacy-doc")
+	if out, err := s.GetDocument(ctx, "legacy-doc", ""); err != nil || out.Source != "draft" {
 		t.Fatalf("%+v %v", out, err)
 	}
-	// Current Draft determines the flat's type, even when the live type differs.
-	if _, err := s.SaveVersion(ctx, "notes", []bundle.File{{Path: "index.html", Data: []byte("website draft")}}, SaveMeta{}, ViaAPI); err != nil {
-		t.Fatal(err)
+	s.startSavedDocs(ctx)
+	f, _ := s.GetFlat(ctx, "legacy-doc")
+	if f.LiveVersion == 0 {
+		t.Fatal("saved document did not start")
 	}
-	f, _ := s.GetFlat(ctx, "notes")
-	if f.Type != "flat" {
-		t.Fatalf("%+v", f)
-	}
-	out, err = s.GetDocument(ctx, "notes", "")
-	if err != nil || out.Source != "live" {
-		t.Fatalf("live docs precedence %+v %v", out, err)
-	}
-	if _, err := s.st.GetDraftRevision(ctx, "notes", v.Revision); err != nil {
-		t.Fatal(err)
+	if out, err := s.GetDocument(ctx, "legacy-doc", ""); err != nil || out.Source != "live" {
+		t.Fatalf("%+v %v", out, err)
 	}
 }
 
@@ -271,9 +310,6 @@ func TestDocsRestoreTrialAndRestart(t *testing.T) {
 	s.cfg.DocsApp = testDocsApp()
 	ctx := context.Background()
 	saveDocs(t, s, "restored-doc")
-	if _, err := approvedInternalDeploy(t, s, ctx, "restored-doc", 0); err != nil {
-		t.Fatal(err)
-	}
 	v, err := s.st.GetVersion(ctx, "restored-doc", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -322,13 +358,7 @@ func TestDocsShutdownStopsRetiringInstances(t *testing.T) {
 	})
 	ctx := context.Background()
 	saveDocs(t, s, "shutdown-doc")
-	if _, err := approvedInternalDeploy(t, s, ctx, "shutdown-doc", 0); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.SaveVersion(ctx, "shutdown-doc", []bundle.File{{Path: "index.md", Data: []byte("# second")}}, SaveMeta{}, ViaAPI); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := approvedInternalDeploy(t, s, ctx, "shutdown-doc", 0); err != nil {
+	if _, err := s.SaveVersion(ctx, "shutdown-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# second")}}, SaveMeta{}, ViaAPI); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -345,7 +375,7 @@ func TestRuntimeStartsUseGenerationInsteadOfVersion(t *testing.T) {
 	s, dir := newTestService(t)
 	rt := &contentRuntime{}
 	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
-	v := saveDocs(t, s, "generations")
+	v := saveDocsDraft(t, s, "generations")
 	for _, version := range []int{0, 1, 3, 1, 0} {
 		v.Number = version
 		// Draft content remains at its immutable revision; only the log number varies.
@@ -368,7 +398,7 @@ func TestDrainingWorkerCannotAcquireNewGeneration(t *testing.T) {
 	s, dir := newTestService(t)
 	rt := &contentRuntime{}
 	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
-	v := saveDocs(t, s, "recovering")
+	v := saveDocsDraft(t, s, "recovering")
 	data := filepath.Join(dir, "live-data")
 	old, err := s.build(t.Context(), "recovering", v, data)
 	if err != nil {
@@ -404,7 +434,7 @@ func TestStoppedCandidateRestoresLiveRecovery(t *testing.T) {
 	s, dir := newTestService(t)
 	rt := &contentRuntime{}
 	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
-	v := saveDocs(t, s, "candidate")
+	v := saveDocsDraft(t, s, "candidate")
 	data := filepath.Join(dir, "live-data")
 	live, err := s.build(t.Context(), "candidate", v, data)
 	if err != nil {
@@ -452,7 +482,7 @@ func TestDocsEnvironmentSnapshotAndContentIsolation(t *testing.T) {
 	rt := &contentRuntime{}
 	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
 	ctx := t.Context()
-	v := saveDocs(t, s, "configured-doc")
+	v := saveDocsDraft(t, s, "configured-doc")
 	for _, err := range []error{
 		s.SetEnv(ctx, "configured-doc", "MODE", "ordinary-doc-setting", ViaAPI),
 		s.SetNetworkPolicy(ctx, "configured-doc", []string{"https://api.example.com"}, ViaCLI),

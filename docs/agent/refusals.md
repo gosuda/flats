@@ -15,7 +15,9 @@ schema and call again.
 ## invalid
 
 The request or upload is malformed: a bad slug, manifest field, path,
-encoding, negative number, unknown visibility, or a docs rule. Upload
+encoding, negative number, unknown visibility, or a docs rule. A version,
+Draft, preview, publish or rollback call on a document is also `invalid`:
+documents have none of them; use `save_document` or `update_document`. Upload
 validation lists every problem with its `path` and `fix` at once. Nothing was
 saved. Fix every listed problem and send the complete request again. Rules:
 `topic.static`, `topic.manifest`, `topic.docs`, `topic.env-secrets`.
@@ -60,7 +62,9 @@ Check `get_flat`; use `save_draft` for websites, or a new slug for a document.
 
 The request contradicts the current state: `expected_revision` differs from
 the Draft, the version is already live, the flat is not published yet (so it
-cannot be Public), or no snapshot exists for `restore_data`. Nothing was
+cannot be Public), no snapshot exists for `restore_data`, or the save would
+turn a running website into a document or a document into a website (use
+another slug). Nothing was
 overwritten. Read `get_draft`, `get_flat` or `list_versions`, reconcile, and
 retry with current values. Never discard someone else's content to win.
 
@@ -78,7 +82,9 @@ change the Draft first, or use `deploy` with an existing version.
 ## not_deployed
 
 Nothing is live yet, so there is nothing to roll back or restore. Request
-publication of a Draft and wait for approval first.
+publication of a Draft and wait for approval first. For `update_document`, the
+document is not running: save it with `save_document`, which starts it at
+once.
 
 ## forbidden
 

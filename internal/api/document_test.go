@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 type draftOnlyRuntime struct{}
 
 func (draftOnlyRuntime) Start(context.Context, core.RuntimeSpec) (core.Instance, error) {
-	panic("reading or saving Draft must not start a runtime")
+	panic("the docs app is not configured, so no runtime may start")
 }
 
 func TestDocumentAPIAndTypeViews(t *testing.T) {
@@ -39,7 +40,9 @@ func TestDocumentAPIAndTypeViews(t *testing.T) {
 	}
 	defer svc.Close()
 	ctx := context.Background()
-	if _, err := svc.SaveVersion(ctx, "document", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# 한국어 😀")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
+	// Without a docs app the saved document cannot start; its saved text
+	// stays readable.
+	if _, err := svc.SaveVersion(ctx, "document", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# 한국어 😀")}}, core.SaveMeta{}, core.ViaAPI); !errors.Is(err, core.ErrRuntimeUnavailable) {
 		t.Fatal(err)
 	}
 	if _, err := svc.SaveVersion(ctx, "website", []bundle.File{{Path: "index.html", Data: []byte("website")}}, core.SaveMeta{}, core.ViaAPI); err != nil {

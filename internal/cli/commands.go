@@ -137,6 +137,12 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 		Version     *version      `json:"version"`
 		Deploy      *deployResult `json:"deploy"`
 		DeployError *errorBody    `json:"deploy_error"`
+		Flat        *struct {
+			Type        string `json:"type"`
+			LiveVersion int    `json:"live_version"`
+			Visibility  string `json:"visibility"`
+			PrivateURL  string `json:"private_url"`
+		} `json:"flat"`
 		actionResult
 	}
 	_ = json.Unmarshal(resp.Body, &out)
@@ -164,6 +170,15 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 	}
 
 	w := a.out
+	if f := out.Flat; f != nil && f.Type == "docs" {
+		// A document has no Draft or publish step: the save runs it.
+		if f.LiveVersion > 0 {
+			fmt.Fprintf(w, "Saved document %s; it is running now (%s) at %s. Documents have no publish step.\n", slug, f.Visibility, f.PrivateURL)
+		} else {
+			fmt.Fprintf(w, "Saved document %s, but it is not running; `flats logs %s` has details.\n", slug, slug)
+		}
+		return nil
+	}
 	if v := out.Version; v != nil {
 		if v.Number == 0 && v.Role == "draft" {
 			fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s (type %s)\n", v.Revision, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty), displayType(v.Type))

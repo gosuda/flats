@@ -165,6 +165,9 @@ func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via
 	if err != nil {
 		return DeployResult{}, err
 	}
+	if err := s.refuseDocs(ctx, f); err != nil {
+		return DeployResult{}, err
+	}
 	providers, err := s.providerKey(ctx, slugName)
 	if err != nil {
 		return DeployResult{}, err
@@ -209,6 +212,9 @@ func (s *Service) requestRollback(ctx context.Context, slugName string, to int, 
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
+		return DeployResult{}, err
+	}
+	if err := s.refuseDocs(ctx, f); err != nil {
 		return DeployResult{}, err
 	}
 	if f.LiveVersion == 0 {
@@ -590,14 +596,16 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if err := s.verifyContent(a.Flat, versionFromRevision(rev)); err != nil {
 		return ActionResult{}, err
 	}
-	res, err := s.publishRevision(ctx, f, rev, a.ID)
+	res, err := s.publishRevision(ctx, f, rev, a.ID, ViaConsole, "publish")
 	if err != nil {
 		return ActionResult{}, err
 	}
 	return ActionResult{Status: "done", Flat: &res.Flat, Message: fmt.Sprintf("published version %d", res.Version), DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}, nil
 }
 
-func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string) (DeployResult, error) {
+// publishRevision makes rev the next live version. kind is "publish" for
+// an approved publish and "save" for a document, which needs no approval.
+func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string, via Via, kind string) (DeployResult, error) {
 	candidate := versionFromRevision(rev)
 	lifecyclePhase(ctx, "before_health", f.Slug, approvalID)
 	env, err := s.captureEnvironment(ctx, f.Slug, candidate)
@@ -638,7 +646,7 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 		os.RemoveAll(dir)
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
 	}
-	res, err := s.activate(ctx, f, d, h, "publish", ViaConsole, approvalID, time.Now())
+	res, err := s.activate(ctx, f, d, h, kind, via, approvalID, time.Now())
 	if err != nil {
 		if d.inst != nil {
 			d.inst.Stop()
@@ -1421,6 +1429,9 @@ func (s *Service) Publish(ctx context.Context, flat string, revision int, hash s
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, flat)
 	if err != nil {
+		return ActionResult{}, err
+	}
+	if err := s.refuseDocs(ctx, f); err != nil {
 		return ActionResult{}, err
 	}
 	d, err := s.st.GetDraft(ctx, flat)

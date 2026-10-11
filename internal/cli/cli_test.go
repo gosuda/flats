@@ -940,3 +940,18 @@ func TestDocsTypeOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestDeployDocumentRunsAtOnce(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	api.handle("POST /api/flats/notes/versions", 201, `{"version": {"flat": "notes", "number": 0, "role": "draft", "revision": 2, "files": 2, "kind": "server", "type": "docs"},
+  "flat": {"slug": "notes", "type": "docs", "visibility": "private", "live_version": 3, "private_url": "http://notes.localhost:7878"}}`)
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"index.md": "# Notes", "flats.json": `{"type":"docs"}`})
+	r := run(t, srv.URL, "", "deploy", dir, "--flat", "notes")
+	if r.code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+	}
+	if want := "Saved document notes; it is running now (private) at http://notes.localhost:7878. Documents have no publish step."; !strings.Contains(r.stdout, want) || strings.Contains(r.stdout, "Draft") || strings.Contains(r.stdout, "publish`") {
+		t.Fatalf("stdout:\n%s", r.stdout)
+	}
+}

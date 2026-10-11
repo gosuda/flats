@@ -327,7 +327,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 		if docsDraft := err == nil && contenttype.FromManifest(draft.Manifest) == contenttype.Docs; !docsDraft && (live != nil || err == nil) {
 			return DocumentEdit{}, ErrNotDocs
 		}
-		return DocumentEdit{}, fmt.Errorf("%w: no docs version is running, so there is no live text to edit; use save_document and publish", ErrNotDeployed)
+		return DocumentEdit{}, fmt.Errorf("%w: the document is not running, so there is no live text to edit; save it with save_document (it starts at once)", ErrNotDeployed)
 	}
 	if !lf.editLimiter.allow() {
 		return DocumentEdit{}, fmt.Errorf("%w: too many live edits of this flat; wait a second and retry", ErrUnavailable)

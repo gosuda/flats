@@ -32,6 +32,6 @@ A rollback to the version that is already live, or with nothing live yet, is
 refused (`refusal.conflict`, `refusal.not_deployed`). Restoring a named
 snapshot without changing code is an operator console action.
 
-For docs flats, a code rollback merges the target version's Markdown into the
-live text: independent human edits are kept and overlapping lines prefer the
-target (`topic.docs`).
+Documents have no versions, so they have no rollback (`refusal.invalid`). To
+undo a change, apply the reverse edit with `update_document` or save the
+earlier text with `save_document` (`topic.docs`).

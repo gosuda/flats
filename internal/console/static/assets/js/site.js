@@ -2,8 +2,10 @@ import { h, icon } from './dom.js';
 import { extLink } from './ui.js';
 import { typeIcon } from './list.js';
 
-// The management tabs of a flat; Deployments is the flat's own address.
+// The management tabs of a flat; Deployments is the flat's own address. A
+// document has no deployments, so its first tab is its Overview.
 const TABS = [['deployments', ''], ['analytics', '/analytics'], ['database', '/database'], ['settings', '/settings']];
+const tabLabel = (flat, tab) => (tab === 'deployments' && flat.type === 'docs' ? 'Overview' : tab[0].toUpperCase() + tab.slice(1));
 
 export function siteHeader(flat, active) {
   const base = `/flats/${encodeURIComponent(flat.slug)}`;
@@ -15,6 +17,6 @@ export function siteHeader(flat, active) {
     h('nav', { class: 'site-tabs', 'aria-label': 'Site management' },
       TABS.map(([tab, path]) => h('a', {
         href: base + path, 'data-nav': true, 'aria-current': active === tab ? 'page' : undefined,
-        text: tab[0].toUpperCase() + tab.slice(1),
+        text: tabLabel(flat, tab),
       }))));
 }
