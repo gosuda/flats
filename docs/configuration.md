@@ -198,6 +198,12 @@ name limit is reached, the route reports the zrok controller's reason. The
 zrok client also honors its own `ZROK2_*` environment variables, such as
 `ZROK2_API_ENDPOINT` for a self-hosted zrok instance.
 
+`cloudflare-quick` has no settings and no credentials to enter: with it in
+`network.permitted`, each flat that allows it gets an anonymous Cloudflare
+quick tunnel while it is public. The tunnel credentials Flats keeps in
+`cloudflare-quick/` are deleted with the flat. `LIBTUNNEL_*` environment
+variables are ignored. See [Private and public access](networking.md#publishing-through-a-cloudflare-quick-tunnel).
+
 Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole
 file, and the error names its JSON path.

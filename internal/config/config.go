@@ -85,7 +85,7 @@ var specs = []spec{
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
-		hint: `list any of "tailscale", "tailscale-funnel", "portal" and "zrok" once each; local is always available`},
+		hint: `list any of "tailscale", "tailscale-funnel", "portal", "zrok" and "cloudflare-quick" once each; local is always available`},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
 	// The providers a new flat is allowed on from the start, one per mode.
@@ -435,7 +435,7 @@ func checkPermitted(v any) (any, error) {
 			return nil, fieldErr(path, "remove it; local is always available", "local is not a grant")
 		}
 		if !slices.Contains(providers, p) {
-			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal" or "zrok"`, "unknown provider %q", p)
+			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal", "zrok" or "cloudflare-quick"`, "unknown provider %q", p)
 		}
 		if slices.Contains(list[:i], p) {
 			return nil, fieldErr(path, "list each provider once", "duplicate provider %q", p)
