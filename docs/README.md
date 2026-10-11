@@ -20,6 +20,7 @@ deploy.
 | [Connecting agents](agents.md) | Plugin, `flats connect`, direct MCP setup, the `guide` tool, llms.txt |
 | [Runtime API v1](runtime-api-v1.md) | The complete server-flat contract: handler, FILES, DB, encoding, limits (generated) |
 | [Content types](content-types.md) | Websites and Markdown documents (`type: "docs"`) (generated) |
+| [Server runtime types](agent/types/flats-runtime-v1.d.ts) | TypeScript declarations of runtime API v1, served as guide `topic.server.types` |
 | [`agent/`](agent) | Source of the MCP `guide` topics and both generated references |
 
 The two generated references come from [`agent/`](agent). Edit the topics
