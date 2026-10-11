@@ -65,12 +65,22 @@ const (
 	// ProviderCloudflareQuick is a Cloudflare quick tunnel: anonymous, on a
 	// random trycloudflare.com hostname.
 	ProviderCloudflareQuick ProviderID = "cloudflare-quick"
+	// ProviderNetbird is the private NetBird mesh; ProviderNetbirdExpose is
+	// NetBird's public reverse proxy. Both use the host's one NetBird peer.
+	ProviderNetbird       ProviderID = "netbird"
+	ProviderNetbirdExpose ProviderID = "netbird-expose"
 )
 
 // PublicProvider reports whether id serves visitors on the internet
-// (Tailscale Funnel, Portal, zrok or a Cloudflare quick tunnel).
+// (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose).
 func PublicProvider(id ProviderID) bool {
-	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick
+	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick || id == ProviderNetbirdExpose
+}
+
+// PrivateMeshProvider reports whether id is a private overlay network that
+// serves a flat's Private route besides loopback (Tailscale or NetBird).
+func PrivateMeshProvider(id ProviderID) bool {
+	return id == ProviderTailscale || id == ProviderNetbird
 }
 
 // ExposureAudience selects the content a provider serves.

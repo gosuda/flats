@@ -13,8 +13,8 @@ This document describes the integrated provider Manager. Production app and disp
 ## Contract
 
 Provider choice stays separate from visibility and version. Local loopback is
-available with no grant. Tailscale, Tailscale Funnel, Portal, zrok and
-Cloudflare quick tunnels (`cloudflare-quick`) start
+available with no grant. Tailscale, NetBird, Tailscale Funnel, Portal, zrok,
+Cloudflare quick tunnels (`cloudflare-quick`) and NetBird Expose start
 only when both of these are true:
 
 1. The host file grants that provider.
@@ -27,15 +27,15 @@ is not a fallback.
 
 | Request | Providers that may open |
 | --- | --- |
-| Draft, or visibility private | `local` always. `tailscale` only when both gates allow it. |
-| Audience current and visibility public | `tailscale-funnel`, `portal`, `zrok` and/or `cloudflare-quick`, each only when both gates allow it. |
+| Draft, or visibility private | `local` always. `tailscale` and `netbird` only when both gates allow them (`netbird` never for an ephemeral preview). |
+| Audience current and visibility public | `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick` and/or `netbird-expose`, each only when both gates allow it. |
 | Ephemeral preview | Private paths only. Public providers return `provider not permitted`. |
 
 If a public request lists no permitted public provider, or none of the
 requested public routes open, `ServeExposure` returns an error. If some open
 and some fail, the result and the joined error are both returned.
 
-`StopPublicRoutes` closes Funnel, Portal, zrok and quick tunnels for that slug. Local and tailscale
+`StopPublicRoutes` closes Funnel, Portal, zrok, quick tunnels and NetBird Expose for that slug. Local and tailscale
 routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later
 call can retry. Unconfirmed means the caller must not treat the flat as
@@ -458,3 +458,37 @@ changed.
 ### Per-flat Private Tailscale revocation
 
 An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route or race a second teardown. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure closes the consumed backend and preserves its persistent state; the next `StopPrivate` call starts a fresh backend over that state and performs a real logout retry in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.
+
+## NetBird
+
+`netbird.Net` (`netbird/`, a separate Go module linked only by
+`netbird/cmd/flats`; the stock binary has a nil `provider.NetbirdDriver` and
+reports `ErrNetbirdNotBuilt`) owns the host's one embedded NetBird
+peer and serves two providers from it. `netbird` (Private, a mesh provider
+like `tailscale`) listens on the peer's overlay address with `ListenTCP`, one
+port per host from a persisted pool (21000–21999, `<data>/netbird/ports.json`),
+and reports `http://<peer FQDN>:<port>`. `netbird-expose` (Public) listens the
+same way on a separate port, asks NetBird to expose it (`Expose` with the slug as
+name prefix, HTTP, no PIN or password) and keeps the session alive; a keep-alive
+error or lost listener exposes again with backoff, so the URL can change and
+`PublicURL` reports the current one. `ServePublic` returns once the first expose
+succeeded; a first failure removes the entry and fails the open.
+
+The peer is enrolled from the console with a setup key
+(`PUT /console/api/providers/netbird/account`), which `netbird.Enroll` uses in
+memory only; the peer identity (mode 0600) and an account record (management
+URL, device name and a fingerprint of the peer's public key) stay in
+`<data>/netbird/`. `DELETE` calls `netbird.Disconnect`, only while both
+providers are off and after `Manager.DetachNetbird` (which refuses while a
+NetBird route is registered and waits for opens in flight). The embedded client
+cannot deregister a peer, so the peer remains in the NetBird account.
+
+`StopPublicRoutes` calls `StopPublic` (session ended, port kept) even without a
+registered route. `StopProviderRoutes(…, netbird)` and `StopExposure` call
+`StopPrivate`. `StopSlug` calls `RetirePublic` then `RetirePrivate`, which free
+the ports (a public port is quarantined for 24 hours first, because NetBird only
+logs a failed `StopExpose` and the proxy mapping may outlive the session); a failed retirement keeps the routes registered for retry. The
+approval policy token includes the management URL and peer fingerprint while a
+NetBird provider is granted, so an approval does not carry over to another
+peer. Public routes strip `Tailscale-User-*` identity headers like zrok;
+private routes strip them too.

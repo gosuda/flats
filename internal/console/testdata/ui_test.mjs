@@ -745,6 +745,53 @@ assert.deepEqual(JSON.parse(connectCall.body), { token: 'test-token' });
 assert.ok(!calls.some((c) => c.key === 'PUT /console/api/providers/zrok'), 'connecting does not turn zrok on');
 assert.equal(tokenInput.value, '', 'the token is cleared from the form');
 
+// NetBird: without a peer the private panel offers the setup key form, the
+// Expose panel points at it, and neither has a switch. Connecting sends the
+// key once and does not turn anything on.
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
+  { ...provider('netbird', 'private', false), management_url: 'https://api.netbird.io:443', connected: false },
+  { ...provider('netbird-expose', 'public', false), management_url: 'https://api.netbird.io:443', connected: false }] };
+routes['PUT /console/api/providers/netbird/account'] = { providers: [] };
+const nbMain = new Element('main');
+settingsPage.mount(nbMain, [], ctx);
+await tick();
+const nbPanel = byId(nbMain, 'provider-netbird');
+assert.equal(byText(nbPanel, 'Turn on').length, 0, 'NetBird without a peer has no switch');
+assert.equal(byText(byId(nbMain, 'provider-netbird-expose'), 'Turn on').length, 0, 'NetBird Expose without a peer has no switch');
+assert.ok(byId(nbMain, 'provider-netbird-expose').textContent.includes('Connect the NetBird peer under NetBird first'));
+const keyInput = byId(nbPanel, 'netbird-setup-key');
+assert.equal(keyInput.getAttribute('type'), 'password', 'the setup key is typed into a password field');
+keyInput.value = '  nb-key  ';
+all(nbPanel, (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+await tick();
+const nbCall = calls.find((c) => c.key === 'PUT /console/api/providers/netbird/account');
+assert.deepEqual(JSON.parse(nbCall.body), { setup_key: 'nb-key' });
+assert.equal(keyInput.value, '', 'the setup key is cleared from the form');
+
+// A binary built without NetBird says so and offers neither a key form nor a switch.
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
+  { ...provider('netbird', 'private', false), unsupported: 'This Flats build does not include NetBird; build ./netbird/cmd/flats from the source tree' }] };
+const nbMain3 = new Element('main');
+settingsPage.mount(nbMain3, [], ctx);
+await tick();
+const nbOff = byId(nbMain3, 'provider-netbird');
+assert.ok(nbOff.textContent.includes('does not include NetBird'));
+assert.equal(all(nbOff, (e) => e.tagName === 'FORM').length, 0, 'no key form without NetBird');
+assert.equal(byText(nbOff, 'Turn on').length, 0, 'no switch without NetBird');
+
+// A connected peer is identified and can be disconnected while both are off.
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
+  { ...provider('netbird', 'private', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' },
+  { ...provider('netbird-expose', 'public', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' }] };
+const nbMain2 = new Element('main');
+settingsPage.mount(nbMain2, [], ctx);
+await tick();
+const nbFacts = all(byId(nbMain2, 'provider-netbird'), (e) => e.tagName === 'CODE').map((e) => e.textContent);
+assert.deepEqual(nbFacts, ['flats-box', 'https://nb.example'], 'the connected peer is identified');
+assert.equal(byText(byId(nbMain2, 'provider-netbird'), 'Disconnect peer').length, 1, 'a connected peer can be disconnected');
+assert.equal(byText(byId(nbMain2, 'provider-netbird'), 'Turn on').length, 1, 'a connected peer can be turned on');
+
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over
 // the tailnet shows it as server-only text; on the host it stays a link.

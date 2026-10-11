@@ -41,6 +41,38 @@ jobs:
       - name: Tests
         run: scripts/ci-test.sh "${{ matrix.shard }}"
 
+  # NetBird is a separate module (./netbird) because its client needs replace
+  # directives; go test ./... above does not reach it.
+  netbird:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: netbird
+      - name: Verify module files
+        working-directory: netbird
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Vet, test and build
+        working-directory: netbird
+        run: |
+          go vet ./...
+          go test -race ./...
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/flats
+      - name: The main module does not link NetBird
+        run: |
+          if go list -deps ./cmd/flats | grep -q github.com/netbirdio; then
+            echo "cmd/flats links NetBird; it must stay in ./netbird" >&2
+            exit 1
+          fi
+          if grep -q '^replace' go.mod; then
+            echo "go.mod has replace directives; go install pkg@version would fail" >&2
+            exit 1
+          fi
+
   race:
     runs-on: ubuntu-latest
     timeout-minutes: 20

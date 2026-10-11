@@ -13,7 +13,7 @@
 Flats lets agents deploy sites and small server apps directly to your own
 machine. Flats are Private by default, through local loopback or permitted
 Tailscale, and optionally Public through permitted Portal, zrok, Tailscale
-Funnel or a Cloudflare quick tunnel.
+Funnel, a Cloudflare quick tunnel or NetBird Expose.
 There is no hosted Flats control plane.
 
 Your machine runs the code and keeps the versions, SQLite databases,
@@ -154,8 +154,10 @@ under Networks on the flat's Settings tab:
 
 | Visibility | Providers |
 | --- | --- |
-| Private | Local (always on), Tailscale (tailnet ACLs decide access) |
-| Public | Tailscale Funnel, Portal, zrok, Cloudflare quick tunnel |
+| Private | Local (always on), Tailscale (tailnet ACLs decide access), NetBird¹ (access policies decide) |
+| Public | Tailscale Funnel, Portal, zrok, Cloudflare quick tunnel, NetBird Expose¹ |
+
+¹ Only in the NetBird variant built from `netbird/cmd/flats` ([how](docs/networking.md#serving-through-netbird)).
 
 Permitting a network never publishes a version or changes visibility, and
 Tailscale does not imply Funnel. Making a flat Public needs a published

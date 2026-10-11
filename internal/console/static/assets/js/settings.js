@@ -107,6 +107,8 @@ export const PROVIDER_INFO = {
   portal: { label: 'Portal', what: 'Anyone on the internet, through Portal relays.' },
   zrok: { label: 'zrok', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
   'cloudflare-quick': { label: 'Cloudflare Quick Tunnel', what: 'Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random trycloudflare.com address. No Cloudflare account or domain needed.' },
+  netbird: { label: 'NetBird', what: 'Peers your NetBird access policies allow. Flats are served on this host’s NetBird peer, one port per flat.' },
+  'netbird-expose': { label: 'NetBird Expose', what: 'Anyone on the internet, through NetBird’s reverse proxy on this host’s NetBird peer.' },
 };
 
 // providerGroups lists the providers as Private and Public groups. data is
@@ -179,7 +181,7 @@ function providerPanel(p, data, opts) {
   let toggle = null;
   if (!local) {
     // zrok can be turned on only once an account is connected.
-    const needsAccount = p.id === 'zrok' && !p.enabled && !p.connected;
+    const needsAccount = (p.id === 'zrok' || p.id === 'netbird' || p.id === 'netbird-expose') && !p.enabled && !p.connected;
     toggle = needsAccount ? null : h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
       disabled: !!p.locked, 'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
     if (toggle) toggle.addEventListener('click', () => busy(toggle, async () => {
@@ -200,6 +202,7 @@ function providerPanel(p, data, opts) {
 
 function providerDetails(p, data, opts) {
   if (p.id === 'zrok') return zrokDetails(p, data, opts);
+  if (p.id === 'netbird' || p.id === 'netbird-expose') return netbirdDetails(p, data, opts);
   if (p.id === 'local') return p.address ? h('dl', { class: 'facts' }, h('dt', { text: 'Address' }), h('dd', null, h('code', { text: p.address }))) : null;
   if (p.id === 'portal') return [limitsForm(data, { ...opts, group: 'portal' }), p.enabled && p.status ? hostsTable(p.status) : null];
   if (!p.enabled) return null;
@@ -290,6 +293,91 @@ function zrokDetails(p, data, opts) {
     }),
     h('div', { class: 'form-actions' }, disconnect),
   ];
+}
+
+// netbirdDetails shows the NetBird peer both NetBird providers share: the
+// private mesh panel holds the setup key form and the disconnect button, the
+// Expose panel points at it. A setup key registers this machine as a peer
+// once and is never stored.
+function netbirdDetails(p, data, opts) {
+  // A binary built without NetBird cannot enroll a peer or turn it on.
+  if (p.unsupported) return h('p', { class: 'alert alert-warn', text: p.unsupported });
+  const facts = h('dl', { class: 'facts' },
+    p.connected ? [
+      h('dt', { text: 'Peer' }), h('dd', { text: 'Connected' }),
+      h('dt', { text: 'Name' }), h('dd', null, h('code', { text: p.device_name || '' })),
+      h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: p.management_url || '' })),
+    ] : [h('dt', { text: 'Peer' }), h('dd', { text: 'Not connected' }),
+      h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: p.management_url || '' }))]);
+  const hosts = p.enabled && p.status ? hostsTable(p.status) : null;
+  if (p.id === 'netbird-expose') {
+    return [facts, h('p', { class: 'muted small', text: p.connected
+      ? 'Uses the NetBird peer connected under NetBird. A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Anyone can open the URL.'
+      : 'Connect the NetBird peer under NetBird first.' }), hosts];
+  }
+  if (!p.connected) {
+    return [facts, netbirdKeyForm(opts)];
+  }
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect peer', disabled: !!p.in_use,
+    title: p.in_use ? 'Turn NetBird and NetBird Expose off first' : '' });
+  disconnect.addEventListener('click', () => busy(disconnect, async () => {
+    const ok = await confirmDialog({
+      title: 'Disconnect the NetBird peer?',
+      body: [h('p', { text: 'Flats deletes this peer’s identity from the data directory. The peer stays listed in the NetBird dashboard until you remove it there.' })],
+      confirmLabel: 'Disconnect',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.disconnectNetbird(false);
+    } catch (err) {
+      const force = await confirmDialog({
+        title: 'The NetBird peer could not be disconnected',
+        body: [errorPanel(err), h('p', { text: 'Forget the peer on this machine anyway? It may stay registered in NetBird; remove it in the dashboard.' })],
+        confirmLabel: 'Forget it here',
+        danger: true,
+      });
+      if (!force) return;
+      try {
+        await api.disconnectNetbird(true);
+      } catch (err2) {
+        await infoDialog('Cannot disconnect the NetBird peer', errorPanel(err2));
+        return;
+      }
+    }
+    toast('NetBird peer disconnected.', 'success');
+    await opts.reload();
+  }));
+  return [facts, hosts, h('div', { class: 'form-actions' }, disconnect)];
+}
+
+// netbirdKeyForm registers this machine as a NetBird peer with a setup key.
+function netbirdKeyForm(opts) {
+  const id = 'netbird-setup-key';
+  const input = h('input', { type: 'password', id, name: 'setup_key', autocomplete: 'off', spellcheck: 'false', required: true,
+    placeholder: 'NetBird setup key' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Connect' });
+  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
+    h('label', { for: id, text: 'Setup key' }), input,
+    h('p', { class: 'muted small', text: 'Create a setup key in the NetBird dashboard (Setup Keys) and paste it here. Flats uses it once to register this machine as a peer and does not keep it. Turn NetBird on once the peer is connected.' }),
+    h('div', { class: 'form-actions' }, submit));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const key = input.value.trim();
+    if (!key) { input.focus(); return; }
+    busy(submit, async () => {
+      try {
+        await api.connectNetbird(key);
+      } catch (err) {
+        await infoDialog('Cannot connect the NetBird peer', errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast('NetBird peer connected. Turn NetBird on to use it.', 'success');
+      await opts.reload();
+    });
+  });
+  return form;
 }
 
 // zrokTokenForm sends an account token to connect or replace the zrok account.

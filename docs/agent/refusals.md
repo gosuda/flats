@@ -128,7 +128,7 @@ For `update_document` the error says which case applies:
 ## provider_not_permitted
 
 The flat needs a network provider the operator has not permitted, typically
-Portal, zrok, Tailscale Funnel or a Cloudflare quick tunnel for Public. Agents
+Portal, zrok, Tailscale Funnel, a Cloudflare quick tunnel or NetBird Expose for Public. Agents
 cannot grant providers. Ask the
 user to permit one in the console, then request again.
 

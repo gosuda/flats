@@ -10,7 +10,7 @@ deploy.
 | [Releases and installation](release.md) | Installer, service, upgrades and backups; how maintainers cut a release |
 | [Configuration and storage](configuration.md) | `config.json`, where each kind of data lives, backups, moving an older installation |
 | [Running Flats in a container](container.md) | Image tags, network modes, hardening, upgrades |
-| [Private and public access](networking.md) | Local, Tailscale, Tailscale Funnel, Portal, zrok and Cloudflare quick tunnels; visibility; upgrading provider grants |
+| [Private and public access](networking.md) | Local, Tailscale, Tailscale Funnel, Portal, zrok, Cloudflare quick tunnels and NetBird; visibility; upgrading provider grants |
 | [Calling external APIs](external-api.md) | Outbound `fetch` grants for server flats and browser-side CORS/CSP |
 
 ## Building on Flats

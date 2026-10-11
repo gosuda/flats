@@ -209,18 +209,20 @@ type Host struct {
 	portalNet  *portal.Net
 	zrokNet    *zrok.Net
 	quickNet   *cfquick.Net
+	netbirdNet provider.NetbirdNet
 	// For providers the console turns on while the host runs.
-	logf          func(string, ...any)
-	legacy        bool
-	portalOptions portal.Config
-	zrokOptions   zrok.Config
-	networkPins   map[provider.ID]string // provider -> service flag that fixes it
-	console       string
-	consoleNet    core.PrivateNet // set when the console runs on the tailnet
-	consoleHost   string
-	dataLock      *os.File
-	closeOnce     sync.Once
-	closeErr      error
+	logf           func(string, ...any)
+	legacy         bool
+	portalOptions  portal.Config
+	zrokOptions    zrok.Config
+	netbirdOptions provider.NetbirdConfig
+	networkPins    map[provider.ID]string // provider -> service flag that fixes it
+	console        string
+	consoleNet     core.PrivateNet // set when the console runs on the tailnet
+	consoleHost    string
+	dataLock       *os.File
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 // ConsoleURL is the operator console address (tailnet URL when available).
@@ -400,6 +402,17 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		h.quickNet = qn
 	}
+	h.netbirdOptions = provider.NetbirdConfig{Dir: filepath.Join(dataDir, "netbird"), ManagementURL: cfg.Netbird.ManagementURL,
+		DeviceName: cfg.Netbird.DeviceName, Instance: cfg.Host.InstanceID, Logf: logf}
+	if permits(provider.Netbird) || permits(provider.NetbirdExpose) {
+		// A missing peer must not keep the console down: the operator
+		// connects one there. NetBird stays unconfigured until then.
+		if nn, err := newNetbird(h.netbirdOptions); err != nil {
+			logf("warning: netbird is permitted but not started: %v", err)
+		} else {
+			h.netbirdNet = nn
+		}
+	}
 	var tail provider.Tailnet
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
@@ -408,7 +421,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, id := range cfg.Network.Permitted {
 		grants.Permitted = append(grants.Permitted, provider.ID(id))
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet), netbirdConfiguration(cfg, h.netbirdNet)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}}
 	if h.portalNet != nil {
@@ -419,6 +432,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	if h.quickNet != nil {
 		backends.CFQuick = h.quickNet
+	}
+	if h.netbirdNet != nil {
+		backends.Netbird = h.netbirdNet
 	}
 	mgr, err := provider.New(dataDir, backends)
 	if err != nil {
@@ -575,7 +591,27 @@ func cfquickConfig(dataDir string, logf func(string, ...any)) cfquick.Config {
 	return cfquick.Config{Dir: filepath.Join(dataDir, "cloudflare-quick"), Logf: logf}
 }
 
-func providerConfiguration(cfg portal.Config, zrokConfig string) string {
+// netbirdConfiguration is NetBird's part of the provider configuration
+// token, or "" when neither NetBird provider is permitted. It names the
+// management server and the enrolled peer (a fingerprint of its public key,
+// never a secret), so an approval granted for one NetBird peer does not
+// apply to another.
+func netbirdConfiguration(cfg *config.Config, nn provider.NetbirdNet) string {
+	if !slices.Contains(cfg.Network.Permitted, string(provider.Netbird)) && !slices.Contains(cfg.Network.Permitted, string(provider.NetbirdExpose)) {
+		return ""
+	}
+	account := ""
+	if nn != nil {
+		account = nn.Account()
+	}
+	return netbirdConfigurationOf(cfg.Netbird.ManagementURL, account)
+}
+
+func netbirdConfigurationOf(managementURL, account string) string {
+	return strings.Join([]string{managementURL, account}, "\x00")
+}
+
+func providerConfiguration(cfg portal.Config, zrokConfig, netbirdConfig string) string {
 	// Only public relay origins and non-secret desired settings participate.
 	// Do not include userinfo, query strings, identities, keys or readiness.
 	origins := make([]string, 0, len(cfg.Relays))
@@ -590,7 +626,8 @@ func providerConfiguration(cfg portal.Config, zrokConfig string) string {
 		Discovery       bool
 		MaxActiveRelays int
 		Zrok            string `json:",omitempty"`
-	}{origins, cfg.Discovery, cfg.MaxActiveRelays, zrokConfig})
+		Netbird         string `json:",omitempty"`
+	}{origins, cfg.Discovery, cfg.MaxActiveRelays, zrokConfig, netbirdConfig})
 	return string(raw)
 }
 
@@ -688,7 +725,7 @@ func (h *Host) Close() error {
 			collect("provider routes", h.Providers.Close())
 		}
 		h.pmu.Lock()
-		tsNet, portalNet, zrokNet, quickNet := h.tsNet, h.portalNet, h.zrokNet, h.quickNet
+		tsNet, portalNet, zrokNet, quickNet, netbirdNet := h.tsNet, h.portalNet, h.zrokNet, h.quickNet, h.netbirdNet
 		h.pmu.Unlock()
 		if h.Public != nil {
 			collect("public network shutdown", h.Public.Close())
@@ -700,6 +737,9 @@ func (h *Host) Close() error {
 		}
 		if quickNet != nil {
 			collect("cloudflare-quick shutdown", quickNet.Close())
+		}
+		if netbirdNet != nil {
+			collect("netbird shutdown", netbirdNet.Close())
 		}
 		if h.Private != nil {
 			collect("private network shutdown", h.Private.Close())

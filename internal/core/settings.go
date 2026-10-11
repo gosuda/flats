@@ -554,18 +554,18 @@ func normalizeSetting(k, v string) (string, error) {
 		return strings.Join(relays, ","), nil
 	case SetDefaultPrivate:
 		switch v {
-		case "", "local", string(ProviderTailscale):
+		case "", "local", string(ProviderTailscale), string(ProviderNetbird):
 			return v, nil
 		}
-		return "", fmt.Errorf("setting %s must be local or tailscale, or empty to follow network.private_backend", k)
+		return "", fmt.Errorf("setting %s must be local, tailscale or netbird, or empty to follow network.private_backend", k)
 	case SetDefaultPublic:
 		switch v {
 		case "", "none":
 			return "", nil
-		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok), string(ProviderCloudflareQuick):
+		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok), string(ProviderCloudflareQuick), string(ProviderNetbirdExpose):
 			return v, nil
 		}
-		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal, zrok or cloudflare-quick, or empty for none", k)
+		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal, zrok, cloudflare-quick or netbird-expose, or empty for none", k)
 	case SetPortalDiscover, SetPortalHide:
 		b, err := strconv.ParseBool(v)
 		if err != nil {

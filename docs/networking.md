@@ -1,8 +1,8 @@
 # Private and public access
 
 This page is for operators: which networks a Flats host serves on, how to turn
-on Tailscale, Tailscale Funnel, Portal, zrok and Cloudflare quick tunnels,
-and how visibility works. The
+on Tailscale, Tailscale Funnel, Portal, zrok, Cloudflare quick tunnels and
+NetBird, and how visibility works. The
 provider state machine is in [Network provider lifecycle](network-provider-lifecycle.md).
 
 ## Providers
@@ -11,10 +11,12 @@ provider state machine is in [Network provider lifecycle](network-provider-lifec
 | --- | --- | --- |
 | Local | Private | `*.localhost` origins on the Flats machine. Always on. |
 | Tailscale | Private | Devices your tailnet ACLs allow |
+| NetBird | Private | Peers your NetBird access policies allow |
 | Tailscale Funnel | Public | Anyone on the internet |
 | Portal | Public | Anyone on the internet, through a Portal relay |
 | zrok | Public | Anyone on the internet, through a zrok public share on your zrok account |
 | Cloudflare quick tunnel | Public | Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random `trycloudflare.com` address |
+| NetBird Expose | Public | Anyone on the internet, through NetBird's reverse proxy |
 
 The default network is Local; every other provider is off. A provider serves a
 flat only when both of these are on:
@@ -26,7 +28,8 @@ flat only when both of these are on:
 2. **Flat permission.** Allow the provider under **Networks** on the flat's
    Settings tab.
 
-Permitting Tailscale does not permit Funnel. Neither permission publishes a
+Permitting Tailscale does not permit Funnel, and permitting NetBird does not
+permit NetBird Expose. Neither permission publishes a
 version or changes visibility.
 
 Each mode has a **default for new flats** in Settings → Network providers. A
@@ -58,7 +61,7 @@ the start, so its private and preview links use the tailnet:
   routes of every flat created afterwards, including flats an agent creates.
 - Each grant is logged as a `provider` event. Turn it off under the flat's
   Networks to keep a flat on the host only.
-- It never allows Funnel, Portal, zrok or quick tunnels. Flats created earlier keep their
+- It never allows Funnel, Portal, zrok, quick tunnels or NetBird Expose. Flats created earlier keep their
   providers.
 
 Flats embeds tsnet. Permitted flat and preview routes, and the console in
@@ -138,15 +141,64 @@ process; no `cloudflared` binary is needed.
 - Flats sends no network-error reports to the mint service and ignores
   `LIBTUNNEL_*` environment variables.
 
+## Serving through NetBird
+
+NetBird is not in the release archives, the container images or
+`go install`. Its client needs `replace` directives that Go rejects for
+`go install …@version`, so it is a separate Go module (`netbird/`) with its own
+entry point. Build the NetBird variant from the source tree and run it in place
+of `flats`; everything else is the same program:
+
+```sh
+git clone https://github.com/gosuda/flats && cd flats/netbird
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o flats ./cmd/flats
+```
+
+The variant is about 30 MB larger than the stock binary. A stock binary shows
+NetBird under Settings → Network providers with a note that this build does not
+include it, and it cannot connect a peer or turn NetBird on.
+
+NetBird gives Flats two providers that share one NetBird peer: **NetBird**
+(Private) and **NetBird Expose** (Public). Under **Settings → Network
+providers → NetBird**, paste a setup key from the NetBird dashboard (Setup
+Keys) and choose **Connect**. Flats uses the key once to register this machine
+as a peer, keeps only the peer identity in `netbird/` in the data directory
+(mode 0600), and does not store or show the key again. The peer talks to the
+management server in `netbird.management_url` (default NetBird Cloud) and is
+named `netbird.device_name` (default `flats`). The embedded client runs in
+userspace, so Flats needs no root rights or tunnel interface. **Turn on** NetBird
+and/or NetBird Expose, then allow them on a flat.
+
+- **NetBird (Private)** serves each flat on the peer's overlay address, on its
+  own TCP port (21000–21999, kept across restarts), over plain HTTP. Reach it
+  from another peer that your NetBird access policies allow, at the URL the
+  flat's page shows. Previews and drafts do not use NetBird.
+- **NetBird Expose (Public)** exposes a public flat through NetBird's reverse
+  proxy, which must be enabled on your NetBird account or server. Flats asks
+  for an expose named after the slug and keeps the session alive; the URL NetBird
+  returns is the flat's public URL. If NetBird ends the session Flats exposes again, and
+  the URL changes: NetBird adds a random suffix to each expose, so a flat that
+  goes Private and Public again, or whose session is exposed again, gets a new
+  address (read the current one from the console or `get_flat`). Public is not access control: Flats sets no PIN or
+  password, and anyone with the URL can open the flat.
+
+**Disconnect peer** deletes the peer identity from this machine; turn both
+providers off first. NetBird's embedded client cannot remove a peer, so remove
+it in the NetBird dashboard (Peers) and revoke a reusable setup key. If the peer
+was removed in the dashboard, connect again with a new key. Deleting a flat
+ends its expose session and releases its port; a public flat's port stays
+out of use for 24 hours, because NetBird only logs a failed attempt to end an
+expose session and its proxy might still forward to that port.
+
 ## Visibility
 
 Visibility is Private or Public, independently of publication and connection
 state.
 
-- **Private** routes use Local, or permitted Tailscale with existing tailnet
-  ACLs.
-- **Public** routes use explicitly permitted Portal, zrok, Tailscale Funnel or
-  Cloudflare quick tunnels.
+- **Private** routes use Local, or permitted Tailscale or NetBird with the
+  existing tailnet ACLs or NetBird access policies.
+- **Public** routes use explicitly permitted Portal, zrok, Tailscale Funnel,
+  Cloudflare quick tunnels or NetBird Expose.
   Public is not access control: anyone with the URL can open the flat.
 
 Configuration alone never publishes a version or changes visibility. Public
@@ -197,4 +249,4 @@ Tailscale choice:
   host Tailscale grant never opts those flats in.
 
 Existing explicit denials win; new flats and later revocations are never opted
-in by restart. Neither choice grants Funnel, Portal, zrok or quick tunnels.
+in by restart. Neither choice grants Funnel, Portal, zrok, quick tunnels or NetBird.

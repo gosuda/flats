@@ -84,3 +84,23 @@ func TestCloudflareQuickCanBeTheDefaultPublic(t *testing.T) {
 		t.Fatalf("providers = %v, want %v", got, want)
 	}
 }
+
+// NetBird can be the private and the public default of new flats.
+func TestNewFlatInheritsNetbirdDefaults(t *testing.T) {
+	s, st := newBackendService(t, "local")
+	ctx := t.Context()
+	if _, err := s.SetPermittedNetworks([]string{"netbird", "netbird-expose"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDefaultPrivate: "netbird", SetDefaultPublic: "netbird-expose"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateFlat(ctx, "nbird", "", ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.PermittedProviders(ctx, "nbird")
+	slices.Sort(got)
+	if want := []string{"local", "netbird", "netbird-expose"}; !slices.Equal(got, want) {
+		t.Fatalf("providers = %v, want %v", got, want)
+	}
+}

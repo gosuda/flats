@@ -106,6 +106,13 @@ container restarts while Cloudflare keeps the tunnel. The container needs
 outbound access to Cloudflare's edge on port 7844 (UDP for QUIC, or TCP when
 UDP is blocked).
 
+The published images do not include NetBird (see
+[Serving through NetBird](networking.md#serving-through-netbird)). To use it in
+a container, build the NetBird variant from `netbird/cmd/flats` and package that
+binary instead of a release archive. It keeps the peer identity in `netbird/` on
+the data volume (the setup key itself is not stored), runs in userspace and
+needs no extra capabilities.
+
 ## Configuration
 
 `flats config set` and `unset` work offline and refuse while the host runs.

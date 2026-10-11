@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -41,7 +42,7 @@ const (
 
 // Network providers that network.permitted may name, in canonical order.
 // Local is always available and is not listed.
-var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick"}
+var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose"}
 
 type kind int
 
@@ -66,7 +67,7 @@ type spec struct {
 }
 
 // sections lists the top-level objects in file order.
-var sections = []string{"host", "network", "system", "portal", "zrok", "credentials"}
+var sections = []string{"host", "network", "system", "portal", "zrok", "netbird", "credentials"}
 
 // specs lists every key in file order. The defaults are frozen.
 var specs = []spec{
@@ -85,7 +86,7 @@ var specs = []spec{
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
-		hint: `list any of "tailscale", "tailscale-funnel", "portal", "zrok" and "cloudflare-quick" once each; local is always available`},
+		hint: `list any of "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird" and "netbird-expose" once each; local is always available`},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
 	// The providers a new flat is allowed on from the start, one per mode.
@@ -93,9 +94,9 @@ var specs = []spec{
 	// flats get no public provider. A new flat is always Private: a public
 	// default is only a permission, never exposure.
 	{key: "network.default_private", kind: kindString, def: "", check: checkDefaultPrivate,
-		hint: `use "local" or "tailscale", or "" to follow network.private_backend`},
+		hint: `use "local", "tailscale" or "netbird", or "" to follow network.private_backend`},
 	{key: "network.default_public", kind: kindString, def: "", check: checkDefaultPublic,
-		hint: `use "tailscale-funnel", "portal", "zrok" or "cloudflare-quick", or "" for none`},
+		hint: `use "tailscale-funnel", "portal", "zrok", "cloudflare-quick" or "netbird-expose", or "" for none`},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
 	// numbers everywhere), as the settings table did.
 	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
@@ -121,6 +122,12 @@ var specs = []spec{
 		hint: "use the absolute path of a zrok environment directory, or unset the key to connect the account in the console"},
 	{key: "zrok.namespace", kind: kindString, def: "public", check: checkNamespace,
 		hint: "use a zrok namespace token such as public"},
+	// The NetBird management server the host's peer registers with. The
+	// default is NetBird Cloud; a self-hosted server sets its own URL.
+	{key: "netbird.management_url", kind: kindString, def: "https://api.netbird.io:443", check: checkManagementURL,
+		hint: "use the https URL of a NetBird management server, such as https://api.netbird.io:443"},
+	{key: "netbird.device_name", kind: kindString, def: "flats", check: checkDeviceName,
+		hint: "use a peer name of 1 to 63 lowercase letters, digits and '-'"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
 	{key: "credentials.tailscale_authkey_file", kind: kindString, check: checkAbsPath,
@@ -400,7 +407,7 @@ func ephemeralPort(addr string) bool {
 
 func checkDefaultPrivate(v any) (any, error) {
 	switch s := v.(string); s {
-	case "", "local", "tailscale":
+	case "", "local", "tailscale", "netbird":
 		return s, nil
 	default:
 		return nil, fmt.Errorf("%q is not a private provider", s)
@@ -409,7 +416,7 @@ func checkDefaultPrivate(v any) (any, error) {
 
 func checkDefaultPublic(v any) (any, error) {
 	switch s := v.(string); s {
-	case "", "tailscale-funnel", "portal", "zrok", "cloudflare-quick":
+	case "", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird-expose":
 		return s, nil
 	default:
 		return nil, fmt.Errorf("%q is not a public provider", s)
@@ -435,7 +442,7 @@ func checkPermitted(v any) (any, error) {
 			return nil, fieldErr(path, "remove it; local is always available", "local is not a grant")
 		}
 		if !slices.Contains(providers, p) {
-			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal", "zrok" or "cloudflare-quick"`, "unknown provider %q", p)
+			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird" or "netbird-expose"`, "unknown provider %q", p)
 		}
 		if slices.Contains(list[:i], p) {
 			return nil, fieldErr(path, "list each provider once", "duplicate provider %q", p)
@@ -448,6 +455,34 @@ func checkPermitted(v any) (any, error) {
 		}
 	}
 	return out, nil
+}
+
+// checkManagementURL accepts an https URL without credentials, query or
+// fragment. A NetBird setup key is never part of it.
+func checkManagementURL(v any) (any, error) {
+	s := v.(string)
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || u.Scheme != "https" {
+		return nil, fmt.Errorf("%q is not an https URL", s)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return nil, fmt.Errorf("%q must be only scheme, host and port", s)
+	}
+	return s, nil
+}
+
+// checkDeviceName accepts a DNS label for the NetBird peer name.
+func checkDeviceName(v any) (any, error) {
+	s := v.(string)
+	if s == "" || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
+		return nil, fmt.Errorf("device name %q must be 1 to 63 characters and not start or end with '-'", s)
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return nil, fmt.Errorf("device name %q may contain only lowercase letters, digits and '-'", s)
+		}
+	}
+	return s, nil
 }
 
 // checkNamespace accepts a zrok namespace token: letters, digits, '-' and
@@ -493,6 +528,7 @@ type Config struct {
 	System        SystemConfig
 	Portal        PortalConfig
 	Zrok          ZrokConfig
+	Netbird       NetbirdConfig
 	Credentials   CredentialsConfig
 
 	values  map[string]any
@@ -552,6 +588,11 @@ type PortalConfig struct {
 	Discovery       bool
 	MaxActiveRelays int64
 	Hide            bool // default relay listing of public flats
+}
+
+type NetbirdConfig struct {
+	ManagementURL string
+	DeviceName    string
 }
 
 type ZrokConfig struct {
@@ -636,6 +677,7 @@ func (c *Config) fill() error {
 		num("system.redirect_days"), num("system.events_keep")}
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
+	c.Netbird = NetbirdConfig{str("netbird.management_url"), str("netbird.device_name")}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error
@@ -648,9 +690,9 @@ func (c *Config) fill() error {
 		errs = append(errs, fieldErr("network.private_backend", `add "tailscale" to network.permitted or use "local"`,
 			"tailscale is not permitted"))
 	}
-	if c.Network.DefaultPrivate == "tailscale" && !slices.Contains(c.Network.Permitted, "tailscale") {
-		errs = append(errs, fieldErr("network.default_private", `add "tailscale" to network.permitted or use "local"`,
-			"tailscale is not permitted"))
+	if p := c.Network.DefaultPrivate; (p == "tailscale" || p == "netbird") && !slices.Contains(c.Network.Permitted, p) {
+		errs = append(errs, fieldErr("network.default_private", fmt.Sprintf(`add %q to network.permitted or use "local"`, p),
+			"%s is not permitted", p))
 	}
 	if p := c.Network.DefaultPublic; p != "" && !slices.Contains(c.Network.Permitted, p) {
 		errs = append(errs, fieldErr("network.default_public", fmt.Sprintf(`add %q to network.permitted or clear the default`, p),

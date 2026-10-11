@@ -166,7 +166,7 @@ export async function setVisibility(flat, vis) {
     return null;
   }
   if (widening && !PUBLIC_PROVIDERS.some((p) => (flat.providers || []).includes(p))) {
-    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal, zrok or a Cloudflare quick tunnel for ${label(flat)} under Networks, then make it public.`);
+    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose for ${label(flat)} under Networks, then make it public.`);
     return null;
   }
   const notice = noticeFor(vis);
@@ -196,12 +196,14 @@ export async function setVisibility(flat, vis) {
 // neither step publishes a flat or makes it public.
 export const PROVIDERS = [
   { id: 'tailscale', scope: 'private', label: 'Tailscale', hint: 'Devices your tailnet ACL allows' },
+  { id: 'netbird', scope: 'private', label: 'NetBird', hint: 'Peers your NetBird access policies allow' },
   { id: 'tailscale-funnel', scope: 'public', label: 'Tailscale Funnel', hint: 'Anyone on the internet' },
   { id: 'portal', scope: 'public', label: 'Portal', hint: 'Anyone on the internet, through Portal relays' },
   { id: 'zrok', scope: 'public', label: 'zrok', hint: 'Anyone on the internet, through zrok public shares' },
   { id: 'cloudflare-quick', scope: 'public', label: 'Cloudflare Quick Tunnel', hint: 'Anyone on the internet, through a random trycloudflare.com address' },
+  { id: 'netbird-expose', scope: 'public', label: 'NetBird Expose', hint: 'Anyone on the internet, through NetBird’s reverse proxy' },
 ];
-const PUBLIC_PROVIDERS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick'];
+const PUBLIC_PROVIDERS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick', 'netbird-expose'];
 
 // setProvider allows or stops a network for one flat; resolves true on success.
 export async function setProvider(flat, provider, permitted) {

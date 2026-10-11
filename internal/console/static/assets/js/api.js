@@ -74,6 +74,8 @@ export const api = {
   setProvider: (id, enabled, etag) => request('PUT', `/providers/${enc(id)}`, { enabled }, etag ? { 'If-Match': `"${etag}"` } : undefined),
   // The token is sent once and never returned.
   connectZrok: (token) => request('PUT', '/providers/zrok/account', { token }),
+  connectNetbird: (setup_key) => request('PUT', '/providers/netbird/account', { setup_key }),
+  disconnectNetbird: (force) => request('DELETE', '/providers/netbird/account' + (force ? '?force=1' : '')),
   disconnectZrok: (force) => request('DELETE', '/providers/zrok/account' + (force ? '?force=1' : '')),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another

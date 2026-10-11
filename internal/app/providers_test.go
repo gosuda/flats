@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,8 @@ import (
 
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/portal"
+	"github.com/gosuda/flats/internal/expose/provider"
 )
 
 type providersBody struct {
@@ -485,5 +489,142 @@ func TestConsoleCloudflareQuickTurnsOnAndPolicyMatchesRestart(t *testing.T) {
 	}
 	if off != again {
 		t.Fatal("the policy token after a restart differs from the one after turning cloudflare-quick off")
+	}
+}
+
+// The NetBird part of the provider configuration token follows the management
+// server and is empty without a NetBird grant, so hosts without NetBird keep
+// their token.
+func TestNetbirdConfigurationToken(t *testing.T) {
+	base := &config.Config{}
+	base.Netbird = config.NetbirdConfig{ManagementURL: "https://a.example", DeviceName: "flats"}
+	if got := netbirdConfiguration(base, nil); got != "" {
+		t.Fatalf("without a grant: %q", got)
+	}
+	base.Network.Permitted = []string{"netbird-expose"}
+	first := netbirdConfiguration(base, nil)
+	other := *base
+	other.Netbird.ManagementURL = "https://b.example"
+	if first == "" || netbirdConfiguration(&other, nil) == first {
+		t.Fatal("changing netbird.management_url did not change the token")
+	}
+	if providerConfiguration(portal.Config{}, "", "") == providerConfiguration(portal.Config{}, "", first) {
+		t.Fatal("the NetBird part does not reach the provider token")
+	}
+}
+
+// A NetBird provider turned on before a peer exists runs without a peer. When
+// the peer is enrolled afterwards the policy token carries its fingerprint at
+// once, as the next start computes it, so a pending approval is not left
+// bound to the empty one.
+func TestConsoleNetbirdEnrollmentRefreshesPolicy(t *testing.T) {
+	provider.RegisterNetbird(fakeNetbirdDriver{})
+	t.Cleanup(func() { provider.RegisterNetbird(nil) })
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if code, out := setHost(t, h, client, "netbird", true); code != 200 {
+		t.Fatalf("turn on netbird: %d %v", code, out)
+	}
+	before, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nbDir := filepath.Join(dir, "netbird")
+	if err := os.MkdirAll(nbDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nbDir, "account.json"), []byte(`{"management_url":"https://api.netbird.io:443","device_name":"flats","fingerprint":"abc123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nbDir, "netbird.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.pmu.Lock()
+	err = h.peerEnrolledLocked()
+	h.pmu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live == before {
+		t.Fatal("enrolling the peer did not change the policy token")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = consoleHostWith(t, dir, nil)
+	restarted, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != restarted {
+		t.Fatal("the policy token after a restart differs from the one after enrolling the peer")
+	}
+}
+
+// fakeNetbirdDriver stands in for the NetBird module, which the main module
+// does not link. Its backend reads the account record like the real one.
+type fakeNetbirdDriver struct{}
+
+func (fakeNetbirdDriver) New(c provider.NetbirdConfig) (provider.NetbirdNet, error) {
+	return &fakeNetbirdNet{dir: c.Dir}, nil
+}
+
+func (fakeNetbirdDriver) LoadAccount(dir string) (provider.NetbirdAccount, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "account.json"))
+	if err != nil {
+		return provider.NetbirdAccount{}, false, nil
+	}
+	var a provider.NetbirdAccount
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return provider.NetbirdAccount{}, false, err
+	}
+	return a, true, nil
+}
+
+func (fakeNetbirdDriver) Enroll(context.Context, string, string, string, string) (provider.NetbirdAccount, error) {
+	return provider.NetbirdAccount{}, errors.New("not used")
+}
+func (fakeNetbirdDriver) Disconnect(context.Context, string, bool) error { return nil }
+func (fakeNetbirdDriver) RetireStored(string, string) error              { return nil }
+func (fakeNetbirdDriver) DisconnectHint() string                         { return "" }
+
+type fakeNetbirdNet struct{ dir string }
+
+func (n *fakeNetbirdNet) Account() string {
+	a, _, _ := fakeNetbirdDriver{}.LoadAccount(n.dir)
+	return a.Fingerprint
+}
+func (*fakeNetbirdNet) ServePrivate(context.Context, string, http.Handler) (string, error) {
+	return "", errors.New("not used")
+}
+func (*fakeNetbirdNet) StopPrivate(string) error      { return nil }
+func (*fakeNetbirdNet) RetirePrivate(string) error    { return nil }
+func (*fakeNetbirdNet) PrivateURL(string) string      { return "" }
+func (*fakeNetbirdNet) PrivateStatus() core.NetStatus { return core.NetStatus{} }
+func (*fakeNetbirdNet) PublicURL(string) string       { return "" }
+func (*fakeNetbirdNet) PublicStatus() core.NetStatus  { return core.NetStatus{} }
+func (*fakeNetbirdNet) StopPublic(string) error       { return nil }
+func (*fakeNetbirdNet) RetirePublic(string) error     { return nil }
+func (*fakeNetbirdNet) Close() error                  { return nil }
+func (*fakeNetbirdNet) ServePublic(context.Context, string, http.Handler) (string, error) {
+	return "", errors.New("not used")
+}
+
+// Without a linked NetBird, the providers report why they cannot run and the
+// peer cannot be enrolled; the host keeps starting.
+func TestConsoleNetbirdNotBuilt(t *testing.T) {
+	provider.RegisterNetbird(nil)
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	p := providerByID(t, h, client, "netbird")
+	if p.Unsupported == "" || p.Connected {
+		t.Fatalf("netbird in a build without it: %+v", p)
+	}
+	if err := h.ConnectNetbird(context.Background(), "key"); !errors.Is(err, core.ErrUnavailable) {
+		t.Fatalf("ConnectNetbird without a driver: %v", err)
 	}
 }

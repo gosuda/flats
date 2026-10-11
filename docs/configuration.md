@@ -44,6 +44,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
     restore-journal.json      present only while a data restore is unfinished
     health-check/ restore-trial/  temporary copies
   tsnet/ portal/              provider node identities
+  netbird/                    the connected NetBird peer: identity (mode 0600), account record, port records (NetBird variant only)
   zrok/                       zrok names this host reserved, until released
   zrok-environment/           the connected zrok account: token and identity (mode 0600)
   cloudflare-quick/           Cloudflare quick tunnel credentials per flat (mode 0600)
@@ -60,8 +61,8 @@ Required: `config.json`, `flats.db` (with `VACUUM INTO` or while the host is
 stopped, never a plain copy of a live database), `secret.key` together with
 `flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`
 and `network-retirements/` when present, and `tsnet/` and `portal/` (without
-them new node names and certificates are issued), and `zrok/` (without it a
-deleted flat no longer releases its zrok name). `cloudflare-quick/` is
+them new node names and certificates are issued), `zrok/` (without it a
+deleted flat no longer releases its zrok name), and `netbird/` (without it the peer must be enrolled again with a new setup key). `cloudflare-quick/` is
 optional: without it each public flat's quick tunnel gets a new random
 address. Back up the credential files
 separately. Logs, caches, sockets and the lock are rebuilt.
@@ -121,6 +122,8 @@ written; `flats config unset KEY` removes it.
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
+| `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to the next peer connected |
+| `netbird.device_name` | `flats` (a DNS label) | the same |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | none (interactive login) | restart |
 
@@ -135,8 +138,8 @@ does not permit Funnel, and Local needs no entry. `private_backend:
 flat allowed on Tailscale when it is created (the operator can turn that off
 per flat); flats that already exist keep their providers.
 
-`default_private` (`local` or `tailscale`) and `default_public`
-(`tailscale-funnel`, `portal`, `zrok` or `cloudflare-quick`) choose the one provider per mode that
+`default_private` (`local`, `tailscale` or `netbird`) and `default_public`
+(`tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick` or `netbird-expose`) choose the one provider per mode that
 a new flat is allowed on when it is created, besides Local. Each must be in
 `permitted`; other permitted providers are not granted to new flats. An empty
 `default_private` follows `private_backend`, and an empty `default_public`

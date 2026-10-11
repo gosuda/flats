@@ -23,21 +23,25 @@ import (
 // enables it for the host, and a flat uses it only after it is also allowed
 // for that flat.
 type ProviderInfo struct {
-	ID         string          `json:"id"`
-	Scope      string          `json:"scope"`                    // private or public
-	Enabled    bool            `json:"enabled"`                  // in network.permitted
-	Configured bool            `json:"configured"`               // backend exists in this process
-	Locked     string          `json:"locked,omitempty"`         // why the console cannot change it
-	Flats      []string        `json:"flats"`                    // flats that allow it
-	Status     *core.NetStatus `json:"status,omitempty"`         // backend hosts
-	Address    string          `json:"address,omitempty"`        // local listener
-	AuthKey    bool            `json:"auth_key,omitempty"`       // tailscale: an auth key file is configured
-	ConsoleOn  bool            `json:"console_on,omitempty"`     // tailscale: the console and private routes use it
-	Namespace  string          `json:"namespace,omitempty"`      // zrok: the namespace names are reserved in
-	Connected  bool            `json:"connected,omitempty"`      // zrok: an account is connected
-	Managed    bool            `json:"managed,omitempty"`        // zrok: Flats manages the environment (connect in the console)
-	EnvID      string          `json:"environment_id,omitempty"` // zrok: the connected environment's identity
-	APIURL     string          `json:"api_endpoint,omitempty"`   // zrok: the zrok service the account belongs to
+	ID          string          `json:"id"`
+	Scope       string          `json:"scope"`                    // private or public
+	Enabled     bool            `json:"enabled"`                  // in network.permitted
+	Configured  bool            `json:"configured"`               // backend exists in this process
+	Locked      string          `json:"locked,omitempty"`         // why the console cannot change it
+	Flats       []string        `json:"flats"`                    // flats that allow it
+	Status      *core.NetStatus `json:"status,omitempty"`         // backend hosts
+	Address     string          `json:"address,omitempty"`        // local listener
+	AuthKey     bool            `json:"auth_key,omitempty"`       // tailscale: an auth key file is configured
+	ConsoleOn   bool            `json:"console_on,omitempty"`     // tailscale: the console and private routes use it
+	Namespace   string          `json:"namespace,omitempty"`      // zrok: the namespace names are reserved in
+	Connected   bool            `json:"connected,omitempty"`      // zrok: an account is connected
+	Managed     bool            `json:"managed,omitempty"`        // zrok: Flats manages the environment (connect in the console)
+	EnvID       string          `json:"environment_id,omitempty"` // zrok: the connected environment's identity
+	APIURL      string          `json:"api_endpoint,omitempty"`   // zrok: the zrok service the account belongs to
+	DeviceName  string          `json:"device_name,omitempty"`    // netbird: the connected peer's name
+	MgmtURL     string          `json:"management_url,omitempty"` // netbird: the management server
+	InUse       bool            `json:"in_use,omitempty"`         // netbird: a NetBird provider is on, so the peer cannot be disconnected
+	Unsupported string          `json:"unsupported,omitempty"`    // netbird: why this build cannot use it
 }
 
 // legacyNetworkPins names the legacy service flags that fix a provider's
@@ -62,14 +66,14 @@ func legacyNetworkPins(o Options) map[provider.ID]string {
 func (h *Host) NetworkProviders(ctx context.Context) any {
 	flats := h.flatsAllowing(ctx)
 	h.pmu.Lock()
-	ts, pn, zn, qn := h.tsNet, h.portalNet, h.zrokNet, h.quickNet
+	ts, pn, zn, qn, nn := h.tsNet, h.portalNet, h.zrokNet, h.quickNet, h.netbirdNet
 	h.pmu.Unlock()
 	var grants provider.File
 	if h.Providers != nil {
 		grants = h.Providers.File()
 	}
-	out := make([]ProviderInfo, 0, 6)
-	for _, id := range []provider.ID{provider.Local, provider.Tailscale, provider.Funnel, provider.Portal, provider.Zrok, provider.CFQuick} {
+	out := make([]ProviderInfo, 0, 8)
+	for _, id := range []provider.ID{provider.Local, provider.Tailscale, provider.Netbird, provider.Funnel, provider.Portal, provider.Zrok, provider.CFQuick, provider.NetbirdExpose} {
 		p := ProviderInfo{ID: string(id), Scope: "private", Enabled: grants.Allows(id), Flats: flats[id]}
 		if p.Flats == nil {
 			p.Flats = []string{}
@@ -107,6 +111,30 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 			if pn != nil {
 				st := pn.Status()
 				p.Status = &st
+			}
+		case provider.Netbird, provider.NetbirdExpose:
+			if id == provider.NetbirdExpose {
+				p.Scope = "public"
+			}
+			p.Configured = nn != nil
+			p.MgmtURL = h.netbirdOptions.ManagementURL
+			p.InUse = grants.Allows(provider.Netbird) || grants.Allows(provider.NetbirdExpose)
+			if d, err := provider.LinkedNetbird(); err != nil {
+				p.Unsupported = err.Error()
+			} else if a, ok, err := d.LoadAccount(h.netbirdOptions.Dir); err == nil && ok {
+				p.Connected, p.DeviceName = true, a.DeviceName
+				if a.ManagementURL != "" {
+					p.MgmtURL = a.ManagementURL
+				}
+			}
+			if nn != nil {
+				if id == provider.Netbird {
+					st := nn.PrivateStatus()
+					p.Status = &st
+				} else {
+					st := nn.PublicStatus()
+					p.Status = &st
+				}
 			}
 		case provider.Zrok:
 			p.Scope = "public"
@@ -184,6 +212,9 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 	if id == provider.Zrok {
 		h.syncZrokConfigurationLocked()
 	}
+	if id == provider.Netbird || id == provider.NetbirdExpose {
+		h.syncNetbirdConfigurationLocked()
+	}
 	h.logf("provider %s enabled=%t from the console", id, enabled)
 	return etag, nil
 }
@@ -216,6 +247,16 @@ func (h *Host) attachLocked(id provider.ID) error {
 		}
 		h.portalNet = p
 		h.Providers.AttachPortal(p)
+	case provider.Netbird, provider.NetbirdExpose:
+		if h.netbirdNet != nil {
+			return nil
+		}
+		nn, err := newNetbird(h.netbirdOptions)
+		if err != nil {
+			return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+		}
+		h.netbirdNet = nn
+		h.Providers.AttachNetbird(nn)
 	case provider.Zrok:
 		if h.zrokNet != nil {
 			return nil
@@ -293,7 +334,104 @@ func (h *Host) syncZrokConfigurationLocked() {
 	if h.zrokNet != nil && h.Providers.HostAllows(provider.Zrok) {
 		zc = zrokConfigurationOf(h.Config.Zrok.Environment, h.zrokNet.Account(), h.zrokOptions.Namespace)
 	}
-	h.Providers.SetConfiguration(providerConfiguration(h.portalOptions, zc))
+	h.Providers.SetConfiguration(providerConfiguration(h.portalOptions, zc, h.netbirdConfigurationLocked()))
+}
+
+// netbirdConfigurationLocked is NetBird's part of the policy token as the next
+// start computes it. h.pmu is held.
+func (h *Host) netbirdConfigurationLocked() string {
+	if h.netbirdNet != nil && (h.Providers.HostAllows(provider.Netbird) || h.Providers.HostAllows(provider.NetbirdExpose)) {
+		return netbirdConfigurationOf(h.Config.Netbird.ManagementURL, h.netbirdNet.Account())
+	}
+	return ""
+}
+
+// syncNetbirdConfigurationLocked refreshes the whole provider configuration
+// token, as syncZrokConfigurationLocked does, after NetBird changed. h.pmu is held.
+func (h *Host) syncNetbirdConfigurationLocked() { h.syncZrokConfigurationLocked() }
+
+// ConnectNetbird implements api.NetbirdAccountAdmin. It registers this host
+// as a NetBird peer with a setup key, which is used once and never stored or
+// logged. A connected peer must be disconnected first. When a NetBird
+// provider is granted, its backend runs on the new peer afterwards.
+func (h *Host) ConnectNetbird(ctx context.Context, setupKey string) error {
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	dir := h.netbirdOptions.Dir
+	d, err := provider.LinkedNetbird()
+	if err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	if _, ok, err := d.LoadAccount(dir); err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	} else if ok {
+		return fmt.Errorf("%w: a NetBird peer is already connected; disconnect it first", core.ErrConflict)
+	}
+	if _, err := d.Enroll(ctx, dir, h.netbirdOptions.ManagementURL, setupKey, h.netbirdOptions.DeviceName); err != nil {
+		return netbirdAccountError(err)
+	}
+	h.logf("netbird peer connected from the console")
+	return h.peerEnrolledLocked()
+}
+
+// peerEnrolledLocked makes the running host match a freshly enrolled peer: the
+// policy token carries the peer's fingerprint even when a NetBird provider was
+// on before the peer existed, and the backend starts when a provider is
+// granted and none runs. h.pmu is held.
+func (h *Host) peerEnrolledLocked() error {
+	if h.Providers == nil {
+		return nil
+	}
+	if h.netbirdNet != nil {
+		h.syncNetbirdConfigurationLocked()
+		return nil
+	}
+	if !(h.Providers.HostAllows(provider.Netbird) || h.Providers.HostAllows(provider.NetbirdExpose)) {
+		return nil
+	}
+	nn, err := newNetbird(h.netbirdOptions)
+	if err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	h.netbirdNet = nn
+	h.Providers.AttachNetbird(nn)
+	h.syncNetbirdConfigurationLocked()
+	return nil
+}
+
+func netbirdAccountError(err error) error {
+	return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+}
+
+// DisconnectNetbird implements api.NetbirdAccountAdmin. It deletes the peer's
+// local identity; both NetBird providers must be off. NetBird cannot remove the
+// peer from the client side, so it stays in the dashboard until removed there.
+func (h *Host) DisconnectNetbird(ctx context.Context, force bool) error {
+	// Checked under h.pmu, which SetNetworkProvider holds while it grants
+	// NetBird, so turning it on and disconnecting cannot both succeed.
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	if h.Providers != nil && (h.Providers.HostAllows(provider.Netbird) || h.Providers.HostAllows(provider.NetbirdExpose)) {
+		return fmt.Errorf("%w: turn NetBird and NetBird Expose off before disconnecting the peer", core.ErrConflict)
+	}
+	if h.netbirdNet != nil {
+		if h.Providers != nil && !h.Providers.DetachNetbird() {
+			return fmt.Errorf("%w: NetBird routes are still registered; stop them first", core.ErrProviderInUse)
+		}
+		if err := h.netbirdNet.Close(); err != nil {
+			h.logf("netbird shutdown before disconnect: %v", err)
+		}
+		h.netbirdNet = nil
+	}
+	d, err := provider.LinkedNetbird()
+	if err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	if err := d.Disconnect(ctx, h.netbirdOptions.Dir, force); err != nil {
+		return netbirdAccountError(err)
+	}
+	h.logf("netbird peer disconnected from the console; %s", d.DisconnectHint())
+	return nil
 }
 
 // ConnectZrok implements api.ZrokAccountAdmin. Without a connected account it
@@ -405,4 +543,14 @@ func (h *Host) DisconnectZrok(ctx context.Context, force bool) error {
 	}
 	h.logf("zrok account disconnected from the console")
 	return nil
+}
+
+// newNetbird starts the NetBird backend of the linked driver. A binary
+// without one reports provider.ErrNetbirdNotBuilt.
+func newNetbird(cfg provider.NetbirdConfig) (provider.NetbirdNet, error) {
+	d, err := provider.LinkedNetbird()
+	if err != nil {
+		return nil, err
+	}
+	return d.New(cfg)
 }

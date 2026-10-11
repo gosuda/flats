@@ -47,6 +47,17 @@ type ZrokAccountAdmin interface {
 	DisconnectZrok(ctx context.Context, force bool) error
 }
 
+// NetbirdAccountAdmin is a System that lets the console enroll the host as a
+// NetBird peer with a setup key, and disconnect it. The setup key is sent
+// once, used to register the peer and never stored or returned.
+type NetbirdAccountAdmin interface {
+	ConnectNetbird(ctx context.Context, setupKey string) error
+	// DisconnectNetbird removes the peer's local identity; force does so even
+	// when it cannot be confirmed. The peer may remain listed in the NetBird
+	// dashboard until the operator removes it there.
+	DisconnectNetbird(ctx context.Context, force bool) error
+}
+
 // Server serves /api and /console/api.
 type Server struct {
 	Svc    *core.Service
@@ -125,6 +136,8 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /providers/{id}", s.setHostProvider)
 			h("PUT /providers/zrok/account", s.connectZrok)
 			h("DELETE /providers/zrok/account", s.disconnectZrok)
+			h("PUT /providers/netbird/account", s.connectNetbird)
+			h("DELETE /providers/netbird/account", s.disconnectNetbird)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
@@ -887,6 +900,49 @@ func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.V
 		return
 	}
 	if err := z.DisconnectZrok(r.Context(), r.URL.Query().Get("force") == "1"); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
+}
+
+func (s *Server) netbirdAccountAdmin(w http.ResponseWriter) (NetbirdAccountAdmin, ProviderAdmin, bool) {
+	n, ok := s.System.(NetbirdAccountAdmin)
+	p, pok := s.System.(ProviderAdmin)
+	if !ok || !pok {
+		writeErr(w, http.StatusNotFound, errors.New("this host does not manage a NetBird peer"))
+		return nil, nil, false
+	}
+	return n, p, true
+}
+
+// connectNetbird enrolls the host as a NetBird peer with a setup key.
+func (s *Server) connectNetbird(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	n, p, ok := s.netbirdAccountAdmin(w)
+	if !ok {
+		return
+	}
+	var in struct {
+		SetupKey string `json:"setup_key"`
+	}
+	if err := decode(r, &in); err != nil || strings.TrimSpace(in.SetupKey) == "" {
+		writeErr(w, 400, errors.New(`body must be {"setup_key": "<NetBird setup key>"}`))
+		return
+	}
+	if err := n.ConnectNetbird(r.Context(), strings.TrimSpace(in.SetupKey)); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
+}
+
+// disconnectNetbird removes the host's NetBird peer identity.
+func (s *Server) disconnectNetbird(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	n, p, ok := s.netbirdAccountAdmin(w)
+	if !ok {
+		return
+	}
+	if err := n.DisconnectNetbird(r.Context(), r.URL.Query().Get("force") == "1"); err != nil {
 		fail(w, err)
 		return
 	}

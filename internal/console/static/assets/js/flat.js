@@ -151,7 +151,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // lists the networks that serve it.
   function drawNetworks() {
     fill(netSlot, section('Networks', 'networks',
-      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel, Portal, zrok or a Cloudflare quick tunnel. A new flat starts allowed on the host’s default providers; allow more here to offer several addresses, listed under the flat’s open button. A network must first be turned on in ',
+      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose. A new flat starts allowed on the host’s default providers; allow more here to offer several addresses, listed under the flat’s open button. A network must first be turned on in ',
         h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Private' }),
         h('ul', { class: 'networks' },

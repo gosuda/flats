@@ -1072,18 +1072,20 @@ Rules:
   `<slug>.localhost:<port>`) or Tailscale for people and devices the existing
   tailnet ACL allows. It is not owner-only access.
 * **Public** means anyone on the internet, through a provider the operator
-  permitted for this flat: Portal relay, zrok public share, Tailscale
-  Funnel (Funnel visitors do not need Tailscale; Tailscale Serve is
+  permitted for this flat: Portal relay, zrok public share, NetBird Expose,
+  Tailscale Funnel (Funnel visitors do not need Tailscale; Tailscale Serve is
   tailnet-only and is not Public) or a Cloudflare quick tunnel (a random
   trycloudflare.com address that can change when Cloudflare drops the
-  tunnel; read the current `public_url` from `get_flat`).
+  tunnel; read the current `public_url` from `get_flat`). A NetBird Expose
+  address also changes each time the flat is exposed again.
   Public is NOT access control: anyone can open a ready Public route.
 * An Unpublished flat cannot become Public. Requesting the current
   visibility changes nothing.
 * Going Private also waits for approval. Until the approved change applies,
   the public route stays reachable.
 * Local is always permitted. Nonlocal providers (`tailscale`,
-  `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`) need host
+  `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird`,
+  `netbird-expose`) need host
   configuration and per-flat
   operator permission; agents cannot grant either. One standing exception:
   the operator can set one default provider per mode for new flats. A new

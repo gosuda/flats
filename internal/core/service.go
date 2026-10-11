@@ -663,6 +663,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 			v.ConnectionState = "unavailable"
 		}
 		if res, err := observer.ExposureStatus(ctx, f.Slug); err == nil {
+			privateFrom := ProviderID("")
 			v.Endpoints = res.Endpoints
 			for i := range v.Endpoints {
 				ep := &v.Endpoints[i]
@@ -670,9 +671,10 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 				if ep.Audience != AudienceCurrent || ep.Host != f.Slug {
 					continue
 				}
-				if (ep.Provider == ProviderLocal || ep.Provider == ProviderTailscale) && ep.Permitted && ep.URL != "" {
-					if v.PrivateURL == "" || ep.Provider == ProviderTailscale {
+				if (ep.Provider == ProviderLocal || PrivateMeshProvider(ep.Provider)) && ep.Permitted && ep.URL != "" {
+					if v.PrivateURL == "" || privateRank(ep.Provider) >= privateRank(privateFrom) {
 						v.PrivateURL, v.PrivateState, v.PrivateDetail = ep.URL, ep.State, ep.Detail
+						privateFrom = ep.Provider
 					}
 				}
 				if PublicProvider(ep.Provider) && f.Visibility.Public() && ep.Permitted {
@@ -815,6 +817,8 @@ func (s *Service) newFlatProviders() []defaultGrant {
 	switch {
 	case n.DefaultPrivate == store.ProviderTailscale && slices.Contains(permitted, store.ProviderTailscale):
 		out = append(out, defaultGrant{store.ProviderTailscale, "network.default_private is tailscale"})
+	case n.DefaultPrivate == store.ProviderNetbird && slices.Contains(permitted, store.ProviderNetbird):
+		out = append(out, defaultGrant{store.ProviderNetbird, "network.default_private is netbird"})
 	case n.DefaultPrivate == "" && s.cfg.PrivateBackend == "tailscale":
 		out = append(out, defaultGrant{store.ProviderTailscale, "network.private_backend is tailscale"})
 	}
@@ -2132,4 +2136,18 @@ func isWithin(dir, p string) bool {
 
 func startsWithDotDot(rel string) bool {
 	return len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)
+}
+
+// privateRank orders the Private URL a flat shows when several private routes
+// are open: Tailscale, then NetBird, then loopback.
+func privateRank(id ProviderID) int {
+	switch id {
+	case ProviderTailscale:
+		return 3
+	case ProviderNetbird:
+		return 2
+	case ProviderLocal:
+		return 1
+	}
+	return 0
 }

@@ -11,12 +11,14 @@ import (
 
 // Provider identifiers stored in flat_providers.
 const (
-	ProviderLocal     = "local"
-	ProviderTailscale = "tailscale"
-	ProviderFunnel    = "tailscale-funnel"
-	ProviderPortal    = "portal"
-	ProviderZrok      = "zrok"
-	ProviderCFQuick   = "cloudflare-quick"
+	ProviderLocal         = "local"
+	ProviderTailscale     = "tailscale"
+	ProviderFunnel        = "tailscale-funnel"
+	ProviderPortal        = "portal"
+	ProviderZrok          = "zrok"
+	ProviderCFQuick       = "cloudflare-quick"
+	ProviderNetbird       = "netbird"
+	ProviderNetbirdExpose = "netbird-expose"
 )
 
 // Draft is the single mutable working copy of a flat.

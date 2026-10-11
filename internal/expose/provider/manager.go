@@ -109,6 +109,31 @@ type QuickNet interface {
 	Close() error
 }
 
+// NetbirdNet is the NetBird backend: the host's one peer serves a flat's
+// Private route inside the mesh (netbird) and a Public route through
+// NetBird's reverse proxy (netbird-expose). A non-nil value is not permission.
+type NetbirdNet interface {
+	ServePrivate(ctx context.Context, host string, h http.Handler) (string, error)
+	// StopPrivate stops serving host and keeps its port reserved.
+	StopPrivate(host string) error
+	// RetirePrivate stops host and releases its port.
+	RetirePrivate(host string) error
+	PrivateURL(host string) string
+	PrivateStatus() core.NetStatus
+
+	ServePublic(ctx context.Context, slug string, h http.Handler) (string, error)
+	// StopPublic ends slug's expose session and keeps its port reserved.
+	StopPublic(slug string) error
+	// RetirePublic ends slug's expose session and releases its port.
+	RetirePublic(slug string) error
+	PublicURL(slug string) string
+	PublicStatus() core.NetStatus
+
+	// Account identifies the enrolled peer without revealing a secret.
+	Account() string
+	Close() error
+}
+
 // TSNet adapts the concrete tailnet so callers outside this module can pass
 // *tsnet.Net without a second implementation.
 type TSNet struct{ *tsnet.Net }
@@ -130,6 +155,11 @@ type Options struct {
 	Portal    PortalNet
 	Zrok      ZrokNet
 	CFQuick   QuickNet
+	Netbird   NetbirdNet
+	// NetbirdStateDir holds the NetBird port records (default <dir>/netbird).
+	// Manager reads it through the linked driver when no backend is attached,
+	// so deleting a flat while NetBird is off still releases its ports.
+	NetbirdStateDir string
 	// TailscaleStateDir is the local tsnet state root. Manager uses it only
 	// when no tailnet backend is configured, so deleting a legacy Local-only
 	// flat can discard its old identity without contacting control.
@@ -167,10 +197,13 @@ type Manager struct {
 	portal        PortalNet
 	zrok          ZrokNet
 	cfquick       QuickNet
+	netbird       NetbirdNet
+	nmu           sync.RWMutex // read-held across a NetBird open; DetachNetbird holds it to write
 	zmu           sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	tailscaleDir  string
 	zrokDir       string
 	cfquickDir    string
+	netbirdDir    string
 	retirementDir string
 	configuration string
 	permission    func(context.Context, string, ID) (bool, error)
@@ -223,6 +256,10 @@ func New(dir string, opts Options) (*Manager, error) {
 	if tailscaleDir == "" {
 		tailscaleDir = filepath.Join(dir, "tsnet")
 	}
+	netbirdDir := opts.NetbirdStateDir
+	if netbirdDir == "" {
+		netbirdDir = filepath.Join(dir, "netbird")
+	}
 	zrokDir := opts.ZrokStateDir
 	if zrokDir == "" {
 		zrokDir = filepath.Join(dir, "zrok")
@@ -236,12 +273,14 @@ func New(dir string, opts Options) (*Manager, error) {
 		zrokDir:        zrokDir,
 		cfquickDir:     cfquickDir,
 		cfquick:        opts.CFQuick,
+		netbirdDir:     netbirdDir,
 		file:           f,
 		fixed:          opts.Grants != nil,
 		local:          opts.Local,
 		ts:             opts.Tailscale,
 		portal:         opts.Portal,
 		zrok:           opts.Zrok,
+		netbird:        opts.Netbird,
 		tailscaleDir:   tailscaleDir,
 		retirementDir:  filepath.Join(dir, "network-retirements"),
 		configuration:  opts.Configuration,
@@ -274,6 +313,40 @@ func (m *Manager) quickNet() QuickNet {
 	m.bmu.RLock()
 	defer m.bmu.RUnlock()
 	return m.cfquick
+}
+
+func (m *Manager) netbirdNet() NetbirdNet {
+	m.bmu.RLock()
+	defer m.bmu.RUnlock()
+	return m.netbird
+}
+
+// AttachNetbird configures the NetBird backend once. It does not grant it.
+func (m *Manager) AttachNetbird(n NetbirdNet) {
+	m.bmu.Lock()
+	defer m.bmu.Unlock()
+	if m.netbird == nil {
+		m.netbird = n
+	}
+}
+
+// DetachNetbird removes the NetBird backend, for a peer disconnected while
+// the host runs. It refuses while any NetBird route is registered.
+func (m *Manager) DetachNetbird() bool {
+	m.nmu.Lock() // waits for NetBird opens in flight
+	defer m.nmu.Unlock()
+	m.mu.Lock()
+	for _, r := range m.routes {
+		if r.provider == Netbird || r.provider == NetbirdExpose {
+			m.mu.Unlock()
+			return false
+		}
+	}
+	m.mu.Unlock()
+	m.bmu.Lock()
+	m.netbird = nil
+	m.bmu.Unlock()
+	return true
 }
 
 // AttachTailnet configures the Tailscale backend once, for a provider the
@@ -473,6 +546,8 @@ func (m *Manager) configured(id ID) bool {
 		return m.zrokNet() != nil
 	case CFQuick:
 		return m.quickNet() != nil
+	case Netbird, NetbirdExpose:
+		return m.netbirdNet() != nil
 	}
 	return false
 }
@@ -515,9 +590,10 @@ func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
 		Tailscale, Portal bool
 		Zrok              bool `json:",omitempty"`
 		CFQuick           bool `json:",omitempty"`
+		Netbird           bool `json:",omitempty"`
 		Configuration     string
 	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil && f.Allows(Zrok),
-		m.quickNet() != nil && f.Allows(CFQuick), m.config()}
+		m.quickNet() != nil && f.Allows(CFQuick), m.netbirdNet() != nil && (f.Allows(Netbird) || f.Allows(NetbirdExpose)), m.config()}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -577,6 +653,19 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 				} else {
 					fresh = ExposureEndpoint{Provider: CFQuick, State: stateUnavailable, Detail: "cloudflare quick tunnels are not configured"}
 				}
+			case Netbird:
+				// NetBird can be detached (peer disconnected) after the snapshot.
+				if n := m.netbirdNet(); n != nil {
+					fresh = fromStatus(Netbird, n.PrivateStatus(), r.host, n.PrivateURL(r.host))
+				} else {
+					fresh = ExposureEndpoint{Provider: Netbird, State: stateUnavailable, Detail: "netbird is not configured"}
+				}
+			case NetbirdExpose:
+				if n := m.netbirdNet(); n != nil {
+					fresh = fromStatus(NetbirdExpose, n.PublicStatus(), r.host, n.PublicURL(r.host))
+				} else {
+					fresh = ExposureEndpoint{Provider: NetbirdExpose, State: stateUnavailable, Detail: "netbird is not configured"}
+				}
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
 		} else if observed.registered {
@@ -604,8 +693,8 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 // opt-in and actual route readiness. Setup alone never opens a route.
 func (m *Manager) HostStatus() []ExposureEndpoint {
 	f := m.File()
-	out := make([]ExposureEndpoint, 0, 6)
-	for _, id := range []ID{Local, Tailscale, Funnel, Portal, Zrok, CFQuick} {
+	out := make([]ExposureEndpoint, 0, 8)
+	for _, id := range []ID{Local, Tailscale, Funnel, Portal, Zrok, CFQuick, Netbird, NetbirdExpose} {
 		configured := m.configured(id)
 		detail := "backend is not configured for this process"
 		if configured {
@@ -627,6 +716,14 @@ func (m *Manager) servePrivate(ctx context.Context, req ExposureRequest) (Exposu
 	}
 	if listed(req.Permitted, Tailscale) {
 		ep, err := m.openTailscale(ctx, req)
+		eps = append(eps, ep)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// Previews are throwaway hosts; NetBird gives them no peer or port.
+	if listed(req.Permitted, Netbird) && !req.Ephemeral {
+		ep, err := m.openNetbird(ctx, req)
 		eps = append(eps, ep)
 		if err != nil {
 			errs = append(errs, err)
@@ -674,6 +771,13 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 			errs = append(errs, err)
 		}
 	}
+	if listed(req.Permitted, Netbird) {
+		mesh, err := m.retainPrivate(ctx, privateReq, Netbird)
+		eps = append(eps, mesh)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
 	opened := 0
 	for _, id := range want {
 		ep, err := m.openPublic(ctx, req, id)
@@ -707,13 +811,22 @@ func (m *Manager) retainPrivate(ctx context.Context, req ExposureRequest, id ID)
 	}
 	m.mu.Unlock()
 	if host != "" {
-		if id == Local {
+		switch id {
+		case Local:
 			return fromStatus(Local, m.local.Status(), host, m.local.URL(host)), nil
+		case Netbird:
+			if n := m.netbirdNet(); n != nil {
+				return fromStatus(Netbird, n.PrivateStatus(), host, n.PrivateURL(host)), nil
+			}
+			return refused(Netbird, "netbird is not configured"), fmt.Errorf("%w: netbird", ErrNotConfigured)
 		}
 		return fromStatus(Tailscale, m.tailnet().Status(), host, m.tailnet().URL(host)), nil
 	}
-	if id == Local {
+	switch id {
+	case Local:
 		return m.openLocal(ctx, req)
+	case Netbird:
+		return m.openNetbird(ctx, req)
 	}
 	return m.openTailscale(ctx, req)
 }
@@ -742,6 +855,33 @@ func (m *Manager) openTailscale(ctx context.Context, req ExposureRequest) (Expos
 	}
 	m.track(req, Tailscale, host)
 	ep := fromStatus(Tailscale, m.tailnet().Status(), host, url)
+	if ep.State == "" {
+		ep.State = stateStarting
+	}
+	return ep, nil
+}
+
+func (m *Manager) openNetbird(ctx context.Context, req ExposureRequest) (ExposureEndpoint, error) {
+	if !m.allows(Netbird) {
+		return refused(Netbird, "host permission absent"), fmt.Errorf("%w: netbird", ErrProviderNotPermitted)
+	}
+	// Hold the open against DetachNetbird from Serve through registration.
+	m.nmu.RLock()
+	defer m.nmu.RUnlock()
+	n := m.netbirdNet()
+	if n == nil {
+		return refused(Netbird, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird", ErrNotConfigured)
+	}
+	host := requestHost(req)
+	url, err := n.ServePrivate(ctx, host, req.Handler)
+	if err != nil {
+		return ExposureEndpoint{Provider: Netbird, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: netbird: %w", core.ErrProviderNotReady, err)
+	}
+	m.track(req, Netbird, host)
+	ep := fromStatus(Netbird, n.PrivateStatus(), host, url)
+	if ep.URL == "" {
+		ep.URL = url
+	}
 	if ep.State == "" {
 		ep.State = stateStarting
 	}
@@ -841,13 +981,33 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 			ep.State = stateStarting
 		}
 		return ep, nil
+	case NetbirdExpose:
+		m.nmu.RLock()
+		defer m.nmu.RUnlock()
+		n := m.netbirdNet()
+		if n == nil {
+			return refused(NetbirdExpose, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird-expose", ErrNotConfigured)
+		}
+		url, err := n.ServePublic(ctx, req.Slug, req.Handler)
+		if err != nil {
+			return ExposureEndpoint{Provider: NetbirdExpose, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: netbird-expose: %w", core.ErrProviderNotReady, err)
+		}
+		m.track(req, NetbirdExpose, req.Slug)
+		ep := fromStatus(NetbirdExpose, n.PublicStatus(), req.Slug, url)
+		if ep.URL == "" {
+			ep.URL = url
+		}
+		if ep.State == "" {
+			ep.State = stateStarting
+		}
+		return ep, nil
 	default:
 		return refused(id, "not a public provider"), fmt.Errorf("%w: %s", ErrProviderNotPermitted, id)
 	}
 }
 
 // publicIDs are the public providers, in the order requests open them.
-var publicIDs = []ID{Funnel, Portal, Zrok, CFQuick}
+var publicIDs = []ID{Funnel, Portal, Zrok, CFQuick, NetbirdExpose}
 
 type retirementMarker struct {
 	slug string
@@ -1060,7 +1220,7 @@ func sortedKeys(set map[string]struct{}) []string {
 	return hosts
 }
 
-// StopPublicRoutes closes Funnel, Portal, zrok and quick tunnels for slug. Local and tailscale
+// StopPublicRoutes closes Funnel, Portal, zrok, quick tunnels and NetBird Expose for slug. Local and tailscale
 // routes for that slug keep serving. Listener stop failures are Unconfirmed
 // and stay tracked. Once Funnel is confirmed closed, a failed node retirement
 // is retained separately for StopSlug or a later Funnel activation to retry;
@@ -1070,6 +1230,7 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 	_, hadPortal := m.take(slug, Portal, false)
 	_, hadZrok := m.take(slug, Zrok, false)
 	_, hadQuick := m.take(slug, CFQuick, false)
+	_, hadExpose := m.take(slug, NetbirdExpose, false)
 	var res PublicStopResult
 	if hadFunnel {
 		if m.tailnet() == nil {
@@ -1142,6 +1303,18 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 			res.Stopped = append(res.Stopped, CFQuick)
 		}
 	}
+	switch n := m.netbirdNet(); {
+	case hadExpose && n == nil:
+		res.Unconfirmed = append(res.Unconfirmed, NetbirdExpose)
+	case n == nil:
+	case n.StopPublic(slug) != nil:
+		// Also without a route: a failed open may have left an expose session.
+		res.Unconfirmed = append(res.Unconfirmed, NetbirdExpose)
+	case hadExpose:
+		m.take(slug, NetbirdExpose, true)
+		m.pruneState(slug, NetbirdExpose)
+		res.Stopped = append(res.Stopped, NetbirdExpose)
+	}
 	if res.Stopped == nil {
 		res.Stopped = []ID{}
 	}
@@ -1194,7 +1367,7 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	m.mu.Unlock()
 
 	type hostRoutes struct {
-		local, tailscale, funnel, portal, zrok, cfquick bool
+		local, tailscale, funnel, portal, zrok, cfquick, netbird, expose bool
 	}
 	byHost := make(map[string]*hostRoutes)
 	// Current and redirect tsnet identities use the exact lifecycle slug as
@@ -1227,6 +1400,10 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			h.zrok = true
 		case CFQuick:
 			h.cfquick = true
+		case Netbird:
+			h.netbird = true
+		case NetbirdExpose:
+			h.expose = true
 		}
 	}
 	hosts := make([]string, 0, len(byHost))
@@ -1372,8 +1549,37 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		return err
 	}
 
+	// NetBird ports are retired with the flat: a deleted flat or an expired
+	// redirect does not keep a port or an expose session. The backend records
+	// its ports, so retiring a host it never served is a no-op.
 	for _, host := range hosts {
-		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal, Zrok, CFQuick)
+		owned := byHost[host]
+		n := m.netbirdNet()
+		if n == nil {
+			if owned.netbird || owned.expose {
+				errs = append(errs, fmt.Errorf("%w: netbird %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
+			} else if d, err := LinkedNetbird(); err == nil {
+				// No backend runs, but an earlier run may have recorded ports.
+				if err := d.RetireStored(m.netbirdDir, host); err != nil {
+					errs = append(errs, fmt.Errorf("netbird %s: release the recorded ports: %w", host, err))
+				}
+			}
+			continue
+		}
+		if err := n.RetirePublic(host); err != nil {
+			errs = append(errs, fmt.Errorf("%w: netbird-expose %s: %w", core.ErrPublicStopUnconfirmed, host, err))
+			continue
+		}
+		if err := n.RetirePrivate(host); err != nil {
+			errs = append(errs, fmt.Errorf("netbird %s: %w", host, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	for _, host := range hosts {
+		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal, Zrok, CFQuick, Netbird, NetbirdExpose)
 	}
 	for _, host := range hosts {
 		owned := byHost[host]
@@ -1401,10 +1607,10 @@ func (m *Manager) forgetRoutes(slug, host string, providers ...ID) {
 	}
 }
 
-// StopProviderRoutes stops only Private Tailscale registrations owned by slug.
+// StopProviderRoutes stops only Private Tailscale and NetBird registrations owned by slug.
 // Successful stops are forgotten; failed registrations remain available for retry.
 func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) error {
-	if id != Tailscale {
+	if id != Tailscale && id != Netbird {
 		return fmt.Errorf("unsupported private provider stop: %s", id)
 	}
 	if err := ctx.Err(); err != nil {
@@ -1423,6 +1629,22 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
+		}
+		if id == Netbird {
+			n := m.netbirdNet()
+			if n == nil {
+				errs = append(errs, ErrNotConfigured)
+				continue
+			}
+			if err := n.StopPrivate(r.host); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			m.mu.Lock()
+			delete(m.routes, k)
+			m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
+			m.mu.Unlock()
+			continue
 		}
 		if m.tailnet() == nil {
 			errs = append(errs, ErrNotConfigured)
@@ -1472,7 +1694,7 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 	m.mu.Lock()
 	routes := make(map[string]route)
 	for k, r := range m.routes {
-		if r.host == host && (r.provider == Local || r.provider == Tailscale) {
+		if r.host == host && (r.provider == Local || r.provider == Tailscale || r.provider == Netbird) {
 			routes[k] = *r
 		}
 	}
@@ -1482,6 +1704,12 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 		var err error
 		if r.provider == Local {
 			err = m.local.Stop(host)
+		} else if r.provider == Netbird {
+			if n := m.netbirdNet(); n != nil {
+				err = n.StopPrivate(host)
+			} else {
+				err = ErrNotConfigured
+			}
 		} else if m.tailnet() != nil {
 			err = m.tailnet().Stop(host)
 		} else {
