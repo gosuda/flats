@@ -28,15 +28,16 @@ type GuideItem struct {
 
 // GuideOut returns the requested guide pages.
 type GuideOut struct {
-	Items     []GuideItem `json:"items"`
-	Unknown   []string    `json:"unknown,omitempty" jsonschema:"requested items that do not exist"`
-	Available []string    `json:"available,omitempty" jsonschema:"every valid item; returned with topic.index or when an item is unknown"`
+	GuideRevision string      `json:"guide_revision"`
+	Items         []GuideItem `json:"items"`
+	Unknown       []string    `json:"unknown,omitempty" jsonschema:"requested items that do not exist"`
+	Available     []string    `json:"available,omitempty" jsonschema:"every valid item; returned with topic.index or when an item is unknown"`
 }
 
 func registerGuide(s *mcp.Server, svc *core.Service) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "guide",
-		Description: "Read Flats guidance on demand. topic.index routes by task; other items: topic.static, topic.server, " +
+		Description: "Read Flats guidance on demand. topic.index routes by task; other items: topic.client-update, topic.static, topic.server, " +
 			"topic.server.types, topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.manifest, " +
 			"topic.env-secrets, topic.approvals, topic.rollback-data, topic.preview-verify, topic.preview-check, topic.instructions, and " +
 			"refusal.<category> for a refused call. Pass several items at once. No side effects.",
@@ -67,7 +68,7 @@ func guide(items []string, uploadLimit int64) GuideOut {
 	if len(items) == 0 {
 		items = []string{"topic.index"}
 	}
-	out := GuideOut{Items: []GuideItem{}}
+	out := GuideOut{Items: []GuideItem{}, GuideRevision: runtimeref.GuideRevision(uploadLimit)}
 	seen := map[string]bool{}
 	refusalSeen := false
 	for _, raw := range items {
@@ -111,6 +112,7 @@ func guidePage(id string, uploadLimit int64) (string, bool) {
 
 func guideText(out GuideOut) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "Guide revision: %s\n\n", out.GuideRevision)
 	for i, it := range out.Items {
 		if i > 0 {
 			b.WriteString("\n")

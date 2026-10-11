@@ -6,6 +6,7 @@
 package runtimeref
 
 import (
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -38,7 +39,7 @@ var PreviewCheck string
 
 // TopicOrder lists every topic file under agent/topics in guide order.
 var TopicOrder = []string{
-	"index", "static", "design", "server", "server.types", "server.files", "server.db", "server.fetch", "server.limits",
+	"index", "client-update", "static", "design", "server", "server.types", "server.files", "server.db", "server.fetch", "server.limits",
 	"docs", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify", "preview-check",
 }
 
@@ -129,3 +130,20 @@ func Refusal(category string) (string, bool) {
 
 // RefusalCategories lists every documented refusal category in file order.
 func RefusalCategories() []string { return slices.Clone(categories) }
+
+// GuideRevision identifies all shipped guide content and rendered runtime limits.
+func GuideRevision(uploadLimit int64) string {
+	h := sha256.New()
+	add := func(name, body string) { fmt.Fprintf(h, "%d:%s%d:%s", len(name), name, len(body), body) }
+	for _, name := range TopicOrder {
+		add(name, topics[name])
+	}
+	add("refusal-intro", RefusalIntro)
+	for _, name := range categories {
+		add("refusal."+name, refusals[name])
+	}
+	add("runtime-reference", Markdown)
+	add("content-types-reference", ContentTypesMarkdown)
+	add("instructions", Instructions(uploadLimit))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}

@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 			})
 		}
 		h("GET /status", s.status)
+		h("GET /client", s.clientManifest)
 		h("GET /flats", s.listFlats)
 		h("GET /flats/{slug}", s.getFlat)
 		h("GET /flats/{slug}/document", s.getDocument)

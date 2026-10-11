@@ -346,3 +346,129 @@ func TestMCPBridgeAnswersEveryRequest(t *testing.T) {
 		t.Errorf("messages: %v", got)
 	}
 }
+
+func TestMCPBridgeInitializeIdentity(t *testing.T) {
+	for _, contentType := range []string{"application/json", "text/event-stream"} {
+		t.Run(contentType, func(t *testing.T) {
+			const reply = `{"jsonrpc":"2.0","id":7,"extension":{"n":9007199254740993},"result":{"protocolVersion":"2025-03-26","instructions":"server guidance","serverInfo":{"name":"flats","version":"server-version"},"capabilities":{"tools":{"listChanged":true}},"future":{"value":9007199254740993}}}`
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", contentType)
+				if contentType == "text/event-stream" {
+					fmt.Fprintf(w, "data: %s\n\n", reply)
+					return
+				}
+				io.WriteString(w, reply)
+			}))
+			defer srv.Close()
+			var out strings.Builder
+			identity := &bridgeIdentity{CLIVersion: "old-running-version", ClientContract: 1,
+				Executable: "/local/bin/flats", ServerURL: srv.URL}
+			bridge := &mcpBridge{endpoint: srv.URL, hc: srv.Client(), out: &out, identity: identity}
+			bridge.forward(context.Background(), []byte(`{"jsonrpc":"2.0","id":7,"method":"initialize"}`), nil)
+			var got, original map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(reply), &original); err != nil {
+				t.Fatal(err)
+			}
+			var result, originalResult map[string]json.RawMessage
+			if err := json.Unmarshal(got["result"], &result); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(original["result"], &originalResult); err != nil {
+				t.Fatal(err)
+			}
+			var instructions string
+			if err := json.Unmarshal(result["instructions"], &instructions); err != nil {
+				t.Fatal(err)
+			}
+			encoded, _ := json.Marshal(identity)
+			if !strings.HasPrefix(instructions, "server guidance\n\n") || !strings.Contains(instructions, string(encoded)) {
+				t.Fatalf("missing server or local instructions: %s", instructions)
+			}
+			delete(result, "instructions")
+			delete(originalResult, "instructions")
+			a, _ := json.Marshal(result)
+			b, _ := json.Marshal(originalResult)
+			if string(a) != string(b) || string(got["extension"]) != string(original["extension"]) {
+				t.Fatalf("server fields changed: %s", out.String())
+			}
+			if bridge.protocol != "2025-03-26" {
+				t.Fatalf("protocol lost: %s", bridge.protocol)
+			}
+		})
+	}
+}
+
+func TestMCPBridgeDoesNotAnnotateUnrelatedMessages(t *testing.T) {
+	cases := []struct {
+		name       string
+		message    string
+		initialize bool
+	}{
+		{name: "error", message: `{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"server failure"}}`, initialize: true},
+		{name: "notification", message: `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"hello"}}`, initialize: true},
+		{name: "ordinary result", message: `{"jsonrpc":"2.0","id":8,"result":{"instructions":"tool text"}}`},
+		{name: "invalid instructions", message: `{"jsonrpc":"2.0","id":7,"result":{"instructions":12}}`, initialize: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			bridge := &mcpBridge{out: &out, identity: &bridgeIdentity{CLIVersion: "test"}}
+			bridge.emit([]byte(tc.message), tc.initialize)
+			if strings.TrimSpace(out.String()) != tc.message {
+				t.Fatalf("message changed: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestMCPBridgeInitializationFactsAreLocal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var request rpcEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(request.ID) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-03-26","serverInfo":{"name":"remote","version":"different-server"},"capabilities":{},"instructions":"remote instructions"}}`, request.ID)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, done := startBridge(t, ctx, srv.URL)
+	instructions := session.InitializeResult().Instructions
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(executable)
+	if !strings.Contains(instructions, `"executable":`+string(encoded)) || !strings.Contains(instructions, `"server_url":"`+srv.URL+`"`) {
+		t.Fatalf("local identity missing: %s", instructions)
+	}
+	session.Close()
+	waitExit(t, done)
+	// The HTTP server itself supplies no local identity. It is added only by
+	// the bridge, never fabricated for a direct HTTP client.
+	resp, err := srv.Client().Post(srv.URL, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"initialize"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "executable") {
+		t.Fatalf("HTTP identity fabricated: %s", body)
+	}
+}

@@ -8,6 +8,7 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 
 | You want to | Read | Main tools |
 |---|---|---|
+| Check client compatibility or refresh CLI, skill and guidance | `topic.client-update` | `check_client`, `get_client_skill` |
 | Publish a static site or single-page app build | `topic.static`, `topic.manifest`, `topic.design` | `save_draft`, `open_preview`, `publish` |
 | Make a page look and read right (title, themes, phone width, assets) | `topic.design` | `save_draft` warnings, `open_preview` |
 | Build a server app (HTTP API, SQLite, file storage) | `topic.server`, then `topic.server.db`, `topic.server.files`, `topic.server.fetch` as needed, and `topic.server.limits` | same as static |

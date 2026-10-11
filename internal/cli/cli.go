@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/buildinfo"
+	"github.com/gosuda/flats/internal/clientstate"
 	"github.com/gosuda/flats/internal/launchd"
+	"github.com/gosuda/flats/internal/selfupdate"
 )
 
 // Serve runs the server (`flats serve`). It is wired by the server package;
@@ -55,16 +57,19 @@ const (
 
 // Env is the process environment of one invocation; tests replace parts.
 type Env struct {
-	Stdin          io.Reader
-	Stdout, Stderr io.Writer
-	Getenv         func(string) string
-	HTTP           *http.Client
-	Launchd        launchd.Runner // nil: the real launchctl
-	Home           string         // launchd home; "" = os.UserHomeDir
-	GOOS           string         // "" = runtime.GOOS
-	PollInterval   time.Duration  // logs --follow; 0 = 2s
-	InstallWait    time.Duration  // how long install waits for the server; 0 = 10s
-	ConfigDir      string         // client settings parent; "" = os.UserConfigDir
+	Stdin            io.Reader
+	Stdout, Stderr   io.Writer
+	Getenv           func(string) string
+	HTTP             *http.Client
+	Launchd          launchd.Runner         // nil: the real launchctl
+	Home             string                 // launchd home; "" = os.UserHomeDir
+	GOOS             string                 // "" = runtime.GOOS
+	PollInterval     time.Duration          // logs --follow; 0 = 2s
+	InstallWait      time.Duration          // how long install waits for the server; 0 = 10s
+	Executable       func() (string, error) // nil: os.Executable
+	ReleaseTransport http.RoundTripper      // release downloads only
+	CandidateProbe   func(context.Context, string) (selfupdate.Identity, error)
+	ConfigDir        string // client settings parent; "" = os.UserConfigDir
 }
 
 // OSEnv is the real process environment.
@@ -118,6 +123,9 @@ func init() {
 		{"mcp", "serve the host's MCP tools over stdio (for agent plugins)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print MCP setup for agent tools", "mcp-config [--url url]", (*app).mcpConfig},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
+		{"client", "check local client compatibility", "client check [--skill-file path]", (*app).clientCommand},
+		{"update", "update this standalone CLI (never share with a running foreground/custom server)", "update [--version tag]\n       Do not share the client path with a running foreground/custom Flats server; new workers may use the replaced binary immediately.", (*app).updateCommand},
+		{"skill", "sync a standalone skill (managed plugins must use their plugin manager)", "skill sync --output SKILL.md [--expected-sha256 hash]\n       Standalone files only; managed plugins must use their plugin manager.", (*app).skillCommand},
 		{"version", "print the flats version", "version", (*app).version},
 	}
 }
@@ -398,7 +406,10 @@ func (a *app) version(args []string) error {
 	}
 	b := buildinfo.Get()
 	if a.jsonOut {
-		a.writeJSON(b)
+		a.writeJSON(struct {
+			buildinfo.Info
+			ClientContract int `json:"client_contract"`
+		}{b, clientstate.ContractRevision})
 		return nil
 	}
 	// A release names its commit; a development version already is one.

@@ -50,6 +50,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := map[string]map[string]any{
+				"check_client": {}, "get_client_skill": {},
 				"list_flats": {}, "get_flat": {"slug": "census"}, "get_draft": {"slug": "census"}, "create_flat": {"slug": "separate"},
 				"save_version":          {"slug": "census", "expected_revision": 3, "files": []any{file("index.html", "NEW-DRAFT", "")}, "deploy": true},
 				"save_draft":            {"slug": "census", "expected_revision": 3, "files": []any{file("index.html", "NEW-DRAFT", "")}},

@@ -11,16 +11,22 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptrace"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gosuda/flats/internal/buildinfo"
+	"github.com/gosuda/flats/internal/clientstate"
 )
 
 // `flats mcp` lets an agent start Flats as a stdio MCP server, the one MCP
 // form Claude Code, Codex and Cursor plugins all launch the same way. It
 // relays each newline-delimited JSON-RPC message from stdin to the host's
 // Streamable HTTP endpoint and writes every message of the reply to stdout,
-// so the tools, resources and instructions are exactly the host's. The host
+// so tools and resources come from the host. Initialization instructions also
+// identify this running local bridge for client compatibility checks. The host
 // comes from --url, FLATS_URL or `flats connect`, never from the plugin.
 
 func (a *app) mcpBridge(args []string) error {
@@ -30,16 +36,34 @@ func (a *app) mcpBridge(args []string) error {
 	}
 	hc := *a.env.HTTP
 	hc.Timeout = 0 // a tool call may legitimately run long; stdin EOF or a signal ends it
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("identify running MCP bridge: %w", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return fmt.Errorf("resolve running MCP bridge path: %w", err)
+	}
 	b := &mcpBridge{
 		endpoint: strings.TrimRight(a.url, "/") + "/mcp",
 		hc:       &hc,
 		out:      a.env.Stdout,
+		identity: &bridgeIdentity{CLIVersion: buildinfo.Get().Version,
+			ClientContract: clientstate.ContractRevision, Executable: executable, ServerURL: a.url},
 	}
 	fmt.Fprintf(a.errw, "flats mcp: relaying to %s (%s)\n", b.endpoint, a.urlSource)
 	return b.run(a.ctx, a.env.Stdin)
 }
 
+type bridgeIdentity struct {
+	CLIVersion     string `json:"cli_version"`
+	ClientContract int    `json:"client_contract"`
+	Executable     string `json:"executable"`
+	ServerURL      string `json:"server_url"`
+}
+
 type mcpBridge struct {
+	identity *bridgeIdentity
 	endpoint string
 	hc       *http.Client
 
@@ -212,7 +236,7 @@ func (b *mcpBridge) forward(ctx context.Context, msg []byte, sent func()) {
 		if replyTo(data, env.ID) {
 			answered = true
 		}
-		b.emit(data, env.Method == "initialize")
+		b.emit(data, env.Method == "initialize" && replyTo(data, env.ID))
 	}
 	ctype, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	switch {
@@ -290,6 +314,9 @@ func replyTo(data, id json.RawMessage) bool {
 // emit writes one message as a single stdout line. An initialize reply
 // also records the negotiated protocol version for later requests.
 func (b *mcpBridge) emit(msg []byte, initialize bool) {
+	if initialize {
+		msg = b.withIdentity(msg)
+	}
 	var line bytes.Buffer
 	if err := json.Compact(&line, msg); err != nil {
 		return
@@ -310,6 +337,45 @@ func (b *mcpBridge) emit(msg []byte, initialize bool) {
 	b.outMu.Lock()
 	defer b.outMu.Unlock()
 	_, _ = b.out.Write(line.Bytes())
+}
+
+// withIdentity changes only the instructions of a successful initialize result.
+// RawMessage maps preserve unknown server fields and exact JSON number values.
+func (b *mcpBridge) withIdentity(msg []byte) []byte {
+	if b.identity == nil {
+		return msg
+	}
+	envelope := map[string]json.RawMessage{}
+	if json.Unmarshal(msg, &envelope) != nil {
+		return msg
+	}
+	if _, failed := envelope["error"]; failed {
+		return msg
+	}
+	result := map[string]json.RawMessage{}
+	if json.Unmarshal(envelope["result"], &result) != nil || result == nil {
+		return msg
+	}
+	var instructions string
+	if raw, exists := result["instructions"]; exists {
+		if json.Unmarshal(raw, &instructions) != nil {
+			return msg
+		}
+	}
+	identity, err := json.Marshal(b.identity)
+	if err != nil {
+		return msg
+	}
+	instructions += "\n\nRunning local Flats MCP bridge (JSON): " + string(identity) +
+		". Pass cli_version and client_contract to check_client. This process keeps this identity until reconnect; " +
+		"a different shell executable is not this bridge. Reconcile server_url with the intended host."
+	result["instructions"], _ = json.Marshal(instructions)
+	envelope["result"], _ = json.Marshal(result)
+	updated, err := json.Marshal(envelope)
+	if err != nil {
+		return msg
+	}
+	return updated
 }
 
 func (b *mcpBridge) emitError(id json.RawMessage, code int, message string) {

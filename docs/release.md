@@ -314,3 +314,43 @@ not carried over from historical defaults; see
 Install a specific release with `--version v1.2.3`. Downgrading across a data
 migration is not supported; restore the backup taken before the upgrade.
 `flats uninstall` removes the service and keeps the data.
+
+## Updating a client
+
+On the agent machine, inspect compatibility with the selected server and then
+explicitly update if required:
+
+```sh
+flats --url https://flats.example.ts.net --json client check
+flats --url https://flats.example.ts.net --json update
+```
+
+`flats update` compares client contract revisions. A compatible CLI is a no-op;
+an incompatible CLI targets the connected server's exact published release.
+It never substitutes latest for a development build or unavailable asset.
+`flats --json update --version v1.2.3` explicitly selects an official release,
+including a downgrade, without a server connection; check compatibility after
+that installation. Results report the path, version, direction and pending
+reconnection, not a claim that an active bridge has already changed.
+
+The updater downloads the platform archive and checksums from gosuda/flats on
+GitHub over HTTPS, verifies SHA-256 and the candidate's version/contract, then
+atomically replaces the invoking executable. The checksum provides consistency
+with that publisher; it is not independent signature verification. Defaults
+also recheck the server target and contract immediately before replacement.
+A failed check/download before replacement preserves the original binary;
+post-replacement durability errors may already have installed new bytes.
+
+It refuses paths resolving through symlinks, known package-managed and temporary
+build paths, and binaries referenced by the installed Flats launchd/systemd
+service. Use the owning installation manager or a separate client installation.
+Custom/foreground servers cannot be universally detected: do not update a path
+shared with one, because newly spawned workers can use the replacement
+immediately. No service is installed or restarted and no remote server is
+upgraded. Existing MCP processes keep their old code until reconnected.
+
+Maintainers bump the client contract only for incompatible local behavior,
+not every release. Bootstrap changes require increasing the visible revision
+and plugin metadata version together. The server embeds that exact skill and
+hashes it separately; guides have their own content revision. Review the
+[agent update design](spec/agent-self-update.md) when changing this contract.

@@ -177,8 +177,12 @@ Without the plugin, register the Streamable HTTP endpoint
 each client. [Connecting agents](docs/agents.md) covers Cursor, remote hosts
 and llms.txt.
 
-The MCP instructions stay short and send the agent to the read-only `guide`
-tool, whose topics live in [`docs/agent/`](docs/agent).
+The agent starts each task with read-only `check_client`, then reads the current
+server `guide`. It can identify stale local resources and explicitly update
+its CLI with `flats update` or a standalone skill with `flats skill sync`.
+Managed plugins stay under their agent's plugin manager. Updating files does
+not reload an active MCP process: reconnect and recheck. See
+[Keeping clients current](docs/agents.md#keeping-clients-current).
 
 For the whole server contract in one document, read resource
 `flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.
