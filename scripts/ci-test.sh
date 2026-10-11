@@ -31,16 +31,29 @@ docs_soak='^(TestConflictPrivacyAndRollbackStorageBudgets|TestPublicDocumentRead
 # rate limit that refills over time.
 docs_budget='^(TestMaximumRewriteActivationBudget|TestLargeDocumentEditAndPingBudgets|TestLargeDisjointActivation|TestFullRewriteActivation|TestAgentEditManyBlocksWithinDeadline|TestVisitorHealthIsCheapAndCannotBlockCommit|Test100KiBDocumentTimings|TestUnauthorizedUpdatesPreserveWriterBudget|TestConnectionInputLimitPreservesOtherWriter|TestAuthorizedUpdatesConsumeWriterBudget)$'
 
+# The release workflow runs this script from main against a tag's source, and
+# an old tag may predate a package. Its shards then have nothing to run.
+need() {
+	[ -d "$1" ] || {
+		echo "$1 is not in this source; nothing to run" >&2
+		exit 0
+	}
+}
+
 case "$shard" in
-runtime-soak) exec go test "$@" -run "$runtime_soak" ./internal/runtime ;;
-runtime-codec) exec go test "$@" -run "$runtime_codec" ./internal/runtime ;;
-runtime) exec go test "$@" -skip "$runtime_soak|$runtime_codec" ./internal/runtime ;;
-docs-soak) exec go test "$@" -run "$docs_soak" ./internal/apps/docs ;;
-docs-budget) exec go test "$@" -run "$docs_budget" ./internal/apps/docs ;;
-docs) exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
+runtime-soak) need internal/runtime && exec go test "$@" -run "$runtime_soak" ./internal/runtime ;;
+runtime-codec) need internal/runtime && exec go test "$@" -run "$runtime_codec" ./internal/runtime ;;
+runtime) need internal/runtime && exec go test "$@" -skip "$runtime_soak|$runtime_codec" ./internal/runtime ;;
+docs-soak) need internal/apps/docs && exec go test "$@" -run "$docs_soak" ./internal/apps/docs ;;
+docs-budget) need internal/apps/docs && exec go test "$@" -run "$docs_budget" ./internal/apps/docs ;;
+docs) need internal/apps/docs && exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
 other)
-	# shellcheck disable=SC2046 # one argument per package path.
-	exec go test "$@" $(go list ./... | grep -vx -e "$module/internal/runtime" -e "$module/internal/apps/docs")
+	# Separate assignments, so set -e stops on a failing go list instead of
+	# testing no packages.
+	all=$(go list ./...)
+	packages=$(printf '%s\n' "$all" | grep -vx -e "$module/internal/runtime" -e "$module/internal/apps/docs")
+	# shellcheck disable=SC2086 # one argument per package path.
+	exec go test "$@" $packages
 	;;
 *)
 	echo "unknown shard: $shard" >&2
