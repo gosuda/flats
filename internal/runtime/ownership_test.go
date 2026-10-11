@@ -7,6 +7,7 @@ import (
 )
 
 func TestLargeHostAndCodecOwnership(t *testing.T) {
+	t.Parallel()
 	count := 50
 	if os.Getenv("FLATS_FULL_SOAK") == "1" {
 		count = 200
@@ -17,6 +18,7 @@ func TestLargeHostAndCodecOwnership(t *testing.T) {
 		`c.length(text);c.digest(text);c.decode(base64);c.encode(bytes);c.textEncoder.encode(text);c.textDecoder.decode(bytes)`,
 	} {
 		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
 			code := fmt.Sprintf(`const text="x".repeat(1048576), c=__flats_docsCodec, bytes=c.textEncoder.encode(text),base64=c.encode(bytes); export default {fetch(request,env){for(let i=0;i<10;i++){%s;}return new Response("ok");}};`, operation)
 			f := mustStart(t, newManager(t), "ownership", map[string]string{"index.js": code}, "index.js", nil)
 			for i := 0; i < count; i += 10 {
@@ -31,6 +33,7 @@ func TestLargeHostAndCodecOwnership(t *testing.T) {
 }
 
 func TestLargeResponseOwnership(t *testing.T) {
+	t.Parallel()
 	f := mustStart(t, newManager(t), "large-response", map[string]string{"index.js": `const text="x".repeat(1048576);export default {fetch(){return new Response(text)}};`}, "index.js", nil)
 	for i := 0; i < 100; i++ {
 		r := f.do(t, "GET", "/", "")

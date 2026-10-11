@@ -163,6 +163,7 @@ func edit(t *testing.T, s *socket, id, u string) map[string]any {
 	return s.next(t, "ack")
 }
 func TestAppRoutesAndSeed(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	if status, b, _ := a.getHeaders(t, "/_docs/healthz", http.Header{"X-Flats-Health": {"1"}}); status != 200 || b != "ok" {
 		t.Fatal(status, b)
@@ -193,6 +194,7 @@ func TestAppRoutesAndSeed(t *testing.T) {
 	}
 }
 func TestConcurrentCommitResendAndPersistence(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	a := startApp(t, data, initialText, "v1")
 	f := fixture(t)
@@ -239,6 +241,7 @@ func TestConcurrentCommitResendAndPersistence(t *testing.T) {
 	z.rejected(t, "invalid_update")
 }
 func TestReadonlyAndInvalidFrames(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	f := fixture(t)
 	for _, access := range []string{"public", "", "unknown"} {
@@ -262,6 +265,7 @@ func TestReadonlyAndInvalidFrames(t *testing.T) {
 	}
 }
 func TestCompactionAndActivationOverlap(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	old := startApp(t, data, initialText, "v1")
 	f := fixture(t)
@@ -314,6 +318,7 @@ func TestCompactionAndActivationOverlap(t *testing.T) {
 	}
 }
 func TestDivergedAfterOlderDataRestore(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	a := startApp(t, data, initialText, "v1")
 	a.document(t)
@@ -344,6 +349,7 @@ func TestDivergedAfterOlderDataRestore(t *testing.T) {
 	}
 }
 func TestFailedAppendDoesNotAckOrPersist(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	s := connect(t, a.srv.URL, "private")
 	s.hello(t, nil)
@@ -372,6 +378,7 @@ func TestFailedAppendDoesNotAckOrPersist(t *testing.T) {
 }
 
 func TestPresenceIdentityAndRemoval(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	x := connect(t, a.srv.URL, "private")
 	w := x.hello(t, nil)
@@ -394,6 +401,7 @@ func TestPresenceIdentityAndRemoval(t *testing.T) {
 }
 
 func TestFailedCommitDoesNotAckOrPersist(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	s := connect(t, a.srv.URL, "private")
 	s.hello(t, nil)
@@ -427,6 +435,7 @@ func TestFailedCommitDoesNotAckOrPersist(t *testing.T) {
 }
 
 func TestIdleOlderWorkerCannotApplyObsoleteSource(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	old := startApp(t, data, "# Obsolete\nold source\n", "v1")
 	newer := startApp(t, data, "# Active\nnew source\n", "v2")
@@ -441,6 +450,7 @@ func TestIdleOlderWorkerCannotApplyObsoleteSource(t *testing.T) {
 	}
 }
 func TestRemovedDocumentHiddenKeepsStoredState(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	old := startApp(t, data, initialText, "v1")
 	if status, _, _ := old.get(t, "/_docs/api/document?doc=nested/other.md"); status != 200 {
@@ -467,6 +477,7 @@ func TestRemovedDocumentHiddenKeepsStoredState(t *testing.T) {
 }
 
 func TestAcknowledgedEditSurvivesKilledWorker(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	a := startApp(t, data, initialText, "v1")
 	x := connect(t, a.srv.URL, "private")
@@ -489,6 +500,7 @@ func TestAcknowledgedEditSurvivesKilledWorker(t *testing.T) {
 }
 
 func TestRollbackReappliesObservedHashOnce(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	v1 := startApp(t, data, initialText, "v1")
 	x := connect(t, v1.srv.URL, "private")
@@ -513,6 +525,7 @@ func TestRollbackReappliesObservedHashOnce(t *testing.T) {
 }
 
 func TestDocsResponsesIgnoreApplicationEnvironment(t *testing.T) {
+	t.Parallel()
 	environment := map[string]string{"MODE": "ordinary-doc-canary", "TOKEN": "secret-doc-canary"}
 	a := startAppWithEnvironment(t, t.TempDir(), initialText, "env-v1", environment)
 	for _, access := range []string{"private", "public"} {

@@ -21,6 +21,11 @@ var cacheRoot string
 var managerOnce sync.Once
 var sharedManager *flatsruntime.Manager
 
+// Tests call t.Parallel unless they use t.Setenv or assert a wall-clock
+// latency, throughput or activation budget. Go runs those serial tests first
+// and starts the parallel tests after them, so no other test of this package
+// competes with a budget. A generous bound on a server-side timeout (seconds
+// of slack) may run in parallel: contention only delays the response.
 func TestMain(m *testing.M) {
 	if os.Getenv("FLATS_DOCS_TEST_WORKER") == "1" {
 		fmt.Fprintf(os.Stderr, "{\"t\":\"log\",\"level\":\"info\",\"msg\":\"docs test worker pid:%d\"}\n", os.Getpid())
@@ -51,6 +56,7 @@ func manager(t *testing.T) *flatsruntime.Manager {
 	return sharedManager
 }
 func TestYjsQuickJSFeasibility(t *testing.T) {
+	t.Parallel()
 	start := time.Now()
 	srv := startYjsTestModule(t, "spike.js")
 	r, err := http.Get(srv.URL)

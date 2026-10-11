@@ -9,6 +9,7 @@ import (
 )
 
 func TestRuntimeReferenceHostFilenameLimit(t *testing.T) {
+	t.Parallel()
 	d := newDataStore(t.TempDir())
 	defer d.Close()
 	if err := d.filePut("seed", "x"); err != nil {
@@ -38,6 +39,7 @@ func TestRuntimeReferenceHostFilenameLimit(t *testing.T) {
 }
 
 func TestRuntimeReferenceListCutoffBeforeSort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	d := newDataStore(dir)
 	defer d.Close()
@@ -67,6 +69,7 @@ func TestRuntimeReferenceListCutoffBeforeSort(t *testing.T) {
 }
 
 func TestRuntimeReferenceFilesystemIdentity(t *testing.T) {
+	t.Parallel()
 	for _, pair := range []struct{ name, first, other string }{
 		{"case", "a", "A"},
 		{"normalization", "caf\u00e9", "cafe\u0301"},

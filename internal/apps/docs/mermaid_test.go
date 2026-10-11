@@ -15,6 +15,7 @@ import (
 // The client loads Mermaid from a content-hashed path that the worker serves
 // by importing the separate dist module on demand.
 func TestMermaidAssetServedLazily(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	_, client, _ := a.get(t, "/_docs/assets/client.js")
 	url := regexp.MustCompile(`/_docs/assets/mermaid-([0-9a-f]{16})\.js`).FindStringSubmatch(client)
@@ -48,6 +49,7 @@ func TestMermaidAssetServedLazily(t *testing.T) {
 // Execute the actual QuickJS worker: binary response serialization must preserve
 // every gzip byte, including values that are not valid UTF-8.
 func TestMermaidAssetEncoding(t *testing.T) {
+	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	_, clientJS, _ := a.get(t, "/_docs/assets/client.js")
 	asset := regexp.MustCompile(`/_docs/assets/mermaid-([0-9a-f]{16})\.js`).FindStringSubmatch(clientJS)

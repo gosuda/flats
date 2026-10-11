@@ -25,6 +25,7 @@ import (
 // verifies binary/HTTP bridging without bypassing the production egress client
 // or making external requests; transport security is tested in internal/egress.
 func TestOutboundFetchPrelude(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	rt, err := qjs.New(qjs.Option{Context: ctx, CloseOnContextDone: true})
@@ -125,6 +126,7 @@ func TestOutboundFetchPrelude(t *testing.T) {
 }
 
 func TestOutboundFetchDeniedAndLimits(t *testing.T) {
+	t.Parallel()
 	code := `export default { async fetch(request) {
  const results = [];
  for (let i = 0; i < 17; i++) {
@@ -156,6 +158,7 @@ func TestOutboundFetchDeniedAndLimits(t *testing.T) {
 }
 
 func TestOutboundFetchUnsupportedOptions(t *testing.T) {
+	t.Parallel()
 	code := `export default { async fetch() {
  const cases = [
   {redirect: "follow"}, {signal: {}}, {cache: "no-store"}, {body: {}, method: "POST"},
@@ -182,6 +185,7 @@ func TestOutboundFetchUnsupportedOptions(t *testing.T) {
 }
 
 func TestOutboundFetchDeniedDuringModuleLoad(t *testing.T) {
+	t.Parallel()
 	_, err := startFlat(t, newManager(t), "fetch-startup", map[string]string{"index.js": `await fetch("https://api.example.test"); export default { fetch() { return new Response("ok"); } };`}, "index.js", nil)
 	if err == nil || !strings.Contains(err.Error(), "only available inside") {
 		t.Fatalf("startup fetch: %v", err)
@@ -189,6 +193,7 @@ func TestOutboundFetchDeniedDuringModuleLoad(t *testing.T) {
 }
 
 func TestOutboundFetchHostLifecycle(t *testing.T) {
+	t.Parallel()
 	client, err := egress.New(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -227,6 +232,7 @@ func (e *contextEngine) handle(ctx context.Context, _ []byte) ([]byte, error) {
 func (*contextEngine) close() {}
 
 func TestWorkerSeparatesRequestCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	eng := &contextEngine{}
@@ -239,6 +245,7 @@ func TestWorkerSeparatesRequestCancellation(t *testing.T) {
 }
 
 func TestOutboundFetchServerExample(t *testing.T) {
+	t.Parallel()
 	example, err := os.ReadFile("../../examples/external-api/server.js")
 	if err != nil {
 		t.Fatal(err)
@@ -275,6 +282,7 @@ func TestOutboundFetchServerExample(t *testing.T) {
 // Invalid requests to a granted public origin stop before DNS/dial. Distinct
 // errors prove real Manager->worker policy propagation without external I/O.
 func TestOutboundFetchWorkerPermissions(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"index.js": `export default { async fetch() {
   const cases = [
@@ -338,6 +346,7 @@ func TestOutboundFetchWorkerPermissions(t *testing.T) {
 }
 
 func TestOutboundFetchCancellationKeepsVMAndWrites(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"index.js": `let hits = 0;
  export default { async fetch(request, env) {
@@ -391,6 +400,7 @@ func TestOutboundFetchCancellationKeepsVMAndWrites(t *testing.T) {
 }
 
 func TestOutboundContextDisconnectAfterCallStarts(t *testing.T) {
+	t.Parallel()
 	vmCtx, stopVM := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopVM()
 	visitor, disconnect := context.WithCancel(context.Background())
@@ -428,8 +438,10 @@ func (f *largeFetchFixture) Fetch(_ context.Context, req egress.Request) (egress
 func (*largeFetchFixture) Close() {}
 
 func TestOutboundFetchLoopOwnershipCycleCollection(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{1 << 20, 4 << 20} {
 		t.Run(fmt.Sprintf("response-%d-MiB", size>>20), func(t *testing.T) {
+			t.Parallel()
 			dir := t.TempDir()
 			writeFiles(t, dir, map[string]string{"index.js": strings.ReplaceAll(`let hits=0; export default {async fetch() {
  const graph={}; graph.self=graph;

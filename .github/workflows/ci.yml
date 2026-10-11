@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [runtime-soak, runtime, docs-soak, docs, other]
+        shard: [runtime-soak, runtime, docs-soak, docs-budget, docs, other]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

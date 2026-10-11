@@ -84,11 +84,15 @@ func TestVisitorHealthIsCheapAndCannotBlockCommit(t *testing.T) {
 }
 
 func TestConflictPrivacyAndRollbackStorageBudgets(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		characters int
 	}{{"count", 90000}, {"bytes", 100000}} {
-		t.Run(tc.name, func(t *testing.T) { testConflictRollback(t, tc.characters) })
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testConflictRollback(t, tc.characters)
+		})
 	}
 }
 func testConflictRollback(t *testing.T, characters int) {
@@ -203,6 +207,7 @@ func testConflictRollback(t *testing.T, characters int) {
 }
 
 func TestRejectedTextMutationReloadsWithoutDisconnectingPeers(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("a", 1024*1024-10)
 	a := startApp(t, t.TempDir(), text, "v1")
 	bad, good := connect(t, a.srv.URL, "private"), connect(t, a.srv.URL, "private")

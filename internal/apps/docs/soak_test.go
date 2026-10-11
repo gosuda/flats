@@ -40,6 +40,7 @@ func clientEdits(t *testing.T, welcome map[string]any, count int) []updateFixtur
 }
 
 func TestDocumentOwnershipSoak(t *testing.T) {
+	t.Parallel()
 	full := os.Getenv("FLATS_FULL_SOAK") == "1"
 	for _, tc := range []struct {
 		name, text string
@@ -50,6 +51,7 @@ func TestDocumentOwnershipSoak(t *testing.T) {
 		{"1MiBKorean", strings.Repeat("한", (1024*1024-4096)/3), 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			count := tc.count
 			if !full {
 				count = 60
@@ -76,6 +78,7 @@ func TestDocumentOwnershipSoak(t *testing.T) {
 }
 
 func TestPublicDocumentReadSoak(t *testing.T) {
+	t.Parallel()
 	count := 60
 	if os.Getenv("FLATS_FULL_SOAK") == "1" {
 		count = 200

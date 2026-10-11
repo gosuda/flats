@@ -8,8 +8,10 @@ import (
 // A bounded live heap must remain usable when dead request-local graphs contain
 // cycles. The acyclic control separates reference counting from cycle collection.
 func TestRequestCycleCollection(t *testing.T) {
+	t.Parallel()
 	for _, cyclic := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cyclic=%t", cyclic), func(t *testing.T) {
+			t.Parallel()
 			link := ""
 			if cyclic {
 				link = "graph.self=graph;"

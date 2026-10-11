@@ -9,6 +9,7 @@ import (
 // The published browser check script must at least parse as JavaScript. It
 // needs a DOM, so it is compiled inside a function that is never called.
 func TestPreviewCheckScriptParses(t *testing.T) {
+	t.Parallel()
 	code := "function previewCheck() {\n" + runtimeref.PreviewCheck + "\n}\n" +
 		`export default { fetch() { return new Response(typeof previewCheck); } };`
 	f := mustStart(t, newManager(t), "preview-check", map[string]string{"index.js": code}, "index.js", nil)

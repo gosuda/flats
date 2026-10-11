@@ -5,6 +5,7 @@ import (
 )
 
 func TestDocsCodecByteBudget(t *testing.T) {
+	t.Parallel()
 	code := `export default {fetch(){
  const c=globalThis.__flats_docsCodec;
  const fails=f=>{try{f();return false}catch{return true}};

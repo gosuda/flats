@@ -226,6 +226,7 @@ websocket: {
 // declared, the synchronous bindings must return the declared shapes, and
 // every global must be declared, documented as unsupported or a language global.
 func TestTypesMatchRuntime(t *testing.T) {
+	t.Parallel()
 	d := parseDeclarations(t, runtimeref.Types)
 	f := mustStart(t, newManager(t), "types", map[string]string{"index.js": typesProbe}, "index.js",
 		map[string]string{"API_KEY": "k", "EMPTY": ""})
@@ -361,6 +362,7 @@ func TestTypesMatchRuntime(t *testing.T) {
 // Every env.DB/env.FILES member the prose topics mention is declared, and every
 // declared member is documented in its topic.
 func TestTypesMatchTopics(t *testing.T) {
+	t.Parallel()
 	d := parseDeclarations(t, runtimeref.Types)
 	for _, c := range []struct{ binding, typ, topic string }{
 		{"env.DB", "Database", "server.db"},
@@ -403,6 +405,7 @@ func (*recordingFetch) Close() {}
 // The declarations accept the incoming request as a fetch input: it is a
 // Request instance, so fetch copies its method, URL, headers and body.
 func TestTypesIncomingRequestAsFetchInput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"index.js": `export default { async fetch(request) {
  const a = await fetch(request), b = await fetch(request, {method: "PUT", headers: {"x-b": "1"}});

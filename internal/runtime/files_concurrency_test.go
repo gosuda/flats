@@ -47,6 +47,7 @@ func assertFilesAccounting(t *testing.T, d *dataStore) {
 }
 
 func TestConcurrentFilesQuota(t *testing.T) {
+	t.Parallel()
 	d := newDataStore(t.TempDir())
 	defer d.Close()
 	root, err := d.filesRoot(true)
@@ -79,6 +80,7 @@ func TestConcurrentFilesQuota(t *testing.T) {
 }
 
 func TestConcurrentFilesSameKey(t *testing.T) {
+	t.Parallel()
 	d := newDataStore(t.TempDir())
 	defer d.Close()
 	if err := d.filePut("shared", "initial"); err != nil {
@@ -93,6 +95,7 @@ func TestConcurrentFilesSameKey(t *testing.T) {
 }
 
 func TestConcurrentFilesPutDelete(t *testing.T) {
+	t.Parallel()
 	d := newDataStore(t.TempDir())
 	defer d.Close()
 	if err := d.filePut("shared", "initial"); err != nil {

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +25,12 @@ import (
 
 const testWorkerEnv = "FLATS_TEST_WORKER"
 
+// Tests call t.Parallel unless they use t.Setenv or assert a wall-clock
+// latency, throughput or activation budget. Go runs those serial tests first
+// and starts the parallel tests after them, so no other test of this package
+// competes with a budget. A generous bound on a server-side timeout (seconds
+// of slack) may run in parallel: contention only delays the response.
+//
 // TestMain doubles as the worker binary: Manager re-executes this test
 // binary with FLATS_TEST_WORKER=1 (the only variable in its environment).
 func TestMain(m *testing.M) {
@@ -50,8 +57,10 @@ func TestMain(m *testing.M) {
 }
 
 var (
-	cacheOnce sync.Once
-	cacheRoot string
+	cacheOnce  sync.Once
+	cacheRoot  string
+	cacheErr   error
+	managerSeq atomic.Int64
 )
 
 func newManager(t *testing.T) *Manager {
@@ -60,16 +69,28 @@ func newManager(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A disposable, process-private DataDir shares the compilation cache
-	// across tests without touching another test run or operator state.
+	// A disposable, process-private root shares the compilation cache across
+	// tests without touching another test run or operator state.
 	cacheOnce.Do(func() {
-		var err error
-		cacheRoot, err = os.MkdirTemp("/tmp", "flats-runtime-test-")
-		if err != nil {
-			t.Fatal(err)
+		cacheRoot, cacheErr = os.MkdirTemp("/tmp", "flats-runtime-test-")
+		if cacheErr == nil {
+			cacheErr = os.Mkdir(filepath.Join(cacheRoot, "cache"), 0o700)
 		}
 	})
-	return &Manager{DataDir: cacheRoot, Exe: exe, Env: []string{testWorkerEnv + "=1"}, Logf: t.Logf}
+	if cacheErr != nil {
+		t.Fatal(cacheErr)
+	}
+	// Each Manager gets its own DataDir because starting one removes the
+	// sockets in DataDir/run, which would break workers of parallel tests.
+	// DataDir/cache links to the shared compilation cache.
+	dir := filepath.Join(cacheRoot, fmt.Sprintf("m%d", managerSeq.Add(1)))
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
+		t.Fatal(err)
+	}
+	return &Manager{DataDir: dir, Exe: exe, Env: []string{testWorkerEnv + "=1"}, Logf: t.Logf}
 }
 
 type logs struct {
@@ -203,6 +224,7 @@ func (f *flat) json(t *testing.T, path string, v any) {
 }
 
 func TestFetchResponse(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "hello", map[string]string{
 		"index.js": `
@@ -328,6 +350,7 @@ export default {
 }`
 
 func TestDBPersistsAcrossRequestsAndRestart(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "db", map[string]string{"index.js": dbApp}, "index.js", nil)
 	for i := 0; i < 3; i++ {
@@ -429,6 +452,7 @@ func TestDBPersistsAcrossRequestsAndRestart(t *testing.T) {
 }
 
 func TestFiles(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "files", map[string]string{"index.js": `
 export default {
@@ -514,6 +538,7 @@ func urlQuery(s string) string {
 }
 
 func TestSecretsInEnv(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "env", map[string]string{"index.js": `
 export default { fetch(request, env) { return Response.json({ key: env.API_KEY, mode: env.MODE, keys: Object.keys(env).sort() }); } }`},
@@ -546,6 +571,7 @@ export default {
 }`
 
 func TestInfiniteLoopTimesOut(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "loop", map[string]string{"index.js": limitsApp}, "index.js", nil)
 	if r := f.get(t, "/"); r.status != 200 {
@@ -571,6 +597,7 @@ func TestInfiniteLoopTimesOut(t *testing.T) {
 }
 
 func TestMemoryBombAndRecursion(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "bomb", map[string]string{"index.js": limitsApp}, "index.js", nil)
 	for _, path := range []string{"/bomb", "/str", "/recurse", "/bomb"} {
@@ -620,6 +647,7 @@ func TestMemoryBombAndRecursion(t *testing.T) {
 }
 
 func TestSyntaxErrorFailsStart(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	_, err := startFlat(t, m, "bad", map[string]string{"index.js": "export default {\n  fetch(request) {\n    return new Response(\"x\"\n  }\n}\n"}, "index.js", nil)
 	if err == nil || !strings.Contains(err.Error(), "SyntaxError") || !strings.Contains(err.Error(), "index.js") {
@@ -789,6 +817,7 @@ export default {
 }
 
 func TestWebSocketEcho(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "ws", map[string]string{"index.js": `
 const peers = new Set();
@@ -855,6 +884,7 @@ export default {
 }
 
 func TestWASIHandler(t *testing.T) {
+	t.Parallel()
 	goBin, err := exec.LookPath("go")
 	if err != nil {
 		t.Skip("no go toolchain to build a wasip1 guest")
@@ -1063,6 +1093,7 @@ export default {
 }
 
 func TestStopWhileServing(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "stop", map[string]string{"index.js": `export default { fetch() { return new Response("ok"); } }`}, "index.js", nil)
 	if r := f.get(t, "/"); r.status != 200 {
@@ -1102,6 +1133,7 @@ export default {
 // Sleeps (os.sleep, os.setTimeout) and long SQL statements are stopped by the
 // request timeout like busy loops; wazero's host sleep ignores the context.
 func TestTimeoutStopsSleepsAndSQL(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	m.Timeout = 2 * time.Second
 	f := mustStart(t, m, "sleepy", map[string]string{"index.js": hardeningApp}, "index.js", nil)
@@ -1138,6 +1170,7 @@ func TestTimeoutStopsSleepsAndSQL(t *testing.T) {
 }
 
 func TestSQLiteHardening(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "sqlhard", map[string]string{"index.js": hardeningApp}, "index.js", nil)
 	tmp := t.TempDir()
@@ -1187,6 +1220,7 @@ func TestSQLiteHardening(t *testing.T) {
 // wazero's directory mount follows symlinks, so a symlink in the version
 // files would expose a host file: the worker refuses to start.
 func TestVersionSymlinkRefused(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	os.WriteFile(outside, []byte("OUTSIDE-SECRET"), 0o644)
@@ -1212,6 +1246,7 @@ export default { fetch() { return new Response(String(std.loadFile("/link.txt"))
 
 // A worker that fails to start leaves no socket behind.
 func TestFailedStartRemovesSocket(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	glob := filepath.Join(m.DataDir, "run", "w*.sock")
 	before, _ := filepath.Glob(glob)
@@ -1227,6 +1262,7 @@ func TestFailedStartRemovesSocket(t *testing.T) {
 // serves every other connection of the flat (closing its connection used to
 // wait for the blocked writer).
 func TestWebSocketSlowClient(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "wsslow", map[string]string{"index.js": `
 export default {
@@ -1280,6 +1316,7 @@ export default {
 }
 
 func TestCryptoAndForwardedScheme(t *testing.T) {
+	t.Parallel()
 	m := newManager(t)
 	f := mustStart(t, m, "cryptoflat", map[string]string{
 		"index.js": `

@@ -19,8 +19,10 @@ func nearCapCount(full int) int {
 }
 
 func TestNearCapCycleCollection(t *testing.T) {
+	t.Parallel()
 	for _, caught := range []bool{false, true} {
 		t.Run(fmt.Sprintf("catch=%t", caught), func(t *testing.T) {
+			t.Parallel()
 			body := `const graph={text:"x".repeat(3*1024*1024)};graph.self=graph;return new Response(String(++calls));`
 			if caught {
 				body = `try {` + body + `} catch(e) {return new Response("caught "+e.name);}`
@@ -40,6 +42,7 @@ func TestNearCapCycleCollection(t *testing.T) {
 }
 
 func TestNearCapLiveStateCycleCollection(t *testing.T) {
+	t.Parallel()
 	code := `const state=Array.from({length:36},()=>"s".repeat(1024*1024));let calls=0;
 export default {fetch(){const graph={text:"x".repeat(1024*1024)};graph.self=graph;
 return new Response(state.length+":"+state[0].length+":"+state[35].length+":"+(++calls));}};`
@@ -56,6 +59,7 @@ return new Response(state.length+":"+state[0].length+":"+state[35].length+":"+(+
 }
 
 func TestNearCapWebSocketCycleCollection(t *testing.T) {
+	t.Parallel()
 	code := `let calls=0;export default {websocket:{message(ws){const graph={text:"x".repeat(3*1024*1024)};graph.self=graph;ws.send(String(++calls));}}};`
 	f := mustStart(t, newManager(t), "near-cap-ws", map[string]string{"index.js": code}, "index.js", nil)
 	addr := strings.TrimPrefix(f.srv.URL, "http://")

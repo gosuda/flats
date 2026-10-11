@@ -11,6 +11,7 @@ import (
 // These run the actual published snippets, so doc edits cannot silently break
 // the example or substitute Promise/byte-store semantics for the real API.
 func TestRuntimeReferenceExamples(t *testing.T) {
+	t.Parallel()
 	parts := strings.Split(runtimeref.Markdown, "```js\n")
 	if len(parts) != 3 {
 		t.Fatal("expected the server and FILES binary examples")
@@ -50,6 +51,7 @@ absentDelete, synchronous: put === undefined, unicode: env.FILES.get("unicode"),
 // Verify the documented boundary cases through the published JS API, including
 // host I/O exceptions rather than merely matching words in the reference.
 func TestRuntimeReferenceFilesystemAndJSON(t *testing.T) {
+	t.Parallel()
 	code := `export default { fetch(request, env) {
  env.FILES.put("parent", "x");
  const throws = f => { try { f(); return false; } catch (_) { return true; } };
@@ -76,6 +78,7 @@ func TestRuntimeReferenceFilesystemAndJSON(t *testing.T) {
 }
 
 func TestRuntimeReferenceUnsupportedGlobals(t *testing.T) {
+	t.Parallel()
 	code := `export default { fetch() {
  return Response.json([typeof TextEncoder, typeof TextDecoder,
  typeof structuredClone, typeof Blob, typeof AbortController,

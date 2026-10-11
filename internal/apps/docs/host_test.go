@@ -111,6 +111,7 @@ func closedSocket(t *testing.T, x *socket) {
 	}
 }
 func TestHostDraftPreviewAndRevocation(t *testing.T) {
+	t.Parallel()
 	s, private, _ := hostService(t)
 	p, err := s.OpenPreview(t.Context(), "host-doc", 0)
 	if err != nil {
@@ -144,6 +145,7 @@ func TestHostDraftPreviewAndRevocation(t *testing.T) {
 	}
 }
 func TestHostPublicSocketRevocation(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"private", "delete", "rename"} {
 		t.Run(action, func(t *testing.T) {
 			s, private, public := hostService(t)
@@ -190,6 +192,7 @@ func TestHostPublicSocketRevocation(t *testing.T) {
 }
 
 func TestHostAPIAndMCPConflictRecovery(t *testing.T) {
+	t.Parallel()
 	s, private, _ := hostService(t)
 	_, err := s.Deploy(t.Context(), "host-doc", 0, core.ViaMCP)
 	approveHost(t, s, err)

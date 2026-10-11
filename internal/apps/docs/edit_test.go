@@ -58,6 +58,7 @@ func ops(v ...map[string]any) string {
 }
 
 func TestAgentEditAuthorityGuardsAndBroadcast(t *testing.T) {
+	t.Parallel()
 	data := t.TempDir()
 	a := startApp(t, data, initialText, "v1")
 	f := fixture(t)
@@ -252,6 +253,7 @@ func callTool(t *testing.T, session *mcp.ClientSession, name string, args map[st
 }
 
 func TestHostUpdateDocumentLifecycle(t *testing.T) {
+	t.Parallel()
 	s, private, public := hostService(t)
 	mcpServer := httptest.NewServer(mcpx.Handler(s, mcpx.Options{Version: "test"}))
 	defer mcpServer.Close()

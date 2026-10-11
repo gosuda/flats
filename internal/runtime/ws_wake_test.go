@@ -5,6 +5,7 @@ import "testing"
 // A wake never blocks the HTTP VM that commits a docs edit: a full queue
 // drops it, and rooms catch up at the next heartbeat instead.
 func TestWSWakeNeverBlocks(t *testing.T) {
+	t.Parallel()
 	h := &wsHub{events: make(chan wsEvent, 1)}
 	h.wake("index.md")
 	h.wake("other.md")

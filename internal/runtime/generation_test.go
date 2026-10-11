@@ -15,6 +15,7 @@ import (
 )
 
 func TestRuntimeGenerationHostInternalsAndRecovery(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"server.js": `
 function metadata(value) {

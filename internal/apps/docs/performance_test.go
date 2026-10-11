@@ -43,6 +43,7 @@ func Test100KiBDocumentTimings(t *testing.T) {
 }
 
 func TestMaximumSeed(t *testing.T) {
+	t.Parallel()
 	text := strings.Repeat("a", 1024*1024)
 	a := startApp(t, t.TempDir(), text, "max-v1")
 	start := time.Now()

@@ -12,6 +12,7 @@ import (
 )
 
 func TestBuildInputs(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	err := filepath.WalkDir("_web/src", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

@@ -8,6 +8,7 @@ import (
 )
 
 func TestWASIRejectsJSHostABI(t *testing.T) {
+	t.Parallel()
 	for _, capability := range []string{"DB", "FILES", "websocket"} {
 		t.Run(capability, func(t *testing.T) {
 			// Minimal valid module importing one () -> () function from "flats".
