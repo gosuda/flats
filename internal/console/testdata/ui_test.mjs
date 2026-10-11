@@ -668,7 +668,8 @@ assert.ok(byId(settingsMain, 'provider-zrok').textContent.includes('flats-ns'), 
 const zrokPanel = byId(settingsMain, 'provider-zrok');
 assert.ok(zrokPanel.textContent.includes('Connected'), 'a connected zrok account is shown');
 assert.equal(byText(zrokPanel, 'Disconnect account').length, 1, 'a connected zrok account can be disconnected');
-assert.ok(zrokPanel.textContent.includes('zenv-123') && zrokPanel.textContent.includes('https://api-v2.zrok.io'), 'the connected environment is identified');
+const zrokFacts = all(zrokPanel, (e) => e.tagName === 'CODE').map((e) => e.textContent);
+assert.deepEqual(zrokFacts, ['zenv-123', 'https://api-v2.zrok.io', 'flats-ns'], 'the connected environment is identified');
 assert.equal(byText(zrokPanel, 'Replace account').length, 1, 'a connected account can be replaced with a new token');
 assert.equal(byText(zrokPanel, 'Turn off').length, 1, 'a connected zrok can be turned off');
 assert.equal(all(groups[0], (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 1, 'Local has no switch');
