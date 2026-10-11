@@ -21,15 +21,18 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/tetratelabs/wazero"
 )
 
 const testWorkerEnv = "FLATS_TEST_WORKER"
 
-// Tests call t.Parallel unless they use t.Setenv or assert a wall-clock
-// latency, throughput or activation budget. Go runs those serial tests first
-// and starts the parallel tests after them, so no other test of this package
-// competes with a budget. A generous bound on a server-side timeout (seconds
-// of slack) may run in parallel: contention only delays the response.
+// Tests call t.Parallel unless their result depends on elapsed time or the
+// process environment: t.Setenv, wall-clock latency or activation budgets,
+// rate limits that refill over time, and requests that take a large share of
+// the request timeout. Go runs those serial tests first and starts the
+// parallel tests after them, so no other test of this package competes with
+// them. A parallel test may bound a server-side timeout only with seconds of
+// slack.
 //
 // TestMain doubles as the worker binary: Manager re-executes this test
 // binary with FLATS_TEST_WORKER=1 (the only variable in its environment).
@@ -49,6 +52,10 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// wazero caches its version string on first use without a lock. Create
+	// one runtime before parallel tests create theirs in this process.
+	ctx := context.Background()
+	wazero.NewRuntime(ctx).Close(ctx)
 	code := m.Run()
 	if cacheRoot != "" {
 		os.RemoveAll(cacheRoot)

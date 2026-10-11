@@ -14,16 +14,17 @@ and runs these checks in parallel jobs:
 ```sh
 go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
-go test ./...                       # as six shards: scripts/ci-test.sh <shard>
+go test ./...                       # as seven shards: scripts/ci-test.sh <shard>
 go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
 go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
 ```
 
 `scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into
-their long soak tests and, for docs, the serial wall-clock budget tests
-(`-run`), and everything else (`-skip` on the same patterns), so together the
-shards always run the whole suite. Tests in those packages call `t.Parallel`
-unless they use `t.Setenv` or check a wall-clock budget. The
+their long soak tests, the serial codec ownership soak and the serial docs
+budget tests (`-run`), and everything else (`-skip` on the same patterns), so
+together the shards always run the whole suite. Tests in those packages call
+`t.Parallel` unless their result depends on elapsed time or the process
+environment (see the comment above each package's `TestMain`). The
 `install-script` and `container` jobs build every release archive CGO-free:
 darwin/amd64 and darwin/arm64 on macOS, linux/amd64 and linux/arm64 in the
 container job.

@@ -179,7 +179,6 @@ func TestPublicCapacityDoesNotConsumeEditors(t *testing.T) {
 // Large envelopes are within the frame and connection budgets, but two of
 // them exhaust the shared room budget if rejected writes are charged to it.
 func TestUnauthorizedUpdatesPreserveWriterBudget(t *testing.T) {
-	t.Parallel()
 	for _, tc := range []struct {
 		name, access, rejection string
 		joined                  bool
@@ -214,7 +213,6 @@ func TestUnauthorizedUpdatesPreserveWriterBudget(t *testing.T) {
 }
 
 func TestConnectionInputLimitPreservesOtherWriter(t *testing.T) {
-	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	bad := connect(t, a.srv.URL, "private")
 	bad.hello(t, nil)
@@ -231,7 +229,6 @@ func TestConnectionInputLimitPreservesOtherWriter(t *testing.T) {
 }
 
 func TestAuthorizedUpdatesConsumeWriterBudget(t *testing.T) {
-	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	first := connect(t, a.srv.URL, "private")
 	first.hello(t, nil)
