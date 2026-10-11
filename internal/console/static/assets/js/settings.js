@@ -106,6 +106,7 @@ export const PROVIDER_INFO = {
   'tailscale-funnel': { label: 'Tailscale Funnel', what: 'Anyone on the internet, through Tailscale Funnel on the flat’s tailnet node. Visitors do not need Tailscale.' },
   portal: { label: 'Portal', what: 'Anyone on the internet, through Portal relays.' },
   zrok: { label: 'zrok', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
+  'cloudflare-quick': { label: 'Cloudflare Quick Tunnel', what: 'Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random trycloudflare.com address. No Cloudflare account or domain needed.' },
 };
 
 // providerGroups lists the providers as Private and Public groups. data is
@@ -211,6 +212,12 @@ function providerDetails(p, data, opts) {
   }
   if (p.id === 'tailscale-funnel') {
     return h('p', { class: 'muted small', text: 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.' });
+  }
+  if (p.id === 'cloudflare-quick') {
+    return [
+      h('p', { class: 'muted small', text: 'Cloudflare offers quick tunnels for testing and development: no uptime guarantee, up to 200 concurrent requests per flat and no server-sent events. Each flat gets a random address. Flats keeps it across restarts while Cloudflare keeps the tunnel; if Cloudflare removes the tunnel, the flat gets a new address.' }),
+      p.status ? hostsTable(p.status) : null,
+    ];
   }
   return null;
 }

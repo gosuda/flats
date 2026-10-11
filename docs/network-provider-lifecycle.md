@@ -13,7 +13,8 @@ This document describes the integrated provider Manager. Production app and disp
 ## Contract
 
 Provider choice stays separate from visibility and version. Local loopback is
-available with no grant. Tailscale, Tailscale Funnel, Portal and zrok start
+available with no grant. Tailscale, Tailscale Funnel, Portal, zrok and
+Cloudflare quick tunnels (`cloudflare-quick`) start
 only when both of these are true:
 
 1. The host file grants that provider.
@@ -27,14 +28,14 @@ is not a fallback.
 | Request | Providers that may open |
 | --- | --- |
 | Draft, or visibility private | `local` always. `tailscale` only when both gates allow it. |
-| Audience current and visibility public | `tailscale-funnel`, `portal` and/or `zrok`, each only when both gates allow it. |
+| Audience current and visibility public | `tailscale-funnel`, `portal`, `zrok` and/or `cloudflare-quick`, each only when both gates allow it. |
 | Ephemeral preview | Private paths only. Public providers return `provider not permitted`. |
 
 If a public request lists no permitted public provider, or none of the
 requested public routes open, `ServeExposure` returns an error. If some open
 and some fail, the result and the joined error are both returned.
 
-`StopPublicRoutes` closes Funnel, Portal and zrok for that slug. Local and tailscale
+`StopPublicRoutes` closes Funnel, Portal, zrok and quick tunnels for that slug. Local and tailscale
 routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later
 call can retry. Unconfirmed means the caller must not treat the flat as
@@ -175,6 +176,41 @@ already present is left alone. Funnel stays `starting` until the
 certificate fetch succeeds, unless a test certificate source is installed, in
 which case it is `ready` immediately. Funnel strips `Tailscale-User-*` headers
 and does not set identity.
+
+## Cloudflare quick tunnels
+
+`cfquick.Net` (`internal/expose/cfquick`) serves a slug through an anonymous
+Cloudflare quick tunnel minted at `api.trycloudflare.com`, using libtunnel
+(`github.com/oesni/libtunnel`, an in-process cloudflared; no binary). `New`
+installs libtunnel's isolated environment, so `LIBTUNNEL_*` variables are
+ignored and no tunnel secret is exported to processes Flats starts, and the
+mint client sends no network-error reports. Each slug gets its own tunnel
+and a loopback origin server that strips `Tailscale-User-*` identity
+headers (including underscore spellings) before the flat's handler.
+
+`Serve` resolves the tunnel's hostname before it returns, so an approved
+Public transition always commits with an address; the edge connection then
+comes up in the background (`starting`, then `ready` when libtunnel has
+verified the public URL from this host). The tunnel's credentials are
+recorded in `<data>/cloudflare-quick/<slug>.json` (mode 0600, written
+atomically) and replayed by the next `Serve`, so the address survives
+restarts and Private/Public changes while Cloudflare keeps the tunnel. A
+record that cannot be replayed is replaced by a fresh mint. When the edge
+reports the tunnel gone, or the credentials are rejected, the record is
+deleted and a new tunnel is minted on a new hostname; a tunnel that ends for
+another reason is retried from the record with backoff (2 s to 60 s). The
+route's URL is read from the backend each time, so a new hostname shows up
+in the flat's `public_url` without a new approval.
+
+`Stop` closes the tunnel, waits for it to let go of the edge, then drains
+the origin; the record is kept. An unconfirmed stop keeps the entry so a
+retry finishes it, and `StopPublicRoutes` reports `cloudflare-quick` in
+`Unconfirmed`. `Retire` (used by `StopSlug`) stops the tunnel and deletes
+the record. With no quick tunnel backend, `StopSlug` deletes the record
+directly, so a deleted flat leaves no credentials behind. Quick tunnels
+reserve nothing at Cloudflare, so there is no remote cleanup obligation. The
+approval policy token counts the quick tunnel backend only while
+`cloudflare-quick` is granted, so hosts without it keep their token.
 
 ## zrok
 

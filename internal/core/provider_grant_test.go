@@ -404,3 +404,47 @@ func TestZrokOnlyFlatGoesPublic(t *testing.T) {
 		t.Fatalf("public_url = %q, want %q", fv.PublicURL, want)
 	}
 }
+
+// A Cloudflare quick tunnel is a public provider like the others: a flat that
+// permits only cloudflare-quick goes public after approval, its public URL
+// comes from the tunnel route, and going private again closes that route.
+func TestCloudflareQuickOnlyFlatGoesPublic(t *testing.T) {
+	s, _ := newTestService(t)
+	network := newLifecycleRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "quick", "one")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "quick"))
+	if err := s.SetProviderPermission(t.Context(), "quick", store.ProviderCFQuick, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if network.serves("quick", ProviderCloudflareQuick) {
+		t.Fatal("granting cloudflare-quick to a private flat opened a public route")
+	}
+	req, err := s.SetVisibility(t.Context(), "quick", store.Public, ViaAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(t.Context(), req.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if !network.serves("quick", ProviderCloudflareQuick) {
+		t.Fatal("approved public flat is not served through the quick tunnel")
+	}
+	fv, err := s.GetFlat(t.Context(), "quick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://quick.cloudflare-quick.test"; fv.PublicURL != want {
+		t.Fatalf("public_url = %q, want %q", fv.PublicURL, want)
+	}
+	req, err = s.SetVisibility(t.Context(), "quick", store.Private, ViaAPI, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(t.Context(), req.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if network.serves("quick", ProviderCloudflareQuick) {
+		t.Fatal("a private flat is still served through the quick tunnel")
+	}
+}

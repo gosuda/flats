@@ -100,6 +100,12 @@ For zrok, connect the account in the console with its account token. Flats
 keeps the zrok environment in `zrok-environment/` on the data volume, so it
 survives container restarts.
 
+Cloudflare quick tunnels need no credentials. Their per-flat tunnel records
+in `cloudflare-quick/` on the data volume keep each flat's address across
+container restarts while Cloudflare keeps the tunnel. The container needs
+outbound access to Cloudflare's edge on port 7844 (UDP for QUIC, or TCP when
+UDP is blocked).
+
 ## Configuration
 
 `flats config set` and `unset` work offline and refuse while the host runs.

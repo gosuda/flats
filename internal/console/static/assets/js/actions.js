@@ -166,7 +166,7 @@ export async function setVisibility(flat, vis) {
     return null;
   }
   if (widening && !PUBLIC_PROVIDERS.some((p) => (flat.providers || []).includes(p))) {
-    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal or zrok for ${label(flat)} under Networks, then make it public.`);
+    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal, zrok or a Cloudflare quick tunnel for ${label(flat)} under Networks, then make it public.`);
     return null;
   }
   const notice = noticeFor(vis);
@@ -199,8 +199,9 @@ export const PROVIDERS = [
   { id: 'tailscale-funnel', scope: 'public', label: 'Tailscale Funnel', hint: 'Anyone on the internet' },
   { id: 'portal', scope: 'public', label: 'Portal', hint: 'Anyone on the internet, through Portal relays' },
   { id: 'zrok', scope: 'public', label: 'zrok', hint: 'Anyone on the internet, through zrok public shares' },
+  { id: 'cloudflare-quick', scope: 'public', label: 'Cloudflare Quick Tunnel', hint: 'Anyone on the internet, through a random trycloudflare.com address' },
 ];
-const PUBLIC_PROVIDERS = ['tailscale-funnel', 'portal', 'zrok'];
+const PUBLIC_PROVIDERS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick'];
 
 // setProvider allows or stops a network for one flat; resolves true on success.
 export async function setProvider(flat, provider, permitted) {

@@ -138,7 +138,7 @@ func (n *lifecycleRouteNet) StopPublicRoutes(_ context.Context, host string) (Pu
 		return PublicStopResult{}, n.stopPublic
 	}
 	var stopped []ProviderID
-	for _, id := range []ProviderID{ProviderPortal, ProviderFunnel, ProviderZrok} {
+	for _, id := range []ProviderID{ProviderPortal, ProviderFunnel, ProviderZrok, ProviderCloudflareQuick} {
 		key := lifecycleRouteKey{host: host, provider: id}
 		if _, ok := n.routes[key]; ok {
 			delete(n.routes, key)

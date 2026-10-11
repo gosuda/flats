@@ -62,12 +62,15 @@ const (
 	ProviderFunnel    ProviderID = "tailscale-funnel"
 	ProviderPortal    ProviderID = "portal"
 	ProviderZrok      ProviderID = "zrok"
+	// ProviderCloudflareQuick is a Cloudflare quick tunnel: anonymous, on a
+	// random trycloudflare.com hostname.
+	ProviderCloudflareQuick ProviderID = "cloudflare-quick"
 )
 
 // PublicProvider reports whether id serves visitors on the internet
-// (Tailscale Funnel, Portal or zrok).
+// (Tailscale Funnel, Portal, zrok or a Cloudflare quick tunnel).
 func PublicProvider(id ProviderID) bool {
-	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok
+	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick
 }
 
 // ExposureAudience selects the content a provider serves.

@@ -16,6 +16,7 @@ const (
 	ProviderFunnel    = "tailscale-funnel"
 	ProviderPortal    = "portal"
 	ProviderZrok      = "zrok"
+	ProviderCFQuick   = "cloudflare-quick"
 )
 
 // Draft is the single mutable working copy of a flat.

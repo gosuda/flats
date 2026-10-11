@@ -41,7 +41,7 @@ const (
 
 // Network providers that network.permitted may name, in canonical order.
 // Local is always available and is not listed.
-var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok"}
+var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick"}
 
 type kind int
 

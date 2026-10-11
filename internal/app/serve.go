@@ -28,6 +28,7 @@ import (
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/console"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/cfquick"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/provider"
@@ -103,7 +104,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "legacy mode: file holding a reusable, untagged Tailscale auth key for new nodes (else TS_AUTHKEY or interactive login)")
 	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console")
 	fs.BoolVar(&o.Portal, "portal", false, "legacy mode: grant Portal and attach it as the legacy public network")
-	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal, zrok. Local needs no grant. Recorded in config.json and does not publish a flat")
+	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal, zrok, cloudflare-quick. Local needs no grant. Recorded in config.json and does not publish a flat")
 	fs.StringVar(&relays, "relays", "", "legacy mode: comma-separated Portal relays (default: Portal CLI default discovery)")
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
 	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "ignored: the operator credential is no longer used")
@@ -203,10 +204,11 @@ type Host struct {
 	srv        *http.Server
 	ln         net.Listener
 	localNet   *local.Net
-	pmu        sync.Mutex // guards tsNet, portalNet and zrokNet, which the console can attach
+	pmu        sync.Mutex // guards tsNet, portalNet, zrokNet and quickNet, which the console can attach
 	tsNet      *tsnetx.Net
 	portalNet  *portal.Net
 	zrokNet    *zrok.Net
+	quickNet   *cfquick.Net
 	// For providers the console turns on while the host runs.
 	logf          func(string, ...any)
 	legacy        bool
@@ -391,6 +393,13 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 			h.zrokNet = zn
 		}
 	}
+	if permits(provider.CFQuick) {
+		qn, err := cfquick.New(cfquickConfig(dataDir, logf))
+		if err != nil {
+			return nil, fmt.Errorf("cloudflare-quick: %w", err)
+		}
+		h.quickNet = qn
+	}
 	var tail provider.Tailnet
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
@@ -407,6 +416,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	if h.zrokNet != nil {
 		backends.Zrok = h.zrokNet
+	}
+	if h.quickNet != nil {
+		backends.CFQuick = h.quickNet
 	}
 	mgr, err := provider.New(dataDir, backends)
 	if err != nil {
@@ -557,6 +569,12 @@ func zrokConfigurationOf(environment, account, namespace string) string {
 	return strings.Join([]string{environment, account, namespace}, "\x00")
 }
 
+// cfquickConfig is the Cloudflare quick tunnel backend's configuration: its
+// tunnel records live in <data>/cloudflare-quick.
+func cfquickConfig(dataDir string, logf func(string, ...any)) cfquick.Config {
+	return cfquick.Config{Dir: filepath.Join(dataDir, "cloudflare-quick"), Logf: logf}
+}
+
 func providerConfiguration(cfg portal.Config, zrokConfig string) string {
 	// Only public relay origins and non-secret desired settings participate.
 	// Do not include userinfo, query strings, identities, keys or readiness.
@@ -670,7 +688,7 @@ func (h *Host) Close() error {
 			collect("provider routes", h.Providers.Close())
 		}
 		h.pmu.Lock()
-		tsNet, portalNet, zrokNet := h.tsNet, h.portalNet, h.zrokNet
+		tsNet, portalNet, zrokNet, quickNet := h.tsNet, h.portalNet, h.zrokNet, h.quickNet
 		h.pmu.Unlock()
 		if h.Public != nil {
 			collect("public network shutdown", h.Public.Close())
@@ -679,6 +697,9 @@ func (h *Host) Close() error {
 		}
 		if zrokNet != nil {
 			collect("zrok shutdown", zrokNet.Close())
+		}
+		if quickNet != nil {
+			collect("cloudflare-quick shutdown", quickNet.Close())
 		}
 		if h.Private != nil {
 			collect("private network shutdown", h.Private.Close())

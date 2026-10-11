@@ -1,7 +1,8 @@
 # Private and public access
 
 This page is for operators: which networks a Flats host serves on, how to turn
-on Tailscale, Tailscale Funnel, Portal and zrok, and how visibility works. The
+on Tailscale, Tailscale Funnel, Portal, zrok and Cloudflare quick tunnels,
+and how visibility works. The
 provider state machine is in [Network provider lifecycle](network-provider-lifecycle.md).
 
 ## Providers
@@ -13,6 +14,7 @@ provider state machine is in [Network provider lifecycle](network-provider-lifec
 | Tailscale Funnel | Public | Anyone on the internet |
 | Portal | Public | Anyone on the internet, through a Portal relay |
 | zrok | Public | Anyone on the internet, through a zrok public share on your zrok account |
+| Cloudflare quick tunnel | Public | Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random `trycloudflare.com` address |
 
 The default network is Local; every other provider is off. A provider serves a
 flat only when both of these are on:
@@ -56,7 +58,7 @@ the start, so its private and preview links use the tailnet:
   routes of every flat created afterwards, including flats an agent creates.
 - Each grant is logged as a `provider` event. Turn it off under the flat's
   Networks to keep a flat on the host only.
-- It never allows Funnel, Portal or zrok. Flats created earlier keep their
+- It never allows Funnel, Portal, zrok or quick tunnels. Flats created earlier keep their
   providers.
 
 Flats embeds tsnet. Permitted flat and preview routes, and the console in
@@ -110,6 +112,32 @@ Share** button, once per visitor; programs can skip it with a
 [Configuration and storage](configuration.md) for `zrok.environment` and
 `zrok.namespace`.
 
+## Publishing through a Cloudflare quick tunnel
+
+A Cloudflare quick tunnel needs no Cloudflare account, no domain and no token.
+Under **Settings → Network providers → Cloudflare Quick Tunnel**, choose
+**Turn on**, then allow it on a flat. While the flat is public, Flats opens an
+anonymous tunnel for it through Cloudflare's own quick-tunnel service
+(`api.trycloudflare.com`) and serves the flat at a random
+`https://<words>.trycloudflare.com` address. The tunnel runs inside the Flats
+process; no `cloudflared` binary is needed.
+
+- **The address is random and can change.** Flats keeps each flat's tunnel
+  credentials in `cloudflare-quick/<slug>.json` (mode 0600), so a restart or
+  a later Public transition reuses the same tunnel and address while
+  Cloudflare still has it. Cloudflare removes idle quick tunnels; when the
+  tunnel is gone, Flats opens a new one and the flat gets a new address. Read
+  the current address from the console or `get_flat`, not from a bookmark.
+- **It is meant for testing and development.** Cloudflare gives quick tunnels
+  no uptime guarantee, allows up to 200 concurrent requests per tunnel
+  (further requests get `429`) and does not support server-sent events.
+- **Cloudflare terminates TLS**, so it sees the traffic in clear text, as with
+  any reverse proxy in front of the flat.
+- Going Private closes the tunnel and keeps its credentials. Deleting the flat
+  closes the tunnel and deletes them, even with the provider turned off.
+- Flats sends no network-error reports to the mint service and ignores
+  `LIBTUNNEL_*` environment variables.
+
 ## Visibility
 
 Visibility is Private or Public, independently of publication and connection
@@ -117,7 +145,8 @@ state.
 
 - **Private** routes use Local, or permitted Tailscale with existing tailnet
   ACLs.
-- **Public** routes use explicitly permitted Portal, zrok or Tailscale Funnel.
+- **Public** routes use explicitly permitted Portal, zrok, Tailscale Funnel or
+  Cloudflare quick tunnels.
   Public is not access control: anyone with the URL can open the flat.
 
 Configuration alone never publishes a version or changes visibility. Public
@@ -168,4 +197,4 @@ Tailscale choice:
   host Tailscale grant never opts those flats in.
 
 Existing explicit denials win; new flats and later revocations are never opted
-in by restart. Neither choice grants Funnel, Portal or zrok.
+in by restart. Neither choice grants Funnel, Portal, zrok or quick tunnels.

@@ -489,7 +489,8 @@ routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 const provider = (id, scope, enabled, flats = []) => ({ id, scope, enabled, configured: enabled, flats });
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true), provider('tailscale', 'private', false),
   provider('tailscale-funnel', 'public', false), provider('portal', 'public', true, ['blog']),
-  { ...provider('zrok', 'public', true), namespace: 'flats-ns', managed: true, connected: true, environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io', status: { kind: 'zrok', enabled: true, hosts: [] } }] };
+  { ...provider('zrok', 'public', true), namespace: 'flats-ns', managed: true, connected: true, environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io', status: { kind: 'zrok', enabled: true, hosts: [] } },
+  { ...provider('cloudflare-quick', 'public', true, ['demo']), status: { kind: 'cloudflare-quick', enabled: true, hosts: [{ host: 'demo', url: 'https://quick-demo.trycloudflare.com', state: 'ready', detail: 'ready at https://quick-demo.trycloudflare.com' }] } }] };
 const mountSettings = async () => {
   const main = new Element('main');
   settingsPage.mount(main, [], ctx);
@@ -694,7 +695,13 @@ await tick();
 const groups = all(settingsMain, (e) => e.className === 'provider-group');
 assert.deepEqual(groups.map((g) => all(g, (e) => e.tagName === 'H3')[0].textContent), ['Private', 'Public']);
 assert.deepEqual(all(groups[0], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-local', 'provider-tailscale']);
-assert.deepEqual(all(groups[1], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-tailscale-funnel', 'provider-portal', 'provider-zrok']);
+assert.deepEqual(all(groups[1], (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['provider-tailscale-funnel', 'provider-portal', 'provider-zrok', 'provider-cloudflare-quick']);
+const quickPanel = byId(settingsMain, 'provider-cloudflare-quick');
+assert.ok(quickPanel.textContent.includes('Cloudflare Quick Tunnel'), 'the quick tunnel panel is labeled');
+assert.ok(quickPanel.textContent.includes('No Cloudflare account or domain needed'), 'the quick tunnel panel says it needs no account');
+assert.ok(quickPanel.textContent.includes('no uptime guarantee'), 'the quick tunnel panel states its limits');
+assert.ok(quickPanel.textContent.includes('https://quick-demo.trycloudflare.com'), 'the quick tunnel panel lists served flats');
+assert.equal(byText(quickPanel, 'Turn off').length, 1, 'quick tunnels can be turned off without an account step');
 assert.ok(byId(settingsMain, 'provider-zrok').textContent.includes('flats-ns'), 'the zrok panel shows its namespace');
 const zrokPanel = byId(settingsMain, 'provider-zrok');
 assert.ok(zrokPanel.textContent.includes('Connected'), 'a connected zrok account is shown');

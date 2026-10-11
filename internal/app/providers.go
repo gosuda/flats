@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/cfquick"
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/provider"
 	tsnetx "github.com/gosuda/flats/internal/expose/tsnet"
@@ -61,14 +62,14 @@ func legacyNetworkPins(o Options) map[provider.ID]string {
 func (h *Host) NetworkProviders(ctx context.Context) any {
 	flats := h.flatsAllowing(ctx)
 	h.pmu.Lock()
-	ts, pn, zn := h.tsNet, h.portalNet, h.zrokNet
+	ts, pn, zn, qn := h.tsNet, h.portalNet, h.zrokNet, h.quickNet
 	h.pmu.Unlock()
 	var grants provider.File
 	if h.Providers != nil {
 		grants = h.Providers.File()
 	}
-	out := make([]ProviderInfo, 0, 5)
-	for _, id := range []provider.ID{provider.Local, provider.Tailscale, provider.Funnel, provider.Portal, provider.Zrok} {
+	out := make([]ProviderInfo, 0, 6)
+	for _, id := range []provider.ID{provider.Local, provider.Tailscale, provider.Funnel, provider.Portal, provider.Zrok, provider.CFQuick} {
 		p := ProviderInfo{ID: string(id), Scope: "private", Enabled: grants.Allows(id), Flats: flats[id]}
 		if p.Flats == nil {
 			p.Flats = []string{}
@@ -117,6 +118,13 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 			}
 			if zn != nil {
 				st := zn.Status()
+				p.Status = &st
+			}
+		case provider.CFQuick:
+			p.Scope = "public"
+			p.Configured = qn != nil
+			if qn != nil {
+				st := qn.Status()
 				p.Status = &st
 			}
 		}
@@ -218,6 +226,16 @@ func (h *Host) attachLocked(id provider.ID) error {
 		}
 		h.zrokNet = z
 		h.Providers.AttachZrok(z)
+	case provider.CFQuick:
+		if h.quickNet != nil {
+			return nil
+		}
+		q, err := cfquick.New(cfquickConfig(h.Config.Host.DataDir, h.logf))
+		if err != nil {
+			return fmt.Errorf("%w: cloudflare-quick: %v", core.ErrUnavailable, err)
+		}
+		h.quickNet = q
+		h.Providers.AttachCFQuick(q)
 	}
 	return nil
 }

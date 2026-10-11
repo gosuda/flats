@@ -46,6 +46,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
   tsnet/ portal/              provider node identities
   zrok/                       zrok names this host reserved, until released
   zrok-environment/           the connected zrok account: token and identity (mode 0600)
+  cloudflare-quick/           Cloudflare quick tunnel credentials per flat (mode 0600)
   network-retirements/        unfinished tailnet node cleanup
   logs/ cache/ run/ flats.lock  logs, caches, sockets, the host lock
 ```
@@ -60,7 +61,9 @@ stopped, never a plain copy of a live database), `secret.key` together with
 `flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`
 and `network-retirements/` when present, and `tsnet/` and `portal/` (without
 them new node names and certificates are issued), and `zrok/` (without it a
-deleted flat no longer releases its zrok name). Back up the credential files
+deleted flat no longer releases its zrok name). `cloudflare-quick/` is
+optional: without it each public flat's quick tunnel gets a new random
+address. Back up the credential files
 separately. Logs, caches, sockets and the lock are rebuilt.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
@@ -302,7 +305,8 @@ written to the file.
 
 It refuses, writing nothing but the lock, when the directory already holds
 Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
-or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `zrok/`, `backups/`,
+or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `zrok/`,
+`zrok-environment/`, `cloudflare-quick/`, `backups/`,
 `network-retirements/` or `network-provider.json` without a database (restore
 the database and config from the same backup). Other entries, such as a new
 volume's `lost+found`, are fine. A bootstrap interrupted after writing

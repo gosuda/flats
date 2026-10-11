@@ -432,3 +432,58 @@ func TestHostStartsWithZrokGrantAndNoAccount(t *testing.T) {
 		t.Fatalf("zrok granted without an account: %+v", p)
 	}
 }
+
+// Cloudflare quick tunnels need no account: the console turns them on in one
+// step, which attaches the backend without contacting Cloudflare, and the
+// policy token then matches the one the next start computes. Turning them off
+// again also matches a start without the grant.
+func TestConsoleCloudflareQuickTurnsOnAndPolicyMatchesRestart(t *testing.T) {
+	dir := t.TempDir()
+	h, client := consoleHostWith(t, dir, nil)
+	if p := providerByID(t, h, client, "cloudflare-quick"); p.Enabled || p.Configured || p.Scope != "public" {
+		t.Fatalf("cloudflare-quick by default: %+v", p)
+	}
+	if code, out := setHost(t, h, client, "cloudflare-quick", true); code != 200 {
+		t.Fatalf("turn on cloudflare-quick: %d %v", code, out)
+	}
+	p := providerByID(t, h, client, "cloudflare-quick")
+	if !p.Enabled || !p.Configured || p.Status == nil || p.Status.Kind != "cloudflare-quick" {
+		t.Fatalf("cloudflare-quick after turning on: %+v", p)
+	}
+	if got := configPermitted(t, h); !slices.Equal(got, []string{"cloudflare-quick"}) {
+		t.Fatalf("config.json network.permitted = %v", got)
+	}
+	live, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, client = consoleHostWith(t, dir, nil)
+	restarted, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live != restarted {
+		t.Fatal("the policy token after a restart differs from the one after turning cloudflare-quick on")
+	}
+	if code, out := setHost(t, h, client, "cloudflare-quick", false); code != 200 {
+		t.Fatalf("turn off cloudflare-quick: %d %v", code, out)
+	}
+	off, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = consoleHostWith(t, dir, nil)
+	again, err := h.Providers.ExposurePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off != again {
+		t.Fatal("the policy token after a restart differs from the one after turning cloudflare-quick off")
+	}
+}

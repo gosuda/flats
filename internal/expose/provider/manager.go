@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/cfquick"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/tsnet"
@@ -94,6 +95,20 @@ type ZrokNet interface {
 	Close() error
 }
 
+// QuickNet is the public Cloudflare quick tunnel backend. A non-nil value is
+// not permission.
+type QuickNet interface {
+	Serve(ctx context.Context, slug string, h http.Handler) (string, error)
+	// Stop closes slug's tunnel and keeps its record, so the next Serve
+	// replays the same tunnel while Cloudflare has it.
+	Stop(slug string) error
+	// Retire closes slug's tunnel and deletes its record.
+	Retire(slug string) error
+	URL(slug string) string
+	Status() core.NetStatus
+	Close() error
+}
+
 // TSNet adapts the concrete tailnet so callers outside this module can pass
 // *tsnet.Net without a second implementation.
 type TSNet struct{ *tsnet.Net }
@@ -114,6 +129,7 @@ type Options struct {
 	Tailscale Tailnet
 	Portal    PortalNet
 	Zrok      ZrokNet
+	CFQuick   QuickNet
 	// TailscaleStateDir is the local tsnet state root. Manager uses it only
 	// when no tailnet backend is configured, so deleting a legacy Local-only
 	// flat can discard its old identity without contacting control.
@@ -122,6 +138,10 @@ type Options struct {
 	// reads it when no zrok backend is configured, so deleting a flat whose
 	// name is still reserved is refused instead of leaving the name behind.
 	ZrokStateDir string
+	// CFQuickStateDir holds the quick tunnel records (default
+	// <dir>/cloudflare-quick). Manager deletes a deleted flat's record there
+	// when no quick tunnel backend is configured.
+	CFQuickStateDir string
 	// Configuration is a canonical, non-secret desired backend configuration.
 	// It must exclude credentials and transient connection readiness.
 	Configuration string
@@ -146,9 +166,11 @@ type Manager struct {
 	ts            Tailnet
 	portal        PortalNet
 	zrok          ZrokNet
+	cfquick       QuickNet
 	zmu           sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	tailscaleDir  string
 	zrokDir       string
+	cfquickDir    string
 	retirementDir string
 	configuration string
 	permission    func(context.Context, string, ID) (bool, error)
@@ -205,9 +227,15 @@ func New(dir string, opts Options) (*Manager, error) {
 	if zrokDir == "" {
 		zrokDir = filepath.Join(dir, "zrok")
 	}
+	cfquickDir := opts.CFQuickStateDir
+	if cfquickDir == "" {
+		cfquickDir = filepath.Join(dir, "cloudflare-quick")
+	}
 	return &Manager{
 		dir:            dir,
 		zrokDir:        zrokDir,
+		cfquickDir:     cfquickDir,
+		cfquick:        opts.CFQuick,
 		file:           f,
 		fixed:          opts.Grants != nil,
 		local:          opts.Local,
@@ -240,6 +268,12 @@ func (m *Manager) zrokNet() ZrokNet {
 	m.bmu.RLock()
 	defer m.bmu.RUnlock()
 	return m.zrok
+}
+
+func (m *Manager) quickNet() QuickNet {
+	m.bmu.RLock()
+	defer m.bmu.RUnlock()
+	return m.cfquick
 }
 
 // AttachTailnet configures the Tailscale backend once, for a provider the
@@ -282,6 +316,16 @@ func (m *Manager) AttachZrok(z ZrokNet) {
 	defer m.bmu.Unlock()
 	if m.zrok == nil {
 		m.zrok = z
+	}
+}
+
+// AttachCFQuick configures the Cloudflare quick tunnel backend once. It does
+// not grant the provider.
+func (m *Manager) AttachCFQuick(q QuickNet) {
+	m.bmu.Lock()
+	defer m.bmu.Unlock()
+	if m.cfquick == nil {
+		m.cfquick = q
 	}
 }
 
@@ -390,7 +434,8 @@ func (m *Manager) Reload() error {
 
 // ServeExposure opens every provider this request is allowed to use.
 // Draft and private requests use local and, when both gates allow it, tailscale.
-// Current public requests use tailscale-funnel, portal and zrok the same way.
+// Current public requests use tailscale-funnel, portal, zrok and
+// cloudflare-quick the same way.
 // A provider that fails is not replaced by another one.
 func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (res ExposureResult, err error) {
 	defer m.observe(req, &res)
@@ -426,6 +471,8 @@ func (m *Manager) configured(id ID) bool {
 		return m.portalNet() != nil
 	case Zrok:
 		return m.zrokNet() != nil
+	case CFQuick:
+		return m.quickNet() != nil
 	}
 	return false
 }
@@ -467,8 +514,10 @@ func (m *Manager) ExposurePolicy(ctx context.Context) (string, error) {
 		PrivateBackend    string `json:"private_backend"`
 		Tailscale, Portal bool
 		Zrok              bool `json:",omitempty"`
+		CFQuick           bool `json:",omitempty"`
 		Configuration     string
-	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil && f.Allows(Zrok), m.config()}
+	}{f.Permitted, f.PrivateBackend, m.tailnet() != nil, m.portalNet() != nil, m.zrokNet() != nil && f.Allows(Zrok),
+		m.quickNet() != nil && f.Allows(CFQuick), m.config()}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -522,6 +571,12 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 				} else {
 					fresh = ExposureEndpoint{Provider: Zrok, State: stateUnavailable, Detail: "zrok is not configured"}
 				}
+			case CFQuick:
+				if q := m.quickNet(); q != nil {
+					fresh = fromStatus(CFQuick, q.Status(), r.host, q.URL(r.host))
+				} else {
+					fresh = ExposureEndpoint{Provider: CFQuick, State: stateUnavailable, Detail: "cloudflare quick tunnels are not configured"}
+				}
 			}
 			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
 		} else if observed.registered {
@@ -549,8 +604,8 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 // opt-in and actual route readiness. Setup alone never opens a route.
 func (m *Manager) HostStatus() []ExposureEndpoint {
 	f := m.File()
-	out := make([]ExposureEndpoint, 0, 5)
-	for _, id := range []ID{Local, Tailscale, Funnel, Portal, Zrok} {
+	out := make([]ExposureEndpoint, 0, 6)
+	for _, id := range []ID{Local, Tailscale, Funnel, Portal, Zrok, CFQuick} {
 		configured := m.configured(id)
 		detail := "backend is not configured for this process"
 		if configured {
@@ -577,7 +632,7 @@ func (m *Manager) servePrivate(ctx context.Context, req ExposureRequest) (Exposu
 			errs = append(errs, err)
 		}
 	}
-	for _, id := range []ID{Funnel, Portal, Zrok} {
+	for _, id := range publicIDs {
 		if listed(req.Permitted, id) {
 			eps = append(eps, refused(id, "drafts and private routes cannot use a public provider"))
 			errs = append(errs, fmt.Errorf("%w: %s", ErrProviderNotPermitted, id))
@@ -591,7 +646,7 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 		return ExposureResult{}, fmt.Errorf("%w: previews cannot use a public provider", ErrProviderNotPermitted)
 	}
 	var want []ID
-	for _, id := range []ID{Funnel, Portal, Zrok} {
+	for _, id := range publicIDs {
 		if listed(req.Permitted, id) {
 			want = append(want, id)
 		}
@@ -768,10 +823,31 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 			ep.State = stateStarting
 		}
 		return ep, nil
+	case CFQuick:
+		q := m.quickNet()
+		if q == nil {
+			return refused(CFQuick, "cloudflare-quick is permitted but not configured"), fmt.Errorf("%w: cloudflare-quick", ErrNotConfigured)
+		}
+		url, err := q.Serve(ctx, req.Slug, req.Handler)
+		if err != nil {
+			return ExposureEndpoint{Provider: CFQuick, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: cloudflare-quick: %w", core.ErrProviderNotReady, err)
+		}
+		m.track(req, CFQuick, req.Slug)
+		ep := fromStatus(CFQuick, q.Status(), req.Slug, url)
+		if ep.URL == "" {
+			ep.URL = url
+		}
+		if ep.State == "" {
+			ep.State = stateStarting
+		}
+		return ep, nil
 	default:
 		return refused(id, "not a public provider"), fmt.Errorf("%w: %s", ErrProviderNotPermitted, id)
 	}
 }
+
+// publicIDs are the public providers, in the order requests open them.
+var publicIDs = []ID{Funnel, Portal, Zrok, CFQuick}
 
 type retirementMarker struct {
 	slug string
@@ -984,7 +1060,7 @@ func sortedKeys(set map[string]struct{}) []string {
 	return hosts
 }
 
-// StopPublicRoutes closes Funnel, Portal and zrok for slug. Local and tailscale
+// StopPublicRoutes closes Funnel, Portal, zrok and quick tunnels for slug. Local and tailscale
 // routes for that slug keep serving. Listener stop failures are Unconfirmed
 // and stay tracked. Once Funnel is confirmed closed, a failed node retirement
 // is retained separately for StopSlug or a later Funnel activation to retry;
@@ -993,6 +1069,7 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 	funnelHost, hadFunnel := m.take(slug, Funnel, false)
 	_, hadPortal := m.take(slug, Portal, false)
 	_, hadZrok := m.take(slug, Zrok, false)
+	_, hadQuick := m.take(slug, CFQuick, false)
 	var res PublicStopResult
 	if hadFunnel {
 		if m.tailnet() == nil {
@@ -1056,6 +1133,15 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 		m.pruneState(slug, Zrok)
 		res.Stopped = append(res.Stopped, Zrok)
 	}
+	if hadQuick {
+		if q := m.quickNet(); q == nil || q.Stop(slug) != nil {
+			res.Unconfirmed = append(res.Unconfirmed, CFQuick)
+		} else {
+			m.take(slug, CFQuick, true)
+			m.pruneState(slug, CFQuick)
+			res.Stopped = append(res.Stopped, CFQuick)
+		}
+	}
 	if res.Stopped == nil {
 		res.Stopped = []ID{}
 	}
@@ -1108,7 +1194,7 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	m.mu.Unlock()
 
 	type hostRoutes struct {
-		local, tailscale, funnel, portal, zrok bool
+		local, tailscale, funnel, portal, zrok, cfquick bool
 	}
 	byHost := make(map[string]*hostRoutes)
 	// Current and redirect tsnet identities use the exact lifecycle slug as
@@ -1139,6 +1225,8 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 			h.portal = true
 		case Zrok:
 			h.zrok = true
+		case CFQuick:
+			h.cfquick = true
 		}
 	}
 	hosts := make([]string, 0, len(byHost))
@@ -1261,8 +1349,31 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 		return err
 	}
 
+	// A quick tunnel is closed with its route; its record (the tunnel's
+	// credentials) is deleted even when the provider is off or the flat
+	// was private, so a deleted flat leaves no credentials behind.
 	for _, host := range hosts {
-		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal, Zrok)
+		owned := byHost[host]
+		q := m.quickNet()
+		switch {
+		case owned.cfquick && q == nil:
+			errs = append(errs, fmt.Errorf("%w: cloudflare-quick %s: %w", core.ErrPublicStopUnconfirmed, host, ErrNotConfigured))
+		case q != nil:
+			if err := q.Retire(host); err != nil {
+				errs = append(errs, fmt.Errorf("%w: cloudflare-quick %s: %w", core.ErrPublicStopUnconfirmed, host, err))
+			}
+		default:
+			if err := cfquick.RemoveRecord(m.cfquickDir, host); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	for _, host := range hosts {
+		m.forgetRoutes(slug, host, Tailscale, Funnel, Portal, Zrok, CFQuick)
 	}
 	for _, host := range hosts {
 		owned := byHost[host]
@@ -1514,6 +1625,7 @@ func fromStatus(id ID, st core.NetStatus, host, url string) ExposureEndpoint {
 var (
 	_ PortalNet              = (*portal.Net)(nil)
 	_ ZrokNet                = (*zrok.Net)(nil)
+	_ QuickNet               = (*cfquick.Net)(nil)
 	_ Tailnet                = TSNet{}
 	_ core.LifecycleNet      = (*Manager)(nil)
 	_ core.LifecycleObserver = (*Manager)(nil)

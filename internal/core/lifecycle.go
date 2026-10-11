@@ -310,7 +310,11 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := s.lifecycleNet(); ok && (portal || funnel || zrok) {
+	quick, err := s.st.ProviderPermitted(ctx, slugName, store.ProviderCFQuick)
+	if err != nil {
+		return err
+	}
+	if _, ok := s.lifecycleNet(); ok && (portal || funnel || zrok || quick) {
 		return nil
 	}
 	if portal && s.cfg.Public != nil {
@@ -319,7 +323,7 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if portal && s.cfg.Public == nil {
 		return errPublicDisabled()
 	}
-	return fmt.Errorf("%w: %w: permit tailscale-funnel, portal or zrok before making this flat public", ErrConflict, ErrProviderNotPermitted)
+	return fmt.Errorf("%w: %w: permit tailscale-funnel, portal, zrok or cloudflare-quick before making this flat public", ErrConflict, ErrProviderNotPermitted)
 }
 
 // SetProviderPermission records an explicit non-local provider permission.
@@ -339,7 +343,7 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return forbiddenf("only the operator can permit a network provider")
 	}
 	switch provider {
-	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal, store.ProviderZrok:
+	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal, store.ProviderZrok, store.ProviderCFQuick:
 	case store.ProviderLocal:
 		return invalidf("local is always permitted")
 	default:
@@ -1663,7 +1667,7 @@ func (s *Service) providerNotInUse(ctx context.Context, slug string, id Provider
 	}
 	// An adapter without route inspection cannot prove a running provider idle.
 	lf := s.state(slug)
-	if ((id == ProviderPortal || id == ProviderZrok) && lf.publicServed) || (id == ProviderTailscale && lf.privateServed) || s.cfg.Lifecycle != nil {
+	if ((id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick) && lf.publicServed) || (id == ProviderTailscale && lf.privateServed) || s.cfg.Lifecycle != nil {
 		return fmt.Errorf("%w: cannot confirm %s routes are stopped", ErrProviderInUse, id)
 	}
 	return nil
