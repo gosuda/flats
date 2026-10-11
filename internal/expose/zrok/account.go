@@ -86,13 +86,17 @@ func Connect(ctx context.Context, dir, token, description string) error {
 	}
 	if err := save(); err != nil {
 		// Do not leave an environment registered that this host cannot use.
-		dreq := restEnvironment.NewDisableParamsWithContext(ctx)
+		// Roll back under its own deadline, even if ctx was cancelled, and
+		// delete the saved token only once zrok confirmed: otherwise keep it
+		// so a later Disconnect can still unregister the environment.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		dreq := restEnvironment.NewDisableParamsWithContext(rctx)
 		dreq.Body.Identity = identity
-		_, derr := c.Environment.Disable(dreq, auth)
-		_ = root.Obliterate()
-		if derr != nil {
-			return fmt.Errorf("zrok: save the environment: %w (and unregistering it failed: %v)", err, derr)
+		if _, derr := c.Environment.Disable(dreq, auth); derr != nil {
+			return fmt.Errorf("zrok: save the environment: %w (and unregistering it failed: %v; Disconnect retries it)", err, derr)
 		}
+		_ = root.Obliterate()
 		return fmt.Errorf("zrok: save the environment: %w", err)
 	}
 	return nil

@@ -366,11 +366,13 @@ func (h *Host) DisconnectZrok(ctx context.Context, force bool) error {
 	if h.Config.Zrok.Environment != "" {
 		return fmt.Errorf("%w: zrok.environment points to an environment managed outside Flats; disable it with the zrok CLI", core.ErrConflict)
 	}
+	// Checked under h.pmu, which SetNetworkProvider holds while it grants
+	// zrok, so turning zrok on and disconnecting cannot both succeed.
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
 	if h.Providers != nil && h.Providers.HostAllows(provider.Zrok) {
 		return fmt.Errorf("%w: turn zrok off before disconnecting its account", core.ErrConflict)
 	}
-	h.pmu.Lock()
-	defer h.pmu.Unlock()
 	if h.zrokNet != nil {
 		if h.Providers != nil && !h.Providers.DetachZrok() {
 			return fmt.Errorf("%w: zrok routes are still registered; stop them first", core.ErrProviderInUse)

@@ -18,11 +18,12 @@ import (
 // accountController emulates the zrok v2 enable and disable endpoints with
 // accounts whose tokens can be regenerated.
 type accountController struct {
-	mu       sync.Mutex
-	accounts map[string]string // token -> account
-	envs     map[string]string // environment identity -> account
-	next     int
-	disabled []string
+	mu          sync.Mutex
+	accounts    map[string]string // token -> account
+	envs        map[string]string // environment identity -> account
+	next        int
+	disabled    []string
+	failDisable bool
 }
 
 func (c *accountController) rotate(from, to string) {
@@ -53,6 +54,10 @@ func (c *accountController) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/api/v2/disable":
 		var body struct{ Identity string }
 		json.NewDecoder(r.Body).Decode(&body)
+		if c.failDisable {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		if !known || c.envs[body.Identity] != account {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -228,5 +233,39 @@ func TestReplaceUnregistersALeftoverStagedEnvironment(t *testing.T) {
 	}
 	if len(c.envs) != 1 {
 		t.Fatalf("registered environments = %v", c.envs)
+	}
+}
+
+func TestConnectKeepsCredentialsWhenRollbackFails(t *testing.T) {
+	c := newAccountController(t)
+	dir := filepath.Join(t.TempDir(), "zrok-environment")
+	ctx := context.Background()
+	// Saving the identity fails: its directory name is taken by a file.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "identities"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.failDisable = true
+	c.mu.Unlock()
+	if err := Connect(ctx, dir, "good-token", "flats@test"); err == nil {
+		t.Fatal("Connect succeeded without saving the identity")
+	}
+	if len(c.envs) != 1 {
+		t.Fatalf("registered environments = %v", c.envs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "environment.json")); err != nil {
+		t.Fatalf("the credentials of a still-registered environment were deleted: %v", err)
+	}
+	c.mu.Lock()
+	c.failDisable = false
+	c.mu.Unlock()
+	if err := Disconnect(ctx, dir, false); err != nil {
+		t.Fatalf("Disconnect could not clean up: %v", err)
+	}
+	if len(c.envs) != 0 {
+		t.Fatalf("environment left registered: %v", c.envs)
 	}
 }
