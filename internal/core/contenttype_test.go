@@ -20,8 +20,9 @@ import (
 )
 
 type contentRuntime struct {
-	specs []RuntimeSpec
-	fail  bool
+	specs     []RuntimeSpec
+	fail      bool
+	afterEdit func() // runs after the fake app answers a live edit
 }
 type contentInstance struct{ http.Handler }
 
@@ -32,6 +33,17 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 		return nil, errors.New("start failed")
 	}
 	return contentInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/_docs/api/receipt" {
+			receiptResponse(w, r)
+			return
+		}
+		if r.URL.Path == "/_docs/api/edit" {
+			editResponse(w, r)
+			if rt.afterEdit != nil {
+				rt.afterEdit()
+			}
+			return
+		}
 		if r.URL.Path == "/_docs/api/document" {
 			_ = json.NewEncoder(w).Encode(Document{Format: 1, Doc: "index.md", Markdown: "live people's edits", Source: "live", Epoch: "epoch", Seq: 7, Conflicts: []DocumentConflict{{Generation: 4, Bytes: 27}}})
 			return
@@ -415,10 +427,12 @@ func TestHostHealthSignalIsTrusted(t *testing.T) {
 		r := httptest.NewRequest("GET", "/_docs/healthz", nil)
 		r.Header.Set("X-Flats-Health", "1")
 		r.Header["x-flats-health"] = []string{"1"}
+		r.Header.Set("X-Flats-Host-Op", "edit")
+		r.Header["x-flats-host-op"] = []string{"edit"}
 		clean := trustedAccess(r, public)
 		for key := range clean.Header {
-			if strings.EqualFold(key, "X-Flats-Health") {
-				t.Fatal("client health signal retained", key)
+			if strings.EqualFold(key, "X-Flats-Health") || strings.EqualFold(key, "X-Flats-Host-Op") {
+				t.Fatal("client host signal retained", key)
 			}
 		}
 	}

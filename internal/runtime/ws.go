@@ -587,6 +587,15 @@ func (h *wsHub) post(ev wsEvent) bool {
 	}
 }
 
+// wake asks the WebSocket VM to catch up a room, without blocking the
+// caller. It is dropped when the event queue is full or no VM runs.
+func (h *wsHub) wake(doc string) {
+	select {
+	case h.events <- wsEvent{Type: "wake", Data: &doc}:
+	default:
+	}
+}
+
 func (h *wsHub) shutdown() {
 	h.mu.Lock()
 	conns := h.conns

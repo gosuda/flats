@@ -51,7 +51,11 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "save_document", Annotations: write,
 		Description: "Save one Markdown document as a docs Draft, creating the flat when absent. Never publishes. Read get_document first to preserve live edits; read flats://docs/content-types/v1 for docs bundles. Use save_version for multiple documents/assets."}, t.saveDocument)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_document", Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no},
-		Description: "Read exact live Markdown including people's edits from a docs flat, or Current Draft when no docs version runs. doc is an exact Markdown path (default: the entry). May seed or activate live state; idempotent and non-destructive. conflict (a generation from conflict metadata) returns preserved text. Read before save_document."}, t.getDocument)
+		Description: "Read exact live Markdown including people's edits from a docs flat, or Current Draft when no docs version runs. doc is an exact Markdown path (default: the entry). Returns hash (whole document); blocks=true also lists live blocks with the hashes update_document guards on. May seed or activate live state; idempotent and non-destructive. conflict (a generation from conflict metadata) returns preserved text. Read before save_document or update_document."}, t.getDocument)
+	mcp.AddTool(s, &mcp.Tool{Name: "update_document", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
+		Description: "Edit the LIVE Markdown of a running docs flat with small guarded operations (replace exact text, replace/delete a block by hash, insert before/after a block, at a section end or document start/end). " +
+			"Changes go live immediately with no approval, like a person editing in the browser, and merge with people's concurrent edits. On a Public flat anyone on the internet sees the change at once. " +
+			"Read get_document {blocks: true} first. A changed guard, missing or ambiguous find refuses the whole call and changes nothing: re-read and retry. Not a publish; the next publish merges into these edits (topic.docs)."}, t.updateDocument)
 	// rollback can replace the flat's data (restore_data), so clients must
 	// treat it as destructive and ask before running it.
 	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},

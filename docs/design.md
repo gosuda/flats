@@ -459,7 +459,8 @@ MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
 (loopback callers only), `deploy`, `rollback`, `list_versions`,
 `open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
 `get_approval`, `get_network`, `list_env`, `set_env`, `delete_env`, `list_secrets`, `save_draft`, `get_draft`, `publish`,
-`save_document`, `get_document`, `get_runtime_reference`, `get_content_types`.
+`save_document`, `get_document`, `update_document` (guarded live edits of a
+running docs flat, no approval), `get_runtime_reference`, `get_content_types`.
 Content type discovery: resource `flats://docs/content-types/v1`.
 
 

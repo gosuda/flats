@@ -149,7 +149,7 @@ func TestListTools(t *testing.T) {
 		}
 	}
 	want := []string{"create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_runtime_reference", "guide", "list_env", "list_flats",
-		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_version", "save_version_from_dir", "set_env", "set_visibility"}
+		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_version", "save_version_from_dir", "set_env", "set_visibility", "update_document"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)

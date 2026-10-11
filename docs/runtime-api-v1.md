@@ -970,9 +970,11 @@ is clicked, so it reaches the flat only from the Flats host itself. On a host
 whose private backend is Tailscale, new flats and Draft previews use the
 tailnet address, which other allowed devices can open.
 
-For a page, look at the Draft preview once at desktop width and at about
-400px, in light and dark, fix what you see in one pass, then publish
-(`topic.design`). Do not repeat the look in a loop.
+For a page, check the Draft preview once in your own browser at desktop
+and phone width, in light and dark, with the check script
+(`topic.preview-check`); fix what you find in one pass, then publish
+(`topic.design`). Do not repeat the look in a loop. Flats itself does not
+render pages.
 
 ### Verify
 

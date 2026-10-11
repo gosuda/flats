@@ -102,10 +102,11 @@ existing component styles), then these defaults.
 1. Save the Draft and read the save `warnings`; fix what applies.
 2. `open_preview {slug, version: 0}` and wait until its `state` is `ready`
    (`topic.preview-verify`).
-3. If you can render pages, look at the preview once at desktop width and
-   at about 400px, in light and dark: overflow, unreadable text, missing
-   assets, console errors. Without a browser, fetch the HTML and its assets
-   and check the status codes instead.
+3. With a browser tool, check the preview once in four views (desktop and
+   phone width, light and dark) and run the check script
+   (`topic.preview-check`). Without a browser, fetch the HTML and its assets,
+   check the status codes, and tell the user you did not see the rendered
+   page.
 4. Make one pass of fixes, save again, then `publish` (`topic.approvals`).
 
 Do not loop: no second round of screenshots or DOM probes. Further polish is

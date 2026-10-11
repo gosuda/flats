@@ -145,3 +145,26 @@ func mustTopic(t *testing.T, name string) string {
 	}
 	return md
 }
+
+// topic.preview-check serves the browser script whole, under a javascript
+// fence, and the runtime reference never includes it: its server-example test
+// counts the reference's js fences.
+func TestPreviewCheckTopic(t *testing.T) {
+	md := mustTopic(t, "preview-check")
+	if !strings.HasSuffix(md, "```javascript\n"+runtimeref.PreviewCheck+"```\n") {
+		t.Fatal("topic.preview-check must end with the whole script in a javascript fence")
+	}
+	if strings.Contains(runtimeref.Markdown, "preview-check.js") || strings.Contains(runtimeref.Markdown, "```javascript") {
+		t.Fatal("the browser script must stay out of the runtime reference")
+	}
+	for _, check := range []string{"title", "viewport", "background", "overflow", "image", "pending-image", "stylesheet", "resource", "hidden-text", "contrast"} {
+		if !strings.Contains(runtimeref.PreviewCheck, `add("`+check+`"`) || !strings.Contains(md, "`"+check+"`") {
+			t.Errorf("check %q must be both emitted by the script and documented in the topic", check)
+		}
+	}
+	for _, topic := range []string{"design", "preview-verify"} {
+		if !strings.Contains(mustTopic(t, topic), "`topic.preview-check`") {
+			t.Errorf("topic.%s must point to topic.preview-check", topic)
+		}
+	}
+}

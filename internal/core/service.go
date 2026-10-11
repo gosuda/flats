@@ -144,6 +144,7 @@ type liveFlat struct {
 	privateServed bool
 	publicServed  bool
 	limiter       *limiter
+	editLimiter   *limiter // live document edits through the management channel
 	views         atomic.Int64
 	trafficMu     sync.Mutex
 	traffic       map[trafficKey]int64
@@ -355,7 +356,7 @@ func (s *Service) state(slug string) *liveFlat {
 	defer s.mu.Unlock()
 	lf, ok := s.live[slug]
 	if !ok {
-		lf = &liveFlat{limiter: newLimiter(s.rateLimit())}
+		lf = &liveFlat{limiter: newLimiter(s.rateLimit()), editLimiter: newLimiter(documentEditRate)}
 		s.live[slug] = lf
 	}
 	return lf
