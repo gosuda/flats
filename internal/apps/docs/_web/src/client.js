@@ -7,7 +7,13 @@ import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { Provider } from "./provider.js";
 import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
-import { onThemeChange, redrawDiagrams, renderDiagrams } from "./diagrams.js";
+import { replaceRendered } from "./diagram-preview.js";
+import {
+  onThemeChange,
+  redrawDiagrams,
+  renderDiagrams,
+  destroyDiagram,
+} from "./diagrams.js";
 import "./client.css";
 const $ = (s) => document.querySelector(s),
   path = document.body.dataset.doc,
@@ -50,7 +56,7 @@ let view,
 const access = new Compartment();
 function renderNow() {
   cancelAnimationFrame(renderFrame);
-  $("#content").innerHTML = md.render(text.toString());
+  replaceRendered($("#content"), md.render(text.toString()), destroyDiagram);
   renderDiagrams($("#content"));
 }
 function render() {

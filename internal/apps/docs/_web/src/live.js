@@ -447,35 +447,51 @@ export function tableBlocks(state, focused, refs = new Map()) {
   return out;
 }
 
-// diagramBlocks returns every top-level ```mermaid block as whole lines, as
-// tableBlocks returns tables: one a selection touches while the editor has
-// focus shows its source, and every other one is drawn. edit is where a click
-// on a drawn diagram puts the cursor: the first line of its source. Blocks
-// inside quotes and lists stay code while editing; the rendered view draws
-// them.
+// Use the same parser and line maps as View. In particular, a nested fence's
+// content excludes quote/list prefixes while its editable range keeps them.
+const diagramParser = new MarkdownIt({ html: false });
+const diagramCache = new WeakMap();
 export function diagramBlocks(state, focused) {
-  const doc = state.doc,
-    out = [];
-  for (let n = syntaxTree(state).topNode.firstChild; n; n = n.nextSibling) {
-    if (n.name !== "FencedCode") continue;
-    const info = n.getChild("CodeInfo");
-    if (!info || !isDiagram(unescapeAll(doc.sliceString(info.from, info.to))))
-      continue;
-    const first = doc.lineAt(n.from),
-      from = first.from,
-      to = doc.lineAt(n.to).to,
-      active =
-        focused &&
-        state.selection.ranges.some((r) => r.from <= to && r.to >= from);
-    out.push({
-      from,
-      to,
-      active,
-      edit: Math.min(first.to + 1, to),
-      source: doc.sliceString(from, to),
-    });
+  const doc = state.doc;
+  let blocks = diagramCache.get(doc);
+  if (!blocks) {
+    const tokens = [];
+    // Only block rules are needed: skip inline parsing of the whole document.
+    // Rechecking containers conservatively also handles remote prefix/fence edits.
+    diagramParser.block.parse(doc.toString(), diagramParser, {}, tokens);
+    blocks = tokens
+      .filter(
+        (token) => token.type === "fence" && isDiagram(unescapeAll(token.info)),
+      )
+      .map((token) => {
+        const first = doc.line(token.map[0] + 1);
+        const last = doc.line(Math.min(token.map[1], doc.lines));
+        const contentLine = doc.line(Math.min(first.number + 1, doc.lines));
+        const firstContent = token.content.split("\n")[0];
+        // markdown-it strips container prefixes and fence indentation. Match
+        // the remaining suffix, rather than searching for a repeated label.
+        const prefix = contentLine.text.endsWith(firstContent)
+          ? contentLine.length - firstContent.length
+          : 0;
+        return {
+          from: first.from,
+          to: last.to,
+          edit: Math.min(contentLine.from + prefix, last.to),
+          code: token.content,
+          source:
+            token.markup + token.info + "\n" + token.content + token.markup,
+        };
+      });
+    diagramCache.set(doc, blocks);
   }
-  return out;
+  return blocks.map((block) => ({
+    ...block,
+    active:
+      focused &&
+      state.selection.ranges.some(
+        (r) => r.from <= block.to && r.to >= block.from,
+      ),
+  }));
 }
 
 // A fence line, possibly inside quotes: its fence run and what follows it.

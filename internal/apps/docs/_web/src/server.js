@@ -557,6 +557,26 @@ async function edit(request, env, d) {
   if (result.changed) globalThis.__flats_docsWake?.(d.path);
   return json(200, result);
 }
+// Only gzip and identity are available. Explicit coding preferences override
+// the wildcard; an absent/empty field retains the uncompressed response.
+function mermaidEncoding(header) {
+  const qualities = new Map();
+  for (const entry of (header || "").split(",")) {
+    const [coding, ...parameters] = entry.trim().toLowerCase().split(";");
+    if (!coding) continue;
+    let quality = 1;
+    for (const parameter of parameters) {
+      // Extensions do not alter a coding's quality; malformed q values do.
+      if (!/^\s*q\s*(?:=|$)/.test(parameter)) continue;
+      const match = /^\s*q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?)\s*$/.exec(parameter);
+      quality = match ? Number(match[1]) : 0;
+    }
+    qualities.set(coding.trim(), quality);
+  }
+  const gzip = qualities.get("gzip") ?? qualities.get("*") ?? 0,
+    identity = qualities.get("identity") ?? (qualities.get("*") === 0 ? 0 : 1);
+  return gzip > 0 && gzip >= identity ? "gzip" : identity > 0 ? "identity" : null;
+}
 export default {
   fetch(request, env) {
     const url = new URL(request.url),
@@ -614,17 +634,28 @@ export default {
     // Mermaid is a large separate module, loaded only by the worker that
     // serves it. Its path carries its content hash (FLATS_MERMAID_URL, set by
     // build.mjs), so browsers keep it.
-    if (path === FLATS_MERMAID_URL)
-      return import("./mermaid-asset.js").then(
-        (m) =>
-          new Response(m.default, {
-            headers: {
-              "content-type": "text/javascript; charset=utf-8",
-              "x-content-type-options": "nosniff",
-              "cache-control": "public, max-age=31536000, immutable",
-            },
-          }),
+    if (path === FLATS_MERMAID_URL) {
+      const encoding = mermaidEncoding(request.headers.get("accept-encoding")),
+        headers = {
+          "content-type": "text/javascript; charset=utf-8",
+          "x-content-type-options": "nosniff",
+          "cache-control": "public, max-age=31536000, immutable",
+          vary: "Accept-Encoding",
+        };
+      if (!encoding)
+        return new Response(null, {
+          status: 406,
+          headers: { vary: "Accept-Encoding", "cache-control": "no-store" },
+        });
+      if (encoding === "gzip") headers["content-encoding"] = "gzip";
+      if (request.method === "HEAD") return new Response(null, { headers });
+      return import("./mermaid-asset.js").then((m) =>
+        new Response(
+          encoding === "gzip" ? unbase64(m.gzip, 1536 * 1024) : m.default,
+          { headers },
+        ),
       );
+    }
     if (
       path === "/_docs/assets/client.js" ||
       path === "/_docs/assets/client.css"

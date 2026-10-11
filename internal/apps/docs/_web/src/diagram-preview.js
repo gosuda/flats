@@ -1,0 +1,50 @@
+// Keep identities through position shifts, but never transfer a deleted
+// block's DOM (and last valid SVG) to another diagram at the same position.
+export function diagramKeys(blocks, previous = new Map(), changes) {
+  const mapped = new Map();
+  for (const [pos, key] of previous) {
+    let removed = false;
+    changes?.iterChangedRanges((from, to) => {
+      if (from <= pos && to > pos) removed = true;
+    });
+    if (!removed) mapped.set(changes ? changes.mapPos(pos, 1) : pos, key);
+  }
+  return new Map(blocks.map(({ from }) => [from, mapped.get(from) || {}]));
+}
+
+export function updatePreview(div, widget, previous, invalidate, draw) {
+  if (widget.key !== previous.key) return false;
+  div.querySelector(".mermaid-edit").hidden = widget.active;
+  if (div.dataset.code !== widget.code) {
+    div.dataset.code = widget.code;
+    clearTimeout(div.diagramTimer);
+    const diagram = div.querySelector(".mermaid-diagram");
+    // Source/copy and cancellation must reflect the new text immediately.
+    invalidate(diagram, widget.code);
+    div.diagramTimer = setTimeout(() => draw(diagram, widget.code), 300);
+  }
+  return true;
+}
+
+// Reuse identical diagrams during a rendered-document refresh so Source
+// toggles and open-dialog origins survive unrelated collaborative edits.
+export function replaceRendered(root, html, dispose) {
+  const groups = new Map();
+  const focused = root.ownerDocument.activeElement;
+  for (const diagram of root.querySelectorAll(".mermaid-diagram")) {
+    const source = diagram.querySelector(".mermaid-source").textContent;
+    if (!groups.has(source)) groups.set(source, []);
+    groups.get(source).push(diagram);
+  }
+  const next = root.ownerDocument.createElement("div");
+  next.innerHTML = html;
+  for (const placeholder of next.querySelectorAll(".mermaid-diagram")) {
+    const source = placeholder.querySelector(".mermaid-source").textContent;
+    const retained = groups.get(source)?.shift();
+    if (retained) placeholder.replaceWith(retained);
+  }
+  for (const diagrams of groups.values())
+    for (const diagram of diagrams) dispose(diagram);
+  root.replaceChildren(...next.childNodes);
+  if (focused && root.contains(focused)) focused.focus({ preventScroll: true });
+}

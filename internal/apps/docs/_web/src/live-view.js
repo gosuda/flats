@@ -21,7 +21,13 @@ import {
   referenceDefinitions,
   tableBlocks,
 } from "./live.js";
-import { renderDiagrams } from "./diagrams.js";
+import { diagramKeys, updatePreview } from "./diagram-preview.js";
+import {
+  renderDiagrams,
+  updateDiagram,
+  destroyDiagram,
+  invalidateDiagram,
+} from "./diagrams.js";
 
 class Bullet extends WidgetType {
   eq() {
@@ -137,35 +143,81 @@ class TableWidget extends WidgetType {
   }
 }
 
-// A drawn Mermaid diagram. Clicking it puts the cursor on its source, which
-// then shows for editing. Its position is read from the DOM on click, so
-// text typed above it does not draw it again.
+// The preview stays immediately below an active fence. Updating its existing
+// DOM preserves the last successful SVG while a debounced render is pending.
 class DiagramWidget extends WidgetType {
-  constructor(source, render) {
+  constructor(code, active, key) {
     super();
-    this.source = source;
-    this.render = render;
+    this.code = code;
+    this.active = active;
+    this.key = key;
   }
   eq(other) {
-    return other.source === this.source;
+    return (
+      other.key === this.key &&
+      other.code === this.code &&
+      other.active === this.active
+    );
   }
   toDOM(view) {
     const div = document.createElement("div");
     div.className = "cm-diagram-widget";
-    // render is markdown-it with raw HTML disabled; a mermaid fence becomes
-    // a placeholder that renderDiagrams draws.
-    div.innerHTML = this.render(this.source);
-    renderDiagrams(div).then(() => view.requestMeasure());
-    div.addEventListener("mousedown", (event) => {
+    div.addEventListener("diagram-rendered", () => view.requestMeasure());
+    // Pointer actions keep the caret/source stable. Keyboard focus remains
+    // native and is included by the focus-change handler below.
+    div.addEventListener(
+      "mousedown",
+      (event) => {
+        if (event.target.closest(".mermaid-tools")) event.preventDefault();
+      },
+      true,
+    );
+    const diagram = document.createElement("div");
+    diagram.className = "mermaid-diagram";
+    const pre = document.createElement("pre");
+    pre.className = "mermaid-source";
+    const code = document.createElement("code");
+    code.textContent = this.code;
+    pre.append(code);
+    diagram.append(pre);
+    div.append(diagram);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "mermaid-edit";
+    edit.textContent = "Edit source";
+    edit.addEventListener("click", (event) => {
       event.preventDefault();
+      const pos = view.posAtDOM(div);
       const block = diagramBlocks(view.state, false).find(
-        (b) => b.from === view.posAtDOM(div),
+        (b) => b.from <= pos && pos <= b.to,
       );
       if (!block) return;
+      view.dispatch({
+        selection: EditorSelection.cursor(block.edit),
+        scrollIntoView: true,
+      });
       view.focus();
-      view.dispatch({ selection: EditorSelection.cursor(block.edit) });
     });
+    div.append(edit);
+    div.dataset.code = this.code;
+    edit.hidden = this.active;
+    renderDiagrams(div).then(() => view.requestMeasure());
+    diagram.querySelector(".mermaid-tools")?.append(edit);
     return div;
+  }
+  updateDOM(div, view, previous) {
+    return updatePreview(
+      div,
+      this,
+      previous,
+      invalidateDiagram,
+      (diagram, code) =>
+        updateDiagram(diagram, code).then(() => view.requestMeasure()),
+    );
+  }
+  destroy(div) {
+    clearTimeout(div.diagramTimer);
+    destroyDiagram(div.querySelector(".mermaid-diagram"));
   }
   ignoreEvent() {
     return true;
@@ -186,7 +238,7 @@ function definitions(links) {
 }
 
 function blocks(render, refs) {
-  const build = (state, focused) =>
+  const build = (state, focused, keys) =>
     Decoration.set(
       [
         ...tableBlocks(state, focused, state.field(refs))
@@ -197,19 +249,20 @@ function blocks(render, refs) {
               block: true,
             }).range(t.from, t.to),
           ),
-        ...diagramBlocks(state, focused)
-          .filter((d) => !d.active)
-          .map((d) =>
-            Decoration.replace({
-              widget: new DiagramWidget(d.source, render),
-              block: true,
-            }).range(d.from, d.to),
-          ),
+        ...diagramBlocks(state, focused).map((d) => {
+          const widget = new DiagramWidget(d.code, d.active, keys.get(d.from));
+          return d.active
+            ? Decoration.widget({ widget, block: true, side: 1 }).range(d.to)
+            : Decoration.replace({ widget, block: true }).range(d.from, d.to);
+        }),
       ],
       true,
     );
   const field = StateField.define({
-    create: (state) => ({ focused: false, decorations: build(state, false) }),
+    create: (state) => {
+      const keys = diagramKeys(diagramBlocks(state, false));
+      return { focused: false, keys, decorations: build(state, false, keys) };
+    },
     update(value, tr) {
       let focused = value.focused;
       for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
@@ -218,15 +271,27 @@ function blocks(render, refs) {
         tr.docChanged ||
         tr.selection ||
         syntaxTree(tr.startState) !== syntaxTree(tr.state)
-      )
-        return { focused, decorations: build(tr.state, focused) };
+      ) {
+        const keys = diagramKeys(
+          diagramBlocks(tr.state, focused),
+          value.keys,
+          tr.changes,
+        );
+        return { focused, keys, decorations: build(tr.state, focused, keys) };
+      }
       return value;
     },
     provide: (f) => EditorView.decorations.from(f, (v) => v.decorations),
   });
   return [
     field,
-    EditorView.focusChangeEffect.of((state, focusing) => setFocus.of(focusing)),
+    EditorView.focusChangeEffect.of((state, focusing) =>
+      setFocus.of(
+        focusing ||
+          (!!document.activeElement?.closest(".cm-diagram-widget") &&
+            EditorView.findFromDOM(document.activeElement)?.state === state),
+      ),
+    ),
   ];
 }
 

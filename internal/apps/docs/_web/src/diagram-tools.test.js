@@ -1,0 +1,186 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { uniqueSVG, diagramTools } from "./diagram-tools.js";
+
+class Node {
+  constructor(tag = "div", attributes = {}) {
+    this.tagName = tag;
+    this.attrs = attributes;
+    this.children = [];
+    this.dataset = {};
+    this.events = {};
+    this.style = {};
+    this.textContent = "";
+    this.className = "";
+  }
+  get id() {
+    return this.attrs.id;
+  }
+  get attributes() {
+    return Object.entries(this.attrs).map(([name, value]) => ({ name, value }));
+  }
+  setAttribute(name, value) {
+    this.attrs[name] = value;
+  }
+  getAttribute(name) {
+    return this.attrs[name];
+  }
+  append(...nodes) {
+    for (const n of nodes) {
+      this.children.push(n);
+      n.parent = this;
+    }
+  }
+  prepend(n) {
+    this.children.unshift(n);
+    n.parent = this;
+  }
+  remove() {
+    if (this.parent)
+      this.parent.children = this.parent.children.filter((n) => n !== this);
+  }
+  addEventListener(type, handler) {
+    this.events[type] = handler;
+  }
+  click() {
+    return this.events.click?.({});
+  }
+  focus() {
+    document.activeElement = this;
+  }
+  select() {
+    document.selection = this.value;
+  }
+  querySelectorAll(selector) {
+    const all = this.children.flatMap((n) => [n, ...n.querySelectorAll("*")]);
+    if (selector === "*") return all;
+    if (selector === "[id]") return all.filter((n) => n.id);
+    if (selector === "[data-diagram-action]")
+      return all.filter((n) => n.dataset.diagramAction);
+    if (selector === ".mermaid-svg svg")
+      return this.querySelector(".mermaid-svg")?.querySelectorAll("svg") || [];
+    return all.filter((n) =>
+      selector.startsWith(".")
+        ? n.className.split(" ").includes(selector.slice(1))
+        : n.tagName === selector,
+    );
+  }
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+}
+test("SVG copies rewrite markers, use links, styles and accessible labels without changing label text", () => {
+  const container = new Node();
+  const svg = new Node("svg", {
+    id: "diagram",
+    "aria-labelledby": "title desc",
+  });
+  const style = new Node("style");
+  style.textContent = "#diagram .node {marker-end:url(#arrow);fill:#fff}";
+  const title = new Node("title", { id: "title" });
+  title.textContent = "diagram title arrow";
+  const desc = new Node("desc", { id: "desc" });
+  const arrow = new Node("marker", { id: "arrow" });
+  const path = new Node("path", { "marker-end": "url(#arrow)" });
+  const use = new Node("use", { href: "#arrow", "xlink:href": "#arrow" });
+  svg.append(style, title, desc, arrow, path, use);
+  container.append(svg);
+  uniqueSVG(container);
+  assert.equal(svg.getAttribute("aria-labelledby"), `${title.id} ${desc.id}`);
+  assert.equal(path.getAttribute("marker-end"), `url(#${arrow.id})`);
+  assert.equal(use.getAttribute("href"), `#${arrow.id}`);
+  assert.equal(use.getAttribute("xlink:href"), `#${arrow.id}`);
+  assert.ok(style.textContent.includes(`#${svg.id}`));
+  assert.ok(style.textContent.includes(`url(#${arrow.id})`));
+  assert.ok(style.textContent.includes("fill:#fff"));
+  assert.equal(title.textContent, "diagram title arrow");
+  const old = arrow.id;
+  uniqueSVG(container);
+  assert.notEqual(arrow.id, old);
+  assert.equal(path.getAttribute("marker-end"), `url(#${arrow.id})`);
+});
+test("HTTP copy fallback reports real success/failure and SVG save uses serialized markup", async () => {
+  const saved = Object.fromEntries(
+    ["document", "navigator", "XMLSerializer", "setTimeout"].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  const oldURL = URL.createObjectURL,
+    oldRevoke = URL.revokeObjectURL;
+  let copied = true,
+    blob,
+    serialized,
+    clicked = false;
+  const body = new Node("body");
+  const document = {
+    body,
+    createElement(tag) {
+      const node = new Node(tag);
+      if (tag === "a")
+        node.click = () => {
+          clicked =
+            body.children.includes(node) && node.download === "diagram.svg";
+        };
+      return node;
+    },
+    execCommand: () => copied,
+  };
+  for (const [key, value] of Object.entries({
+    document,
+    navigator: {},
+    XMLSerializer: class {
+      serializeToString(svg) {
+        serialized = svg;
+        return '<svg xmlns="http://www.w3.org/2000/svg"><title>Diagram</title></svg>';
+      }
+    },
+    setTimeout: () => {},
+  }))
+    Object.defineProperty(globalThis, key, { value, configurable: true });
+  URL.createObjectURL = (value) => {
+    blob = value;
+    return "blob:diagram";
+  };
+  URL.revokeObjectURL = () => {};
+  try {
+    const el = new Node();
+    el.dataset.error = "syntax";
+    const source = new Node("pre");
+    source.className = "mermaid-source";
+    source.textContent = "graph TD; A-->B";
+    const figure = new Node();
+    figure.className = "mermaid-svg";
+    const svg = new Node("svg");
+    figure.append(svg);
+    el.append(source, figure);
+    diagramTools(el, () => {});
+    const controls = el.querySelectorAll("button");
+    const copy = controls.find((n) => n.textContent === "Copy source");
+    await copy.click();
+    assert.equal(document.selection, source.textContent);
+    assert.equal(copy.textContent, "Copied");
+    assert.equal(body.children.length, 0);
+    copied = false;
+    await copy.click();
+    assert.equal(copy.textContent, "Copy unavailable");
+    assert.equal(el.dataset.sourceVisible, "true");
+    assert.equal(el.querySelector(".mermaid-retry").hidden, true);
+    el.dataset.error = "load";
+    diagramTools(el, () => {});
+    assert.equal(el.querySelector(".mermaid-retry").hidden, false);
+    controls.find((n) => n.textContent === "Save SVG").click();
+    assert.equal(serialized, svg);
+    assert.equal(clicked, true);
+    assert.equal(blob.type, "image/svg+xml;charset=utf-8");
+    assert.match(await blob.text(), /^<svg xmlns=/);
+    assert.equal(body.children.length, 0);
+  } finally {
+    for (const [key, descriptor] of Object.entries(saved)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+    URL.createObjectURL = oldURL;
+    URL.revokeObjectURL = oldRevoke;
+  }
+});

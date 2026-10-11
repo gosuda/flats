@@ -18,7 +18,8 @@ go test ./internal/apps/docs/... ./internal/runtime/...
 Dependencies are pinned in `_web/package.json` and its lockfile. The build
 produces one minified server ESM bundle, embedding the client JavaScript and
 CSS as strings, plus `mermaid-asset.js`, a module exporting the minified
-Mermaid browser bundle as a string. No Node, network, WebAssembly, TextEncoder, or TextDecoder
+Mermaid browser bundle as a string plus its build-time gzip representation
+encoded as base64. No Node, network, WebAssembly, TextEncoder, or TextDecoder
 is needed at deployment time. Third-party license texts cover the 90 packages
 actually bundled, as determined by esbuild's input graph (a package whose
 license is only a README section, such as fastdom, contributes that section).
@@ -60,11 +61,28 @@ reconnect, clears them only on ACK, relays awareness, and stops with a local
 download on divergent history or fatal rejection. Markdown-it disables raw
 HTML and validates links. A ```` ```mermaid ```` fence renders as a placeholder that
 Mermaid 11.17.2 (strict security level, light/dark theme from the color scheme)
-draws in the browser. Mermaid (3.4 MB) is fetched only for documents with diagrams,
-from `/_docs/assets/mermaid-<sha256[:16]>.js` with immutable caching; the worker
-dynamically imports `mermaid-asset.js` only when that path is requested, so
-other workers never load it. Drawings are cached by theme and source, and the
-live-preview editor draws top-level diagrams in place like tables. Public viewers construct no editor, cannot send presence and receive no
+draws in the browser. Mermaid is fetched only for documents with diagrams,
+from `/_docs/assets/mermaid-<sha256[:16]>.js` with immutable caching. The server
+negotiates gzip or identity using `Accept-Encoding`, includes `Vary`, and
+returns 406 if neither representation is acceptable. The approximately
+3.45 MB module compresses to 0.96 MB with gzip. Compression happens at build
+time; the worker decodes base64 with the bounded host codec into a binary
+response. The build rejects gzip payloads above that codec's 1.5 MiB limit.
+The worker dynamically imports `mermaid-asset.js` only when that path is
+requested, so other workers never load it. Drawings are cached by theme and
+source, concurrent identical requests share rendering work, and stale work
+cannot overwrite a newer theme or source. Diagrams near the viewport render
+first, and work for removed placeholders is discarded.
+
+Diagram controls provide an expanded view with zoom, pan and fit, source
+viewing/copying, and SVG download. The expanded view supports keyboard use,
+Escape to close, and restoring focus to its opener; source editing has a
+separate control. Loading and syntax errors are distinguished, source is
+preserved on failure, and failed loads can be retried. The live-preview editor
+also handles diagrams inside quotes and lists. While source is being edited,
+an optional preview refreshes after typing pauses.
+
+ Public viewers construct no editor, cannot send presence and receive no
 private identities/cursors. Public connections/rooms have separate smaller
 budgets. Already activated API reads and heartbeats use deferred read snapshots.
 Rooms catch up from their cached Y.Doc, validating once after replay. Unchanged

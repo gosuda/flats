@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 process.chdir(path.dirname(fileURLToPath(import.meta.url)));
 const out = "../dist";
@@ -26,9 +27,13 @@ const mermaid = await build({
 const mermaidJS = mermaid.outputFiles[0].text,
   mermaidURL = `/_docs/assets/mermaid-${createHash("sha256").update(mermaidJS).digest("hex").slice(0, 16)}.js`,
   mermaidDefine = { FLATS_MERMAID_URL: JSON.stringify(mermaidURL) };
+const mermaidGzip = gzipSync(mermaidJS, { level: 9 });
+// The deployed QuickJS host codec accepts at most 1.5 MiB of decoded bytes.
+if (mermaidGzip.length > 1536 * 1024)
+  throw new Error("Compressed Mermaid exceeds the host codec limit");
 await writeFile(
   out + "/mermaid-asset.js",
-  `export default ${JSON.stringify(mermaidJS)};\n`,
+  `export default ${JSON.stringify(mermaidJS)};\nexport const gzip = ${JSON.stringify(mermaidGzip.toString("base64"))};\n`,
 );
 const client = await build({
   ...options,
@@ -171,5 +176,5 @@ for (const p of inputs) {
 }
 await writeFile(out + "/BUILD-INPUTS.sha256", hash.digest("hex") + "\n");
 console.log(
-  `Client JS ${Buffer.byteLength(js)} bytes; Mermaid ${Buffer.byteLength(mermaidJS)} bytes; CSS ${Buffer.byteLength(css)} bytes; server (includes client assets) ${(await readFile(out + "/server.js")).length} bytes; ${packages.size} bundled packages.`,
+  `Client JS ${Buffer.byteLength(js)} bytes; Mermaid ${Buffer.byteLength(mermaidJS)} bytes (${mermaidGzip.length} gzip); CSS ${Buffer.byteLength(css)} bytes; server (includes client assets) ${(await readFile(out + "/server.js")).length} bytes; ${packages.size} bundled packages.`,
 );

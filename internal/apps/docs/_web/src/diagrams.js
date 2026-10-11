@@ -1,142 +1,170 @@
-// Draws the Mermaid diagram placeholders markdown.js renders. Mermaid is
-// large, so it loads on first use from its own content-hashed asset;
-// documents without diagrams never fetch it. FLATS_MERMAID_URL is set by
-// build.mjs.
+import { createDiagramRuntime } from "./diagram-runtime.js";
+import { diagramTools, uniqueSVG } from "./diagram-tools.js";
 let loading,
-  initialized = "",
-  queue = Promise.resolve();
-// Drawn SVG (or an error) by theme and source, so re-rendering the document
-// on every edit reuses unchanged diagrams instead of drawing them again.
-const cache = new Map(),
-  cacheLimit = 64,
-  dark = matchMedia("(prefers-color-scheme: dark)");
-
-function load() {
-  loading ||= import(FLATS_MERMAID_URL).then(
+  loadAttempt = 0,
+  sequence = 0;
+const dark = matchMedia("(prefers-color-scheme: dark)"),
+  requests = new WeakMap();
+const freshID = () =>
+  "flats-mermaid-" + ++sequence + "-" + Math.random().toString(36).slice(2, 10);
+const runtime = createDiagramRuntime(() => {
+  const url = loadAttempt
+    ? FLATS_MERMAID_URL + "?retry=" + loadAttempt
+    : FLATS_MERMAID_URL;
+  loading ||= import(url).then(
     (m) => m.default,
-    (err) => {
+    (error) => {
       loading = undefined;
-      throw err;
+      loadAttempt++;
+      throw error;
     },
   );
   return loading;
+}, freshID);
+const observed = new Set();
+const observer =
+  typeof IntersectionObserver === "undefined"
+    ? null
+    : new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries)
+            if (entry.isIntersecting) {
+              observer.unobserve(entry.target);
+              observed.delete(entry.target);
+              renderOne(entry.target);
+            }
+        },
+        { rootMargin: "400px" },
+      );
+
+// View mode replaces whole document subtrees; release unseen placeholders too.
+if (observer && typeof MutationObserver !== "undefined") {
+  new MutationObserver(() => {
+    for (const el of observed) if (!el.isConnected) destroyDiagram(el);
+  }).observe(document.documentElement, { childList: true, subtree: true });
+}
+export function destroyDiagram(el) {
+  requests.delete(el);
+  observer?.unobserve(el);
+  observed.delete(el);
 }
 
-// Each drawing gets its own id: the SVG scopes its styles and arrow markers
-// by it, and a copy sharing ids with a hidden one can lose its markers.
-const freshID = () =>
-  "flats-mermaid-" + Math.random().toString(36).slice(2, 12);
-
-// draw runs one Mermaid render at a time; theme changes reinitialize
-// between them.
-function draw(source, theme) {
-  const job = queue.then(async () => {
-    const mermaid = await load();
-    if (initialized !== theme) {
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: "strict",
-        suppressErrorRendering: true,
-        theme,
-      });
-      initialized = theme;
-    }
-    const id = freshID();
-    try {
-      const { svg } = await mermaid.render(id, source);
-      return { svg, id };
-    } catch (err) {
-      // Parse errors point at the column on their own line, so the
-      // first lines keep their breaks.
-      const message = String(err?.message || err || "Invalid diagram")
-        .split("\n")
-        .slice(0, 4)
-        .join("\n");
-      return { error: message.slice(0, 500) };
-    }
-  });
-  queue = job.catch(() => {});
-  return job;
-}
-
-function cached(key) {
-  const value = cache.get(key);
-  if (value) {
-    cache.delete(key);
-    cache.set(key, value);
+function status(el, message, error = false) {
+  let note = el.querySelector(".mermaid-status");
+  if (!note) {
+    note = document.createElement("p");
+    note.setAttribute("role", "status");
+    el.append(note);
   }
-  return value;
+  note.className = "mermaid-status" + (error ? " mermaid-error" : "");
+  note.textContent = message;
+}
+function renderOne(el) {
+  observer?.unobserve(el);
+  observed.delete(el);
+  const source = el.querySelector(".mermaid-source")?.textContent ?? "";
+  const token = {},
+    theme = dark.matches ? "dark" : "default";
+  requests.set(el, token);
+  // CodeMirror builds widgets before mounting them. A fresh detached widget
+  // still owns its request; once mounted, removal invalidates it. Explicit
+  // destroyDiagram also cancels widgets discarded before their first mount.
+  let mounted = el.isConnected;
+  const current = () => {
+    if (el.isConnected) mounted = true;
+    return requests.get(el) === token && (!mounted || el.isConnected);
+  };
+  el.dataset.state = "pending";
+  delete el.dataset.error;
+  el.setAttribute("aria-busy", "true");
+  diagramTools(el, () => renderOne(el));
+  status(el, "Rendering diagram…");
+  return runtime
+    .request(source, theme, current)
+    .then(
+      (result) => {
+        if (!current() || !result) return;
+        if (result.error) {
+          el.dataset.state = "error";
+          el.dataset.error = "syntax";
+          status(
+            el,
+            (el.querySelector(".mermaid-svg")
+              ? "Preview kept from the last valid diagram. "
+              : "") +
+              "Diagram syntax error: " +
+              result.error,
+            true,
+          );
+        } else {
+          el.querySelector(".mermaid-svg")?.remove();
+          const figure = document.createElement("div");
+          figure.className = "mermaid-svg";
+          // Mermaid strict mode sanitizes the markup. Each instance has unique IDs.
+          figure.innerHTML = result.svg;
+          uniqueSVG(figure);
+          el.querySelector(".mermaid-tools").after(figure);
+          el.dataset.state = "drawn";
+          status(el, "");
+        }
+        diagramTools(el, () => renderOne(el));
+      },
+      () => {
+        if (!current()) return;
+        el.dataset.state = "error";
+        el.dataset.error = "load";
+        status(
+          el,
+          "Diagram renderer could not load. Check your connection and retry.",
+          true,
+        );
+        diagramTools(el, () => renderOne(el));
+      },
+    )
+    .finally(() => {
+      if (current()) {
+        el.removeAttribute("aria-busy");
+        el.dispatchEvent(new Event("diagram-rendered", { bubbles: true }));
+      }
+    });
 }
 
-function remember(key, value) {
-  cache.set(key, value);
-  if (cache.size > cacheLimit) cache.delete(cache.keys().next().value);
-}
-
-// show puts a drawing (or its error) before the source, which CSS hides
-// once drawn; the source stays so a theme change can draw it again.
-function show(el, result) {
-  for (const old of el.querySelectorAll(".mermaid-svg, .mermaid-error"))
-    old.remove();
-  if (result.error) {
-    el.dataset.state = "error";
-    const note = document.createElement("p");
-    note.className = "mermaid-error";
-    note.textContent = "Diagram error: " + result.error;
-    el.prepend(note);
-    return;
-  }
-  el.dataset.state = "drawn";
-  const figure = document.createElement("div");
-  figure.className = "mermaid-svg";
-  // Mermaid's strict security level sanitizes the SVG it returns.
-  figure.innerHTML = result.svg.replaceAll(result.id, freshID());
-  el.prepend(figure);
-}
-
-// renderDiagrams draws every placeholder under root that is not drawn yet.
-// It resolves once all of them are drawn or have failed; drawings already in
-// the cache are shown synchronously.
+// Resolves for visible work; offscreen placeholders render as they approach.
 export function renderDiagrams(root) {
-  const theme = dark.matches ? "dark" : "default",
-    pending = [];
-  for (const el of root.querySelectorAll(
-    ".mermaid-diagram:not([data-state])",
-  )) {
-    const source = el.querySelector(".mermaid-source")?.textContent ?? "",
-      key = theme + "\n" + source,
-      hit = cached(key);
-    if (hit) {
-      show(el, hit);
-      continue;
-    }
-    el.dataset.state = "pending";
-    pending.push(
-      draw(source, theme).then(
-        (result) => {
-          remember(key, result);
-          show(el, result);
-        },
-        () => {
-          // Mermaid could not load: the source stays as a code block, and
-          // the next render tries again.
-          delete el.dataset.state;
-        },
-      ),
-    );
+  const pending = [];
+  // Measure the whole batch before toolbar/status writes invalidate layout.
+  const placeholders = [
+    ...root.querySelectorAll(".mermaid-diagram:not([data-state])"),
+  ].map((el) => ({
+    el,
+    offscreen: observer && el.getBoundingClientRect().top > innerHeight + 400,
+  }));
+  for (const { el, offscreen } of placeholders) {
+    if (offscreen) {
+      el.dataset.state = "waiting";
+      diagramTools(el, () => renderOne(el));
+      status(el, "Diagram will render when scrolled into view.");
+      observed.add(el);
+      observer.observe(el);
+    } else pending.push(renderOne(el));
   }
   return Promise.all(pending);
 }
-
-// redrawDiagrams draws every placeholder under root again, as after a
-// theme change.
 export function redrawDiagrams(root) {
-  for (const el of root.querySelectorAll(".mermaid-diagram[data-state]"))
+  for (const el of root.querySelectorAll(".mermaid-diagram")) {
+    destroyDiagram(el);
     delete el.dataset.state;
+  }
   return renderDiagrams(root);
 }
-
-// onThemeChange calls f when the color scheme changes.
+export function invalidateDiagram(el, source) {
+  destroyDiagram(el);
+  el.querySelector(".mermaid-source").textContent = source;
+}
+export function updateDiagram(el, source) {
+  invalidateDiagram(el, source);
+  return renderOne(el);
+}
 export function onThemeChange(f) {
   dark.addEventListener("change", f);
 }

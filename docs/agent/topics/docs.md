@@ -105,8 +105,13 @@ Each document keeps the newest 8 records within 2 MiB; older ones are gone.
 * A fenced code block whose language is exactly `mermaid` is drawn as a
   [Mermaid](https://mermaid.js.org/) diagram (strict security level: no
   click handlers or HTML labels) in the light or dark theme of the reader.
-  Invalid diagram syntax shows an error above the source. Diagrams in quotes
-  and lists are drawn in View; in Edit they stay code.
+  Diagram controls offer an expanded view with zoom, pan and fit, source
+  viewing/copying, and SVG download. The expanded view supports keyboard
+  navigation and Escape to close, restoring focus to its opener.
+  Invalid syntax preserves the source and shows a syntax error; loading
+  failures offer retry. Diagrams in quotes and lists also render in Edit.
+  While editing a diagram's source, an optional preview updates after typing
+  pauses. Source editing and expanded viewing use separate controls.
 * A docs version is recorded as kind `server`: snapshots, isolated previews
   and rollback behave as for server flats (`topic.rollback-data`). Docs flats
   get no outbound network, even with saved origin grants.

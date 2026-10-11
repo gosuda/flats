@@ -145,9 +145,9 @@ test("mermaid fences are found as whole lines and reveal under the selection", (
     ensureSyntaxTree(s, s.doc.length, 5000);
     return s;
   };
-  // Other languages and diagrams inside quotes stay code while editing.
+  // Nested fences use the same stripped content as the rendered view.
   const blocks = diagramBlocks(state(0), true);
-  assert.equal(blocks.length, 1);
+  assert.equal(blocks.length, 2);
   const [diagram] = blocks;
   assert.equal(diagram.source, "```mermaid\ngraph TD\n  A --> B\n```");
   assert.equal(diagram.active, false);
@@ -424,4 +424,44 @@ test("indented code hides its indent away from the cursor", () => {
   const text = "x\n\n    code\n      more\n\ny";
   assert.deepEqual(hidden(decorate(text)), ["    ", "    "]);
   assert.deepEqual(hidden(decorate(text, 9)), ["    "]);
+});
+
+test("nested Mermaid uses renderer content and maps editing to original source", () => {
+  for (const text of [
+    "> ```mermaid\n> flowchart LR\n>   A --> B\n> ```\n\nafter",
+    "- Diagram\n\n  ```mermaid\n  flowchart LR\n    A --> B\n  ```\n\nafter",
+    "> - ```mermaid\n>   flowchart LR\n>     A --> B\n>   ```\n\nafter",
+    "1. ```mermaid\n   flowchart LR\n     A --> B\n   ```\n\nafter",
+    "   ~~~mermaid extra\n   flowchart LR\n     A --> B\n   ~~~\n\nafter",
+  ]) {
+    const state = EditorState.create({ doc: text });
+    const [block] = diagramBlocks(state, false);
+    const token = createMarkdown()
+      .parse(text, {})
+      .find((t) => t.type === "fence");
+    assert.equal(block.code, token.content, text);
+    assert.equal(block.edit, text.indexOf("flowchart"), text);
+    assert.equal(block.from, state.doc.line(token.map[0] + 1).from);
+    assert.equal(block.to, state.doc.line(token.map[1]).to);
+    assert.equal(
+      createMarkdown().parse(block.source, {})[0].content,
+      token.content,
+    );
+    const edited = state.update({ selection: { anchor: block.edit } }).state;
+    assert.equal(diagramBlocks(edited, true)[0].active, true);
+  }
+});
+
+test("Mermaid source ranges handle open fences, blank lines and multiple blocks", () => {
+  const text =
+    "before\n\n> ```mermaid\n> \n> graph LR\n> A --> B\n> ```\n\n~~~mermaid\nsequenceDiagram\nAlice->>Bob: Hello";
+  const state = EditorState.create({ doc: text });
+  const blocks = diagramBlocks(state, false);
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0].code, "\ngraph LR\nA --> B\n");
+  assert.equal(blocks[0].edit, state.doc.line(4).to);
+  assert.equal(blocks[1].to, text.length);
+  assert.equal(blocks[1].edit, text.indexOf("sequenceDiagram"));
+  assert.equal(blocks[1].code, "sequenceDiagram\nAlice->>Bob: Hello");
+  assert.ok(blocks[0].to < blocks[1].from);
 });

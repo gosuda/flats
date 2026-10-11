@@ -290,7 +290,11 @@ main {
 .mermaid-diagram {
   margin: 16px 0;
 }
-.mermaid-diagram[data-state="drawn"] .mermaid-source {
+.mermaid-diagram:has(.mermaid-svg):not([data-source-visible="true"])
+  .mermaid-source,
+.cm-diagram-widget
+  .mermaid-diagram:not([data-source-visible="true"])
+  .mermaid-source {
   display: none;
 }
 .mermaid-svg {
@@ -463,4 +467,108 @@ main {
   font-size: 13px;
   background: var(--paper);
   border-bottom: 1px solid var(--line);
+}
+
+/* Diagram actions stay within the document, with a focused reading view. */
+.mermaid-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  cursor: default;
+}
+.mermaid-tools button {
+  font-size: 12px;
+  min-height: 32px;
+  padding: 5px 9px;
+}
+.mermaid-tools button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--active);
+}
+.mermaid-tools [hidden] {
+  display: none;
+}
+.mermaid-status {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0;
+}
+.mermaid-status:empty {
+  display: none;
+}
+.mermaid-status.mermaid-error {
+  color: var(--error);
+}
+.mermaid-dialog {
+  width: min(1200px, calc(100vw - 32px));
+  height: min(900px, calc(100dvh - 32px));
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+}
+.mermaid-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.mermaid-dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+.mermaid-dialog .mermaid-tools {
+  flex: none;
+}
+.mermaid-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  background: var(--canvas);
+}
+.mermaid-viewport:active {
+  cursor: grabbing;
+}
+.mermaid-viewport:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.mermaid-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  user-select: none;
+}
+.mermaid-canvas svg {
+  display: block;
+}
+.mermaid-zoom {
+  min-width: 4ch;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+@media (max-width: 599px) {
+  .mermaid-tools button {
+    min-height: 40px;
+  }
+  .mermaid-dialog {
+    padding: 8px;
+  }
+}
+
+.mermaid-copy-buffer {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+}
+.mermaid-edit {
+  font-size: 12px;
+  min-height: 32px;
+  padding: 5px 9px;
 }
