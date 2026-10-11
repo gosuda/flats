@@ -65,6 +65,8 @@ test("PNG snapshots resolved SVG styles and encodes canvas with explicit dimensi
   const canvas = {
     getContext: () => (failure === "context" ? null : context),
     toBlob(done, type) {
+      if (failure === "taint")
+        throw Object.assign(Error("tainted"), { name: "SecurityError" });
       encodedType = type;
       done(failure === "encode" ? null : new Blob(["PNG"], { type }));
     },
@@ -119,10 +121,45 @@ test("PNG snapshots resolved SVG styles and encodes canvas with explicit dimensi
       ["context", /unavailable/],
       ["encode", /encoding failed/],
       ["security", /security restriction/],
+      ["taint", /Save SVG instead/],
     ]) {
       failure = kind;
       await assert.rejects(pngBlob(svg), match);
     }
+    values.set("cursor", 'url("https://other.test/cursor.png")');
+    assert.doesNotThrow(
+      () => snapshotSVG(svg),
+      "nonpaint cursor URL is ignored",
+    );
+    assert.equal(xmlSource.props.has("cursor"), false);
+    values.set("fill", 'url("https://other.test/image.svg#gradient")');
+    assert.throws(() => snapshotSVG(svg), /external/);
+    values.set("fill", "red");
+    const image = node("image");
+    image.attrs.href = "https://other.test/img.png";
+    svg.querySelectorAll = () => [image];
+    svg.cloneNode = () => {
+      const clone = node();
+      clone.querySelectorAll = () => [node("image")];
+      return clone;
+    };
+    assert.throws(() => snapshotSVG(svg), /external image/);
+    const html = node("div");
+    html.namespaceURI = "http://www.w3.org/1999/xhtml";
+    const htmlClone = node("div");
+    svg.querySelectorAll = () => [html];
+    svg.cloneNode = () => {
+      const clone = node();
+      clone.querySelectorAll = (selector) =>
+        selector === "*" ? [htmlClone] : [];
+      return clone;
+    };
+    values.set("padding-left", "12px");
+    values.set("background-image", "none");
+    snapshotSVG(svg);
+    assert.equal(htmlClone.props.get("padding-left"), "12px");
+    assert.equal(htmlClone.props.get("font-family"), "Arial");
+    assert.equal(htmlClone.props.has("marker-end"), false);
     values.set("background-image", 'url("https://other.test/image.png")');
     assert.throws(() => snapshotSVG(svg), /external/);
   } finally {

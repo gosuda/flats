@@ -1,20 +1,18 @@
-import { StateEffect } from "@codemirror/state";
+import { ySyncAnnotation } from "y-codemirror.next";
+import { StateEffect, Transaction } from "@codemirror/state";
 
 export const setDiagramEditing = StateEffect.define();
 
-// Closing is explicit even when the caret remains inside a replaced fence.
-// Leaving that block releases the override so normal caret entry works again.
+// A focus-only transition preserves Done. Deliberate cursor movement or a
+// local edit releases it before decorations hide a caret receiving input.
 export function diagramClosures(blocks, keys, previous, transaction) {
   const live = new Set(keys.values());
   const closed = new Set([...previous].filter((key) => live.has(key)));
-  if (transaction.selection) {
-    for (const block of blocks) {
-      const touches = transaction.state.selection.ranges.some(
-        (range) => range.from <= block.to && range.to >= block.from,
-      );
-      if (!touches) closed.delete(keys.get(block.from));
-    }
-  }
+  const localEdit =
+    transaction.docChanged &&
+    !transaction.annotation(ySyncAnnotation) &&
+    !transaction.annotation(Transaction.remote);
+  if (transaction.selection || localEdit) closed.clear();
   for (const effect of transaction.effects)
     if (effect.is(setDiagramEditing)) {
       const { key, open } = effect.value;
@@ -26,7 +24,13 @@ export function diagramClosures(blocks, keys, previous, transaction) {
 
 export function sourceAction(button, active) {
   button.textContent = active ? "Done" : "Edit source";
-  button.setAttribute("aria-expanded", String(active));
+}
+
+// Avoid leaving a hidden caret inside the fence where another position exists.
+export function closedDiagramCursor(block, documentLength) {
+  if (block.to < documentLength) return block.to + 1;
+  if (block.from > 0) return block.from - 1;
+  return null;
 }
 
 // Keep identities through position shifts, but never transfer a deleted

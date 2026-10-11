@@ -28,6 +28,20 @@ function localResources(value, base) {
     );
   });
 }
+// Paint and label layout only: do not serialize hundreds of browser longhands,
+// interaction cursors or app custom properties into every diagram element.
+const textProperties =
+  "color font-family font-size font-style font-weight font-variant font-kerning letter-spacing word-spacing line-height text-decoration text-transform text-align white-space word-break overflow-wrap direction writing-mode".split(
+    " ",
+  );
+const svgProperties =
+  "display visibility opacity fill fill-opacity fill-rule stroke stroke-width stroke-opacity stroke-dasharray stroke-dashoffset stroke-linecap stroke-linejoin stroke-miterlimit paint-order marker-start marker-mid marker-end clip-path mask filter text-anchor dominant-baseline alignment-baseline baseline-shift vector-effect shape-rendering text-rendering transform transform-origin transform-box".split(
+    " ",
+  );
+const htmlProperties =
+  "display visibility opacity box-sizing width height min-width max-width min-height max-height padding-top padding-right padding-bottom padding-left margin-top margin-right margin-bottom margin-left border-top-width border-right-width border-bottom-width border-left-width border-style border-color border-radius background-color background-image vertical-align overflow position top left right bottom flex-direction align-items justify-content gap".split(
+    " ",
+  );
 export function snapshotSVG(svg) {
   const rect = svg.getBoundingClientRect(),
     box = svg.viewBox?.baseVal;
@@ -45,7 +59,11 @@ export function snapshotSVG(svg) {
     const source = originals[i],
       target = copies[i];
     const style = getComputedStyle(source);
-    for (const property of style)
+    const properties =
+      source.namespaceURI === "http://www.w3.org/1999/xhtml"
+        ? [...textProperties, ...htmlProperties]
+        : [...textProperties, ...svgProperties];
+    for (const property of properties)
       target.style.setProperty(
         property,
         localResources(style.getPropertyValue(property), document.baseURI),
@@ -143,6 +161,12 @@ export async function pngBlob(svg) {
         "image/png",
       );
     });
+  } catch (error) {
+    if (error?.name === "SecurityError")
+      throw Error(
+        "This browser cannot export this diagram's HTML labels as PNG. Save SVG instead.",
+      );
+    throw error;
   } finally {
     canvas.width = canvas.height = 0;
     image.src = "";

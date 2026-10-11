@@ -24,6 +24,7 @@ import {
 import {
   diagramKeys,
   diagramClosures,
+  closedDiagramCursor,
   setDiagramEditing,
   sourceAction,
   updatePreview,
@@ -199,7 +200,18 @@ class DiagramWidget extends WidgetType {
       event.preventDefault();
       const key = div.diagramKey;
       if (div.dataset.active === "true") {
-        view.dispatch({ effects: setDiagramEditing.of({ key, open: false }) });
+        const pos = view.posAtDOM(div);
+        const block = diagramBlocks(view.state, false).find(
+          (b) => b.from <= pos && pos <= b.to,
+        );
+        const outside =
+          block && closedDiagramCursor(block, view.state.doc.length);
+        view.dispatch({
+          effects: setDiagramEditing.of({ key, open: false }),
+          ...(outside != null
+            ? { selection: EditorSelection.cursor(outside) }
+            : {}),
+        });
         // CM may replace the tile when source collapses. Find the retained
         // block by identity and focus its Edit source control after layout.
         view.requestMeasure({

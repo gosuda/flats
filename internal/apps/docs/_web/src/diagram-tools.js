@@ -33,6 +33,22 @@ export function uniqueSVG(container) {
     }
   }
 }
+function actionStatus(el, message, error = false, clear = true) {
+  let note = el.querySelector(".mermaid-export-status");
+  if (!note) {
+    note = document.createElement("p");
+    note.setAttribute("role", "status");
+    el.append(note);
+  }
+  clearTimeout(note.clearTimer);
+  note.className =
+    "mermaid-export-status mermaid-status" + (error ? " mermaid-error" : "");
+  note.textContent = message;
+  if (clear)
+    note.clearTimer = setTimeout(() => {
+      note.textContent = "";
+    }, 10000);
+}
 function button(label, action) {
   const el = document.createElement("button");
   el.type = "button";
@@ -219,10 +235,8 @@ export function diagramTools(el, retry) {
     const source = button("Source", () => {
       const visible = el.dataset.sourceVisible !== "true";
       el.dataset.sourceVisible = String(visible);
-      source.setAttribute("aria-pressed", String(visible));
       source.textContent = visible ? "Hide source" : "Source";
     });
-    source.setAttribute("aria-pressed", "false");
     const copy = button("Copy source", async () => {
       try {
         const text = el.querySelector(".mermaid-source").textContent;
@@ -246,9 +260,14 @@ export function diagramTools(el, retry) {
         copy.textContent = "Copied";
       } catch {
         copy.textContent = "Copy unavailable";
+        if (el.dataset.editable === "true")
+          actionStatus(
+            el,
+            "Copy unavailable. Use Edit source to select and copy the diagram text.",
+            true,
+          );
         if (el.dataset.editable !== "true") {
           el.dataset.sourceVisible = "true";
-          source.setAttribute("aria-pressed", "true");
           source.textContent = "Hide source";
         }
       }
@@ -271,26 +290,21 @@ export function diagramTools(el, retry) {
       const svg = el.querySelector(".mermaid-svg svg");
       if (!svg || png.dataset.busy === "true") return;
       png.dataset.busy = "true";
-      png.disabled = true;
+      png.setAttribute("aria-disabled", "true");
       png.textContent = "Saving PNG…";
-      let note = el.querySelector(".mermaid-export-status");
-      if (!note) {
-        note = document.createElement("p");
-        note.className = "mermaid-export-status mermaid-status";
-        note.setAttribute("role", "status");
-        el.append(note);
-      }
-      note.className = "mermaid-export-status mermaid-status";
-      note.textContent = "Preparing PNG…";
+      actionStatus(el, "Preparing PNG…", false, false);
       try {
         saveBlob(await pngBlob(svg), "diagram.png");
-        note.textContent = "PNG download started.";
+        actionStatus(el, "PNG download started.");
       } catch (error) {
-        note.className = "mermaid-export-status mermaid-status mermaid-error";
-        note.textContent =
-          "PNG export failed: " + (error?.message || "Try Save SVG instead.");
+        actionStatus(
+          el,
+          "PNG export failed: " + (error?.message || "Try Save SVG instead."),
+          true,
+        );
       } finally {
         delete png.dataset.busy;
+        png.setAttribute("aria-disabled", "false");
         png.disabled = !el.querySelector(".mermaid-svg svg");
         png.textContent = "Save PNG";
       }
@@ -305,7 +319,6 @@ export function diagramTools(el, retry) {
     el.prepend(bar);
   }
   for (const control of bar.querySelectorAll("[data-diagram-action]"))
-    control.disabled =
-      control.dataset.busy === "true" || !el.querySelector(".mermaid-svg svg");
+    control.disabled = !el.querySelector(".mermaid-svg svg");
   bar.querySelector(".mermaid-retry").hidden = el.dataset.error !== "load";
 }

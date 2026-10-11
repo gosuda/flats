@@ -115,6 +115,7 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
   );
   const oldURL = URL.createObjectURL,
     oldRevoke = URL.revokeObjectURL;
+  const actionTimers = [];
   let copied = true,
     blob,
     serialized,
@@ -142,7 +143,7 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
         return '<svg xmlns="http://www.w3.org/2000/svg"><title>Diagram</title></svg>';
       }
     },
-    setTimeout: () => {},
+    setTimeout: (callback) => actionTimers.push(callback),
   }))
     Object.defineProperty(globalThis, key, { value, configurable: true });
   URL.createObjectURL = (value) => {
@@ -166,6 +167,7 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
     const toggle = controls.find((n) => n.textContent === "Source");
     toggle.click();
     assert.equal(toggle.textContent, "Hide source");
+    assert.equal(toggle.getAttribute("aria-pressed"), undefined);
     assert.equal(el.dataset.sourceVisible, "true");
     toggle.click();
     assert.equal(toggle.textContent, "Source");
@@ -202,6 +204,49 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
     assert.equal(blob.type, "image/svg+xml;charset=utf-8");
     assert.match(await blob.text(), /^<svg xmlns=/);
     assert.equal(body.children.length, 0);
+    const editableCopy = editable
+      .querySelectorAll("button")
+      .find((n) => n.textContent === "Copy source");
+    await editableCopy.click();
+    assert.equal(editable.dataset.sourceVisible, undefined);
+    assert.match(
+      editable.querySelector(".mermaid-export-status").textContent,
+      /Use Edit source/,
+    );
+    const png = controls.find((n) => n.textContent === "Save PNG");
+    let fontsReady;
+    document.fonts = {
+      ready: new Promise((resolve) => {
+        fontsReady = resolve;
+      }),
+    };
+    svg.isConnected = false;
+    png.focus();
+    const exporting = png.click();
+    assert.equal(png.disabled, false);
+    assert.equal(png.getAttribute("aria-disabled"), "true");
+    assert.equal(document.activeElement, png);
+    diagramTools(el, () => {});
+    assert.equal(
+      png.disabled,
+      false,
+      "refresh does not disable busy focused button",
+    );
+    await png.click();
+    assert.equal(png.dataset.busy, "true");
+    fontsReady();
+    await exporting;
+    assert.match(
+      el.querySelector(".mermaid-export-status").textContent,
+      /diagram changed/,
+    );
+    assert.equal(png.textContent, "Save PNG");
+    assert.equal(png.disabled, false);
+    assert.equal(png.getAttribute("aria-disabled"), "false");
+    assert.equal(png.dataset.busy, undefined);
+    assert.equal(document.activeElement, png);
+    actionTimers.at(-1)();
+    assert.equal(el.querySelector(".mermaid-export-status").textContent, "");
   } finally {
     for (const [key, descriptor] of Object.entries(saved)) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

@@ -1,12 +1,14 @@
+import { ySyncAnnotation } from "y-codemirror.next";
 import { test } from "node:test";
 import { diagramBlocks } from "./live.js";
 import assert from "node:assert/strict";
-import { ChangeSet, EditorState } from "@codemirror/state";
+import { ChangeSet, EditorState, Transaction } from "@codemirror/state";
 import {
   diagramKeys,
   updatePreview,
   trackFocusExit,
   diagramClosures,
+  closedDiagramCursor,
   setDiagramEditing,
   sourceAction,
 } from "./diagram-preview.js";
@@ -94,7 +96,7 @@ test("preview rejects foreign DOM; same-block edits cancel immediately and debou
     draw,
   );
   assert.equal(edit.textContent, "Edit source");
-  assert.equal(edit["aria-expanded"], "false");
+  assert.equal(edit["aria-expanded"], undefined);
   assert.equal(div.dataset.active, "false");
   clearTimeout(div.diagramTimer); // Widget.destroy cancels a detached preview.
   t.mock.timers.tick(1000);
@@ -156,11 +158,7 @@ test("Done closes and Edit source reopens nested and EOF fences without changing
       close,
     );
     assert.ok(closed.has(key), "caret inside the fence must not reopen Done");
-    assert.equal(
-      close.state.doc.toString(),
-      text,
-      "Done preserves Markdown and undo history",
-    );
+    assert.equal(close.state.doc.toString(), text, "Done preserves Markdown");
     assert.equal(close.state.selection.main.head, state.selection.main.head);
     const focusOnly = close.state.update({});
     closed = diagramClosures(
@@ -189,6 +187,87 @@ test("Done closes and Edit source reopens nested and EOF fences without changing
     };
     sourceAction(button, true);
     assert.equal(button.textContent, "Done");
-    assert.equal(button["aria-expanded"], "true");
+    assert.equal(button["aria-expanded"], undefined);
   }
+});
+
+test("typing, deletion and deliberate cursor motion reopen a closed whole-document fence", () => {
+  const text = "```mermaid\ngraph TD; A-->B\n```";
+  const start = EditorState.create({ doc: text });
+  const block = diagramBlocks(start, true)[0];
+  assert.equal(closedDiagramCursor(block, text.length), null);
+  const state = start.update({ selection: { anchor: block.edit + 3 } }).state;
+  const keys = diagramKeys([block]);
+  const key = keys.get(block.from);
+  for (const spec of [
+    {
+      changes: { from: block.edit + 3, insert: "X" },
+      annotations: Transaction.userEvent.of("input.type"),
+    },
+    {
+      changes: { from: block.edit + 2, to: block.edit + 3 },
+      annotations: Transaction.userEvent.of("delete.backward"),
+    },
+    {
+      selection: { anchor: block.edit + 2 },
+      annotations: Transaction.userEvent.of("select"),
+    },
+    { changes: { from: block.edit + 3, insert: "X" } },
+  ]) {
+    const tr = state.update(spec);
+    const blocks = diagramBlocks(tr.state, true);
+    const nextKeys = diagramKeys(blocks, keys, tr.changes);
+    const closed = diagramClosures(blocks, nextKeys, new Set([key]), tr);
+    assert.equal(closed.has(key), false);
+    assert.ok(
+      blocks.some((b) => b.active),
+      "changed source is visible under the caret",
+    );
+  }
+});
+
+test("Done moves the caret outside nested or trailing blocks, reentry reopens, deletion prunes", () => {
+  for (const text of [
+    "before\n\n> ```mermaid\n> graph LR\n> ```",
+    "```mermaid\ngraph LR\n```\n\nafter",
+  ]) {
+    const state = EditorState.create({ doc: text });
+    const block = diagramBlocks(state, true)[0];
+    const keys = diagramKeys([block]),
+      key = keys.get(block.from);
+    const outside = closedDiagramCursor(block, text.length);
+    assert.ok(outside < block.from || outside > block.to);
+    const done = state.update({
+      selection: { anchor: outside },
+      effects: setDiagramEditing.of({ key, open: false }),
+    });
+    let closed = diagramClosures([block], keys, new Set(), done);
+    assert.ok(closed.has(key));
+    const reenter = done.state.update({ selection: { anchor: block.edit } });
+    closed = diagramClosures([block], keys, closed, reenter);
+    assert.equal(closed.has(key), false);
+    const remove = state.update({
+      changes: { from: block.from, to: block.to },
+    });
+    const remaining = diagramBlocks(remove.state, true);
+    const nextKeys = diagramKeys(remaining, keys, remove.changes);
+    assert.equal(
+      diagramClosures(remaining, nextKeys, new Set([key]), remove).size,
+      0,
+    );
+  }
+});
+
+test("remote edits and focus-only effects retain Done until local interaction", () => {
+  const state = EditorState.create({ doc: "```mermaid\ngraph LR\n```" });
+  const block = diagramBlocks(state, true)[0],
+    keys = diagramKeys([block]),
+    key = keys.get(block.from);
+  const remote = state.update({
+    changes: { from: block.edit + 8, insert: "; A-->B" },
+    annotations: ySyncAnnotation.of({}),
+  });
+  const blocks = diagramBlocks(remote.state, true),
+    mapped = diagramKeys(blocks, keys, remote.changes);
+  assert.ok(diagramClosures(blocks, mapped, new Set([key]), remote).has(key));
 });

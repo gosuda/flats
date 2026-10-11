@@ -83,8 +83,10 @@ preserved on failure, and failed loads can be retried. The live-preview editor
 also handles diagrams inside quotes and lists. While source is being edited,
 an optional preview refreshes after typing pauses. PNG export snapshots the
 current appearance onto the document background at up to 2× resolution,
-bounded by 8,192 pixels per side and 16 megapixels. Unsupported external
-resources or oversized diagrams report an error and leave SVG export available.
+bounded by 8,192 pixels per side and 16 megapixels. PNG uses locally available
+fonts; page web fonts are not embedded, so text metrics can differ. Unsupported
+external resources, browser canvas restrictions, or oversized diagrams report
+an error and leave SVG export available.
 
 Public viewers construct no editor, cannot send presence and receive no
 private identities/cursors. Public connections/rooms have separate smaller
