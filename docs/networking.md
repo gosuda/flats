@@ -90,7 +90,11 @@ it. To switch to another token, for example after regenerating it, enter it
 under **Replace with a new account token**: the current account stays
 connected if the new token is refused, and replacing is refused while a flat
 is public through zrok. **Disconnect account** unregisters the environment
-and deletes the token; turn zrok off first. Each flat served through zrok reserves its slug as a name in
+and deletes the token; turn zrok off first. If zrok refuses the stored token
+(for example after you regenerated it), the console says so and offers to
+forget the account on this machine; remove the environment it names in the
+zrok console. Replacing works after a regenerated token: the new token
+unregisters the old environment of the same account. Each flat served through zrok reserves its slug as a name in
 `zrok.namespace` (default `public`), so its URL survives restarts, and the
 share exists only while the flat is public. A name already reserved in your
 zrok account by something other than this host is refused. On the free zrok

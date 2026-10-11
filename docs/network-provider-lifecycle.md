@@ -183,11 +183,17 @@ the operator's enabled zrok environment: by default the one Flats manages in
 `<data>/zrok-environment`, which `zrok.Connect` creates from the account token
 the operator enters in the console (`PUT /console/api/providers/zrok/account`)
 and `zrok.Disconnect` unregisters and removes (`DELETE`, only while zrok is
-off; the backend is detached first). The same `PUT` with an account already
+off; the backend is detached first). When zrok refuses the stored token,
+`Disconnect` keeps the environment and returns `ErrStale`, because it may
+still be registered; `DELETE ...?force=1` removes it locally anyway. The same `PUT` with an account already
 connected calls `zrok.Replace`: the new environment is enabled in
-`<dir>.next`, then the old one is unregistered and the new one moved into
-place. The running backend is detached first, which `Manager.DetachZrok`
-refuses while a zrok route is registered, and restarted on the new account,
+`<dir>.next`, then the old one is unregistered, with its own token or else
+the new one (a regenerated token of the same account), and the new one moved
+into place. If neither token can unregister it, the replacement fails with
+`ErrStale`, the staged environment is unregistered and the current one
+stays. The running backend is detached first, which `Manager.DetachZrok`
+refuses while a zrok route is registered (it waits for zrok opens in flight,
+which hold a read lock from `Serve` through route registration), and restarted on the new account,
 or on the old one if the replacement fails. `Net.Adopt` then moves name
 records to the new account fingerprint when the new account holds the same
 reservation (same name and creation time). Constructing a `Net` reads that

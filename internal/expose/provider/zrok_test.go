@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
@@ -21,11 +22,16 @@ type fakeZrok struct {
 	stopped, retired   []string
 	stopErr, retireErr error
 	reserved           map[string]bool
+	entered, release   chan struct{} // when set, Serve blocks between them
 }
 
 func (f *fakeZrok) Reserved(slug string) (bool, error) { return f.reserved[slug], nil }
 
 func (f *fakeZrok) Serve(ctx context.Context, slug string, h http.Handler) (string, error) {
+	if f.entered != nil {
+		f.entered <- struct{}{}
+		<-f.release
+	}
 	f.serve++
 	return f.net.Serve(ctx, "zrok-"+slug, h, false)
 }
@@ -348,5 +354,32 @@ func TestDetachZrokRefusesWhileRouted(t *testing.T) {
 	}
 	if !m.DetachZrok() || m.zrokNet() != nil {
 		t.Fatal("zrok was not detached after its routes stopped")
+	}
+}
+
+func TestDetachZrokWaitsForOpenInFlight(t *testing.T) {
+	z := newFakeZrok(t)
+	z.entered, z.release = make(chan struct{}), make(chan struct{})
+	m := zrokManager(t, []ID{Zrok}, z)
+	served := make(chan error, 1)
+	go func() {
+		_, err := m.ServeExposure(context.Background(), ExposureRequest{Slug: "notes", Host: "notes", Visibility: "public",
+			Audience: AudienceCurrent, Handler: text("public"), Permitted: []ID{Zrok}})
+		served <- err
+	}()
+	<-z.entered // the open is inside Serve, before registering its route
+	detached := make(chan bool, 1)
+	go func() { detached <- m.DetachZrok() }()
+	select {
+	case <-detached:
+		t.Fatal("DetachZrok did not wait for the open in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(z.release)
+	if err := <-served; err != nil {
+		t.Fatal(err)
+	}
+	if <-detached {
+		t.Fatal("detached zrok under a route that registered meanwhile")
 	}
 }

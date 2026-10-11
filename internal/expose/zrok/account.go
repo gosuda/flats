@@ -97,10 +97,17 @@ func Connect(ctx context.Context, dir, token, description string) error {
 	return nil
 }
 
+// ErrStale reports that zrok refused every token offered for unregistering
+// an environment. The environment may still be registered at zrok, for
+// example after its account token was regenerated elsewhere.
+var ErrStale = errors.New("zrok refused the environment's account token, so it may still be registered at zrok")
+
 // Disconnect unregisters the zrok environment in dir from its account and
 // removes dir, including the account token and identity. A dir without an
-// enabled environment is removed without contacting zrok.
-func Disconnect(ctx context.Context, dir string) error {
+// enabled environment is removed without contacting zrok. When zrok refuses
+// the stored token, dir is kept and ErrStale returned, unless force is set:
+// then dir is removed although the environment may stay registered.
+func Disconnect(ctx context.Context, dir string, force bool) error {
 	if !filepath.IsAbs(dir) {
 		return fmt.Errorf("zrok: environment directory %q is not absolute", dir)
 	}
@@ -109,33 +116,47 @@ func Disconnect(ctx context.Context, dir string) error {
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	environment.SetRootDirName(dir)
-	root, err := environment.LoadRoot()
-	if err != nil {
-		return fmt.Errorf("zrok: %w", err)
-	}
-	if root.IsEnabled() {
-		env := root.Environment()
-		endpoint, _ := root.ApiEndpoint()
-		c, err := controllerClient(ctx, endpoint)
-		if err != nil {
-			return fmt.Errorf("zrok: %w", err)
-		}
-		req := restEnvironment.NewDisableParamsWithContext(ctx)
-		req.Body.Identity = env.ZitiIdentity
-		if _, err := c.Environment.Disable(req, httptransport.APIKeyAuth("X-TOKEN", "header", env.AccountToken)); err != nil {
-			var unauthorized *restEnvironment.DisableUnauthorized
-			if !errors.As(err, &unauthorized) {
-				return fmt.Errorf("zrok: unregister the environment: %w", err)
-			}
-			// The token or environment is no longer valid at zrok; there is
-			// nothing left to unregister.
-		}
+	err := unregisterLocked(ctx, dir)
+	if err != nil && !(force && errors.Is(err, ErrStale)) {
+		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("zrok: remove the environment: %w", err)
 	}
 	return nil
+}
+
+// unregisterLocked unregisters the enabled environment in dir with its own
+// token, then with each of extra (another token of the same account). envMu
+// is held.
+func unregisterLocked(ctx context.Context, dir string, extra ...string) error {
+	environment.SetRootDirName(dir)
+	root, err := environment.LoadRoot()
+	if err != nil {
+		return fmt.Errorf("zrok: %w", err)
+	}
+	if !root.IsEnabled() {
+		return nil
+	}
+	env := root.Environment()
+	endpoint, _ := root.ApiEndpoint()
+	c, err := controllerClient(ctx, endpoint)
+	if err != nil {
+		return fmt.Errorf("zrok: %w", err)
+	}
+	for _, token := range append([]string{env.AccountToken}, extra...) {
+		req := restEnvironment.NewDisableParamsWithContext(ctx)
+		req.Body.Identity = env.ZitiIdentity
+		_, err := c.Environment.Disable(req, httptransport.APIKeyAuth("X-TOKEN", "header", token))
+		if err == nil {
+			return nil
+		}
+		var unauthorized *restEnvironment.DisableUnauthorized
+		if !errors.As(err, &unauthorized) {
+			return fmt.Errorf("zrok: unregister environment %s: %w", env.ZitiIdentity, err)
+		}
+	}
+	return fmt.Errorf("zrok: environment %s: %w", env.ZitiIdentity, ErrStale)
 }
 
 // Account describes the zrok environment in a directory without its token.
@@ -164,9 +185,10 @@ func Describe(dir string) (Account, error) {
 
 // Replace connects the account of token in place of the environment in dir.
 // The new environment is enabled first, next to dir; only when that works is
-// the old one unregistered and replaced, so a rejected token leaves the
-// current account connected. An old environment zrok no longer accepts is
-// replaced too.
+// the old one unregistered, with its own token or else the new one, and
+// replaced. A rejected new token, or an old environment neither token can
+// unregister (ErrStale: another account whose token changed), leaves the
+// current account connected.
 func Replace(ctx context.Context, dir, token, description string) error {
 	next := dir + ".next"
 	if err := os.RemoveAll(next); err != nil {
@@ -175,12 +197,19 @@ func Replace(ctx context.Context, dir, token, description string) error {
 	if err := Connect(ctx, next, token, description); err != nil {
 		return err
 	}
-	if err := Disconnect(ctx, dir); err != nil {
-		_ = Disconnect(ctx, next)
-		return err
-	}
 	envMu.Lock()
 	defer envMu.Unlock()
+	// The old token may have been regenerated: then the new token, of the
+	// same account, unregisters the old environment.
+	if err := unregisterLocked(ctx, dir, token); err != nil {
+		if uerr := unregisterLocked(ctx, next); uerr == nil {
+			_ = os.RemoveAll(next)
+		}
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("zrok: remove the old environment: %w", err)
+	}
 	if err := os.Rename(next, dir); err != nil {
 		return fmt.Errorf("zrok: install the new environment: %w", err)
 	}

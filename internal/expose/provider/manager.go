@@ -146,6 +146,7 @@ type Manager struct {
 	ts            Tailnet
 	portal        PortalNet
 	zrok          ZrokNet
+	zmu           sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	tailscaleDir  string
 	zrokDir       string
 	retirementDir string
@@ -287,6 +288,8 @@ func (m *Manager) AttachZrok(z ZrokNet) {
 // DetachZrok removes the zrok backend, for an account disconnected while the
 // host runs. It refuses while any zrok route is registered.
 func (m *Manager) DetachZrok() bool {
+	m.zmu.Lock() // waits for zrok opens in flight
+	defer m.zmu.Unlock()
 	m.mu.Lock()
 	for _, r := range m.routes {
 		if r.provider == Zrok {
@@ -739,15 +742,20 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		return ep, nil
 	case Zrok:
-		if m.zrokNet() == nil {
+		// Hold the open against DetachZrok from Serve through registration,
+		// so a backend is never detached under an open that will register.
+		m.zmu.RLock()
+		defer m.zmu.RUnlock()
+		z := m.zrokNet()
+		if z == nil {
 			return refused(Zrok, "zrok is permitted but not configured"), fmt.Errorf("%w: zrok", ErrNotConfigured)
 		}
-		url, err := m.zrokNet().Serve(ctx, req.Slug, req.Handler)
+		url, err := z.Serve(ctx, req.Slug, req.Handler)
 		if err != nil {
 			return ExposureEndpoint{Provider: Zrok, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: zrok: %w", core.ErrProviderNotReady, err)
 		}
 		m.track(req, Zrok, req.Slug)
-		ep := fromStatus(Zrok, m.zrokNet().Status(), req.Slug, url)
+		ep := fromStatus(Zrok, z.Status(), req.Slug, url)
 		if ep.URL == "" {
 			ep.URL = url
 		}

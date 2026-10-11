@@ -41,7 +41,9 @@ type ProviderAdmin interface {
 // once and never returned.
 type ZrokAccountAdmin interface {
 	ConnectZrok(ctx context.Context, token string) error
-	DisconnectZrok(ctx context.Context) error
+	// DisconnectZrok unregisters the environment; force forgets it locally
+	// even when zrok refuses its token.
+	DisconnectZrok(ctx context.Context, force bool) error
 }
 
 // Server serves /api and /console/api.
@@ -875,7 +877,7 @@ func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.V
 	if !ok {
 		return
 	}
-	if err := z.DisconnectZrok(r.Context()); err != nil {
+	if err := z.DisconnectZrok(r.Context(), r.URL.Query().Get("force") == "1"); err != nil {
 		fail(w, err)
 		return
 	}

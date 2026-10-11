@@ -353,6 +353,8 @@ func zrokAccountError(err error) error {
 		return fmt.Errorf("%w: %v", core.ErrConflict, err)
 	case errors.Is(err, zrok.ErrRejected):
 		return fmt.Errorf("%w: %v", core.ErrInvalid, err)
+	case errors.Is(err, zrok.ErrStale):
+		return fmt.Errorf("%w: %v; remove the environment in the zrok console", core.ErrConflict, err)
 	default:
 		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
 	}
@@ -360,7 +362,7 @@ func zrokAccountError(err error) error {
 
 // DisconnectZrok implements api.ZrokAccountAdmin. It unregisters the
 // environment and removes it with the account token. zrok must be off.
-func (h *Host) DisconnectZrok(ctx context.Context) error {
+func (h *Host) DisconnectZrok(ctx context.Context, force bool) error {
 	if h.Config.Zrok.Environment != "" {
 		return fmt.Errorf("%w: zrok.environment points to an environment managed outside Flats; disable it with the zrok CLI", core.ErrConflict)
 	}
@@ -378,8 +380,8 @@ func (h *Host) DisconnectZrok(ctx context.Context) error {
 		}
 		h.zrokNet = nil
 	}
-	if err := zrok.Disconnect(ctx, h.zrokOptions.Environment); err != nil {
-		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	if err := zrok.Disconnect(ctx, h.zrokOptions.Environment, force); err != nil {
+		return zrokAccountError(err)
 	}
 	h.logf("zrok account disconnected from the console")
 	return nil

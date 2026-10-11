@@ -203,12 +203,26 @@ function zrokDetails(p, data, opts) {
     });
     if (!ok) return;
     try {
-      await api.disconnectZrok();
-      toast('zrok account disconnected.', 'success');
-      await opts.reload();
+      await api.disconnectZrok(false);
     } catch (err) {
-      await infoDialog('Cannot disconnect the zrok account', errorPanel(err));
+      // zrok may refuse the stored token (regenerated elsewhere): offer to
+      // forget the account here, leaving its removal to the zrok console.
+      const force = await confirmDialog({
+        title: 'zrok did not unregister this environment',
+        body: [errorPanel(err), h('p', { text: `Forget the account on this machine anyway? Environment ${p.environment_id || ''} may stay registered in your zrok account; remove it in the zrok console.` })],
+        confirmLabel: 'Forget it here',
+        danger: true,
+      });
+      if (!force) return;
+      try {
+        await api.disconnectZrok(true);
+      } catch (err2) {
+        await infoDialog('Cannot disconnect the zrok account', errorPanel(err2));
+        return;
+      }
     }
+    toast('zrok account disconnected.', 'success');
+    await opts.reload();
   }));
   return [
     facts,
