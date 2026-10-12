@@ -21,7 +21,6 @@ set -eu
 shard=$1
 shift
 
-module=github.com/gosuda/flats
 runtime_soak='^(TestOutboundFetchLoopOwnershipCycleCollection|TestNearCapCycleCollection)$'
 # A serial soak whose requests take seconds each: alone, it keeps its margin
 # against the request timeout.
@@ -31,8 +30,9 @@ docs_soak='^(TestConflictPrivacyAndRollbackStorageBudgets|TestPublicDocumentRead
 # rate limit that refills over time.
 docs_budget='^(TestMaximumRewriteActivationBudget|TestLargeDocumentEditAndPingBudgets|TestLargeDisjointActivation|TestFullRewriteActivation|TestAgentEditManyBlocksWithinDeadline|TestVisitorHealthIsCheapAndCannotBlockCommit|Test100KiBDocumentTimings|TestUnauthorizedUpdatesPreserveWriterBudget|TestConnectionInputLimitPreservesOtherWriter|TestAuthorizedUpdatesConsumeWriterBudget)$'
 
-# The release workflow runs this script from main against a tag's source, and
-# an old tag may predate a package. Its shards then have nothing to run.
+# The release and commit image workflows run this script from main against
+# older source, which may predate a package. Its shards then have nothing to
+# run.
 need() {
 	[ -d "$1" ] || {
 		echo "$1 is not in this source; nothing to run" >&2
@@ -49,7 +49,8 @@ docs-budget) need internal/apps/docs && exec go test "$@" -run "$docs_budget" ./
 docs) need internal/apps/docs && exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
 other)
 	# Separate assignments, so set -e stops on a failing go list instead of
-	# testing no packages.
+	# testing no packages. Older source has another module path.
+	module=$(go list -m)
 	all=$(go list ./...)
 	packages=$(printf '%s\n' "$all" | grep -vx -e "$module/internal/runtime" -e "$module/internal/apps/docs")
 	# shellcheck disable=SC2086 # one argument per package path.

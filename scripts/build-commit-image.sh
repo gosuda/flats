@@ -12,12 +12,15 @@ git worktree add --detach "$source_dir" "$commit"
 # go test ./... as CI's shards, one after another: run all at once on one
 # runner, the docs tests miss their wall-clock budgets. The shard script comes
 # from the workflow's commit, like the rest of the tooling; see ci-test.sh.
+# Every shard runs even after one fails, so the log shows all failures.
 (
 	cd "$source_dir"
 	go vet ./...
+	failed=0
 	for shard in runtime-soak runtime-codec runtime docs-soak docs-budget docs other; do
-		"$root/scripts/ci-test.sh" "$shard"
+		"$root/scripts/ci-test.sh" "$shard" || failed=1
 	done
+	[ "$failed" = 0 ]
 )
 FLATS_SOURCE_DIR="$source_dir" FLATS_RELEASE_TARGETS='linux/amd64 linux/arm64' \
 	"$root/scripts/build-release.sh" "$version" "$work/dist"
