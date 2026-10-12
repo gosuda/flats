@@ -467,7 +467,9 @@ reports `ErrNetbirdNotBuilt`) owns the host's one embedded NetBird
 peer and serves two providers from it. `netbird` (Private, a mesh provider
 like `tailscale`) listens on the peer's overlay address with `ListenTCP`, one
 port per host from a persisted pool (21000–21999, `<data>/netbird/ports.json`),
-and reports `http://<peer FQDN>:<port>`. `netbird-expose` (Public) listens the
+and reports `http://<peer FQDN>:<port>`. All flats share that one host name, so
+their browser cookies are shared (cookies are not scoped by port); this is a
+known limit, not isolated by Flats. `netbird-expose` (Public) listens the
 same way on a separate port, asks NetBird to expose it (`Expose` with the slug as
 name prefix, HTTP, no PIN or password) and keeps the session alive; a keep-alive
 error or lost listener exposes again with backoff, so the URL can change and

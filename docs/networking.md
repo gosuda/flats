@@ -172,7 +172,14 @@ and/or NetBird Expose, then allow them on a flat.
 - **NetBird (Private)** serves each flat on the peer's overlay address, on its
   own TCP port (21000–21999, kept across restarts), over plain HTTP. Reach it
   from another peer that your NetBird access policies allow, at the URL the
-  flat's page shows. Previews and drafts do not use NetBird.
+  flat's page shows. Previews and drafts do not use NetBird. **Flats on the
+  same peer share one browser cookie jar.** The peer has a single host name and
+  the flats differ only by port, and browsers do not scope cookies by port, so
+  a cookie one flat sets is also sent to the others on that peer, which can read
+  or overwrite it. This matters only for server flats that set cookies, such as
+  a session; static flats are unaffected. Use NetBird for flats you trust
+  together, and serve a flat that needs its own cookies through NetBird Expose,
+  Tailscale (each flat has its own host name) or another provider.
 - **NetBird Expose (Public)** exposes a public flat through NetBird's reverse
   proxy, which must be enabled on your NetBird account or server. Flats asks
   for an expose named after the slug and keeps the session alive; the URL NetBird
