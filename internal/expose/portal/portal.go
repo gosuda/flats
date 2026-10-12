@@ -1,18 +1,22 @@
 // Package portal exposes public flats through Portal relays
 // (github.com/gosuda/portal-tunnel). Each served slug gets one Portal
-// exposure under a persisted identity named after the slug, so its public
-// hostname stays stable across restarts. Relays report a canonical hostname
-// bound to the identity address: <slug>-<address>.<relay host>, or
+// exposure under a persisted identity named after the slug. Relays report a
+// canonical hostname bound to the identity address, which stays stable
+// across restarts: <slug>-<address>.<relay host>, or
 // <name hash>--<address>.<relay host> for slugs longer than 22 characters.
 // Relays also grant the friendly <slug>.<relay host> alias while no other
-// identity holds it; Flats shows that URL when granted, else the canonical one.
+// identity holds it; Flats shows that URL when granted, else the canonical
+// one, and warns when an alias it showed is no longer granted (see the
+// alias memory comment above aliasPath).
 package portal
 
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"net/http"
@@ -122,6 +126,7 @@ type entry struct {
 	primary string                     // discovered relay whose URL URL() keeps returning while it is ready
 	sticky  map[string]sdk.RelayStatus // terminal failures, kept after deselection
 	logged  map[string]string          // relayURL -> last logged state
+	aliases map[string]string          // relayURL -> alias URL last shown (see aliasPath)
 }
 
 type handlerBox struct {
@@ -305,6 +310,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		pinned:  pinned,
 		sticky:  map[string]sdk.RelayStatus{},
 		logged:  map[string]string{},
+		aliases: n.loadAliases(slug),
 	}
 
 	var wg sync.WaitGroup
@@ -527,7 +533,7 @@ func (n *Net) URLs(slug string) []string {
 func (n *Net) readyURLs(e *entry, sts []sdk.RelayStatus) []string {
 	var ready []sdk.RelayStatus
 	for _, s := range sts {
-		if s.State == sdk.RelayReady && !s.Deselected && s.PublicURL != "" {
+		if isReady(s) {
 			ready = append(ready, s)
 		}
 	}
@@ -641,19 +647,32 @@ func (n *Net) watch(ctx context.Context, e *entry) {
 
 func (n *Net) observe(e *entry, sts ...sdk.RelayStatus) {
 	e.mu.Lock()
-	n.record(e, sts)
+	var aliases map[string]string
+	if n.record(e, sts) {
+		aliases = maps.Clone(e.aliases)
+	}
 	old, next := n.pinChange(e, sts, time.Now())
 	e.mu.Unlock()
+	if aliases != nil {
+		n.saveAliases(e.slug, aliases)
+	}
 	if next != "" {
 		n.repin(e, old, next)
 	}
 }
 
-// record tracks terminal failures and logs state changes. e.mu is held.
-func (n *Net) record(e *entry, sts []sdk.RelayStatus) {
+// record tracks terminal failures and granted aliases and logs state
+// changes. It reports whether e.aliases changed. e.mu is held.
+func (n *Net) record(e *entry, sts []sdk.RelayStatus) (aliasesChanged bool) {
 	for _, s := range sts {
 		if s.RelayURL == "" {
 			continue
+		}
+		if s.AliasURL != "" && isReady(s) {
+			if u := displayURL(s); e.aliases[s.RelayURL] != u {
+				e.aliases[s.RelayURL] = u
+				aliasesChanged = true
+			}
 		}
 		permanent := s.State == sdk.RelayFailed && (s.Failure == sdk.RelayFailureTerminal || s.Failure == sdk.RelayFailureMITM)
 		switch {
@@ -663,8 +682,12 @@ func (n *Net) record(e *entry, sts []sdk.RelayStatus) {
 			delete(e.sticky, s.RelayURL)
 		}
 		state := string(s.State)
-		if s.Deselected {
+		lost := lostAlias(e, s)
+		switch {
+		case s.Deselected:
 			state = "deselected"
+		case lost != "":
+			state += " without " + lost
 		}
 		if e.logged[s.RelayURL] == state {
 			continue
@@ -677,10 +700,73 @@ func (n *Net) record(e *entry, sts []sdk.RelayStatus) {
 			}
 		case s.State == sdk.RelayReady:
 			n.logf("portal: %s: ready at %s", e.slug, displayURL(s))
+			if lost != "" {
+				n.logf("portal: %s: %s is no longer granted to this flat; %s", e.slug, lost, aliasLostHint)
+			}
 		case s.State == sdk.RelayFailed:
 			n.logf("portal: %s: %s", e.slug, describeFailure(s))
 		}
 	}
+	return aliasesChanged
+}
+
+// Alias memory. A relay grants the friendly <slug>.<relay host> alias only
+// while no other Portal identity holds it, and the SDK falls back to the
+// canonical hostname without an error when another identity took it, for
+// example while this flat was offline. A link someone was given then opens
+// that other service. Flats therefore remembers the alias it last showed
+// for each relay in <Dir>/<slug>.alias and reports when a ready relay no
+// longer grants it. The warning stays while that relay lacks the alias;
+// deleting the file clears it.
+
+// aliasLostHint explains a lost alias.
+const aliasLostHint = "another Portal identity may hold that name now, so links to it can reach another service; share the current URL instead"
+
+func (n *Net) aliasPath(slug string) string {
+	return filepath.Join(n.cfg.Dir, slug+".alias")
+}
+
+// loadAliases returns slug's remembered aliases (relayURL -> alias URL).
+func (n *Net) loadAliases(slug string) map[string]string {
+	var aliases map[string]string
+	b, err := os.ReadFile(n.aliasPath(slug))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		n.logf("portal: %s: read aliases: %v", slug, err)
+	default:
+		if err := json.Unmarshal(b, &aliases); err != nil {
+			n.logf("portal: %s: ignore unreadable alias file: %v", slug, err)
+			aliases = nil
+		}
+	}
+	if aliases == nil { // also a file holding JSON null
+		aliases = map[string]string{}
+	}
+	return aliases
+}
+
+func (n *Net) saveAliases(slug string, aliases map[string]string) {
+	b, err := json.Marshal(aliases)
+	if err == nil {
+		err = writeFileAtomic(n.aliasPath(slug), append(b, '\n'))
+	}
+	if err != nil {
+		n.logf("portal: %s: save aliases: %v", slug, err)
+	}
+}
+
+// lostAlias returns the alias Flats last showed for s's relay when s is
+// ready without it, else "". e.mu is held.
+func lostAlias(e *entry, s sdk.RelayStatus) string {
+	if !isReady(s) || s.AliasURL != "" {
+		return ""
+	}
+	return e.aliases[s.RelayURL]
+}
+
+func isReady(s sdk.RelayStatus) bool {
+	return s.State == sdk.RelayReady && !s.Deselected && s.PublicURL != ""
 }
 
 // Relay pinning. Without explicit relays, every relay comes from discovery,
@@ -720,15 +806,12 @@ func (n *Net) pinChange(e *entry, sts []sdk.RelayStatus, now time.Time) (old, ne
 	if len(n.relays) > 0 {
 		return "", ""
 	}
-	ready := func(s sdk.RelayStatus) bool {
-		return s.State == sdk.RelayReady && !s.Deselected && s.PublicURL != ""
-	}
 	var candidate string
 	pinnedReady := false
 	for _, s := range sts {
 		if s.RelayURL == e.pinned {
-			pinnedReady = ready(s)
-		} else if candidate == "" && ready(s) {
+			pinnedReady = isReady(s)
+		} else if candidate == "" && isReady(s) {
 			candidate = s.RelayURL
 		}
 	}
@@ -870,6 +953,12 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	e.mu.Lock()
 	hidden := e.hidden
 	merged := maps.Clone(e.sticky)
+	var lost []string
+	for _, s := range live {
+		if a := lostAlias(e, s); a != "" {
+			lost = append(lost, a)
+		}
+	}
 	e.mu.Unlock()
 	for _, s := range live {
 		if s.Deselected {
@@ -920,6 +1009,10 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	}
 	if len(failed) > 0 {
 		parts = append(parts, "failed: "+strings.Join(failed, "; "))
+	}
+	if len(lost) > 0 {
+		slices.Sort(lost)
+		parts = append(parts, strings.Join(lost, ", ")+" no longer granted: "+aliasLostHint)
 	}
 	if hidden {
 		parts = append(parts, "unlisted")

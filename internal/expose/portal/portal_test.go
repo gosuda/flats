@@ -904,11 +904,176 @@ func TestDisplayURLPrefersGrantedAliasURL(t *testing.T) {
 		{"explicit port kept", sdk.RelayStatus{PublicURL: "https://blog-x.relay.example:8443", AliasURL: "https://blog.relay.example:8443"}, "https://blog.relay.example:8443"},
 		{"no port", sdk.RelayStatus{PublicURL: "https://blog.relay.example"}, "https://blog.relay.example"},
 		{"ipv6 default port", sdk.RelayStatus{PublicURL: "https://[::1]:443"}, "https://[::1]"},
-		{"not ready", sdk.RelayStatus{}, ""},
+		{"empty status", sdk.RelayStatus{}, ""},
 	}
 	for _, tc := range tests {
 		if got := displayURL(tc.st); got != tc.want {
 			t.Errorf("%s: displayURL() = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func aliased(relay, canonical, alias string) sdk.RelayStatus {
+	s := ready(relay, canonical)
+	s.AliasURL = alias
+	return s
+}
+
+func hostDetail(n *Net, slug string) (url, detail string) {
+	for _, h := range n.Status().Hosts {
+		if h.Host == slug {
+			return h.URL, h.Detail
+		}
+	}
+	return "", ""
+}
+
+// A granted alias is shown; when a ready relay stops granting it (another
+// identity took the name), Flats shows the canonical URL and warns, also
+// after a restart, until the alias is granted again.
+func TestAliasShownAndLossWarned(t *testing.T) {
+	const (
+		relay     = "https://m-relay.example"
+		canonical = "https://blog-0123456789abcdef0123456789abcdef01234567.m-relay.example:443"
+		alias     = "https://blog.m-relay.example:443"
+	)
+	dir := t.TempDir()
+	var mu sync.Mutex
+	var logs []string
+	logf := func(format string, args ...any) {
+		mu.Lock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	lostLogs := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		c := 0
+		for _, l := range logs {
+			if strings.Contains(l, "no longer granted") {
+				c++
+			}
+		}
+		return c
+	}
+	n, ff := newTestNet(t, Config{Dir: dir, Relays: []string{relay}, Logf: logf})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	f := ff.last(t)
+
+	// While connecting, a held alias is not shown yet.
+	connecting := aliased(relay, canonical, alias)
+	connecting.State = sdk.RelayConnecting
+	f.set(connecting)
+	time.Sleep(50 * time.Millisecond)
+	if got := n.URL("blog"); got != "" {
+		t.Fatalf("URL while connecting = %q, want empty", got)
+	}
+
+	f.set(aliased(relay, canonical, alias))
+	waitFor(t, func() bool { return n.URL("blog") == "https://blog.m-relay.example" })
+	if u, d := hostDetail(n, "blog"); u != "https://blog.m-relay.example" || strings.Contains(d, "no longer granted") {
+		t.Fatalf("status with alias: url %q detail %q", u, d)
+	}
+	waitFor(t, func() bool {
+		b, _ := os.ReadFile(n.aliasPath("blog"))
+		return strings.Contains(string(b), "https://blog.m-relay.example")
+	})
+	if fi, err := os.Stat(n.aliasPath("blog")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("alias file mode: %v %v", fi, err)
+	}
+
+	// Canonical fallback: the relay no longer grants the alias.
+	f.set(ready(relay, canonical))
+	waitFor(t, func() bool {
+		return n.URL("blog") == "https://blog-0123456789abcdef0123456789abcdef01234567.m-relay.example"
+	})
+	if _, d := hostDetail(n, "blog"); !strings.Contains(d, "https://blog.m-relay.example no longer granted") {
+		t.Fatalf("detail after losing the alias = %q", d)
+	}
+	waitFor(t, func() bool { return lostLogs() == 1 })
+	f.set(ready(relay, canonical)) // the same state again: no new log line
+	time.Sleep(3 * pollInterval)
+	if got := lostLogs(); got != 1 {
+		t.Fatalf("lost-alias log lines = %d, want 1", got)
+	}
+	n.Close()
+
+	// The warning survives a restart, and goes away once the alias is back.
+	n2, ff2 := newTestNet(t, Config{Dir: dir, Relays: []string{relay}})
+	if _, err := n2.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	f2 := ff2.last(t)
+	f2.set(ready(relay, canonical))
+	waitFor(t, func() bool {
+		_, d := hostDetail(n2, "blog")
+		return strings.Contains(d, "https://blog.m-relay.example no longer granted")
+	})
+	f2.set(aliased(relay, canonical, alias))
+	waitFor(t, func() bool {
+		u, d := hostDetail(n2, "blog")
+		return u == "https://blog.m-relay.example" && !strings.Contains(d, "no longer granted")
+	})
+}
+
+// A relay that never granted an alias (for example an older relay) shows
+// its canonical URL without a warning.
+func TestNoAliasWarningWithoutEarlierAlias(t *testing.T) {
+	const relay = "https://m-relay.example"
+	n, ff := newTestNet(t, Config{Relays: []string{relay}})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	ff.last(t).set(ready(relay, "https://blog-x.m-relay.example:443"))
+	waitFor(t, func() bool { return n.URL("blog") == "https://blog-x.m-relay.example" })
+	if _, d := hostDetail(n, "blog"); strings.Contains(d, "no longer granted") {
+		t.Fatalf("detail = %q, want no alias warning", d)
+	}
+	if _, err := os.Stat(n.aliasPath("blog")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("alias file without any alias: %v", err)
+	}
+}
+
+// A corrupt or JSON-null alias file is ignored instead of breaking the
+// watcher, and the next granted alias replaces it.
+func TestAliasFileCorruptOrNull(t *testing.T) {
+	const relay = "https://m-relay.example"
+	for _, content := range []string{"null\n", "{not json", "[]"} {
+		dir := t.TempDir()
+		n, ff := newTestNet(t, Config{Dir: dir, Relays: []string{relay}})
+		if err := os.WriteFile(n.aliasPath("blog"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+			t.Fatal(err)
+		}
+		ff.last(t).set(aliased(relay, "https://blog-x.m-relay.example:443", "https://blog.m-relay.example:443"))
+		waitFor(t, func() bool { return n.URL("blog") == "https://blog.m-relay.example" })
+		waitFor(t, func() bool {
+			b, _ := os.ReadFile(n.aliasPath("blog"))
+			return strings.Contains(string(b), `"https://m-relay.example":"https://blog.m-relay.example"`)
+		})
+		n.Close()
+	}
+}
+
+// A deselected relay is no longer shown, so it raises no alias warning.
+func TestNoAliasWarningForDeselectedRelay(t *testing.T) {
+	const relay = "https://m-relay.example"
+	n, ff := newTestNet(t, Config{Relays: []string{relay}})
+	if _, err := n.Serve(t.Context(), "blog", hello("x"), false); err != nil {
+		t.Fatal(err)
+	}
+	f := ff.last(t)
+	f.set(aliased(relay, "https://blog-x.m-relay.example:443", "https://blog.m-relay.example:443"))
+	waitFor(t, func() bool { return n.URL("blog") == "https://blog.m-relay.example" })
+	gone := ready(relay, "https://blog-x.m-relay.example:443")
+	gone.Deselected = true
+	f.set(gone)
+	waitFor(t, func() bool { return n.URL("blog") == "" })
+	if _, d := hostDetail(n, "blog"); strings.Contains(d, "no longer granted") {
+		t.Fatalf("detail = %q, want no alias warning for a deselected relay", d)
 	}
 }
