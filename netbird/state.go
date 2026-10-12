@@ -197,10 +197,3 @@ func (p ports) allocate(key string) (port int, added bool, err error) {
 	p[key] = next
 	return next, true, nil
 }
-
-func mkdirPrivate(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return nil
-}

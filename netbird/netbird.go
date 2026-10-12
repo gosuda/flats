@@ -133,9 +133,6 @@ func New(cfg Config) (*Net, error) {
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = 30 * time.Second
 	}
-	if err := mkdirPrivate(cfg.Dir); err != nil {
-		return nil, fmt.Errorf("netbird: state directory: %w", err)
-	}
 	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
