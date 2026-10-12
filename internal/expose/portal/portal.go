@@ -221,7 +221,7 @@ func (n *Net) loadIdentity(slug string) (types.Identity, error) {
 	if err != nil {
 		return types.Identity{}, err
 	}
-	id, err := identity.LoadOrCreate(slug, "", path, "")
+	id, err := identity.LoadOrCreate(slug, path, "")
 	if err != nil {
 		return types.Identity{}, fmt.Errorf("portal: identity for %s: %w", slug, err)
 	}

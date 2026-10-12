@@ -106,7 +106,7 @@ require (
 	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/gosuda/keyless_tls v0.0.4-0.20260919135918-b58f4ae3ae41 // indirect
-	github.com/gosuda/portal-tunnel/v2 v2.6.0 // indirect
+	github.com/gosuda/portal-tunnel/v2 v2.6.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect

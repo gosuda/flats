@@ -475,8 +475,8 @@ github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 h1:JeSE6pjso5T
 github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674/go.mod h1:r4w70xmWCQKmi1ONH4KIaBptdivuRPyosB9RmPlGEwA=
 github.com/gosuda/keyless_tls v0.0.4-0.20260919135918-b58f4ae3ae41 h1:ijG3C9ff8d/i9ycKT1bupWczSb2SmKPseapa4Fn9biU=
 github.com/gosuda/keyless_tls v0.0.4-0.20260919135918-b58f4ae3ae41/go.mod h1:Kymj8rE/o2D0LVW3dMiXd14P9aVr0wx3oAWO4jBThYo=
-github.com/gosuda/portal-tunnel/v2 v2.6.0 h1:4Cz09oki4ITh12craMIMmMGUdHztqfMQW50jWpFW9nc=
-github.com/gosuda/portal-tunnel/v2 v2.6.0/go.mod h1:n6UcbDCbUOKf2AO/SCJrCdhM4POVZqJS2hlSjWP5WC0=
+github.com/gosuda/portal-tunnel/v2 v2.6.2 h1:cmvQsing1RCJL7ifEl342Zn2+iIyP0Uu4YyiWhS8Awk=
+github.com/gosuda/portal-tunnel/v2 v2.6.2/go.mod h1:aMKjio8LBpM/Ru3HFYonvQjRMDXfyTBypgQZUPVyXhg=
 github.com/grafana/pyroscope-go v1.4.2 h1:0LW5HrUJXgGr9zF5gITP/HaFXN9/LsMiwlgVJAK75l0=
 github.com/grafana/pyroscope-go v1.4.2/go.mod h1:Ej13Jr05rRJrjWvrrFhfh6gGYXtfibuukOs3Tl3Y7QQ=
 github.com/grafana/pyroscope-go/godeltaprof v0.1.11 h1:el5LYpXissAiCKZ5/6yjlr6mhYVV6Cp5lahTocxraXM=

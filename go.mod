@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/go-openapi/runtime v0.29.0
 	github.com/go-openapi/strfmt v0.24.0
-	github.com/gosuda/portal-tunnel/v2 v2.6.0
+	github.com/gosuda/portal-tunnel/v2 v2.6.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oesni/libtunnel v0.0.0-20261011195643-61501adfbebe
 	github.com/openziti/sdk-golang v1.2.8
