@@ -168,7 +168,7 @@ connections when exposure is withdrawn.
   public URL survives discovery reshuffles and restarts. On a real run,
   discovery replaced both relays of a public flat within two minutes, which
   broke the link the operator had shared. The pin moves only when its relay
-  fails permanently (for example the name is taken there) or has not been
+  fails permanently (for example it rejects the name) or has not been
   ready for 24 hours while another relay is; other relays keep serving
   meanwhile.
   Discovery-only startup can take about

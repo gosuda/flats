@@ -1,7 +1,10 @@
 // Package portal exposes public flats through Portal relays
 // (github.com/gosuda/portal-tunnel). Each served slug gets one Portal
 // exposure under a persisted identity named after the slug, so its public
-// hostname (<slug>.<relay host>) stays stable across restarts.
+// hostname stays stable across restarts. Relays report a canonical hostname
+// bound to the identity address: <slug>-<address>.<relay host>, or
+// <name hash>--<address>.<relay host> for slugs longer than 22 characters.
+// Relays also route <slug>.<relay host> while no other identity holds it.
 package portal
 
 import (
@@ -672,7 +675,7 @@ func (n *Net) record(e *entry, sts []sdk.RelayStatus) {
 // pinned: added as an explicit relay, which discovery never drops, and
 // saved to <Dir>/<slug>.relay so the URL survives restarts too. Discovery
 // still adds other relays next to it. The pin moves only when the pinned
-// relay fails permanently (for example the name is taken there) or has not
+// relay fails permanently (for example it rejects the name) or has not
 // been ready for repinAfter while another relay is.
 var repinAfter = 24 * time.Hour
 
