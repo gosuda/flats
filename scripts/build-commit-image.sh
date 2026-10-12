@@ -9,7 +9,16 @@ trap 'git -C "$root" worktree remove --force "$source_dir" 2>/dev/null || true; 
 short=$(printf '%.7s' "$commit")
 version=v0.0.0-sha-$short
 git worktree add --detach "$source_dir" "$commit"
-(cd "$source_dir" && go vet ./... && go test ./...)
+# go test ./... as CI's shards, one after another: run all at once on one
+# runner, the docs tests miss their wall-clock budgets. The shard script comes
+# from the workflow's commit, like the rest of the tooling; see ci-test.sh.
+(
+	cd "$source_dir"
+	go vet ./...
+	for shard in runtime-soak runtime-codec runtime docs-soak docs-budget docs other; do
+		"$root/scripts/ci-test.sh" "$shard"
+	done
+)
 FLATS_SOURCE_DIR="$source_dir" FLATS_RELEASE_TARGETS='linux/amd64 linux/arm64' \
 	"$root/scripts/build-release.sh" "$version" "$work/dist"
 for archive in "$work"/dist/*.tar.gz; do

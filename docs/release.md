@@ -165,7 +165,9 @@ only selects its own new range, so it does not recover those skipped commits;
 manually dispatch each missing SHA using the command below.
 
 A commit is published only after vet, tests, clean revision verification and
-the container smoke test succeed. A failure prevents that commit's publication;
+the container smoke test succeed. The tests run CI's shards
+(`scripts/ci-test.sh`) one after another, so the docs tests' wall-clock
+budgets run alone. A failure prevents that commit's publication;
 later commits in its build lane are still attempted and the lane reports failure.
 Each lane has a 360-minute timeout and remains subject to GitHub Actions runtime
 limits; a timeout can leave unattempted commits that need manual recovery.
