@@ -140,6 +140,14 @@ func New(cfg Config) (*Net, error) {
 	if cfg.Dir == "" {
 		return nil, errors.New("cloudflare-quick: record directory is required")
 	}
+	// The directory is <data dir>/cloudflare-quick. Accept only a clean
+	// absolute path, so nothing that reaches the host's configuration can
+	// point the tunnel credentials elsewhere through a relative or ".."
+	// path.
+	cfg.Dir = filepath.Clean(cfg.Dir)
+	if !filepath.IsAbs(cfg.Dir) || strings.Contains(cfg.Dir, "..") {
+		return nil, fmt.Errorf("cloudflare-quick: record directory %q must be an absolute path without ..", cfg.Dir)
+	}
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("cloudflare-quick: record directory: %w", err)
 	}

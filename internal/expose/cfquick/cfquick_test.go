@@ -481,3 +481,12 @@ func TestHostnamePanicBecomesAnError(t *testing.T) {
 		t.Fatal("Serve succeeded after a panicking mint")
 	}
 }
+
+func TestNewRefusesUnsafeRecordDirectories(t *testing.T) {
+	t.Cleanup(func() { v1.SetEnvironment(nil) })
+	for _, dir := range []string{"relative/dir", filepath.Join(t.TempDir(), "a..b")} {
+		if _, err := New(Config{Dir: dir}); err == nil {
+			t.Errorf("New accepted record directory %q", dir)
+		}
+	}
+}
