@@ -300,5 +300,5 @@ export function openLinks(f) {
   };
   const priv = button(false);
   const pub = button(true) || (priv ? h('span', { class: 'icon-btn open-spacer', 'aria-hidden': 'true' }) : null);
-  return pub || priv ? h('span', { class: 'open-links' }, pub, priv) : null;
+  return pub || priv ? h('div', { class: 'open-links' }, pub, priv) : null;
 }
