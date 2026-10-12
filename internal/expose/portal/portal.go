@@ -722,14 +722,23 @@ func (n *Net) record(e *entry, sts []sdk.RelayStatus) (aliasesChanged bool) {
 // aliasLostHint explains a lost alias.
 const aliasLostHint = "another Portal identity may hold that name now, so links to it can reach another service; share the current URL instead"
 
+// aliasPath returns <Dir>/<slug>.alias, or "" when slug is not a plain file
+// name (Serve already rejects such slugs through identityPath).
 func (n *Net) aliasPath(slug string) string {
+	if slug == "" || strings.Contains(slug, "..") || strings.ContainsAny(slug, `/\`) {
+		return ""
+	}
 	return filepath.Join(n.cfg.Dir, slug+".alias")
 }
 
 // loadAliases returns slug's remembered aliases (relayURL -> alias URL).
 func (n *Net) loadAliases(slug string) map[string]string {
 	var aliases map[string]string
-	b, err := os.ReadFile(n.aliasPath(slug))
+	path := n.aliasPath(slug)
+	if path == "" {
+		return map[string]string{}
+	}
+	b, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
@@ -747,9 +756,13 @@ func (n *Net) loadAliases(slug string) map[string]string {
 }
 
 func (n *Net) saveAliases(slug string, aliases map[string]string) {
+	path := n.aliasPath(slug)
+	if path == "" {
+		return
+	}
 	b, err := json.Marshal(aliases)
 	if err == nil {
-		err = writeFileAtomic(n.aliasPath(slug), append(b, '\n'))
+		err = writeFileAtomic(path, append(b, '\n'))
 	}
 	if err != nil {
 		n.logf("portal: %s: save aliases: %v", slug, err)

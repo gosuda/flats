@@ -1077,3 +1077,27 @@ func TestNoAliasWarningForDeselectedRelay(t *testing.T) {
 		t.Fatalf("detail = %q, want no alias warning for a deselected relay", d)
 	}
 }
+
+func TestAliasPathRejectsNonFileSlugs(t *testing.T) {
+	dir := t.TempDir()
+	n, _ := newTestNet(t, Config{Dir: dir, Discovery: true})
+	for _, slug := range []string{"", "..", "../blog", "a/b", `a\b`} {
+		if got := n.aliasPath(slug); got != "" {
+			t.Errorf("aliasPath(%q) = %q, want empty", slug, got)
+		}
+		if got := n.loadAliases(slug); len(got) != 0 {
+			t.Errorf("loadAliases(%q) = %v, want empty", slug, got)
+		}
+		n.saveAliases(slug, map[string]string{"https://r.example": "https://x.r.example"})
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("files written for rejected slugs: %v", entries)
+	}
+	if got, want := n.aliasPath("blog"), filepath.Join(dir, "blog.alias"); got != want {
+		t.Fatalf("aliasPath(blog) = %q, want %q", got, want)
+	}
+}
