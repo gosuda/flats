@@ -144,8 +144,9 @@ const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick
 
 // linkTargets lists the addresses that open a flat, split into private and
 // public ones: one per allowed network that has a route. Without a private
-// route it falls back to the private URL, and public addresses are listed
-// only while the flat is public.
+// route it falls back to the private URL, and without a public one to the
+// server's public_url, which is already limited to this flat's permitted
+// routes. Public addresses are listed only while the flat is public.
 export function linkTargets(f) {
   const out = { private: [], public: [] };
   if (!f) return out;
@@ -159,7 +160,7 @@ export function linkTargets(f) {
     else if (isPublic) add(out.public, e.provider, e.url);
   }
   if (!out.private.length) add(out.private, '', f.private_url, 'private URL');
-  if (isPublic && !out.public.length) add(out.public, '', publicURL(f), 'public URL');
+  if (isPublic && !out.public.length) add(out.public, '', f.public_url, 'public URL');
   return out;
 }
 

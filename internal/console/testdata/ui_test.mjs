@@ -169,13 +169,26 @@ for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
  assert.equal(name.getAttribute('data-nav'), '');
 }
 // A running document has its private open button.
+const openCount = (row) => all(row, (e) => (e.getAttribute('class') || '').includes('open-links')).length;
 assert.equal(all(rows[2], (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1);
+assert.equal(openCount(rows[0]), 1);
 // A flat with draft changes offers Publish; a document never does.
 assert.equal(byText(rows[0], 'Publish').length, 1);
 assert.equal(byText(rows[2], 'Publish').length, 0);
 assert.ok(rows[2].textContent.includes('Running') && !rows[2].textContent.includes('Live v'), 'a document row shows no version: ' + rows[2].textContent);
 assert.equal(byText(rows[2], 'Overview').length, 1);
 stopList();
+// A stopped document and an unpublished flat have nothing to open.
+const savedFlats = routes['GET /console/api/flats'];
+routes['GET /console/api/flats'] = { flats: [{ ...notes, running: false }, { ...blog, live_version: 0, live: null }] };
+const idleMain = new Element('main');
+const stopIdle = list.mount(idleMain, [], ctx);
+await tick();
+const idleRows = all(idleMain, (e) => e.tagName === 'LI' && e.className === 'flat');
+assert.equal(idleRows.length, 2);
+for (const row of idleRows) assert.equal(openCount(row), 0, row.textContent);
+stopIdle();
+routes['GET /console/api/flats'] = savedFlats;
 
 // The flat's own address is its Deployments tab: status, versions, previews
 // and logs under the same tabs as Settings, with no settings panels of its own.
@@ -867,12 +880,27 @@ assert.ok(privBtn.getAttribute('class').includes('open-private'));
 assert.ok(glyphOf(pubBtn).getAttribute('aria-label').includes('anyone with the URL'), 'the public button warns');
 assert.equal(pathOf(glyphOf(privBtn)), pathOf(icon('lock')), 'private uses the lock icon');
 assert.equal(pathOf(glyphOf(pubBtn)), pathOf(icon('globe')), 'public uses the globe icon');
+// A private flat has no public button; an empty slot keeps the private one in place.
+const isSpacer = (el) => el.getAttribute('class') === 'icon-btn open-spacer' && el.getAttribute('aria-hidden') === 'true' && el.childNodes.length === 0;
 const openPrivate = ui.openLinks({ ...blog, visibility: 'private', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('tailscale', 'https://blog.tail1234.ts.net/'), ep('portal', 'https://blog.rly.best/')] });
-assert.equal(openPrivate.childNodes.length, 1, 'a private flat has no public button');
-assert.ok(openPrivate.childNodes[0].getAttribute('class').includes('menu-wrap'), 'two private networks become a menu');
+assert.equal(openPrivate.childNodes.length, 2);
+assert.ok(isSpacer(openPrivate.childNodes[0]), 'a private flat has no public button');
+assert.ok(openPrivate.childNodes[1].getAttribute('class').includes('menu-wrap'), 'two private networks become a menu');
 assert.equal(all(openPrivate, (e) => (e.getAttribute('class') || '').includes('menu-item')).length, 2);
 // A private flat with a leftover public URL still shows only the private button.
-assert.equal(ui.openLinks({ ...blog, visibility: 'private' }).childNodes.length, 1);
+assert.ok(isSpacer(ui.openLinks({ ...blog, visibility: 'private' }).childNodes[0]));
+// Public routes the flat may not use (unpermitted, another flat's, stopped)
+// never become its public button; only the server's public_url backs it.
+const local = ep('local', 'http://blog.localhost:7879/');
+for (const bad of [{ ...ep('tailscale-funnel', 'https://blog.ts.net/'), permitted: false }, { ...ep('portal', 'https://other.rly.best/'), host: 'other' },
+  { ...ep('zrok', 'https://blog.share.zrok.io/'), state: 'stopped' }]) {
+  const t = (await import('./dom.js')).linkTargets({ ...blog, public_url: undefined, endpoints: [local, bad] });
+  assert.deepEqual(t.public, [], bad.url);
+  assert.deepEqual(t.private.map((x) => x.url), [local.url]);
+  assert.ok(isSpacer(ui.openLinks({ ...blog, public_url: undefined, endpoints: [local, bad] }).childNodes[0]), bad.url);
+}
+const fromServer = (await import('./dom.js')).linkTargets({ ...blog, endpoints: [local, { ...ep('portal', 'https://other.rly.best/'), host: 'other' }] });
+assert.deepEqual(fromServer.public.map((x) => x.url), [blog.public_url], 'the server public_url is the fallback');
 const openNb = ui.openLinks({ ...blog, visibility: 'public', live_version: 1, endpoints: [ep('netbird-expose', 'https://blog.nb.example/')] });
 assert.equal(openNb.childNodes.length, 2, 'the private URL backs the private button');
 assert.equal(openNb.childNodes[0].getAttribute('href'), 'https://blog.nb.example/', 'NetBird Expose is public');

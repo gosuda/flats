@@ -277,8 +277,10 @@ export async function busy(btn, fn) {
 }
 
 // openLinks is a flat's open shortcuts: a private button (lock icon) and,
-// while the flat is public, a public one (globe icon) to its left, so the
-// private button keeps its place whatever the visibility. Each is a plain
+// while the flat is public, a public one (globe icon) to its left. Without a
+// public button an empty slot of the same size takes its place, so the
+// private button keeps its position whatever the visibility, also in the
+// left-aligned narrow layout. Each is a plain
 // icon link with one address and a list of its networks with several.
 export function openLinks(f) {
   const name = f.name || f.slug;
@@ -296,6 +298,7 @@ export function openLinks(f) {
       label: t.label, detail: t.url.replace(/^https?:\/\//, ''), href: t.url,
     })), glyph);
   };
-  const pub = button(true), priv = button(false);
+  const priv = button(false);
+  const pub = button(true) || (priv ? h('span', { class: 'icon-btn open-spacer', 'aria-hidden': 'true' }) : null);
   return pub || priv ? h('span', { class: 'open-links' }, pub, priv) : null;
 }

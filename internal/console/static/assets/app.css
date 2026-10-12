@@ -213,6 +213,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .menu-item .menu-detail { display: block; font-family: var(--mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 a.menu-item { text-decoration: none; color: inherit; display: block; }
 .open-links { display: inline-flex; align-items: center; gap: 4px; }
+.open-spacer { visibility: hidden; }
 .provider-head p { margin: 2px 0 0; }
 .provider > p { margin: 8px 0 0; }
 .provider .facts, .provider .net, .provider-form { margin-top: 10px; }
