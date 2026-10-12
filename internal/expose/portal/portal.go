@@ -4,10 +4,12 @@
 // hostname stays stable across restarts. Relays report a canonical hostname
 // bound to the identity address: <slug>-<address>.<relay host>, or
 // <name hash>--<address>.<relay host> for slugs longer than 22 characters.
-// Relays also route <slug>.<relay host> while no other identity holds it.
+// Relays also grant the friendly <slug>.<relay host> alias while no other
+// identity holds it; Flats shows that URL when granted, else the canonical one.
 package portal
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -537,9 +539,22 @@ func (n *Net) readyURLs(e *entry, sts []sdk.RelayStatus) []string {
 	}
 	urls := make([]string, len(ready))
 	for i, s := range ready {
-		urls[i] = s.PublicURL
+		urls[i] = displayURL(s)
 	}
 	return urls
+}
+
+// displayURL is the URL Flats shows for a relay: the friendly
+// <slug>.<relay host> alias when the relay granted it to this exposure,
+// else the identity-bound canonical URL. A default https port is dropped.
+func displayURL(s sdk.RelayStatus) string {
+	raw := cmp.Or(s.AliasURL, s.PublicURL)
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Port() != "443" {
+		return raw
+	}
+	u.Host = strings.TrimSuffix(u.Host, ":443")
+	return u.String()
 }
 
 // URL returns the first ready public URL, or "" while no relay is ready.
@@ -658,10 +673,10 @@ func (n *Net) record(e *entry, sts []sdk.RelayStatus) {
 		switch {
 		case s.Deselected:
 			if s.PublicURL != "" {
-				n.logf("portal: %s: no longer served at %s", e.slug, s.PublicURL)
+				n.logf("portal: %s: no longer served at %s", e.slug, displayURL(s))
 			}
 		case s.State == sdk.RelayReady:
-			n.logf("portal: %s: ready at %s", e.slug, s.PublicURL)
+			n.logf("portal: %s: ready at %s", e.slug, displayURL(s))
 		case s.State == sdk.RelayFailed:
 			n.logf("portal: %s: %s", e.slug, describeFailure(s))
 		}

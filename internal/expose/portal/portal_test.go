@@ -888,3 +888,27 @@ func TestNoPinWithExplicitRelays(t *testing.T) {
 		t.Errorf("pin file written with explicit relays: %v", err)
 	}
 }
+
+func TestDisplayURLPrefersGrantedAliasURL(t *testing.T) {
+	const (
+		canonical = "https://blog-0123456789abcdef0123456789abcdef01234567.relay.example:443"
+		friendly  = "https://blog.relay.example:443"
+	)
+	tests := []struct {
+		name string
+		st   sdk.RelayStatus
+		want string
+	}{
+		{"friendly alias granted", sdk.RelayStatus{PublicURL: canonical, AliasURL: friendly}, "https://blog.relay.example"},
+		{"canonical fallback", sdk.RelayStatus{PublicURL: canonical}, "https://blog-0123456789abcdef0123456789abcdef01234567.relay.example"},
+		{"explicit port kept", sdk.RelayStatus{PublicURL: "https://blog-x.relay.example:8443", AliasURL: "https://blog.relay.example:8443"}, "https://blog.relay.example:8443"},
+		{"no port", sdk.RelayStatus{PublicURL: "https://blog.relay.example"}, "https://blog.relay.example"},
+		{"ipv6 default port", sdk.RelayStatus{PublicURL: "https://[::1]:443"}, "https://[::1]"},
+		{"not ready", sdk.RelayStatus{}, ""},
+	}
+	for _, tc := range tests {
+		if got := displayURL(tc.st); got != tc.want {
+			t.Errorf("%s: displayURL() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
