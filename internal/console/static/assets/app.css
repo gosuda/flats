@@ -212,7 +212,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .menu-item .menu-label { display: block; }
 .menu-item .menu-detail { display: block; font-family: var(--mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
 a.menu-item { text-decoration: none; color: inherit; display: block; }
-.site-address .menu-wrap { display: inline-flex; vertical-align: middle; }
+.open-links { display: inline-flex; align-items: center; gap: 4px; }
 .provider-head p { margin: 2px 0 0; }
 .provider > p { margin: 8px 0 0; }
 .provider .facts, .provider .net, .provider-form { margin-top: 10px; }
@@ -501,6 +501,8 @@ td > .badge:first-child { margin-left: 0; }
 
 /* The "…" dots need a heavier stroke to read at icon size. */
 .icon-btn[aria-haspopup] .icon { stroke-width: 3.2; }
+/* The bold stroke is for the "more" dots; an open menu keeps its glyph's weight. */
+.open-links .icon-btn[aria-haspopup] .icon { stroke-width: 2; }
 
 /* Per-flat management, following the compact console reference. */
 .site-page { max-width: 840px; }
@@ -508,7 +510,8 @@ td > .badge:first-child { margin-left: 0; }
 .site-head { display: flex; align-items: center; gap: 16px; }
 .site-head-main { min-width: 0; }
 .site-head h1 { font-size: 32px; font-weight: 500; margin-bottom: 6px; }
-.site-address { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.site-links { display: flex; flex-direction: column; gap: 2px; }
+.site-address { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; }
 .site-address .icon { width: 14px; height: 14px; }
 .site-address a { color: var(--muted); }
 .site-tabs { display: flex; align-items: center; gap: 8px; margin-top: 24px; margin-bottom: 48px; }

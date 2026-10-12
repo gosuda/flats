@@ -139,27 +139,27 @@ export function publicURL(f) {
   return ep ? ep.url : '';
 }
 
-const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok', 'cloudflare-quick': 'Cloudflare Quick Tunnel' };
-const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick'];
+const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', netbird: 'NetBird', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok', 'cloudflare-quick': 'Cloudflare Quick Tunnel', 'netbird-expose': 'NetBird Expose' };
+const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick', 'netbird-expose'];
 
-// openTargets lists the addresses that open a flat's live version, one per
-// allowed network that has a route: private networks first, then public
-// ones. Without route details it falls back to the private and public URL.
-export function openTargets(f) {
-  if (!f) return [];
-  const out = [];
-  const add = (provider, url, isPublic) => {
-    if (url && !out.some((t) => t.url === url)) out.push({ provider, url, public: isPublic, label: NETWORK_LABELS[provider] || provider });
+// linkTargets lists the addresses that open a flat, split into private and
+// public ones: one per allowed network that has a route. Without a private
+// route it falls back to the private URL, and public addresses are listed
+// only while the flat is public.
+export function linkTargets(f) {
+  const out = { private: [], public: [] };
+  if (!f) return out;
+  const add = (list, provider, url, label) => {
+    if (url && !list.some((t) => t.url === url)) list.push({ provider, url, public: list === out.public, label: label || NETWORK_LABELS[provider] || provider });
   };
-  const eps = (f.endpoints || []).filter((e) => e.audience === 'current' && e.url && e.permitted &&
-    (!e.host || e.host === f.slug) && e.state !== 'stopped' &&
-    (!PUBLIC_NETWORKS.includes(e.provider) || f.visibility !== 'private'));
-  eps.sort((a, b) => Number(PUBLIC_NETWORKS.includes(a.provider)) - Number(PUBLIC_NETWORKS.includes(b.provider)));
-  for (const e of eps) add(e.provider, e.url, PUBLIC_NETWORKS.includes(e.provider));
-  if (!out.length) {
-    add('local', f.private_url, false);
-    add('portal', publicURL(f), true);
+  const isPublic = visibilityOf(f.visibility) === 'public';
+  for (const e of f.endpoints || []) {
+    if (e.audience !== 'current' || !e.url || !e.permitted || (e.host && e.host !== f.slug) || e.state === 'stopped') continue;
+    if (!PUBLIC_NETWORKS.includes(e.provider)) add(out.private, e.provider, e.url);
+    else if (isPublic) add(out.public, e.provider, e.url);
   }
+  if (!out.private.length) add(out.private, '', f.private_url, 'private URL');
+  if (isPublic && !out.public.length) add(out.public, '', publicURL(f), 'public URL');
   return out;
 }
 

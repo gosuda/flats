@@ -161,12 +161,15 @@ for (const row of rows) {
 for (const row of rows) {
   assert.equal(all(row, (e) => e.className.includes('notice-text')).length, 0);
 }
+// The name opens the flat's first management tab in the console, not the site.
 for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
  const name = all(row, (e) => e.tagName === 'A' && e.className === 'flat-name')[0];
- assert.equal(name.getAttribute('href'), new URL(site.public_url || publicURL(site) || site.private_url).href);
- assert.equal(name.getAttribute('target'), '_blank');
- assert.equal(name.getAttribute('data-nav'), null);
+ assert.equal(name.getAttribute('href'), `/flats/${site.slug}`);
+ assert.equal(name.getAttribute('target'), null);
+ assert.equal(name.getAttribute('data-nav'), '');
 }
+// A running document has its private open button.
+assert.equal(all(rows[2], (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1);
 // A flat with draft changes offers Publish; a document never does.
 assert.equal(byText(rows[0], 'Publish').length, 1);
 assert.equal(byText(rows[2], 'Publish').length, 0);
@@ -847,5 +850,42 @@ assert.equal(all(tailShare, (e) => e.tagName === 'BUTTON' && e.textContent.inclu
 tailShare.close();
 globalThis.location = { origin: 'http://127.0.0.1:7878' };
 assert.equal(ui.extLink('http://blog.localhost:7879/').tagName, 'A', 'on the host a loopback link works');
+// --- separate private and public open buttons ---
+// The private button (lock) is always last, so it keeps its place; the
+// public one (globe) sits to its left only while the flat is public. A kind
+// with several networks becomes a menu of them.
+const glyphOf = (el) => all(el, (e) => e.tagName === 'SVG')[0];
+const pathOf = (svg) => svg.childNodes[0].getAttribute('d');
+const ep = (provider, url) => ({ provider, url, audience: 'current', permitted: true, state: 'ready' });
+const openBoth = ui.openLinks({ ...blog, visibility: 'public', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('portal', 'https://blog.rly.best/')] });
+const [pubBtn, privBtn] = openBoth.childNodes;
+assert.equal(openBoth.childNodes.length, 2, 'one public and one private button');
+assert.equal(pubBtn.getAttribute('href'), 'https://blog.rly.best/');
+assert.ok(pubBtn.getAttribute('class').includes('open-public'));
+assert.equal(privBtn.getAttribute('href'), 'http://blog.localhost:7879/');
+assert.ok(privBtn.getAttribute('class').includes('open-private'));
+assert.ok(glyphOf(pubBtn).getAttribute('aria-label').includes('anyone with the URL'), 'the public button warns');
+assert.equal(pathOf(glyphOf(privBtn)), pathOf(icon('lock')), 'private uses the lock icon');
+assert.equal(pathOf(glyphOf(pubBtn)), pathOf(icon('globe')), 'public uses the globe icon');
+const openPrivate = ui.openLinks({ ...blog, visibility: 'private', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('tailscale', 'https://blog.tail1234.ts.net/'), ep('portal', 'https://blog.rly.best/')] });
+assert.equal(openPrivate.childNodes.length, 1, 'a private flat has no public button');
+assert.ok(openPrivate.childNodes[0].getAttribute('class').includes('menu-wrap'), 'two private networks become a menu');
+assert.equal(all(openPrivate, (e) => (e.getAttribute('class') || '').includes('menu-item')).length, 2);
+// A private flat with a leftover public URL still shows only the private button.
+assert.equal(ui.openLinks({ ...blog, visibility: 'private' }).childNodes.length, 1);
+const openNb = ui.openLinks({ ...blog, visibility: 'public', live_version: 1, endpoints: [ep('netbird-expose', 'https://blog.nb.example/')] });
+assert.equal(openNb.childNodes.length, 2, 'the private URL backs the private button');
+assert.equal(openNb.childNodes[0].getAttribute('href'), 'https://blog.nb.example/', 'NetBird Expose is public');
+assert.equal(openNb.childNodes[1].getAttribute('href'), new URL(blog.private_url).href);
+// The flat page shows one line per kind: private (lock) first, then public.
+const { siteHeader } = await import('./site.js');
+const lines = (f) => all(siteHeader(f, 'deployments'), (e) => e.className === 'site-address muted');
+const pubLines = lines({ ...blog, visibility: 'public' });
+assert.equal(pubLines.length, 2);
+assert.equal(pathOf(glyphOf(pubLines[0])), pathOf(icon('lock')));
+assert.equal(all(pubLines[0], (e) => e.tagName === 'A')[0].getAttribute('href'), new URL(blog.private_url).href);
+assert.equal(pathOf(glyphOf(pubLines[1])), pathOf(icon('globe')));
+assert.equal(all(pubLines[1], (e) => e.tagName === 'A')[0].getAttribute('href'), new URL(blog.public_url).href);
+assert.equal(lines({ ...blog, visibility: 'private' }).length, 1, 'no public line while private');
 globalThis.location = savedLocation;
 console.log('ok');

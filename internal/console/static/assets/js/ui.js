@@ -1,7 +1,7 @@
 // Shared UI pieces: confirm dialogs, popup menus, toasts, error panels and
 // copyable snippets.
 
-import { h, clear, icon, openTargets } from './dom.js';
+import { h, clear, icon, linkTargets } from './dom.js';
 
 // confirmDialog opens a modal <dialog> and resolves true when confirmed.
 // opts: title, body (string | Node | array), confirmLabel, danger,
@@ -276,19 +276,26 @@ export async function busy(btn, fn) {
   }
 }
 
-// openLinks is a flat's open shortcut. With one address it is a plain icon
-// link; when several networks serve the flat it opens a list of them, each
-// labelled with its network (public ones say anyone can open them).
+// openLinks is a flat's open shortcuts: a private button (lock icon) and,
+// while the flat is public, a public one (globe icon) to its left, so the
+// private button keeps its place whatever the visibility. Each is a plain
+// icon link with one address and a list of its networks with several.
 export function openLinks(f) {
   const name = f.name || f.slug;
-  const targets = openTargets(f);
-  if (!targets.length) return null;
-  if (targets.length === 1) {
-    const t = targets[0];
-    return extLink(t.url, icon(t.public ? 'globe' : 'external',
-      `Open ${name} through ${t.label}` + (t.public ? ' (public URL: anyone with it can open the flat)' : '')), 'icon-btn');
-  }
-  return menu(`Open ${name}: choose a network`, targets.map((t) => ({
-    label: t.label + (t.public ? ' · public' : ''), detail: t.url.replace(/^https?:\/\//, ''), href: t.url,
-  })), 'external');
+  const targets = linkTargets(f);
+  const button = (isPublic) => {
+    const ts = isPublic ? targets.public : targets.private;
+    if (!ts.length) return null;
+    const kind = isPublic ? 'public' : 'private';
+    const glyph = isPublic ? 'globe' : 'lock';
+    const note = isPublic ? ' (anyone with the URL can open the flat)' : '';
+    if (ts.length === 1) {
+      return extLink(ts[0].url, icon(glyph, `Open ${name} ${kind}ly through ${ts[0].label}${note}`), 'icon-btn open-' + kind);
+    }
+    return menu(`Open ${name} ${kind}ly: choose a network${note}`, ts.map((t) => ({
+      label: t.label, detail: t.url.replace(/^https?:\/\//, ''), href: t.url,
+    })), glyph);
+  };
+  const pub = button(true), priv = button(false);
+  return pub || priv ? h('span', { class: 'open-links' }, pub, priv) : null;
 }

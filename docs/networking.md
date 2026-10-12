@@ -35,8 +35,10 @@ version or changes visibility.
 Each mode has a **default for new flats** in Settings → Network providers. A
 new flat starts allowed on Local plus the private and public defaults only,
 even when more providers are on for the host, and it is always created
-Private. Allow more providers on a flat to serve it on several networks; the
-console's open button then lists every address.
+Private. Allow more providers on a flat to serve it on several networks. The console
+shows a private open button (lock icon) and, while the flat is public, a
+public one (globe icon); a button lists every address when its kind has
+several.
 
 ## Running the console on Tailscale
 

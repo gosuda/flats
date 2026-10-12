@@ -1,8 +1,8 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
 
-import { h, clear, icon, timeEl, visibilityBadge, publicURL } from './dom.js';
+import { h, clear, icon, timeEl, visibilityBadge } from './dom.js';
 import { api, thumbnail } from './api.js';
-import { menu, errorPanel, loading, extLink, busy, openLinks } from './ui.js';
+import { menu, errorPanel, loading, busy, openLinks } from './ui.js';
 import { publishDraft } from './actions.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
@@ -117,7 +117,8 @@ export function mount(main, _params, ctx) {
       pub.addEventListener('click', () => busy(pub, async () => { if (await publishDraft(f)) load(); }));
       actions.appendChild(pub);
     }
-    if (f.live_version) {
+    // A document is open once it runs; a flat once a version is live.
+    if (docs ? f.running : f.live_version) {
       const open = openLinks(f);
       if (open) actions.appendChild(open);
     }
@@ -131,7 +132,7 @@ export function mount(main, _params, ctx) {
       view === 'grid' ? preview(f) : null,
       typeIcon(f),
       h('div', { class: 'flat-main' },
-        extLink(publicURL(f) || f.private_url, f.name || f.slug, 'flat-name'),
+        h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
         h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
