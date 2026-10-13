@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,6 +77,63 @@ func TestRejectsTraversalLinksAndOversize(t *testing.T) {
 	if _, ok := IsValidation(err); !ok {
 		t.Fatalf("garbage: %v", err)
 	}
+}
+
+// requireRejectedArchive checks the public upload error rather than the tar
+// reader's internal EOF or checksum errors.
+func requireRejectedArchive(t *testing.T, data []byte, limits Limits, want string) {
+	t.Helper()
+	_, err := FromArchive(bytes.NewReader(data), limits)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), want) {
+		t.Fatalf("want validation containing %q, got %v", want, err)
+	}
+}
+
+func TestTarGzRejectsOversizedIgnoredEntries(t *testing.T) {
+	big := strings.Repeat("x", int(lim.MaxBytes)+1)
+	for _, name := range []string{"node_modules/huge", "../escaped", ".DS_Store"} {
+		t.Run(name, func(t *testing.T) {
+			data := tgz(t, map[string]string{"index.html": "ok", name: big})
+			requireRejectedArchive(t, data, lim, "too much uncompressed data")
+		})
+	}
+}
+
+func TestTarGzBoundsAggregateIgnoredContent(t *testing.T) {
+	// Every body individually fits, but the skipped total exceeds the gzip
+	// expansion budget. The old collector did not account for any of it.
+	skipped := strings.Repeat("x", int(lim.MaxBytes))
+	entries := map[string]string{"index.html": "ok"}
+	for i := 0; i < 50; i++ {
+		entries[fmt.Sprintf("node_modules/dependency-%d", i)] = skipped
+	}
+	requireRejectedArchive(t, tgz(t, entries), lim, "too much uncompressed data")
+}
+
+func TestTarGzBoundsHiddenPAXMetadata(t *testing.T) {
+	// tar.Reader consumes global PAX headers internally without exposing them
+	// as entries. The decompression budget still must include their contents.
+	payload := strings.Repeat("x", 512<<10)
+	headers := make([]*tar.Header, 90)
+	for i := range headers {
+		headers[i] = &tar.Header{
+			Name:       fmt.Sprintf("pax-%d", i),
+			Typeflag:   tar.TypeXGlobalHeader,
+			PAXRecords: map[string]string{"comment": payload},
+		}
+	}
+	requireRejectedArchive(t, tgz(t, map[string]string{"index.html": "ok"}, headers...), lim, "too much uncompressed data")
+}
+
+func TestTarGzBoundsIgnoredEntryCount(t *testing.T) {
+	// Directories do not count toward MaxFiles, but each still costs parser
+	// work and must count toward the archive's separate entry limit.
+	headers := make([]*tar.Header, maxTarEntries)
+	for i := range headers {
+		headers[i] = &tar.Header{Name: fmt.Sprintf("dir-%d", i), Typeflag: tar.TypeDir}
+	}
+	requireRejectedArchive(t, tgz(t, map[string]string{"index.html": "ok"}, headers...), lim, "more than 40000 entries")
 }
 
 func TestManifestValidation(t *testing.T) {
