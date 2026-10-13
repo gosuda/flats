@@ -58,6 +58,10 @@ func (s *Service) deletedStorageRoot() string {
 	return filepath.Join(s.storageJournalDir(), "deleted")
 }
 
+func (s *Service) orphanStorageRoot() string {
+	return filepath.Join(s.storageJournalDir(), "orphans")
+}
+
 func (s *Service) deletedStorageDir(slugName string) string {
 	return filepath.Join(s.deletedStorageRoot(), slugName)
 }
@@ -367,7 +371,7 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	orphans := filepath.Join(s.storageJournalDir(), "orphans")
+	orphans := s.orphanStorageRoot()
 	for _, entry := range entries {
 		name := entry.Name()
 		if slug.Validate(name) != nil || owned[name] {
@@ -387,11 +391,9 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 }
 
 // quarantineOrphan moves root/name below orphans without replacing an
-// earlier quarantined directory of the same name.
+// earlier quarantined directory of the same name. recoverStorageOperations
+// has already created orphans and synced its parent.
 func (s *Service) quarantineOrphan(root, orphans, name string) (string, error) {
-	if err := os.MkdirAll(orphans, 0o700); err != nil {
-		return "", err
-	}
 	for i := 0; i < 1000; i++ {
 		target := filepath.Join(orphans, name)
 		if i > 0 {
@@ -419,7 +421,12 @@ func (s *Service) quarantineOrphan(root, orphans, name string) (string, error) {
 // previews, and redirects. Unknown legacy directories are quarantined; they
 // are never implicitly assigned to a newly created flat.
 func (s *Service) recoverStorageOperations(ctx context.Context) error {
+	// Create both recovery directories before the syncs below make their
+	// entries durable; storage is only moved into a durable directory.
 	if err := os.MkdirAll(s.deletedStorageRoot(), 0700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.orphanStorageRoot(), 0700); err != nil {
 		return err
 	}
 	if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
