@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gosuda/portal-tunnel/v2/portal/identity"
@@ -139,6 +140,8 @@ type entry struct {
 	closeDone   bool
 	closeErr    error     // the first Close error; SDK Close uses sync.Once
 	closedAt    time.Time // when that Close returned
+	httpSeen    bool      // HTTP shutdown error already reported
+	pumpSeen    bool      // listener pump error already reported
 
 	mu      sync.Mutex
 	hidden  bool
@@ -151,9 +154,13 @@ type entry struct {
 }
 
 type handlerBox struct {
-	mu sync.RWMutex
-	h  http.Handler
+	mu     sync.RWMutex
+	h      http.Handler
+	active atomic.Int64 // requests inside publicHandler
 }
+
+// idle reports whether no request is running. A nil box has none.
+func (b *handlerBox) idle() bool { return b == nil || b.active.Load() == 0 }
 
 func (b *handlerBox) get() http.Handler {
 	b.mu.RLock()
@@ -393,6 +400,8 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 // path never carries a Tailscale identity.
 func publicHandler(b *handlerBox) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.active.Add(1)
+		defer b.active.Add(-1)
 		for k := range r.Header {
 			if strings.HasPrefix(k, "Tailscale-User-") {
 				r.Header.Del(k)
@@ -524,8 +533,20 @@ func (n *Net) stopEntry(e *entry) error {
 	}
 
 	e.cancel()
-	if wait(e.done, "HTTP drain") && e.httpErr != nil && !errors.Is(e.httpErr, net.ErrClosed) && !errors.Is(e.httpErr, context.Canceled) {
-		errs = append(errs, fmt.Errorf("portal: %s HTTP shutdown: %w", e.slug, e.httpErr))
+	if wait(e.done, "HTTP drain") {
+		switch err := e.httpErr; {
+		case errors.Is(err, context.DeadlineExceeded):
+			// sdk.RunHTTP gives up after its own shutdown timeout and returns
+			// while requests may still run. Those requests are the
+			// obligation, not the historical error: wait for them.
+			if !waitIdle(ctx, e.handler) {
+				errs = append(errs, fmt.Errorf("portal: %s HTTP drain: requests still running after %s: %w", e.slug, n.cfg.ShutdownTimeout, err))
+			}
+		case err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) && !e.httpSeen:
+			// A finished server leaves nothing to retry: report it once.
+			e.httpSeen = true
+			errs = append(errs, fmt.Errorf("portal: %s HTTP shutdown: %w", e.slug, err))
+		}
 	}
 	// Stop accepting even if HTTP drain timed out; the pump remains an
 	// obligation until the underlying exposure closes.
@@ -554,10 +575,25 @@ func (n *Net) stopEntry(e *entry) error {
 			errs = append(errs, fmt.Errorf("%w (the relay drops the lease within %s)", e.closeErr, left.Round(time.Second)))
 		}
 	}
-	if wait(e.ln.pumped, "listener pump") && e.ln.err != nil && !errors.Is(e.ln.err, net.ErrClosed) && !errors.Is(e.ln.err, context.Canceled) {
+	if wait(e.ln.pumped, "listener pump") && e.ln.err != nil && !errors.Is(e.ln.err, net.ErrClosed) && !errors.Is(e.ln.err, context.Canceled) && !e.pumpSeen {
+		e.pumpSeen = true // the pump has returned: report its error once
 		errs = append(errs, fmt.Errorf("portal: %s listener pump: %w", e.slug, e.ln.err))
 	}
 	return errors.Join(errs...)
+}
+
+// waitIdle waits until no request runs in b or ctx ends.
+func waitIdle(ctx context.Context, b *handlerBox) bool {
+	t := time.NewTicker(10 * time.Millisecond)
+	defer t.Stop()
+	for !b.idle() {
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			return b.idle()
+		}
+	}
+	return true
 }
 
 // Close stops every exposure. Later Serve calls fail.

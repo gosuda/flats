@@ -3,12 +3,15 @@ package portal
 import (
 	"context"
 	"errors"
-	"github.com/gosuda/portal-tunnel/v2/types"
+	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
 type shutdownExposure struct {
@@ -340,3 +343,89 @@ func TestPortalStopResumesIncompleteTeardown(t *testing.T) {
 		})
 	}
 }
+
+// sdk.RunHTTP returns DeadlineExceeded after its own shutdown timeout while
+// requests may still run. Stop must wait for those requests on retry
+// instead of either forgetting them or failing forever.
+func TestPortalStopWaitsForRequestsOutlivingHTTPShutdown(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	e, exp := shutdownEntry(t, "slow")
+	release, entered := make(chan struct{}), make(chan struct{})
+	e.handler = &handlerBox{h: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	})}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		publicHandler(e.handler).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	}()
+	awaitShutdown(t, entered)
+	e.httpErr = fmt.Errorf("serve relay http: %w", context.DeadlineExceeded)
+	close(e.done)
+	n.entries[e.slug] = e
+
+	if err := n.Stop(e.slug); err == nil || !strings.Contains(err.Error(), "requests still running") {
+		t.Fatalf("Stop with a running request = %v", err)
+	}
+	if n.entry(e.slug) != e {
+		t.Fatal("Stop forgot a running request")
+	}
+	close(release)
+	awaitShutdown(t, served)
+	awaitShutdown(t, exp.finished)
+	if err := n.Stop(e.slug); err != nil {
+		t.Fatalf("Stop after the request finished = %v", err)
+	}
+	if n.entry(e.slug) != nil {
+		t.Fatal("confirmed Stop retained the entry")
+	}
+}
+
+// An error from a stage that has finished leaves nothing to retry: the
+// first Stop reports it and a retry confirms the teardown.
+func TestPortalStopReportsFinishedStageErrorOnce(t *testing.T) {
+	for _, stage := range []string{"HTTP shutdown", "listener pump"} {
+		t.Run(stage, func(t *testing.T) {
+			n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = n.Close() })
+			e, exp := shutdownEntry(t, "failed")
+			failure := errors.New("boom")
+			if stage == "HTTP shutdown" {
+				e.httpErr = failure
+			} else {
+				failing := &shutdownExposure{listener: failingListener{exp.listener, failure}, entered: make(chan struct{}), finished: make(chan struct{})}
+				e.exp, e.ln = failing, newDrainListener(failing)
+			}
+			close(e.done)
+			n.entries[e.slug] = e
+
+			if err := n.Stop(e.slug); !errors.Is(err, failure) || !strings.Contains(err.Error(), stage) {
+				t.Fatalf("first Stop = %v", err)
+			}
+			if n.entry(e.slug) != e {
+				t.Fatal("first Stop forgot the entry")
+			}
+			if err := n.Stop(e.slug); err != nil {
+				t.Fatalf("retry = %v", err)
+			}
+			if n.entry(e.slug) != nil {
+				t.Fatal("retry retained the entry")
+			}
+		})
+	}
+}
+
+type failingListener struct {
+	net.Listener
+	err error
+}
+
+func (l failingListener) Accept() (net.Conn, error) { return nil, l.err }

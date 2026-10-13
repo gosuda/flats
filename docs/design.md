@@ -63,7 +63,9 @@ cancelling their SDK parent context, so unregister errors reach the caller.
 The outer bound also covers admitted Serve/Stop/SetHidden operations; cancellation
 at the deadline unblocks context-aware SDK work. SDK close is attempted even if
 drain times out. A Portal Stop that fails keeps the exposure tracked, and a
-retry resumes the pending stages instead of reporting success. The SDK closes
+retry resumes the pending stages instead of reporting success: it waits for
+requests that outlived the SDK's HTTP shutdown timeout, while an error from a
+stage that has finished is reported once. The SDK closes
 an exposure only once, so a failed unregister stays reported until the relay
 must have dropped the unrenewed lease (2 minutes after close); Serve and
 SetHidden never revive an exposure being torn down. Tailscale already bounds
