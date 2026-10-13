@@ -46,11 +46,21 @@ const ManifestName = "flats.json"
 const MaxFiles = 20000
 
 const (
-	// Count every returned tar entry, including directories and rejected files.
-	maxTarEntries = MaxFiles * 2
+	// maxTarEntries bounds every entry a tar stream returns, including
+	// directories and entries the collector skips or rejects. It leaves room
+	// for MaxFiles files plus their directories and AppleDouble "._" entries.
+	maxTarEntries = 3 * MaxFiles
 
-	// Allow tar headers, padding and metadata on top of the file-content limit.
-	maxTarOverhead = maxTarEntries*1024 + 1<<20
+	// tarEntryOverhead is the tar data allowed per entry beyond the file
+	// contents kept: the header, PAX or GNU long-name records, extended
+	// attributes (macOS tar writes about 2.5 KiB of them per entry) and block
+	// padding.
+	tarEntryOverhead = 4 << 10
+
+	// tarOverhead is how much decompressed tar data a tar.gz upload may hold
+	// beyond the upload limit. It also covers the bodies of skipped entries
+	// such as node_modules, which the tar reader still has to decompress.
+	tarOverhead = maxTarEntries*tarEntryOverhead + 1<<20
 )
 
 // Manifest describes a build.
@@ -190,15 +200,21 @@ func skipName(p string) bool {
 	return false
 }
 
-func archiveExpansionError() error {
+func expansionError(budget int64) error {
 	return &ValidationError{Problems: []Problem{{
-		Message: "archive contains too much uncompressed data",
-		Fix:     "remove oversized or unnecessary archive entries, including ignored files",
+		Message: fmt.Sprintf("archive expands to more than %d bytes of tar data", budget),
+		Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats deploy <dir>`",
 	}}}
 }
 
 // FromArchive reads a tar, tar.gz or zip archive.
 func FromArchive(r io.Reader, lim Limits) ([]File, error) {
+	return fromArchive(r, lim, tarOverhead)
+}
+
+// fromArchive is FromArchive with the tar.gz expansion allowance as a
+// parameter, so tests can exercise the bound without huge archives.
+func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	// Bound the compressed body too: a well-formed archive of MaxBytes is never
 	// much larger than MaxBytes plus headers.
 	raw, err := io.ReadAll(io.LimitReader(r, lim.MaxBytes+lim.MaxBytes/4+1<<20))
@@ -218,12 +234,14 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
 		}
 		defer gz.Close()
-		// tar.Reader also consumes rejected bodies and hidden PAX metadata.
-		// Cap the entire gzip output, not only files retained by the collector.
-		limited := &io.LimitedReader{R: gz, N: lim.MaxBytes + maxTarOverhead + 1}
-		err = c.readTar(limited)
-		if limited.N == 0 {
-			return nil, archiveExpansionError()
+		// The tar reader decompresses every byte it passes over, including
+		// skipped bodies and PAX records the collector never sees, so bound
+		// the whole stream rather than only the files kept.
+		budget := lim.MaxBytes + overhead
+		stream := &io.LimitedReader{R: gz, N: budget + 1}
+		err = c.readTar(stream)
+		if stream.N == 0 {
+			return nil, expansionError(budget)
 		}
 	default:
 		err = c.readTar(bytes.NewReader(raw))
@@ -253,12 +271,9 @@ func (c *collector) readTar(r io.Reader) error {
 		entries++
 		if entries > maxTarEntries {
 			return &ValidationError{Problems: []Problem{{
-				Message: fmt.Sprintf("archive has more than %d entries", maxTarEntries),
-				Fix:     "remove unnecessary files and directories from the archive",
+				Message: fmt.Sprintf("archive has more than %d entries, counting directories and skipped files", maxTarEntries),
+				Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats deploy <dir>`",
 			}}}
-		}
-		if h.Size > c.lim.MaxBytes {
-			return archiveExpansionError()
 		}
 		switch h.Typeflag {
 		case tar.TypeDir, tar.TypeXGlobalHeader, tar.TypeXHeader:

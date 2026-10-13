@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,59 +82,174 @@ func TestRejectsTraversalLinksAndOversize(t *testing.T) {
 
 // requireRejectedArchive checks the public upload error rather than the tar
 // reader's internal EOF or checksum errors.
-func requireRejectedArchive(t *testing.T, data []byte, limits Limits, want string) {
+func requireRejectedArchive(t *testing.T, data []byte, limits Limits, overhead int64, want string) {
 	t.Helper()
-	_, err := FromArchive(bytes.NewReader(data), limits)
+	_, err := fromArchive(bytes.NewReader(data), limits, overhead)
 	v, ok := IsValidation(err)
 	if !ok || !strings.Contains(v.Error(), want) {
 		t.Fatalf("want validation containing %q, got %v", want, err)
 	}
 }
 
-func TestTarGzRejectsOversizedIgnoredEntries(t *testing.T) {
-	big := strings.Repeat("x", int(lim.MaxBytes)+1)
-	for _, name := range []string{"node_modules/huge", "../escaped", ".DS_Store"} {
+// writeTgz packs the entries add writes. It uses BestSpeed so large but
+// legitimate fixtures stay quick.
+func writeTgz(t *testing.T, add func(tw *tar.Writer)) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(gz)
+	add(tw)
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// writeEntry writes one header and body, failing the test on any error so a
+// fixture the tar writer refuses cannot silently become a smaller archive.
+func writeEntry(t *testing.T, tw *tar.Writer, h *tar.Header, body string) {
+	t.Helper()
+	if err := tw.WriteHeader(h); err != nil {
+		t.Fatalf("header %s: %v", h.Name, err)
+	}
+	if _, err := io.WriteString(tw, body); err != nil {
+		t.Fatalf("body %s: %v", h.Name, err)
+	}
+}
+
+const expansionMsg = "bytes of tar data"
+
+func TestTarGzBoundsSkippedAndRejectedBodies(t *testing.T) {
+	// The collector never reads these bodies, but tar.Reader still
+	// decompresses them to reach the next header.
+	const overhead = 64 << 10
+	big := strings.Repeat("x", int(lim.MaxBytes+overhead)+1)
+	for _, name := range []string{"node_modules/huge", ".git/objects/pack", "../escaped", ".DS_Store"} {
 		t.Run(name, func(t *testing.T) {
 			data := tgz(t, map[string]string{"index.html": "ok", name: big})
-			requireRejectedArchive(t, data, lim, "too much uncompressed data")
+			requireRejectedArchive(t, data, lim, overhead, expansionMsg)
 		})
 	}
 }
 
-func TestTarGzBoundsAggregateIgnoredContent(t *testing.T) {
-	// Every body individually fits, but the skipped total exceeds the gzip
-	// expansion budget. The old collector did not account for any of it.
-	skipped := strings.Repeat("x", int(lim.MaxBytes))
+func TestTarGzKeepsSkippedBodiesWithinBudget(t *testing.T) {
+	// Skipped entries larger than the upload limit itself were accepted
+	// before the bound and still are while the whole stream fits.
+	big := strings.Repeat("x", int(lim.MaxBytes)+1)
+	data := tgz(t, map[string]string{"index.html": "ok", "node_modules/huge": big, ".git/pack": big})
+	files, err := fromArchive(bytes.NewReader(data), lim, 4<<20)
+	if err != nil || len(files) != 1 || files[0].Path != "index.html" {
+		t.Fatalf("files %+v err %v", files, err)
+	}
+}
+
+func TestTarGzBoundsAggregateSkippedContent(t *testing.T) {
+	// Each body fits on its own; their sum exceeds the budget.
+	const overhead = 64 << 10
 	entries := map[string]string{"index.html": "ok"}
-	for i := 0; i < 50; i++ {
-		entries[fmt.Sprintf("node_modules/dependency-%d", i)] = skipped
+	for i := 0; i < 4; i++ {
+		entries[fmt.Sprintf("node_modules/dependency-%d", i)] = strings.Repeat("x", int(lim.MaxBytes)/3)
 	}
-	requireRejectedArchive(t, tgz(t, entries), lim, "too much uncompressed data")
+	requireRejectedArchive(t, tgz(t, entries), lim, overhead, expansionMsg)
 }
 
-func TestTarGzBoundsHiddenPAXMetadata(t *testing.T) {
-	// tar.Reader consumes global PAX headers internally without exposing them
-	// as entries. The decompression budget still must include their contents.
+func TestTarGzBoundsPAXMetadata(t *testing.T) {
+	// tar.Reader consumes local PAX headers internally and returns global
+	// ones as entries; both are decompressed and count toward the budget.
+	const overhead = 64 << 10
 	payload := strings.Repeat("x", 512<<10)
-	headers := make([]*tar.Header, 90)
-	for i := range headers {
-		headers[i] = &tar.Header{
-			Name:       fmt.Sprintf("pax-%d", i),
-			Typeflag:   tar.TypeXGlobalHeader,
-			PAXRecords: map[string]string{"comment": payload},
-		}
+	for name, typ := range map[string]byte{"local": tar.TypeReg, "global": tar.TypeXGlobalHeader} {
+		t.Run(name, func(t *testing.T) {
+			data := writeTgz(t, func(tw *tar.Writer) {
+				writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 2}, "ok")
+				for i := 0; i < 4; i++ {
+					h := &tar.Header{
+						Name:       fmt.Sprintf("node_modules/pax-%d", i),
+						Typeflag:   typ,
+						PAXRecords: map[string]string{"comment": payload},
+					}
+					if typ == tar.TypeReg {
+						h.Mode = 0o644
+					}
+					writeEntry(t, tw, h, "")
+				}
+			})
+			requireRejectedArchive(t, data, lim, overhead, expansionMsg)
+		})
 	}
-	requireRejectedArchive(t, tgz(t, map[string]string{"index.html": "ok"}, headers...), lim, "too much uncompressed data")
 }
 
-func TestTarGzBoundsIgnoredEntryCount(t *testing.T) {
+func TestTarGzBoundsEntryCount(t *testing.T) {
 	// Directories do not count toward MaxFiles, but each still costs parser
-	// work and must count toward the archive's separate entry limit.
-	headers := make([]*tar.Header, maxTarEntries)
-	for i := range headers {
-		headers[i] = &tar.Header{Name: fmt.Sprintf("dir-%d", i), Typeflag: tar.TypeDir}
+	// work and counts toward the separate entry limit.
+	limits := Limits{MaxBytes: 16 << 20}
+	data := writeTgz(t, func(tw *tar.Writer) {
+		writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 2}, "ok")
+		for i := 0; i < maxTarEntries; i++ {
+			writeEntry(t, tw, &tar.Header{Name: fmt.Sprintf("d%d/", i), Typeflag: tar.TypeDir, Mode: 0o755}, "")
+		}
+	})
+	_, err := FromArchive(bytes.NewReader(data), limits)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), fmt.Sprintf("more than %d entries", maxTarEntries)) {
+		t.Fatalf("want entry-count validation, got %v", err)
 	}
-	requireRejectedArchive(t, tgz(t, map[string]string{"index.html": "ok"}, headers...), lim, "more than 40000 entries")
+}
+
+func TestTarGzRejectsBombWithDefaultBudget(t *testing.T) {
+	// One skipped entry just past the real budget, streamed as zeros: the
+	// gzip input is small, the decompressed tar is not.
+	budget := lim.MaxBytes + tarOverhead
+	data := writeTgz(t, func(tw *tar.Writer) {
+		writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 2}, "ok")
+		writeEntry(t, tw, &tar.Header{Name: "node_modules/bomb", Mode: 0o644, Size: budget}, "")
+		if _, err := io.CopyN(tw, zeroReader{}, budget); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_, err := FromArchive(bytes.NewReader(data), lim)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), fmt.Sprintf("more than %d bytes of tar data", budget)) {
+		t.Fatalf("want expansion validation, got %v", err)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestTarGzAcceptsMetadataHeavyArchiveAtFileLimit(t *testing.T) {
+	// macOS tar writes PAX extended attributes for every entry (about 2.5 KiB
+	// each). A build at MaxFiles with long paths and such metadata must fit.
+	xattr := strings.Repeat("A", 2<<10)
+	data := writeTgz(t, func(tw *tar.Writer) {
+		for d := 0; d < MaxFiles/10; d++ {
+			dir := fmt.Sprintf("assets/some/deeper/directory/structure/with-a-fairly-long-name/%05d/", d)
+			writeEntry(t, tw, &tar.Header{Name: dir, Typeflag: tar.TypeDir, Mode: 0o755,
+				PAXRecords: map[string]string{"LIBARCHIVE.xattr.com.apple.provenance": xattr}}, "")
+			for f := 0; f < 10; f++ {
+				name := dir + fmt.Sprintf("generated-chunk-%d.js", f)
+				if d == 0 && f == 0 {
+					name = "index.html"
+				}
+				writeEntry(t, tw, &tar.Header{Name: name, Mode: 0o644, Size: 1,
+					PAXRecords: map[string]string{"LIBARCHIVE.xattr.com.apple.provenance": xattr}}, "x")
+			}
+		}
+	})
+	files, err := FromArchive(bytes.NewReader(data), Limits{MaxBytes: 1 << 20})
+	if err != nil || len(files) != MaxFiles {
+		t.Fatalf("got %d files, err %v", len(files), err)
+	}
 }
 
 func TestManifestValidation(t *testing.T) {
