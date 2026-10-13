@@ -31,6 +31,7 @@ there and run `go test ./docs -run TestGeneratedReferences -update`.
 | Page | Covers |
 | --- | --- |
 | [Design](design.md) | Process layout, manifest, exposure, secrets, approvals, handler ABI, HTTP API |
+| [Content data models](spec/content-models.md) | Principles for the Version model (websites, pages) and the Revision model (documents, design); target, partly implemented |
 | [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, publication, versions, approvals and data in the core store |
 | [Lifecycle transport](lifecycle-transport.md) | Console decisions and the API/CLI/MCP surfaces |
 | [Lifecycle console](lifecycle-console.md) | Routes and screens of the web console |
