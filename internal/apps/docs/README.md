@@ -135,10 +135,10 @@ Host internals outside runtime API v1 must accompany the app:
   `RuntimeSpec.Generation`. The persisted host counter survives restarts and clock changes.
   Content hashes alone cannot order an idle old worker
   against a newer activation.
-* Optional `ws.setSendLimits(connectionBytes, flatBytes)`, bounding queued
-  and in-flight Go payload bytes. App delivery receipts can be forged, so
+* `ws.setSendLimits(connectionBytes, flatBytes)` can lower the host's default
+  queued and in-flight byte budgets. App delivery receipts can be forged, so
   they cannot independently bound the host's outgoing queues. Budgets only
-  decrease and existing apps keep their default behavior.
+  decrease.
 
 ## Operational limits
 
