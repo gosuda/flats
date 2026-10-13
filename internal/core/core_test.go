@@ -61,9 +61,38 @@ func files(kv ...string) []bundle.File {
 	return out
 }
 
+func decidePublish(t *testing.T, svc *core.Service, slug string) (int, error) {
+	t.Helper()
+	ctx := context.Background()
+	res, err := svc.Publish(ctx, slug, 0, "", core.ViaAPI)
+	if err != nil {
+		return 0, err
+	}
+	if res.Approval == nil {
+		t.Fatal("publish applied without approval")
+	}
+	a, err := svc.Decide(ctx, res.Approval.ID, true)
+	if err != nil {
+		return 0, err
+	}
+	f, err := svc.GetFlat(ctx, slug)
+	if err != nil {
+		return 0, err
+	}
+	_ = a
+	return f.LatestVersion, nil
+}
+
 func decideDeploy(t *testing.T, svc *core.Service, slug string, version int) error {
 	t.Helper()
 	ctx := context.Background()
+	if version == 0 {
+		n, err := decidePublish(t, svc, slug)
+		if err != nil {
+			return err
+		}
+		version = n
+	}
 	_, err := svc.Deploy(ctx, slug, version, core.ViaAPI)
 	var pending *core.PendingApproval
 	if !errors.As(err, &pending) || pending.Approval == nil {

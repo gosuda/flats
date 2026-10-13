@@ -189,24 +189,30 @@ const classCount = (row, c) => all(row, (e) => (e.getAttribute('class') || '').s
 assert.equal(classCount(rows[0], 'open-primary'), 1);
 assert.equal(classCount(rows[0], 'flat-sub-vis'), 1);
 assert.ok(classCount(rows[0], 'menu-narrow') >= 1);
-// A flat with draft changes offers Publish; a document never does.
-assert.equal(byText(rows[0], 'Publish').length, 1);
-assert.equal(byText(rows[2], 'Publish').length, 0);
+// A flat with draft changes offers Save version; a document never does.
+assert.equal(byText(rows[0], 'Save version').length, 1);
+assert.equal(byText(rows[2], 'Save version').length, 0);
 assert.ok(rows[2].textContent.includes('Running') && !rows[2].textContent.includes('Live v'), 'a document row shows no version: ' + rows[2].textContent);
 assert.equal(byText(rows[2], 'Overview').length, 1);
 stopList();
 // A stopped document and an unpublished flat have nothing to open.
 const savedFlats = routes['GET /console/api/flats'];
-routes['GET /console/api/flats'] = { flats: [{ ...notes, running: false }, { ...blog, live_version: 0, live: null }] };
+routes['GET /console/api/flats'] = { flats: [
+  { ...notes, running: false },
+  { ...blog, live_version: 0, live: null },
+  { ...blog, slug: 'saved-not-live', name: 'Saved Not Live', live_version: 0, live: null, versions: 1, latest_version: 1, draft: { ...blog.draft, dirty: false } },
+] };
 const idleMain = new Element('main');
 const stopIdle = list.mount(idleMain, [], ctx);
 await tick();
 const idleRows = all(idleMain, (e) => e.tagName === 'LI' && e.className === 'flat');
-assert.equal(idleRows.length, 2);
+assert.equal(idleRows.length, 3);
 for (const row of idleRows) {
   assert.equal(openCount(row), 0, row.textContent);
   assert.equal(classCount(row, 'open-primary') + classCount(row, 'menu-narrow'), 0, row.textContent);
 }
+assert.ok(idleRows[2].textContent.includes('Not deployed · v1 saved'), idleRows[2].textContent);
+assert.equal(byText(idleRows[2], 'Deploy v1').length, 1, 'saved version that is not live yet offers Deploy v1');
 stopIdle();
 routes['GET /console/api/flats'] = savedFlats;
 
@@ -257,20 +263,26 @@ assert.ok(dialogs[0].textContent.includes(PUBLIC), 'deploy result must show the 
 dialogs[0].close('ok');
 await tick();
 
-// The unpublished draft is a row above the published versions and publishes
-// the exact revision shown.
+// The unpublished draft is a row above the published versions and saves
+// the exact revision shown as a new version.
 const draftRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-draft')[0];
 assert.ok(draftRow, 'want a draft row');
 routes['POST /console/api/flats/blog/publish'] = pending('apr-publish');
-routes['POST /console/api/approvals/apr-publish/approve'] = { id: 'apr-publish', status: 'approved', result: 'version 3 is live' };
-byText(draftRow, 'Publish')[0].dispatch('click');
+routes['POST /console/api/approvals/apr-publish/approve'] = { id: 'apr-publish', status: 'approved', result: 'saved version 3', result_data: { version: 3 } };
+const pubToastBox = new Element('div');
+pubToastBox.setAttribute('id', 'toasts');
+const origGetElementById = document.getElementById;
+document.getElementById = (id) => (id === 'toasts' ? pubToastBox : origGetElementById?.(id));
+byText(draftRow, 'Save version')[0].dispatch('click');
 await tick();
 dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
-assert.ok(dialogs[0].textContent.includes('Publish Blog?'));
+assert.ok(dialogs[0].textContent.includes('Save draft of Blog as a new version?'));
 dialogs[0].close('ok');
 await tick();
+document.getElementById = origGetElementById;
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/publish').body), { revision: 3, hash: 'c' });
 assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/approve'));
+assert.ok(pubToastBox.textContent.includes('Saved version 3. Deploy it to make it live.'), pubToastBox.textContent);
 all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
 await tick();
 
@@ -287,7 +299,7 @@ for (const id of ['versions', 'previews']) {
 for (const id of ['status', 'logs']) {
   assert.equal(all(docMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `document page lacks ${id}`);
 }
-for (const text of ['Publish', 'Redeploy (apply environment)', 'Preview', 'Roll back', 'Deploy']) {
+for (const text of ['Save version', 'Redeploy (apply environment)', 'Preview', 'Roll back', 'Deploy']) {
   assert.equal(byText(docMain, text).length, 0, `document page offers ${text}`);
 }
 assert.ok(docMain.textContent.includes('Running') && !docMain.textContent.includes('Not published'));

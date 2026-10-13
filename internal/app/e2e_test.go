@@ -116,6 +116,10 @@ func TestMVPGate(t *testing.T) {
 		t.Fatal("upload became live before approval")
 	}
 	approve(pending)
+	if c := call(t, "POST", base+"/api/flats/big-site/deploy", strings.NewReader(`{"version":1}`), &pending); c != 202 {
+		t.Fatalf("deploy v1 pending: %d %+v", c, pending)
+	}
+	approve(pending)
 	liveURL := currentURL()
 	if c, body := fetch(t, liveURL); c != 200 || !strings.Contains(body, "v1") {
 		t.Fatalf("live: %d %q", c, body)
@@ -131,6 +135,13 @@ func TestMVPGate(t *testing.T) {
 	}
 	if _, body := fetch(t, liveURL); !strings.Contains(body, "v1") {
 		t.Fatalf("pending v2 replaced current: %q", body)
+	}
+	approve(pending)
+	if _, body := fetch(t, liveURL); !strings.Contains(body, "v1") {
+		t.Fatalf("saved v2 replaced current before deploy: %q", body)
+	}
+	if c := call(t, "POST", base+"/api/flats/big-site/deploy", strings.NewReader(`{"version":2}`), &pending); c != 202 {
+		t.Fatalf("deploy v2 pending: %d %+v", c, pending)
 	}
 	approve(pending)
 	if _, body := fetch(t, liveURL); !strings.Contains(body, "v2") {

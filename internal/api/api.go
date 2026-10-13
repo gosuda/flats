@@ -536,7 +536,7 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request, via core.Via) {
 		return
 	}
 	if n < 0 {
-		writeErr(w, 400, errors.New(`body must be {"version": <n>}; 0 requests publish of the current Draft`))
+		writeErr(w, 400, fmt.Errorf("%w: body must be {\"version\": <n>} with a positive version number; save the draft as a new version first, then deploy that version", core.ErrInvalid))
 		return
 	}
 	res, err := s.Svc.Deploy(r.Context(), r.PathValue("slug"), n, via)

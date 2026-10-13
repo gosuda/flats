@@ -100,12 +100,22 @@ func TestAgainstRealAPI(t *testing.T) {
 		t.Fatal("CLI save allocated vN")
 	}
 	approvePending()
+	assertState(0, "private", "")
+	if r := run(t, srv.URL, "", "deploy", "--flat", "demo", "--version", "1"); r.code != ExitPending {
+		t.Fatalf("deploy v1 pending: %+v", r)
+	}
+	approvePending()
 	assertState(1, "private", "<h1>v1</h1>")
 	writeTree(t, site, map[string]string{"index.html": "<h1>v2</h1>"})
 	if r := run(t, srv.URL, "", "deploy", site, "--flat", "demo", "--expected-revision", "1"); r.code != ExitPending {
 		t.Fatalf("second pending: %+v", r)
 	}
 	assertState(1, "private", "<h1>v1</h1>")
+	approvePending()
+	assertState(1, "private", "<h1>v1</h1>")
+	if r := run(t, srv.URL, "", "deploy", "--flat", "demo", "--version", "2"); r.code != ExitPending {
+		t.Fatalf("deploy v2 pending: %+v", r)
+	}
 	approvePending()
 	assertState(2, "private", "<h1>v2</h1>")
 	if r := run(t, srv.URL, "", "versions", "demo"); r.code != 0 || !strings.Contains(r.stdout, "first") {
@@ -194,6 +204,11 @@ func TestAgainstRealAPI(t *testing.T) {
 		t.Fatalf("explicit publish: %+v", r)
 	}
 	assertState(1, "private", "<h1>v1</h1>")
+	approvePending()
+	assertState(1, "private", "<h1>v1</h1>")
+	if r := run(t, srv.URL, "", "deploy", "--flat", "demo", "--version", "3"); r.code != ExitPending {
+		t.Fatalf("deploy v3: %+v", r)
+	}
 	approvePending()
 	assertState(3, "private", "DRAFT-3")
 	if r := run(t, srv.URL, "", "deploy", "--flat", "demo", "--version", "2"); r.code != ExitPending {

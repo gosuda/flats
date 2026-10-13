@@ -286,6 +286,20 @@ func TestViewsReportHostState(t *testing.T) {
 
 func approvedInternalDeploy(t *testing.T, s *Service, ctx context.Context, slug string, n int) (DeployResult, error) {
 	t.Helper()
+	if n == 0 {
+		res, err := s.Publish(ctx, slug, 0, "", ViaAPI)
+		if err != nil {
+			return DeployResult{}, err
+		}
+		if _, err := s.Decide(ctx, res.Approval.ID, true); err != nil {
+			return DeployResult{}, err
+		}
+		v, ok, err := s.latestVersion(ctx, slug)
+		if err != nil || !ok {
+			return DeployResult{}, err
+		}
+		n = v.Number
+	}
 	_, err := s.Deploy(ctx, slug, n, ViaAPI)
 	var p *PendingApproval
 	if !errors.As(err, &p) {

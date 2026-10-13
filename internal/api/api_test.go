@@ -125,6 +125,13 @@ func saveAndPublish(t *testing.T, srv *httptest.Server, slug, content string) {
 		t.Fatalf("publish request: %d %v", code, out)
 	}
 	approveRequest(t, srv, out)
+	_, f := req(t, "GET", srv.URL+"/api/flats/"+slug, nil, nil)
+	latest := int(f["latest_version"].(float64))
+	code, dep := req(t, "POST", srv.URL+"/api/flats/"+slug+"/deploy", strings.NewReader(fmt.Sprintf(`{"version":%d}`, latest)), nil)
+	if code != 202 || dep["status"] != "pending_approval" {
+		t.Fatalf("deploy request: %d %v", code, dep)
+	}
+	approveRequest(t, srv, dep)
 }
 
 func approveRequest(t *testing.T, srv *httptest.Server, pending map[string]any) map[string]any {

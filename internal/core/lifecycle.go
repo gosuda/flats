@@ -159,6 +159,17 @@ func pending(res ActionResult) (DeployResult, error) {
 	return DeployResult{}, &PendingApproval{ActionResult: res}
 }
 
+func (s *Service) latestVersion(ctx context.Context, slugName string) (store.Version, bool, error) {
+	vs, err := s.st.ListVersions(ctx, slugName)
+	if err != nil {
+		return store.Version{}, false, err
+	}
+	if len(vs) == 0 {
+		return store.Version{}, false, nil
+	}
+	return vs[0], true, nil
+}
+
 func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via Via) (DeployResult, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
@@ -169,33 +180,12 @@ func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via
 	if err := s.refuseDocs(ctx, f); err != nil {
 		return DeployResult{}, err
 	}
+	if n <= 0 {
+		return DeployResult{}, invalidf("version must be a positive integer; save the draft as a new version first, then deploy that version")
+	}
 	providers, err := s.providerKey(ctx, slugName)
 	if err != nil {
 		return DeployResult{}, err
-	}
-	if n == 0 {
-		d, err := s.st.GetDraft(ctx, slugName)
-		if err != nil {
-			return DeployResult{}, err
-		}
-		rev, err := s.st.GetDraftRevision(ctx, slugName, d.Revision)
-		if err != nil {
-			return DeployResult{}, err
-		}
-		if rev.Pruned {
-			return DeployResult{}, fmt.Errorf("%w: draft revision %d was pruned", ErrConflict, rev.Revision)
-		}
-		if err := s.checkCandidateType(ctx, f, rev.Manifest, fmt.Sprintf("draft revision %d", rev.Revision)); err != nil {
-			return DeployResult{}, err
-		}
-		res, err := s.requestFrozen(ctx, slugName, "publish", publishParams{
-			Revision: d.Revision, Hash: rev.Hash, BaseVersion: f.LiveVersion,
-			Visibility: string(f.Visibility.Canonical()), Providers: providers,
-		}, via, "")
-		if err != nil {
-			return DeployResult{}, err
-		}
-		return pending(res)
 	}
 	v, err := s.st.GetVersion(ctx, slugName, n)
 	if err != nil {
@@ -281,12 +271,8 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility unchanged"}, nil
 	}
 	if vis.Public() {
-		n, err := s.st.CountPublished(ctx, slugName)
-		if err != nil {
-			return ActionResult{}, err
-		}
-		if f.LiveVersion == 0 && n == 0 {
-			return ActionResult{}, fmt.Errorf("%w: publish a version before making this flat public", ErrConflict)
+		if f.LiveVersion == 0 {
+			return ActionResult{}, fmt.Errorf("%w: publish and deploy a version before making this flat public", ErrConflict)
 		}
 	}
 	providers, err := s.providerKey(ctx, slugName)
@@ -486,7 +472,11 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	if json.Unmarshal(a.ResultData, &receipt) == nil && receipt.Status == "applied" {
 		receipt.Status = "approved"
 		raw, _ := json.Marshal(receipt)
-		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", "visibility applied", raw, s.now()); err != nil {
+		msg := "visibility applied"
+		if a.Action == "publish" && receipt.Version > 0 {
+			msg = fmt.Sprintf("saved version %d", receipt.Version)
+		}
+		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err
 		}
 		return s.st.GetApproval(ctx, a.ID)
@@ -496,7 +486,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 		return a, err
 	} else if ok {
 		msg := fmt.Sprintf("version %d is live (was %d)", dep.Version, dep.Previous)
-		dto := ApprovalExecution{Status: "approved", DataImpact: "none", HealthData: "isolated_copy", LiveData: "untouched"}
+		dto := ApprovalExecution{Status: "approved", Version: dep.Version, DataImpact: "none", HealthData: "isolated_copy", LiveData: "untouched"}
 		if v, err := s.st.GetVersion(ctx, a.Flat, dep.Version); err == nil && v.Kind == "server" {
 			dto.DataImpact, dto.LiveData = "runtime_start", "runtime_may_write"
 		}
@@ -519,7 +509,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	if err != nil {
 		status, result = "failed", err.Error()
 	}
-	dto := ApprovalExecution{Status: status, DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}
+	dto := ApprovalExecution{Status: status, Version: res.Version, DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}
 	if dto.DataImpact == "" {
 		dto.DataImpact, dto.HealthData, dto.LiveData = "none", "not_run", "untouched"
 	}
@@ -579,8 +569,12 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if f.LiveVersion != p.BaseVersion {
-		return ActionResult{}, mismatch(strconv.Itoa(p.BaseVersion), strconv.Itoa(f.LiveVersion), "the live version")
+	latest, hasLatest, err := s.latestVersion(ctx, a.Flat)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if latest.Number != p.BaseVersion {
+		return ActionResult{}, mismatch(strconv.Itoa(p.BaseVersion), strconv.Itoa(latest.Number), "the latest version")
 	}
 	if string(f.Visibility.Canonical()) != p.Visibility {
 		return ActionResult{}, mismatch(p.Visibility, string(f.Visibility.Canonical()), "visibility")
@@ -609,19 +603,61 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if err := s.checkCandidateType(ctx, f, rev.Manifest, fmt.Sprintf("draft revision %d", rev.Revision)); err != nil {
 		return ActionResult{}, err
 	}
-	if f.LiveVersion > 0 {
-		if v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion); err == nil && v.Hash == rev.Hash {
-			return ActionResult{}, fmt.Errorf("%w: %w", ErrConflict, ErrUnchangedContent)
-		}
+	if hasLatest && latest.Hash == rev.Hash {
+		return ActionResult{}, fmt.Errorf("%w: %w", ErrConflict, ErrUnchangedContent)
 	}
 	if err := s.verifyContent(a.Flat, versionFromRevision(rev)); err != nil {
 		return ActionResult{}, err
 	}
-	res, err := s.publishRevision(ctx, f, rev, a.ID, ViaConsole, "publish")
+	return s.saveVersionFromDraft(ctx, f, rev, a.ID, ViaConsole)
+}
+
+func (s *Service) saveVersionFromDraft(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string, via Via) (ActionResult, error) {
+	candidate := versionFromRevision(rev)
+	n, err := s.st.NextVersionNumber(ctx, f.Slug)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return ActionResult{Status: "done", Flat: &res.Flat, Message: fmt.Sprintf("published version %d", res.Version), DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}, nil
+	lifecyclePhase(ctx, "after_allocation_before_live", f.Slug, approvalID)
+	dir := s.versionDir(f.Slug, n)
+	if err := os.RemoveAll(dir); err != nil {
+		return ActionResult{}, err
+	}
+	if err := copyTree(s.draftRevDir(f.Slug, rev.Revision), dir); err != nil {
+		os.RemoveAll(dir)
+		return ActionResult{}, err
+	}
+	now := s.now()
+	v := candidate
+	v.Number = n
+	v.Published = true
+	v.Role = "published"
+	v.Revision = 0
+	v.CreatedAt = now
+	raw, _ := json.Marshal(ApprovalExecution{
+		Status:     "applied",
+		Version:    n,
+		DataImpact: "none",
+		HealthData: "not_run",
+		LiveData:   "untouched",
+	})
+	if err := s.st.CommitVersion(ctx, v, rev.Revision, approvalID, raw, now); err != nil {
+		os.RemoveAll(dir)
+		return ActionResult{}, err
+	}
+	s.Event(ctx, f.Slug, "info", "version", fmt.Sprintf("saved version %d from draft revision %d via %s", n, rev.Revision, via), map[string]int{"version": n, "revision": rev.Revision})
+	s.pruneVersions(ctx, f.Slug)
+	fv, _ := s.st.GetFlat(ctx, f.Slug)
+	view := s.view(ctx, fv)
+	return ActionResult{
+		Status:     "done",
+		Flat:       &view,
+		Version:    n,
+		Message:    fmt.Sprintf("saved version %d", n),
+		DataImpact: "none",
+		HealthData: "not_run",
+		LiveData:   "untouched",
+	}, nil
 }
 
 // publishRevision makes rev the next live version. kind is "publish" for
@@ -741,7 +777,7 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return ActionResult{Status: "done", Flat: &res.Flat, Message: fmt.Sprintf("version %d is live", res.Version), DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}, nil
+	return ActionResult{Status: "done", Flat: &res.Flat, Version: res.Version, Message: fmt.Sprintf("version %d is live", res.Version), DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}, nil
 }
 
 func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (ActionResult, error) {
@@ -844,12 +880,8 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{Status: "done", Flat: &fv, Message: "visibility unchanged"}, nil
 	}
 	if target.Public() {
-		n, err := s.st.CountPublished(ctx, a.Flat)
-		if err != nil {
-			return ActionResult{}, err
-		}
-		if f.LiveVersion == 0 && n == 0 {
-			return ActionResult{}, fmt.Errorf("%w: publish a version before making this flat public", ErrConflict)
+		if f.LiveVersion == 0 {
+			return ActionResult{}, fmt.Errorf("%w: publish and deploy a version before making this flat public", ErrConflict)
 		}
 		if err := s.publicAvailable(ctx, a.Flat); err != nil {
 			return ActionResult{}, err
@@ -1094,9 +1126,11 @@ func (s *Service) saveDraftLocked(ctx context.Context, slugName string, files []
 		os.RemoveAll(dir)
 		return store.Version{}, err
 	}
+	baseVersion := f.LiveVersion
 	dirty := true
-	if f.LiveVersion > 0 {
-		if live, err := s.st.GetVersion(ctx, slugName, f.LiveVersion); err == nil && live.Hash == res.Hash {
+	if latest, ok, err := s.latestVersion(ctx, slugName); err == nil && ok {
+		baseVersion = latest.Number
+		if latest.Hash == res.Hash {
 			dirty = false
 		}
 	}
@@ -1105,7 +1139,7 @@ func (s *Service) saveDraftLocked(ctx context.Context, slugName string, files []
 		created = cur.CreatedAt
 	}
 	if err := s.st.PutDraft(ctx, store.Draft{
-		Flat: slugName, Revision: next, Hash: res.Hash, BaseVersion: f.LiveVersion, Dirty: dirty,
+		Flat: slugName, Revision: next, Hash: res.Hash, BaseVersion: baseVersion, Dirty: dirty,
 		Size: res.Size, Files: res.Files, Kind: res.Manifest.Kind, Manifest: man,
 		GitSHA: meta.GitSHA, GitDirty: meta.GitDirty, Message: meta.Message,
 		UpdatedAt: now, CreatedAt: created,
@@ -1369,6 +1403,7 @@ var ErrPublicStopUnconfirmed = errors.New("public stop unconfirmed")
 // ApprovalExecution is persisted as Approval.result_data for transport serialization.
 type ApprovalExecution struct {
 	Status      string `json:"status"`
+	Version     int    `json:"version,omitempty"`
 	FailureCode string `json:"failure_code,omitempty"`
 	DataImpact  string `json:"data_impact"`
 	HealthData  string `json:"health_data"`
@@ -1462,7 +1497,8 @@ func (s *Service) GetDraft(ctx context.Context, flat string) (store.Draft, error
 	return s.st.GetDraft(ctx, flat)
 }
 
-// Publish requests the exact current revision; zero selects current.
+// Publish requests saving the current draft revision as a new numbered version;
+// zero selects the current draft revision.
 func (s *Service) Publish(ctx context.Context, flat string, revision int, hash string, via Via) (ActionResult, error) {
 	unlock := s.lock(flat)
 	defer unlock()
@@ -1483,14 +1519,25 @@ func (s *Service) Publish(ctx context.Context, flat string, revision int, hash s
 	if hash != "" && hash != d.Hash {
 		return ActionResult{}, fmt.Errorf("%w: %w: draft hash changed", ErrConflict, ErrStaleApproval)
 	}
+	rev, err := s.st.GetDraftRevision(ctx, flat, d.Revision)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if rev.Pruned {
+		return ActionResult{}, fmt.Errorf("%w: draft revision %d was pruned", ErrConflict, rev.Revision)
+	}
 	if err := s.checkCandidateType(ctx, f, d.Manifest, fmt.Sprintf("draft revision %d", d.Revision)); err != nil {
+		return ActionResult{}, err
+	}
+	latest, _, err := s.latestVersion(ctx, flat)
+	if err != nil {
 		return ActionResult{}, err
 	}
 	key, err := s.providerKey(ctx, flat)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return s.requestFrozen(ctx, flat, "publish", publishParams{Revision: d.Revision, Hash: d.Hash, BaseVersion: f.LiveVersion, Visibility: string(f.Visibility.Canonical()), Providers: key}, via, "")
+	return s.requestFrozen(ctx, flat, "publish", publishParams{Revision: d.Revision, Hash: d.Hash, BaseVersion: latest.Number, Visibility: string(f.Visibility.Canonical()), Providers: key}, via, "")
 }
 
 // SaveDraft is the explicit Draft save facade with optimistic revision checking.

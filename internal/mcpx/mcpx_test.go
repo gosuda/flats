@@ -179,6 +179,15 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 	}
 	e.approve(t, out.Deploy.ApprovalID)
 	f, _ = e.svc.GetFlat(context.Background(), "blog")
+	if f.LiveVersion != 0 || f.Versions != 1 || f.Publication != "published" {
+		t.Fatalf("saved version without deploy: %+v", f)
+	}
+	var dep1 DeployInfo
+	if text, failed := call(t, e.local, "deploy", map[string]any{"slug": "blog", "version": 1}, &dep1); failed || dep1.Status != "pending_approval" {
+		t.Fatalf("deploy v1 pending: %s %+v", text, dep1)
+	}
+	e.approve(t, dep1.ApprovalID)
+	f, _ = e.svc.GetFlat(context.Background(), "blog")
 	code, body := get(t, f.PrivateURL)
 	if code != 200 || string(body) != "<h1>héllo</h1>" {
 		t.Fatalf("traffic: %d %q", code, body)
@@ -216,6 +225,11 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 		t.Fatalf("publish: %s %+v", text, action)
 	}
 	e.approve(t, action.ApprovalID)
+	var dep2 DeployInfo
+	if text, failed := call(t, e.local, "deploy", map[string]any{"slug": "blog", "version": 2}, &dep2); failed || dep2.Status != "pending_approval" {
+		t.Fatalf("deploy v2 pending: %s %+v", text, dep2)
+	}
+	e.approve(t, dep2.ApprovalID)
 	var d DeployInfo
 	if text, failed := call(t, e.local, "rollback", map[string]any{"slug": "blog"}, &d); failed || d.Status != "pending_approval" {
 		t.Fatalf("rollback pending: %s %+v", text, d)
@@ -269,7 +283,7 @@ func TestValidationErrorsHaveFixes(t *testing.T) {
 	}
 	call(t, e.local, "create_flat", map[string]any{"slug": "empty"}, nil)
 	text, isErr = call(t, e.local, "rollback", map[string]any{"slug": "empty"}, nil)
-	if !isErr || !strings.Contains(text, "request publish of a Draft") || !strings.Contains(text, "operator approval") {
+	if !isErr || !strings.Contains(text, "save a Draft as a version") || !strings.Contains(text, "deploy that version") {
 		t.Fatalf("rollback of an undeployed flat: %s", text)
 	}
 	text, isErr = call(t, e.local, "get_flat", map[string]any{"slug": "nope"}, nil)
@@ -305,12 +319,22 @@ func TestFailedDeployKeepsLive(t *testing.T) {
 		t.Fatal(text)
 	}
 	e.approve(t, out.Deploy.ApprovalID)
+	var dep1 DeployInfo
+	if text, failed := call(t, e.local, "deploy", map[string]any{"slug": "site", "version": 1}, &dep1); failed {
+		t.Fatal(text)
+	}
+	e.approve(t, dep1.ApprovalID)
 	f, _ := e.svc.GetFlat(context.Background(), "site")
 	text, failed := call(t, e.local, "save_version", map[string]any{"slug": "site", "deploy": true, "files": []any{file("index.html", "broken", ""), file("flats.json", `{"health":"/missing"}`, "")}}, &out)
 	if failed || out.Deploy.Status != "pending_approval" {
-		t.Fatalf("health ran before approval: %s %+v", text, out)
+		t.Fatalf("publish pending: %s %+v", text, out)
 	}
-	code, a := e.decision(t, out.Deploy.ApprovalID, true)
+	e.approve(t, out.Deploy.ApprovalID)
+	var dep2 DeployInfo
+	if text, failed := call(t, e.local, "deploy", map[string]any{"slug": "site", "version": 2}, &dep2); failed || dep2.Status != "pending_approval" {
+		t.Fatalf("health ran before approval: %s %+v", text, dep2)
+	}
+	code, a := e.decision(t, dep2.ApprovalID, true)
 	if code != 422 || a.Status != "failed" || a.ResultData == nil || a.ResultData.FailureCode != "health_check_failed" || a.ResultData.DataImpact != "none" || a.ResultData.HealthData != "isolated_copy" || a.ResultData.LiveData != "untouched" {
 		t.Fatalf("failure cause/data: %d %+v", code, a)
 	}
@@ -318,8 +342,8 @@ func TestFailedDeployKeepsLive(t *testing.T) {
 		t.Fatalf("failure changed serving: %q", body)
 	}
 	f, _ = e.svc.GetFlat(context.Background(), "site")
-	if f.LiveVersion != 1 || f.Versions != 1 {
-		t.Fatalf("failed health allocated version: %+v", f)
+	if f.LiveVersion != 1 || f.Versions != 2 {
+		t.Fatalf("failed deploy changed live version: %+v", f)
 	}
 }
 
@@ -328,6 +352,9 @@ func TestSetVisibilityNeedsApproval(t *testing.T) {
 	var saved SaveOut
 	call(t, e.local, "save_version", map[string]any{"slug": "demo", "files": []any{file("index.html", "hi", "")}, "deploy": true}, &saved)
 	e.approve(t, saved.Deploy.ApprovalID)
+	var dep DeployInfo
+	call(t, e.local, "deploy", map[string]any{"slug": "demo", "version": 1}, &dep)
+	e.approve(t, dep.ApprovalID)
 	if code, _ := e.operatorCall(t, "POST", "/flats/demo/providers", `{"provider":"portal","permitted":true}`); code != 200 {
 		t.Fatalf("provider grant: %d", code)
 	}
@@ -403,6 +430,9 @@ func TestSaveVersionFromDir(t *testing.T) {
 		t.Fatalf("out = %+v", out)
 	}
 	e.approve(t, out.Deploy.ApprovalID)
+	var dep DeployInfo
+	call(t, e.local, "deploy", map[string]any{"slug": "local", "version": 1}, &dep)
+	e.approve(t, dep.ApprovalID)
 	f, _ := e.svc.GetFlat(context.Background(), "local")
 	if _, body := get(t, f.PrivateURL); string(body) != "from dir" {
 		t.Fatalf("served %q", body)

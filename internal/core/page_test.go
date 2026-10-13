@@ -167,8 +167,8 @@ func TestMixedTypeContentNeverGoesLive(t *testing.T) {
 	if _, err := s.Publish(ctx, "site", 0, "", ViaAPI); !errors.Is(err, ErrTypeChange) {
 		t.Fatalf("publish request: %v", err)
 	}
-	if _, err := s.Deploy(ctx, "site", 0, ViaAPI); !errors.Is(err, ErrTypeChange) {
-		t.Fatalf("deploy request: %v", err)
+	if _, err := s.Deploy(ctx, "site", 0, ViaAPI); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("deploy 0 request: %v", err)
 	}
 	// An approval requested before this check is refused when applied.
 	f, _ := s.st.GetFlat(ctx, "site")

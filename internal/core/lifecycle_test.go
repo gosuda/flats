@@ -26,18 +26,38 @@ func lifecycleSave(t *testing.T, s *Service, slug, body string) store.Version {
 }
 func lifecycleRequest(t *testing.T, s *Service, slug string) *PendingApproval {
 	t.Helper()
-	_, err := s.Deploy(t.Context(), slug, 0, ViaConsole)
-	var p *PendingApproval
-	if !errors.As(err, &p) {
-		t.Fatalf("wanted pending: %v", err)
+	r, err := s.Publish(t.Context(), slug, 0, "", ViaConsole)
+	if err != nil || r.Approval == nil {
+		t.Fatalf("wanted pending publish: %+v %v", r, err)
 	}
-	return p
+	return &PendingApproval{Approval: r.Approval, ApprovalURL: r.ApprovalURL}
 }
 func lifecycleApprove(t *testing.T, s *Service, p *PendingApproval) store.Approval {
 	t.Helper()
 	a, err := s.Decide(t.Context(), p.Approval.ID, true)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if a.Action == "publish" {
+		var d ApprovalExecution
+		_ = json.Unmarshal(a.ResultData, &d)
+		n := d.Version
+		if n == 0 {
+			if v, ok, _ := s.latestVersion(t.Context(), a.Flat); ok {
+				n = v.Number
+			}
+		}
+		if n > 0 {
+			_, err := s.Deploy(t.Context(), a.Flat, n, ViaConsole)
+			var dep *PendingApproval
+			if !errors.As(err, &dep) {
+				t.Fatalf("wanted pending deploy for v%d: %v", n, err)
+			}
+			a, err = s.Decide(t.Context(), dep.Approval.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	return a
 }
@@ -132,7 +152,7 @@ func TestLifecycleConcurrentPublishExactlyOnce(t *testing.T) {
 	wg.Wait()
 	vs, _ := s.ListVersions(t.Context(), "once")
 	ds, _ := s.Deployments(t.Context(), "once")
-	if len(vs) != 1 || len(ds) != 1 {
+	if len(vs) != 1 || len(ds) != 0 {
 		t.Fatalf("duplicate versions/history %v %v", vs, ds)
 	}
 	// A crash after durable live commit but before final status must only finish.
@@ -155,7 +175,7 @@ func TestLifecycleConcurrentPublishExactlyOnce(t *testing.T) {
 	}
 	s.resumeApplying(t.Context())
 	ds, _ = s.Deployments(t.Context(), "once")
-	if len(ds) != 2 {
+	if len(ds) != 1 {
 		t.Fatalf("resume reactivated %v", ds)
 	}
 	a, _ := s.GetApproval(t.Context(), activation.Approval.ID)
@@ -210,7 +230,7 @@ func TestLifecycleSuccessfulHealthWritesOnlyCopy(t *testing.T) {
 	}
 }
 
-func TestLifecycleFailedHealthDoesNotConsumeVersion(t *testing.T) {
+func TestLifecycleFailedHealthOnDeployKeepsLive(t *testing.T) {
 	s, _ := newTestService(t)
 	lifecycleSave(t, s, "health", "one")
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "health"))
@@ -218,7 +238,16 @@ func TestLifecycleFailedHealthDoesNotConsumeVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := s.Decide(t.Context(), lifecycleRequest(t, s, "health").Approval.ID, true)
+	pub := lifecycleRequest(t, s, "health")
+	if _, err := s.Decide(t.Context(), pub.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Deploy(t.Context(), "health", 2, ViaConsole)
+	var dep *PendingApproval
+	if !errors.As(err, &dep) {
+		t.Fatal(err)
+	}
+	a, err := s.Decide(t.Context(), dep.Approval.ID, true)
 	var de *DeployError
 	if !errors.As(err, &de) || de.Health.Status != 404 || execution(t, a).FailureCode != "health_check_failed" {
 		t.Fatalf("health %+v %v", a, err)
@@ -229,8 +258,8 @@ func TestLifecycleFailedHealthDoesNotConsumeVersion(t *testing.T) {
 	lifecycleSave(t, s, "health", "two")
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "health"))
 	vs, _ := s.ListVersions(t.Context(), "health")
-	if len(vs) != 2 || vs[0].Number != 2 {
-		t.Fatalf("consumed number %+v", vs)
+	if len(vs) != 3 || vs[0].Number != 3 {
+		t.Fatalf("versions %+v", vs)
 	}
 }
 
@@ -565,3 +594,106 @@ func TestLifecycleNeverPublishedLegacyFirstVersionIsOne(t *testing.T) {
 		t.Fatal("first legacy draft publication is not v1")
 	}
 }
+
+func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
+	s, _ := newTestService(t)
+	// Save and deploy v1, v2, v3 so LiveVersion == 3.
+	lifecycleSave(t, s, "prune", "v1")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "prune"))
+	lifecycleSave(t, s, "prune", "v2")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "prune"))
+	lifecycleSave(t, s, "prune", "v3")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "prune"))
+	// Lower keep_versions only after creating v4, v5 and the pending approvals.
+
+	// Save v4 without deploying it yet, and create a pending deploy for v4 and pending rollback for v1.
+	lifecycleSave(t, s, "prune", "v4")
+	pub := lifecycleRequest(t, s, "prune")
+	if _, err := s.Decide(t.Context(), pub.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Deploy(t.Context(), "prune", 4, ViaConsole)
+	var dep4 *PendingApproval
+	if !errors.As(err, &dep4) {
+		t.Fatalf("wanted pending deploy for v4: %v", err)
+	}
+	_, err = s.Rollback(t.Context(), "prune", 1, ViaConsole)
+	var rb1 *PendingApproval
+	if !errors.As(err, &rb1) {
+		t.Fatalf("wanted pending rollback for v1: %v", err)
+	}
+
+	// Save v5, then lower keep_versions=1; v5 (newest), v4 (pending activate), v3 (LiveVersion),
+	// and v1 (pending rollback) remain protected, while v2 is pruned.
+	lifecycleSave(t, s, "prune", "v5")
+	pub5 := lifecycleRequest(t, s, "prune")
+	if _, err := s.Decide(t.Context(), pub5.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetKeepVersions: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneVersions(t.Context(), "prune")
+	for _, n := range []int{1, 3, 4, 5} {
+		v, err := s.st.GetVersion(t.Context(), "prune", n)
+		if err != nil || v.Pruned {
+			t.Fatalf("version %d was pruned despite protection: %+v %v", n, v, err)
+		}
+	}
+	if v2, err := s.st.GetVersion(t.Context(), "prune", 2); err != nil || !v2.Pruned {
+		t.Fatalf("unprotected version 2 was not pruned: %+v %v", v2, err)
+	}
+
+	// Reject the pending approvals for v4 and v1, then prune with keep_versions=1:
+	// v5 (newest) and v3 (LiveVersion) stay; v4 and v1 become prunable.
+	if _, err := s.Decide(t.Context(), dep4.Approval.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(t.Context(), rb1.Approval.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneVersions(t.Context(), "prune")
+	for _, n := range []int{3, 5} {
+		v, err := s.st.GetVersion(t.Context(), "prune", n)
+		if err != nil || v.Pruned {
+			t.Fatalf("protected version %d was pruned: %+v %v", n, v, err)
+		}
+	}
+	for _, n := range []int{1, 2, 4} {
+		v, err := s.st.GetVersion(t.Context(), "prune", n)
+		if err != nil || !v.Pruned {
+			t.Fatalf("unprotected version %d was not pruned: %+v %v", n, v, err)
+		}
+	}
+}
+
+func TestPublishReceiptResumesWithoutReapplying(t *testing.T) {
+	s, _ := newTestService(t)
+	lifecycleSave(t, s, "pub-receipt", "one")
+	p := lifecycleRequest(t, s, "pub-receipt")
+	now := time.Now()
+	if err := s.st.ClaimApprovalAuthorized(t.Context(), p.Approval.ID, "operator fixture", now); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an interrupted publish that already wrote its receipt and version 1.
+	a, err := s.GetApproval(t.Context(), p.Approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.applyPublishApproval(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	s.resumeApplying(t.Context())
+	a, err = s.GetApproval(t.Context(), p.Approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != "approved" || a.Result != "saved version 1" || execution(t, a).Version != 1 {
+		t.Fatalf("unexpected resumed publish approval: %+v", a)
+	}
+	// A saved version that has never been deployed cannot become Public yet.
+	if _, err := s.SetVisibility(t.Context(), "pub-receipt", store.Public, ViaConsole, ""); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected conflict making undeployed version public: %v", err)
+	}
+}
+

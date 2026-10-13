@@ -26,7 +26,7 @@ func (a *app) deploy(args []string) error {
 	slug := fs.String("flat", "", "flat slug (created on first deploy)")
 	saveOnly := fs.Bool("save-only", false, "save the Private Draft without requesting publish approval")
 	message := fs.String("message", "", "note stored with the Draft")
-	n := fs.Int("version", 0, "request activation of a published version; 0 requests current Draft publication")
+	n := fs.Int("version", 0, "request activation of a saved version (> 0)")
 	expected := fs.Int("expected-revision", -1, "save only if current Draft revision matches (0 means no Draft)")
 	pos, err := a.parse(fs, args, 0, 1)
 	if err != nil {
@@ -48,8 +48,11 @@ func (a *app) deploy(args []string) error {
 		return usagef("version and expected-revision must be nonnegative")
 	}
 	if versionSet {
+		if *n <= 0 {
+			return usagef("version must be a positive integer; save the Draft as a new version with `flats publish <slug>` first")
+		}
 		if len(pos) > 0 || *saveOnly || *message != "" {
-			return usagef("--version requests activation of published content; do not pass a directory, --save-only or --message")
+			return usagef("--version requests activation of a saved version; do not pass a directory, --save-only or --message")
 		}
 		return a.deployExisting(*slug, *n)
 	}

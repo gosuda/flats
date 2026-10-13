@@ -233,12 +233,16 @@ func TestJoinedErrorPrecedence(t *testing.T) {
 	}
 }
 
-func TestDraftDirtyFollowsApprovedCurrentVersion(t *testing.T) {
+func TestDraftDirtyFollowsLatestSavedVersion(t *testing.T) {
 	s, _ := newTestService(t)
 	lifecycleSave(t, s, "dirty", "one")
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "dirty"))
 	lifecycleSave(t, s, "dirty", "two")
-	lifecycleApprove(t, s, lifecycleRequest(t, s, "dirty"))
+	// Approve publish only (saving v2 without deploying it yet).
+	pPub := lifecycleRequest(t, s, "dirty")
+	if _, err := s.Decide(t.Context(), pPub.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	assertDirty := func(want bool) {
 		t.Helper()
 		d, err := s.GetDraft(t.Context(), "dirty")
@@ -250,27 +254,30 @@ func TestDraftDirtyFollowsApprovedCurrentVersion(t *testing.T) {
 			t.Fatalf("view draft %+v %v", view.Draft, err)
 		}
 	}
+	// Draft matches v2 (the latest saved version), even while v1 is still live.
 	assertDirty(false)
-	_, err := s.Rollback(t.Context(), "dirty", 1, ViaAPI)
+	// Uploading "one" makes the draft differ from v2 (latest saved version).
+	lifecycleSave(t, s, "dirty", "one")
+	assertDirty(true)
+	// Uploading "two" again matches v2.
+	lifecycleSave(t, s, "dirty", "two")
+	assertDirty(false)
+	// Deploying v2 or rolling back to v1 does not alter the draft's dirty state against latest version v2.
+	_, err := s.Deploy(t.Context(), "dirty", 2, ViaAPI)
 	var pending *PendingApproval
 	if !errors.As(err, &pending) {
 		t.Fatal(err)
 	}
-	assertDirty(false) // requesting a change does not change live or Draft.
-	lifecycleApprove(t, s, pending)
-	assertDirty(true)
-	lifecycleSave(t, s, "dirty", "one")
-	assertDirty(false)
-	_, err = s.Deploy(t.Context(), "dirty", 2, ViaAPI)
-	if !errors.As(err, &pending) {
+	if _, err := s.Decide(t.Context(), pending.Approval.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	lifecycleApprove(t, s, pending)
-	assertDirty(true)
+	assertDirty(false)
 	_, err = s.Rollback(t.Context(), "dirty", 1, ViaAPI)
 	if !errors.As(err, &pending) {
 		t.Fatal(err)
 	}
-	lifecycleApprove(t, s, pending)
+	if _, err := s.Decide(t.Context(), pending.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	assertDirty(false)
 }

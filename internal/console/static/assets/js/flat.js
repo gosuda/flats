@@ -101,7 +101,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
     if (isDocs()) add('Document', flat.running ? 'Running' : 'Not running');
-    else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : 'Not published');
+    else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : (flat.latest_version ? `Not deployed (v${flat.latest_version} saved)` : 'Not published'));
     add('Created', dateTime(flat.created_at));
     if (flat.old_slug && flat.old_slug_until) {
       add('Redirect', `Old slug ${flat.old_slug} redirects here until ${dateTime(flat.old_slug_until)}`);
@@ -283,11 +283,11 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         h('tbody', null, draft ? draftRow(draft) : null, rows))));
   }
 
-  // draftRow is the agent's latest save that is not published yet.
+  // draftRow is the agent's latest save that is not saved as a version yet.
   function draftRow(d) {
     const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': 'Preview the draft' });
     prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, 0)) loadPreviews(); }));
-    const pub = h('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Publish', 'aria-label': 'Publish the draft' });
+    const pub = h('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Save version', 'aria-label': 'Save the draft as a new version' });
     pub.addEventListener('click', () => busy(pub, async () => { if (await publishDraft(flat)) refresh(); }));
     return h('tr', { class: 'is-draft' },
       h('th', { scope: 'row' }, 'Draft', h('span', { class: 'badge badge-draft', text: 'New' })),

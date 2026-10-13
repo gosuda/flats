@@ -254,7 +254,7 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
 
 .flats { list-style: none; margin: 0; padding: 0; }
 .list-head, .flats-list .flat {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) 170px 132px; align-items: center; gap: 16px;
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) 170px 236px; align-items: center; gap: 16px;
 }
 .list-head { padding: 0 12px 8px; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--border); }
 .list-head span:first-child { grid-column: 1 / 3; }
@@ -265,6 +265,17 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
 .flat-sub { color: var(--muted); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flat-vis { color: var(--muted); font-size: 14px; }
 .row-actions { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.flats-list .row-actions {
+  display: grid;
+  grid-template-columns: 116px 72px 34px;
+  align-items: center;
+  justify-content: end;
+  justify-items: end;
+  gap: 4px;
+}
+.flats-list .row-actions > .btn-pill { grid-column: 1; grid-row: 1; width: 100%; }
+.flats-list .row-actions > .open-links { grid-column: 2; grid-row: 1; }
+.flats-list .row-actions > .menu-wrap { grid-column: 3; grid-row: 1; }
 
 .flats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
 .flats-grid .flat {
@@ -486,7 +497,7 @@ td > .badge:first-child { margin-left: 0; }
   .flats-list .flat-sub-vis .vis .icon { width: 13px; height: 13px; }
   .flats-list .flat-sub-vis .vis-public { color: var(--text); font-weight: 500; padding: 0 8px 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; }
   .flats-list .flat-vis { display: none; }
-  .flats-list .row-actions { grid-area: actions; gap: 0; }
+  .flats-list .row-actions { grid-area: actions; display: flex; gap: 0; }
   .flats-list .open-links { display: none; }
   .flats-list .row-actions .open-primary { display: inline-flex; }
   .flats-list .menu .menu-narrow { display: block; }

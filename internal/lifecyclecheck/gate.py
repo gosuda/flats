@@ -271,6 +271,9 @@ class Host:
     def publish(self, slug):
         return self.approval(self.ok("POST", f"/api/flats/{slug}/publish", {"revision": 0}, status=202))
 
+    def deploy_version(self, slug, version):
+        return self.approval(self.ok("POST", f"/api/flats/{slug}/deploy", {"version": version}, status=202))
+
     def decide(self, approval):
         code, out = self.request("POST", f"/console/api/approvals/{approval}/approve", {}, console=True)
         require(code in (200, 409, 422), f"unexpected approval response: {code}: {out}")
@@ -279,7 +282,11 @@ class Host:
     def activate(self, slug, files):
         self.save(slug, files)
         approval = self.publish(slug)
-        require(self.decide(approval)["status"] == "approved", "human approval did not publish")
+        decided = self.decide(approval)
+        require(decided["status"] == "approved", f"human approval did not save version: {decided}")
+        version = execution(decided).get("version") or self.versions(slug)[0]["number"]
+        dep_approval = self.deploy_version(slug, version)
+        require(self.decide(dep_approval)["status"] == "approved", "human approval did not deploy version")
         return self.flat(slug)
 
     def traffic(self, slug, path="/"):
@@ -371,8 +378,14 @@ def publish_idempotency(h):
     require(any(o["status"] == "approved" for o in outcomes), outcomes)
     require(h.decide(a)["status"] == "approved", "completed approval retry failed")
     f = h.flat("publish")
-    require(f["live_version"] == 1 and f["publication"] == "published" and f["visibility"] == "private", f)
+    require(f["live_version"] == 0 and f["publication"] == "published" and f["visibility"] == "private", f)
     require([v["number"] for v in h.versions("publish")] == [1], "duplicate version created")
+    dep = h.deploy_version("publish", 1)
+    require(h.deploy_version("publish", 1) == dep, "deploy retry created a second pending approval")
+    require(h.decide(dep)["status"] == "approved", "deploy approval failed")
+    f = h.flat("publish")
+    require(f["live_version"] == 1 and f["publication"] == "published" and f["visibility"] == "private", f)
+    require([v["number"] for v in h.versions("publish")] == [1], "deploy created duplicate version")
     require(len(h.ok("GET", "/api/flats/publish/deployments")["deployments"]) == 1, "duplicate activation")
     require("LIVE-V1" in h.traffic("publish"), "approved bytes not serving")
     h.save("publish", static("UNPUBLISHED-EDIT"))
@@ -391,6 +404,7 @@ def drift(h):
     failed(h.decide(a), "draft-drift")
     require(h.flat("drift")["live_version"] == 0 and h.versions("drift") == [], "stale approval activated")
     require(h.decide(h.publish("drift"))["status"] == "approved", "fresh Draft approval poisoned after drift")
+    require(h.decide(h.deploy_version("drift", 1))["status"] == "approved", "fresh deploy approval poisoned after drift")
     require("NEW-DRAFT" in h.traffic("drift"), "fresh Draft positive control did not serve")
     h.save("drift", static("POLICY-CANDIDATE"))
     a = h.publish("drift")
@@ -399,6 +413,7 @@ def drift(h):
     require(h.flat("drift")["live_version"] == 1, "policy drift activated")
     h.ok("POST", "/console/api/flats/drift/providers", {"provider": "tailscale", "permitted": False}, console=True)
     require(h.decide(h.publish("drift"))["status"] == "approved", "fresh policy approval poisoned after drift")
+    require(h.decide(h.deploy_version("drift", 2))["status"] == "approved", "fresh policy deploy approval poisoned after drift")
     require("POLICY-CANDIDATE" in h.traffic("drift"), "policy positive control did not serve")
 
 
@@ -410,8 +425,11 @@ def cli_pending(h):
     proc = h.cli("deploy", str(folder), "--flat", "cli")
     require(proc.returncode == 3, f"CLI publish exit should be 3, got {proc.returncode}: {proc.stdout} {proc.stderr}")
     require(h.flat("cli")["live_version"] == 0 and h.versions("cli") == [], "CLI activated")
+    pub_id = h.approval(json.loads(proc.stdout))
+    require(h.decide(pub_id)["status"] == "approved", "CLI version save not approved")
+    require(h.flat("cli")["live_version"] == 0 and [v["number"] for v in h.versions("cli")] == [1], "CLI version save should allocate v1 without deploying")
     # Exercise the console deploy request too: console surface cannot bypass.
-    a = h.approval(h.ok("POST", "/console/api/flats/cli/deploy", {"version": 0}, status=202, console=True))
+    a = h.approval(h.ok("POST", "/console/api/flats/cli/deploy", {"version": 1}, status=202, console=True))
     require(h.flat("cli")["live_version"] == 0, "console request bypassed approval")
     require(h.decide(a)["status"] == "approved", "CLI candidate not approved")
     require(h.flat("cli")["live_version"] == 1 and "CLI" in h.traffic("cli"), "approved CLI bytes not live")
@@ -425,19 +443,25 @@ def mcp_pending(h):
     out = h.mcp("save_version", slug="mcp", files=files, deploy=True)
     pending = h.approval(out)
     require(h.flat("mcp")["live_version"] == 0 and h.versions("mcp") == [], "MCP upload/deploy activated")
-    require(h.approval(h.mcp("deploy", slug="mcp", version=0)) == pending, "MCP duplicate request did not dedupe")
+    require(h.approval(h.mcp("publish", slug="mcp", revision=0)) == pending, "MCP duplicate publish request did not dedupe")
+    require(h.decide(pending)["status"] == "approved", "MCP publish candidate not approved")
+    require(h.flat("mcp")["live_version"] == 0 and [v["number"] for v in h.versions("mcp")] == [1], "MCP publish activated before deploy")
+    dep = h.approval(h.mcp("deploy", slug="mcp", version=1))
+    require(h.approval(h.mcp("deploy", slug="mcp", version=1)) == dep, "MCP duplicate deploy request did not dedupe")
     require(h.flat("mcp")["live_version"] == 0, "MCP deploy activated")
-    require(h.decide(pending)["status"] == "approved", "MCP candidate not approved")
+    require(h.decide(dep)["status"] == "approved", "MCP deploy candidate not approved")
     require(h.flat("mcp")["live_version"] == 1 and "MCP" in h.traffic("mcp"), "approved MCP bytes not live")
 
 
 def api_pending(h):
     out = h.save("upload", static("API-UPLOAD"), deploy=True)
-    h.approval(out)
+    pub = h.approval(out)
     require(h.flat("upload")["live_version"] == 0 and h.versions("upload") == [], "API upload activated")
+    require(h.decide(pub)["status"] == "approved", "API publish approval failed")
+    require(h.flat("upload")["live_version"] == 0 and [v["number"] for v in h.versions("upload")] == [1], "API publish deployed directly")
     for console in (False, True):
         prefix = "/console/api" if console else "/api"
-        h.approval(h.ok("POST", prefix + "/flats/upload/deploy", {"version": 0}, status=202, console=console))
+        h.approval(h.ok("POST", prefix + "/flats/upload/deploy", {"version": 1}, status=202, console=console))
         require(h.flat("upload")["live_version"] == 0, "deploy surface activated before approval")
 
 
@@ -476,7 +500,7 @@ def approval_boundary(h):
         require(not unknown, f"behavioral census lacks valid inputs for {tool['name']}: {unknown}")
         if tool['name'] == 'create_flat':
             args['slug'] = 'boundary-created'
-        if tool['name'] == 'rollback':
+        if tool['name'] in {'deploy', 'rollback'}:
             args['version'] = 1
         result = h.rpc("tools/call", {"name": tool["name"], "arguments": args})
         require(not result.get('isError'), f"MCP census tool failed rather than exercised: {tool['name']}: {result}")
@@ -505,6 +529,7 @@ def approval_boundary(h):
     # a separate operator credential is a known open design item.
     failed(h.decide(pending), 'draft-drift')
     require(h.decide(h.publish('boundary'))['status'] == 'approved', 'fresh authorized operator did not publish')
+    require(h.decide(h.deploy_version('boundary', 3))['status'] == 'approved', 'fresh authorized operator did not deploy')
     require('BOUNDARY-CANDIDATE' in h.traffic('boundary'), 'authorized boundary bytes not serving')
     h.save('boundary', static('EXPLICITLY-REJECTED-CANDIDATE'))
     rejection = h.publish('boundary')
@@ -559,24 +584,26 @@ def runtime_data(h):
     h.activate("counter", server(1))
     require(h.traffic("counter", "/hit")["hits"] == 1, "runtime did not persist hit")
     h.save("counter", server(2, broken=True))
-    a = h.publish("counter")
+    pub = h.publish("counter")
+    require(h.decide(pub)["status"] == "approved", "saving version 2 failed")
+    require([v["number"] for v in h.versions("counter")] == [2, 1], "saved version 2 missing")
+    a = h.deploy_version("counter", 2)
     require(h.traffic("counter")["hits"] == 1, "health ran before approval")
     failure = failed(h.decide(a), "health")
     data_impact(failure)
     require(h.traffic("counter") == {"version": 1, "hits": 1}, "failed health touched live data")
     require(h.traffic("counter", "/health-file") is None, "failed health FILES sentinel escaped copy")
-    require([v["number"] for v in h.versions("counter")] == [1], "failed publish consumed number")
-    h.activate("counter", server(2, healthy_write=True))
+    h.activate("counter", server(3, healthy_write=True))
     require(h.traffic("counter", "/health-file") is None, "healthy health FILES sentinel escaped copy")
-    require(h.traffic("counter", "/hit") == {"version": 2, "hits": 2}, "second publish lost data")
+    require(h.traffic("counter", "/hit") == {"version": 3, "hits": 2}, "second publish lost data")
     a = h.approval(h.ok("POST", "/api/flats/counter/rollback", {"version": 1}, status=202))
-    require(h.traffic("counter")["version"] == 2, "rollback applied before approval")
+    require(h.traffic("counter")["version"] == 3, "rollback applied before approval")
     require(h.decide(a)["status"] == "approved", "rollback failed")
     require(h.traffic("counter") == {"version": 1, "hits": 2}, "code rollback restored data implicitly")
-    require(sorted(v["number"] for v in h.versions("counter")) == [1, 2], "rollback allocated number")
+    require(sorted(v["number"] for v in h.versions("counter")) == [1, 2, 3], "rollback allocated number")
     # A restore request is a separately frozen approval, not implicit rollback.
     h.traffic("counter", "/hit")
-    a = h.approval(h.ok("POST", "/api/flats/counter/rollback", {"version": 2, "restore_data": True}, status=202))
+    a = h.approval(h.ok("POST", "/api/flats/counter/rollback", {"version": 3, "restore_data": True}, status=202))
     require(h.traffic("counter") == {"version": 1, "hits": 3}, "restore mutated data before approval")
     row = h.ok("GET", f"/api/approvals/{a}")
     params = row["params"]
@@ -598,7 +625,12 @@ def resume_claimed(h):
         h.start()
         slug = "resume-" + str(i)
         h.save(slug, static("RESUME-" + phase))
-        a = h.publish(slug)
+        if phase == 'after_allocation_before_live':
+            a = h.publish(slug)
+        else:
+            pub = h.publish(slug)
+            require(h.decide(pub)["status"] == "approved", "setup version save failed")
+            a = h.deploy_version(slug, 1)
         def approve_at_phase():
             try:
                 h.request("POST", f"/console/api/approvals/{a}/approve", {}, console=True)
@@ -623,10 +655,17 @@ def resume_claimed(h):
             h.start()
             require(h.ok("GET", f"/api/approvals/{a}")["status"] == "approved", "claimed approval not resumed")
             require([v["number"] for v in h.versions(slug)] == [1], "crash resume allocated more than once")
-            require(h.flat(slug)["live_version"] == 1 and "RESUME-" + phase in h.traffic(slug), "resumed bytes/pointer mismatch")
-            require(len(h.ok("GET", f"/api/flats/{slug}/deployments")["deployments"]) == 1, "crash resume activation count")
+            if phase != 'after_allocation_before_live':
+                require(h.flat(slug)["live_version"] == 1 and "RESUME-" + phase in h.traffic(slug), "resumed bytes/pointer mismatch")
+                require(len(h.ok("GET", f"/api/flats/{slug}/deployments")["deployments"]) == 1, "crash resume activation count")
+            else:
+                require(h.flat(slug)["live_version"] == 0, "publish crash resume deployed without deploy approval")
             h.stop()
         h.start()
+        if phase == 'after_allocation_before_live':
+            dep = h.deploy_version(slug, 1)
+            require(h.decide(dep)["status"] == "approved", "post-resume deploy failed")
+            require(h.flat(slug)["live_version"] == 1 and "RESUME-" + phase in h.traffic(slug), "post-resume deployed bytes mismatch")
     h.phase = None
     h.phase_marker = None
 
@@ -677,6 +716,7 @@ def migration(h):
             "repeated startup damaged migration files")
     a = h.publish("historical")
     require(h.decide(a)["status"] == "approved", "migrated draft not publishable")
+    require(h.decide(h.deploy_version("historical", 1))["status"] == "approved", "migrated v1 not deployable")
     require(h.flat("historical")["live_version"] == 1, "historical never-deployed number not freed")
     require("LEGACY-B" in h.traffic("historical"), "migrated publish served wrong bytes")
 
@@ -782,6 +822,10 @@ def public_publish_rollback(h):
     a = h.publish("binding")
     both("BINDING-V1")
     require(h.decide(a)["status"] == "approved", "public v2 publish failed")
+    both("BINDING-V1")
+    dep = h.deploy_version("binding", 2)
+    both("BINDING-V1")
+    require(h.decide(dep)["status"] == "approved", "public v2 deploy failed")
     both("BINDING-V2")
     h.save("binding", static("UNAPPROVED-BINDING-DRAFT"))
     both("BINDING-V2")

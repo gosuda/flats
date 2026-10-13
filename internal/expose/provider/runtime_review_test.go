@@ -160,6 +160,12 @@ func reviewerServiceMode(t *testing.T, id ID, legacy bool) reviewFixture {
 		t.Fatal(err)
 	}
 	approveReview(t, svc, r)
+	_, err = svc.Deploy(t.Context(), "site", 1, core.ViaAPI)
+	var dep *core.PendingApproval
+	if !errors.As(err, &dep) || dep.Approval == nil {
+		t.Fatalf("deploy v1: %v", err)
+	}
+	approveReview(t, svc, core.ActionResult{Approval: dep.Approval})
 	if err := svc.SetProviderPermission(t.Context(), "site", string(id), true, core.ViaConsole); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +327,7 @@ func TestPrivateDTOUsesActuallyServedProvider(t *testing.T) {
 	if err := f.svc.SetProviderPermission(t.Context(), "site", string(Tailscale), true, core.ViaConsole); err != nil {
 		t.Fatal(err)
 	}
-	// A publish reopens the explicitly permitted private provider.
+	// A publish+deploy reopens the explicitly permitted private provider.
 	_, err := f.svc.SaveVersion(t.Context(), "site", []bundle.File{{Path: "index.html", Data: []byte("v2")}}, core.SaveMeta{}, core.ViaAPI)
 	if err != nil {
 		t.Fatal(err)
@@ -331,6 +337,12 @@ func TestPrivateDTOUsesActuallyServedProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	approveReview(t, f.svc, r)
+	_, err = f.svc.Deploy(t.Context(), "site", 2, core.ViaAPI)
+	var dep *core.PendingApproval
+	if !errors.As(err, &dep) || dep.Approval == nil {
+		t.Fatalf("deploy v2: %v", err)
+	}
+	approveReview(t, f.svc, core.ActionResult{Approval: dep.Approval})
 	v, _ = f.svc.GetFlat(t.Context(), "site")
 	if v.PrivateURL != f.tail.URL("site") || v.PrivateState != "ready" {
 		t.Fatalf("served tailscale not advertised %+v", v)
@@ -469,6 +481,12 @@ func TestPrivateTailscaleRevokeClosesOnlyOwnedRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	approveReview(t, f.svc, r)
+	_, err = f.svc.Deploy(t.Context(), "site", 2, core.ViaAPI)
+	var dep *core.PendingApproval
+	if !errors.As(err, &dep) || dep.Approval == nil {
+		t.Fatalf("deploy v2: %v", err)
+	}
+	approveReview(t, f.svc, core.ActionResult{Approval: dep.Approval})
 	if _, err := f.svc.RenameSlug(t.Context(), "site", "moved", core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
@@ -540,6 +558,12 @@ func TestTailscaleRevocationPreservesPublicFunnel(t *testing.T) {
 		t.Fatal(err)
 	}
 	approveReview(t, f.svc, r)
+	_, err = f.svc.Deploy(t.Context(), "site", 2, core.ViaAPI)
+	var dep *core.PendingApproval
+	if !errors.As(err, &dep) || dep.Approval == nil {
+		t.Fatalf("deploy v2: %v", err)
+	}
+	approveReview(t, f.svc, core.ActionResult{Approval: dep.Approval})
 	f.public.advance()
 	publicReview(t, f)
 	before, err := f.svc.GetFlat(t.Context(), "site")

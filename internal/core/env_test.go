@@ -409,7 +409,7 @@ func TestRestoreUsesCheckedEnvironmentAndFailureRetainsPrevious(t *testing.T) {
 }
 
 func TestEnvironmentCaptureFailureReportsUntouchedData(t *testing.T) {
-	for _, action := range []string{"publish", "deploy", "restore"} {
+	for _, action := range []string{"deploy", "restore"} {
 		t.Run(action, func(t *testing.T) {
 			s, _ := newTestService(t)
 			ctx := t.Context()
@@ -441,16 +441,12 @@ func TestEnvironmentCaptureFailureReportsUntouchedData(t *testing.T) {
 			var err error
 			wantVersion := 1
 			switch action {
-			case "publish":
-				save("third")
-				pending = lifecycleRequest(t, s, "app")
-				wantVersion = 0 // publication number is allocated only after health passes
 			case "deploy":
 				_, err = s.Deploy(ctx, "app", 1, ViaConsole)
 			case "restore":
 				_, err = s.RollbackWithData(ctx, "app", 1, true, ViaConsole)
 			}
-			if action != "publish" && !errors.As(err, &pending) {
+			if !errors.As(err, &pending) {
 				t.Fatal(err)
 			}
 			// Corruption can arise from a mismatched restored host key/database pair.

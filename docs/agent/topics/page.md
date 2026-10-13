@@ -43,9 +43,11 @@ database or file storage.
    the html, every asset and the screenshot each time.
 3. Read the save `warnings`, then `open_preview {slug, version: 0}` and look
    at it in your browser (`topic.preview-check`).
-4. `publish` (or `deploy: true` on the save) and wait for the operator
-   (`topic.approvals`). `rollback` returns to an earlier version; a page has
-   no data, so `restore_data` is refused.
+4. `publish` (or `deploy: true` on the save) requests approval to save the
+   Draft as a numbered version (`v1`, `v2`, ...), and `deploy {slug, version:
+   N}` requests approval to activate that saved version (`topic.approvals`).
+   `rollback` returns to an earlier version; a page has no data, so
+   `restore_data` is refused.
 
 ### Write a document that reads well
 

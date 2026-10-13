@@ -38,8 +38,8 @@ checks. Console requests never skip the core approval request. Existing unrelate
 | GET `draft` | None | Current Draft metadata, or 404 |
 | POST `versions` | Same complete archive | Draft save compatibility; no published vN |
 | POST `versions?deploy=1` | Same archive | 202 pending publish, top-level approval/status/link and nested deploy request |
-| POST `publish` | `{revision, hash?}`; revision 0 selects current | 202 frozen current-candidate publish request |
-| POST `deploy` | `{version}`; 0 selects current Draft, positive selects existing published version | 202 pending request |
+| POST `publish` | `{revision, hash?}`; revision 0 selects current | 202 frozen current-candidate request to save Draft as a new version |
+| POST `deploy` | `{version}` (`version > 0`) | 202 pending request to activate an existing saved version |
 | POST `rollback` | `{version, restore_data?}` | 202 frozen request; default retains data |
 | POST `visibility` | `{visibility, reason?}` | Both directions 202; same value 200 with status done and message visibility unchanged; Unpublished Public is 409 |
 | POST `previews` | `{target:"draft",version:0}` or positive published version | 201 Private preview; no Public Draft route |
@@ -80,9 +80,8 @@ converts a setup/read/provider connection into consent to run these actions.
 
 `flats draft <slug>` reads metadata; adding a build directory/archive saves
 complete content. `--expected-revision` detects conflicts. `flats publish
-<slug> [--revision n] [--hash h]` requests publication. Existing `deploy` uploads
-Draft and requests publish unless `--save-only`; explicit `--version 0` selects
-current Draft and positive versions select already published content. Default
+<slug> [--revision n] [--hash h]` requests saving the Draft as a new version. Existing `deploy` uploads
+Draft and requests version creation unless `--save-only`; explicit positive `--version <n>` selects an already saved version for activation. Default
 `preview` opens current Draft; positive `--version` previews published content.
 Publish, activation, rollback and both visibility directions return exit 3 while
 pending in text and JSON modes, with approval URL/status and read-only poll

@@ -17,7 +17,7 @@ export function describeApproval(a) {
   const p = params(a);
   if (a.action === 'set_visibility') return `Make ${a.flat} ${visLabel(p.visibility).toLowerCase()}`;
   if (a.action === 'delete') return `Delete ${a.flat}`;
-  if (a.action === 'publish') return `Publish the draft of ${a.flat}`;
+  if (a.action === 'publish') return `Save the draft of ${a.flat} as a new version`;
   if (a.action === 'activate') return `Deploy version ${p.version} of ${a.flat}`;
   if (a.action === 'rollback') return `Roll back ${a.flat} to version ${p.version}` + (p.restore_data ? ' and restore its data' : '');
   if (a.action === 'restore_data') return `Restore the data of ${a.flat}`;

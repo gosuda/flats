@@ -117,16 +117,23 @@ func TestDevServer(t *testing.T) {
 		_, err := svc.Decide(ctx, a.ID, true)
 		must(err)
 	}
-	// publish requests publishing the flat's draft. It is approved unless
-	// leavePending is set, which keeps a pending request in the console.
+	// publish requests saving the flat's draft as a version (and deploying it
+	// unless leavePending is set).
 	publish := func(slug string, leavePending bool) {
 		t.Helper()
-		_, err := svc.Deploy(ctx, slug, 0, core.ViaMCP)
-		var p *core.PendingApproval
-		if !errors.As(err, &p) {
+		res, err := svc.Publish(ctx, slug, core.PublishOptions{Via: core.ViaMCP})
+		if err != nil {
 			t.Fatalf("publish %s: %v", slug, err)
 		}
 		if !leavePending {
+			approve(res.Approval)
+			fv, err := svc.GetFlat(ctx, slug)
+			must(err)
+			_, err = svc.Deploy(ctx, slug, fv.LatestVersion, core.ViaMCP)
+			var p *core.PendingApproval
+			if !errors.As(err, &p) {
+				t.Fatalf("deploy %s: %v", slug, err)
+			}
 			approve(p.Approval)
 		}
 	}

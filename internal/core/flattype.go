@@ -15,8 +15,8 @@ import (
 var ErrTypeChange = fmt.Errorf("%w: a flat cannot change its content type (website, page or document)", ErrConflict)
 
 // flatType is the content type of a flat: that of its live version, or,
-// while nothing runs, that of its Draft. It is "" for a flat that has never
-// been saved.
+// while nothing runs, its latest saved version or Draft. It is "" for a flat
+// that has never been saved.
 func (s *Service) flatType(ctx context.Context, f store.Flat) (string, error) {
 	if f.LiveVersion > 0 {
 		v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion)
@@ -24,6 +24,11 @@ func (s *Service) flatType(ctx context.Context, f store.Flat) (string, error) {
 			return "", err
 		}
 		return contenttype.FromManifest(v.Manifest), nil
+	}
+	if latest, ok, err := s.latestVersion(ctx, f.Slug); err != nil {
+		return "", err
+	} else if ok {
+		return contenttype.FromManifest(latest.Manifest), nil
 	}
 	d, err := s.st.GetDraft(ctx, f.Slug)
 	if errors.Is(err, store.ErrNotFound) {
@@ -46,18 +51,25 @@ func (s *Service) checkTypeChange(ctx context.Context, f store.Flat, typ string)
 }
 
 // checkCandidateType refuses publishing or activating content whose type
-// differs from the running version's. Earlier releases could leave such
-// content behind (a docs Draft over a running website); a slug keeps its
-// type, so it never goes live.
+// differs from the running or latest saved version's. Earlier releases could
+// leave such content behind (a docs Draft over a running website); a slug
+// keeps its type, so it never goes live.
 func (s *Service) checkCandidateType(ctx context.Context, f store.Flat, manifest json.RawMessage, what string) error {
-	if f.LiveVersion == 0 {
+	var base json.RawMessage
+	if f.LiveVersion > 0 {
+		v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion)
+		if err != nil {
+			return err
+		}
+		base = v.Manifest
+	} else if latest, ok, err := s.latestVersion(ctx, f.Slug); err != nil {
+		return err
+	} else if ok {
+		base = latest.Manifest
+	} else {
 		return nil
 	}
-	v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion)
-	if err != nil {
-		return err
-	}
-	cur, typ := contenttype.FromManifest(v.Manifest), contenttype.FromManifest(manifest)
+	cur, typ := contenttype.FromManifest(base), contenttype.FromManifest(manifest)
 	if cur == typ {
 		return nil
 	}

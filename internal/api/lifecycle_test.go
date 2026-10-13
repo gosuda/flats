@@ -95,6 +95,17 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	flatState(t, srv, "drafts", 0, "private", 3)
 	id := out["approval"].(map[string]any)["id"].(string)
 	approveRequest(t, srv, out)
+	// Saving a version creates v1 without making it live yet.
+	code, fAfterPub := req(t, "GET", srv.URL+"/api/flats/drafts", nil, nil)
+	if code != 200 || fAfterPub["live_version"] != float64(0) || fAfterPub["latest_version"] != float64(1) {
+		t.Fatalf("after publish (before deploy): %d %v", code, fAfterPub)
+	}
+	// Deploy v1 to make it live.
+	code, depOut := req(t, "POST", srv.URL+"/api/flats/drafts/deploy", strings.NewReader(`{"version":1}`), nil)
+	if code != 202 || depOut["status"] != "pending_approval" {
+		t.Fatalf("deploy v1 pending: %d %v", code, depOut)
+	}
+	approveRequest(t, srv, depOut)
 	f := flatState(t, srv, "drafts", 1, "private", 3)
 	serving(t, f["private_url"].(string), "DRAFT-3")
 	code, out = req(t, "POST", srv.URL+"/api/flats/drafts/draft?expected_revision=3", bytes.NewReader(archive(map[string]string{"index.html": "DRAFT-4"})), nil)
@@ -103,9 +114,13 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	}
 	flatState(t, srv, "drafts", 1, "private", 4)
 	serving(t, f["private_url"].(string), "DRAFT-3")
-	code, pending := req(t, "POST", srv.URL+"/api/flats/drafts/deploy", strings.NewReader(`{"version":0}`), nil)
+	code, badDeploy := req(t, "POST", srv.URL+"/api/flats/drafts/deploy", strings.NewReader(`{"version":0}`), nil)
+	if code != 400 {
+		t.Fatalf("deploy 0 must be refused: %d %v", code, badDeploy)
+	}
+	code, pending := req(t, "POST", srv.URL+"/api/flats/drafts/publish", strings.NewReader(`{"revision":4}`), nil)
 	if code != 202 {
-		t.Fatalf("compat deploy Draft: %d %v", code, pending)
+		t.Fatalf("publish Draft: %d %v", code, pending)
 	}
 	_, out = req(t, "POST", srv.URL+"/api/flats/drafts/draft?expected_revision=4", bytes.NewReader(archive(map[string]string{"index.html": "DRAFT-5"})), nil)
 	id = pending["approval"].(map[string]any)["id"].(string)
@@ -120,6 +135,11 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 		t.Fatalf("fresh request: %d %v", code, out)
 	}
 	approveRequest(t, srv, out)
+	code, dep2 := req(t, "POST", srv.URL+"/api/flats/drafts/deploy", strings.NewReader(`{"version":2}`), nil)
+	if code != 202 {
+		t.Fatalf("deploy v2: %d %v", code, dep2)
+	}
+	approveRequest(t, srv, dep2)
 	flatState(t, srv, "drafts", 2, "private", 5)
 	serving(t, f["private_url"].(string), "DRAFT-5")
 }
@@ -193,6 +213,16 @@ func TestPublicPublishRollbackKeepsBothCurrentEndpointsOnApprovedVersion(t *test
 	}
 	for _, url := range []string{privateURL, publicURL} {
 		serving(t, url, "VERSION-1")
+	}
+	approveRequest(t, srv, pending)
+	// Version 2 is saved, but v1 remains live until v2 is deployed.
+	flatState(t, srv, "dual", 1, "public", 2)
+	for _, url := range []string{privateURL, publicURL} {
+		serving(t, url, "VERSION-1")
+	}
+	code, pending = req(t, "POST", srv.URL+"/api/flats/dual/deploy", strings.NewReader(`{"version":2}`), nil)
+	if code != 202 {
+		t.Fatalf("deploy v2: %d %v", code, pending)
 	}
 	approveRequest(t, srv, pending)
 	flatState(t, srv, "dual", 2, "public", 2)

@@ -34,23 +34,23 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
 		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; or with type docs a Private document that runs at once (no publish or approval). Optional: save_version, save_page and save_document create the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version", Annotations: write,
-		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval. For one Markdown document use save_document. A docs bundle is not a Draft: it runs at once (topic.docs)."}, t.saveVersion)
+		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval to save the Draft as a numbered version (call deploy with that version number after approval to make it live). For one Markdown document use save_document. A docs bundle is not a Draft: it runs at once (topic.docs)."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version_from_dir", Annotations: write,
 		Description: "Save a Private Draft from a directory on the Flats host (absolute path). " +
 			"Only works when the agent runs on the Flats host itself (loopback); otherwise use save_version or the flats CLI."}, t.saveVersionFromDir)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_versions", Annotations: ro,
 		Description: "List published website versions only, newest first, with the current version marked. Documents have no versions."}, t.listVersions)
 	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
-		Description: "Request operator approval to activate an already published version; version 0 requests publish of current Draft. Nothing changes before approval. Websites only."}, t.deploy)
+		Description: "Request operator approval to activate a saved version (version > 0). Save the Draft as a new version with publish first. Nothing changes before approval. Websites only."}, t.deploy)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft", Annotations: write,
-		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. Saving allocates no published number. Optional deploy=true requests pending publication; only successful operator approval later creates vN. A docs bundle runs at once instead (topic.docs)."}, t.saveVersion)
+		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. Saving allocates no version number. Optional deploy=true requests pending version creation; after approval creates vN, call deploy(version=N) to make it live. A docs bundle runs at once instead (topic.docs)."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_draft", Annotations: ro,
 		Description: "Read the current Private Draft revision and hash of a website. Documents have no Draft."}, t.getDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "publish", Annotations: write,
-		Description: "Freeze current Draft revision/hash and request explicit operator approval to publish. No version is created before successful approval. Websites only: documents have no publishing."}, t.publish)
+		Description: "Freeze current Draft revision/hash and request explicit operator approval to save it as a new numbered version (v1, v2, ...) without deploying it. Call deploy with that version number to make it live. Websites only: documents have no publishing."}, t.publish)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_page", Annotations: write,
 		Description: "Save a page (one static HTML document with charts, graphs or visualizations, plus its assets) as a Private Draft, creating the flat when absent. " +
-			"Saving never publishes; deploy=true requests explicit operator approval. Replaces the whole Draft: send the html and every asset each time. " +
+			"Saving never publishes; deploy=true requests explicit operator approval to save the Draft as a numbered version (call deploy with that version number after approval to make it live). Replaces the whole Draft: send the html and every asset each time. " +
 			"Flats writes flats.json (type page); other saves into a page need {\"type\":\"page\"} (topic.page)."}, t.savePage)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_document", Annotations: write,
 		Description: "Save one Markdown document, creating the flat when absent. It runs at once, Private unless the operator already made it Public: documents have no Draft, versions, publish or approval. It replaces the document; people's concurrent edits on other lines are kept. Read get_document first to preserve live edits; prefer update_document for small changes; read flats://docs/content-types/v1 for docs bundles. Use save_version for multiple documents/assets."}, t.saveDocument)
@@ -426,7 +426,7 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 	case contenttype.Page:
 		return result(pageCreatedText(fi), fi), fi, nil
 	}
-	return result("Created unpublished Private flat "+fi.Slug+". Next: save_draft, then publish and wait for operator approval.", fi), fi, nil
+	return result("Created unpublished Private flat "+fi.Slug+". Next: save_draft, publish to save a version (with approval), then deploy that version.", fi), fi, nil
 }
 
 // documentText describes a document that was just created or saved.
@@ -675,7 +675,7 @@ func (t *tools) listVersions(ctx context.Context, _ *mcp.CallToolRequest, in Slu
 // DeployIn deploys a version.
 type DeployIn struct {
 	Slug    string `json:"slug" jsonschema:"flat slug"`
-	Version int    `json:"version" jsonschema:"published version to activate after approval; 0 requests publish of current Draft"`
+	Version int    `json:"version" jsonschema:"saved version (> 0) to activate after approval; save the Draft as a new version with publish first"`
 }
 
 // RollbackIn rolls back.
@@ -697,7 +697,9 @@ func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
 			hint = "nothing was live before, so the flat is still not deployed; " + hint
 		}
 	} else if errors.Is(err, core.ErrNotDeployed) {
-		hint = "nothing is live yet, so there is nothing to roll back; request publish of a Draft and wait for successful operator approval first"
+		hint = "nothing is live yet, so there is nothing to roll back; save a Draft as a version with publish and deploy that version first"
+	} else if errors.Is(err, core.ErrInvalid) {
+		hint = "save the Draft as a new version with publish first, then pass its positive version number to deploy"
 	} else if errors.Is(err, core.ErrConflict) {
 		hint = "call list_versions to pick a version"
 	}
@@ -706,7 +708,7 @@ func (t *tools) deployErr(ctx context.Context, slug string, err error) error {
 
 func (t *tools) deploy(ctx context.Context, _ *mcp.CallToolRequest, in DeployIn) (*mcp.CallToolResult, DeployInfo, error) {
 	if in.Version < 0 {
-		return nil, DeployInfo{}, toolErr(refuse(core.ErrInvalid, "version must be nonnegative"), "0 requests current Draft publication; positive numbers activate published versions")
+		return nil, DeployInfo{}, toolErr(refuse(core.ErrInvalid, "version must be a positive integer"), "save the Draft as a new version with publish first, then pass its version number to deploy")
 	}
 	res, err := t.svc.Deploy(ctx, in.Slug, in.Version, core.ViaMCP)
 	var pending *core.PendingApproval
@@ -785,6 +787,7 @@ type DeleteIn struct {
 type ActionOut struct {
 	Approval    *ApprovalOut `json:"approval,omitempty"`
 	Status      string       `json:"status" jsonschema:"done, or pending_approval (nothing changed yet)"`
+	Version     int          `json:"version,omitempty" jsonschema:"saved or deployed version number when applicable"`
 	Message     string       `json:"message" jsonschema:"what happened"`
 	ApprovalID  string       `json:"approval_id,omitempty" jsonschema:"poll it with get_approval"`
 	ApprovalURL string       `json:"approval_url,omitempty" jsonschema:"console link for the operator; give it to the user verbatim"`
@@ -794,7 +797,7 @@ type ActionOut struct {
 }
 
 func actionOut(r core.ActionResult) ActionOut {
-	out := ActionOut{Status: r.Status, Message: r.Message, ApprovalURL: r.ApprovalURL, Notice: r.Notice}
+	out := ActionOut{Status: r.Status, Version: r.Version, Message: r.Message, ApprovalURL: r.ApprovalURL, Notice: r.Notice}
 	if r.Approval != nil {
 		out.ApprovalID = r.Approval.ID
 		a := approvalOut(*r.Approval)

@@ -53,28 +53,29 @@ export async function deployVersion(flat, n, kind = 'deploy') {
   }
 }
 
-// publishDraft publishes the flat's draft as its next version.
+// publishDraft saves the flat's draft as a new version without deploying it.
 export async function publishDraft(flat) {
   const draft = flat.draft;
   if (!draft || !draft.dirty) {
-    await infoDialog('Nothing to publish', 'The draft has no changes since the live version. An agent saves one with save_version (MCP) or `flats deploy`.');
+    await infoDialog('Nothing to save', 'The draft has no changes since the latest saved version. An agent saves one with save_version (MCP) or `flats deploy`.');
     return false;
   }
   const ok = await confirmDialog({
-    title: `Publish ${label(flat)}?`,
+    title: `Save draft of ${label(flat)} as a new version?`,
     body: [
-      h('p', { text: `The draft becomes a new version and ${label(flat)} serves it` + (flat.live_version ? ` instead of version ${flat.live_version}.` : '.') }),
-      h('p', { class: 'muted', text: 'The health check runs first; if it fails, nothing is published.' }),
+      h('p', { text: 'The current draft will be saved as a new version without deploying it.' }),
+      h('p', { class: 'muted', text: 'Once saved, click Deploy on the new version to make it live.' }),
     ],
-    confirmLabel: 'Publish',
+    confirmLabel: 'Save version',
   });
   if (!ok) return false;
   try {
-    await approve(await api.publish(flat.slug, draft));
-    await showLive(flat.slug, 'is live');
+    const decided = await approve(await api.publish(flat.slug, draft));
+    const v = decided?.result_data?.version;
+    toast(v ? `Saved version ${v}. Deploy it to make it live.` : 'Saved as a new version.', 'success');
     return true;
   } catch (err) {
-    await report('Publish failed', err);
+    await report('Save version failed', err);
     return false;
   }
 }

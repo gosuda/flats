@@ -15,13 +15,19 @@ import (
 
 func publishedFixture(t *testing.T, e *env) {
 	t.Helper()
-	for _, content := range []string{"VERSION-1", "VERSION-2"} {
+	for i, content := range []string{"VERSION-1", "VERSION-2"} {
 		var out SaveOut
 		text, failed := call(t, e.local, "save_version", map[string]any{"slug": "census", "files": []any{file("index.html", content, "")}, "deploy": true}, &out)
 		if failed || out.Deploy == nil || out.Deploy.Status != "pending_approval" {
 			t.Fatalf("fixture pending: %s %+v", text, out)
 		}
 		e.approve(t, out.Deploy.ApprovalID)
+		var dep DeployInfo
+		text, failed = call(t, e.local, "deploy", map[string]any{"slug": "census", "version": i + 1}, &dep)
+		if failed || dep.Status != "pending_approval" {
+			t.Fatalf("fixture deploy pending: %s %+v", text, dep)
+		}
+		e.approve(t, dep.ApprovalID)
 	}
 }
 
@@ -128,25 +134,38 @@ func TestMCPConflictPreservesContentAndCannotDecideOrGrant(t *testing.T) {
 	}
 }
 
-func TestMCPDeployZeroRequestsCurrentDraftAndNoVersionBeforeDecision(t *testing.T) {
+func TestMCPDeployZeroRejectedAndPublishSavesVersionThenDeployActivates(t *testing.T) {
 	e := newEnv(t)
 	var saved SaveOut
 	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "zero", "expected_revision": 0, "files": []any{file("index.html", "ZERO-DRAFT", "")}}, &saved); failed {
 		t.Fatal(text)
 	}
-	var pending DeployInfo
-	text, failed := call(t, e.local, "deploy", map[string]any{"slug": "zero", "version": 0}, &pending)
-	if failed || pending.Status != "pending_approval" || pending.ApprovalID == "" || pending.Approval == nil || pending.Approval.Action != "publish" || strings.Contains(text, " is live") {
-		t.Fatalf("Draft deploy pending: %s %+v", text, pending)
+	if text, failed := call(t, e.local, "deploy", map[string]any{"slug": "zero", "version": 0}, nil); !failed || !strings.Contains(text, `"category":"invalid"`) {
+		t.Fatalf("Draft deploy zero must be rejected: %s", text)
+	}
+	var pub ActionOut
+	text, failed := call(t, e.local, "publish", map[string]any{"slug": "zero", "revision": 1}, &pub)
+	if failed || pub.Status != "pending_approval" || pub.ApprovalID == "" || strings.Contains(text, " is live") {
+		t.Fatalf("Draft publish pending: %s %+v", text, pub)
 	}
 	f, _ := e.svc.GetFlat(context.Background(), "zero")
 	if f.LiveVersion != 0 || f.Versions != 0 {
 		t.Fatalf("premature vN: %+v", f)
 	}
-	e.approve(t, pending.ApprovalID)
+	e.approve(t, pub.ApprovalID)
+	f, _ = e.svc.GetFlat(context.Background(), "zero")
+	if f.LiveVersion != 0 || f.Versions != 1 {
+		t.Fatalf("approved v1 saved without live deploy: %+v", f)
+	}
+	var dep DeployInfo
+	text, failed = call(t, e.local, "deploy", map[string]any{"slug": "zero", "version": 1}, &dep)
+	if failed || dep.Status != "pending_approval" || dep.ApprovalID == "" {
+		t.Fatalf("deploy v1 pending: %s %+v", text, dep)
+	}
+	e.approve(t, dep.ApprovalID)
 	f, _ = e.svc.GetFlat(context.Background(), "zero")
 	if f.LiveVersion != 1 || f.Versions != 1 {
-		t.Fatalf("approved v1: %+v", f)
+		t.Fatalf("approved deploy v1: %+v", f)
 	}
 	if _, body := get(t, f.PrivateURL); string(body) != "ZERO-DRAFT" {
 		t.Fatalf("published bytes: %q", body)

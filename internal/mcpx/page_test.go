@@ -35,6 +35,15 @@ func TestCreateAndSavePage(t *testing.T) {
 	}
 	e.approve(t, saved.Deploy.ApprovalID)
 	f, _ = e.svc.GetFlat(ctx, "report")
+	if f.Type != "page" || f.LiveVersion != 0 || f.Versions != 1 {
+		t.Fatalf("saved page version: type %q live %d versions %d", f.Type, f.LiveVersion, f.Versions)
+	}
+	var dep DeployInfo
+	if text, failed := call(t, e.local, "deploy", map[string]any{"slug": "report", "version": 1}, &dep); failed || dep.Status != "pending_approval" {
+		t.Fatalf("deploy page pending: %s %+v", text, dep)
+	}
+	e.approve(t, dep.ApprovalID)
+	f, _ = e.svc.GetFlat(ctx, "report")
 	if f.Type != "page" || f.LiveVersion != 1 || f.Thumbnail == "" {
 		t.Fatalf("published page: type %q live %d thumbnail %q", f.Type, f.LiveVersion, f.Thumbnail)
 	}

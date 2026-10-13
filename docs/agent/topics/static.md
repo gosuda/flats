@@ -26,8 +26,10 @@ binary files. A missing flat is created on the first save. A minimal call:
 {"slug":"hello","files":[{"path":"index.html","content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}
 ```
 
-Saving never publishes: `deploy: true` only requests publish approval after
-the save (`topic.approvals`). `expected_revision` is the Draft revision you
+Saving never publishes: `deploy: true` only requests operator approval to save
+the Draft as a numbered version (`v1`, `v2`, ...); after that approval creates
+`vN`, call `deploy {slug, version: N}` (which also requires approval) to make
+it live (`topic.approvals`). `expected_revision` is the Draft revision you
 expect (0 when no Draft exists); a mismatch is refused as `conflict` and
 overwrites nothing. Read `get_draft`, reconcile, then save again.
 
@@ -39,8 +41,9 @@ the save; fix them and save again (`topic.design` lists every check).
 On the Flats host itself, `save_version_from_dir {slug, dir}` uploads an
 absolute build directory (loopback callers only; it also skips
 `node_modules`). The CLI `flats deploy <dir> --flat <slug> --save-only` saves
-the Draft the same way; without `--save-only` it also requests publish
-approval. Remote agents send files inline.
+the Draft the same way; without `--save-only` it also requests approval to save
+the Draft as a new version, and `flats deploy --flat <slug> --version <n>`
+requests approval to activate version `n`. Remote agents send files inline.
 
 ### Upload limits
 

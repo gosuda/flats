@@ -158,6 +158,8 @@ def mixed_migration(h):
     h.save('mixed', static('NEW-PUBLISH-DISTINCT-FROM-LEGACY-FOUR'))
     a = h.publish('mixed')
     require(h.decide(a)['status'] == 'approved', 'migrated draft publish failed')
+    dep = h.deploy_version('mixed', 4)
+    require(h.decide(dep)['status'] == 'approved', 'migrated v4 deploy failed')
     require(h.flat('mixed')['live_version'] == 4, 'next identity not max published + 1')
     require('NEW-PUBLISH-DISTINCT-FROM-LEGACY-FOUR' in h.traffic('mixed'), 'new publication aliased legacy saved bytes')
     for previous in seed['previews']:
@@ -270,7 +272,9 @@ def runtime_initialization(h):
     h.activate('startup', startup_server())
     before = h.traffic('startup')
     h.save('startup', startup_server(broken=True))
-    a = h.publish('startup')
+    pub = h.publish('startup')
+    require(h.decide(pub)['status'] == 'approved', 'saving broken version 2 failed')
+    a = h.deploy_version('startup', 2)
     require(h.traffic('startup') == before, 'candidate initialized before approval')
     from gate import failed, data_impact
     failure = failed(h.decide(a), 'module-init')
@@ -286,7 +290,9 @@ def runtime_initialization(h):
     candidate = startup_server()
     candidate['server.js'] += '\n// DISTINCT-RECOVERY-CANDIDATE\n'
     h.save('startup', candidate)
-    a = h.publish('startup')
+    pub = h.publish('startup')
+    require(h.decide(pub)['status'] == 'approved', 'saving recovery version 3 failed')
+    a = h.deploy_version('startup', 3)
     dbpaths = list((h.data / 'flats/startup/data').glob('db.sqlite'))
     require(len(dbpaths) == 1, 'missing runtime data oracle')
     with sqlite3.connect(f'file:{dbpaths[0]}?mode=ro', uri=True) as db:
@@ -301,7 +307,7 @@ def runtime_initialization(h):
     h.traffic('startup')
     h.stop()
     h.start()
-    require(h.flat('startup')['live_version'] == 2, 'startup restart lost code identity')
+    require(h.flat('startup')['live_version'] == 3, 'startup restart lost code identity')
 
 
 def current_live_drift(h):
@@ -309,15 +315,17 @@ def current_live_drift(h):
     h.activate('live-drift', static('LIVE-ONE'))
     h.activate('live-drift', static('LIVE-TWO'))
     h.save('live-drift', static('PENDING-THREE'))
-    pending = h.publish('live-drift')
+    pub = h.publish('live-drift')
+    require(h.decide(pub)['status'] == 'approved', 'saving version 3 failed')
+    pending = h.deploy_version('live-drift', 3)
     rollback = h.approval(h.ok('POST', '/api/flats/live-drift/rollback', {'version': 1}, status=202))
     require(h.decide(rollback)['status'] == 'approved', 'drift setup rollback failed')
     from gate import failed
     failed(h.decide(pending), 'live-drift')
     require(h.flat('live-drift')['live_version'] == 1 and 'LIVE-ONE' in h.traffic('live-drift'),
             'stale approval changed current bytes')
-    require(sorted(v['number'] for v in h.versions('live-drift')) == [1, 2], 'stale approval allocated number')
-    require(h.decide(h.publish('live-drift'))['status'] == 'approved', 'fresh live policy approval poisoned')
+    require(sorted(v['number'] for v in h.versions('live-drift')) == [1, 2, 3], 'stale approval allocated number')
+    require(h.decide(h.deploy_version('live-drift', 3))['status'] == 'approved', 'fresh live policy approval poisoned')
     require('PENDING-THREE' in h.traffic('live-drift'), 'fresh live policy did not publish expected bytes')
 
 
@@ -337,4 +345,5 @@ def visibility_drift(h):
     require('CURRENT' in h.traffic('pub-visibility-drift'), 'stale visibility approval changed public bytes')
     require([v['number'] for v in h.versions('visibility-drift')] == [1], 'stale visibility allocated number')
     require(h.decide(h.publish('visibility-drift'))['status'] == 'approved', 'fresh visibility approval poisoned')
+    require(h.decide(h.deploy_version('visibility-drift', 2))['status'] == 'approved', 'fresh visibility deploy approval poisoned')
     require('STALE-CANDIDATE' in h.traffic('pub-visibility-drift'), 'fresh visibility candidate did not serve')
