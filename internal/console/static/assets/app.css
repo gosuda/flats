@@ -214,6 +214,9 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 a.menu-item { text-decoration: none; color: inherit; display: block; }
 .open-links { display: inline-flex; align-items: center; gap: 4px; }
 .open-spacer { visibility: hidden; }
+/* The narrow list's single open link, its menu entries and its inline
+   visibility; the wide layout keeps the column and both shortcuts. */
+.row-actions .open-primary, .flat-sub-vis, .menu .menu-narrow { display: none; }
 .provider-head p { margin: 2px 0 0; }
 .provider > p { margin: 8px 0 0; }
 .provider .facts, .provider .net, .provider-form { margin-top: 10px; }
@@ -461,16 +464,25 @@ td > .badge:first-child { margin-left: 0; }
   .segmented { flex: none; }
   .seg { min-width: 44px; min-height: 44px; }
   .list-head { display: none; }
+  /* One row per flat: type, name over visibility and status, then actions. */
   .flats-list .flat {
-    grid-template-columns: 44px minmax(0, 1fr);
-    grid-template-areas: "type main" ". vis" ". actions";
-    align-items: start; gap: 6px 12px; padding: 12px 8px;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas: "type main actions";
+    align-items: center; gap: 0 12px; padding: 12px 0;
   }
   .flats-list .type-icon { grid-area: type; width: 44px; height: 44px; }
-  .flats-list .flat-main { grid-area: main; }
+  .flats-list .flat-main { grid-area: main; display: flex; flex-direction: column; gap: 4px; }
   .flats-list .flat-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
-  .flats-list .flat-vis { grid-area: vis; font-size: 13px; }
-  .flats-list .row-actions { grid-area: actions; justify-content: flex-start; flex-wrap: wrap; min-width: 0; }
+  .flats-list .flat-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; }
+  .flats-list .flat-sub-vis { display: inline-flex; font-size: 12.5px; }
+  .flats-list .flat-sub-vis .vis { gap: 4px; }
+  .flats-list .flat-sub-vis .vis .icon { width: 13px; height: 13px; }
+  .flats-list .flat-sub-vis .vis-public { color: var(--text); font-weight: 500; padding: 0 8px 0 6px; border: 1px solid var(--border-strong); border-radius: 999px; }
+  .flats-list .flat-vis { display: none; }
+  .flats-list .row-actions { grid-area: actions; gap: 0; }
+  .flats-list .open-links { display: none; }
+  .flats-list .row-actions .open-primary { display: inline-flex; }
+  .flats-list .menu .menu-narrow { display: block; }
   .flats-grid .flat {
     grid-template-columns: 44px minmax(0, 1fr);
     grid-template-areas: "preview preview" "type main" "vis vis" "actions actions";

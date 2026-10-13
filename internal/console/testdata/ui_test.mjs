@@ -172,6 +172,12 @@ for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
 const openCount = (row) => all(row, (e) => (e.getAttribute('class') || '').includes('open-links')).length;
 assert.equal(all(rows[2], (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1);
 assert.equal(openCount(rows[0]), 1);
+// Narrow rows also get one open link, the visibility inline under the name
+// and every address in the menu; CSS shows them only on small screens.
+const classCount = (row, c) => all(row, (e) => (e.getAttribute('class') || '').split(/\s+/).includes(c)).length;
+assert.equal(classCount(rows[0], 'open-primary'), 1);
+assert.equal(classCount(rows[0], 'flat-sub-vis'), 1);
+assert.ok(classCount(rows[0], 'menu-narrow') >= 1);
 // A flat with draft changes offers Publish; a document never does.
 assert.equal(byText(rows[0], 'Publish').length, 1);
 assert.equal(byText(rows[2], 'Publish').length, 0);
@@ -186,7 +192,10 @@ const stopIdle = list.mount(idleMain, [], ctx);
 await tick();
 const idleRows = all(idleMain, (e) => e.tagName === 'LI' && e.className === 'flat');
 assert.equal(idleRows.length, 2);
-for (const row of idleRows) assert.equal(openCount(row), 0, row.textContent);
+for (const row of idleRows) {
+  assert.equal(openCount(row), 0, row.textContent);
+  assert.equal(classCount(row, 'open-primary') + classCount(row, 'menu-narrow'), 0, row.textContent);
+}
 stopIdle();
 routes['GET /console/api/flats'] = savedFlats;
 
@@ -889,6 +898,22 @@ assert.ok(openPrivate.childNodes[1].getAttribute('class').includes('menu-wrap'),
 assert.equal(all(openPrivate, (e) => (e.getAttribute('class') || '').includes('menu-item')).length, 2);
 // A private flat with a leftover public URL still shows only the private button.
 assert.ok(isSpacer(ui.openLinks({ ...blog, visibility: 'private' }).childNodes[0]));
+// The narrow list's single open link uses the external-link arrow, so globe
+// and lock only mean visibility. It opens the first public address while the
+// flat is public, else the first private one; the menu lists every address.
+const twoNets = { ...blog, visibility: 'public', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('portal', 'https://blog.rly.best/')] };
+const primary = ui.openPrimary(twoNets);
+assert.equal(primary.getAttribute('href'), 'https://blog.rly.best/');
+assert.ok(primary.getAttribute('class').includes('open-primary'));
+assert.equal(pathOf(glyphOf(primary)), pathOf(icon('external')));
+assert.ok(glyphOf(primary).getAttribute('aria-label').includes('anyone with the URL'), 'the public link warns');
+const privPrimary = ui.openPrimary({ ...twoNets, visibility: 'private' });
+assert.equal(privPrimary.getAttribute('href'), 'http://blog.localhost:7879/');
+assert.ok(!glyphOf(privPrimary).getAttribute('aria-label').includes('anyone with the URL'));
+assert.deepEqual(ui.openMenuItems(twoNets).map((i) => [i.label, i.detail, i.href, i.className]), [
+  ['Open publicly · Portal', 'blog.rly.best/', 'https://blog.rly.best/', 'menu-narrow'],
+  ['Open privately · Local', 'blog.localhost:7879/', 'http://blog.localhost:7879/', 'menu-narrow']]);
+assert.deepEqual(ui.openMenuItems({ ...twoNets, visibility: 'private' }).map((i) => i.label), ['Open privately · Local']);
 // Public routes the flat may not use (unpermitted, another flat's, stopped)
 // never become its public button; only the server's public_url backs it.
 const local = ep('local', 'http://blog.localhost:7879/');

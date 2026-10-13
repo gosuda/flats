@@ -51,7 +51,8 @@ export function infoDialog(title, body) {
 }
 
 // menu builds a "…" button with a popup menu.
-// items: [{label, onSelect, danger, disabled}]
+// items: [{label, onSelect, danger, disabled, className}]; className lets CSS
+// show an item at some widths only (a hidden item is skipped by the keyboard).
 let openMenu = null;
 
 export function menu(label, items, iconName) {
@@ -68,16 +69,16 @@ export function menu(label, items, iconName) {
     const blocked = it.href && (!href || serverOnly(href));
     const content = it.detail ? [h('span', { class: 'menu-label', text: it.label }), h('span', { class: 'menu-detail muted small', text: it.detail })] : null;
     const mi = href && !blocked
-      ? h('a', { role: 'menuitem', tabindex: '-1', class: 'menu-item', href, target: '_blank', rel: 'noopener noreferrer' }, content || it.label)
+      ? h('a', { role: 'menuitem', tabindex: '-1', class: 'menu-item' + (it.className ? ' ' + it.className : ''), href, target: '_blank', rel: 'noopener noreferrer' }, content || it.label)
       : h('button', {
         type: 'button', role: 'menuitem', tabindex: '-1', title: blocked ? SERVER_ONLY : undefined,
-        class: 'menu-item' + (it.danger ? ' danger' : ''), disabled: !!it.disabled || !!blocked,
+        class: 'menu-item' + (it.danger ? ' danger' : '') + (it.className ? ' ' + it.className : ''), disabled: !!it.disabled || !!blocked,
       }, content || it.label);
     mi.addEventListener('click', () => { close(!href); if (it.onSelect) it.onSelect(); });
     list.appendChild(mi);
   }
   const wrap = h('div', { class: 'menu-wrap' }, btn, list);
-  const enabled = () => [...list.querySelectorAll('.menu-item:not([disabled])')];
+  const enabled = () => [...list.querySelectorAll('.menu-item:not([disabled])')].filter((el) => el.getClientRects().length);
 
   function open() {
     if (openMenu && openMenu !== close) openMenu(false);
@@ -301,4 +302,27 @@ export function openLinks(f) {
   const priv = button(false);
   const pub = button(true) || (priv ? h('span', { class: 'icon-btn open-spacer', 'aria-hidden': 'true' }) : null);
   return pub || priv ? h('div', { class: 'open-links' }, pub, priv) : null;
+}
+
+// openPrimary is the single open shortcut of the narrow layout: one link to
+// the flat's first public address while it is public, else its first private
+// one. Its glyph is the external-link arrow, so the globe and lock stay the
+// visibility's own icons; openMenuItems lists every address for the menu.
+export function openPrimary(f) {
+  const name = f.name || f.slug;
+  const targets = linkTargets(f);
+  const t = targets.public[0] || targets.private[0];
+  if (!t) return null;
+  const note = t.public ? ' (anyone with the URL can open the flat)' : '';
+  return extLink(t.url, icon('external', `Open ${name} ${t.public ? 'public' : 'private'}ly through ${t.label}${note}`), 'icon-btn open-primary');
+}
+
+// openMenuItems are menu entries for each address of a flat, public ones
+// first, shown only where the narrow layout replaces openLinks.
+export function openMenuItems(f) {
+  const targets = linkTargets(f);
+  return [...targets.public, ...targets.private].map((t) => ({
+    label: `Open ${t.public ? 'publicly' : 'privately'} · ${t.label}`,
+    detail: t.url.replace(/^https?:\/\//, ''), href: t.url, className: 'menu-narrow',
+  }));
 }
