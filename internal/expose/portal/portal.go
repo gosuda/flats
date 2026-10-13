@@ -119,6 +119,12 @@ type entry struct {
 	httpErr error              // read only after done closes
 	done    chan struct{}      // closed when RunHTTP and the watcher returned
 
+	// The slug lock owns teardown state; e.mu guards stopping for status readers.
+	stopping    bool
+	closeResult <-chan error // one SDK Close attempt, shared across retries
+	closeDone   bool
+	closeErr    error // first error is sticky: SDK Close uses sync.Once
+
 	mu      sync.Mutex
 	hidden  bool
 	pinned  string                     // discovered relay kept as explicit so the URL stays (see pin)
@@ -272,6 +278,12 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		return "", errors.New("portal: closed")
 	}
 	if e != nil {
+		e.mu.Lock()
+		stopping := e.stopping
+		e.mu.Unlock()
+		if stopping {
+			return "", fmt.Errorf("portal: %s teardown not confirmed", slug)
+		}
 		e.handler.set(h)
 		if err := n.setHidden(e, hidden); err != nil {
 			return "", err
@@ -335,7 +347,13 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	if n.closed {
 		// Close ran while this exposure was being created and did not see it.
 		n.mu.Unlock()
-		return "", errors.Join(errors.New("portal: closed"), n.stopEntry(e))
+		stopErr := n.stopEntry(e)
+		if stopErr != nil {
+			n.mu.Lock()
+			n.shutdownErrs = append(n.shutdownErrs, stopErr)
+			n.mu.Unlock()
+		}
+		return "", errors.Join(errors.New("portal: closed"), stopErr)
 	}
 	n.entries[slug] = e
 	n.mu.Unlock()
@@ -371,6 +389,12 @@ func (n *Net) SetHidden(slug string, hidden bool) error {
 	if e == nil {
 		return fmt.Errorf("portal: %s is not served", slug)
 	}
+	e.mu.Lock()
+	stopping := e.stopping
+	e.mu.Unlock()
+	if stopping {
+		return fmt.Errorf("portal: %s teardown not confirmed", slug)
+	}
 	return n.setHidden(e, hidden)
 }
 
@@ -394,12 +418,19 @@ func (n *Net) setHidden(e *entry, hidden bool) error {
 	return nil
 }
 
-// Stop shuts the HTTP server down, unregisters slug from its relays and
-// forgets its status. Unknown slugs are a no-op.
+// Stop shuts down HTTP and unregisters slug from its relays. It forgets the
+// exposure only after all teardown obligations succeed. Unknown slugs are
+// a no-op.
 func (n *Net) Stop(slug string) error {
 	if !n.beginOp() {
+		n.mu.RLock()
+		_, pending := n.entries[slug]
+		n.mu.RUnlock()
+		if pending {
+			return fmt.Errorf("portal: %s teardown not confirmed: network closed", slug)
+		}
 		return nil
-	} // Close owns remaining entries.
+	}
 	defer n.ops.Done()
 	return n.stop(slug)
 }
@@ -418,28 +449,32 @@ func (n *Net) stop(slug string) error {
 	l := n.slugLock(slug)
 	l.Lock()
 	defer l.Unlock()
-	n.mu.Lock()
+
+	n.mu.RLock()
 	e := n.entries[slug]
-	delete(n.entries, slug)
-	n.mu.Unlock()
+	n.mu.RUnlock()
 	if e == nil {
 		return nil
 	}
-	return n.stopEntry(e)
+	e.mu.Lock()
+	e.stopping = true
+	e.mu.Unlock()
+
+	err := n.stopEntry(e)
+	n.mu.Lock()
+	if err == nil {
+		delete(n.entries, slug)
+	} else if n.closed {
+		// Close must see failures from its own stops and admitted Stop calls.
+		n.shutdownErrs = append(n.shutdownErrs, err)
+	}
+	n.mu.Unlock()
+	return err
 }
 
-func (n *Net) stopEntry(e *entry) (retErr error) {
-	// A Stop may remove its entry before Close snapshots entries. Preserve
-	// its failure so Close cannot silently release host state after a timeout.
-	defer func() {
-		if retErr != nil {
-			n.mu.Lock()
-			n.shutdownErrs = append(n.shutdownErrs, retErr)
-			n.mu.Unlock()
-		}
-	}()
-	// A single deadline bounds all stages. Even if HTTP drain fails, attempt
-	// unregistering the exposure; an SDK Close that hangs is left to process exit.
+// stopEntry holds the slug lock. It resumes pending work without issuing
+// another SDK Close: SDK v2 uses sync.Once and later calls lose the first error.
+func (n *Net) stopEntry(e *entry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
 	defer cancel()
 	var errs []error
@@ -452,22 +487,32 @@ func (n *Net) stopEntry(e *entry) (retErr error) {
 		}
 		return false
 	}
+
 	e.cancel()
 	if wait(e.done, "HTTP drain") && e.httpErr != nil && !errors.Is(e.httpErr, net.ErrClosed) && !errors.Is(e.httpErr, context.Canceled) {
 		errs = append(errs, fmt.Errorf("portal: %s HTTP shutdown: %w", e.slug, e.httpErr))
 	}
-	// Force the drain listener closed even if a stuck HTTP/watch path did
-	// not do so, allowing the pump to discard queued connections.
+	// Stop accepting even if HTTP drain timed out; the pump remains an
+	// obligation until the underlying exposure closes.
 	e.ln.Close()
-	closed := make(chan error, 1)
-	go func() { closed <- e.exp.Close() }()
-	select {
-	case err := <-closed:
-		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
-			errs = append(errs, fmt.Errorf("portal: close %s: %w", e.slug, err))
+	if e.closeResult == nil {
+		closed := make(chan error, 1)
+		e.closeResult = closed
+		go func() { closed <- e.exp.Close() }()
+	}
+	if !e.closeDone {
+		select {
+		case err := <-e.closeResult:
+			e.closeDone = true
+			if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+				e.closeErr = fmt.Errorf("portal: close %s: %w", e.slug, err)
+			}
+		case <-ctx.Done():
+			errs = append(errs, fmt.Errorf("portal: %s exposure close exceeded %s: %w", e.slug, n.cfg.ShutdownTimeout, ctx.Err()))
 		}
-	case <-ctx.Done():
-		errs = append(errs, fmt.Errorf("portal: %s exposure close exceeded %s: %w", e.slug, n.cfg.ShutdownTimeout, ctx.Err()))
+	}
+	if e.closeErr != nil {
+		errs = append(errs, e.closeErr)
 	}
 	if wait(e.ln.pumped, "listener pump") && e.ln.err != nil && !errors.Is(e.ln.err, net.ErrClosed) && !errors.Is(e.ln.err, context.Canceled) {
 		errs = append(errs, fmt.Errorf("portal: %s listener pump: %w", e.slug, e.ln.err))
@@ -965,6 +1010,7 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	live := e.exp.Relays()
 	e.mu.Lock()
 	hidden := e.hidden
+	stopping := e.stopping
 	merged := maps.Clone(e.sticky)
 	var lost []string
 	for _, s := range live {
@@ -1029,6 +1075,10 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	}
 	if hidden {
 		parts = append(parts, "unlisted")
+	}
+	if stopping {
+		hi.State = "error"
+		parts = append(parts, "teardown pending confirmation")
 	}
 	hi.Detail = strings.Join(parts, "; ")
 	return hi, conflict
