@@ -106,7 +106,10 @@ Each document keeps the newest 8 records within 2 MiB; older ones are gone.
 
 * Every `.md`/`.markdown` file is one document: valid UTF-8, at most 1 MiB
   each and 4 MiB together, at most 128 documents. Other files are assets,
-  served as static files. Paths under `_docs/` are reserved.
+  served as static files. Images (including SVG), audio, video, fonts and
+  plain text (`.txt`, `.csv`, `.log`) open in the browser; every other asset,
+  such as HTML, scripts or PDF, downloads instead. Assets never run scripts.
+  Paths under `_docs/` are reserved.
 * `entry` is the main document. Default: `index.md`, then `README.md`, then the
   only `.md`/`.markdown` file at any depth. It must be a Markdown file.
 * `name` is the document title shown in the editor (default: the first `# `

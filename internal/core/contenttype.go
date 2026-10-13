@@ -79,8 +79,10 @@ func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 	})
 }
 
-// docsInlineMIME returns a fixed, non-executable MIME type for assets that may
-// appear inline in a document. Every other file must be downloaded instead.
+// docsInlineMIME returns a fixed MIME type for assets that may appear inline in
+// a document. Every other file must be downloaded instead. SVG stays inline so
+// Markdown images keep rendering: an <img> never runs SVG scripts, and the
+// asset CSP (no scripts, sandboxed) also covers opening the file directly.
 func docsInlineMIME(p string) string {
 	switch strings.ToLower(path.Ext(p)) {
 	case ".apng":
@@ -97,6 +99,8 @@ func docsInlineMIME(p string) string {
 		return "image/jpeg"
 	case ".png":
 		return "image/png"
+	case ".svg":
+		return "image/svg+xml"
 	case ".tif", ".tiff":
 		return "image/tiff"
 	case ".webp":

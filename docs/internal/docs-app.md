@@ -55,9 +55,10 @@ The docs handler is the worker plus a thin host wrapper:
 * Everything else goes to the worker.
 * Every asset response has `X-Content-Type-Options: nosniff` and a sandboxing
   Content Security Policy that forbids scripts and same-origin document access.
-  Only known raster image, media, font, and plain-text extensions are served
-  inline, with fixed MIME types. Other files, including HTML, JavaScript, SVG,
-  and PDF, use `application/octet-stream` and `Content-Disposition: attachment`.
+  Only known image (raster and SVG), media, font, and plain-text extensions are
+  served inline, with fixed MIME types. Other files, including HTML,
+  JavaScript, compressed SVG (`.svgz`) and PDF, use `application/octet-stream`
+  and `Content-Disposition: attachment`.
   This applies to already-saved bundles as well as new uploads.
 
 ### Trusted access header
