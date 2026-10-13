@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +20,9 @@ import (
 // configured redirect window (7 days by default).
 func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (FlatView, error) {
 	if err := slug.Validate(to); err != nil {
+		return FlatView{}, invalid(err)
+	}
+	if err := slug.Validate(from); err != nil {
 		return FlatView{}, invalid(err)
 	}
 	if from == to {
@@ -43,7 +47,10 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return FlatView{}, err
 	}
-	if err := s.checkUnusedFlatDir(to); err != nil {
+	if err := s.checkStorageJournal(from); err != nil {
+		return FlatView{}, err
+	}
+	if err := s.requireUnusedStorage(to); err != nil {
 		return FlatView{}, err
 	}
 	// Preview data lives below the flat directory. Do not rename while an
@@ -89,24 +96,55 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		}
 		lf.cur.Store(rebuilt)
 	}
-	moved := false
-	if err := os.Rename(s.flatDir(from), s.flatDir(to)); err == nil {
-		moved = true
-	} else if !os.IsNotExist(err) {
+	op := storageOperation{Kind: "rename", From: from, To: to}
+	if err := s.beginStorageOperation(op); err != nil {
 		restoreCurrent()
 		return FlatView{}, err
+	}
+	moved := false
+	root := filepath.Dir(s.flatDir(from))
+	if err := os.Rename(s.flatDir(from), s.flatDir(to)); err == nil {
+		moved = true
+		if err := syncDirectory(root); err != nil {
+			rollbackErr := os.Rename(s.flatDir(to), s.flatDir(from))
+			if rollbackErr != nil {
+				// Keep the journal so startup can recover the remaining files.
+				return FlatView{}, errors.Join(err, rollbackErr)
+			}
+			// The data is back at the old path: restart the old worker.
+			restoreCurrent()
+			rollbackErr = syncDirectory(root)
+			if rollbackErr == nil {
+				rollbackErr = s.finishStorageOperation(op)
+			}
+			return FlatView{}, errors.Join(err, rollbackErr)
+		}
+	} else if !os.IsNotExist(err) {
+		restoreCurrent()
+		return FlatView{}, errors.Join(err, s.finishStorageOperation(op))
 	}
 	if err := s.st.RenameFlat(ctx, from, to, till, s.now()); err != nil {
 		if moved {
 			if rollbackErr := os.Rename(s.flatDir(to), s.flatDir(from)); rollbackErr != nil {
-				return FlatView{}, errors.Join(err, fmt.Errorf("restore flat directory: %w", rollbackErr))
+				// Keep the journal so startup can recover the remaining files.
+				return FlatView{}, errors.Join(err, fmt.Errorf("restore storage after failed rename: %w", rollbackErr))
+			}
+			if rollbackErr := syncDirectory(root); rollbackErr != nil {
+				restoreCurrent()
+				return FlatView{}, errors.Join(err, rollbackErr)
 			}
 		}
 		restoreCurrent()
+		err = errors.Join(err, s.finishStorageOperation(op))
 		if errors.Is(err, store.ErrExists) {
 			return FlatView{}, withKind(ErrConflict, err)
 		}
 		return FlatView{}, err
+	}
+	if err := s.finishStorageOperation(op); err != nil {
+		// The database and storage are committed; startup can remove the
+		// remaining journal. Do not undo or interrupt the in-memory rename.
+		s.logf("rename %s -> %s committed but journal cleanup failed: %v", from, to, err)
 	}
 
 	s.revokeRoute("public:" + from)
