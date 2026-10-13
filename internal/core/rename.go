@@ -81,7 +81,8 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		if current == nil {
 			return
 		}
-		rebuilt, err := s.build(context.WithoutCancel(ctx), from, current.version, s.dataDirOf(from))
+		// Not an activation: keep the captured settings snapshot.
+		rebuilt, err := s.buildWithEnvironment(context.WithoutCancel(ctx), from, current.version, s.dataDirOf(from), current.environment)
 		if err != nil {
 			s.Event(context.WithoutCancel(ctx), from, "error", "rename", "could not restart the live version after failed rename: "+err.Error(), nil)
 			return
@@ -132,9 +133,10 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		// the served flags start over for the new host names.
 		lf.privateServed, lf.publicServed = false, false
 		if current != nil {
-			// Rebuild against the moved path. Failure must leave the flat
-			// unavailable, never with a handler bound to the old slug.
-			if rebuilt, err := s.build(ctx, to, current.version, s.dataDirOf(to)); err == nil {
+			// Rebuild against the moved path with the captured settings
+			// snapshot (a rename is not an activation). Failure must leave
+			// the flat unavailable, never with a handler bound to the old slug.
+			if rebuilt, err := s.buildWithEnvironment(ctx, to, current.version, s.dataDirOf(to), current.environment); err == nil {
 				lf.cur.Store(rebuilt)
 			} else {
 				s.Event(ctx, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)

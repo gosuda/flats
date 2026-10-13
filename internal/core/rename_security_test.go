@@ -151,3 +151,49 @@ func TestUnownedFlatPathCannotBeReused(t *testing.T) {
 		t.Fatalf("unowned contents changed: %q, %v", got, err)
 	}
 }
+
+type envRecordingRuntime struct {
+	envs map[string]map[string]string // by data directory
+}
+
+func (r *envRecordingRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, error) {
+	r.envs[spec.DataDir] = spec.Env
+	return &renameGuardInstance{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "ready")
+	})}, nil
+}
+
+// A rename is not an activation: the rebuilt worker keeps the settings
+// captured when the live version was activated, and later writes wait for the
+// next approved deployment.
+func TestRenameKeepsCapturedSettings(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	r := &envRecordingRuntime{envs: map[string]map[string]string{}}
+	s.cfg.Runtime = r
+	if _, err := s.SaveVersion(ctx, "origin", []bundle.File{
+		{Path: "flats.json", Data: []byte(`{"kind":"server"}`)},
+		{Path: "server.js", Data: []byte("export default { fetch() { return new Response('ready') } }")},
+	}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnv(ctx, "origin", "MODE", "captured", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := approvedInternalDeploy(t, s, ctx, "origin", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnv(ctx, "origin", "MODE", "pending", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameSlug(ctx, "origin", "renamed", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	env, ok := r.envs[s.dataDirOf("renamed")]
+	if !ok {
+		t.Fatal("renamed flat was not rebuilt")
+	}
+	if got := env["MODE"]; got != "captured" {
+		t.Fatalf("rebuilt worker MODE = %q, want the captured snapshot", got)
+	}
+}
