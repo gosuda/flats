@@ -146,7 +146,9 @@ class TableWidget extends WidgetType {
       if ((event.metaKey || event.ctrlKey) && event.target.closest?.("a[href]"))
         return;
       view.focus();
-      view.dispatch({ selection: EditorSelection.cursor(this.from) });
+      // The widget may have been mapped through remote edits since it was
+      // built, so resolve its current position from the DOM.
+      view.dispatch({ selection: EditorSelection.cursor(view.posAtDOM(div)) });
     });
     return div;
   }
@@ -478,7 +480,8 @@ export function livePreview(links, resolve, render) {
             u.viewportChanged ||
             u.selectionSet ||
             u.focusChanged ||
-            syntaxTree(u.startState) !== syntaxTree(u.state)
+            syntaxTree(u.startState) !== syntaxTree(u.state) ||
+            u.startState.field(refs) !== u.state.field(refs)
           )
             this.decorations = build(u.view);
         }
