@@ -130,6 +130,17 @@ people and agents edit live.
       it shows no revision list and accepts no revision operation.
     - Agents may pin, unpin and roll back without approval.
 
+## Quotas
+
+These rules apply to the version, revision and pin quotas alike.
+
+1. **A quota is a count.** There is no byte limit.
+2. **0 means unlimited.**
+3. **Lowering a quota below what is held.** Unpinned revisions above the new
+   revision quota are deleted at once, oldest first. Versions and pins are
+   never deleted: they all stay, and new ones are refused until the count is
+   below the quota.
+
 ## Model per content type
 
 | Type | Model | Status |
@@ -180,11 +191,9 @@ Compared with `main` at `aa5bf97`:
    the version quota and cannot be deployed.
 5. **`keep_versions` becomes the version quota.** A host that set
    `system.keep_versions` explicitly uses that value as its default version
-   quota; otherwise the default is 20. Automatic pruning stops.
+   quota (`0`, never prune, becomes unlimited); otherwise the default is 20.
+   Automatic pruning stops.
 
 ## Open questions
 
-- **Zero and unlimited.** Whether a quota of 0 means unlimited, and what an
-  explicit `keep_versions: 0` (today: never prune) becomes.
-- **Lowering a quota.** What happens when a quota is set below the number
-  already held.
+None at the moment. Record new ones here as they come up.
