@@ -43,6 +43,8 @@ OS user configuration directory under `flats-client/`, only the CLI and
     previews/                 preview data, paired with preview rows in flats.db
     restore-journal.json      present only while a data restore is unfinished
     health-check/ restore-trial/  temporary copies
+  flats/.lifecycle/           unfinished rename/delete journals, deleted storage
+                              being removed, and orphans/ (see below)
   tsnet/ portal/              provider node identities
   netbird/                    the connected NetBird peer: identity (mode 0600), account record, port records (NetBird variant only)
   zrok/                       zrok names this host reserved, until released
@@ -55,12 +57,22 @@ OS user configuration directory under `flats-client/`, only the CLI and
 The Tailscale auth key stays outside the data directory and outside anything
 agents can read; `config.json` holds only its path.
 
+A rename or deletion writes a journal under `flats/.lifecycle/` before it moves
+or removes a flat directory, and startup finishes or undoes an interrupted one
+before any flat runs. A new or renamed flat never takes over a directory that
+already exists at its path. At startup, a `flats/<slug>/` directory that no flat
+owns is moved, not deleted, to `flats/.lifecycle/orphans/<slug>` (with a numeric
+suffix if that name is taken) and the start is logged; inspect it and remove it
+when it is no longer needed. Startup stops with an error only when it cannot
+tell which directory holds a flat's data, and the message names the paths to
+resolve by hand.
+
 ### What to back up
 
 Required: `config.json`, `flats.db` (with `VACUUM INTO` or while the host is
 stopped, never a plain copy of a live database), `secret.key` together with
-`flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`
-and `network-retirements/` when present, and `tsnet/` and `portal/` (without
+`flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`,
+`flats/.lifecycle/` and `network-retirements/` when present, and `tsnet/` and `portal/` (without
 them new node names and certificates are issued), `zrok/` (without it a
 deleted flat no longer releases its zrok name), and `netbird/` (without it the peer must be enrolled again with a new setup key). `cloudflare-quick/` is
 optional: without it each public flat's quick tunnel gets a new random

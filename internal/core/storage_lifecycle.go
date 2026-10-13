@@ -97,12 +97,11 @@ func (s *Service) storageOperations() ([]storageOperation, error) {
 			continue
 		}
 		// atomicJournal writes .tmp first. No filesystem operation can
-		// start until the completed .json journal has been synced.
-		if strings.HasSuffix(entry.Name(), ".tmp") {
-			continue
-		}
+		// start until the completed .json journal has been synced, so a .tmp
+		// file is an abandoned write. Other names (for example a desktop
+		// index file) are not journals either and must not stop the host.
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			return nil, fmt.Errorf("unexpected storage recovery entry %q", entry.Name())
+			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(s.storageJournalDir(), entry.Name()))
 		if err != nil {
@@ -206,8 +205,14 @@ func (s *Service) recoverStorageRename(ctx context.Context, op storageOperation)
 	if err != nil {
 		return err
 	}
-	if fromOwned == toOwned {
-		return fmt.Errorf("cannot recover rename %s -> %s: ambiguous database owner", op.From, op.To)
+	if !fromOwned && !toOwned {
+		// The flat is gone (for example its metadata was removed by hand).
+		// Nothing may run on either path; the quarantine below moves any
+		// remaining directory aside instead of assigning it to a new flat.
+		return s.finishStorageOperation(op)
+	}
+	if fromOwned && toOwned {
+		return fmt.Errorf("cannot recover rename %s -> %s: both slugs have a flat in flats.db; resolve it by hand, then restart", op.From, op.To)
 	}
 	fromExists, err := pathExists(s.flatDir(op.From))
 	if err != nil {
@@ -218,7 +223,9 @@ func (s *Service) recoverStorageRename(ctx context.Context, op storageOperation)
 		return err
 	}
 	if fromExists && toExists {
-		return fmt.Errorf("cannot recover rename %s -> %s: both directories exist", op.From, op.To)
+		// Never guess which directory holds the flat's data.
+		return fmt.Errorf("cannot recover rename %s -> %s: both %q and %q exist; move the one that does not belong to the flat out of %q, then restart",
+			op.From, op.To, s.flatDir(op.From), s.flatDir(op.To), filepath.Dir(s.flatDir(op.From)))
 	}
 	switch {
 	case fromOwned && toExists:
@@ -253,6 +260,12 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 		return err
 	}
 	if sourceExists && trashExists {
+		if !owned {
+			// Leave both for the operator; the journal keeps the slug
+			// reserved and startup quarantines the unowned active path.
+			s.logf("delete %s: both %q and %q exist; keeping both for inspection", op.From, source, trash)
+			return nil
+		}
 		return fmt.Errorf("cannot recover delete %s: both active and deleted storage exist", op.From)
 	}
 	if owned && trashExists {
@@ -269,23 +282,37 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 		}
 	}
 	if !owned {
-		if sourceExists {
-			if err := os.Rename(source, trash); err != nil {
-				return err
-			}
-			if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
-				return err
-			}
-			if err := syncDirectory(s.deletedStorageRoot()); err != nil {
-				return err
-			}
+		// The deletion committed: no runtime starts for this slug, and the
+		// kept journal blocks its reuse. A cleanup failure must therefore not
+		// stop the whole host; the next startup retries it.
+		if err := s.removeDeletedStorage(op, sourceExists && !trashExists); err != nil {
+			s.logf("delete %s: storage cleanup is still incomplete; the slug stays reserved until a later startup finishes it: %v", op.From, err)
 		}
-		if err := os.RemoveAll(trash); err != nil {
+		return nil
+	}
+	return s.finishStorageOperation(op)
+}
+
+// removeDeletedStorage moves a deleted flat's directory out of its reusable
+// path (when move is set), removes it, and then drops the journal.
+func (s *Service) removeDeletedStorage(op storageOperation, move bool) error {
+	source, trash := s.flatDir(op.From), s.deletedStorageDir(op.From)
+	if move {
+		if err := os.Rename(source, trash); err != nil {
+			return err
+		}
+		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
 			return err
 		}
 		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
 			return err
 		}
+	}
+	if err := os.RemoveAll(trash); err != nil {
+		return err
+	}
+	if err := syncDirectory(s.deletedStorageRoot()); err != nil {
+		return err
 	}
 	return s.finishStorageOperation(op)
 }
@@ -306,24 +333,7 @@ func (s *Service) discardDeletedStorage(op storageOperation) error {
 	if err != nil {
 		return err
 	}
-	if sourceExists {
-		if err := os.Rename(source, trash); err != nil {
-			return err
-		}
-		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
-			return err
-		}
-		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
-			return err
-		}
-	}
-	if err := os.RemoveAll(trash); err != nil {
-		return err
-	}
-	if err := syncDirectory(s.deletedStorageRoot()); err != nil {
-		return err
-	}
-	return s.finishStorageOperation(op)
+	return s.removeDeletedStorage(op, sourceExists)
 }
 
 func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
@@ -346,29 +356,46 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 		if slug.Validate(name) != nil || owned[name] {
 			continue
 		}
-		if err := os.MkdirAll(orphans, 0700); err != nil {
-			return err
-		}
-		target := filepath.Join(orphans, name)
-		exists, err := pathExists(target)
+		// A failure leaves the path in place: creation and rename still
+		// refuse an occupied path, so it is never adopted. Do not stop the
+		// host over it.
+		target, err := s.quarantineOrphan(root, orphans, name)
 		if err != nil {
-			return err
-		}
-		if exists {
-			return fmt.Errorf("cannot quarantine unowned storage %q: destination already exists", name)
-		}
-		if err := os.Rename(filepath.Join(root, name), target); err != nil {
-			return err
-		}
-		if err := syncDirectory(root); err != nil {
-			return err
-		}
-		if err := syncDirectory(orphans); err != nil {
-			return err
+			s.logf("could not quarantine unowned flat storage %q; the slug stays unavailable until it is moved away: %v", name, err)
+			continue
 		}
 		s.logf("quarantined unowned flat storage %q at %q", name, target)
 	}
 	return nil
+}
+
+// quarantineOrphan moves root/name below orphans without replacing an
+// earlier quarantined directory of the same name.
+func (s *Service) quarantineOrphan(root, orphans, name string) (string, error) {
+	if err := os.MkdirAll(orphans, 0o700); err != nil {
+		return "", err
+	}
+	for i := 0; i < 1000; i++ {
+		target := filepath.Join(orphans, name)
+		if i > 0 {
+			target = fmt.Sprintf("%s.%d", target, i)
+		}
+		exists, err := pathExists(target)
+		if err != nil {
+			return "", err
+		}
+		if exists {
+			continue
+		}
+		if err := os.Rename(filepath.Join(root, name), target); err != nil {
+			return "", err
+		}
+		if err := syncDirectory(root); err != nil {
+			return target, err
+		}
+		return target, syncDirectory(orphans)
+	}
+	return "", fmt.Errorf("too many quarantined copies of %q", name)
 }
 
 // recoverStorageOperations runs before draft migrations, runtime restore,

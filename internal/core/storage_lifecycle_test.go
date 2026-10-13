@@ -200,9 +200,9 @@ func TestStartupQuarantinesLegacyOrphan(t *testing.T) {
 	}
 	s, err := New(ctx, Config{
 		DataDir: dir,
-		Store: st,
+		Store:   st,
 		Private: &memNet{hosts: make(map[string]http.Handler)},
-		Logf: t.Logf,
+		Logf:    t.Logf,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,4 +218,145 @@ func TestStartupQuarantinesLegacyOrphan(t *testing.T) {
 	if exists, err := pathExists(s.flatDir("legacy-orphan")); err != nil || exists {
 		t.Fatalf("new flat inherited a storage directory: %t, %v", exists, err)
 	}
+}
+
+// Startup runs on every restart: a second orphan of the same name, or a
+// stray non-journal file, must neither replace earlier quarantined data nor
+// stop the host.
+func TestRepeatedStartupQuarantineKeepsEarlierOrphans(t *testing.T) {
+	s, _ := newTestService(t)
+	if err := writeFile(filepath.Join(s.storageJournalDir(), ".DS_Store"), "finder"); err != nil {
+		t.Fatal(err)
+	}
+	for i, body := range []string{"first", "second"} {
+		if err := writeFile(filepath.Join(s.flatDir("twice-orphan"), "data", "files", "secret"), body); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.recoverStorageOperations(t.Context()); err != nil {
+			t.Fatalf("startup %d: %v", i+1, err)
+		}
+	}
+	if err := s.recoverStorageOperations(t.Context()); err != nil {
+		t.Fatalf("idle startup: %v", err)
+	}
+	orphans := filepath.Join(s.storageJournalDir(), "orphans")
+	for name, want := range map[string]string{"twice-orphan": "first", "twice-orphan.1": "second"} {
+		if got, err := readFile(filepath.Join(orphans, name, "data", "files", "secret")); err != nil || got != want {
+			t.Fatalf("quarantined %s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if exists, err := pathExists(s.flatDir("twice-orphan")); err != nil || exists {
+		t.Fatalf("orphan stayed at its slug path: %t, %v", exists, err)
+	}
+	if _, err := s.CreateFlat(t.Context(), "twice-orphan", "", ViaAPI); err != nil {
+		t.Fatalf("slug not reusable after quarantine: %v", err)
+	}
+}
+
+// A committed deletion whose files cannot be removed yet must not stop the
+// host. The journal stays and keeps the slug reserved until a later startup
+// finishes the removal.
+func TestDeleteCleanupFailureKeepsSlugReserved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	s, _ := newTestService(t)
+	createStorageFixture(t, s, "stuck-delete")
+	op := storageOperation{Kind: "delete", From: "stuck-delete"}
+	if err := s.beginStorageOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(s.flatDir(op.From), "data", "files")
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(s.deletedStorageDir(op.From), "data", "files"), 0o700) })
+	if err := s.recoverStorageOperations(t.Context()); err != nil {
+		t.Fatalf("cleanup failure stopped startup: %v", err)
+	}
+	journal := filepath.Join(s.storageJournalDir(), op.fileName())
+	if exists, err := pathExists(journal); err != nil || !exists {
+		t.Fatalf("journal released before cleanup finished: %t, %v", exists, err)
+	}
+	if exists, err := pathExists(s.flatDir(op.From)); err != nil || exists {
+		t.Fatalf("deleted storage stayed at its slug path: %t, %v", exists, err)
+	}
+	if _, err := s.CreateFlat(t.Context(), op.From, "", ViaAPI); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unfinished delete permitted slug reuse: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(s.deletedStorageDir(op.From), "data", "files"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recoverStorageOperations(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := pathExists(journal); err != nil || exists {
+		t.Fatalf("retry kept the journal: %t, %v", exists, err)
+	}
+	if exists, err := pathExists(s.deletedStorageDir(op.From)); err != nil || exists {
+		t.Fatalf("retry kept deleted storage: %t, %v", exists, err)
+	}
+	if _, err := s.CreateFlat(t.Context(), op.From, "", ViaAPI); err != nil {
+		t.Fatalf("finished delete did not release the slug: %v", err)
+	}
+}
+
+// Recovery never guesses: with a directory at both slugs it stops and
+// leaves both untouched, and it never assigns storage of a flat that no
+// longer exists to anyone.
+func TestRenameRecoveryRefusesAmbiguousStorage(t *testing.T) {
+	t.Run("both directories", func(t *testing.T) {
+		s, _ := newTestService(t)
+		createStorageFixture(t, s, "amb-old")
+		op := storageOperation{Kind: "rename", From: "amb-old", To: "amb-new"}
+		if err := s.beginStorageOperation(op); err != nil {
+			t.Fatal(err)
+		}
+		stray := filepath.Join(s.flatDir(op.To), "data", "files", "secret")
+		if err := writeFile(stray, "stray"); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := s.recoverStorageOperations(t.Context()); err == nil {
+				t.Fatal("recovery guessed between two directories")
+			}
+		}
+		if got, err := readFile(filepath.Join(s.flatDir(op.From), "data", "files", "secret")); err != nil || got != "original secret" {
+			t.Fatalf("source changed: %q, %v", got, err)
+		}
+		if got, err := readFile(stray); err != nil || got != "stray" {
+			t.Fatalf("destination changed: %q, %v", got, err)
+		}
+	})
+	t.Run("no owner", func(t *testing.T) {
+		s, _ := newTestService(t)
+		createStorageFixture(t, s, "gone-old")
+		op := storageOperation{Kind: "rename", From: "gone-old", To: "gone-new"}
+		if err := s.beginStorageOperation(op); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(s.flatDir(op.From), s.flatDir(op.To)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.recoverStorageOperations(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := readFile(filepath.Join(s.storageJournalDir(), "orphans", op.To, "data", "files", "secret")); err != nil || got != "original secret" {
+			t.Fatalf("unowned storage not preserved in quarantine: %q, %v", got, err)
+		}
+		for _, slugName := range []string{op.From, op.To} {
+			if _, err := s.CreateFlat(t.Context(), slugName, "", ViaAPI); err != nil {
+				t.Fatalf("create %s: %v", slugName, err)
+			}
+			if exists, err := pathExists(s.flatDir(slugName)); err != nil || exists {
+				t.Fatalf("new flat %s inherited storage: %t, %v", slugName, exists, err)
+			}
+		}
+	})
 }

@@ -37,6 +37,7 @@ secret.key                      32-byte AES-256-GCM key for flat secrets (0600)
 flats/<slug>/versions/<n>/      immutable version files (read-only, 0444)
 flats/<slug>/data/              server-flat data: db.sqlite and files/
 flats/<slug>/previews/<host>/   preview copy of data/ (removed with the preview)
+flats/.lifecycle/               rename/delete journals, deleted storage, orphans/
 tsnet/<host>/                   tsnet node state (one directory per node)
 runtime/docs/<app>-<content>/  read-only embedded docs modules and generated content.js
 portal/<slug>.json              Portal identity (keeps the canonical public hostname stable)
