@@ -196,6 +196,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	s.secretKey = key
+	if err := s.recoverStorageOperations(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.migrateLegacyDrafts(ctx); err != nil {
 		return nil, err
 	}
@@ -828,7 +831,7 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	// An existing flat owns its directory: leave that case to the "already
 	// exists" conflict below.
 	if _, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
-		if err := s.checkUnusedFlatDir(slugName); err != nil {
+		if err := s.requireUnusedStorage(slugName); err != nil {
 			return FlatView{}, err
 		}
 	} else if err != nil {
@@ -1686,6 +1689,9 @@ func (s *Service) Delete(ctx context.Context, slugName string, via Via, reason s
 }
 
 func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
+	if err := slug.Validate(slugName); err != nil {
+		return ActionResult{}, invalid(err)
+	}
 	unlock := s.lock(slugName)
 	defer unlock()
 	flat, err := s.st.GetFlat(ctx, slugName)
@@ -1735,12 +1741,21 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 		restoreErr := s.restoreDeletePreviews(context.WithoutCancel(ctx), previews)
 		return ActionResult{}, errors.Join(err, restoreErr)
 	}
-	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
+	op := storageOperation{Kind: "delete", From: slugName}
+	if err := s.beginStorageOperation(op); err != nil {
 		restoreCtx := context.WithoutCancel(ctx)
 		restoreErr := s.ensureExposure(restoreCtx, flat)
 		restoreAliases()
 		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
 		return ActionResult{}, errors.Join(err, restoreErr)
+	}
+	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
+		journalErr := s.finishStorageOperation(op)
+		restoreCtx := context.WithoutCancel(ctx)
+		restoreErr := s.ensureExposure(restoreCtx, flat)
+		restoreAliases()
+		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
+		return ActionResult{}, errors.Join(err, journalErr, restoreErr)
 	}
 	s.mu.Lock()
 	lf := s.live[slugName]
@@ -1774,8 +1789,8 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 			}
 		}
 	}
-	if err := os.RemoveAll(s.flatDir(slugName)); err != nil {
-		return ActionResult{}, err
+	if err := s.discardDeletedStorage(op); err != nil {
+		return ActionResult{}, fmt.Errorf("flat %q metadata deleted but storage cleanup is incomplete: %w", slugName, err)
 	}
 	s.logf("flat %s deleted via %s", slugName, via)
 	return ActionResult{Status: "done", Message: fmt.Sprintf("flat %s was permanently deleted", slugName)}, nil
