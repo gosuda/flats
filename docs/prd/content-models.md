@@ -1,9 +1,9 @@
 # Content data models: Version and Revision
 
-Status: agreed principles for future development. This page describes the
-target. Several parts are not implemented yet: [Current state](#current-state)
-lists the differences, and [Open questions](#open-questions) lists what is
-still undecided. Agent guides (`docs/agent/`) keep describing implemented
+Status: agreed product principles (PRD) for future development. This page
+describes the target. Several parts are not implemented yet:
+[Current state](#current-state) lists the differences, and
+[Open questions](#open-questions) lists what is still undecided. Agent guides (`docs/agent/`) keep describing implemented
 behavior only; they change when each part ships.
 
 ## Summary
@@ -45,8 +45,10 @@ Applies to websites (the `flat` type, static and server) and pages.
    Draft changes before the decision, the request fails as stale and nothing is
    created. On approval the Draft is stored as the next number.
 3. **Deployment is a separate step and needs explicit approval, including the
-   first deployment.** The order is: create a version, then, when wanted,
-   deploy that version. Creating a version never deploys it by itself.
+   first deployment.** The order is always: create a version, then, when
+   wanted, deploy that version. No request creates and deploys in one step,
+   and creating a version never deploys it. A version can therefore exist
+   without ever being deployed.
 4. **Deploy and roll back by version.** Rollback is a deployment of an earlier
    version and needs approval. A server flat's data is a separate axis: data
    restore keeps its own explicit request and approval, as today.
@@ -131,8 +133,10 @@ Compared with `main` at `aa5bf97`:
 - **Edit unit.** Real-time editing sends a change per keystroke, which is far
   too fine for a revision. Candidates: one revision per agent write call; for
   people, edits grouped per editor by idle time or by a maximum interval.
-- **One approval or two.** Whether one request may create a version and deploy
-  it under a single approval, or each step always needs its own approval.
+- **Version retention.** Today files of versions beyond the newest
+  `keep_versions` (default 10) are pruned after each deployment, unless live.
+  With undeployed versions, it is open how they count and whether one can be
+  pruned before it was ever deployed.
 - **Revision scope.** A docs flat can hold several documents and a design holds
   several files: a revision per document/file or per flat.
 - **Quota defaults and limits.** Default values, where they are configured

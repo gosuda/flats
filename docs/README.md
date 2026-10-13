@@ -26,12 +26,20 @@ deploy.
 The two generated references come from [`agent/`](agent). Edit the topics
 there and run `go test ./docs -run TestGeneratedReferences -update`.
 
+## Product principles
+
+Agreed principles that development follows, described independently of the
+implementation. See [the PRD index](prd/README.md) for how these pages work.
+
+| Page | Covers |
+| --- | --- |
+| [Content data models](prd/content-models.md) | The Version model (websites, pages) and the Revision model (documents, design); target, partly implemented |
+
 ## Design and contracts
 
 | Page | Covers |
 | --- | --- |
 | [Design](design.md) | Process layout, manifest, exposure, secrets, approvals, handler ABI, HTTP API |
-| [Content data models](spec/content-models.md) | Principles for the Version model (websites, pages) and the Revision model (documents, design); target, partly implemented |
 | [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, publication, versions, approvals and data in the core store |
 | [Lifecycle transport](lifecycle-transport.md) | Console decisions and the API/CLI/MCP surfaces |
 | [Lifecycle console](lifecycle-console.md) | Routes and screens of the web console |
