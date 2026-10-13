@@ -2,7 +2,7 @@
 
 import { h, clear, icon, timeEl, visibilityBadge } from './dom.js';
 import { api, thumbnail } from './api.js';
-import { menu, errorPanel, loading, busy, openLinks } from './ui.js';
+import { menu, errorPanel, loading, busy, openLinks, openPrimary, openMenuItems } from './ui.js';
 import { publishDraft } from './actions.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
@@ -118,11 +118,17 @@ export function mount(main, _params, ctx) {
       actions.appendChild(pub);
     }
     // A document is open once it runs; a flat once a version is live.
-    if (docs ? f.running : f.live_version) {
+    // Wide rows show both open shortcuts; narrow ones show one and move the
+    // full list into the menu (CSS picks which).
+    const openable = docs ? f.running : f.live_version;
+    if (openable) {
       const open = openLinks(f);
       if (open) actions.appendChild(open);
+      const primary = openPrimary(f);
+      if (primary) actions.appendChild(primary);
     }
     actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
+      ...(openable ? openMenuItems(f) : []),
       { label: 'Share', onSelect: () => shareDialog(f, load) },
       { label: docs ? 'Overview' : 'Deployments', onSelect: () => ctx.navigate(href) },
       { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
@@ -133,7 +139,7 @@ export function mount(main, _params, ctx) {
       typeIcon(f),
       h('div', { class: 'flat-main' },
         h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
-        h('div', { class: 'flat-sub' }, timeEl(f.updated_at), ` · ${status}`)),
+        h('div', { class: 'flat-sub' }, h('span', { class: 'flat-sub-vis' }, visibilityBadge(f.visibility)), h('span', null, timeEl(f.updated_at), ` · ${status}`))),
       h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
       actions);
   }
