@@ -12,6 +12,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +34,7 @@ const (
 	MaxQueryResult     = 16 << 20
 	MaxWSMessage       = 1 << 20
 	maxLogLine         = 8 << 10
+	omittedLogLine     = "log line omitted (exceeds 8 KiB)"
 )
 
 // workerSpec is sent to the child on stdin as one JSON line. Secrets travel
@@ -109,8 +111,10 @@ func (l *childLog) send(m childMsg) {
 
 // Logf logs one line (rate limited; control messages are never dropped).
 func (l *childLog) Log(level, msg string) {
+	// The parent redacts exact secret values, including secrets larger than
+	// this limit. A truncated prefix would bypass that redaction.
 	if len(msg) > maxLogLine {
-		msg = msg[:maxLogLine] + "… (truncated)"
+		msg = omittedLogLine
 	}
 	l.mu.Lock()
 	now := time.Now()
@@ -136,40 +140,59 @@ func (l *childLog) Log(level, msg string) {
 
 // lineWriter turns guest stdout/stderr bytes into log lines.
 type lineWriter struct {
-	mu    sync.Mutex
-	log   *childLog
-	level string
-	buf   []byte
+	mu      sync.Mutex
+	log     *childLog
+	level   string
+	buf     []byte
+	omitted bool
+}
+
+// appendFragment buffers a line only while its complete contents can be logged.
+// Once it exceeds the limit, keep no prefix that could contain part of a secret.
+func (w *lineWriter) appendFragment(p []byte) {
+	if w.omitted {
+		return
+	}
+	if len(p) > maxLogLine-len(w.buf) {
+		w.buf = w.buf[:0]
+		w.omitted = true
+		return
+	}
+	w.buf = append(w.buf, p...)
+}
+
+func (w *lineWriter) emit() {
+	if w.omitted {
+		w.log.Log(w.level, omittedLogLine)
+	} else if line := strings.TrimRight(string(w.buf), "\r"); line != "" {
+		w.log.Log(w.level, line)
+	}
+	w.buf = w.buf[:0]
+	w.omitted = false
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.buf = append(w.buf, p...)
-	for {
-		i := strings.IndexByte(string(w.buf), '\n')
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
-			if len(w.buf) > maxLogLine {
-				w.log.Log(w.level, string(w.buf))
-				w.buf = w.buf[:0]
-			}
-			return len(p), nil
+			w.appendFragment(p)
+			break
 		}
-		line := strings.TrimRight(string(w.buf[:i]), "\r")
-		w.buf = w.buf[i+1:]
-		if line != "" {
-			w.log.Log(w.level, line)
-		}
+		w.appendFragment(p[:i])
+		w.emit()
+		p = p[i+1:]
 	}
+	return n, nil
 }
 
 func (w *lineWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.buf) > 0 {
-		w.log.Log(w.level, string(w.buf))
-		w.buf = nil
-	}
+	w.emit()
+	w.buf = nil
 }
 
 var stderrLog = newChildLog(os.Stderr)
