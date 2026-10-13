@@ -545,7 +545,7 @@ func (n *Net) Close() error {
 		// The SDK closes an exposure on parent cancellation and discards the
 		// first Close error. Keep that parent alive until explicit teardown
 		// drains HTTP and captures unregister errors, including an admitted
-		// Stop that already removed its entry or a late Serve's cleanup.
+		// Stop with unconfirmed teardown or a late Serve's cleanup.
 		// On timeout cancellation unblocks context-aware SDK work; the caller
 		// receives a deadline error even if background cleanup outlives Close.
 		defer n.cancel()
