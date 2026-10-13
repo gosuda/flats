@@ -67,12 +67,18 @@ diagrams are in `topic.page.visuals`. For documents in particular:
   notes to turn into a page, keep their substance and wording, but design the
   page instead of transcribing it line by line: tables become real tables,
   figures become charts where the numbers support one.
-* **Reading width.** Body text about 65 characters wide; tables, code and
-  wide figures may be wider inside their own `overflow-x: auto` box.
+* **Reading width.** Body text about 65 characters wide. Tables and code
+  may be wider inside their own `overflow-x: auto` box; charts follow the
+  phone-width rule in `topic.page.visuals`.
 * **Print.** People print and save documents as PDF. Add an `@media print`
-  block: light background and dark text regardless of the scheme, no
-  shadows or sticky elements, `break-inside: avoid` on figures and tables,
-  and hide controls that do nothing on paper.
+  block that resets the color tokens and `color-scheme` to light (SVG charts
+  that use the tokens follow; canvas and library charts redraw on
+  `beforeprint`), drops shadows and sticky elements, removes the height and
+  overflow limits of scrolling boxes, and shows data that is otherwise
+  collapsed (open `<details>` in a `beforeprint` handler, or print the table
+  separately). Keep a figure or a table row on one sheet
+  (`break-inside: avoid`) but let long tables run across sheets; their
+  `<thead>` repeats on each. Hide controls that do nothing on paper.
 * **Data stays with the page.** Embed the data in the HTML (a
   `<script type="application/json">` block or a JS constant) or bundle it as
   a file loaded by a relative path (`fetch("data/sales.csv")`). Loading data

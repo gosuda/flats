@@ -235,12 +235,18 @@ diagrams are in `topic.page.visuals`. For documents in particular:
   notes to turn into a page, keep their substance and wording, but design the
   page instead of transcribing it line by line: tables become real tables,
   figures become charts where the numbers support one.
-* **Reading width.** Body text about 65 characters wide; tables, code and
-  wide figures may be wider inside their own `overflow-x: auto` box.
+* **Reading width.** Body text about 65 characters wide. Tables and code
+  may be wider inside their own `overflow-x: auto` box; charts follow the
+  phone-width rule in `topic.page.visuals`.
 * **Print.** People print and save documents as PDF. Add an `@media print`
-  block: light background and dark text regardless of the scheme, no
-  shadows or sticky elements, `break-inside: avoid` on figures and tables,
-  and hide controls that do nothing on paper.
+  block that resets the color tokens and `color-scheme` to light (SVG charts
+  that use the tokens follow; canvas and library charts redraw on
+  `beforeprint`), drops shadows and sticky elements, removes the height and
+  overflow limits of scrolling boxes, and shows data that is otherwise
+  collapsed (open `<details>` in a `beforeprint` handler, or print the table
+  separately). Keep a figure or a table row on one sheet
+  (`break-inside: avoid`) but let long tables run across sheets; their
+  `<thead>` repeats on each. Hide controls that do nothing on paper.
 * **Data stays with the page.** Embed the data in the HTML (a
   `<script type="application/json">` block or a JS constant) or bundle it as
   a file loaded by a relative path (`fetch("data/sales.csv")`). Loading data
@@ -254,7 +260,8 @@ diagrams are in `topic.page.visuals`. For documents in particular:
 ## Charts and diagrams in pages
 
 How to make the visuals of a page (`topic.page`) carry information and
-stay readable. The page contract in `topic.design` still applies.
+stay readable. The page contract in `topic.design` still applies. These are
+defaults: depart from one when the content reads better without it.
 
 ### Pick the form before the colors
 
@@ -264,18 +271,37 @@ comes last.
 | The reader should | Use |
 |---|---|
 | see one current value, maybe with its change | a stat tile (value, signed delta against a named period); not a one-bar chart |
-| compare a few headline numbers | a row of stat tiles, only when those numbers are the point of the page |
-| compare magnitudes | bars or columns; a heatmap for a grid |
+| compare magnitudes | bars or columns, sorted when the order of the categories carries no meaning; a heatmap for a grid |
 | follow a trend over time | a line; an area only for a single series |
-| tell a few series apart | grouped or stacked bars, or several lines |
-| see why one series matters | emphasis: that series in the accent color, the rest in a muted grey |
+| compare several series | grouped bars, several lines, or small multiples |
+| see the parts of a meaningful whole | a stacked bar of additive parts; a pie or donut only for a few clearly different shares |
+| see why one series matters | emphasis: that series in the accent color, the others quieter but still visible |
 | see above or below a baseline or target | a diverging bar, or a line against the baseline |
-| see parts of a whole | a stacked bar; a pie or donut only for at most a few clearly different shares |
-| read more than about seven categories | a table, or a table next to a smaller chart |
+| see a relationship between two measures | a scatterplot |
+| see how values are distributed | a histogram or a box plot |
+| look up many exact values | a table, possibly next to a smaller chart |
 
 Never put two y-axes on one chart: the alignment of the two scales is
 arbitrary and suggests a relation the data does not have. Use two charts, or
 index both series to a common start (= 100).
+
+Every chart states its source, units and period, and says what a gap or
+missing value means.
+
+### Scale and layout
+
+* Map marks and ticks through the same scale. Bars and areas start at zero;
+  a line chart may use a tighter range when its axis is clearly labeled. Use
+  rounded domain bounds that contain all the data, and label units and any
+  logarithmic scale.
+* Leave room in the SVG `viewBox` for the outermost labels, give every shape
+  an explicit fill or stroke, and give the chart's container room for its
+  axis labels.
+* At phone width, keep labels readable first: fewer ticks, shorter labels, a
+  horizontal bar chart instead of columns, or small multiples. Shrinking an
+  SVG also shrinks its text and hit areas, so when a chart cannot be
+  simplified, give it a minimum readable width inside its own labeled
+  `overflow-x: auto` box. The page body never scrolls sideways.
 
 ### Color by its job
 
@@ -288,62 +314,77 @@ index both series to a common start (= 100).
   orange, not blue and teal) with a neutral grey midpoint.
 * **Status** (good, warning, critical): reserved for status, always with a
   text label or icon, never reused as a series color.
+* Essential marks need at least 3:1 contrast against the background and
+  against neighboring marks. Check that neighboring series stay
+  distinguishable for color-blind readers (your browser's vision-deficiency
+  emulation, or a palette checker); when two are close, add a second cue
+  (direct labels, line style, markers).
 * Every chart color is a theme token with a dark value chosen for the dark
-  background, not an automatic inversion. Check that neighboring series stay
-  distinguishable for color-blind readers (a simulator in your browser's
-  developer tools, or a palette checker); when two are close, add a second
-  cue (direct labels, line style, markers).
+  background, not an automatic inversion. SVG drawn in the page references
+  the tokens through CSS (`fill: var(--series-1)`), so it follows the scheme
+  by itself. A canvas or library chart copies colors when it draws: read the
+  tokens with `getComputedStyle` and redraw when
+  `matchMedia("(prefers-color-scheme: dark)")` changes and before printing.
 * Text is never set in a series color: labels, values and legends use the
   page's text tokens, and a colored mark beside the text (a dot, a short
   line, a swatch) carries the identity.
 
-### Marks, labels and scale
+### Marks and labels
 
-* Draw every mark, tick and label with one scale per axis, and only label
-  values the chart actually reaches. Leave room in the SVG `viewBox` for the
-  outermost labels, and give every shape an explicit fill or stroke.
 * Keep marks light: lines about 2px, markers at least 8px across, bars that
   do not fill their whole slot, area fills as a faint wash. Gridlines and
-  axes are thin, solid and quiet; dashed lines suggest a threshold or a
-  forecast, so keep dashes for those.
-* Two or more series get a legend. Direct labels supplement it, sparingly:
-  the last point, the extreme, the series the text is about. Never a number
-  on every point. Round axis ticks to clean values with thousands separators.
+  axes are thin, solid and quiet; keep dashed lines for thresholds and
+  forecasts.
+* Make identity readable without color matching: direct labels on the
+  series (at the last point, for example) or, when they would collide, a
+  legend. Label values sparingly (the last point, the extreme, the series the
+  text is about) rather than every point, unless there are only a few. Round
+  axis ticks to clean values with thousands separators.
 * A label that does not fit inside its bar goes outside the bar end or into
   the tooltip; never clip it.
-* Give the chart's container room for its axis labels, so the chart never
-  gets its own scrollbar.
 
-### Interaction: hover, tap and keyboard
+### Interaction
 
-A chart in a page is interactive by default; a bare stat tile is the
-exception.
+Interaction is worth adding when it reveals useful detail (exact values of a
+dense chart) or supports exploration. A clearly labeled static chart with a
+data table is enough for a simple figure.
 
 * Lines and areas: a vertical guide that snaps to the nearest data position,
-  with one tooltip listing every series at that position. Bars, dots and
-  cells: a tooltip per mark, and the hovered mark visibly responds.
+  with one tooltip listing every series there. Bars, dots and cells: a
+  tooltip per mark, and the hovered mark visibly responds.
 * The hit area is larger than the mark: a whole column per data position,
-  or at least 24px around a point. Nobody should have to land on a 2px line.
-* Hover is not available on touch screens or to keyboard users: show the
-  same tooltip on tap (`pointerdown`) and on keyboard focus (focusable hit
-  areas with `tabindex="0"` and an `aria-label` that states the values).
+  or at least 24px around a point.
+* Touch and keyboard get the same details. Open the tooltip on `click`
+  (a tap; `pointerdown` also fires when a reader starts scrolling) and on
+  keyboard focus. Keep it open while the pointer is over the trigger or the
+  tooltip, close it with Escape, on blur and on a tap elsewhere.
+* Keep keyboard stops bounded: one focusable chart (or one per series) that
+  moves between data points with the arrow keys, rather than one Tab stop
+  per datum. Announce the focused point with an `aria-label` on the focused
+  element or a polite live region.
 * In the tooltip the value is the prominent part and the series name is
   secondary. Keep it inside the chart's box: flip it below the point when
-  there is no room above, and clamp it at the sides.
+  there is no room above, and clamp it at the sides. When it adds a
+  description to a focused element, give it `role="tooltip"` and point to it
+  with `aria-describedby`.
 * Tooltips add detail; they never hold the only copy of a value. Every
   value is also in direct labels or a data table.
 * Insert category and series names with `textContent`, not `innerHTML`:
   they often come from a CSV header or a tool's output.
 * Respect `prefers-reduced-motion` for tooltip and chart transitions.
 
-### Data tables and text alternatives
+### Text alternatives and data tables
 
-Give every chart a caption that states its point (`<figure>` with
-`<figcaption>`), `role="img"` with an `aria-label` or `<desc>` on the SVG,
-and the exact numbers in a table (it may sit in a `<details>` block). Long
-tables scroll in their own `overflow-x: auto` box; numeric columns are
-right-aligned with `font-variant-numeric: tabular-nums`. Large standalone
-figures (stat tiles) keep proportional digits.
+* Wrap every chart in `<figure>` with a `<figcaption>` that states its
+  point.
+* A static SVG chart gets `role="img"` and `aria-labelledby` pointing to its
+  `<title>` or the caption; a `<desc>` adds a longer description, not the
+  name. An interactive chart keeps its focusable elements reachable: do not
+  put `role="img"` on a container that holds them.
+* Put the exact numbers in a table (it may sit in a `<details>` block).
+  Numeric columns are right-aligned with `font-variant-numeric:
+  tabular-nums`; large standalone figures (stat tiles) keep proportional
+  digits.
 
 ### Diagrams
 
@@ -360,17 +401,18 @@ write the sentence.
 * Hand-written inline SVG is enough: `viewBox` sized to the content and
   scaled with CSS (`max-width: 100%; height: auto`), strokes and text in
   `currentColor` so both schemes work, arrowheads as `<marker>` or a small
-  polygon, text about 11-13px, shapes aligned to a grid.
-* One figure, one claim: wrap it in `<figure>` with a `<figcaption>` that
-  states it, and give the SVG `role="img"` and an `aria-label` with the same
-  claim.
+  polygon, text about 11-13px at the drawn size, shapes aligned to a grid.
+  Caption and label it like a static chart.
 * Mermaid also works in a page when you bundle the library (or pin an exact
-  CDN version) and render `<pre class="mermaid">` blocks; give it theme
-  variables for both schemes.
+  CDN version) and render `<pre class="mermaid">` blocks. Its colors are
+  rendering settings, not CSS: use `theme: "base"` with `themeVariables` set
+  to the resolved token colors, keep each diagram's source, and render again
+  from that source when the color scheme changes.
 
 ### Check the chart
 
 In the one preview check before publishing (`topic.preview-check`), spend the
 look on the charts: labels that collide or clip, marks outside the axes, a
 tooltip that leaves the chart, colors that vanish in dark mode, and the phone
-width.
+width. Switch the color scheme without reloading once, to catch charts that
+do not redraw.
