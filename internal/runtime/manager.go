@@ -36,6 +36,9 @@ type Manager struct {
 	Timeout      time.Duration        // per request; 0 = DefaultTimeout
 	StartTimeout time.Duration        // worker start; 0 = 60s
 
+	pending    chan struct{} // all admitted HTTP requests waiting or running
+	active     chan struct{} // HTTP requests allowed to reach worker bodies
+	websockets chan struct{} // independent budget for long-lived upgrades
 	once    sync.Once
 	sockDir string
 	initErr error
@@ -53,6 +56,9 @@ func (m *Manager) logf(format string, args ...any) {
 
 func (m *Manager) init() error {
 	m.once.Do(func() {
+		m.pending = make(chan struct{}, maxPendingRequestsGlobal)
+		m.active = make(chan struct{}, maxActiveRequestsGlobal)
+		m.websockets = make(chan struct{}, maxWebSocketsGlobal)
 		if m.Exe == "" {
 			m.Exe, m.initErr = os.Executable()
 			if m.initErr != nil {
@@ -130,6 +136,8 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
 			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds()},
+		pending:    make(chan struct{}, maxPendingRequestsPerFlat),
+		websockets: make(chan struct{}, maxWebSocketsPerFlat),
 	}
 	if in.ws.Env == nil {
 		in.ws.Env = map[string]string{}
@@ -141,6 +149,9 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		},
 		MaxIdleConns:        64,
 		MaxIdleConnsPerHost: 64,
+		// WebSockets keep transport connections for their full lifetime.
+		// Reserve enough connections for admitted HTTP traffic as well.
+		MaxConnsPerHost: maxPendingRequestsPerFlat + maxWebSocketsPerFlat,
 		IdleConnTimeout:     60 * time.Second,
 		DisableCompression:  true,
 		// Backstop only: the worker answers within its request timeout.
@@ -182,8 +193,10 @@ type instance struct {
 	spec  core.RuntimeSpec
 	ws    workerSpec
 	sock  string
-	tr    *http.Transport
-	proxy *httputil.ReverseProxy
+	tr         *http.Transport
+	proxy      *httputil.ReverseProxy
+	pending    chan struct{}
+	websockets chan struct{}
 
 	mu       sync.Mutex
 	p        *proc
@@ -507,11 +520,57 @@ func (in *instance) ensure(ctx context.Context) error {
 	return nil
 }
 
+// tryAdmit never queues an unbounded number of requests behind a semaphore.
+func tryAdmit(slots chan struct{}) bool {
+	select {
+	case slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func busyResponse(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, "Service Unavailable: server flat is busy.", http.StatusServiceUnavailable)
+}
+
 func (in *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	websocket := isWebSocketUpgrade(r)
+	local, global := in.pending, in.m.pending
+	if websocket {
+		local, global = in.websockets, in.m.websockets
+	}
+	if !tryAdmit(local) {
+		busyResponse(w)
+		return
+	}
+	defer func() { <-local }()
+	if !tryAdmit(global) {
+		busyResponse(w)
+		return
+	}
+	defer func() { <-global }()
+
 	if err := in.ensure(r.Context()); err != nil {
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "Service Unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
+	}
+	if !websocket {
+		// Bound aggregate body buffering even when many different flats are
+		// targeted at once. Requests awaiting this token have not been proxied.
+		ctx, cancel := context.WithTimeout(r.Context(), in.ws.timeout())
+		defer cancel()
+		select {
+		case in.m.active <- struct{}{}:
+			defer func() { <-in.m.active }()
+		case <-ctx.Done():
+			if r.Context().Err() == nil {
+				busyResponse(w)
+			}
+			return
+		}
 	}
 	in.proxy.ServeHTTP(w, r)
 }

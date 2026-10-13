@@ -33,12 +33,13 @@ type outboundClient interface {
 }
 
 type worker struct {
-	spec    workerSpec
-	log     *childLog
-	data    *dataStore
-	eng     engine
-	js      *jsEngine      // nil for WASI
-	network outboundClient // shared by all JS request and WebSocket VMs
+	spec      workerSpec
+	log       *childLog
+	data      *dataStore
+	eng       engine
+	js        *jsEngine      // nil for WASI
+	network   outboundClient // shared by all JS request and WebSocket VMs
+	admission chan struct{}  // bound bodies being read before execution
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
@@ -67,7 +68,7 @@ func WorkerMain(args []string) error {
 		log.send(childMsg{T: "fatal", Msg: "worker: no listener: " + err.Error()})
 		return err
 	}
-	w := &worker{spec: spec, log: log, data: newDataStore(spec.DataDir)}
+	w := &worker{spec: spec, log: log, data: newDataStore(spec.DataDir), admission: make(chan struct{}, spec.poolSize())}
 	if err := w.init(); err != nil {
 		log.send(childMsg{T: "fatal", Msg: err.Error()})
 		return err
@@ -212,16 +213,56 @@ func requestHeaders(r *http.Request) map[string]string {
 	return h
 }
 
+// readRequestBody enforces both a streaming byte cap and a wall-clock body
+// deadline. It clears the socket deadline before a response is written.
+func readRequestBody(rw http.ResponseWriter, r *http.Request, timeout time.Duration) ([]byte, error) {
+	controller := http.NewResponseController(rw)
+	if err := controller.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, fmt.Errorf("set request body read deadline: %w", err)
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, MaxRequestBody))
+	if resetErr := controller.SetReadDeadline(time.Time{}); resetErr != nil && err == nil {
+		err = fmt.Errorf("clear request body read deadline: %w", resetErr)
+	}
+	return body, err
+}
+
 func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if w.js != nil && w.js.hasWS && isWebSocketUpgrade(r) {
 		w.js.wsHub.serve(rw, r, requestURL(r), requestHeaders(r))
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, MaxRequestBody))
+	if r.ContentLength > MaxRequestBody {
+		http.Error(rw, fmt.Sprintf("request body larger than %d MiB", MaxRequestBody>>20), http.StatusRequestEntityTooLarge)
+		return
+	}
+	// Wait for an execution slot before materializing any request body. The
+	// parent bounds the number of requests allowed to wait here.
+	waitCtx, stopWaiting := context.WithTimeout(r.Context(), w.spec.timeout())
+	select {
+	case w.admission <- struct{}{}:
+		stopWaiting()
+		defer func() { <-w.admission }()
+	case <-waitCtx.Done():
+		stopWaiting()
+		if r.Context().Err() == nil {
+			rw.Header().Set("Retry-After", "1")
+			http.Error(rw, "Service Unavailable: server flat is busy.", http.StatusServiceUnavailable)
+		}
+		return
+	}
+	body, err := readRequestBody(rw, r, requestBodyReadTimeout)
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			http.Error(rw, fmt.Sprintf("request body larger than %d MiB", MaxRequestBody>>20), http.StatusRequestEntityTooLarge)
+			return
+		}
+		// A partial body must not be drained to reuse this connection.
+		rw.Header().Set("Connection", "close")
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			http.Error(rw, "request body read timed out", http.StatusRequestTimeout)
 			return
 		}
 		http.Error(rw, "could not read request body", http.StatusBadRequest)
