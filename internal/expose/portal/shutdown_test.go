@@ -429,3 +429,32 @@ type failingListener struct {
 }
 
 func (l failingListener) Accept() (net.Conn, error) { return nil, l.err }
+
+// The lease-expiry wait after a failed unregister starts when SDK Close
+// returned, not when a later retry happens to read its result.
+func TestPortalLeaseExpiryCountsFromCloseReturn(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+	n.leaseTTL = 150 * time.Millisecond
+	e, exp := shutdownEntry(t, "late")
+	failure := errors.New("unregister failed")
+	exp.err, exp.closeGate = failure, make(chan struct{})
+	close(e.done)
+	n.entries[e.slug] = e
+
+	if err := n.Stop(e.slug); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop with a blocked Close = %v", err)
+	}
+	close(exp.closeGate)
+	awaitShutdown(t, exp.finished)
+	time.Sleep(n.leaseTTL)
+	if err := n.Stop(e.slug); err != nil {
+		t.Fatalf("retry after the lease expired = %v", err)
+	}
+	if n.entry(e.slug) != nil {
+		t.Fatal("retry retained the entry")
+	}
+}

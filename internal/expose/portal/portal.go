@@ -136,7 +136,7 @@ type entry struct {
 
 	// The slug lock owns teardown state; e.mu guards stopping for status readers.
 	stopping    bool
-	closeResult <-chan error // one SDK Close attempt, shared across retries
+	closeResult <-chan closeResult // one SDK Close attempt, shared across retries
 	closeDone   bool
 	closeErr    error     // the first Close error; SDK Close uses sync.Once
 	closedAt    time.Time // when that Close returned
@@ -552,16 +552,19 @@ func (n *Net) stopEntry(e *entry) error {
 	// obligation until the underlying exposure closes.
 	e.ln.Close()
 	if e.closeResult == nil {
-		closed := make(chan error, 1)
+		closed := make(chan closeResult, 1)
 		e.closeResult = closed
-		go func() { closed <- e.exp.Close() }()
+		go func() {
+			err := e.exp.Close()
+			closed <- closeResult{err: err, at: time.Now()}
+		}()
 	}
 	if !e.closeDone {
 		select {
-		case err := <-e.closeResult:
+		case r := <-e.closeResult:
 			e.closeDone = true
-			e.closedAt = time.Now()
-			if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+			e.closedAt = r.at
+			if err := r.err; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 				e.closeErr = fmt.Errorf("portal: close %s: %w", e.slug, err)
 			}
 		case <-ctx.Done():
@@ -572,7 +575,7 @@ func (n *Net) stopEntry(e *entry) error {
 	// dropped the unrenewed lease; calling Close again would return nil.
 	if e.closeErr != nil {
 		if left := n.leaseExpiry() - time.Since(e.closedAt); left > 0 {
-			errs = append(errs, fmt.Errorf("%w (the relay drops the lease within %s)", e.closeErr, left.Round(time.Second)))
+			errs = append(errs, fmt.Errorf("%w (the relay drops the lease within %s)", e.closeErr, (left+time.Second-1).Truncate(time.Second)))
 		}
 	}
 	if wait(e.ln.pumped, "listener pump") && e.ln.err != nil && !errors.Is(e.ln.err, net.ErrClosed) && !errors.Is(e.ln.err, context.Canceled) && !e.pumpSeen {
@@ -580,6 +583,12 @@ func (n *Net) stopEntry(e *entry) error {
 		errs = append(errs, fmt.Errorf("portal: %s listener pump: %w", e.slug, e.ln.err))
 	}
 	return errors.Join(errs...)
+}
+
+// closeResult is the outcome of the one SDK Close call and when it returned.
+type closeResult struct {
+	err error
+	at  time.Time
 }
 
 // waitIdle waits until no request runs in b or ctx ends.
