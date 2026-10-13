@@ -30,7 +30,9 @@ const (
 	MaxResponseBody    = 32 << 20
 	MaxFileValue       = 10 << 20
 	MaxFilesTotal      = 1 << 30
+	MaxFilesObjects    = 20_000
 	MaxQueryResult     = 16 << 20
+	MaxDBBytes         = 256 << 20
 	MaxWSMessage       = 1 << 20
 	maxLogLine         = 8 << 10
 )

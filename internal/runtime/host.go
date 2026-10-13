@@ -35,11 +35,13 @@ type dataStore struct {
 	filesMu      sync.Mutex
 	files        *os.Root
 	filesUsed    atomic.Int64 // -1 until computed
+	filesEntries int64        // -1 until computed; protected by filesWriteMu
 }
 
 func newDataStore(dir string) *dataStore {
 	d := &dataStore{dir: dir}
 	d.filesUsed.Store(-1)
+	d.filesEntries = -1
 	return d
 }
 
@@ -83,8 +85,10 @@ func (d *dataStore) openDB() (*sql.DB, error) {
 		// _defensive: SQLITE_DBCONFIG_DEFENSIVE (no writable_schema, no
 		// sqlite_dbpage writes, no journal_mode=OFF); trusted_schema=0;
 		// temp_store=2 keeps temporary tables and sorts in (capped) memory
-		// instead of temp files outside the data directory.
-		d.db, d.dbErr = sql.Open("sqlite", p+"?_defensive=1&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"+
+		// instead of temp files outside the data directory. DELETE journals
+		// bound rollback disk use to the page-capped database, unlike WAL,
+		// which can grow without bound under a long-lived reader.
+		d.db, d.dbErr = sql.Open("sqlite", p+"?_defensive=1&_pragma=busy_timeout(5000)&_pragma=journal_mode(DELETE)&_pragma=foreign_keys(1)"+
 			"&_pragma=trusted_schema(0)&_pragma=temp_store(2)"+fmt.Sprintf("&_pragma=hard_heap_limit(%d)", sqliteHeapLimit))
 	})
 	return d.db, d.dbErr
@@ -109,18 +113,51 @@ func (d *dataStore) conn(ctx context.Context) (*sql.Conn, error) {
 		c.Close()
 		return nil, fmt.Errorf("open database: %w", err)
 	}
+	if err := limitDBPages(ctx, c); err != nil {
+		c.Close()
+		return nil, fmt.Errorf("open database: %w", err)
+	}
 	return c, nil
 }
 
-// checkSQL refuses the pragmas that point SQLite at host directories
-// (temp_store_directory / data_store_directory set a process-wide directory
-// for temporary files). Pragma names cannot be built dynamically, and quoting
-// keeps the name intact, so a substring test catches every spelling.
+// The page budget is set on every connection because max_page_count is a
+// connection-local SQLite limit. Existing databases above the budget fail
+// closed instead of silently raising it. Page size is fixed for guest SQL.
+func limitDBPages(ctx context.Context, c *sql.Conn) error {
+	var pageSize int64
+	if err := c.QueryRowContext(ctx, "PRAGMA main.page_size").Scan(&pageSize); err != nil {
+		return err
+	}
+	if pageSize <= 0 || pageSize > MaxDBBytes {
+		return fmt.Errorf("invalid SQLite page size %d", pageSize)
+	}
+	maxPages := int64(MaxDBBytes) / pageSize
+	var applied int64
+	if err := c.QueryRowContext(ctx, fmt.Sprintf("PRAGMA main.max_page_count = %d", maxPages)).Scan(&applied); err != nil {
+		return err
+	}
+	if applied > maxPages {
+		return fmt.Errorf("SQLite database exceeds %d MiB limit", MaxDBBytes>>20)
+	}
+	return nil
+}
+
+// checkSQL denies pragmas that can escape storage or page limits. SQLite
+// pragma names are single identifiers, even when quoted; case-folding and
+// substring matching also reject multi-statement attempts to change them.
 func checkSQL(query string) error {
 	q := strings.ToLower(query)
-	for _, p := range []string{"temp_store_directory", "data_store_directory"} {
+	for _, p := range []string{"temp_store_directory", "data_store_directory", "max_page_count", "page_size", "journal_mode"} {
 		if strings.Contains(q, p) {
 			return fmt.Errorf("PRAGMA %s is not allowed", p)
+		}
+	}
+	// Keep temp storage in the capped SQLite heap, not in unbounded disk
+	// files. Preserve the read-only introspection used by the runtime API.
+	if strings.Contains(q, "temp_store") {
+		trimmed := strings.TrimSpace(q)
+		if trimmed != "pragma temp_store" && trimmed != "pragma temp_store;" {
+			return errors.New("PRAGMA temp_store changes are not allowed")
 		}
 	}
 	return nil
@@ -328,21 +365,65 @@ func (d *dataStore) fileGet(key string) (*string, error) {
 	return &s, nil
 }
 
-func (d *dataStore) usage(r *os.Root) int64 {
-	if u := d.filesUsed.Load(); u >= 0 {
-		return u
+// usage caches FILES bytes and inode-consuming objects. The caller holds
+// filesWriteMu, so the snapshot and all later mutations are serialized.
+func (d *dataStore) usage(r *os.Root) (int64, int64, error) {
+	if bytes := d.filesUsed.Load(); bytes >= 0 && d.filesEntries >= 0 {
+		return bytes, d.filesEntries, nil
 	}
-	var total int64
-	fs.WalkDir(r.FS(), ".", func(p string, e fs.DirEntry, err error) error {
-		if err == nil && e.Type().IsRegular() {
-			if info, err := e.Info(); err == nil {
-				total += info.Size()
+	var bytes, entries int64
+	err := fs.WalkDir(r.FS(), ".", func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p != "." {
+			entries++ // count files, directories, symlinks and special files
+		}
+		if e.Type().IsRegular() {
+			info, err := e.Info()
+			if err != nil {
+				return err
 			}
+			bytes += info.Size()
 		}
 		return nil
 	})
-	d.filesUsed.CompareAndSwap(-1, total)
-	return d.filesUsed.Load()
+	if err != nil {
+		return 0, 0, fmt.Errorf("measure FILES usage: %w", err)
+	}
+	d.filesUsed.Store(bytes)
+	d.filesEntries = entries
+	return bytes, entries, nil
+}
+
+// missingDirs counts directories that MkdirAll would create. Checking every
+// prefix also detects incompatible paths before attempting any mutation.
+func missingDirs(r *os.Root, dir string) (int64, error) {
+	if dir == "." {
+		return 0, nil
+	}
+	var missing int64
+	prefix := ""
+	for _, segment := range strings.Split(dir, "/") {
+		prefix = path.Join(prefix, segment)
+		info, err := r.Stat(prefix)
+		if errors.Is(err, fs.ErrNotExist) {
+			missing++
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if !info.IsDir() {
+			return 0, fmt.Errorf("%q is not a directory", prefix)
+		}
+	}
+	return missing, nil
+}
+
+func (d *dataStore) invalidateUsage() {
+	d.filesUsed.Store(-1)
+	d.filesEntries = -1
 }
 
 func (d *dataStore) filePut(key, data string) error {
@@ -359,29 +440,59 @@ func (d *dataStore) filePut(key, data string) error {
 		return err
 	}
 	var old int64
-	if info, err := r.Stat(key); err == nil && info.Mode().IsRegular() {
-		old = info.Size()
+	exists := false
+	if info, err := r.Stat(key); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("put %q: target is not a regular file", key)
+		}
+		old, exists = info.Size(), true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("put %q: %w", key, err)
 	}
-	if d.usage(r)-old+int64(len(data)) > MaxFilesTotal {
+	bytes, entries, err := d.usage(r)
+	if err != nil {
+		return err
+	}
+	if bytes-old+int64(len(data)) > MaxFilesTotal {
 		return fmt.Errorf("FILES storage is full (limit %d MiB)", MaxFilesTotal>>20)
 	}
-	if dir := path.Dir(key); dir != "." {
+	dir := path.Dir(key)
+	newDirs, err := missingDirs(r, dir)
+	if err != nil {
+		return fmt.Errorf("put %q: %w", key, err)
+	}
+	// A put needs one temporary file inode even when replacing a key.
+	// For a new key that inode becomes the final file after rename.
+	if entries+newDirs+1 > MaxFilesObjects {
+		return fmt.Errorf("FILES object quota is full (limit %d files and directories)", MaxFilesObjects)
+	}
+	if dir != "." {
 		if err := r.MkdirAll(dir, 0o700); err != nil {
+			d.invalidateUsage() // MkdirAll may have created some parents
 			return fmt.Errorf("put %q: %w", key, err)
 		}
 	}
 	var rnd [8]byte
-	rand.Read(rnd[:])
-	tmp := path.Join(path.Dir(key), tmpPrefix+hex.EncodeToString(rnd[:]))
+	if _, err := rand.Read(rnd[:]); err != nil {
+		d.invalidateUsage()
+		return fmt.Errorf("put %q: random temporary name: %w", key, err)
+	}
+	tmp := path.Join(dir, tmpPrefix+hex.EncodeToString(rnd[:]))
 	if err := r.WriteFile(tmp, []byte(data), 0o600); err != nil {
 		r.Remove(tmp)
+		d.invalidateUsage() // cleanup can fail, leaving an inode or bytes
 		return fmt.Errorf("put %q: %w", key, err)
 	}
 	if err := r.Rename(tmp, key); err != nil {
 		r.Remove(tmp)
+		d.invalidateUsage()
 		return fmt.Errorf("put %q: %w", key, err)
 	}
 	d.filesUsed.Add(int64(len(data)) - old)
+	d.filesEntries += newDirs
+	if !exists {
+		d.filesEntries++
+	}
 	return nil
 }
 
@@ -412,10 +523,16 @@ func (d *dataStore) fileDelete(key string) (bool, error) {
 	if d.filesUsed.Load() >= 0 {
 		d.filesUsed.Add(-info.Size())
 	}
+	if d.filesEntries >= 0 {
+		d.filesEntries--
+	}
 	// Remove now-empty parent directories (best effort).
 	for dir := path.Dir(key); dir != "."; dir = path.Dir(dir) {
 		if r.Remove(dir) != nil {
 			break
+		}
+		if d.filesEntries >= 0 {
+			d.filesEntries--
 		}
 	}
 	return true, nil

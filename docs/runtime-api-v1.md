@@ -284,10 +284,13 @@ base64 overhead counts. This explicit size limit does not guarantee a put/get
 will fit in the **48 MiB JS heap**: strings and serialization copies compete
 with other live allocations, so operations near 10 MiB can exhaust the heap
 and produce a generic 500 even with a value within the limit.
-Per-flat FILES total is **1 GiB (1,073,741,824 bytes)**;
-overwriting charges the new size minus old size, deletion releases space.
-Quota checks/mutations are serialized within a worker; individual put publishes
-by rename. Multi-call sequences are not transactions and have no compare/swap.
+Per-flat FILES total is **1 GiB (1,073,741,824 bytes)** and at most
+**20,000 filesystem objects** (files, directories and other entries, excluding
+the FILES root). Empty values and newly created parent directories count toward
+the object limit. Overwriting charges the new size minus old size; deletion
+releases space and removes empty parent directories when possible. A put must
+have room for its temporary file during replacement. Quota checks/mutations
+are serialized within a worker; individual put publishes by rename. Multi-call sequences are not transactions and have no compare/swap.
 There is no FILES TTL or versioning. Invalid keys/prefixes, value/quota overflow,
 permissions, disk-full and incompatible file/directory paths throw; catch errors
 and choose an HTTP response. Error wording can contain the key/OS details;
@@ -334,14 +337,17 @@ One SQLite connection per JS VM keeps concurrent request transactions apart.
 Use `exec("BEGIN")`, parameterized statements, `exec("COMMIT")`, and rollback
 on errors within one handler invocation. Any transaction left open at the end
 of a handler/callback is rolled back; never span requests with a transaction.
-WAL, foreign keys and 5-second busy timeout are enabled. Query result cap is
+DELETE journaling, foreign keys and 5-second busy timeout are enabled. Query result cap is
 **16 MiB** while accumulating serialized rows (the closing bracket is added
 afterward; add LIMIT); SQL value/row length cap **32 MiB**;
 SQLite allocation ceiling **256 MiB**. Runtime deadline also bounds queries.
-ATTACH and VACUUM INTO and directory-changing pragmas are blocked. There is
-no hard DB disk-size quota: DB growth is reported against host disk usage;
-operator disk quota can reject uploads, but does not hard-cap runtime DB growth.
-DB and FILES do not participate in a shared transaction.
+ATTACH, VACUUM INTO and pragmas that change page limits, page size, journal
+mode or disk-based temporary storage are blocked. SQLite's main database is
+capped at **256 MiB**, with a page-count limit set on each connection for the
+actual page size. Existing databases over the cap cannot be opened for runtime
+queries. DELETE journaling bounds rollback journal growth by the database size;
+temporary tables and sorts stay in SQLite's capped memory. DB and FILES do not
+participate in a shared transaction.
 
 ## JavaScript outbound HTTP
 
@@ -424,8 +430,8 @@ Server deploys need the host runtime enabled; a host started with
 |---|---|---|
 | Request body / decoded response | 10 MiB / 32 MiB | `topic.server` |
 | WebSocket message | 1 MiB, 256 queued sends | `topic.server` |
-| FILES value / per-flat total / list | 10 MiB / 1 GiB / 10,000 keys | `topic.server.files` |
-| DB query result / value or row / allocation | 16 MiB / 32 MiB / 256 MiB | `topic.server.db` |
+| FILES value / total bytes / objects / list | 10 MiB / 1 GiB / 20,000 / 10,000 keys | `topic.server.files` |
+| DB query result / value or row / allocation / disk | 16 MiB / 32 MiB / 256 MiB / 256 MiB | `topic.server.db` |
 | Outbound fetch | 5 s, 16 calls per invocation, 4 MiB response | `topic.server.fetch` |
 | Upload | operator setting (default 20 MiB), 20,000 files | `topic.static` |
 | Environment value | 64 KiB, names up to 64 characters | `topic.env-secrets` |
