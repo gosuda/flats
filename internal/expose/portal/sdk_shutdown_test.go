@@ -80,8 +80,8 @@ func TestPortalCloseCapturesSDKUnregisterError(t *testing.T) {
 				stopped = make(chan error, 1)
 				go func() { stopped <- n.Stop("blog") }()
 				awaitShutdown(t, e.ln.closed)
-				if n.entry("blog") != nil {
-					t.Fatal("Stop has not removed entry")
+				if n.entry("blog") != e {
+					t.Fatal("Stop must retain unconfirmed teardown")
 				}
 			}
 			err := n.Close()
@@ -143,5 +143,36 @@ func TestPortalCloseDrainsBeforeSDKUnregister(t *testing.T) {
 	}
 	if exp.closeCount() != 1 {
 		t.Fatalf("SDK teardown count = %d", exp.closeCount())
+	}
+}
+
+func TestPortalStopDoesNotForgetSDKCloseFailure(t *testing.T) {
+	failure := errors.New("relay refused unregister")
+	n, exp := sdkBoundNet(t, failure)
+	original := n.entry("blog")
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := n.Stop("blog"); !errors.Is(err, failure) {
+			t.Fatalf("Stop attempt %d = %v, want original error", attempt+1, err)
+		}
+		if n.entry("blog") != original {
+			t.Fatal("failed Stop discarded the exposure")
+		}
+	}
+	// SDK Close uses sync.Once, so calling it again would falsely return nil.
+	if count := exp.closeCount(); count != 1 {
+		t.Fatalf("SDK Close count = %d, want 1", count)
+	}
+	if _, err := n.Serve(t.Context(), "blog", http.NotFoundHandler(), false); err == nil {
+		t.Fatal("Serve resurrected an exposure with unconfirmed teardown")
+	}
+	if err := n.SetHidden("blog", true); err == nil {
+		t.Fatal("SetHidden updated an exposure with unconfirmed teardown")
+	}
+	if err := n.Close(); !errors.Is(err, failure) {
+		t.Fatalf("Close discarded the failed unregister: %v", err)
+	}
+	if err := n.Stop("blog"); err == nil {
+		t.Fatal("Stop after Close claimed an unconfirmed exposure was removed")
 	}
 }
