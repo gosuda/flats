@@ -481,18 +481,22 @@ func (in *instance) ensure(ctx context.Context) error {
 		err = in.spawn(context.Background())
 	}
 	in.mu.Lock()
-	in.starting = nil
 	in.lastErr = err
-	close(done)
-	if in.stopped && in.p != nil {
+	if in.stopped {
 		p := in.p
 		in.p = nil
 		in.mu.Unlock()
-		in.terminate(p)
-		os.Remove(in.sock) // Stop may have removed it before this spawn re-created it
+		if p != nil {
+			in.terminate(p)
+		}
+		os.Remove(in.sock) // Stop may have removed it before spawn re-created it
 		in.mu.Lock()
+		in.starting = nil
+		close(done) // Stop waits for termination, not just the spawn result.
 		return errStopped
 	}
+	in.starting = nil
+	close(done)
 	if err != nil {
 		in.failures++
 		in.retryAt = time.Now().Add(backoff(in.failures))
@@ -519,9 +523,13 @@ func (in *instance) Stop() {
 	in.stopped = true
 	p := in.p
 	in.p = nil
+	starting := in.starting
 	in.mu.Unlock()
 	if p != nil {
 		in.terminate(p)
+	}
+	if starting != nil {
+		<-starting // A concurrent restart may spawn another worker.
 	}
 	in.tr.CloseIdleConnections()
 	os.Remove(in.sock)
