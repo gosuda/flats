@@ -54,6 +54,23 @@ export function mapDiagramKeys(previous, changes) {
   return mapped;
 }
 
+// Keep the rendered blocks a remote change did not touch, at their mapped
+// positions, without rescanning the document. A touched block shows its
+// Markdown source until the next budgeted refresh rebuilds it.
+export function mapUntouched(decorations, changes) {
+  return decorations
+    .update({
+      filter: (from, to) => {
+        let touched = false;
+        changes.iterChangedRanges((a, b) => {
+          if (a <= to && b >= from) touched = true;
+        });
+        return !touched;
+      },
+    })
+    .map(changes);
+}
+
 export function diagramKeys(blocks, previous = new Map(), changes) {
   const mapped = changes ? mapDiagramKeys(previous, changes) : previous;
   return new Map(blocks.map(({ from }) => [from, mapped.get(from) || {}]));

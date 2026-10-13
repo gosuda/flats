@@ -31,6 +31,7 @@ import {
   updatePreview,
   trackFocusExit,
   mapDiagramKeys,
+  mapUntouched,
   remoteChange,
 } from "./diagram-preview.js";
 import {
@@ -319,12 +320,13 @@ function blocks(render, refs) {
       for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
       if (remoteChange(tr)) {
         // Never run a full Markdown scan for each incoming Yjs transaction.
-        // Source stays editable while diagrams are rebuilt on a budget.
+        // Untouched tables and diagrams keep rendering; blocks the change
+        // touched show source until the budgeted refresh rebuilds them.
         return {
           ...value,
           focused,
           keys: mapDiagramKeys(value.keys, tr.changes),
-          decorations: Decoration.none,
+          decorations: mapUntouched(value.decorations, tr.changes),
         };
       }
       if (
@@ -371,14 +373,13 @@ function blocks(render, refs) {
           });
         }
         update(update) {
-          if (
-            update.transactions.some(
-              (tr) => tr.docChanged && !remoteChange(tr),
-            )
-          )
-            this.remoteRefresh.cancel();
-          else if (update.transactions.some(remoteChange))
-            this.remoteRefresh.request();
+          // A local edit rebuilds every block. Only a remote change after
+          // the last local one leaves the decorations to refresh.
+          let last;
+          for (const tr of update.transactions) if (tr.docChanged) last = tr;
+          if (!last) return;
+          if (remoteChange(last)) this.remoteRefresh.request();
+          else this.remoteRefresh.cancel();
         }
         destroy() {
           this.remoteRefresh.cancel();

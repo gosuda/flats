@@ -2,10 +2,17 @@ import { ySyncAnnotation } from "y-codemirror.next";
 import { test } from "node:test";
 import { diagramBlocks } from "./live.js";
 import assert from "node:assert/strict";
-import { ChangeSet, EditorState, Transaction } from "@codemirror/state";
+import {
+  ChangeSet,
+  EditorState,
+  RangeSet,
+  RangeValue,
+  Transaction,
+} from "@codemirror/state";
 import {
   diagramKeys,
   mapDiagramKeys,
+  mapUntouched,
   remoteChange,
   updatePreview,
   trackFocusExit,
@@ -294,7 +301,10 @@ test("remote transactions are recognized without treating local changes as remot
 });
 
 test("remote position mapping preserves identities without parsing blocks", () => {
-  const keys = new Map([[10, {}], [30, {}]]);
+  const keys = new Map([
+    [10, {}],
+    [30, {}],
+  ]);
   const insert = ChangeSet.of({ from: 0, insert: "hello" }, 50);
   const mapped = mapDiagramKeys(keys, insert);
   assert.equal(mapped.get(15), keys.get(10));
@@ -303,4 +313,66 @@ test("remote position mapping preserves identities without parsing blocks", () =
   const pruned = mapDiagramKeys(keys, remove);
   assert.equal(pruned.has(10), false);
   assert.equal(pruned.get(20), keys.get(30));
+});
+
+test("remote changes keep untouched rendered blocks and drop touched ones", () => {
+  class Block extends RangeValue {
+    constructor(name) {
+      super();
+      this.name = name;
+    }
+  }
+  const set = RangeSet.of([
+    new Block("table").range(10, 20),
+    new Block("diagram").range(30, 40),
+    new Block("preview").range(50),
+  ]);
+  const names = (s) => {
+    const out = [];
+    s.between(0, 1e9, (from, to, value) => {
+      out.push([value.name, from, to]);
+    });
+    return out;
+  };
+  // An insertion before every block shifts all of them.
+  assert.deepEqual(
+    names(mapUntouched(set, ChangeSet.of({ from: 0, insert: "ab" }, 60))),
+    [
+      ["table", 12, 22],
+      ["diagram", 32, 42],
+      ["preview", 52, 52],
+    ],
+  );
+  // Edits inside or at a block's edge drop only that block.
+  assert.deepEqual(
+    names(
+      mapUntouched(set, ChangeSet.of({ from: 35, to: 36, insert: "x" }, 60)),
+    ),
+    [
+      ["table", 10, 20],
+      ["preview", 50, 50],
+    ],
+  );
+  assert.deepEqual(
+    names(mapUntouched(set, ChangeSet.of({ from: 20, insert: "x" }, 60))),
+    [
+      ["diagram", 31, 41],
+      ["preview", 51, 51],
+    ],
+  );
+  assert.deepEqual(
+    names(mapUntouched(set, ChangeSet.of({ from: 50, insert: "x" }, 60))),
+    [
+      ["table", 10, 20],
+      ["diagram", 30, 40],
+    ],
+  );
+  // Deleting a whole block never leaves a collapsed copy behind.
+  assert.deepEqual(
+    names(mapUntouched(set, ChangeSet.of({ from: 25, to: 45 }, 60))),
+    [
+      ["table", 10, 20],
+      ["preview", 30, 30],
+    ],
+  );
 });
