@@ -79,7 +79,6 @@ func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 	})
 }
 
-
 // docsInlineMIME returns a fixed, non-executable MIME type for assets that may
 // appear inline in a document. Every other file must be downloaded instead.
 func docsInlineMIME(p string) string {

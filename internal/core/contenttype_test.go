@@ -680,8 +680,12 @@ func TestDocsAssetContentSecurity(t *testing.T) {
 			if got := r.Header().Get("Content-Type"); got != tt.contentType {
 				t.Errorf("content type = %q, want %q", got, tt.contentType)
 			}
-			if got := r.Header().Get("Content-Disposition"); (got == "attachment") != tt.attachment {
-				t.Errorf("content disposition = %q, want attachment %v", got, tt.attachment)
+			wantDisposition := ""
+			if tt.attachment {
+				wantDisposition = "attachment"
+			}
+			if got := r.Header().Get("Content-Disposition"); got != wantDisposition {
+				t.Errorf("content disposition = %q, want %q", got, wantDisposition)
 			}
 			if got := r.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'; sandbox" {
 				t.Errorf("CSP = %q", got)
@@ -691,7 +695,7 @@ func TestDocsAssetContentSecurity(t *testing.T) {
 			}
 		})
 	}
-	// Conditional and partial responses must also keep the download policy.
+	// Partial responses must also keep the download policy.
 	req := httptest.NewRequest(http.MethodGet, "/active.html", nil)
 	req.Header.Set("Range", "bytes=0-5")
 	r := httptest.NewRecorder()
