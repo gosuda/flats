@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gosuda/flats/internal/egress"
@@ -33,13 +34,13 @@ type outboundClient interface {
 }
 
 type worker struct {
-	spec      workerSpec
-	log       *childLog
-	data      *dataStore
-	eng       engine
-	js        *jsEngine      // nil for WASI
-	network   outboundClient // shared by all JS request and WebSocket VMs
-	admission chan struct{}  // bound bodies being read before execution
+	spec    workerSpec
+	log     *childLog
+	data    *dataStore
+	eng     engine
+	js      *jsEngine      // nil for WASI
+	network outboundClient // shared by all JS request and WebSocket VMs
+	bodies  bodyBudget     // request body bytes held at once
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
@@ -68,7 +69,7 @@ func WorkerMain(args []string) error {
 		log.send(childMsg{T: "fatal", Msg: "worker: no listener: " + err.Error()})
 		return err
 	}
-	w := &worker{spec: spec, log: log, data: newDataStore(spec.DataDir), admission: make(chan struct{}, spec.poolSize())}
+	w := &worker{spec: spec, log: log, data: newDataStore(spec.DataDir)}
 	if err := w.init(); err != nil {
 		log.send(childMsg{T: "fatal", Msg: err.Error()})
 		return err
@@ -213,22 +214,99 @@ func requestHeaders(r *http.Request) map[string]string {
 	return h
 }
 
-// readRequestBody enforces both a streaming byte cap and a wall-clock body
-// deadline. Successful reads clear the deadline; failed reads retain it so
-// closing a partial request cannot block indefinitely.
-func readRequestBody(rw http.ResponseWriter, r *http.Request, timeout time.Duration) ([]byte, error) {
-	controller := http.NewResponseController(rw)
-	if err := controller.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, fmt.Errorf("set request body read deadline: %w", err)
+// Request bodies are read into memory before the handler runs. A worker holds
+// at most maxBufferedBodies bytes of them at once (bodies being received,
+// waiting for a runtime or being handled); a body that would exceed it gets
+// 503. Requests without a body are never refused. A body must arrive at
+// minBodyRate after a bodyGrace start, so a stalled upload does not hold
+// memory or a connection indefinitely; slower uploads get 408.
+const (
+	maxBufferedBodies = 8 * MaxRequestBody
+	minBodyRate       = 16 << 10 // bytes per second
+)
+
+var bodyGrace = 30 * time.Second // a variable for tests
+
+var errBodiesBusy = errors.New("request body budget exhausted")
+
+// bodyBudget counts request body bytes a worker holds. It never blocks: a
+// request that does not fit fails at once instead of waiting with a partial
+// body, which could leave every waiter holding memory that no one releases.
+type bodyBudget struct {
+	mu   sync.Mutex
+	used int64
+}
+
+func (b *bodyBudget) take(n int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > maxBufferedBodies-b.used {
+		return false
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, MaxRequestBody))
-	if err != nil {
-		return nil, err
+	b.used += n
+	return true
+}
+
+func (b *bodyBudget) give(n int64) {
+	b.mu.Lock()
+	b.used -= n
+	b.mu.Unlock()
+}
+
+// readBody reads the request body within MaxRequestBody, the worker's body
+// budget and the minimum upload rate. release returns the body's bytes to
+// the budget; call it once the body is no longer needed, even after an error.
+func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte, release func(), err error) {
+	var held int64
+	release = func() { w.bodies.give(held); held = 0 }
+	if r.ContentLength > MaxRequestBody {
+		return nil, release, &http.MaxBytesError{Limit: MaxRequestBody}
 	}
-	if err := controller.SetReadDeadline(time.Time{}); err != nil {
-		return nil, fmt.Errorf("clear request body read deadline: %w", err)
+	// A declared length is reserved before it is allocated; a chunked body
+	// is counted as it arrives.
+	if r.ContentLength > 0 {
+		if !w.bodies.take(r.ContentLength) {
+			return nil, release, errBodiesBusy
+		}
+		held = r.ContentLength
+		body = make([]byte, 0, r.ContentLength)
 	}
-	return body, nil
+	rc := http.NewResponseController(rw)
+	start := time.Now()
+	src := http.MaxBytesReader(rw, r.Body, MaxRequestBody)
+	defer func() {
+		// A deadline left on the connection would end the request's context
+		// while the handler runs. net/http clears it when the body ends; clear
+		// it explicitly too. A failed read closes the connection anyway.
+		if err == nil {
+			if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+				body, err = nil, derr
+			}
+		}
+	}()
+	buf := make([]byte, 32<<10)
+	for {
+		limit := start.Add(bodyGrace + time.Duration(len(body))*time.Second/minBodyRate)
+		if err := rc.SetReadDeadline(limit); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return nil, release, err
+		}
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if grow := int64(len(body)+n) - held; grow > 0 {
+				if !w.bodies.take(grow) {
+					return nil, release, errBodiesBusy
+				}
+				held += grow
+			}
+			body = append(body, buf[:n]...)
+		}
+		if rerr == io.EOF {
+			return body, release, nil
+		}
+		if rerr != nil {
+			return nil, release, rerr
+		}
+	}
 }
 
 func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
@@ -236,40 +314,26 @@ func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		w.js.wsHub.serve(rw, r, requestURL(r), requestHeaders(r))
 		return
 	}
-	if r.ContentLength > MaxRequestBody {
-		http.Error(rw, fmt.Sprintf("request body larger than %d MiB", MaxRequestBody>>20), http.StatusRequestEntityTooLarge)
-		return
-	}
-	// Wait for an execution slot before materializing any request body. The
-	// parent bounds the number of requests allowed to wait here.
-	waitCtx, stopWaiting := context.WithTimeout(r.Context(), w.spec.timeout())
-	select {
-	case w.admission <- struct{}{}:
-		stopWaiting()
-		defer func() { <-w.admission }()
-	case <-waitCtx.Done():
-		stopWaiting()
-		if r.Context().Err() == nil {
-			rw.Header().Set("Retry-After", "1")
-			http.Error(rw, "Service Unavailable: server flat is busy.", http.StatusServiceUnavailable)
-		}
-		return
-	}
-	body, err := readRequestBody(rw, r, requestBodyReadTimeout)
+	body, release, err := w.readBody(rw, r)
+	defer release()
 	if err != nil {
 		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			http.Error(rw, fmt.Sprintf("request body larger than %d MiB", MaxRequestBody>>20), http.StatusRequestEntityTooLarge)
-			return
-		}
-		// A partial body must not be drained to reuse this connection.
-		rw.Header().Set("Connection", "close")
 		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
-			http.Error(rw, "request body read timed out", http.StatusRequestTimeout)
-			return
+		switch {
+		case errors.As(err, &mbe):
+			http.Error(rw, fmt.Sprintf("request body larger than %d MiB", MaxRequestBody>>20), http.StatusRequestEntityTooLarge)
+		case errors.Is(err, errBodiesBusy):
+			// The rest of the body is not read, so the connection cannot be reused.
+			rw.Header().Set("Connection", "close")
+			rw.Header().Set("Retry-After", "1")
+			http.Error(rw, "Service Unavailable: server flat is busy receiving other uploads.", http.StatusServiceUnavailable)
+		case errors.As(err, &ne) && ne.Timeout():
+			rw.Header().Set("Connection", "close")
+			http.Error(rw, "request body arrived too slowly", http.StatusRequestTimeout)
+		default:
+			rw.Header().Set("Connection", "close")
+			http.Error(rw, "could not read request body", http.StatusBadRequest)
 		}
-		http.Error(rw, "could not read request body", http.StatusBadRequest)
 		return
 	}
 	p := reqPayload{Method: r.Method, URL: requestURL(r), Headers: requestHeaders(r)}

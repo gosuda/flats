@@ -170,6 +170,9 @@ or empty JSON. Body is buffered text, not a ReadableStream: arbitrary binary
 requests are not losslessly represented. `await request.arrayBuffer()` UTF-8
 encodes this buffered text; it does not recover original binary request bytes.
 No multipart/formData or clone API. Incoming body max **10 MiB** (413 if exceeded).
+A body must keep arriving at 16 KiB/s on average after its first 30 seconds
+(else 408). One flat buffers at most 80 MiB of request bodies at once; a body
+beyond that gets 503 with Retry-After. Requests without a body are not limited.
 
 Return `new Response(body, {status, headers})`, `Response.json(value, init)`,
 `Response.redirect(url, status = 302)`, a string, or `{status, headers, body}`.
@@ -440,6 +443,7 @@ Server deploys need the host runtime enabled; a host started with
 | Resource | Limit | Topic |
 |---|---|---|
 | Request body / decoded response | 10 MiB / 32 MiB | `topic.server` |
+| Request bodies buffered per flat / upload rate | 80 MiB (503) / 16 KiB/s after 30 s (408) | `topic.server` |
 | WebSocket connections | 256 per running version; closed after 2 min without any frame from the peer (server pings every 30 s) | `topic.server` |
 | WebSocket message / outgoing queue | 1 MiB incoming; 256 sends and 4 MiB per connection, 16 MiB per running version | `topic.server` |
 | FILES value / per-flat total / objects / list | 10 MiB / 1 GiB / 20,000 / 10,000 keys | `topic.server.files` |

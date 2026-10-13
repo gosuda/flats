@@ -41,14 +41,6 @@ const (
 	// secret and leave a prefix the host cannot recognize. Longer lines are
 	// replaced by a note that keeps only their size.
 	maxLogLine = 64 << 10
-
-	// Bound requests waiting for a VM, bytes being read, and upgrades independently.
-	requestBodyReadTimeout    = 30 * time.Second
-	maxPendingRequestsPerFlat = 64
-	maxPendingRequestsGlobal  = 256
-	maxActiveRequestsGlobal   = 16
-	maxWebSocketsPerFlat      = 64
-	maxWebSocketsGlobal       = 256
 )
 
 func omittedLogLine(n int) string {
