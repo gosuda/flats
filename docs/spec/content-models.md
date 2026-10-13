@@ -91,8 +91,8 @@ people and agents edit live.
 4. **Every edit unit creates a revision.**
    - One agent write call (a save or a live edit through MCP) is one revision.
    - A person's live edits are grouped per editor. A group closes, and becomes
-     one revision, when that editor has been idle for a while or a maximum
-     interval has passed since the group began.
+     one revision, when that editor has been idle for 30 seconds or 5 minutes
+     have passed since the group began.
    - A rollback is one revision.
 5. **A revision covers the whole flat.** It records every document or file of
    the flat at that point, so files that belong together (a design's index and
@@ -166,10 +166,25 @@ Compared with `main` at `aa5bf97`:
   - A docs bundle with several documents or assets is saved with
     `save_version`, although documents have no versions.
 
+## Migration
+
+1. **Documents.** Each existing document flat starts its history with one
+   revision holding its current content.
+2. **Versions keep their numbers.** Existing versions keep their numbers, and
+   new numbers continue after the highest one.
+3. **Nothing is deleted to fit the quota.** A flat that already holds more
+   versions than its quota keeps them all; creating a version is refused until
+   the user deletes enough versions or raises the quota.
+4. **Pruned versions do not count.** A version whose files `keep_versions`
+   already deleted (`pruned`) stays only as a record. It does not count toward
+   the version quota and cannot be deployed.
+5. **`keep_versions` becomes the version quota.** A host that set
+   `system.keep_versions` explicitly uses that value as its default version
+   quota; otherwise the default is 20. Automatic pruning stops.
+
 ## Open questions
 
-- **Grouping times.** The idle time and maximum interval that close a
-  person's group of edits.
-- **Migration.** Existing documents would get their current content as the
-  first revision. Existing published versions keep their numbers; a flat that
-  already holds more versions than its quota needs a rule.
+- **Zero and unlimited.** Whether a quota of 0 means unlimited, and what an
+  explicit `keep_versions: 0` (today: never prune) becomes.
+- **Lowering a quota.** What happens when a quota is set below the number
+  already held.
