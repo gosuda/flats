@@ -10,7 +10,7 @@ rejected; every problem is reported at once with a fix.
 
 | Field | Meaning |
 |---|---|
-| `type` | `flat` (default, a website) or `docs` (Markdown documents, `topic.docs`) |
+| `type` | `flat` (default, a website), `page` (one static HTML page, `topic.page`) or `docs` (Markdown documents, `topic.docs`) |
 | `name` | display name |
 | `kind` | `static` (default) or `server` (`topic.server`) |
 | `entry` | static: default `index.html`; server: first of `server.js`, `index.js`, `main.wasm`, `server.wasm` |
@@ -22,4 +22,6 @@ rejected; every problem is reported at once with a fix.
 An upload with no manifest `type`, no `kind`, no `index.html` and no server
 entry, but with a Markdown entry candidate, is a `docs` upload. `type: "docs"`
 has its own rules for `entry`, `name`, `kind`, `spa`, `not_found` and `health`
-(`topic.docs`).
+(`topic.docs`). A page is never detected: only `"type": "page"` makes one, and
+it refuses `kind` other than `static`, `spa`, `not_found` and `health`
+(`topic.page`).

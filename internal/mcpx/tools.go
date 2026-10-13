@@ -32,7 +32,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_flat", Annotations: ro,
 		Description: "Show one flat: visibility, live version, private/public URLs and open previews."}, t.getFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
-		Description: "Create an empty private website flat, or with type docs a Private document that runs at once (no publish or approval). Optional: save_version and save_document create the flat on first save."}, t.createFlat)
+		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; or with type docs a Private document that runs at once (no publish or approval). Optional: save_version, save_page and save_document create the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version", Annotations: write,
 		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never publishes; deploy=true requests explicit operator approval. For one Markdown document use save_document. A docs bundle is not a Draft: it runs at once (topic.docs)."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_version_from_dir", Annotations: write,
@@ -48,6 +48,10 @@ func register(s *mcp.Server, t *tools) {
 		Description: "Read the current Private Draft revision and hash of a website. Documents have no Draft."}, t.getDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "publish", Annotations: write,
 		Description: "Freeze current Draft revision/hash and request explicit operator approval to publish. No version is created before successful approval. Websites only: documents have no publishing."}, t.publish)
+	mcp.AddTool(s, &mcp.Tool{Name: "save_page", Annotations: write,
+		Description: "Save a page (one static HTML document with charts, graphs or visualizations, plus its assets) as a Private Draft, creating the flat when absent. " +
+			"Saving never publishes; deploy=true requests explicit operator approval. Replaces the whole Draft: send the html and every asset each time. " +
+			"Flats writes flats.json (type page); other saves into a page need {\"type\":\"page\"} (topic.page)."}, t.savePage)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_document", Annotations: write,
 		Description: "Save one Markdown document, creating the flat when absent. It runs at once, Private unless the operator already made it Public: documents have no Draft, versions, publish or approval. It replaces the document; people's concurrent edits on other lines are kept. Read get_document first to preserve live edits; prefer update_document for small changes; read flats://docs/content-types/v1 for docs bundles. Use save_version for multiple documents/assets."}, t.saveDocument)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_document", Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no},
@@ -88,7 +92,7 @@ func register(s *mcp.Server, t *tools) {
 
 // FlatInfo describes a flat.
 type FlatInfo struct {
-	Type            string                  `json:"type" jsonschema:"flat (website) or docs (document)"`
+	Type            string                  `json:"type" jsonschema:"flat (website), page (one static HTML page; website lifecycle) or docs (document)"`
 	Publication     string                  `json:"publication,omitempty" jsonschema:"websites: published or unpublished; absent for documents, which have no publishing"`
 	Running         bool                    `json:"running,omitempty" jsonschema:"documents: true when the document runs and its private URL serves it"`
 	Draft           *DraftInfo              `json:"draft" jsonschema:"websites: the current Private Draft; null for documents"`
@@ -128,7 +132,7 @@ func flatInfo(v core.FlatView) FlatInfo {
 
 // VersionInfo describes a saved version.
 type VersionInfo struct {
-	Type      string    `json:"type" jsonschema:"flat (website) or docs (document)"`
+	Type      string    `json:"type" jsonschema:"flat (website), page (one static HTML page) or docs (document)"`
 	Published bool      `json:"published"`
 	Role      string    `json:"role,omitempty"`
 	Revision  int       `json:"revision,omitempty"`
@@ -395,26 +399,32 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 type CreateIn struct {
 	Slug string `json:"slug" jsonschema:"3-54 lowercase letters, digits and single hyphens, starting with a letter; becomes the private host name"`
 	Name string `json:"name,omitempty" jsonschema:"display name (default: the slug)"`
-	Type string `json:"type,omitempty" jsonschema:"flat (website, default) or docs (a document that runs Private at once)"`
+	Type string `json:"type,omitempty" jsonschema:"flat (website, default), page (one static HTML page with a starter Draft; website lifecycle) or docs (a document that runs Private at once)"`
 }
 
 func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in CreateIn) (*mcp.CallToolResult, FlatInfo, error) {
-	if in.Type != "" && in.Type != contenttype.Flat && in.Type != contenttype.Docs {
-		return nil, FlatInfo{}, toolErr(refuse(core.ErrInvalid, "type must be flat or docs"), "omit type for a website")
+	if in.Type != "" && in.Type != contenttype.Flat && in.Type != contenttype.Docs && in.Type != contenttype.Page {
+		return nil, FlatInfo{}, toolErr(refuse(core.ErrInvalid, "type must be flat, docs or page"), "omit type for a website")
 	}
 	var f core.FlatView
 	var err error
-	if in.Type == contenttype.Docs {
+	switch in.Type {
+	case contenttype.Docs:
 		f, err = t.svc.CreateDocument(ctx, in.Slug, in.Name, core.ViaMCP)
-	} else {
+	case contenttype.Page:
+		f, err = t.svc.CreatePage(ctx, in.Slug, in.Name, core.ViaMCP)
+	default:
 		f, err = t.svc.CreateFlat(ctx, in.Slug, in.Name, core.ViaMCP)
 	}
 	if err != nil {
 		return nil, FlatInfo{}, toolErr(err, "pick another slug (3-54 lowercase letters, digits and single hyphens, starting with a letter) or use the existing flat")
 	}
 	fi := flatInfo(f)
-	if in.Type == contenttype.Docs {
+	switch in.Type {
+	case contenttype.Docs:
 		return result(documentText("Created document", fi), fi), fi, nil
+	case contenttype.Page:
+		return result(pageCreatedText(fi), fi), fi, nil
 	}
 	return result("Created unpublished Private flat "+fi.Slug+". Next: save_draft, then publish and wait for operator approval.", fi), fi, nil
 }
@@ -980,7 +990,7 @@ func (t *tools) listSecrets(ctx context.Context, _ *mcp.CallToolRequest, in Slug
 
 // DraftInfo is working content metadata, separate from published version IDs.
 type DraftInfo struct {
-	Type        string    `json:"type" jsonschema:"flat (website) or docs (document)"`
+	Type        string    `json:"type" jsonschema:"flat (website), page (one static HTML page) or docs (document)"`
 	Flat        string    `json:"flat"`
 	Revision    int       `json:"revision"`
 	Hash        string    `json:"hash"`

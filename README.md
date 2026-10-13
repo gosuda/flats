@@ -132,6 +132,11 @@ Deploy that directory with the same `flats deploy` command.
   `update_document` (guarded find/replace and block operations, no approval;
   on a Public flat the change is visible at once). Making a document Public
   still waits for approval. See [Content types](docs/content-types.md).
+- **HTML pages.** A flat with `type: "page"` is one static HTML document plus
+  its assets, for documents that need charts, graphs or visualizations. It
+  keeps the website lifecycle (Private Draft, versions, approved publish,
+  rollback) and has no server code or data. Agents save it with `save_page`.
+  See [Content types](docs/content-types.md).
 
 Data survives deploys and ordinary rollbacks. `flats rollback hello` restores
 code; `--restore-data` requests a separately approved restore of the

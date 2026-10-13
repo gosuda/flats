@@ -6,6 +6,7 @@ import "encoding/json"
 const (
 	Flat = "flat"
 	Docs = "docs"
+	Page = "page"
 )
 
 type Description struct {
@@ -15,7 +16,8 @@ type Description struct {
 }
 
 func Types() []Description {
-	return []Description{{Flat, "Website", "Static or server website"}, {Docs, "Document", "Markdown documents and assets in the embedded collaborative editor"}}
+	return []Description{{Flat, "Website", "Static or server website"}, {Docs, "Document", "Markdown documents and assets in the embedded collaborative editor"},
+		{Page, "Page", "Static HTML page: a document with charts, graphs and visualizations"}}
 }
 
 // FromManifest derives the type without changing the metadata schema.

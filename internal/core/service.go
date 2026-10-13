@@ -897,7 +897,7 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 		}
 	} else if err != nil {
 		return store.Version{}, err
-	} else if err := s.checkTypeChange(ctx, f, docs); err != nil {
+	} else if err := s.checkTypeChange(ctx, f, m.Type); err != nil {
 		return store.Version{}, err
 	}
 	var size int64

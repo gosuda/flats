@@ -11,6 +11,7 @@ import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
 import { deployVersion, publishDraft, previewVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
+import { hasServer } from './list.js';
 import { shareDialog } from './share.js';
 
 const LOG_POLL_MS = 5000;
@@ -40,6 +41,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   const secretsSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
   const isDocs = () => flat && flat.type === 'docs';
+  const serverParts = () => flat && hasServer(flat);
 
   const page = h('section', { class: 'page site-page' },
     h('a', { class: 'back', href: '/', 'data-nav': true }, icon('back'), 'All flats'),
@@ -69,7 +71,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const ok = await loadFlat();
     if (ok) {
       if (settings) {
-        if (!isDocs()) { loadEnv(); loadSecrets(); loadNetwork(); }
+        if (serverParts()) { loadEnv(); loadSecrets(); loadNetwork(); }
         loadHostProviders();
       } else {
         if (!isDocs()) { loadVersions(); loadPreviews(); }
@@ -139,9 +141,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       netSlot,
-      isDocs() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
-      isDocs() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
-      isDocs() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
+      !serverParts() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
+      !serverParts() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
+      !serverParts() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()));
   }
 
@@ -250,7 +252,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
       actions.appendChild(prev);
       if (v.number === live) {
-        actions.appendChild(redeployButton());
+        // A page has no environment to apply.
+        if (serverParts()) actions.appendChild(redeployButton());
       } else {
         const back = live && v.number < live;
         const btn = h('button', {

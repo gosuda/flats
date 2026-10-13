@@ -47,7 +47,7 @@ func registerContentTypes(s *mcp.Server, hostVersion string, uploadLimit int64) 
 		func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: runtimeref.ContentTypesURI, MIMEType: "text/markdown", Text: runtimeref.ContentTypesMarkdown}}}, nil
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "get_content_types", Description: "Read the versioned content-type contract (websites and Markdown docs: save_document, get_document, bundle rules). Same as flats://docs/content-types/v1 and guide topic.docs. No arguments.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}},
+	mcp.AddTool(s, &mcp.Tool{Name: "get_content_types", Description: "Read the versioned content-type contract (websites, HTML pages and Markdown docs: save_page, save_document, get_document, bundle rules). Same as flats://docs/content-types/v1 and guide topic.docs and topic.page. No arguments.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}},
 		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, referenceOut, error) {
 			out := referenceOut{DocumentationVersion: runtimeref.ContentTypesVersion, URI: runtimeref.ContentTypesURI, Markdown: runtimeref.ContentTypesMarkdown, HostVersion: hostVersion, UploadLimitBytes: uploadLimit}
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.Markdown}}}, out, nil

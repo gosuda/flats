@@ -17,29 +17,13 @@ var (
 	// rollback operations on a docs flat: a document has none of them. Its
 	// saves apply at once and live edits change its text directly.
 	ErrDocsUnversioned = fmt.Errorf("%w: documents have no versions, drafts, previews or publishing; save_document applies at once and update_document edits the live text", ErrInvalid)
-	// ErrTypeChange refuses saving a website into a document flat or a
-	// document into a running website flat.
-	ErrTypeChange = fmt.Errorf("%w: a flat cannot change between a website and a document; use another slug", ErrConflict)
 )
 
 // isDocs reports whether a flat is a document: its live version is docs,
 // or, while nothing runs, its Draft is.
 func (s *Service) isDocs(ctx context.Context, f store.Flat) (bool, error) {
-	if f.LiveVersion > 0 {
-		v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion)
-		if err != nil {
-			return false, err
-		}
-		return contenttype.FromManifest(v.Manifest) == contenttype.Docs, nil
-	}
-	d, err := s.st.GetDraft(ctx, f.Slug)
-	if errors.Is(err, store.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return contenttype.FromManifest(d.Manifest) == contenttype.Docs, nil
+	t, err := s.flatType(ctx, f)
+	return t == contenttype.Docs, err
 }
 
 // refuseDocs returns ErrDocsUnversioned for a docs flat.
@@ -50,22 +34,6 @@ func (s *Service) refuseDocs(ctx context.Context, f store.Flat) error {
 	}
 	if docs {
 		return ErrDocsUnversioned
-	}
-	return nil
-}
-
-// checkTypeChange refuses a save whose content type differs from the type
-// of the version that runs.
-func (s *Service) checkTypeChange(ctx context.Context, f store.Flat, docs bool) error {
-	if f.LiveVersion == 0 {
-		return nil
-	}
-	v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion)
-	if err != nil {
-		return err
-	}
-	if (contenttype.FromManifest(v.Manifest) == contenttype.Docs) != docs {
-		return ErrTypeChange
 	}
 	return nil
 }

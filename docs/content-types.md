@@ -2,20 +2,23 @@
 
 Contract version: `1`. MCP resource: `flats://docs/content-types/v1`.
 Read-only fallback tool: `get_content_types` (no arguments); the document part
-is also `guide {"items":["topic.docs"]}`.
+is also `guide {"items":["topic.docs"]}`, and the page part
+`guide {"items":["topic.page"]}`.
 
 A flat's **type** says what an agent authored; the **kind** says how Flats runs
 it. Agents upload content of a type; a type adapter in the host turns that
-content into something Flats can serve. Versions, drafts, approvals, previews,
-data and exposure work the same for every type.
+content into something Flats can serve. Websites and pages share the
+lifecycle of Drafts, versions, approvals and previews; documents run at once
+(below). Visibility and exposure work the same for every type.
 
 | Type | Agent authors | Host runs it as | Live data |
 |---|---|---|---|
 | `flat` (default) | a website: static files, or a server module (`kind` `static`/`server`) | static file server or the server-flat runtime | server flats: `env.DB` / `env.FILES` |
 | `docs` | Markdown documents (plus images/other assets) | the built-in collaborative editor app on the server-flat runtime (kind `server`) | the live collaborative document state |
+| `page` | one static HTML document with charts or visualizations, plus its assets | static file server (kind `static`) | none |
 
-Slides and other types are candidates for later adapters; they are not
-implemented. Websites are described in `flats://docs/runtime-api/v1`.
+A flat keeps its type: a save of another type is refused. Slides and other
+types are candidates for later adapters; they are not implemented. Websites are described in `flats://docs/runtime-api/v1`.
 
 The built-in editor uses host helpers (`runtimeGeneration`,
 `ws.setSendLimits`, `__flats_docsCodec`) that are not part of runtime API v1
@@ -52,8 +55,8 @@ and `rollback` are refused (`refusal.invalid`).
 4. For several documents or assets, use `save_version` with the complete
    bundle and a `flats.json` of `{"type":"docs"}`. A docs bundle is not a
    Draft either: it runs at once.
-5. A slug keeps its type: saving a document into a running website, or a
-   website into a document, is refused (`refusal.conflict`); use another slug.
+5. A slug keeps its type: saving a document into a website or a page, or
+   either into a document, is refused (`refusal.conflict`); use another slug.
 
 If a saved document cannot start (for example its health check fails), the
 save is refused and the document keeps running its previous text; the next
@@ -162,3 +165,79 @@ internals, not part of this contract or of runtime API v1.
 Comments, rich-text (WYSIWYG) editing, DOCX/PDF export, account management,
 offline editing beyond in-memory reconnect buffering, multi-host replication,
 and arbitrary HTML in Markdown.
+
+## HTML pages (`type: "page"`)
+
+A page is one static HTML document plus the assets it uses: a report, memo
+or explainer that needs charts, graphs, interactive visualizations or a free
+layout that Markdown cannot give. It has the website lifecycle: saves change
+only a Private Draft, and the page serves after an operator-approved publish
+(`topic.index` workflow map, `topic.approvals`). It has no server code,
+database or file storage.
+
+### Choose the type
+
+| The user wants | Type |
+|---|---|
+| a document people edit together, or quick notes (Markdown, Mermaid) | `docs` (`topic.docs`) |
+| a document you write as HTML with charts or visualizations | `page` |
+| a site with several pages, an app, or anything with a server | `flat` (`topic.static`, `topic.server`) |
+
+### Bundle rules
+
+* `flats.json` must say `"type": "page"`. `save_page` and
+  `create_flat {type: "page"}` write it for you; `save_draft`,
+  `save_version`, `save_version_from_dir` and `flats deploy` need it in the
+  upload. A flat keeps its type: saving a website into a page (for example an
+  upload without the manifest) is refused (`refusal.conflict`).
+* Exactly one HTML file, the entry (`index.html` by default; `entry` may
+  name another `.html` file). Everything else is an asset: scripts, styles,
+  images, SVG, fonts and data files such as CSV or JSON. A second HTML file is
+  refused: inline it, or use a website flat.
+* `kind` other than `"static"`, `spa`, `not_found` and `health` are refused.
+  `name`, `entry` and `screenshot` work as for websites (`topic.manifest`).
+* The page is served like a static site: `/` is the entry, assets are at
+  their paths, other paths answer 404.
+
+### Write and publish
+
+1. `create_flat {slug, name, type: "page"}` makes an unpublished page with a
+   starter Draft (revision 1). Optional: `save_page` also creates the flat.
+2. `save_page {slug, html, title?, screenshot?, files?, expected_revision?,
+   message?, deploy?}` saves the Draft. `html` is the whole document (saved as
+   `index.html`); `files` are the assets (`[{path, content, encoding}]`, utf8
+   or base64), omitted for a self-contained page; `screenshot` names one of
+   those files as the console thumbnail. It replaces the whole Draft: send
+   the html, every asset and the screenshot each time.
+3. Read the save `warnings`, then `open_preview {slug, version: 0}` and look
+   at it in your browser (`topic.preview-check`).
+4. `publish` (or `deploy: true` on the save) and wait for the operator
+   (`topic.approvals`). `rollback` returns to an earlier version; a page has
+   no data, so `restore_data` is refused.
+
+### Charts and data
+
+The page contract in `topic.design` applies (title, viewport, favicon,
+both color schemes, phone width, accessibility). For charts in particular:
+
+* **Library.** Bundle the chart library file (Chart.js, D3, ECharts, Vega,
+  Plotly...) into `files`, or load it from a CDN URL that names an exact
+  version, with an `integrity` hash. Inline SVG needs no library.
+* **Data.** Embed the data in the HTML (a `<script type="application/json">`
+  block or a JS constant) or bundle it as a file loaded by a relative path
+  (`fetch("data/sales.csv")`). Loading data from another origin while the page
+  renders is a save warning: the published version then no longer fixes what
+  readers see, and the page breaks offline.
+* **Readable in both schemes.** Take series, axis and grid colors from the
+  page's color tokens, re-read them when `prefers-color-scheme` changes (or
+  draw with `currentColor`), and keep at least 3:1 contrast against the
+  background. Do not rely on color alone: label series directly or add a
+  legend with distinct markers.
+* **Text alternative.** Give every chart a caption that states its point
+  (`<figure>` with `<figcaption>`), and the exact numbers in a table, a
+  `<details>` block or an `aria-label`.
+* **Phone width.** Charts resize with their container (`max-width: 100%`,
+  a responsive option, or an SVG `viewBox`); a wide chart may scroll inside
+  its own `overflow-x: auto` box.
+* **First frame.** Render charts on load, not on scroll, and respect
+  `prefers-reduced-motion` for chart animations.

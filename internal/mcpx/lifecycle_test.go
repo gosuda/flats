@@ -60,6 +60,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
 				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {}, "get_content_types": {},
 				"save_document": {"slug": "separate-doc", "markdown": "# doc"}, "get_document": {"slug": "census"},
+				"save_page":       {"slug": "separate-page", "html": "<title>Page</title>", "deploy": true},
 				"update_document": {"slug": "census", "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "x"}}},
 				"get_network":     {"slug": "census"}, "guide": {"items": []string{"topic.index", "refusal.conflict"}},
 				"list_env": {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},

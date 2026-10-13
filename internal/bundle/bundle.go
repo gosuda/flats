@@ -391,15 +391,18 @@ func ParseManifest(files []File) (Manifest, error) {
 	}
 	if m.Type == "" {
 		if _, explicit := fields["type"]; explicit && !bad["type"] {
-			verr.add(ManifestName, "type must be flat or docs", `use "flat" or "docs", or omit type`)
+			verr.add(ManifestName, "type must be flat, docs or page", `use "flat", "docs" or "page", or omit type`)
 		}
 		m.Type = contenttype.Flat
 	}
-	if m.Type != contenttype.Flat && m.Type != contenttype.Docs {
-		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat" or "docs"`)
+	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page {
+		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs" or "page"`)
 	}
-	if m.Type == contenttype.Docs {
+	switch m.Type {
+	case contenttype.Docs:
 		return parseDocs(files, index, fields, m, &verr)
+	case contenttype.Page:
+		return parsePage(files, index, fields, m, &verr, bad)
 	}
 	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
 		// Guess the kind so the entry checks below stay useful.
@@ -760,6 +763,60 @@ func markdownEntry(files []File) string {
 		}
 	}
 	return entry
+}
+
+// parsePage validates a page: one static HTML document (its entry) plus the
+// assets it uses. A page is always served as a static flat without spa, so
+// the fields that change how a website is served are refused.
+func parsePage(files []File, index map[string]bool, fields map[string]json.RawMessage, m Manifest, verr *ValidationError, bad map[string]bool) (Manifest, error) {
+	if _, ok := fields["kind"]; ok && !bad["kind"] && m.Kind != "static" {
+		verr.add(ManifestName, fmt.Sprintf("kind %q is not allowed for a page", m.Kind), `remove kind (a page is always static), or use a website flat ("type": "flat") for server code`)
+	}
+	for _, field := range []struct{ name, fix string }{
+		{"spa", "remove spa; a page is one document, so other paths answer 404"},
+		{"not_found", "remove not_found; a page has one HTML document, so other paths answer the default 404"},
+		{"health", `remove health; a page is checked at "/"`},
+	} {
+		if _, ok := fields[field.name]; ok {
+			verr.add(ManifestName, field.name+" is not allowed for a page", field.fix)
+		}
+	}
+	m.Kind, m.SPA, m.NotFound, m.Health = "static", false, "", "/"
+	if m.Entry == "" {
+		m.Entry = "index.html"
+	}
+	entry, ok := cleanPath(m.Entry)
+	switch {
+	case bad["entry"]:
+	case !ok || !IsHTML(entry):
+		verr.add(ManifestName, "page entry must be an .html or .htm file", `remove entry to use index.html, or set "entry" to the page's HTML file`)
+	case !index[entry]:
+		verr.add(entry, "page entry file is missing", fmt.Sprintf("add %s to the bundle, or set \"entry\" to the page's HTML file", entry))
+	}
+	for _, f := range files {
+		if IsHTML(f.Path) && f.Path != entry {
+			verr.add(f.Path, "a page has one HTML document; this is a second one",
+				"inline this content into the page's entry, or use a website flat (\"type\": \"flat\") for several pages")
+		}
+	}
+	if m.Screenshot != "" {
+		cp, ok := cleanPath(m.Screenshot)
+		if !ok {
+			verr.add(ManifestName, "screenshot is not a relative path", "use a screenshot path inside the bundle")
+		} else if !index[cp] {
+			verr.add(cp, "screenshot file is missing", "add the screenshot or remove screenshot from flats.json")
+		}
+	}
+	if len(verr.Problems) > 0 {
+		return m, verr
+	}
+	return m, nil
+}
+
+// IsHTML reports whether a bundle path is an HTML document.
+func IsHTML(p string) bool {
+	ext := strings.ToLower(path.Ext(p))
+	return ext == ".html" || ext == ".htm"
 }
 
 func parseDocs(files []File, index map[string]bool, fields map[string]json.RawMessage, m Manifest, verr *ValidationError) (Manifest, error) {

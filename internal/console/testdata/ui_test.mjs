@@ -107,13 +107,19 @@ const shop = { ...blog, type: 'flat', slug: 'shop', name: 'Shop', visibility: 'p
   endpoints: [{ provider: 'tailscale-funnel', audience: 'current', url: 'https://shop.tail.ts.net', state: 'ready' }] };
 // A document runs once saved: it has no versions, Draft or publishing.
 const notes = { ...blog, type: 'docs', running: true, slug: 'notes', name: 'Notes', visibility: 'private', public_url: undefined, public_notice: undefined, draft: null, versions: 0, providers: [] };
+// A page has the website lifecycle but is always static: no database,
+// environment, secrets or server permissions.
+const report = { ...blog, type: 'page', slug: 'report', name: 'Report', visibility: 'private', public_url: undefined, public_notice: undefined, providers: [],
+  draft: { revision: 2, hash: 'p', dirty: false, size: 1, files: 1, kind: 'static', updated_at: '2026-10-03T00:00:00Z' }, live: { number: 1, kind: 'static' }, live_version: 1, versions: 1 };
 const pending = (id) => ({ status: 'pending_approval', approval: { id, status: 'pending' } });
 const calls = [];
 const routes = {
-  'GET /console/api/flats': { flats: [blog, shop, notes] },
+  'GET /console/api/flats': { flats: [blog, shop, notes, report] },
   'GET /console/api/approvals?status=pending': { approvals: [] },
   'GET /console/api/flats/blog': blog,
   'GET /console/api/flats/notes': notes,
+  'GET /console/api/flats/report': report,
+  'GET /console/api/flats/report/versions': { versions: [{ number: 1, kind: 'static', hash: 'p', size: 1, files: 1, created_at: '2026-10-02T00:00:00Z' }] },
   'GET /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'PUT /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'PUT /console/api/flats/blog/listing': { ...blog, portal_listing: 'hidden', portal_hidden: true },
@@ -147,7 +153,7 @@ const listMain = new Element('main');
 const stopList = list.mount(listMain, [], ctx);
 await tick();
 const rows = all(listMain, (e) => e.tagName === 'LI' && e.className === 'flat');
-assert.equal(rows.length, 3);
+assert.equal(rows.length, 4);
 // The type shows as an icon left of the name, labelled for hover and screen
 // readers; there is no initials tile or text badge.
 const typeLabel = (root) => all(root, (e) => e.className.startsWith('type-icon'))
@@ -155,6 +161,11 @@ const typeLabel = (root) => all(root, (e) => e.className.startsWith('type-icon')
 assert.deepEqual(typeLabel(rows[0]), [['img', 'Flat', 'Flat', '0']]);
 assert.deepEqual(typeLabel(rows[1]), [['img', 'Flat', 'Flat', '0']]);
 assert.deepEqual(typeLabel(rows[2]), [['img', 'Document', 'Document', '0']]);
+assert.deepEqual(typeLabel(rows[3]), [['img', 'Page', 'Page', '0']]);
+// The page tile carries its own class and the </> code glyph.
+const pageIcon = all(rows[3], (e) => e.className.startsWith('type-icon'))[0];
+assert.ok(pageIcon.className.includes('type-page'), pageIcon.className);
+assert.equal(all(pageIcon, (e) => e.tagName === 'PATH')[0]?.getAttribute('d'), 'M8 7l-5 5l5 5M16 7l5 5l-5 5M14 4l-4 16');
 for (const row of rows) {
   assert.equal(all(row, (e) => /\b(thumb|content-type)\b/.test(e.className)).length, 0);
 }
@@ -162,7 +173,7 @@ for (const row of rows) {
   assert.equal(all(row, (e) => e.className.includes('notice-text')).length, 0);
 }
 // The name opens the flat's first management tab in the console, not the site.
-for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes][i]])) {
+for (const [row, site] of rows.map((row, i) => [row, [blog, shop, notes, report][i]])) {
  const name = all(row, (e) => e.tagName === 'A' && e.className === 'flat-name')[0];
  assert.equal(name.getAttribute('href'), `/flats/${site.slug}`);
  assert.equal(name.getAttribute('target'), null);
@@ -281,6 +292,27 @@ for (const id of ['env', 'secrets', 'network']) {
 }
 assert.equal(all(docSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
 stopDocSettings();
+// A page keeps deployments, versions and previews, but has no Database tab,
+// no environment redeploy and no server settings panels.
+const pageMain = new Element('main');
+const stopPage = flat.mount(pageMain, ['report'], ctx);
+await tick();
+assert.deepEqual(typeLabel(pageMain), [['img', 'Page', 'Page', '0']]);
+assert.deepEqual(tabLinks(pageMain).map((a) => a.textContent), ['Deployments', 'Analytics', 'Settings']);
+for (const id of ['status', 'versions', 'previews', 'logs']) {
+  assert.equal(all(pageMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `page lacks ${id}`);
+}
+assert.equal(byText(pageMain, 'Redeploy (apply environment)').length, 0, 'a page has no environment to apply');
+stopPage();
+const pageSettings = new Element('main');
+const stopPageSettings = flat.mountSettings(pageSettings, ['report'], ctx);
+await tick();
+for (const id of ['env', 'secrets', 'network']) {
+  assert.equal(all(pageSettings, (e) => e.getAttribute('id') === id).length, 0, `page settings show ${id}`);
+}
+assert.equal(all(pageSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
+assert.equal(calls.some((c) => /\/flats\/report\/(env|secrets|network)$/.test(c.key)), false, 'a page loads no server settings');
+stopPageSettings();
 // The Settings tab holds every setting once, and still offers the redeploy
 // that applies environment changes.
 const management = new Element('main');

@@ -156,7 +156,7 @@ without an installed skill or source checkout:
 | Reference | MCP resource | Read-only tool |
 | --- | --- | --- |
 | [Runtime API v1](runtime-api-v1.md): FILES/DB signatures, text/binary semantics, limits, handler examples and approvals | `flats://docs/runtime-api/v1` | `get_runtime_reference` with `{}` |
-| [Content types](content-types.md): websites and Markdown documents | `flats://docs/content-types/v1` | `get_content_types` |
+| [Content types](content-types.md): websites, HTML pages and Markdown documents | `flats://docs/content-types/v1` | `get_content_types` |
 
 ## A first MCP deploy
 

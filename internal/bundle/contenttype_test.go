@@ -42,6 +42,21 @@ func TestContentTypeManifest(t *testing.T) {
 		{"empty type", `{"type":""}`, []string{"index.html"}, "", "", "type must"},
 		{"null type", `{"type":null}`, []string{"index.html"}, "", "", "type must"},
 		{"screenshot", `{"type":"docs","screenshot":"shot.png"}`, []string{"index.md"}, "", "", "screenshot file is missing"},
+		{"page", `{"type":"page"}`, []string{"index.html", "chart.js", "data/sales.csv", "logo.svg"}, "page", "index.html", ""},
+		{"page custom entry", `{"type":"page","entry":"./report.htm"}`, []string{"report.htm", "style.css"}, "page", "./report.htm", ""},
+		{"page static kind", `{"type":"page","kind":"static"}`, []string{"index.html"}, "page", "index.html", ""},
+		{"page screenshot", `{"type":"page","screenshot":"shot.png"}`, []string{"index.html", "shot.png"}, "page", "index.html", ""},
+		{"page not inferred", `{}`, []string{"index.html", "chart.js"}, "flat", "index.html", ""},
+		{"page missing entry", `{"type":"page"}`, []string{"page.html"}, "", "", "page entry file is missing"},
+		{"page entry not html", `{"type":"page","entry":"notes.md"}`, []string{"notes.md"}, "", "", "must be an .html"},
+		{"page entry outside", `{"type":"page","entry":"../x.html"}`, []string{"index.html"}, "", "", "must be an .html"},
+		{"page second html", `{"type":"page"}`, []string{"index.html", "appendix/more.HTML"}, "", "", "second one"},
+		{"page server kind", `{"type":"page","kind":"server"}`, []string{"index.html", "server.js"}, "", "", "not allowed for a page"},
+		{"page empty kind", `{"type":"page","kind":""}`, []string{"index.html"}, "", "", "not allowed for a page"},
+		{"page spa", `{"type":"page","spa":false}`, []string{"index.html"}, "", "", "spa is not allowed"},
+		{"page not found", `{"type":"page","not_found":"index.html"}`, []string{"index.html"}, "", "", "not_found is not allowed"},
+		{"page health", `{"type":"page","health":"/"}`, []string{"index.html"}, "", "", "health is not allowed"},
+		{"page screenshot missing", `{"type":"page","screenshot":"shot.png"}`, []string{"index.html"}, "", "", "screenshot file is missing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -70,6 +85,9 @@ func TestContentTypeManifest(t *testing.T) {
 			}
 			if tt.typ == "docs" && (m.Kind != "server" || m.Health != "/_docs/healthz") {
 				t.Fatalf("docs defaults: %+v", m)
+			}
+			if tt.typ == "page" && (m.Kind != "static" || m.Health != "/" || m.SPA || m.NotFound != "") {
+				t.Fatalf("page defaults: %+v", m)
 			}
 		})
 	}

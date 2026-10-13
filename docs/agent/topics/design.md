@@ -1,10 +1,10 @@
 ## Page design
 
-Every page a flat serves (a static site, or the HTML a server flat returns)
-should meet the page contract below. Saves check part of it and return
-non-blocking `warnings` (see "Save warnings"). Precedence: the user's own
-words, then the project's existing design system (a tokens or theme file,
-existing component styles), then these defaults.
+Every page a flat serves (a static site, an HTML page flat, or the HTML a
+server flat returns) should meet the page contract below. Saves check part of
+it and return non-blocking `warnings` (see "Save warnings"). Precedence: the
+user's own words, then the project's existing design system (a tokens or
+theme file, existing component styles), then these defaults.
 
 ### Page contract
 
@@ -115,9 +115,9 @@ and look once more.
 
 ### Save warnings
 
-`save_draft`, `save_version` and `save_version_from_dir` return
-`warnings: [{path, message, fix}]` for flat bundles; the text result lists
-them too. They never block or change the save. Docs bundles are not checked.
+`save_draft`, `save_version`, `save_version_from_dir` and `save_page`
+return `warnings: [{path, message, fix}]` for website and page bundles; the
+text result lists them too. They never block or change the save. Docs bundles are not checked.
 
 | Check | Applies to |
 |---|---|
@@ -129,8 +129,10 @@ them too. They never block or change the save. Docs bundles are not checked.
 | image file larger than 1 MiB | every image in the bundle |
 | no `<link rel="icon" href>` and no root `favicon.ico` (an Apple touch icon is not a tab favicon) | a static flat's HTML entry |
 | no `screenshot` in `flats.json` | static flats with an HTML entry |
+| data loaded from another origin while the page renders: an absolute or protocol-relative URL literal as the first argument of `fetch`, `EventSource`, `WebSocket`, `Papa.parse` or a d3-style loader (`.csv`, `.json`, `.tsv`, `.text`, `.xml`), or the second of `XMLHttpRequest.open` | pages (`topic.page`): the entry's inline scripts and bundled `.js`/`.mjs` files; one warning per file and origin |
 
 A single-page app without its entry file is already a validation error. The
-checks read HTML tokens, not a rendered page: they do not see URLs that
-scripts or CSS load, layout, color or contrast. At most 50 warnings are
+checks read HTML tokens, not a rendered page: apart from the page data check,
+which reads script text for URL literals, they do not see URLs that scripts
+or CSS load, layout, color or contrast. At most 50 warnings are
 listed per save, and long references are shortened.

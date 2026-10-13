@@ -50,6 +50,7 @@ const ICONS = {
   close: 'M6 6l12 12M18 6L6 18',
   home: 'M3.5 11.5L12 4l8.5 7.5M6 9.5V19a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.5M10 20v-4.5a2 2 0 0 1 4 0V20',
   doc: 'M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7zM14 3v4h4M9 12h6M9 16h4',
+  code: 'M8 7l-5 5l5 5M16 7l5 5l-5 5M14 4l-4 16',
 };
 
 export function icon(name, label) {

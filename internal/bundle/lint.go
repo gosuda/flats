@@ -25,7 +25,8 @@ const maxWarnings = 50
 // Lint reports non-blocking page-quality warnings for a valid flat bundle:
 // HTML documents without a title or viewport, external scripts and styles
 // without an exact version, references to files missing from the bundle,
-// large images, and a missing favicon or console thumbnail. It never fails:
+// large images, a missing favicon or console thumbnail, and, for a page, data
+// loaded from another origin while it renders. It never fails:
 // docs bundles and bundles that do not validate return nil. The checks are
 // heuristics over tokens, not a browser render (guide topic.design).
 func Lint(files []File) []Problem {
@@ -61,6 +62,9 @@ func Lint(files []File) []Problem {
 			l.add(f.Path, fmt.Sprintf("image is %.1f MiB; pages load it on every visit", float64(len(f.Data))/(1<<20)),
 				"resize it to the largest size it is displayed at and re-encode it (WebP or AVIF for photos), ideally below 500 KiB")
 		}
+	}
+	if m.Type == contenttype.Page {
+		l.externalData(files, m.Entry)
 	}
 	if more := l.total - len(l.out); more > 0 {
 		l.out = append(l.out, Problem{Message: fmt.Sprintf("%d more warnings not shown", more),
@@ -625,10 +629,7 @@ func looksLikeDocument(data []byte) bool {
 	return bytes.Contains(lower, []byte("<!doctype html")) || bytes.Contains(lower, []byte("<html")) || bytes.Contains(lower, []byte("<head"))
 }
 
-func isHTML(p string) bool {
-	ext := strings.ToLower(path.Ext(p))
-	return ext == ".html" || ext == ".htm"
-}
+func isHTML(p string) bool { return IsHTML(p) }
 
 func isImage(p string) bool {
 	switch strings.ToLower(path.Ext(p)) {

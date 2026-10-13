@@ -29,8 +29,8 @@ and `rollback` are refused (`refusal.invalid`).
 4. For several documents or assets, use `save_version` with the complete
    bundle and a `flats.json` of `{"type":"docs"}`. A docs bundle is not a
    Draft either: it runs at once.
-5. A slug keeps its type: saving a document into a running website, or a
-   website into a document, is refused (`refusal.conflict`); use another slug.
+5. A slug keeps its type: saving a document into a website or a page, or
+   either into a document, is refused (`refusal.conflict`); use another slug.
 
 If a saved document cannot start (for example its health check fails), the
 save is refused and the document keeps running its previous text; the next

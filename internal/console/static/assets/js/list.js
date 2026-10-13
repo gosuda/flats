@@ -170,9 +170,15 @@ function emptyState() {
 const TYPES = {
   flat: { key: 'flat', label: 'Flat', icon: 'home' },
   docs: { key: 'docs', label: 'Document', icon: 'doc' },
+  page: { key: 'page', label: 'Page', icon: 'code' },
 };
 
-export const typeOf = (flat) => (flat.type === 'docs' ? TYPES.docs : TYPES.flat);
+export const typeOf = (flat) => (Object.hasOwn(TYPES, flat.type) ? TYPES[flat.type] : TYPES.flat);
+
+// hasServer reports whether a flat can run server code, so its database,
+// environment, secrets and server HTTP(S) permissions apply: documents run
+// the built-in editor and pages are always static.
+export const hasServer = (flat) => flat.type !== 'docs' && flat.type !== 'page';
 
 // typeIcon is the tile left of a flat's name. Its label shows on hover, and on
 // focus for keyboard users and touch (a tap focuses it); screen readers

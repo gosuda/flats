@@ -62,9 +62,10 @@ Check `get_flat`; use `save_draft` for websites, or a new slug for a document.
 
 The request contradicts the current state: `expected_revision` differs from
 the Draft, the version is already live, the flat is not published yet (so it
-cannot be Public), no snapshot exists for `restore_data`, or the save would
-turn a running website into a document or a document into a website (use
-another slug). Nothing was
+cannot be Public), no snapshot exists for `restore_data`, or the content's
+type differs from the flat's (website, page or document): the message names
+both types. For a page, add `flats.json` `{"type":"page"}` or use
+`save_page`; otherwise use another slug. Nothing was
 overwritten. Read `get_draft`, `get_flat` or `list_versions`, reconcile, and
 retry with current values. Never discard someone else's content to win.
 

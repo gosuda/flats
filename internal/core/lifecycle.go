@@ -185,6 +185,9 @@ func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via
 		if rev.Pruned {
 			return DeployResult{}, fmt.Errorf("%w: draft revision %d was pruned", ErrConflict, rev.Revision)
 		}
+		if err := s.checkCandidateType(ctx, f, rev.Manifest, fmt.Sprintf("draft revision %d", rev.Revision)); err != nil {
+			return DeployResult{}, err
+		}
 		res, err := s.requestFrozen(ctx, slugName, "publish", publishParams{
 			Revision: d.Revision, Hash: rev.Hash, BaseVersion: f.LiveVersion,
 			Visibility: string(f.Visibility.Canonical()), Providers: providers,
@@ -196,6 +199,9 @@ func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via
 	}
 	v, err := s.st.GetVersion(ctx, slugName, n)
 	if err != nil {
+		return DeployResult{}, err
+	}
+	if err := s.checkCandidateType(ctx, f, v.Manifest, fmt.Sprintf("version %d", n)); err != nil {
 		return DeployResult{}, err
 	}
 	res, err := s.requestFrozen(ctx, slugName, "activate", activateParams{
@@ -231,6 +237,9 @@ func (s *Service) requestRollback(ctx context.Context, slugName string, to int, 
 	}
 	v, err := s.st.GetVersion(ctx, slugName, to)
 	if err != nil {
+		return DeployResult{}, err
+	}
+	if err := s.checkCandidateType(ctx, f, v.Manifest, fmt.Sprintf("version %d", to)); err != nil {
 		return DeployResult{}, err
 	}
 	providers, err := s.providerKey(ctx, slugName)
@@ -597,6 +606,9 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if rev.Hash != p.Hash || rev.Pruned {
 		return ActionResult{}, fmt.Errorf("%w: draft revision %d no longer matches the approved snapshot", ErrConflict, p.Revision)
 	}
+	if err := s.checkCandidateType(ctx, f, rev.Manifest, fmt.Sprintf("draft revision %d", rev.Revision)); err != nil {
+		return ActionResult{}, err
+	}
 	if f.LiveVersion > 0 {
 		if v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion); err == nil && v.Hash == rev.Hash {
 			return ActionResult{}, fmt.Errorf("%w: %w", ErrConflict, ErrUnchangedContent)
@@ -715,6 +727,9 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 	if v.Hash != p.Hash {
 		return ActionResult{}, fmt.Errorf("%w: version %d no longer matches the approved snapshot", ErrConflict, p.Version)
 	}
+	if err := s.checkCandidateType(ctx, f, v.Manifest, fmt.Sprintf("version %d", v.Number)); err != nil {
+		return ActionResult{}, err
+	}
 	if err := s.verifyContent(a.Flat, v); err != nil {
 		return ActionResult{}, err
 	}
@@ -759,6 +774,9 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 	}
 	if v.Hash != p.Hash {
 		return ActionResult{}, mismatch(p.Hash, v.Hash, "version hash")
+	}
+	if err := s.checkCandidateType(ctx, f, v.Manifest, fmt.Sprintf("version %d", v.Number)); err != nil {
+		return ActionResult{}, err
 	}
 	if err := s.verifyContent(a.Flat, v); err != nil {
 		return ActionResult{}, err
@@ -1464,6 +1482,9 @@ func (s *Service) Publish(ctx context.Context, flat string, revision int, hash s
 	}
 	if hash != "" && hash != d.Hash {
 		return ActionResult{}, fmt.Errorf("%w: %w: draft hash changed", ErrConflict, ErrStaleApproval)
+	}
+	if err := s.checkCandidateType(ctx, f, d.Manifest, fmt.Sprintf("draft revision %d", d.Revision)); err != nil {
+		return ActionResult{}, err
 	}
 	key, err := s.providerKey(ctx, flat)
 	if err != nil {
