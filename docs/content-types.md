@@ -244,7 +244,8 @@ diagrams are in `topic.page.visuals`. For documents in particular:
   `beforeprint`), drops shadows and sticky elements, removes the height and
   overflow limits of scrolling boxes, and shows data that is otherwise
   collapsed (open `<details>` in a `beforeprint` handler, or print the table
-  separately). Keep a figure or a table row on one sheet
+  separately). Undo it in `afterprint`: close what you opened and redraw the
+  charts with the screen tokens. Keep a figure or a table row on one sheet
   (`break-inside: avoid`) but let long tables run across sheets; their
   `<thead>` repeats on each. Hide controls that do nothing on paper.
 * **Data stays with the page.** Embed the data in the HTML (a
@@ -301,7 +302,9 @@ missing value means.
   horizontal bar chart instead of columns, or small multiples. Shrinking an
   SVG also shrinks its text and hit areas, so when a chart cannot be
   simplified, give it a minimum readable width inside its own labeled
-  `overflow-x: auto` box. The page body never scrolls sideways.
+  `overflow-x: auto` box (the one exception to the phone-width rule in
+  `topic.design` that charts share with tables, code and diagrams). The page
+  body never scrolls sideways.
 
 ### Color by its job
 
@@ -324,7 +327,8 @@ missing value means.
   the tokens through CSS (`fill: var(--series-1)`), so it follows the scheme
   by itself. A canvas or library chart copies colors when it draws: read the
   tokens with `getComputedStyle` and redraw when
-  `matchMedia("(prefers-color-scheme: dark)")` changes and before printing.
+  `matchMedia("(prefers-color-scheme: dark)")` changes, on `beforeprint` and
+  again on `afterprint`.
 * Text is never set in a series color: labels, values and legends use the
   page's text tokens, and a colored mark beside the text (a dot, a short
   line, a swatch) carries the identity.
@@ -406,7 +410,8 @@ write the sentence.
 * Mermaid also works in a page when you bundle the library (or pin an exact
   CDN version) and render `<pre class="mermaid">` blocks. Its colors are
   rendering settings, not CSS: use `theme: "base"` with `themeVariables` set
-  to the resolved token colors, keep each diagram's source, and render again
+  to the token colors converted to hex (`#rrggbb`), keep each diagram's
+  source, and render again
   from that source when the color scheme changes.
 
 ### Check the chart

@@ -40,8 +40,9 @@ theme file, existing component styles), then these defaults.
   a side gutter of at least 16px at every width, set once on `body` or one
   wrapper (use `padding-block` for vertical padding so the sides stay). Let
   flex and grid rows wrap or stack; give text-holding flex/grid children
-  `min-width: 0`; put `max-width: 100%` on images. Only tables, code and
-  diagrams may be wider, each inside its own `overflow-x: auto` box.
+  `min-width: 0`; put `max-width: 100%` on images. Only tables, code,
+  charts and diagrams may be wider, each inside its own `overflow-x: auto`
+  box, and charts only after simplifying them (`topic.page.visuals`).
 * **Complete first frame.** Everything meant to be read is visible right
   after load, without scrolling to trigger it: no content parked at
   `opacity: 0` for a scroll observer, no `100vh` hero that pushes the content

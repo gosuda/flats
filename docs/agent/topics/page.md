@@ -76,7 +76,8 @@ diagrams are in `topic.page.visuals`. For documents in particular:
   `beforeprint`), drops shadows and sticky elements, removes the height and
   overflow limits of scrolling boxes, and shows data that is otherwise
   collapsed (open `<details>` in a `beforeprint` handler, or print the table
-  separately). Keep a figure or a table row on one sheet
+  separately). Undo it in `afterprint`: close what you opened and redraw the
+  charts with the screen tokens. Keep a figure or a table row on one sheet
   (`break-inside: avoid`) but let long tables run across sheets; their
   `<thead>` repeats on each. Hide controls that do nothing on paper.
 * **Data stays with the page.** Embed the data in the HTML (a
