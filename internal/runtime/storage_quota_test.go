@@ -26,6 +26,12 @@ func TestCheckSQLPragmas(t *testing.T) {
 		"PRAGMA temp_store_directory",
 		"PRAGMA data_store_directory = '/tmp'",
 		"-- note\nPRAGMA\tmain.temp_store\n=\n1",
+		"PRAGMA 'max_page_count' = 1000000000",
+		"PRAGMA 'main'.'max_page_count'(1000000000)",
+		"PRAGMA main.'page_size' = 65536",
+		"PRAGMA 'temp_store' = FILE",
+		"PRAGMA 'temp_store_directory' = '/tmp'",
+		"PRAGMA 'journal_mode' = 'delete'",
 	} {
 		if err := checkSQL(q); err == nil {
 			t.Errorf("checkSQL(%q) allowed a storage pragma", q)
@@ -44,6 +50,8 @@ func TestCheckSQLPragmas(t *testing.T) {
 		"INSERT INTO notes VALUES ('PRAGMA page_size = 1')",
 		`SELECT "pragma" AS max_page_count FROM t -- PRAGMA page_size = 1`,
 		"SELECT * FROM pragma_page_size()",
+		"PRAGMA 'page_size'",
+		"SELECT 'pragma', 'page_size', '=', 1",
 	} {
 		if err := checkSQL(q); err != nil {
 			t.Errorf("checkSQL(%q) = %v; want allowed", q, err)

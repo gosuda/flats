@@ -218,26 +218,28 @@ var (
 )
 
 // checkSQL refuses denied pragmas. It finds PRAGMA statements with a
-// tokenizer that skips comments and string literals and unquotes
-// identifiers, so table, column and value names such as page_size are not
-// mistaken for pragmas while every spelling of a pragma name is caught.
+// tokenizer that skips comments and unquotes identifiers and strings, so
+// table, column and value names such as page_size are not mistaken for
+// pragmas while every spelling of a pragma name is caught. SQLite also
+// accepts a string literal as a pragma or schema name ('page_size').
 // The table-valued pragma_NAME functions take no value argument and cannot
 // set anything.
 func checkSQL(query string) error {
 	toks := sqlTokens(query)
+	punct := func(i int, p string) bool { return i < len(toks) && toks[i].kind == sqlPunct && toks[i].text == p }
 	for i, t := range toks {
-		if t.quoted || !strings.EqualFold(t.text, "pragma") {
+		if t.kind != sqlWord || !strings.EqualFold(t.text, "pragma") {
 			continue
 		}
 		j := i + 1
-		if j+1 < len(toks) && toks[j+1].text == "." && !toks[j+1].quoted {
+		if punct(j+1, ".") {
 			j += 2 // schema-qualified name
 		}
-		if j >= len(toks) {
+		if j >= len(toks) || toks[j].kind == sqlPunct {
 			continue
 		}
 		name := strings.ToLower(toks[j].text)
-		set := j+1 < len(toks) && !toks[j+1].quoted && (toks[j+1].text == "=" || toks[j+1].text == "(")
+		set := punct(j+1, "=") || punct(j+1, "(")
 		switch {
 		case deniedPragmas[name]:
 			return fmt.Errorf("PRAGMA %s is not allowed", name)
@@ -249,12 +251,19 @@ func checkSQL(query string) error {
 }
 
 type sqlToken struct {
-	text   string
-	quoted bool // a quoted identifier; its text is unquoted
+	kind int
+	text string // unquoted for identifiers and strings
 }
 
-// sqlTokens splits SQL into words, quoted identifiers and punctuation,
-// dropping whitespace, comments and string literals.
+const (
+	sqlWord   = iota // keyword or bare identifier
+	sqlIdent         // "identifier", `identifier` or [identifier]
+	sqlString        // 'string'
+	sqlPunct         // any other single byte
+)
+
+// sqlTokens splits SQL into words, quoted identifiers, strings and
+// punctuation, dropping whitespace and comments.
 func sqlTokens(q string) []sqlToken {
 	var toks []sqlToken
 	for i := 0; i < len(q); {
@@ -275,27 +284,29 @@ func sqlTokens(q string) []sqlToken {
 				i = len(q)
 			}
 		case c == '\'':
-			_, i = sqlQuoted(q, i, '\'')
+			var text string
+			text, i = sqlQuoted(q, i, c)
+			toks = append(toks, sqlToken{kind: sqlString, text: text})
 		case c == '"' || c == '`':
 			var text string
 			text, i = sqlQuoted(q, i, c)
-			toks = append(toks, sqlToken{text: text, quoted: true})
+			toks = append(toks, sqlToken{kind: sqlIdent, text: text})
 		case c == '[':
 			end := strings.IndexByte(q[i:], ']')
 			if end < 0 {
 				end = len(q) - i
 			}
-			toks = append(toks, sqlToken{text: q[i+1 : i+end], quoted: true})
+			toks = append(toks, sqlToken{kind: sqlIdent, text: q[i+1 : i+end]})
 			i += end + 1
 		case sqlWordByte(c):
 			j := i
 			for j < len(q) && sqlWordByte(q[j]) {
 				j++
 			}
-			toks = append(toks, sqlToken{text: q[i:j]})
+			toks = append(toks, sqlToken{kind: sqlWord, text: q[i:j]})
 			i = j
 		default:
-			toks = append(toks, sqlToken{text: q[i : i+1]})
+			toks = append(toks, sqlToken{kind: sqlPunct, text: q[i : i+1]})
 			i++
 		}
 	}
