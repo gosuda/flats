@@ -240,6 +240,17 @@ func (s *Service) lock(slug string) func() {
 }
 
 func (s *Service) flatDir(slug string) string { return filepath.Join(s.cfg.DataDir, "flats", slug) }
+
+// checkUnusedFlatDir rejects an unowned on-disk path before assigning a slug.
+// An old worker or a failed cleanup must never donate its data to a new flat.
+func (s *Service) checkUnusedFlatDir(slugName string) error {
+	if _, err := os.Lstat(s.flatDir(slugName)); err == nil {
+		return fmt.Errorf("%w: flat directory %q already exists", ErrConflict, slugName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check flat directory %q: %w", slugName, err)
+	}
+	return nil
+}
 func (s *Service) versionDir(slug string, n int) string {
 	return filepath.Join(s.flatDir(slug), "versions", strconv.Itoa(n))
 }
@@ -776,6 +787,9 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 		return FlatView{}, forbiddenf("flats are created by agents (MCP, CLI or API), not from the console")
 	}
 	if err := s.checkReserved(ctx, slugName, ""); err != nil {
+		return FlatView{}, err
+	}
+	if err := s.checkUnusedFlatDir(slugName); err != nil {
 		return FlatView{}, err
 	}
 	if name == "" {
