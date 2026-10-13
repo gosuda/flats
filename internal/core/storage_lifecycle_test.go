@@ -363,7 +363,7 @@ func TestRenameRecoveryRefusesAmbiguousStorage(t *testing.T) {
 
 // Creating a slug that already has a flat keeps reporting the existing flat,
 // not its directory as unowned storage.
-func TestCreateExistingFlatReportsExists(t *testing.T) {
+func TestCreateExistingFlatWithStorageReportsExists(t *testing.T) {
 	s, _ := newTestService(t)
 	createStorageFixture(t, s, "taken")
 	_, err := s.CreateFlat(t.Context(), "taken", "", ViaAPI)
