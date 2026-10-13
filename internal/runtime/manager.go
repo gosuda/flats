@@ -39,9 +39,9 @@ type Manager struct {
 	pending    chan struct{} // all admitted HTTP requests waiting or running
 	active     chan struct{} // HTTP requests allowed to reach worker bodies
 	websockets chan struct{} // independent budget for long-lived upgrades
-	once    sync.Once
-	sockDir string
-	initErr error
+	once       sync.Once
+	sockDir    string
+	initErr    error
 }
 
 var _ core.Runtime = (*Manager)(nil)
@@ -151,7 +151,7 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		MaxIdleConnsPerHost: 64,
 		// WebSockets keep transport connections for their full lifetime.
 		// Reserve enough connections for admitted HTTP traffic as well.
-		MaxConnsPerHost: maxPendingRequestsPerFlat + maxWebSocketsPerFlat,
+		MaxConnsPerHost:     maxPendingRequestsPerFlat + maxWebSocketsPerFlat,
 		IdleConnTimeout:     60 * time.Second,
 		DisableCompression:  true,
 		// Backstop only: the worker answers within its request timeout.
