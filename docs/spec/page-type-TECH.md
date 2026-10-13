@@ -55,7 +55,10 @@ Code loading (`import(...)`, `<script src>`, module imports) is not a data
 load and stays with the existing pinned-version check of `<script src>` and
 stylesheets; dynamic `import()` of code is not inspected.
 
-One warning per (file, origin), within the existing `maxWarnings` bound:
+Matches are found one at a time (no slice of every match), a repeated origin
+costs no allocation beyond the per-call match indices, and a file stops after
+`maxSeen` distinct origins. One warning per (file, origin), within the
+existing `maxWarnings` bound:
 "page loads data from <origin> while it renders, so a published version no
 longer fixes what readers see, and the page breaks offline" with fix "bundle
 the data file (e.g. data.csv) and load it by a relative path, or embed it in
@@ -100,8 +103,10 @@ to the general wording.
 ## Create (`internal/core`)
 
 `CreatePage(ctx, slug, name, via)` mirrors `CreateDocument`: `CreateFlat`,
-then `SaveVersion` of the starter bundle with `SaveMeta{Message: "created"}`.
-It does not publish. The starter `index.html` is a complete small page:
+then `SaveVersion` of the starter bundle with `SaveMeta{Message: "created"}`
+and an expected Draft revision of 0, so a save that reached the new flat
+between the two steps is kept and creation reports a conflict instead of
+replacing it. It does not publish. The starter `index.html` is a complete small page:
 doctype, `<meta charset="utf-8">`, the viewport tag, `<title>` and `<h1>`
 from the HTML-escaped name (slug when empty), and `:root` color tokens for
 light and dark as in `topic.design`. `flats.json` is

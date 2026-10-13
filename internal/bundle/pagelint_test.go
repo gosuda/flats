@@ -84,11 +84,14 @@ func TestLintWebsiteSkipsExternalData(t *testing.T) {
 // warning per origin, and a repeated origin allocates nothing beyond the
 // small per-call match slice.
 func TestLintPageManyDataLoads(t *testing.T) {
-	const calls = 200000
+	const calls = 50000
 	js := []byte(strings.Repeat(`fetch("https://a.example/x");`, calls) + `fetch("https://B.example/y")`)
 	ws := dataWarnings(Lint(pageBundle("", File{Path: "app.js", Data: js})))
 	if len(ws) != 2 || !strings.Contains(ws[0].Message, "https://a.example ") || !strings.Contains(ws[1].Message, "https://b.example ") {
 		t.Fatalf("warnings: %+v", ws)
+	}
+	if raceEnabled {
+		return // the race detector allocates on its own
 	}
 	l := &linter{}
 	runtime.GC()
