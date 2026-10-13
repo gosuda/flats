@@ -117,10 +117,45 @@ func TestWebSocketIdleReadDeadline(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 	ws := newWSConn(a, bufio.NewReader(a), false)
-	_, err := ws.readMessageWithin(20 * time.Millisecond)
+	ws.readIdleTimeout = 20 * time.Millisecond
+	_, err := ws.readMessage()
 	var ne net.Error
 	if !errors.As(err, &ne) || !ne.Timeout() {
 		t.Fatalf("idle read error = %v, want timeout", err)
+	}
+}
+
+func TestWebSocketControlFramesKeepReadAlive(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	server := newWSConn(a, bufio.NewReader(a), false)
+	peer := newWSConn(b, bufio.NewReader(b), true)
+	server.readIdleTimeout = 500 * time.Millisecond
+	result := make(chan error, 1)
+	go func() {
+		msg, err := server.readMessage()
+		if err == nil && msg != "ok" {
+			err = errors.New("unexpected message")
+		}
+		result <- err
+	}()
+	for i := 0; i < 4; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if err := peer.writeFrame(opPong, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := peer.writeFrame(opText, []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read stayed blocked")
 	}
 }
 

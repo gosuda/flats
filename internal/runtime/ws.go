@@ -65,9 +65,10 @@ func isWebSocketUpgrade(r *http.Request) bool {
 
 // wsConn is one WebSocket connection (server or client side).
 type wsConn struct {
-	c      net.Conn
-	br     *bufio.Reader
-	client bool // client frames are masked
+	c               net.Conn
+	br              *bufio.Reader
+	client          bool // client frames are masked
+	readIdleTimeout time.Duration
 
 	qmu          sync.Mutex // serializes enqueue and close; never held during socket writes
 	budget       wsByteBudget
@@ -227,17 +228,17 @@ func (ws *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 
 // readMessage returns the next data message, answering pings. A close frame
 // is returned as *wsCloseError.
-func (ws *wsConn) readMessageWithin(timeout time.Duration) (string, error) {
-	if err := ws.c.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return "", err
-	}
-	return ws.readMessage()
-}
-
 func (ws *wsConn) readMessage() (string, error) {
 	var msg []byte
 	inMsg := false
 	for {
+		// Re-arm after each completed frame, including ping/pong keepalives.
+		// A stalled or partial frame still has one finite read deadline.
+		if ws.readIdleTimeout > 0 {
+			if err := ws.c.SetReadDeadline(time.Now().Add(ws.readIdleTimeout)); err != nil {
+				return "", err
+			}
+		}
 		fin, op, p, err := ws.readFrame()
 		if err != nil {
 			return "", err
@@ -590,6 +591,7 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 		return
 	}
 	id := h.next.Add(1)
+	c.readIdleTimeout = wsReadIdleTimeout
 	c.sharedBudget = &h.budget
 	h.conns[id] = c
 	h.mu.Unlock()
@@ -613,7 +615,7 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 		return
 	}
 	for {
-		msg, err := c.readMessageWithin(wsReadIdleTimeout)
+		msg, err := c.readMessage()
 		if err != nil {
 			var ce *wsCloseError
 			var ne net.Error

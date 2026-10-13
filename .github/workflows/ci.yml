@@ -86,7 +86,7 @@ jobs:
       - name: FILES concurrency races
         run: go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
       - name: WebSocket resource limit races
-        run: go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|IdleReadDeadline|DefaultByteLimits)$'
+        run: go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|IdleReadDeadline|ControlFramesKeepReadAlive|DefaultByteLimits)$'
 
   install-script:
     strategy:
