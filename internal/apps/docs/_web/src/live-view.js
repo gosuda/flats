@@ -13,6 +13,7 @@ import {
   StateField,
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
+import { coalescedRefresh } from "./render-budget.js";
 import {
   activeLines,
   diagramBlocks,
@@ -29,6 +30,8 @@ import {
   sourceAction,
   updatePreview,
   trackFocusExit,
+  mapDiagramKeys,
+  remoteChange,
 } from "./diagram-preview.js";
 import {
   renderDiagrams,
@@ -264,12 +267,16 @@ class DiagramWidget extends WidgetType {
 // view plugin may not replace line breaks. The field tracks focus through an
 // effect, so a block renders again when the editor loses focus.
 const setFocus = StateEffect.define();
+const refreshRemote = StateEffect.define();
 // The document's reference definitions, rescanned when the text changes.
 function definitions(links) {
   return StateField.define({
     create: (state) => referenceDefinitions(state.doc, links),
     update: (value, tr) =>
-      tr.docChanged ? referenceDefinitions(tr.state.doc, links) : value,
+      (tr.docChanged && !remoteChange(tr)) ||
+      tr.effects.some((effect) => effect.is(refreshRemote))
+        ? referenceDefinitions(tr.state.doc, links)
+        : value,
   });
 }
 
@@ -310,7 +317,18 @@ function blocks(render, refs) {
     update(value, tr) {
       let focused = value.focused;
       for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
+      if (remoteChange(tr)) {
+        // Never run a full Markdown scan for each incoming Yjs transaction.
+        // Source stays editable while diagrams are rebuilt on a budget.
+        return {
+          ...value,
+          focused,
+          keys: mapDiagramKeys(value.keys, tr.changes),
+          decorations: Decoration.none,
+        };
+      }
       if (
+        tr.effects.some((effect) => effect.is(refreshRemote)) ||
         tr.effects.some((effect) => effect.is(setDiagramEditing)) ||
         focused !== value.focused ||
         tr.docChanged ||
@@ -344,12 +362,26 @@ function blocks(render, refs) {
     ViewPlugin.fromClass(
       class {
         constructor(view) {
+          this.remoteRefresh = coalescedRefresh(() => {
+            view.dispatch({ effects: refreshRemote.of(null) });
+          });
           this.cleanup = trackFocusExit(view.dom, () => {
             if (view.state.field(field).focused)
               view.dispatch({ effects: setFocus.of(false) });
           });
         }
+        update(update) {
+          if (
+            update.transactions.some(
+              (tr) => tr.docChanged && !remoteChange(tr),
+            )
+          )
+            this.remoteRefresh.cancel();
+          else if (update.transactions.some(remoteChange))
+            this.remoteRefresh.request();
+        }
         destroy() {
+          this.remoteRefresh.cancel();
           this.cleanup();
         }
       },
