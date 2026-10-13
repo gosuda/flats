@@ -44,9 +44,12 @@ func sdkBoundNet(t *testing.T, failure error) (*Net, *sdkBoundExposure) {
 		if err != nil {
 			return nil, err
 		}
-		exp = &sdkBoundExposure{fakeExposure: f.(*fakeExposure), err: failure, closed: make(chan struct{}), autoClosed: make(chan struct{})}
-		go func() { <-ctx.Done(); _ = exp.Close(); close(exp.autoClosed) }()
-		return exp, nil
+		bound := &sdkBoundExposure{fakeExposure: f.(*fakeExposure), err: failure, closed: make(chan struct{}), autoClosed: make(chan struct{})}
+		go func() { <-ctx.Done(); _ = bound.Close(); close(bound.autoClosed) }()
+		if exp == nil {
+			exp = bound // later exposures of a re-served slug are not tracked
+		}
+		return bound, nil
 	}
 	if failure != nil {
 		runHTTP := n.runHTTP
@@ -217,5 +220,50 @@ func TestPortalCloseKeepsFailedUnpublishedServe(t *testing.T) {
 	}
 	if err := n.Stop("late"); err == nil {
 		t.Fatal("Stop reported success for unconfirmed unpublished teardown")
+	}
+}
+
+// A failed unregister cannot be retried through the SDK, but nothing renews
+// the lease after Close returns. Once the lease must have expired, a retry
+// confirms the teardown, and Serve can register the slug afresh.
+func TestPortalFailedUnregisterSettlesAfterLeaseExpiry(t *testing.T) {
+	for _, via := range []string{"Stop", "Serve"} {
+		t.Run(via, func(t *testing.T) {
+			failure := errors.New("relay unreachable")
+			n, exp := sdkBoundNet(t, failure)
+			n.leaseTTL = 200 * time.Millisecond
+			original := n.entry("blog")
+
+			if err := n.Stop("blog"); !errors.Is(err, failure) {
+				t.Fatalf("first Stop = %v, want unregister error", err)
+			}
+			if _, err := n.Serve(t.Context(), "blog", http.NotFoundHandler(), false); !errors.Is(err, failure) {
+				t.Fatalf("Serve before lease expiry = %v, want unregister error", err)
+			}
+			if n.entry("blog") != original {
+				t.Fatal("teardown confirmed before the lease expired")
+			}
+			time.Sleep(n.leaseTTL)
+
+			switch via {
+			case "Stop":
+				if err := n.Stop("blog"); err != nil {
+					t.Fatalf("Stop after lease expiry = %v", err)
+				}
+				if n.entry("blog") != nil {
+					t.Fatal("confirmed Stop retained the entry")
+				}
+			case "Serve":
+				if _, err := n.Serve(t.Context(), "blog", http.NotFoundHandler(), false); err != nil {
+					t.Fatalf("Serve after lease expiry = %v", err)
+				}
+				if e := n.entry("blog"); e == nil || e == original {
+					t.Fatal("Serve did not register a fresh exposure")
+				}
+			}
+			if count := exp.closeCount(); count != 1 {
+				t.Fatalf("SDK Close count = %d, want 1", count)
+			}
+		})
 	}
 }

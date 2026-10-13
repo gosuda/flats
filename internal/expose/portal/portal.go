@@ -106,6 +106,20 @@ type Net struct {
 	closed       bool
 	entries      map[string]*entry
 	locks        map[string]*sync.Mutex // per-slug Serve/Stop/SetHidden serialization
+	leaseTTL     time.Duration          // tests shorten it; zero means sdkLeaseTTL
+}
+
+// sdkLeaseTTL is the lease lifetime the Portal SDK requests and renews
+// (portal-tunnel v2.6.3 sdk/listener.go defaultLeaseTTL). Once SDK Close has
+// returned, nothing renews the lease, so a relay that missed the unregister
+// request drops it within this time.
+const sdkLeaseTTL = 2 * time.Minute
+
+func (n *Net) leaseExpiry() time.Duration {
+	if n.leaseTTL > 0 {
+		return n.leaseTTL
+	}
+	return sdkLeaseTTL
 }
 
 var _ core.PublicNet = (*Net)(nil)
@@ -123,7 +137,8 @@ type entry struct {
 	stopping    bool
 	closeResult <-chan error // one SDK Close attempt, shared across retries
 	closeDone   bool
-	closeErr    error // first error is sticky: SDK Close uses sync.Once
+	closeErr    error     // the first Close error; SDK Close uses sync.Once
+	closedAt    time.Time // when that Close returned
 
 	mu      sync.Mutex
 	hidden  bool
@@ -282,8 +297,15 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		stopping := e.stopping
 		e.mu.Unlock()
 		if stopping {
-			return "", fmt.Errorf("portal: %s teardown not confirmed", slug)
+			// Never revive an exposure being torn down. Finish that teardown
+			// first; a confirmed one lets this Serve register afresh.
+			if err := n.finishStop(slug, e); err != nil {
+				return "", fmt.Errorf("portal: %s teardown not confirmed: %w", slug, err)
+			}
+			e = nil
 		}
+	}
+	if e != nil {
 		e.handler.set(h)
 		if err := n.setHidden(e, hidden); err != nil {
 			return "", err
@@ -463,6 +485,12 @@ func (n *Net) stop(slug string) error {
 	if e == nil {
 		return nil
 	}
+	return n.finishStop(slug, e)
+}
+
+// finishStop tears e down, or resumes its pending teardown, and forgets it
+// once confirmed. The slug lock is held.
+func (n *Net) finishStop(slug string, e *entry) error {
 	e.mu.Lock()
 	e.stopping = true
 	e.mu.Unlock()
@@ -511,6 +539,7 @@ func (n *Net) stopEntry(e *entry) error {
 		select {
 		case err := <-e.closeResult:
 			e.closeDone = true
+			e.closedAt = time.Now()
 			if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 				e.closeErr = fmt.Errorf("portal: close %s: %w", e.slug, err)
 			}
@@ -518,8 +547,12 @@ func (n *Net) stopEntry(e *entry) error {
 			errs = append(errs, fmt.Errorf("portal: %s exposure close exceeded %s: %w", e.slug, n.cfg.ShutdownTimeout, ctx.Err()))
 		}
 	}
+	// A failed unregister stays unconfirmed until the relay must have
+	// dropped the unrenewed lease; calling Close again would return nil.
 	if e.closeErr != nil {
-		errs = append(errs, e.closeErr)
+		if left := n.leaseExpiry() - time.Since(e.closedAt); left > 0 {
+			errs = append(errs, fmt.Errorf("%w (the relay drops the lease within %s)", e.closeErr, left.Round(time.Second)))
+		}
 	}
 	if wait(e.ln.pumped, "listener pump") && e.ln.err != nil && !errors.Is(e.ln.err, net.ErrClosed) && !errors.Is(e.ln.err, context.Canceled) {
 		errs = append(errs, fmt.Errorf("portal: %s listener pump: %w", e.slug, e.ln.err))
