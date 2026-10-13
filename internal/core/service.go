@@ -789,7 +789,13 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	if err := s.checkReserved(ctx, slugName, ""); err != nil {
 		return FlatView{}, err
 	}
-	if err := s.checkUnusedFlatDir(slugName); err != nil {
+	// An existing flat owns its directory: leave that case to the "already
+	// exists" conflict below.
+	if _, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
+		if err := s.checkUnusedFlatDir(slugName); err != nil {
+			return FlatView{}, err
+		}
+	} else if err != nil {
 		return FlatView{}, err
 	}
 	if name == "" {

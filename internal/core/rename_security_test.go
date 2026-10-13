@@ -197,3 +197,20 @@ func TestRenameKeepsCapturedSettings(t *testing.T) {
 		t.Fatalf("rebuilt worker MODE = %q, want the captured snapshot", got)
 	}
 }
+
+// Creating a slug that already has a flat keeps reporting the existing flat,
+// not its directory as unowned storage.
+func TestCreateExistingFlatReportsExists(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	if _, err := s.SaveVersion(ctx, "taken", []bundle.File{{Path: "index.html", Data: []byte("x")}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(s.flatDir("taken")); err != nil {
+		t.Fatalf("fixture has no directory: %v", err)
+	}
+	_, err := s.CreateFlat(ctx, "taken", "", ViaAPI)
+	if !errors.Is(err, ErrConflict) || !errors.Is(err, store.ErrExists) {
+		t.Fatalf("create over an existing flat: %v", err)
+	}
+}
