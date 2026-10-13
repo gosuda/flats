@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -132,5 +133,42 @@ func TestOpenRegularRejectsReplacements(t *testing.T) {
 				t.Fatal("opened a path changed after directory traversal")
 			}
 		})
+	}
+}
+
+// TestOpenRegularKeepsRootAfterRename checks that a walk stays on the
+// directory it opened even if its pathname is later pointed elsewhere.
+func TestOpenRegularKeepsRootAfterRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("cannot rename an open directory on Windows")
+	}
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "dist")
+	writeTestFile(t, filepath.Join(dir, "index.html"), "safe")
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	seen, err := root.Lstat("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, filepath.Join(parent, "old-dist")); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	writeTestFile(t, filepath.Join(outside, "index.html"), "evil")
+	if err := os.Symlink(outside, dir); err != nil {
+		t.Fatal(err)
+	}
+	f, _, err := OpenRegular(root, "index.html", seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil || string(data) != "safe" {
+		t.Fatalf("read %q (err %v) from the replacement root", data, err)
 	}
 }

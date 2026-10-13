@@ -290,3 +290,54 @@ func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// TestFromDirSwapRaceNeverLeaks races FromDir against a writer that keeps
+// replacing a file with a symlink to a file outside the directory. A failure
+// is always a real leak; a pass on vulnerable code is possible.
+func TestFromDirSwapRaceNeverLeaks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "a", "page.html")
+	if err := os.WriteFile(target, []byte("public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "a", "link.tmp")
+	plain := filepath.Join(dir, "a", "plain.tmp")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Symlink(secret, link)
+			_ = os.Rename(link, target)
+			_ = os.WriteFile(plain, []byte("public"), 0o644)
+			_ = os.Rename(plain, target)
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for range 1000 {
+		files, err := FromDir(dir, lim)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if strings.Contains(string(f.Data), "SECRET") {
+				t.Fatalf("%s carried the outside file into the bundle", f.Path)
+			}
+		}
+	}
+}
