@@ -56,7 +56,9 @@ The docs handler is the worker plus a thin host wrapper:
 * Every asset response has `X-Content-Type-Options: nosniff` and a sandboxing
   Content Security Policy that forbids scripts, connections and same-origin
   document access; it allows only inline styles and same-site or `data:`
-  images, so an SVG opened directly keeps its styling.
+  images, so an SVG or image opened directly still renders. Audio and video
+  get `default-src 'none'; media-src 'self'` without `sandbox`, because
+  browsers do not play a media file opened in a sandboxed document.
   Only known image (raster and SVG), media, font, and plain-text extensions are
   served inline, with fixed MIME types. Other files, including HTML,
   JavaScript, compressed SVG (`.svgz`) and PDF, use `application/octet-stream`

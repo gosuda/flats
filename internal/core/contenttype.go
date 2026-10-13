@@ -57,9 +57,15 @@ func trustedAccess(r *http.Request, public bool) *http.Request {
 
 // docsAssetCSP keeps every bundle asset inert: no scripts (sandbox, no
 // script-src), no plugins, frames or connections, and an opaque origin. Inline
-// styles and same-site or data: images stay allowed so an SVG opened directly
-// still renders its own styling.
+// styles and same-site or data: images stay allowed so an SVG or image opened
+// directly still renders.
 const docsAssetCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; sandbox"
+
+// docsMediaCSP is for audio and video. Browsers do not play a media file opened
+// directly in a sandboxed document, so it omits sandbox; with a fixed media type
+// and nosniff the browser's media document has nothing scriptable, and
+// default-src 'none' still forbids scripts.
+const docsMediaCSP = "default-src 'none'; media-src 'self'; frame-ancestors 'none'"
 
 func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 	listed := make(map[string]bool, len(assets))
@@ -71,8 +77,13 @@ func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && listed[r.URL.Path] {
 			// Bundle assets are untrusted, including assets saved before this policy.
 			// Never let an asset become an active document on the docs origin.
-			w.Header().Set("Content-Security-Policy", docsAssetCSP)
-			if typ := docsInlineMIME(r.URL.Path); typ != "" {
+			typ := docsInlineMIME(r.URL.Path)
+			if strings.HasPrefix(typ, "audio/") || strings.HasPrefix(typ, "video/") {
+				w.Header().Set("Content-Security-Policy", docsMediaCSP)
+			} else {
+				w.Header().Set("Content-Security-Policy", docsAssetCSP)
+			}
+			if typ != "" {
 				w.Header().Set("Content-Type", typ)
 			} else {
 				w.Header().Set("Content-Type", "application/octet-stream")

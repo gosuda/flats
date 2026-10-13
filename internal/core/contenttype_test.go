@@ -644,6 +644,7 @@ func TestDocsAssetContentSecurity(t *testing.T) {
 		{"picture.PNG", "image/png", false},
 		{"picture.jpeg", "image/jpeg", false},
 		{"clip.mp4", "video/mp4", false},
+		{"tone.MP3", "audio/mpeg", false},
 		{"font.woff2", "font/woff2", false},
 		{"notes.txt", "text/plain; charset=utf-8", false},
 		{"table.csv", "text/plain; charset=utf-8", false},
@@ -688,8 +689,12 @@ func TestDocsAssetContentSecurity(t *testing.T) {
 			if got := r.Header().Get("Content-Disposition"); got != wantDisposition {
 				t.Errorf("content disposition = %q, want %q", got, wantDisposition)
 			}
-			if got := r.Header().Get("Content-Security-Policy"); got != "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; sandbox" {
-				t.Errorf("CSP = %q", got)
+			wantCSP := "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; sandbox"
+			if strings.HasPrefix(tt.contentType, "audio/") || strings.HasPrefix(tt.contentType, "video/") {
+				wantCSP = "default-src 'none'; media-src 'self'; frame-ancestors 'none'"
+			}
+			if got := r.Header().Get("Content-Security-Policy"); got != wantCSP {
+				t.Errorf("CSP = %q, want %q", got, wantCSP)
 			}
 			if got := r.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 				t.Errorf("X-Content-Type-Options = %q", got)
