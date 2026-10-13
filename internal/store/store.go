@@ -320,6 +320,20 @@ func Open(path string) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// Sync makes every committed transaction durable. The database uses WAL with
+// synchronous=NORMAL, where a commit can still roll back after a power loss
+// until the next checkpoint syncs it; a complete checkpoint ends that window.
+func (s *Store) Sync(ctx context.Context) error {
+	var busy, frames, checkpointed int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(FULL)").Scan(&busy, &frames, &checkpointed); err != nil {
+		return fmt.Errorf("checkpoint database: %w", err)
+	}
+	if busy != 0 {
+		return errors.New("checkpoint database: another connection kept it busy")
+	}
+	return nil
+}
+
 func unix(t time.Time) int64 { return t.UnixMilli() }
 func fromUnix(ms int64) time.Time {
 	return time.UnixMilli(ms).UTC()

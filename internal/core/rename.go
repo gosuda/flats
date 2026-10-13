@@ -141,7 +141,12 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		}
 		return FlatView{}, err
 	}
-	if err := s.finishStorageOperation(op); err != nil {
+	// Keep the journal until the metadata commit is durable: after a power
+	// loss the database could otherwise return to the old slug with nothing
+	// left that links it to the moved directory.
+	if err := s.st.Sync(context.WithoutCancel(ctx)); err != nil {
+		s.logf("rename %s -> %s committed; its journal stays until the next startup because the database could not be synced: %v", from, to, err)
+	} else if err := s.finishStorageOperation(op); err != nil {
 		// The database and storage are committed; startup can remove the
 		// remaining journal. Do not undo or interrupt the in-memory rename.
 		s.logf("rename %s -> %s committed but journal cleanup failed: %v", from, to, err)

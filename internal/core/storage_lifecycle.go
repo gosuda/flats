@@ -332,7 +332,12 @@ func (s *Service) removeDeletedStorage(op storageOperation, move bool) error {
 // discardDeletedStorage runs only after the metadata deletion commits and
 // all serving runtimes have stopped. On failure its journal stays in place,
 // preventing slug reuse until the next successful recovery.
-func (s *Service) discardDeletedStorage(op storageOperation) error {
+func (s *Service) discardDeletedStorage(ctx context.Context, op storageOperation) error {
+	// Remove nothing until the deletion is durable: after a power loss the
+	// database could otherwise bring back a flat whose files are gone.
+	if err := s.st.Sync(ctx); err != nil {
+		return err
+	}
 	source, trash := s.flatDir(op.From), s.deletedStorageDir(op.From)
 	trashExists, err := pathExists(trash)
 	if err != nil {
@@ -426,6 +431,13 @@ func (s *Service) recoverStorageOperations(ctx context.Context) error {
 	operations, err := s.storageOperations()
 	if err != nil {
 		return err
+	}
+	if len(operations) > 0 {
+		// Decide from metadata that is durable, not from commits still
+		// only in the write-ahead log.
+		if err := s.st.Sync(ctx); err != nil {
+			return err
+		}
 	}
 	for _, op := range operations {
 		switch op.Kind {

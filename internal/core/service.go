@@ -1779,7 +1779,7 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 			}
 		}
 	}
-	if err := s.discardDeletedStorage(op); err != nil {
+	if err := s.discardDeletedStorage(context.WithoutCancel(ctx), op); err != nil {
 		return ActionResult{}, fmt.Errorf("flat %q metadata deleted but storage cleanup is incomplete: %w", slugName, err)
 	}
 	s.logf("flat %s deleted via %s", slugName, via)
