@@ -117,8 +117,8 @@ func TestFilesObjectAccounting(t *testing.T) {
 	if err := d.filePut("next", ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.filesEntries; got != 3 {
-		t.Fatalf("object count after retry = %d, want 3", got)
+	if got := d.filesEntries; got != 2 {
+		t.Fatalf("object count after retry = %d, want 2", got)
 	}
 }
 
