@@ -190,8 +190,9 @@ header names, CR/LF/NUL values and hop-by-hop/framing headers are discarded.
 Unhandled exception/invalid response/memory exhaustion becomes generic 500;
 deadline exceeded becomes 504; details go to runtime logs via get_logs. An
 error does not undo already committed DB/FILES writes. console log/info/debug/
-trace/warn/error is supported; lines truncate at 8 KiB, rate limit 20/s with
-burst 100. Do not log secrets.
+trace/warn/error is supported; lines truncate at 8 KiB after secret values
+are redacted, and a line over 64 KiB is replaced by a note with its size; rate
+limit 20/s with burst 100. Do not log secrets.
 
 ### WebSocket
 
@@ -728,7 +729,7 @@ declare namespace Flats {
     | Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array
     | Int32Array | Uint32Array | BigInt64Array | BigUint64Array;
 
-  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; 20/s, burst 100. */
+  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; a line over 64 KiB becomes a note with its size; 20/s, burst 100. */
   interface Console {
     log(...data: unknown[]): void;
     info(...data: unknown[]): void;

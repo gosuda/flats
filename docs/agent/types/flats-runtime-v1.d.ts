@@ -264,7 +264,7 @@ declare namespace Flats {
     | Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array
     | Int32Array | Uint32Array | BigInt64Array | BigUint64Array;
 
-  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; 20/s, burst 100. */
+  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; a line over 64 KiB becomes a note with its size; 20/s, burst 100. */
   interface Console {
     log(...data: unknown[]): void;
     info(...data: unknown[]): void;

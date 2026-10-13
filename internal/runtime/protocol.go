@@ -33,9 +33,17 @@ const (
 	MaxFilesTotal      = 1 << 30
 	MaxQueryResult     = 16 << 20
 	MaxWSMessage       = 1 << 20
-	maxLogLine         = 8 << 10
-	omittedLogLine     = "log line omitted (exceeds 8 KiB)"
+	// maxLogLine is the longest log line the worker forwards. The host
+	// removes secret values from each complete line and only then truncates
+	// it for storage, so the worker never cuts a line: a cut could split a
+	// secret and leave a prefix the host cannot recognize. Longer lines are
+	// replaced by a note that keeps only their size.
+	maxLogLine = 64 << 10
 )
+
+func omittedLogLine(n int) string {
+	return fmt.Sprintf("log line omitted: %d bytes is more than the %d KiB limit", n, maxLogLine>>10)
+}
 
 // workerSpec is sent to the child on stdin as one JSON line. Secrets travel
 // only here: never in argv or in the child's environment.
@@ -111,10 +119,8 @@ func (l *childLog) send(m childMsg) {
 
 // Logf logs one line (rate limited; control messages are never dropped).
 func (l *childLog) Log(level, msg string) {
-	// The parent redacts exact secret values, including secrets larger than
-	// this limit. A truncated prefix would bypass that redaction.
 	if len(msg) > maxLogLine {
-		msg = omittedLogLine
+		msg = omittedLogLine(len(msg))
 	}
 	l.mu.Lock()
 	now := time.Now()
@@ -144,31 +150,32 @@ type lineWriter struct {
 	log     *childLog
 	level   string
 	buf     []byte
-	omitted bool
+	omitted int // length of the current line once it exceeds maxLogLine
 }
 
-// appendFragment buffers a line only while its complete contents can be logged.
-// Once it exceeds the limit, keep no prefix that could contain part of a secret.
+// appendFragment buffers a line only while it fits maxLogLine. Once it is
+// longer, keep no part of it (see maxLogLine), only count its length.
 func (w *lineWriter) appendFragment(p []byte) {
-	if w.omitted {
+	if w.omitted > 0 {
+		w.omitted += len(p)
 		return
 	}
 	if len(p) > maxLogLine-len(w.buf) {
+		w.omitted = len(w.buf) + len(p)
 		w.buf = w.buf[:0]
-		w.omitted = true
 		return
 	}
 	w.buf = append(w.buf, p...)
 }
 
 func (w *lineWriter) emit() {
-	if w.omitted {
-		w.log.Log(w.level, omittedLogLine)
+	if w.omitted > 0 {
+		w.log.Log(w.level, omittedLogLine(w.omitted))
 	} else if line := strings.TrimRight(string(w.buf), "\r"); line != "" {
 		w.log.Log(w.level, line)
 	}
 	w.buf = w.buf[:0]
-	w.omitted = false
+	w.omitted = 0
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {

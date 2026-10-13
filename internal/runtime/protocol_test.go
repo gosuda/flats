@@ -25,9 +25,11 @@ func readLogMessages(t *testing.T, b []byte) []childMsg {
 	}
 }
 
+// The worker never cuts a log line (the host redacts secrets in complete lines
+// before truncating), so a line is forwarded whole or replaced by a note.
 func TestChildLogOmitsLongMessagesWithoutPrefix(t *testing.T) {
 	const prefix = "sensitive-secret-prefix"
-	for _, size := range []int{1, maxLogLine - 1, maxLogLine, maxLogLine + 1, 64 << 10} {
+	for _, size := range []int{1, 8 << 10, 8<<10 + 1, maxLogLine - 1, maxLogLine, maxLogLine + 1, 128 << 10} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			secret := strings.Repeat("z", size)
 			if size >= len(prefix) {
@@ -42,10 +44,10 @@ func TestChildLogOmitsLongMessagesWithoutPrefix(t *testing.T) {
 			}
 			want := secret
 			if size > maxLogLine {
-				want = omittedLogLine
+				want = omittedLogLine(size)
 			}
 			if got[0].Msg != want {
-				t.Fatalf("log = %q, want %q", got[0].Msg, want)
+				t.Fatalf("log = %.80q, want %.80q", got[0].Msg, want)
 			}
 			if size > maxLogLine && strings.Contains(raw.String(), prefix) {
 				t.Fatal("partial secret leaked")
@@ -56,16 +58,13 @@ func TestChildLogOmitsLongMessagesWithoutPrefix(t *testing.T) {
 
 func TestLineWriterDropsWholeOversizedLine(t *testing.T) {
 	const prefix = "sensitive-secret-prefix"
-	secret := prefix + strings.Repeat("z", (64<<10)-len(prefix))
-	for _, chunk := range []int{1, maxLogLine - 1, maxLogLine + 1, len(secret) + 10} {
+	secret := prefix + strings.Repeat("z", maxLogLine+1-len(prefix))
+	for _, chunk := range []int{1, 8 << 10, maxLogLine - 1, maxLogLine + 1, len(secret) + 10} {
 		var raw bytes.Buffer
 		log := newChildLog(&raw)
 		w := &lineWriter{log: log, level: "info"}
 		for i := 0; i < len(secret); i += chunk {
-			end := i + chunk
-			if end > len(secret) {
-				end = len(secret)
-			}
+			end := min(i+chunk, len(secret))
 			n, err := w.Write([]byte(secret[i:end]))
 			if err != nil || n != end-i {
 				t.Fatalf("Write = %d, %v", n, err)
@@ -79,8 +78,9 @@ func TestLineWriterDropsWholeOversizedLine(t *testing.T) {
 		}
 		w.Flush()
 		got := readLogMessages(t, raw.Bytes())
-		if len(got) != 2 || got[0].Msg != omittedLogLine || got[1].Msg != "okay" {
-			t.Fatalf("chunk %d: log = %#v", chunk, got)
+		// The omitted size counts the line's bytes before the newline.
+		if len(got) != 2 || got[0].Msg != omittedLogLine(len(secret)+1) || got[1].Msg != "okay" {
+			t.Fatalf("chunk %d: log = %.200v", chunk, got)
 		}
 		if strings.Contains(raw.String(), prefix) {
 			t.Fatalf("chunk %d leaked secret", chunk)
@@ -91,21 +91,23 @@ func TestLineWriterDropsWholeOversizedLine(t *testing.T) {
 func TestLineWriterFlushDropsOverlongUnterminatedLine(t *testing.T) {
 	var raw bytes.Buffer
 	w := &lineWriter{log: newChildLog(&raw), level: "error"}
-	secret := strings.Repeat("S", 64<<10)
+	secret := strings.Repeat("S", 128<<10)
 	w.Write([]byte(secret))
 	w.Flush()
 	w.Write([]byte("safe\n"))
 	got := readLogMessages(t, raw.Bytes())
-	if len(got) != 2 || got[0].Msg != omittedLogLine || got[1].Msg != "safe" {
-		t.Fatalf("log = %#v", got)
+	if len(got) != 2 || got[0].Msg != omittedLogLine(len(secret)) || got[1].Msg != "safe" {
+		t.Fatalf("log = %.200v", got)
 	}
 	if strings.Contains(raw.String(), "SSSSSSSS") {
 		t.Fatal("partial secret leaked")
 	}
 }
 
+// Lines longer than the 8 KiB the host stores are still forwarded whole, so the
+// host can remove secrets and keep a truncated, readable prefix.
 func TestLineWriterAcceptsBoundedLines(t *testing.T) {
-	for _, size := range []int{maxLogLine - 1, maxLogLine} {
+	for _, size := range []int{8<<10 - 1, 8 << 10, 8<<10 + 1, maxLogLine - 1, maxLogLine} {
 		var raw bytes.Buffer
 		w := &lineWriter{log: newChildLog(&raw), level: "info"}
 		msg := strings.Repeat("y", size)
@@ -113,7 +115,7 @@ func TestLineWriterAcceptsBoundedLines(t *testing.T) {
 		w.Write([]byte(msg[3:] + "\n"))
 		got := readLogMessages(t, raw.Bytes())
 		if len(got) != 1 || got[0].Msg != msg {
-			t.Fatalf("size %d: %v", size, got)
+			t.Fatalf("size %d: %.200v", size, got)
 		}
 	}
 }
