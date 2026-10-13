@@ -55,7 +55,7 @@ Applies to websites (the `flat` type, static and server) and pages.
 5. **A failed deployment leaves the version in place.** The version stays in
    the list, and the previously live version keeps serving.
 6. **Versions are never deleted automatically.** Each flat has a version quota,
-   a count of versions with a host default that each flat can override. When it
+   a count of versions with a host default (20) that each flat can override. When it
    is full, a request to create a version is refused and nothing is
    created. The refusal tells the user to delete older versions or raise the
    quota. The check runs when the request is made and again when an approval
@@ -70,9 +70,10 @@ Applies to websites (the `flat` type, static and server) and pages.
    the request returns an approval link for the user, and nothing is deleted
    until the user opens it and explicitly approves.
 10. **Tool names follow the model.** A tool that only changes the Draft never
-    has *version* in its name: Draft saves go through `save_draft`, and the only
-    tool that creates a version is `create_version`. The current `save_version`
-    is replaced, not kept as an alias.
+    has *version* in its name: Draft saves go through `save_draft` and
+    `save_draft_from_dir`, and the only tool that creates a version is
+    `create_version`. `save_version` and `save_version_from_dir` are replaced,
+    not kept as aliases.
 
 ## Revision model
 
@@ -87,8 +88,12 @@ people and agents edit live.
    directions.
 3. **Live concurrent editing.** People and agents can edit the same content at
    the same time.
-4. **Every edit unit creates a revision.** What one edit unit is remains open
-   (see [Open questions](#open-questions)).
+4. **Every edit unit creates a revision.**
+   - One agent write call (a save or a live edit through MCP) is one revision.
+   - A person's live edits are grouped per editor. A group closes, and becomes
+     one revision, when that editor has been idle for a while or a maximum
+     interval has passed since the group began.
+   - A rollback is one revision.
 5. **A revision covers the whole flat.** It records every document or file of
    the flat at that point, so files that belong together (a design's index and
    its artboards, several documents) stay consistent. Assets that a retained
@@ -103,18 +108,22 @@ people and agents edit live.
      revision by itself to make room.
    - An unpinned revision counts toward the revision quota again from then on.
    - Both quotas count revisions only, with no byte limit, and have a host
-     default that each flat can override.
+     default that each flat can override: 100 revisions and 20 pins.
 7. **Overwritten content is kept as a revision.** When a save replaces live
    content that people had changed, the content before the overwrite is a
    revision like any other. There is no separate store for overwritten text.
-8. **Rollback creates a new revision.** Rolling back to revision R creates a
+8. **Documents are written with document tools.** `save_document` writes one
+   document or a whole docs bundle with several documents and assets;
+   `update_document` edits live text. Revision-model content is never written
+   through a Version-model tool.
+9. **Rollback creates a new revision.** Rolling back to revision R creates a
    new revision whose content equals R's whole flat. History is never
    rewritten, and the rollback itself can be rolled back. To people editing at
    that moment, a rollback is one more concurrent edit.
-9. **Revisions are managed inside the content.** Listing, viewing, pinning,
-   unpinning and rolling back happen in the content's own editor, and through
-   MCP for agents, not in the console.
-10. **Only writers manage revisions.** Every revision operation needs write
+10. **Revisions are managed inside the content.** Listing, viewing, pinning,
+    unpinning and rolling back happen in the content's own editor, and through
+    MCP for agents, not in the console.
+11. **Only writers manage revisions.** Every revision operation needs write
     access to the content.
     - Today write access means the Private route (Local loopback, or Tailscale
       as the existing tailnet ACL allows) and MCP. A Public route is read-only:
@@ -159,13 +168,8 @@ Compared with `main` at `aa5bf97`:
 
 ## Open questions
 
-- **Edit unit.** Real-time editing sends a change per keystroke, which is far
-  too fine for a revision. Candidates: one revision per agent write call; for
-  people, edits grouped per editor by idle time or by a maximum interval.
-- **Quota values.** Default counts for the version, revision and pin quotas.
-- **Other tool names.** Names for the other Draft-only tools
-  (`save_version_from_dir`) and for writing a whole docs bundle once
-  `save_version` is gone.
+- **Grouping times.** The idle time and maximum interval that close a
+  person's group of edits.
 - **Migration.** Existing documents would get their current content as the
   first revision. Existing published versions keep their numbers; a flat that
   already holds more versions than its quota needs a rule.
