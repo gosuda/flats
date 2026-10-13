@@ -47,29 +47,38 @@ database or file storage.
    (`topic.approvals`). `rollback` returns to an earlier version; a page has
    no data, so `restore_data` is refused.
 
-### Charts and data
+### Write a document that reads well
 
-The page contract in `topic.design` applies (title, viewport, favicon,
-both color schemes, phone width, accessibility). For charts in particular:
+The page contract and design guidance in `topic.design` apply; charts and
+diagrams are in `topic.page.visuals`. For documents in particular:
 
-* **Library.** Bundle the chart library file (Chart.js, D3, ECharts, Vega,
-  Plotly...) into `files`, or load it from a CDN URL that names an exact
-  version, with an `integrity` hash. Inline SVG needs no library.
-* **Data.** Embed the data in the HTML (a `<script type="application/json">`
-  block or a JS constant) or bundle it as a file loaded by a relative path
-  (`fetch("data/sales.csv")`). Loading data from another origin while the page
-  renders is a save warning: the published version then no longer fixes what
-  readers see, and the page breaks offline.
-* **Readable in both schemes.** Take series, axis and grid colors from the
-  page's color tokens, re-read them when `prefers-color-scheme` changes (or
-  draw with `currentColor`), and keep at least 3:1 contrast against the
-  background. Do not rely on color alone: label series directly or add a
-  legend with distinct markers.
-* **Text alternative.** Give every chart a caption that states its point
-  (`<figure>` with `<figcaption>`), and the exact numbers in a table, a
-  `<details>` block or an `aria-label`.
-* **Phone width.** Charts resize with their container (`max-width: 100%`,
-  a responsive option, or an SVG `viewBox`); a wide chart may scroll inside
-  its own `overflow-x: auto` box.
-* **First frame.** Render charts on load, not on scroll, and respect
-  `prefers-reduced-motion` for chart animations.
+* **Plan the design in the file.** Before writing the page, put a short
+  design plan at the top of its `<style>` as tokens: four to six named color
+  tokens, font tokens for the display, body and (if needed) data roles, and a
+  one-line comment naming the layout. Build every later rule from those
+  tokens.
+* **Lead with the point.** Open with the title, one or two sentences that
+  state the conclusion, and only then the evidence. A long document gets a
+  short contents list linking to section ids (`<a href="#costs">`).
+* **Structure is information.** Headings, eyebrows, numbering and dividers
+  should say something true about the content: number steps only when the
+  order matters, and use one heading level per level of the outline.
+* **From Markdown or notes.** When the user gives you a Markdown document or
+  notes to turn into a page, keep their substance and wording, but design the
+  page instead of transcribing it line by line: tables become real tables,
+  figures become charts where the numbers support one.
+* **Reading width.** Body text about 65 characters wide; tables, code and
+  wide figures may be wider inside their own `overflow-x: auto` box.
+* **Print.** People print and save documents as PDF. Add an `@media print`
+  block: light background and dark text regardless of the scheme, no
+  shadows or sticky elements, `break-inside: avoid` on figures and tables,
+  and hide controls that do nothing on paper.
+* **Data stays with the page.** Embed the data in the HTML (a
+  `<script type="application/json">` block or a JS constant) or bundle it as
+  a file loaded by a relative path (`fetch("data/sales.csv")`). Loading data
+  from another origin while the page renders is a save warning: the
+  published version then no longer fixes what readers see, and the page
+  breaks offline.
+* **Libraries.** Bundle a chart or diagram library into `files`, or load it
+  from a CDN URL that names an exact version, with an `integrity` hash. Use
+  one only when it does real work; inline SVG covers most document charts.

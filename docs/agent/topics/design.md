@@ -73,6 +73,9 @@ theme file, existing component styles), then these defaults.
   share can take a bolder, editorial treatment with one deliberate risk.
 * **Ground it in the subject.** Use real content, never lorem ipsum, and at
   least one detail only this subject has (its units, terms, conventions).
+* **Plan with tokens.** Settle the palette (four to six named colors) and
+  the type roles as tokens at the top of the stylesheet before writing the
+  page, and derive every later color and font from them.
 * **Neutrals on purpose.** Tint greys slightly toward the accent instead of
   using a default mid-grey; pick white or near-black backgrounds only by
   choice.
@@ -83,19 +86,38 @@ theme file, existing component styles), then these defaults.
   `font-variant-numeric: tabular-nums` where digits line up.
 * **Layout.** Space sibling groups with flex or grid `gap`, not per-element
   margins. Give repeated items (cards, rows, badges) the same edges and
-  padding. Use borders, fills and shadows to set off the one element that
-  needs it, not every block.
+  padding, let content set their height, and pick a column count the items
+  fill. Use borders, fills and shadows to set off the one element that needs
+  it, not every block. Open with big-number tiles only when those numbers
+  are the point of the page.
+* **Structure is information.** Numbering, eyebrows, dividers and labels
+  should encode something true about the content (a real sequence, a real
+  grouping), not decorate it.
+* **Dashboards and tools** are scanned, not read: summary before detail,
+  state shown in form as well as numbers (a chip, a colored stripe with a
+  label), status colors kept separate from the accent, and controls that
+  look clickable.
+* **Charts and diagrams** follow `topic.page.visuals` in any flat: the form
+  chosen from the data's job, one scale per axis, chart text in text
+  tokens, and hover details that also appear on tap and keyboard focus.
 * **Avoid the common AI-generated looks** unless the user asks for them:
   cream background with a serif display and terracotta accent; near-black
   with one acid-green pop; a purple-to-blue gradient hero; Inter or Space
   Grotesk as the default face; emoji as section markers; everything centered;
-  the same large radius and shadow on every card; numbered 01/02/03 markers
-  on content that is not a sequence.
+  the same large radius and shadow on every card; an accent bar down the
+  side of rounded cards; numbered 01/02/03 markers on content that is not a
+  sequence.
 * **Copy.** Write from the user's side: name things as people see them
   ("notifications", not "webhook config"). Use active voice; a button says
   what it does ("Publish") and the confirmation says what happened
   ("Published"). Errors say what went wrong and how to fix it, without
-  apology. Prefer short, plain, specific sentences over clever ones.
+  apology. Prefer short, plain, specific sentences over clever ones, and
+  avoid mannered devices: dash-set asides, "not X, but Y" framing, a colon
+  before a reveal, scare quotes, and filler such as "it's worth noting".
+* **Build cleanly.** Close every element and quote attributes; watch for
+  rules that override each other's spacing; give form controls stable `id`s;
+  for decorative or generative graphics use a canvas instead of long
+  hand-written SVG paths.
 
 ### Check once, then publish
 
@@ -108,6 +130,8 @@ theme file, existing component styles), then these defaults.
    check the status codes, and tell the user you did not see the rendered
    page.
 4. Make one pass of fixes, save again, then `publish` (`topic.approvals`).
+   For a page that charts real numbers, spend that one look on the charts
+   (`topic.page.visuals`).
 
 Do not loop: no second round of screenshots or DOM probes. Further polish is
 for the user to request; when they report something visibly broken, fix that

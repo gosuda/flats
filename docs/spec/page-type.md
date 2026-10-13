@@ -91,8 +91,11 @@ The three content types then have distinct roles:
    chart and data practice (bundle the chart library or pin an exact CDN
    version; bundle or inline the data; give every chart a text alternative
    and readable colors in both schemes) and the website lifecycle it shares.
+   A second topic, `topic.page.visuals`, covers charts and diagrams: choosing
+   the form from the data's job, color by role, marks and labels, hover with
+   tap and keyboard equivalents, data tables, and diagrams of mechanisms.
    `topic.index` routes "write a rich HTML document with charts or
-   visualizations" to it. The content-types reference
+   visualizations" to both. The content-types reference
    (`flats://docs/content-types/v1`, `get_content_types`) gains a page
    section, and `get_content_types` lists the type.
 10. **Console.** The console names the type "Page" and shows a `</>` code

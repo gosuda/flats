@@ -148,8 +148,15 @@ MCP `create_flat` offers the type.
   data; text alternative such as a caption or a data table for every chart;
   chart colors as tokens in both schemes; fit at phone width), and a pointer
   to the website lifecycle (`topic.index` workflow map, `topic.approvals`).
-* `TopicOrder` inserts `page` after `docs`; `contentTypesSections` becomes
-  `docs`, `page`, so the generated `docs/content-types.md` gains the section.
+* New topic file `docs/agent/topics/page.visuals.md` (`## Charts and
+  diagrams in pages`): form by the data's job, color by role (identity,
+  magnitude, polarity, status), marks/labels/scale, hover with tap and
+  keyboard equivalents, data tables, diagrams, and where to spend the preview
+  look. `topic.design` gains a token plan, structure-as-information, dashboard,
+  copy and clean-build guidance and points charts to it.
+* `TopicOrder` inserts `page` and `page.visuals` after `docs`;
+  `contentTypesSections` becomes `docs`, `page`, `page.visuals`, so the
+  generated `docs/content-types.md` gains both sections.
   The reference header (`docs/agent/references/content-types.md`) adds the
   page row to its type table and drops "Slides and other types" only as far
   as it now lists three types.
