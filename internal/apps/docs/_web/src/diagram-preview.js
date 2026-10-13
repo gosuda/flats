@@ -3,15 +3,22 @@ import { StateEffect, Transaction } from "@codemirror/state";
 
 export const setDiagramEditing = StateEffect.define();
 
+export function remoteChange(transaction) {
+  return (
+    transaction.docChanged &&
+    !!(
+      transaction.annotation(ySyncAnnotation) ||
+      transaction.annotation(Transaction.remote)
+    )
+  );
+}
+
 // A focus-only transition preserves Done. Deliberate cursor movement or a
 // local edit releases it before decorations hide a caret receiving input.
 export function diagramClosures(blocks, keys, previous, transaction) {
   const live = new Set(keys.values());
   const closed = new Set([...previous].filter((key) => live.has(key)));
-  const localEdit =
-    transaction.docChanged &&
-    !transaction.annotation(ySyncAnnotation) &&
-    !transaction.annotation(Transaction.remote);
+  const localEdit = transaction.docChanged && !remoteChange(transaction);
   if (transaction.selection || localEdit) closed.clear();
   for (const effect of transaction.effects)
     if (effect.is(setDiagramEditing)) {
@@ -35,15 +42,20 @@ export function closedDiagramCursor(block, documentLength) {
 
 // Keep identities through position shifts, but never transfer a deleted
 // block's DOM (and last valid SVG) to another diagram at the same position.
-export function diagramKeys(blocks, previous = new Map(), changes) {
+export function mapDiagramKeys(previous, changes) {
   const mapped = new Map();
   for (const [pos, key] of previous) {
     let removed = false;
-    changes?.iterChangedRanges((from, to) => {
+    changes.iterChangedRanges((from, to) => {
       if (from <= pos && to > pos) removed = true;
     });
-    if (!removed) mapped.set(changes ? changes.mapPos(pos, 1) : pos, key);
+    if (!removed) mapped.set(changes.mapPos(pos, 1), key);
   }
+  return mapped;
+}
+
+export function diagramKeys(blocks, previous = new Map(), changes) {
+  const mapped = changes ? mapDiagramKeys(previous, changes) : previous;
   return new Map(blocks.map(({ from }) => [from, mapped.get(from) || {}]));
 }
 
