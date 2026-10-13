@@ -10,29 +10,35 @@ import (
 	"testing"
 )
 
+// bypassPragmas are spellings of limit-changing pragmas checkSQL must refuse.
+var bypassPragmas = []string{
+	"PRAGMA max_page_count = 1000000000",
+	`PRAGMA "MAX_PAGE_COUNT" = 1000000000`,
+	"PRAGMA main.max_page_count(1000000000)",
+	`pragma "main" . [max_page_count]=1`,
+	"PRAGMA /* comment */ page_size = 65536",
+	"PRAGMA journal_mode = DELETE",
+	"PRAGMA `journal_mode`=MEMORY",
+	"SELECT 1; PRAGMA journal_mode = DELETE",
+	"PRAGMA temp_store = FILE",
+	`PRAGMA "Temp_Store" = 1`,
+	"PRAGMA temp_store_directory",
+	"PRAGMA data_store_directory = '/tmp'",
+	"-- note\nPRAGMA\tmain.temp_store\n=\n1",
+	"PRAGMA 'max_page_count' = 1000000000",
+	"PRAGMA 'main'.'max_page_count'(1000000000)",
+	"PRAGMA main.'page_size' = 65536",
+	"PRAGMA 'temp_store' = FILE",
+	"PRAGMA 'temp_store_directory' = '/tmp'",
+	"PRAGMA 'journal_mode' = 'delete'",
+	"\uFEFFPRAGMA max_page_count = 1000000000",
+	"PRAGMA \uFEFFmax_page_count = 1000000000",
+	"SELECT 1;\uFEFFPRAGMA \uFEFF'temp_store' = FILE",
+}
+
 func TestCheckSQLPragmas(t *testing.T) {
 	t.Parallel()
-	for _, q := range []string{
-		"PRAGMA max_page_count = 1000000000",
-		`PRAGMA "MAX_PAGE_COUNT" = 1000000000`,
-		"PRAGMA main.max_page_count(1000000000)",
-		`pragma "main" . [max_page_count]=1`,
-		"PRAGMA /* comment */ page_size = 65536",
-		"PRAGMA journal_mode = DELETE",
-		"PRAGMA `journal_mode`=MEMORY",
-		"SELECT 1; PRAGMA journal_mode = DELETE",
-		"PRAGMA temp_store = FILE",
-		`PRAGMA "Temp_Store" = 1`,
-		"PRAGMA temp_store_directory",
-		"PRAGMA data_store_directory = '/tmp'",
-		"-- note\nPRAGMA\tmain.temp_store\n=\n1",
-		"PRAGMA 'max_page_count' = 1000000000",
-		"PRAGMA 'main'.'max_page_count'(1000000000)",
-		"PRAGMA main.'page_size' = 65536",
-		"PRAGMA 'temp_store' = FILE",
-		"PRAGMA 'temp_store_directory' = '/tmp'",
-		"PRAGMA 'journal_mode' = 'delete'",
-	} {
+	for _, q := range bypassPragmas {
 		if err := checkSQL(q); err == nil {
 			t.Errorf("checkSQL(%q) allowed a storage pragma", q)
 		}
@@ -82,6 +88,22 @@ func TestSQLitePageBudget(t *testing.T) {
 	}
 	if got, err := dbQuery(ctx, c, "PRAGMA temp_store", nil); err != nil || got != `[{"temp_store":2}]` {
 		t.Fatalf("read temp_store: %s, %v", got, err)
+	}
+	// Run the bypass spellings through SQLite itself: whatever checkSQL
+	// misses must not change the limits.
+	for _, q := range bypassPragmas {
+		dbExec(ctx, c, q, nil)
+		dbQuery(ctx, c, q, nil)
+	}
+	var tempStore int64
+	if err := c.QueryRowContext(ctx, "PRAGMA main.max_page_count").Scan(&maxPages); err != nil || maxPages != d.maxDBBytes/pageSize {
+		t.Fatalf("max_page_count after bypass attempts = %d, %v", maxPages, err)
+	}
+	if err := c.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("journal_mode after bypass attempts = %q, %v", mode, err)
+	}
+	if err := c.QueryRowContext(ctx, "PRAGMA temp_store").Scan(&tempStore); err != nil || tempStore != 2 {
+		t.Fatalf("temp_store after bypass attempts = %d, %v", tempStore, err)
 	}
 	if _, err := dbExec(ctx, c, "CREATE TABLE settings (page_size INTEGER)", nil); err != nil {
 		t.Fatalf("column named page_size: %v", err)

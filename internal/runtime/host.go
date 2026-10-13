@@ -263,7 +263,8 @@ const (
 )
 
 // sqlTokens splits SQL into words, quoted identifiers, strings and
-// punctuation, dropping whitespace and comments.
+// punctuation, dropping whitespace and comments. It follows SQLite's
+// tokenizer (tokenize.c) for everything that separates or hides a word.
 func sqlTokens(q string) []sqlToken {
 	var toks []sqlToken
 	for i := 0; i < len(q); {
@@ -271,6 +272,10 @@ func sqlTokens(q string) []sqlToken {
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
 			i++
+		case strings.HasPrefix(q[i:], "\uFEFF"):
+			// SQLite skips a UTF-8 byte order mark where a token starts.
+			// Inside a word it is an identifier byte, as below.
+			i += len("\uFEFF")
 		case strings.HasPrefix(q[i:], "--"):
 			if n := strings.IndexByte(q[i:], '\n'); n >= 0 {
 				i += n + 1
