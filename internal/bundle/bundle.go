@@ -45,6 +45,14 @@ const ManifestName = "flats.json"
 // MaxFiles bounds the number of files in one version.
 const MaxFiles = 20000
 
+const (
+	// Count every returned tar entry, including directories and rejected files.
+	maxTarEntries = MaxFiles * 2
+
+	// Allow tar headers, padding and metadata on top of the file-content limit.
+	maxTarOverhead = maxTarEntries*1024 + 1<<20
+)
+
 // Manifest describes a build.
 type Manifest struct {
 	Type       string `json:"type,omitempty"`
@@ -182,6 +190,13 @@ func skipName(p string) bool {
 	return false
 }
 
+func archiveExpansionError() error {
+	return &ValidationError{Problems: []Problem{{
+		Message: "archive contains too much uncompressed data",
+		Fix:     "remove oversized or unnecessary archive entries, including ignored files",
+	}}}
+}
+
 // FromArchive reads a tar, tar.gz or zip archive.
 func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 	// Bound the compressed body too: a well-formed archive of MaxBytes is never
@@ -202,7 +217,14 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 		if gerr != nil {
 			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
 		}
-		err = c.readTar(gz)
+		defer gz.Close()
+		// tar.Reader also consumes rejected bodies and hidden PAX metadata.
+		// Cap the entire gzip output, not only files retained by the collector.
+		limited := &io.LimitedReader{R: gz, N: lim.MaxBytes + maxTarOverhead + 1}
+		err = c.readTar(limited)
+		if limited.N == 0 {
+			return nil, archiveExpansionError()
+		}
 	default:
 		err = c.readTar(bytes.NewReader(raw))
 	}
@@ -215,6 +237,7 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 func (c *collector) readTar(r io.Reader) error {
 	tr := tar.NewReader(r)
 	seen := false
+	entries := 0
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -227,6 +250,16 @@ func (c *collector) readTar(r io.Reader) error {
 			return &ValidationError{Problems: []Problem{{Message: "corrupt tar archive: " + err.Error(), Fix: "re-create the archive"}}}
 		}
 		seen = true
+		entries++
+		if entries > maxTarEntries {
+			return &ValidationError{Problems: []Problem{{
+				Message: fmt.Sprintf("archive has more than %d entries", maxTarEntries),
+				Fix:     "remove unnecessary files and directories from the archive",
+			}}}
+		}
+		if h.Size > c.lim.MaxBytes {
+			return archiveExpansionError()
+		}
 		switch h.Typeflag {
 		case tar.TypeDir, tar.TypeXGlobalHeader, tar.TypeXHeader:
 			continue
