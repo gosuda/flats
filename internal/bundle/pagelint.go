@@ -3,7 +3,6 @@ package bundle
 import (
 	"bytes"
 	"fmt"
-	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -46,27 +45,61 @@ func (l *linter) externalData(files []File, entry string) {
 	}
 }
 
+// dataLoads matches one call at a time, so a file with many calls never
+// holds all matches at once. A repeated origin costs no further allocation,
+// and the scan stops at maxSeen distinct origins.
 func (l *linter) dataLoads(file string, src []byte, seen map[string]bool) {
-	for _, m := range dataLoad.FindAllSubmatch(src, -1) {
-		raw := string(m[1])
-		if raw == "" {
-			raw = string(m[2])
+	var key []byte
+	for pos := 0; pos < len(src) && len(seen) < maxSeen; {
+		m := dataLoad.FindSubmatchIndex(src[pos:])
+		if m == nil {
+			return
 		}
-		if strings.HasPrefix(raw, "//") {
-			raw = "https:" + raw
+		group := 2
+		if m[2] < 0 {
+			group = 4
 		}
-		u, err := url.Parse(raw)
-		if err != nil || u.Host == "" {
+		raw := src[pos+m[group] : pos+m[group+1]]
+		pos += m[1]
+		if key = originKey(key[:0], raw); key == nil || seen[string(key)] {
 			continue
 		}
-		origin := strings.ToLower(u.Scheme + "://" + u.Host)
-		if seen[origin] {
-			continue
-		}
+		origin := string(key)
 		seen[origin] = true
 		l.add(file, fmt.Sprintf("page loads data from %s while it renders, so a published version no longer fixes what readers see, and the page breaks offline", origin),
 			"bundle the data file (e.g. data/sales.csv) and load it by a relative path, or embed it in the HTML")
 	}
+}
+
+// originKey appends the lowercase "scheme://host" of a URL that dataLoad
+// matched (absolute, or protocol-relative and read as https) to dst. It
+// returns nil when the URL has no host.
+func originKey(dst, raw []byte) []byte {
+	i := bytes.Index(raw, []byte("//"))
+	host := raw[i+2:]
+	if j := bytes.IndexAny(host, "/?#"); j >= 0 {
+		host = host[:j]
+	}
+	if len(host) == 0 {
+		return nil
+	}
+	if i == 0 {
+		dst = append(dst, "https:"...)
+	} else {
+		dst = appendLower(dst, raw[:i])
+	}
+	dst = append(dst, "//"...)
+	return appendLower(dst, host)
+}
+
+func appendLower(dst, b []byte) []byte {
+	for _, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		dst = append(dst, c)
+	}
+	return dst
 }
 
 // inlineScripts returns the text of the scripts without src that a browser

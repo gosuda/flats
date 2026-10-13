@@ -42,18 +42,26 @@ func (s *Service) CreatePage(ctx context.Context, slugName, name string, via Via
 	if _, err := s.CreateFlat(ctx, slugName, name, via); err != nil {
 		return FlatView{}, err
 	}
+	if err := s.savePageStarter(ctx, slugName, name, via); err != nil {
+		return FlatView{}, err
+	}
+	return s.GetFlat(ctx, slugName)
+}
+
+// savePageStarter saves the starter Draft only while the flat has no Draft:
+// a save that reached the new flat first is kept, and creation reports a
+// conflict instead of replacing it.
+func (s *Service) savePageStarter(ctx context.Context, slugName, name string, via Via) error {
 	title := strings.Join(strings.Fields(name), " ")
 	if title == "" {
 		title = slugName
 	}
 	manifest, err := json.Marshal(map[string]string{"type": contenttype.Page, "name": title})
 	if err != nil {
-		return FlatView{}, err
+		return err
 	}
 	page := strings.ReplaceAll(pageStarter, "{{title}}", html.EscapeString(title))
 	files := []bundle.File{{Path: "index.html", Data: []byte(page)}, {Path: bundle.ManifestName, Data: manifest}}
-	if _, err := s.SaveVersion(ctx, slugName, files, SaveMeta{Message: "created"}, via); err != nil {
-		return FlatView{}, err
-	}
-	return s.GetFlat(ctx, slugName)
+	_, err = s.SaveVersion(ctx, slugName, files, SaveMeta{Message: "created", CheckRevision: true, ExpectedRevision: 0}, via)
+	return err
 }

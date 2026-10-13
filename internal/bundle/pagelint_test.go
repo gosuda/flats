@@ -1,6 +1,8 @@
 package bundle
 
 import (
+	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,5 +77,45 @@ func TestLintWebsiteSkipsExternalData(t *testing.T) {
 	entry := strings.Replace(goodPage, "<body>", `<body><script>fetch("https://api.example.com/x")</script>`, 1)
 	if ws := dataWarnings(Lint(with(File{Path: "index.html", Data: []byte(entry)}))); len(ws) != 0 {
 		t.Fatalf("website: %+v", ws)
+	}
+}
+
+// A script with very many calls is matched one call at a time: it yields one
+// warning per origin, and a repeated origin allocates nothing beyond the
+// small per-call match slice.
+func TestLintPageManyDataLoads(t *testing.T) {
+	const calls = 200000
+	js := []byte(strings.Repeat(`fetch("https://a.example/x");`, calls) + `fetch("https://B.example/y")`)
+	ws := dataWarnings(Lint(pageBundle("", File{Path: "app.js", Data: js})))
+	if len(ws) != 2 || !strings.Contains(ws[0].Message, "https://a.example ") || !strings.Contains(ws[1].Message, "https://b.example ") {
+		t.Fatalf("warnings: %+v", ws)
+	}
+	l := &linter{}
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	l.dataLoads("app.js", js, map[string]bool{})
+	runtime.ReadMemStats(&after)
+	if perCall := (after.TotalAlloc - before.TotalAlloc) / calls; perCall > 96 {
+		t.Fatalf("data lint allocated %d bytes per call", perCall)
+	}
+	if len(l.out) != 2 {
+		t.Fatalf("direct scan: %+v", l.out)
+	}
+}
+
+// Distinct origins past maxSeen stop the scan of that file.
+func TestLintPageOriginBound(t *testing.T) {
+	var b strings.Builder
+	for i := range maxSeen + 10 {
+		fmt.Fprintf(&b, "fetch(\"https://h%d.example/\");", i)
+	}
+	ws := Lint(pageBundle("", File{Path: "app.js", Data: []byte(b.String())}))
+	if n := len(dataWarnings(ws)); n == 0 || n > maxWarnings {
+		t.Fatalf("kept %d data warnings", n)
+	}
+	last := ws[len(ws)-1]
+	if !strings.Contains(last.Message, fmt.Sprintf("%d more warnings not shown", maxSeen-maxWarnings)) {
+		t.Fatalf("summary: %+v", last)
 	}
 }

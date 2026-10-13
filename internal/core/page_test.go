@@ -185,9 +185,10 @@ func TestMixedTypeContentNeverGoesLive(t *testing.T) {
 	if res.Approval == nil {
 		t.Fatalf("no approval: %+v", res)
 	}
-	a, err := s.Decide(ctx, res.Approval.ID, true)
-	if a.Status == "approved" {
-		t.Fatalf("mixed-type publish applied: %+v %v", a, err)
+	a, _ := s.Decide(ctx, res.Approval.ID, true)
+	var exec ApprovalExecution
+	if a.Status != "failed" || json.Unmarshal(a.ResultData, &exec) != nil || exec.FailureCode != "conflict" {
+		t.Fatalf("mixed-type publish apply: status %q result %s", a.Status, a.ResultData)
 	}
 	after, _ := s.GetFlat(ctx, "site")
 	if after.Type != contenttype.Flat || after.LiveVersion != f.LiveVersion {
@@ -221,5 +222,106 @@ func TestPageRollbackHasNoData(t *testing.T) {
 	var params rollbackParams
 	if json.Unmarshal(p.Approval.Params, &params) != nil || params.Version != 1 || params.RestoreData {
 		t.Fatalf("rollback approval params: %s", p.Approval.Params)
+	}
+}
+
+// The starter Draft never replaces a save that reached the new flat first.
+func TestPageStarterKeepsEarlierSave(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.CreateFlat(ctx, "report", "", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := s.SaveVersion(ctx, "report", pageFiles("first"), SaveMeta{}, ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.savePageStarter(ctx, "report", "Report", ViaAPI); !errors.Is(err, ErrConflict) {
+		t.Fatalf("starter over an existing Draft: %v", err)
+	}
+	d, err := s.st.GetDraft(ctx, "report")
+	if err != nil || d.Revision != saved.Revision || d.Hash != saved.Hash {
+		t.Fatalf("starter replaced the Draft: %+v %v", d, err)
+	}
+}
+
+// mixedTypeFlat makes a flat whose live version 2 is a page over a website
+// version 1, as only content from an earlier release could be.
+func mixedTypeFlat(t *testing.T, s *Service) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.SaveVersion(ctx, "mixed", []bundle.File{{Path: "index.html", Data: []byte("<title>Site</title>WEBSITE")}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := approvedInternalDeploy(t, s, ctx, "mixed", 0); err != nil {
+		t.Fatal(err)
+	}
+	files, err := bundle.FromFiles(pageFiles("PAGE"), bundle.Limits{MaxBytes: s.UploadLimit()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock := s.lock("mixed")
+	defer unlock()
+	saved, err := s.saveDraftLocked(ctx, "mixed", files, SaveMeta{}, ViaAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := s.st.GetDraftRevision(ctx, "mixed", saved.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, _ := s.st.GetFlat(ctx, "mixed")
+	if _, err := s.publishRevision(ctx, f, rev, "", ViaAPI, "publish"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Activating or rolling back to a version of another type is refused when
+// requested, and an approval requested before the check fails when applied.
+func TestMixedTypeVersionsNeverGoLive(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	mixedTypeFlat(t, s)
+	f, _ := s.st.GetFlat(ctx, "mixed")
+	if f.LiveVersion != 2 {
+		t.Fatalf("fixture live version: %d", f.LiveVersion)
+	}
+	if _, err := s.Deploy(ctx, "mixed", 1, ViaAPI); !errors.Is(err, ErrTypeChange) {
+		t.Fatalf("deploy request: %v", err)
+	}
+	if _, err := s.Rollback(ctx, "mixed", 1, ViaAPI); !errors.Is(err, ErrTypeChange) {
+		t.Fatalf("rollback request: %v", err)
+	}
+	v1, err := s.st.GetVersion(ctx, "mixed", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := s.providerKey(ctx, "mixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vis := string(f.Visibility.Canonical())
+	for action, params := range map[string]any{
+		"activate": activateParams{Version: 1, Hash: v1.Hash, ExpectedLive: 2, Visibility: vis, Providers: key},
+		"rollback": rollbackParams{Version: 1, Hash: v1.Hash, ExpectedLive: 2, Visibility: vis, Providers: key},
+	} {
+		unlock := s.lock("mixed")
+		res, err := s.requestFrozen(ctx, "mixed", action, params, ViaAPI, "")
+		unlock()
+		if err != nil || res.Approval == nil {
+			t.Fatalf("%s approval: %+v %v", action, res, err)
+		}
+		a, _ := s.Decide(ctx, res.Approval.ID, true)
+		var exec ApprovalExecution
+		if a.Status != "failed" || json.Unmarshal(a.ResultData, &exec) != nil || exec.FailureCode != "conflict" {
+			t.Fatalf("%s apply: status %q result %s", action, a.Status, a.ResultData)
+		}
+		after, _ := s.GetFlat(ctx, "mixed")
+		if after.LiveVersion != 2 || after.Type != contenttype.Page {
+			t.Fatalf("%s changed the live flat: live %d type %q", action, after.LiveVersion, after.Type)
+		}
+		if code, body := served(t, s, "mixed", "/"); code != 200 || !strings.Contains(body, "PAGE") {
+			t.Fatalf("%s changed serving content: %d %s", action, code, body)
+		}
 	}
 }
