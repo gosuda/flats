@@ -55,6 +55,12 @@ func trustedAccess(r *http.Request, public bool) *http.Request {
 	return r
 }
 
+// docsAssetCSP keeps every bundle asset inert: no scripts (sandbox, no
+// script-src), no plugins, frames or connections, and an opaque origin. Inline
+// styles and same-site or data: images stay allowed so an SVG opened directly
+// still renders its own styling.
+const docsAssetCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; sandbox"
+
 func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 	listed := make(map[string]bool, len(assets))
 	for _, p := range assets {
@@ -65,7 +71,7 @@ func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && listed[r.URL.Path] {
 			// Bundle assets are untrusted, including assets saved before this policy.
 			// Never let an asset become an active document on the docs origin.
-			w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox")
+			w.Header().Set("Content-Security-Policy", docsAssetCSP)
 			if typ := docsInlineMIME(r.URL.Path); typ != "" {
 				w.Header().Set("Content-Type", typ)
 			} else {

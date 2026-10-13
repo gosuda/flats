@@ -688,7 +688,7 @@ func TestDocsAssetContentSecurity(t *testing.T) {
 			if got := r.Header().Get("Content-Disposition"); got != wantDisposition {
 				t.Errorf("content disposition = %q, want %q", got, wantDisposition)
 			}
-			if got := r.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'; sandbox" {
+			if got := r.Header().Get("Content-Security-Policy"); got != "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; sandbox" {
 				t.Errorf("CSP = %q", got)
 			}
 			if got := r.Header().Get("X-Content-Type-Options"); got != "nosniff" {

@@ -54,7 +54,9 @@ The docs handler is the worker plus a thin host wrapper:
   the version directory (static file semantics), never by the worker.
 * Everything else goes to the worker.
 * Every asset response has `X-Content-Type-Options: nosniff` and a sandboxing
-  Content Security Policy that forbids scripts and same-origin document access.
+  Content Security Policy that forbids scripts, connections and same-origin
+  document access; it allows only inline styles and same-site or `data:`
+  images, so an SVG opened directly keeps its styling.
   Only known image (raster and SVG), media, font, and plain-text extensions are
   served inline, with fixed MIME types. Other files, including HTML,
   JavaScript, compressed SVG (`.svgz`) and PDF, use `application/octet-stream`
