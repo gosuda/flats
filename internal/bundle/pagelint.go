@@ -80,6 +80,11 @@ func originKey(dst, raw []byte) []byte {
 	if j := bytes.IndexAny(host, "/?#"); j >= 0 {
 		host = host[:j]
 	}
+	// Never repeat credentials ("user:pass@") in a warning; the origin is
+	// what follows them.
+	if j := bytes.LastIndexByte(host, '@'); j >= 0 {
+		host = host[j+1:]
+	}
 	if len(host) == 0 {
 		return nil
 	}

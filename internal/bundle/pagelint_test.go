@@ -43,6 +43,7 @@ func TestLintPageExternalData(t *testing.T) {
 		{"bundled js", "", `fetch("https://api.example.com/a"); fetch("https://API.example.com/b")`, []string{"https://api.example.com"}},
 		{"one per origin", `<script>fetch("https://a.example/1"); fetch("https://a.example/2"); fetch("https://b.example/3")</script>`, "", []string{"https://a.example", "https://b.example"}},
 		{"protocol relative", `<script>d3.json("//cdn.example.com/a.json")</script>`, "", []string{"https://cdn.example.com"}},
+		{"credentials dropped", `<script>fetch("https://alice:secret@API.example:8443/a"); fetch("https://bob@api.example:8443/b"); fetch("https://[2001:db8::1]:9000/c")</script>`, "", []string{"https://api.example:8443", "https://[2001:db8::1]:9000"}},
 		{"import is code", `<script type="module">await import("https://cdn.example.com/x@1.0.0/x.js")</script>`, "", nil},
 		{"relative", `<script>fetch("data/sales.csv"); d3.csv("./a.csv")</script>`, "", nil},
 		{"dynamic", `<script>fetch(base + "/x"); fetch(` + "`${base}/y`" + `)</script>`, "", nil},
@@ -58,6 +59,9 @@ func TestLintPageExternalData(t *testing.T) {
 				t.Fatalf("got %+v, want origins %v", ws, tt.origins)
 			}
 			for i, w := range ws {
+				if strings.Contains(w.Message, "secret") || strings.Contains(w.Message, "@") {
+					t.Fatalf("warning repeats credentials: %+v", w)
+				}
 				if !strings.Contains(w.Message, tt.origins[i]+" ") || w.Fix == "" {
 					t.Fatalf("warning %d: %+v, want origin %s", i, w, tt.origins[i])
 				}
