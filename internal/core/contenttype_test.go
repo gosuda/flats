@@ -631,3 +631,74 @@ func TestDocumentSavesPruneOldBundles(t *testing.T) {
 		t.Fatalf("kept bundles %v of %d (live %d)", kept, len(vs), f.LiveVersion)
 	}
 }
+
+// A docs asset must not be executable in the browser's docs origin, including
+// for bundles written before this protection was introduced.
+func TestDocsAssetContentSecurity(t *testing.T) {
+	dir := t.TempDir()
+	body := "<script>fetch('/_docs/api/document')</script>"
+	tests := []struct {
+		name, contentType string
+		attachment        bool
+	}{
+		{"picture.PNG", "image/png", false},
+		{"picture.jpeg", "image/jpeg", false},
+		{"clip.mp4", "video/mp4", false},
+		{"font.woff2", "font/woff2", false},
+		{"notes.txt", "text/plain; charset=utf-8", false},
+		{"table.csv", "text/plain; charset=utf-8", false},
+		{"active.html", "application/octet-stream", true},
+		{"active.HTM", "application/octet-stream", true},
+		{"active.xhtml", "application/octet-stream", true},
+		{"active.svg", "application/octet-stream", true},
+		{"active.svgz", "application/octet-stream", true},
+		{"active.js", "application/octet-stream", true},
+		{"active.mjs", "application/octet-stream", true},
+		{"active.css", "application/octet-stream", true},
+		{"active.xml", "application/octet-stream", true},
+		{"active.pdf", "application/octet-stream", true},
+		{"active.wasm", "application/octet-stream", true},
+		{"active.unknown", "application/octet-stream", true},
+	}
+	assets := make([]string, 0, len(tests))
+	for _, tt := range tests {
+		if err := os.WriteFile(filepath.Join(dir, tt.name), []byte(body), 0o444); err != nil {
+			t.Fatal(err)
+		}
+		assets = append(assets, tt.name)
+	}
+	h := docsAssets(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "worker")
+	}), dir, assets)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRecorder()
+			h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/"+tt.name, nil))
+			if r.Code != http.StatusOK || r.Body.String() != body {
+				t.Fatalf("asset response: %d %q", r.Code, r.Body.String())
+			}
+			if got := r.Header().Get("Content-Type"); got != tt.contentType {
+				t.Errorf("content type = %q, want %q", got, tt.contentType)
+			}
+			if got := r.Header().Get("Content-Disposition"); (got == "attachment") != tt.attachment {
+				t.Errorf("content disposition = %q, want attachment %v", got, tt.attachment)
+			}
+			if got := r.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'; sandbox" {
+				t.Errorf("CSP = %q", got)
+			}
+			if got := r.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q", got)
+			}
+		})
+	}
+	// Conditional and partial responses must also keep the download policy.
+	req := httptest.NewRequest(http.MethodGet, "/active.html", nil)
+	req.Header.Set("Range", "bytes=0-5")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusPartialContent || r.Header().Get("Content-Disposition") != "attachment" ||
+		r.Header().Get("Content-Type") != "application/octet-stream" ||
+		r.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("partial active asset response: %d %v", r.Code, r.Header())
+	}
+}

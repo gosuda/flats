@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -62,11 +63,76 @@ func docsAssets(worker http.Handler, dir string, assets []string) http.Handler {
 	static := &site.Static{Dir: dir}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && listed[r.URL.Path] {
+			// Bundle assets are untrusted, including assets saved before this policy.
+			// Never let an asset become an active document on the docs origin.
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; sandbox")
+			if typ := docsInlineMIME(r.URL.Path); typ != "" {
+				w.Header().Set("Content-Type", typ)
+			} else {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Disposition", "attachment")
+			}
 			static.ServeHTTP(w, r)
 			return
 		}
 		worker.ServeHTTP(w, r)
 	})
+}
+
+
+// docsInlineMIME returns a fixed, non-executable MIME type for assets that may
+// appear inline in a document. Every other file must be downloaded instead.
+func docsInlineMIME(p string) string {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".apng":
+		return "image/apng"
+	case ".avif":
+		return "image/avif"
+	case ".bmp":
+		return "image/bmp"
+	case ".gif":
+		return "image/gif"
+	case ".ico":
+		return "image/x-icon"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".tif", ".tiff":
+		return "image/tiff"
+	case ".webp":
+		return "image/webp"
+	case ".flac":
+		return "audio/flac"
+	case ".m4a":
+		return "audio/mp4"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".oga", ".ogg":
+		return "audio/ogg"
+	case ".wav":
+		return "audio/wav"
+	case ".mov":
+		return "video/quicktime"
+	case ".mp4":
+		return "video/mp4"
+	case ".ogv":
+		return "video/ogg"
+	case ".webm":
+		return "video/webm"
+	case ".otf":
+		return "font/otf"
+	case ".ttf":
+		return "font/ttf"
+	case ".woff":
+		return "font/woff"
+	case ".woff2":
+		return "font/woff2"
+	case ".csv", ".log", ".txt":
+		return "text/plain; charset=utf-8"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) docsRuntime(v store.Version, versionDir string) (string, []string, func(), error) {
