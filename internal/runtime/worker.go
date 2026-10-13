@@ -214,17 +214,21 @@ func requestHeaders(r *http.Request) map[string]string {
 }
 
 // readRequestBody enforces both a streaming byte cap and a wall-clock body
-// deadline. It clears the socket deadline before a response is written.
+// deadline. Successful reads clear the deadline; failed reads retain it so
+// closing a partial request cannot block indefinitely.
 func readRequestBody(rw http.ResponseWriter, r *http.Request, timeout time.Duration) ([]byte, error) {
 	controller := http.NewResponseController(rw)
 	if err := controller.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set request body read deadline: %w", err)
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, MaxRequestBody))
-	if resetErr := controller.SetReadDeadline(time.Time{}); resetErr != nil && err == nil {
-		err = fmt.Errorf("clear request body read deadline: %w", resetErr)
+	if err != nil {
+		return nil, err
 	}
-	return body, err
+	if err := controller.SetReadDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("clear request body read deadline: %w", err)
+	}
+	return body, nil
 }
 
 func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
