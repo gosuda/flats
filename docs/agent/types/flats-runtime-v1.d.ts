@@ -147,7 +147,9 @@ declare namespace Flats {
    * parameter, storage or limit errors. One connection per VM; a transaction
    * left open at the end of an invocation is rolled back. WAL, foreign keys
    * and a 5-second busy timeout are on. ATTACH, VACUUM INTO and
-   * directory-changing pragmas are blocked.
+   * directory-changing pragmas are blocked; journal_mode, page_size,
+   * max_page_count and temp_store are read-only. The database file and its
+   * write-ahead log are each capped at 1 GiB.
    */
   interface Database {
     /**
@@ -182,7 +184,8 @@ declare namespace Flats {
    * through a regular-file parent ("a/b" when "a" is a value) also throws,
    * for get and delete too. Key identity follows the host filesystem (case and
    * Unicode normalization may be folded). Values are text, at most 10 MiB
-   * each; the flat's total is 1 GiB. Calls are not transactions.
+   * each; the flat's total is 1 GiB and 20,000 objects (keys plus the
+   * directories their paths create). Calls are not transactions.
    */
   interface Files {
     /** The stored text, or null for an absent key, absent store or directory key; other failures throw. */

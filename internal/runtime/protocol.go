@@ -32,7 +32,7 @@ const (
 	MaxFilesTotal      = 1 << 30
 	MaxFilesObjects    = 20_000
 	MaxQueryResult     = 16 << 20
-	MaxDBBytes         = 256 << 20
+	MaxDBBytes         = 1 << 30
 	MaxWSMessage       = 1 << 20
 	maxLogLine         = 8 << 10
 )

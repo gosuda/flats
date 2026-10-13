@@ -18,7 +18,8 @@ import (
 func TestDocumentedRuntimeLimits(t *testing.T) {
 	checks := []struct{ section, claim string }{
 		{"JavaScript env.FILES", fmt.Sprintf("Each value is capped at **%d MiB (%s bytes)** of stored UTF-8 text;", runtime.MaxFileValue>>20, "10,485,760")},
-		{"JavaScript env.FILES", fmt.Sprintf("Per-flat FILES total is **%d GiB (%s bytes)**;", runtime.MaxFilesTotal>>30, "1,073,741,824")},
+		{"JavaScript env.FILES", fmt.Sprintf("Per-flat FILES total is **%d GiB (%s bytes)** and **%s objects**:", runtime.MaxFilesTotal>>30, "1,073,741,824", "20,000")},
+		{"JavaScript env.DB", fmt.Sprintf("The database file is capped at **%d GiB (%s bytes)**:", runtime.MaxDBBytes>>30, "1,073,741,824")},
 		{"JavaScript env.DB", fmt.Sprintf("Query result cap is **%d MiB** while accumulating serialized rows", runtime.MaxQueryResult>>20)},
 		{"Server flats", fmt.Sprintf("Incoming body max **%d MiB** (413 if exceeded).", runtime.MaxRequestBody>>20)},
 		{"Server flats", fmt.Sprintf("Decoded response max **%d MiB**.", runtime.MaxResponseBody>>20)},
@@ -48,7 +49,8 @@ func TestDocumentedRuntimeLimits(t *testing.T) {
 		})
 	}
 	// These human-readable byte counts must track their actual constants too.
-	if runtime.MaxFileValue != 10485760 || runtime.MaxFilesTotal != 1073741824 || bundle.MaxFiles != 20000 {
+	if runtime.MaxFileValue != 10485760 || runtime.MaxFilesTotal != 1073741824 || runtime.MaxFilesObjects != 20000 ||
+		runtime.MaxDBBytes != 1073741824 || bundle.MaxFiles != 20000 {
 		t.Fatal("byte/upload counts changed: update the published exact counts")
 	}
 }

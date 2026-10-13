@@ -284,13 +284,14 @@ base64 overhead counts. This explicit size limit does not guarantee a put/get
 will fit in the **48 MiB JS heap**: strings and serialization copies compete
 with other live allocations, so operations near 10 MiB can exhaust the heap
 and produce a generic 500 even with a value within the limit.
-Per-flat FILES total is **1 GiB (1,073,741,824 bytes)** and at most
-**20,000 filesystem objects** (files, directories and other entries, excluding
-the FILES root). Empty values and newly created parent directories count toward
-the object limit. Overwriting charges the new size minus old size; deletion
-releases space and removes empty parent directories when possible. A put must
-have room for its temporary file during replacement. Quota checks/mutations
-are serialized within a worker; individual put publishes by rename. Multi-call sequences are not transactions and have no compare/swap.
+Per-flat FILES total is **1 GiB (1,073,741,824 bytes)** and
+**20,000 objects**: stored keys plus the directories their parent paths
+create (`a/b/c` uses three), so empty values count too. Overwriting charges
+the new size minus old size and adds no object; deletion releases space and
+the parent directories it empties. A store already over the object limit
+keeps working for get, overwrite and delete, but puts of new keys throw.
+Quota checks/mutations are serialized within a worker; individual put publishes
+by rename. Multi-call sequences are not transactions and have no compare/swap.
 There is no FILES TTL or versioning. Invalid keys/prefixes, value/quota overflow,
 permissions, disk-full and incompatible file/directory paths throw; catch errors
 and choose an HTTP response. Error wording can contain the key/OS details;
@@ -337,17 +338,20 @@ One SQLite connection per JS VM keeps concurrent request transactions apart.
 Use `exec("BEGIN")`, parameterized statements, `exec("COMMIT")`, and rollback
 on errors within one handler invocation. Any transaction left open at the end
 of a handler/callback is rolled back; never span requests with a transaction.
-DELETE journaling, foreign keys and 5-second busy timeout are enabled. Query result cap is
+WAL, foreign keys and 5-second busy timeout are enabled. Query result cap is
 **16 MiB** while accumulating serialized rows (the closing bracket is added
 afterward; add LIMIT); SQL value/row length cap **32 MiB**;
 SQLite allocation ceiling **256 MiB**. Runtime deadline also bounds queries.
-ATTACH, VACUUM INTO and pragmas that change page limits, page size, journal
-mode or disk-based temporary storage are blocked. SQLite's main database is
-capped at **256 MiB**, with a page-count limit set on each connection for the
-actual page size. Existing databases over the cap cannot be opened for runtime
-queries. DELETE journaling bounds rollback journal growth by the database size;
-temporary tables and sorts stay in SQLite's capped memory. DB and FILES do not
-participate in a shared transaction.
+ATTACH and VACUUM INTO and directory-changing pragmas are blocked; the
+`journal_mode`, `page_size`, `max_page_count` and `temp_store` pragmas can be
+read but not changed. The database file is capped at **1 GiB
+(1,073,741,824 bytes)**: a write that needs more pages throws a "database is
+full" error, while deleting rows frees pages for reuse (the file does not
+shrink). A database that was already larger keeps working but cannot grow.
+The write-ahead log is capped at 1 GiB as well: while other invocations hold
+reads open, the log cannot restart, and once it is over the cap commits throw
+a "write-ahead log" error and are rolled back; retry after the reads finish.
+DB and FILES do not participate in a shared transaction.
 
 ## JavaScript outbound HTTP
 
@@ -430,8 +434,8 @@ Server deploys need the host runtime enabled; a host started with
 |---|---|---|
 | Request body / decoded response | 10 MiB / 32 MiB | `topic.server` |
 | WebSocket message | 1 MiB, 256 queued sends | `topic.server` |
-| FILES value / total bytes / objects / list | 10 MiB / 1 GiB / 20,000 / 10,000 keys | `topic.server.files` |
-| DB query result / value or row / allocation / disk | 16 MiB / 32 MiB / 256 MiB / 256 MiB | `topic.server.db` |
+| FILES value / per-flat total / objects / list | 10 MiB / 1 GiB / 20,000 / 10,000 keys | `topic.server.files` |
+| DB query result / value or row / allocation / file | 16 MiB / 32 MiB / 256 MiB / 1 GiB | `topic.server.db` |
 | Outbound fetch | 5 s, 16 calls per invocation, 4 MiB response | `topic.server.fetch` |
 | Upload | operator setting (default 20 MiB), 20,000 files | `topic.static` |
 | Environment value | 64 KiB, names up to 64 characters | `topic.env-secrets` |
@@ -617,7 +621,9 @@ declare namespace Flats {
    * parameter, storage or limit errors. One connection per VM; a transaction
    * left open at the end of an invocation is rolled back. WAL, foreign keys
    * and a 5-second busy timeout are on. ATTACH, VACUUM INTO and
-   * directory-changing pragmas are blocked.
+   * directory-changing pragmas are blocked; journal_mode, page_size,
+   * max_page_count and temp_store are read-only. The database file and its
+   * write-ahead log are each capped at 1 GiB.
    */
   interface Database {
     /**
@@ -652,7 +658,8 @@ declare namespace Flats {
    * through a regular-file parent ("a/b" when "a" is a value) also throws,
    * for get and delete too. Key identity follows the host filesystem (case and
    * Unicode normalization may be folded). Values are text, at most 10 MiB
-   * each; the flat's total is 1 GiB. Calls are not transactions.
+   * each; the flat's total is 1 GiB and 20,000 objects (keys plus the
+   * directories their paths create). Calls are not transactions.
    */
   interface Files {
     /** The stored text, or null for an absent key, absent store or directory key; other failures throw. */

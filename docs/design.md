@@ -376,9 +376,12 @@ export default {
 * Limits per request: 64 MiB wasm memory and 10 s wall-clock time (sleeps,
   timers and database waits count); a runtime that hits a limit is discarded
   and replaced. ATTACH, VACUUM INTO and extension loading are blocked;
-  env.FILES is capped at 1 GiB. Database growth is not capped by SQLite; the
-  per-flat disk quota refuses new uploads and the console reports flats over
-  quota. JS has no general filesystem or socket access; outbound `fetch` is host-mediated and requires exact operator-granted origins.
+  env.FILES is capped at 1 GiB and 20,000 files and directories. The SQLite
+  database file is capped at 1 GiB with a per-connection `max_page_count`, and
+  a commit hook refuses commits while its write-ahead log is over 1 GiB (a
+  reader holding an old snapshot keeps the log from restarting). Beyond those,
+  the per-flat disk quota refuses new uploads and the console reports flats
+  over quota. JS has no general filesystem or socket access; outbound `fetch` is host-mediated and requires exact operator-granted origins.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing response JSON on stdout. Each request creates a fresh instance.
   Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment. Clocks, cancellable
