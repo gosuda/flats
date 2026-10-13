@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { ChangeSet, EditorState, Transaction } from "@codemirror/state";
 import {
   diagramKeys,
+  mapDiagramKeys,
+  remoteChange,
   updatePreview,
   trackFocusExit,
   diagramClosures,
@@ -270,4 +272,35 @@ test("remote edits and focus-only effects retain Done until local interaction", 
   const blocks = diagramBlocks(remote.state, true),
     mapped = diagramKeys(blocks, keys, remote.changes);
   assert.ok(diagramClosures(blocks, mapped, new Set([key]), remote).has(key));
+});
+
+test("remote transactions are recognized without treating local changes as remote", () => {
+  const state = EditorState.create({ doc: "abc" });
+  const change = { changes: { from: 1, insert: "x" } };
+  assert.equal(remoteChange(state.update(change)), false);
+  assert.equal(
+    remoteChange(
+      state.update({ ...change, annotations: Transaction.remote.of(true) }),
+    ),
+    true,
+  );
+  assert.equal(
+    remoteChange(
+      state.update({ ...change, annotations: ySyncAnnotation.of(true) }),
+    ),
+    true,
+  );
+  assert.equal(remoteChange(state.update({ selection: { anchor: 2 } })), false);
+});
+
+test("remote position mapping preserves identities without parsing blocks", () => {
+  const keys = new Map([[10, {}], [30, {}]]);
+  const insert = ChangeSet.of({ from: 0, insert: "hello" }, 50);
+  const mapped = mapDiagramKeys(keys, insert);
+  assert.equal(mapped.get(15), keys.get(10));
+  assert.equal(mapped.get(35), keys.get(30));
+  const remove = ChangeSet.of({ from: 10, to: 20 }, 50);
+  const pruned = mapDiagramKeys(keys, remove);
+  assert.equal(pruned.has(10), false);
+  assert.equal(pruned.get(20), keys.get(30));
 });
