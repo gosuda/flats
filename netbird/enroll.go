@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +25,7 @@ const DisconnectHint = "the peer stays registered in NetBird; remove it in the N
 // in memory only; it is neither stored nor logged, and is scrubbed from
 // returned errors. Enroll refuses when dir already holds an enrollment
 // (Disconnect first). Close any Net on dir before enrolling it again.
+// A non-default management URL must be an HTTPS origin.
 func Enroll(ctx context.Context, dir, managementURL, setupKey, deviceName string) (Account, error) {
 	if dir == "" {
 		return Account{}, errors.New("netbird: state directory is required")
@@ -35,11 +35,8 @@ func Enroll(ctx context.Context, dir, managementURL, setupKey, deviceName string
 		return Account{}, errors.New("netbird: setup key is required")
 	}
 	managementURL = strings.TrimSpace(managementURL)
-	if managementURL != "" {
-		u, err := url.Parse(managementURL)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-			return Account{}, fmt.Errorf("netbird: management URL %q must be an http(s) URL", managementURL)
-		}
+	if err := validateManagementURL(managementURL); err != nil {
+		return Account{}, fmt.Errorf("netbird: %w", err)
 	}
 	if deviceName == "" {
 		deviceName, _ = os.Hostname()
