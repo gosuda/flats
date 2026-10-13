@@ -104,6 +104,12 @@ func (s *Service) storageOperations() ([]storageOperation, error) {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(s.storageJournalDir(), entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			// An operation on other slugs finished during this scan. A
+			// journal naming the caller's slug cannot disappear here: it
+			// needs that slug's lock, which the caller holds.
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
