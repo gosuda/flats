@@ -223,7 +223,7 @@ func TestPortalCloseWaitsForUnpublishedServe(t *testing.T) {
 	}
 }
 
-func TestPortalCloseObservesAlreadyRemovedStop(t *testing.T) {
+func TestPortalCloseObservesConcurrentStop(t *testing.T) {
 	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 30 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -235,8 +235,8 @@ func TestPortalCloseObservesAlreadyRemovedStop(t *testing.T) {
 	finished := make(chan error, 1)
 	go func() { finished <- n.Stop(e.slug) }()
 	awaitShutdown(t, exp.entered)
-	if n.entry(e.slug) != nil {
-		t.Fatal("Stop has not removed the entry")
+	if n.entry(e.slug) != e {
+		t.Fatal("Stop must retain the entry until teardown is confirmed")
 	}
 	err = n.Close()
 	stopErr := <-finished
@@ -279,4 +279,64 @@ func TestPortalCloseDeadlineCancelsUnpublishedServe(t *testing.T) {
 		t.Fatal("creation context was not cancelled at deadline")
 	}
 	n.ops.Wait()
+}
+
+func TestPortalStopResumesIncompleteTeardown(t *testing.T) {
+	for _, stage := range []string{"HTTP drain", "exposure close", "listener pump"} {
+		t.Run(stage, func(t *testing.T) {
+			n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 30 * time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = n.Close() })
+			e, exp := shutdownEntry(t, "retry")
+			if stage != "HTTP drain" {
+				close(e.done)
+			}
+			if stage == "exposure close" {
+				exp.closeGate = make(chan struct{})
+			}
+			if stage == "listener pump" {
+				exp.skipListenerClose = true
+			}
+			n.entries[e.slug] = e
+
+			if err := n.Stop(e.slug); !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("first Stop = %v, want deadline", err)
+			}
+			if n.entry(e.slug) != e {
+				t.Fatal("failed Stop lost the original exposure")
+			}
+			if _, err := n.Serve(t.Context(), e.slug, http.NotFoundHandler(), false); err == nil || !strings.Contains(err.Error(), "teardown") {
+				t.Fatalf("Serve during failed teardown = %v", err)
+			}
+			if err := n.SetHidden(e.slug, true); err == nil || !strings.Contains(err.Error(), "teardown") {
+				t.Fatalf("SetHidden during failed teardown = %v", err)
+			}
+			awaitShutdown(t, exp.entered)
+			switch stage {
+			case "HTTP drain":
+				close(e.done)
+			case "exposure close":
+				// A retry must wait for this first SDK Close, not call it again.
+				if err := n.Stop(e.slug); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("retry while Close is pending = %v", err)
+				}
+				close(exp.closeGate)
+			case "listener pump":
+				exp.listener.Close()
+			}
+			awaitShutdown(t, exp.finished)
+			awaitShutdown(t, e.ln.pumped)
+			if err := n.Stop(e.slug); err != nil {
+				t.Fatalf("retry after %s recovered: %v", stage, err)
+			}
+			if n.entry(e.slug) != nil {
+				t.Fatal("confirmed Stop retained entry")
+			}
+			if err := n.Stop(e.slug); err != nil {
+				t.Fatalf("idempotent Stop: %v", err)
+			}
+		})
+	}
 }
