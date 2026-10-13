@@ -176,3 +176,46 @@ func TestPortalStopDoesNotForgetSDKCloseFailure(t *testing.T) {
 		t.Fatal("Stop after Close claimed an unconfirmed exposure was removed")
 	}
 }
+
+func TestPortalCloseKeepsFailedUnpublishedServe(t *testing.T) {
+	failure := errors.New("unpublished unregister failed")
+	n, ff := newTestNet(t, Config{Discovery: true, ShutdownTimeout: time.Second})
+	closed := make(chan error, 1)
+	ff.onExpose = func() {
+		go func() { closed <- n.Close() }()
+		deadline := time.After(time.Second)
+		for {
+			n.mu.RLock()
+			shuttingDown := n.closed
+			n.mu.RUnlock()
+			if shuttingDown {
+				return
+			}
+			select {
+			case <-deadline:
+				t.Fatal("Close did not mark the network closed")
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	n.expose = func(ctx context.Context, id types.Identity, relays []string, max int, meta types.LeaseMetadata) (exposure, error) {
+		f, err := ff.expose(ctx, id, relays, max, meta)
+		if err != nil {
+			return nil, err
+		}
+		return &sdkBoundExposure{fakeExposure: f.(*fakeExposure), err: failure, closed: make(chan struct{})}, nil
+	}
+
+	if _, err := n.Serve(t.Context(), "late", http.NotFoundHandler(), false); !errors.Is(err, failure) {
+		t.Fatalf("unpublished Serve cleanup = %v", err)
+	}
+	if err := <-closed; !errors.Is(err, failure) {
+		t.Fatalf("Close lost unpublished unregister error: %v", err)
+	}
+	if n.entry("late") == nil {
+		t.Fatal("failed unpublished Serve discarded the exposure")
+	}
+	if err := n.Stop("late"); err == nil {
+		t.Fatal("Stop reported success for unconfirmed unpublished teardown")
+	}
+}
