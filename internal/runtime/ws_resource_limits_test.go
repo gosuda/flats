@@ -186,3 +186,43 @@ func TestWebSocketDefaultByteLimits(t *testing.T) {
 		t.Fatal("lowering budgets failed")
 	}
 }
+
+// A browser that only listens sends nothing but pongs. Server pings must keep
+// such an idle, live client connected past the read deadline.
+func TestWebSocketServerPingsKeepIdleClientAlive(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	server := newWSConn(a, bufio.NewReader(a), false)
+	server.readIdleTimeout = 300 * time.Millisecond
+	server.pingInterval = 50 * time.Millisecond
+	go server.writer()
+	defer server.end(1006, "")
+	peer := newWSConn(b, bufio.NewReader(b), true)
+	go peer.readMessage() // answers pings with pongs, like a browser
+
+	result := make(chan error, 1)
+	go func() {
+		msg, err := server.readMessage()
+		if err == nil && msg != "ok" {
+			err = errors.New("unexpected message")
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("idle client with pongs was dropped: %v", err)
+	case <-time.After(time.Second):
+	}
+	if err := peer.writeFrame(opText, []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("read stayed blocked")
+	}
+}

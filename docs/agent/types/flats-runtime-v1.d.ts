@@ -230,7 +230,8 @@ declare namespace Flats {
     readonly closeReason?: string;
     /**
      * Sends a text message. There is no binary send: base64-encode binary
-     * yourself. Throws when not open. At most 256 queued messages; overflow
+     * yourself. Throws when not open. At most 256 queued messages and 4 MiB
+     * queued per connection (16 MiB across connections); overflow throws and
      * closes the connection.
      */
     send(data: string): void;

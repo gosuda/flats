@@ -31,8 +31,8 @@ Server deploys need the host runtime enabled; a host started with
 | Resource | Limit | Topic |
 |---|---|---|
 | Request body / decoded response | 10 MiB / 32 MiB | `topic.server` |
-| WebSocket connections | 256 per worker, 5 s handshake write, 2 min inbound idle deadline | `topic.server` |
-| WebSocket messages / outbound buffer | 1 MiB incoming message, 256 queued sends, 4 MiB per connection and 16 MiB per worker queued and in flight | `topic.server` |
+| WebSocket connections | 256 per running version; closed after 2 min without any frame from the peer (server pings every 30 s) | `topic.server` |
+| WebSocket message / outgoing queue | 1 MiB incoming; 256 sends and 4 MiB per connection, 16 MiB per running version | `topic.server` |
 | FILES value / per-flat total / list | 10 MiB / 1 GiB / 10,000 keys | `topic.server.files` |
 | DB query result / value or row / allocation | 16 MiB / 32 MiB / 256 MiB | `topic.server.db` |
 | Outbound fetch | 5 s, 16 calls per invocation, 4 MiB response | `topic.server.fetch` |

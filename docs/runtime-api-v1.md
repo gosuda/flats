@@ -202,7 +202,13 @@ converts to text; close(code=1000, reason=""); close callback gets closeCode
 (1005 when the peer sent none, 1006 when the connection dropped) and
 closeReason (undefined when empty). Incoming text/binary messages are
 delivered as strings (not a lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
-send queue 256 messages, closes on overflow. Redeploy closes connections.
+send queue 256 messages, and at most **4 MiB** per connection and **16 MiB**
+across the worker's connections queued or still being written; a send over
+any of these throws and closes that connection (code 1008). At most **256**
+connections per running version, counting handshakes and closing sockets;
+further upgrades get 503. The server pings every 30 seconds; a peer that sends
+nothing, not even the pong browsers send automatically, for 2 minutes is
+closed with code 1001. Redeploy closes connections.
 
 ### WASI
 
@@ -423,7 +429,8 @@ Server deploys need the host runtime enabled; a host started with
 | Resource | Limit | Topic |
 |---|---|---|
 | Request body / decoded response | 10 MiB / 32 MiB | `topic.server` |
-| WebSocket message | 1 MiB, 256 queued sends | `topic.server` |
+| WebSocket connections | 256 per running version; closed after 2 min without any frame from the peer (server pings every 30 s) | `topic.server` |
+| WebSocket message / outgoing queue | 1 MiB incoming; 256 sends and 4 MiB per connection, 16 MiB per running version | `topic.server` |
 | FILES value / per-flat total / list | 10 MiB / 1 GiB / 10,000 keys | `topic.server.files` |
 | DB query result / value or row / allocation | 16 MiB / 32 MiB / 256 MiB | `topic.server.db` |
 | Outbound fetch | 5 s, 16 calls per invocation, 4 MiB response | `topic.server.fetch` |
@@ -694,7 +701,8 @@ declare namespace Flats {
     readonly closeReason?: string;
     /**
      * Sends a text message. There is no binary send: base64-encode binary
-     * yourself. Throws when not open. At most 256 queued messages; overflow
+     * yourself. Throws when not open. At most 256 queued messages and 4 MiB
+     * queued per connection (16 MiB across connections); overflow throws and
      * closes the connection.
      */
     send(data: string): void;

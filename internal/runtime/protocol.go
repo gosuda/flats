@@ -23,19 +23,16 @@ import (
 
 // Limits enforced in the worker.
 const (
-	DefaultTimeout          = 10 * time.Second
-	DefaultMemoryPages      = 1024 // 64 KiB wasm pages = 64 MiB
-	DefaultPoolSize         = 4
-	MaxRequestBody          = 10 << 20
-	MaxResponseBody         = 32 << 20
-	MaxFileValue            = 10 << 20
-	MaxFilesTotal           = 1 << 30
-	MaxQueryResult          = 16 << 20
-	MaxWSMessage            = 1 << 20
-	MaxWSConnections        = 256 // per worker; includes handshakes and closing sockets
-	MaxWSQueuedBytesPerConn = 4 << 20
-	MaxWSQueuedBytesPerFlat = 16 << 20 // aggregate across connections in one worker
-	maxLogLine              = 8 << 10
+	DefaultTimeout     = 10 * time.Second
+	DefaultMemoryPages = 1024 // 64 KiB wasm pages = 64 MiB
+	DefaultPoolSize    = 4
+	MaxRequestBody     = 10 << 20
+	MaxResponseBody    = 32 << 20
+	MaxFileValue       = 10 << 20
+	MaxFilesTotal      = 1 << 30
+	MaxQueryResult     = 16 << 20
+	MaxWSMessage       = 1 << 20
+	maxLogLine         = 8 << 10
 )
 
 // workerSpec is sent to the child on stdin as one JSON line. Secrets travel

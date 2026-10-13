@@ -33,9 +33,18 @@ const (
 
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+// WebSocket resource limits, per worker (one per running flat version).
 const (
+	MaxWSConnections        = 256      // includes handshakes and sockets still closing
+	MaxWSQueuedBytesPerConn = 4 << 20  // queued and in-flight outgoing bytes
+	MaxWSQueuedBytesPerFlat = 16 << 20 // the same, across all connections
+
 	wsHandshakeTimeout = 5 * time.Second
-	wsReadIdleTimeout  = 2 * time.Minute
+	// A peer that sends nothing, not even a pong, for wsReadIdleTimeout is
+	// gone. The server pings every wsPingInterval so that idle but live
+	// clients (browsers answer pings automatically) are not closed.
+	wsReadIdleTimeout = 2 * time.Minute
+	wsPingInterval    = 30 * time.Second
 )
 
 // wsAccept implements RFC 6455 section 4.2.2: SHA-1 of the public handshake
@@ -67,8 +76,9 @@ func isWebSocketUpgrade(r *http.Request) bool {
 type wsConn struct {
 	c               net.Conn
 	br              *bufio.Reader
-	client          bool // client frames are masked
-	readIdleTimeout time.Duration
+	client          bool          // client frames are masked
+	readIdleTimeout time.Duration // 0: no read deadline
+	pingInterval    time.Duration // 0: the writer sends no pings
 
 	qmu          sync.Mutex // serializes enqueue and close; never held during socket writes
 	budget       wsByteBudget
@@ -331,12 +341,23 @@ func (ws *wsConn) writer() {
 			}
 		}
 	}()
+	var ping <-chan time.Time
+	if ws.pingInterval > 0 {
+		t := time.NewTicker(ws.pingInterval)
+		defer t.Stop()
+		ping = t.C
+	}
 	for {
 		select {
 		case m := <-ws.sendQ:
 			err := ws.writeFrame(opText, m)
 			ws.release(int64(len(m)))
 			if err != nil {
+				ws.end(1006, "")
+				return
+			}
+		case <-ping:
+			if err := ws.writeFrame(opPing, nil); err != nil {
 				ws.end(1006, "")
 				return
 			}
@@ -592,6 +613,7 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 	}
 	id := h.next.Add(1)
 	c.readIdleTimeout = wsReadIdleTimeout
+	c.pingInterval = wsPingInterval
 	c.sharedBudget = &h.budget
 	h.conns[id] = c
 	h.mu.Unlock()
