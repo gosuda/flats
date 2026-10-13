@@ -246,6 +246,11 @@ func (s *Service) recoverStorageRename(ctx context.Context, op storageOperation)
 		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
 			return err
 		}
+		owner := op.From
+		if toOwned {
+			owner = op.To
+		}
+		s.logf("recovered interrupted rename %s -> %s: storage now belongs to %s", op.From, op.To, owner)
 	}
 	return s.finishStorageOperation(op)
 }
@@ -286,6 +291,7 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
 			return err
 		}
+		s.logf("recovered interrupted delete of %s: the flat still exists, so its storage was restored", op.From)
 	}
 	if !owned {
 		// The deletion committed: no runtime starts for this slug, and the
