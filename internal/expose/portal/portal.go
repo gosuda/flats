@@ -345,14 +345,21 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 
 	n.mu.Lock()
 	if n.closed {
-		// Close ran while this exposure was being created and did not see it.
+		// Close already took its entry snapshot, but it still waits for
+		// this admitted Serve. Retain failed cleanup for later inspection.
+		e.mu.Lock()
+		e.stopping = true
+		e.mu.Unlock()
+		n.entries[slug] = e
 		n.mu.Unlock()
 		stopErr := n.stopEntry(e)
-		if stopErr != nil {
-			n.mu.Lock()
+		n.mu.Lock()
+		if stopErr == nil {
+			delete(n.entries, slug)
+		} else {
 			n.shutdownErrs = append(n.shutdownErrs, stopErr)
-			n.mu.Unlock()
 		}
+		n.mu.Unlock()
 		return "", errors.Join(errors.New("portal: closed"), stopErr)
 	}
 	n.entries[slug] = e
