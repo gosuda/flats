@@ -8,6 +8,7 @@ import { Provider } from "./provider.js";
 import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
 import { replaceRendered } from "./diagram-preview.js";
+import { coalescedRefresh } from "./render-budget.js";
 import {
   onThemeChange,
   redrawDiagrams,
@@ -54,13 +55,24 @@ let view,
   mode = "edit",
   writable = false;
 const access = new Compartment();
-function renderNow() {
-  cancelAnimationFrame(renderFrame);
+const refresh = coalescedRefresh(() => {
   replaceRendered($("#content"), md.render(text.toString()), destroyDiagram);
   renderDiagrams($("#content"));
+});
+function renderNow() {
+  cancelAnimationFrame(renderFrame);
+  renderFrame = 0;
+  refresh.run();
 }
-function render() {
+function render(_event, transaction) {
   if ($("#content").hidden) return;
+  // Remote bursts apply to Yjs immediately, but render only the latest state.
+  // A pending local frame already includes those remote edits.
+  if (transaction && !transaction.local) {
+    if (!renderFrame) refresh.request();
+    return;
+  }
+  refresh.cancel();
   cancelAnimationFrame(renderFrame);
   renderFrame = requestAnimationFrame(renderNow);
 }
@@ -75,7 +87,11 @@ function showRendered(rendered) {
   const stale = rendered && $("#content").hidden;
   $("#editor").hidden = rendered;
   $("#content").hidden = !rendered;
-  if (stale) renderNow();
+  if (!rendered) {
+    refresh.cancel();
+    cancelAnimationFrame(renderFrame);
+    renderFrame = 0;
+  } else if (stale) renderNow();
   else render();
 }
 // Private HTML includes the Edit | View group; a page first served
@@ -301,4 +317,7 @@ window.addEventListener("beforeunload", (event) => {
     event.returnValue = "";
   }
 });
-window.addEventListener("pagehide", () => provider.destroy());
+window.addEventListener("pagehide", () => {
+  refresh.cancel();
+  provider.destroy();
+});
