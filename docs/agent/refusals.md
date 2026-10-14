@@ -58,6 +58,12 @@ operator; tell the user.
 The tool needs a docs flat (`type: "docs"`), and this flat is a website.
 Check `get_flat`; use `save_draft` for websites, or a new slug for a document.
 
+## not_design
+
+The tool needs a design (`type: "design"`), and this flat is another type.
+Check `get_flat`. Create a design with `create_flat {type: "design"}` or
+`save_design` on a new slug; designs keep their own revision history.
+
 ## conflict
 
 The request contradicts the current state: `expected_revision` differs from

@@ -66,7 +66,10 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
 				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {}, "get_content_types": {},
 				"save_document": {"slug": "separate-doc", "markdown": "# doc"}, "get_document": {"slug": "census"},
-				"save_page":       {"slug": "separate-page", "html": "<title>Page</title>", "deploy": true},
+				"save_page":   {"slug": "separate-page", "html": "<title>Page</title>", "deploy": true},
+				"save_design": {"slug": "separate-design", "message": "census"},
+				"get_design":  {"slug": "census"}, "list_revisions": {"slug": "census"}, "get_revision": {"slug": "census", "revision": 1},
+				"pin_revision": {"slug": "census", "revision": 1, "pinned": true}, "rollback_revision": {"slug": "census", "revision": 1},
 				"update_document": {"slug": "census", "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "x"}}},
 				"get_network":     {"slug": "census"}, "guide": {"items": []string{"topic.index", "refusal.conflict"}},
 				"list_env": {"slug": "census"}, "set_env": {"slug": "census", "name": "MODE", "value": "test"}, "delete_env": {"slug": "census", "name": "MODE"},
@@ -81,11 +84,19 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				t.Fatalf("new tool lacks authority behavior census: %s", tool.Name)
 			}
 			text, failed := call(t, e.local, tool.Name, input, nil)
-			docTool := tool.Name == "get_document" || tool.Name == "update_document"
+			// Document and design tools refuse the census website; the refusal
+			// must still leave the pending approval untouched.
+			docTool := tool.Name == "get_document" || tool.Name == "update_document" ||
+				tool.Name == "get_design" || tool.Name == "list_revisions" || tool.Name == "get_revision" ||
+				tool.Name == "pin_revision" || tool.Name == "rollback_revision"
 			if failed && !docTool {
 				t.Fatalf("valid census operation failed: %s", text)
 			}
-			if docTool && (!failed || !strings.Contains(text, `"category":"not_docs"`)) {
+			want := `"category":"not_docs"`
+			if strings.Contains(tool.Name, "design") || strings.Contains(tool.Name, "revision") {
+				want = `"category":"not_design"`
+			}
+			if docTool && (!failed || !strings.Contains(text, want)) {
 				t.Fatal("website must reject document reads and edits with a typed error", text)
 			}
 			a, err := e.svc.GetApproval(context.Background(), pending.ApprovalID)

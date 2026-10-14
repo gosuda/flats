@@ -1,0 +1,14 @@
+{
+  "title": "Daily Grind — subscription app",
+  "boards": {
+    "home.html": {"x": 0, "y": 0, "w": 390, "h": 844, "title": "1 · Home"},
+    "plan.html": {"x": 470, "y": 0, "w": 390, "h": 844, "title": "2 · Choose a plan"},
+    "checkout.html": {"x": 940, "y": 0, "w": 390, "h": 844, "title": "3 · Checkout"},
+    "landing.html": {"x": 1410, "y": 0, "w": 1440, "h": 900, "title": "Desktop landing", "fill": true}
+  },
+  "order": ["home.html", "plan.html", "checkout.html", "landing.html"],
+  "notes": {
+    "flow": {"x": 0, "y": -180, "w": 1330, "text": "Mobile flow — open Home and click through: Start → choose a plan → pay.", "color": "yellow"},
+    "landing": {"x": 1410, "y": -180, "w": 640, "text": "Desktop landing page. Try the Accent and Corner tweaks in Edit mode.", "color": "blue"}
+  }
+}

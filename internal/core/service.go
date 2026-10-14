@@ -124,6 +124,8 @@ type Service struct {
 	runtimeMu     sync.Mutex
 	runtimeOwners map[string]int64 // data directory -> newest runtime start
 	routeEpochs   sync.Map         // route key -> *routeEpoch
+	designOnce    sync.Once
+	design        *designState
 	settings      *SettingsSource
 	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
 	logLimits     sync.Map // slug -> *logLimit
@@ -210,8 +212,12 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	s.startSavedDocs(ctx)
 	s.cleanupDocs()
-	s.wg.Add(1)
+	s.startPendingDesigns(ctx)
+	s.retainAllDesigns(ctx)
+	s.CloseDueGroups(ctx)
+	s.wg.Add(2)
 	go s.sweeper()
+	go s.designLoop()
 	return s, nil
 }
 
@@ -399,6 +405,10 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 	}
 	var m bundle.Manifest
 	_ = json.Unmarshal(v.Manifest, &m)
+	if contenttype.FromManifest(v.Manifest) == contenttype.Design {
+		inst := s.designInstance(slugName)
+		return &deployed{version: v, handler: inst, inst: inst, redact: func(s string) string { return s }, environment: snapshot}, nil
+	}
 	dir := s.contentDir(slugName, v)
 	switch v.Kind {
 	case "server":
@@ -937,6 +947,9 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 	if m.Kind == "server" && s.cfg.Runtime == nil {
 		return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Path: bundle.ManifestName, Message: "server flats are not enabled on this host", Fix: `deploy a static build ("kind": "static")`}}}
 	}
+	if m.Type == contenttype.Design {
+		return store.Version{}, ErrDesignUnversioned
+	}
 	docs := m.Type == contenttype.Docs
 	unlock, err := s.lockStorage(slugName)
 	if err != nil {
@@ -979,7 +992,7 @@ func (s *Service) ListVersions(ctx context.Context, slugName string) ([]store.Ve
 	if err != nil {
 		return nil, err
 	}
-	if err := s.refuseDocs(ctx, f); err != nil {
+	if err := s.refuseUnversioned(ctx, f); err != nil {
 		return nil, err
 	}
 	vs, err := s.st.ListVersions(ctx, slugName)
@@ -1052,10 +1065,13 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 	// A document has no versions to go back to, so keep_versions does not
 	// apply: keep the running bundle and the one before it, which a draining
 	// runtime may still serve assets from.
-	docs, err := s.isDocs(ctx, f)
+	// Documents and designs (Revision model) have no versions to go back
+	// to; they keep the running bundle and the one before it.
+	t, err := s.flatType(ctx, f)
 	if err != nil {
 		return nil, err
 	}
+	docs := contenttype.RevisionModel(t)
 	if docs {
 		keep = 1
 	}
@@ -1931,7 +1947,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	defer unlock()
 	if f, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return PreviewView{}, err
-	} else if err := s.refuseDocs(ctx, f); err != nil {
+	} else if err := s.refuseUnversioned(ctx, f); err != nil {
 		return PreviewView{}, err
 	}
 	if n == 0 {

@@ -106,6 +106,8 @@ var specs = []spec{
 	intSpec("system.rate_limit_rps", 50, 1, MaxInt),
 	intSpec("system.redirect_days", 7, 0, MaxInt),
 	intSpec("system.events_keep", 5000, 1, MaxInt),
+	intSpec("system.revision_quota", 100, 0, MaxInt),
+	intSpec("system.pin_quota", 20, 0, MaxInt),
 	{key: "portal.relays", kind: kindList, def: []string{}, check: checkRelays,
 		hint: "list https://host[:port] relay origins once each, or [] for Portal defaults"},
 	{key: "portal.discovery", kind: kindBool, def: true,

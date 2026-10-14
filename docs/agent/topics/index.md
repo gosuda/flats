@@ -15,6 +15,7 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 | Type-check server code against the exact runtime API | `topic.server.types` | |
 | Write a document with charts, graphs or visualizations as one HTML page (Draft, then approved publish) | `topic.page`, `topic.page.visuals`, `topic.design` | `create_flat {type: "page"}`, `save_page`, `open_preview`, `publish`, `deploy` |
 | Draw a chart, tooltip or diagram that reads correctly (in a page or any website) | `topic.page.visuals` | |
+| Design screens, a prototype, posters or social images on a canvas people edit with you (runs Private at once; no publish or approval) | `topic.canvas`, `topic.design` | `create_flat {type: "design"}`, `save_design`, `get_design`, `list_revisions` |
 | Write a Markdown document (runs Private at once; no publish or approval) | `topic.docs` | `create_flat {type: "docs"}`, `save_document` |
 | Fix or add to a Markdown document (no approval; Public is visible at once) | `topic.docs` | `get_document`, `update_document` |
 | Give an app settings, credentials or API access | `topic.env-secrets`, `topic.server.fetch` | `list_env`, `set_env`, `list_secrets`, `get_network` |
@@ -28,8 +29,8 @@ For an existing flat, call `get_flat` before changing anything.
 
 ### Workflow map
 
-Websites and pages follow these steps. Documents do not: they have no Draft, versions,
-previews or publish, and every save runs at once (`topic.docs`).
+Websites and pages follow these steps. Documents and designs do not: they have no Draft,
+versions, previews or publish, and every save runs at once (`topic.docs`, `topic.canvas`).
 
 1. **Draft.** `save_draft` (or `save_version`) uploads the complete build;
    saving creates a missing flat and only changes its Private Draft. Nothing

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Grind — Checkout</title>
+<script type="application/json" data-flats-tweaks>
+{
+  "accent": {"type": "color", "label": "Accent", "value": "#b4532a"},
+  "radius": {"type": "number", "label": "Corner radius", "value": 16, "min": 0, "max": 32, "step": 2, "unit": "px"}
+}
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="phone">
+  <header class="top">
+    <a href="plan.html" style="color: inherit">Back</a>
+    <span class="brand"><span class="dot" aria-hidden="true"></span>Daily Grind</span>
+    <span aria-hidden="true"></span>
+  </header>
+  <section class="content">
+    <h2>Checkout</h2>
+    <div class="card">
+      <span class="row"><strong>Duo plan</strong><span class="price">[PRICE]</span></span>
+      <span>500 g every week · first delivery Thursday</span>
+    </div>
+    <label for="name">Name on the door<input id="name" autocomplete="name" placeholder="Alex Kim"></label>
+    <label for="addr">Delivery address<input id="addr" autocomplete="street-address" placeholder="Street, number, city"></label>
+    <span class="spacer"></span>
+    <a class="button" href="home.html">Pay and subscribe</a>
+    <p style="text-align: center; font-size: 14px">You can pause or cancel any week.</p>
+  </section>
+</main>
+</body>
+</html>

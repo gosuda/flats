@@ -35,6 +35,7 @@ the full list.
 | Page | Covers |
 | --- | --- |
 | [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, design); target, partly implemented |
+| [Design content type](spec/design-type.md) | Canvas of HTML artboards with live editing and revisions; background in [research](research/claude-artifacts-design.md) |
 
 ## Design and contracts
 

@@ -148,8 +148,8 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"check_client", "create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_client_skill", "get_content_types", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_runtime_reference", "guide", "list_env", "list_flats",
-		"list_secrets", "list_versions", "open_preview", "publish", "rollback", "save_document", "save_draft", "save_page", "save_version", "save_version_from_dir", "set_env", "set_visibility", "update_document"}
+	want := []string{"check_client", "create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_client_skill", "get_content_types", "get_design", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_revision", "get_runtime_reference", "guide", "list_env", "list_flats",
+		"list_revisions", "list_secrets", "list_versions", "open_preview", "pin_revision", "publish", "rollback", "rollback_revision", "save_design", "save_document", "save_draft", "save_page", "save_version", "save_version_from_dir", "set_env", "set_visibility", "update_document"}
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)

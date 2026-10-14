@@ -132,6 +132,8 @@ func (s *Server) Handler() http.Handler {
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
 			h("PUT /flats/{slug}/listing", s.setListing)
+			h("GET /flats/{slug}/revision-quota", s.revisionQuota)
+			h("PUT /flats/{slug}/revision-quota", s.putRevisionQuota)
 			h("GET /providers", s.hostProviders)
 			h("PUT /providers/{id}", s.setHostProvider)
 			h("PUT /providers/zrok/account", s.connectZrok)
@@ -467,6 +469,35 @@ func (s *Server) setListing(w http.ResponseWriter, r *http.Request, via core.Via
 		return
 	}
 	writeJSON(w, 200, fv)
+}
+
+// revisionQuota returns a design's revision and pin quota overrides and
+// the host defaults. Console only.
+func (s *Server) revisionQuota(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	q, err := s.Svc.RevisionQuotas(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, q)
+}
+
+// putRevisionQuota stores a design's overrides: {"revision_quota": n|null,
+// "pin_quota": n|null}; null follows the host default. Console only.
+func (s *Server) putRevisionQuota(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	var in struct {
+		RevisionQuota *int `json:"revision_quota"`
+		PinQuota      *int `json:"pin_quota"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := s.Svc.SetRevisionQuotas(r.Context(), r.PathValue("slug"), in.RevisionQuota, in.PinQuota); err != nil {
+		fail(w, err)
+		return
+	}
+	s.revisionQuota(w, r, core.ViaConsole)
 }
 
 func (s *Server) listVersions(w http.ResponseWriter, r *http.Request, _ core.Via) {

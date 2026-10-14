@@ -40,13 +40,13 @@ var PreviewCheck string
 // TopicOrder lists every topic file under agent/topics in guide order.
 var TopicOrder = []string{
 	"index", "client-update", "static", "design", "server", "server.types", "server.files", "server.db", "server.fetch", "server.limits",
-	"docs", "page", "page.visuals", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify", "preview-check",
+	"docs", "page", "page.visuals", "canvas", "manifest", "env-secrets", "approvals", "rollback-data", "preview-verify", "preview-check",
 }
 
 // Sections of each reference, in order, after its header.
 var (
 	runtimeSections      = []string{"static", "manifest", "server", "server.files", "server.db", "server.fetch", "server.limits", "server.types", "env-secrets", "preview-verify", "rollback-data", "approvals"}
-	contentTypesSections = []string{"docs", "page", "page.visuals"}
+	contentTypesSections = []string{"docs", "page", "page.visuals", "canvas"}
 )
 
 var (

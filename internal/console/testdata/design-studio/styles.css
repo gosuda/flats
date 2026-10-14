@@ -1,0 +1,24 @@
+:root { color-scheme: light; --ink: #1f1a16; --muted: #6d645c; --paper: #fbf7f1; --card: #ffffff; --line: #e8e0d5; }
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--paper); }
+.phone { width: 390px; height: 844px; display: flex; flex-direction: column; overflow: hidden; }
+.top { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px 8px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: -0.01em; }
+.dot { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); }
+.content { flex: 1; display: flex; flex-direction: column; gap: 16px; padding: 16px 24px 24px; }
+h1 { margin: 0; font-size: 34px; line-height: 1.1; letter-spacing: -0.02em; }
+h2 { margin: 0; font-size: 22px; line-height: 1.2; }
+p { margin: 0; color: var(--muted); }
+.hero { height: 300px; border-radius: var(--radius); background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 85%, #000) 0%, var(--accent) 100%); display: grid; place-items: center; color: #fff; }
+.hero svg { width: 120px; height: 120px; opacity: .9; }
+.button { display: flex; justify-content: center; align-items: center; min-height: 52px; border-radius: var(--radius); background: var(--accent); color: #fff; font-weight: 600; text-decoration: none; }
+.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.card { display: grid; gap: 4px; padding: 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line); text-decoration: none; color: inherit; }
+.card.picked { border: 2px solid var(--accent); }
+.price { font-weight: 700; font-size: 20px; color: var(--ink); }
+.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 14%, #fff); color: color-mix(in srgb, var(--accent) 70%, #000); }
+label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+input { min-height: 48px; padding: 0 14px; border-radius: calc(var(--radius) * .7); border: 1px solid var(--line); background: var(--card); font: inherit; }
+.spacer { flex: 1; }

@@ -177,7 +177,7 @@ func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via
 	if err != nil {
 		return DeployResult{}, err
 	}
-	if err := s.refuseDocs(ctx, f); err != nil {
+	if err := s.refuseUnversioned(ctx, f); err != nil {
 		return DeployResult{}, err
 	}
 	if n <= 0 {
@@ -211,7 +211,7 @@ func (s *Service) requestRollback(ctx context.Context, slugName string, to int, 
 	if err != nil {
 		return DeployResult{}, err
 	}
-	if err := s.refuseDocs(ctx, f); err != nil {
+	if err := s.refuseUnversioned(ctx, f); err != nil {
 		return DeployResult{}, err
 	}
 	if f.LiveVersion == 0 {
@@ -1440,7 +1440,7 @@ var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
 	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed",
-	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "document_not_found", "not_found", "invalid",
+	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "not_design", "document_not_found", "not_found", "invalid",
 }
 
 // ErrorCategory defines cause precedence for persisted failures and transports.
@@ -1492,6 +1492,8 @@ func ErrorCategory(err error) string {
 		return "forbidden"
 	case errors.Is(err, ErrNotDocs):
 		return "not_docs"
+	case errors.Is(err, ErrNotDesign):
+		return "not_design"
 	case errors.Is(err, ErrDocumentNotFound):
 		return "document_not_found"
 	case errors.Is(err, store.ErrNotFound):
@@ -1508,7 +1510,7 @@ func (s *Service) GetDraft(ctx context.Context, flat string) (store.Draft, error
 	if err != nil {
 		return store.Draft{}, err
 	}
-	if err := s.refuseDocs(ctx, f); err != nil {
+	if err := s.refuseUnversioned(ctx, f); err != nil {
 		return store.Draft{}, err
 	}
 	return s.st.GetDraft(ctx, flat)
@@ -1523,7 +1525,7 @@ func (s *Service) Publish(ctx context.Context, flat string, revision int, hash s
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if err := s.refuseDocs(ctx, f); err != nil {
+	if err := s.refuseUnversioned(ctx, f); err != nil {
 		return ActionResult{}, err
 	}
 	d, err := s.st.GetDraft(ctx, flat)

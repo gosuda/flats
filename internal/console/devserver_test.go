@@ -211,6 +211,16 @@ func TestDevServer(t *testing.T) {
 	must(err)
 	makePublic("launch-notes")
 
+	// studio: a design (canvas of artboards) linked as a prototype.
+	var studio []core.DesignFile
+	for _, name := range []string{"canvas.json", "styles.css", "home.html", "plan.html", "checkout.html", "landing.html"} {
+		data, err := os.ReadFile(filepath.Join("testdata", "design-studio", name))
+		must(err)
+		studio = append(studio, core.DesignFile{Path: name, Data: data})
+	}
+	_, err = svc.WriteDesign(ctx, "studio", core.DesignWrite{Files: studio, Name: "Daily Grind", Message: "first draft"}, core.ViaMCP)
+	must(err)
+
 	// empty-one: created but empty, with a delete request waiting for approval.
 	_, err = svc.CreateFlat(ctx, "empty-one", "Empty one", core.ViaMCP)
 	must(err)

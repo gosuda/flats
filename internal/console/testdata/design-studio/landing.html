@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Grind — Coffee subscription</title>
+<script type="application/json" data-flats-tweaks>
+{
+  "accent": {"type": "color", "label": "Accent", "value": "#b4532a"},
+  "radius": {"type": "number", "label": "Corner radius", "value": 16, "min": 0, "max": 32, "step": 2, "unit": "px"}
+}
+</script>
+<link rel="stylesheet" href="styles.css">
+<style>
+.page { min-height: 100vh; display: flex; flex-direction: column; }
+nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px clamp(20px, 5vw, 72px); flex-wrap: wrap; }
+nav ul { display: flex; gap: 24px; margin: 0; padding: 0; list-style: none; flex-wrap: wrap; }
+nav a { color: inherit; text-decoration: none; }
+.hero-wrap { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; align-items: center; padding: 32px clamp(20px, 5vw, 72px) 72px; max-width: 1440px; }
+.hero-wrap .hero { height: 420px; }
+.lead { font-size: 20px; max-width: 34em; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+.cta .button { padding: 0 28px; }
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; padding: 0 clamp(20px, 5vw, 72px) 72px; max-width: 1440px; }
+.steps .card { padding: 24px; }
+.big { font-size: 56px; }
+@media (max-width: 760px) { .hero-wrap, .steps { grid-template-columns: minmax(0, 1fr); } .big { font-size: 40px; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <nav aria-label="Main">
+    <span class="brand"><span class="dot" aria-hidden="true"></span>Daily Grind</span>
+    <ul><li><a href="plan.html">Plans</a></li><li><a href="#how">How it works</a></li><li><a href="home.html">Open the app</a></li></ul>
+  </nav>
+  <header class="hero-wrap">
+    <div>
+      <h1 class="big">Coffee that shows up before you run out.</h1>
+      <p class="lead">Small-batch beans, roasted weekly and delivered to your door. Choose a plan, pause anytime.</p>
+      <div class="cta"><a class="button" href="plan.html">See plans</a><a class="button ghost" href="#how">How it works</a></div>
+    </div>
+    <div class="hero" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10h13v4a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5zM17 11h1.5a2.5 2.5 0 0 1 0 5H17M8 3c0 1.5 1 1.5 1 3M12 3c0 1.5 1 1.5 1 3"/></svg>
+    </div>
+  </header>
+  <section class="steps" id="how" aria-label="How it works">
+    <div class="card"><strong>1. Pick a plan</strong><p>Solo, Duo or Office — change it whenever you like.</p></div>
+    <div class="card"><strong>2. We roast on Monday</strong><p>Every bag is roasted the week it ships.</p></div>
+    <div class="card"><strong>3. It arrives Thursday</strong><p>Free delivery, letterbox-friendly packaging.</p></div>
+  </section>
+</div>
+</body>
+</html>

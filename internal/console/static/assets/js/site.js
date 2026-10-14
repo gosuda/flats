@@ -5,7 +5,7 @@ import { hasServer, typeIcon } from './list.js';
 // The management tabs of a flat; Deployments is the flat's own address. A
 // document has no deployments, so its first tab is its Overview.
 const TABS = [['deployments', ''], ['analytics', '/analytics'], ['database', '/database'], ['settings', '/settings']];
-const tabLabel = (flat, tab) => (tab === 'deployments' && flat.type === 'docs' ? 'Overview' : tab[0].toUpperCase() + tab.slice(1));
+const tabLabel = (flat, tab) => (tab === 'deployments' && (flat.type === 'docs' || flat.type === 'design') ? 'Overview' : tab[0].toUpperCase() + tab.slice(1));
 
 export function siteHeader(flat, active) {
   const base = `/flats/${encodeURIComponent(flat.slug)}`;

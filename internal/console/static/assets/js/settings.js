@@ -15,6 +15,8 @@ const FIELDS = [
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
   { key: 'redirect_days', label: 'Redirect after a slug rename', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect to the new ones.' },
   { key: 'events_keep', label: 'Log events kept per flat', unit: 'events', factor: 1, step: 1, min: 1, help: 'Older events are deleted.' },
+  { key: 'revision_quota', label: 'Design revisions kept', unit: 'revisions', factor: 1, step: 1, help: 'Unpinned revisions each design keeps; older ones are deleted at once when lowered. A design can override it. 0 keeps all.' },
+  { key: 'pin_quota', label: 'Design pins', unit: 'pins', factor: 1, step: 1, help: 'Pinned revisions per design, never deleted automatically. A design can override it. 0 is unlimited.' },
   { key: 'portal_max_relays', label: 'Active Portal relays', unit: 'relays', factor: 1, step: 1, min: 1, portal: true, help: 'How many discovered relays a public flat uses at once. Used when Portal starts.' },
 ];
 

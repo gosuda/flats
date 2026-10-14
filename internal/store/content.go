@@ -1,0 +1,542 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+)
+
+// Revision-model content (designs): the current files ("head"), open groups
+// of a person's edits, and revisions with their files. File bytes live in a
+// content-addressed blob store owned by core; these tables hold references.
+
+// ContentState is the per-flat row of a Revision-model flat. Its presence
+// marks the flat's type before the flat is first published.
+type ContentState struct {
+	Flat          string `json:"flat"`
+	Type          string `json:"type"`
+	Phase         string `json:"phase"` // init | ready
+	Seq           int64  `json:"seq"`
+	RevisionQuota *int   `json:"revision_quota,omitempty"`
+	PinQuota      *int   `json:"pin_quota,omitempty"`
+}
+
+// HeadFile is one current file.
+type HeadFile struct {
+	Path string `json:"path"`
+	Hash string `json:"hash"`
+	Size int64  `json:"size"`
+	Gen  int64  `json:"gen"`
+}
+
+// ContentGroup is an open group of one person's edits.
+type ContentGroup struct {
+	Editor  string
+	Label   string
+	Started time.Time
+	Last    time.Time
+}
+
+// Changes summarizes a revision against the one before it.
+type Changes struct {
+	Added   []string `json:"added"`
+	Changed []string `json:"changed"`
+	Removed []string `json:"removed"`
+}
+
+// Revision is one entry of a flat's history.
+type Revision struct {
+	Flat       string    `json:"-"`
+	Number     int       `json:"number"`
+	CreatedAt  time.Time `json:"created_at"`
+	Kind       string    `json:"kind"` // created | agent | person | rollback
+	Authors    []string  `json:"authors"`
+	Message    string    `json:"message"`
+	RollbackOf int       `json:"rollback_of,omitempty"`
+	Pinned     bool      `json:"pinned"`
+	Changes    Changes   `json:"changes"`
+	Files      int       `json:"files"`
+	Size       int64     `json:"size"`
+}
+
+// RevisionFile is one file of a revision.
+type RevisionFile struct {
+	Path string `json:"path"`
+	Hash string `json:"hash"`
+	Size int64  `json:"size"`
+}
+
+func addContentRevisions(ctx context.Context, x executor) error {
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS content_state (
+ flat TEXT PRIMARY KEY REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+ type TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK(phase IN ('init','ready')),
+ seq INTEGER NOT NULL DEFAULT 0,
+ gen INTEGER NOT NULL DEFAULT 0,
+ revision_quota INTEGER,
+ pin_quota INTEGER
+ )`,
+		`CREATE TABLE IF NOT EXISTS content_head (
+ flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+ path TEXT NOT NULL,
+ hash TEXT NOT NULL,
+ size INTEGER NOT NULL,
+ gen INTEGER NOT NULL,
+ PRIMARY KEY (flat, path)
+ )`,
+		`CREATE INDEX IF NOT EXISTS content_head_hash ON content_head(flat, hash)`,
+		`CREATE TABLE IF NOT EXISTS content_groups (
+ flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+ editor TEXT NOT NULL,
+ label TEXT NOT NULL,
+ started_at INTEGER NOT NULL,
+ last_at INTEGER NOT NULL,
+ PRIMARY KEY (flat, editor)
+ )`,
+		`CREATE TABLE IF NOT EXISTS revisions (
+ flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+ number INTEGER NOT NULL,
+ created_at INTEGER NOT NULL,
+ kind TEXT NOT NULL,
+ authors TEXT NOT NULL,
+ message TEXT NOT NULL,
+ rollback_of INTEGER,
+ pinned INTEGER NOT NULL DEFAULT 0,
+ changes TEXT NOT NULL,
+ files INTEGER NOT NULL,
+ size INTEGER NOT NULL,
+ PRIMARY KEY (flat, number)
+ )`,
+		`CREATE TABLE IF NOT EXISTS revision_files (
+ flat TEXT NOT NULL,
+ number INTEGER NOT NULL,
+ path TEXT NOT NULL,
+ hash TEXT NOT NULL,
+ size INTEGER NOT NULL,
+ PRIMARY KEY (flat, number, path),
+ FOREIGN KEY (flat, number) REFERENCES revisions(flat, number) ON DELETE CASCADE ON UPDATE CASCADE
+ )`,
+		`CREATE INDEX IF NOT EXISTS revision_files_hash ON revision_files(flat, hash)`,
+	} {
+		if _, err := x.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ContentTx is one transaction over a flat's Revision-model tables.
+type ContentTx struct {
+	tx   *sql.Tx
+	flat string
+}
+
+// ContentTx runs fn in one immediate transaction for flat.
+func (s *Store) ContentTx(ctx context.Context, flat string, fn func(*ContentTx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := fn(&ContentTx{tx: tx, flat: flat}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ContentState returns the state row of flat.
+func (s *Store) ContentState(ctx context.Context, flat string) (ContentState, error) {
+	return scanContentState(s.db.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota FROM content_state WHERE flat=?`, flat))
+}
+
+// ContentStates lists every Revision-model flat.
+func (s *Store) ContentStates(ctx context.Context) ([]ContentState, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota FROM content_state ORDER BY flat`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContentState
+	for rows.Next() {
+		st, err := scanContentState(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+func scanContentState(sc interface{ Scan(...any) error }) (ContentState, error) {
+	var st ContentState
+	var rq, pq sql.NullInt64
+	err := sc.Scan(&st.Flat, &st.Type, &st.Phase, &st.Seq, &rq, &pq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return st, fmt.Errorf("content state: %w", ErrNotFound)
+	}
+	if rq.Valid {
+		v := int(rq.Int64)
+		st.RevisionQuota = &v
+	}
+	if pq.Valid {
+		v := int(pq.Int64)
+		st.PinQuota = &v
+	}
+	return st, err
+}
+
+// State returns the state row.
+func (c *ContentTx) State(ctx context.Context) (ContentState, error) {
+	return scanContentState(c.tx.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota FROM content_state WHERE flat=?`, c.flat))
+}
+
+// InitState inserts the state row of a new Revision-model flat.
+func (c *ContentTx) InitState(ctx context.Context, typ string) error {
+	_, err := c.tx.ExecContext(ctx, `INSERT INTO content_state(flat,type,phase,seq) VALUES(?,?,'init',0)`, c.flat, typ)
+	return err
+}
+
+// SetPhase updates the creation phase.
+func (c *ContentTx) SetPhase(ctx context.Context, phase string) error {
+	_, err := c.tx.ExecContext(ctx, `UPDATE content_state SET phase=? WHERE flat=?`, phase, c.flat)
+	return err
+}
+
+// SetQuotas stores per-flat quota overrides (nil = host default).
+func (c *ContentTx) SetQuotas(ctx context.Context, revisions, pins *int) error {
+	_, err := c.tx.ExecContext(ctx, `UPDATE content_state SET revision_quota=?,pin_quota=? WHERE flat=?`, nullInt(revisions), nullInt(pins), c.flat)
+	return err
+}
+
+func nullInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// NextGen returns a new file generation: a flat-wide counter that never
+// repeats, so a recreated path never reuses an old generation.
+func (c *ContentTx) NextGen(ctx context.Context) (int64, error) {
+	if _, err := c.tx.ExecContext(ctx, `UPDATE content_state SET gen=gen+1 WHERE flat=?`, c.flat); err != nil {
+		return 0, err
+	}
+	var gen int64
+	err := c.tx.QueryRowContext(ctx, `SELECT gen FROM content_state WHERE flat=?`, c.flat).Scan(&gen)
+	return gen, err
+}
+
+// BumpSeq increments and returns the head sequence.
+func (c *ContentTx) BumpSeq(ctx context.Context) (int64, error) {
+	if _, err := c.tx.ExecContext(ctx, `UPDATE content_state SET seq=seq+1 WHERE flat=?`, c.flat); err != nil {
+		return 0, err
+	}
+	var seq int64
+	err := c.tx.QueryRowContext(ctx, `SELECT seq FROM content_state WHERE flat=?`, c.flat).Scan(&seq)
+	return seq, err
+}
+
+// Head returns the current files, by path.
+func (c *ContentTx) Head(ctx context.Context) ([]HeadFile, error) {
+	return queryHead(ctx, c.tx, c.flat)
+}
+
+// Head returns the current files of flat in one read.
+func (s *Store) Head(ctx context.Context, flat string) ([]HeadFile, error) {
+	return queryHead(ctx, s.db, flat)
+}
+
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func queryHead(ctx context.Context, q querier, flat string) ([]HeadFile, error) {
+	rows, err := q.QueryContext(ctx, `SELECT path,hash,size,gen FROM content_head WHERE flat=? ORDER BY path`, flat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HeadFile
+	for rows.Next() {
+		var f HeadFile
+		if err := rows.Scan(&f.Path, &f.Hash, &f.Size, &f.Gen); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// PutHead inserts or replaces one current file.
+func (c *ContentTx) PutHead(ctx context.Context, f HeadFile) error {
+	_, err := c.tx.ExecContext(ctx, `INSERT INTO content_head(flat,path,hash,size,gen) VALUES(?,?,?,?,?) ON CONFLICT(flat,path) DO UPDATE SET hash=excluded.hash,size=excluded.size,gen=excluded.gen`, c.flat, f.Path, f.Hash, f.Size, f.Gen)
+	return err
+}
+
+// DeleteHead removes one current file.
+func (c *ContentTx) DeleteHead(ctx context.Context, path string) error {
+	_, err := c.tx.ExecContext(ctx, `DELETE FROM content_head WHERE flat=? AND path=?`, c.flat, path)
+	return err
+}
+
+// Groups returns the open edit groups.
+func (c *ContentTx) Groups(ctx context.Context) ([]ContentGroup, error) {
+	rows, err := c.tx.QueryContext(ctx, `SELECT editor,label,started_at,last_at FROM content_groups WHERE flat=? ORDER BY started_at,editor`, c.flat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContentGroup
+	for rows.Next() {
+		var g ContentGroup
+		var a, b int64
+		if err := rows.Scan(&g.Editor, &g.Label, &a, &b); err != nil {
+			return nil, err
+		}
+		g.Started, g.Last = fromUnix(a), fromUnix(b)
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// TouchGroup opens or extends the editor's group.
+func (c *ContentTx) TouchGroup(ctx context.Context, editor, label string, now time.Time) error {
+	_, err := c.tx.ExecContext(ctx, `INSERT INTO content_groups(flat,editor,label,started_at,last_at) VALUES(?,?,?,?,?) ON CONFLICT(flat,editor) DO UPDATE SET last_at=excluded.last_at,label=excluded.label`, c.flat, editor, label, unix(now), unix(now))
+	return err
+}
+
+// DeleteGroup closes one editor's group; "" closes every group.
+func (c *ContentTx) DeleteGroup(ctx context.Context, editor string) error {
+	if editor == "" {
+		_, err := c.tx.ExecContext(ctx, `DELETE FROM content_groups WHERE flat=?`, c.flat)
+		return err
+	}
+	_, err := c.tx.ExecContext(ctx, `DELETE FROM content_groups WHERE flat=? AND editor=?`, c.flat, editor)
+	return err
+}
+
+// LatestRevision returns the newest revision number, 0 without revisions.
+func (c *ContentTx) LatestRevision(ctx context.Context) (int, error) {
+	var n sql.NullInt64
+	err := c.tx.QueryRowContext(ctx, `SELECT MAX(number) FROM revisions WHERE flat=?`, c.flat).Scan(&n)
+	return int(n.Int64), err
+}
+
+// InsertRevision stores a revision and its files.
+func (c *ContentTx) InsertRevision(ctx context.Context, r Revision, files []RevisionFile) error {
+	authors, _ := json.Marshal(nonNil(r.Authors))
+	changes, _ := json.Marshal(r.Changes)
+	var rb any
+	if r.RollbackOf > 0 {
+		rb = r.RollbackOf
+	}
+	if _, err := c.tx.ExecContext(ctx, `INSERT INTO revisions(flat,number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		c.flat, r.Number, unix(r.CreatedAt), r.Kind, string(authors), r.Message, rb, boolInt(r.Pinned), string(changes), r.Files, r.Size); err != nil {
+		return err
+	}
+	for _, f := range files {
+		if _, err := c.tx.ExecContext(ctx, `INSERT INTO revision_files(flat,number,path,hash,size) VALUES(?,?,?,?,?)`, c.flat, r.Number, f.Path, f.Hash, f.Size); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// RevisionFiles returns the files of revision n.
+func (c *ContentTx) RevisionFiles(ctx context.Context, n int) ([]RevisionFile, error) {
+	return queryRevisionFiles(ctx, c.tx, c.flat, n)
+}
+
+// RevisionFiles returns the files of revision n in one read.
+func (s *Store) RevisionFiles(ctx context.Context, flat string, n int) ([]RevisionFile, error) {
+	return queryRevisionFiles(ctx, s.db, flat, n)
+}
+
+func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]RevisionFile, error) {
+	rows, err := q.QueryContext(ctx, `SELECT path,hash,size FROM revision_files WHERE flat=? AND number=? ORDER BY path`, flat, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RevisionFile
+	for rows.Next() {
+		var f RevisionFile
+		if err := rows.Scan(&f.Path, &f.Hash, &f.Size); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+const revisionCols = `number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size`
+
+func scanRevision(flat string, sc interface{ Scan(...any) error }) (Revision, error) {
+	r := Revision{Flat: flat}
+	var created int64
+	var authors, changes string
+	var rb sql.NullInt64
+	var pinned int
+	err := sc.Scan(&r.Number, &created, &r.Kind, &authors, &r.Message, &rb, &pinned, &changes, &r.Files, &r.Size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, fmt.Errorf("revision: %w", ErrNotFound)
+	}
+	if err != nil {
+		return r, err
+	}
+	r.CreatedAt = fromUnix(created)
+	r.RollbackOf = int(rb.Int64)
+	r.Pinned = pinned == 1
+	_ = json.Unmarshal([]byte(authors), &r.Authors)
+	_ = json.Unmarshal([]byte(changes), &r.Changes)
+	return r, nil
+}
+
+// Revision returns revision n.
+func (c *ContentTx) Revision(ctx context.Context, n int) (Revision, error) {
+	return scanRevision(c.flat, c.tx.QueryRowContext(ctx, `SELECT `+revisionCols+` FROM revisions WHERE flat=? AND number=?`, c.flat, n))
+}
+
+// Revision returns revision n of flat.
+func (s *Store) Revision(ctx context.Context, flat string, n int) (Revision, error) {
+	return scanRevision(flat, s.db.QueryRowContext(ctx, `SELECT `+revisionCols+` FROM revisions WHERE flat=? AND number=?`, flat, n))
+}
+
+// ListRevisions returns revisions newest first, older than before when
+// before > 0, at most limit.
+func (s *Store) ListRevisions(ctx context.Context, flat string, before, limit int) ([]Revision, error) {
+	q := `SELECT ` + revisionCols + ` FROM revisions WHERE flat=?`
+	args := []any{flat}
+	if before > 0 {
+		q += ` AND number<?`
+		args = append(args, before)
+	}
+	q += ` ORDER BY number DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Revision
+	for rows.Next() {
+		r, err := scanRevision(flat, rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CountPins returns the number of pinned revisions.
+func (c *ContentTx) CountPins(ctx context.Context) (int, error) {
+	var n int
+	err := c.tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM revisions WHERE flat=? AND pinned=1`, c.flat).Scan(&n)
+	return n, err
+}
+
+// CountPins returns the number of pinned revisions of flat.
+func (s *Store) CountPins(ctx context.Context, flat string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM revisions WHERE flat=? AND pinned=1`, flat).Scan(&n)
+	return n, err
+}
+
+// SetPinned marks revision n pinned or not.
+func (c *ContentTx) SetPinned(ctx context.Context, n int, pinned bool) error {
+	res, err := c.tx.ExecContext(ctx, `UPDATE revisions SET pinned=? WHERE flat=? AND number=?`, boolInt(pinned), c.flat, n)
+	if err != nil {
+		return err
+	}
+	if k, _ := res.RowsAffected(); k == 0 {
+		return fmt.Errorf("revision %d: %w", n, ErrNotFound)
+	}
+	return nil
+}
+
+// UnpinnedOldestFirst lists unpinned revision numbers, oldest first.
+func (c *ContentTx) UnpinnedOldestFirst(ctx context.Context) ([]int, error) {
+	rows, err := c.tx.QueryContext(ctx, `SELECT number FROM revisions WHERE flat=? AND pinned=0 ORDER BY number`, c.flat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// DeleteRevision removes revision n and its file rows.
+func (c *ContentTx) DeleteRevision(ctx context.Context, n int) error {
+	if _, err := c.tx.ExecContext(ctx, `DELETE FROM revision_files WHERE flat=? AND number=?`, c.flat, n); err != nil {
+		return err
+	}
+	_, err := c.tx.ExecContext(ctx, `DELETE FROM revisions WHERE flat=? AND number=?`, c.flat, n)
+	return err
+}
+
+// ReferencedHashes returns every hash referenced by flat's head or
+// revisions.
+func (s *Store) ReferencedHashes(ctx context.Context, flat string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT hash FROM content_head WHERE flat=? UNION SELECT hash FROM revision_files WHERE flat=?`, flat, flat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out[h] = true
+	}
+	return out, rows.Err()
+}
+
+// ErrCheckpointBusy reports a checkpoint that could not complete.
+var ErrCheckpointBusy = errors.New("checkpoint did not complete")
+
+// Checkpoint runs a WAL checkpoint of the given mode (PASSIVE, FULL). For
+// FULL it fails with ErrCheckpointBusy unless every frame of the WAL was
+// written to the database file.
+func (s *Store) Checkpoint(ctx context.Context, mode string) error {
+	switch mode {
+	case "PASSIVE", "FULL":
+	default:
+		return fmt.Errorf("checkpoint mode %q", mode)
+	}
+	var busy, logFrames, done int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(`+mode+`)`).Scan(&busy, &logFrames, &done); err != nil {
+		return err
+	}
+	if mode == "FULL" && (busy != 0 || (logFrames >= 0 && done < logFrames)) {
+		return fmt.Errorf("%w: busy=%d log=%d checkpointed=%d", ErrCheckpointBusy, busy, logFrames, done)
+	}
+	return nil
+}

@@ -6,6 +6,12 @@ it and return non-blocking `warnings` (see "Save warnings"). Precedence: the
 user's own words, then the project's existing design system (a tokens or
 theme file, existing component styles), then these defaults.
 
+Design artboards (`topic.canvas`) follow the same contract for title,
+viewport, themes, contrast, accessibility and assets. The screenshot field,
+Draft and preview steps here apply to websites and pages only, and the
+phone-width rule applies to `fill` artboards, not to fixed-size posters or
+social images.
+
 ### Page contract
 
 * **Title.** A real `<title>` that names the page: a short noun phrase, two

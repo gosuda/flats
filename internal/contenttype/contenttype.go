@@ -4,9 +4,10 @@ package contenttype
 import "encoding/json"
 
 const (
-	Flat = "flat"
-	Docs = "docs"
-	Page = "page"
+	Flat   = "flat"
+	Docs   = "docs"
+	Page   = "page"
+	Design = "design"
 )
 
 type Description struct {
@@ -17,8 +18,13 @@ type Description struct {
 
 func Types() []Description {
 	return []Description{{Flat, "Website", "Static or server website"}, {Docs, "Document", "Markdown documents and assets in the embedded collaborative editor"},
-		{Page, "Page", "Static HTML page: a document with charts, graphs and visualizations"}}
+		{Page, "Page", "Static HTML page: a document with charts, graphs and visualizations"},
+		{Design, "Design", "Canvas of HTML artboards that people and agents edit live"}}
 }
+
+// RevisionModel reports whether content of type t follows the Revision
+// model: no Draft, versions or publish; changes are live at once.
+func RevisionModel(t string) bool { return t == Docs || t == Design }
 
 // FromManifest derives the type without changing the metadata schema.
 func FromManifest(raw json.RawMessage) string {

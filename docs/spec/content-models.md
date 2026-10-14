@@ -110,8 +110,9 @@ people and agents edit live.
      one revision, when that editor has been idle for 30 seconds or 5 minutes
      have passed since the group began.
    - A rollback is one revision.
-   - Before an agent write, a rollback or an overwrite applies, every open
-     group of a person's edits closes as its own revision, so the state just
+   - Before an agent write, a rollback or an overwrite applies, the open
+     groups close: the current state is kept as one revision that credits
+     every person who edited since the previous revision, so the state just
      before it is always kept.
 5. **A revision covers the whole flat.** It records every document or file of
    the flat at that point, so files that belong together (a design's index and
@@ -233,7 +234,11 @@ deployment (gosuda/flats PR #95):
     approval despite their names. `create_version`, `save_draft_from_dir` and
     version deletion do not exist.
 - **Revision model.**
-  - Documents have no revisions. When a new document version overwrites live
+  - Designs implement the Revision model with the revision store described in
+    [design-type-TECH.md](design-type-TECH.md): whole-flat revisions, shared
+    content-addressed storage, per-editor edit groups, revision and pin
+    quotas, rollback and the revision tools.
+  - Documents do not use that store yet and have no revisions. When a new document version overwrites live
     text, the overwritten text is preserved separately in
     `flats_docs_conflicts` (up to 8 records and 2 MiB per document); revisions
     replace this store.

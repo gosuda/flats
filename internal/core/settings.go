@@ -31,6 +31,8 @@ const (
 	SetPortalDiscover = "portal_discovery"  // "true" (Portal CLI default) or "false"
 	SetPortalMaxRelay = "portal_max_relays" // active relays chosen by discovery (default 3)
 	SetEventsKeep     = "events_keep"       // log events kept per flat
+	SetRevisionQuota  = "revision_quota"    // unpinned revisions kept per design; 0 = all
+	SetPinQuota       = "pin_quota"         // pinned revisions per design; 0 = unlimited
 	SetPortalHide     = "portal_hide"       // "true" keeps public flats out of relay listings by default
 	// The providers new flats inherit, one per mode. "" for private follows
 	// network.private_backend; "" for public grants none.
@@ -47,6 +49,8 @@ var settingKeys = map[string]string{
 	SetRateLimit:      "system.rate_limit_rps",
 	SetRedirectDays:   "system.redirect_days",
 	SetEventsKeep:     "system.events_keep",
+	SetRevisionQuota:  "system.revision_quota",
+	SetPinQuota:       "system.pin_quota",
 	SetPortalRelays:   "portal.relays",
 	SetPortalDiscover: "portal.discovery",
 	SetPortalMaxRelay: "portal.max_active_relays",
@@ -513,6 +517,9 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 	}
 	if slices.Contains(changed, SetPortalHide) {
 		s.applyHostListing(ctx)
+	}
+	if slices.Contains(changed, SetRevisionQuota) {
+		s.retainAllDesigns(ctx)
 	}
 	all, _ := s.Settings(ctx)
 	return SettingsUpdate{Settings: all, Changed: changed, ETag: etag}, nil

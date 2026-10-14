@@ -443,18 +443,20 @@ func ParseManifest(files []File) (Manifest, error) {
 	}
 	if m.Type == "" {
 		if _, explicit := fields["type"]; explicit && !bad["type"] {
-			verr.add(ManifestName, "type must be flat, docs or page", `use "flat", "docs" or "page", or omit type`)
+			verr.add(ManifestName, "type must be flat, docs, page or design", `use "flat", "docs", "page" or "design", or omit type`)
 		}
 		m.Type = contenttype.Flat
 	}
-	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page {
-		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs" or "page"`)
+	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design {
+		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page" or "design"`)
 	}
 	switch m.Type {
 	case contenttype.Docs:
 		return parseDocs(files, index, fields, m, &verr)
 	case contenttype.Page:
 		return parsePage(files, index, fields, m, &verr, bad)
+	case contenttype.Design:
+		return parseDesignShell(files, fields, m, &verr)
 	}
 	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
 		// Guess the kind so the entry checks below stay useful.
@@ -859,6 +861,28 @@ func parsePage(files []File, index map[string]bool, fields map[string]json.RawMe
 			verr.add(cp, "screenshot file is missing", "add the screenshot or remove screenshot from flats.json")
 		}
 	}
+	if len(verr.Problems) > 0 {
+		return m, verr
+	}
+	return m, nil
+}
+
+// parseDesignShell validates the shell bundle of a design: only flats.json
+// with type and name. A design's files live in its revision store; core
+// writes this shell itself and refuses design manifests on every public
+// bundle path.
+func parseDesignShell(files []File, fields map[string]json.RawMessage, m Manifest, verr *ValidationError) (Manifest, error) {
+	for k := range fields {
+		if k != "type" && k != "name" {
+			verr.add(ManifestName, k+" is not allowed for a design", "write design files with save_design")
+		}
+	}
+	for _, f := range files {
+		if f.Path != ManifestName {
+			verr.add(f.Path, "a design keeps its files in its revision history, not in a bundle", "write design files with save_design")
+		}
+	}
+	m.Kind, m.Health, m.Entry = "static", "/", ""
 	if len(verr.Problems) > 0 {
 		return m, verr
 	}

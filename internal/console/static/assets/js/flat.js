@@ -17,6 +17,32 @@ import { shareDialog } from './share.js';
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
 
+// revisionQuotaBlock edits a design's revision and pin quotas. An empty
+// field follows the host default; 0 means unlimited.
+function revisionQuotaBlock(slug) {
+  const slot = h('div', null, loading());
+  (async () => {
+    let q;
+    try { q = await api.revisionQuota(slug); } catch (err) { fill(slot, errorPanel(err)); return; }
+    const field = (id, label, value, def, hint) => {
+      const input = h('input', { id, type: 'number', min: '0', step: '1', inputmode: 'numeric', placeholder: `Default (${def || 'unlimited'})`, value: value == null ? '' : String(value) });
+      return { input, row: h('div', { class: 'setting-row' }, h('div', null, h('label', { for: id, text: label }), h('div', { class: 'muted small', text: hint })), input) };
+    };
+    const rev = field('rev-quota', 'Revisions kept', q.revision_quota, q.default_revision_quota, 'Unpinned revisions kept; older ones are deleted automatically. 0 keeps all.');
+    const pin = field('pin-quota', 'Pins', q.pin_quota, q.default_pin_quota, `Pinned revisions are never deleted automatically. ${q.pins} in use. 0 is unlimited.`);
+    const save = h('button', { class: 'btn btn-small', type: 'button', text: 'Save' });
+    const num = (v) => (v.trim() === '' ? null : Number(v));
+    save.addEventListener('click', () => busy(save, async () => {
+      const body = { revision_quota: num(rev.input.value), pin_quota: num(pin.input.value) };
+      if ([body.revision_quota, body.pin_quota].some((v) => v != null && (!Number.isInteger(v) || v < 0))) { toast('Use whole numbers ≥ 0, or leave a field empty for the default.', 'error'); return; }
+      try { await api.setRevisionQuota(slug, body); toast('Saved. Revisions over the new quota were deleted.', 'success'); }
+      catch (err) { toast(err.message, 'error'); }
+    }));
+    fill(slot, h('p', { class: 'muted small', text: 'People and agents manage revisions on the design itself: open it and choose History.' }), rev.row, pin.row, h('div', { class: 'setting-row' }, h('span'), save));
+  })();
+  return slot;
+}
+
 function section(title, id, ...children) {
   const hid = id + '-title';
   return h('section', { class: 'settings-section', id, 'aria-labelledby': hid },
@@ -40,7 +66,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   const networkSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
-  const isDocs = () => flat && flat.type === 'docs';
+  // Documents and designs have no versions or previews: they run once saved.
+  const isDocs = () => flat && (flat.type === 'docs' || flat.type === 'design');
   const serverParts = () => flat && hasServer(flat);
 
   const page = h('section', { class: 'page site-page' },
@@ -93,14 +120,14 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
             flat.private_detail || 'not answering yet') : null)
-      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ' (online once the document starts)' : ' (online after the first publish)'));
+      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ` (online once the ${flat.type === 'design' ? 'design' : 'document'} starts)` : ' (online after the first publish)'));
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
         flat.live_version ? extLink(pub) : h('code', { text: pub }),
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
-    if (isDocs()) add('Document', flat.running ? 'Running' : 'Not running');
+    if (isDocs()) add(flat.type === 'design' ? 'Design' : 'Document', flat.running ? 'Running' : 'Not running');
     else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : (flat.latest_version ? `Not published (v${flat.latest_version} saved)` : 'Not published'));
     add('Created', dateTime(flat.created_at));
     if (flat.old_slug && flat.old_slug_until) {
@@ -141,6 +168,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       netSlot,
+      flat.type === 'design' ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug)) : null,
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
