@@ -164,6 +164,11 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		FlushInterval: -1,
 		ErrorLog:      log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if b, _ := r.Context().Value(visitorBodyKey{}).(*visitorBody); b != nil && b.timedOut.Load() {
+				w.Header().Set("Connection", "close")
+				http.Error(w, "request body arrived too slowly", http.StatusRequestTimeout)
+				return
+			}
 			in.spec.Log("error", fmt.Sprintf("%s %s: worker unreachable: %v", r.Method, r.URL.RequestURI(), err))
 			http.Error(w, "Bad Gateway: the server flat is not responding.", http.StatusBadGateway)
 		},
@@ -513,8 +518,51 @@ func (in *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Service Unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	if r.ContentLength != 0 && r.Body != nil && r.Body != http.NoBody {
+		// The worker's own body deadline only ends its side of the proxy;
+		// the transport would still wait for a stalled visitor. Apply the
+		// same minimum upload rate to the visitor's connection.
+		b := &visitorBody{body: r.Body, rc: http.NewResponseController(w), start: time.Now()}
+		r = r.WithContext(context.WithValue(r.Context(), visitorBodyKey{}, b))
+		r.Body = b
+	}
 	in.proxy.ServeHTTP(w, r)
 }
+
+type visitorBodyKey struct{}
+
+// visitorBody bounds a visitor's request body to the minimum upload rate
+// with read deadlines on the visitor's connection.
+type visitorBody struct {
+	body     io.ReadCloser
+	rc       *http.ResponseController
+	start    time.Time
+	n        int64
+	noLimit  bool // the connection does not support read deadlines
+	timedOut atomic.Bool
+}
+
+func (b *visitorBody) Read(p []byte) (int, error) {
+	if !b.noLimit {
+		if err := b.rc.SetReadDeadline(bodyDeadline(b.start, b.n)); err != nil {
+			b.noLimit = true
+		}
+	}
+	n, err := b.body.Read(p)
+	b.n += int64(n)
+	if err == io.EOF && !b.noLimit {
+		// A deadline left on the connection would end the request's
+		// context while the response is copied.
+		b.rc.SetReadDeadline(time.Time{})
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		b.timedOut.Store(true)
+	}
+	return n, err
+}
+
+func (b *visitorBody) Close() error { return b.body.Close() }
 
 // Stop stops the worker (in-flight requests get a short grace period) and
 // removes its socket.

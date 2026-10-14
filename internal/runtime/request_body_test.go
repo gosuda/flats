@@ -213,3 +213,39 @@ func TestWorkerUnhandledUpgradeUsesBodyBudget(t *testing.T) {
 		t.Fatalf("status %d, used %d", rw.Code, maxBufferedBodies-w.bodies.used)
 	}
 }
+
+// Through the manager's proxy, a stalled visitor gets 408 from the visitor
+// side even though the worker (another process) keeps its own 30 s grace,
+// a steady upload passes, and a cleared deadline does not end a slow handler.
+func TestProxiedRequestBodyMinimumRate(t *testing.T) {
+	old := bodyGrace
+	bodyGrace = 300 * time.Millisecond
+	defer func() { bodyGrace = old }()
+	m := newManager(t)
+	f := mustStart(t, m, "slow-body", map[string]string{"index.js": `export default { async fetch(req) {
+  const text = await req.text();
+  await new Promise(r => setTimeout(r, 800));
+  return new Response(String(text.length));
+} };`}, "index.js", nil)
+	addr := strings.TrimPrefix(f.srv.URL, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	start := time.Now()
+	fmt.Fprintf(conn, "POST / HTTP/1.1\r\nHost: flat.test\r\nContent-Length: 100\r\n\r\nstalled")
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil || resp.StatusCode != http.StatusRequestTimeout {
+		t.Fatalf("stalled body: %v %v after %v", resp, err, time.Since(start))
+	}
+	resp.Body.Close()
+	if code, body := sendSlowly(t, addr, 5, 16<<10, 200*time.Millisecond); code != http.StatusOK || body != fmt.Sprint(80<<10) {
+		t.Fatalf("steady upload: %d %q", code, body)
+	}
+	// The handler outlasts this small body's deadline.
+	if r := f.do(t, http.MethodPost, "/", "hello"); r.status != http.StatusOK || r.body != "5" {
+		t.Fatalf("slow handler: %d %q", r.status, r.body)
+	}
+}

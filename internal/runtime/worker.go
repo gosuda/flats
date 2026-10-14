@@ -230,6 +230,12 @@ var bodyGrace = 30 * time.Second // a variable for tests
 
 var errBodiesBusy = errors.New("request body budget exhausted")
 
+// bodyDeadline is when the next part of a body that began at start and has
+// n bytes so far must arrive.
+func bodyDeadline(start time.Time, n int64) time.Time {
+	return start.Add(bodyGrace + time.Duration(n)*time.Second/minBodyRate)
+}
+
 // bodyBudget counts request body bytes a worker holds. It never blocks: a
 // request that does not fit fails at once instead of waiting with a partial
 // body, which could leave every waiter holding memory that no one releases.
@@ -288,8 +294,7 @@ func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte,
 	}()
 	buf := make([]byte, 32<<10)
 	for {
-		limit := start.Add(bodyGrace + time.Duration(len(body))*time.Second/minBodyRate)
-		if err := rc.SetReadDeadline(limit); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		if err := rc.SetReadDeadline(bodyDeadline(start, int64(len(body)))); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return nil, release, err
 		}
 		n, rerr := src.Read(buf)
