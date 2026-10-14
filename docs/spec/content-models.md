@@ -117,6 +117,10 @@ people and agents edit live.
    the flat at that point, so files that belong together (a design's index and
    its artboards, several documents) stay consistent. Assets that a retained
    revision references stay available as long as that revision exists.
+   - Storage is shared: each file's content is stored once and referenced by
+     every revision that holds it, so a revision costs only the files it
+     changes plus metadata. Stored content is deleted only when no retained
+     revision references it.
 6. **Two separate quotas.**
    - A *revision quota* is the maximum number of unpinned revisions kept. When
      it is exceeded, the oldest unpinned revisions are deleted automatically.
@@ -154,13 +158,19 @@ people and agents edit live.
    revision closed just before it, and the result is exactly R's content.
    Edits that arrive after it apply on top of R's content; an edit to a
    document the rollback removed is discarded.
+   - A rollback adds only metadata: its revision references R's stored
+     content, and the edit group it closes first holds live content that was
+     already admitted. A rollback is therefore never refused for disk quota.
+   - A rollback resets every document's merge base to the restored content, so
+     a later save merges against what the rollback restored.
 10. **Revisions are managed inside the content.** Listing, viewing, pinning,
     unpinning and rolling back happen in the content's own editor, and through
     MCP for agents, not in the console.
 11. **Only writers manage revisions.** Every revision operation needs write
     access to the content.
-    - Today write access means the Private route (Local loopback, or Tailscale
-      as the existing tailnet ACL allows) and MCP. A Public route is read-only:
+    - Today write access means the Private route and MCP. The Private route is
+      Local loopback or a private mesh provider (Tailscale or NetBird), as that
+      network's existing access control allows. A Public route is read-only:
       it shows no revision list and accepts no revision operation.
     - Agents may pin, unpin and roll back without approval.
 
@@ -176,7 +186,8 @@ These rules apply to the version, revision and pin quotas alike.
    creation or a person's edit that would exceed it is refused, and no history
    is deleted automatically to make room. A person's edit is checked when it
    arrives, including the space its revision will need when its group closes,
-   and is refused before it becomes live if that would not fit.
+   and is refused before it becomes live if that would not fit. A revision
+   rollback adds only metadata and is never refused for disk quota.
 4. **Lowering a quota below what is held.** Unpinned revisions above the new
    revision quota are deleted at once, oldest first. Versions and pins are
    never deleted: they all stay, and new ones are refused until the count is
