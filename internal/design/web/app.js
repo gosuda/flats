@@ -832,6 +832,7 @@ async function refresh() {
   S.state = await api('/_design/api/state');
   document.title = (S.state.canvas.title || S.state.slug) + ' · Design';
   if (S.revision == null) { renderBar(); renderWorld(); refreshFocus(); sendBoards(); }
+  else { const b = $('.bar .badge'); if (b) b.replaceWith(visibilityBadge()); } // a revision view keeps its canvas
   if (S.panel === 'tweaks') showTweaks();
   if (S.panel === 'revisions' && (prevRev !== S.state.revision || prevPending !== S.state.pending)) showRevisions();
 }
