@@ -1534,9 +1534,7 @@ func (s *Service) SweepDesignBlobs(ctx context.Context) {
 }
 
 func (s *Service) sweepDesignBlobs(ctx context.Context, slugName string) {
-	// Every caller passes a validated slug; check again before deleting
-	// files under a path built from it.
-	if slug.Validate(slugName) != nil || strings.Contains(slugName, "..") {
+	if strings.Contains(slugName, "..") {
 		return
 	}
 	unlock := s.lock(slugName)
@@ -1550,7 +1548,13 @@ func (s *Service) sweepDesignBlobs(ctx context.Context, slugName string) {
 		return
 	}
 	cutoff := time.Now().Add(-blobGrace)
-	root := s.designDir(slugName)
+	// Build the paths to delete from the stored flat, not from the caller's
+	// name, and only for a valid slug.
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil || slug.Validate(f.Slug) != nil {
+		return
+	}
+	root := s.designDir(f.Slug)
 	_ = filepath.WalkDir(filepath.Join(root, "blobs"), func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
