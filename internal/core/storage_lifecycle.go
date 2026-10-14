@@ -50,20 +50,51 @@ func (op storageOperation) fileName() string {
 	return "delete." + op.From + ".json"
 }
 
-func (s *Service) storageJournalDir() string {
-	return filepath.Join(s.cfg.DataDir, "flats", ".lifecycle")
+// storagePath returns the path of elems below the flat storage root
+// (<data>/flats). Each element must be exactly one path name, such as a
+// slug, a journal file name or a recovery directory name: an empty name,
+// "." or "..", and any name with a path separator are refused, so the
+// result names the root itself or an entry below it, never anything else.
+// Every path the storage lifecycle reads, moves or removes comes from here.
+func (s *Service) storagePath(elems ...string) (string, error) {
+	root := filepath.Join(s.cfg.DataDir, "flats")
+	p := root
+	for _, name := range elems {
+		if name == "" || name == "." || strings.ContainsAny(name, `/\`) || !filepath.IsLocal(name) {
+			return "", fmt.Errorf("invalid flat storage name %q", name)
+		}
+		p = filepath.Join(p, name)
+	}
+	// Single names cannot leave the root; check the result anyway.
+	if strings.HasPrefix(p, root) {
+		return p, nil
+	}
+	return "", fmt.Errorf("flat storage path %q is outside %q", p, root)
 }
 
-func (s *Service) deletedStorageRoot() string {
-	return filepath.Join(s.storageJournalDir(), "deleted")
+// fixedStoragePath is storagePath for constant names, which are always valid.
+func (s *Service) fixedStoragePath(elems ...string) string {
+	p, err := s.storagePath(elems...)
+	if err != nil {
+		panic(err)
+	}
+	return p
 }
 
-func (s *Service) orphanStorageRoot() string {
-	return filepath.Join(s.storageJournalDir(), "orphans")
+func (s *Service) storageRoot() string { return s.fixedStoragePath() }
+
+func (s *Service) storageJournalDir() string { return s.fixedStoragePath(".lifecycle") }
+
+func (s *Service) deletedStorageRoot() string { return s.fixedStoragePath(".lifecycle", "deleted") }
+
+func (s *Service) orphanStorageRoot() string { return s.fixedStoragePath(".lifecycle", "orphans") }
+
+func (s *Service) deletedStorageDir(slugName string) (string, error) {
+	return s.storagePath(".lifecycle", "deleted", slugName)
 }
 
-func (s *Service) deletedStorageDir(slugName string) string {
-	return filepath.Join(s.deletedStorageRoot(), slugName)
+func (s *Service) journalPath(op storageOperation) (string, error) {
+	return s.storagePath(".lifecycle", op.fileName())
 }
 
 func pathExists(path string) (bool, error) {
@@ -107,7 +138,11 @@ func (s *Service) storageOperations() ([]storageOperation, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(s.storageJournalDir(), entry.Name()))
+		path, err := s.storagePath(".lifecycle", entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		raw, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			// An operation on other slugs finished during this scan. A
 			// journal naming the caller's slug cannot disappear here: it
@@ -139,10 +174,26 @@ func (s *Service) checkStorageJournal(slugName string) error {
 	}
 	for _, op := range operations {
 		if op.From == slugName || op.To == slugName {
-			return withKind(ErrConflict, fmt.Errorf("flat %q has unfinished %s storage cleanup", slugName, op.Kind))
+			return withKind(ErrConflict, fmt.Errorf("flat %q has unfinished %s storage cleanup; its storage cannot change until Flats restarts and recovers it", slugName, op.Kind))
 		}
 	}
 	return nil
+}
+
+// lockStorage takes slugName's operation lock for an operation that writes,
+// moves or removes files below the flat's storage directory. While a storage
+// journal names the slug (an interrupted or failed rename or delete), the
+// files may sit under the other slug, and a write here could recreate the
+// directory that recovery has to move back. Such operations are refused
+// until a startup recovery settles the journal; reads continue. A journal
+// naming slugName cannot appear or disappear while its lock is held.
+func (s *Service) lockStorage(slugName string) (func(), error) {
+	unlock := s.lock(slugName)
+	if err := s.checkStorageJournal(slugName); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
 }
 
 // A database-free slug may still have a previous owner's files on disk.
@@ -151,7 +202,11 @@ func (s *Service) requireUnusedStorage(slugName string) error {
 	if err := s.checkStorageJournal(slugName); err != nil {
 		return err
 	}
-	exists, err := pathExists(s.flatDir(slugName))
+	dir, err := s.storagePath(slugName)
+	if err != nil {
+		return err
+	}
+	exists, err := pathExists(dir)
 	if err != nil {
 		return err
 	}
@@ -173,7 +228,11 @@ func (s *Service) beginStorageOperation(op storageOperation) error {
 			return err
 		}
 	} else {
-		exists, err := pathExists(s.deletedStorageDir(op.From))
+		trash, err := s.deletedStorageDir(op.From)
+		if err != nil {
+			return err
+		}
+		exists, err := pathExists(trash)
 		if err != nil {
 			return err
 		}
@@ -185,14 +244,22 @@ func (s *Service) beginStorageOperation(op storageOperation) error {
 	if err != nil {
 		return err
 	}
-	if err := atomicJournal(filepath.Join(s.storageJournalDir(), op.fileName()), b); err != nil {
+	journal, err := s.journalPath(op)
+	if err != nil {
+		return err
+	}
+	if err := atomicJournal(journal, b); err != nil {
 		return err
 	}
 	return syncDirectory(s.storageJournalDir())
 }
 
 func (s *Service) finishStorageOperation(op storageOperation) error {
-	if err := os.Remove(filepath.Join(s.storageJournalDir(), op.fileName())); err != nil {
+	journal, err := s.journalPath(op)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(journal); err != nil {
 		return err
 	}
 	return syncDirectory(s.storageJournalDir())
@@ -224,30 +291,38 @@ func (s *Service) recoverStorageRename(ctx context.Context, op storageOperation)
 	if fromOwned && toOwned {
 		return fmt.Errorf("cannot recover rename %s -> %s: both slugs have a flat in flats.db; resolve it by hand, then restart", op.From, op.To)
 	}
-	fromExists, err := pathExists(s.flatDir(op.From))
+	fromDir, err := s.storagePath(op.From)
 	if err != nil {
 		return err
 	}
-	toExists, err := pathExists(s.flatDir(op.To))
+	toDir, err := s.storagePath(op.To)
+	if err != nil {
+		return err
+	}
+	fromExists, err := pathExists(fromDir)
+	if err != nil {
+		return err
+	}
+	toExists, err := pathExists(toDir)
 	if err != nil {
 		return err
 	}
 	if fromExists && toExists {
 		// Never guess which directory holds the flat's data.
 		return fmt.Errorf("cannot recover rename %s -> %s: both %q and %q exist; move the one that does not belong to the flat out of %q, then restart",
-			op.From, op.To, s.flatDir(op.From), s.flatDir(op.To), filepath.Dir(s.flatDir(op.From)))
+			op.From, op.To, fromDir, toDir, s.storageRoot())
 	}
 	switch {
 	case fromOwned && toExists:
-		err = os.Rename(s.flatDir(op.To), s.flatDir(op.From))
+		err = os.Rename(toDir, fromDir)
 	case toOwned && fromExists:
-		err = os.Rename(s.flatDir(op.From), s.flatDir(op.To))
+		err = os.Rename(fromDir, toDir)
 	}
 	if err != nil {
 		return err
 	}
 	if (fromOwned && toExists) || (toOwned && fromExists) {
-		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
+		if err := syncDirectory(s.storageRoot()); err != nil {
 			return err
 		}
 		owner := op.From
@@ -264,8 +339,14 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 	if err != nil {
 		return err
 	}
-	source := s.flatDir(op.From)
-	trash := s.deletedStorageDir(op.From)
+	source, err := s.storagePath(op.From)
+	if err != nil {
+		return err
+	}
+	trash, err := s.deletedStorageDir(op.From)
+	if err != nil {
+		return err
+	}
 	sourceExists, err := pathExists(source)
 	if err != nil {
 		return err
@@ -291,7 +372,7 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 		}
 		// Persist the restored entry before the removal from the trash, so
 		// a crash between the syncs cannot leave the files at neither path.
-		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
+		if err := syncDirectory(s.storageRoot()); err != nil {
 			return err
 		}
 		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
@@ -314,12 +395,19 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 // removeDeletedStorage moves a deleted flat's directory out of its reusable
 // path (when move is set), removes it, and then drops the journal.
 func (s *Service) removeDeletedStorage(op storageOperation, move bool) error {
-	source, trash := s.flatDir(op.From), s.deletedStorageDir(op.From)
+	source, err := s.storagePath(op.From)
+	if err != nil {
+		return err
+	}
+	trash, err := s.deletedStorageDir(op.From)
+	if err != nil {
+		return err
+	}
 	if move {
 		if err := os.Rename(source, trash); err != nil {
 			return err
 		}
-		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
+		if err := syncDirectory(s.storageRoot()); err != nil {
 			return err
 		}
 		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
@@ -344,7 +432,14 @@ func (s *Service) discardDeletedStorage(ctx context.Context, op storageOperation
 	if err := s.st.Sync(ctx); err != nil {
 		return err
 	}
-	source, trash := s.flatDir(op.From), s.deletedStorageDir(op.From)
+	source, err := s.storagePath(op.From)
+	if err != nil {
+		return err
+	}
+	trash, err := s.deletedStorageDir(op.From)
+	if err != nil {
+		return err
+	}
 	trashExists, err := pathExists(trash)
 	if err != nil {
 		return err
@@ -382,7 +477,11 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 		if op.Kind != "delete" {
 			continue
 		}
-		trashExists, err := pathExists(s.deletedStorageDir(op.From))
+		trash, err := s.deletedStorageDir(op.From)
+		if err != nil {
+			return err
+		}
+		trashExists, err := pathExists(trash)
 		if err != nil {
 			return err
 		}
@@ -390,12 +489,10 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 			pendingDelete[op.From] = true
 		}
 	}
-	root := filepath.Join(s.cfg.DataDir, "flats")
-	entries, err := os.ReadDir(root)
+	entries, err := os.ReadDir(s.storageRoot())
 	if err != nil {
 		return err
 	}
-	orphans := s.orphanStorageRoot()
 	for _, entry := range entries {
 		name := entry.Name()
 		if slug.Validate(name) != nil || owned[name] || pendingDelete[name] {
@@ -404,7 +501,7 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 		// A failure leaves the path in place: creation and rename still
 		// refuse an occupied path, so it is never adopted. Do not stop the
 		// host over it.
-		target, err := s.quarantineOrphan(root, orphans, name)
+		target, err := s.quarantineOrphan(name)
 		if err != nil {
 			s.logf("could not quarantine unowned flat storage %q; the slug stays unavailable until it is moved away: %v", name, err)
 			continue
@@ -414,14 +511,23 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 	return nil
 }
 
-// quarantineOrphan moves root/name below orphans without replacing an
-// earlier quarantined directory of the same name. recoverStorageOperations
-// has already created orphans and synced its parent.
-func (s *Service) quarantineOrphan(root, orphans, name string) (string, error) {
+// quarantineOrphan moves the storage of slug name below the orphans
+// directory without replacing an earlier quarantined directory of the same
+// name. recoverStorageOperations has already created orphans and synced its
+// parent.
+func (s *Service) quarantineOrphan(name string) (string, error) {
+	source, err := s.storagePath(name)
+	if err != nil {
+		return "", err
+	}
 	for i := 0; i < 1000; i++ {
-		target := filepath.Join(orphans, name)
+		quarantined := name
 		if i > 0 {
-			target = fmt.Sprintf("%s.%d", target, i)
+			quarantined = fmt.Sprintf("%s.%d", name, i)
+		}
+		target, err := s.storagePath(".lifecycle", "orphans", quarantined)
+		if err != nil {
+			return "", err
 		}
 		exists, err := pathExists(target)
 		if err != nil {
@@ -430,15 +536,15 @@ func (s *Service) quarantineOrphan(root, orphans, name string) (string, error) {
 		if exists {
 			continue
 		}
-		if err := os.Rename(filepath.Join(root, name), target); err != nil {
+		if err := os.Rename(source, target); err != nil {
 			return "", err
 		}
 		// Persist the quarantined entry before the removal from root, so a
 		// crash between the syncs cannot leave the files at neither path.
-		if err := syncDirectory(orphans); err != nil {
+		if err := syncDirectory(s.orphanStorageRoot()); err != nil {
 			return target, err
 		}
-		return target, syncDirectory(root)
+		return target, syncDirectory(s.storageRoot())
 	}
 	return "", fmt.Errorf("too many quarantined copies of %q", name)
 }
@@ -455,7 +561,7 @@ func (s *Service) recoverStorageOperations(ctx context.Context) error {
 	if err := os.MkdirAll(s.orphanStorageRoot(), 0700); err != nil {
 		return err
 	}
-	if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
+	if err := syncDirectory(s.storageRoot()); err != nil {
 		return err
 	}
 	if err := syncDirectory(s.storageJournalDir()); err != nil {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -96,19 +95,31 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		}
 		lf.cur.Store(rebuilt)
 	}
+	fromDir, err := s.storagePath(from)
+	if err != nil {
+		restoreCurrent()
+		return FlatView{}, err
+	}
+	toDir, err := s.storagePath(to)
+	if err != nil {
+		restoreCurrent()
+		return FlatView{}, err
+	}
 	op := storageOperation{Kind: "rename", From: from, To: to}
 	if err := s.beginStorageOperation(op); err != nil {
 		restoreCurrent()
 		return FlatView{}, err
 	}
 	moved := false
-	root := filepath.Dir(s.flatDir(from))
-	if err := os.Rename(s.flatDir(from), s.flatDir(to)); err == nil {
+	root := s.storageRoot()
+	if err := os.Rename(fromDir, toDir); err == nil {
 		moved = true
 		if err := syncDirectory(root); err != nil {
-			rollbackErr := os.Rename(s.flatDir(to), s.flatDir(from))
+			rollbackErr := os.Rename(toDir, fromDir)
 			if rollbackErr != nil {
-				// Keep the journal so startup can recover the remaining files.
+				// Keep the journal so startup can recover the remaining
+				// files. The worker stays stopped, and every storage write
+				// to either slug is refused until then (lockStorage).
 				return FlatView{}, errors.Join(err, rollbackErr)
 			}
 			// The data is back at the old path: restart the old worker.
@@ -125,8 +136,10 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	}
 	if err := s.st.RenameFlat(ctx, from, to, till, s.now()); err != nil {
 		if moved {
-			if rollbackErr := os.Rename(s.flatDir(to), s.flatDir(from)); rollbackErr != nil {
-				// Keep the journal so startup can recover the remaining files.
+			if rollbackErr := os.Rename(toDir, fromDir); rollbackErr != nil {
+				// Keep the journal so startup can recover the remaining
+				// files. The worker stays stopped, and every storage write
+				// to either slug is refused until then (lockStorage).
 				return FlatView{}, errors.Join(err, fmt.Errorf("restore storage after failed rename: %w", rollbackErr))
 			}
 			if rollbackErr := syncDirectory(root); rollbackErr != nil {

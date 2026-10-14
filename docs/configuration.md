@@ -59,7 +59,11 @@ agents can read; `config.json` holds only its path.
 
 A rename or deletion writes a journal under `flats/.lifecycle/` before it moves
 or removes a flat directory, and startup finishes or undoes an interrupted one
-before any flat runs. A new or renamed flat never takes over a directory that
+before any flat runs. If a rename or deletion can neither finish nor undo its
+directory move, its journal stays, and until a restart recovers it every
+operation that writes that flat's storage (saves, document edits, previews, and
+approved publish, deploy, rollback and data restore) is refused with a conflict;
+reading the flat still works. A new or renamed flat never takes over a directory that
 already exists at its path. At startup, a `flats/<slug>/` directory that no flat
 owns is moved, not deleted, to `flats/.lifecycle/orphans/<slug>` (with a numeric
 suffix if that name is taken) and the start is logged; inspect it and remove it

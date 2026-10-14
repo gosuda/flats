@@ -938,7 +938,10 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 		return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Path: bundle.ManifestName, Message: "server flats are not enabled on this host", Fix: `deploy a static build ("kind": "static")`}}}
 	}
 	docs := m.Type == contenttype.Docs
-	unlock := s.lock(slugName)
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return store.Version{}, err
+	}
 	defer unlock()
 	if f, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
 		if _, err := s.createFlatLocked(ctx, slugName, m.Name, via); err != nil && !errors.Is(err, store.ErrExists) {
@@ -1921,7 +1924,10 @@ const maxPreviews = 5
 
 // OpenPreview serves a saved version at a new random private address.
 func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (PreviewView, error) {
-	unlock := s.lock(slugName)
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return PreviewView{}, err
+	}
 	defer unlock()
 	if f, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return PreviewView{}, err

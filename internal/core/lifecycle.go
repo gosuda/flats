@@ -563,7 +563,10 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if err := json.Unmarshal(a.Params, &p); err != nil {
 		return ActionResult{}, err
 	}
-	unlock := s.lock(a.Flat)
+	unlock, err := s.lockStorage(a.Flat)
+	if err != nil {
+		return ActionResult{}, err
+	}
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, a.Flat)
 	if err != nil {
@@ -745,7 +748,10 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 	if err := json.Unmarshal(a.Params, &p); err != nil {
 		return ActionResult{}, err
 	}
-	unlock := s.lock(a.Flat)
+	unlock, err := s.lockStorage(a.Flat)
+	if err != nil {
+		return ActionResult{}, err
+	}
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, a.Flat)
 	if err != nil {
@@ -793,7 +799,10 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 	if err := json.Unmarshal(a.Params, &p); err != nil {
 		return ActionResult{}, err
 	}
-	unlock := s.lock(a.Flat)
+	unlock, err := s.lockStorage(a.Flat)
+	if err != nil {
+		return ActionResult{}, err
+	}
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, a.Flat)
 	if err != nil {

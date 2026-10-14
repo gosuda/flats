@@ -85,9 +85,11 @@ func (s *Service) startSavedDocs(ctx context.Context) {
 		if err != nil || contenttype.FromManifest(d.Manifest) != contenttype.Docs {
 			continue
 		}
-		unlock := s.lock(f.Slug)
-		err = s.applyDocsLocked(ctx, f.Slug, d.Revision, ViaConsole)
-		unlock()
+		var unlock func()
+		if unlock, err = s.lockStorage(f.Slug); err == nil {
+			err = s.applyDocsLocked(ctx, f.Slug, d.Revision, ViaConsole)
+			unlock()
+		}
 		if err != nil {
 			s.Event(ctx, f.Slug, "error", "deploy", "could not start the saved document: "+err.Error(), nil)
 		}

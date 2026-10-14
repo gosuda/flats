@@ -309,7 +309,10 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	if len(body) > maxDocumentEditBody {
 		return DocumentEdit{}, fmt.Errorf("%w: edit request is %d bytes, above %d; split it into smaller calls", ErrDocumentCapacity, len(body), maxDocumentEditBody)
 	}
-	unlock := s.lock(slugName)
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return DocumentEdit{}, err
+	}
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
