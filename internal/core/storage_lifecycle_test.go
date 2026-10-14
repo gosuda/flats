@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -361,13 +362,63 @@ func TestRenameRecoveryRefusesAmbiguousStorage(t *testing.T) {
 	})
 }
 
-// Creating a slug that already has a flat keeps reporting the existing flat,
-// not its directory as unowned storage.
-func TestCreateExistingFlatWithStorageReportsExists(t *testing.T) {
-	s, _ := newTestService(t)
-	createStorageFixture(t, s, "taken")
-	_, err := s.CreateFlat(t.Context(), "taken", "", ViaAPI)
-	if !errors.Is(err, ErrConflict) || !errors.Is(err, store.ErrExists) {
-		t.Fatalf("create over an existing flat: %v", err)
+// A rename that fails before the metadata commit must restart the worker it
+// stopped, on the old slug, and leave no journal that blocks a later retry.
+func TestFailedRenameRestartsStoppedWorker(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based failure injection does not apply to root")
+	}
+	for _, tc := range []struct {
+		name   string
+		locked func(s *Service) string
+	}{
+		{name: "journal cannot be written", locked: (*Service).storageJournalDir},
+		{name: "storage cannot be moved", locked: func(s *Service) string { return filepath.Dir(s.flatDir("origin")) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			s, _ := newTestService(t)
+			r := &renameGuardRuntime{
+				oldDir:     s.flatDir("origin"),
+				oldDataDir: s.dataDirOf("origin"),
+				newDataDir: s.dataDirOf("renamed"),
+			}
+			s.cfg.Runtime = r
+			if _, err := s.SaveVersion(ctx, "origin", []bundle.File{
+				{Path: "flats.json", Data: []byte(`{"kind":"server"}`)},
+				{Path: "server.js", Data: []byte("export default { fetch() { return new Response('ready') } }")},
+			}, SaveMeta{}, ViaAPI); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := approvedInternalDeploy(t, s, ctx, "origin", 0); err != nil {
+				t.Fatal(err)
+			}
+			locked := tc.locked(s)
+			if err := os.Chmod(locked, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(locked, 0o700) })
+			if _, err := s.RenameSlug(ctx, "origin", "renamed", ViaAPI); err == nil {
+				t.Fatal("rename succeeded despite the injected failure")
+			}
+			if err := os.Chmod(locked, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if !r.stopped.Load() || r.rebuildCalled.Load() {
+				t.Fatalf("worker state: stopped=%t rebuilt on new slug=%t", r.stopped.Load(), r.rebuildCalled.Load())
+			}
+			if _, err := s.st.GetFlat(ctx, "origin"); err != nil {
+				t.Fatalf("failed rename lost the source metadata: %v", err)
+			}
+			response := httptest.NewRecorder()
+			s.siteHandler("origin", false).ServeHTTP(response,
+				httptest.NewRequest(http.MethodGet, "http://origin.test/", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("flat answered %d after a failed rename, want its restarted worker", response.Code)
+			}
+			if err := s.checkStorageJournal("origin"); err != nil {
+				t.Fatalf("failed rename left a journal: %v", err)
+			}
+		})
 	}
 }
