@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
@@ -283,6 +284,11 @@ type logLimit struct {
 	dropped atomic.Int64
 }
 
+// runtimeLogLine is the longest runtime log message stored. Callers pass
+// messages with secret values already removed, so the cut cannot leave part of
+// a secret.
+const runtimeLogLine = 8 << 10
+
 // runtimeLog records a log line from a flat's code, rate limited per flat.
 func (s *Service) runtimeLog(slug string, version int, level, msg string) {
 	v, _ := s.logLimits.LoadOrStore(slug, &logLimit{lim: newLimiter(runtimeLogRate)})
@@ -292,7 +298,18 @@ func (s *Service) runtimeLog(slug string, version int, level, msg string) {
 		return
 	}
 	s.reportDroppedLogs(slug, ll)
-	s.Event(context.Background(), slug, level, "runtime", msg, map[string]int{"version": version})
+	s.Event(context.Background(), slug, level, "runtime", truncateLogLine(msg, runtimeLogLine), map[string]int{"version": version})
+}
+
+func truncateLogLine(msg string, max int) string {
+	if len(msg) <= max {
+		return msg
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "… (truncated)"
 }
 
 func (s *Service) reportDroppedLogs(slug string, ll *logLimit) {

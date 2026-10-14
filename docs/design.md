@@ -119,7 +119,10 @@ failures or an injected implementation that ignores the network contract.
   total uncompressed size `upload_max_bytes` (20 MB), 20 000 files, no links,
   no special files, no paths outside the root; a single wrapping directory
   (e.g. `dist/`) is stripped. `.git`, `node_modules`, `.DS_Store`, `__MACOSX`
-  are skipped.
+  are skipped. A tar.gz may hold at most 60 000 tar entries (directories and
+  skipped files included) and decompress to at most the upload limit plus
+  about 235 MiB (4 KiB per allowed entry and 1 MiB) of tar headers,
+  metadata and skipped bodies.
 
 ## Content types
 

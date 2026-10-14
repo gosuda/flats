@@ -515,8 +515,8 @@
       if (this.readyState !== 1) throw new Error("WebSocket is not open");
       call("ws.send", [this.id, bodyText(data)]);
     }
-    // Optional byte budgets include queued and currently writing frames.
-    // Repeated calls may only lower either budget; existing apps opt out.
+    // The host always limits queued and in-flight outbound bytes.
+    // Built-in apps may lower either limit, but cannot raise it.
     setSendLimits(connectionBytes, flatBytes) {
       call("ws.limits", [this.id, connectionBytes, flatBytes]);
     }

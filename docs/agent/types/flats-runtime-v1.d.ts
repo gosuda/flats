@@ -233,7 +233,8 @@ declare namespace Flats {
     readonly closeReason?: string;
     /**
      * Sends a text message. There is no binary send: base64-encode binary
-     * yourself. Throws when not open. At most 256 queued messages; overflow
+     * yourself. Throws when not open. At most 256 queued messages and 4 MiB
+     * queued per connection (16 MiB across connections); overflow throws and
      * closes the connection.
      */
     send(data: string): void;
@@ -267,7 +268,7 @@ declare namespace Flats {
     | Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array
     | Int32Array | Uint32Array | BigInt64Array | BigUint64Array;
 
-  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; 20/s, burst 100. */
+  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; a line over 64 KiB becomes a note with its size; 20/s, burst 100. */
   interface Console {
     log(...data: unknown[]): void;
     info(...data: unknown[]): void;

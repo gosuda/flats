@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/store"
@@ -484,5 +485,54 @@ func TestEnvironmentCaptureFailureReportsUntouchedData(t *testing.T) {
 				t.Fatal("capture failure leaked secret")
 			}
 		})
+	}
+}
+
+// A runtime log line longer than the stored limit is truncated only after
+// secrets are removed, so a secret crossing the cut leaves no prefix behind.
+func TestRuntimeLogTruncatesAfterRedaction(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := t.Context()
+	if _, err := s.CreateFlat(ctx, "app", "", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	secret := "tok-" + strings.Repeat("Q", 60)
+	if err := s.SetSecret(ctx, "app", "TOKEN", secret, ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+		// The secret starts 10 bytes before the 8 KiB cut.
+		spec.Log("info", strings.Repeat("a", runtimeLogLine-10)+secret+strings.Repeat("b", 100))
+		// A two-byte rune starts one byte before the cut.
+		spec.Log("info", strings.Repeat("c", runtimeLogLine-1)+"é")
+		return lifecycleInstance{http.NotFoundHandler()}, nil
+	})
+	d, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.inst.Stop()
+	events, err := s.st.ListEvents(ctx, "app", "runtime", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events: %d", len(events))
+	}
+	for _, ev := range events {
+		if strings.Contains(ev.Message, "tok-") {
+			t.Fatalf("secret prefix leaked: %q", ev.Message[len(ev.Message)-40:])
+		}
+		if !strings.HasSuffix(ev.Message, "… (truncated)") || len(ev.Message) > runtimeLogLine+len("… (truncated)") {
+			t.Fatalf("not truncated: %d bytes", len(ev.Message))
+		}
+		if !utf8.ValidString(ev.Message) {
+			t.Fatal("truncation split a rune")
+		}
+	}
+	got := map[string]bool{events[0].Message: true, events[1].Message: true}
+	if !got[strings.Repeat("a", runtimeLogLine-10)+"[redacted]… (truncated)"] ||
+		!got[strings.Repeat("c", runtimeLogLine-1)+"… (truncated)"] {
+		t.Fatal("unexpected truncated messages")
 	}
 }

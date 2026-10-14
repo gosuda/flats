@@ -177,3 +177,67 @@ func TestDetectGit(t *testing.T) {
 		t.Fatalf("modified: %+v ok=%v", gi, ok)
 	}
 }
+
+// TestPackDirSwapRaceNeverLeaks races packDir against a writer that keeps
+// replacing a build file with a symlink to a file outside the build. Every
+// pack either fails or contains only build content; the outside file must
+// never reach the archive. The race is not deterministic, so a pass on
+// vulnerable code is possible, but a failure is always a real leak.
+func TestPackDirSwapRaceNeverLeaks(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"index.html": "hello", "a/page.html": "public"})
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "a", "page.html")
+	link := filepath.Join(root, "a", "link.tmp")
+	plain := filepath.Join(root, "a", "plain.tmp")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Symlink(secret, link)
+			_ = os.Rename(link, target)
+			_ = os.WriteFile(plain, []byte("public"), 0o644)
+			_ = os.Rename(plain, target)
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for range 1000 {
+		b, _, err := packDir(root, 0)
+		if err != nil {
+			continue
+		}
+		for name, body := range untar(t, b) {
+			if strings.Contains(body, "SECRET") {
+				t.Fatalf("%s carried the outside file into the archive", name)
+			}
+		}
+	}
+}
+
+// TestPackDirSymlinkedRoot keeps a linked build directory (dist -> build)
+// working: only links inside the build are refused.
+func TestPackDirSymlinkedRoot(t *testing.T) {
+	parent := t.TempDir()
+	build := filepath.Join(parent, "build")
+	writeTree(t, build, map[string]string{"index.html": "hello"})
+	dist := filepath.Join(parent, "dist")
+	if err := os.Symlink(build, dist); err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := packDir(dist, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := untar(t, b); got["index.html"] != "hello" || len(got) != 1 {
+		t.Fatalf("packed %v", got)
+	}
+}

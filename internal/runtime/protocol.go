@@ -12,6 +12,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,8 +35,17 @@ const (
 	MaxQueryResult     = 16 << 20
 	MaxDBBytes         = 1 << 30
 	MaxWSMessage       = 1 << 20
-	maxLogLine         = 8 << 10
+	// maxLogLine is the longest log line the worker forwards. The host
+	// removes secret values from each complete line and only then truncates
+	// it for storage, so the worker never cuts a line: a cut could split a
+	// secret and leave a prefix the host cannot recognize. Longer lines are
+	// replaced by a note that keeps only their size.
+	maxLogLine = 64 << 10
 )
+
+func omittedLogLine(n int) string {
+	return fmt.Sprintf("log line omitted: %d bytes is more than the %d KiB limit", n, maxLogLine>>10)
+}
 
 // workerSpec is sent to the child on stdin as one JSON line. Secrets travel
 // only here: never in argv or in the child's environment.
@@ -112,7 +122,7 @@ func (l *childLog) send(m childMsg) {
 // Logf logs one line (rate limited; control messages are never dropped).
 func (l *childLog) Log(level, msg string) {
 	if len(msg) > maxLogLine {
-		msg = msg[:maxLogLine] + "… (truncated)"
+		msg = omittedLogLine(len(msg))
 	}
 	l.mu.Lock()
 	now := time.Now()
@@ -138,40 +148,62 @@ func (l *childLog) Log(level, msg string) {
 
 // lineWriter turns guest stdout/stderr bytes into log lines.
 type lineWriter struct {
-	mu    sync.Mutex
-	log   *childLog
-	level string
-	buf   []byte
+	mu      sync.Mutex
+	log     *childLog
+	level   string
+	buf     []byte
+	omitted int // length of the current line once it exceeds maxLogLine
+}
+
+// appendFragment buffers a line only while it fits maxLogLine, plus one byte
+// for a CR that emit drops as part of a CRLF delimiter (Log omits the line if
+// it is still too long). Once it is longer, keep no part of it (see
+// maxLogLine), only count its length.
+func (w *lineWriter) appendFragment(p []byte) {
+	if w.omitted > 0 {
+		w.omitted += len(p)
+		return
+	}
+	if len(p) > maxLogLine+1-len(w.buf) {
+		w.omitted = len(w.buf) + len(p)
+		w.buf = w.buf[:0]
+		return
+	}
+	w.buf = append(w.buf, p...)
+}
+
+func (w *lineWriter) emit() {
+	if w.omitted > 0 {
+		w.log.Log(w.level, omittedLogLine(w.omitted))
+	} else if line := strings.TrimRight(string(w.buf), "\r"); line != "" {
+		w.log.Log(w.level, line)
+	}
+	w.buf = w.buf[:0]
+	w.omitted = 0
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.buf = append(w.buf, p...)
-	for {
-		i := strings.IndexByte(string(w.buf), '\n')
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
-			if len(w.buf) > maxLogLine {
-				w.log.Log(w.level, string(w.buf))
-				w.buf = w.buf[:0]
-			}
-			return len(p), nil
+			w.appendFragment(p)
+			break
 		}
-		line := strings.TrimRight(string(w.buf[:i]), "\r")
-		w.buf = w.buf[i+1:]
-		if line != "" {
-			w.log.Log(w.level, line)
-		}
+		w.appendFragment(p[:i])
+		w.emit()
+		p = p[i+1:]
 	}
+	return n, nil
 }
 
 func (w *lineWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.buf) > 0 {
-		w.log.Log(w.level, string(w.buf))
-		w.buf = nil
-	}
+	w.emit()
+	w.buf = nil
 }
 
 var stderrLog = newChildLog(os.Stderr)
