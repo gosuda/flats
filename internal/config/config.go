@@ -661,6 +661,12 @@ func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 	return c, nil
 }
 
+// cleanDataDir returns host.data_dir in clean form. The key is validated as an
+// absolute path, and Flats runs on Unix only, so the leading "/" changes
+// nothing; filepath.Clean("/" + p) is also the form static analysis accepts
+// as free of ".." traversal for the paths Flats builds under the directory.
+func cleanDataDir(p string) string { return filepath.Clean("/" + p) }
+
 // fill copies values into the typed fields and checks cross-key rules.
 func (c *Config) fill() error {
 	str := func(k string) string { s, _ := c.values[k].(string); return s }
@@ -668,7 +674,7 @@ func (c *Config) fill() error {
 	flag := func(k string) bool { return c.values[k].(bool) }
 	list := func(k string) []string { return slices.Clone(c.values[k].([]string)) }
 
-	c.Host = HostConfig{str("host.instance_id"), str("host.data_dir"), str("host.management_addr"),
+	c.Host = HostConfig{str("host.instance_id"), cleanDataDir(str("host.data_dir")), str("host.management_addr"),
 		str("host.local_addr"), str("host.console_host"), flag("host.server_runtime")}
 	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
 		str("network.default_private"), str("network.default_public")}

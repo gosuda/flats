@@ -281,6 +281,27 @@ func TestEffectiveDefaults(t *testing.T) {
 	}
 }
 
+func TestDataDirIsClean(t *testing.T) {
+	for in, want := range map[string]string{
+		"/var/lib/flats":           "/var/lib/flats",
+		"/var/lib/flats/":          "/var/lib/flats",
+		"//srv//flats/./data":      "/srv/flats/data",
+		"/srv/flats/../flats-data": "/srv/flats-data",
+	} {
+		d, err := New(testID, in)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		c, err := d.Effective(nil)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if c.Host.DataDir != want {
+			t.Errorf("DataDir(%q) = %q, want %q", in, c.Host.DataDir, want)
+		}
+	}
+}
+
 func TestOverrides(t *testing.T) {
 	doc, err := New(testID, "/var/lib/flats")
 	if err != nil {

@@ -385,7 +385,7 @@ func (c *configCmd) set(args []string, unset bool) error {
 		if !filepath.IsAbs(dir) {
 			return actionf("host.data_dir must be an absolute path")
 		}
-		if dir != cfg.Host.DataDir {
+		if filepath.Clean(dir) != cfg.Host.DataDir {
 			if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 				return actionf("%s is not a directory; move the data there first", dir)
 			}
