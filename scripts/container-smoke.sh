@@ -125,15 +125,36 @@ hits() {
 	get counter | sed -n 's/.*"hits": *\([0-9]*\).*/\1/p'
 }
 
-# deploy_approved FLAT deploys $work/FLAT with the host CLI and approves the
-# publish request through the console API.
-deploy_approved() {
-	"$flats" deploy "$work/$1" --flat "$1" --json >"$work/deploy" && status=0 || status=$?
-	[ "$status" -eq 3 ] || fail "deploy of $1 did not wait for approval (exit $status): $(cat "$work/deploy")"
+# approve_pending approves the only pending approval through the console API,
+# the way an operator does in the console. $1 names it in failures.
+approve_pending() {
 	"$flats" approvals --status pending --json >"$work/approvals"
 	id=$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' "$work/approvals" | head -n 1)
 	[ -n "$id" ] || fail "no pending approval for $1: $(cat "$work/approvals")"
 	console -X POST "$url/console/api/approvals/$id/approve" >/dev/null || fail "approving $id for $1 failed"
+}
+
+# saved_version FLAT prints the newest saved version number of FLAT, if any.
+saved_version() {
+	"$flats" info "$1" --json 2>/dev/null | sed -n 's/.*"latest_version": *\([0-9]*\).*/\1/p' | head -n 1
+}
+
+has_saved_version() {
+	[ -n "$(saved_version "$1")" ]
+}
+
+# deploy_approved FLAT saves $work/FLAT with the host CLI, approves saving it
+# as a new version, then requests and approves deploying that version. Saving
+# a version and deploying it are separate approvals.
+deploy_approved() {
+	"$flats" deploy "$work/$1" --flat "$1" --json >"$work/deploy" && status=0 || status=$?
+	[ "$status" -eq 3 ] || fail "deploy of $1 did not wait for approval (exit $status): $(cat "$work/deploy")"
+	approve_pending "saving $1 as a version"
+	wait_for "a saved version of $1" has_saved_version "$1"
+	version=$(saved_version "$1")
+	"$flats" deploy --flat "$1" --version "$version" --json >"$work/deploy" && status=0 || status=$?
+	[ "$status" -eq 3 ] || fail "deploy of $1 version $version did not wait for approval (exit $status): $(cat "$work/deploy")"
+	approve_pending "deploying $1 version $version"
 }
 
 # deploy_document FLAT deploys the document $work/FLAT with the host CLI. A

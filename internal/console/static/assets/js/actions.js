@@ -12,8 +12,8 @@ async function report(title, err) {
   await infoDialog(title, errorPanel(err, title));
 }
 
-// approve completes a request this console just made. Publishing, deploys,
-// rollbacks, visibility changes and deletion wait for the operator's
+// approve completes a request this console just made. Saving a version,
+// publishing, rollbacks, visibility changes and deletion wait for the operator's
 // approval; the confirm dialog before each request is that decision, so the
 // pending request is approved at once. Resolves to the decided approval.
 async function approve(res) {
@@ -30,17 +30,27 @@ function restoreBox(flat) {
   return { input, row };
 }
 
-export async function deployVersion(flat, n, kind = 'deploy') {
+// Two separate steps, each approved on its own (docs/spec/content-models.md):
+//   Save    — the draft becomes a new numbered version. Nothing goes live.
+//   Publish — one saved version becomes the live content. Rolling back is
+//             publishing an earlier version again.
+
+// nextVersion is the number the next saved version is expected to get.
+export const nextVersion = (flat) => (flat.latest_version || 0) + 1;
+
+// publishVersion makes version n live; kind 'rollback' publishes an earlier
+// version again and offers to restore its data.
+export async function publishVersion(flat, n, kind = 'publish') {
   const rollback = kind === 'rollback';
   const box = rollback ? restoreBox(flat) : null;
   const ok = await confirmDialog({
-    title: rollback ? `Roll back to version ${n}?` : `Deploy version ${n}?`,
+    title: rollback ? `Roll back ${label(flat)} to version ${n}?` : `Publish version ${n} of ${label(flat)}?`,
     body: [
-      h('p', { text: `${label(flat)} will serve version ${n}` + (flat.live_version ? ` instead of version ${flat.live_version}.` : '.') }),
-      h('p', { class: 'muted', text: 'The health check runs first; if it fails, the current live version keeps serving. Data is not rolled back unless you ask for it.' }),
+      h('p', { text: `Version ${n} becomes the live content` + (flat.live_version ? `, replacing version ${flat.live_version}.` : '. This is its first publish.') }),
+      h('p', { class: 'muted', text: 'Publishing does not create a version: it puts an already saved version live. The health check runs first; if it fails, the current live version keeps serving. Data is not rolled back unless you ask for it.' }),
       box ? box.row : null,
     ],
-    confirmLabel: rollback ? 'Roll back' : 'Deploy',
+    confirmLabel: rollback ? `Roll back to v${n}` : `Publish v${n}`,
   });
   if (!ok) return false;
   try {
@@ -48,34 +58,35 @@ export async function deployVersion(flat, n, kind = 'deploy') {
     await showLive(flat.slug, 'is live');
     return true;
   } catch (err) {
-    await report(rollback ? 'Roll back failed' : 'Deploy failed', err);
+    await report(rollback ? 'Roll back failed' : 'Publish failed', err);
     return false;
   }
 }
 
-// publishDraft saves the flat's draft as a new version without deploying it.
-export async function publishDraft(flat) {
+// saveVersion saves the flat's draft as a new version. It does not publish.
+export async function saveVersion(flat) {
   const draft = flat.draft;
   if (!draft || !draft.dirty) {
-    await infoDialog('Nothing to save', 'The draft has no changes since the latest saved version. An agent saves one with save_version (MCP) or `flats deploy`.');
+    await infoDialog('Nothing to save', 'The draft has no changes since the latest saved version. An agent updates the draft with save_draft or save_version (MCP), or `flats deploy`.');
     return false;
   }
+  const n = nextVersion(flat);
   const ok = await confirmDialog({
-    title: `Save draft of ${label(flat)} as a new version?`,
+    title: `Save the draft of ${label(flat)} as version ${n}?`,
     body: [
-      h('p', { text: 'The current draft will be saved as a new version without deploying it.' }),
-      h('p', { class: 'muted', text: 'Once saved, click Deploy on the new version to make it live.' }),
+      h('p', { text: `The current draft is stored as version ${n}, a fixed copy you can publish or roll back to later.` }),
+      h('p', { class: 'muted', text: 'Saving does not publish: ' + (flat.live_version ? `version ${flat.live_version} stays live` : 'nothing goes live') + '. Publish the new version when you are ready.' }),
     ],
-    confirmLabel: 'Save version',
+    confirmLabel: `Save as v${n}`,
   });
   if (!ok) return false;
   try {
     const decided = await approve(await api.publish(flat.slug, draft));
     const v = decided?.result_data?.version;
-    toast(v ? `Saved version ${v}. Deploy it to make it live.` : 'Saved as a new version.', 'success');
+    toast(v ? `Saved version ${v}. It is not live yet: publish it when ready.` : 'Saved as a new version. It is not live yet.', 'success');
     return true;
   } catch (err) {
-    await report('Save version failed', err);
+    await report('Save failed', err);
     return false;
   }
 }
@@ -163,7 +174,7 @@ export async function setVisibility(flat, vis) {
   const to = VISIBILITY[vis];
   const widening = to.rank > from.rank;
   if (widening && !flat.live_version) {
-    await infoDialog('Publish first', `${label(flat)} has no live version yet. Publish it, then make it public.`);
+    await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);
     return null;
   }
   if (widening && !PUBLIC_PROVIDERS.some((p) => (flat.providers || []).includes(p))) {

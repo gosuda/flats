@@ -117,25 +117,35 @@ func TestDevServer(t *testing.T) {
 		_, err := svc.Decide(ctx, a.ID, true)
 		must(err)
 	}
-	// publish requests saving the flat's draft as a version (and deploying it
-	// unless leavePending is set).
-	publish := func(slug string, leavePending bool) {
+	// save requests saving the flat's draft as a new version and approves it
+	// unless leavePending is set. Nothing goes live.
+	save := func(slug string, leavePending bool) {
 		t.Helper()
-		res, err := svc.Publish(ctx, slug, core.PublishOptions{Via: core.ViaMCP})
+		res, err := svc.Publish(ctx, slug, 0, "", core.ViaMCP)
 		if err != nil {
-			t.Fatalf("publish %s: %v", slug, err)
+			t.Fatalf("save %s as a version: %v", slug, err)
 		}
 		if !leavePending {
 			approve(res.Approval)
-			fv, err := svc.GetFlat(ctx, slug)
-			must(err)
-			_, err = svc.Deploy(ctx, slug, fv.LatestVersion, core.ViaMCP)
-			var p *core.PendingApproval
-			if !errors.As(err, &p) {
-				t.Fatalf("deploy %s: %v", slug, err)
-			}
-			approve(p.Approval)
 		}
+	}
+	// publishLatest requests publishing (deploying) the newest saved version
+	// and approves it.
+	publishLatest := func(slug string) {
+		t.Helper()
+		fv, err := svc.GetFlat(ctx, slug)
+		must(err)
+		_, err = svc.Deploy(ctx, slug, fv.LatestVersion, core.ViaMCP)
+		var p *core.PendingApproval
+		if !errors.As(err, &p) {
+			t.Fatalf("publish %s v%d: %v", slug, fv.LatestVersion, err)
+		}
+		approve(p.Approval)
+	}
+	publish := func(slug string) {
+		t.Helper()
+		save(slug, false)
+		publishLatest(slug)
 	}
 	// makePublic permits the local Portal stand-in and approves Public.
 	makePublic := func(slug string) {
@@ -149,18 +159,48 @@ func TestDevServer(t *testing.T) {
 	// blog: published twice (v2 live), Public, with a screenshot and a secret.
 	_, err = svc.SaveVersion(ctx, "blog", f("index.html", "<h1>one</h1>"), core.SaveMeta{GitSHA: "abc1234def", Message: "first"}, core.ViaMCP)
 	must(err)
-	publish("blog", false)
+	publish("blog")
 	_, err = svc.SaveVersion(ctx, "blog", append(f("index.html", "<h1>two</h1>", "flats.json", `{"name":"My blog","screenshot":"shot.png"}`),
 		bundle.File{Path: "shot.png", Data: shot.Bytes()}), core.SaveMeta{GitSHA: "beef5678", GitDirty: true, Message: "add screenshot and a much longer commit message to see wrapping"}, core.ViaCLI)
 	must(err)
-	publish("blog", false)
+	publish("blog")
 	makePublic("blog")
 	must(svc.SetSecret(ctx, "blog", "API_KEY", "x", core.ViaConsole))
 
-	// notes: never published, with a publish request waiting for approval.
+	// notes: never published, with a request to save a version waiting for
+	// approval.
 	_, err = svc.SaveVersion(ctx, "notes", f("index.html", "<h1>notes</h1>"), core.SaveMeta{}, core.ViaMCP)
 	must(err)
-	publish("notes", true)
+	save("notes", true)
+
+	// landing: v1 saved but never published (Publish v1).
+	_, err = svc.SaveVersion(ctx, "landing", f("index.html", "<h1>landing v1</h1>"), core.SaveMeta{Message: "first draft"}, core.ViaMCP)
+	must(err)
+	save("landing", false)
+
+	// shop: v1 live, v2 saved and not published yet (Publish v2).
+	_, err = svc.SaveVersion(ctx, "shop", f("index.html", "<h1>shop v1</h1>"), core.SaveMeta{Message: "open the shop"}, core.ViaMCP)
+	must(err)
+	publish("shop")
+	_, err = svc.SaveVersion(ctx, "shop", f("index.html", "<h1>shop v2</h1>"), core.SaveMeta{Message: "new prices"}, core.ViaMCP)
+	must(err)
+	save("shop", false)
+
+	// docs-site: v2 live after a rollback from v3, plus unsaved draft changes
+	// (Save as v4; v3 is Previously live).
+	for i, msg := range []string{"one", "two", "three"} {
+		_, err = svc.SaveVersion(ctx, "docs-site", f("index.html", fmt.Sprintf("<h1>docs %d</h1>", i+1)), core.SaveMeta{Message: msg}, core.ViaMCP)
+		must(err)
+		publish("docs-site")
+	}
+	_, err = svc.Rollback(ctx, "docs-site", 2, core.ViaConsole)
+	var rb *core.PendingApproval
+	if !errors.As(err, &rb) {
+		t.Fatalf("roll back docs-site: %v", err)
+	}
+	approve(rb.Approval)
+	_, err = svc.SaveVersion(ctx, "docs-site", f("index.html", "<h1>docs 4 draft</h1>"), core.SaveMeta{Message: "work in progress"}, core.ViaMCP)
+	must(err)
 
 	// handbook: a Private document; launch-notes: a Public document.
 	_, err = svc.SaveVersion(ctx, "handbook", f("flats.json", `{"type":"docs","name":"Team handbook"}`,

@@ -148,6 +148,7 @@ type VersionInfo struct {
 	GitDirty  bool      `json:"git_dirty,omitempty" jsonschema:"true when the working tree had uncommitted changes"`
 	Message   string    `json:"message,omitempty" jsonschema:"note given at save time"`
 	Pruned    bool      `json:"pruned,omitempty" jsonschema:"files were removed by the retention policy; cannot be deployed"`
+	Deployed  bool      `json:"deployed,omitempty" jsonschema:"this saved version was ever made live; a saved version that was never deployed is not published yet"`
 	CreatedAt time.Time `json:"created_at" jsonschema:"save time"`
 }
 
@@ -156,7 +157,7 @@ func versionInfo(v store.Version, live int) VersionInfo {
 	_ = json.Unmarshal(v.Manifest, &m)
 	return VersionInfo{Type: contenttype.FromManifest(v.Manifest), Published: v.Published, Role: v.Role, Revision: v.Revision, Number: v.Number, Live: v.Number > 0 && v.Number == live, Kind: v.Kind, Entry: m.Entry, Health: m.Health,
 		Files: v.Files, Size: v.Size, Hash: v.Hash, GitSHA: v.GitSHA, GitDirty: v.GitDirty, Message: v.Message,
-		Pruned: v.Pruned, CreatedAt: v.CreatedAt}
+		Pruned: v.Pruned, Deployed: v.Deployed, CreatedAt: v.CreatedAt}
 }
 
 // DeployInfo is the outcome of a successful deploy or rollback.

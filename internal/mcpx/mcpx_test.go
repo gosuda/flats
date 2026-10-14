@@ -179,7 +179,8 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 	}
 	e.approve(t, out.Deploy.ApprovalID)
 	f, _ = e.svc.GetFlat(context.Background(), "blog")
-	if f.LiveVersion != 0 || f.Versions != 1 || f.Publication != "published" {
+	// A saved version that was never deployed does not publish the flat.
+	if f.LiveVersion != 0 || f.Versions != 1 || f.Publication != "unpublished" || f.LatestVersion != 1 || f.LatestDeployed {
 		t.Fatalf("saved version without deploy: %+v", f)
 	}
 	var dep1 DeployInfo
@@ -188,6 +189,9 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 	}
 	e.approve(t, dep1.ApprovalID)
 	f, _ = e.svc.GetFlat(context.Background(), "blog")
+	if f.LiveVersion != 1 || f.Publication != "published" || !f.LatestDeployed {
+		t.Fatalf("deployed v1: %+v", f)
+	}
 	code, body := get(t, f.PrivateURL)
 	if code != 200 || string(body) != "<h1>héllo</h1>" {
 		t.Fatalf("traffic: %d %q", code, body)

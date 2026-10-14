@@ -95,7 +95,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 // --- stubbed API ---
 const PUBLIC = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 const blog = {
-  type: 'flat', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, providers: ['portal'],
+  type: 'flat', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, latest_version: 2, latest_deployed: true, providers: ['portal'],
   portal_listing: 'default', portal_hidden: false,
   private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: PUBLIC,
   draft: { revision: 3, hash: 'c', dirty: true, size: 1, files: 1, kind: 'server', updated_at: '2026-10-03T00:00:00Z' },
@@ -110,7 +110,7 @@ const notes = { ...blog, type: 'docs', running: true, slug: 'notes', name: 'Note
 // A page has the website lifecycle but is always static: no database,
 // environment, secrets or server permissions.
 const report = { ...blog, type: 'page', slug: 'report', name: 'Report', visibility: 'private', public_url: undefined, public_notice: undefined, providers: [],
-  draft: { revision: 2, hash: 'p', dirty: false, size: 1, files: 1, kind: 'static', updated_at: '2026-10-03T00:00:00Z' }, live: { number: 1, kind: 'static' }, live_version: 1, versions: 1 };
+  draft: { revision: 2, hash: 'p', dirty: false, size: 1, files: 1, kind: 'static', updated_at: '2026-10-03T00:00:00Z' }, live: { number: 1, kind: 'static' }, live_version: 1, versions: 1, latest_version: 1 };
 const pending = (id) => ({ status: 'pending_approval', approval: { id, status: 'pending' } });
 const calls = [];
 const routes = {
@@ -126,8 +126,8 @@ const routes = {
   'GET /console/api/flats/blog/env': { env: [{ name: 'APP_MODE', value: '<script>demo</script>\nsecond line', updated_at: '2026-10-03T00:00:00Z' }, { name: 'EMPTY', value: '', updated_at: '2026-10-03T00:00:00Z' }] },
   'GET /console/api/flats/blog/secrets': { secrets: [{ name: 'API_KEY', updated_at: '2026-10-03T00:00:00Z', value: 'SECRET_MUST_NEVER_RENDER' }] },
   'GET /console/api/flats/blog/versions': { versions: [
-    { number: 2, kind: 'server', hash: 'b', size: 1, files: 1, created_at: '2026-10-02T00:00:00Z' },
-    { number: 1, kind: 'server', hash: 'a', size: 1, files: 1, created_at: '2026-10-01T00:00:00Z' }] },
+    { number: 2, kind: 'server', hash: 'b', size: 1, files: 1, deployed: true, created_at: '2026-10-02T00:00:00Z' },
+    { number: 1, kind: 'server', hash: 'a', size: 1, files: 1, deployed: true, created_at: '2026-10-01T00:00:00Z' }] },
   'POST /console/api/flats/blog/deploy': pending('apr-deploy'),
   'POST /console/api/approvals/apr-deploy/approve': { id: 'apr-deploy', status: 'approved', result: 'version 2 is live' },
 };
@@ -189,9 +189,12 @@ const classCount = (row, c) => all(row, (e) => (e.getAttribute('class') || '').s
 assert.equal(classCount(rows[0], 'open-primary'), 1);
 assert.equal(classCount(rows[0], 'flat-sub-vis'), 1);
 assert.ok(classCount(rows[0], 'menu-narrow') >= 1);
-// A flat with draft changes offers Save version; a document never does.
-assert.equal(byText(rows[0], 'Save version').length, 1);
-assert.equal(byText(rows[2], 'Save version').length, 0);
+// A flat with draft changes offers Save as the next version number; a
+// document never offers Save or Publish.
+const startsWith = (root, prefix) => all(root, (e) => e.tagName === 'BUTTON' && e.textContent.startsWith(prefix));
+assert.equal(byText(rows[0], 'Save as v3').length, 1);
+assert.ok(rows[0].textContent.includes('Live v2 · unsaved draft changes'), rows[0].textContent);
+assert.equal(startsWith(rows[2], 'Save as').length + startsWith(rows[2], 'Publish').length, 0);
 assert.ok(rows[2].textContent.includes('Running') && !rows[2].textContent.includes('Live v'), 'a document row shows no version: ' + rows[2].textContent);
 assert.equal(byText(rows[2], 'Overview').length, 1);
 stopList();
@@ -200,7 +203,7 @@ const savedFlats = routes['GET /console/api/flats'];
 routes['GET /console/api/flats'] = { flats: [
   { ...notes, running: false },
   { ...blog, live_version: 0, live: null },
-  { ...blog, slug: 'saved-not-live', name: 'Saved Not Live', live_version: 0, live: null, versions: 1, latest_version: 1, draft: { ...blog.draft, dirty: false } },
+  { ...blog, slug: 'saved-not-live', name: 'Saved Not Live', live_version: 0, live: null, versions: 1, latest_version: 1, latest_deployed: false, draft: { ...blog.draft, dirty: false } },
 ] };
 const idleMain = new Element('main');
 const stopIdle = list.mount(idleMain, [], ctx);
@@ -211,9 +214,25 @@ for (const row of idleRows) {
   assert.equal(openCount(row), 0, row.textContent);
   assert.equal(classCount(row, 'open-primary') + classCount(row, 'menu-narrow'), 0, row.textContent);
 }
-assert.ok(idleRows[2].textContent.includes('Not deployed · v1 saved'), idleRows[2].textContent);
-assert.equal(byText(idleRows[2], 'Deploy v1').length, 1, 'saved version that is not live yet offers Deploy v1');
+assert.ok(idleRows[2].textContent.includes('Not published · v1 saved'), idleRows[2].textContent);
+assert.equal(byText(idleRows[2], 'Publish v1').length, 1, 'a saved version that was never live offers Publish v1');
+assert.equal(startsWith(idleRows[2], 'Save as').length, 0, 'no draft changes: nothing to save');
 stopIdle();
+// A live flat whose newest saved version was never published offers Publish
+// for it; one that was live before (a rollback) offers nothing.
+routes['GET /console/api/flats'] = { flats: [
+  { ...blog, slug: 'next', name: 'Next', latest_version: 3, latest_deployed: false, draft: { ...blog.draft, dirty: false } },
+  { ...blog, slug: 'back', name: 'Back', live_version: 1, live: { number: 1, kind: 'server' }, latest_version: 2, latest_deployed: true, draft: { ...blog.draft, dirty: false } },
+] };
+const nextMain = new Element('main');
+const stopNext = list.mount(nextMain, [], ctx);
+await tick();
+const nextRows = all(nextMain, (e) => e.tagName === 'LI' && e.className === 'flat');
+assert.ok(nextRows[0].textContent.includes('Live v2 · v3 saved, not published'), nextRows[0].textContent);
+assert.equal(byText(nextRows[0], 'Publish v3').length, 1);
+assert.ok(!nextRows[1].textContent.includes('not published'), nextRows[1].textContent);
+assert.equal(startsWith(nextRows[1], 'Publish').length + startsWith(nextRows[1], 'Save as').length, 0);
+stopNext();
 routes['GET /console/api/flats'] = savedFlats;
 
 // The flat's own address is its Deployments tab: status, versions, previews
@@ -239,6 +258,11 @@ assert.equal(all(flatMain, (e) => e.tagName === 'SELECT').length, 0, 'visibility
 const redeploys = byText(flatMain, 'Redeploy (apply environment)');
 assert.equal(redeploys.length, 1, 'want a redeploy button on the live version row only');
 const liveRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-live')[0];
+// Version rows name their state: the live one, and an earlier one that was
+// live before and is offered as a rollback, never as a new Publish.
+const v1Row = all(flatMain, (e) => e.tagName === 'TR' && e.className === '' && e.textContent.startsWith('v1'))[0];
+assert.ok(v1Row && v1Row.textContent.includes('Previously live'), v1Row?.textContent);
+assert.equal(byText(v1Row, 'Roll back to v1').length, 1);
 assert.ok(liveRow && byText(liveRow, 'Redeploy (apply environment)').length === 1, 'live version row has no redeploy action');
 
 redeploys[0].dispatch('click');
@@ -273,16 +297,17 @@ const pubToastBox = new Element('div');
 pubToastBox.setAttribute('id', 'toasts');
 const origGetElementById = document.getElementById;
 document.getElementById = (id) => (id === 'toasts' ? pubToastBox : origGetElementById?.(id));
-byText(draftRow, 'Save version')[0].dispatch('click');
+byText(draftRow, 'Save as v3')[0].dispatch('click');
 await tick();
 dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
-assert.ok(dialogs[0].textContent.includes('Save draft of Blog as a new version?'));
+assert.ok(dialogs[0].textContent.includes('Save the draft of Blog as version 3?'), dialogs[0].textContent);
+assert.ok(dialogs[0].textContent.includes('Saving does not publish: version 2 stays live'), dialogs[0].textContent);
 dialogs[0].close('ok');
 await tick();
 document.getElementById = origGetElementById;
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/publish').body), { revision: 3, hash: 'c' });
 assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/approve'));
-assert.ok(pubToastBox.textContent.includes('Saved version 3. Deploy it to make it live.'), pubToastBox.textContent);
+assert.ok(pubToastBox.textContent.includes('Saved version 3. It is not live yet: publish it when ready.'), pubToastBox.textContent);
 all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
 await tick();
 
@@ -299,8 +324,11 @@ for (const id of ['versions', 'previews']) {
 for (const id of ['status', 'logs']) {
   assert.equal(all(docMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `document page lacks ${id}`);
 }
-for (const text of ['Save version', 'Redeploy (apply environment)', 'Preview', 'Roll back', 'Deploy']) {
+for (const text of ['Redeploy (apply environment)', 'Preview']) {
   assert.equal(byText(docMain, text).length, 0, `document page offers ${text}`);
+}
+for (const prefix of ['Save as', 'Publish', 'Roll back']) {
+  assert.equal(startsWith(docMain, prefix).length, 0, `document page offers ${prefix}`);
 }
 assert.ok(docMain.textContent.includes('Running') && !docMain.textContent.includes('Not published'));
 assert.equal(calls.some((c) => c.key.startsWith('GET /console/api/flats/notes/versions') || c.key.startsWith('GET /console/api/flats/notes/previews')), false, 'a document loads no versions or previews');

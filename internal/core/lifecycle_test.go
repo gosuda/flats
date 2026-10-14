@@ -623,8 +623,9 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 		t.Fatalf("wanted pending rollback for v1: %v", err)
 	}
 
-	// Save v5, then lower keep_versions=1; v5 (newest), v4 (pending activate), v3 (LiveVersion),
-	// and v1 (pending rollback) remain protected, while v2 is pruned.
+	// Save v5, then lower keep_versions=1. keep_versions counts deployed
+	// history only: v3 is live, v2 is the one kept deployed version, v1 is
+	// protected by its pending rollback, and v4 and v5 were never deployed.
 	lifecycleSave(t, s, "prune", "v5")
 	pub5 := lifecycleRequest(t, s, "prune")
 	if _, err := s.Decide(t.Context(), pub5.Approval.ID, true); err != nil {
@@ -634,18 +635,15 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.pruneVersions(t.Context(), "prune")
-	for _, n := range []int{1, 3, 4, 5} {
+	for _, n := range []int{1, 2, 3, 4, 5} {
 		v, err := s.st.GetVersion(t.Context(), "prune", n)
 		if err != nil || v.Pruned {
 			t.Fatalf("version %d was pruned despite protection: %+v %v", n, v, err)
 		}
 	}
-	if v2, err := s.st.GetVersion(t.Context(), "prune", 2); err != nil || !v2.Pruned {
-		t.Fatalf("unprotected version 2 was not pruned: %+v %v", v2, err)
-	}
 
-	// Reject the pending approvals for v4 and v1, then prune with keep_versions=1:
-	// v5 (newest) and v3 (LiveVersion) stay; v4 and v1 become prunable.
+	// Reject the pending approvals for v4 and v1, then prune again: v1 loses
+	// its protection and is pruned; v4 and v5 were never deployed and stay.
 	if _, err := s.Decide(t.Context(), dep4.Approval.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -653,16 +651,68 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.pruneVersions(t.Context(), "prune")
-	for _, n := range []int{3, 5} {
+	for _, n := range []int{2, 3, 4, 5} {
 		v, err := s.st.GetVersion(t.Context(), "prune", n)
 		if err != nil || v.Pruned {
 			t.Fatalf("protected version %d was pruned: %+v %v", n, v, err)
 		}
 	}
-	for _, n := range []int{1, 2, 4} {
-		v, err := s.st.GetVersion(t.Context(), "prune", n)
-		if err != nil || !v.Pruned {
-			t.Fatalf("unprotected version %d was not pruned: %+v %v", n, v, err)
+	if v1, err := s.st.GetVersion(t.Context(), "prune", 1); err != nil || !v1.Pruned {
+		t.Fatalf("unprotected deployed version 1 was not pruned: %+v %v", v1, err)
+	}
+}
+
+// A saved version that was never deployed is never pruned, however low
+// keep_versions is, and a flat is published only once something was deployed.
+func TestUndeployedVersionsAreNotPrunedOrPublished(t *testing.T) {
+	s, _ := newTestService(t)
+	for _, body := range []string{"v1", "v2", "v3"} {
+		lifecycleSave(t, s, "saved", body)
+		if _, err := s.Decide(t.Context(), lifecycleRequest(t, s, "saved").Approval.ID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetKeepVersions: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneVersions(t.Context(), "saved")
+	vs, err := s.ListVersions(t.Context(), "saved")
+	if err != nil || len(vs) != 3 {
+		t.Fatalf("want three saved versions: %+v %v", vs, err)
+	}
+	for _, v := range vs {
+		if v.Pruned || v.Deployed {
+			t.Fatalf("never deployed version %d was pruned or reported deployed: %+v", v.Number, v)
+		}
+	}
+	f, err := s.GetFlat(t.Context(), "saved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Publication != "unpublished" || f.LatestVersion != 3 || f.LatestDeployed {
+		t.Fatalf("saved but never deployed flat: publication %q latest %d deployed %v", f.Publication, f.LatestVersion, f.LatestDeployed)
+	}
+
+	_, err = s.Deploy(t.Context(), "saved", 2, ViaConsole)
+	var dep *PendingApproval
+	if !errors.As(err, &dep) {
+		t.Fatalf("wanted pending deploy for v2: %v", err)
+	}
+	if _, err := s.Decide(t.Context(), dep.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if f, err = s.GetFlat(t.Context(), "saved"); err != nil {
+		t.Fatal(err)
+	}
+	if f.Publication != "published" || f.LiveVersion != 2 || f.LatestDeployed {
+		t.Fatalf("after deploying v2: publication %q live %d latest deployed %v", f.Publication, f.LiveVersion, f.LatestDeployed)
+	}
+	if vs, err = s.ListVersions(t.Context(), "saved"); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vs {
+		if v.Deployed != (v.Number == 2) || v.Pruned {
+			t.Fatalf("after deploying v2, version %d: %+v", v.Number, v)
 		}
 	}
 }
@@ -696,4 +746,3 @@ func TestPublishReceiptResumesWithoutReapplying(t *testing.T) {
 		t.Fatalf("expected conflict making undeployed version public: %v", err)
 	}
 }
-

@@ -378,7 +378,9 @@ def publish_idempotency(h):
     require(any(o["status"] == "approved" for o in outcomes), outcomes)
     require(h.decide(a)["status"] == "approved", "completed approval retry failed")
     f = h.flat("publish")
-    require(f["live_version"] == 0 and f["publication"] == "published" and f["visibility"] == "private", f)
+    # A saved version that was never deployed does not publish the flat.
+    require(f["live_version"] == 0 and f["publication"] == "unpublished" and f["visibility"] == "private", f)
+    require(f.get("latest_version") == 1 and not f.get("latest_deployed"), f)
     require([v["number"] for v in h.versions("publish")] == [1], "duplicate version created")
     dep = h.deploy_version("publish", 1)
     require(h.deploy_version("publish", 1) == dep, "deploy retry created a second pending approval")

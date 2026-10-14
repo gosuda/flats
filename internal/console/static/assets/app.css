@@ -136,6 +136,9 @@ h3 { font-size: 15px; margin: 20px 0 8px; font-weight: 600; }
 .btn-primary, .btn-pill { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .btn-primary:hover:not(:disabled), .btn-pill:hover:not(:disabled) { background: var(--accent); opacity: 0.88; }
 .btn-pill { min-height: 32px; padding: 4px 14px; font-size: 14px; }
+/* Save (a new version, nothing goes live) is quieter than Publish (goes live). */
+.btn-pill.btn-quiet { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn-pill.btn-quiet:hover:not(:disabled) { background: var(--hover); opacity: 1; }
 .btn-small { min-height: 30px; padding: 3px 12px; font-size: 13.5px; }
 .btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn-danger:hover:not(:disabled) { background: var(--danger); opacity: 0.88; }

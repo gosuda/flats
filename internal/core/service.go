@@ -607,8 +607,11 @@ type FlatView struct {
 	Live          *store.Version `json:"live,omitempty"`
 	Versions      int            `json:"versions"`
 	LatestVersion int            `json:"latest_version,omitempty"`
-	DiskBytes     int64          `json:"disk_bytes"`
-	Thumbnail     string         `json:"thumbnail,omitempty"`
+	// LatestDeployed reports whether LatestVersion was ever made live. False
+	// means the newest saved version still waits to be published.
+	LatestDeployed bool   `json:"latest_deployed,omitempty"`
+	DiskBytes      int64  `json:"disk_bytes"`
+	Thumbnail      string `json:"thumbnail,omitempty"`
 	// Running reports whether a version is serving now on this host: false
 	// when the live version could not start (for example after a restart),
 	// even though LiveVersion still names it.
@@ -673,7 +676,8 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	}
 	if f.LiveVersion > 0 {
 		v.Publication = "published"
-	} else if n, err := s.st.CountPublished(ctx, f.Slug); err == nil && n > 0 {
+	} else if ok, err := s.st.HasDeployment(ctx, f.Slug); err == nil && ok {
+		// A saved but never deployed version does not publish the flat.
 		v.Publication = "published"
 	} else {
 		v.Publication = "unpublished"
@@ -730,6 +734,12 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		if len(vs) > 0 {
 			v.LatestVersion = vs[0].Number
 			latestManifest = vs[0].Manifest
+			v.LatestDeployed = vs[0].Number == f.LiveVersion
+			if !v.LatestDeployed {
+				if deployed, err := s.st.DeployedVersions(ctx, f.Slug); err == nil {
+					v.LatestDeployed = deployed[vs[0].Number]
+				}
+			}
 		}
 		for i := range vs {
 			if vs[i].Number == f.LiveVersion {
@@ -975,7 +985,18 @@ func (s *Service) ListVersions(ctx context.Context, slugName string) ([]store.Ve
 	if err := s.refuseDocs(ctx, f); err != nil {
 		return nil, err
 	}
-	return s.st.ListVersions(ctx, slugName)
+	vs, err := s.st.ListVersions(ctx, slugName)
+	if err != nil {
+		return nil, err
+	}
+	deployed, err := s.st.DeployedVersions(ctx, slugName)
+	if err != nil {
+		return nil, err
+	}
+	for i := range vs {
+		vs[i].Deployed = deployed[vs[i].Number] || vs[i].Number == f.LiveVersion
+	}
+	return vs, nil
 }
 
 // GetVersion returns one version.
@@ -1062,11 +1083,24 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 			}
 		}
 	}
+	// A saved website or page version that was never deployed is never
+	// pruned: versions are not deleted automatically before anyone could
+	// deploy them (docs/spec/content-models.md). keep_versions still bounds
+	// deployed history until version quotas replace it.
+	var deployed map[int]bool
+	if !docs {
+		if deployed, err = s.st.DeployedVersions(ctx, slugName); err != nil {
+			return nil, err
+		}
+	}
 	var prune []int
 	kept := 0
 	for _, v := range vs { // newest first
 		// The live, previewed and pending-approval versions are kept on top of keep_versions.
 		if v.Pruned || v.Number == f.LiveVersion || inPreview[v.Number] {
+			continue
+		}
+		if !docs && !deployed[v.Number] {
 			continue
 		}
 		if kept < keep {

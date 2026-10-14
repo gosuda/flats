@@ -200,7 +200,7 @@ These rules apply to the version, revision and pin quotas alike.
 
 | Type | Model | Status |
 |---|---|---|
-| website (`flat`) | Version | versions exist; separate version creation is not implemented |
+| website (`flat`) | Version | creation and deployment are separate; quotas, deletion and tool names are not implemented |
 | page (`page`) | Version | as for websites |
 | document (`docs`) | Revision | no revisions yet; planned next |
 | design | Revision | planned type |
@@ -214,17 +214,24 @@ sense: it has no pins, quotas or rollback.
 
 ## Current state
 
-Compared with `main` at `aa5bf97`:
+Compared with the implementation after version creation was split from
+deployment (gosuda/flats PR #95):
 
 - **Version model.**
-  - A version is created only by an approved publish, which allocates `vN` and
-    deploys it in one step; a failed health check consumes no number.
-  - After each deployment, version files are pruned automatically: the newest
-    `keep_versions` (default 10) versions are kept, plus the live version and
-    any version with an open preview on top of that count.
+  - Creating a version and deploying it are separate approved steps, as this
+    spec requires. The version-creation step is still named `publish` in MCP,
+    the CLI and the API (`approval action "publish"`), and deployment is
+    `deploy` with a positive version number (`action "activate"`).
+    `save_draft`, `save_version`, `save_page` and `flats deploy <dir>` with
+    `deploy` requested only ask to create a version.
+  - Versions are still pruned automatically after each deployment and version
+    creation, but only deployed history: the newest `keep_versions` (default
+    10) deployed versions are kept, plus the live version, any version with an
+    open preview or a pending deployment approval, and every version that was
+    never deployed. There is no version quota or version deletion yet.
   - `save_version` and `save_version_from_dir` write the Draft without
-    approval despite their names. `create_version` and version deletion do
-    not exist.
+    approval despite their names. `create_version`, `save_draft_from_dir` and
+    version deletion do not exist.
 - **Revision model.**
   - Documents have no revisions. When a new document version overwrites live
     text, the overwritten text is preserved separately in

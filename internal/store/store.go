@@ -90,6 +90,9 @@ type Version struct {
 	Published bool   `json:"published"`
 	Role      string `json:"role,omitempty"`
 	Revision  int    `json:"revision,omitempty"`
+	// Deployed is true for a saved version that was ever made live. Listings
+	// fill it in; a saved version that was never deployed is not published.
+	Deployed bool `json:"deployed"`
 }
 
 // Event is a log line attached to a flat (deploys, health checks, runtime).

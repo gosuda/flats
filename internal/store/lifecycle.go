@@ -182,11 +182,32 @@ func (s *Store) DeleteVersion(ctx context.Context, flat string, n int) error {
 	return err
 }
 
-// CountPublished returns how many published versions a flat has.
-func (s *Store) CountPublished(ctx context.Context, flat string) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM versions WHERE flat=? AND published=1`, flat).Scan(&n)
-	return n, err
+// HasDeployment reports whether any version of a flat was ever deployed.
+// A saved version that was never deployed does not count: Published means
+// deployed at least once.
+func (s *Store) HasDeployment(ctx context.Context, flat string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM deployments WHERE flat=?)`, flat).Scan(&ok)
+	return ok, err
+}
+
+// DeployedVersions returns the numbers of a flat's versions that were ever
+// deployed (made live by a publish, deploy or rollback).
+func (s *Store) DeployedVersions(ctx context.Context, flat string) (map[int]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT version FROM deployments WHERE flat=?`, flat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out[n] = true
+	}
+	return out, rows.Err()
 }
 
 // PutDraftRevision inserts an immutable draft snapshot.

@@ -9,7 +9,7 @@
 import { h, icon, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
-import { deployVersion, publishDraft, previewVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
+import { publishVersion, saveVersion, nextVersion, previewVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
 import { hasServer } from './list.js';
 import { shareDialog } from './share.js';
@@ -93,7 +93,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
             flat.private_detail || 'not answering yet') : null)
-      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ' (online once the document starts)' : ' (online after the first deploy)'));
+      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ' (online once the document starts)' : ' (online after the first publish)'));
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
@@ -101,7 +101,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
     if (isDocs()) add('Document', flat.running ? 'Running' : 'Not running');
-    else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : (flat.latest_version ? `Not deployed (v${flat.latest_version} saved)` : 'Not published'));
+    else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : (flat.latest_version ? `Not published (v${flat.latest_version} saved)` : 'Not published'));
     add('Created', dateTime(flat.created_at));
     if (flat.old_slug && flat.old_slug_until) {
       add('Redirect', `Old slug ${flat.old_slug} redirects here until ${dateTime(flat.old_slug_until)}`);
@@ -242,7 +242,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   function drawVersions(vs) {
     const draft = flat.draft && flat.draft.dirty ? flat.draft : null;
     if (!vs.length && !draft) {
-      fill(versionsSlot, h('p', { class: 'muted', text: 'No saved versions yet. Agents save versions with save_version (MCP) or `flats deploy`.' }));
+      fill(versionsSlot, h('p', { class: 'muted', text: 'No draft or saved versions yet. Agents update the draft with save_draft or save_version (MCP), or `flats deploy`.' }));
       return;
     }
     const live = flat.live_version;
@@ -255,18 +255,20 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         // A page has no environment to apply.
         if (serverParts()) actions.appendChild(redeployButton());
       } else {
+        // Publishing puts a saved version live; an earlier one is a rollback.
         const back = live && v.number < live;
         const btn = h('button', {
           type: 'button', class: 'btn btn-small' + (back ? '' : ' btn-primary'), disabled: v.pruned,
-          text: back ? 'Roll back' : 'Deploy', 'aria-label': `${back ? 'Roll back to' : 'Deploy'} version ${v.number}`,
+          text: back ? `Roll back to v${v.number}` : `Publish v${v.number}`,
+          'aria-label': back ? `Roll back to version ${v.number}` : `Publish version ${v.number}`,
         });
         btn.addEventListener('click', () => busy(btn, async () => {
-          if (await deployVersion(flat, v.number, back ? 'rollback' : 'deploy')) refresh();
+          if (await publishVersion(flat, v.number, back ? 'rollback' : 'publish')) refresh();
         }));
         actions.appendChild(btn);
       }
       return h('tr', { class: v.number === live ? 'is-live' : '' },
-        h('th', { scope: 'row' }, `v${v.number}`, v.number === live ? h('span', { class: 'badge badge-live', text: 'Live' }) : null),
+        h('th', { scope: 'row' }, `v${v.number}`, versionBadge(v, live)),
         h('td', null, timeEl(v.created_at)),
         h('td', null, h('code', { title: v.hash, text: shortHash(v.hash) })),
         h('td', null, v.git_sha ? h('code', { title: v.git_sha, text: v.git_sha.slice(0, 7) }) : h('span', { class: 'muted', text: '—' }),
@@ -278,19 +280,28 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     });
     fill(versionsSlot, h('div', { class: 'table-wrap' },
       h('table', { class: 'table table-versions' },
-        h('caption', { class: 'sr-only', text: 'Draft and published versions, newest first' }),
+        h('caption', { class: 'sr-only', text: 'Draft and saved versions, newest first' }),
         h('thead', null, h('tr', null, ['Version', 'Created', 'Hash', 'Git', 'Message', 'Size', 'Actions'].map((t) => h('th', { scope: 'col', text: t })))),
         h('tbody', null, draft ? draftRow(draft) : null, rows))));
+  }
+
+  // versionBadge says where a saved version stands: live now, live before,
+  // or saved and never published.
+  function versionBadge(v, live) {
+    if (v.number === live) return h('span', { class: 'badge badge-live', text: 'Live' });
+    if (v.deployed) return h('span', { class: 'badge', text: 'Previously live' });
+    return h('span', { class: 'badge badge-draft', text: 'Not published', title: 'Saved, never live. Publish it to put it live.' });
   }
 
   // draftRow is the agent's latest save that is not saved as a version yet.
   function draftRow(d) {
     const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': 'Preview the draft' });
     prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, 0)) loadPreviews(); }));
-    const pub = h('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Save version', 'aria-label': 'Save the draft as a new version' });
-    pub.addEventListener('click', () => busy(pub, async () => { if (await publishDraft(flat)) refresh(); }));
+    const n = nextVersion(flat);
+    const pub = h('button', { type: 'button', class: 'btn btn-small', text: `Save as v${n}`, title: `Save the draft as version ${n}. Nothing goes live.`, 'aria-label': `Save the draft as version ${n}` });
+    pub.addEventListener('click', () => busy(pub, async () => { if (await saveVersion(flat)) refresh(); }));
     return h('tr', { class: 'is-draft' },
-      h('th', { scope: 'row' }, 'Draft', h('span', { class: 'badge badge-draft', text: 'New' })),
+      h('th', { scope: 'row' }, 'Draft', h('span', { class: 'badge badge-draft', text: 'Unsaved' })),
       h('td', null, timeEl(d.updated_at)),
       h('td', null, h('code', { title: d.hash, text: shortHash(d.hash) })),
       h('td', null, d.git_sha ? h('code', { title: d.git_sha, text: d.git_sha.slice(0, 7) }) : h('span', { class: 'muted', text: '—' }),
