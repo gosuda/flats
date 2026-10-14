@@ -217,6 +217,21 @@ func (s *Service) lockCtx(ctx context.Context, slugName string) (func(), error) 
 	}
 }
 
+// lockStorageCtx is lockCtx for an operation that writes or removes files
+// below the flat's storage directory: like lockStorage, it refuses while an
+// unfinished rename or delete journal names the slug.
+func (s *Service) lockStorageCtx(ctx context.Context, slugName string) (func(), error) {
+	unlock, err := s.lockCtx(ctx, slugName)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkStorageJournal(slugName); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
 // --- type and access ---
 
 // isDesign reports whether f is a design.
@@ -473,12 +488,14 @@ func (s *Service) startPendingDesigns(ctx context.Context) {
 		if st.Type != contenttype.Design || st.Phase != "init" {
 			continue
 		}
-		unlock := s.lock(st.Flat)
-		f, err := s.st.GetFlat(ctx, st.Flat)
+		unlock, err := s.lockStorage(st.Flat)
 		if err == nil {
-			err = s.finishDesignLocked(ctx, st.Flat, f.Name, ViaConsole)
+			var f store.Flat
+			if f, err = s.st.GetFlat(ctx, st.Flat); err == nil {
+				err = s.finishDesignLocked(ctx, st.Flat, f.Name, ViaConsole)
+			}
+			unlock()
 		}
-		unlock()
 		if err != nil {
 			s.Event(ctx, st.Flat, "error", "design", "could not finish creating the design: "+err.Error(), nil)
 		}
@@ -661,7 +678,7 @@ func (s *Service) WriteDesign(ctx context.Context, slugName string, w DesignWrit
 	if err := slug.Validate(slugName); err != nil {
 		return DesignWriteResult{}, invalid(err)
 	}
-	unlock, lerr := s.lockCtx(ctx, slugName)
+	unlock, lerr := s.lockStorageCtx(ctx, slugName)
 	if lerr != nil {
 		return DesignWriteResult{}, lerr
 	}
@@ -1044,7 +1061,7 @@ func (s *Service) retainDesign(ctx context.Context, slugName string) {
 
 // ApplyDesignOp applies one person operation from the canvas app.
 func (s *Service) ApplyDesignOp(ctx context.Context, slugName, editor, label string, op design.Op) error {
-	unlock, lerr := s.lockCtx(ctx, slugName)
+	unlock, lerr := s.lockStorageCtx(ctx, slugName)
 	if lerr != nil {
 		return lerr
 	}
@@ -1534,7 +1551,12 @@ func (s *Service) SweepDesignBlobs(ctx context.Context) {
 }
 
 func (s *Service) sweepDesignBlobs(ctx context.Context, slugName string) {
-	unlock := s.lock(slugName)
+	// During an unfinished rename or delete the files under this slug may
+	// belong to another flat: never delete them by this slug's references.
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return
+	}
 	defer unlock()
 	if err := s.st.Checkpoint(ctx, "FULL"); err != nil {
 		s.logf("sweep design blobs of %s: checkpoint: %v", slugName, err)

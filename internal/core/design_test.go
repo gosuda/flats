@@ -405,3 +405,52 @@ func TestDesignExpectedRevisionSeesPendingEdits(t *testing.T) {
 		t.Fatalf("pending edits not guarded: %v", err)
 	}
 }
+
+func TestKeptRenameJournalRefusesDesignStorageWrites(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	newDesign(t, s, "studio")
+	if _, err := s.WriteDesign(ctx, "studio", DesignWrite{Files: []DesignFile{{Path: "big.txt", Data: []byte(strings.Repeat("y", 1000))}}}, ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteDesign(ctx, "studio", DesignWrite{Delete: []string{"big.txt"}}, ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	one := 1
+	if err := s.SetRevisionQuotas(ctx, "studio", &one, nil); err != nil {
+		t.Fatal(err)
+	}
+	blob := s.blobPath("studio", hashBytes([]byte(strings.Repeat("y", 1000))))
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(blob, old, old)
+	op := storageOperation{Kind: "rename", From: "old-studio", To: "studio"}
+	if err := s.beginStorageOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriteDesign(ctx, "studio", DesignWrite{Files: []DesignFile{{Path: "c.html", Data: []byte("<p>C</p>")}}}, ViaMCP); !errors.Is(err, ErrConflict) {
+		t.Fatalf("write while the rename journal is kept: %v", err)
+	}
+	src, a := headFile(t, s, "studio", "a.html")
+	n, err := design.NodeOf(src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := design.Op{Kind: "text.set", Path: "a.html", Gen: a.Gen, Node: 0, Tag: "h1", InnerHash: n.InnerHash, HTML: "Hi"}
+	if err := s.ApplyDesignOp(ctx, "studio", "e1", "Person", edit); !errors.Is(err, ErrConflict) {
+		t.Fatalf("edit while the rename journal is kept: %v", err)
+	}
+	// The files under this slug may belong to the other flat: no sweep.
+	s.sweepDesignBlobs(ctx, "studio")
+	if _, err := os.Stat(blob); err != nil {
+		t.Fatalf("sweep deleted a blob while the rename journal is kept: %v", err)
+	}
+	if _, err := s.GetDesign(ctx, "studio"); err != nil {
+		t.Fatalf("read while the rename journal is kept: %v", err)
+	}
+	if err := s.recoverStorageOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyDesignOp(ctx, "studio", "e1", "Person", edit); err != nil {
+		t.Fatalf("edit after recovery: %v", err)
+	}
+}
