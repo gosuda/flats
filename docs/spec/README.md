@@ -23,4 +23,5 @@ spec and leaves that list.
 | [Content data models](content-models.md) | The Version model (websites, pages) and the Revision model (documents, design) |
 | [Design content type](design-type.md) ([technical design](design-type-TECH.md)) | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
 | [Page content type](page-type.md) ([technical design](page-type-TECH.md)) | `type: "page"`: one static HTML document with assets, on the website lifecycle |
+| [Operator keys and console domains](console-settings.md) ([technical design](console-settings-TECH.md)) | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |
 | [Agent self-update](agent-self-update.md) ([technical design](agent-self-update-TECH.md)) | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
