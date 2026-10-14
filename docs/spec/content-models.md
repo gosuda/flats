@@ -132,7 +132,12 @@ people and agents edit live.
    `update_document` edits live text. Saving one document changes only that
    document and leaves the flat's other documents and assets as they are. A
    save that replaces the whole bundle says so explicitly, and files it omits
-   are deleted. Revision-model content is never written
+   are deleted.
+   - Saves keep today's merge behavior: people's concurrent edits that do not
+     overlap the save are kept, and where they overlap, the save wins. The
+     overwritten text stays in the revision closed just before the save.
+   - `update_document` keeps its guards: if any guarded text changed since
+     the agent read it, the whole call is refused and nothing changes. Revision-model content is never written
    through a Version-model tool.
 9. **Rollback creates a new revision.** Rolling back to revision R creates a
    new revision whose content equals R's whole flat. History is never
@@ -206,11 +211,17 @@ Compared with `main` at `aa5bf97`:
 
 ## Migration
 
-1. **Documents.** Each record of overwritten text in `flats_docs_conflicts`
-   becomes a revision, oldest first, in which that document holds the
-   preserved text. Then one revision holds the flat's current content, so it
-   is the latest. The preserved text can then be recovered by rollback. The
-   separate store is removed afterwards.
+1. **Documents.** A record of overwritten text in `flats_docs_conflicts` holds
+   one document's text, not the whole flat, so each record becomes a synthetic
+   recovery revision, oldest first: the flat's current content with only that
+   document replaced by the preserved text. A document that no longer exists
+   is restored with that text; assets and the manifest are the current ones.
+   These revisions are marked as migrated, not as historical snapshots. Then
+   one revision holds the flat's current content, so it is the latest. The
+   preserved text can be recovered by rollback, and the separate store is
+   removed afterwards. Migrated revisions follow the revision quota like any
+   other: when a flat has more records than the quota allows, the oldest
+   migrated revisions are deleted, as accepted for this rare case.
 2. **Versions keep their numbers.** Existing versions keep their numbers, and
    new numbers continue after the highest one.
 3. **Nothing is deleted to fit the quota.** A flat that already holds more
