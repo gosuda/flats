@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -46,7 +48,7 @@ func TestWorkerBodyBudgetRefusesOnlyBodies(t *testing.T) {
 	r = httptest.NewRequest(http.MethodPost, "http://flat.test/", strings.NewReader("abcde"))
 	r.ContentLength = -1
 	body, release, err = w.readBody(httptest.NewRecorder(), r)
-	if err != nil || string(body) != "abcde" || w.bodies.used != 5 {
+	if err != nil || string(body) != "abcde" || w.bodies.used != int64(cap(body)) {
 		t.Fatalf("chunked: %q %v used %d", body, err, w.bodies.used)
 	}
 	release()
@@ -54,6 +56,44 @@ func TestWorkerBodyBudgetRefusesOnlyBodies(t *testing.T) {
 		t.Fatalf("not released: %d", w.bodies.used)
 	}
 }
+
+// A body is read into memory that the budget already counts: a declared
+// length exactly, a chunked body as its buffer grows, never past the limit.
+func TestWorkerBodyBufferIsBudgeted(t *testing.T) {
+	t.Parallel()
+	w := &worker{}
+	r := httptest.NewRequest(http.MethodPost, "http://flat.test/", strings.NewReader("x"))
+	body, release, err := w.readBody(httptest.NewRecorder(), r)
+	if err != nil || string(body) != "x" || cap(body) != 1 || w.bodies.used != 1 {
+		t.Fatalf("declared: %q cap %d used %d %v", body, cap(body), w.bodies.used, err)
+	}
+	release()
+	data := bytes.Repeat([]byte("0123456789abcdef"), 6000)
+	r = httptest.NewRequest(http.MethodPost, "http://flat.test/", iotest.OneByteReader(bytes.NewReader(data)))
+	r.ContentLength = -1
+	body, release, err = w.readBody(httptest.NewRecorder(), r)
+	if err != nil || !bytes.Equal(body, data) || w.bodies.used != int64(cap(body)) || cap(body) > 2*len(data) {
+		t.Fatalf("chunked: %d bytes cap %d used %d %v", len(body), cap(body), w.bodies.used, err)
+	}
+	release()
+	r = httptest.NewRequest(http.MethodPost, "http://flat.test/", io.LimitReader(zeros{}, MaxRequestBody+1))
+	r.ContentLength = -1
+	var mbe *http.MaxBytesError
+	if _, release, err = w.readBody(httptest.NewRecorder(), r); !errors.As(err, &mbe) {
+		t.Fatalf("oversize chunked: %v", err)
+	}
+	if w.bodies.used > MaxRequestBody {
+		t.Fatalf("oversize chunked held %d", w.bodies.used)
+	}
+	release()
+	if w.bodies.used != 0 {
+		t.Fatalf("not released: %d", w.bodies.used)
+	}
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
 func TestWorkerRejectsDeclaredOversizeBodyUnread(t *testing.T) {
 	t.Parallel()

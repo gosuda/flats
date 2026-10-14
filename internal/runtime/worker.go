@@ -270,8 +270,11 @@ func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte,
 	if r.ContentLength > MaxRequestBody {
 		return nil, release, &http.MaxBytesError{Limit: MaxRequestBody}
 	}
-	// A declared length is reserved before it is allocated; a chunked body
-	// is counted as it arrives.
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, release, nil
+	}
+	// Body memory is reserved before it is allocated: a declared length at
+	// once, a chunked body as its buffer grows.
 	if r.ContentLength > 0 {
 		if !w.bodies.take(r.ContentLength) {
 			return nil, release, errBodiesBusy
@@ -292,20 +295,33 @@ func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte,
 			}
 		}
 	}()
-	buf := make([]byte, 32<<10)
+	// Reads go straight into the body's spare capacity. When it is full, a
+	// one-byte probe finds the end of the body (or more of a chunked one)
+	// without allocating.
+	var probe [1]byte
 	for {
 		if err := rc.SetReadDeadline(bodyDeadline(start, int64(len(body)))); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return nil, release, err
 		}
-		n, rerr := src.Read(buf)
+		full := len(body) == cap(body)
+		dst := body[len(body):cap(body)]
+		if full {
+			dst = probe[:]
+		}
+		n, rerr := src.Read(dst)
 		if n > 0 {
-			if grow := int64(len(body)+n) - held; grow > 0 {
-				if !w.bodies.take(grow) {
+			if !full {
+				body = body[:len(body)+n]
+			} else {
+				// MaxBytesReader never lets a body grow past MaxRequestBody.
+				size := min(max(512, 2*int64(cap(body))), MaxRequestBody)
+				if !w.bodies.take(size - held) {
 					return nil, release, errBodiesBusy
 				}
-				held += grow
+				held = size
+				body = append(make([]byte, 0, size), body...)
+				body = append(body, probe[0])
 			}
-			body = append(body, buf[:n]...)
 		}
 		if rerr == io.EOF {
 			return body, release, nil
