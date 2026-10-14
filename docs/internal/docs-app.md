@@ -351,8 +351,8 @@ These are host internals for built-in apps, **not part of runtime API
 v1** and not supported APIs for agent-authored server flats. They are visible
 in JavaScript but do not change existing v1 request fields or queue defaults.
 The byte helper bounds actual queued **and in-flight** Go text payload bytes,
-only lowers budgets, and accepts connection budgets of 1 KiB–32 MiB and flat
-budgets between that connection budget and 256 MiB. App delivery receipts also
+only lowers budgets, and accepts connection budgets of 1 KiB–4 MiB and flat
+budgets between that connection budget and 16 MiB (the host defaults). App delivery receipts also
 bound unprocessed output; native budgets cannot be bypassed by forged receipts.
 Adopting this embedded app requires the matching host implementation.
 
