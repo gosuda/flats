@@ -68,7 +68,10 @@ requests that outlived the SDK's HTTP shutdown timeout, while an error from a
 stage that has finished is reported once. The SDK closes
 an exposure only once, so a failed unregister stays reported until the relay
 must have dropped the unrenewed lease (2 minutes after close); Serve and
-SetHidden never revive an exposure being torn down. Tailscale already bounds
+SetHidden never revive an exposure being torn down. Portal Close reports the
+failures of exposures whose teardown is still unconfirmed when it finishes; a
+Stop failure whose teardown a later retry confirmed is not reported again by
+Close. Tailscale already bounds
 Stop/Close at 30s. Expected listener closure/context cancellation is ignored;
 other errors and exceeded deadlines are reported. A stuck third-party call
 cannot be forcibly stopped in Go: cleanup may finish later, or only at process

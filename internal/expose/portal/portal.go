@@ -99,15 +99,14 @@ type Net struct {
 	ctx    context.Context // parent of every exposure; cancelled by Close
 	cancel context.CancelFunc
 
-	mu           sync.RWMutex
-	closeOnce    sync.Once
-	closeErr     error
-	ops          sync.WaitGroup // admitted operations; Add is serialized with closing
-	shutdownErrs []error        // failures from completed teardown, including concurrent Stop
-	closed       bool
-	entries      map[string]*entry
-	locks        map[string]*sync.Mutex // per-slug Serve/Stop/SetHidden serialization
-	leaseTTL     time.Duration          // tests shorten it; zero means sdkLeaseTTL
+	mu        sync.RWMutex
+	closeOnce sync.Once
+	closeErr  error
+	ops       sync.WaitGroup // admitted operations; Add is serialized with closing
+	closed    bool
+	entries   map[string]*entry
+	locks     map[string]*sync.Mutex // per-slug Serve/Stop/SetHidden serialization
+	leaseTTL  time.Duration          // tests shorten it; zero means sdkLeaseTTL
 }
 
 // sdkLeaseTTL is the lease lifetime the Portal SDK requests and renews
@@ -142,6 +141,7 @@ type entry struct {
 	closedAt    time.Time // when that Close returned
 	httpSeen    bool      // HTTP shutdown error already reported
 	pumpSeen    bool      // listener pump error already reported
+	stopErr     error     // latest unconfirmed teardown failure; guarded by Net.mu
 
 	mu      sync.Mutex
 	hidden  bool
@@ -382,13 +382,7 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		n.entries[slug] = e
 		n.mu.Unlock()
 		stopErr := n.stopEntry(e)
-		n.mu.Lock()
-		if stopErr == nil {
-			delete(n.entries, slug)
-		} else {
-			n.shutdownErrs = append(n.shutdownErrs, stopErr)
-		}
-		n.mu.Unlock()
+		n.settleStop(slug, e, stopErr)
 		return "", errors.Join(errors.New("portal: closed"), stopErr)
 	}
 	n.entries[slug] = e
@@ -462,10 +456,14 @@ func (n *Net) setHidden(e *entry, hidden bool) error {
 func (n *Net) Stop(slug string) error {
 	if !n.beginOp() {
 		n.mu.RLock()
-		_, pending := n.entries[slug]
+		e := n.entries[slug]
+		var stopErr error
+		if e != nil {
+			stopErr = e.stopErr
+		}
 		n.mu.RUnlock()
-		if pending {
-			return fmt.Errorf("portal: %s teardown not confirmed: network closed", slug)
+		if e != nil {
+			return errors.Join(fmt.Errorf("portal: %s teardown not confirmed: network closed", slug), stopErr)
 		}
 		return nil
 	}
@@ -505,15 +503,21 @@ func (n *Net) finishStop(slug string, e *entry) error {
 	e.mu.Unlock()
 
 	err := n.stopEntry(e)
+	n.settleStop(slug, e, err)
+	return err
+}
+
+// settleStop forgets a confirmed teardown or records why it is still
+// unconfirmed. Close reports the failures of entries that remain, so a later
+// retry that confirms teardown also clears an earlier failure.
+func (n *Net) settleStop(slug string, e *entry, err error) {
 	n.mu.Lock()
+	defer n.mu.Unlock()
 	if err == nil {
 		delete(n.entries, slug)
-	} else if n.closed {
-		// Close must see failures from its own stops and admitted Stop calls.
-		n.shutdownErrs = append(n.shutdownErrs, err)
+		return
 	}
-	n.mu.Unlock()
-	return err
+	e.stopErr = err
 }
 
 // stopEntry holds the slug lock. It resumes pending work without issuing
@@ -632,13 +636,28 @@ func (n *Net) Close() error {
 		select {
 		case <-done:
 			n.mu.Lock()
-			n.closeErr = errors.Join(n.shutdownErrs...)
+			n.closeErr = n.unconfirmedErr()
 			n.mu.Unlock()
 		case <-time.After(n.cfg.ShutdownTimeout):
 			n.closeErr = fmt.Errorf("portal: network shutdown exceeded %s: %w", n.cfg.ShutdownTimeout, context.DeadlineExceeded)
 		}
 	})
 	return n.closeErr
+}
+
+// unconfirmedErr joins the failures of exposures whose teardown is still
+// unconfirmed, in slug order. n.mu is held.
+func (n *Net) unconfirmedErr() error {
+	var errs []error
+	for _, slug := range slices.Sorted(maps.Keys(n.entries)) {
+		e := n.entries[slug]
+		if err := e.stopErr; err != nil {
+			errs = append(errs, err)
+		} else {
+			errs = append(errs, fmt.Errorf("portal: %s teardown not confirmed", slug))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (n *Net) entry(slug string) *entry {

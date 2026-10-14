@@ -251,6 +251,51 @@ func TestPortalCloseObservesConcurrentStop(t *testing.T) {
 	}
 }
 
+// A Stop admitted before Close can time out after Close has started. Close
+// then resumes the same teardown; once that confirms it, the earlier
+// failure must not make Close report an unconfirmed shutdown.
+func TestPortalCloseClearsConcurrentStopFailureAfterConfirmedRetry(t *testing.T) {
+	const timeout = time.Second
+	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, exp := shutdownEntry(t, "stopping")
+	close(e.done)
+	exp.closeGate = make(chan struct{})
+	n.entries[e.slug] = e
+	stopped := make(chan error, 1)
+	go func() { stopped <- n.Stop(e.slug) }()
+	awaitShutdown(t, exp.entered)
+
+	// Start Close well inside the Stop deadline, so the Stop fails while the
+	// network is closed and Close still has time left for its own retry.
+	time.Sleep(timeout / 2)
+	closed := make(chan error, 1)
+	go func() { closed <- n.Close() }()
+	if stopErr := <-stopped; !errors.Is(stopErr, context.DeadlineExceeded) {
+		t.Fatalf("admitted Stop = %v, want deadline", stopErr)
+	}
+	n.mu.RLock()
+	closing := n.closed
+	n.mu.RUnlock()
+	if !closing {
+		t.Fatal("Stop failed before Close started; the race was not exercised")
+	}
+	close(exp.closeGate)
+	awaitShutdown(t, exp.finished)
+	awaitShutdown(t, e.ln.pumped)
+	if err := <-closed; err != nil {
+		t.Fatalf("Close after a confirmed retry = %v", err)
+	}
+	if n.entry(e.slug) != nil {
+		t.Fatal("confirmed teardown retained entry")
+	}
+	if err := n.Stop(e.slug); err != nil {
+		t.Fatalf("Stop after confirmed Close = %v", err)
+	}
+}
+
 func TestPortalCloseDeadlineCancelsUnpublishedServe(t *testing.T) {
 	n, err := New(Config{Dir: t.TempDir(), Discovery: true, ShutdownTimeout: 40 * time.Millisecond})
 	if err != nil {
