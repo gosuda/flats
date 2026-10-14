@@ -50,7 +50,9 @@ func TestOpenRegularRejectsReplacements(t *testing.T) {
 			name: "equal-size regular file",
 			mutate: func(t *testing.T, _, file, _ string) {
 				t.Helper()
-				if err := os.Remove(file); err != nil {
+				// Keep the original linked so the filesystem cannot hand its
+				// inode number to the replacement (Linux reuses freed ones).
+				if err := os.Rename(file, file+".old"); err != nil {
 					t.Fatal(err)
 				}
 				writeTestFile(t, file, "evil")
