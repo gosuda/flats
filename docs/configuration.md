@@ -46,7 +46,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
   flats/.lifecycle/           unfinished rename/delete journals, deleted storage
                               being removed, and orphans/ (see below)
   tsnet/ portal/              provider node identities
-  netbird/                    the connected NetBird peer: identity (mode 0600), account record, port records (NetBird variant only)
+  netbird/                    the connected NetBird peer: identity (mode 0600), account record, port records (builds with NetBird only)
   zrok/                       zrok names this host reserved, until released
   zrok-environment/           the connected zrok account: token and identity (mode 0600)
   cloudflare-quick/           Cloudflare quick tunnel credentials per flat (mode 0600)

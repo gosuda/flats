@@ -9,8 +9,9 @@ import (
 // ErrNetbirdNotBuilt means this binary does not contain NetBird. NetBird's
 // client needs `replace` directives in go.mod, which Go refuses for
 // `go install pkg@version`, so it lives in the separate module ./netbird and
-// is linked only by the build in ./netbird/cmd/flats (docs/networking.md).
-var ErrNetbirdNotBuilt = errors.New("this Flats build does not include NetBird; build ./netbird/cmd/flats from the source tree (see docs/networking.md)")
+// is linked only by the build in ./netbird/cmd/flats, which the release
+// archives and container images ship (docs/networking.md).
+var ErrNetbirdNotBuilt = errors.New("this Flats build does not include NetBird; use a release binary (install.sh or the container image) or build ./netbird/cmd/flats from the source tree (see docs/networking.md)")
 
 // NetbirdAccount describes the enrolled NetBird peer. It holds no secret.
 type NetbirdAccount struct {

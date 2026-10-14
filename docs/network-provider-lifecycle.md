@@ -462,8 +462,9 @@ An operator-validated revocation confirms Manager teardown of that flat’s Tail
 ## NetBird
 
 `netbird.Net` (`netbird/`, a separate Go module linked only by
-`netbird/cmd/flats`; the stock binary has a nil `provider.NetbirdDriver` and
-reports `ErrNetbirdNotBuilt`) owns the host's one embedded NetBird
+`netbird/cmd/flats`, which `build-release.sh` builds for the release
+archives; `cmd/flats`, which `go install` builds, has a nil
+`provider.NetbirdDriver` and reports `ErrNetbirdNotBuilt`) owns the host's one embedded NetBird
 peer and serves two providers from it. `netbird` (Private, a mesh provider
 like `tailscale`) listens on the peer's overlay address with `ListenTCP`, one
 port per host from a persisted pool (21000–21999, `<data>/netbird/ports.json`),

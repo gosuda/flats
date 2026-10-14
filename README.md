@@ -147,11 +147,16 @@ Requires Go 1.27.1 or newer:
 go install github.com/gosuda/flats/cmd/flats@latest
 ```
 
-Use `@main` for unreleased changes. From a checkout:
+Use `@main` for unreleased changes. This build does not include NetBird,
+which needs `replace` directives that `go install` refuses. From a checkout,
+build the release binary, NetBird included, from the `netbird` module:
 
 ```sh
-CGO_ENABLED=0 go build -o flats ./cmd/flats
+cd netbird && CGO_ENABLED=0 go build -o flats ./cmd/flats
 ```
+
+or `CGO_ENABLED=0 go build -o flats ./cmd/flats` at the root for the build
+without NetBird.
 
 </details>
 
@@ -274,8 +279,9 @@ under **Networks** on its Settings tab.
 | **Private** | Local (always on), Tailscale (tailnet ACLs), NetBird¹ (access policies) |
 | **Public** | Portal, Tailscale Funnel, zrok, Cloudflare quick tunnel, NetBird Expose¹ |
 
-¹ NetBird and NetBird Expose require the separate variant built from
-`netbird/cmd/flats`; see [NetBird setup](docs/networking.md#serving-through-netbird).
+¹ NetBird and NetBird Expose are in the release binary (`install.sh` and the
+container image) but not in `go install`; see
+[NetBird setup](docs/networking.md#serving-through-netbird).
 
 Host permission alone does not grant a provider to a flat. Configured provider
 defaults can grant providers to new flats; changing those defaults does not

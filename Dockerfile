@@ -2,7 +2,8 @@
 #
 # The image packages a release archive from dist/ instead of compiling, so a
 # published image runs the same binary as the attested flats_linux_<arch>
-# archive of its release. To build one from a checkout:
+# archive of its release, NetBird included (build-release.sh builds the
+# netbird module's cmd/flats). To build one from a checkout:
 #
 #   FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-dev dist
 #   docker buildx build --platform linux/amd64,linux/arm64 -t flats:dev .

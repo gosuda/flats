@@ -145,20 +145,25 @@ process; no `cloudflared` binary is needed.
 
 ## Serving through NetBird
 
-NetBird is not in the release archives, the container images or
-`go install`. Its client needs `replace` directives that Go rejects for
-`go install …@version`, so it is a separate Go module (`netbird/`) with its own
-entry point. Build the NetBird variant from the source tree and run it in place
-of `flats`; everything else is the same program:
+The release archives, and so `install.sh` and the container images, include
+NetBird. `go install` does not: NetBird's client needs `replace` directives
+that Go rejects for `go install …@version`, so NetBird lives in a separate Go
+module (`netbird/`) with its own entry point, and `build-release.sh` builds the
+release binary from it. To build the same binary from a checkout:
 
 ```sh
 git clone https://github.com/gosuda/flats && cd flats/netbird
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o flats ./cmd/flats
 ```
 
-The variant is about 30 MB larger than the stock binary. A stock binary shows
-NetBird under Settings → Network providers with a note that this build does not
-include it, and it cannot connect a peer or turn NetBird on.
+Including NetBird makes the binary 10–16 MB larger (about 80 MB to 95 MB on
+linux/amd64) and its archive about 5 MB larger. Its `replace`
+directives apply to that binary too; among them,
+`github.com/cloudflare/circl` is replaced by NetBird's pinned 2023 fork
+(`codeberg.org/cunicu/circl`). A build without NetBird (`go install`, or
+`go build ./cmd/flats`) shows NetBird under Settings → Network providers with a
+note that this build does not include it, and it cannot connect a peer or turn
+NetBird on.
 
 NetBird gives Flats two providers that share one NetBird peer: **NetBird**
 (Private) and **NetBird Expose** (Public). Under **Settings → Network

@@ -7,6 +7,12 @@
 # checksums.txt in sha256sum format to the output directory.
 # FLATS_RELEASE_TARGETS (space-separated os/arch) narrows the platforms.
 # FLATS_SOURCE_DIR builds another checkout (default: this script's repository).
+#
+# The binary is the NetBird variant (netbird/cmd/flats), built inside the
+# nested netbird module whose go.mod carries the replace directives NetBird's
+# client needs. go install github.com/gosuda/flats/cmd/flats@version cannot
+# honour those, so it stays the build without NetBird. A checkout without the
+# netbird module (a tag cut before it existed) builds ./cmd/flats.
 
 set -eu
 
@@ -49,6 +55,12 @@ else
 	owner_flags='--uid 0 --gid 0 --uname root --gname wheel'
 fi
 
+if [ -f "$root/netbird/cmd/flats/main.go" ]; then
+	module=$root/netbird
+else
+	module=$root
+fi
+
 for target in ${FLATS_RELEASE_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64}; do
 	os=${target%/*}
 	arch=${target#*/}
@@ -59,9 +71,13 @@ for target in ${FLATS_RELEASE_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 lin
 	# internal/buildinfo holds the version. The release workflow also builds
 	# older tags with this script, whose source kept it in cli and app; the
 	# linker ignores -X for a variable a build does not have.
-	(cd "$root" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+	(cd "$module" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
 		-ldflags "-s -w -X github.com/gosuda/flats/internal/buildinfo.Version=$version -X github.com/gosuda/flats/internal/cli.Version=$version -X github.com/gosuda/flats/internal/app.Version=$version" \
 		-o "$stage/flats" ./cmd/flats)
+	if [ "$module" != "$root" ] && ! go version -m "$stage/flats" | grep -q 'github.com/netbirdio/netbird'; then
+		echo "$name does not link NetBird" >&2
+		exit 1
+	fi
 	cp "$root/LICENSE" "$root/README.md" "$stage/"
 	# Record root ownership so archives do not carry the build user's name.
 	# shellcheck disable=SC2086 # owner_flags is a word list.

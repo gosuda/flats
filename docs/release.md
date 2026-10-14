@@ -9,7 +9,10 @@ Every `v*` tag on `main` produces a GitHub release with:
 
 - `flats_<os>_<arch>.tar.gz` for `darwin` and `linux` on `amd64` and `arm64`.
   Each archive holds the CGO-free `flats` binary (built with `-trimpath`, the
-  tag stamped into `flats version`), `LICENSE` and `README.md`.
+  tag stamped into `flats version`), `LICENSE` and `README.md`. The binary is
+  built from the `netbird` module (`netbird/cmd/flats`), so it includes
+  NetBird; `go install` builds `cmd/flats`, which does not (see
+  [Serving through NetBird](networking.md#serving-through-netbird)).
 - `checksums.txt`: SHA-256 of every archive, in `sha256sum` format.
 - A GitHub build provenance attestation for every archive.
 - A multi-platform container image, `ghcr.io/gosuda/flats` for `linux/amd64`
