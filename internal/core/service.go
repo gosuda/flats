@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
@@ -240,6 +241,17 @@ func (s *Service) lock(slug string) func() {
 }
 
 func (s *Service) flatDir(slug string) string { return filepath.Join(s.cfg.DataDir, "flats", slug) }
+
+// checkUnusedFlatDir rejects an unowned on-disk path before assigning a slug.
+// An old worker or a failed cleanup must never donate its data to a new flat.
+func (s *Service) checkUnusedFlatDir(slugName string) error {
+	if _, err := os.Lstat(s.flatDir(slugName)); err == nil {
+		return fmt.Errorf("%w: flat directory %q already exists", ErrConflict, slugName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check flat directory %q: %w", slugName, err)
+	}
+	return nil
+}
 func (s *Service) versionDir(slug string, n int) string {
 	return filepath.Join(s.flatDir(slug), "versions", strconv.Itoa(n))
 }
@@ -283,6 +295,11 @@ type logLimit struct {
 	dropped atomic.Int64
 }
 
+// runtimeLogLine is the longest runtime log message stored. Callers pass
+// messages with secret values already removed, so the cut cannot leave part of
+// a secret.
+const runtimeLogLine = 8 << 10
+
 // runtimeLog records a log line from a flat's code, rate limited per flat.
 func (s *Service) runtimeLog(slug string, version int, level, msg string) {
 	v, _ := s.logLimits.LoadOrStore(slug, &logLimit{lim: newLimiter(runtimeLogRate)})
@@ -292,7 +309,18 @@ func (s *Service) runtimeLog(slug string, version int, level, msg string) {
 		return
 	}
 	s.reportDroppedLogs(slug, ll)
-	s.Event(context.Background(), slug, level, "runtime", msg, map[string]int{"version": version})
+	s.Event(context.Background(), slug, level, "runtime", truncateLogLine(msg, runtimeLogLine), map[string]int{"version": version})
+}
+
+func truncateLogLine(msg string, max int) string {
+	if len(msg) <= max {
+		return msg
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + "… (truncated)"
 }
 
 func (s *Service) reportDroppedLogs(slug string, ll *logLimit) {
@@ -784,6 +812,15 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 		return FlatView{}, forbiddenf("flats are created by agents (MCP, CLI or API), not from the console")
 	}
 	if err := s.checkReserved(ctx, slugName, ""); err != nil {
+		return FlatView{}, err
+	}
+	// An existing flat owns its directory: leave that case to the "already
+	// exists" conflict below.
+	if _, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
+		if err := s.checkUnusedFlatDir(slugName); err != nil {
+			return FlatView{}, err
+		}
+	} else if err != nil {
 		return FlatView{}, err
 	}
 	if name == "" {

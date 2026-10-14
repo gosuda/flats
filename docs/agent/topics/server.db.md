@@ -34,7 +34,13 @@ WAL, foreign keys and 5-second busy timeout are enabled. Query result cap is
 **16 MiB** while accumulating serialized rows (the closing bracket is added
 afterward; add LIMIT); SQL value/row length cap **32 MiB**;
 SQLite allocation ceiling **256 MiB**. Runtime deadline also bounds queries.
-ATTACH and VACUUM INTO and directory-changing pragmas are blocked. There is
-no hard DB disk-size quota: DB growth is reported against host disk usage;
-operator disk quota can reject uploads, but does not hard-cap runtime DB growth.
+ATTACH and VACUUM INTO and directory-changing pragmas are blocked; the
+`journal_mode`, `page_size`, `max_page_count` and `temp_store` pragmas can be
+read but not changed. The database file is capped at **1 GiB
+(1,073,741,824 bytes)**: a write that needs more pages throws a "database is
+full" error, while deleting rows frees pages for reuse (the file does not
+shrink). A database that was already larger keeps working but cannot grow.
+The write-ahead log is capped at 1 GiB as well: while other invocations hold
+reads open, the log cannot restart, and once it is over the cap commits throw
+a "write-ahead log" error and are rolled back; retry after the reads finish.
 DB and FILES do not participate in a shared transaction.

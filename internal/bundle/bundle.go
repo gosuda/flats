@@ -18,7 +18,6 @@ package bundle
 import (
 	"archive/tar"
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -37,6 +36,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/safedir"
 )
 
 // ManifestName is the optional manifest at the bundle root.
@@ -44,6 +44,24 @@ const ManifestName = "flats.json"
 
 // MaxFiles bounds the number of files in one version.
 const MaxFiles = 20000
+
+const (
+	// maxTarEntries bounds every entry a tar stream returns, including
+	// directories and entries the collector skips or rejects. It leaves room
+	// for MaxFiles files plus their directories and AppleDouble "._" entries.
+	maxTarEntries = 3 * MaxFiles
+
+	// tarEntryOverhead is the tar data allowed per entry beyond the file
+	// contents kept: the header, PAX or GNU long-name records, extended
+	// attributes (macOS tar writes about 2.5 KiB of them per entry) and block
+	// padding.
+	tarEntryOverhead = 4 << 10
+
+	// tarOverhead is how much decompressed tar data a tar.gz upload may hold
+	// beyond the upload limit. It also covers the bodies of skipped entries
+	// such as node_modules, which the tar reader still has to decompress.
+	tarOverhead = maxTarEntries*tarEntryOverhead + 1<<20
+)
 
 // Manifest describes a build.
 type Manifest struct {
@@ -182,8 +200,21 @@ func skipName(p string) bool {
 	return false
 }
 
+func expansionError(budget int64) error {
+	return &ValidationError{Problems: []Problem{{
+		Message: fmt.Sprintf("archive expands to more than %d bytes of tar data", budget),
+		Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats deploy <dir>`",
+	}}}
+}
+
 // FromArchive reads a tar, tar.gz or zip archive.
 func FromArchive(r io.Reader, lim Limits) ([]File, error) {
+	return fromArchive(r, lim, tarOverhead)
+}
+
+// fromArchive is FromArchive with the tar.gz expansion allowance as a
+// parameter, so tests can exercise the bound without huge archives.
+func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	// Bound the compressed body too: a well-formed archive of MaxBytes is never
 	// much larger than MaxBytes plus headers.
 	raw, err := io.ReadAll(io.LimitReader(r, lim.MaxBytes+lim.MaxBytes/4+1<<20))
@@ -202,7 +233,16 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 		if gerr != nil {
 			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
 		}
-		err = c.readTar(gz)
+		defer gz.Close()
+		// The tar reader decompresses every byte it passes over, including
+		// skipped bodies and PAX records the collector never sees, so bound
+		// the whole stream rather than only the files kept.
+		budget := lim.MaxBytes + overhead
+		stream := &io.LimitedReader{R: gz, N: budget + 1}
+		err = c.readTar(stream)
+		if stream.N == 0 {
+			return nil, expansionError(budget)
+		}
 	default:
 		err = c.readTar(bytes.NewReader(raw))
 	}
@@ -215,6 +255,7 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 func (c *collector) readTar(r io.Reader) error {
 	tr := tar.NewReader(r)
 	seen := false
+	entries := 0
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
@@ -227,6 +268,13 @@ func (c *collector) readTar(r io.Reader) error {
 			return &ValidationError{Problems: []Problem{{Message: "corrupt tar archive: " + err.Error(), Fix: "re-create the archive"}}}
 		}
 		seen = true
+		entries++
+		if entries > maxTarEntries {
+			return &ValidationError{Problems: []Problem{{
+				Message: fmt.Sprintf("archive has more than %d entries, counting directories and skipped files", maxTarEntries),
+				Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats deploy <dir>`",
+			}}}
+		}
 		switch h.Typeflag {
 		case tar.TypeDir, tar.TypeXGlobalHeader, tar.TypeXHeader:
 			continue
@@ -275,13 +323,17 @@ func (c *collector) readZip(raw []byte) error {
 
 // FromDir reads a local directory (used by the CLI and loopback callers).
 func FromDir(dir string, lim Limits) ([]File, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
 	c := newCollector(lim)
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(dir, p)
-		rel = filepath.ToSlash(rel)
+		rel := p
 		if d.IsDir() {
 			if rel != "." && (d.Name() == ".git" || d.Name() == "node_modules") {
 				return filepath.SkipDir
@@ -292,16 +344,16 @@ func FromDir(dir string, lim Limits) ([]File, error) {
 			c.verr.add(rel, "links and special files are not allowed", "copy the target file into the build instead of linking it")
 			return nil
 		}
-		info, err := d.Info()
+		seen, err := d.Info()
 		if err != nil {
 			return err
 		}
-		f, err := os.Open(p)
+		f, info, err := safedir.OpenRegular(root, rel, seen)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		return c.addFile(rel, bufio.NewReader(f), info.Mode())
+		return c.addFile(rel, f, info.Mode())
 	})
 	if err != nil {
 		return nil, err

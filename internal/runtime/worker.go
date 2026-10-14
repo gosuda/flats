@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gosuda/flats/internal/egress"
@@ -39,6 +40,7 @@ type worker struct {
 	eng     engine
 	js      *jsEngine      // nil for WASI
 	network outboundClient // shared by all JS request and WebSocket VMs
+	bodies  bodyBudget     // request body bytes held at once
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
@@ -212,19 +214,149 @@ func requestHeaders(r *http.Request) map[string]string {
 	return h
 }
 
+// Request bodies are read into memory before the handler runs. A worker holds
+// at most maxBufferedBodies bytes of them at once (bodies being received,
+// waiting for a runtime or being handled, but not while the response is
+// written); a body that would exceed it gets
+// 503. Requests without a body are never refused. A body must arrive at
+// minBodyRate after a bodyGrace start, so a stalled upload does not hold
+// memory or a connection indefinitely; slower uploads get 408.
+const (
+	maxBufferedBodies = 8 * MaxRequestBody
+	minBodyRate       = 16 << 10 // bytes per second
+)
+
+var bodyGrace = 30 * time.Second // a variable for tests
+
+var errBodiesBusy = errors.New("request body budget exhausted")
+
+// bodyDeadline is when the next part of a body that began at start and has
+// n bytes so far must arrive.
+func bodyDeadline(start time.Time, n int64) time.Time {
+	return start.Add(bodyGrace + time.Duration(n)*time.Second/minBodyRate)
+}
+
+// bodyBudget counts request body bytes a worker holds. It never blocks: a
+// request that does not fit fails at once instead of waiting with a partial
+// body, which could leave every waiter holding memory that no one releases.
+type bodyBudget struct {
+	mu   sync.Mutex
+	used int64
+}
+
+func (b *bodyBudget) take(n int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n > maxBufferedBodies-b.used {
+		return false
+	}
+	b.used += n
+	return true
+}
+
+func (b *bodyBudget) give(n int64) {
+	b.mu.Lock()
+	b.used -= n
+	b.mu.Unlock()
+}
+
+// readBody reads the request body within MaxRequestBody, the worker's body
+// budget and the minimum upload rate. release returns the body's bytes to
+// the budget; call it once the body is no longer needed, even after an error.
+// Calling release again does nothing.
+func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte, release func(), err error) {
+	var held int64
+	release = func() { w.bodies.give(held); held = 0 }
+	if r.ContentLength > MaxRequestBody {
+		return nil, release, &http.MaxBytesError{Limit: MaxRequestBody}
+	}
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, release, nil
+	}
+	// Body memory is reserved before it is allocated: a declared length at
+	// once, a chunked body as its buffer grows.
+	if r.ContentLength > 0 {
+		if !w.bodies.take(r.ContentLength) {
+			return nil, release, errBodiesBusy
+		}
+		held = r.ContentLength
+		body = make([]byte, 0, r.ContentLength)
+	}
+	rc := http.NewResponseController(rw)
+	start := time.Now()
+	src := http.MaxBytesReader(rw, r.Body, MaxRequestBody)
+	defer func() {
+		// A deadline left on the connection would end the request's context
+		// while the handler runs. net/http clears it when the body ends; clear
+		// it explicitly too. A failed read closes the connection anyway.
+		if err == nil {
+			if derr := rc.SetReadDeadline(time.Time{}); derr != nil && !errors.Is(derr, http.ErrNotSupported) {
+				body, err = nil, derr
+			}
+		}
+	}()
+	// Reads go straight into the body's spare capacity. When it is full, a
+	// one-byte probe finds the end of the body (or more of a chunked one)
+	// without allocating.
+	var probe [1]byte
+	for {
+		if err := rc.SetReadDeadline(bodyDeadline(start, int64(len(body)))); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return nil, release, err
+		}
+		full := len(body) == cap(body)
+		dst := body[len(body):cap(body)]
+		if full {
+			dst = probe[:]
+		}
+		n, rerr := src.Read(dst)
+		if n > 0 {
+			if !full {
+				body = body[:len(body)+n]
+			} else {
+				// MaxBytesReader never lets a body grow past MaxRequestBody.
+				size := min(max(512, 2*int64(cap(body))), MaxRequestBody)
+				if !w.bodies.take(size - held) {
+					return nil, release, errBodiesBusy
+				}
+				held = size
+				body = append(make([]byte, 0, size), body...)
+				body = append(body, probe[0])
+			}
+		}
+		if rerr == io.EOF {
+			return body, release, nil
+		}
+		if rerr != nil {
+			return nil, release, rerr
+		}
+	}
+}
+
 func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if w.js != nil && w.js.hasWS && isWebSocketUpgrade(r) {
 		w.js.wsHub.serve(rw, r, requestURL(r), requestHeaders(r))
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(rw, r.Body, MaxRequestBody))
+	body, release, err := w.readBody(rw, r)
+	defer release()
 	if err != nil {
 		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
+		var ne net.Error
+		switch {
+		case errors.As(err, &mbe):
 			http.Error(rw, fmt.Sprintf("request body larger than %d MiB", MaxRequestBody>>20), http.StatusRequestEntityTooLarge)
-			return
+		case errors.Is(err, errBodiesBusy):
+			// The rest of the body is not read, so the connection cannot be reused.
+			rw.Header().Set("Connection", "close")
+			rw.Header().Set("Retry-After", "1")
+			http.Error(rw, "Service Unavailable: server flat is busy receiving other uploads.", http.StatusServiceUnavailable)
+		case errors.As(err, &ne) && ne.Timeout():
+			rw.Header().Set("Connection", "close")
+			http.Error(rw, "request body arrived too slowly", http.StatusRequestTimeout)
+		default:
+			rw.Header().Set("Connection", "close")
+			http.Error(rw, "could not read request body", http.StatusBadRequest)
 		}
-		http.Error(rw, "could not read request body", http.StatusBadRequest)
 		return
 	}
 	p := reqPayload{Method: r.Method, URL: requestURL(r), Headers: requestHeaders(r)}
@@ -240,6 +372,11 @@ func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, outboundRequestContextKey{}, r.Context())
 	start := time.Now()
 	out, err := w.eng.handle(ctx, reqJSON)
+	// The body is not needed once the handler returns. Writing the response
+	// can block on a visitor who stops reading; that must not hold the
+	// flat's body budget.
+	body, p.Body, reqJSON = nil, nil, nil
+	release()
 	if err == nil {
 		var resp respPayload
 		if jerr := json.Unmarshal(out, &resp); jerr != nil {

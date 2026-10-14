@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -75,6 +77,178 @@ func TestRejectsTraversalLinksAndOversize(t *testing.T) {
 	_, err = FromArchive(strings.NewReader("this is not an archive at all, just text that is long enough"), lim)
 	if _, ok := IsValidation(err); !ok {
 		t.Fatalf("garbage: %v", err)
+	}
+}
+
+// requireRejectedArchive checks the public upload error rather than the tar
+// reader's internal EOF or checksum errors.
+func requireRejectedArchive(t *testing.T, data []byte, limits Limits, overhead int64, want string) {
+	t.Helper()
+	_, err := fromArchive(bytes.NewReader(data), limits, overhead)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), want) {
+		t.Fatalf("want validation containing %q, got %v", want, err)
+	}
+}
+
+// writeTgz packs the entries add writes. It uses BestSpeed so large but
+// legitimate fixtures stay quick.
+func writeTgz(t *testing.T, add func(tw *tar.Writer)) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(gz)
+	add(tw)
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// writeEntry writes one header and body, failing the test on any error so a
+// fixture the tar writer refuses cannot silently become a smaller archive.
+func writeEntry(t *testing.T, tw *tar.Writer, h *tar.Header, body string) {
+	t.Helper()
+	if err := tw.WriteHeader(h); err != nil {
+		t.Fatalf("header %s: %v", h.Name, err)
+	}
+	if _, err := io.WriteString(tw, body); err != nil {
+		t.Fatalf("body %s: %v", h.Name, err)
+	}
+}
+
+const expansionMsg = "bytes of tar data"
+
+func TestTarGzBoundsSkippedAndRejectedBodies(t *testing.T) {
+	// The collector never reads these bodies, but tar.Reader still
+	// decompresses them to reach the next header.
+	const overhead = 64 << 10
+	big := strings.Repeat("x", int(lim.MaxBytes+overhead)+1)
+	for _, name := range []string{"node_modules/huge", ".git/objects/pack", "../escaped", ".DS_Store"} {
+		t.Run(name, func(t *testing.T) {
+			data := tgz(t, map[string]string{"index.html": "ok", name: big})
+			requireRejectedArchive(t, data, lim, overhead, expansionMsg)
+		})
+	}
+}
+
+func TestTarGzKeepsSkippedBodiesWithinBudget(t *testing.T) {
+	// Skipped entries larger than the upload limit itself were accepted
+	// before the bound and still are while the whole stream fits.
+	big := strings.Repeat("x", int(lim.MaxBytes)+1)
+	data := tgz(t, map[string]string{"index.html": "ok", "node_modules/huge": big, ".git/pack": big})
+	files, err := fromArchive(bytes.NewReader(data), lim, 4<<20)
+	if err != nil || len(files) != 1 || files[0].Path != "index.html" {
+		t.Fatalf("files %+v err %v", files, err)
+	}
+}
+
+func TestTarGzBoundsAggregateSkippedContent(t *testing.T) {
+	// Each body fits on its own; their sum exceeds the budget.
+	const overhead = 64 << 10
+	entries := map[string]string{"index.html": "ok"}
+	for i := 0; i < 4; i++ {
+		entries[fmt.Sprintf("node_modules/dependency-%d", i)] = strings.Repeat("x", int(lim.MaxBytes)/3)
+	}
+	requireRejectedArchive(t, tgz(t, entries), lim, overhead, expansionMsg)
+}
+
+func TestTarGzBoundsPAXMetadata(t *testing.T) {
+	// tar.Reader consumes local PAX headers internally and returns global
+	// ones as entries; both are decompressed and count toward the budget.
+	const overhead = 64 << 10
+	payload := strings.Repeat("x", 512<<10)
+	for name, typ := range map[string]byte{"local": tar.TypeReg, "global": tar.TypeXGlobalHeader} {
+		t.Run(name, func(t *testing.T) {
+			data := writeTgz(t, func(tw *tar.Writer) {
+				writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 2}, "ok")
+				for i := 0; i < 4; i++ {
+					h := &tar.Header{
+						Name:       fmt.Sprintf("node_modules/pax-%d", i),
+						Typeflag:   typ,
+						PAXRecords: map[string]string{"comment": payload},
+					}
+					if typ == tar.TypeReg {
+						h.Mode = 0o644
+					}
+					writeEntry(t, tw, h, "")
+				}
+			})
+			requireRejectedArchive(t, data, lim, overhead, expansionMsg)
+		})
+	}
+}
+
+func TestTarGzBoundsEntryCount(t *testing.T) {
+	// Directories do not count toward MaxFiles, but each still costs parser
+	// work and counts toward the separate entry limit.
+	limits := Limits{MaxBytes: 16 << 20}
+	data := writeTgz(t, func(tw *tar.Writer) {
+		writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 2}, "ok")
+		for i := 0; i < maxTarEntries; i++ {
+			writeEntry(t, tw, &tar.Header{Name: fmt.Sprintf("d%d/", i), Typeflag: tar.TypeDir, Mode: 0o755}, "")
+		}
+	})
+	_, err := FromArchive(bytes.NewReader(data), limits)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), fmt.Sprintf("more than %d entries", maxTarEntries)) {
+		t.Fatalf("want entry-count validation, got %v", err)
+	}
+}
+
+func TestTarGzRejectsBombWithDefaultBudget(t *testing.T) {
+	// One skipped entry just past the real budget, streamed as zeros: the
+	// gzip input is small, the decompressed tar is not.
+	budget := lim.MaxBytes + tarOverhead
+	data := writeTgz(t, func(tw *tar.Writer) {
+		writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 2}, "ok")
+		writeEntry(t, tw, &tar.Header{Name: "node_modules/bomb", Mode: 0o644, Size: budget}, "")
+		if _, err := io.CopyN(tw, zeroReader{}, budget); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_, err := FromArchive(bytes.NewReader(data), lim)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), fmt.Sprintf("more than %d bytes of tar data", budget)) {
+		t.Fatalf("want expansion validation, got %v", err)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestTarGzAcceptsMetadataHeavyArchiveAtFileLimit(t *testing.T) {
+	// macOS tar writes PAX extended attributes for every entry (about 2.5 KiB
+	// each). A build at MaxFiles with long paths and such metadata must fit.
+	xattr := strings.Repeat("A", 2<<10)
+	data := writeTgz(t, func(tw *tar.Writer) {
+		for d := 0; d < MaxFiles/10; d++ {
+			dir := fmt.Sprintf("assets/some/deeper/directory/structure/with-a-fairly-long-name/%05d/", d)
+			writeEntry(t, tw, &tar.Header{Name: dir, Typeflag: tar.TypeDir, Mode: 0o755,
+				PAXRecords: map[string]string{"LIBARCHIVE.xattr.com.apple.provenance": xattr}}, "")
+			for f := 0; f < 10; f++ {
+				name := dir + fmt.Sprintf("generated-chunk-%d.js", f)
+				if d == 0 && f == 0 {
+					name = "index.html"
+				}
+				writeEntry(t, tw, &tar.Header{Name: name, Mode: 0o644, Size: 1,
+					PAXRecords: map[string]string{"LIBARCHIVE.xattr.com.apple.provenance": xattr}}, "x")
+			}
+		}
+	})
+	files, err := FromArchive(bytes.NewReader(data), Limits{MaxBytes: 1 << 20})
+	if err != nil || len(files) != MaxFiles {
+		t.Fatalf("got %d files, err %v", len(files), err)
 	}
 }
 
@@ -289,4 +463,55 @@ func TestManifestErrorsAreSpecificAndComplete(t *testing.T) {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// TestFromDirSwapRaceNeverLeaks races FromDir against a writer that keeps
+// replacing a file with a symlink to a file outside the directory. A failure
+// is always a real leak; a pass on vulnerable code is possible.
+func TestFromDirSwapRaceNeverLeaks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "a", "page.html")
+	if err := os.WriteFile(target, []byte("public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "a", "link.tmp")
+	plain := filepath.Join(dir, "a", "plain.tmp")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.Symlink(secret, link)
+			_ = os.Rename(link, target)
+			_ = os.WriteFile(plain, []byte("public"), 0o644)
+			_ = os.Rename(plain, target)
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for range 1000 {
+		files, err := FromDir(dir, lim)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if strings.Contains(string(f.Data), "SECRET") {
+				t.Fatalf("%s carried the outside file into the bundle", f.Path)
+			}
+		}
+	}
 }

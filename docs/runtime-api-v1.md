@@ -173,6 +173,9 @@ or empty JSON. Body is buffered text, not a ReadableStream: arbitrary binary
 requests are not losslessly represented. `await request.arrayBuffer()` UTF-8
 encodes this buffered text; it does not recover original binary request bytes.
 No multipart/formData or clone API. Incoming body max **10 MiB** (413 if exceeded).
+A body must keep arriving at 16 KiB/s on average after its first 30 seconds
+(else 408). One flat buffers at most 80 MiB of request bodies at once; a body
+beyond that gets 503 with Retry-After. Requests without a body are not limited.
 
 Return `new Response(body, {status, headers})`, `Response.json(value, init)`,
 `Response.redirect(url, status = 302)`, a string, or `{status, headers, body}`.
@@ -193,8 +196,9 @@ header names, CR/LF/NUL values and hop-by-hop/framing headers are discarded.
 Unhandled exception/invalid response/memory exhaustion becomes generic 500;
 deadline exceeded becomes 504; details go to runtime logs via get_logs. An
 error does not undo already committed DB/FILES writes. console log/info/debug/
-trace/warn/error is supported; lines truncate at 8 KiB, rate limit 20/s with
-burst 100. Do not log secrets.
+trace/warn/error is supported; lines truncate at 8 KiB after secret values
+are redacted, and a line over 64 KiB is replaced by a note with its size; rate
+limit 20/s with burst 100. Do not log secrets.
 
 ### WebSocket
 
@@ -205,7 +209,13 @@ converts to text; close(code=1000, reason=""); close callback gets closeCode
 (1005 when the peer sent none, 1006 when the connection dropped) and
 closeReason (undefined when empty). Incoming text/binary messages are
 delivered as strings (not a lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
-send queue 256 messages, closes on overflow. Redeploy closes connections.
+send queue 256 messages, and at most **4 MiB** per connection and **16 MiB**
+across the worker's connections queued or still being written; a send over
+any of these throws and closes that connection (code 1008). At most **256**
+connections per running version, counting handshakes and closing sockets;
+further upgrades get 503. The server pings every 30 seconds; a peer that sends
+nothing, not even the pong browsers send automatically, for 2 minutes is
+closed with code 1001. Redeploy closes connections.
 
 ### WASI
 
@@ -287,8 +297,12 @@ base64 overhead counts. This explicit size limit does not guarantee a put/get
 will fit in the **48 MiB JS heap**: strings and serialization copies compete
 with other live allocations, so operations near 10 MiB can exhaust the heap
 and produce a generic 500 even with a value within the limit.
-Per-flat FILES total is **1 GiB (1,073,741,824 bytes)**;
-overwriting charges the new size minus old size, deletion releases space.
+Per-flat FILES total is **1 GiB (1,073,741,824 bytes)** and
+**20,000 objects**: stored keys plus the directories their parent paths
+create (`a/b/c` uses three), so empty values count too. Overwriting charges
+the new size minus old size and adds no object; deletion releases space and
+the parent directories it empties. A store already over the object limit
+keeps working for get, overwrite and delete, but puts of new keys throw.
 Quota checks/mutations are serialized within a worker; individual put publishes
 by rename. Multi-call sequences are not transactions and have no compare/swap.
 There is no FILES TTL or versioning. Invalid keys/prefixes, value/quota overflow,
@@ -341,9 +355,15 @@ WAL, foreign keys and 5-second busy timeout are enabled. Query result cap is
 **16 MiB** while accumulating serialized rows (the closing bracket is added
 afterward; add LIMIT); SQL value/row length cap **32 MiB**;
 SQLite allocation ceiling **256 MiB**. Runtime deadline also bounds queries.
-ATTACH and VACUUM INTO and directory-changing pragmas are blocked. There is
-no hard DB disk-size quota: DB growth is reported against host disk usage;
-operator disk quota can reject uploads, but does not hard-cap runtime DB growth.
+ATTACH and VACUUM INTO and directory-changing pragmas are blocked; the
+`journal_mode`, `page_size`, `max_page_count` and `temp_store` pragmas can be
+read but not changed. The database file is capped at **1 GiB
+(1,073,741,824 bytes)**: a write that needs more pages throws a "database is
+full" error, while deleting rows frees pages for reuse (the file does not
+shrink). A database that was already larger keeps working but cannot grow.
+The write-ahead log is capped at 1 GiB as well: while other invocations hold
+reads open, the log cannot restart, and once it is over the cap commits throw
+a "write-ahead log" error and are rolled back; retry after the reads finish.
 DB and FILES do not participate in a shared transaction.
 
 ## JavaScript outbound HTTP
@@ -426,9 +446,11 @@ Server deploys need the host runtime enabled; a host started with
 | Resource | Limit | Topic |
 |---|---|---|
 | Request body / decoded response | 10 MiB / 32 MiB | `topic.server` |
-| WebSocket message | 1 MiB, 256 queued sends | `topic.server` |
-| FILES value / per-flat total / list | 10 MiB / 1 GiB / 10,000 keys | `topic.server.files` |
-| DB query result / value or row / allocation | 16 MiB / 32 MiB / 256 MiB | `topic.server.db` |
+| Request bodies buffered per flat / upload rate | 80 MiB (503) / 16 KiB/s after 30 s (408) | `topic.server` |
+| WebSocket connections | 256 per running version; closed after 2 min without any frame from the peer (server pings every 30 s) | `topic.server` |
+| WebSocket message / outgoing queue | 1 MiB incoming; 256 sends and 4 MiB per connection, 16 MiB per running version | `topic.server` |
+| FILES value / per-flat total / objects / list | 10 MiB / 1 GiB / 20,000 / 10,000 keys | `topic.server.files` |
+| DB query result / value or row / allocation / file | 16 MiB / 32 MiB / 256 MiB / 1 GiB | `topic.server.db` |
 | Outbound fetch | 5 s, 16 calls per invocation, 4 MiB response | `topic.server.fetch` |
 | Upload | operator setting (default 20 MiB), 20,000 files | `topic.static` |
 | Environment value | 64 KiB, names up to 64 characters | `topic.env-secrets` |
@@ -614,7 +636,9 @@ declare namespace Flats {
    * parameter, storage or limit errors. One connection per VM; a transaction
    * left open at the end of an invocation is rolled back. WAL, foreign keys
    * and a 5-second busy timeout are on. ATTACH, VACUUM INTO and
-   * directory-changing pragmas are blocked.
+   * directory-changing pragmas are blocked; journal_mode, page_size,
+   * max_page_count and temp_store are read-only. The database file and its
+   * write-ahead log are each capped at 1 GiB.
    */
   interface Database {
     /**
@@ -649,7 +673,8 @@ declare namespace Flats {
    * through a regular-file parent ("a/b" when "a" is a value) also throws,
    * for get and delete too. Key identity follows the host filesystem (case and
    * Unicode normalization may be folded). Values are text, at most 10 MiB
-   * each; the flat's total is 1 GiB. Calls are not transactions.
+   * each; the flat's total is 1 GiB and 20,000 objects (keys plus the
+   * directories their paths create). Calls are not transactions.
    */
   interface Files {
     /** The stored text, or null for an absent key, absent store or directory key; other failures throw. */
@@ -697,7 +722,8 @@ declare namespace Flats {
     readonly closeReason?: string;
     /**
      * Sends a text message. There is no binary send: base64-encode binary
-     * yourself. Throws when not open. At most 256 queued messages; overflow
+     * yourself. Throws when not open. At most 256 queued messages and 4 MiB
+     * queued per connection (16 MiB across connections); overflow throws and
      * closes the connection.
      */
     send(data: string): void;
@@ -731,7 +757,7 @@ declare namespace Flats {
     | Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array
     | Int32Array | Uint32Array | BigInt64Array | BigUint64Array;
 
-  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; 20/s, burst 100. */
+  /** Logs to the flat's runtime log (get_logs). Lines truncate at 8 KiB; a line over 64 KiB becomes a note with its size; 20/s, burst 100. */
   interface Console {
     log(...data: unknown[]): void;
     info(...data: unknown[]): void;

@@ -97,6 +97,9 @@ type embedClient struct {
 }
 
 func newEmbedClient(o clientOptions) (*embedClient, error) {
+	if err := validateManagementURL(o.ManagementURL); err != nil {
+		return nil, fmt.Errorf("netbird: %w", err)
+	}
 	opts := embed.Options{
 		DeviceName:    o.DeviceName,
 		ManagementURL: o.ManagementURL,

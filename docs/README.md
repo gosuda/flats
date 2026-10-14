@@ -26,6 +26,16 @@ deploy.
 The two generated references come from [`agent/`](agent). Edit the topics
 there and run `go test ./docs -run TestGeneratedReferences -update`.
 
+## Product specs
+
+What Flats must do and why, independent of the implementation; development
+follows them. See [the spec index](spec/README.md) for how these pages work and
+the full list.
+
+| Page | Covers |
+| --- | --- |
+| [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, design); target, partly implemented |
+
 ## Design and contracts
 
 | Page | Covers |

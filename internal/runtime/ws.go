@@ -33,6 +33,20 @@ const (
 
 const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+// WebSocket resource limits, per worker (one per running flat version).
+const (
+	MaxWSConnections        = 256      // includes handshakes and sockets still closing
+	MaxWSQueuedBytesPerConn = 4 << 20  // queued and in-flight outgoing bytes
+	MaxWSQueuedBytesPerFlat = 16 << 20 // the same, across all connections
+
+	wsHandshakeTimeout = 5 * time.Second
+	// A peer that sends nothing, not even a pong, for wsReadIdleTimeout is
+	// gone. The server pings every wsPingInterval so that idle but live
+	// clients (browsers answer pings automatically) are not closed.
+	wsReadIdleTimeout = 2 * time.Minute
+	wsPingInterval    = 30 * time.Second
+)
+
 // wsAccept implements RFC 6455 section 4.2.2: SHA-1 of the public handshake
 // nonce plus GUID, not credential hashing or authentication. Section 10.8
 // explains why collision resistance is not required here. Keep SHA-1 for
@@ -60,9 +74,11 @@ func isWebSocketUpgrade(r *http.Request) bool {
 
 // wsConn is one WebSocket connection (server or client side).
 type wsConn struct {
-	c      net.Conn
-	br     *bufio.Reader
-	client bool // client frames are masked
+	c               net.Conn
+	br              *bufio.Reader
+	client          bool          // client frames are masked
+	readIdleTimeout time.Duration // 0: no read deadline
+	pingInterval    time.Duration // 0: the writer sends no pings
 
 	qmu          sync.Mutex // serializes enqueue and close; never held during socket writes
 	budget       wsByteBudget
@@ -79,7 +95,9 @@ type wsConn struct {
 }
 
 func newWSConn(c net.Conn, br *bufio.Reader, client bool) *wsConn {
-	return &wsConn{c: c, br: br, client: client, sendQ: make(chan []byte, 256), done: make(chan struct{}), gone: make(chan struct{}), writerDone: make(chan struct{})}
+	ws := &wsConn{c: c, br: br, client: client, sendQ: make(chan []byte, 256), done: make(chan struct{}), gone: make(chan struct{}), writerDone: make(chan struct{})}
+	ws.budget.limit.Store(MaxWSQueuedBytesPerConn)
+	return ws
 }
 
 // upgradeWS completes the server handshake.
@@ -98,12 +116,19 @@ func upgradeWS(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := c.SetDeadline(time.Now().Add(wsHandshakeTimeout)); err != nil {
+		c.Close()
+		return nil, err
+	}
 	resp := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAccept(key) + "\r\n\r\n"
 	if _, err := c.Write([]byte(resp)); err != nil {
 		c.Close()
 		return nil, err
 	}
-	c.SetDeadline(time.Time{})
+	if err := c.SetDeadline(time.Time{}); err != nil {
+		c.Close()
+		return nil, err
+	}
 	return newWSConn(c, brw.Reader, false), nil
 }
 
@@ -217,6 +242,13 @@ func (ws *wsConn) readMessage() (string, error) {
 	var msg []byte
 	inMsg := false
 	for {
+		// Re-arm after each completed frame, including ping/pong keepalives.
+		// A stalled or partial frame still has one finite read deadline.
+		if ws.readIdleTimeout > 0 {
+			if err := ws.c.SetReadDeadline(time.Now().Add(ws.readIdleTimeout)); err != nil {
+				return "", err
+			}
+		}
 		fin, op, p, err := ws.readFrame()
 		if err != nil {
 			return "", err
@@ -257,7 +289,7 @@ func (ws *wsConn) readMessage() (string, error) {
 }
 
 // wsByteBudget accounts for queued and in-flight text payloads. A zero limit
-// preserves the original API's count-only queue behavior.
+// disables the byte ceiling; production connections have a nonzero default.
 type wsByteBudget struct {
 	used  atomic.Int64
 	limit atomic.Int64
@@ -309,12 +341,23 @@ func (ws *wsConn) writer() {
 			}
 		}
 	}()
+	var ping <-chan time.Time
+	if ws.pingInterval > 0 {
+		t := time.NewTicker(ws.pingInterval)
+		defer t.Stop()
+		ping = t.C
+	}
 	for {
 		select {
 		case m := <-ws.sendQ:
 			err := ws.writeFrame(opText, m)
 			ws.release(int64(len(m)))
 			if err != nil {
+				ws.end(1006, "")
+				return
+			}
+		case <-ping:
+			if err := ws.writeFrame(opPing, nil); err != nil {
 				ws.end(1006, "")
 				return
 			}
@@ -412,15 +455,17 @@ type wsEvent struct {
 // wsHub runs every websocket event of the worker on one JS runtime, in
 // order, so module state (e.g. a set of connected sockets) is shared.
 type wsHub struct {
-	w      *worker
-	mu     sync.Mutex
-	conns  map[int64]*wsConn
-	next   atomic.Int64
-	budget wsByteBudget
-	events chan wsEvent
-	stop   chan struct{}
-	vm     *jsVM // owned by the loop goroutine
-	wg     sync.WaitGroup
+	w        *worker
+	mu       sync.Mutex
+	conns    map[int64]*wsConn
+	active   int // includes pending upgrades and sockets closing after removal from conns
+	stopping bool
+	next     atomic.Int64
+	budget   wsByteBudget
+	events   chan wsEvent
+	stop     chan struct{}
+	vm       *jsVM // owned by the loop goroutine
+	wg       sync.WaitGroup
 }
 
 // wsEventQueue bounds the events waiting for the websocket runtime. Readers
@@ -430,9 +475,28 @@ const wsEventQueue = 64
 
 func newWSHub(w *worker) *wsHub {
 	h := &wsHub{w: w, conns: map[int64]*wsConn{}, events: make(chan wsEvent, wsEventQueue), stop: make(chan struct{})}
+	h.budget.limit.Store(MaxWSQueuedBytesPerFlat)
 	h.wg.Add(1)
 	go h.loop()
 	return h
+}
+
+// admit reserves capacity before hijacking the HTTP connection. The slot is
+// held until the socket's writer and closer have both exited.
+func (h *wsHub) admit() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopping || h.active >= MaxWSConnections {
+		return false
+	}
+	h.active++
+	return true
+}
+
+func (h *wsHub) releaseSlot() {
+	h.mu.Lock()
+	h.active--
+	h.mu.Unlock()
 }
 
 func (h *wsHub) send(id int64, text string) error {
@@ -445,9 +509,9 @@ func (h *wsHub) send(id int64, text string) error {
 	return c.enqueue(text)
 }
 
-// setSendLimits is opt-in; subsequent calls may only lower limits.
+// setSendLimits allows built-in apps to lower the enforced default budgets.
 func (h *wsHub) setSendLimits(id, connectionBytes, flatBytes int64) error {
-	if connectionBytes < 1024 || connectionBytes > 32<<20 || flatBytes < connectionBytes || flatBytes > 256<<20 {
+	if connectionBytes < 1024 || connectionBytes > MaxWSQueuedBytesPerConn || flatBytes < connectionBytes || flatBytes > MaxWSQueuedBytesPerFlat {
 		return errors.New("invalid WebSocket send limits")
 	}
 	h.mu.Lock()
@@ -530,37 +594,71 @@ func (h *wsHub) dispatch(ev wsEvent) {
 
 // serve handles one upgraded connection until it closes.
 func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, headers map[string]string) {
+	if !h.admit() {
+		http.Error(w, "WebSocket connection limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	defer h.releaseSlot()
+
 	c, err := upgradeWS(w, r)
 	if err != nil {
 		return
 	}
-	id := h.next.Add(1)
+
 	h.mu.Lock()
+	if h.stopping {
+		h.mu.Unlock()
+		c.c.Close()
+		return
+	}
+	id := h.next.Add(1)
+	c.readIdleTimeout = wsReadIdleTimeout
+	c.pingInterval = wsPingInterval
+	c.sharedBudget = &h.budget
 	h.conns[id] = c
 	h.mu.Unlock()
-	c.sharedBudget = &h.budget
 	go c.writer()
+
+	code, reason := 1006, ""
+	defer func() {
+		c.end(1006, "")
+		h.mu.Lock()
+		_, known := h.conns[id]
+		delete(h.conns, id)
+		h.mu.Unlock()
+		if known {
+			h.post(wsEvent{Type: "close", ID: id, Code: code, Reason: reason})
+		}
+		<-c.gone // keep the slot charged while the closer and writer are alive
+	}()
+
 	if !h.post(wsEvent{Type: "open", ID: id, URL: url, Headers: headers}) {
 		c.end(1001, "going away")
 		return
 	}
-	code, reason := 1006, ""
 	for {
 		msg, err := c.readMessage()
 		if err != nil {
 			var ce *wsCloseError
-			if errors.As(err, &ce) {
+			var ne net.Error
+			switch {
+			case errors.As(err, &ce):
 				code, reason = ce.Code, ce.Reason
 				if code == 1005 {
 					c.end(1000, "")
 				} else {
 					c.end(code, "")
 				}
-			} else {
+			case errors.As(err, &ne) && ne.Timeout():
+				code, reason = 1001, "idle timeout"
+				c.end(code, reason)
+			default:
 				c.end(1006, "")
-				if c.endCode != 0 { // we closed it (ws.close or a full queue)
+				c.qmu.Lock()
+				if c.endCode != 0 { // a concurrent close or full send queue won
 					code, reason = c.endCode, c.endWhy
 				}
+				c.qmu.Unlock()
 			}
 			break
 		}
@@ -568,13 +666,6 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 			c.end(1001, "going away")
 			break
 		}
-	}
-	h.mu.Lock()
-	_, known := h.conns[id]
-	delete(h.conns, id)
-	h.mu.Unlock()
-	if known {
-		h.post(wsEvent{Type: "close", ID: id, Code: code, Reason: reason})
 	}
 }
 
@@ -598,16 +689,17 @@ func (h *wsHub) wake(doc string) {
 
 func (h *wsHub) shutdown() {
 	h.mu.Lock()
+	h.stopping = true
 	conns := h.conns
 	h.conns = map[int64]*wsConn{}
-	h.mu.Unlock()
-	for _, c := range conns {
-		c.end(1001, "server restarting")
-	}
 	select {
 	case <-h.stop:
 	default:
 		close(h.stop)
+	}
+	h.mu.Unlock()
+	for _, c := range conns {
+		c.end(1001, "server restarting")
 	}
 	h.wg.Wait()
 	// Let the close frames go out (each closer gives up after wsCloseGrace).

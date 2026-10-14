@@ -60,6 +60,9 @@ or empty JSON. Body is buffered text, not a ReadableStream: arbitrary binary
 requests are not losslessly represented. `await request.arrayBuffer()` UTF-8
 encodes this buffered text; it does not recover original binary request bytes.
 No multipart/formData or clone API. Incoming body max **10 MiB** (413 if exceeded).
+A body must keep arriving at 16 KiB/s on average after its first 30 seconds
+(else 408). One flat buffers at most 80 MiB of request bodies at once; a body
+beyond that gets 503 with Retry-After. Requests without a body are not limited.
 
 Return `new Response(body, {status, headers})`, `Response.json(value, init)`,
 `Response.redirect(url, status = 302)`, a string, or `{status, headers, body}`.
@@ -80,8 +83,9 @@ header names, CR/LF/NUL values and hop-by-hop/framing headers are discarded.
 Unhandled exception/invalid response/memory exhaustion becomes generic 500;
 deadline exceeded becomes 504; details go to runtime logs via get_logs. An
 error does not undo already committed DB/FILES writes. console log/info/debug/
-trace/warn/error is supported; lines truncate at 8 KiB, rate limit 20/s with
-burst 100. Do not log secrets.
+trace/warn/error is supported; lines truncate at 8 KiB after secret values
+are redacted, and a line over 64 KiB is replaced by a note with its size; rate
+limit 20/s with burst 100. Do not log secrets.
 
 ### WebSocket
 
@@ -92,7 +96,13 @@ converts to text; close(code=1000, reason=""); close callback gets closeCode
 (1005 when the peer sent none, 1006 when the connection dropped) and
 closeReason (undefined when empty). Incoming text/binary messages are
 delivered as strings (not a lossless arbitrary binary API), max **1 MiB**. No extensions/subprotocols;
-send queue 256 messages, closes on overflow. Redeploy closes connections.
+send queue 256 messages, and at most **4 MiB** per connection and **16 MiB**
+across the worker's connections queued or still being written; a send over
+any of these throws and closes that connection (code 1008). At most **256**
+connections per running version, counting handshakes and closing sockets;
+further upgrades get 503. The server pings every 30 seconds; a peer that sends
+nothing, not even the pong browsers send automatically, for 2 minutes is
+closed with code 1001. Redeploy closes connections.
 
 ### WASI
 

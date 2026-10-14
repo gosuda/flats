@@ -43,6 +43,9 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return FlatView{}, err
 	}
+	if err := s.checkUnusedFlatDir(to); err != nil {
+		return FlatView{}, err
+	}
 	// Preview data lives below the flat directory. Do not rename while an
 	// old-slug preview route remains reachable; leave all flat state retryable.
 	if err := s.dropPreviews(ctx, from); err != nil {
@@ -65,16 +68,41 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	if wasPrivate || wasPublic {
 		till = s.now().Add(s.redirectWindow())
 	}
+	// A handler may open DB/FILES lazily using its original absolute path.
+	// Disable new requests and wait for the worker to exit before moving data.
+	var current *deployed
+	if lf != nil {
+		current = lf.cur.Swap(nil)
+		if current != nil && current.inst != nil {
+			current.inst.Stop()
+		}
+	}
+	restoreCurrent := func() {
+		if current == nil {
+			return
+		}
+		// Not an activation: keep the captured settings snapshot.
+		rebuilt, err := s.buildWithEnvironment(context.WithoutCancel(ctx), from, current.version, s.dataDirOf(from), current.environment)
+		if err != nil {
+			s.Event(context.WithoutCancel(ctx), from, "error", "rename", "could not restart the live version after failed rename: "+err.Error(), nil)
+			return
+		}
+		lf.cur.Store(rebuilt)
+	}
 	moved := false
 	if err := os.Rename(s.flatDir(from), s.flatDir(to)); err == nil {
 		moved = true
 	} else if !os.IsNotExist(err) {
+		restoreCurrent()
 		return FlatView{}, err
 	}
 	if err := s.st.RenameFlat(ctx, from, to, till, s.now()); err != nil {
 		if moved {
-			_ = os.Rename(s.flatDir(to), s.flatDir(from))
+			if rollbackErr := os.Rename(s.flatDir(to), s.flatDir(from)); rollbackErr != nil {
+				return FlatView{}, errors.Join(err, fmt.Errorf("restore flat directory: %w", rollbackErr))
+			}
 		}
+		restoreCurrent()
 		if errors.Is(err, store.ErrExists) {
 			return FlatView{}, withKind(ErrConflict, err)
 		}
@@ -104,15 +132,17 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		// The same state object keeps its counters and in-flight requests;
 		// the served flags start over for the new host names.
 		lf.privateServed, lf.publicServed = false, false
-		if d := lf.cur.Load(); d != nil {
-			// Handlers reference the flat directory, which moved: rebuild.
-			if rebuilt, err := s.build(ctx, to, d.version, s.dataDirOf(to)); err == nil {
+		if current != nil {
+			// Rebuild against the moved path with the captured settings
+			// snapshot (a rename is not an activation). Failure must leave
+			// the flat unavailable, never with a handler bound to the old slug.
+			// The rename is committed, so a caller that went away must not
+			// leave the flat without its worker.
+			bg := context.WithoutCancel(ctx)
+			if rebuilt, err := s.buildWithEnvironment(bg, to, current.version, s.dataDirOf(to), current.environment); err == nil {
 				lf.cur.Store(rebuilt)
-				if d.inst != nil {
-					d.inst.Stop()
-				}
 			} else {
-				s.Event(ctx, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)
+				s.Event(bg, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)
 			}
 		}
 		s.mu.Lock()

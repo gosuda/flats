@@ -162,8 +162,22 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		},
 		Transport:     tr,
 		FlushInterval: -1,
-		ErrorLog:      log.New(io.Discard, "", 0),
+		ModifyResponse: func(res *http.Response) error {
+			// The worker closes its connection when it refuses a body it has
+			// not read. Close the visitor's too: otherwise net/http would
+			// first try to drain the rest of a stalled upload.
+			if b, _ := res.Request.Context().Value(visitorBodyKey{}).(*visitorBody); b != nil && res.Close && !b.finished() {
+				res.Header.Set("Connection", "close")
+			}
+			return nil
+		},
+		ErrorLog: log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if b, _ := r.Context().Value(visitorBodyKey{}).(*visitorBody); b != nil && b.timedOut.Load() {
+				w.Header().Set("Connection", "close")
+				http.Error(w, "request body arrived too slowly", http.StatusRequestTimeout)
+				return
+			}
 			in.spec.Log("error", fmt.Sprintf("%s %s: worker unreachable: %v", r.Method, r.URL.RequestURI(), err))
 			http.Error(w, "Bad Gateway: the server flat is not responding.", http.StatusBadGateway)
 		},
@@ -481,18 +495,22 @@ func (in *instance) ensure(ctx context.Context) error {
 		err = in.spawn(context.Background())
 	}
 	in.mu.Lock()
-	in.starting = nil
 	in.lastErr = err
-	close(done)
-	if in.stopped && in.p != nil {
+	if in.stopped {
 		p := in.p
 		in.p = nil
 		in.mu.Unlock()
-		in.terminate(p)
-		os.Remove(in.sock) // Stop may have removed it before this spawn re-created it
+		if p != nil {
+			in.terminate(p)
+		}
+		os.Remove(in.sock) // Stop may have removed it before spawn re-created it
 		in.mu.Lock()
+		in.starting = nil
+		close(done) // Stop waits for termination, not just the spawn result.
 		return errStopped
 	}
+	in.starting = nil
+	close(done)
 	if err != nil {
 		in.failures++
 		in.retryAt = time.Now().Add(backoff(in.failures))
@@ -509,7 +527,74 @@ func (in *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Service Unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	if r.ContentLength != 0 && r.Body != nil && r.Body != http.NoBody {
+		// The worker's own body deadline only ends its side of the proxy;
+		// the transport would still wait for a stalled visitor. Apply the
+		// same minimum upload rate to the visitor's connection.
+		b := &visitorBody{body: r.Body, rc: http.NewResponseController(w), start: time.Now()}
+		r = r.WithContext(context.WithValue(r.Context(), visitorBodyKey{}, b))
+		r.Body = b
+	}
 	in.proxy.ServeHTTP(w, r)
+}
+
+type visitorBodyKey struct{}
+
+// visitorBody bounds a visitor's request body to the minimum upload rate
+// with read deadlines on the visitor's connection.
+type visitorBody struct {
+	body     io.ReadCloser
+	rc       *http.ResponseController
+	start    time.Time
+	n        int64 // bytes read; only Read uses it
+	timedOut atomic.Bool
+
+	mu      sync.Mutex
+	noLimit bool // the connection does not support read deadlines
+	eof     bool
+	closed  bool
+}
+
+func (b *visitorBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	if !b.eof && !b.closed && !b.noLimit && b.rc.SetReadDeadline(bodyDeadline(b.start, b.n)) != nil {
+		b.noLimit = true
+	}
+	b.mu.Unlock()
+	n, err := b.body.Read(p)
+	b.n += int64(n)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err == io.EOF && !b.eof && !b.closed && !b.noLimit {
+		// A deadline left on the connection would end the request's
+		// context while the response is copied.
+		b.rc.SetReadDeadline(time.Time{})
+	}
+	b.eof = b.eof || err == io.EOF
+	var ne net.Error
+	if !b.closed && errors.As(err, &ne) && ne.Timeout() {
+		b.timedOut.Store(true)
+	}
+	return n, err
+}
+
+// finished reports whether the whole body was read.
+func (b *visitorBody) finished() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.eof
+}
+
+// Close ends a read that still waits for the visitor: the proxy is done with
+// the body, and the connection is not reused after an unfinished body.
+func (b *visitorBody) Close() error {
+	b.mu.Lock()
+	if !b.eof && !b.closed && !b.noLimit {
+		b.rc.SetReadDeadline(time.Now())
+	}
+	b.closed = true
+	b.mu.Unlock()
+	return b.body.Close()
 }
 
 // Stop stops the worker (in-flight requests get a short grace period) and
@@ -519,9 +604,13 @@ func (in *instance) Stop() {
 	in.stopped = true
 	p := in.p
 	in.p = nil
+	starting := in.starting
 	in.mu.Unlock()
 	if p != nil {
 		in.terminate(p)
+	}
+	if starting != nil {
+		<-starting // A concurrent restart may spawn another worker.
 	}
 	in.tr.CloseIdleConnections()
 	os.Remove(in.sock)
