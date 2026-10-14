@@ -63,7 +63,9 @@ before any flat runs. A new or renamed flat never takes over a directory that
 already exists at its path. At startup, a `flats/<slug>/` directory that no flat
 owns is moved, not deleted, to `flats/.lifecycle/orphans/<slug>` (with a numeric
 suffix if that name is taken) and the start is logged; inspect it and remove it
-when it is no longer needed. Startup stops with an error only when it cannot
+when it is no longer needed. A deleted flat's directory that could not be
+removed yet stays at its path, and its journal keeps the slug reserved until a
+later startup removes it. Startup stops with an error only when it cannot
 tell which directory holds a flat's data, and the message names the paths to
 resolve by hand.
 

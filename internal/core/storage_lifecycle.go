@@ -368,6 +368,28 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 	for _, f := range flats {
 		owned[f.Slug] = true
 	}
+	// A delete whose files could not be moved to the trash yet still owns
+	// its active path: quarantining it would let the next startup release
+	// the journal while the deleted files stay in orphans. Its journal keeps
+	// the slug reserved until a later startup removes the files. With a
+	// trash copy as well, the active path is ambiguous and is quarantined.
+	operations, err := s.storageOperations()
+	if err != nil {
+		return err
+	}
+	pendingDelete := make(map[string]bool)
+	for _, op := range operations {
+		if op.Kind != "delete" {
+			continue
+		}
+		trashExists, err := pathExists(s.deletedStorageDir(op.From))
+		if err != nil {
+			return err
+		}
+		if !trashExists {
+			pendingDelete[op.From] = true
+		}
+	}
 	root := filepath.Join(s.cfg.DataDir, "flats")
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -376,7 +398,7 @@ func (s *Service) quarantineUnownedStorage(ctx context.Context) error {
 	orphans := s.orphanStorageRoot()
 	for _, entry := range entries {
 		name := entry.Name()
-		if slug.Validate(name) != nil || owned[name] {
+		if slug.Validate(name) != nil || owned[name] || pendingDelete[name] {
 			continue
 		}
 		// A failure leaves the path in place: creation and rename still

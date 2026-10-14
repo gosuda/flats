@@ -422,3 +422,51 @@ func TestFailedRenameRestartsStoppedWorker(t *testing.T) {
 		})
 	}
 }
+
+// A deletion whose files cannot be moved to the trash keeps them at their
+// path, reserved by the journal, instead of quarantining them; otherwise the
+// next startup would release the journal and keep the deleted files forever.
+func TestStuckDeleteIsNotQuarantined(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	s, _ := newTestService(t)
+	secret := createStorageFixture(t, s, "stuck-move")
+	op := storageOperation{Kind: "delete", From: "stuck-move"}
+	if err := s.beginStorageOperation(op); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(s.deletedStorageRoot(), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(s.deletedStorageRoot(), 0o700) })
+	if err := s.recoverStorageOperations(t.Context()); err != nil {
+		t.Fatalf("cleanup failure stopped startup: %v", err)
+	}
+	if got, err := readFile(secret); err != nil || got != "original secret" {
+		t.Fatalf("pending delete storage moved: %q, %v", got, err)
+	}
+	if entries, err := os.ReadDir(s.orphanStorageRoot()); err != nil || len(entries) != 0 {
+		t.Fatalf("pending delete storage quarantined: %v, %v", entries, err)
+	}
+	if _, err := s.CreateFlat(t.Context(), op.From, "", ViaAPI); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unfinished delete permitted slug reuse: %v", err)
+	}
+	if err := os.Chmod(s.deletedStorageRoot(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.recoverStorageOperations(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{s.flatDir(op.From), s.deletedStorageDir(op.From), filepath.Join(s.storageJournalDir(), op.fileName())} {
+		if exists, err := pathExists(path); err != nil || exists {
+			t.Fatalf("retry left %q: %t, %v", path, exists, err)
+		}
+	}
+	if entries, err := os.ReadDir(s.orphanStorageRoot()); err != nil || len(entries) != 0 {
+		t.Fatalf("deleted storage ended in quarantine: %v, %v", entries, err)
+	}
+}
