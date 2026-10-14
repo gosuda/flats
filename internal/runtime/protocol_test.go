@@ -119,3 +119,29 @@ func TestLineWriterAcceptsBoundedLines(t *testing.T) {
 		}
 	}
 }
+
+// A CRLF delimiter's CR is not content: a maximum-length line ending in CRLF
+// is forwarded whole, including when the CR and LF arrive in separate writes,
+// while one more content byte is still omitted.
+func TestLineWriterExcludesCRFromLimit(t *testing.T) {
+	msg := strings.Repeat("c", maxLogLine)
+	for _, writes := range [][]string{{msg + "\r\n"}, {msg + "\r", "\n"}, {msg, "\r\n"}} {
+		var raw bytes.Buffer
+		w := &lineWriter{log: newChildLog(&raw), level: "info"}
+		for _, p := range writes {
+			w.Write([]byte(p))
+		}
+		got := readLogMessages(t, raw.Bytes())
+		if len(got) != 1 || got[0].Msg != msg {
+			t.Fatalf("writes of %d parts: %.200v", len(writes), got)
+		}
+	}
+	var raw bytes.Buffer
+	w := &lineWriter{log: newChildLog(&raw), level: "info"}
+	w.Write([]byte(msg + "x\r\n"))
+	got := readLogMessages(t, raw.Bytes())
+	// The omitted size counts the delimiter's CR; only the note matters.
+	if len(got) != 1 || !strings.HasPrefix(got[0].Msg, "log line omitted: ") {
+		t.Fatalf("got %.200v, want an omission note", got)
+	}
+}

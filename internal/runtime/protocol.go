@@ -153,14 +153,16 @@ type lineWriter struct {
 	omitted int // length of the current line once it exceeds maxLogLine
 }
 
-// appendFragment buffers a line only while it fits maxLogLine. Once it is
-// longer, keep no part of it (see maxLogLine), only count its length.
+// appendFragment buffers a line only while it fits maxLogLine, plus one byte
+// for a CR that emit drops as part of a CRLF delimiter (Log omits the line if
+// it is still too long). Once it is longer, keep no part of it (see
+// maxLogLine), only count its length.
 func (w *lineWriter) appendFragment(p []byte) {
 	if w.omitted > 0 {
 		w.omitted += len(p)
 		return
 	}
-	if len(p) > maxLogLine-len(w.buf) {
+	if len(p) > maxLogLine+1-len(w.buf) {
 		w.omitted = len(w.buf) + len(p)
 		w.buf = w.buf[:0]
 		return
