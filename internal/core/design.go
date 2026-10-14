@@ -542,7 +542,7 @@ func (s *Service) prepareWrite(ctx context.Context, slugName string, cur []store
 	for _, p := range deletes {
 		delete(byPath, p)
 	}
-	paths := make([]string, 0, len(byPath)+len(newData))
+	paths := make([]string, 0, len(byPath))
 	for p := range byPath {
 		if _, ok := newData[p]; !ok {
 			paths = append(paths, p)
@@ -1534,6 +1534,11 @@ func (s *Service) SweepDesignBlobs(ctx context.Context) {
 }
 
 func (s *Service) sweepDesignBlobs(ctx context.Context, slugName string) {
+	// Every caller passes a validated slug; check again before deleting
+	// files under a path built from it.
+	if slug.Validate(slugName) != nil || strings.Contains(slugName, "..") {
+		return
+	}
 	unlock := s.lock(slugName)
 	defer unlock()
 	if err := s.st.Checkpoint(ctx, "FULL"); err != nil {

@@ -331,7 +331,7 @@ func (s *Source) Rewrite(insert string) []byte {
 
 // Splice returns src with the byte range r replaced by repl.
 func Splice(src []byte, r [2]int, repl []byte) []byte {
-	out := make([]byte, 0, len(src)-(r[1]-r[0])+len(repl))
+	var out []byte
 	out = append(out, src[:r[0]]...)
 	out = append(out, repl...)
 	return append(out, src[r[1]:]...)
