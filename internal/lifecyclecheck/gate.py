@@ -622,17 +622,22 @@ def resume_claimed(h):
     # contract and exist only in the test executable, never product HTTP.
     phases = ('before_health', 'after_health', 'after_allocation_before_live', 'after_live_before_finalize')
     for i, phase in enumerate(phases):
+        slug = "resume-" + str(i)
+        # Set up with no crash phase armed: saving the version is itself an
+        # approval, and after_live_before_finalize fires after every applied
+        # approval, so arming it first would crash the setup instead of the
+        # deployment under test.
+        h.stop()
+        h.phase, h.phase_marker = None, None
+        h.start()
+        h.save(slug, static("RESUME-" + phase))
+        if phase != 'after_allocation_before_live':
+            pub = h.publish(slug)
+            require(h.decide(pub)["status"] == "approved", "setup version save failed")
         h.stop()
         h.phase, h.phase_marker = phase, h.work / (phase + '.json')
         h.start()
-        slug = "resume-" + str(i)
-        h.save(slug, static("RESUME-" + phase))
-        if phase == 'after_allocation_before_live':
-            a = h.publish(slug)
-        else:
-            pub = h.publish(slug)
-            require(h.decide(pub)["status"] == "approved", "setup version save failed")
-            a = h.deploy_version(slug, 1)
+        a = h.publish(slug) if phase == 'after_allocation_before_live' else h.deploy_version(slug, 1)
         def approve_at_phase():
             try:
                 h.request("POST", f"/console/api/approvals/{a}/approve", {}, console=True)

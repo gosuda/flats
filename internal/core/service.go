@@ -744,6 +744,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		for i := range vs {
 			if vs[i].Number == f.LiveVersion {
 				lv := vs[i]
+				lv.Deployed = true // the live version is deployed by definition
 				v.Live = &lv
 			}
 		}
@@ -1001,7 +1002,16 @@ func (s *Service) ListVersions(ctx context.Context, slugName string) ([]store.Ve
 
 // GetVersion returns one version.
 func (s *Service) GetVersion(ctx context.Context, slugName string, n int) (store.Version, error) {
-	return s.st.GetVersion(ctx, slugName, n)
+	v, err := s.st.GetVersion(ctx, slugName, n)
+	if err != nil {
+		return v, err
+	}
+	if f, err := s.st.GetFlat(ctx, slugName); err == nil && f.LiveVersion == n {
+		v.Deployed = true
+	} else if deployed, err := s.st.DeployedVersions(ctx, slugName); err == nil {
+		v.Deployed = deployed[n]
+	}
+	return v, nil
 }
 
 // VersionFile opens a file of a stored version (used for thumbnails).
@@ -1067,18 +1077,21 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 				inPreview[p.Version] = true
 			}
 		}
-		for _, st := range []string{"pending", "applying"} {
-			if aps, err := s.st.ListApprovals(ctx, st); err == nil {
-				for _, a := range aps {
-					if a.Flat != slugName || (a.Action != "activate" && a.Action != "rollback" && a.Action != "restore_data") {
-						continue
-					}
-					var p struct {
-						Version int `json:"version"`
-					}
-					if json.Unmarshal(a.Params, &p) == nil && p.Version > 0 {
-						inPreview[p.Version] = true
-					}
+	}
+	// A version an open deploy, rollback or restore approval names is kept
+	// whether or not previews count, so a retention-impact report matches
+	// what pruning really removes.
+	for _, st := range []string{"pending", "applying"} {
+		if aps, err := s.st.ListApprovals(ctx, st); err == nil {
+			for _, a := range aps {
+				if a.Flat != slugName || (a.Action != "activate" && a.Action != "rollback" && a.Action != "restore_data") {
+					continue
+				}
+				var p struct {
+					Version int `json:"version"`
+				}
+				if json.Unmarshal(a.Params, &p) == nil && p.Version > 0 {
+					inPreview[p.Version] = true
 				}
 			}
 		}

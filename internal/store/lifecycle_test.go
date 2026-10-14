@@ -231,3 +231,33 @@ func TestExplicitLegacyTailscaleUpgradeDoesNotInventPublicPermissions(t *testing
 		t.Fatal("restart undid revocation")
 	}
 }
+
+// A version named only as an earlier deployment's previous one was live too;
+// migrated histories can lack the row that first deployed it.
+func TestDeployedVersionsIncludesPreviousOnly(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "metadata.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now()
+	if err := s.CreateFlat(ctx, Flat{Slug: "old", Name: "old", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO deployments(flat,version,previous,kind,at) VALUES('old',3,1,'deploy',?)`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DeployedVersions(ctx, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[1] || !got[3] || got[2] || len(got) != 2 {
+		t.Fatalf("deployed versions: %v", got)
+	}
+	if ok, err := s.HasDeployment(ctx, "old"); err != nil || !ok {
+		t.Fatalf("has deployment: %v %v", ok, err)
+	}
+	if ok, err := s.HasDeployment(ctx, "none"); err != nil || ok {
+		t.Fatalf("no deployments: %v %v", ok, err)
+	}
+}

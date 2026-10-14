@@ -192,9 +192,11 @@ func (s *Store) HasDeployment(ctx context.Context, flat string) (bool, error) {
 }
 
 // DeployedVersions returns the numbers of a flat's versions that were ever
-// deployed (made live by a publish, deploy or rollback).
+// deployed (made live by a publish, deploy or rollback). A version named only
+// as a deployment's previous one was live too: migrated histories can lack
+// the row that first deployed it.
 func (s *Store) DeployedVersions(ctx context.Context, flat string) (map[int]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT version FROM deployments WHERE flat=?`, flat)
+	rows, err := s.db.QueryContext(ctx, `SELECT version FROM deployments WHERE flat=? UNION SELECT previous FROM deployments WHERE flat=? AND previous>0`, flat, flat)
 	if err != nil {
 		return nil, err
 	}

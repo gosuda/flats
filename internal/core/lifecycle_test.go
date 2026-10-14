@@ -642,6 +642,19 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 		}
 	}
 
+	// The retention-impact preview counts the same protections as pruning:
+	// keep_versions 0 never prunes, and at 1 nothing is removable because v1
+	// is held by its pending rollback.
+	impact, err := s.RetentionImpact(t.Context(), map[string]string{SetKeepVersions: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fi := range impact[SetKeepVersions].Flats {
+		if fi.Slug == "prune" {
+			t.Fatalf("impact lists versions a pending approval or deployment rule protects: %+v", fi)
+		}
+	}
+
 	// Reject the pending approvals for v4 and v1, then prune again: v1 loses
 	// its protection and is pruned; v4 and v5 were never deployed and stay.
 	if _, err := s.Decide(t.Context(), dep4.Approval.ID, false); err != nil {
@@ -659,6 +672,40 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 	}
 	if v1, err := s.st.GetVersion(t.Context(), "prune", 1); err != nil || !v1.Pruned {
 		t.Fatalf("unprotected deployed version 1 was not pruned: %+v %v", v1, err)
+	}
+}
+
+// A pending deployment of an older, previously deployed version keeps it from
+// retention until the approval is decided.
+func TestPendingActivationProtectsDeployedVersion(t *testing.T) {
+	s, _ := newTestService(t)
+	for _, body := range []string{"v1", "v2", "v3"} {
+		lifecycleSave(t, s, "act", body)
+		lifecycleApprove(t, s, lifecycleRequest(t, s, "act"))
+	}
+	_, err := s.Deploy(t.Context(), "act", 1, ViaConsole)
+	var dep *PendingApproval
+	if !errors.As(err, &dep) {
+		t.Fatalf("wanted pending deploy for v1: %v", err)
+	}
+	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetKeepVersions: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	// v3 is live, v2 fills keep_versions=1 and v1 is held by the approval.
+	s.pruneVersions(t.Context(), "act")
+	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || v1.Pruned || !v1.Deployed {
+		t.Fatalf("v1 with a pending deployment: %+v %v", v1, err)
+	}
+	if _, err := s.Decide(t.Context(), dep.Approval.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	s.pruneVersions(t.Context(), "act")
+	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || !v1.Pruned {
+		t.Fatalf("v1 after rejecting its deployment: %+v %v", v1, err)
+	}
+	f, err := s.GetFlat(t.Context(), "act")
+	if err != nil || f.Live == nil || !f.Live.Deployed || !f.LatestDeployed {
+		t.Fatalf("live version view: %+v %v", f.Live, err)
 	}
 }
 
