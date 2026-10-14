@@ -136,10 +136,13 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 			// Rebuild against the moved path with the captured settings
 			// snapshot (a rename is not an activation). Failure must leave
 			// the flat unavailable, never with a handler bound to the old slug.
-			if rebuilt, err := s.buildWithEnvironment(ctx, to, current.version, s.dataDirOf(to), current.environment); err == nil {
+			// The rename is committed, so a caller that went away must not
+			// leave the flat without its worker.
+			bg := context.WithoutCancel(ctx)
+			if rebuilt, err := s.buildWithEnvironment(bg, to, current.version, s.dataDirOf(to), current.environment); err == nil {
 				lf.cur.Store(rebuilt)
 			} else {
-				s.Event(ctx, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)
+				s.Event(bg, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)
 			}
 		}
 		s.mu.Lock()
