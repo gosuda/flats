@@ -13,7 +13,6 @@ import {
   StateField,
 } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
-import { coalescedRefresh } from "./render-budget.js";
 import {
   activeLines,
   diagramBlocks,
@@ -30,9 +29,6 @@ import {
   sourceAction,
   updatePreview,
   trackFocusExit,
-  mapDiagramKeys,
-  mapUntouched,
-  remoteChange,
 } from "./diagram-preview.js";
 import {
   renderDiagrams,
@@ -146,9 +142,7 @@ class TableWidget extends WidgetType {
       if ((event.metaKey || event.ctrlKey) && event.target.closest?.("a[href]"))
         return;
       view.focus();
-      // The widget may have been mapped through remote edits since it was
-      // built, so resolve its current position from the DOM.
-      view.dispatch({ selection: EditorSelection.cursor(view.posAtDOM(div)) });
+      view.dispatch({ selection: EditorSelection.cursor(this.from) });
     });
     return div;
   }
@@ -270,16 +264,12 @@ class DiagramWidget extends WidgetType {
 // view plugin may not replace line breaks. The field tracks focus through an
 // effect, so a block renders again when the editor loses focus.
 const setFocus = StateEffect.define();
-const refreshRemote = StateEffect.define();
 // The document's reference definitions, rescanned when the text changes.
 function definitions(links) {
   return StateField.define({
     create: (state) => referenceDefinitions(state.doc, links),
     update: (value, tr) =>
-      (tr.docChanged && !remoteChange(tr)) ||
-      tr.effects.some((effect) => effect.is(refreshRemote))
-        ? referenceDefinitions(tr.state.doc, links)
-        : value,
+      tr.docChanged ? referenceDefinitions(tr.state.doc, links) : value,
   });
 }
 
@@ -320,19 +310,7 @@ function blocks(render, refs) {
     update(value, tr) {
       let focused = value.focused;
       for (const e of tr.effects) if (e.is(setFocus)) focused = e.value;
-      if (remoteChange(tr)) {
-        // Never run a full Markdown scan for each incoming Yjs transaction.
-        // Untouched tables and diagrams keep rendering; blocks the change
-        // touched show source until the budgeted refresh rebuilds them.
-        return {
-          ...value,
-          focused,
-          keys: mapDiagramKeys(value.keys, tr.changes),
-          decorations: mapUntouched(value.decorations, tr.changes),
-        };
-      }
       if (
-        tr.effects.some((effect) => effect.is(refreshRemote)) ||
         tr.effects.some((effect) => effect.is(setDiagramEditing)) ||
         focused !== value.focused ||
         tr.docChanged ||
@@ -366,25 +344,12 @@ function blocks(render, refs) {
     ViewPlugin.fromClass(
       class {
         constructor(view) {
-          this.remoteRefresh = coalescedRefresh(() => {
-            view.dispatch({ effects: refreshRemote.of(null) });
-          });
           this.cleanup = trackFocusExit(view.dom, () => {
             if (view.state.field(field).focused)
               view.dispatch({ effects: setFocus.of(false) });
           });
         }
-        update(update) {
-          // A local edit rebuilds every block. Only a remote change after
-          // the last local one leaves the decorations to refresh.
-          let last;
-          for (const tr of update.transactions) if (tr.docChanged) last = tr;
-          if (!last) return;
-          if (remoteChange(last)) this.remoteRefresh.request();
-          else this.remoteRefresh.cancel();
-        }
         destroy() {
-          this.remoteRefresh.cancel();
           this.cleanup();
         }
       },
@@ -480,8 +445,7 @@ export function livePreview(links, resolve, render) {
             u.viewportChanged ||
             u.selectionSet ||
             u.focusChanged ||
-            syntaxTree(u.startState) !== syntaxTree(u.state) ||
-            u.startState.field(refs) !== u.state.field(refs)
+            syntaxTree(u.startState) !== syntaxTree(u.state)
           )
             this.decorations = build(u.view);
         }
