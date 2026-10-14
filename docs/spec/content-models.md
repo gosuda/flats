@@ -74,6 +74,8 @@ Applies to websites (the `flat` type, static and server) and pages.
    the request returns an approval link for the user, and nothing is deleted
    until the user opens it and explicitly approves. Whether the version can be
    deleted (it is not live) is checked again when the deletion is applied.
+   Open previews of that version are closed first, then its files are deleted
+   and it stops counting toward the quota.
 10. **Tool names follow the model.** A tool that only changes the Draft never
     has *version* in its name: Draft saves go through `save_draft` and
     `save_draft_from_dir`, and the only tool that creates a version is
@@ -97,7 +99,9 @@ people and agents edit live.
 2. **Edits need no approval.** An agent changes the content at once. Private
    content stays Private. On Public content every change is visible to everyone
    as soon as it is saved. Visibility changes still need approval in both
-   directions.
+   directions. Such an approval covers the flat, not one revision: content
+   changes while it is pending do not make it stale, and approving it exposes
+   the content as it is when the change applies.
 3. **Live concurrent editing.** People and agents can edit the same content at
    the same time.
 4. **Every edit unit creates a revision.**
@@ -136,6 +140,10 @@ people and agents edit live.
    - Saves keep today's merge behavior: people's concurrent edits that do not
      overlap the save are kept, and where they overlap, the save wins. The
      overwritten text stays in the revision closed just before the save.
+   - Today's merge bounds also stay: when a document is too large to merge
+     (for example more than 16,000 lines combined), the save replaces it
+     whole, and people's edits remain recoverable from the revision closed
+     just before it.
    - `update_document` keeps its guards: if any guarded text changed since
      the agent read it, the whole call is refused and nothing changes. Revision-model content is never written
    through a Version-model tool.
@@ -166,7 +174,9 @@ These rules apply to the version, revision and pin quotas alike.
 3. **The disk quota stays.** The existing per-flat disk quota
    (`system.disk_quota_bytes`) is separate and unchanged. A save, a version
    creation or a person's edit that would exceed it is refused, and no history
-   is deleted automatically to make room.
+   is deleted automatically to make room. A person's edit is checked when it
+   arrives, including the space its revision will need when its group closes,
+   and is refused before it becomes live if that would not fit.
 4. **Lowering a quota below what is held.** Unpinned revisions above the new
    revision quota are deleted at once, oldest first. Versions and pins are
    never deleted: they all stay, and new ones are refused until the count is
