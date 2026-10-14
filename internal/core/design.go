@@ -444,7 +444,7 @@ func (s *Service) finishDesignLocked(ctx context.Context, slugName, title string
 	}
 	if f.LiveVersion == 0 {
 		manifest, _ := json.Marshal(map[string]string{"type": contenttype.Design, "name": title})
-		v, err := s.saveDraftLocked(ctx, slugName, []bundle.File{{Path: bundle.ManifestName, Data: manifest}}, SaveMeta{Message: "design shell"}, via)
+		v, err := s.saveDraftLocked(ctx, slugName, []bundle.File{{Path: bundle.ManifestName, Data: manifest}}, SaveMeta{Message: "design shell", quiet: true}, via)
 		if err != nil {
 			return err
 		}
@@ -1422,6 +1422,9 @@ func (s *Service) DesignSnapshot(ctx context.Context, slugName string, rev int) 
 
 func (s *Service) designSnapshotLocked(ctx context.Context, slugName string, rev int) (*design.Snapshot, error) {
 	snap := &design.Snapshot{Revision: rev}
+	if f, err := s.st.GetFlat(ctx, slugName); err == nil {
+		snap.Visibility = string(f.Visibility)
+	}
 	var hashes []string
 	if rev == 0 {
 		st, err := s.st.ContentState(ctx, slugName)
@@ -1589,8 +1592,12 @@ func (s *Service) designLoop() {
 
 // --- serving ---
 
-// notifyDesign tells the live design instance of slug about a change.
+// notifyDesign tells the live design instance of slug about a change. A
+// content change (seq > 0) also marks the flat as updated.
 func (s *Service) notifyDesign(slugName string, seq int64, revision int, paths []string) {
+	if seq > 0 {
+		_ = s.st.Touch(context.Background(), slugName, s.now())
+	}
 	lf := s.state(slugName)
 	if d := lf.cur.Load(); d != nil {
 		if inst, ok := d.inst.(*design.Instance); ok {

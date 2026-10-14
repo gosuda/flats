@@ -927,6 +927,8 @@ type SaveMeta struct {
 	Message          string
 	ExpectedRevision int
 	CheckRevision    bool
+	// quiet skips the "saved draft" event, for the internal design shell.
+	quiet bool
 }
 
 // SaveVersion validates files and stores them as the flat's draft.
@@ -1370,7 +1372,9 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 		s.Event(ctx, slugName, "error", "exposure", err.Error(), nil)
 	}
 	_ = s.dropPreviews(ctx, slugName)
-	if kind == "save" {
+	if kind == "save" && contenttype.FromManifest(d.version.Manifest) == contenttype.Design {
+		// The design shell goes live once, at creation; that is logged as a design event.
+	} else if kind == "save" {
 		s.Event(ctx, slugName, "info", "deploy", fmt.Sprintf("document saved and running via %s", via), map[string]int{"version": n, "previous": prev})
 	} else {
 		s.Event(ctx, slugName, "info", "deploy", fmt.Sprintf("%s: version %d is live (was %d) via %s", kind, n, prev, via), map[string]int{"version": n, "previous": prev})

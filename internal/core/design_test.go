@@ -80,6 +80,11 @@ func TestDesignCreateWriteAndServe(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "--accent:#ffffff") || strings.Contains(rec.Body.String(), "bridge.js") {
 		t.Fatalf("direct open must apply tweaks without the bridge: %s", rec.Body.String())
 	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/_design/api/state", nil))
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"visibility":"private"`) {
+		t.Fatalf("state must carry the flat's visibility: %d %s", rec.Code, rec.Body.String())
+	}
 	req := httptest.NewRequest("POST", "/_design/api/ops", strings.NewReader(`{"editor":"e1","op":{"op":"note.add","gen":1,"fields":{"x":1,"y":2,"text":"hi"}}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Flats-Design", "1")
@@ -119,8 +124,13 @@ func TestDesignOpsGroupsAndGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 	op := design.Op{Kind: "text.set", Path: "a.html", Gen: a.Gen, Node: 0, Tag: "h1", InnerHash: n.InnerHash, HTML: "Hi <b>there</b>"}
+	clock = clock.Add(time.Minute)
 	if err := s.ApplyDesignOp(ctx, "studio", "e1", "Person", op); err != nil {
 		t.Fatal(err)
+	}
+	// An edit marks the flat as updated.
+	if f, err := s.GetFlat(ctx, "studio"); err != nil || !f.UpdatedAt.Equal(clock) {
+		t.Fatalf("updated_at after an edit = %v, want %v (%v)", f.UpdatedAt, clock, err)
 	}
 	// Not yet a revision: the group is open.
 	page, _ := s.ListRevisions(ctx, "studio", 0, 10)

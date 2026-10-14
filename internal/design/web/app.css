@@ -88,8 +88,8 @@ a.btn { color: inherit; text-decoration: none; }
   height: 28px; padding: 0 2px 4px; color: var(--muted); font-size: 13px; white-space: nowrap;
   transform-origin: 0 100%;
 }
-.board .strip .name { overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.board .strip button { border: 0; background: none; padding: 2px 6px; border-radius: 6px; color: var(--muted); font-size: 12px; }
+.board .strip .name { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.board .strip button { flex: none; border: 0; background: none; padding: 2px 6px; border-radius: 6px; color: var(--muted); font-size: 12px; }
 .board .strip button:hover { background: var(--panel); color: var(--ink); }
 .board .frame {
   position: absolute; inset: 0; background: #fff; box-shadow: var(--frame-shadow); overflow: hidden; border-radius: 2px;

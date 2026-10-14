@@ -49,9 +49,11 @@ type Snapshot struct {
 	// Pending reports edits of the head not yet kept as a revision (an
 	// open group of a person's edits).
 	Pending bool
-	Files   []SnapFile
-	Read    func(path string) ([]byte, error)
-	Release func()
+	// Visibility is the flat's visibility: private or public.
+	Visibility string
+	Files      []SnapFile
+	Read       func(path string) ([]byte, error)
+	Release    func()
 }
 
 // File returns the snapshot entry of p.
@@ -509,14 +511,15 @@ type ArtboardInfo struct {
 
 // State is the canvas app's view of the design.
 type State struct {
-	Slug      string                  `json:"slug"`
-	Access    string                  `json:"access"`
-	Seq       int64                   `json:"seq"`
-	Revision  int                     `json:"revision"`
-	Pending   bool                    `json:"pending"`
-	Canvas    *Canvas                 `json:"canvas"`
-	Files     []SnapFile              `json:"files"`
-	Artboards map[string]ArtboardInfo `json:"artboards"`
+	Slug       string                  `json:"slug"`
+	Access     string                  `json:"access"`
+	Seq        int64                   `json:"seq"`
+	Revision   int                     `json:"revision"`
+	Pending    bool                    `json:"pending"`
+	Visibility string                  `json:"visibility,omitempty"`
+	Canvas     *Canvas                 `json:"canvas"`
+	Files      []SnapFile              `json:"files"`
+	Artboards  map[string]ArtboardInfo `json:"artboards"`
 }
 
 // MarshalJSON keeps the canvas's unknown keys.
@@ -560,7 +563,7 @@ func (in *Instance) serveState(w http.ResponseWriter, r *http.Request) {
 
 // BuildState parses the canvas and the artboards' tweaks of a snapshot.
 func BuildState(snap *Snapshot) (*State, error) {
-	st := &State{Seq: snap.Seq, Revision: snap.Revision, Pending: snap.Pending, Files: append([]SnapFile(nil), snap.Files...), Artboards: map[string]ArtboardInfo{}}
+	st := &State{Seq: snap.Seq, Revision: snap.Revision, Pending: snap.Pending, Visibility: snap.Visibility, Files: append([]SnapFile(nil), snap.Files...), Artboards: map[string]ArtboardInfo{}}
 	raw, err := snap.Read(IndexPath)
 	if err != nil {
 		st.Canvas = &Canvas{Boards: map[string]Board{}, Notes: map[string]Note{}, extra: map[string]json.RawMessage{}}

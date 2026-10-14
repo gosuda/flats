@@ -914,6 +914,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 			return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
 		}
 		s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> %s", p.From, target), nil)
+		s.notifyDesign(a.Flat, 0, 0, nil) // an open canvas shows the new visibility
 		fv := s.view(ctx, next)
 		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility changed to " + string(target)}, nil
 	}
@@ -934,6 +935,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{Status: "done", Flat: &fv, Notice: "Visibility is Private, but its private route needs attention: " + err.Error(), Message: "visibility changed to private; private exposure needs attention"}, nil
 	}
 	s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> private", p.From), nil)
+	s.notifyDesign(a.Flat, 0, 0, nil)
 	fv := s.view(ctx, f)
 	return ActionResult{Status: "done", Flat: &fv, Message: "visibility changed to private"}, nil
 }
@@ -1089,8 +1091,13 @@ func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Versi
 	if d.inst != nil {
 		d.inst.Stop()
 	}
+	if h.OK && contenttype.FromManifest(v.Manifest) == contenttype.Design {
+		return h, nil // the design shell is internal; its creation is logged as a design event
+	}
 	what := fmt.Sprintf("version %d", v.Number)
-	if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
+	if contenttype.FromManifest(v.Manifest) == contenttype.Design {
+		what = "the design"
+	} else if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
 		what = "the saved document" // a document has no versions or Draft
 	} else if !v.Published && v.Revision > 0 {
 		what = fmt.Sprintf("draft revision %d", v.Revision)
@@ -1168,7 +1175,9 @@ func (s *Service) saveDraftLocked(ctx context.Context, slugName string, files []
 		_ = s.st.UpdateFlat(ctx, f)
 	}
 	_ = s.st.Touch(ctx, slugName, now)
-	s.Event(ctx, slugName, "info", "draft", fmt.Sprintf("saved draft revision %d (%d files, %d bytes) via %s", next, res.Files, res.Size, via), map[string]any{"revision": next, "hash": res.Hash, "git_sha": meta.GitSHA})
+	if !meta.quiet {
+		s.Event(ctx, slugName, "info", "draft", fmt.Sprintf("saved draft revision %d (%d files, %d bytes) via %s", next, res.Files, res.Size, via), map[string]any{"revision": next, "hash": res.Hash, "git_sha": meta.GitSHA})
+	}
 	s.pruneDraftRevisions(ctx, slugName, next)
 	return versionFromRevision(rev), nil
 }

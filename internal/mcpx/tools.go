@@ -308,15 +308,19 @@ func (t *tools) listFlats(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) 
 }
 
 // stateText is "live vN"/"not deployed" for a website and "document,
-// running"/"document, not running" for a document.
+// running"/"design, not running" for a document or design.
 func stateText(fi FlatInfo) string {
-	if fi.Type != contenttype.Docs {
+	if !contenttype.RevisionModel(fi.Type) {
 		return liveText(fi.LiveVersion)
 	}
-	if fi.Running {
-		return "document, running"
+	what := "document"
+	if fi.Type == contenttype.Design {
+		what = "design"
 	}
-	return "document, not running"
+	if fi.Running {
+		return what + ", running"
+	}
+	return what + ", not running"
 }
 
 func liveText(n int) string {
@@ -355,9 +359,11 @@ type FlatOut struct {
 
 func flatText(fi FlatInfo) string {
 	var b strings.Builder
-	if fi.Type == contenttype.Docs {
+	if contenttype.RevisionModel(fi.Type) {
 		fmt.Fprintf(&b, "%s (%s): %s, %s. Private URL: %s", fi.Slug, fi.Name, fi.Visibility, stateText(fi), fi.PrivateURL)
-		if !fi.Running {
+		if !fi.Running && fi.Type == contenttype.Design {
+			b.WriteString(" (save it with save_design to start it)")
+		} else if !fi.Running {
 			b.WriteString(" (save it with save_document to start it)")
 		}
 	} else {

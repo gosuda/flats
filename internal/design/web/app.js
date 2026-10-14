@@ -154,6 +154,12 @@ function hashOf(path) {
 }
 
 // ---- toolbar ----
+// visibilityBadge shows who can open the design, and that a public visitor
+// can only look.
+function visibilityBadge() {
+  const pub = !priv() || S.state.visibility === 'public';
+  return h('span', { class: 'badge' + (pub ? ' live' : ''), text: pub ? (priv() ? 'Public' : 'Public · view only') : 'Private' });
+}
 function renderBar() {
   const bar = $('.bar');
   bar.replaceChildren();
@@ -162,7 +168,7 @@ function renderBar() {
   bar.append(
     h('span', { class: 'title', text: (c && c.title) || st.slug }),
     h('span', { class: 'meta', text: S.revision != null ? `Revision ${S.revision}` : `Revision ${st.revision}` }),
-    h('span', { class: 'badge' + (priv() ? '' : ' live'), text: priv() ? 'Private' : 'Public · view only' }),
+    visibilityBadge(),
     h('span', { class: 'spacer' }),
     h('div', { class: 'zoom', role: 'group', 'aria-label': 'Zoom' },
       iconBtn('minus', 'Zoom out', () => zoomBy(1 / 1.25)),
@@ -192,7 +198,12 @@ function applyView() {
   const out = $('.zoom output');
   if (out) out.textContent = Math.round(S.view.z * 100) + '%';
   // keep titles readable: counter-scale strips
-  for (const f of S.frames.values()) f.strip.style.transform = `scale(${1 / S.view.z})`;
+  // and keep each strip within its board's on-screen width so titles of
+  // neighbouring boards never overlap at low zoom
+  for (const f of S.frames.values()) {
+    f.strip.style.transform = `scale(${1 / S.view.z})`;
+    f.strip.style.maxWidth = (parseFloat(f.el.style.width) || 0) * S.view.z + 'px';
+  }
   loadVisible();
 }
 function zoomAt(factor, cx, cy) {
@@ -363,7 +374,7 @@ function dragger(handleEl, path, kind) {
     const dx = (e.clientX - start.x) / S.view.z, dy = (e.clientY - start.y) / S.view.z;
     const f = S.frames.get(path);
     if (kind === 'move') { f.el.style.left = Math.round(start.b.x + dx) + 'px'; f.el.style.top = Math.round(start.b.y + dy) + 'px'; }
-    else { f.el.style.width = clamp(Math.round(start.b.w + dx), 40, 8000) + 'px'; f.el.style.height = clamp(Math.round(start.b.h + dy), 40, 8000) + 'px'; }
+    else { f.el.style.width = clamp(Math.round(start.b.w + dx), 40, 8000) + 'px'; f.el.style.height = clamp(Math.round(start.b.h + dy), 40, 8000) + 'px'; f.strip.style.maxWidth = parseFloat(f.el.style.width) * S.view.z + 'px'; }
   });
   handleEl.addEventListener('pointerup', async (e) => {
     if (!start) return;

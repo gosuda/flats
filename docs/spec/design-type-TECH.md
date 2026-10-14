@@ -396,7 +396,7 @@ which `trustedAccess` sets; anything but `private` is public.
 | `GET /` | all | canvas app shell |
 | `GET /_design/app/<file>` | all | embedded app assets |
 | `POST /_design/api/session` | all | issue a resource capability (below) |
-| `GET /_design/api/state` | all | `{access, seq, revision, title, canvas, files:[{path,size,hash,gen}], artboards:{path:{tweaks}}}`; public responses omit `gen` |
+| `GET /_design/api/state` | all | `{access, visibility, seq, revision, title, canvas, files:[{path,size,hash,gen}], artboards:{path:{tweaks}}}`; public responses omit `gen` |
 | `GET /_design/api/events` | all | SSE: `hello {seq}`, then `change {seq, revision, paths}`, `resync`; heartbeat every 25 s |
 | `GET /_design/api/node?path=&node=` | private | `{tag, inner, inner_hash, gen}` of an editable element |
 | `POST /_design/api/ops` | private | one person operation `{editor, op}` |
@@ -529,8 +529,10 @@ The app is ES modules with no dependencies:
 
 - `app.js`: boot, state, events and the toolbar;
 - the canvas: pan and zoom (wheel, pinch, space+drag), fit and zoom steps;
-- frames: lazy iframes near the viewport, title strips, error badges, move
-  and resize handles;
+- the toolbar badge shows the flat's visibility (Private or Public) and
+  "view only" on a public route; a visibility change refreshes it live;
+- frames: lazy iframes near the viewport, title strips clipped to the frame
+  width at any zoom, error badges, move and resize handles;
 - notes;
 - focus and play;
 - edit mode and the parent-side text editor;
