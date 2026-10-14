@@ -126,8 +126,11 @@ export const visibilityOf = (vis) => (!vis || vis === 'private' ? 'private' : 'p
 // afterwards. console_test.go checks it matches internal/core.
 export const PUBLIC_ACCESS_NOTICE = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 
-export function noticeFor(vis) {
-  return visibilityOf(vis) === 'public' ? PUBLIC_ACCESS_NOTICE : '';
+// BECOMING_PUBLIC_NOTICE warns before a flat is made public; the flat is not
+// public yet, so it must not say that it is.
+export const BECOMING_PUBLIC_NOTICE = 'Once public, anyone on the internet can open this flat. A domain or URL is not what makes it public.';
+export function becomingNoticeFor(vis) {
+  return visibilityOf(vis) === 'public' ? BECOMING_PUBLIC_NOTICE : '';
 }
 
 // publicURL is the current public address: Portal's public_url, or the URL

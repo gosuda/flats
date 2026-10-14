@@ -1,6 +1,6 @@
 // Approval page: what an agent asked for and the operator's decision.
 
-import { h, clear, dateTime, timeEl, VISIBILITY, visibilityOf, visibilityBadge, noticeFor } from './dom.js';
+import { h, clear, dateTime, timeEl, VISIBILITY, visibilityOf, visibilityBadge, becomingNoticeFor } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, busy } from './ui.js';
 
@@ -78,7 +78,7 @@ export function mount(main, [id], ctx) {
     if (a.result) rows.push(['Result', a.result]);
     body.appendChild(h('dl', { class: 'facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)])));
 
-    const notice = a.action === 'set_visibility' ? noticeFor(p.visibility) : '';
+    const notice = a.action === 'set_visibility' ? becomingNoticeFor(p.visibility) : '';
     if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
     if (a.action === 'delete' && a.status === 'pending') {
       body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, environment variables, secrets and logs.' }));
@@ -100,7 +100,7 @@ export function mount(main, [id], ctx) {
 
   async function decide(a, yes) {
     const p = params(a);
-    const notice = yes && a.action === 'set_visibility' ? noticeFor(p.visibility) : '';
+    const notice = yes && a.action === 'set_visibility' ? becomingNoticeFor(p.visibility) : '';
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [

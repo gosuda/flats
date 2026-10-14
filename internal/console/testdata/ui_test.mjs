@@ -528,6 +528,21 @@ assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats
 assert.ok(share.textContent.includes('devices allowed by your tailnet'));
 assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0].getAttribute('href'), new URL(blog.private_url).href);
 share.close();
+// Before a private flat goes public, the warning must not say it already is.
+const quiet = { ...blog, slug: 'quiet', name: 'Quiet', visibility: 'private', public_url: undefined, public_notice: undefined };
+shareDialog(quiet);
+const quietShare = all(document.body, (e) => e.tagName === 'DIALOG' && e.open !== false && e.textContent.includes('Share Quiet'))[0];
+const widen = all(quietShare, (e) => e.tagName === 'SELECT')[0];
+widen.value = 'public';
+widen.dispatch('change');
+await tick();
+const publicConfirm = all(document.body, (e) => e.tagName === 'DIALOG' && e.textContent.includes('Make Quiet public?'))[0];
+assert.ok(publicConfirm, 'making a private flat public asks first');
+assert.ok(publicConfirm.textContent.includes('Once public, anyone on the internet can open this flat.'), publicConfirm.textContent);
+assert.ok(!publicConfirm.textContent.includes(PUBLIC), 'the confirm must not claim the flat is public yet');
+publicConfirm.close('cancel');
+await tick();
+quietShare.close();
 for (const label of ['Share', 'Deployments', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
 // The build label next to the brand: a release links to its release page,

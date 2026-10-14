@@ -2,7 +2,7 @@
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
 
-import { h, dateTime, VISIBILITY, visibilityOf, noticeFor, publicURL, publicNoticeOf } from './dom.js';
+import { h, dateTime, VISIBILITY, visibilityOf, becomingNoticeFor, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, infoDialog, errorPanel, toast, extLink } from './ui.js';
 
@@ -181,7 +181,7 @@ export async function setVisibility(flat, vis) {
     await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose for ${label(flat)} under Networks, then make it public.`);
     return null;
   }
-  const notice = noticeFor(vis);
+  const notice = becomingNoticeFor(vis);
   const ok = await confirmDialog({
     title: `Make ${label(flat)} ${to.label.toLowerCase()}?`,
     body: [
