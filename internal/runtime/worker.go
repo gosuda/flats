@@ -216,7 +216,8 @@ func requestHeaders(r *http.Request) map[string]string {
 
 // Request bodies are read into memory before the handler runs. A worker holds
 // at most maxBufferedBodies bytes of them at once (bodies being received,
-// waiting for a runtime or being handled); a body that would exceed it gets
+// waiting for a runtime or being handled, but not while the response is
+// written); a body that would exceed it gets
 // 503. Requests without a body are never refused. A body must arrive at
 // minBodyRate after a bodyGrace start, so a stalled upload does not hold
 // memory or a connection indefinitely; slower uploads get 408.
@@ -256,6 +257,7 @@ func (b *bodyBudget) give(n int64) {
 // readBody reads the request body within MaxRequestBody, the worker's body
 // budget and the minimum upload rate. release returns the body's bytes to
 // the budget; call it once the body is no longer needed, even after an error.
+// Calling release again does nothing.
 func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte, release func(), err error) {
 	var held int64
 	release = func() { w.bodies.give(held); held = 0 }
@@ -349,6 +351,11 @@ func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, outboundRequestContextKey{}, r.Context())
 	start := time.Now()
 	out, err := w.eng.handle(ctx, reqJSON)
+	// The body is not needed once the handler returns. Writing the response
+	// can block on a visitor who stops reading; that must not hold the
+	// flat's body budget.
+	body, p.Body, reqJSON = nil, nil, nil
+	release()
 	if err == nil {
 		var resp respPayload
 		if jerr := json.Unmarshal(out, &resp); jerr != nil {

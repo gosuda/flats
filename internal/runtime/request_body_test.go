@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -153,5 +154,62 @@ func TestRequestBodyDeadlineCleared(t *testing.T) {
 	})
 	if code, _ := sendSlowly(t, addr, 1, 10, 0); code != http.StatusOK || ctxErr != nil {
 		t.Fatalf("status %d, context %v", code, ctxErr)
+	}
+}
+
+// budgetEngine records the worker's body budget while its handler runs.
+type budgetEngine struct {
+	w    *worker
+	used int64
+	out  string
+}
+
+func (e *budgetEngine) handle(context.Context, []byte) ([]byte, error) {
+	e.used = e.w.bodies.used
+	return []byte(e.out), nil
+}
+func (*budgetEngine) close() {}
+
+// budgetWriter records the worker's body budget when the response starts.
+type budgetWriter struct {
+	*httptest.ResponseRecorder
+	w    *worker
+	used int64
+}
+
+func (b *budgetWriter) WriteHeader(code int) {
+	b.used = b.w.bodies.used
+	b.ResponseRecorder.WriteHeader(code)
+}
+
+// A visitor who stops reading the response must not hold the flat's body
+// budget: the body is released once the handler returns.
+func TestWorkerReleasesBodyBeforeResponse(t *testing.T) {
+	t.Parallel()
+	for _, out := range []string{`{"status":200,"body":"ok"}`, `{"status":700}`} {
+		w := &worker{log: newChildLog(io.Discard), spec: workerSpec{TimeoutMS: 1000}}
+		eng := &budgetEngine{w: w, out: out}
+		w.eng = eng
+		rw := &budgetWriter{ResponseRecorder: httptest.NewRecorder(), w: w, used: -1}
+		w.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "http://flat.test/", strings.NewReader("0123456789")))
+		if eng.used != 10 || rw.used != 0 || w.bodies.used != 0 {
+			t.Fatalf("%s: budget while handling %d, at response %d, after %d", out, eng.used, rw.used, w.bodies.used)
+		}
+	}
+}
+
+// Upgrade headers on a flat without WebSocket handlers do not bypass the
+// body budget: the request is handled, and counted, as ordinary HTTP.
+func TestWorkerUnhandledUpgradeUsesBodyBudget(t *testing.T) {
+	t.Parallel()
+	w := &worker{}
+	w.bodies.used = maxBufferedBodies - 5
+	r := httptest.NewRequest(http.MethodGet, "http://flat.test/", strings.NewReader("0123456789"))
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	rw := httptest.NewRecorder()
+	w.ServeHTTP(rw, r)
+	if rw.Code != http.StatusServiceUnavailable || w.bodies.used != maxBufferedBodies-5 {
+		t.Fatalf("status %d, used %d", rw.Code, maxBufferedBodies-w.bodies.used)
 	}
 }
