@@ -289,10 +289,12 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 		if err := os.Rename(trash, source); err != nil {
 			return err
 		}
-		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
+		// Persist the restored entry before the removal from the trash, so
+		// a crash between the syncs cannot leave the files at neither path.
+		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
 			return err
 		}
-		if err := syncDirectory(filepath.Join(s.cfg.DataDir, "flats")); err != nil {
+		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
 			return err
 		}
 		s.logf("recovered interrupted delete of %s: the flat still exists, so its storage was restored", op.From)
@@ -409,10 +411,12 @@ func (s *Service) quarantineOrphan(root, orphans, name string) (string, error) {
 		if err := os.Rename(filepath.Join(root, name), target); err != nil {
 			return "", err
 		}
-		if err := syncDirectory(root); err != nil {
+		// Persist the quarantined entry before the removal from root, so a
+		// crash between the syncs cannot leave the files at neither path.
+		if err := syncDirectory(orphans); err != nil {
 			return target, err
 		}
-		return target, syncDirectory(orphans)
+		return target, syncDirectory(root)
 	}
 	return "", fmt.Errorf("too many quarantined copies of %q", name)
 }
