@@ -22,10 +22,8 @@ import (
 // preview host or a rename redirect. A redirect that points at owner (the
 // flat being renamed) does not count: a flat may take its old slug back.
 func (s *Service) checkReserved(ctx context.Context, slugName, owner string) error {
-	for _, r := range s.cfg.Reserved {
-		if slugName == r {
-			return invalidf("invalid slug: %q is reserved for the Flats console", slugName)
-		}
+	if s.consoleNameReserved(slugName) {
+		return invalidf("invalid slug: %q is reserved for the Flats console", slugName)
 	}
 	s.mu.Lock()
 	_, isPreview := s.prevs[slugName]

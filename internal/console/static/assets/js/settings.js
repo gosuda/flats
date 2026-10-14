@@ -1,5 +1,5 @@
-// Settings: network providers, config.json, limits, the approvals queue
-// and agent setup.
+// Settings: network providers, console domains, operator keys, config.json,
+// limits, the approvals queue and agent setup.
 
 import { h, timeEl, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
@@ -34,20 +34,18 @@ const CONFIG_GROUPS = [
   ['Host', [
     ['host.management_addr', 'Management address', (c) => c.host.management_addr],
     ['host.local_addr', 'Local network address', (c) => c.host.local_addr],
-    ['host.console_host', 'Console host name', (c) => c.host.console_host],
     ['host.server_runtime', 'Server flats', (c) => (c.host.server_runtime ? 'on' : 'off')],
   ]],
   ['Network', [
-    ['network.private_backend', 'Console and private routes', (c) => c.network.private_backend],
-  ]],
-  ['Credentials', [
-    ['credentials.tailscale_authkey_file', 'Tailscale auth key file', (c) => (c.credentials.tailscale_authkey_file ? 'configured' : 'not configured')],
+    ['network.private_backend', 'Private routes', (c) => c.network.private_backend],
   ]],
 ];
 
 export function mount(main, _params, ctx) {
   ctx.setTitle('Settings');
   const providersSlot = h('div', null, loading());
+  const domainsSlot = h('div', null, loading());
+  const keysSlot = h('div', null, loading());
   const noticeSlot = h('div');
   const configSlot = h('div', null, loading());
   const limitsSlot = h('div', null, loading());
@@ -60,6 +58,8 @@ export function mount(main, _params, ctx) {
     h('div', { class: 'page-head' }, h('h1', { text: 'Settings' })),
     noticeSlot,
     card('Network providers', 'providers', providersSlot),
+    card('Console domains', 'console-domains', domainsSlot),
+    card('Keys', 'keys', keysSlot),
     card('Host configuration', 'configuration', configSlot),
     card('Limits', 'limits', limitsSlot),
     card('Approvals', 'approvals', approvalsSlot),
@@ -80,6 +80,8 @@ export function mount(main, _params, ctx) {
       fill(configSlot, errorPanel(err, 'Cannot load settings'));
       fill(limitsSlot);
       fill(providersSlot);
+      fill(domainsSlot);
+      fill(keysSlot);
       return;
     }
     if (!ctx.alive()) return;
@@ -88,12 +90,12 @@ export function mount(main, _params, ctx) {
     showNotice(data.config);
     fill(configSlot, configView(data.config));
     fill(limitsSlot, limitsForm(data, { ...opts, group: 'system' }));
-    try {
-      const { providers } = await api.providers();
-      if (ctx.alive()) fill(providersSlot, providerGroups(providers || [], data, opts));
-    } catch (err) {
-      if (ctx.alive()) fill(providersSlot, errorPanel(err, 'Cannot load network providers'));
-    }
+    const [prov, domains, keys] = await Promise.allSettled([api.providers(), api.consoleDomains(), api.keys()]);
+    if (!ctx.alive()) return;
+    const providers = prov.status === 'fulfilled' ? (prov.value.providers || []) : [];
+    fill(providersSlot, prov.status === 'fulfilled' ? providerGroups(providers, data, opts) : errorPanel(prov.reason, 'Cannot load network providers'));
+    fill(domainsSlot, domains.status === 'fulfilled' ? consoleDomains(domains.value, opts) : errorPanel(domains.reason, 'Cannot load the console domains'));
+    fill(keysSlot, keys.status === 'fulfilled' ? keysCard(keys.value.keys || [], providers, opts) : errorPanel(keys.reason, 'Cannot load the keys'));
   }
 }
 
@@ -203,15 +205,15 @@ function providerPanel(p, data, opts) {
 }
 
 function providerDetails(p, data, opts) {
-  if (p.id === 'zrok') return zrokDetails(p, data, opts);
-  if (p.id === 'netbird' || p.id === 'netbird-expose') return netbirdDetails(p, data, opts);
+  if (p.id === 'zrok') return zrokDetails(p);
+  if (p.id === 'netbird' || p.id === 'netbird-expose') return netbirdDetails(p);
   if (p.id === 'local') return p.address ? h('dl', { class: 'facts' }, h('dt', { text: 'Address' }), h('dd', null, h('code', { text: p.address }))) : null;
   if (p.id === 'portal') return [limitsForm(data, { ...opts, group: 'portal' }), p.enabled && p.status ? hostsTable(p.status) : null];
   if (!p.enabled) return null;
   if (p.id === 'tailscale') {
     return [
       h('dl', { class: 'facts' }, h('dt', { text: 'Auth key' }),
-        h('dd', { text: p.auth_key ? 'From credentials.tailscale_authkey_file.' : 'None. Each new node shows a login link below.' })),
+        h('dd', null, p.auth_key ? 'Stored. ' : 'None: each new node shows a login link below. ', keysLink('Manage it under Keys.'))),
       p.status ? hostsTable(p.status) : null,
     ];
   }
@@ -227,10 +229,10 @@ function providerDetails(p, data, opts) {
   return null;
 }
 
-// zrokDetails shows the zrok account: who is connected, and a form to connect
-// one or replace it with a new account token. With zrok.environment set in
-// config.json the account is managed outside Flats, with the zrok CLI.
-function zrokDetails(p, data, opts) {
+// zrokDetails shows the zrok account the provider uses. The account token is
+// managed under Keys; with zrok.environment set in config.json the account
+// is managed outside Flats, with the zrok CLI.
+function zrokDetails(p) {
   const facts = h('dl', { class: 'facts' },
     p.connected ? [
       h('dt', { text: 'Account' }), h('dd', { text: 'Connected' }),
@@ -244,64 +246,16 @@ function zrokDetails(p, data, opts) {
       h('p', { class: 'muted small', text: 'Uses the zrok environment set as zrok.environment in config.json; manage its account with the zrok CLI. Each public flat reserves its slug as a name in this namespace.' }),
       hosts];
   }
-  if (!p.connected) {
-    return [facts, zrokTokenForm(opts, {
-      label: 'Account token', submit: 'Connect',
-      help: 'Sign in at myzrok.io, open the zrok API console and copy the account token from its getting-started wizard. Flats registers this machine as an environment of that account and keeps the token in its data directory; it is never shown again. Turn zrok on once the account is connected.',
-      done: 'zrok account connected. Turn zrok on to use it.',
-    })];
-  }
-  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect account', disabled: !!p.enabled,
-    title: p.enabled ? 'Turn zrok off first' : '' });
-  disconnect.addEventListener('click', () => busy(disconnect, async () => {
-    const ok = await confirmDialog({
-      title: 'Disconnect the zrok account?',
-      body: [h('p', { text: 'Flats unregisters this machine from the zrok account and deletes the stored account token. Names this host reserved stay in the account; delete flats first to release them.' })],
-      confirmLabel: 'Disconnect',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await api.disconnectZrok(false);
-    } catch (err) {
-      // zrok may refuse the stored token (regenerated elsewhere): offer to
-      // forget the account here, leaving its removal to the zrok console.
-      const force = await confirmDialog({
-        title: 'zrok did not unregister this environment',
-        body: [errorPanel(err), h('p', { text: `Forget the account on this machine anyway? Environment ${p.environment_id || ''} may stay registered in your zrok account; remove it in the zrok console.` })],
-        confirmLabel: 'Forget it here',
-        danger: true,
-      });
-      if (!force) return;
-      try {
-        await api.disconnectZrok(true);
-      } catch (err2) {
-        await infoDialog('Cannot disconnect the zrok account', errorPanel(err2));
-        return;
-      }
-    }
-    toast('zrok account disconnected.', 'success');
-    await opts.reload();
-  }));
-  return [
-    facts,
-    h('p', { class: 'muted small', text: 'Each public flat reserves its slug as a name in this namespace, so its URL stays the same.' }),
-    hosts,
-    zrokTokenForm(opts, {
-      label: 'Replace with a new account token', submit: 'Replace account',
-      help: 'Connects the account of the new token in place of this one, for example after regenerating the token. The current account stays connected if the new token is refused. Refused while a flat is public through zrok.',
-      done: 'zrok account replaced.',
-      confirm: { title: 'Replace the zrok account?', body: 'Flats registers this machine with the account of the new token, then unregisters the current environment and deletes its token.' },
-    }),
-    h('div', { class: 'form-actions' }, disconnect),
-  ];
+  return [facts,
+    h('p', { class: 'muted small' }, p.connected
+      ? 'Each public flat reserves its slug as a name in this namespace, so its URL stays the same. '
+      : 'Connect a zrok account first, then turn zrok on. ', keysLink('Manage the account token under Keys.')),
+    hosts];
 }
 
-// netbirdDetails shows the NetBird peer both NetBird providers share: the
-// private mesh panel holds the setup key form and the disconnect button, the
-// Expose panel points at it. A setup key registers this machine as a peer
-// once and is never stored.
-function netbirdDetails(p, data, opts) {
+// netbirdDetails shows the NetBird peer both NetBird providers share. The
+// setup key that enrolls it is managed under Keys.
+function netbirdDetails(p) {
   // A binary built without NetBird cannot enroll a peer or turn it on.
   if (p.unsupported) return h('p', { class: 'alert alert-warn', text: p.unsupported });
   const facts = h('dl', { class: 'facts' },
@@ -317,40 +271,13 @@ function netbirdDetails(p, data, opts) {
       ? 'Uses the NetBird peer connected under NetBird. A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Anyone can open the URL.'
       : 'Connect the NetBird peer under NetBird first.' }), hosts];
   }
-  if (!p.connected) {
-    return [facts, netbirdKeyForm(opts)];
-  }
-  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect peer', disabled: !!p.in_use,
-    title: p.in_use ? 'Turn NetBird and NetBird Expose off first' : '' });
-  disconnect.addEventListener('click', () => busy(disconnect, async () => {
-    const ok = await confirmDialog({
-      title: 'Disconnect the NetBird peer?',
-      body: [h('p', { text: 'Flats deletes this peer’s identity from the data directory. The peer stays listed in the NetBird dashboard until you remove it there.' })],
-      confirmLabel: 'Disconnect',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await api.disconnectNetbird(false);
-    } catch (err) {
-      const force = await confirmDialog({
-        title: 'The NetBird peer could not be disconnected',
-        body: [errorPanel(err), h('p', { text: 'Forget the peer on this machine anyway? It may stay registered in NetBird; remove it in the dashboard.' })],
-        confirmLabel: 'Forget it here',
-        danger: true,
-      });
-      if (!force) return;
-      try {
-        await api.disconnectNetbird(true);
-      } catch (err2) {
-        await infoDialog('Cannot disconnect the NetBird peer', errorPanel(err2));
-        return;
-      }
-    }
-    toast('NetBird peer disconnected.', 'success');
-    await opts.reload();
-  }));
-  return [facts, hosts, h('div', { class: 'form-actions' }, disconnect)];
+  return [facts, h('p', { class: 'muted small' }, p.connected ? '' : 'Connect a peer first, then turn NetBird on. ',
+    keysLink('Manage the setup key and the peer under Keys.')), hosts];
+}
+
+// keysLink points to the Keys card.
+function keysLink(text) {
+  return h('a', { href: '#keys', text });
 }
 
 // netbirdKeyForm registers this machine as a NetBird peer with a setup key.
@@ -431,6 +358,319 @@ async function setHostProvider(p, info, enabled, etag) {
     await infoDialog(`Cannot turn ${enabled ? 'on' : 'off'} ${info.label}`, errorPanel(err));
     return false;
   }
+}
+
+// --- keys ---
+
+const KEY_INFO = {
+  tailscale: { label: 'Tailscale auth key', what: 'Logs in each new tailnet node: flats, previews and console domains. Nodes already on the tailnet keep their identity.' },
+  netbird: { label: 'NetBird setup key', what: 'Registers this machine as a NetBird peer once. Flats keeps it only until the peer is enrolled.' },
+  zrok: { label: 'zrok account token', what: 'Registers this machine as an environment of your zrok account.' },
+};
+
+const KEY_SOURCES = { console: 'the console', cli: 'flats key set', flag: 'a flats serve flag', env: 'an environment variable',
+  config: 'config.json (moved to flats.db)', unknown: 'unknown (connected before Flats recorded it)' };
+
+// keysCard lists every operator key the same way: its state, where it came
+// from and when, and the actions to set, replace or remove it. Values are
+// never shown.
+export function keysCard(keys, providers, opts) {
+  const byId = Object.fromEntries(providers.map((p) => [p.id, p]));
+  return [
+    h('p', { class: 'muted' }, 'Keys are stored in flats.db, encrypted with secret.key, and never shown again. They can also be given before the first start with ',
+      h('code', { text: 'flats key set' }), ' or a ', h('code', { text: 'flats serve' }),
+      ' flag or environment variable; those only fill in a key that is not stored yet.'),
+    ...keys.map((k) => keyRow(k, byId, opts)),
+  ];
+}
+
+function keyRow(k, providers, opts) {
+  const info = KEY_INFO[k.id] || { label: k.id, what: '' };
+  let state = k.set ? (k.id === 'tailscale' ? 'Stored' : 'Connected') : (k.waiting ? 'Waiting for the next start' : 'Not set');
+  if (k.unsupported) state = 'Not available';
+  const facts = [];
+  if (k.source) facts.push(h('dt', { text: 'Source' }), h('dd', { text: KEY_SOURCES[k.source] || k.source }));
+  if (k.updated_at) facts.push(h('dt', { text: 'Set' }), h('dd', null, h('time', { datetime: k.updated_at, title: dateTime(k.updated_at), text: relTime(k.updated_at) })));
+  if (k.environment_id) facts.push(h('dt', { text: 'Environment ID' }), h('dd', null, h('code', { text: k.environment_id })));
+  if (k.api_endpoint) facts.push(h('dt', { text: 'zrok service' }), h('dd', null, h('code', { text: k.api_endpoint })));
+  if (k.device_name) facts.push(h('dt', { text: 'Peer' }), h('dd', null, h('code', { text: k.device_name })));
+  if (k.id === 'netbird' && k.management_url) facts.push(h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: k.management_url })));
+  return h('article', { class: 'provider key' + (k.set ? ' is-on' : ''), id: 'key-' + k.id },
+    h('div', { class: 'provider-head' },
+      h('div', null, h('h4', null, info.label, h('span', { class: 'badge' + (k.set ? ' badge-ready' : ''), text: state })),
+        h('p', { class: 'muted small', text: info.what }))),
+    facts.length ? h('dl', { class: 'facts' }, facts) : null,
+    k.external_differs ? h('p', { class: 'alert alert-warn', text: 'The key given to this run by a flag or environment variable differs from the stored key. Flats uses the stored key; register a new one here to replace it.' }) : null,
+    k.last_error ? h('p', { class: 'alert alert-warn', text: `The last attempt to use this key failed: ${k.last_error}` }) : null,
+    keyActions(k, providers, opts));
+}
+
+function keyActions(k, providers, opts) {
+  if (k.id === 'tailscale') return tailscaleKeyActions(k, opts);
+  if (k.id === 'netbird') {
+    if (k.unsupported) return h('p', { class: 'alert alert-warn', text: k.unsupported });
+    const p = providers.netbird || {};
+    const expose = providers['netbird-expose'] || {};
+    return k.set ? netbirdDisconnect(!!(p.enabled || expose.enabled || p.in_use), opts) : netbirdKeyForm(opts);
+  }
+  if (k.id === 'zrok') {
+    if (!k.managed) return h('p', { class: 'muted small', text: 'zrok.environment in config.json names an environment managed with the zrok CLI; manage its account there.' });
+    const enabled = !!(providers.zrok && providers.zrok.enabled);
+    if (!k.set) {
+      return zrokTokenForm(opts, {
+        label: 'Account token', submit: 'Connect',
+        help: 'Sign in at myzrok.io, open the zrok API console and copy the account token from its getting-started wizard. Flats registers this machine as an environment of that account and keeps the token in its data directory; it is never shown again. Turn zrok on once the account is connected.',
+        done: 'zrok account connected. Turn zrok on to use it.',
+      });
+    }
+    return [
+      zrokTokenForm(opts, {
+        label: 'Replace with a new account token', submit: 'Replace account',
+        help: 'Connects the account of the new token in place of this one, for example after regenerating the token. The current account stays connected if the new token is refused. Refused while a flat is public through zrok.',
+        done: 'zrok account replaced.',
+        confirm: { title: 'Replace the zrok account?', body: 'Flats registers this machine with the account of the new token, then unregisters the current environment and deletes its token.' },
+      }),
+      zrokDisconnect(k, enabled, opts),
+    ];
+  }
+  return null;
+}
+
+// tailscaleKeyForm stores a Tailscale auth key; a stored one can be removed.
+function tailscaleKeyActions(k, opts) {
+  const id = 'tailscale-key';
+  const input = h('input', { type: 'password', id, name: 'key', autocomplete: 'off', spellcheck: 'false', required: true,
+    placeholder: 'tskey-auth-…' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: k.set ? 'Replace key' : 'Save key' });
+  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
+    h('label', { for: id, text: k.set ? 'Replace with a new auth key' : 'Auth key' }), input,
+    h('p', { class: 'muted small', text: 'In the Tailscale admin console, open Settings › Keys and generate a reusable auth key. Leave it untagged so console decisions record who made them. New nodes use it from now on; nodes already on the tailnet are not affected.' }),
+    h('div', { class: 'form-actions' }, submit));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const key = input.value.trim();
+    if (!key) { input.focus(); return; }
+    busy(submit, async () => {
+      try {
+        await api.setTailscaleKey(key);
+      } catch (err) {
+        await infoDialog('Cannot save the Tailscale auth key', errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast('Tailscale auth key saved.', 'success');
+      await opts.reload();
+    });
+  });
+  if (!k.set) return form;
+  const remove = h('button', { type: 'button', class: 'btn btn-small', text: 'Remove key' });
+  remove.addEventListener('click', () => busy(remove, async () => {
+    const ok = await confirmDialog({
+      title: 'Remove the Tailscale auth key?',
+      body: [h('p', { text: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.' })],
+      confirmLabel: 'Remove', danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deleteTailscaleKey();
+    } catch (err) {
+      await infoDialog('Cannot remove the Tailscale auth key', errorPanel(err));
+      return;
+    }
+    toast('Tailscale auth key removed.', 'success');
+    await opts.reload();
+  }));
+  return [form, h('div', { class: 'form-actions' }, remove)];
+}
+
+function zrokDisconnect(k, enabled, opts) {
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect account', disabled: enabled,
+    title: enabled ? 'Turn zrok off first' : '' });
+  disconnect.addEventListener('click', () => busy(disconnect, async () => {
+    const ok = await confirmDialog({
+      title: 'Disconnect the zrok account?',
+      body: [h('p', { text: 'Flats unregisters this machine from the zrok account and deletes the stored account token. Names this host reserved stay in the account; delete flats first to release them.' })],
+      confirmLabel: 'Disconnect',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.disconnectZrok(false);
+    } catch (err) {
+      // zrok may refuse the stored token (regenerated elsewhere): offer to
+      // forget the account here, leaving its removal to the zrok console.
+      const force = await confirmDialog({
+        title: 'zrok did not unregister this environment',
+        body: [errorPanel(err), h('p', { text: `Forget the account on this machine anyway? Environment ${k.environment_id || ''} may stay registered in your zrok account; remove it in the zrok console.` })],
+        confirmLabel: 'Forget it here',
+        danger: true,
+      });
+      if (!force) return;
+      try {
+        await api.disconnectZrok(true);
+      } catch (err2) {
+        await infoDialog('Cannot disconnect the zrok account', errorPanel(err2));
+        return;
+      }
+    }
+    toast('zrok account disconnected.', 'success');
+    await opts.reload();
+  }));
+  return h('div', { class: 'form-actions' }, disconnect);
+}
+
+function netbirdDisconnect(inUse, opts) {
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect peer', disabled: inUse,
+    title: inUse ? 'Turn NetBird and NetBird Expose off first' : '' });
+  disconnect.addEventListener('click', () => busy(disconnect, async () => {
+    const ok = await confirmDialog({
+      title: 'Disconnect the NetBird peer?',
+      body: [h('p', { text: 'Flats deletes this peer’s identity from the data directory. The peer stays listed in the NetBird dashboard until you remove it there.' })],
+      confirmLabel: 'Disconnect',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.disconnectNetbird(false);
+    } catch (err) {
+      const force = await confirmDialog({
+        title: 'The NetBird peer could not be disconnected',
+        body: [errorPanel(err), h('p', { text: 'Forget the peer on this machine anyway? It may stay registered in NetBird; remove it in the dashboard.' })],
+        confirmLabel: 'Forget it here',
+        danger: true,
+      });
+      if (!force) return;
+      try {
+        await api.disconnectNetbird(true);
+      } catch (err2) {
+        await infoDialog('Cannot disconnect the NetBird peer', errorPanel(err2));
+        return;
+      }
+    }
+    toast('NetBird peer disconnected.', 'success');
+    await opts.reload();
+  }));
+  return h('div', { class: 'form-actions' }, disconnect);
+}
+
+// --- console domains ---
+
+// consoleDomains lists the console's Tailscale names. Each is its own tailnet
+// node; names are only added and deleted, so a change of name is an addition
+// followed by a deletion.
+export function consoleDomains(view, opts) {
+  const domains = view.domains || [];
+  const intro = h('p', { class: 'muted' }, 'The console on your tailnet: each name is its own tailnet node at https://NAME.<tailnet>.ts.net, open to the devices your tailnet ACL allows. To change the name, add the new one, move your agents to it (',
+    h('code', { text: 'flats connect' }), '), then delete the old one. Add several to use them together.');
+  const rows = domains.map((d) => domainRow(d, view, domains.length, opts));
+  const retiring = (view.retiring || []).map((d) => retiringRow(d, view, opts));
+  const parts = [intro];
+  if (view.pinned) parts.push(h('p', { class: 'muted small', text: `Set by ${view.pinned}. Reinstall the service with flats install to manage the domains here.` }));
+  if (!domains.length) {
+    parts.push(h('p', { class: 'muted small', text: view.loopback
+      ? 'No console domain: the console is only on this machine’s loopback address.'
+      : 'No console domain.' }));
+  } else {
+    parts.push(h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', null, h('tr', null, ['Name', 'State', 'Address', ''].map((t) => h('th', { scope: 'col', text: t })))),
+      h('tbody', null, rows))));
+  }
+  if (retiring.length) {
+    parts.push(h('h3', { text: 'Being removed' }),
+      h('p', { class: 'muted small', text: 'These names were deleted, but their tailnet nodes are not logged out yet. They stay reserved until that succeeds; Flats retries at the next start.' }),
+      h('ul', { class: 'plain-list' }, retiring));
+  }
+  if (!view.pinned) parts.push(view.tailscale_on ? domainAddForm(view, opts)
+    : h('p', { class: 'muted small', text: 'Turn Tailscale on under Network providers to add a console domain.' }));
+  return parts;
+}
+
+function domainRow(d, view, count, opts) {
+  const login = d.state === 'needs-login' && (d.detail || '').match(/https?:\/\/\S+/)?.[0];
+  const state = d.conflict ? h('span', { class: 'badge badge-error', text: 'not served' })
+    : h('span', { class: 'badge badge-' + (d.state || 'starting'), text: d.state || 'starting' });
+  const lastViaConsole = count === 1 && !view.loopback;
+  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', disabled: lastViaConsole || !!view.pinned,
+    title: lastViaConsole ? 'The last console domain can only be deleted from the console on the loopback address' : '',
+    'aria-label': `Delete console domain ${d.name}` });
+  del.addEventListener('click', () => busy(del, () => deleteDomain(d, view, opts)));
+  return h('tr', null,
+    h('th', { scope: 'row' }, h('code', { text: d.name }), d.current ? h('span', { class: 'badge', text: 'this page' }) : null),
+    h('td', null, state),
+    h('td', null,
+      login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
+      d.url ? extLink(d.url) : null,
+      d.conflict ? h('div', { class: 'muted small', text: `Not served: ${d.conflict}. Delete this domain or rename that flat.` }) : null,
+      d.detail && !login && !d.conflict ? h('div', { class: 'muted small' }, linkify(d.detail)) : null),
+    h('td', null, view.pinned ? null : del));
+}
+
+function retiringRow(d, view, opts) {
+  const retry = h('button', { type: 'button', class: 'btn btn-small', text: 'Retry', 'aria-label': `Retry removing ${d.name}` });
+  retry.addEventListener('click', () => busy(retry, async () => {
+    try {
+      await api.deleteConsoleDomain(d.name, view.etag);
+    } catch (err) {
+      await infoDialog(`Cannot remove ${d.name}`, errorPanel(err));
+      return;
+    }
+    toast(`${d.name} removed.`, 'success');
+    await opts.reload();
+  }));
+  return h('li', { class: 'plain-row' },
+    h('div', null, h('code', { text: d.name }), d.error ? h('div', { class: 'muted small', text: d.error }) : null), retry);
+}
+
+async function deleteDomain(d, view, opts) {
+  const others = (view.domains || []).filter((x) => x.name !== d.name).map((x) => x.name);
+  const body = [h('p', { text: 'Flats removes the name and logs its tailnet node out. Agents connected through it must reconnect to another console address.' })];
+  if (d.current) body.push(h('p', { class: 'alert alert-warn', text: `You are using this domain. The page moves to ${others[0] || 'another domain'}.` }));
+  if (others.length) body.push(h('p', { class: 'muted small', text: `Remaining: ${others.join(', ')}.` }));
+  if (view.pending_approvals) body.push(h('p', { class: 'muted small', text: `${plural(view.pending_approvals, 'approval')} waiting; links that name this domain stop working. Open them from Approvals on another domain.` }));
+  const ok = await confirmDialog({ title: `Delete console domain ${d.name}?`, body, confirmLabel: 'Delete', danger: true });
+  if (!ok) return;
+  let res;
+  try {
+    res = await api.deleteConsoleDomain(d.name, view.etag);
+  } catch (err) {
+    await infoDialog(`Cannot delete ${d.name}`, errorPanel(err));
+    await opts.reload();
+    return;
+  }
+  toast(`${d.name} deleted.`, 'success');
+  if (d.current && res && res.redirect) {
+    window.location.href = res.redirect.replace(/\/$/, '') + '/settings#console-domains';
+    return;
+  }
+  await opts.reload();
+}
+
+function domainAddForm(view, opts) {
+  const id = 'console-domain-name';
+  const input = h('input', { type: 'text', id, name: 'name', autocomplete: 'off', spellcheck: 'false', required: true,
+    pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?', placeholder: 'flats' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Add' });
+  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
+    h('label', { for: id, text: 'Add a console domain' }), input,
+    h('p', { class: 'muted small', text: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name. The new node logs in with the Tailscale auth key under Keys, or shows a login link here.' }),
+    h('div', { class: 'form-actions' }, submit));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    busy(submit, async () => {
+      try {
+        await api.addConsoleDomain(name, view.etag);
+      } catch (err) {
+        await infoDialog(`Cannot add ${name}`, errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast(`${name} added. Its node joins the tailnet in a minute or two.`, 'success');
+      await opts.reload();
+    });
+  });
+  return form;
 }
 
 function humanKey(k) {

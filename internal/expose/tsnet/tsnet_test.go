@@ -977,7 +977,7 @@ func TestSharedACMEKey(t *testing.T) {
 
 func TestAuthKeyLoginIsStarting(t *testing.T) {
 	n := &Net{cfg: Config{AuthKey: "k"}, nodes: map[string]*node{}}
-	nd := &node{host: "h", backend: "NeedsLogin"}
+	nd := &node{host: "h", authKey: "k", backend: "NeedsLogin"}
 	if hi := n.hostInfoLocked(nd, time.Now()); hi.State != StateStarting || !strings.Contains(hi.Detail, "auth key") {
 		t.Errorf("new node with auth key: %s %q", hi.State, hi.Detail)
 	}
@@ -1137,5 +1137,38 @@ func TestServedHostsFollowsRename(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://flats.old.ts.net/", nil))
 	if w.Code != 403 {
 		t.Fatal("old status hostname retained", w.Code)
+	}
+}
+
+// SetAuthKey changes the key of nodes started afterwards only.
+func TestSetAuthKeyAppliesToNewNodes(t *testing.T) {
+	n, err := New(Config{Dir: t.TempDir(), AuthKey: "tskey-auth-first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	first := n.newNode("one", false, true)
+	n.mu.Unlock()
+	n.SetAuthKey("tskey-auth-second")
+	n.mu.Lock()
+	second := n.newNode("two", false, true)
+	n.mu.Unlock()
+	n.SetAuthKey("")
+	n.mu.Lock()
+	third := n.newNode("three", false, true)
+	n.mu.Unlock()
+	if first.authKey != "tskey-auth-first" || second.authKey != "tskey-auth-second" || third.authKey != "" {
+		t.Fatalf("keys = %q %q %q", first.authKey, second.authKey, third.authKey)
+	}
+	// Without a key a new node is a real needs-login, not "joining".
+	third.backend = "NeedsLogin"
+	n.mu.Lock()
+	hi := n.hostInfoLocked(third, time.Now())
+	n.mu.Unlock()
+	if hi.State != StateNeedsLogin {
+		t.Fatalf("keyless node = %s %q", hi.State, hi.Detail)
+	}
+	for _, nd := range []*node{first, second, third} {
+		nd.cancel()
 	}
 }

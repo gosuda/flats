@@ -137,7 +137,7 @@ func TestSave(t *testing.T) {
 		t.Errorf("file mode = %v, want 0600", m)
 	}
 	hist := historyFiles(t, dir)
-	if len(hist) != 1 || !historyName.MatchString(hist[0]) || !strings.HasPrefix(hist[0], "config.v1.") {
+	if len(hist) != 1 || !historyName.MatchString(hist[0]) || !strings.HasPrefix(hist[0], fmt.Sprintf("config.v%d.", CurrentSchemaVersion)) {
 		t.Fatalf("history = %v", hist)
 	}
 	if readString(t, filepath.Join(dir, historyDir, hist[0])) != orig {

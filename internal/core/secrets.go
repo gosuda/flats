@@ -39,6 +39,12 @@ func CheckSecretKey(ctx context.Context, dataDir string, st *store.Store) error 
 	if has {
 		return fmt.Errorf("%w: restore %s from the backup of this database; Flats will not create a new key", ErrSecretKeyMissing, path)
 	}
+	if has, err = st.HasSealedHostKeys(ctx); err != nil {
+		return err
+	}
+	if has {
+		return fmt.Errorf("%w: restore %s from the backup of this database, or remove the stored operator keys with `flats key rm` and register them again; Flats will not create a new key", ErrSecretKeyMissing, path)
+	}
 	return nil
 }
 

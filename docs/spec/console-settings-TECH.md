@@ -85,8 +85,10 @@ the lowest-priority external value above, and after the database step has
 committed removes the key from `config.json` through the config writer
 (keeping history). A crash between the two steps repeats the same idempotent
 import at the next start. A legacy service's `--authkey-file` is handled as
-the flag; the legacy migration no longer writes the config key and the
-per-start flag comparison no longer checks that flag.
+the flag at start. The legacy migration (also run by `flats install`) still
+records that path as the deprecated key without reading the file
+(`Document.SetDeprecated`), so the first start imports it, and the per-start
+flag comparison no longer checks that flag.
 
 zrok and NetBird (rule 7): the highest-priority value (flag, environment,
 then a waiting row) is used only when no account or peer is connected. The
@@ -161,7 +163,9 @@ checks the database binding, and opens the store.
 - Legacy services: `--network tailscale --console-host X` migrates to
   `["X"]`; with `--network local` the list is empty. The per-start flag
   comparison treats `--console-host X` as matching a list `["X"]`, or an empty
-  list while `private_backend` is not `tailscale`.
+  list while `private_backend` is not `tailscale`, and a legacy service that
+  passes `--console-host` pins the list in the console so the next start's
+  comparison keeps passing.
 
 ### Ownership record
 
@@ -182,8 +186,10 @@ when the name leaves the list, and deleted once `tsNet.Stop` succeeds.
 
 ### Reservation
 
-Core's reserved names become a function: the effective console list plus
-every `console_nodes` row plus names whose addition is in progress.
+Core's reserved names gain a function (`Config.ReservedNames`): the effective
+console list plus every `console_nodes` row, and core adds names whose
+addition is in progress. The fixed name `flats` stays reserved for flats but
+may be added as a console domain.
 `core.ReserveConsoleName(ctx, name, commit)` runs under the per-slug
 operation lock flat creation and rename use: it refuses a name held by a
 flat, a preview, a redirect or the reserved set, adds it to the in-progress
@@ -246,8 +252,9 @@ both take the settings ETag.
 
 ### Links (rule 16)
 
-`core.Config.ConsoleURL` becomes `func(context.Context) string`. The host
-returns, in order: the URL of the console domain recorded in the context if
+`core.Config` gains `ConsoleURLFor func(context.Context) string` next to
+`ConsoleURL`, and `ApprovalURL` takes the request context. The host returns,
+in order: the URL of the console domain recorded in the context if
 it is still listed and served; the URL of the first listed, served name; the
 loopback console address. MCP requests carry the same context, so approval
 links, their event messages, and status `console_url` / `mcp_url` follow the

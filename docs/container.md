@@ -83,18 +83,34 @@ tailnet nodes with HTTPS, and no ports need publishing:
 ```sh
 docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config init
 docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set network.permitted tailscale
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set tailscale.console_hosts flats
 docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set network.private_backend tailscale
 docker run -d --name flats --restart unless-stopped \
   -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-Each node prints a login link to `docker logs flats` and shows it in `docker
-exec flats flats status` until you log it in. To log nodes in automatically,
-mount a reusable, untagged auth key that uid `65532` can read outside the data
-volume, for example `-v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro"`,
-and set `credentials.tailscale_authkey_file` to
-`/run/secrets/tailscale-authkey`. A host started from `config.json` refuses
-`TS_AUTHKEY` and other `TS_*` variables.
+`tailscale.console_hosts` puts the console on the tailnet as
+`https://flats.<tailnet>.ts.net`; add or delete names later under Settings →
+Console domains. Each node prints a login link to `docker logs flats` and
+shows it in `docker exec flats flats status` until you log it in. To log nodes
+in automatically, give Flats a reusable, untagged auth key, in one of these
+ways:
+
+- Store it once on the volume while the container is stopped:
+  `docker run --rm -i -v flats-data:/data ghcr.io/gosuda/flats:latest key set tailscale < tailscale-authkey`.
+- Mount it as a secret and name it with `FLATS_TAILSCALE_AUTHKEY_FILE`, for
+  example `-v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro" -e
+  FLATS_TAILSCALE_AUTHKEY_FILE=/run/secrets/tailscale-authkey` (uid `65532`
+  must be able to read it).
+- Register it later in Settings → Keys.
+
+Flats stores the key in `flats.db`, encrypted with `secret.key`. A mounted
+key only fills in a missing one: after a key is stored, replacing the mounted
+file changes nothing, and a different value is reported as a warning.
+Register the new key in Settings → Keys or with `flats key set`. A host
+started from `config.json` refuses `TS_AUTHKEY` and other `TS_*` variables.
+zrok and NetBird keys work the same way with `flats key set zrok|netbird`,
+`FLATS_ZROK_TOKEN_FILE` or `FLATS_NETBIRD_SETUP_KEY_FILE`.
 
 For zrok, connect the account in the console with its account token. Flats
 keeps the zrok environment in `zrok-environment/` on the data volume, so it
@@ -129,9 +145,10 @@ arguments after the image name replace the command: start them with `serve`
 to pass flags to the host, as in the published-ports example, or name another
 subcommand, for example `docker run --rm ghcr.io/gosuda/flats:latest version`.
 With `config.json`, only `--listen`, `--local-addr`, `--console-host` and
-`--runtime` can be overridden for a run; set everything else in the file.
-The console's Settings page can change the system and Portal settings and
-`network.permitted` while the host runs, as on a native host.
+`--runtime` can be overridden for a run, plus the key file flags; set
+everything else in the file. The console's Settings page can change the
+system and Portal settings, `network.permitted`, the console domains and the
+keys while the host runs, as on a native host.
 
 ## Using the host
 
@@ -191,7 +208,8 @@ docker run --rm -v flats-data:/data:ro -v "$PWD:/backup" alpine \
 docker start flats
 ```
 
-Keep the Tailscale auth key, if you use one, backed up separately. Restore with
+The volume holds the operator keys in `flats.db` and the `secret.key` that
+opens them; keep the backup as private as the keys. Restore with
 the same or a newer release: an older binary refuses a newer `config.json` or
 database.
 

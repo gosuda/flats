@@ -131,7 +131,7 @@ func (s *Service) requestFrozen(ctx context.Context, slugName, action string, pa
 	sum := sha256.Sum256([]byte(slugName + "\n" + action + "\n" + string(raw)))
 	key := hex.EncodeToString(sum[:])
 	if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil {
-		url := s.ApprovalURL(existing.ID)
+		url := s.ApprovalURL(ctx, existing.ID)
 		return ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: url,
 			Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -143,13 +143,13 @@ func (s *Service) requestFrozen(ctx context.Context, slugName, action string, pa
 	}
 	if err := s.st.InsertApproval(ctx, a); err != nil {
 		if existing, ferr := s.st.FindOpenApprovalByKey(ctx, key); ferr == nil {
-			url := s.ApprovalURL(existing.ID)
+			url := s.ApprovalURL(ctx, existing.ID)
 			return ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: url,
 				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}, nil
 		}
 		return ActionResult{}, err
 	}
-	url := s.ApprovalURL(a.ID)
+	url := s.ApprovalURL(ctx, a.ID)
 	s.Event(ctx, slugName, "warn", "approval", fmt.Sprintf("%s requested via %s; waiting for the operator: %s", action, via, url), params)
 	return ActionResult{Status: "pending_approval", Approval: &a, ApprovalURL: url,
 		Message: "This action needs the operator's approval. Share the approval link with them; nothing changes until they approve it in the web console."}, nil
@@ -1242,7 +1242,7 @@ func (s *Service) openDraftPreviewLocked(ctx context.Context, slugName string) (
 	} else if len(ps) >= maxPreviews {
 		return PreviewView{}, fmt.Errorf("%w: %d previews are already open; close one first", ErrConflict, len(ps))
 	}
-	host := slug.PreviewHost(slugName)
+	host := s.previewHost(slugName)
 	dataDir := filepath.Join(s.flatDir(slugName), "previews", host)
 	if rev.Kind == "server" {
 		if err := snapshotData(s.dataDirOf(slugName), dataDir); err != nil {

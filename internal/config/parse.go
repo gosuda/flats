@@ -49,8 +49,42 @@ type registry struct {
 	steps   []Migration
 }
 
-// migrations is the production registry. Version 1 has no steps.
-var migrations = registry{current: CurrentSchemaVersion}
+// migrations is the production registry.
+var migrations = registry{current: CurrentSchemaVersion, steps: []Migration{
+	{From: 1, To: 2, Apply: consoleHostsV2},
+}}
+
+// consoleHostsV2 replaces host.console_host with tailscale.console_hosts.
+// A console ran on the tailnet only with network.private_backend
+// "tailscale", and only under a name tsnet accepted, so the list holds the
+// name exactly in that case and is empty otherwise. Nothing is rewritten:
+// the step never opens a console that was not open.
+func consoleHostsV2(doc map[string]any) error {
+	if _, ok := doc["tailscale"]; ok {
+		return unknownFileKey("tailscale")
+	}
+	name := "flats"
+	if host, ok := doc["host"].(map[string]any); ok {
+		if v, ok := host["console_host"]; ok {
+			s, ok := v.(string)
+			if !ok {
+				return fieldErr("host.console_host", "use a host name such as flats", "must be a string, not %s", describe(v))
+			}
+			name = s
+			delete(host, "console_host")
+		}
+	}
+	backend := "local"
+	if network, ok := doc["network"].(map[string]any); ok {
+		if v, ok := network["private_backend"].(string); ok {
+			backend = v
+		}
+	}
+	if backend == "tailscale" && ConsoleHostRE.MatchString(name) {
+		doc["tailscale"] = map[string]any{"console_hosts": []any{name}}
+	}
+	return nil
+}
 
 // Loaded is a parsed config file.
 type Loaded struct {

@@ -37,7 +37,6 @@ import (
 	"github.com/gosuda/flats/internal/forkwatch"
 	"github.com/gosuda/flats/internal/mcpx"
 	"github.com/gosuda/flats/internal/runtime"
-	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -45,7 +44,8 @@ import (
 //
 // With ConfigPath set the host runs in config mode: config.json is the only
 // source of host configuration, and only the four host keys may be changed
-// for one run (--listen, --local-addr, --console-host, --runtime). Without
+// for one run (--listen, --local-addr, --console-host, --runtime); the key
+// file flags seed flats.db. Without
 // it the host runs in legacy mode from <DataDir>/config.json: the first run
 // creates that file from the flags (migrating a legacy data directory), and
 // later runs refuse flags that differ from it.
@@ -55,12 +55,17 @@ type Options struct {
 	Listen      string // loopback management address
 	Network     string // tailscale | local; legacy private path
 	LocalAddr   string // local network address
-	AuthKeyFile string
-	ConsoleHost string
-	Portal      bool
-	Permit      []string // explicit host grants; does not publish a flat
-	Relays      []string
-	Runtime     bool
+	AuthKeyFile string // legacy alias of TailscaleKeyFile
+	// Key files whose keys are stored in flats.db when it holds none yet
+	// (zrok and NetBird: used when no account or peer is connected).
+	TailscaleKeyFile string
+	ZrokTokenFile    string
+	NetbirdKeyFile   string
+	ConsoleHost      string
+	Portal           bool
+	Permit           []string // explicit host grants; does not publish a flat
+	Relays           []string
+	Runtime          bool
 	// OperatorCredentialStdin and OperatorCredentialFile are accepted so
 	// existing services keep starting; the operator credential is no longer
 	// used and both are ignored with a warning.
@@ -101,8 +106,11 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&o.Listen, "listen", "127.0.0.1:7878", "loopback address for the CLI, local agents and the console")
 	fs.StringVar(&o.Network, "network", "local", "legacy mode: private path, tailscale or local. tailscale records a host grant and preserves Private Tailscale for pre-lifecycle flats; does not enable Funnel")
 	fs.StringVar(&o.LocalAddr, "local-addr", "127.0.0.1:7879", "address of the local network")
-	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "legacy mode: file holding a reusable, untagged Tailscale auth key for new nodes (else TS_AUTHKEY or interactive login)")
-	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console")
+	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "legacy alias of --tailscale-authkey-file")
+	fs.StringVar(&o.TailscaleKeyFile, "tailscale-authkey-file", "", "file holding a reusable Tailscale auth key; stored in flats.db when none is stored yet (also FLATS_TAILSCALE_AUTHKEY or FLATS_TAILSCALE_AUTHKEY_FILE)")
+	fs.StringVar(&o.ZrokTokenFile, "zrok-token-file", "", "file holding a zrok account token, used when no zrok account is connected (also FLATS_ZROK_TOKEN or FLATS_ZROK_TOKEN_FILE)")
+	fs.StringVar(&o.NetbirdKeyFile, "netbird-setup-key-file", "", "file holding a NetBird setup key, used when no NetBird peer is connected (also FLATS_NETBIRD_SETUP_KEY or FLATS_NETBIRD_SETUP_KEY_FILE)")
+	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console for this run (replaces tailscale.console_hosts)")
 	fs.BoolVar(&o.Portal, "portal", false, "legacy mode: grant Portal and attach it as the legacy public network")
 	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal, zrok, cloudflare-quick. Local needs no grant. Recorded in config.json and does not publish a flat")
 	fs.StringVar(&relays, "relays", "", "legacy mode: comma-separated Portal relays (default: Portal CLI default discovery)")
@@ -126,7 +134,7 @@ func ParseServeFlags(args []string) (Options, error) {
 		}
 		o.ConfigPath = abs
 	}
-	for _, path := range []*string{&o.OperatorCredentialFile, &o.AuthKeyFile} {
+	for _, path := range []*string{&o.OperatorCredentialFile, &o.AuthKeyFile, &o.TailscaleKeyFile, &o.ZrokTokenFile, &o.NetbirdKeyFile} {
 		if *path != "" {
 			abs, err := filepath.Abs(*path)
 			if err != nil {
@@ -184,7 +192,11 @@ func Serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("flats %s serving; console %s (loopback http://%s)", buildinfo.Get().Version, h.ConsoleURL(), h.Addr())
+	consoles := h.ConsoleURLs()
+	if len(consoles) == 0 {
+		consoles = []string{h.ConsoleURL()}
+	}
+	log.Printf("flats %s serving; console %s (loopback http://%s)", buildinfo.Get().Version, strings.Join(consoles, ", "), h.Addr())
 	<-ctx.Done()
 	log.Printf("shutting down")
 	return h.Close()
@@ -206,10 +218,12 @@ type Host struct {
 	localNet   *local.Net
 	pmu        sync.Mutex // guards tsNet, portalNet, zrokNet and quickNet, which the console can attach
 	tsNet      *tsnetx.Net
-	portalNet  *portal.Net
-	zrokNet    *zrok.Net
-	quickNet   *cfquick.Net
-	netbirdNet provider.NetbirdNet
+	// testTailnet replaces tsNet for console nodes in tests.
+	testTailnet core.PrivateNet
+	portalNet   *portal.Net
+	zrokNet     *zrok.Net
+	quickNet    *cfquick.Net
+	netbirdNet  provider.NetbirdNet
 	// For providers the console turns on while the host runs.
 	logf           func(string, ...any)
 	legacy         bool
@@ -217,22 +231,44 @@ type Host struct {
 	zrokOptions    zrok.Config
 	netbirdOptions provider.NetbirdConfig
 	networkPins    map[provider.ID]string // provider -> service flag that fixes it
-	console        string
-	consoleNet     core.PrivateNet // set when the console runs on the tailnet
-	consoleHost    string
-	dataLock       *os.File
-	closeOnce      sync.Once
-	closeErr       error
+	console        string                 // the loopback console address
+	// Console domains: cdMu serializes adding and deleting them; cdNamesMu
+	// guards cd.
+	cdMu      sync.Mutex
+	cdNamesMu sync.Mutex
+	cd        consoleState
+	// Operator keys: keyMu guards the Tailscale key state the console shows.
+	keyMu         sync.Mutex
+	tsKeyExternal string            // the flag or environment Tailscale key of this run
+	tsKeyDiffers  bool              // tsKeyExternal differs from the stored key
+	enrollErr     map[string]string // zrok/netbird enrollment errors from start inputs
+	// Background work (enrollment, node logouts) stops with the host.
+	bgMu      sync.Mutex // guards bgClosed against new background work
+	bgClosed  bool
+	bgCtx     context.Context
+	bgCancel  context.CancelFunc
+	bg        sync.WaitGroup
+	dataLock  *os.File
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// ConsoleURL is the operator console address (tailnet URL when available).
-func (h *Host) ConsoleURL() string {
-	// The tailnet name is learned after start, so ask the network each time
-	// rather than keeping the placeholder it returns before that.
-	if h.consoleNet != nil {
-		return h.consoleNet.URL(h.consoleHost)
+// background runs fn until it returns; Close cancels its context and
+// waits for it before closing the store it may use.
+func (h *Host) background(fn func(context.Context)) {
+	h.bgMu.Lock()
+	defer h.bgMu.Unlock()
+	if h.bgClosed {
+		return
 	}
-	return h.console
+	if h.bgCtx == nil {
+		h.bgCtx, h.bgCancel = context.WithCancel(context.Background())
+	}
+	h.bg.Add(1)
+	go func() {
+		defer h.bg.Done()
+		fn(h.bgCtx)
+	}()
 }
 
 // Addr is the loopback management address actually bound.
@@ -243,7 +279,8 @@ func (h *Host) Addr() string { return h.ln.Addr().String() }
 var configModeFlags = map[string]string{
 	"config": "", "operator-credential-stdin": "",
 	"listen": "host.management_addr", "local-addr": "host.local_addr",
-	"console-host": "host.console_host", "runtime": "host.server_runtime",
+	"console-host": "tailscale.console_hosts", "runtime": "host.server_runtime",
+	"tailscale-authkey-file": "", "zrok-token-file": "", "netbird-setup-key-file": "",
 }
 
 // setup turns the options into the startup inputs of their mode.
@@ -281,36 +318,6 @@ func (o Options) setup(logf func(string, ...any)) (setup, error) {
 // tailscaleEnv are the variables tsnet reads when it has no auth key.
 var tailscaleEnv = []string{"TS_AUTHKEY", "TS_AUTH_KEY", "TS_CLIENT_SECRET", "TS_CLIENT_ID", "TS_ID_TOKEN", "TS_CONTROL_URL"}
 
-// tailscaleAuthKey returns the auth key for new tailnet nodes. In config
-// mode the key comes only from credentials.tailscale_authkey_file: tsnet
-// would otherwise log in with a shell's TS_* variables or reach another
-// control server, so they are refused. Legacy mode still reads TS_AUTHKEY.
-func tailscaleAuthKey(c *config.Config, legacy bool, logf func(string, ...any)) (string, error) {
-	if !legacy {
-		var set []string
-		for _, name := range tailscaleEnv {
-			if os.Getenv(name) != "" {
-				set = append(set, name)
-			}
-		}
-		if len(set) > 0 {
-			return "", actionf("%s set in the environment, but tailscale is permitted in config.json: put the auth key in a 0600 file named by credentials.tailscale_authkey_file and unset the variables", strings.Join(set, ", "))
-		}
-	}
-	if path := c.Credentials.TailscaleAuthKeyFile; path != "" {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("read auth key file: %w", err)
-		}
-		return strings.TrimSpace(string(b)), nil
-	}
-	if key := os.Getenv("TS_AUTHKEY"); key != "" {
-		logf("warning: using TS_AUTHKEY from the environment; config.json cannot record it, so move the key to a 0600 file and set credentials.tailscale_authkey_file")
-		return key, nil
-	}
-	return "", nil
-}
-
 // Start builds and starts every component.
 func Start(ctx context.Context, o Options) (*Host, error) {
 	logf := log.Printf
@@ -323,7 +330,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, err
 	}
 	cfg := p.cfg
-	h := &Host{Opts: o, Config: cfg, ConfigPath: p.path, Store: p.st, dataLock: p.lock, logf: logf, legacy: s.legacy}
+	h := &Host{Opts: o, Config: cfg, ConfigPath: p.path, Store: p.st, dataLock: p.lock, logf: logf, legacy: s.legacy,
+		enrollErr: map[string]string{}, cd: consoleState{owned: map[string]bool{}, served: map[string]bool{}, conflicts: map[string]string{}}}
+	h.bgCtx, h.bgCancel = context.WithCancel(context.Background())
 	ok := false
 	defer func() {
 		if !ok {
@@ -344,9 +353,8 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	// The environment, the secret key and the credential files are checked
 	// before any network or worker starts.
 	permits := func(id provider.ID) bool { return slices.Contains(cfg.Network.Permitted, string(id)) }
-	var authKey string
 	if permits(provider.Tailscale) || permits(provider.Funnel) {
-		if authKey, err = tailscaleAuthKey(cfg, s.legacy, logf); err != nil {
+		if err := refuseTailscaleEnv(s.legacy); err != nil {
 			return nil, err
 		}
 	}
@@ -356,6 +364,19 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 		return nil, err
 	}
+	// Keys given to this run seed flats.db; the stored Tailscale key wins.
+	keys, err := readKeyInputs(o, s.legacy, deprecatedAuthKeyFile(cfg))
+	if err != nil {
+		return nil, err
+	}
+	authKey, differs, err := resolveTailscaleKey(ctx, dataDir, st, keys.tailscale, time.Now(), logf)
+	if err != nil {
+		return nil, err
+	}
+	if keys.tailscale.source != core.KeySourceConfig {
+		h.tsKeyExternal = keys.tailscale.value
+	}
+	h.tsKeyDiffers = differs
 	if cfg.Credentials.OperatorFile != "" || o.OperatorCredentialStdin || o.OperatorCredentialFile != "" {
 		logf("warning: the operator credential is no longer used; ignoring credentials.operator_file and --operator-credential-*. Console decisions rely on the console's same-origin checks")
 	}
@@ -478,17 +499,27 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if s.legacy {
 		h.networkPins = legacyNetworkPins(o)
 	}
-	h.console = "http://" + cfg.Host.ManagementAddr
-	if useTailscale {
-		h.consoleNet, h.consoleHost = h.Private, cfg.Host.ConsoleHost
+	if s.legacy && o.Set["console-host"] {
+		settings.PinConsoleHosts("the service's --console-host flag")
 	}
+	h.console = "http://" + cfg.Host.ManagementAddr
 	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
-		ConsoleURL: h.ConsoleURL, PrivateBackend: cfg.Network.PrivateBackend, Reserved: []string{cfg.Host.ConsoleHost}, Logf: logf}
+		ConsoleURL: h.ConsoleURL, ConsoleURLFor: h.ConsoleURLFor, PrivateBackend: cfg.Network.PrivateBackend,
+		// "flats" is the console's usual tailnet name: kept free for it, as before.
+		Reserved: []string{"flats"}, ReservedNames: h.consoleReserved, Logf: logf}
 	svc, err := core.New(ctx, coreCfg)
 	if err != nil {
 		return nil, err
 	}
 	h.Svc = svc
+	// The deprecated key file path goes once its key is in flats.db.
+	if cfg.Credentials.TailscaleAuthKeyFile != "" {
+		if err := svc.DropDeprecatedAuthKeyFile(); err != nil {
+			logf("warning: remove credentials.tailscale_authkey_file from %s: %v; it is read again at the next start", p.path, err)
+		} else {
+			logf("removed credentials.tailscale_authkey_file from %s: the Tailscale auth key is kept in flats.db", p.path)
+		}
+	}
 
 	apiSrv := &api.Server{Svc: svc, System: h}
 	mux := http.NewServeMux()
@@ -507,14 +538,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
 	}
-	if !useTailscale {
-		h.console = "http://" + h.ln.Addr().String()
-	}
+	h.console = "http://" + h.ln.Addr().String()
 	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
 		logf("warning: the management API listens on %s, which is not a loopback address", h.ln.Addr())
-	}
-	if err := slug.Validate(cfg.Host.ConsoleHost); err != nil {
-		logf("warning: host.console_host %q is not a valid host name; flats cannot use it as a tailnet name", cfg.Host.ConsoleHost)
 	}
 	h.srv = &http.Server{Handler: loopbackGuard(h.ln.Addr(), mux), ReadHeaderTimeout: 15 * time.Second}
 	go func() {
@@ -522,14 +548,13 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 			logf("management server: %v", err)
 		}
 	}()
-	if useTailscale {
-		// The tsnet identity middleware sets Tailscale-User-Login from WhoIs
-		// on this node, so console decisions here record who made them.
-		node := &api.HostGuard{Hosts: h.consoleNames, Ports: []string{"", "80", "443"}, Next: api.TailnetIdentity(mux)}
-		if _, err := h.Private.Serve(ctx, cfg.Host.ConsoleHost, node, false); err != nil {
-			logf("console node %s: %v", cfg.Host.ConsoleHost, err)
-		}
+	// Each console domain is its own tailnet node. The tsnet identity
+	// middleware sets Tailscale-User-Login from WhoIs on it, so console
+	// decisions there record who made them.
+	if err := h.startConsoleDomains(ctx); err != nil {
+		return nil, err
 	}
+	h.background(func(ctx context.Context) { h.enrollWaiting(ctx, keys) })
 	ok = true
 	return h, nil
 }
@@ -647,41 +672,33 @@ func loopbackGuard(addr net.Addr, next http.Handler) http.Handler {
 	return &api.HostGuard{Hosts: func() []string { return hosts }, Ports: ports, Next: next}
 }
 
-// consoleNames are the tailnet names of the console node: the configured
-// host, and its MagicDNS name and first label once the node knows them
-// (control may have renamed a duplicate to e.g. flats-1).
-func (h *Host) consoleNames() []string {
-	names := []string{h.Config.Host.ConsoleHost}
-	if u, err := url.Parse(h.Private.URL(h.Config.Host.ConsoleHost)); err == nil {
-		if fqdn := u.Hostname(); fqdn != "" && !strings.Contains(fqdn, "<") {
-			short, _, _ := strings.Cut(fqdn, ".")
-			names = append(names, fqdn, short)
-		}
-	}
-	return names
-}
-
 // SystemStatus is returned by /api/status and the console settings page.
 type SystemStatus struct {
 	// Version is Build.Version, kept for clients that read it here.
-	Version    string                  `json:"version"`
-	Build      buildinfo.Info          `json:"build"`
-	DataDir    string                  `json:"data_dir"`
-	ConsoleURL string                  `json:"console_url"`
-	MCPURL     string                  `json:"mcp_url"`
-	LocalURL   string                  `json:"local_url"`
-	Private    core.NetStatus          `json:"private"`
-	Public     *core.NetStatus         `json:"public,omitempty"`
-	Runtime    bool                    `json:"server_flats"`
-	Grants     []string                `json:"provider_grants,omitempty"`
-	Providers  []core.ExposureEndpoint `json:"providers"`
-	Redirects  map[string]string       `json:"redirects,omitempty"`
+	Version    string         `json:"version"`
+	Build      buildinfo.Info `json:"build"`
+	DataDir    string         `json:"data_dir"`
+	ConsoleURL string         `json:"console_url"`
+	// ConsoleURLs lists every console domain the host serves, in order.
+	ConsoleURLs []string                `json:"console_urls"`
+	MCPURL      string                  `json:"mcp_url"`
+	LocalURL    string                  `json:"local_url"`
+	Private     core.NetStatus          `json:"private"`
+	Public      *core.NetStatus         `json:"public,omitempty"`
+	Runtime     bool                    `json:"server_flats"`
+	Grants      []string                `json:"provider_grants,omitempty"`
+	Providers   []core.ExposureEndpoint `json:"providers"`
+	Redirects   map[string]string       `json:"redirects,omitempty"`
 }
 
 // Status implements api.System.
 func (h *Host) Status(ctx context.Context) any {
-	console := h.ConsoleURL() // read once so console_url and mcp_url agree
-	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: console, MCPURL: strings.TrimSuffix(console, "/") + "/mcp",
+	console := h.ConsoleURLFor(ctx) // read once so console_url and mcp_url agree
+	urls := h.ConsoleURLs()
+	if urls == nil {
+		urls = []string{}
+	}
+	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: console, ConsoleURLs: urls, MCPURL: strings.TrimSuffix(console, "/") + "/mcp",
 		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
 		s.Providers = h.Providers.HostStatus()
@@ -709,6 +726,12 @@ func (h *Host) Close() error {
 				errs = append(errs, fmt.Errorf("%s: %w", component, err))
 			}
 		}
+		h.bgMu.Lock()
+		h.bgClosed = true
+		h.bgMu.Unlock()
+		if h.bgCancel != nil {
+			h.bgCancel()
+		}
 		if h.srv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := h.srv.Shutdown(ctx)
@@ -718,6 +741,7 @@ func (h *Host) Close() error {
 				collect("management close", h.srv.Close())
 			}
 		}
+		h.bg.Wait()
 		if h.Svc != nil {
 			collect("core shutdown", h.Svc.Close())
 		}

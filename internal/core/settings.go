@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -338,6 +339,107 @@ func (s *SettingsSource) setPermitted(ids []string, ifMatch string) (string, err
 	return s.etag(), nil
 }
 
+// consoleHosts returns tailscale.console_hosts in effect, including this
+// run's --console-host override, and what pins it ("" when the console may
+// change it).
+func (s *SettingsSource) consoleHosts() ([]string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var overrides map[string]string
+	if s.file != nil {
+		overrides = s.file.Overrides
+	}
+	c, err := s.doc.Effective(overrides)
+	if err != nil {
+		return nil, ""
+	}
+	pin := s.pinned[consoleHostsKey]
+	if _, ok := overrides[consoleHostsKey]; ok {
+		pin = "the service's --console-host flag"
+	}
+	return slices.Clone(c.Tailscale.ConsoleHosts), pin
+}
+
+// PinConsoleHosts refuses console changes to the console domains: by names
+// what sets them, such as a legacy service's --console-host flag, which the
+// next start compares with the list.
+func (s *SettingsSource) PinConsoleHosts(by string) { s.Pin(consoleHostsKey, by) }
+
+const consoleHostsKey = "tailscale.console_hosts"
+
+// setConsoleHosts saves tailscale.console_hosts, as a settings change does.
+// It refuses while a --console-host flag sets the list for this run.
+func (s *SettingsSource) setConsoleHosts(names []string, ifMatch string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	by := s.pinned[consoleHostsKey]
+	if s.file != nil {
+		if _, ok := s.file.Overrides[consoleHostsKey]; ok {
+			by = "the service's --console-host flag"
+		}
+	}
+	if by != "" {
+		return "", withKind(ErrConfigOverridden, fmt.Errorf("the console domains are set by %s; reinstall the service with `flats install` to manage them here", by))
+	}
+	if err := s.checkMatch(ifMatch); err != nil {
+		return "", err
+	}
+	apply := func(d *config.Document) error {
+		raw, err := json.Marshal(names)
+		if err != nil {
+			return err
+		}
+		if err := d.Set(consoleHostsKey, string(raw)); err != nil {
+			return err
+		}
+		return d.Validate()
+	}
+	if err := s.commit(ifMatch, apply); err != nil {
+		return "", err
+	}
+	return s.etag(), nil
+}
+
+// dropDeprecatedAuthKeyFile removes credentials.tailscale_authkey_file from
+// config.json once its key is stored in flats.db.
+func (s *SettingsSource) dropDeprecatedAuthKeyFile() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.Stored(authKeyFileKey); !ok {
+		return nil
+	}
+	return s.commit("", func(d *config.Document) error { return d.Unset(authKeyFileKey) })
+}
+
+const authKeyFileKey = "credentials.tailscale_authkey_file"
+
+// ConsoleHosts returns the console domains in effect and what pins them.
+func (s *Service) ConsoleHosts() ([]string, string) { return s.settings.consoleHosts() }
+
+// SetConsoleHosts saves the console domain list against the settings ETag.
+func (s *Service) SetConsoleHosts(names []string, ifMatch string) (string, error) {
+	return s.settings.setConsoleHosts(names, ifMatch)
+}
+
+// DropDeprecatedAuthKeyFile removes credentials.tailscale_authkey_file from
+// config.json; the caller has stored its key in flats.db first.
+func (s *Service) DropDeprecatedAuthKeyFile() error { return s.settings.dropDeprecatedAuthKeyFile() }
+
+// CheckSettingsMatch refuses a conditional change whose ETag is not the
+// current one, before the caller does anything else.
+func (s *Service) CheckSettingsMatch(ifMatch string) error {
+	s.settings.mu.Lock()
+	defer s.settings.mu.Unlock()
+	return s.settings.checkMatch(ifMatch)
+}
+
+// SettingsETag returns the current settings ETag.
+func (s *Service) SettingsETag() string {
+	s.settings.mu.Lock()
+	defer s.settings.mu.Unlock()
+	return s.settings.etag()
+}
+
 func errChangedOnDisk() error {
 	return withKind(ErrConfigChanged, errors.New("config.json changed on disk since Flats loaded it; restart Flats to load the file, then retry"))
 }
@@ -365,9 +467,11 @@ type ConfigView struct {
 	Host          struct {
 		ManagementAddr string `json:"management_addr"`
 		LocalAddr      string `json:"local_addr"`
-		ConsoleHost    string `json:"console_host"`
 		ServerRuntime  bool   `json:"server_runtime"`
 	} `json:"host"`
+	Tailscale struct {
+		ConsoleHosts []string `json:"console_hosts"`
+	} `json:"tailscale"`
 	Network struct {
 		Permitted      []string `json:"permitted"`
 		PrivateBackend string   `json:"private_backend"`
@@ -402,7 +506,8 @@ func (s *SettingsSource) view() (*ConfigView, error) {
 		v.Pinned = map[string]string{}
 	}
 	v.Host.ManagementAddr, v.Host.LocalAddr = c.Host.ManagementAddr, c.Host.LocalAddr
-	v.Host.ConsoleHost, v.Host.ServerRuntime = c.Host.ConsoleHost, c.Host.ServerRuntime
+	v.Host.ServerRuntime = c.Host.ServerRuntime
+	v.Tailscale.ConsoleHosts = slices.Clone(c.Tailscale.ConsoleHosts)
 	v.Network.Permitted, v.Network.PrivateBackend = c.Network.Permitted, c.Network.PrivateBackend
 	v.Credentials.OperatorFile = c.Credentials.OperatorFile != ""
 	v.Credentials.TailscaleAuthKeyFile = c.Credentials.TailscaleAuthKeyFile != ""

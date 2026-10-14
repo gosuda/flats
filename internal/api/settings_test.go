@@ -145,7 +145,7 @@ func TestSettingsDescribeConfig(t *testing.T) {
 	if c == nil || c.Mode != "config" || c.SchemaVersion != config.CurrentSchemaVersion || c.ETag != hash || etag != strconv.Quote(hash) || c.ChangedOnDisk {
 		t.Fatalf("config = %+v, ETag header %q, file hash %s", c, etag, hash)
 	}
-	if c.Host.ManagementAddr != "127.0.0.1:9999" || c.Host.LocalAddr != "127.0.0.1:7879" || c.Host.ConsoleHost != "flats" || !c.Host.ServerRuntime {
+	if c.Host.ManagementAddr != "127.0.0.1:9999" || c.Host.LocalAddr != "127.0.0.1:7879" || len(c.Tailscale.ConsoleHosts) != 0 || !c.Host.ServerRuntime {
 		t.Fatalf("host = %+v", c.Host)
 	}
 	if !slices.Equal(c.Network.Permitted, []string{"portal"}) || c.Network.PrivateBackend != "local" {

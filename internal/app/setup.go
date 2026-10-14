@@ -478,7 +478,7 @@ var hostFlags = []struct {
 }{
 	{"listen", "host.management_addr", func(o Options) string { return o.Listen }},
 	{"local-addr", "host.local_addr", func(o Options) string { return o.LocalAddr }},
-	{"console-host", "host.console_host", func(o Options) string { return o.ConsoleHost }},
+	{"console-host", "tailscale.console_hosts", func(o Options) string { return o.ConsoleHost }},
 	{"runtime", "host.server_runtime", func(o Options) string { return strconv.FormatBool(o.Runtime) }},
 }
 
@@ -490,11 +490,13 @@ func legacyHostValues(o Options) (map[string]string, []string) {
 	values, notes := map[string]string{}, []string(nil)
 	scratch, _ := config.New(config.NewInstanceID(), string(filepath.Separator))
 	for _, hf := range hostFlags {
-		if !o.Set[hf.flag] {
+		// --console-host only named a console on the tailnet; legacyConsoleHosts
+		// decides it with the private backend.
+		if !o.Set[hf.flag] || hf.flag == "console-host" {
 			continue
 		}
 		v := hf.value(o)
-		if host, port, err := net.SplitHostPort(v); err == nil && hf.flag != "console-host" {
+		if host, port, err := net.SplitHostPort(v); err == nil {
 			if _, err := strconv.ParseUint(port, 10, 16); err != nil && port != "" {
 				if n, err := net.LookupPort("tcp", port); err == nil {
 					notes = append(notes, fmt.Sprintf("--%s %s is stored as port %d", hf.flag, v, n))
@@ -520,6 +522,33 @@ func legacyHostValues(o Options) (map[string]string, []string) {
 		}
 	}
 	return values, notes
+}
+
+// legacyConsoleHosts is the console domain list a legacy service had: the
+// --console-host name (default flats) on the tailnet when the private
+// backend is Tailscale and tsnet accepts the name, else none.
+func legacyConsoleHosts(o Options, backend string) ([]string, string) {
+	name := o.ConsoleHost
+	if !o.Set["console-host"] || name == "" {
+		name = "flats"
+	}
+	if backend != "tailscale" {
+		return []string{}, ""
+	}
+	if !config.ConsoleHostRE.MatchString(name) {
+		return []string{}, fmt.Sprintf("--console-host %s is not a tailnet host name, so the console never ran on the tailnet; tailscale.console_hosts stays empty", name)
+	}
+	return []string{name}, ""
+}
+
+// effectiveBackend is network.private_backend of doc, or its default.
+func effectiveBackend(doc *config.Document) string {
+	if v, ok := doc.Stored("network.private_backend"); ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return "local"
 }
 
 // flagRelays returns the relays of --relays, or none (and a note) when
@@ -646,6 +675,15 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 			return nil, err
 		}
 	}
+	hosts, hostNote := legacyConsoleHosts(o, effectiveBackend(doc))
+	if hostNote != "" {
+		note("%s", hostNote)
+	}
+	if len(hosts) > 0 {
+		if err := set("tailscale.console_hosts", strings.Join(hosts, ","), "--console-host "+o.ConsoleHost); err != nil {
+			return nil, err
+		}
+	}
 
 	for _, k := range systemSettings {
 		v, ok := old.Settings[k]
@@ -725,13 +763,15 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 		}
 	}
 
-	if o.Set["operator-credential-file"] && o.OperatorCredentialFile != "" {
-		if err := set("credentials.operator_file", o.OperatorCredentialFile, "--operator-credential-file"); err != nil {
-			return nil, err
+	// The key itself is read at the first start, which stores it in flats.db
+	// and removes the path again.
+	if o.AuthKeyFile != "" {
+		if err := doc.SetDeprecated("credentials.tailscale_authkey_file", o.AuthKeyFile); err != nil {
+			return nil, actionf("--authkey-file cannot be stored in config.json: %v", err)
 		}
 	}
-	if o.AuthKeyFile != "" {
-		if err := set("credentials.tailscale_authkey_file", o.AuthKeyFile, "--authkey-file"); err != nil {
+	if o.Set["operator-credential-file"] && o.OperatorCredentialFile != "" {
+		if err := set("credentials.operator_file", o.OperatorCredentialFile, "--operator-credential-file"); err != nil {
 			return nil, err
 		}
 	}
@@ -785,7 +825,7 @@ func prepareLegacyPrivateUpgrade(ctx context.Context, st *store.Store, o Options
 func comparedFlags(o Options) []string {
 	var out []string
 	for _, name := range []string{"listen", "local-addr", "console-host", "runtime", "network", "portal", "permit",
-		"relays", "authkey-file", "operator-credential-file"} {
+		"relays", "operator-credential-file"} {
 		if o.Set[name] {
 			out = append(out, name)
 		}
@@ -827,8 +867,10 @@ func flagConflicts(c *config.Config, o Options) []string {
 	if r, _ := flagRelays(o); len(r) > 0 && !slices.Equal(r, c.Portal.Relays) {
 		differ("relays", strings.Join(o.Relays, ","), "portal.relays", c.Portal.Relays)
 	}
-	if o.Set["authkey-file"] && o.AuthKeyFile != c.Credentials.TailscaleAuthKeyFile {
-		differ("authkey-file", o.AuthKeyFile, "credentials.tailscale_authkey_file", c.Credentials.TailscaleAuthKeyFile)
+	if o.Set["console-host"] {
+		if want, _ := legacyConsoleHosts(o, c.Network.PrivateBackend); !slices.Equal(want, c.Tailscale.ConsoleHosts) {
+			differ("console-host", o.ConsoleHost, "tailscale.console_hosts", c.Tailscale.ConsoleHosts)
+		}
 	}
 	if o.Set["operator-credential-file"] && o.OperatorCredentialFile != c.Credentials.OperatorFile {
 		differ("operator-credential-file", o.OperatorCredentialFile, "credentials.operator_file", c.Credentials.OperatorFile)

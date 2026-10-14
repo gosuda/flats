@@ -93,14 +93,21 @@ type Config struct {
 	// frozen defaults in memory.
 	Settings   *SettingsSource
 	ConsoleURL func() string
+	// ConsoleURLFor, when set, is the console address for a request: the
+	// console domain the request came through, else what ConsoleURL says.
+	// Approval links use it so they open where the agent connected.
+	ConsoleURLFor func(context.Context) string
 	// PrivateBackend is network.private_backend. When it is "tailscale" the
 	// operator chose the tailnet for the console and private routes, so new
 	// flats are allowed on Tailscale from the start instead of loopback only.
 	PrivateBackend string
 	// Reserved are host names flats may not use (e.g. the console host).
 	Reserved []string
-	Now      func() time.Time
-	Logf     func(format string, args ...any)
+	// ReservedNames, when set, returns more such names at each check: the
+	// console domains and the console nodes still being retired.
+	ReservedNames func() []string
+	Now           func() time.Time
+	Logf          func(format string, args ...any)
 }
 
 // Service is the Flats core.
@@ -111,12 +118,15 @@ type Service struct {
 	logf  func(string, ...any)
 	locks sync.Map // slug -> *sync.Mutex
 
-	docsMu        sync.Mutex
-	docsRefs      map[string]int
-	mu            sync.Mutex
-	live          map[string]*liveFlat // slug -> state
-	prevs         map[string]*preview  // host -> preview
-	redir         map[string]*redirect // old slug -> redirect being served
+	docsMu   sync.Mutex
+	docsRefs map[string]int
+	mu       sync.Mutex
+	live     map[string]*liveFlat // slug -> state
+	prevs    map[string]*preview  // host -> preview
+	redir    map[string]*redirect // old slug -> redirect being served
+	// consoleAdding holds console domains whose addition is in progress;
+	// guarded by mu.
+	consoleAdding map[string]bool
 	quotaWarned   map[string]time.Time
 	stop          chan struct{}
 	wg            sync.WaitGroup
@@ -1677,9 +1687,16 @@ func (s *Service) requestApproval(ctx context.Context, slugName, action string, 
 	return s.requestFrozen(ctx, slugName, action, params, via, reason)
 }
 
-// ApprovalURL is the console address where the operator decides approval id.
-func (s *Service) ApprovalURL(id string) string {
-	return strings.TrimSuffix(s.cfg.ConsoleURL(), "/") + "/approvals/" + id
+// ApprovalURL is the console address where the operator decides approval
+// id, on the console domain the request came through when there is one.
+func (s *Service) ApprovalURL(ctx context.Context, id string) string {
+	base := ""
+	if s.cfg.ConsoleURLFor != nil {
+		base = s.cfg.ConsoleURLFor(ctx)
+	} else {
+		base = s.cfg.ConsoleURL()
+	}
+	return strings.TrimSuffix(base, "/") + "/approvals/" + id
 }
 
 // SetVisibility requests a private or public change. Both directions, from
@@ -1966,7 +1983,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	} else if len(ps) >= maxPreviews {
 		return PreviewView{}, fmt.Errorf("%w: %d previews are already open; close one first", ErrConflict, len(ps))
 	}
-	host := slug.PreviewHost(slugName)
+	host := s.previewHost(slugName)
 	dataDir := filepath.Join(s.flatDir(slugName), "previews", host)
 	if v.Kind == "server" {
 		if quota := s.diskQuota(); quota > 0 {

@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ import (
 )
 
 // CurrentSchemaVersion is the config.json format this binary reads and writes.
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 2
 
 // Source tells where an effective value came from.
 type Source string
@@ -64,10 +65,13 @@ type spec struct {
 	check    func(any) (any, error) // validates and normalizes; nil = type only
 	hint     string
 	override bool // may be overridden for one run (SourceFlag)
+	// deprecated keys are still read from a file but Set refuses them; the
+	// host consumes and removes them.
+	deprecated string
 }
 
 // sections lists the top-level objects in file order.
-var sections = []string{"host", "network", "system", "portal", "zrok", "netbird", "credentials"}
+var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "credentials"}
 
 // specs lists every key in file order. The defaults are frozen.
 var specs = []spec{
@@ -79,10 +83,6 @@ var specs = []spec{
 		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7878"},
 	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkAddr, override: true,
 		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7879"},
-	// Any console host `flats serve --console-host` accepted stays valid;
-	// serve warns about one that is not a valid flat host name.
-	{key: "host.console_host", kind: kindString, def: "flats", override: true,
-		hint: "use a host name such as flats"},
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
@@ -99,6 +99,10 @@ var specs = []spec{
 		hint: `use "tailscale-funnel", "portal", "zrok", "cloudflare-quick" or "netbird-expose", or "" for none`},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
 	// numbers everywhere), as the settings table did.
+	// The console's tailnet names, in the order they were added. Each one is
+	// its own tailnet node. A non-empty list runs the console on Tailscale.
+	{key: "tailscale.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts, override: true,
+		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off the tailnet"},
 	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
 	intSpec("system.keep_versions", 10, 0, MaxInt),
 	intSpec("system.disk_quota_bytes", 30<<30, 0, MaxInt),
@@ -132,8 +136,10 @@ var specs = []spec{
 		hint: "use a peer name of 1 to 63 lowercase letters, digits and '-'"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
+	// Read once at start into flats.db, then removed from the file.
 	{key: "credentials.tailscale_authkey_file", kind: kindString, check: checkAbsPath,
-		hint: "use an absolute path, or unset the key to log in interactively"},
+		hint:       "unset it; register the key in the console, with `flats key set tailscale` or with `flats serve --tailscale-authkey-file`",
+		deprecated: "the Tailscale auth key is kept in flats.db; register it in the console, with `flats key set tailscale` or with `flats serve --tailscale-authkey-file`"},
 }
 
 // MaxInt is the largest system.* value, 2^53-1.
@@ -241,6 +247,25 @@ func (d *Document) SchemaVersion() int { return d.version }
 // or "false"; lists are a JSON array (`["a","b"]`) or comma-separated items
 // (`a, b`), where blank items are skipped and "" is the empty list.
 func (d *Document) Set(key, value string) error {
+	sp, ok := lookupSpec(key)
+	if !ok {
+		return unknownKey(key)
+	}
+	if sp.deprecated != "" {
+		return fieldErr(key, sp.hint, "can no longer be set: %s", sp.deprecated)
+	}
+	v, err := sp.parseString(value)
+	if err != nil {
+		return err
+	}
+	d.values[key] = v
+	return nil
+}
+
+// SetDeprecated stores a deprecated key, which Set refuses. Only a
+// conversion of older inputs uses it, such as the migration of a legacy
+// service's --authkey-file; the host consumes and removes the key.
+func (d *Document) SetDeprecated(key, value string) error {
 	sp, ok := lookupSpec(key)
 	if !ok {
 		return unknownKey(key)
@@ -459,6 +484,25 @@ func checkPermitted(v any) (any, error) {
 	return out, nil
 }
 
+// ConsoleHostRE is a lowercase DNS label, the tailnet host names tsnet
+// accepts.
+var ConsoleHostRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// checkConsoleHosts accepts lowercase DNS labels, each once, in order.
+func checkConsoleHosts(v any) (any, error) {
+	list := v.([]string)
+	for i, name := range list {
+		path := fmt.Sprintf("tailscale.console_hosts[%d]", i)
+		if !ConsoleHostRE.MatchString(name) {
+			return nil, fieldErr(path, "use 1 to 63 lowercase letters, digits and '-', not starting or ending with '-'", "%q is not a lowercase DNS label", name)
+		}
+		if slices.Contains(list[:i], name) {
+			return nil, fieldErr(path, "list each name once", "duplicate console host %q", name)
+		}
+	}
+	return slices.Clone(list), nil
+}
+
 // checkManagementURL accepts an https URL without credentials, query or
 // fragment. A NetBird setup key is never part of it.
 func checkManagementURL(v any) (any, error) {
@@ -527,6 +571,7 @@ type Config struct {
 	SchemaVersion int
 	Host          HostConfig
 	Network       NetworkConfig
+	Tailscale     TailscaleConfig
 	System        SystemConfig
 	Portal        PortalConfig
 	Zrok          ZrokConfig
@@ -542,8 +587,11 @@ type HostConfig struct {
 	DataDir        string
 	ManagementAddr string
 	LocalAddr      string
-	ConsoleHost    string
 	ServerRuntime  bool
+}
+
+type TailscaleConfig struct {
+	ConsoleHosts []string // the console's tailnet names, in order
 }
 
 type NetworkConfig struct {
@@ -623,8 +671,8 @@ func (c *Config) Lookup(key string) (value any, src Source, ok bool) {
 }
 
 // Effective resolves the document with defaults and per-run overrides.
-// Only host.management_addr, host.local_addr, host.console_host and
-// host.server_runtime may be overridden; the values are parsed like Set.
+// Only host.management_addr, host.local_addr, host.server_runtime and
+// tailscale.console_hosts may be overridden; the values are parsed like Set.
 func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 	c := &Config{SchemaVersion: d.version, values: map[string]any{}, sources: map[string]Source{}}
 	var errs []error
@@ -677,7 +725,8 @@ func (c *Config) fill() error {
 	list := func(k string) []string { return slices.Clone(c.values[k].([]string)) }
 
 	c.Host = HostConfig{str("host.instance_id"), cleanDataDir(str("host.data_dir")), str("host.management_addr"),
-		str("host.local_addr"), str("host.console_host"), flag("host.server_runtime")}
+		str("host.local_addr"), flag("host.server_runtime")}
+	c.Tailscale = TailscaleConfig{list("tailscale.console_hosts")}
 	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
 		str("network.default_private"), str("network.default_public")}
 	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.keep_versions"),
@@ -696,6 +745,10 @@ func (c *Config) fill() error {
 	}
 	if c.Network.PrivateBackend == "tailscale" && !slices.Contains(c.Network.Permitted, "tailscale") {
 		errs = append(errs, fieldErr("network.private_backend", `add "tailscale" to network.permitted or use "local"`,
+			"tailscale is not permitted"))
+	}
+	if len(c.Tailscale.ConsoleHosts) > 0 && !slices.Contains(c.Network.Permitted, "tailscale") {
+		errs = append(errs, fieldErr("tailscale.console_hosts", `add "tailscale" to network.permitted or remove the console hosts`,
 			"tailscale is not permitted"))
 	}
 	if p := c.Network.DefaultPrivate; (p == "tailscale" || p == "netbird") && !slices.Contains(c.Network.Permitted, p) {

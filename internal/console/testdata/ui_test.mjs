@@ -584,14 +584,15 @@ const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
 const SETTINGS = { upload_max_bytes: '20971520', keep_versions: '10', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
   rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://relay.example.com', portal_discovery: 'true', portal_max_relays: '3', portal_hide: 'false' };
 const CONFIG = {
-  mode: 'config', schema_version: 1, etag: 'etag-1', changed_on_disk: false,
-  host: { management_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', console_host: 'flats', server_runtime: true },
+  mode: 'config', schema_version: 2, etag: 'etag-1', changed_on_disk: false,
+  host: { management_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', server_runtime: true },
   network: { permitted: ['portal'], private_backend: 'local' },
+  tailscale: { console_hosts: [] },
   credentials: { operator_file: true, tailscale_authkey_file: false },
   keys: { upload_max_bytes: 'system.upload_max_bytes', keep_versions: 'system.keep_versions', disk_quota_bytes: 'system.disk_quota_bytes',
     preview_ttl_seconds: 'system.preview_ttl_seconds', rate_limit_rps: 'system.rate_limit_rps', redirect_days: 'system.redirect_days',
     events_keep: 'system.events_keep', portal_relays: 'portal.relays', portal_discovery: 'portal.discovery', portal_max_relays: 'portal.max_active_relays', portal_hide: 'portal.hide' },
-  sources: { 'host.management_addr': 'flag', 'host.local_addr': 'default', 'host.console_host': 'default', 'host.server_runtime': 'default',
+  sources: { 'host.management_addr': 'flag', 'host.local_addr': 'default', 'tailscale.console_hosts': 'default', 'host.server_runtime': 'default',
     'network.permitted': 'file', 'network.private_backend': 'default', 'credentials.operator_file': 'file', 'credentials.tailscale_authkey_file': 'default',
     'system.keep_versions': 'file', 'system.events_keep': 'default', 'portal.relays': 'file' },
   pinned: { portal_relays: "the service's --relays flag" },
@@ -603,6 +604,14 @@ routes['GET /console/api/providers'] = { providers: [provider('local', 'private'
   provider('tailscale-funnel', 'public', false), provider('portal', 'public', true, ['blog']),
   { ...provider('zrok', 'public', true), namespace: 'flats-ns', managed: true, connected: true, environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io', status: { kind: 'zrok', enabled: true, hosts: [] } },
   { ...provider('cloudflare-quick', 'public', true, ['demo']), status: { kind: 'cloudflare-quick', enabled: true, hosts: [{ host: 'demo', url: 'https://quick-demo.trycloudflare.com', state: 'ready', detail: 'ready at https://quick-demo.trycloudflare.com' }] } }] };
+const KEYS = [
+  { id: 'tailscale', set: false, managed: true },
+  { id: 'netbird', set: false, managed: true, management_url: 'https://api.netbird.io:443' },
+  { id: 'zrok', set: true, managed: true, source: 'console', updated_at: '2026-10-01T00:00:00Z', environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io' },
+];
+routes['GET /console/api/keys'] = { keys: KEYS };
+const DOMAINS = { domains: [], retiring: [], loopback: true, tailscale_on: false, pending_approvals: 0, etag: 'etag-1' };
+routes['GET /console/api/console-domains'] = DOMAINS;
 const mountSettings = async () => {
   const main = new Element('main');
   settingsPage.mount(main, [], ctx);
@@ -614,8 +623,8 @@ const puts = () => calls.filter((c) => c.key === 'PUT /console/api/settings');
 // Host, network and credentials are read only, with their sources.
 let page = await mountSettings();
 const configCard = byId(page, 'configuration');
-for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Network', 'Credentials',
-  'Tailscale auth key file', 'not configured', 'flats config set', 'apply after Flats restarts']) {
+for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Network', 'Private routes',
+  'flats config set', 'apply after Flats restarts']) {
   assert.ok(configCard.textContent.includes(text), `configuration lacks ${text}: ${configCard.textContent}`);
 }
 assert.equal(all(configCard, (e) => ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(e.tagName)).length, 0);
@@ -818,11 +827,19 @@ assert.equal(byText(quickPanel, 'Turn off').length, 1, 'quick tunnels can be tur
 assert.ok(byId(settingsMain, 'provider-zrok').textContent.includes('flats-ns'), 'the zrok panel shows its namespace');
 const zrokPanel = byId(settingsMain, 'provider-zrok');
 assert.ok(zrokPanel.textContent.includes('Connected'), 'a connected zrok account is shown');
-assert.equal(byText(zrokPanel, 'Disconnect account').length, 1, 'a connected zrok account can be disconnected');
 const zrokFacts = all(zrokPanel, (e) => e.tagName === 'CODE').map((e) => e.textContent);
 assert.deepEqual(zrokFacts, ['zenv-123', 'https://api-v2.zrok.io', 'flats-ns'], 'the connected environment is identified');
-assert.equal(byText(zrokPanel, 'Replace account').length, 1, 'a connected account can be replaced with a new token');
 assert.equal(byText(zrokPanel, 'Turn off').length, 1, 'a connected zrok can be turned off');
+assert.equal(all(zrokPanel, (e) => e.tagName === 'FORM').length, 0, 'the account token is managed under Keys');
+// The Keys card lists every key the same way; the zrok account actions live there.
+const keysCard = byId(settingsMain, 'keys');
+assert.deepEqual(all(keysCard, (e) => e.tagName === 'ARTICLE').map((e) => e.getAttribute('id')), ['key-tailscale', 'key-netbird', 'key-zrok']);
+const zrokKey = byId(keysCard, 'key-zrok');
+assert.ok(zrokKey.textContent.includes('Connected') && zrokKey.textContent.includes('the console'), 'state and source are shown');
+assert.equal(byText(zrokKey, 'Replace account').length, 1, 'a connected account can be replaced with a new token');
+const zrokDisconnectBtn = byText(zrokKey, 'Disconnect account')[0];
+assert.ok(zrokDisconnectBtn, 'a connected zrok account can be disconnected');
+assert.equal(zrokDisconnectBtn.getAttribute('disabled'), '', 'disconnecting waits until zrok is off');
 assert.equal(all(groups[0], (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 1, 'Local has no switch');
 assert.ok(groups[1].textContent.includes('Portal relays'), 'Portal settings belong to the Portal provider');
 byText(groups[0], 'Turn on')[0].dispatch('click');
@@ -844,8 +861,12 @@ routes['PUT /console/api/providers/zrok'] = { providers: [], etag: 'etag-10' };
 const zrokMain = new Element('main');
 settingsPage.mount(zrokMain, [], ctx);
 await tick();
-const zrokForm = byId(zrokMain, 'provider-zrok');
-assert.equal(byText(zrokForm, 'Turn on').length, 0, 'zrok without an account has no switch');
+assert.equal(byText(byId(zrokMain, 'provider-zrok'), 'Turn on').length, 0, 'zrok without an account has no switch');
+routes['GET /console/api/keys'] = { keys: [KEYS[0], KEYS[1], { id: 'zrok', set: false, managed: true }] };
+const zrokMain2 = new Element('main');
+settingsPage.mount(zrokMain2, [], ctx);
+await tick();
+const zrokForm = byId(zrokMain2, 'key-zrok');
 const tokenInput = byId(zrokForm, 'zrok-token');
 assert.equal(tokenInput.getAttribute('type'), 'password', 'the account token is typed into a password field');
 tokenInput.value = '  test-token  ';
@@ -867,8 +888,8 @@ routes['PUT /console/api/providers/netbird/account'] = { providers: [] };
 const nbMain = new Element('main');
 settingsPage.mount(nbMain, [], ctx);
 await tick();
-const nbPanel = byId(nbMain, 'provider-netbird');
-assert.equal(byText(nbPanel, 'Turn on').length, 0, 'NetBird without a peer has no switch');
+assert.equal(byText(byId(nbMain, 'provider-netbird'), 'Turn on').length, 0, 'NetBird without a peer has no switch');
+const nbPanel = byId(nbMain, 'key-netbird');
 assert.equal(byText(byId(nbMain, 'provider-netbird-expose'), 'Turn on').length, 0, 'NetBird Expose without a peer has no switch');
 assert.ok(byId(nbMain, 'provider-netbird-expose').textContent.includes('Connect the NetBird peer under NetBird first'));
 const keyInput = byId(nbPanel, 'netbird-setup-key');
@@ -884,25 +905,120 @@ assert.equal(keyInput.value, '', 'the setup key is cleared from the form');
 // A binary built without NetBird says so and offers neither a key form nor a switch.
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
   { ...provider('netbird', 'private', false), unsupported: 'This Flats build does not include NetBird; build ./netbird/cmd/flats from the source tree' }] };
+routes['GET /console/api/keys'] = { keys: [KEYS[0], { id: 'netbird', set: false, managed: false, unsupported: 'This Flats build does not include NetBird; build ./netbird/cmd/flats from the source tree' }, KEYS[2]] };
 const nbMain3 = new Element('main');
 settingsPage.mount(nbMain3, [], ctx);
 await tick();
 const nbOff = byId(nbMain3, 'provider-netbird');
 assert.ok(nbOff.textContent.includes('does not include NetBird'));
-assert.equal(all(nbOff, (e) => e.tagName === 'FORM').length, 0, 'no key form without NetBird');
 assert.equal(byText(nbOff, 'Turn on').length, 0, 'no switch without NetBird');
+assert.equal(all(byId(nbMain3, 'key-netbird'), (e) => e.tagName === 'FORM').length, 0, 'no key form without NetBird');
+assert.ok(byId(nbMain3, 'key-netbird').textContent.includes('does not include NetBird'));
 
 // A connected peer is identified and can be disconnected while both are off.
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
   { ...provider('netbird', 'private', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' },
   { ...provider('netbird-expose', 'public', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' }] };
+routes['GET /console/api/keys'] = { keys: [KEYS[0], { id: 'netbird', set: true, managed: true, device_name: 'flats-box', management_url: 'https://nb.example' }, KEYS[2]] };
 const nbMain2 = new Element('main');
 settingsPage.mount(nbMain2, [], ctx);
 await tick();
 const nbFacts = all(byId(nbMain2, 'provider-netbird'), (e) => e.tagName === 'CODE').map((e) => e.textContent);
 assert.deepEqual(nbFacts, ['flats-box', 'https://nb.example'], 'the connected peer is identified');
-assert.equal(byText(byId(nbMain2, 'provider-netbird'), 'Disconnect peer').length, 1, 'a connected peer can be disconnected');
+assert.equal(byText(byId(nbMain2, 'key-netbird'), 'Disconnect peer').length, 1, 'a connected peer can be disconnected under Keys');
 assert.equal(byText(byId(nbMain2, 'provider-netbird'), 'Turn on').length, 1, 'a connected peer can be turned on');
+routes['GET /console/api/keys'] = { keys: KEYS };
+
+// --- Tailscale auth key ---
+// The key is typed into a password field, sent once and cleared; a stored
+// key can be replaced or removed, and a differing start value is explained.
+routes['GET /console/api/keys'] = { keys: KEYS };
+routes['PUT /console/api/keys/tailscale'] = { keys: KEYS };
+const tsMain = new Element('main');
+settingsPage.mount(tsMain, [], ctx);
+await tick();
+const tsKey = byId(tsMain, 'key-tailscale');
+assert.ok(tsKey.textContent.includes('Not set'));
+const tsInput = byId(tsKey, 'tailscale-key');
+assert.equal(tsInput.getAttribute('type'), 'password', 'the auth key is typed into a password field');
+tsInput.value = '  tskey-auth-abc  ';
+all(tsKey, (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+await tick();
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'PUT /console/api/keys/tailscale').body), { key: 'tskey-auth-abc' });
+assert.equal(tsInput.value, '', 'the key is cleared from the form');
+routes['GET /console/api/keys'] = { keys: [{ id: 'tailscale', set: true, managed: true, source: 'env', updated_at: '2026-10-01T00:00:00Z', external_differs: true }, KEYS[1], KEYS[2]] };
+routes['DELETE /console/api/keys/tailscale'] = { keys: KEYS };
+const tsMain2 = new Element('main');
+settingsPage.mount(tsMain2, [], ctx);
+await tick();
+const tsKey2 = byId(tsMain2, 'key-tailscale');
+assert.ok(tsKey2.textContent.includes('Stored') && tsKey2.textContent.includes('an environment variable'), 'state and source');
+assert.ok(tsKey2.textContent.includes('differs from the stored key'), 'a differing start value is explained');
+assert.equal(byText(tsKey2, 'Replace key').length, 1);
+byText(tsKey2, 'Remove key')[0].dispatch('click');
+await tick();
+const removeDialog = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+assert.ok(removeDialog.textContent.includes('interactive login'));
+removeDialog.close('ok');
+await tick();
+assert.ok(calls.some((c) => c.key === 'DELETE /console/api/keys/tailscale'), 'the key is removed after confirmation');
+assert.equal(JSON.stringify(calls.filter((c) => c.key.startsWith('GET /console/api/keys'))).includes('tskey'), false);
+routes['GET /console/api/keys'] = { keys: KEYS };
+
+// --- console domains ---
+// Without Tailscale there is nothing to add; with it, names are listed, added
+// and deleted, and the last one cannot be deleted through itself.
+let domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+let domCard = byId(domMain, 'console-domains');
+assert.ok(domCard.textContent.includes('Turn Tailscale on'), 'adding needs Tailscale');
+assert.equal(all(domCard, (e) => e.tagName === 'FORM').length, 0);
+routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', pending_approvals: 2, etag: 'etag-7',
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true },
+    { name: 'blog', conflict: 'used by the flat "blog"' }],
+  retiring: [{ name: 'old', error: 'logout refused' }] };
+routes['POST /console/api/console-domains'] = { etag: 'etag-8' };
+routes['DELETE /console/api/console-domains/blog'] = { etag: 'etag-8', redirect: '' };
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+domCard = byId(domMain, 'console-domains');
+assert.ok(domCard.textContent.includes('this page'), 'the domain in use is marked');
+assert.ok(domCard.textContent.includes('used by the flat'), 'a conflict is explained');
+assert.ok(domCard.textContent.includes('Being removed') && domCard.textContent.includes('logout refused'), 'a failed logout is listed');
+assert.equal(all(domCard, (e) => e.tagName === 'A').some((e) => e.getAttribute('href') === 'https://flats.tail1234.ts.net/'), true, 'a domain links to its console');
+const nameInput = byId(domCard, 'console-domain-name');
+nameInput.value = ' admin ';
+all(domCard, (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+await tick();
+const addCall = calls.find((c) => c.key === 'POST /console/api/console-domains');
+assert.deepEqual(JSON.parse(addCall.body), { name: 'admin' });
+assert.equal(addCall.headers['If-Match'], '"etag-7"', 'adding is guarded by the settings ETag');
+const delButtons = all(domCard, (e) => e.tagName === 'BUTTON' && e.textContent === 'Delete');
+assert.equal(delButtons.length, 2);
+delButtons[1].dispatch('click');
+await tick();
+const delDialog = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+assert.ok(delDialog.textContent.includes('Remaining: flats.'), 'the remaining names are listed');
+assert.ok(delDialog.textContent.includes('2 approvals waiting'), 'pending approvals are mentioned');
+delDialog.close('ok');
+await tick();
+await tick();
+const delCall = calls.find((c) => c.key === 'DELETE /console/api/console-domains/blog');
+assert.ok(delCall && delCall.headers['If-Match'] === '"etag-7"', 'deleting is guarded by the settings ETag');
+// The last domain, seen through itself, cannot be deleted here.
+routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', etag: 'etag-7',
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] };
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+const lastDel = all(byId(domMain, 'console-domains'), (e) => e.tagName === 'BUTTON' && e.textContent === 'Delete')[0];
+assert.equal(lastDel.getAttribute('disabled'), '', 'the last domain is deleted only from the loopback console');
+assert.ok(lastDel.getAttribute('title').includes('loopback'));
+routes['GET /console/api/console-domains'] = DOMAINS;
 
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over

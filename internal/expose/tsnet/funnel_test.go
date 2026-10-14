@@ -239,7 +239,7 @@ func waitFunnelState(t *testing.T, n *Net, host string, want string) FunnelRepor
 func TestFunnelStatusUsesHostAuthenticationStateWhileOpening(t *testing.T) {
 	n := &Net{cfg: Config{AuthKey: "test-auth-key"}, nodes: map[string]*node{}, funnelReports: map[string]FunnelReport{}}
 	nd := &node{
-		host: "auth-state", backend: ipn.NeedsLogin.String(), funnelOpening: true,
+		host: "auth-state", authKey: "test-auth-key", backend: ipn.NeedsLogin.String(), funnelOpening: true,
 		funnelState: FunnelStarting, funnelDetail: "joining the tailnet before Funnel can listen",
 	}
 	n.nodes[nd.host] = nd

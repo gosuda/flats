@@ -1,7 +1,6 @@
 # Operator keys and console domains
 
-Status: target, not implemented. See [Current state](#current-state) and the
-[technical design](console-settings-TECH.md).
+Technical design: [console-settings-TECH.md](console-settings-TECH.md).
 
 ## Summary
 
@@ -118,7 +117,8 @@ every start may be added later.
     is refused when it equals an existing flat slug, a preview host, a name
     kept by a rename redirect, another console domain or a node still being
     retired. New flats, renames and previews can never take a console
-    domain's name, including one whose addition is still in progress. A name
+    domain's name, including one whose addition is still in progress. The
+    name `flats` stays reserved for the console even when it is not listed. A name
     added outside the console (offline `flats config`, a file edit) that
     collides with any of these is not served; the console shows the conflict. When the node
     needs a login (no Tailscale key), the console shows the login link. The
@@ -156,23 +156,9 @@ tailnet. Everything above can therefore also be done before the first start:
 
 After the first start the operator continues in the console.
 
-## Current state
+## Upgrading
 
-On main (`5e2703e`):
-
-- The Tailscale auth key comes only from a file named by
-  `credentials.tailscale_authkey_file` (a legacy service without `--config`
-  may instead pass `--authkey-file` or set `TS_AUTHKEY`).
-  It is read at start or when the provider is turned on, so replacing it needs
-  a restart. The console shows only whether the file is configured.
-- The zrok token and NetBird setup key can be entered only in the console;
-  there is no flag or environment input.
-- The console has one Tailscale name, `host.console_host` (default `flats`),
-  used only when `network.private_backend` is `tailscale`. Changing it needs a
-  restart; `--console-host` overrides it for one run.
-- Approval links and status use that single console URL.
-
-Moving to this spec bumps `schema_version`. The migration replaces
+This feature bumps `schema_version` to 2. The migration replaces
 `host.console_host` with a list that holds the old name when
 `private_backend` was `tailscale` and the name is a valid lowercase DNS label,
 and is empty otherwise (a name that was not a valid label never served a

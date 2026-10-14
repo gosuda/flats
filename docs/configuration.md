@@ -10,9 +10,9 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, credential file paths |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, ordinary app environment variables, encrypted secrets |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, approvals, per-flat provider permission, events, analytics, ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records |
 | The flat | `flats/<slug>/` | uploaded code, the flat's SQLite database and FILES |
-| Nobody may read it in plain text | separate files | `secret.key`, the Tailscale auth key |
+| Nobody may read it in plain text | separate files | `secret.key` |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
 
 No value is stored in two places. `flats.db` also holds `host_binding`, which
@@ -54,8 +54,9 @@ OS user configuration directory under `flats-client/`, only the CLI and
   logs/ cache/ run/ flats.lock  logs, caches, sockets, the host lock
 ```
 
-The Tailscale auth key stays outside the data directory and outside anything
-agents can read; `config.json` holds only its path.
+Operator keys (the Tailscale auth key, and a NetBird setup key or zrok token
+waiting to be used) are kept in `flats.db`, encrypted with `secret.key`; see
+[Operator keys](#operator-keys). `config.json` holds no key and no path to one.
 
 A rename or deletion writes a journal under `flats/.lifecycle/` before it moves
 or removes a flat directory, and startup finishes or undoes an interrupted one
@@ -82,8 +83,8 @@ stopped, never a plain copy of a live database), `secret.key` together with
 them new node names and certificates are issued), `zrok/` (without it a
 deleted flat no longer releases its zrok name), and `netbird/` (without it the peer must be enrolled again with a new setup key). `cloudflare-quick/` is
 optional: without it each public flat's quick tunnel gets a new random
-address. Back up the credential files
-separately. Logs, caches, sockets and the lock are rebuilt.
+address. The operator keys are in `flats.db` and need `secret.key` from the
+same backup. Logs, caches, sockets and the lock are rebuilt.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
 `config.json` or database.
@@ -98,13 +99,16 @@ written; `flats config unset KEY` removes it.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "host": {
     "instance_id": "63b57046-582f-48d9-a64f-877ae28d12aa",
     "data_dir": "/path/to/flats-data"
   },
   "network": {
-    "permitted": ["portal"]
+    "permitted": ["tailscale", "portal"]
+  },
+  "tailscale": {
+    "console_hosts": ["flats"]
   },
   "system": {
     "keep_versions": 20
@@ -121,12 +125,12 @@ written; `flats config unset KEY` removes it.
 | `host.data_dir` | written by init | offline: `flats config set host.data_dir` |
 | `host.management_addr` | `127.0.0.1:7878` | restart |
 | `host.local_addr` | `127.0.0.1:7879` | restart |
-| `host.console_host` | `flats` | restart |
 | `host.server_runtime` | `true` | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
 | `network.default_private` | `""` (follow `private_backend`) | immediately, for flats created afterwards |
 | `network.default_public` | `""` (no public provider) | immediately, for flats created afterwards |
+| `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; otherwise restart |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.keep_versions` | `10` per flat, `0` = never prune | next pruning |
 | `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately |
@@ -143,7 +147,7 @@ written; `flats config unset KEY` removes it.
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to the next peer connected |
 | `netbird.device_name` | `flats` (a DNS label) | the same |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
-| `credentials.tailscale_authkey_file` | none (interactive login) | restart |
+| `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
 
 Addresses take any `host:port` that the old `--listen` and `--local-addr`
 flags took, and the host logs a warning when the management address is not
@@ -229,16 +233,104 @@ Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole
 file, and the error names its JSON path.
 
+### Console domains
+
+`tailscale.console_hosts` lists the console's names on the tailnet, in the
+order they were added. Each name is its own tailnet node with its own
+MagicDNS name and HTTPS certificate, `https://NAME.<tailnet>.ts.net`, open to
+the devices the tailnet ACL allows. A non-empty list runs the console on
+Tailscale whatever `network.private_backend` says, and needs `tailscale` in
+`network.permitted`; Tailscale cannot be turned off in the console while the
+list is not empty.
+
+The console's Settings → Console domains adds and deletes names while the
+host runs; there is no single name to edit. To change the name, add the new
+one, point agents at it (`flats connect`), then delete the old one.
+
+- A name is a lowercase DNS label. It is refused when a flat, an open
+  preview, a rename redirect, another console domain or a node still being
+  logged out uses it, and no flat or preview can take a console domain's
+  name afterwards. `flats` stays reserved for the console even when it is not
+  listed.
+- Deleting a name saves the list first, then logs its node out and deletes
+  its identity. A console reached over the tailnet refuses to delete the last
+  name; only the console on the loopback address, or `flats config set` while
+  the host is stopped, can empty the list. Deleting the name the page is
+  open on moves the page to a remaining name.
+- `flats.db` records every console node (`console_nodes`), so a name removed
+  with `flats config set` or a text editor is logged out at the next start. A
+  logout that fails keeps the name reserved; the console lists it and retries
+  on request, and the next start retries it.
+- A listed name that a flat, preview or redirect already uses is not served;
+  the console shows the conflict.
+- Approval links and `console_url` / `mcp_url` in `flats status` use the
+  console domain the request came through, else the first listed name, else
+  the loopback address. `console_urls` lists every served name.
+
+`flats config set tailscale.console_hosts flats` sets the list while the host
+is stopped, as on a new remote server.
+
+### Operator keys
+
+Flats keeps the keys an operator enters in `flats.db`, encrypted with
+`secret.key` like flat secrets, and never writes them to `config.json`, logs,
+events or API responses:
+
+| Key | Use | Kept |
+| --- | --- | --- |
+| Tailscale auth key | logs in every new tailnet node | until removed |
+| NetBird setup key | enrolls the NetBird peer once | until the peer is enrolled |
+| zrok account token | connects the zrok account | until connected; the zrok environment in `zrok-environment/` then holds it |
+
+A key reaches Flats in one of these ways:
+
+- **Console**: Settings → Keys sets, replaces and removes keys while the host
+  runs. A new Tailscale key is used by nodes started afterwards; nodes on the
+  tailnet keep their identity.
+- **`flats key set tailscale|zrok|netbird`** while the host is stopped, with
+  the key on standard input (a prompt without echo on a terminal) or
+  `--from-file PATH`. `flats key ls` lists the keys without values and
+  `flats key rm` removes a stored key or a waiting zrok/NetBird key.
+- **At start**, in this order: the flags `--tailscale-authkey-file`
+  (`--authkey-file` for a legacy service), `--zrok-token-file` and
+  `--netbird-setup-key-file`, each naming a file; then the environment
+  variables `FLATS_TAILSCALE_AUTHKEY`, `FLATS_ZROK_TOKEN` and
+  `FLATS_NETBIRD_SETUP_KEY`, or their `_FILE` forms naming a file (setting both
+  forms of one key is refused); then the deprecated
+  `credentials.tailscale_authkey_file`. A legacy service also reads
+  `TS_AUTHKEY` and `TS_AUTH_KEY`. Flats removes these variables from its
+  environment after reading them.
+
+A key given at start only fills in what is missing: the Tailscale key is
+stored when `flats.db` holds none, and a zrok token or NetBird setup key is
+used when no account or peer is connected. A key registered in the console or
+with `flats key set` therefore stays after restarts even while a service
+still passes an older flag or variable; a start value that differs from the
+stored Tailscale key is ignored, with a warning in the log and the console.
+To replace a key, register the new one. An unreadable key file stops the
+start with status 78.
+
+A Tailscale key must be an auth key (`tskey-auth-…`); OAuth client secrets and
+API tokens are refused. Use a reusable key so every new node can log in, and
+leave it untagged so console decisions record who made them.
+
+No MCP tool and no agent API route reads or sets a key. The console's routes
+are protected against cross-site requests, not authenticated: a program that
+can reach the management listener could imitate the console, as it can for
+approvals.
+
 ### Editing
 
-- **Console**: the system and Portal keys, and `network.permitted`,
+- **Console**: the system and Portal keys, `network.permitted`,
   `network.default_private` and `network.default_public` through Network
-  providers. A save rereads the file under a lock and fails if it
-  changed on disk since the host read it; restart to pick up an outside edit.
-  Host, `network.private_backend` and credential keys are read-only there. A
-  service that still passes `--relays` pins the relays, and one that passes
-  `--portal`, `--permit` or `--network tailscale` pins those providers: the
-  console refuses to change them until the service is reinstalled.
+  providers, and `tailscale.console_hosts` through Console domains. A save
+  rereads the file under a lock and fails if it changed on disk since the
+  host read it; restart to pick up an outside edit. Host and
+  `network.private_backend` keys are read-only there. A service that still
+  passes `--relays` pins the relays, one that passes `--portal`, `--permit` or
+  `--network tailscale` pins those providers, and one that passes
+  `--console-host` pins the console domains: the console refuses to change
+  them until the service is reinstalled.
 - **`flats config set KEY VALUE` / `unset KEY`**: offline; they take the host
   lock and refuse while a host runs.
 - **A text editor**: allowed. A running host does not reload the file; the
@@ -278,6 +370,11 @@ Every released schema version keeps example files under
 `internal/config/testdata/config/v<N>/`; tests migrate each to the current
 version.
 
+Schema 2 replaced `host.console_host` with `tailscale.console_hosts`. The
+migration lists the old name only when `network.private_backend` was
+`tailscale` and the name was a lowercase DNS label, the only case in which a
+console ran on the tailnet, so no console opens that was not open before.
+
 A newer `schema_version` than the binary supports is refused without touching
 the file. So is a key this binary does not know: it may come from a newer
 release.
@@ -296,7 +393,11 @@ restore the backup.
 
 `flats serve --config PATH` (or `FLATS_CONFIG`) runs from that file. Only
 `--listen`, `--local-addr`, `--console-host` and `--runtime` may override a
-value for one run; they are not saved. Other configuration flags are refused.
+value for one run; they are not saved. `--console-host NAME` makes the console
+domains `[NAME]` for that run and pins them. The key file flags
+`--tailscale-authkey-file`, `--zrok-token-file` and `--netbird-setup-key-file`
+are accepted too; see [Operator keys](#operator-keys). Other configuration
+flags are refused.
 `--operator-credential-stdin` and `--operator-credential-file` are accepted and
 ignored, with a warning: the operator credential is no longer used.
 
@@ -351,12 +452,13 @@ start with status 78 without changing anything.
 When `network.permitted` includes `tailscale` or `tailscale-funnel`, a
 `--config` host refuses to start while `TS_AUTHKEY`, `TS_AUTH_KEY`,
 `TS_CLIENT_SECRET`, `TS_CLIENT_ID`, `TS_ID_TOKEN` or `TS_CONTROL_URL` is set:
-the embedded tsnet would read them and bypass `config.json`. Put the auth key
-in a file and set `credentials.tailscale_authkey_file`.
+the embedded tsnet would read them and bypass Flats. Give the auth key as
+described under [Operator keys](#operator-keys).
 
-If flats have stored secrets and `secret.key` is missing, the host refuses to
-start instead of creating a new key. Restore the key from the same backup as
-`flats.db`.
+If flats have stored secrets, or operator keys are stored, and `secret.key` is
+missing, the host refuses to start instead of creating a new key. Restore the
+key from the same backup as `flats.db`, or, when only operator keys are
+stored, remove them with `flats key rm` and register them again.
 
 ## Moving an existing installation
 
@@ -367,7 +469,10 @@ restarting it with its old arguments. `flats config migrate --data DIR
 
 The migration converts exactly what the old release used:
 
-- `--listen`, `--local-addr`, `--console-host`, `--runtime` when given.
+- `--listen`, `--local-addr`, `--runtime` when given.
+- `tailscale.console_hosts`: the `--console-host` name (default `flats`) when
+  the private backend is Tailscale and the name is a lowercase DNS label,
+  else none: the console ran on the tailnet only then.
 - `network.permitted`: the grants in `network-provider.json` plus those the
   given `--permit`, `--network tailscale` or `--portal` flags would have
   recorded. An explicit `--portal=false` leaves `portal` out, because Portal
@@ -378,7 +483,8 @@ The migration converts exactly what the old release used:
   release ignored become the value that was in effect, and the migration log
   lists them.
 - `--operator-credential-file` (kept but ignored) and `--authkey-file` paths.
-  File contents are not read.
+  File contents are not read; the first start stores the auth key in
+  `flats.db` and removes the path.
 - Pre-lifecycle flats waiting for the one-time Private Tailscale choice are
   decided by the old rules. If the choice is ambiguous (old Tailscale state but
   no `--network`), nothing is written and the start stops with the same

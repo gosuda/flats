@@ -34,6 +34,12 @@ var Worker func(args []string) error
 // directory, wired like Serve.
 var Config func(ctx context.Context, args []string, out io.Writer) error
 
+// Key runs `flats key`, wired like Serve.
+var Key func(ctx context.Context, args []string, in io.Reader, out io.Writer) error
+
+// KeyUsage is the usage of `flats key`, wired like Serve.
+var KeyUsage = "key <subcommand> [args]"
+
 // ConfigUsage is the usage of `flats config`, wired like Serve.
 var ConfigUsage = "config <subcommand> [args]"
 
@@ -123,6 +129,7 @@ func init() {
 		{"mcp", "serve the host's MCP tools over stdio (for agent plugins)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print MCP setup for agent tools", "mcp-config [--url url]", (*app).mcpConfig},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
+		{"key", "manage the host's Tailscale, zrok and NetBird keys while it is stopped", "", (*app).key},
 		{"client", "check local client compatibility", "client check [--skill-file path]", (*app).clientCommand},
 		{"update", "update this standalone CLI (never share with a running foreground/custom server)", "update [--version tag]\n       Do not share the client path with a running foreground/custom Flats server; new workers may use the replaced binary immediately.", (*app).updateCommand},
 		{"skill", "sync a standalone skill (managed plugins must use their plugin manager)", "skill sync --output SKILL.md [--expected-sha256 hash]\n       Standalone files only; managed plugins must use their plugin manager.", (*app).skillCommand},
@@ -133,6 +140,9 @@ func init() {
 func (c *command) commandUsage() string {
 	if c.name == "config" {
 		return ConfigUsage
+	}
+	if c.name == "key" {
+		return KeyUsage
 	}
 	return c.usage
 }

@@ -53,6 +53,18 @@ func (a *app) config(args []string) error {
 	return err
 }
 
+func (a *app) key(args []string) error {
+	if Key == nil {
+		return errors.New("key is not wired")
+	}
+	err := Key(a.ctx, args, a.env.Stdin, a.out)
+	var ec exitCoder
+	if errors.As(err, &ec) && ec.ExitCode() == ExitUsage {
+		return usageError{err.Error()}
+	}
+	return err
+}
+
 // install makes sure config.json exists and matches the given legacy serve
 // flags (creating it for a new host or migrating a legacy data directory),
 // then installs a service that runs only `flats serve --config <path>`.

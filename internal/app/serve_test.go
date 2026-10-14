@@ -254,7 +254,7 @@ func TestLegacyPlanSettings(t *testing.T) {
 		return o
 	}
 	c, notes, err = plan(nil, flags("--listen", "localhost:http", "--local-addr", ":7999", "--console-host", "My_Console"))
-	if err != nil || c.Host.ManagementAddr != "localhost:80" || c.Host.LocalAddr != ":7999" || c.Host.ConsoleHost != "My_Console" || len(notes) != 1 {
+	if err != nil || c.Host.ManagementAddr != "localhost:80" || c.Host.LocalAddr != ":7999" || len(c.Tailscale.ConsoleHosts) != 0 || len(notes) != 1 {
 		t.Fatalf("host flags: %+v notes=%q %v", c.Host, notes, err)
 	}
 	c, notes, err = plan(nil, flags("--listen", "nonsense", "--relays", "ftp://bad host"))

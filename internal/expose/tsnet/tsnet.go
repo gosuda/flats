@@ -43,7 +43,8 @@ type Config struct {
 	// Dir is the base state directory; each node keeps its state in Dir/<host>.
 	Dir string
 	// AuthKey is a reusable, untagged auth key for new nodes. It may be empty,
-	// in which case each new node waits for an interactive login.
+	// in which case each new node waits for an interactive login. SetAuthKey
+	// replaces it for nodes started afterwards.
 	AuthKey string
 	// ControlURL overrides the coordination server (tests).
 	ControlURL string
@@ -119,6 +120,8 @@ type Net struct {
 
 	acmeMu sync.Mutex // serializes creating the shared ACME account key
 
+	authKey atomic.Pointer[string] // the key new nodes log in with
+
 	mu            sync.Mutex
 	nodes         map[string]*node
 	stopping      map[string]chan struct{} // host -> closed when any teardown attempt finishes
@@ -147,6 +150,7 @@ type node struct {
 	privateMu      sync.Mutex // serializes private listener setup and confirmed stop
 	funnelMu       sync.Mutex // serializes Funnel listener setup and stop after node boot
 	host           string
+	authKey        string // the auth key this node logs in with
 	ephemeral      bool
 	dir            string
 	handler        atomic.Pointer[http.Handler]
@@ -207,7 +211,7 @@ func New(cfg Config) (*Net, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Net{
+	n := &Net{
 		cfg:           cfg,
 		logf:          logf,
 		getCert:       cfg.GetCertificate,
@@ -216,7 +220,20 @@ func New(cfg Config) (*Net, error) {
 		retiring:      map[string]*retirement{},
 		funnelReports: map[string]FunnelReport{},
 		changed:       make(chan struct{}),
-	}, nil
+	}
+	n.SetAuthKey(cfg.AuthKey)
+	return n, nil
+}
+
+// SetAuthKey replaces the auth key nodes started from now on log in with.
+// Nodes already running, and nodes with a stored identity, are not affected.
+func (n *Net) SetAuthKey(key string) { n.authKey.Store(&key) }
+
+func (n *Net) currentAuthKey() string {
+	if k := n.authKey.Load(); k != nil {
+		return *k
+	}
+	return n.cfg.AuthKey
 }
 
 // notifyLocked wakes WaitReady callers. n.mu must be held.
@@ -285,6 +302,7 @@ func (n *Net) newNode(host string, ephemeral, private bool) *node {
 	ctx, cancel := context.WithCancel(context.Background())
 	nd := &node{
 		host:      host,
+		authKey:   n.currentAuthKey(),
 		ephemeral: ephemeral,
 		private:   private,
 		dir:       filepath.Join(n.cfg.Dir, host),
@@ -332,7 +350,7 @@ func (n *Net) run(nd *node) {
 	srv := &ts.Server{
 		Dir:        nd.dir,
 		Hostname:   nd.host,
-		AuthKey:    n.cfg.AuthKey,
+		AuthKey:    nd.authKey,
 		ControlURL: n.cfg.ControlURL,
 		Ephemeral:  nd.ephemeral,
 		UserLogf:   n.userLogf(nd),
@@ -1578,7 +1596,7 @@ func (n *Net) hostInfoLocked(nd *node, now time.Time) core.HostInfo {
 	switch {
 	case nd.err != nil:
 		hi.State, hi.Detail = StateError, nd.err.Error()
-	case nd.backend == ipn.NeedsLogin.String() && !nd.wasUp && n.cfg.AuthKey != "" && nd.authURL == "":
+	case nd.backend == ipn.NeedsLogin.String() && !nd.wasUp && nd.authKey != "" && nd.authURL == "":
 		// A new node logging in with the auth key passes through NeedsLogin.
 		hi.Detail = "joining the tailnet with the auth key"
 	case nd.backend == ipn.NeedsLogin.String():

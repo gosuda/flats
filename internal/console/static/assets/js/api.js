@@ -79,6 +79,14 @@ export const api = {
   connectNetbird: (setup_key) => request('PUT', '/providers/netbird/account', { setup_key }),
   disconnectNetbird: (force) => request('DELETE', '/providers/netbird/account' + (force ? '?force=1' : '')),
   disconnectZrok: (force) => request('DELETE', '/providers/zrok/account' + (force ? '?force=1' : '')),
+  // Operator keys: values are sent once and never returned.
+  keys: () => get('/keys'),
+  setTailscaleKey: (key) => request('PUT', '/keys/tailscale', { key }),
+  deleteTailscaleKey: () => request('DELETE', '/keys/tailscale'),
+  // Console domains; etag is config.etag (or the view's etag), as for saveSettings.
+  consoleDomains: () => get('/console-domains'),
+  addConsoleDomain: (name, etag) => request('POST', '/console-domains', { name }, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  deleteConsoleDomain: (name, etag) => request('DELETE', `/console-domains/${enc(name)}`, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another
   // save since then makes the server refuse with 412.

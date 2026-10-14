@@ -28,7 +28,7 @@ func (e *UsageError) ExitCode() int { return 2 }
 func usagef(format string, args ...any) error { return &UsageError{fmt.Sprintf(format, args...)} }
 
 // ConfigUsage lists the `flats config` subcommands.
-const ConfigUsage = `config init [--data dir] [--config path] [--listen addr] [--local-addr addr] [--console-host name] [--runtime=bool]
+const ConfigUsage = `config init [--data dir] [--config path] [--listen addr] [--local-addr addr] [--runtime=bool]
        flats config show [--config path | --data dir]
        flats config validate [--config path | --data dir]
        flats config set KEY VALUE [--config path | --data dir]
@@ -167,10 +167,15 @@ func (c *configCmd) init(args []string) error {
 	}
 	f.StringVar(host["listen"], "listen", "", "loopback management address")
 	f.StringVar(host["local-addr"], "local-addr", "", "address of the local network")
-	f.StringVar(host["console-host"], "console-host", "", "tailnet host name of the console")
+	f.StringVar(host["console-host"], "console-host", "", "removed: add console domains with `flats config set tailscale.console_hosts`")
 	serverRuntime := f.Bool("runtime", true, "enable server flats")
 	if err := c.parseFlags(args); err != nil {
 		return err
+	}
+	removed := false
+	f.Visit(func(fl *flag.Flag) { removed = removed || fl.Name == "console-host" })
+	if removed {
+		return usagef("--console-host was removed: after init, permit Tailscale (`flats config set network.permitted tailscale`) and add console domains with `flats config set tailscale.console_hosts NAME`")
 	}
 	values := map[string]string{}
 	f.Visit(func(fl *flag.Flag) {

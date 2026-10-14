@@ -42,19 +42,35 @@ several.
 
 ## Running the console on Tailscale
 
-To run the console and private routes on your tailnet as well, set the private
-backend while the host is stopped:
+The console runs on your tailnet under one or more console domains. Turn
+Tailscale on (Settings → Network providers) and add a name under Settings →
+Console domains; it is served at `https://NAME.<tailnet>.ts.net`. On a new
+remote server, whose console is not reachable yet, set it up while the host
+is stopped:
 
 ```sh
 flats config set network.permitted tailscale
-flats config set network.private_backend tailscale
+flats config set tailscale.console_hosts flats
+flats key set tailscale < tailscale-authkey    # optional: or follow the login links
 ```
 
-Then enable MagicDNS and HTTPS certificates in your tailnet, and either follow
-the node login links in the console or put a reusable, untagged Tailscale auth
-key in a protected file and set its path as
-`credentials.tailscale_authkey_file`. A host started with `--config` refuses
-`TS_AUTHKEY` and the other `TS_*` variables, which would bypass `config.json`.
+Enable MagicDNS and HTTPS certificates in your tailnet. Without an auth key,
+each new node shows a login link in the console and the log. Keys can also be
+registered in Settings → Keys or given at start; see
+[Operator keys](configuration.md#operator-keys). A host started with
+`--config` refuses `TS_AUTHKEY` and the other `TS_*` variables, which would
+bypass Flats.
+
+To change the console's name, add the new domain, move agents to it with
+`flats connect`, then delete the old one; several can be used at once. See
+[Console domains](configuration.md#console-domains).
+
+To also put new flats' private routes on the tailnet, set the private backend
+while the host is stopped:
+
+```sh
+flats config set network.private_backend tailscale
+```
 
 With the private backend on Tailscale, a new flat is allowed on Tailscale from
 the start, so its private and preview links use the tailnet:
@@ -66,8 +82,8 @@ the start, so its private and preview links use the tailnet:
 - It never allows Funnel, Portal, zrok, quick tunnels or NetBird Expose. Flats created earlier keep their
   providers.
 
-Flats embeds tsnet. Permitted flat and preview routes, and the console in
-Tailscale mode, use separate nodes, so each flat and preview gets its own
+Flats embeds tsnet. Permitted flat and preview routes, and each console
+domain, use separate nodes, so each flat and preview gets its own
 origin. Tailnet ACLs decide which devices can reach those origins. Code and
 data stay on your machine.
 

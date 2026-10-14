@@ -250,10 +250,11 @@ Flats polls each node's `Self.KeyExpiry` and `BackendState` every 5 minutes.
 * On `NeedsLogin` the node is `needs-login`; the console shows the login URL
   (from the IPN bus) so the operator can re-authenticate, or the operator
   disables key expiry for the node in the Tailscale admin console.
-* `credentials.tailscale_authkey_file` in `config.json` names a file with a
-  reusable untagged auth key for new nodes; it is never logged and only read
-  at startup. A host started with `--config` refuses the `TS_*` environment
-  variables tsnet would otherwise read.
+* The reusable untagged auth key for new nodes is kept in `flats.db`,
+  encrypted with `secret.key`, and never logged
+  ([Operator keys](configuration.md#operator-keys)); a replacement applies to
+  nodes started afterwards. A host started with `--config` refuses the `TS_*`
+  environment variables tsnet would otherwise read.
 
 ## App environment variables
 

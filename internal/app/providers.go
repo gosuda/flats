@@ -31,8 +31,8 @@ type ProviderInfo struct {
 	Flats       []string        `json:"flats"`                    // flats that allow it
 	Status      *core.NetStatus `json:"status,omitempty"`         // backend hosts
 	Address     string          `json:"address,omitempty"`        // local listener
-	AuthKey     bool            `json:"auth_key,omitempty"`       // tailscale: an auth key file is configured
-	ConsoleOn   bool            `json:"console_on,omitempty"`     // tailscale: the console and private routes use it
+	AuthKey     bool            `json:"auth_key,omitempty"`       // tailscale: an auth key is stored
+	ConsoleOn   bool            `json:"console_on,omitempty"`     // tailscale: the console or private routes use it
 	Namespace   string          `json:"namespace,omitempty"`      // zrok: the namespace names are reserved in
 	Connected   bool            `json:"connected,omitempty"`      // zrok: an account is connected
 	Managed     bool            `json:"managed,omitempty"`        // zrok: Flats manages the environment (connect in the console)
@@ -99,10 +99,18 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 					st := ts.Status()
 					p.Status = &st
 				}
-				p.AuthKey = h.Config.Credentials.TailscaleAuthKeyFile != ""
-				p.ConsoleOn = ts != nil && h.Private == core.PrivateNet(ts)
-				if p.ConsoleOn && p.Locked == "" {
-					p.Locked = "The console and private routes run on Tailscale (network.private_backend)."
+				if k, err := h.Store.GetHostKey(ctx, core.HostKeyTailscale); err == nil && k.HasValue() {
+					p.AuthKey = true
+				}
+				domains := h.consoleHostList()
+				private := ts != nil && h.Private == core.PrivateNet(ts)
+				p.ConsoleOn = len(domains) > 0 || private
+				switch {
+				case p.Locked != "":
+				case len(domains) > 0:
+					p.Locked = "The console runs on Tailscale (Settings > Console domains). Delete its Tailscale domains first."
+				case private:
+					p.Locked = "Private routes run on Tailscale (network.private_backend)."
 				}
 			}
 		case provider.Portal:
@@ -190,6 +198,9 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 		if names := h.flatsAllowing(ctx)[id]; len(names) > 0 {
 			return "", fmt.Errorf("%w: %s is allowed on %s; stop allowing it there first", core.ErrProviderInUse, id, strings.Join(names, ", "))
 		}
+		if id == provider.Tailscale && len(h.consoleHostList()) > 0 {
+			return "", fmt.Errorf("%w: the console runs on Tailscale; delete its Tailscale domains first", core.ErrConflict)
+		}
 		if id == provider.Tailscale && h.tsNet != nil && h.Private == core.PrivateNet(h.tsNet) {
 			return "", fmt.Errorf("%w: the console and private routes run on Tailscale; set network.private_backend to local first", core.ErrConflict)
 		}
@@ -227,7 +238,10 @@ func (h *Host) attachLocked(id provider.ID) error {
 		if h.tsNet != nil {
 			return nil
 		}
-		key, err := tailscaleAuthKey(h.Config, h.legacy, h.logf)
+		if err := refuseTailscaleEnv(h.legacy); err != nil {
+			return err
+		}
+		key, err := h.currentTailscaleKey(context.Background())
 		if err != nil {
 			return err
 		}
@@ -355,6 +369,11 @@ func (h *Host) syncNetbirdConfigurationLocked() { h.syncZrokConfigurationLocked(
 // logged. A connected peer must be disconnected first. When a NetBird
 // provider is granted, its backend runs on the new peer afterwards.
 func (h *Host) ConnectNetbird(ctx context.Context, setupKey string) error {
+	return h.connectNetbird(ctx, setupKey, core.KeySourceConsole)
+}
+
+// connectNetbird enrolls the peer and records where the setup key came from.
+func (h *Host) connectNetbird(ctx context.Context, setupKey, source string) error {
 	h.pmu.Lock()
 	defer h.pmu.Unlock()
 	dir := h.netbirdOptions.Dir
@@ -370,7 +389,8 @@ func (h *Host) ConnectNetbird(ctx context.Context, setupKey string) error {
 	if _, err := d.Enroll(ctx, dir, h.netbirdOptions.ManagementURL, setupKey, h.netbirdOptions.DeviceName); err != nil {
 		return netbirdAccountError(err)
 	}
-	h.logf("netbird peer connected from the console")
+	h.logf("netbird peer connected (key from %s)", source)
+	h.recordConnection(ctx, core.HostKeyNetbird, source)
 	return h.peerEnrolledLocked()
 }
 
@@ -431,6 +451,7 @@ func (h *Host) DisconnectNetbird(ctx context.Context, force bool) error {
 		return netbirdAccountError(err)
 	}
 	h.logf("netbird peer disconnected from the console; %s", d.DisconnectHint())
+	h.forgetConnection(ctx, core.HostKeyNetbird)
 	return nil
 }
 
@@ -441,6 +462,12 @@ func (h *Host) DisconnectNetbird(ctx context.Context, force bool) error {
 // is public through zrok. When zrok is granted, its backend runs on the new
 // account afterwards.
 func (h *Host) ConnectZrok(ctx context.Context, token string) error {
+	return h.connectZrok(ctx, token, core.KeySourceConsole)
+}
+
+// connectZrok connects or replaces the zrok account and records where the
+// token came from.
+func (h *Host) connectZrok(ctx context.Context, token, source string) error {
 	if h.Config.Zrok.Environment != "" {
 		return fmt.Errorf("%w: zrok.environment points to an environment managed outside Flats; enable it with the zrok CLI", core.ErrConflict)
 	}
@@ -457,7 +484,8 @@ func (h *Host) ConnectZrok(ctx context.Context, token string) error {
 		if err := zrok.Connect(ctx, dir, token, description); err != nil {
 			return zrokAccountError(err)
 		}
-		h.logf("zrok account connected from the console")
+		h.logf("zrok account connected (token from %s)", source)
+		h.recordConnection(ctx, core.HostKeyZrok, source)
 		return h.startZrokLocked(ctx)
 	}
 	// Replace: the running backend holds the old account; take it down first.
@@ -479,7 +507,8 @@ func (h *Host) ConnectZrok(ctx context.Context, token string) error {
 		}
 		return zrokAccountError(err)
 	}
-	h.logf("zrok account replaced from the console")
+	h.logf("zrok account replaced (token from %s)", source)
+	h.recordConnection(ctx, core.HostKeyZrok, source)
 	return h.startZrokLocked(ctx)
 }
 
@@ -542,6 +571,7 @@ func (h *Host) DisconnectZrok(ctx context.Context, force bool) error {
 		return zrokAccountError(err)
 	}
 	h.logf("zrok account disconnected from the console")
+	h.forgetConnection(ctx, core.HostKeyZrok)
 	return nil
 }
 

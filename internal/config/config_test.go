@@ -13,7 +13,7 @@ import (
 
 const testID = "63b57046-582f-48d9-a64f-877ae28d12aa"
 
-// fileWith returns a minimal v1 file with extra raw JSON members added to
+// fileWith returns a minimal current-version file with extra raw JSON members added to
 // the named sections, e.g. fileWith("system", `"keep_versions": 3`).
 func fileWith(pairs ...string) string {
 	sections := map[string][]string{"host": {`"instance_id": "` + testID + `"`, `"data_dir": "/var/lib/flats"`}}
@@ -25,7 +25,7 @@ func fileWith(pairs ...string) string {
 		sections[pairs[i]] = append(sections[pairs[i]], pairs[i+1])
 	}
 	var b strings.Builder
-	b.WriteString(`{"schema_version": 1`)
+	b.WriteString(`{"schema_version": 2`)
 	for _, s := range order {
 		fmt.Fprintf(&b, `, %q: {%s}`, s, strings.Join(sections[s], ", "))
 	}
@@ -71,10 +71,13 @@ func TestValidation(t *testing.T) {
 		{"host", `"local_addr": "127.0.0.2:7879"`, ""},
 		{"host", `"local_addr": "192.168.0.1:7879"`, ""},
 		{"host", `"local_addr": "127.0.0.1:7878"`, "host.local_addr"}, // equals default management_addr
-		{"host", `"console_host": "my-console"`, ""},
-		{"host", `"console_host": "Flats"`, ""},
-		{"host", `"console_host": "a.flats"`, ""},
-		{"host", `"console_host": 1`, "host.console_host"},
+		{"host", `"console_host": "flats"`, "host.console_host"},      // schema 1 only
+		{"tailscale", `"console_hosts": []`, ""},
+		{"tailscale", `"console_hosts": "flats"`, "tailscale.console_hosts"},
+		{"tailscale", `"console_hosts": ["Flats"]`, "tailscale.console_hosts[0]"},
+		{"tailscale", `"console_hosts": ["a.flats"]`, "tailscale.console_hosts[0]"},
+		{"tailscale", `"console_hosts": ["-flats"]`, "tailscale.console_hosts[0]"},
+		{"tailscale", `"console_hosts": ["flats"]`, "tailscale.console_hosts"}, // tailscale not permitted
 		{"host", `"server_runtime": false`, ""},
 		{"host", `"server_runtime": "false"`, "host.server_runtime"},
 		{"host", `"server_runtime": 0`, "host.server_runtime"},
@@ -198,7 +201,7 @@ func TestStrictParse(t *testing.T) {
 		{"schema_version string", `{"schema_version": "1"}`, "schema_version"},
 		{"missing instance_id", `{"schema_version": 1, "host": {"data_dir": "/x"}}`, "host.instance_id"},
 		{"missing data_dir", `{"schema_version": 1, "host": {"instance_id": "` + testID + `"}}`, "host.data_dir"},
-		{"invalid UTF-8", fileWith("host", "\"console_host\": \"fl\xffats\""), ""},
+		{"invalid UTF-8", fileWith("portal", "\"relays\": [\"fl\xffats\"]"), ""},
 		{"oversize", big, ""},
 		{"not an object", `[1]`, ""},
 		{"trailing data", fileWith() + ` {}`, ""},
@@ -228,9 +231,12 @@ func TestEffectiveDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HostConfig{testID, "/var/lib/flats", "127.0.0.1:7878", "127.0.0.1:7879", "flats", true}
+	want := HostConfig{testID, "/var/lib/flats", "127.0.0.1:7878", "127.0.0.1:7879", true}
 	if c.Host != want {
 		t.Errorf("Host = %+v, want %+v", c.Host, want)
+	}
+	if !slices.Equal(c.Tailscale.ConsoleHosts, []string{}) {
+		t.Errorf("Tailscale = %+v", c.Tailscale)
 	}
 	if !slices.Equal(c.Network.Permitted, []string{}) || c.Network.PrivateBackend != "local" {
 		t.Errorf("Network = %+v", c.Network)
@@ -307,21 +313,27 @@ func TestOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := doc.Set("network.permitted", "tailscale"); err != nil {
+		t.Fatal(err)
+	}
 	before := doc.Encode()
 	c, err := doc.Effective(map[string]string{
-		"host.management_addr": "127.0.0.1:18000",
-		"host.local_addr":      "[::1]:18001",
-		"host.console_host":    "gate-console",
-		"host.server_runtime":  "false",
+		"host.management_addr":    "127.0.0.1:18000",
+		"host.local_addr":         "[::1]:18001",
+		"tailscale.console_hosts": "gate-console",
+		"host.server_runtime":     "false",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HostConfig{testID, "/var/lib/flats", "127.0.0.1:18000", "[::1]:18001", "gate-console", false}
+	want := HostConfig{testID, "/var/lib/flats", "127.0.0.1:18000", "[::1]:18001", false}
 	if c.Host != want {
 		t.Errorf("Host = %+v, want %+v", c.Host, want)
 	}
-	for _, key := range []string{"host.management_addr", "host.local_addr", "host.console_host", "host.server_runtime"} {
+	if !slices.Equal(c.Tailscale.ConsoleHosts, []string{"gate-console"}) {
+		t.Errorf("Tailscale = %+v", c.Tailscale)
+	}
+	for _, key := range []string{"host.management_addr", "host.local_addr", "tailscale.console_hosts", "host.server_runtime"} {
 		if _, src, _ := c.Lookup(key); src != SourceFlag {
 			t.Errorf("%s source = %q, want flag", key, src)
 		}
@@ -370,7 +382,7 @@ func TestSetUnset(t *testing.T) {
 		}
 	}
 	want := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "host": {
     "instance_id": "` + testID + `",
     "data_dir": "/var/lib/flats",
@@ -574,5 +586,110 @@ func TestDefaultAndClone(t *testing.T) {
 	c.values["portal.relays"].([]string)[0] = "changed"
 	if bytes.Contains(doc.Encode(), []byte("keep_versions")) || !bytes.Contains(doc.Encode(), []byte("relay.example.com")) {
 		t.Fatalf("clone shares state:\n%s", doc.Encode())
+	}
+}
+
+// TestConsoleHostsMigration converts schema 1's host.console_host: the list
+// holds the name only where a console ran on the tailnet under it.
+func TestConsoleHostsMigration(t *testing.T) {
+	v1 := func(host, network string) string {
+		f := `{"schema_version": 1, "host": {"instance_id": "` + testID + `", "data_dir": "/var/lib/flats"` + host + `}`
+		if network != "" {
+			f += `, "network": {` + network + `}`
+		}
+		return f + `}`
+	}
+	ts := `"permitted": ["tailscale"], "private_backend": "tailscale"`
+	tests := []struct {
+		name, file string
+		want       []string
+	}{
+		{"default name, tailscale backend", v1("", ts), []string{"flats"}},
+		{"custom name, tailscale backend", v1(`, "console_host": "my-console"`, ts), []string{"my-console"}},
+		{"default name, local backend", v1("", `"permitted": ["tailscale"]`), []string{}},
+		{"custom name, no network", v1(`, "console_host": "my-console"`, ""), []string{}},
+		{"uppercase name is not rewritten", v1(`, "console_host": "Flats"`, ts), []string{}},
+		{"dotted name", v1(`, "console_host": "a.flats"`, ts), []string{}},
+		{"empty name", v1(`, "console_host": ""`, ts), []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l, err := Parse([]byte(tt.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !l.Migrated || l.NeedsConfirm {
+				t.Fatalf("Migrated %v NeedsConfirm %v", l.Migrated, l.NeedsConfirm)
+			}
+			c, err := l.Doc.Effective(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(c.Tailscale.ConsoleHosts, tt.want) {
+				t.Fatalf("console hosts = %q, want %q", c.Tailscale.ConsoleHosts, tt.want)
+			}
+			if bytes.Contains(l.Doc.Encode(), []byte("console_host\"")) {
+				t.Fatalf("host.console_host kept:\n%s", l.Doc.Encode())
+			}
+		})
+	}
+	for name, file := range map[string]string{
+		"console_host not a string": v1(`, "console_host": 1`, ts),
+		"tailscale section in v1":   `{"schema_version": 1, "host": {"instance_id": "` + testID + `", "data_dir": "/x"}, "tailscale": {}}`,
+	} {
+		if _, err := Parse([]byte(file)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// The deprecated auth key file path is still read from a file, but cannot be
+// set any more.
+func TestDeprecatedTailscaleAuthKeyFile(t *testing.T) {
+	l, err := Parse([]byte(fileWith("credentials", `"tailscale_authkey_file": "/etc/flats/authkey"`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := l.Doc.Effective(nil)
+	if err != nil || c.Credentials.TailscaleAuthKeyFile != "/etc/flats/authkey" {
+		t.Fatalf("Credentials = %+v, %v", c.Credentials, err)
+	}
+	if err := l.Doc.Set("credentials.tailscale_authkey_file", "/etc/other"); errPath(err) != "credentials.tailscale_authkey_file" {
+		t.Fatalf("Set = %v", err)
+	}
+	if err := l.Doc.Unset("credentials.tailscale_authkey_file"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConsoleHostsList(t *testing.T) {
+	doc, err := New(testID, "/var/lib/flats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Set("tailscale.console_hosts", "flats, flats-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Validate(); errPath(err) != "tailscale.console_hosts" {
+		t.Fatalf("Validate without tailscale = %v", err)
+	}
+	if err := doc.Set("network.permitted", "tailscale"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := doc.Effective(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.Tailscale.ConsoleHosts, []string{"flats", "flats-2"}) {
+		t.Fatalf("console hosts = %q", c.Tailscale.ConsoleHosts)
+	}
+	if err := doc.Set("tailscale.console_hosts", `["b", "a"]`); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := doc.Effective(nil); !slices.Equal(c.Tailscale.ConsoleHosts, []string{"b", "a"}) {
+		t.Fatalf("order not kept: %q", c.Tailscale.ConsoleHosts)
+	}
+	if err := doc.Set("tailscale.console_hosts", "a, a"); errPath(err) != "tailscale.console_hosts[1]" {
+		t.Fatalf("duplicate = %v", err)
 	}
 }

@@ -23,6 +23,8 @@ func init() {
 	cli.Worker = runtime.WorkerMain
 	cli.Config = app.ConfigCommand
 	cli.ConfigUsage = app.ConfigUsage
+	cli.Key = app.KeyCommand
+	cli.KeyUsage = app.KeyUsage
 	cli.EnsureConfig = app.EnsureConfig
 }
 
