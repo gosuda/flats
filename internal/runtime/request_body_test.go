@@ -289,3 +289,40 @@ func TestProxiedRequestBodyMinimumRate(t *testing.T) {
 		t.Fatalf("slow handler: %d %q", r.status, r.body)
 	}
 }
+
+// When the worker refuses a body it has not read, the visitor gets the
+// refusal and a closed connection at once, not after its upload deadline.
+func TestProxiedEarlyBodyRefusalIsImmediate(t *testing.T) {
+	t.Parallel()
+	m := newManager(t)
+	f := mustStart(t, m, "busy-body", map[string]string{"index.js": `export default { async fetch(req) { return new Response(String((await req.text()).length)); } };`}, "index.js", nil)
+	addr := strings.TrimPrefix(f.srv.URL, "http://")
+	open := func(length int, sent string) net.Conn {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		fmt.Fprintf(conn, "POST / HTTP/1.1\r\nHost: flat.test\r\nContent-Length: %d\r\n\r\n%s", length, sent)
+		return conn
+	}
+	// Stalled uploads that declare the full limit reserve the whole budget.
+	for i := 0; i < maxBufferedBodies/MaxRequestBody; i++ {
+		open(MaxRequestBody, "")
+	}
+	// Give them time to reach the worker; this test cannot see its budget.
+	time.Sleep(2 * time.Second)
+	conn := open(1000, "x")
+	start := time.Now()
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("refusal: %v %v after %v", resp, err, time.Since(start))
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if _, err := br.ReadByte(); err != io.EOF || time.Since(start) > 5*time.Second {
+		t.Fatalf("503 then %v after %v", err, time.Since(start))
+	}
+}

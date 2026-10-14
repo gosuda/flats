@@ -162,7 +162,16 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		},
 		Transport:     tr,
 		FlushInterval: -1,
-		ErrorLog:      log.New(io.Discard, "", 0),
+		ModifyResponse: func(res *http.Response) error {
+			// The worker closes its connection when it refuses a body it has
+			// not read. Close the visitor's too: otherwise net/http would
+			// first try to drain the rest of a stalled upload.
+			if b, _ := res.Request.Context().Value(visitorBodyKey{}).(*visitorBody); b != nil && res.Close && !b.finished() {
+				res.Header.Set("Connection", "close")
+			}
+			return nil
+		},
+		ErrorLog: log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if b, _ := r.Context().Value(visitorBodyKey{}).(*visitorBody); b != nil && b.timedOut.Load() {
 				w.Header().Set("Connection", "close")
@@ -537,32 +546,56 @@ type visitorBody struct {
 	body     io.ReadCloser
 	rc       *http.ResponseController
 	start    time.Time
-	n        int64
-	noLimit  bool // the connection does not support read deadlines
+	n        int64 // bytes read; only Read uses it
 	timedOut atomic.Bool
+
+	mu      sync.Mutex
+	noLimit bool // the connection does not support read deadlines
+	eof     bool
+	closed  bool
 }
 
 func (b *visitorBody) Read(p []byte) (int, error) {
-	if !b.noLimit {
-		if err := b.rc.SetReadDeadline(bodyDeadline(b.start, b.n)); err != nil {
-			b.noLimit = true
-		}
+	b.mu.Lock()
+	if !b.eof && !b.closed && !b.noLimit && b.rc.SetReadDeadline(bodyDeadline(b.start, b.n)) != nil {
+		b.noLimit = true
 	}
+	b.mu.Unlock()
 	n, err := b.body.Read(p)
 	b.n += int64(n)
-	if err == io.EOF && !b.noLimit {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err == io.EOF && !b.eof && !b.closed && !b.noLimit {
 		// A deadline left on the connection would end the request's
 		// context while the response is copied.
 		b.rc.SetReadDeadline(time.Time{})
 	}
+	b.eof = b.eof || err == io.EOF
 	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
+	if !b.closed && errors.As(err, &ne) && ne.Timeout() {
 		b.timedOut.Store(true)
 	}
 	return n, err
 }
 
-func (b *visitorBody) Close() error { return b.body.Close() }
+// finished reports whether the whole body was read.
+func (b *visitorBody) finished() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.eof
+}
+
+// Close ends a read that still waits for the visitor: the proxy is done with
+// the body, and the connection is not reused after an unfinished body.
+func (b *visitorBody) Close() error {
+	b.mu.Lock()
+	if !b.eof && !b.closed && !b.noLimit {
+		b.rc.SetReadDeadline(time.Now())
+	}
+	b.closed = true
+	b.mu.Unlock()
+	return b.body.Close()
+}
 
 // Stop stops the worker (in-flight requests get a short grace period) and
 // removes its socket.
