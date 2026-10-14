@@ -613,6 +613,14 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 }
 
 func (s *Service) saveVersionFromDraft(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string, via Via) (ActionResult, error) {
+	// A stored slug is already valid; the explicit separator checks keep the
+	// version directory's path guard visible next to the paths it protects.
+	if err := slug.Validate(f.Slug); err != nil {
+		return ActionResult{}, invalid(err)
+	}
+	if strings.Contains(f.Slug, "..") || strings.ContainsAny(f.Slug, `/\`) {
+		return ActionResult{}, invalidf("flat slug %q is not a plain directory name", f.Slug)
+	}
 	candidate := versionFromRevision(rev)
 	n, err := s.st.NextVersionNumber(ctx, f.Slug)
 	if err != nil {
