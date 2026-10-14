@@ -163,6 +163,9 @@ people and agents edit live.
      already admitted. A rollback is therefore never refused for disk quota.
    - A rollback resets every document's merge base to the restored content, so
      a later save merges against what the rollback restored.
+   - Retention never removes a rollback's target before the rollback's new
+     revision references it: automatic deletion runs only after the rollback
+     completes. This protection is not a pin and uses no pin quota.
 10. **Revisions are managed inside the content.** Listing, viewing, pinning,
     unpinning and rolling back happen in the content's own editor, and through
     MCP for agents, not in the console.
