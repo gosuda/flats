@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from gate import Host, accepted, data_impact, failed, mcp_payload, reserve_ports, source_identity
 
@@ -98,10 +99,14 @@ class HarnessChecks(unittest.TestCase):
                     host.request = lambda *args, **kwargs: (code, {"category": category})
                     host.flat = lambda slug: {"providers": ["local", "tailscale"] if saved else ["local"]}
                     if accepted_outcome:
-                        host.set_flat_permission("example", "tailscale")
+                        host.set_flat_permission("example", "tailscale", allow_not_ready=True)
                     else:
                         with self.assertRaises(AssertionError):
-                            host.set_flat_permission("example", "tailscale")
+                            host.set_flat_permission("example", "tailscale", allow_not_ready=True)
+            host.request = lambda *args, **kwargs: (409, {"category": "provider_not_ready"})
+            host.flat = lambda slug: {"providers": ["local", "tailscale"]}
+            with self.assertRaises(AssertionError):
+                host.set_flat_permission("example", "tailscale")
 
     def test_owned_port_time_wait_is_reusable_but_live_listener_is_not(self):
         listener = socket.socket()
@@ -125,6 +130,21 @@ class HarnessChecks(unittest.TestCase):
         finally:
             for sock in sockets:
                 sock.close()
+
+    def test_adapter_preflight_failure_explicitly_closes_reserved_ports(self):
+        with tempfile.TemporaryDirectory() as folder:
+            host = Host("unused", folder, without_tailnet=True)
+            sockets, ports = reserve_ports()
+            # Keep references alive so garbage collection cannot hide a leak.
+            try:
+                with patch('gate.reserve_ports', return_value=(sockets, ports)):
+                    with self.assertRaisesRegex(AssertionError, 'only to the test adapter'):
+                        host.start()
+                self.assertTrue(all(sock.fileno() == -1 for sock in sockets))
+                self.assertIsNone(host.proc)
+            finally:
+                for sock in sockets:
+                    sock.close()
 
     def test_stop_rejects_nonzero_exit_and_recovered_panic(self):
         for marker, exit_code in (("", 7), ("panic: simulated handler panic", 0)):

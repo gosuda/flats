@@ -417,6 +417,7 @@ routes['GET /console/api/flats/blog'] = blog;
 // it must never focus a detached button from the earlier version table.
 const detachedMain = new Element('main');
 const stopDetached = flat.mount(detachedMain, ['blog'], ctx); await tick();
+const detachedHistory = all(detachedMain, (e) => e.getAttribute('aria-label') === 'Version history')[0];
 const detachedDelete = all(detachedMain, (e) => e.getAttribute('aria-label') === 'Delete version 1')[0];
 const detachedFocusCount = detachedDelete.focusCount || 0;
 detachedDelete.dispatch('click'); await tick();
@@ -425,7 +426,7 @@ while (detachedRow.tagName !== 'TR') detachedRow = detachedRow.parentNode;
 detachedRow.remove();
 all(document.body, (e) => e.tagName === 'DIALOG')[0].close('cancel'); await tick();
 assert.equal(detachedDelete.focusCount || 0, detachedFocusCount);
-assert.equal(document.activeElement.getAttribute('aria-label'), 'Version history', 'a removed invoker falls back to the history region');
+assert.equal(document.activeElement, detachedHistory, 'a removed invoker falls back to this page’s history region');
 stopDetached();
 
 const approvalsPage = await import('./approval.js');

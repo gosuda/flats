@@ -202,18 +202,20 @@ class Host:
         # Reserve both ports until immediately before spawn. Bind-race failures
         # fail the run; never kill another process or reuse the operator's port.
         reservations, ports = reserve_ports(self.addresses)
-        # A restart must repeat the configured listener addresses; changing
-        # legacy flags against config.json correctly fails with EX_CONFIG.
-        self.addresses = ports
-        self.base = f"http://127.0.0.1:{ports[0]}"
-        self.local = f"http://127.0.0.1:{ports[1]}"
-        argv = [self.binary, "serve", "--data", str(self.data), "--listen", f"127.0.0.1:{ports[0]}",
-                "--network", "local", "--local-addr", f"127.0.0.1:{ports[1]}", "--portal=false"]
-        if self.without_tailnet:
-            require(self.adapter and not self.legacy, "missing-backend flag belongs only to the test adapter")
-            argv.append("--without-tailnet")
-        for sock in reservations:
-            sock.close()
+        try:
+            # A restart must repeat the configured listener addresses; changing
+            # legacy flags against config.json correctly fails with EX_CONFIG.
+            self.addresses = ports
+            self.base = f"http://127.0.0.1:{ports[0]}"
+            self.local = f"http://127.0.0.1:{ports[1]}"
+            argv = [self.binary, "serve", "--data", str(self.data), "--listen", f"127.0.0.1:{ports[0]}",
+                    "--network", "local", "--local-addr", f"127.0.0.1:{ports[1]}", "--portal=false"]
+            if self.without_tailnet:
+                require(self.adapter and not self.legacy, "missing-backend flag belongs only to the test adapter")
+                argv.append("--without-tailnet")
+        finally:
+            for sock in reservations:
+                sock.close()
         env = os.environ.copy()
         # Explicitly remove inherited provider credentials; not even their values
         # are inspected or recorded. Worker child keeps this disposable binary.
@@ -295,10 +297,10 @@ class Host:
         self.ok('POST', '/__gate/host-permission', {'permitted': permitted})
         self.trace.append({'kind': 'disposable-host-permission', 'permitted': permitted})
 
-    def set_flat_permission(self, slug, provider, permitted=True):
+    def set_flat_permission(self, slug, provider, permitted=True, allow_not_ready=False):
         code, out = self.request('POST', f'/console/api/flats/{slug}/providers',
                                  {'provider': provider, 'permitted': permitted}, console=True)
-        require(code == 200 or (permitted and code == 409 and out.get('category') == 'provider_not_ready'),
+        require(code == 200 or (allow_not_ready and permitted and code == 409 and out.get('category') == 'provider_not_ready'),
                 f"unexpected permission outcome: {code}: {out}")
         saved = provider in provider_ids(self.flat(slug))
         require(saved == permitted, f"permission was not saved despite readiness response: {provider}: {out}")
@@ -467,7 +469,7 @@ def drift(h):
     require("NEW-DRAFT" in h.traffic("drift"), "fresh Draft positive control did not serve")
     h.save("drift", static("POLICY-CANDIDATE"))
     a = h.create_version("drift")
-    h.set_flat_permission("drift", "tailscale")
+    h.set_flat_permission("drift", "tailscale", allow_not_ready=True)
     failed(h.decide(a), "policy-drift")
     require(h.flat("drift")["live_version"] == 1, "policy drift activated")
     h.ok("POST", "/console/api/flats/drift/providers", {"provider": "tailscale", "permitted": False}, console=True)
@@ -713,6 +715,34 @@ def denied_visibility(h, slug):
     failed(h.decide(pending), "not-permitted")
 
 
+def actual_binary_authority(h):
+    require(not h.adapter and not h.legacy, 'authority population must exercise the real product binary')
+    h.activate('authority', static('ACTUAL-BINARY-AUTHORITY'))
+    before = h.flat('authority')
+    require(provider_ids(before) == {'local'}, 'actual host unexpectedly granted a nonlocal provider')
+    code, _ = h.request('POST', '/api/flats/authority/providers', {'provider': 'portal', 'permitted': True})
+    require(code == 403, f'agent HTTP provider grant was not forbidden: {code}')
+    require(provider_ids(h.flat('authority')) == {'local'}, 'forbidden HTTP request changed provider policy')
+    attempted = h.cli('set-provider-permission', 'authority', 'portal')
+    require(attempted.returncode == 2 and 'unknown command "set-provider-permission"' in attempted.stderr,
+            f'CLI exposed a provider-grant command: {attempted.returncode}: {attempted.stderr}')
+    require(provider_ids(h.flat('authority')) == {'local'}, 'CLI probe changed provider policy')
+    h.initialize_mcp()
+    h.serial += 1
+    refused = h.ok('POST', '/mcp', {'jsonrpc': '2.0', 'id': h.serial, 'method': 'tools/call',
+                                  'params': {'name': 'set_provider_permission',
+                                             'arguments': {'slug': 'authority', 'provider': 'portal', 'permitted': True}}},
+                    headers={'Accept': 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-03-26'})
+    require(refused.get('error') == {'code': -32602, 'message': 'unknown tool "set_provider_permission"'},
+            f'MCP exposed a provider grant instead of its typed unknown-tool error: {refused}')
+    require(provider_ids(h.flat('authority')) == {'local'}, 'MCP probe changed provider policy')
+    denied_visibility(h, 'authority')
+    after = h.flat('authority')
+    require(provider_ids(after) == {'local'} and after['visibility'] == 'private' and after['live_version'] == 1,
+            'denied Public request changed the actual binary current state')
+    require('ACTUAL-BINARY-AUTHORITY' in h.traffic('authority'), 'authority probes changed live content')
+
+
 def provider_failure(h):
     capabilities = h.ok('GET', '/__gate/capabilities')
     require(capabilities.get('tailnet_backend') is False, 'missing-backend population unexpectedly has a tailnet backend')
@@ -721,7 +751,7 @@ def provider_failure(h):
     code, _ = h.request("POST", "/api/flats/provider/providers", {"provider": "portal", "permitted": True})
     require(code in (403, 404, 405), "agent can grant provider permission")
     denied_visibility(h, "provider")
-    h.set_flat_permission("provider", "tailscale")
+    h.set_flat_permission("provider", "tailscale", allow_not_ready=True)
     require(h.flat("provider")["visibility"] == "private", "connection permission authorized Public")
     require("tailscale-funnel" not in provider_ids(h.flat("provider")), "Tailscale authorized Funnel")
     h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale-funnel", "permitted": True}, console=True)
@@ -1010,7 +1040,7 @@ def provider_matrix(h):
     h.activate("matrix", static("MANAGER-MATRIX"))
     # Both injected backends exist throughout; permission causes cannot be
     # accidentally satisfied by the unavailable-backend failure used elsewhere.
-    h.ok("POST", "/__gate/host-permission", {"permitted": ["tailscale-funnel", "portal"]})
+    h.ok("POST", "/__gate/host-permission", {"permitted": ["tailscale", "tailscale-funnel", "portal"]})
     def public_request():
         return h.approval(h.ok("POST", "/api/flats/matrix/visibility", {"visibility": "public"}, status=202))
     def allow(provider, permitted=True):
@@ -1160,6 +1190,7 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("approval-boundary-census", approval_boundary),
                ("version-quota-explicit-deletion", version_quota_deletion),
                ("production-fault-hooks-absent", production_hooks_absent),
+               ("actual-binary-provider-authority", actual_binary_authority),
                ("runtime-health-rollback-data", runtime_data),
                ("historical-migration", migration),
                ("historical-mixed-migration", mixed_migration),

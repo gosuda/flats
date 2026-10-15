@@ -163,8 +163,8 @@ Deletion can return `status: cleanup_pending` and `cleanup_pending: true` after
 the metadata deletion was applied but durable storage cleanup is incomplete.
 An approved deletion's `result_data.cleanup_pending` carries the same state.
 Report the returned message: the version is already deleted; do not repeat
-its deletion. The lifecycle journal blocks guarded storage changes while
-staged files remain. The pending receipt can survive a sync failure without
+its deletion. Guarded storage changes are blocked while the `.version-delete-N`
+staging folder remains. The pending receipt can survive a sync failure without
 staged files, so it does not universally block rename, flat deletion or slug
 reuse. Repair the reported storage issue and restart the host to recover;
 a repeated cleanup failure can prevent host startup.

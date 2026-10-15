@@ -162,9 +162,10 @@ docker exec flats flats approvals
 ```
 
 `docker exec` runs inside the container, so `flats save-draft <slug> <dir>`
-there needs the build files inside it as well; uploading from the host CLI or
-an agent is usually simpler. Creating a version and deploying its number are
-separate approval requests and need no local build directory. The image healthcheck runs `flats status`; if you move the listener
+and `flats save-document <slug> <dir>` need their files inside it as well;
+uploading from the host CLI or an agent is usually simpler. Creating a version
+and deploying its number are separate approval requests and need no local build
+directory. The image healthcheck runs `flats status`; if you move the listener
 to another port, also set `-e FLATS_URL=http://127.0.0.1:<port>`.
 
 The image has no shell. To look at the volume, stop the host and mount it in a

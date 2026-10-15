@@ -28,6 +28,7 @@ api() { curl -fsS --max-time 30 "$@"; }
 # Real-tailnet work always requires the operator's exact explicit decision.
 # Do not inherit disposable-host auto-approval from the caller's environment.
 FLATS_GATE_DISPOSABLE_OPERATOR=0
+# shellcheck source=scripts/approval-gate.sh
 source "$ROOT/scripts/approval-gate.sh"
 # host_state prints "<state> <detail>" of a private host.
 host_state() {

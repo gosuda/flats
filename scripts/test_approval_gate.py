@@ -104,6 +104,51 @@ sys.exit(3)
         self.assertEqual(calls, [("GET", "/api/approvals/apr-create")])
 
 
+class SecretLogTests(unittest.TestCase):
+    def check_logs(self, mode):
+        source = Path(__file__).with_name("server-flat-gate.sh").read_text()
+        check = source.split("# BEGIN secret log check\n", 1)[1].split(
+            "# END secret log check", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "flats"
+            executable.write_text("""#!/usr/bin/env python3
+import os,sys
+assert sys.argv[1:]==['logs','counter'],sys.argv
+mode=os.environ['LOG_MODE']
+if mode=='failed':
+ print('otherwise safe output');sys.exit(7)
+if mode=='secret': print('s3cr3t-value')
+# Exceed normal pipe capacity after the early match. The former grep -q
+# pipeline killed this writer with SIGPIPE and incorrectly reported PASS.
+sys.stdout.write('safe log entry\\n'*150000)
+""")
+            executable.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-uo", "pipefail", "-c",
+                 'FAIL=0; pass(){ echo "PASS: $*"; }; '
+                 'fail(){ echo "FAIL: $*"; FAIL=1; };\n' + check + '\nexit "$FAIL"'],
+                env={**os.environ, "F": str(executable), "LOG_MODE": mode},
+                capture_output=True, text=True, timeout=10)
+        return result
+
+    def test_failed_logs_never_pass_secret_check(self):
+        result = self.check_logs("failed")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cannot read logs", result.stdout)
+        self.assertNotIn("PASS:", result.stdout)
+
+    def test_early_secret_in_large_output_is_rejected(self):
+        result = self.check_logs("secret")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("secret value leaked", result.stdout)
+        self.assertNotIn("PASS:", result.stdout)
+
+    def test_successful_large_safe_logs_pass(self):
+        result = self.check_logs("safe")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS: secret value not in logs", result.stdout)
+
+
 class ContainerApprovalTests(unittest.TestCase):
     def test_container_cli_uses_exact_create_then_deploy_and_live_docs(self):
         # Execute the checked-in container helpers with fake executables only;

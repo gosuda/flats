@@ -13,6 +13,7 @@ FAIL=0
 # This gate owns only temp data on Local, with Portal disabled. Record exact
 # simulated operator interventions; the client under test still only requests.
 FLATS_GATE_DISPOSABLE_OPERATOR=1
+# shellcheck source=scripts/approval-gate.sh
 source "$ROOT/scripts/approval-gate.sh"
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAIL=1; }
@@ -61,7 +62,19 @@ if grep -q '"version":1' <<<"$r" && grep -q '"hits":4' <<<"$r"; then pass "rollb
 gate_request deploy --flat counter --version 2 >/dev/null
 curl -s "$URL/hit" >/dev/null; curl -s "$URL/hit" >/dev/null
 if gate_request rollback counter --restore-data >/dev/null && r=$(curl -s "$URL") && grep -q '"hits":4' <<<"$r"; then pass "rollback --restore-data puts back the pre-deploy DB: $r"; else fail "restore-data rollback: $r"; fi
-if "$F" logs counter | grep -q "s3cr3t-value"; then fail "secret value leaked into logs"; else pass "secret value not in logs"; fi
+# Read the entire successful CLI response before searching: grep -q can close
+# a pipeline early, and pipefail would then mistake SIGPIPE for no secret.
+# BEGIN secret log check
+if logs=$("$F" logs counter); then
+  if grep -q "s3cr3t-value" <<<"$logs"; then
+    fail "secret value leaked into logs"
+  else
+    pass "secret value not in logs"
+  fi
+else
+  fail "cannot read logs for secret check"
+fi
+# END secret log check
 
 # Sandbox probes.
 mkdir -p "$WORK/probe"

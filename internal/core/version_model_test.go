@@ -425,9 +425,16 @@ func TestVersionModelCheckpointFailureKeepsRecoverableFiles(t *testing.T) {
 	}
 }
 
-func TestVersionModelPendingReceiptSurvivesReusedFlatIdentity(t *testing.T) {
+// Deletion/recreation reproduces the old recovery failure: the historical
+// receipt still names the reused slug. Rename is a noninterference control,
+// since renaming also updates approvals.flat and already passed the old code.
+func TestVersionModelPendingReceiptReusedIdentityAndRenameControl(t *testing.T) {
 	for _, change := range []string{"rename", "delete"} {
-		t.Run(change, func(t *testing.T) {
+		name := "delete_reuse_regression"
+		if change == "rename" {
+			name = "rename_noninterference_control"
+		}
+		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 			dir := t.TempDir()
 			st, err := store.Open(filepath.Join(dir, "flats.db"))
