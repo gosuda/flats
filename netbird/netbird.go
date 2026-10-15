@@ -118,6 +118,11 @@ type Net struct {
 	// still run, so the name is neither started again nor its identity
 	// deleted until a later Stop succeeds.
 	stopping map[string]client
+	// starting holds, by name, starts that went on after their caller gave
+	// up; the channel closes once that start (and, if it connected late, its
+	// teardown) has ended. Until then the name is not started again and its
+	// identity is not deleted.
+	starting map[string]chan struct{}
 	// keyRefused records, by name, the setup key a late start found unable
 	// to register (ErrKeyNoExtraLabels), so the next start with the same key
 	// fails at once instead of waiting for NetBird's retries again.
@@ -181,7 +186,7 @@ func New(cfg Config) (*Net, error) {
 		logf = func(string, ...any) {}
 	}
 	return &Net{cfg: cfg, logf: logf, retryMin: 2 * time.Second, retryMax: time.Minute,
-		peers: map[string]client{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}, stopping: map[string]client{}, keyRefused: map[string]string{}}, nil
+		peers: map[string]client{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}, stopping: map[string]client{}, starting: map[string]chan struct{}{}, keyRefused: map[string]string{}}, nil
 }
 
 type logWriter struct{ logf func(string, ...any) }
@@ -250,6 +255,9 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 	if c != nil {
 		return c, nil
 	}
+	if err := n.startPending(name); err != nil {
+		return nil, err
+	}
 	if err := n.finishStop(name); err != nil {
 		return nil, err
 	}
@@ -301,9 +309,20 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 		final <- err
 	})
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		// The underlying start goes on; report how it ends.
+		// The underlying start goes on; report how it ends, and keep the
+		// name busy until it has.
+		pending := make(chan struct{})
+		n.mu.Lock()
+		n.starting[name] = pending
+		n.mu.Unlock()
 		go func() {
 			ferr := <-final
+			n.mu.Lock()
+			if n.starting[name] == pending {
+				delete(n.starting, name)
+			}
+			n.mu.Unlock()
+			close(pending)
 			if ferr == nil {
 				n.logf("netbird: %s: the abandoned start connected late; it was stopped, and the next route retries", name)
 				return
@@ -351,6 +370,18 @@ const registrationFallbackMsg = "invalid setup-key or no sso information provide
 func isPeerRejected(err error) bool {
 	st, ok := status.FromError(err)
 	return ok && st.Code() == codes.InvalidArgument && strings.Contains(st.Message(), registrationFallbackMsg)
+}
+
+// startPending refuses while a start of name abandoned by its caller still
+// runs.
+func (n *Net) startPending(name string) error {
+	n.mu.Lock()
+	_, busy := n.starting[name]
+	n.mu.Unlock()
+	if busy {
+		return fmt.Errorf("netbird: %s: an earlier start of this peer is still running; retry when it has ended (the log shows it)", name)
+	}
+	return nil
 }
 
 // finishStop stops name's peer left as stopping, if any. It runs under name's
@@ -410,6 +441,9 @@ func (n *Net) releasePeer(name string, retire bool) error {
 		return err
 	}
 	if retire {
+		if err := n.startPending(name); err != nil {
+			return err
+		}
 		if err := os.RemoveAll(peerDir(n.cfg.Dir, name)); err != nil {
 			return fmt.Errorf("netbird: %s: delete the peer identity: %w", name, err)
 		}

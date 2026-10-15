@@ -942,3 +942,34 @@ func TestTeardownErrorStillRetires(t *testing.T) {
 		t.Fatalf("retire after a teardown error: %v", err)
 	}
 }
+
+// A start its caller abandoned keeps the name busy: the peer is neither
+// started again nor retired until that start has ended.
+func TestAbandonedStartBlocksTheName(t *testing.T) {
+	fs := install(t)
+	release := make(chan struct{})
+	fs.prep = func(f *fakeClient) {
+		if f.opts.DeviceName == "slow" && f.block == nil && fs.count() == 1 {
+			f.block = release
+		}
+	}
+	old := startTimeout
+	startTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { startTimeout = old })
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	if _, err := n.ServePrivate(context.Background(), "slow", okHandler); err == nil {
+		t.Fatal("the slow start did not time out")
+	}
+	if err := n.RetirePrivate("slow"); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("retire during an abandoned start: %v", err)
+	}
+	if !exists(filepath.Join(dir, "peers", "slow")) {
+		t.Fatal("the identity was deleted while a start still ran")
+	}
+	close(release)
+	eventually(t, "the abandoned start ends", func() bool { return n.RetirePrivate("slow") == nil })
+	if exists(filepath.Join(dir, "peers", "slow")) {
+		t.Fatal("the retirement after the start ended kept the identity")
+	}
+}

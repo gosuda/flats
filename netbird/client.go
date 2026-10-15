@@ -11,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/netbirdio/netbird/client/embed"
 )
@@ -160,9 +159,9 @@ func (e *embedClient) Start(ctx context.Context, finished func(error)) error {
 		go func() {
 			err := <-done
 			if err == nil {
-				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				_ = e.c.Stop(sctx)
-				cancel()
+				// Connected late: tear down and wait for the teardown, so
+				// finished means nothing of this start runs any more.
+				_ = e.Stop(context.Background())
 			}
 			finished(err)
 		}()
