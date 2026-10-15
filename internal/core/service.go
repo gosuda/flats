@@ -254,7 +254,12 @@ func (s *Service) lock(slug string) func() {
 	return mu.Unlock
 }
 
-func (s *Service) flatDir(slug string) string { return filepath.Join(s.cfg.DataDir, "flats", slug) }
+// flatDir is the storage directory of a flat. Slugs are validated before
+// they reach it; cleaning the slug as a rooted path also keeps any other
+// value inside flats/, in the form static analysis recognizes.
+func (s *Service) flatDir(slug string) string {
+	return filepath.Join(s.cfg.DataDir, "flats", filepath.Clean("/"+slug))
+}
 
 func (s *Service) versionDir(slug string, n int) string {
 	return filepath.Join(s.flatDir(slug), "versions", strconv.Itoa(n))
