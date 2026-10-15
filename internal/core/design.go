@@ -1291,13 +1291,16 @@ func (s *Service) closeDue(ctx context.Context, slugName string, now time.Time) 
 
 // RollbackRevision restores revision n as a new revision.
 func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, label string, via Via) (int, error) {
-	if err := s.catchUpDocs(ctx, slugName); err != nil {
+	// A document holds its target before it imports anything (rollbackDocs).
+	if f, err := s.st.GetFlat(ctx, slugName); err != nil {
 		return 0, err
-	}
-	if _, st, err := s.revisionFlat(ctx, slugName); err != nil {
+	} else if docs, err := s.isDocs(ctx, f); err != nil {
 		return 0, err
-	} else if st.Type == contenttype.Docs {
+	} else if docs {
 		return s.rollbackDocs(ctx, slugName, n, label, via)
+	}
+	if _, _, err := s.revisionFlat(ctx, slugName); err != nil {
+		return 0, err
 	}
 	unlock, lerr := s.lockCtx(ctx, slugName)
 	if lerr != nil {

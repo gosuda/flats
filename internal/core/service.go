@@ -128,9 +128,12 @@ type Service struct {
 	design        *designState
 	// docsCatchUps holds when each document last imported for a read.
 	docsCatchUps sync.Map
-	settings     *SettingsSource
-	eventCount   sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits    sync.Map // slug -> *logLimit
+	// docsRollbacks holds the ids of document rollbacks in progress, whose
+	// holds are not settled yet.
+	docsRollbacks sync.Map
+	settings      *SettingsSource
+	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits     sync.Map // slug -> *logLimit
 }
 
 // redirect owns an old slug while its route is served or provider teardown is

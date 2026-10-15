@@ -56,11 +56,15 @@ func (s *Service) docsHost(ctx context.Context, slugName, method, op string, bod
 	}
 	var r io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
+		// No HTML escaping: a staged text full of < would otherwise grow
+		// six-fold on the way.
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(body); err != nil {
 			return err
 		}
-		r = bytes.NewReader(b)
+		r = &buf
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -455,7 +459,7 @@ func (s *Service) settleHoldsLocked(ctx context.Context, slugName, intent string
 		return
 	}
 	for _, h := range holds {
-		if h.Op == intent {
+		if _, running := s.docsRollbacks.Load(h.Op); h.Op == intent || running {
 			continue
 		}
 		var status struct {
@@ -586,6 +590,41 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 		return 0, err
 	}
 	defer unlock()
+	// Hold n before anything can run retention; only a revision that does
+	// not exist yet needs an import first.
+	op := newOpID()
+	s.docsRollbacks.Store(op, true)
+	held := false
+	defer func() {
+		// The hold settles like any other once this call is over: imported
+		// with the rollback, or released when it did not commit.
+		s.docsRollbacks.Delete(op)
+		if !held {
+			return
+		}
+		if _, err := s.refreshDocsLocked(context.WithoutCancel(ctx), slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
+			s.logf("document revisions of %s: %v", slugName, err)
+		}
+	}()
+	hold := func() error {
+		return s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
+			if _, err := tx.Revision(ctx, n); err != nil {
+				return err
+			}
+			return tx.AddHold(ctx, op, n)
+		})
+	}
+	if err := hold(); errors.Is(err, store.ErrNotFound) {
+		if _, err := s.refreshDocsLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
+			return 0, err
+		}
+		if err := hold(); err != nil {
+			return 0, err
+		}
+	} else if err != nil {
+		return 0, err
+	}
+	held = true
 	r, err := s.st.Revision(ctx, slugName, n)
 	if err != nil {
 		return 0, err
@@ -597,17 +636,6 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 	if len(docs) > maxRevisionDocuments {
 		return 0, invalidf("revision %d holds %d documents, more than the %d a document can run; read its texts with get_revision and save them instead", n, len(docs), maxRevisionDocuments)
 	}
-	op := newOpID()
-	if err := s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error { return tx.AddHold(ctx, op, n) }); err != nil {
-		return 0, err
-	}
-	// From here the hold keeps n through any retention until the rollback
-	// is imported or settled as not committed.
-	defer func() {
-		if _, err := s.refreshDocsLocked(context.WithoutCancel(ctx), slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
-			s.logf("document revisions of %s: %v", slugName, err)
-		}
-	}()
 	if _, err := s.refreshDocsLocked(ctx, slugName); err != nil {
 		return 0, err
 	}

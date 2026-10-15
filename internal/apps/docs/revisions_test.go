@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -154,5 +155,19 @@ func TestRevisionsCreatedAndAgentEdit(t *testing.T) {
 	}
 	if got := a.revisionText(t, agent.hash("index.md")); got == "" {
 		t.Fatal("recorded text released after acknowledgement")
+	}
+}
+
+func TestRevisionStageTakesEscapedText(t *testing.T) {
+	t.Parallel()
+	a := startApp(t, t.TempDir(), initialText, "v1")
+	// Go's JSON escapes < as six bytes: a valid 1 MiB text grows to 6 MiB.
+	text := strings.Repeat("<", 1024*1024)
+	status, out := a.hostOp(t, "POST", "stage", map[string]any{"text": text})
+	if status != 200 || out["hash"] != digestOf(text) {
+		t.Fatal("stage", status, out)
+	}
+	if status, _ := a.hostOp(t, "POST", "stage", map[string]any{"text": text + "x"}); status != 400 {
+		t.Fatal("over 1 MiB staged", status)
 	}
 }

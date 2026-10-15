@@ -330,6 +330,36 @@ func TestHostDocumentRevisions(t *testing.T) {
 	if rec.Code != 200 || strings.Contains(rec.Body.String(), "conflicts") {
 		t.Fatal(rec.Code, rec.Body.String())
 	}
+	// With a revision quota of 1, a rollback still finds and keeps its
+	// target while the history it imports first would push it out.
+	one := 1
+	if err := s.SetRevisionQuotas(ctx, "host-doc", &one, nil); err != nil {
+		t.Fatal(err)
+	}
+	quotaTarget := revs()[0].Number
+	editor = connect(t, srv.URL, "private")
+	editor.hello(t, nil)
+	// A change no revision holds yet: the rollback imports it first.
+	quotaEdit := fixture(t).Compact[0]
+	edit(t, editor, quotaEdit.ID, quotaEdit.U)
+	editor.Close()
+	if out, failed := callTool(t, session, "rollback_revision", map[string]any{"slug": "host-doc", "revision": quotaTarget}, &done); failed {
+		t.Fatal("rollback under quota 1", out)
+	}
+	if live, _ := s.GetDocument(ctx, "host-doc", ""); live.Markdown != text(revs()[0].Number, "index.md") {
+		t.Fatal("rollback under quota 1 did not restore the text")
+	}
+	// Only the rollback stays unpinned; revision 2 is pinned.
+	if r := revs(); len(r) != 2 || r[0].Kind != "rollback" || r[0].RollbackOf != quotaTarget || !r[1].Pinned {
+		t.Fatalf("history under quota 1 %+v", r)
+	}
+	if holds, _ := s.RevisionQuotas(ctx, "host-doc"); holds.RevisionQuota == nil {
+		t.Fatal("quota override lost")
+	}
+	if err := s.SetRevisionQuotas(ctx, "host-doc", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
 	_ = json.Valid
 	_ = fmt.Sprint
 }

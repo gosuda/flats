@@ -544,6 +544,7 @@ async function edit(request, env, d) {
             ...shape,
             authors: label ? [label] : [],
             known: { [d.path]: plan.text },
+            op: id,
           });
           // Checked last, immediately before COMMIT.
           if (deadline !== undefined && Date.now() > deadline)
@@ -605,7 +606,9 @@ async function revisionOp(request, env, url) {
   let body;
   if (method === "POST") {
     const raw = await request.text();
-    if (raw.length > 4 * 1024 * 1024 || utf8Bytes(raw) > 4 * 1024 * 1024)
+    // One text of at most 1 MiB, JSON-escaped (up to six characters each);
+    // the runtime already bounds the request to 10 MiB.
+    if (raw.length > 8 * 1024 * 1024)
       return json(413, { code: "invalid", message: "body too large" });
     try {
       body = JSON.parse(raw || "{}");

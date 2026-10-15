@@ -63,6 +63,9 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     viewing = null,
     showChanges = false,
     confirming = false,
+    // Bumped by every selection, return to live and close, so a response
+    // that arrives late cannot bring back what the person left.
+    selection = 0,
     titles = new Map();
   const md = createMarkdown();
 
@@ -327,8 +330,10 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
   }
 
   async function show(number) {
+    const mine = ++selection;
     try {
       const info = await api(`/${number}`);
+      if (mine !== selection) return;
       const documents = info.documents || [];
       let markdown = null;
       if (documents.some((d) => d.path === path)) {
@@ -337,6 +342,7 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         );
         markdown = doc.markdown;
       }
+      if (mine !== selection) return;
       viewing = { revision: info.revision, markdown, documents };
       showChanges = false;
       confirming = false;
@@ -351,6 +357,7 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
   }
 
   function live() {
+    selection++;
     if (!viewing) return;
     viewing = null;
     view.hidden = true;

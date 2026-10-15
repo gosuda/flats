@@ -352,9 +352,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	}
 	if out.Changed {
 		// The edit recorded its revision in the same worker transaction.
-		if res := s.docsAfterWriteLocked(auditCtx, slugName); len(res.revisions) > 0 {
-			out.Revision = res.revisions[len(res.revisions)-1]
-		}
+		out.Revision = s.docsAfterWriteLocked(auditCtx, slugName).byOp[id]
 		auditCtx, cancelAudit := context.WithTimeout(auditCtx, 10*time.Second)
 		defer cancelAudit()
 		s.Event(auditCtx, slugName, "info", "document", editSummary(out, via), map[string]any{

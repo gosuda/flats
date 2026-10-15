@@ -343,10 +343,18 @@ export function ensureFlat(db, content, generation) {
   }
   if (intent) releaseIntent(db, intent);
   db.exec("DELETE FROM flats_docs_groups");
+  // Documents this version no longer has stop holding their recorded text:
+  // the entries above hold what they last contained.
+  const paths = new Set(content.documents.map((d) => d.path));
+  for (const row of db.query("SELECT doc,hash FROM flats_docs_recorded"))
+    if (!paths.has(row.doc)) {
+      db.exec("DELETE FROM flats_docs_recorded WHERE doc=?", [row.doc]);
+      release(db, row.hash);
+    }
   setMeta(db, "active", {
     hash: content.hash,
     generation,
-    docs: content.documents.map((d) => d.path),
+    docs: [...paths],
   });
   return true;
 }
@@ -375,7 +383,20 @@ function resetDocument(db, content, source, text, generation) {
 // base text, as one update; a document whose history cannot take that
 // update is reset to a fresh state instead.
 export function restoreText(db, content, source, text, op, generation) {
-  const s = activate(db, source, content.hash, undefined, generation);
+  let s;
+  try {
+    // Activating a new version merges first, which can itself reach a
+    // history limit: the reset below covers that too.
+    s = activate(db, source, content.hash, undefined, generation);
+  } catch (e) {
+    if (e?.code !== "capacity") throw e;
+    resetDocument(db, content, source, text, generation);
+    db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
+      text,
+      source.path,
+    ]);
+    return;
+  }
   try {
     const ytext = s.doc.getText("markdown");
     if (ytext.toString() !== text) {
