@@ -974,6 +974,18 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 	if err := slug.Validate(slugName); err != nil {
 		return store.Version{}, invalid(err)
 	}
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return store.Version{}, err
+	}
+	defer unlock()
+	return s.saveVersionLocked(ctx, slugName, files, meta, via)
+}
+
+// saveVersionLocked validates and saves a complete bundle while the caller
+// holds the flat's storage lock. Partial document saves assemble their source
+// bundle under that same lock, so simultaneous saves cannot lose sibling files.
+func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files []bundle.File, meta SaveMeta, via Via) (store.Version, error) {
 	files, err := bundle.FromFiles(files, bundle.Limits{MaxBytes: s.UploadLimit()})
 	if err != nil {
 		return store.Version{}, err
@@ -989,11 +1001,6 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 		return store.Version{}, ErrDesignUnversioned
 	}
 	docs := m.Type == contenttype.Docs
-	unlock, err := s.lockStorage(slugName)
-	if err != nil {
-		return store.Version{}, err
-	}
-	defer unlock()
 	if f, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
 		if _, err := s.createFlatLocked(ctx, slugName, m.Name, via); err != nil && !errors.Is(err, store.ErrExists) {
 			return store.Version{}, err

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -76,6 +77,13 @@ func TestDocumentTools(t *testing.T) {
 				text, failed := call(t, client, "save_document", map[string]any{"slug": slug, "markdown": "# Hello\n한글 😀", "title": "Title", "path": path, "message": "edit"}, &saved)
 				if failed || saved.Flat == nil || saved.Flat.Type != "docs" || !saved.Flat.Running || saved.Flat.Visibility != "private" || saved.Flat.LiveVersion != 0 || saved.Flat.Publication != "" || saved.Flat.Draft != nil || saved.Draft.Revision != 0 || saved.Deploy != nil || !strings.Contains(text, "running now") {
 					t.Fatalf("save %d: %s %+v", i, text, saved)
+				}
+				wantPath := path
+				if wantPath == "" {
+					wantPath = "index.md"
+				}
+				if saved.Document != wantPath || saved.Entry != "index.md" || !strings.Contains(text, wantPath) || !strings.Contains(text, "Entry document: index.md") {
+					t.Fatalf("saved path/entry missing: %s %+v", text, saved)
 				}
 				if strings.Contains(text, `"draft":{`) || strings.Contains(text, `"version":{`) {
 					t.Fatalf("document save reports a Draft or version: %s", text)
@@ -183,5 +191,39 @@ func TestEditHintFollowsOutcome(t *testing.T) {
 	}
 	if h := editHint(&core.EditOutcomeError{Outcome: core.EditApplied, Seq: 7}, "doc"); strings.Contains(h, "retry") {
 		t.Fatal("applied edit hint suggests a retry:", h)
+	}
+}
+
+type documentFailureRuntime struct{ fail atomic.Bool }
+
+func (rt *documentFailureRuntime) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instance, error) {
+	if rt.fail.Load() {
+		return nil, fmt.Errorf("test startup failure")
+	}
+	return (documentRuntime{}).Start(ctx, spec)
+}
+func TestDocumentSaveStartupHints(t *testing.T) {
+	t.Parallel()
+	rt := &documentFailureRuntime{}
+	rt.fail.Store(true)
+	e := newEnvWithRuntime(t, rt)
+	text, failed := call(t, e.local, "save_document", map[string]any{"slug": "failed-start", "markdown": "initial"}, nil)
+	if !failed || !strings.Contains(text, "no document is running yet") || !strings.Contains(text, "repeat this same save") {
+		t.Fatal(text)
+	}
+	rt.fail.Store(false)
+	if text, failed := call(t, e.local, "save_document", map[string]any{"slug": "failed-start", "markdown": "initial"}, nil); failed {
+		t.Fatal(text)
+	}
+	rt.fail.Store(true)
+	text, failed = call(t, e.local, "save_document", map[string]any{"slug": "failed-start", "path": "new.md", "markdown": "failed new document"}, nil)
+	if !failed || !strings.Contains(text, "running document is unchanged") || !strings.Contains(text, "sibling-document save will not carry this failed change") {
+		t.Fatal(text)
+	}
+}
+func TestDocumentSaveTextKeepsPublicNoticeSeparate(t *testing.T) {
+	text := documentText("Saved document", FlatInfo{Slug: "handbook", Running: true, Visibility: "public", PublicNotice: "Public notice"}, "Saved path: chapter.md. Entry document: README.md.")
+	if !strings.HasPrefix(text, "Saved document handbook.") || !strings.Contains(text, "Entry document: README.md.\nNotice: Public notice") {
+		t.Fatal(text)
 	}
 }

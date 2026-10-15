@@ -245,10 +245,11 @@ deployment (gosuda/flats PR #95):
     ([document-revisions-TECH.md](document-revisions-TECH.md)). Existing
     `flats_docs_conflicts` records were migrated into `recovered` revisions,
     and that store is no longer written.
-  - Rule 8 is not complete for documents: `save_document` still replaces the
-    bundle with the one document it saves, and a docs bundle with several
-    documents or assets is saved with `save_version`, although documents have
-    no versions. Both are recoverable through revisions.
+  - Rule 8's single-document behavior is implemented: `save_document` preserves
+    sibling documents, assets and manifest settings, and adding a document keeps
+    the existing entry. `title` changes only the manifest name. Whole-bundle
+    replacement still uses `save_version`, although documents have no versions;
+    moving that explicit operation to a Revision-model tool remains unfinished.
   - Quota rule 3 is not complete for documents: a person's live edit is not
     checked against the disk quota, and the revision recording it is stored
     without that check.

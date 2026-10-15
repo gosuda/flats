@@ -49,19 +49,30 @@ and `rollback` are refused (`refusal.invalid`).
    and non-destructive but may seed or activate live state. For a small
    change, prefer `update_document` (below) over saving the whole document.
 3. `save_document {slug, markdown, title?, path?, message?}` saves one
-   Markdown document (`index.md` by default) plus a `flats.json` with
-   `type: "docs"` and `name` from `title`, creating a missing flat, and runs it
-   at once. It replaces the document's files; people's concurrent edits are
-   merged as described below. The result's `flat` shows `running`.
-4. For several documents or assets, use `save_version` with the complete
-   bundle and a `flats.json` of `{"type":"docs"}`. A docs bundle is not a
-   Draft either: it runs at once.
+   Markdown document (`index.md` by default), creating a missing flat, and
+   runs it at once. Other documents, images and assets are preserved, as are
+   existing `flats.json` settings. An optional `title` changes only the
+   manifest's `name`. Adding a document keeps the current entry; if it was
+   implicit, the host makes it explicit when needed. People's concurrent edits
+   are merged as described below. The result names the saved `doc` and the
+   `entry`; `get_document` without `doc` reads the entry, which may differ
+   from the default save path `index.md`. The result's `flat` shows `running`.
+4. To deliberately replace the **whole bundle**, use `save_version` with
+   every document and asset to keep and a `flats.json` of `{"type":"docs"}`.
+   Files omitted from that call are deleted. A docs bundle is not a Draft:
+   it runs at once.
 5. A slug keeps its type: saving a document into a website or a page, or
    either into a document, is refused (`refusal.conflict`); use another slug.
 
 If a saved document cannot start (for example its health check fails), the
-save is refused and the document keeps running its previous text; the next
-successful save starts it. **On a Public document a save, like a live edit,
+save is refused and the running document keeps its previous text. Fix the
+startup problem and repeat that same save: a different sibling save does not
+carry the failed change. If no document has ever started, the files remain
+saved internally until its first successful start. A single-document save validates the resulting
+bundle against upload limits. If retained files put it over a limit, shrink the
+target document further, raise `upload_max_bytes` for an upload-size refusal,
+or explicitly save the complete desired bundle. No files are deleted to make
+room; the disk quota still applies. **On a Public document a save, like a live edit,
 is visible to everyone at once**; tell the user.
 
 ### Edit live text
@@ -73,8 +84,9 @@ change at once and their own concurrent edits elsewhere are kept.
 **On a Public flat the change is visible to everyone on the internet as soon
 as the call returns**; such results carry `public_notice`, so tell the user.
 Use it for small corrections and additions; use `save_document` for a
-rewrite, several documents or assets, or when the document is not running
-(that refuses with `not_deployed`).
+rewrite of one document, or when the document is not running (which refuses
+`update_document` with `not_deployed`). Repeat `save_document` to write other
+documents; use an explicit whole-bundle save for assets or replacement.
 
 1. Read `get_document {slug, doc?, blocks: true}`. It returns `hash` (of the
    whole document) and `blocks: [{hash, kind, level?, line, preview}]`. A

@@ -19,6 +19,7 @@ import (
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -193,6 +194,169 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOf
 	}
 	sum := sha256.Sum256(b)
 	return Document{Format: 1, Doc: doc, Markdown: string(b), Hash: hex.EncodeToString(sum[:]), Source: "draft"}, nil
+}
+
+// SaveDocument writes one Markdown file, preserving the saved source of every
+// sibling and the existing manifest. Keep source text (not live collaborative
+// text): activating the resulting bundle must retain each sibling's merge base.
+func (s *Service) SaveDocument(ctx context.Context, slugName, path, markdown, title string, meta SaveMeta, via Via) (store.Version, error) {
+	if err := slug.Validate(slugName); err != nil {
+		return store.Version{}, invalid(err)
+	}
+	if path == "" {
+		path = "index.md"
+	}
+	if !fs.ValidPath(path) || !bundle.IsMarkdown(path) {
+		return store.Version{}, invalidf("path must be a relative .md or .markdown path")
+	}
+	if path == "_docs" || strings.HasPrefix(path, "_docs/") {
+		return store.Version{}, invalidf("path is reserved for the docs app; choose a Markdown path outside _docs/")
+	}
+	// Use the same collector as a bundle upload, but require the exact target
+	// to survive. Ignored metadata and normalized paths must not become a
+	// successful no-op or modify a different document.
+	incoming, err := bundle.FromFiles([]bundle.File{{Path: path, Data: []byte(markdown)}, {Path: bundle.ManifestName, Data: []byte(`{"type":"docs"}`)}}, bundle.Limits{MaxBytes: s.UploadLimit()})
+	if err != nil {
+		return store.Version{}, err
+	}
+	if len(incoming) != 2 || incoming[0].Path != path && incoming[1].Path != path {
+		return store.Version{}, invalidf("path must be an exact bundle path and must not be ignored upload metadata")
+	}
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return store.Version{}, err
+	}
+	defer unlock()
+	var files []bundle.File
+	var entry string
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return store.Version{}, err
+	}
+	if err == nil {
+		if err := s.checkTypeChange(ctx, f, contenttype.Docs); err != nil {
+			return store.Version{}, err
+		}
+		// A failed save may have left a newer Draft. Use the current source,
+		// rather than silently adopting those unactivated files on this call.
+		var v store.Version
+		if f.LiveVersion > 0 {
+			v, err = s.st.GetVersion(ctx, slugName, f.LiveVersion)
+		} else {
+			var d store.Draft
+			d, err = s.st.GetDraft(ctx, slugName)
+			v = store.Version{Revision: d.Revision, Role: "draft", Manifest: d.Manifest}
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return store.Version{}, err
+		}
+		if err == nil {
+			// Stored source may exceed a newly lowered upload limit or be a
+			// historical rollback above the Markdown-total upload bound. Read
+			// it intact, then validate the resulting bundle after this edit.
+			root, err := os.OpenRoot(s.contentDir(slugName, v))
+			if err != nil {
+				return store.Version{}, err
+			}
+			err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() {
+					return err
+				}
+				if !d.Type().IsRegular() {
+					return invalidf("stored bundle contains a non-regular file: %s", p)
+				}
+				b, err := root.ReadFile(p)
+				if err == nil {
+					files = append(files, bundle.File{Path: p, Data: b})
+				}
+				return err
+			})
+			root.Close()
+			if err != nil {
+				return store.Version{}, err
+			}
+			var m bundle.Manifest
+			if err := json.Unmarshal(v.Manifest, &m); err != nil {
+				return store.Version{}, err
+			}
+			entry = m.Entry
+		}
+	}
+	found := false
+	manifest := -1
+	for i := range files {
+
+		if files[i].Path == path {
+			files[i].Data = []byte(markdown)
+			found = true
+		}
+		if files[i].Path == bundle.ManifestName {
+			manifest = i
+		}
+	}
+	if !found {
+		files = append(files, bundle.File{Path: path, Data: []byte(markdown)})
+	}
+	if manifest < 0 {
+		files = append(files, bundle.File{Path: bundle.ManifestName, Data: []byte(`{"type":"docs"}`)})
+		manifest = len(files) - 1
+	}
+	// Include the manifest created for new and manifest-less flats in the
+	// prefix census, before any file or flat metadata is written.
+	for _, file := range files {
+		other := file.Path
+		if strings.HasPrefix(path, other+"/") || strings.HasPrefix(other, path+"/") {
+			return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Path: path, Message: fmt.Sprintf("path collides with kept file %q", other), Fix: "choose a Markdown path outside existing file paths and directories, or explicitly replace the complete bundle to remove the conflicting file"}}}
+		}
+	}
+
+	// Preserve raw manifest bytes unless the caller changes the title or a
+	// new document would change an implicitly selected entry.
+	m, _ := bundle.ParseManifest(files)
+	// Several Markdown files without an index or explicit entry are
+	// ambiguous; pin the previous entry before validating the new bundle.
+	pinEntry := entry != "" && entry != m.Entry
+	if title != "" || pinEntry {
+		var config map[string]json.RawMessage
+		if err := json.Unmarshal(files[manifest].Data, &config); err != nil {
+			return store.Version{}, err
+		}
+		if config == nil {
+			config = make(map[string]json.RawMessage)
+		}
+		// An explicit entry suppresses legacy type inference. Rewrites make
+		// the already validated docs type explicit, including null manifests.
+		config["type"] = json.RawMessage(`"docs"`)
+		if title != "" {
+			config["name"], _ = json.Marshal(title)
+		}
+		if pinEntry {
+			config["entry"], _ = json.Marshal(entry)
+		}
+		files[manifest].Data, err = json.Marshal(config)
+		if err != nil {
+			return store.Version{}, err
+		}
+	}
+	v, err := s.saveVersionLocked(ctx, slugName, files, meta, via)
+	if verr, ok := bundle.IsValidation(err); ok {
+		problems := append([]bundle.Problem(nil), verr.Problems...)
+		for i := range problems {
+			p := &problems[i]
+			switch {
+			case strings.Contains(p.Message, "upload is larger than"):
+				p.Fix = "this save retains the other files; shrink this document further, raise upload_max_bytes, or explicitly save a complete bundle with the desired files"
+			case strings.Contains(p.Message, "Markdown total exceeds"):
+				p.Fix = "this save retains the other documents; shrink this document enough to bring the total within 4 MiB, or explicitly save a complete bundle with the desired documents"
+			case strings.Contains(p.Message, "docs bundle exceeds"):
+				p.Fix = "update an existing document, or explicitly save a complete bundle with at most 128 documents; omitted files are deleted"
+			case strings.Contains(p.Message, "disk quota"):
+				p.Fix = "this save preserves other files and history; explicitly delete old versions/data or raise the per-flat disk quota"
+			}
+		}
+		return v, &bundle.ValidationError{Problems: problems}
+	}
+	return v, err
 }
 
 // DocumentEditOp is one guarded live edit operation. The docs app validates

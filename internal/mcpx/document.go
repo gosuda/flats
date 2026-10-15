@@ -17,7 +17,7 @@ type SaveDocumentIn struct {
 	Slug     string `json:"slug"`
 	Markdown string `json:"markdown"`
 	Title    string `json:"title,omitempty"`
-	Path     string `json:"path,omitempty" jsonschema:"relative .md or .markdown path; default index.md; complete Draft replacement"`
+	Path     string `json:"path,omitempty" jsonschema:"relative .md or .markdown path; default index.md; only this document changes; other files and settings are preserved"`
 	Message  string `json:"message,omitempty"`
 }
 
@@ -28,15 +28,20 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 	if !fs.ValidPath(in.Path) || !bundle.IsMarkdown(in.Path) {
 		return nil, SaveOut{}, toolErr(fmt.Errorf("%w: path must be a relative .md or .markdown path", core.ErrInvalid), "use index.md or a path inside the bundle")
 	}
-	manifest := map[string]string{"type": "docs"}
-	if in.Title != "" {
-		manifest["name"] = in.Title
-	}
-	b, err := json.Marshal(manifest)
+	v, err := t.svc.SaveDocument(ctx, in.Slug, in.Path, in.Markdown, in.Title, core.SaveMeta{Message: in.Message}, core.ViaMCP)
+	res, out, err := t.saved(ctx, in.Slug, nil, v, err, false)
 	if err != nil {
-		return nil, SaveOut{}, toolErr(err, "")
+		return res, out, err
 	}
-	return t.save(ctx, in.Slug, []bundle.File{{Path: in.Path, Data: []byte(in.Markdown)}, {Path: bundle.ManifestName, Data: b}}, core.SaveMeta{Message: in.Message}, false, nil)
+	var m bundle.Manifest
+	if err := json.Unmarshal(v.Manifest, &m); err != nil {
+		return nil, SaveOut{}, toolErr(err, "read get_flat to inspect the saved document")
+	}
+	out.Document, out.Entry = in.Path, m.Entry
+	if out.Flat != nil {
+		res = result(documentText("Saved document", *out.Flat, fmt.Sprintf("Saved path: %s. Entry document: %s; get_document without doc reads that entry.", in.Path, m.Entry)), out)
+	}
+	return res, out, nil
 }
 
 type GetDocumentIn struct {

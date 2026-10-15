@@ -19,10 +19,9 @@ Documents (`type: "docs"`) get revisions as the Revision model requires:
 This is a milestone of the Revision model, not all of it. These rules of
 content-models stay open and are listed in its "Current state":
 
-- rule 8: `save_document` still replaces the bundle with the one document it
-  saves, and docs bundles are still saved with `save_version`. Both are now
-  recoverable through revisions; saving one document while keeping the others
-  is a separate change;
+- rule 8: single-document saves now preserve sibling files, manifest settings
+  and the existing entry. Explicit whole-bundle replacement still uses
+  `save_version`; moving it to a Revision-model tool remains a separate change;
 - quota rule 3: a person's live edit is not checked against the disk quota,
   as today.
 
