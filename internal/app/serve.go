@@ -502,7 +502,13 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if s.legacy && o.Set["console-host"] {
 		settings.PinConsoleHosts("the service's --console-host flag")
 	}
-	h.console = "http://" + cfg.Host.ManagementAddr
+	// The management listener comes first: core may need the console address
+	// while it starts, and that address is the one actually bound.
+	h.ln, err = net.Listen("tcp", cfg.Host.ManagementAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
+	}
+	h.console = "http://" + h.ln.Addr().String()
 	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: h.ConsoleURL, ConsoleURLFor: h.ConsoleURLFor, PrivateBackend: cfg.Network.PrivateBackend,
 		// "flats" is the console's usual tailnet name: kept free for it, as before.
@@ -534,11 +540,6 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	mux.Handle("/", console.Handler())
 	h.Mux = mux
 
-	h.ln, err = net.Listen("tcp", cfg.Host.ManagementAddr)
-	if err != nil {
-		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
-	}
-	h.console = "http://" + h.ln.Addr().String()
 	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
 		logf("warning: the management API listens on %s, which is not a loopback address", h.ln.Addr())
 	}
@@ -731,6 +732,9 @@ func (h *Host) Close() error {
 		h.bgMu.Unlock()
 		if h.bgCancel != nil {
 			h.bgCancel()
+		}
+		if h.srv == nil && h.ln != nil {
+			collect("management listener", h.ln.Close())
 		}
 		if h.srv != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

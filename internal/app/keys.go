@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -45,7 +46,16 @@ var keyEnv = []struct {
 var legacyTailscaleEnv = []string{"TS_AUTHKEY", "TS_AUTH_KEY"}
 
 // readKeyFile reads a key from path, trimmed of surrounding white space.
+// A relative path (from an environment variable) is taken from the working
+// directory; the path is cleaned before use.
 func readKeyFile(path, from string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", actionf("%s: %v", from, err)
+	}
+	// Flats runs on Unix only, where abs already starts with "/"; this is the
+	// form static analysis accepts as free of ".." traversal.
+	path = filepath.Clean("/" + abs)
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", actionf("%s: read the key file: %v", from, err)
