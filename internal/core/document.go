@@ -196,7 +196,7 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOf
 	return Document{Format: 1, Doc: doc, Markdown: string(b), Hash: hex.EncodeToString(sum[:]), Source: "draft"}, nil
 }
 
-const documentDiskQuotaFix = "raise the per-flat disk quota to provide room for this save; reduce document or asset sizes, or explicitly save a complete bundle omitting unwanted files; single-document saves retain sibling files and revision history"
+const documentDiskQuotaFix = "raise the per-flat disk quota in system settings to provide room for this save"
 
 // SaveDocument writes one Markdown file, preserving the saved source of every
 // sibling and the existing manifest. Keep source text (not live collaborative

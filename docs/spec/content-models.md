@@ -203,7 +203,7 @@ These rules apply to the version, revision and pin quotas alike.
 |---|---|---|
 | website (`flat`) | Version | implemented: separate creation/deployment approvals, quota and explicit deletion |
 | page (`page`) | Version | as for websites |
-| document (`docs`) | Revision | revisions, quotas, pins, rollback and single-document preservation; a person's live edit is not yet checked against the disk quota |
+| document (`docs`) | Revision | revisions, quotas, pins, rollback and single-document preservation; live edits (people and `update_document`) are not yet checked against the disk quota |
 | design | Revision | implemented |
 
 A flat keeps its first save's type, so its model never changes.
@@ -246,9 +246,9 @@ Compared with the Version-model completion:
     entry. `title` changes only the manifest name. Explicit whole-bundle
     replacement uses `save_document {replace_bundle: true, files: [...]}`;
     omitted documents and assets are deleted.
-  - Quota rule 3 is not complete for documents: a person's live edit is not
-    checked against the disk quota, and the revision recording it is stored
-    without that check.
+  - Quota rule 3 is not complete for documents: live edits by people and
+    through `update_document` are not checked against the disk quota, and the
+    revisions recording them are stored without that check.
 
 ## Migration
 

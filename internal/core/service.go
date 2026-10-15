@@ -1106,45 +1106,33 @@ func (s *Service) VersionFile(slugName string, n int, rel string) (string, error
 }
 
 func (s *Service) pruneVersions(ctx context.Context, slugName string) {
-	keep := 1
-	prune, err := s.prunableVersions(ctx, slugName, keep, true)
+	prune, err := s.prunableVersions(ctx, slugName, true)
 	if err != nil {
 		return
 	}
 	for _, n := range prune {
 		if err := os.RemoveAll(s.versionDir(slugName, n)); err == nil {
 			_ = s.st.MarkPruned(ctx, slugName, n)
-			s.Event(ctx, slugName, "info", "retention", fmt.Sprintf("pruned files of version %d (keeping the newest %d plus the live version)", n, keep), nil)
+			s.Event(ctx, slugName, "info", "retention", fmt.Sprintf("pruned internal backing bundle %d (keeping the live and previous bundles)", n), nil)
 		}
 	}
 }
 
-// prunableVersions returns the versions of a flat whose files pruning
-// removes when keep_versions is keep, newest first. 0 prunes nothing. The
-// live version is kept on top of keep, and so are the versions of open
-// previews when keepPreviewed is set.
-func (s *Service) prunableVersions(ctx context.Context, slugName string, keep int, keepPreviewed bool) ([]int, error) {
+// prunableVersions returns obsolete internal backing bundles for Revision-model
+// flats. It retains the live bundle, the newest non-live bundle, and any pinned
+// bundles. User-facing Version-model snapshots are never automatically pruned.
+func (s *Service) prunableVersions(ctx context.Context, slugName string, keepPreviewed bool) ([]int, error) {
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return nil, err
 	}
-	// A document has no versions to go back to, so keep_versions does not
-	// apply: keep the running bundle and the one before it, which a draining
-	// runtime may still serve assets from.
-	// Documents and designs (Revision model) have no versions to go back
-	// to; they keep the running bundle and the one before it.
+	// Documents and designs keep internal bundles for their running and
+	// draining runtimes; their user-facing history uses Revisions.
 	t, err := s.flatType(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	docs := contenttype.RevisionModel(t)
-	if !docs {
-		return nil, nil
-	}
-	if docs {
-		keep = 1
-	}
-	if keep <= 0 {
+	if !contenttype.RevisionModel(t) {
 		return nil, nil
 	}
 	vs, err := s.st.ListVersions(ctx, slugName)
@@ -1159,9 +1147,8 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 			}
 		}
 	}
-	// A version an open deploy, rollback or restore approval names is kept
-	// whether or not previews count, so a retention-impact report matches
-	// what pruning really removes.
+	// Preserve any historical approval pins conservatively even though new
+	// Revision-model operations do not create these approvals.
 	for _, st := range []string{"pending", "applying"} {
 		if aps, err := s.st.ListApprovals(ctx, st); err == nil {
 			for _, a := range aps {
@@ -1177,27 +1164,14 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 			}
 		}
 	}
-	// A saved website or page version that was never deployed is never
-	// pruned: versions are not deleted automatically before anyone could
-	// deploy them (docs/spec/content-models.md). keep_versions still bounds
-	// deployed history until version quotas replace it.
-	var deployed map[int]bool
-	if !docs {
-		if deployed, err = s.st.DeployedVersions(ctx, slugName); err != nil {
-			return nil, err
-		}
-	}
 	var prune []int
 	kept := 0
 	for _, v := range vs { // newest first
-		// The live, previewed and pending-approval versions are kept on top of keep_versions.
+		// Pinned bundles do not consume the one previous-bundle allowance.
 		if v.Pruned || v.Number == f.LiveVersion || inPreview[v.Number] {
 			continue
 		}
-		if !docs && !deployed[v.Number] {
-			continue
-		}
-		if kept < keep {
+		if kept < 1 {
 			kept++
 			continue
 		}

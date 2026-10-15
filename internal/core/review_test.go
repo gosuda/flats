@@ -568,7 +568,7 @@ func TestEventsPrunedAndRuntimeLogsLimited(t *testing.T) {
 	}
 }
 
-// Regression (spec F10): keep_versions counts versions besides the live one.
+// Lowering a Version quota preserves all existing snapshots.
 func TestLoweringVersionQuotaKeepsAllVersions(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)

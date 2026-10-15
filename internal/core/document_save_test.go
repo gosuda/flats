@@ -297,13 +297,8 @@ func TestSaveDocumentDiskQuotaGuidance(t *testing.T) {
 				t.Fatalf("disk quota must remain a structured upload validation refusal: %T %v", err, err)
 			}
 			fix := validation.Problems[0].Fix
-			for _, want := range []string{"raise the per-flat disk quota", "reduce document or asset sizes", "complete bundle omitting unwanted files", "retain sibling files and revision history"} {
-				if !strings.Contains(fix, want) {
-					t.Fatalf("missing document-model remedy %q: %s", want, fix)
-				}
-			}
-			if strings.Contains(fix, "old versions") || strings.Contains(fix, "delete_version") || strings.Contains(fix, "versions/data") {
-				t.Fatalf("document refusal recommends unavailable Version tools: %s", fix)
+			if fix != "raise the per-flat disk quota in system settings to provide room for this save" {
+				t.Fatalf("already-over-quota refusal must offer a usable remedy: %s", fix)
 			}
 			after, err := s.st.GetDraft(ctx, "quota-guidance")
 			if err != nil || after.Hash != before.Hash || after.Revision != before.Revision {

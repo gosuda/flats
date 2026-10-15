@@ -601,13 +601,16 @@ func TestDocumentRunningFollowsRuntime(t *testing.T) {
 	}
 }
 
-// Document saves keep only the running bundle and the one before it, not
-// keep_versions copies the document can never go back to.
+// Document saves keep the running and previous internal bundles independently
+// of the user-facing Version quota.
 func TestDocumentSavesPruneOldBundles(t *testing.T) {
 	s, _ := newTestService(t)
 	s.cfg.Runtime = &contentRuntime{}
 	s.cfg.DocsApp = testDocsApp()
 	ctx := t.Context()
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetVersionQuota: "1"}); err != nil {
+		t.Fatal(err)
+	}
 	for i := range 4 {
 		if _, err := s.SaveVersion(ctx, "pruned-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(fmt.Sprintf("# save %d", i))}}, SaveMeta{}, ViaAPI); err != nil {
 			t.Fatal(err)
@@ -629,6 +632,31 @@ func TestDocumentSavesPruneOldBundles(t *testing.T) {
 	}
 	if len(vs) != 4 || len(kept) != 2 || kept[0] != f.LiveVersion || kept[1] != f.LiveVersion-1 {
 		t.Fatalf("kept bundles %v of %d (live %d)", kept, len(vs), f.LiveVersion)
+	}
+	revisions, err := s.st.ListDraftRevisions(ctx, "pruned-doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedDrafts := 0
+	for _, r := range revisions {
+		_, statErr := os.Stat(s.draftRevDir("pruned-doc", r.Revision))
+		if !r.Pruned && statErr == nil {
+			retainedDrafts++
+		} else if statErr == nil {
+			t.Fatalf("pruned draft snapshot %d remains on disk", r.Revision)
+		}
+	}
+	if retainedDrafts != 1 {
+		t.Fatalf("retained %d draft snapshots, want only the latest", retainedDrafts)
+	}
+	events, err := s.st.ListEvents(ctx, "pruned-doc", "retention", 0, 20)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("backing cleanup events: %+v %v", events, err)
+	}
+	for _, e := range events {
+		if !strings.Contains(e.Message, "internal backing bundle") || strings.Contains(e.Message, "version") {
+			t.Fatalf("backing cleanup described as user Version deletion: %s", e.Message)
+		}
 	}
 }
 
