@@ -840,6 +840,7 @@ assert.equal(byText(zrokKey, 'Replace account').length, 1, 'a connected account 
 const zrokDisconnectBtn = byText(zrokKey, 'Disconnect account')[0];
 assert.ok(zrokDisconnectBtn, 'a connected zrok account can be disconnected');
 assert.equal(zrokDisconnectBtn.getAttribute('disabled'), '', 'disconnecting waits until zrok is off');
+assert.ok(all(zrokKey, (e) => e.className === 'disabled-reason')[0].getAttribute('data-reason').includes('Turn it off'), 'and says so on hover');
 assert.equal(all(groups[0], (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 1, 'Local has no switch');
 assert.ok(groups[1].textContent.includes('Portal relays'), 'Portal settings belong to the Portal provider');
 byText(groups[0], 'Turn on')[0].dispatch('click');
@@ -1020,7 +1021,24 @@ settingsPage.mount(domMain, [], ctx);
 await tick();
 const lastDel = all(byId(domMain, 'console-domains'), (e) => e.tagName === 'BUTTON' && e.textContent === 'Delete')[0];
 assert.equal(lastDel.getAttribute('disabled'), '', 'the last domain is deleted only from the loopback console');
-assert.ok(lastDel.getAttribute('title').includes('loopback'));
+// A disabled button gets no hover events: its wrapper carries the reason,
+// and screen readers get it as the button's description.
+const lastWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason')[0];
+assert.ok(lastWrap && lastWrap.getAttribute('data-reason').includes('last tailnet domain') && lastWrap.getAttribute('data-reason').includes('loopback'), 'the reason shows on hover');
+assert.equal(lastWrap.getAttribute('tabindex'), '0', 'keyboard users can reach the reason');
+assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last tailnet domain'), 'the reason describes the button');
+// The domains are labeled as the tailnet's, in their own section.
+assert.ok(all(byId(domMain, 'console-domains'), (e) => e.tagName === 'H3').some((e) => e.textContent === 'Tailnet (Tailscale)'));
+// The domain in use cannot be deleted while no other one is ready.
+routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', etag: 'etag-7',
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] };
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+const curWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason');
+assert.equal(curWrap.length, 1, 'only the domain in use is blocked');
+assert.ok(curWrap[0].getAttribute('data-reason').includes('no other tailnet domain is ready'));
+assert.equal(settingsPage.deleteBlocker({ name: 'a' }, { loopback: true }, 1, ['a']), '', 'the loopback console may delete the last domain');
 routes['GET /console/api/console-domains'] = DOMAINS;
 // The cards refresh only while a node or an enrollment is still pending.
 assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }, [{ id: 'zrok' }]), false);

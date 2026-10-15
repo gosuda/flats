@@ -227,10 +227,13 @@ function providerPanel(p, data, opts) {
     // zrok can be turned on only once an account is connected.
     const needsAccount = (p.id === 'zrok' || p.id === 'netbird' || p.id === 'netbird-expose') && !p.enabled && !p.connected;
     toggle = needsAccount ? null : h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
-      disabled: !!p.locked, 'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
-    if (toggle) toggle.addEventListener('click', () => busy(toggle, async () => {
-      if (await setHostProvider(p, info, !p.enabled, data.config ? data.config.etag : '')) await opts.reload();
-    }));
+      'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
+    if (toggle) {
+      toggle.addEventListener('click', () => busy(toggle, async () => {
+        if (await setHostProvider(p, info, !p.enabled, data.config ? data.config.etag : '')) await opts.reload();
+      }));
+      toggle = withReason(toggle, p.locked || '');
+    }
   }
   const used = p.flats.length
     ? h('p', { class: 'small' }, 'Allowed on ', p.flats.map((slug, i) => [i ? ', ' : '', h('a', { href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: slug })]))
@@ -313,6 +316,22 @@ function netbirdDetails(p) {
   }
   return [facts, h('p', { class: 'muted small' }, p.connected ? '' : 'Connect a peer first, then turn NetBird on. ',
     keysLink('Manage the setup key and the peer under Keys.')), hosts];
+}
+
+// withReason disables button when reason is set and shows why. A disabled
+// button gets no mouse events and is skipped by Tab, so the reason sits on a
+// wrapper that takes focus and shows it as a tooltip on hover and on
+// keyboard focus; screen readers read it as the wrapper's description.
+let reasonSeq = 0;
+export function withReason(button, reason) {
+  if (!reason) return button;
+  const id = 'reason-' + (++reasonSeq);
+  button.disabled = true;
+  button.setAttribute('disabled', '');
+  button.setAttribute('aria-describedby', id);
+  return h('span', { class: 'disabled-reason', tabindex: '0', 'data-reason': reason,
+    'aria-label': `${button.textContent} is unavailable`, 'aria-describedby': id },
+  button, h('span', { id, class: 'sr-only', text: reason }));
 }
 
 // keysLink points to the Keys card.
@@ -525,8 +544,7 @@ function tailscaleKeyActions(k, opts) {
 }
 
 function zrokDisconnect(k, enabled, opts) {
-  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect account', disabled: enabled,
-    title: enabled ? 'Turn zrok off first' : '' });
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect account' });
   disconnect.addEventListener('click', () => busy(disconnect, async () => {
     const ok = await confirmDialog({
       title: 'Disconnect the zrok account?',
@@ -557,12 +575,11 @@ function zrokDisconnect(k, enabled, opts) {
     toast('zrok account disconnected.', 'success');
     await opts.reload();
   }));
-  return h('div', { class: 'form-actions' }, disconnect);
+  return h('div', { class: 'form-actions' }, withReason(disconnect, enabled ? 'zrok is on. Turn it off under Network providers before disconnecting its account.' : ''));
 }
 
 function netbirdDisconnect(inUse, opts) {
-  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect peer', disabled: inUse,
-    title: inUse ? 'Turn NetBird and NetBird Expose off first' : '' });
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect peer' });
   disconnect.addEventListener('click', () => busy(disconnect, async () => {
     const ok = await confirmDialog({
       title: 'Disconnect the NetBird peer?',
@@ -591,7 +608,7 @@ function netbirdDisconnect(inUse, opts) {
     toast('NetBird peer disconnected.', 'success');
     await opts.reload();
   }));
-  return h('div', { class: 'form-actions' }, disconnect);
+  return h('div', { class: 'form-actions' }, withReason(disconnect, inUse ? 'NetBird is on. Turn NetBird and NetBird Expose off under Network providers before disconnecting the peer.' : ''));
 }
 
 // --- console domains ---
@@ -600,40 +617,61 @@ function netbirdDisconnect(inUse, opts) {
 // node; names are only added and deleted, so a change of name is an addition
 // followed by a deletion.
 export function consoleDomains(view, opts) {
+  return [
+    h('p', { class: 'muted' }, 'The addresses where this console opens, one list per network. To change an address, add the new one, move your agents to it (',
+      h('code', { text: 'flats connect' }), '), then delete the old one. Several can be used together.'),
+    tailnetDomains(view, opts),
+  ];
+}
+
+// tailnetDomains is the Tailscale part of the Console domains card: each
+// name is its own tailnet node.
+function tailnetDomains(view, opts) {
   const domains = view.domains || [];
-  const intro = h('p', { class: 'muted' }, 'The console on your tailnet: each name is its own tailnet node at https://NAME.<tailnet>.ts.net, open to the devices your tailnet ACL allows. To change the name, add the new one, move your agents to it (',
-    h('code', { text: 'flats connect' }), '), then delete the old one. Add several to use them together.');
-  const rows = domains.map((d) => domainRow(d, view, domains.length, opts));
+  const ready = domains.filter((d) => !d.conflict && d.state === 'ready').map((d) => d.name);
+  const rows = domains.map((d) => domainRow(d, view, domains.length, ready, opts));
   const retiring = (view.retiring || []).map((d) => retiringRow(d, view, opts));
-  const parts = [intro];
-  if (view.pinned) parts.push(h('p', { class: 'muted small', text: `Set by ${view.pinned}. Reinstall the service with flats install to manage the domains here.` }));
+  const parts = [
+    h('h3', { id: 'console-domains-tailnet', text: 'Tailnet (Tailscale)' }),
+    h('p', { class: 'muted small', text: 'Each name is its own tailnet node at https://NAME.<tailnet>.ts.net, open to the devices your tailnet ACL allows.' }),
+  ];
+  if (view.pinned) parts.push(h('p', { class: 'muted small', text: `Set by ${view.pinned}. Reinstall the service with flats install to manage the tailnet domains here.` }));
   if (!domains.length) {
     parts.push(h('p', { class: 'muted small', text: view.loopback
-      ? 'No console domain: the console is only on this machine’s loopback address.'
-      : 'No console domain.' }));
+      ? 'No tailnet domain: the console is only on this machine’s loopback address.'
+      : 'No tailnet domain.' }));
   } else {
-    parts.push(h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+    parts.push(h('div', { class: 'table-wrap' }, h('table', { class: 'table', 'aria-labelledby': 'console-domains-tailnet' },
       h('thead', null, h('tr', null, ['Name', 'State', 'Address', ''].map((t) => h('th', { scope: 'col', text: t })))),
       h('tbody', null, rows))));
   }
   if (retiring.length) {
-    parts.push(h('h3', { text: 'Being removed' }),
+    parts.push(h('h4', { text: 'Being removed' }),
       h('p', { class: 'muted small', text: 'These names were deleted, but their tailnet nodes are not logged out yet. They stay reserved until that succeeds; Flats retries at the next start.' }),
       h('ul', { class: 'plain-list' }, retiring));
   }
   if (!view.pinned) parts.push(view.tailscale_on ? domainAddForm(view, opts)
-    : h('p', { class: 'muted small', text: 'Turn Tailscale on under Network providers to add a console domain.' }));
-  return parts;
+    : h('p', { class: 'muted small', text: 'Turn Tailscale on under Network providers to add a tailnet domain.' }));
+  return h('section', { class: 'domain-network', 'aria-labelledby': 'console-domains-tailnet' }, parts);
 }
 
-function domainRow(d, view, count, opts) {
+// deleteBlocker is why a tailnet domain cannot be deleted from this page,
+// or '' when it can. The server checks the same rules.
+export function deleteBlocker(d, view, count, ready) {
+  if (count === 1 && !view.loopback) {
+    return 'This is the console’s last tailnet domain. Add another one first, or delete it from the console on this machine’s loopback address.';
+  }
+  if (d.current && !ready.some((n) => n !== d.name)) {
+    return 'You are using this domain and no other tailnet domain is ready yet. Wait until another one shows ready, then delete this one.';
+  }
+  return '';
+}
+
+function domainRow(d, view, count, ready, opts) {
   const login = d.state === 'needs-login' && (d.detail || '').match(/https?:\/\/\S+/)?.[0];
   const state = d.conflict ? h('span', { class: 'badge badge-error', text: 'not served' })
     : h('span', { class: 'badge badge-' + (d.state || 'starting'), text: d.state || 'starting' });
-  const lastViaConsole = count === 1 && !view.loopback;
-  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', disabled: lastViaConsole || !!view.pinned,
-    title: lastViaConsole ? 'The last console domain can only be deleted from the console on the loopback address' : '',
-    'aria-label': `Delete console domain ${d.name}` });
+  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', 'aria-label': `Delete tailnet domain ${d.name}` });
   del.addEventListener('click', () => busy(del, () => deleteDomain(d, view, opts)));
   return h('tr', null,
     h('th', { scope: 'row' }, h('code', { text: d.name }), d.current ? h('span', { class: 'badge', text: 'this page' }) : null),
@@ -644,7 +682,7 @@ function domainRow(d, view, count, opts) {
       d.conflict ? h('div', { class: 'muted small', text: `Not served: ${d.conflict}. Delete this domain or rename that flat.` }) : null,
       d.assigned ? h('div', { class: 'warn-text small', text: `The tailnet named this node ${d.assigned}: another machine already uses ${d.name}. Rename or remove that machine in the Tailscale admin console, or use this address.` }) : null,
       d.detail && !login && !d.conflict ? h('div', { class: 'muted small' }, linkify(d.detail)) : null),
-    h('td', null, view.pinned ? null : del));
+    h('td', null, view.pinned ? null : withReason(del, deleteBlocker(d, view, count, ready))));
 }
 
 function retiringRow(d, view, opts) {
@@ -665,11 +703,11 @@ function retiringRow(d, view, opts) {
 
 async function deleteDomain(d, view, opts) {
   const others = (view.domains || []).filter((x) => x.name !== d.name).map((x) => x.name);
-  const body = [h('p', { text: 'Flats removes the name and logs its tailnet node out. Agents connected through it must reconnect to another console address.' })];
+  const body = [h('p', { text: 'Flats removes the name from the tailnet domains and logs its tailnet node out. Agents connected through it must reconnect to another console address.' })];
   if (d.current) body.push(h('p', { class: 'alert alert-warn', text: `You are using this domain. The page moves to ${others[0] || 'another domain'}.` }));
   if (others.length) body.push(h('p', { class: 'muted small', text: `Remaining: ${others.join(', ')}.` }));
   if (view.pending_approvals) body.push(h('p', { class: 'muted small', text: `${plural(view.pending_approvals, 'approval')} waiting; links that name this domain stop working. Open them from Approvals on another domain.` }));
-  const ok = await confirmDialog({ title: `Delete console domain ${d.name}?`, body, confirmLabel: 'Delete', danger: true });
+  const ok = await confirmDialog({ title: `Delete tailnet domain ${d.name}?`, body, confirmLabel: 'Delete', danger: true });
   if (!ok) return;
   let res;
   try {
@@ -693,8 +731,8 @@ function domainAddForm(view, opts) {
     pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?', placeholder: 'flats' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Add' });
   const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: id, text: 'Add a console domain' }), input,
-    h('p', { class: 'muted small', text: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name. The new node logs in with the Tailscale auth key under Keys, or shows a login link here.' }),
+    h('label', { for: id, text: 'Add a tailnet domain' }), input,
+    h('p', { class: 'muted small', text: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name. The new tailnet node logs in with the Tailscale auth key under Keys, or shows a login link here.' }),
     h('div', { class: 'form-actions' }, submit));
   form.addEventListener('submit', (e) => {
     e.preventDefault();

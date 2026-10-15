@@ -108,7 +108,7 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 				switch {
 				case p.Locked != "":
 				case len(domains) > 0:
-					p.Locked = "The console runs on Tailscale (Settings > Console domains). Delete its Tailscale domains first."
+					p.Locked = "The console runs on Tailscale (Settings > Console domains > Tailnet). Delete its tailnet domains first."
 				case private:
 					p.Locked = "Private routes run on Tailscale (network.private_backend)."
 				}
@@ -199,7 +199,7 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 			return "", fmt.Errorf("%w: %s is allowed on %s; stop allowing it there first", core.ErrProviderInUse, id, strings.Join(names, ", "))
 		}
 		if id == provider.Tailscale && len(h.consoleHostList()) > 0 {
-			return "", fmt.Errorf("%w: the console runs on Tailscale; delete its Tailscale domains first", core.ErrConflict)
+			return "", fmt.Errorf("%w: the console runs on Tailscale; delete its tailnet domains first (Settings > Console domains)", core.ErrConflict)
 		}
 		if id == provider.Tailscale && h.tsNet != nil && h.Private == core.PrivateNet(h.tsNet) {
 			return "", fmt.Errorf("%w: the console and private routes run on Tailscale; set network.private_backend to local first", core.ErrConflict)

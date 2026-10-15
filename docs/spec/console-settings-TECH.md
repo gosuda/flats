@@ -288,10 +288,15 @@ prints every console URL.
   error), and the set/replace and remove (or disconnect) actions. The zrok and
   NetBird forms move there; their provider panels keep the connection facts
   and point to Keys.
-- A **Console domains** card lists the Tailscale names with URL, state,
-  conflicts and retirement errors, an add form, and delete buttons with the
-  confirmations of rule 15. Deleting the current domain navigates to the URL
-  the response names.
+- A **Console domains** card has one section per network; today only
+  **Tailnet (Tailscale)**, so NetBird can get its own section later. The
+  section lists the names with URL, state, conflicts and retirement errors,
+  an add form, and delete buttons with the confirmations of rule 15.
+  Deleting the current domain navigates to the URL the response names.
+- A disabled action (delete, disconnect, a locked provider switch) shows why
+  on hover and on keyboard focus: a disabled button gets no mouse events and
+  no focus, so a focusable wrapper shows the reason as a tooltip and carries
+  it as its description for screen readers.
 
 ## Documentation
 
