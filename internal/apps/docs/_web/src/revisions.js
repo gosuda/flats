@@ -78,7 +78,7 @@ function committedText(db, path) {
 }
 // The recorded file of a document, loading its committed text only when it
 // moved since it was last recorded. known maps paths to their committed text
-// when the caller already has it.
+// when the caller already has it, or to {hash, size} of a text it stored.
 function documentFile(db, path, known) {
   const pos = position(db, path);
   if (!pos) return null;
@@ -87,11 +87,17 @@ function documentFile(db, path, known) {
   ])[0];
   if (rec && rec.epoch === pos.epoch && rec.seq === pos.seq)
     return { path, hash: rec.hash, size: rec.bytes };
-  const text =
-    known && Object.hasOwn(known, path) ? known[path] : committedText(db, path);
-  const hash = digest(text),
+  const given = known && Object.hasOwn(known, path) ? known[path] : undefined;
+  let hash, size;
+  if (given && typeof given === "object") {
+    ({ hash, size } = given);
+    addRef(db, hash);
+  } else {
+    const text = given ?? committedText(db, path);
+    hash = digest(text);
     size = utf8Bytes(text);
-  addRef(db, hash, text);
+    addRef(db, hash, text);
+  }
   if (rec) release(db, rec.hash);
   db.exec("INSERT OR REPLACE INTO flats_docs_recorded VALUES(?,?,?,?,?)", [
     path,
@@ -150,6 +156,11 @@ export function record(db, o) {
   for (const path of paths) {
     if (Object.hasOwn(overrides, path)) {
       const text = overrides[path];
+      if (typeof text === "object") {
+        // Already stored (see store): its row exists.
+        documents.push({ path, hash: text.hash, size: text.size });
+        continue;
+      }
       const d = { path, hash: digest(text), size: utf8Bytes(text) };
       texts[d.hash] = text;
       documents.push(d);
@@ -190,6 +201,21 @@ export function record(db, o) {
   if (o.op && o.kind === "rollback")
     db.exec("INSERT OR REPLACE INTO flats_docs_ops VALUES(?,?)", [o.op, seq]);
   return seq;
+}
+
+// store keeps a text for an entry recorded later in the same transaction,
+// so the caller need not hold it meanwhile. Rows nothing ended up
+// referencing are deleted by dropUnused.
+function store(db, text) {
+  const hash = digest(text);
+  if (
+    !db.query("SELECT 1 AS x FROM flats_docs_texts WHERE hash=?", [hash]).length
+  )
+    db.exec("INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)", [hash, text]);
+  return { hash, size: utf8Bytes(text) };
+}
+function dropUnused(db) {
+  db.exec("DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NULL");
 }
 
 const currentShape = (content) => ({
@@ -309,28 +335,30 @@ export function ensureFlat(db, content, generation) {
   } else {
     // People's text a merge may discard is kept first, as the flat was
     // before this version. The activation loads every document anyway, so
-    // both entries use the texts it has instead of loading them again.
+    // both entries use the texts it has instead of loading them again. Each
+    // text is stored as soon as it is known and only its hash is kept: a
+    // flat of 128 large documents does not fit the worker's memory twice.
     const dirty = textDirty(db),
+      prior = dirty ? beforeShape(db) : null,
+      wanted = new Set(prior?.paths),
       known = {},
       before = {};
     for (const d of content.documents) {
       const s = activate(db, d, content.hash, undefined, generation);
-      known[d.path] = s.doc.getText("markdown").toString();
-      before[d.path] = s.before ?? known[d.path];
+      const text = s.doc.getText("markdown").toString();
       s.doc.destroy();
+      known[d.path] = store(db, text);
+      if (wanted.has(d.path))
+        before[d.path] =
+          s.before === undefined ? known[d.path] : store(db, s.before);
     }
-    if (dirty) {
-      const prior = beforeShape(db),
-        overrides = {};
-      for (const path of prior.paths)
-        if (Object.hasOwn(before, path)) overrides[path] = before[path];
+    if (dirty)
       record(db, {
         kind: "person",
         source: prior.source,
-        paths: prior.paths.filter((p) => !Object.hasOwn(overrides, p)),
-        overrides,
+        paths: prior.paths.filter((p) => !Object.hasOwn(before, p)),
+        overrides: before,
       });
-    }
     db.exec("DELETE FROM flats_docs_groups");
     record(db, {
       kind: "agent",
@@ -340,6 +368,7 @@ export function ensureFlat(db, content, generation) {
       op: mine?.id,
       known,
     });
+    dropUnused(db);
   }
   if (intent) releaseIntent(db, intent);
   finishActivation(db, content, generation);

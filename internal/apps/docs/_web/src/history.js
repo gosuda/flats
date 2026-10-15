@@ -198,15 +198,22 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
   function rewrite(container, number) {
     const base = new URL("/" + path, location.origin);
     for (const node of container.querySelectorAll("img[src], a[href]")) {
-      const attr = node.tagName === "IMG" ? "src" : "href",
+      const attr = node.tagName === "IMG" ? "src" : "href";
+      let url, p;
+      try {
         url = new URL(node.getAttribute(attr), base);
+        p = decodeURIComponent(url.pathname.slice(1));
+      } catch {
+        continue; // a malformed link stays as written
+      }
       if (url.origin !== location.origin) continue;
-      const p = decodeURIComponent(url.pathname.slice(1));
       if (p && !p.startsWith("_docs/") && !isMarkdown(p))
         node.setAttribute(
           attr,
           `/_docs/api/revisions/${number}/files/` +
-            p.split("/").map(encodeURIComponent).join("/"),
+            p.split("/").map(encodeURIComponent).join("/") +
+            url.search +
+            url.hash,
         );
     }
   }
