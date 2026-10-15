@@ -1006,3 +1006,12 @@ func TestCloseWaitsForAbandonedStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPeerDirStaysInsidePeers(t *testing.T) {
+	for _, name := range []string{"blog", "../x", "../../etc", "a/../../b"} {
+		got := peerDir("/data/netbird", name)
+		if !strings.HasPrefix(got, "/data/netbird/peers/") {
+			t.Errorf("peerDir(%q) = %q", name, got)
+		}
+	}
+}

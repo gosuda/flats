@@ -229,9 +229,12 @@ func (n *Net) setupKey() string {
 	return strings.TrimSpace(n.cfg.SetupKey())
 }
 
-// peerDir is the directory of name's peer. name is a DNS label (callers
-// validate it), so it cannot leave peers/.
-func peerDir(dir, name string) string { return filepath.Join(dir, peersDir, name) }
+// peerDir is the directory of name's peer. Callers validate name as a DNS
+// label; cleaning it as an absolute path also keeps any other input inside
+// peers/ (the form static analysis recognizes as free of ".." traversal).
+func peerDir(dir, name string) string {
+	return filepath.Join(dir, peersDir, filepath.Clean("/"+name))
+}
 
 // validName reports whether name can be a peer directory and NetBird host
 // name: a lowercase DNS label.
