@@ -136,7 +136,7 @@ social images.
    (`topic.preview-check`). Without a browser, fetch the HTML and its assets,
    check the status codes, and tell the user you did not see the rendered
    page.
-4. Make one pass of fixes, save again, then `publish` (`topic.approvals`).
+4. Make one pass of fixes, save again, then `create_version` (`topic.approvals`).
    For a page that charts real numbers, spend that one look on the charts
    (`topic.page.visuals`).
 
@@ -146,7 +146,7 @@ and look once more.
 
 ### Save warnings
 
-`save_draft`, `save_version`, `save_version_from_dir` and `save_page`
+`save_draft`, `save_draft_from_dir` and `save_page`
 return `warnings: [{path, message, fix}]` for website and page bundles; the
 text result lists them too. They never block or change the save. Docs bundles are not checked.
 

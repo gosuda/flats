@@ -216,8 +216,8 @@ func TestLegacyPlanSettings(t *testing.T) {
 		t.Fatalf("discovery off without relays: %+v notes=%q %v", c.Portal, notes, err)
 	}
 
-	c, notes, err = plan(map[string]string{core.SetKeepVersions: "20", core.SetUploadMaxBytes: "lots", core.SetRateLimit: "50"}, Options{})
-	if err != nil || c.System.KeepVersions != 20 || c.System.UploadMaxBytes != 20<<20 || len(notes) != 1 {
+	c, notes, err = plan(map[string]string{core.SetVersionQuota: "20", core.SetUploadMaxBytes: "lots", core.SetRateLimit: "50"}, Options{})
+	if err != nil || c.System.VersionQuota != 20 || c.System.UploadMaxBytes != 20<<20 || len(notes) != 1 {
 		t.Fatalf("system settings: %+v notes=%q %v", c.System, notes, err)
 	}
 	if src := func() config.Source { _, s, _ := c.Lookup("system.rate_limit_rps"); return s }(); src != config.SourceDefault {
@@ -228,11 +228,11 @@ func TestLegacyPlanSettings(t *testing.T) {
 	c, notes, err = plan(map[string]string{
 		core.SetUploadMaxBytes: "4294967296",        // above the old 1 GiB cap: kept
 		core.SetRateLimit:      "0",                 // limiting off
-		core.SetKeepVersions:   "-3",                // no pruning
+		core.SetVersionQuota:   "-3",                // no pruning
 		core.SetEventsKeep:     "99999999999999999", // above 2^53-1
 		core.SetPortalMaxRelay: "0",                 // Portal default
 	}, Options{})
-	if err != nil || c.System.UploadMaxBytes != 4294967296 || c.System.RateLimitRPS != config.MaxInt || c.System.KeepVersions != 0 ||
+	if err != nil || c.System.UploadMaxBytes != 4294967296 || c.System.RateLimitRPS != config.MaxInt || c.System.VersionQuota != 0 ||
 		c.System.EventsKeep != config.MaxInt || c.Portal.MaxActiveRelays != 3 || len(notes) != 4 {
 		t.Fatalf("converted settings: %+v %+v notes=%q %v", c.System, c.Portal, notes, err)
 	}
@@ -315,7 +315,7 @@ func TestManagementServerRejectsForeignHost(t *testing.T) {
 			}
 		}
 	}
-	req, _ := http.NewRequest("PUT", "http://"+h.Addr()+"/console/api/settings", strings.NewReader(`{"keep_versions":"3"}`))
+	req, _ := http.NewRequest("PUT", "http://"+h.Addr()+"/console/api/settings", strings.NewReader(`{"version_quota":"3"}`))
 	req.Header.Set("X-Flats-Console", "1")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Origin", "http://attacker.example:"+port)

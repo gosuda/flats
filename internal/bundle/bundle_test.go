@@ -515,3 +515,19 @@ func TestFromDirSwapRaceNeverLeaks(t *testing.T) {
 		}
 	}
 }
+
+func TestInvalidArchiveHintsUseDraftSave(t *testing.T) {
+	_, err := FromArchive(strings.NewReader("not an archive"), Limits{})
+	validation, ok := IsValidation(err)
+	if !ok {
+		t.Fatalf("want validation error, got %v", err)
+	}
+	for _, problem := range validation.Problems {
+		if strings.Contains(problem.Fix, "flats deploy <dir>") {
+			t.Fatalf("removed command in hint: %s", problem.Fix)
+		}
+	}
+	if !strings.Contains(validation.Problems[0].Fix, "flats save-draft <slug> <dir>") {
+		t.Fatalf("hint lacks working command: %+v", validation.Problems)
+	}
+}

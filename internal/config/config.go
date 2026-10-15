@@ -30,7 +30,7 @@ import (
 )
 
 // CurrentSchemaVersion is the config.json format this binary reads and writes.
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 // Source tells where an effective value came from.
 type Source string
@@ -104,7 +104,7 @@ var specs = []spec{
 	{key: "tailscale.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts, override: true,
 		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off the tailnet"},
 	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
-	intSpec("system.keep_versions", 10, 0, MaxInt),
+	intSpec("system.version_quota", 20, 0, MaxInt),
 	intSpec("system.disk_quota_bytes", 30<<30, 0, MaxInt),
 	intSpec("system.preview_ttl_seconds", 24*3600, 1, MaxInt),
 	intSpec("system.rate_limit_rps", 50, 1, MaxInt),
@@ -625,7 +625,7 @@ func (n NetworkConfig) EffectiveDefaultPrivate() string {
 
 type SystemConfig struct {
 	UploadMaxBytes    int64
-	KeepVersions      int64 // 0 = no pruning
+	VersionQuota      int64 // 0 = unlimited
 	DiskQuotaBytes    int64 // 0 = off
 	PreviewTTLSeconds int64
 	RateLimitRPS      int64
@@ -729,7 +729,7 @@ func (c *Config) fill() error {
 	c.Tailscale = TailscaleConfig{list("tailscale.console_hosts")}
 	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
 		str("network.default_private"), str("network.default_public")}
-	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.keep_versions"),
+	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.version_quota"),
 		num("system.disk_quota_bytes"), num("system.preview_ttl_seconds"), num("system.rate_limit_rps"),
 		num("system.redirect_days"), num("system.events_keep")}
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}

@@ -256,7 +256,7 @@ update operations. The agent contract is guide `topic.docs`.
   running docs handler with trusted `private` access and
   `X-Flats-Host-Op: edit`. Only a running docs version is edited; without one
   the call refuses with `not_deployed` and a hint to use `save_document` and
-  `publish`. Agent-authored server flats never see the header, and a
+  `create_version`. Agent-authored server flats never see the header, and a
   browser on a private route cannot add it (core strips it), so the endpoint
   is not a cross-site write path.
 * **Same authority as people's edits.** One `BEGIN IMMEDIATE` transaction runs

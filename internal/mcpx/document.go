@@ -14,14 +14,33 @@ import (
 )
 
 type SaveDocumentIn struct {
-	Slug     string `json:"slug"`
-	Markdown string `json:"markdown"`
-	Title    string `json:"title,omitempty"`
-	Path     string `json:"path,omitempty" jsonschema:"relative .md or .markdown path; default index.md; complete Draft replacement"`
-	Message  string `json:"message,omitempty"`
+	Slug          string   `json:"slug"`
+	Markdown      string   `json:"markdown,omitempty"`
+	Files         []FileIn `json:"files,omitempty" jsonschema:"complete docs bundle, including flats.json with type docs; requires replace_bundle true"`
+	ReplaceBundle bool     `json:"replace_bundle,omitempty" jsonschema:"explicitly replace every document and asset with files; omitted files are deleted"`
+	Title         string   `json:"title,omitempty"`
+	Path          string   `json:"path,omitempty" jsonschema:"relative .md or .markdown path; default index.md; complete Draft replacement"`
+	Message       string   `json:"message,omitempty"`
 }
 
 func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in SaveDocumentIn) (*mcp.CallToolResult, SaveOut, error) {
+	if in.ReplaceBundle || len(in.Files) > 0 {
+		if !in.ReplaceBundle || len(in.Files) == 0 || in.Markdown != "" || in.Path != "" || in.Title != "" {
+			return nil, SaveOut{}, toolErr(fmt.Errorf("%w: files requires replace_bundle=true and cannot be combined with markdown, path or title", core.ErrInvalid), "")
+		}
+		raw, err := decodeFiles(in.Files)
+		if err != nil {
+			return nil, SaveOut{}, toolErr(err, "")
+		}
+		files, err := bundle.FromFiles(raw, bundle.Limits{MaxBytes: t.svc.UploadLimit()})
+		if err != nil {
+			return nil, SaveOut{}, toolErr(err, "")
+		}
+		if !docsBundle(files) {
+			return nil, SaveOut{}, toolErr(fmt.Errorf("%w: save_document files must be a docs bundle", core.ErrInvalid), "include flats.json with type docs")
+		}
+		return t.save(ctx, in.Slug, files, core.SaveMeta{Message: in.Message}, nil)
+	}
 	if in.Path == "" {
 		in.Path = "index.md"
 	}
@@ -36,7 +55,7 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 	if err != nil {
 		return nil, SaveOut{}, toolErr(err, "")
 	}
-	return t.save(ctx, in.Slug, []bundle.File{{Path: in.Path, Data: []byte(in.Markdown)}, {Path: bundle.ManifestName, Data: b}}, core.SaveMeta{Message: in.Message}, false, nil)
+	return t.save(ctx, in.Slug, []bundle.File{{Path: in.Path, Data: []byte(in.Markdown)}, {Path: bundle.ManifestName, Data: b}}, core.SaveMeta{Message: in.Message}, nil)
 }
 
 type GetDocumentIn struct {
@@ -112,4 +131,9 @@ func editHint(err error, slug string) string {
 		hint = notFoundHint(err, slug)
 	}
 	return hint
+}
+
+func docsBundle(files []bundle.File) bool {
+	m, err := bundle.ParseManifest(files)
+	return err == nil && m.Type == "docs"
 }

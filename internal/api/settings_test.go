@@ -52,7 +52,7 @@ func setupConfig(t *testing.T, pin bool) *configHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for k, v := range map[string]string{"credentials.operator_file": operatorFile, "network.permitted": "portal", "system.keep_versions": "10"} {
+	for k, v := range map[string]string{"credentials.operator_file": operatorFile, "network.permitted": "portal", "system.version_quota": "10"} {
 		if err := doc.Set(k, v); err != nil {
 			t.Fatal(err)
 		}
@@ -155,7 +155,7 @@ func TestSettingsDescribeConfig(t *testing.T) {
 		t.Fatalf("credentials = %+v", c.Credentials)
 	}
 	for k, want := range map[string]config.Source{"host.management_addr": config.SourceFlag, "host.local_addr": config.SourceDefault,
-		"network.permitted": config.SourceFile, "system.keep_versions": config.SourceFile, "system.events_keep": config.SourceDefault,
+		"network.permitted": config.SourceFile, "system.version_quota": config.SourceFile, "system.events_keep": config.SourceDefault,
 		"credentials.operator_file": config.SourceFile, "credentials.tailscale_authkey_file": config.SourceDefault} {
 		if c.Sources[k] != want {
 			t.Errorf("source of %s = %q, want %q", k, c.Sources[k], want)
@@ -174,7 +174,7 @@ func TestSettingsDescribeConfig(t *testing.T) {
 	}
 
 	// An edit on disk is reported, and the ETag stays the loaded file's.
-	edit(t, h.path, `"keep_versions": 10`, `"keep_versions": 11`)
+	edit(t, h.path, `"version_quota": 10`, `"version_quota": 11`)
 	_, etag, raw = settingsCall(t, h, "GET", "/settings", "", read)
 	if c := decodeSettings(t, raw).Config; !c.ChangedOnDisk || c.ETag != hash || etag != strconv.Quote(hash) {
 		t.Fatalf("after edit: %+v %q", c, etag)
@@ -221,14 +221,14 @@ func TestSettingsIfMatch(t *testing.T) {
 	}
 	first := fileHash(t, h.path)
 
-	code, etag, raw := settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4","portal_max_relays":"5","rate_limit_rps":"50"}`, with(strconv.Quote(first)))
+	code, etag, raw := settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4","portal_max_relays":"5","rate_limit_rps":"50"}`, with(strconv.Quote(first)))
 	b := decodeSettings(t, raw)
 	second := fileHash(t, h.path)
 	if code != 200 || b.ETag != second || second == first || etag != strconv.Quote(second) {
 		t.Fatalf("save: %d %s (file %s)", code, raw, second)
 	}
 	// rate_limit_rps was sent unchanged, so it is in neither list.
-	if !slices.Equal(b.Applied, []string{"keep_versions"}) || !slices.Equal(b.RestartRequired, []string{"portal_max_relays"}) || b.Settings["keep_versions"] != "4" {
+	if !slices.Equal(b.Applied, []string{"version_quota"}) || !slices.Equal(b.RestartRequired, []string{"portal_max_relays"}) || b.Settings["version_quota"] != "4" {
 		t.Fatalf("applied %v, restart %v", b.Applied, b.RestartRequired)
 	}
 	if h.svc.UploadLimit() != 20<<20 {
@@ -236,12 +236,12 @@ func TestSettingsIfMatch(t *testing.T) {
 	}
 
 	// A second request with the first ETag cannot overwrite the first save.
-	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"7"}`, with(strconv.Quote(first)))
+	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"version_quota":"7"}`, with(strconv.Quote(first)))
 	if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" || !strings.Contains(b.Error, "reload the page") {
 		t.Fatalf("stale ETag: %d %s", code, raw)
 	}
 	// The unquoted form is accepted too.
-	if code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"6"}`, with(second)); code != 200 {
+	if code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"version_quota":"6"}`, with(second)); code != 200 {
 		t.Fatalf("unquoted ETag: %d %s", code, raw)
 	}
 	third := fileHash(t, h.path)
@@ -254,7 +254,7 @@ func TestSettingsIfMatch(t *testing.T) {
 
 	// After an edit on disk, a save with the ETag in effect is refused with
 	// a restart instruction, and the edit is kept.
-	edit(t, h.path, `"keep_versions": 6`, `"keep_versions": 8`)
+	edit(t, h.path, `"version_quota": 6`, `"version_quota": 8`)
 	edited := fileHash(t, h.path)
 	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"events_keep":"100"}`, with(strconv.Quote(third)))
 	if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" || !strings.Contains(b.Error, "restart Flats") {
@@ -273,7 +273,7 @@ func TestSettingsIfMatch(t *testing.T) {
 	if fileHash(t, h.path) != edited {
 		t.Fatal("a refused save changed the file")
 	}
-	if all, _ := h.svc.Settings(context.Background()); all["events_keep"] != "5000" || all["keep_versions"] != "6" {
+	if all, _ := h.svc.Settings(context.Background()); all["events_keep"] != "5000" || all["version_quota"] != "6" {
 		t.Fatalf("refused saves applied: %v", all)
 	}
 }
@@ -295,7 +295,7 @@ func TestSettingsSaveWithoutReadableFile(t *testing.T) {
 	if err := os.Chmod(h.dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4"}`, hdr)
+	code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
 	os.Chmod(h.dir, 0o700)
 	if os.Geteuid() != 0 {
 		if b := decodeSettings(t, raw); code != 500 || b.Category != "" {
@@ -307,7 +307,7 @@ func TestSettingsSaveWithoutReadableFile(t *testing.T) {
 	if err := os.Chmod(h.path, 0); err != nil {
 		t.Fatal(err)
 	}
-	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4"}`, hdr)
+	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
 	if os.Geteuid() != 0 {
 		if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" {
 			t.Fatalf("unreadable file: %d %s", code, raw)
@@ -317,12 +317,12 @@ func TestSettingsSaveWithoutReadableFile(t *testing.T) {
 	if err := os.Remove(h.path); err != nil {
 		t.Fatal(err)
 	}
-	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"keep_versions":"4"}`, hdr)
+	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
 	if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" || !strings.Contains(b.Error, "restart Flats") {
 		t.Fatalf("removed file: %d %s", code, raw)
 	}
 	noPath(raw)
-	if all, _ := h.svc.Settings(context.Background()); all["keep_versions"] != "10" {
+	if all, _ := h.svc.Settings(context.Background()); all["version_quota"] != "10" {
 		t.Fatalf("a refused save applied: %v", all)
 	}
 }
@@ -388,11 +388,11 @@ func TestSettingsImpactMatchesPruning(t *testing.T) {
 	saveAndPublish(t, h.srv, "notes", "n1")
 
 	// Increases, equal values and other settings have no impact.
-	if code, b := impactOf(t, h, `{"keep_versions":"20","events_keep":"5000","rate_limit_rps":"1","preview_ttl_seconds":"90000"}`); code != 200 || len(b.Impact) != 0 {
+	if code, b := impactOf(t, h, `{"version_quota":"20","events_keep":"5000","rate_limit_rps":"1","preview_ttl_seconds":"90000"}`); code != 200 || len(b.Impact) != 0 {
 		t.Fatalf("no decrease: %d %+v", code, b)
 	}
-	if code, b := impactOf(t, h, `{"keep_versions":"0"}`); code != 200 || len(b.Impact) != 0 {
-		t.Fatalf("keep_versions 0 keeps everything: %d %+v", code, b)
+	if code, b := impactOf(t, h, `{"version_quota":"0"}`); code != 200 || len(b.Impact) != 0 {
+		t.Fatalf("version_quota 0 keeps everything: %d %+v", code, b)
 	}
 	if code, b := impactOf(t, h, `{"events_keep":"0"}`); code != 400 || b.Category != "invalid" {
 		t.Fatalf("invalid candidate: %d %+v", code, b)
@@ -401,24 +401,21 @@ func TestSettingsImpactMatchesPruning(t *testing.T) {
 		t.Fatalf("unknown setting: %d %+v", code, b)
 	}
 
-	_, b := impactOf(t, h, `{"keep_versions":"2"}`)
-	vi := b.Impact["keep_versions"]
-	if vi.Current != "10" || vi.Candidate != "2" || vi.Total != 2 || len(vi.Flats) != 1 || vi.Flats[0].Slug != "blog" ||
-		!slices.Equal(vi.Flats[0].Versions, []int{2, 1}) || vi.Flats[0].Count != 2 {
-		t.Fatalf("version impact = %+v", vi)
+	_, b := impactOf(t, h, `{"version_quota":"2"}`)
+	if len(b.Impact) != 0 {
+		t.Fatalf("version quota must not propose automatic deletion: %+v", b.Impact)
 	}
-	put(t, h, `{"keep_versions":"2"}`)
+	put(t, h, `{"version_quota":"2"}`)
 	if fileHash(t, h.path) == hash {
 		t.Fatal("setting not saved")
 	}
-	// The next pruning runs after blog's next deploy.
 	code, out := req(t, "POST", h.srv.URL+"/api/flats/blog/deploy", strings.NewReader(`{"version":5}`), nil)
 	if code != 202 {
 		t.Fatalf("redeploy: %d %v", code, out)
 	}
 	approveRequest(t, h.srv, out)
-	if got := prunedVersions(t, h, "blog"); !slices.Equal(got, vi.Flats[0].Versions) {
-		t.Fatalf("pruned %v, preview said %v", got, vi.Flats[0].Versions)
+	if got := prunedVersions(t, h, "blog"); len(got) != 0 {
+		t.Fatalf("quota decrease pruned versions: %v", got)
 	}
 
 	// Events: the next sweep trims each flat's log to the candidate.
@@ -461,23 +458,22 @@ func TestSettingsImpactMatchesPruning(t *testing.T) {
 		t.Fatalf("open previews after the sweep: %v (closed %s, kept %s)", open, old, fresh)
 	}
 
-	// An open preview does not protect its version from the next pruning:
-	// the deploy that prunes closes the flat's previews first.
+	// Quota decreases preserve every version, even when previewed.
 	openPreview(t, h, "blog", 4)
-	_, b = impactOf(t, h, `{"keep_versions":"1"}`)
-	vi = b.Impact["keep_versions"]
-	if vi.Total != 1 || !slices.Equal(vi.Flats[0].Versions, []int{3}) {
-		t.Fatalf("keep 1 with v4 previewed = %+v", vi)
+	_, b = impactOf(t, h, `{"version_quota":"1"}`)
+	if len(b.Impact) != 0 {
+		t.Fatalf("quota impact proposed deletion: %+v", b.Impact)
 	}
-	put(t, h, `{"keep_versions":"1"}`)
+	put(t, h, `{"version_quota":"1"}`)
 	code, out = req(t, "POST", h.srv.URL+"/api/flats/blog/deploy", strings.NewReader(`{"version":5}`), nil)
 	if code != 202 {
 		t.Fatalf("redeploy: %d %v", code, out)
 	}
 	approveRequest(t, h.srv, out)
-	if got := prunedVersions(t, h, "blog"); !slices.Equal(got, []int{3, 2, 1}) {
-		t.Fatalf("pruned %v after the redeploy, preview said %v on top of [2 1]", got, vi.Flats[0].Versions)
+	if got := prunedVersions(t, h, "blog"); len(got) != 0 {
+		t.Fatalf("quota decrease pruned %v", got)
 	}
+
 }
 
 func openPreview(t *testing.T, h *configHost, slug string, version int) string {

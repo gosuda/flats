@@ -222,6 +222,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err := s.migrateLegacyDrafts(ctx); err != nil {
 		return nil, err
 	}
+	if err := s.recoverVersionDeletions(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.recoverRestoreJournals(ctx); err != nil {
 		return nil, err
 	}
@@ -636,13 +639,16 @@ type FlatView struct {
 	// PrivateState is the private host's state once it is served: "ready"
 	// when the URL answers, "starting" while the node joins the tailnet or
 	// waits for its HTTPS certificate (PrivateDetail says which).
-	PrivateState  string         `json:"private_state,omitempty"`
-	PrivateDetail string         `json:"private_detail,omitempty"`
-	PublicURL     string         `json:"public_url,omitempty"`
-	PublicNotice  string         `json:"public_notice,omitempty"`
-	Live          *store.Version `json:"live,omitempty"`
-	Versions      int            `json:"versions"`
-	LatestVersion int            `json:"latest_version,omitempty"`
+	PrivateState          string         `json:"private_state,omitempty"`
+	PrivateDetail         string         `json:"private_detail,omitempty"`
+	PublicURL             string         `json:"public_url,omitempty"`
+	PublicNotice          string         `json:"public_notice,omitempty"`
+	Live                  *store.Version `json:"live,omitempty"`
+	Versions              int            `json:"versions"`
+	EffectiveVersionQuota int            `json:"effective_version_quota"`
+	VersionCount          int            `json:"version_count"`
+	NextVersion           int            `json:"next_version"`
+	LatestVersion         int            `json:"latest_version,omitempty"`
 	// LatestDeployed reports whether LatestVersion was ever made live. False
 	// means the newest saved version still waits to be published.
 	LatestDeployed bool   `json:"latest_deployed,omitempty"`
@@ -684,6 +690,8 @@ const PendingPublicAccessNotice = "If approved, this flat becomes Public: anyone
 
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
+	v.EffectiveVersionQuota = s.versionQuota(f)
+	v.NextVersion, _ = s.st.NextVersionNumber(ctx, f.Slug)
 	s.mu.Lock()
 	lf := s.live[f.Slug]
 	s.mu.Unlock()
@@ -767,6 +775,11 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	var latestManifest json.RawMessage
 	if vs, err := s.st.ListVersions(ctx, f.Slug); err == nil {
 		v.Versions = len(vs)
+		for _, version := range vs {
+			if !version.Pruned {
+				v.VersionCount++
+			}
+		}
 		if len(vs) > 0 {
 			v.LatestVersion = vs[0].Number
 			latestManifest = vs[0].Manifest
@@ -1082,7 +1095,7 @@ func (s *Service) VersionFile(slugName string, n int, rel string) (string, error
 }
 
 func (s *Service) pruneVersions(ctx context.Context, slugName string) {
-	keep := s.keepVersions()
+	keep := 1
 	prune, err := s.prunableVersions(ctx, slugName, keep, true)
 	if err != nil {
 		return
@@ -1114,6 +1127,9 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 		return nil, err
 	}
 	docs := contenttype.RevisionModel(t)
+	if !docs {
+		return nil, nil
+	}
 	if docs {
 		keep = 1
 	}
@@ -1358,7 +1374,7 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	}
 	lifecyclePhase(ctx, "after_health", slugName, approvalID)
 	if snap, serr := s.snapshotDB(slugName, n, f.LiveVersion); serr != nil {
-		s.Event(ctx, slugName, "warn", "snapshot", "could not snapshot the database before deploy: "+serr.Error(), nil)
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: fmt.Errorf("%w: %w", ErrSnapshotFailed, serr), Data: dataIsolated, DataImpact: "none", HealthData: "isolated_copy", LiveData: "untouched"}
 	} else if snap != "" {
 		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
 	}
@@ -1469,18 +1485,11 @@ func (s *Service) rollbackLocked(ctx context.Context, f store.Flat, to int, rest
 
 // previousLive returns the version that was live before the current one.
 func (s *Service) previousLive(ctx context.Context, f store.Flat) (int, error) {
-	hist, err := s.st.ListDeployments(ctx, f.Slug, 200)
-	if err != nil {
-		return 0, err
+	n, err := s.st.PreviousAvailableDeployment(ctx, f.Slug, f.LiveVersion)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, fmt.Errorf("%w: there is no available earlier deployed version to roll back to", ErrConflict)
 	}
-	for _, d := range hist {
-		// A redeploy of the live version (to apply secrets) records itself
-		// as its previous version; it says nothing about what came before.
-		if d.Version == f.LiveVersion && d.Previous > 0 && d.Previous != d.Version {
-			return d.Previous, nil
-		}
-	}
-	return 0, fmt.Errorf("%w: there is no earlier deployed version to roll back to", ErrConflict)
+	return n, err
 }
 
 // RestoreSnapshot puts back database snapshot name (see Snapshots) and
@@ -1701,16 +1710,17 @@ func (s *Service) Deployments(ctx context.Context, slugName string) ([]store.Dep
 
 // ActionResult is returned by actions that may need approval.
 type ActionResult struct {
-	Status      string          `json:"status"` // done | pending_approval
-	Approval    *store.Approval `json:"approval,omitempty"`
-	ApprovalURL string          `json:"approval_url,omitempty"`
-	Flat        *FlatView       `json:"flat,omitempty"`
-	Version     int             `json:"version,omitempty"`
-	Notice      string          `json:"notice,omitempty"`
-	Message     string          `json:"message"`
-	DataImpact  string          `json:"data_impact,omitempty"`
-	HealthData  string          `json:"health_data,omitempty"`
-	LiveData    string          `json:"live_data,omitempty"`
+	Status         string          `json:"status"` // done | pending_approval | cleanup_pending
+	CleanupPending bool            `json:"cleanup_pending,omitempty"`
+	Approval       *store.Approval `json:"approval,omitempty"`
+	ApprovalURL    string          `json:"approval_url,omitempty"`
+	Flat           *FlatView       `json:"flat,omitempty"`
+	Version        int             `json:"version,omitempty"`
+	Notice         string          `json:"notice,omitempty"`
+	Message        string          `json:"message"`
+	DataImpact     string          `json:"data_impact,omitempty"`
+	HealthData     string          `json:"health_data,omitempty"`
+	LiveData       string          `json:"live_data,omitempty"`
 }
 
 func (s *Service) requestApproval(ctx context.Context, slugName, action string, params any, via Via, reason string) (ActionResult, error) {

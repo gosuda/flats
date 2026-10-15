@@ -23,46 +23,22 @@ import (
 
 func (a *app) deploy(args []string) error {
 	fs := a.flags("deploy")
-	slug := fs.String("flat", "", "flat slug (created on first deploy)")
-	saveOnly := fs.Bool("save-only", false, "save the Private Draft without requesting publish approval")
-	message := fs.String("message", "", "note stored with the Draft")
-	n := fs.Int("version", 0, "request activation of a saved version (> 0)")
-	expected := fs.Int("expected-revision", -1, "save only if current Draft revision matches (0 means no Draft)")
+	slug := fs.String("flat", "", "flat slug")
+	n := fs.Int("version", 0, "saved version to deploy; explicit approval required")
 	pos, err := a.parse(fs, args, 0, 1)
 	if err != nil {
 		return err
 	}
-	if *slug == "" {
-		return usagef("--flat is required")
+	if len(pos) > 0 {
+		return usagef("deploy requires --flat and --version; save build output with `flats save-draft <slug> <dir>`, then request `flats create-version <slug>` first")
 	}
-	versionSet, expectedSet := false, false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "expected-revision" {
-			expectedSet = true
-		}
-		if f.Name == "version" {
-			versionSet = true
-		}
-	})
-	if *n < 0 || *expected < -1 || (expectedSet && *expected < 0) {
-		return usagef("version and expected-revision must be nonnegative")
+	if *slug == "" || *n <= 0 {
+		return usagef("--flat and a positive --version are required; save-draft, then create-version first")
 	}
-	if versionSet {
-		if *n <= 0 {
-			return usagef("version must be a positive integer; save the Draft as a new version with `flats publish <slug>` first")
-		}
-		if len(pos) > 0 || *saveOnly || *message != "" {
-			return usagef("--version requests activation of a saved version; do not pass a directory, --save-only or --message")
-		}
-		return a.deployExisting(*slug, *n)
-	}
-	if len(pos) == 0 {
-		return usagef("missing build directory")
-	}
-	return a.upload(pos[0], *slug, *message, !*saveOnly, *expected, false)
+	return a.deployExisting(*slug, *n)
 }
 
-func (a *app) upload(src, slug, message string, deploy bool, expected int, draftRoute bool) error {
+func (a *app) upload(src, slug, message string, expected int, document bool) error {
 	start := time.Now()
 	c := a.client()
 
@@ -121,54 +97,41 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 	if expected >= 0 {
 		q.Set("expected_revision", strconv.Itoa(expected))
 	}
-	if deploy {
-		q.Set("deploy", "1")
-	}
 	sent := time.Now()
-	suffix := "/versions"
-	if draftRoute {
-		suffix = "/draft"
+	suffix := "/draft"
+	if document {
+		suffix = "/document"
 	}
 	resp, err := c.do(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(slug)+suffix, q, bytes.NewReader(body), ctype)
 	if err != nil {
 		return err
 	}
-	if a.jsonOut {
-		a.emitRaw(resp)
-	}
 	var out struct {
-		Version     *version      `json:"version"`
-		Deploy      *deployResult `json:"deploy"`
-		DeployError *errorBody    `json:"deploy_error"`
-		Flat        *struct {
+		Draft *draftView `json:"draft"`
+		Flat  *struct {
 			Type       string `json:"type"`
 			Running    bool   `json:"running"`
 			Visibility string `json:"visibility"`
 			PrivateURL string `json:"private_url"`
 		} `json:"flat"`
-		actionResult
 	}
+
 	_ = json.Unmarshal(resp.Body, &out)
-	if resp.Status >= 300 && out.DeployError == nil {
+
+	if a.jsonOut {
+		a.emitRaw(resp)
+	}
+
+	if resp.Status >= 300 {
 		if a.jsonOut {
 			return exitCode(ExitError)
 		}
 		return newAPIError(resp)
 	}
-	pending := out.actionResult
-	if out.Deploy != nil && out.Deploy.Status == "pending_approval" {
-		pending = out.Deploy.pendingAction()
-	}
-	if pending.Status == "pending_approval" {
-		if a.jsonOut {
-			return exitCode(ExitPending)
-		}
-		return a.action(resp, pending, "")
+	if out.Flat == nil && (out.Draft == nil || out.Draft.Revision <= 0 || out.Draft.Hash == "") {
+		return fmt.Errorf("Draft save succeeded but the server returned no exact revision/hash receipt; read get-draft and reconcile before creating a version")
 	}
 	if a.jsonOut {
-		if out.DeployError != nil {
-			return exitCode(ExitError)
-		}
 		return nil
 	}
 
@@ -182,39 +145,19 @@ func (a *app) upload(src, slug, message string, deploy bool, expected int, draft
 		}
 		return nil
 	}
-	if v := out.Version; v != nil {
-		if v.Number == 0 && v.Role == "draft" {
-			fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s (type %s)\n", v.Revision, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty), displayType(v.Type))
-		} else {
-			fmt.Fprintf(w, "Saved version %d of %s: %d files, %s%s (type %s)\n", v.Number, slug, v.Files, humanBytes(v.Size), gitLabel(v.GitSHA, v.GitDirty), displayType(v.Type))
-		}
+	if d := out.Draft; d != nil {
+		fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s (type %s)\n", d.Revision, slug, d.Files, humanBytes(d.Size), gitLabel(d.GitSHA, d.GitDirty), displayType(d.Type))
 	}
 	if info.IsDir() && ps.Skipped > 0 {
 		fmt.Fprintf(w, "  skipped %d entries (.git, node_modules, .DS_Store, ...)\n", ps.Skipped)
 	}
-	if out.DeployError != nil {
-		fmt.Fprintf(a.errw, "error: %s\n", out.DeployError.Error)
-		if h := out.DeployError.Health; h != nil {
-			printHealth(a.errw, *h)
-		}
-		if out.Version != nil {
-			fmt.Fprintf(a.errw, "The version is saved; fix the problem and deploy again, or deploy it later with `flats deploy --flat %s --version %d`.\n", slug, out.Version.Number)
-		}
-		return exitCode(ExitError)
+	if d := out.Draft; d != nil {
+		fmt.Fprintf(w, "Current version is unchanged. Request approval for this saved content with `flats create-version %s --revision %d --hash %s`, or preview with `flats preview %s`.\n", slug, d.Revision, d.Hash, slug)
 	}
-	if d := out.Deploy; d != nil {
-		printDeploy(w, *d)
-	} else if out.Version != nil && out.Version.Number == 0 {
-		fmt.Fprintf(w, "Current version is unchanged. Request approval with `flats publish %s`, or preview with `flats preview %s`.\n", slug, slug)
-	} else if out.Version != nil {
-		fmt.Fprintf(w, "Not deployed (--save-only). Deploy it with `flats deploy --flat %s --version %d`, or preview it with `flats preview %s --version %d`.\n",
-			slug, out.Version.Number, slug, out.Version.Number)
-	}
+
 	total := time.Since(start)
 	fmt.Fprintf(w, "Took %s (pack %s, upload %s", roundDur(total), roundDur(packed), humanBytes(int64(len(body))))
-	if out.Deploy != nil {
-		fmt.Fprintf(w, ", deploy %s", roundDur(time.Duration(out.Deploy.Millis)*time.Millisecond))
-	}
+
 	fmt.Fprintf(w, ", server round trip %s)\n", roundDur(time.Since(sent)))
 	return nil
 }
@@ -336,7 +279,7 @@ func (a *app) list(args []string) error {
 		return nil
 	}
 	if len(out.Flats) == 0 {
-		fmt.Fprintln(a.out, "No flats yet. Deploy one with `flats deploy <dir> --flat <slug>`.")
+		fmt.Fprintln(a.out, "No flats yet. Save one with `flats save-draft <slug> <dir>`, then create-version and deploy after separate approvals.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
@@ -449,7 +392,7 @@ func (a *app) versions(args []string) error {
 		return nil
 	}
 	if len(out.Versions) == 0 {
-		fmt.Fprintln(a.out, "No published versions yet.")
+		fmt.Fprintln(a.out, "No retained versions yet.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
@@ -502,7 +445,7 @@ func (a *app) rollback(args []string) error {
 
 func (a *app) preview(args []string) error {
 	fs := a.flags("preview")
-	n := fs.Int("version", 0, "published version to preview (default 0: current Private Draft)")
+	n := fs.Int("version", 0, "saved version to preview (default 0: current Private Draft)")
 	pos, err := a.parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -606,6 +549,9 @@ func (a *app) action(resp response, res actionResult, requested string) error {
 	} else {
 		if res.Message != "" {
 			fmt.Fprintln(a.out, res.Message)
+		}
+		if res.CleanupPending || res.Status == "cleanup_pending" {
+			fmt.Fprintln(a.out, "Status: cleanup_pending (deletion applied; do not repeat it)")
 		}
 		if pending {
 			fmt.Fprintf(a.out, "Status: pending_approval\nApproval needed: %s\n", res.ApprovalURL)
@@ -972,8 +918,8 @@ func (d deployResult) pendingAction() actionResult {
 	return actionResult{Status: d.Status, Approval: d.Approval, ApprovalURL: d.ApprovalURL, Message: d.Message}
 }
 
-func (a *app) publish(args []string) error {
-	fs := a.flags("publish")
+func (a *app) createVersion(args []string) error {
+	fs := a.flags("create-version")
 	revision := fs.Int("revision", 0, "current Draft revision to freeze; 0 selects current")
 	hash := fs.String("hash", "", "expected Draft content hash")
 	pos, err := a.parse(fs, args, 1, 1)
@@ -984,7 +930,7 @@ func (a *app) publish(args []string) error {
 		return usagef("revision must be nonnegative")
 	}
 	var res actionResult
-	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/publish", nil, map[string]any{"revision": *revision, "hash": *hash}, &res)
+	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/versions", nil, map[string]any{"revision": *revision, "hash": *hash}, &res)
 	if err != nil {
 		return err
 	}
@@ -1009,7 +955,7 @@ func (a *app) draft(args []string) error {
 		return usagef("expected-revision must be nonnegative")
 	}
 	if len(pos) == 2 {
-		return a.upload(pos[1], pos[0], *message, false, *expected, true)
+		return a.upload(pos[1], pos[0], *message, *expected, false)
 	}
 	var d draftView
 	resp, err := a.client().call(a.ctx, http.MethodGet, "/api/flats/"+pathEscape(pos[0])+"/draft", nil, nil, &d)
@@ -1029,4 +975,60 @@ func displayType(t string) string {
 		return "flat"
 	}
 	return t
+}
+
+func (a *app) deleteVersion(args []string) error {
+	fs := a.flags("delete-version")
+	n := fs.Int("version", 0, "retained version to delete; cannot be live")
+	pos, err := a.parse(fs, args, 1, 1)
+	if err != nil {
+		return err
+	}
+	if *n <= 0 {
+		return usagef("--version must be positive")
+	}
+	var out actionResult
+	resp, err := a.client().call(a.ctx, http.MethodDelete, "/api/flats/"+pathEscape(pos[0])+"/versions/"+strconv.Itoa(*n), nil, nil, &out)
+	if err != nil {
+		return err
+	}
+	return a.action(resp, out, "")
+}
+
+func (a *app) saveDraft(args []string) error {
+	fs := a.flags("save-draft")
+	expected := fs.Int("expected-revision", -1, "current Draft revision; 0 expects no Draft")
+	message := fs.String("message", "", "Draft note")
+	pos, err := a.parse(fs, args, 2, 2)
+	if err != nil {
+		return err
+	}
+	invalid := *expected < -1
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "expected-revision" && *expected < 0 {
+			invalid = true
+		}
+	})
+	if invalid {
+		return usagef("expected-revision must be nonnegative")
+	}
+	return a.upload(pos[1], pos[0], *message, *expected, false)
+}
+func (a *app) getDraft(args []string) error {
+	fs := a.flags("get-draft")
+	pos, err := a.parse(fs, args, 1, 1)
+	if err != nil {
+		return err
+	}
+	return a.draft(pos)
+}
+
+func (a *app) saveDocument(args []string) error {
+	fs := a.flags("save-document")
+	message := fs.String("message", "", "revision note")
+	pos, err := a.parse(fs, args, 2, 2)
+	if err != nil {
+		return err
+	}
+	return a.upload(pos[1], pos[0], *message, -1, true)
 }

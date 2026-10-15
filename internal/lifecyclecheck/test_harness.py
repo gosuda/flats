@@ -43,6 +43,38 @@ class HarnessChecks(unittest.TestCase):
         self.assertEqual(len(identity["head"]), 40)
         self.assertIn("scripts/lifecycle-gate.sh", identity["harness_sha256"])
 
+    def test_draft_upload_cannot_create_an_approval_or_use_version_route(self):
+        with tempfile.TemporaryDirectory() as folder:
+            host = Host("unused", folder)
+            calls = []
+            host.ok = lambda *args, **kwargs: calls.append((args, kwargs)) or {"draft": {"revision": 1}}
+            host.save("example", {"index.html": "draft"})
+            self.assertEqual(calls[0][0][:2], ("POST", "/api/flats/example/draft"))
+            self.assertEqual(calls[0][1]["status"], 201)
+            with self.assertRaises(AssertionError):
+                host.save("example", {"index.html": "draft"}, deploy=True)
+            historical = Host("pinned-archive-binary", folder, legacy=True)
+            historical.ok = host.ok
+            historical.save("example", {"index.html": "historical"})
+            self.assertEqual(calls[-1][0][:2], ("POST", "/api/flats/example/versions"))
+
+    def test_version_request_freezes_the_observed_draft_and_requires_new_action(self):
+        with tempfile.TemporaryDirectory() as folder:
+            host = Host("unused", folder)
+            calls = []
+            def response(method, path, body=None, **kwargs):
+                calls.append((method, path, body))
+                if method == "GET":
+                    return {"revision": 7, "hash": "frozen-hash"}
+                return {"status": "pending_approval", "approval": {"id": "request", "action": "create_version"}}
+            host.ok = response
+            self.assertEqual(host.create_version("example"), "request")
+            self.assertEqual(calls[-1], ("POST", "/api/flats/example/versions", {"revision": 7, "hash": "frozen-hash"}))
+            host.ok = lambda *args, **kwargs: ({"revision": 7, "hash": "frozen-hash"} if args[0] == "GET"
+                                              else {"status": "pending_approval", "approval": {"id": "wrong", "action": "publish"}})
+            with self.assertRaises(AssertionError):
+                host.create_version("example")
+
     def test_stop_rejects_nonzero_exit_and_recovered_panic(self):
         for marker, exit_code in (("", 7), ("panic: simulated handler panic", 0)):
             with self.subTest(marker=marker, exit_code=exit_code), tempfile.TemporaryDirectory() as folder:

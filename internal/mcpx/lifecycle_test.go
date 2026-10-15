@@ -16,8 +16,8 @@ import (
 func publishedFixture(t *testing.T, e *env) {
 	t.Helper()
 	for i, content := range []string{"VERSION-1", "VERSION-2"} {
-		var out SaveOut
-		text, failed := call(t, e.local, "save_version", map[string]any{"slug": "census", "files": []any{file("index.html", content, "")}, "deploy": true}, &out)
+		var out saveFixtureOut
+		text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "census", "files": []any{file("index.html", content, "")}, "deploy": true}, &out)
 		if failed || out.Deploy == nil || out.Deploy.Status != "pending_approval" {
 			t.Fatalf("fixture pending: %s %+v", text, out)
 		}
@@ -44,10 +44,10 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 			if code, _ := e.operatorCall(t, "POST", "/flats/census/providers", `{"provider":"portal","permitted":true}`); code != 200 {
 				t.Fatalf("fixture grant: %d", code)
 			}
-			var saved SaveOut
+			var saved saveFixtureOut
 			call(t, e.local, "save_draft", map[string]any{"slug": "census", "files": []any{file("index.html", "DRAFT-3", "")}}, &saved)
 			var pending ActionOut
-			call(t, e.local, "publish", map[string]any{"slug": "census", "revision": 3}, &pending)
+			call(t, e.local, "create_version", map[string]any{"slug": "census", "revision": 3}, &pending)
 			if pending.Status != "pending_approval" {
 				t.Fatalf("missing census approval: %+v", pending)
 			}
@@ -58,11 +58,11 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 			args := map[string]map[string]any{
 				"check_client": {}, "get_client_skill": {},
 				"list_flats": {}, "get_flat": {"slug": "census"}, "get_draft": {"slug": "census"}, "create_flat": {"slug": "separate"},
-				"save_version":          {"slug": "census", "expected_revision": 3, "files": []any{file("index.html", "NEW-DRAFT", "")}, "deploy": true},
-				"save_draft":            {"slug": "census", "expected_revision": 3, "files": []any{file("index.html", "NEW-DRAFT", "")}},
-				"save_version_from_dir": {"slug": "census", "expected_revision": 3, "dir": dir, "deploy": true},
-				"list_versions":         {"slug": "census"}, "deploy": {"slug": "census", "version": 1}, "publish": {"slug": "census", "revision": 3},
-				"rollback": {"slug": "census", "version": 1}, "open_preview": {"slug": "census", "target": "draft", "version": 0},
+				"save_draft":          {"slug": "census", "expected_revision": 3, "files": []any{file("index.html", "NEW-DRAFT", "")}},
+				"save_draft_from_dir": {"slug": "census", "expected_revision": 3, "dir": dir, "deploy": true},
+				"list_versions":       {"slug": "census"}, "deploy": {"slug": "census", "version": 1}, "create_version": {"slug": "census", "revision": 3},
+				"delete_version": {"slug": "census", "version": 1},
+				"rollback":       {"slug": "census", "version": 1}, "open_preview": {"slug": "census", "target": "draft", "version": 0},
 				"set_visibility": {"slug": "census", "visibility": "public"}, "delete_flat": {"slug": "census", "reason": "census"},
 				"get_logs": {"slug": "census"}, "get_approval": {"id": pending.ApprovalID}, "list_secrets": {"slug": "census"}, "get_runtime_reference": {}, "get_content_types": {},
 				"save_document": {"slug": "separate-doc", "markdown": "# doc"}, "get_document": {"slug": "census"},
@@ -119,7 +119,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 
 func TestMCPConflictPreservesContentAndCannotDecideOrGrant(t *testing.T) {
 	e := newEnv(t)
-	var saved SaveOut
+	var saved saveFixtureOut
 	call(t, e.local, "save_draft", map[string]any{"slug": "conflict", "files": []any{file("index.html", "PRESERVED", "")}, "expected_revision": 0, "deploy": true}, &saved)
 	if saved.Draft.Revision != 1 || saved.Deploy == nil {
 		t.Fatalf("initial save: %+v", saved)
@@ -150,7 +150,7 @@ func TestMCPConflictPreservesContentAndCannotDecideOrGrant(t *testing.T) {
 
 func TestMCPDeployZeroRejectedAndPublishSavesVersionThenDeployActivates(t *testing.T) {
 	e := newEnv(t)
-	var saved SaveOut
+	var saved saveFixtureOut
 	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "zero", "expected_revision": 0, "files": []any{file("index.html", "ZERO-DRAFT", "")}}, &saved); failed {
 		t.Fatal(text)
 	}
@@ -158,7 +158,7 @@ func TestMCPDeployZeroRejectedAndPublishSavesVersionThenDeployActivates(t *testi
 		t.Fatalf("Draft deploy zero must be rejected: %s", text)
 	}
 	var pub ActionOut
-	text, failed := call(t, e.local, "publish", map[string]any{"slug": "zero", "revision": 1}, &pub)
+	text, failed := call(t, e.local, "create_version", map[string]any{"slug": "zero", "revision": 1}, &pub)
 	if failed || pub.Status != "pending_approval" || pub.ApprovalID == "" || strings.Contains(text, " is live") {
 		t.Fatalf("Draft publish pending: %s %+v", text, pub)
 	}
@@ -209,7 +209,7 @@ func TestMCPVisibilityWithoutProviderRemainsPending(t *testing.T) {
 
 func TestMCPApplyingApprovalIsNotDescribedAsWaitingForDecision(t *testing.T) {
 	e := newEnv(t)
-	var saved SaveOut
+	var saved saveFixtureOut
 	call(t, e.local, "save_draft", map[string]any{"slug": "applying", "files": []any{file("index.html", "one", "")}, "deploy": true}, &saved)
 	if saved.Deploy == nil || saved.Deploy.ApprovalID == "" {
 		t.Fatal("missing pending approval")
@@ -227,7 +227,7 @@ func TestMCPApplyingApprovalIsNotDescribedAsWaitingForDecision(t *testing.T) {
 func TestGetFlatRetainsSummaryAlongsideDraftPreview(t *testing.T) {
 	e := newEnv(t)
 	publishedFixture(t, e)
-	var saved SaveOut
+	var saved saveFixtureOut
 	call(t, e.local, "save_draft", map[string]any{"slug": "census", "files": []any{file("index.html", "DRAFT-3", "")}}, &saved)
 	if text, failed := call(t, e.local, "open_preview", map[string]any{"slug": "census", "target": "draft", "version": 0}, nil); failed {
 		t.Fatal(text)

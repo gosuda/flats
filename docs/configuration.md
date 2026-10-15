@@ -99,7 +99,7 @@ written; `flats config unset KEY` removes it.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "host": {
     "instance_id": "63b57046-582f-48d9-a64f-877ae28d12aa",
     "data_dir": "/path/to/flats-data"
@@ -111,7 +111,7 @@ written; `flats config unset KEY` removes it.
     "console_hosts": ["flats"]
   },
   "system": {
-    "keep_versions": 20
+    "version_quota": 20
   },
   "portal": {
     "relays": ["https://relay.example.com"]
@@ -132,7 +132,7 @@ written; `flats config unset KEY` removes it.
 | `network.default_public` | `""` (no public provider) | immediately, for flats created afterwards |
 | `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; otherwise restart |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
-| `system.keep_versions` | `10` per flat, `0` = never prune | next pruning |
+| `system.version_quota` | `20` per flat, `0` = unlimited | immediately; existing versions are kept |
 | `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately |
 | `system.preview_ttl_seconds` | `86400` | next sweep |
 | `system.rate_limit_rps` | `50` per flat | immediately |
@@ -521,3 +521,17 @@ service definition again if that fails.
 
 To go back to an older release, restore `backups/flats.v<N>.<time>.db`; the
 older binary ignores `config.json`.
+
+Version history is retained until explicitly deleted. Per-flat overrides are
+managed in the console; lowering a quota never deletes versions. Configuration
+schema 3 migrates an explicitly configured `system.keep_versions` to
+`system.version_quota` (including 0 as unlimited); hosts without an explicit
+old value use 20. Previously pruned records stay unavailable and do not count.
+
+Migration changes the meaning of an explicit old count: `keep_versions: N`
+becomes a quota of **N total available versions**, including the live version,
+not N historical versions plus the live one. For example, quota 1 on a deployed
+flat leaves no room to create its replacement. Raise the quota or explicitly
+delete eligible older versions. Over-quota flats keep all retained versions;
+new creation is refused until there is room. Previously pruned rows do not
+count.

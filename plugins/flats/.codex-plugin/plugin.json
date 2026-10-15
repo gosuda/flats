@@ -1,6 +1,6 @@
 {
   "name": "flats",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deploy agent-built websites to your own Flats host: versions, previews, rollback, private (Tailscale) or public (Portal) flats.",
   "author": { "name": "oesni" },
   "license": "MIT",
@@ -10,7 +10,7 @@
   "interface": {
     "displayName": "Flats",
     "shortDescription": "Deploy sites to your Flats host",
-    "longDescription": "Save a build as an immutable version, preview it on a private address, deploy it with a health check, roll back, and request public exposure through the operator.",
+    "longDescription": "Save a Private Draft and preview it, request approval to create a numbered version, then request separate approval to deploy it. Versions stay until explicitly deleted.",
     "developerName": "oesni",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

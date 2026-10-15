@@ -4,10 +4,9 @@ Agents never decide publication, exposure or deletion. These requests return
 `status: pending_approval` with `approval_id` and `approval_url`. What they
 request changes nothing until the operator approves it in the Flats console:
 
-* `publish`, and the publish request made by `save_draft`/`save_version` with
-  `deploy: true` (the save itself updates the Private Draft immediately;
-  approval saves the Draft as a numbered version `v1`, `v2`, ... without
-  deploying it, and the Draft stays saved if that request fails);
+* `create_version {slug, revision?, hash?}` freezes the current Draft and
+  requests a new numbered version without deploying it;
+* `delete_version {slug, version}` deletes a retained, non-live version;
 * `deploy {version}` (activation or redeploy of a saved version `version > 0`);
 * `rollback`, with or without `restore_data`;
 * `set_visibility` in **both** directions, private to public and public to

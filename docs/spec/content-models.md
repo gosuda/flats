@@ -201,7 +201,7 @@ These rules apply to the version, revision and pin quotas alike.
 
 | Type | Model | Status |
 |---|---|---|
-| website (`flat`) | Version | creation and deployment are separate; quotas, deletion and tool names are not implemented |
+| website (`flat`) | Version | implemented: separate creation/deployment approvals, quota and explicit deletion |
 | page (`page`) | Version | as for websites |
 | document (`docs`) | Revision | revisions, quotas, pins and rollback; saving one document while keeping the others is not implemented |
 | design | Revision | implemented |
@@ -215,24 +215,20 @@ sense: it has no pins, quotas or rollback.
 
 ## Current state
 
-Compared with the implementation after version creation was split from
-deployment (gosuda/flats PR #95):
+Compared with the Version-model completion:
 
 - **Version model.**
-  - Creating a version and deploying it are separate approved steps, as this
-    spec requires. The version-creation step is still named `publish` in MCP,
-    the CLI and the API (`approval action "publish"`), and deployment is
-    `deploy` with a positive version number (`action "activate"`).
-    `save_draft`, `save_version`, `save_page` and `flats deploy <dir>` with
-    `deploy` requested only ask to create a version.
-  - Versions are still pruned automatically after each deployment and version
-    creation, but only deployed history: the newest `keep_versions` (default
-    10) deployed versions are kept, plus the live version, any version with an
-    open preview or a pending deployment approval, and every version that was
-    never deployed. There is no version quota or version deletion yet.
-  - `save_version` and `save_version_from_dir` write the Draft without
-    approval despite their names. `create_version`, `save_draft_from_dir` and
-    version deletion do not exist.
+  - `save_draft`, `save_draft_from_dir` and `save_page` only save Private Draft
+    content. `create_version` freezes revision/hash and requests approval to
+    create the next number. Deployment remains a separate approved action.
+    Legacy `save_version` and `save_version_from_dir` tools are removed.
+  - Versions are never pruned automatically. The host default quota is 20,
+    each flat can override it, and 0 is unlimited. Full quotas refuse creation
+    at request and approval time. Lowering quotas preserves all versions.
+  - The console deletes non-live versions directly; agents use `delete_version`
+    to request explicit approval. Deletion rechecks frozen state and live
+    protection, closes previews, and preserves data snapshots. New version
+    numbers never reuse deleted numbers.
 - **Revision model.**
   - Designs implement the Revision model with the revision store described in
     [design-type-TECH.md](design-type-TECH.md): whole-flat revisions, shared
@@ -246,9 +242,8 @@ deployment (gosuda/flats PR #95):
     `flats_docs_conflicts` records were migrated into `recovered` revisions,
     and that store is no longer written.
   - Rule 8 is not complete for documents: `save_document` still replaces the
-    bundle with the one document it saves, and a docs bundle with several
-    documents or assets is saved with `save_version`, although documents have
-    no versions. Both are recoverable through revisions.
+    bundle with the one document it saves, and remains recoverable through revisions. Whole docs bundles now use
+    `save_document {replace_bundle: true, files: [...]}` explicitly.
   - Quota rule 3 is not complete for documents: a person's live edit is not
     checked against the disk quota, and the revision recording it is stored
     without that check.
@@ -277,7 +272,10 @@ deployment (gosuda/flats PR #95):
 5. **`keep_versions` becomes the version quota.** A host that set
    `system.keep_versions` explicitly uses that value as its default version
    quota (`0`, never prune, becomes unlimited); otherwise the default is 20.
-   Automatic pruning stops.
+   Automatic pruning stops. The migrated count includes the live version:
+   it is N total retained available versions, not N historical versions plus
+   the live one. A deployed flat migrated from `keep_versions: 1` needs its
+   quota raised before another version can be created; existing versions stay.
 
 ## Open questions
 

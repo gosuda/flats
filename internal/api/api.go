@@ -117,9 +117,11 @@ func (s *Server) Handler() http.Handler {
 		h("GET /flats/{slug}", s.getFlat)
 		h("GET /flats/{slug}/document", s.getDocument)
 		h("GET /flats/{slug}/draft", s.getDraft)
-		h("POST /flats/{slug}/draft", s.saveVersion)
-		h("PUT /flats/{slug}/draft", s.saveVersion)
-		h("POST /flats/{slug}/publish", s.publish)
+		h("POST /flats/{slug}/draft", s.saveContent)
+		h("PUT /flats/{slug}/draft", s.saveContent)
+		h("POST /flats/{slug}/versions", s.createVersion)
+		h("DELETE /flats/{slug}/versions/{n}", s.deleteVersion)
+		h("POST /flats/{slug}/document", s.saveContent)
 		h("POST /flats/{slug}/providers", s.providers)
 		h("GET /flats/{slug}/versions", s.listVersions)
 		h("GET /flats/{slug}/versions/{n}", s.getVersion)
@@ -147,11 +149,12 @@ func (s *Server) Handler() http.Handler {
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
-			h("POST /flats/{slug}/versions", s.saveVersion)
 			h("POST /approvals/{id}/approve", s.decide(true))
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
 			h("PUT /flats/{slug}/listing", s.setListing)
+			h("GET /flats/{slug}/version-quota", s.getFlat)
+			h("PUT /flats/{slug}/version-quota", s.putVersionQuota)
 			h("GET /flats/{slug}/revision-quota", s.revisionQuota)
 			h("PUT /flats/{slug}/revision-quota", s.putRevisionQuota)
 			h("GET /providers", s.hostProviders)
@@ -171,7 +174,6 @@ func (s *Server) Handler() http.Handler {
 			h("POST /settings/impact", s.settingsImpact)
 		} else {
 			h("POST /flats", s.createFlat)
-			h("POST /flats/{slug}/versions", s.saveVersion)
 		}
 	}
 	return mux
@@ -361,20 +363,40 @@ func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, 201, f)
 }
 
-// SaveResponse keeps the archive-upload compatibility object and the current
-// Draft separate. A pending request is never represented as a live version.
+// SaveResponse describes a Private Draft or a live document.
+// Saving never creates a numbered version or requests approval.
 type SaveResponse struct {
-	Version store.Version      `json:"version"`
-	Draft   store.Draft        `json:"draft"`
-	Deploy  *core.ActionResult `json:"deploy,omitempty"`
-	// Flat is set for a document, which runs at once: it has no Draft or
-	// publish step, so deploy is ignored.
-	Flat *core.FlatView `json:"flat,omitempty"`
-	core.ActionResult
+	Draft *SavedDraft    `json:"draft,omitempty"`
+	Flat  *core.FlatView `json:"flat,omitempty"`
 }
 
-func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
+// SavedDraft is metadata of this exact save, captured under the core storage
+// lock. Current mutable metadata (dirty/base_version) is read through GET draft.
+type SavedDraft struct {
+	Type     string    `json:"type"`
+	Flat     string    `json:"flat"`
+	Revision int       `json:"revision"`
+	Hash     string    `json:"hash"`
+	Size     int64     `json:"size"`
+	Files    int       `json:"files"`
+	Kind     string    `json:"kind"`
+	GitSHA   string    `json:"git_sha,omitempty"`
+	GitDirty bool      `json:"git_dirty"`
+	Message  string    `json:"message,omitempty"`
+	SavedAt  time.Time `json:"saved_at"`
+}
+
+// SavedDraftFrom projects the atomic core save receipt without version fields.
+func SavedDraftFrom(v store.Version) SavedDraft {
+	return SavedDraft{Type: contenttype.FromManifest(v.Manifest), Flat: v.Flat, Revision: v.Revision, Hash: v.Hash, Size: v.Size, Files: v.Files, Kind: v.Kind, GitSHA: v.GitSHA, GitDirty: v.GitDirty, Message: v.Message, SavedAt: v.CreatedAt}
+}
+
+func (s *Server) saveContent(w http.ResponseWriter, r *http.Request, via core.Via) {
 	q := r.URL.Query()
+	if q.Has("deploy") {
+		writeErr(w, 400, errors.New("Draft saves never create a version; request creation separately with POST /versions"))
+		return
+	}
 	dirty, _ := strconv.ParseBool(q.Get("git_dirty"))
 	meta := core.SaveMeta{GitSHA: q.Get("git_sha"), GitDirty: dirty, Message: q.Get("message")}
 	if values, present := q["expected_revision"]; present {
@@ -394,34 +416,27 @@ func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Vi
 		fail(w, err)
 		return
 	}
-	v, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
+	manifest, err := bundle.ParseManifest(files)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	documentRoute := strings.HasSuffix(r.URL.Path, "/document")
+	if (manifest.Type == contenttype.Docs) != documentRoute {
+		writeErr(w, 400, errors.New("documents must use /document; websites and pages must use /draft"))
+		return
+	}
+	saved, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	if f, err := s.Svc.GetFlat(r.Context(), r.PathValue("slug")); err == nil && f.Type == contenttype.Docs {
-		writeJSON(w, http.StatusCreated, SaveResponse{Version: v, Flat: &f})
+		writeJSON(w, http.StatusCreated, SaveResponse{Flat: &f})
 		return
 	}
-	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	out := SaveResponse{Version: v, Draft: draft}
-	if deploy, _ := strconv.ParseBool(q.Get("deploy")); deploy {
-		res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), v.Revision, v.Hash, via)
-		if err != nil {
-			writeJSON(w, statusOf(err), struct {
-				SaveResponse
-				DeployError ErrorBody `json:"deploy_error"`
-			}{out, errorBody(err)})
-			return
-		}
-		out.ActionResult, out.Deploy = res, &res
-		writeJSON(w, http.StatusAccepted, out)
-		return
-	}
+	draft := SavedDraftFrom(saved)
+	out := SaveResponse{Draft: &draft}
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -434,20 +449,20 @@ func (s *Server) getDraft(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	writeJSON(w, http.StatusOK, draft)
 }
 
-// PublishRequest freezes the selected current revision and optional content
+// CreateVersionRequest freezes the selected current revision and optional content
 // hash. Revision zero selects current, and cannot substitute a stale revision.
-type PublishRequest struct {
+type CreateVersionRequest struct {
 	Revision int    `json:"revision"`
 	Hash     string `json:"hash,omitempty"`
 }
 
-func (s *Server) publish(w http.ResponseWriter, r *http.Request, via core.Via) {
-	var in PublishRequest
+func (s *Server) createVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in CreateVersionRequest
 	if err := decode(r, &in); err != nil || in.Revision < 0 {
-		writeErr(w, 400, errors.New("publish body requires a nonnegative revision and optional hash"))
+		writeErr(w, 400, errors.New("version creation body requires a nonnegative revision and optional hash"))
 		return
 	}
-	res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), in.Revision, in.Hash, via)
+	res, err := s.Svc.RequestCreateVersion(r.Context(), r.PathValue("slug"), in.Revision, in.Hash, via)
 	if err != nil {
 		fail(w, err)
 		return
@@ -1225,4 +1240,45 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request, _ core.Via)
 		return
 	}
 	writeJSON(w, http.StatusOK, document)
+}
+
+func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n <= 0 {
+		writeErr(w, 400, errors.New("version must be a positive integer"))
+		return
+	}
+	out, err := s.Svc.RequestDeleteVersion(r.Context(), r.PathValue("slug"), n, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	code := http.StatusOK
+	if out.Status == "pending_approval" {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, out)
+}
+func (s *Server) putVersionQuota(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in struct {
+		VersionQuota json.RawMessage `json:"version_quota"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	var quota *int
+	if len(in.VersionQuota) == 0 {
+		writeErr(w, 400, errors.New("version_quota is required; use null to follow the host"))
+		return
+	}
+	if err := json.Unmarshal(in.VersionQuota, &quota); err != nil {
+		writeErr(w, 400, errors.New("version_quota must be an integer or null"))
+		return
+	}
+	if err := s.Svc.SetVersionQuotaOverride(r.Context(), r.PathValue("slug"), quota); err != nil {
+		fail(w, err)
+		return
+	}
+	s.getFlat(w, r, via)
 }

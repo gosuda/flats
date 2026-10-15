@@ -49,9 +49,9 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 		if code != 201 {
 			t.Fatalf("save: %d %v", code, out)
 		}
-		v := out["version"].(map[string]any)
-		if v["number"] != float64(0) || v["published"] != false || v["role"] != "draft" || v["revision"] != float64(revision) {
-			t.Fatalf("compatibility Draft: %v", v)
+		v := out["draft"].(map[string]any)
+		if out["version"] != nil || v["revision"] != float64(revision) {
+			t.Fatalf("Draft response: %v", v)
 		}
 		flatState(t, srv, "drafts", 0, "private", revision)
 	}
@@ -88,7 +88,7 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	}
 	serving(t, out["url"].(string), "DRAFT-3")
 	_, draft := req(t, "GET", srv.URL+"/api/flats/drafts/draft", nil, nil)
-	code, out = req(t, "POST", srv.URL+"/api/flats/drafts/publish", strings.NewReader(fmt.Sprintf(`{"revision":3,"hash":%q}`, draft["hash"])), nil)
+	code, out = req(t, "POST", srv.URL+"/api/flats/drafts/versions", strings.NewReader(fmt.Sprintf(`{"revision":3,"hash":%q}`, draft["hash"])), nil)
 	if code != 202 || out["status"] != "pending_approval" {
 		t.Fatalf("publish pending: %d %v", code, out)
 	}
@@ -118,7 +118,7 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	if code != 400 {
 		t.Fatalf("deploy 0 must be refused: %d %v", code, badDeploy)
 	}
-	code, pending := req(t, "POST", srv.URL+"/api/flats/drafts/publish", strings.NewReader(`{"revision":4}`), nil)
+	code, pending := req(t, "POST", srv.URL+"/api/flats/drafts/versions", strings.NewReader(`{"revision":4}`), nil)
 	if code != 202 {
 		t.Fatalf("publish Draft: %d %v", code, pending)
 	}
@@ -130,7 +130,7 @@ func TestDraftRevisionConflictPublishAndServingIsolation(t *testing.T) {
 	}
 	flatState(t, srv, "drafts", 1, "private", 5)
 	serving(t, f["private_url"].(string), "DRAFT-3")
-	code, out = req(t, "POST", srv.URL+"/api/flats/drafts/publish", strings.NewReader(`{"revision":5}`), nil)
+	code, out = req(t, "POST", srv.URL+"/api/flats/drafts/versions", strings.NewReader(`{"revision":5}`), nil)
 	if code != 202 {
 		t.Fatalf("fresh request: %d %v", code, out)
 	}
@@ -207,7 +207,7 @@ func TestPublicPublishRollbackKeepsBothCurrentEndpointsOnApprovedVersion(t *test
 		t.Fatalf("Draft preview: %d %v", code, preview)
 	}
 	serving(t, preview["url"].(string), "VERSION-2")
-	code, pending = req(t, "POST", srv.URL+"/api/flats/dual/publish", strings.NewReader(`{"revision":2}`), nil)
+	code, pending = req(t, "POST", srv.URL+"/api/flats/dual/versions", strings.NewReader(`{"revision":2}`), nil)
 	if code != 202 {
 		t.Fatalf("publish: %d %v", code, pending)
 	}

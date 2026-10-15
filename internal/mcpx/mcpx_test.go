@@ -91,10 +91,53 @@ func connect(t *testing.T, endpoint string) *mcp.ClientSession {
 	return cs
 }
 
+// saveFixtureOut holds the Draft response plus the result of a separate
+// create_version call used by lifecycle fixtures; deploy is not a save output.
+type saveFixtureOut struct {
+	SaveOut
+	Deploy *DeployInfo `json:"deploy,omitempty"`
+}
+
 // call runs a tool and returns its result text; out (if non-nil) receives the
 // structured output.
 func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any, out any) (string, bool) {
 	t.Helper()
+	// Older fixtures spell save-and-request as one helper call. Exercise the
+	// public operations separately; saves themselves never create approvals.
+	if (name == "save_draft" || name == "save_draft_from_dir" || name == "save_page") && args["deploy"] != nil {
+		want, _ := args["deploy"].(bool)
+		copied := make(map[string]any, len(args))
+		for k, v := range args {
+			if k != "deploy" {
+				copied[k] = v
+			}
+		}
+		args = copied
+		var saved saveFixtureOut
+		text, failed := call(t, cs, name, args, &saved)
+		if failed {
+			return text, true
+		}
+		if want && saved.Flat == nil {
+			var action ActionOut
+			msg, bad := call(t, cs, "create_version", map[string]any{"slug": args["slug"], "revision": saved.Draft.Revision, "hash": saved.Draft.Hash}, &action)
+			if bad {
+				return msg, true
+			}
+			saved.Deploy = &DeployInfo{Status: action.Status, Approval: action.Approval, ApprovalURL: action.ApprovalURL, Message: action.Message}
+			if action.Approval != nil {
+				saved.Deploy.ApprovalID = action.Approval.ID
+			}
+			text += "\n" + msg
+		}
+		if out != nil {
+			b, _ := json.Marshal(saved)
+			if err := json.Unmarshal(b, out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return text, false
+	}
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("%s: protocol error: %v", name, err)
@@ -148,8 +191,9 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"check_client", "create_flat", "delete_env", "delete_flat", "deploy", "get_approval", "get_client_skill", "get_content_types", "get_design", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_revision", "get_runtime_reference", "guide", "list_env", "list_flats",
-		"list_revisions", "list_secrets", "list_versions", "open_preview", "pin_revision", "publish", "rollback", "rollback_revision", "save_design", "save_document", "save_draft", "save_page", "save_version", "save_version_from_dir", "set_env", "set_visibility", "update_document"}
+	want := []string{"check_client", "create_flat", "delete_env", "delete_flat", "delete_version", "deploy", "get_approval", "get_client_skill", "get_content_types", "get_design", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_revision", "get_runtime_reference", "guide", "list_env", "list_flats",
+		"list_revisions", "list_secrets", "list_versions", "open_preview", "pin_revision", "create_version", "rollback", "rollback_revision", "save_design", "save_document", "save_draft", "save_page", "save_draft_from_dir", "set_env", "set_visibility", "update_document"}
+	slices.Sort(want)
 	slices.Sort(names)
 	if !slices.Equal(names, want) {
 		t.Fatalf("tools = %v, want %v", names, want)
@@ -165,9 +209,9 @@ func TestListTools(t *testing.T) {
 func TestSaveVersionAndDeploy(t *testing.T) {
 	e := newEnv(t)
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0xff, 0xfe}
-	var out SaveOut
-	text, failed := call(t, e.local, "save_version", map[string]any{"slug": "blog", "files": []any{file("index.html", "<h1>héllo</h1>", "UTF-8"), file("img/logo.png", base64.StdEncoding.EncodeToString(png), "Base64"), file("flats.json", `{"name":"My Blog"}`, "")}, "git_sha": "abc123", "git_dirty": true, "message": "first", "deploy": true}, &out)
-	if failed || out.Version.Number != 0 || out.Version.Live || out.Version.Published || out.Version.Role != "draft" || out.Version.Revision != 1 || out.Version.GitSHA != "abc123" || !out.Version.GitDirty || out.Version.Files != 3 {
+	var out saveFixtureOut
+	text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "blog", "files": []any{file("index.html", "<h1>héllo</h1>", "UTF-8"), file("img/logo.png", base64.StdEncoding.EncodeToString(png), "Base64"), file("flats.json", `{"name":"My Blog"}`, "")}, "git_sha": "abc123", "git_dirty": true, "message": "first", "deploy": true}, &out)
+	if failed || out.Draft.Revision != 1 || out.Draft.GitSHA != "abc123" || !out.Draft.GitDirty || out.Draft.Files != 3 {
 		t.Fatalf("Draft save: %s %+v", text, out)
 	}
 	if out.Deploy == nil || out.Deploy.Status != "pending_approval" || out.Deploy.ApprovalID == "" || strings.Contains(text, " is live") {
@@ -225,7 +269,7 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 		t.Fatalf("preview: %q", body)
 	}
 	var action ActionOut
-	if text, failed := call(t, e.local, "publish", map[string]any{"slug": "blog", "revision": 2}, &action); failed || action.Status != "pending_approval" {
+	if text, failed := call(t, e.local, "create_version", map[string]any{"slug": "blog", "revision": 2}, &action); failed || action.Status != "pending_approval" {
 		t.Fatalf("publish: %s %+v", text, action)
 	}
 	e.approve(t, action.ApprovalID)
@@ -259,7 +303,7 @@ func TestSaveVersionAndDeploy(t *testing.T) {
 
 func TestValidationErrorsHaveFixes(t *testing.T) {
 	e := newEnv(t)
-	text, isErr := call(t, e.local, "save_version", map[string]any{
+	text, isErr := call(t, e.local, "save_draft", map[string]any{
 		"slug": "site", "files": []any{file("readme.txt", "hi", "utf8")},
 	}, nil)
 	if !isErr {
@@ -270,13 +314,13 @@ func TestValidationErrorsHaveFixes(t *testing.T) {
 			t.Errorf("error text lacks %q:\n%s", s, text)
 		}
 	}
-	text, isErr = call(t, e.local, "save_version", map[string]any{
+	text, isErr = call(t, e.local, "save_draft", map[string]any{
 		"slug": "site", "files": []any{file("index.html", "x", "utf8"), file("a.bin", "%%%", "base64"), file("b", "x", "hex")},
 	}, nil)
 	if !isErr || !strings.Contains(text, "a.bin: invalid base64") || !strings.Contains(text, `unknown encoding "hex"`) {
 		t.Fatalf("encoding problems not reported:\n%s", text)
 	}
-	text, isErr = call(t, e.local, "save_version", map[string]any{
+	text, isErr = call(t, e.local, "save_draft", map[string]any{
 		"slug": "site", "files": []any{file("../etc/passwd", "x", "utf8"), file("index.html", "x", "")},
 	}, nil)
 	if !isErr || !strings.Contains(text, "escapes the bundle root") {
@@ -301,14 +345,14 @@ func TestUploadLimit(t *testing.T) {
 	if _, err := e.svc.UpdateSettings(context.Background(), map[string]string{core.SetUploadMaxBytes: "1024"}); err != nil {
 		t.Fatal(err)
 	}
-	text, isErr := call(t, e.local, "save_version", map[string]any{
+	text, isErr := call(t, e.local, "save_draft", map[string]any{
 		"slug": "big", "files": []any{file("index.html", strings.Repeat("a", 2000), "")},
 	}, nil)
 	if !isErr || !strings.Contains(text, "1024-byte limit") {
 		t.Fatalf("over-limit upload: %s", text)
 	}
 	// A body far beyond the base64-adjusted limit is refused by the transport.
-	_, err := e.local.CallTool(context.Background(), &mcp.CallToolParams{Name: "save_version", Arguments: map[string]any{
+	_, err := e.local.CallTool(context.Background(), &mcp.CallToolParams{Name: "save_draft", Arguments: map[string]any{
 		"slug": "big", "files": []any{file("index.html", strings.Repeat("a", 2<<20), "")},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "Request Entity Too Large") {
@@ -318,8 +362,8 @@ func TestUploadLimit(t *testing.T) {
 
 func TestFailedDeployKeepsLive(t *testing.T) {
 	e := newEnv(t)
-	var out SaveOut
-	if text, failed := call(t, e.local, "save_version", map[string]any{"slug": "site", "files": []any{file("index.html", "ok", "")}, "deploy": true}, &out); failed {
+	var out saveFixtureOut
+	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "site", "files": []any{file("index.html", "ok", "")}, "deploy": true}, &out); failed {
 		t.Fatal(text)
 	}
 	e.approve(t, out.Deploy.ApprovalID)
@@ -329,7 +373,7 @@ func TestFailedDeployKeepsLive(t *testing.T) {
 	}
 	e.approve(t, dep1.ApprovalID)
 	f, _ := e.svc.GetFlat(context.Background(), "site")
-	text, failed := call(t, e.local, "save_version", map[string]any{"slug": "site", "deploy": true, "files": []any{file("index.html", "broken", ""), file("flats.json", `{"health":"/missing"}`, "")}}, &out)
+	text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "site", "deploy": true, "files": []any{file("index.html", "broken", ""), file("flats.json", `{"health":"/missing"}`, "")}}, &out)
 	if failed || out.Deploy.Status != "pending_approval" {
 		t.Fatalf("publish pending: %s %+v", text, out)
 	}
@@ -353,8 +397,8 @@ func TestFailedDeployKeepsLive(t *testing.T) {
 
 func TestSetVisibilityNeedsApproval(t *testing.T) {
 	e := newEnv(t)
-	var saved SaveOut
-	call(t, e.local, "save_version", map[string]any{"slug": "demo", "files": []any{file("index.html", "hi", "")}, "deploy": true}, &saved)
+	var saved saveFixtureOut
+	call(t, e.local, "save_draft", map[string]any{"slug": "demo", "files": []any{file("index.html", "hi", "")}, "deploy": true}, &saved)
 	e.approve(t, saved.Deploy.ApprovalID)
 	var dep DeployInfo
 	call(t, e.local, "deploy", map[string]any{"slug": "demo", "version": 1}, &dep)
@@ -417,20 +461,20 @@ func TestSaveVersionFromDir(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "css", "a.css"), []byte("body{}"), 0o644)
 	args := map[string]any{"slug": "local", "dir": dir, "deploy": true}
 
-	text, isErr := call(t, e.remote, "save_version_from_dir", args, nil)
-	if !isErr || !strings.Contains(text, "loopback") || !strings.Contains(text, "save_version") {
+	text, isErr := call(t, e.remote, "save_draft_from_dir", args, nil)
+	if !isErr || !strings.Contains(text, "loopback") || !strings.Contains(text, "save_draft") {
 		t.Fatalf("remote caller must be refused with a hint: %s", text)
 	}
 	if fs, _ := e.svc.ListFlats(context.Background()); len(fs) != 0 {
 		t.Fatal("refused call created a flat")
 	}
 
-	var out SaveOut
-	text, isErr = call(t, e.local, "save_version_from_dir", args, &out)
+	var out saveFixtureOut
+	text, isErr = call(t, e.local, "save_draft_from_dir", args, &out)
 	if isErr {
 		t.Fatalf("loopback caller refused: %s", text)
 	}
-	if out.Version.Files != 2 || out.Deploy == nil {
+	if out.Draft.Files != 2 || out.Deploy == nil {
 		t.Fatalf("out = %+v", out)
 	}
 	e.approve(t, out.Deploy.ApprovalID)
@@ -446,20 +490,20 @@ func TestSaveVersionFromDir(t *testing.T) {
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
-	if text, isErr := call(t, e.local, "save_version_from_dir", map[string]any{"slug": "local", "dir": link}, &out); isErr || out.Version.Files != 2 {
+	if text, isErr := call(t, e.local, "save_draft_from_dir", map[string]any{"slug": "local", "dir": link}, &out); isErr || out.Draft.Files != 2 {
 		t.Fatalf("symlinked dir: %s %+v", text, out)
 	}
 	if err := os.Symlink(filepath.Join(dir, "index.html"), filepath.Join(dir, "alias.html")); err != nil {
 		t.Fatal(err)
 	}
-	if text, isErr := call(t, e.local, "save_version_from_dir", map[string]any{"slug": "local", "dir": link}, nil); !isErr || !strings.Contains(text, "alias.html") {
+	if text, isErr := call(t, e.local, "save_draft_from_dir", map[string]any{"slug": "local", "dir": link}, nil); !isErr || !strings.Contains(text, "alias.html") {
 		t.Fatalf("link inside the dir accepted: %s", text)
 	}
-	if text, isErr := call(t, e.local, "save_version_from_dir", map[string]any{"slug": "local", "dir": "dist"}, nil); !isErr || !strings.Contains(text, "absolute") {
+	if text, isErr := call(t, e.local, "save_draft_from_dir", map[string]any{"slug": "local", "dir": "dist"}, nil); !isErr || !strings.Contains(text, "absolute") {
 		t.Fatalf("relative dir: %s", text)
 	}
 	// The remote session still works for inline saves.
-	if text, isErr := call(t, e.remote, "save_version", map[string]any{"slug": "local", "files": []any{file("index.html", "inline", "")}}, nil); isErr {
+	if text, isErr := call(t, e.remote, "save_draft", map[string]any{"slug": "local", "files": []any{file("index.html", "inline", "")}}, nil); isErr {
 		t.Fatal(text)
 	}
 }
@@ -538,10 +582,10 @@ func TestLoopbackAcrossProtocols(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("hi"), 0o644)
 	for i, proto := range []string{"", "2025-03-26", "2025-06-18", "2025-11-25"} {
 		args := map[string]any{"slug": fmt.Sprintf("proto%d", i), "dir": dir}
-		if text, isErr := rawCall(t, e.remoteURL, proto, "save_version_from_dir", args); !isErr || !strings.Contains(text, "loopback") {
+		if text, isErr := rawCall(t, e.remoteURL, proto, "save_draft_from_dir", args); !isErr || !strings.Contains(text, "loopback") {
 			t.Errorf("protocol %q: remote caller not refused: %s", proto, text)
 		}
-		if text, isErr := rawCall(t, e.localURL, proto, "save_version_from_dir", args); isErr {
+		if text, isErr := rawCall(t, e.localURL, proto, "save_draft_from_dir", args); isErr {
 			t.Errorf("protocol %q: loopback caller refused: %s", proto, text)
 		}
 	}

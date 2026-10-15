@@ -10,7 +10,7 @@ import (
 
 func TestNetworkPermissionsOperatorOnly(t *testing.T) {
 	srv, svc := setup(t)
-	req(t, "POST", srv.URL+"/api/flats/site/versions", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	req(t, "POST", srv.URL+"/api/flats/site/draft", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	endpoint := srv.URL + "/api/flats/site/network"
 	if code, out := req(t, "GET", endpoint, nil, nil); code != 200 || !strings.Contains(out["note"].(string), "redeploy to revoke") {
 		t.Fatalf("initial: %d %v", code, out)

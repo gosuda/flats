@@ -12,8 +12,13 @@ Deploy the server example with its checked-in manifest (the local health path
 must stay `/healthz`):
 
 ```sh
-flats deploy examples/external-api --flat hello
+flats save-draft hello examples/external-api
 ```
+
+Run the exact `create-version` command printed by the save, including its
+`--revision` and `--hash`. Approve its link, then request
+`flats deploy --flat hello --version <created version>` and approve that
+separate deployment request. A save or version creation alone puts nothing live.
 
 For a static browser flat, use a fresh directory containing only `index.html`
 with the contents of `browser.html`. No manifest is needed for that default

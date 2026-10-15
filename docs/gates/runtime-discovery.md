@@ -1,5 +1,13 @@
 # Runtime discovery: unfamiliar-agent evidence
 
+Current interface note: historical receipts below retain their original tool
+names and behavior. Client contract 2 uses `save_draft` / `save_draft_from_dir`
+for Draft content, `create_version` for separately approved version creation,
+and `deploy` for a separately approved deployment of a positive version.
+`save_version`, `save_version_from_dir` and `publish` are removed tools;
+these historical receipts are not instructions to invoke them.
+
+
 On 2026-10-03 an actual fresh Claude Code 2.1.288 client, model
 `claude-opus-5-5`, authored a private notebook using the connected Flats MCP.
 All three client phases exited 0, with empty stderr; independent operator HTTP

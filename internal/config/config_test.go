@@ -14,7 +14,7 @@ import (
 const testID = "63b57046-582f-48d9-a64f-877ae28d12aa"
 
 // fileWith returns a minimal current-version file with extra raw JSON members added to
-// the named sections, e.g. fileWith("system", `"keep_versions": 3`).
+// the named sections, e.g. fileWith("system", `"version_quota": 3`).
 func fileWith(pairs ...string) string {
 	sections := map[string][]string{"host": {`"instance_id": "` + testID + `"`, `"data_dir": "/var/lib/flats"`}}
 	order := []string{"host"}
@@ -25,7 +25,7 @@ func fileWith(pairs ...string) string {
 		sections[pairs[i]] = append(sections[pairs[i]], pairs[i+1])
 	}
 	var b strings.Builder
-	b.WriteString(`{"schema_version": 2`)
+	b.WriteString(`{"schema_version": 3`)
 	for _, s := range order {
 		fmt.Fprintf(&b, `, %q: {%s}`, s, strings.Join(sections[s], ", "))
 	}
@@ -95,10 +95,10 @@ func TestValidation(t *testing.T) {
 		{"system", `"upload_max_bytes": 9007199254740991`, ""},
 		{"system", `"upload_max_bytes": 0`, "system.upload_max_bytes"},
 		{"system", `"upload_max_bytes": 9007199254740992`, "system.upload_max_bytes"},
-		{"system", `"keep_versions": 0`, ""},
-		{"system", `"keep_versions": 9007199254740991`, ""},
-		{"system", `"keep_versions": -1`, "system.keep_versions"},
-		{"system", `"keep_versions": 9007199254740992`, "system.keep_versions"},
+		{"system", `"version_quota": 0`, ""},
+		{"system", `"version_quota": 9007199254740991`, ""},
+		{"system", `"version_quota": -1`, "system.version_quota"},
+		{"system", `"version_quota": 9007199254740992`, "system.version_quota"},
 		{"system", `"disk_quota_bytes": 0`, ""},
 		{"system", `"disk_quota_bytes": 9007199254740991`, ""},
 		{"system", `"disk_quota_bytes": 9007199254740992`, "system.disk_quota_bytes"},
@@ -181,19 +181,19 @@ func TestStrictParse(t *testing.T) {
 		name, file string
 		wantPath   string // "" = any error
 	}{
-		{"duplicate nested key", fileWith("system", `"keep_versions": 1`, "system", `"keep_versions": 2`), "system.keep_versions"},
+		{"duplicate nested key", fileWith("system", `"version_quota": 1`, "system", `"version_quota": 2`), "system.version_quota"},
 		{"duplicate section", `{"schema_version": 1, "host": {}, "host": {}}`, "host"},
 		{"duplicate schema_version", `{"schema_version": 1, "schema_version": 1}`, "schema_version"},
 		{"unknown nested key", fileWith("system", `"keep_version": 1`), "system.keep_version"},
 		{"unknown section", fileWith("hosts", `"x": 1`), "hosts"},
 		{"unknown top-level scalar", `{"schema_version": 1, "comment": "x"}`, "comment"},
-		{"null value", fileWith("system", `"keep_versions": null`), "system.keep_versions"},
+		{"null value", fileWith("system", `"version_quota": null`), "system.version_quota"},
 		{"null in array", fileWith("portal", `"relays": [null]`), "portal.relays[0]"},
 		{"null section", `{"schema_version": 1, "system": null}`, "system"},
-		{"float", fileWith("system", `"keep_versions": 1.0`), "system.keep_versions"},
-		{"fraction", fileWith("system", `"keep_versions": 1.5`), "system.keep_versions"},
-		{"exponent", fileWith("system", `"keep_versions": 1e3`), "system.keep_versions"},
-		{"quoted int", fileWith("system", `"keep_versions": "10"`), "system.keep_versions"},
+		{"float", fileWith("system", `"version_quota": 1.0`), "system.version_quota"},
+		{"fraction", fileWith("system", `"version_quota": 1.5`), "system.version_quota"},
+		{"exponent", fileWith("system", `"version_quota": 1e3`), "system.version_quota"},
+		{"quoted int", fileWith("system", `"version_quota": "10"`), "system.version_quota"},
 		{"section not object", `{"schema_version": 1, "system": []}`, "system"},
 		{"missing schema_version", `{"host": {}}`, "schema_version"},
 		{"schema_version zero", `{"schema_version": 0}`, "schema_version"},
@@ -223,7 +223,7 @@ func TestStrictParse(t *testing.T) {
 }
 
 func TestEffectiveDefaults(t *testing.T) {
-	l, err := Parse([]byte(fileWith("system", `"keep_versions": 10`)))
+	l, err := Parse([]byte(fileWith("system", `"version_quota": 10`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestEffectiveDefaults(t *testing.T) {
 		_, src, ok := c.Lookup(key)
 		want := SourceDefault
 		switch key {
-		case "host.instance_id", "host.data_dir", "system.keep_versions":
+		case "host.instance_id", "host.data_dir", "system.version_quota":
 			want = SourceFile
 		}
 		if !ok || src != want {
@@ -268,7 +268,7 @@ func TestEffectiveDefaults(t *testing.T) {
 		t.Error("Lookup of an unknown key succeeded")
 	}
 	// A value equal to its default stays in the file.
-	if !bytes.Contains(l.Doc.Encode(), []byte(`"keep_versions": 10`)) {
+	if !bytes.Contains(l.Doc.Encode(), []byte(`"version_quota": 10`)) {
 		t.Errorf("explicit default dropped:\n%s", l.Doc.Encode())
 	}
 	// Lookup and the typed fields must not share slices with the document.
@@ -348,7 +348,7 @@ func TestOverrides(t *testing.T) {
 		{"host.data_dir", "/tmp/other", "host.data_dir"},
 		{"host.instance_id", testID, "host.instance_id"},
 		{"network.permitted", "portal", "network.permitted"},
-		{"system.keep_versions", "3", "system.keep_versions"},
+		{"system.version_quota", "3", "system.version_quota"},
 		{"portal.relays", "https://relay.example.com", "portal.relays"},
 		{"credentials.operator_file", "/x", "credentials.operator_file"},
 		{"host.nope", "x", "host.nope"},
@@ -372,7 +372,7 @@ func TestSetUnset(t *testing.T) {
 	sets := []struct{ key, value string }{
 		{"network.permitted", "portal, tailscale"},
 		{"portal.relays", `["relay-a.example.com", "https://relay.example.com/relay"]`},
-		{"system.keep_versions", "10"},
+		{"system.version_quota", "10"},
 		{"host.server_runtime", "false"},
 		{"credentials.operator_file", "/etc/flats/operator"},
 	}
@@ -382,7 +382,7 @@ func TestSetUnset(t *testing.T) {
 		}
 	}
 	want := `{
-  "schema_version": 2,
+  "schema_version": 3,
   "host": {
     "instance_id": "` + testID + `",
     "data_dir": "/var/lib/flats",
@@ -392,7 +392,7 @@ func TestSetUnset(t *testing.T) {
     "permitted": ["tailscale", "portal"]
   },
   "system": {
-    "keep_versions": 10
+    "version_quota": 10
   },
   "portal": {
     "relays": ["https://relay-a.example.com", "https://relay.example.com"]
@@ -413,11 +413,11 @@ func TestSetUnset(t *testing.T) {
 	}
 
 	bad := []struct{ key, value string }{
-		{"system.keep_versions", "1e3"},
-		{"system.keep_versions", "+5"},
-		{"system.keep_versions", "05"},
-		{"system.keep_versions", " 5"},
-		{"system.keep_versions", "9007199254740992"},
+		{"system.version_quota", "1e3"},
+		{"system.version_quota", "+5"},
+		{"system.version_quota", "05"},
+		{"system.version_quota", " 5"},
+		{"system.version_quota", "9007199254740992"},
 		{"host.server_runtime", "yes"},
 		{"host.server_runtime", "True"},
 		{"network.permitted", "portal,portal"},
@@ -444,7 +444,7 @@ func TestSetUnset(t *testing.T) {
 	if err := doc.Unset("system.nope"); err == nil {
 		t.Error("Unset of an unknown key succeeded")
 	}
-	for _, key := range []string{"network.permitted", "system.keep_versions", "system.keep_versions", "portal.relays", "credentials.operator_file", "host.server_runtime"} {
+	for _, key := range []string{"network.permitted", "system.version_quota", "system.version_quota", "portal.relays", "credentials.operator_file", "host.server_runtime"} {
 		if err := doc.Unset(key); err != nil {
 			t.Errorf("Unset(%s) = %v", key, err)
 		}
@@ -563,8 +563,8 @@ func TestFreePortAddresses(t *testing.T) {
 }
 
 func TestDefaultAndClone(t *testing.T) {
-	if v, ok := Default("system.keep_versions"); !ok || v != int64(10) {
-		t.Fatalf("Default(keep_versions) = %v, %t", v, ok)
+	if v, ok := Default("system.version_quota"); !ok || v != int64(20) {
+		t.Fatalf("Default(version_quota) = %v, %t", v, ok)
 	}
 	if v, ok := Default("credentials.operator_file"); !ok || v != nil {
 		t.Fatalf("Default(operator_file) = %v, %t", v, ok)
@@ -580,11 +580,11 @@ func TestDefaultAndClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := doc.Clone()
-	if err := c.Set("system.keep_versions", "3"); err != nil {
+	if err := c.Set("system.version_quota", "3"); err != nil {
 		t.Fatal(err)
 	}
 	c.values["portal.relays"].([]string)[0] = "changed"
-	if bytes.Contains(doc.Encode(), []byte("keep_versions")) || !bytes.Contains(doc.Encode(), []byte("relay.example.com")) {
+	if bytes.Contains(doc.Encode(), []byte("version_quota")) || !bytes.Contains(doc.Encode(), []byte("relay.example.com")) {
 		t.Fatalf("clone shares state:\n%s", doc.Encode())
 	}
 }

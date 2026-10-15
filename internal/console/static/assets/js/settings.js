@@ -4,12 +4,12 @@
 import { h, timeEl, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
 import { errorPanel, loading, toast, extLink, busy, fill, copyable, confirmDialog, infoDialog } from './ui.js';
-import { describeApproval, statusBadge } from './approval.js';
+import { describeApproval, statusBadge, cleanupPending } from './approval.js';
 
 // Limits shown in human units; values are stored as integers in base units.
 const FIELDS = [
   { key: 'upload_max_bytes', label: 'Upload size limit', unit: 'MB', factor: 1 << 20, min: 0.001, help: 'Total uncompressed size of one saved version.' },
-  { key: 'keep_versions', label: 'Versions to keep', unit: 'versions', factor: 1, step: 1, help: 'Files of older versions are pruned after each deploy, which also closes the flat’s previews. The live version is always kept. 0 keeps every version.' },
+  { key: 'version_quota', label: 'Version quota', unit: 'versions', factor: 1, step: 1, help: 'Default version count per flat (20 on a new host). Each flat can override it. Versions are never deleted automatically; a full quota refuses new versions. Lowering it keeps existing versions. 0 is unlimited.' },
   { key: 'disk_quota_bytes', label: 'Disk quota per flat', unit: 'GB', factor: 1 << 30, help: '0 means no quota.' },
   { key: 'preview_ttl_seconds', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
@@ -25,7 +25,7 @@ const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
   ['portal_relays', 'Portal relays'], ['portal_discovery', 'Discover Portal relays'], ['portal_hide', 'Hide public flats from relay listings']]);
 
 // Lower values of these settings remove data at the next pruning.
-const RETENTION = ['keep_versions', 'events_keep', 'preview_ttl_seconds'];
+const RETENTION = ['events_keep', 'preview_ttl_seconds'];
 
 const SOURCES = { default: 'default', file: 'config.json', flag: 'flag for this run' };
 
@@ -837,11 +837,10 @@ function display(base, factor) {
   return Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : '';
 }
 
-// isDecrease mirrors the server: keep_versions 0 keeps every version.
+// Only destructive retention settings use isDecrease. Version quotas keep all existing versions.
 export function isDecrease(key, current, next) {
   const cur = Number(current);
   const n = Number(next);
-  if (key === 'keep_versions') return n !== 0 && (cur === 0 || n < cur);
   return n < cur;
 }
 
@@ -965,8 +964,8 @@ function limitsForm(data, opts) {
     for (const { f, input, initial } of inputs) {
       if (pinned[f.key] || input.value === initial) continue;
       const n = Number(input.value);
-      if (input.value.trim() === '' || !Number.isFinite(n) || n < 0) {
-        setError(f.key, `${f.label} must be a number of 0 or more.`);
+      if (input.value.trim() === '' || !Number.isFinite(n) || n < 0 || (f.key === 'version_quota' && !Number.isSafeInteger(n))) {
+        setError(f.key, `${f.label} must be ${f.key === 'version_quota' ? 'a whole number' : 'a number'} of 0 or more.`);
         input.focus();
         return null;
       }
@@ -1060,7 +1059,6 @@ function savedSummary(res) {
 }
 
 const IMPACT_TEXT = {
-  keep_versions: (n) => `The next deploy of each flat prunes the files of ${plural(n, 'version')}, if the live versions stay live.`,
   events_keep: (n) => `The next cleanup deletes ${plural(n, 'log event')}.`,
   preview_ttl_seconds: (n) => `The next cleanup closes ${plural(n, 'preview')}.`,
 };
@@ -1068,7 +1066,6 @@ const IMPACT_TEXT = {
 function impactItem(key, f) {
   const shown = (f.versions || f.previews || []).length;
   const more = f.count > shown && shown ? ` and ${f.count - shown} more` : '';
-  if (key === 'keep_versions') return `${f.slug}: ${plural(f.count, 'version')} (${f.versions.join(', ')}${more})`;
   if (key === 'preview_ttl_seconds') return `${f.slug}: ${f.previews.join(', ')}${more}`;
   return `${f.slug}: ${plural(f.count, 'event')}`;
 }
@@ -1114,7 +1111,7 @@ function approvals(list) {
         a.reason ? h('div', { class: 'muted small', text: a.reason }) : null),
       h('td', { text: a.via }),
       h('td', null, timeEl(a.requested_at)),
-      h('td', null, statusBadge(a.status)))))));
+      h('td', null, statusBadge(a.status), cleanupPending(a) ? h('span', { class: 'badge badge-warn', text: 'Storage cleanup pending' }) : null))))));
 }
 
 // --- connect an agent ---
@@ -1123,13 +1120,13 @@ function connectAgent() {
   const url = location.origin + '/mcp';
   return [
     h('p', null, 'Flats speaks MCP over Streamable HTTP at ', h('code', { text: url }),
-      '. Agents can create flats, save and deploy versions, open previews and read logs. Making a flat public or deleting one always needs your approval here.'),
+      '. Agents can create flats, save Drafts, request numbered versions and deploy them, open previews and read logs. Version creation, deployment and deletion, visibility changes and deleting a flat need your approval here.'),
     copyable(`claude mcp add --transport http flats ${url}`, 'Claude Code'),
     copyable(`# ~/.codex/config.toml\n[mcp_servers.flats]\nurl = "${url}"`, 'Codex'),
     copyable(JSON.stringify({ mcpServers: { flats: { url } } }, null, 2), 'Cursor (~/.cursor/mcp.json or .cursor/mcp.json)'),
     h('h3', { text: 'Command line' }),
-    h('p', { class: 'muted', text: 'On the Flats host, the flats CLI uploads a built folder as a new version and deploys it:' }),
-    copyable('flats deploy ./dist --flat <slug>', 'CLI'),
+    h('p', { class: 'muted', text: 'Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval:' }),
+    copyable('flats save-draft <slug> ./dist\nflats create-version <slug> --revision <revision> --hash <hash>\nflats deploy --flat <slug> --version <version>', 'CLI'),
     h('p', { class: 'muted small', text: 'Secret values can only be set in this console or with “flats secret set” on the Flats host.' }),
   ];
 }

@@ -96,7 +96,7 @@ func TestToolErrorsNameCategoryAndRefusalPage(t *testing.T) {
 		{"negative version", "deploy", map[string]any{"slug": "x-flat", "version": -1}, false, "invalid"},
 		{"bad upload", "save_draft", map[string]any{"slug": "x-flat", "files": []any{file("../a", "x", "")}}, false, "invalid"},
 		{"empty upload", "save_draft", map[string]any{"slug": "x-flat", "files": []any{}}, false, "invalid"},
-		{"remote dir upload", "save_version_from_dir", map[string]any{"slug": "x-flat", "dir": "/tmp"}, true, "forbidden"},
+		{"remote dir upload", "save_draft_from_dir", map[string]any{"slug": "x-flat", "dir": "/tmp"}, true, "forbidden"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

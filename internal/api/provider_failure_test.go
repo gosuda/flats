@@ -168,7 +168,7 @@ func (*uploadPolicyFailure) ExposureStatus(context.Context, string) (core.Exposu
 }
 func TestUploadDeployErrorRetainsTypedCategoryAndSavedDraft(t *testing.T) {
 	srv, _ := setupWithLifecycle(t, &uploadPolicyFailure{})
-	code, out := req(t, "POST", srv.URL+"/api/flats/upload-failure/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "SAVED-DRAFT"})), nil)
+	code, out := req(t, "POST", srv.URL+"/api/flats/upload-failure/draft?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "SAVED-DRAFT"})), nil)
 	if code != 409 || out["deploy_error"].(map[string]any)["category"] != "provider_unavailable" {
 		t.Fatalf("upload+deploy error: %d %v", code, out)
 	}

@@ -40,7 +40,7 @@ In each view:
    failed requests. The script cannot see messages logged before it ran.
 
 Then fix everything you found in one pass and add the thumbnail (below) in
-the same change, save the Draft once more and `publish` (`topic.approvals`):
+the same change, save the Draft once more and `create_version` (`topic.approvals`):
 publishing freezes the saved Draft, so anything added after it is not in that
 version. Do not repeat the four views in a loop. Further polish is for the
 user to ask for.

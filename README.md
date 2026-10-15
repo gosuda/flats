@@ -46,14 +46,14 @@ endpoint. **No hosted Flats control plane.**
 
 | Type | Made for | How it goes live |
 | --- | --- | --- |
-| **Website** | Static sites and sandboxed JavaScript or WASI server apps | Save a Private Draft and preview it. Approve saving it as a numbered version, then approve publishing that version. Published versions support rollback. |
-| **Page** | A single HTML document with bundled assets: charts, reports and visualizations | The same Draft, version and publish flow as websites. No server code or data storage. |
+| **Website** | Static sites and sandboxed JavaScript or WASI server apps | Save a Private Draft and preview it. Approve saving it as a numbered version, then approve deploying that version. Deployed versions support rollback. |
+| **Page** | A single HTML document with bundled assets: charts, reports and visualizations | The same Draft, version and deployment flow as websites. No server code or data storage. |
 | **Document** | Live, collaborative Markdown | Create or save to run immediately, initially Private. No Draft, versions or publish step. |
 | **Design** | A canvas of HTML artboards: screens, landing pages, posters and click-through prototypes | Changes are live at once, initially Private. Every change is kept as a revision you can pin or roll back. |
 
 Websites and pages follow the **version model**: you work on a Private Draft
 while the live version keeps serving, and previews use isolated data. Saving a
-version (v1, v2, ...) and publishing it are separate approved steps, so a
+version (v1, v2, ...) and deploying it are separate approved steps, so a
 version can exist without ever going live. Publication and rollback require
 console approval.
 
@@ -86,14 +86,16 @@ is Local; other providers are off.
 ```sh
 mkdir -p hello
 printf '<h1>Hello from Flats</h1>\n' > hello/index.html
-flats deploy ./hello --flat hello
+flats save-draft hello ./hello
 ```
 
-### 3. Approve, publish and open
+### 3. Approve, deploy and open
 
-The command asks to save the Draft as version 1. Follow the approval URL it
+Run the exact `flats create-version` command printed by the save above; its
+`--revision` and `--hash` freeze the files you saved, even if someone edits
+the Draft afterwards. The command asks to save that Draft as version 1. Follow the approval URL it
 returns, or open the [local console](http://127.0.0.1:7878), and approve it.
-That creates v1 but puts nothing live yet. Publish it with **Publish v1** in
+That creates v1 but puts nothing live yet. Deploy it with **Publish v1** in
 the console, or request it from the CLI and approve that request too:
 
 ```sh
@@ -104,7 +106,7 @@ Then visit [hello.localhost:7879](http://hello.localhost:7879).
 
 > `flats deploy` returns exit code **3** while a request awaits approval,
 > including with `--json`. Saving a Draft or a version does not make a site
-> live; only publishing a version does.
+> live; only deploying a version does.
 
 Run `flats status` to check the host. Run the installer again to upgrade;
 `flats uninstall` removes the service and keeps your data. See
@@ -237,7 +239,8 @@ export default {
 };
 ```
 
-Deploy the directory with the same `flats deploy` command. JavaScript runs in
+Save the directory with `flats save-draft <slug> <dir>`, create a version with
+`flats create-version <slug>`, then deploy that version after approval. JavaScript runs in
 QuickJS on WebAssembly, with SQLite (`env.DB`), persistent string files
 (`env.FILES`), Web Crypto and WebSocket callbacks. There are no Node.js APIs;
 bundle imports into the uploaded version. Server-side `fetch` can call exact

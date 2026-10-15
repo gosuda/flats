@@ -20,7 +20,6 @@ type SavePageIn struct {
 	Screenshot       string   `json:"screenshot,omitempty" jsonschema:"path of an image in files that the operator's console shows as the thumbnail"`
 	Files            []FileIn `json:"files,omitempty" jsonschema:"every asset the page uses (scripts, styles, images, fonts, chart data), no HTML; omit for a self-contained page"`
 	Message          string   `json:"message,omitempty" jsonschema:"short note about this version"`
-	Deploy           bool     `json:"deploy,omitempty" jsonschema:"request publish approval after saving; never activates directly"`
 }
 
 func (t *tools) savePage(ctx context.Context, _ *mcp.CallToolRequest, in SavePageIn) (*mcp.CallToolResult, SaveOut, error) {
@@ -62,7 +61,7 @@ func (t *tools) savePage(ctx context.Context, _ *mcp.CallToolRequest, in SavePag
 	if err != nil {
 		return nil, SaveOut{}, toolErr(err, "no Draft was saved; fix every listed problem and call save_page again with the html and every asset")
 	}
-	return t.save(ctx, in.Slug, files, core.SaveMeta{Message: in.Message}, in.Deploy, in.ExpectedRevision)
+	return t.save(ctx, in.Slug, files, core.SaveMeta{Message: in.Message}, in.ExpectedRevision)
 }
 
 // pageCreatedText describes a page that create_flat just made.
@@ -71,5 +70,5 @@ func pageCreatedText(fi FlatInfo) string {
 	if fi.Draft != nil {
 		rev = fi.Draft.Revision
 	}
-	return fmt.Sprintf("Created unpublished Private page %s with a starter Draft (revision %d). Next: save_page, open_preview with version 0, publish to save a version (with approval), then deploy that version (topic.page).", fi.Slug, rev)
+	return fmt.Sprintf("Created unpublished Private page %s with a starter Draft (revision %d). Next: save_page, open_preview with version 0, create_version to save a version (with approval), then deploy that version (topic.page).", fi.Slug, rev)
 }

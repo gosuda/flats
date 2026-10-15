@@ -122,7 +122,7 @@ content. Do not rewrite it from an older copy.
 - Old unpinned revisions are deleted beyond the host's quota (default 100).
   Pins have their own quota (default 20).
 - None of this needs approval.
-- Version tools (`save_draft`, `publish`, `deploy`, `rollback`,
+- Version tools (`save_draft`, `create_version`, `deploy`, `rollback`,
   `open_preview`, `list_versions`) refuse a design.
 
 ### Verify

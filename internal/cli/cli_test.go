@@ -112,80 +112,56 @@ func runEnv(t *testing.T, env Env, srvURL string, args ...string) result {
 	return result{code, out.String(), errb.String()}
 }
 
-const deployOK = `{
-  "version": {"flat": "blog", "number": 4, "hash": "abc", "size": 2048, "files": 3, "kind": "static", "git_sha": "0123456789abcdef", "git_dirty": true, "created_at": "2026-10-03T10:00:00Z", "pruned": false},
-  "deploy": {
-    "flat": {"slug": "blog", "name": "Blog", "visibility": "public-unlisted", "live_version": 4,
-             "private_url": "https://blog.tail1234.ts.net", "public_url": "https://blog.portal.example",
-             "public_notice": "Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone with the URL can open it.",
-             "versions": 4, "disk_bytes": 9000},
-    "version": 4, "previous": 3,
-    "health": {"path": "/", "status": 200, "ok": true, "millis": 12},
-    "millis": 340
-  }
-}`
-
-func TestDeploySuccess(t *testing.T) {
+func TestSaveDraftDoesNotCreateVersion(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	api.handle("POST /api/flats/blog/versions", 201, deployOK)
+	api.handle("POST /api/flats/blog/draft", 201, `{"draft":{"flat":"blog","revision":1,"hash":"abc","size":2048,"files":3,"kind":"static","git_sha":"0123456789abcdef","git_dirty":true}}`)
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{"index.html": "<h1>x</h1>", "css/site.css": "a{}", ".DS_Store": "x", "node_modules/m.js": "x"})
-
-	// Flags after the positional directory must still parse.
-	r := run(t, srv.URL, "", "deploy", dir, "--flat", "blog", "--message", "first try")
-	if r.code != 0 {
-		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
+	r := run(t, srv.URL, "", "save-draft", "blog", dir, "--message", "first try")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Private Draft revision 1") || !strings.Contains(r.stdout, "flats create-version blog --revision 1 --hash abc") {
+		t.Fatalf("save: %+v", r)
 	}
-	req := api.last("POST /api/flats/blog/versions")
-	if req.client != "cli" {
-		t.Errorf("X-Flats-Client = %q", req.client)
+	request := api.last("POST /api/flats/blog/draft")
+	if request.client != "cli" || strings.Contains(request.query, "deploy=") || !strings.Contains(request.query, "message=first+try") {
+		t.Fatalf("request: %+v", request)
 	}
-	if !strings.Contains(req.query, "deploy=1") || !strings.Contains(req.query, "message=first+try") {
-		t.Errorf("query = %q", req.query)
+	if names := keys(untar(t, request.body)); strings.Join(names, ",") != "css/site.css,index.html" {
+		t.Fatal(names)
 	}
-	if names := keys(untar(t, req.body)); strings.Join(names, ",") != "css/site.css,index.html" {
-		t.Errorf("uploaded %v", names)
-	}
-	for _, want := range []string{
-		"Saved version 4 of blog: 3 files, 2.0 kB, git 0123456 (dirty)",
-		"Version 4 is live (was 3).",
-		"health: GET / -> 200 in 12ms (ok)",
-		"private: https://blog.tail1234.ts.net",
-		"public:  https://blog.portal.example",
-		"NOT access control",
-		"Took ",
-		"deploy 340ms",
-	} {
-		if !strings.Contains(r.stdout, want) {
-			t.Errorf("stdout missing %q:\n%s", want, r.stdout)
+	for _, request := range api.reqs {
+		if request.method == "POST" && request.path != "/api/flats/blog/draft" {
+			t.Fatalf("save crossed version boundary: %+v", request)
 		}
+	}
+	if r := run(t, srv.URL, "", "deploy", dir, "--flat", "blog"); r.code != ExitUsage || !strings.Contains(r.stderr, "save-draft") {
+		t.Fatalf("old directory deployment: %+v", r)
 	}
 }
 
 func TestDeploySaveOnlyAndJSON(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	api.handle("POST /api/flats/blog/versions", 201, `{"version": {"flat": "blog", "number": 5, "files": 1, "size": 3}}`)
+	api.handle("POST /api/flats/blog/draft", 201, `{"draft":{"flat":"blog","revision":5,"hash":"saved-five","files":1,"size":3}}`)
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{"index.html": "hey"})
 
-	r := run(t, srv.URL, "", "deploy", "--flat", "blog", "--save-only", dir)
-	if r.code != 0 || !strings.Contains(r.stdout, "flats deploy --flat blog --version 5") {
+	r := run(t, srv.URL, "", "save-draft", "blog", dir)
+	if r.code != 0 || !strings.Contains(r.stdout, "flats create-version blog --revision 5 --hash saved-five") {
 		t.Fatalf("exit %d: %s %s", r.code, r.stdout, r.stderr)
 	}
-	if q := api.last("POST /api/flats/blog/versions").query; strings.Contains(q, "deploy") {
+	if q := api.last("POST /api/flats/blog/draft").query; strings.Contains(q, "deploy") {
 		t.Errorf("save-only query = %q", q)
 	}
 
-	r = run(t, srv.URL, "", "--json", "deploy", "--flat", "blog", dir)
+	r = run(t, srv.URL, "", "--json", "save-draft", "blog", dir)
 	var v map[string]any
-	if r.code != 0 || json.Unmarshal([]byte(r.stdout), &v) != nil || v["version"] == nil {
+	if r.code != 0 || json.Unmarshal([]byte(r.stdout), &v) != nil || v["draft"] == nil || v["version"] != nil {
 		t.Fatalf("json mode: exit %d stdout %q", r.code, r.stdout)
 	}
 }
 
 func TestDeployValidationFailure(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	api.handle("POST /api/flats/blog/versions", 422, `{
+	api.handle("POST /api/flats/blog/draft", 422, `{
   "error": "upload rejected:\n- flats.json: unknown field \"knd\" (fix: use kind)\n- index.html is missing (fix: add index.html)",
   "problems": [
     {"path": "flats.json", "message": "unknown field \"knd\"", "fix": "use kind"},
@@ -194,7 +170,7 @@ func TestDeployValidationFailure(t *testing.T) {
 }`)
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{"flats.json": `{"knd":"static"}`})
-	r := run(t, srv.URL, "", "deploy", dir, "--flat", "blog")
+	r := run(t, srv.URL, "", "save-draft", "blog", dir)
 	if r.code != ExitError {
 		t.Fatalf("exit %d", r.code)
 	}
@@ -212,7 +188,7 @@ func TestDeployValidationFailure(t *testing.T) {
 		t.Errorf("problems repeated:\n%s", r.stderr)
 	}
 
-	r = run(t, srv.URL, "", "deploy", dir, "--flat", "blog", "--json")
+	r = run(t, srv.URL, "", "save-draft", "blog", dir, "--json")
 	if r.code != ExitError || !strings.Contains(r.stdout, `"problems"`) {
 		t.Fatalf("json: exit %d stdout %s", r.code, r.stdout)
 	}
@@ -220,20 +196,14 @@ func TestDeployValidationFailure(t *testing.T) {
 
 func TestDeployHealthFailure(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	api.handle("POST /api/flats/blog/versions", 422, `{
-  "version": {"flat": "blog", "number": 7, "files": 1, "size": 10},
-  "deploy_error": {"error": "deploy of version 7 failed its health check: GET /healthz returned 500 (the previous live version keeps serving)",
-                   "health": {"path": "/healthz", "status": 500, "ok": false, "millis": 4, "body_head": "boom\n trace"}}
-}`)
-	dir := t.TempDir()
-	writeTree(t, dir, map[string]string{"index.html": "x"})
-	r := run(t, srv.URL, "", "deploy", dir, "--flat", "blog")
+	api.handle("POST /api/flats/blog/deploy", 422, `{"error":"deploy of version 7 failed its health check (the previous live version keeps serving)","health":{"path":"/healthz","status":500,"ok":false,"millis":4,"body_head":"boom\n trace"}}`)
+	r := run(t, srv.URL, "", "deploy", "--flat", "blog", "--version", "7")
 	if r.code != ExitError {
 		t.Fatalf("exit %d", r.code)
 	}
-	for _, want := range []string{"previous live version keeps serving", "GET /healthz -> 500 in 4ms (failed)", "response body: boom trace", "--version 7"} {
+	for _, want := range []string{"previous live version keeps serving", "GET /healthz -> 500 in 4ms (failed)", "response body: boom trace"} {
 		if !strings.Contains(r.stderr, want) {
-			t.Errorf("stderr missing %q:\n%s", want, r.stderr)
+			t.Errorf("missing %q: %s", want, r.stderr)
 		}
 	}
 }
@@ -549,7 +519,7 @@ func TestMCPConfig(t *testing.T) {
 	for _, want := range []string{
 		"claude mcp add --transport http flats http://127.0.0.1:7878/mcp",
 		"[mcp_servers.flats]",
-		"every publish, activation, rollback",
+		"every version creation, deployment, rollback",
 		"visibility change in both directions",
 		"does not make a version live",
 		`url = "http://127.0.0.1:7878/mcp"`,
@@ -948,11 +918,10 @@ func TestDocsTypeOutput(t *testing.T) {
 
 func TestDeployDocumentRunsAtOnce(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	api.handle("POST /api/flats/notes/versions", 201, `{"version": {"flat": "notes", "number": 0, "role": "draft", "revision": 2, "files": 2, "kind": "server", "type": "docs"},
-  "flat": {"slug": "notes", "type": "docs", "visibility": "private", "live_version": 3, "running": true, "private_url": "http://notes.localhost:7878"}}`)
+	api.handle("POST /api/flats/notes/document", 201, `{"flat": {"slug": "notes", "type": "docs", "visibility": "private", "live_version": 3, "running": true, "private_url": "http://notes.localhost:7878"}}`)
 	dir := t.TempDir()
 	writeTree(t, dir, map[string]string{"index.md": "# Notes", "flats.json": `{"type":"docs"}`})
-	r := run(t, srv.URL, "", "deploy", dir, "--flat", "notes")
+	r := run(t, srv.URL, "", "save-document", "notes", dir)
 	if r.code != 0 {
 		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", r.code, r.stdout, r.stderr)
 	}

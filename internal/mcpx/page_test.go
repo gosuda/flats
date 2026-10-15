@@ -20,10 +20,10 @@ func TestCreateAndSavePage(t *testing.T) {
 
 	// A page with assets and a screenshot, requesting publish approval.
 	png := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G'})
-	var saved SaveOut
+	var saved saveFixtureOut
 	text, failed = call(t, e.local, "save_page", map[string]any{"slug": "report", "html": testPage, "title": "Sales Report", "screenshot": "shot.png", "expected_revision": 1, "message": "chart",
 		"files": []any{file("chart.js", "new Chart()", ""), file("icon.svg", "<svg/>", ""), file("shot.png", png, "base64")}, "deploy": true}, &saved)
-	if failed || saved.Draft.Revision != 2 || saved.Draft.Type != "page" || saved.Version.Type != "page" || saved.Version.Kind != "static" || saved.Flat != nil || saved.Deploy == nil || saved.Deploy.Status != "pending_approval" {
+	if failed || saved.Draft.Revision != 2 || saved.Draft.Type != "page" || saved.Draft.Kind != "static" || saved.Flat != nil || saved.Deploy == nil || saved.Deploy.Status != "pending_approval" {
 		t.Fatalf("save page: %s %+v", text, saved)
 	}
 	if len(saved.Warnings) != 0 {
@@ -57,13 +57,13 @@ func TestCreateAndSavePage(t *testing.T) {
 	// A self-contained page needs no files; omitted and empty both work,
 	// and each save replaces the whole Draft.
 	for i, args := range []map[string]any{{"slug": "report", "html": "<title>Two</title>"}, {"slug": "report", "html": "<title>Three</title>", "files": []any{}}} {
-		var out SaveOut
+		var out saveFixtureOut
 		if text, failed := call(t, e.local, "save_page", args, &out); failed || out.Draft.Revision != 3+i || out.Draft.Files != 2 {
 			t.Fatalf("self-contained save %d: %s %+v", i, text, out)
 		}
 	}
 	// External render-time data is a warning, not a refusal.
-	var warned SaveOut
+	var warned saveFixtureOut
 	if text, failed := call(t, e.local, "save_page", map[string]any{"slug": "report", "html": `<title>Live</title><script>fetch("https://api.example.com/sales.json")</script>`}, &warned); failed || !strings.Contains(text, "loads data from https://api.example.com") {
 		t.Fatalf("data warning: %s %+v", text, warned)
 	}

@@ -38,7 +38,7 @@ func lifecycleApprove(t *testing.T, s *Service, p *PendingApproval) store.Approv
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Action == "publish" {
+	if a.Action == "publish" || a.Action == "create_version" {
 		var d ApprovalExecution
 		_ = json.Unmarshal(a.ResultData, &d)
 		n := d.Version
@@ -670,8 +670,8 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 			t.Fatalf("protected version %d was pruned: %+v %v", n, v, err)
 		}
 	}
-	if v1, err := s.st.GetVersion(t.Context(), "prune", 1); err != nil || !v1.Pruned {
-		t.Fatalf("unprotected deployed version 1 was not pruned: %+v %v", v1, err)
+	if v1, err := s.st.GetVersion(t.Context(), "prune", 1); err != nil || v1.Pruned {
+		t.Fatalf("deployed version 1 was pruned automatically: %+v %v", v1, err)
 	}
 }
 
@@ -700,8 +700,8 @@ func TestPendingActivationProtectsDeployedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.pruneVersions(t.Context(), "act")
-	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || !v1.Pruned {
-		t.Fatalf("v1 after rejecting its deployment: %+v %v", v1, err)
+	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || v1.Pruned {
+		t.Fatalf("v1 must remain after rejecting its deployment: %+v %v", v1, err)
 	}
 	f, err := s.GetFlat(t.Context(), "act")
 	if err != nil || f.Live == nil || !f.Live.Deployed || !f.LatestDeployed {

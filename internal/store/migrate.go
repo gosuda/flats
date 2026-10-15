@@ -50,6 +50,7 @@ var migrations = []migration{
 	{11, "content revisions", addContentRevisions},
 	{12, "document revision import cursor", addContentImport},
 	{13, "host keys and console nodes", addHostKeys},
+	{14, "version quota and number history", addVersionQuota},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
@@ -470,5 +471,40 @@ func addRuntimeGeneration(ctx context.Context, x executor) error {
   id INTEGER PRIMARY KEY CHECK(id=1),
   generation INTEGER NOT NULL
 )`)
+	return err
+}
+
+func addVersionQuota(ctx context.Context, x executor) error {
+	// New databases already have the column in the baseline schema.
+	rows, err := x.QueryContext(ctx, `PRAGMA table_info(flats)`)
+	if err != nil {
+		return err
+	}
+	exists := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "version_quota" {
+			exists = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := x.ExecContext(ctx, `ALTER TABLE flats ADD COLUMN version_quota INTEGER CHECK(version_quota IS NULL OR version_quota >= 0)`); err != nil {
+			return err
+		}
+	}
+	_, err = x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS version_numbers (flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE, number INTEGER NOT NULL, PRIMARY KEY(flat,number));
+INSERT OR IGNORE INTO version_numbers SELECT flat,number FROM versions WHERE published=1;
+CREATE TRIGGER IF NOT EXISTS version_number_history AFTER INSERT ON versions WHEN new.published=1 BEGIN INSERT OR IGNORE INTO version_numbers(flat,number) VALUES(new.flat,new.number); END;`)
 	return err
 }

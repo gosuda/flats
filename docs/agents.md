@@ -160,10 +160,10 @@ without an installed skill or source checkout:
 
 ## A first MCP deploy
 
-For a minimal static walkthrough, call `save_version` with:
+For a minimal static walkthrough, call `save_draft` with:
 
 ```json
-{"slug":"hello","files":[{"path":"index.html","content":"<h1>Hello</h1>","encoding":"utf8"}],"deploy":true}
+{"slug":"hello","files":[{"path":"index.html","content":"<h1>Hello</h1>","encoding":"utf8"}]}
 ```
 
 Its result warns that this bare page has no title or viewport. For a server,
@@ -171,9 +171,14 @@ include `flats.json` and `server.js` (see the
 [README](../README.md#static-and-server-flats)) in the same complete inline file
 list.
 
-Requesting deploy still waits for operator approval in the console. After
-approval, fetch the returned URL and check `get_flat` and `get_logs`; a
-successful save alone does not establish a live site.
+The save returns `draft.revision` and `draft.hash` for those exact files.
+Call `create_version {slug:"hello", revision:<returned revision>,
+hash:<returned hash>}`. Give its `approval_url` to the operator and poll
+`get_approval` until the operator approves; the receipt's
+`result_data.version` is the new numbered version. Creating it deploys nothing.
+Then call `deploy {slug:"hello", version:<that number>}`, share this separate
+approval link and wait for approval again. Fetch the ready URL and check
+`get_flat` and `get_logs` before reporting the site live.
 
 ## llms.txt
 

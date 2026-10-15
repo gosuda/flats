@@ -99,7 +99,7 @@ func TestMCPBridgeRealHost(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"save_draft", "publish", "get_runtime_reference"} {
+	for _, want := range []string{"save_draft", "create_version", "get_runtime_reference"} {
 		if !names[want] {
 			t.Errorf("tool %s missing from %v", want, names)
 		}
@@ -112,7 +112,7 @@ func TestMCPBridgeRealHost(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(site, "index.html"), []byte("<h1>bridged</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "save_version_from_dir", Arguments: map[string]any{"slug": "bridged", "dir": site}})
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "save_draft_from_dir", Arguments: map[string]any{"slug": "bridged", "dir": site}})
 	if err != nil || res.IsError {
 		t.Fatalf("from_dir through the bridge: %+v %v", res, err)
 	}
@@ -121,7 +121,7 @@ func TestMCPBridgeRealHost(t *testing.T) {
 		t.Fatalf("draft %+v %v", draft, err)
 	}
 	// A failing tool comes back as a tool error, not a transport failure.
-	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "save_version_from_dir", Arguments: map[string]any{"slug": "bridged", "dir": "relative"}})
+	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "save_draft_from_dir", Arguments: map[string]any{"slug": "bridged", "dir": "relative"}})
 	if err != nil || !res.IsError {
 		t.Fatalf("tool error: %+v %v", res, err)
 	}

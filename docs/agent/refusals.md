@@ -2,8 +2,7 @@
 
 A call that Flats refuses reports `category` in its error JSON and ends its
 hint with `See guide refusal.<category>`. Unless the section or the error's
-hint says otherwise, a refused call changed nothing; for example, a save with
-`deploy: true` whose publish request fails keeps the saved Draft and says so.
+hint says otherwise, a refused call changed nothing; a refused version-creation request keeps the separately saved Private Draft.
 `get_approval` `result_data.failure_code` uses the same names, plus
 `apply_failed` for an unclassified failure while applying an approved action.
 
@@ -73,6 +72,13 @@ first.
 
 ## conflict
 
+Version creation is also refused when the retained version count is at or above
+the effective quota. Nothing is deleted: ask the operator to delete older
+versions or raise its version quota (0 means unlimited). The separate disk
+quota can refuse a save or version creation too; free space or raise it.
+Lowering the version quota preserves every retained version.
+
+
 The request contradicts the current state: `expected_revision` differs from
 the Draft, the version is already live, the flat is not published yet (so it
 cannot be Public), no snapshot exists for `restore_data`, or the content's
@@ -87,6 +93,10 @@ retry with current values. Never discard someone else's content to win.
 What an approval froze (Draft revision and hash, live version, snapshot,
 visibility or providers) changed before it applied, so it was not applied.
 Read the current state and request a new approval (`topic.approvals`).
+A pre-upgrade `publish` request without the frozen live-version field is also
+refused as stale: it lacks the state required by the current approval contract,
+even if the live version did not change. Read `get_draft`, then request
+`create_version` with its current revision and hash and obtain a new approval.
 
 ## unchanged_content
 
@@ -103,7 +113,7 @@ once.
 ## forbidden
 
 This surface may not perform the action, for example
-`save_version_from_dir` from a non-loopback caller. Use `save_version` with
+`save_draft_from_dir` from a non-loopback caller. Use `save_draft` with
 inline files, or the operator's console or host CLI where the action belongs.
 Do not try to imitate the console.
 
@@ -113,6 +123,17 @@ The candidate started but its health path did not answer 2xx/3xx within 15
 seconds on an isolated data copy. The previous code stays live. Read the
 returned health result and `get_logs`, fix the build, save a new Draft and
 request again (`topic.server`).
+
+## snapshot_failed
+
+The required data snapshot could not be captured before deployment or rollback.
+The target version is retained, the previous live version keeps serving, and
+the candidate was not activated on live data. Isolated health checks may
+already have run; inspect `result_data.health_data`, the backup/storage error
+and `get_logs`,
+free space or repair storage, then request a new deployment or rollback
+approval. A code-only rollback also requires this snapshot; a snapshot failure
+never silently skips the backup or authorizes deleting version history.
 
 ## runtime_start_failed
 

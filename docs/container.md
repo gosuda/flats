@@ -73,8 +73,8 @@ docker run -d --name flats --restart unless-stopped --network flats \
 The host logs a warning that the management API is not on loopback; that is
 expected here. Never publish without `127.0.0.1:`, which would let your
 network approve deploys. Connections through published ports are not loopback
-to Flats, so MCP's `save_version_from_dir` is unavailable: agents use
-`save_version` or the `flats` CLI, which uploads the files.
+to Flats, so MCP's `save_draft_from_dir` is unavailable: agents use
+`save_draft` or the `flats` CLI, which uploads the files.
 
 **Tailscale.** Permit Tailscale and make it the private backend while the
 host is stopped, then start it; the console and permitted flats get their own
@@ -135,7 +135,7 @@ volume, and start it again:
 
 ```sh
 docker stop flats
-docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set system.keep_versions 20
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set system.version_quota 20
 docker start flats
 docker exec flats flats config show
 ```

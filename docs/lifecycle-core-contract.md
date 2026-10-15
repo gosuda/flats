@@ -51,13 +51,14 @@ Decide(ctx context.Context, approvalID string, approve bool) (store.Approval, er
 ```
 
 `SaveDraft` always checks the supplied revision. `SaveVersion` supports legacy
-transport callers using `SaveMeta`'s optional check. Draft results have
-`number:0, published:false, role:"draft", revision:<n>`. Lists of versions contain
-only numbered published versions. `Publish` returns an `ActionResult` with
+transport callers using `SaveMeta`'s optional check. Internal save results use
+a compatibility store.Version, while public transports expose only Draft
+metadata under `draft` with revision/hash. Lists of versions contain only
+numbered versions. `CreateVersion` returns an `ActionResult` with
 `status:"pending_approval"`; `Deploy`, rollback and snapshot restore return
 `*PendingApproval`, which embeds that result and wraps `ErrPending`.
-`Deploy(number:0)` requests Current Draft publication; positive numbers request
-activation of an existing published version. `OpenPreview(number:0)` targets
+`Deploy` requires a positive version number and requests activation of an
+existing saved version. `OpenPreview(number:0)` targets
 Draft. Publish revision zero selects Current; an explicit revision/hash must
 match it. No `Via`, including Console, skips approval for these actions.
 

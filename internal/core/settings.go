@@ -23,7 +23,8 @@ import (
 // config.json under the key in settingKeys.
 const (
 	SetUploadMaxBytes = "upload_max_bytes"
-	SetKeepVersions   = "keep_versions"
+	SetVersionQuota   = "version_quota"
+	SetKeepVersions   = SetVersionQuota // internal source compatibility; no retention behavior
 	SetDiskQuotaBytes = "disk_quota_bytes"
 	SetPreviewTTL     = "preview_ttl_seconds"
 	SetRateLimit      = "rate_limit_rps"
@@ -44,7 +45,7 @@ const (
 // settingKeys maps each setting to its config.json key.
 var settingKeys = map[string]string{
 	SetUploadMaxBytes: "system.upload_max_bytes",
-	SetKeepVersions:   "system.keep_versions",
+	SetVersionQuota:   "system.version_quota",
 	SetDiskQuotaBytes: "system.disk_quota_bytes",
 	SetPreviewTTL:     "system.preview_ttl_seconds",
 	SetRateLimit:      "system.rate_limit_rps",
@@ -551,7 +552,6 @@ func (s *Service) intSetting(key string) int64 {
 
 // UploadLimit is the maximum uncompressed upload size in bytes.
 func (s *Service) UploadLimit() int64 { return s.intSetting(SetUploadMaxBytes) }
-func (s *Service) keepVersions() int  { return clampInt(s.intSetting(SetKeepVersions)) }
 func (s *Service) diskQuota() int64   { return s.intSetting(SetDiskQuotaBytes) }
 func (s *Service) previewTTL() time.Duration {
 	return durationOf(s.intSetting(SetPreviewTTL), time.Second)

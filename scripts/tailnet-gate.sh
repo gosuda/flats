@@ -16,6 +16,8 @@ set -uo pipefail
 KEY=${1:?usage: tailnet-gate.sh <authkey-file>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/flats-tailnet-gate.XXXXXX")
+F="$WORK/flats"
+DELETED_THIRD=0
 PORT=${FLATS_GATE_PORT:-27878}
 export FLATS_URL="http://127.0.0.1:$PORT"
 SUFFIX=$(LC_ALL=C tr -dc a-z0-9 </dev/urandom | head -c4)
@@ -23,13 +25,10 @@ FAIL=0
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAIL=1; }
 api() { curl -fsS --max-time 30 "$@"; }
-# approve_pending approves every pending approval as the console would.
-approve_pending() {
-  for id in $(api "$FLATS_URL/api/approvals?status=pending" 2>/dev/null | python3 -c 'import json,sys; [print(a["id"]) for a in json.load(sys.stdin)["approvals"]]' 2>/dev/null); do
-    curl -s --max-time 60 -X POST -H "X-Flats-Console: 1" -H "Sec-Fetch-Site: same-origin" -H "Origin: $FLATS_URL" \
-      "$FLATS_URL/console/api/approvals/$id/approve" >/dev/null
-  done
-}
+# Real-tailnet work always requires the operator's exact explicit decision.
+# Do not inherit disposable-host auto-approval from the caller's environment.
+FLATS_GATE_DISPOSABLE_OPERATOR=0
+source "$ROOT/scripts/approval-gate.sh"
 # host_state prints "<state> <detail>" of a private host.
 host_state() {
   api "$FLATS_URL/api/status" | python3 -c '
@@ -57,8 +56,10 @@ for p in (json.load(sys.stdin).get("Peer") or {}).values():
 }
 cleanup() {
   if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
-    for i in 1 2 3; do "$WORK/flats" delete "tg$SUFFIX-$i" >/dev/null 2>&1; done
-    approve_pending
+    for i in 1 2 3; do
+      [ "$i" = 3 ] && [ "$DELETED_THIRD" = 1 ] && continue
+      FLATS_GATE_APPROVAL_TIMEOUT=30 gate_request delete "tg$SUFFIX-$i" >/dev/null || echo "Cleanup requires the operator's decision for tg$SUFFIX-$i" >&2
+    done
     kill "$PID" 2>/dev/null
   fi
   wait 2>/dev/null
@@ -94,12 +95,14 @@ done
 kind=$(curl -fsS --max-time 10 "$FLATS_URL/api/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["system"]["private"]["kind"])' 2>/dev/null)
 kill -0 "$PID" 2>/dev/null && [ "$kind" = tailscale ] || { echo "server on :$PORT is not this gate's tailscale server (kind=$kind)"; tail -5 "$WORK/serve.log"; exit 1; }
 F="$WORK/flats"
+lsof -t -a -iTCP:"$PORT" -sTCP:LISTEN | /usr/bin/grep -qx "$PID" || { echo "gate does not own listener :$PORT" >&2; exit 1; }
+echo "Before approving deployment, enable Tailscale for each gate flat in this disposable host's console if not already permitted." >&2
 
 start=$(date +%s)
 for i in 1 2 3; do
   mkdir -p "$WORK/s$i"
   echo "<h1>tailnet gate $i</h1>" >"$WORK/s$i/index.html"
-  "$F" deploy "$WORK/s$i" --flat "tg$SUFFIX-$i" >/dev/null || fail "deploy $i"
+  gate_save_and_deploy "tg$SUFFIX-$i" "$WORK/s$i" >/dev/null || fail "deploy $i"
 done
 st=$(host_state "tg$SUFFIX-1")
 [[ "$st" == starting* ]] && pass "a new flat reports starting until it has its certificate ($st)" || echo "note: flat 1 state right after deploy: $st"
@@ -122,7 +125,7 @@ issuer=$(echo | timeout 30 openssl s_client -connect "tg$SUFFIX-1.$TAILNET:443" 
 
 # Preview node: ephemeral, removed on deploy.
 mkdir -p "$WORK/s1b"; echo "<h1>preview candidate</h1>" >"$WORK/s1b/index.html"
-"$F" deploy "$WORK/s1b" --flat "tg$SUFFIX-1" --save-only >/dev/null
+saved_preview=$("$F" --json save-draft "tg$SUFFIX-1" "$WORK/s1b") || fail "save preview Draft"
 purl=$("$F" preview "tg$SUFFIX-1" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])')
 phost=$(sed -E 's#https?://([^.]+)\..*#\1#' <<<"$purl")
 [[ "$phost" =~ ^tg$SUFFIX-1-[a-z0-9]{8}$ ]] && pass "preview host $phost" || fail "preview host $phost"
@@ -134,14 +137,14 @@ else
   fail "preview not ready after 600s: $(host_state "$phost")"
 fi
 dstart=$(date +%s)
-"$F" deploy --flat "tg$SUFFIX-1" --version 2 >/dev/null || fail "deploy closing the preview"
+preview_version=$(gate_create_saved "tg$SUFFIX-1" "$saved_preview") || fail "create preview version"
+gate_request deploy --flat "tg$SUFFIX-1" --version "$preview_version" >/dev/null || fail "deploy closing the preview"
 echo "deploy closing the preview took $(( $(date +%s) - dstart ))s"
 for _ in $(seq 1 20); do gone "$phost" && break; sleep 3; done
 gone "$phost" && pass "preview node logged out of the tailnet after deploy" || fail "preview node $phost still online after deploy"
 
 # Delete logs the node out.
-"$F" delete "tg$SUFFIX-3" >/dev/null   # creates an approval; approve it as the console would
-approve_pending
+if gate_request delete "tg$SUFFIX-3" >/dev/null; then DELETED_THIRD=1; else fail "operator-approved delete"; fi
 for _ in $(seq 1 20); do gone "tg$SUFFIX-3" && break; sleep 3; done
 gone "tg$SUFFIX-3" && pass "deleted flat's node logged out of the tailnet" || fail "deleted flat's node still online"
 
@@ -165,7 +168,7 @@ export default {
 }
 JS
 echo '{"kind": "server"}' >"$WORK/s2b/flats.json"
-"$F" deploy "$WORK/s2b" --flat "tg$SUFFIX-2" >/dev/null || fail "deploy the header echo flat"
+gate_save_and_deploy "tg$SUFFIX-2" "$WORK/s2b" >/dev/null || fail "deploy the header echo flat"
 me=$(tailscale status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["User"][str(d["Self"]["UserID"])]["LoginName"])')
 got=$(curl -fsS --max-time 20 -H "Tailscale-User-Login: attacker@example.com" -H "Tailscale-User-Profile-Pic: spoofed" "https://tg$SUFFIX-2.$TAILNET/")
 python3 - "$me" "$got" <<'PY' && pass "identity headers set from the real peer's login; spoofed headers replaced" || fail "identity headers wrong"

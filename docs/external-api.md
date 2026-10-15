@@ -35,8 +35,11 @@ keep `/healthz` local and free of external side effects.
 [The server example](../examples/external-api/server.js) calls the configured
 origin with a server-only token and returns one public field. Deploy its
 directory using the checked-in `flats.json`, which selects `server.js` and
-`/healthz` (the default `/` route returns 404). For example, `flats deploy
-examples/external-api --flat hello`. Configure `API_BASE` and enter your own token through the operator
+`/healthz` (the default `/` route returns 404). For example, run `flats save-draft hello examples/external-api`, then run
+the exact `flats create-version` command printed by that save (including its
+revision and hash). After the operator approves version creation, request
+`flats deploy --flat hello --version <created version>` and obtain its separate
+approval. Configure `API_BASE` and enter your own token through the operator
 secret prompt. `api.example.com` is a placeholder, not a configured service.
 Do not accept arbitrary visitor URLs or forward incoming authorization headers.
 Grant only services you trust to receive any credentials your handler sends.

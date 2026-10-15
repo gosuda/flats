@@ -52,7 +52,25 @@ type registry struct {
 // migrations is the production registry.
 var migrations = registry{current: CurrentSchemaVersion, steps: []Migration{
 	{From: 1, To: 2, Apply: consoleHostsV2},
+	{From: 2, To: 3, Apply: versionQuotaV3},
 }}
+
+// versionQuotaV3 preserves only explicitly configured retention values.
+// An absent old setting adopts the new quota default of 20.
+func versionQuotaV3(doc map[string]any) error {
+	sys, ok := doc["system"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if old, ok := sys["keep_versions"]; ok {
+		if _, exists := sys["version_quota"]; exists {
+			return fmt.Errorf("config: system.keep_versions and system.version_quota cannot both be set")
+		}
+		sys["version_quota"] = old
+		delete(sys, "keep_versions")
+	}
+	return nil
+}
 
 // consoleHostsV2 replaces host.console_host with tailscale.console_hosts.
 // A console ran on the tailnet only with network.private_backend

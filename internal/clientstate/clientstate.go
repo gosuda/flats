@@ -14,8 +14,8 @@ import (
 	"github.com/gosuda/flats/plugins"
 )
 
-const ContractRevision = 1
-const BootstrapRevision = 1
+const ContractRevision = 2
+const BootstrapRevision = 2
 const MaxSkillBytes = 32 << 10
 
 type Manifest struct {
