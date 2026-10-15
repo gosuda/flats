@@ -139,6 +139,11 @@ type Service struct {
 	routeEpochs   sync.Map         // route key -> *routeEpoch
 	designOnce    sync.Once
 	design        *designState
+	// docsCatchUps holds when each document last imported for a read.
+	docsCatchUps sync.Map
+	// docsRollbacks holds the ids of document rollbacks in progress, whose
+	// holds are not settled yet.
+	docsRollbacks sync.Map
 	settings      *SettingsSource
 	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
 	logLimits     sync.Map // slug -> *logLimit
@@ -226,7 +231,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	s.startSavedDocs(ctx)
 	s.cleanupDocs()
 	s.startPendingDesigns(ctx)
-	s.retainAllDesigns(ctx)
+	s.retainAllRevisions(ctx, false)
 	s.CloseDueGroups(ctx)
 	s.wg.Add(2)
 	go s.sweeper()
@@ -262,7 +267,12 @@ func (s *Service) lock(slug string) func() {
 	return mu.Unlock
 }
 
-func (s *Service) flatDir(slug string) string { return filepath.Join(s.cfg.DataDir, "flats", slug) }
+// flatDir is the storage directory of a flat. Slugs are validated before
+// they reach it; cleaning the slug as a rooted path also keeps any other
+// value inside flats/, in the form static analysis recognizes.
+func (s *Service) flatDir(slug string) string {
+	return filepath.Join(s.cfg.DataDir, "flats", filepath.Clean("/"+slug))
+}
 
 func (s *Service) versionDir(slug string, n int) string {
 	return filepath.Join(s.flatDir(slug), "versions", strconv.Itoa(n))
@@ -436,6 +446,13 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		release := func() {}
 		var assets []string
 		if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
+			// Revisions of the live document name this version's other
+			// files by its hash: record them before its worker can.
+			if dataDir == s.dataDirOf(slugName) {
+				if err := s.registerDocsSource(ctx, slugName, v, dir); err != nil {
+					return nil, fmt.Errorf("record the document's files for revisions: %w", err)
+				}
+			}
 			runtimeDir, assets, release, err = s.docsRuntime(v, dir)
 			if err != nil {
 				return nil, err
@@ -468,6 +485,9 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		var handler http.Handler = managed
 		if assets != nil {
 			handler = docsAssets(managed, dir, assets)
+			if dataDir == s.dataDirOf(slugName) {
+				handler = s.docsRevisionRoutes(slugName, handler)
+			}
 		}
 		return &deployed{version: v, handler: handler, inst: managed, redact: redact, environment: snapshot}, nil
 	default:
@@ -942,6 +962,9 @@ type SaveMeta struct {
 	CheckRevision    bool
 	// quiet skips the "saved draft" event, for the internal design shell.
 	quiet bool
+	// historical writes a bundle rebuilt from a document revision, which
+	// may exceed the upload-only Markdown total (bundle.WriteHistorical).
+	historical bool
 }
 
 // SaveVersion validates files and stores them as the flat's draft.
@@ -994,8 +1017,12 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 		return v, err
 	}
 	// A document has no publish step: its save runs at once, Private
-	// unless the operator already approved Public.
-	if err := s.applyDocsLocked(ctx, slugName, v.Revision, via); err != nil {
+	// unless the operator already approved Public. Its revision is recorded
+	// by the new version's activation, labelled through the intent.
+	s.docsIntentLocked(ctx, slugName, v.Hash, agentLabel(via), meta.Message)
+	err = s.applyDocsLocked(ctx, slugName, v.Revision, via)
+	s.docsAfterWriteLocked(ctx, slugName)
+	if err != nil {
 		return v, err
 	}
 	return v, nil

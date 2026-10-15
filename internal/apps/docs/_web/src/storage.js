@@ -28,6 +28,25 @@ export function schema(db) {
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_activations(doc TEXT NOT NULL, hash TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(doc,hash))",
   );
+  // Revision capture (revisions.js).
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)",
+  );
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_ops(id TEXT PRIMARY KEY, seq INTEGER NOT NULL)",
+  );
 }
 export function history(db, row, known) {
   if (!known) return true;
@@ -193,6 +212,8 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
   if (!Number.isSafeInteger(runtimeGeneration) || runtimeGeneration < 1)
     throw new Error("host runtime generation unavailable");
   let s = load(db, source.path, cached),
+    // The committed text before a merge, for revision capture.
+    before,
     activation = null,
     activationState;
   const highest = db.query(
@@ -264,14 +285,13 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
         code: "capacity",
       });
     if (s.row.seed_hash !== source.hash) {
+      before = s.doc.getText("markdown").toString();
       const merged = mergeText(
           db.query("SELECT seed_text FROM flats_docs_documents WHERE doc=?", [
             source.path,
           ])[0].seed_text,
-          s.doc.getText("markdown").toString(),
+          before,
           source.text,
-          (markdown) =>
-            preserveConflict(db, source.path, runtimeGeneration, markdown),
         ),
         sv = Y.encodeStateVector(s.doc);
       applyText(s.doc.getText("markdown"), merged);
@@ -293,41 +313,9 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
       "INSERT INTO flats_docs_activations VALUES(?,?,?) ON CONFLICT(doc,hash) DO UPDATE SET version=excluded.version",
       [source.path, versionHash, runtimeGeneration],
     );
-    pruneConflicts(db, source.path);
   }
   if (activation) compact(db, s, activationState);
-  return { ...s, activation };
-}
-function preserveConflict(db, path, generation, markdown) {
-  db.exec("INSERT OR IGNORE INTO flats_docs_conflicts VALUES(?,?,?)", [
-    path,
-    generation,
-    markdown,
-  ]);
-}
-function pruneConflicts(db, path) {
-  const rows = db.query(
-    "SELECT generation,length(CAST(markdown AS BLOB)) AS bytes FROM flats_docs_conflicts WHERE doc=? ORDER BY generation DESC",
-    [path],
-  );
-  let bytes = 0,
-    count = 0;
-  for (const row of rows) {
-    bytes += row.bytes;
-    if (++count > LIMITS.conflicts || bytes > LIMITS.conflictBytes) {
-      db.exec(
-        "DELETE FROM flats_docs_conflicts WHERE doc=? AND generation<=?",
-        [path, row.generation],
-      );
-      break;
-    }
-  }
-}
-export function conflictList(db, path) {
-  return db.query(
-    "SELECT generation,length(CAST(markdown AS BLOB)) AS bytes FROM flats_docs_conflicts WHERE doc=? ORDER BY generation DESC LIMIT ?",
-    [path, LIMITS.conflicts],
-  );
+  return { ...s, activation, before };
 }
 export function transaction(db, fn) {
   db.exec("BEGIN IMMEDIATE");
@@ -398,7 +386,18 @@ export function structureCount(doc) {
   return n;
 }
 
-export function current(db, source, versionHash, cached, generation) {
+// current reads a document's committed state, activating it first when
+// needed. ensureFlat(db) runs the flat activation of the running version in
+// the same write transaction (revisions.js); the read-only fast path is taken
+// only once that activation ran, or when a newer worker owns the flat.
+export function current(
+  db,
+  source,
+  versionHash,
+  cached,
+  generation,
+  ensureFlat,
+) {
   db.exec("BEGIN");
   try {
     const ready = db.query(
@@ -408,7 +407,20 @@ export function current(db, source, versionHash, cached, generation) {
     const highest = db.query(
       "SELECT coalesce(max(version),0) AS version FROM flats_docs_activations",
     )[0].version;
-    if (ready && (ready.version >= generation || highest > generation)) {
+    const raw = db.query(
+        "SELECT value FROM flats_docs_meta WHERE key='active'",
+      )[0],
+      active = raw ? JSON.parse(raw.value) : null,
+      flatReady =
+        !ensureFlat ||
+        active?.hash === versionHash ||
+        (active && active.generation > generation) ||
+        highest > generation;
+    if (
+      flatReady &&
+      ready &&
+      (ready.version >= generation || highest > generation)
+    ) {
       const s = load(db, source.path, cached);
       db.exec("COMMIT");
       return s;
@@ -422,9 +434,10 @@ export function current(db, source, versionHash, cached, generation) {
     if (!String(e.message).includes("no such table")) throw e;
   }
   schema(db);
-  return transaction(db, () =>
-    activate(db, source, versionHash, cached, generation),
-  );
+  return transaction(db, () => {
+    ensureFlat?.(db);
+    return activate(db, source, versionHash, cached, generation);
+  });
 }
 export function rejectionCode(e) {
   return e.transient ? null : e.code || null;

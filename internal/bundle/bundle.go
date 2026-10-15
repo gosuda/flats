@@ -412,6 +412,13 @@ func stripCommonRoot(files []File) []File {
 // ParseManifest reads and validates flats.json (or derives defaults). It
 // reports every problem it finds, not just the first one.
 func ParseManifest(files []File) (Manifest, error) {
+	return parseManifest(files, false)
+}
+
+// parseManifest is ParseManifest; historical skips the upload-only limit of
+// 4 MiB of Markdown per docs bundle, which a document's live text may have
+// outgrown by the time a revision of it is restored.
+func parseManifest(files []File, historical bool) (Manifest, error) {
 	index := map[string]bool{}
 	for _, f := range files {
 		index[f.Path] = true
@@ -452,7 +459,7 @@ func ParseManifest(files []File) (Manifest, error) {
 	}
 	switch m.Type {
 	case contenttype.Docs:
-		return parseDocs(files, index, fields, m, &verr)
+		return parseDocs(files, index, fields, m, &verr, historical)
 	case contenttype.Page:
 		return parsePage(files, index, fields, m, &verr, bad)
 	case contenttype.Design:
@@ -697,11 +704,22 @@ func Hash(files []File) string {
 // Write validates files, then writes them into dst atomically (dst must not
 // exist). It returns the manifest and content hash.
 func Write(files []File, dst string) (Result, error) {
+	return write(files, dst, false)
+}
+
+// WriteHistorical is Write for a bundle rebuilt from a stored revision of a
+// document: it skips the upload-only 4 MiB Markdown total (see
+// parseManifest). Every file keeps its own limits.
+func WriteHistorical(files []File, dst string) (Result, error) {
+	return write(files, dst, true)
+}
+
+func write(files []File, dst string, historical bool) (Result, error) {
 	files, err := canonicalWriteFiles(files)
 	if err != nil {
 		return Result{}, err
 	}
-	m, err := ParseManifest(files)
+	m, err := parseManifest(files, historical)
 	if err != nil {
 		return Result{}, err
 	}
@@ -895,7 +913,7 @@ func IsHTML(p string) bool {
 	return ext == ".html" || ext == ".htm"
 }
 
-func parseDocs(files []File, index map[string]bool, fields map[string]json.RawMessage, m Manifest, verr *ValidationError) (Manifest, error) {
+func parseDocs(files []File, index map[string]bool, fields map[string]json.RawMessage, m Manifest, verr *ValidationError, historical bool) (Manifest, error) {
 	for _, field := range []string{"kind", "spa", "not_found"} {
 		if _, ok := fields[field]; ok {
 			verr.add(ManifestName, field+" is not allowed for docs", "remove "+field+"; the host selects the docs runtime")
@@ -934,7 +952,7 @@ func parseDocs(files []File, index map[string]bool, fields map[string]json.RawMe
 	if documents > 128 {
 		verr.add(ManifestName, "docs bundle exceeds 128 documents", "reduce the bundle to at most 128 Markdown files")
 	}
-	if total > 4<<20 {
+	if total > 4<<20 && !historical {
 		verr.add(ManifestName, "Markdown total exceeds 4 MiB", "reduce the documents to at most 4 MiB combined")
 	}
 	if m.Screenshot != "" {

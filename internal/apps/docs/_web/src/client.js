@@ -9,6 +9,8 @@ import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
 import { replaceRendered } from "./diagram-preview.js";
 import { coalescedRefresh } from "./render-budget.js";
+import { initHistory } from "./history.js";
+import { randomUUID } from "./uuid.js";
 import {
   onThemeChange,
   redrawDiagrams,
@@ -117,10 +119,12 @@ function modesGroup() {
   }
   return group;
 }
+let viewingRevision = false;
 function setMode(next) {
   mode = next;
   for (const b of document.querySelectorAll("#modes [data-mode]"))
     b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  if (viewingRevision) return;
   showRendered(!view || !writable || mode === "view");
   if (view && writable && mode === "edit") view.requestMeasure();
 }
@@ -159,11 +163,16 @@ const adjectives = [
     "Robin",
   ],
   pick = (list) => list[Math.floor(Math.random() * list.length)];
-let name = pick(adjectives) + " " + pick(animals);
+let name = pick(adjectives) + " " + pick(animals),
+  // A random id of this browser groups its edits into revisions.
+  editor = randomUUID().replaceAll("-", "");
 try {
   const saved = localStorage.getItem("flats-docs-name");
   if (saved) name = saved;
   else localStorage.setItem("flats-docs-name", name);
+  const id = localStorage.getItem("flats-docs-editor");
+  if (id && /^[A-Za-z0-9_-]{8,64}$/.test(id)) editor = id;
+  else localStorage.setItem("flats-docs-editor", editor);
 } catch {}
 function download() {
   const a = document.createElement("a"),
@@ -190,31 +199,37 @@ function stopped(message) {
       effects: access.reconfigure(EditorState.readOnly.of(true)),
     });
 }
-function showConflicts(conflicts) {
-  if (initialReadonly || !conflicts?.length) return;
-  const el = $("#conflict-notice");
-  el.hidden = false;
-  el.replaceChildren(
-    document.createTextNode(
-      "Publication replaced some edits. Previous text is preserved. ",
-    ),
-  );
-  const link = document.createElement("a");
-  link.textContent = "View / copy previous text";
-  link.href = `/_docs/api/conflict?doc=${encodeURIComponent(path)}&generation=${conflicts[0].generation}&view=1`;
-  link.target = "_blank";
-  link.rel = "noopener";
-  el.append(link);
-}
+// The history panel views a revision in place of the live surface; the
+// editor stays connected meanwhile.
+const history = initHistory({
+  path,
+  name: () => name,
+  liveText: () => text.toString(),
+  onView() {
+    viewingRevision = true;
+    $("#editor").hidden = true;
+    $("#content").hidden = true;
+  },
+  onLive() {
+    viewingRevision = false;
+    $("#content").hidden = true;
+    setMode(mode);
+  },
+  status(message) {
+    $("#status").textContent = message;
+    $("#status").dataset.state = "Saved";
+    provider.catchUp();
+  },
+});
 const provider = new Provider(doc, path, {
   readonly: initialReadonly,
   name,
+  editor,
   onState: (label) => {
     $("#status").textContent = label;
     $("#status").dataset.state = label;
   },
   onStop: stopped,
-  onConflicts: showConflicts,
   onWelcome: (m) => {
     if (!view && !m.readonly) {
       const undoManager = new Y.UndoManager(text, {
@@ -263,6 +278,7 @@ const provider = new Provider(doc, path, {
     writable = !m.readonly;
     const group = writable ? modesGroup() : $("#modes");
     if (group) group.hidden = !writable;
+    history.enable(writable);
     view?.dispatch({
       effects: access.reconfigure(
         EditorState.readOnly.of(!writable || provider.model.stopped),

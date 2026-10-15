@@ -40,7 +40,6 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 }
 
 type GetDocumentIn struct {
-	Conflict    int64  `json:"conflict,omitempty" jsonschema:"positive generation from private conflict metadata; retrieve preserved Markdown"`
 	Slug        string `json:"slug"`
 	Doc         string `json:"doc,omitempty" jsonschema:"exact Markdown path, default entry"`
 	Blocks      bool   `json:"blocks,omitempty" jsonschema:"also list live Markdown blocks with the hashes update_document guards on, 1,000 per page"`
@@ -50,9 +49,7 @@ type GetDocumentIn struct {
 func (t *tools) getDocument(ctx context.Context, _ *mcp.CallToolRequest, in GetDocumentIn) (*mcp.CallToolResult, core.Document, error) {
 	var out core.Document
 	var err error
-	if in.Conflict != 0 {
-		out, err = t.svc.GetDocumentConflict(ctx, in.Slug, in.Doc, in.Conflict)
-	} else if in.Blocks {
+	if in.Blocks {
 		out, err = t.svc.GetDocumentBlocks(ctx, in.Slug, in.Doc, in.BlockOffset)
 	} else {
 		out, err = t.svc.GetDocument(ctx, in.Slug, in.Doc)

@@ -63,22 +63,22 @@ export class Provider {
     {
       readonly = false,
       name = "Guest",
+      editor,
       onState = () => {},
       onWelcome = () => {},
       onStop = () => {},
-      onConflicts = () => {},
       WebSocketClass = globalThis.WebSocket,
     } = {},
   ) {
     this.doc = doc;
     this.path = path;
     this.name = cleanName(name);
+    this.editor = editor;
     this.model = new Pending();
     this.model.readonly = readonly;
     this.onState = onState;
     this.onWelcome = onWelcome;
     this.onStop = onStop;
-    this.onConflicts = onConflicts;
     this.WS = WebSocketClass;
     this.attempt = 0;
     this.awareness = new Awareness(doc);
@@ -128,6 +128,11 @@ export class Provider {
   state() {
     this.onState(this.model.label(), this.model);
   }
+  // catchUp asks for committed changes now instead of at the next
+  // heartbeat, for example after a restore.
+  catchUp() {
+    if (this.model.connected) this.send({ t: "ping" });
+  }
   send(m) {
     if (this.socket?.readyState === 1 && !this.model.stopped) {
       if (this.socket.bufferedAmount > 2 * 1024 * 1024) {
@@ -165,6 +170,7 @@ export class Provider {
         sv: base64(Y.encodeStateVector(this.doc)),
         known: this.model.known || undefined,
         name: this.name,
+        editor: this.editor,
       });
     };
     socket.onmessage = (e) => {
@@ -246,7 +252,6 @@ export class Provider {
         colorLight: "#3b65b933",
       });
       this.onWelcome(m);
-      if (!m.readonly && m.conflicts) this.onConflicts(m.conflicts);
       if (!m.readonly)
         for (const [id, u] of this.model.items)
           this.send({ t: "update", id, u });
@@ -269,8 +274,6 @@ export class Provider {
         unbase64(m.u, LIMITS.awareness * 50),
         this,
       );
-    } else if (m.t === "conflicts") {
-      if (!this.model.readonly) this.onConflicts(m.conflicts);
     } else if (m.t === "pong") {
       this.model.remember(m);
     } else throw new Error("unknown response");

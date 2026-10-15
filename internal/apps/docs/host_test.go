@@ -170,89 +170,203 @@ func TestHostPublicSocketRevocation(t *testing.T) {
 	}
 }
 
-func TestHostAPIAndMCPConflictRecovery(t *testing.T) {
+func TestHostDocumentRevisions(t *testing.T) {
 	t.Parallel()
-	s, private, _ := hostService(t)
+	ctx := t.Context()
+	s, private, public := hostService(t)
 	srv := httptest.NewServer(private.handler("host-doc"))
 	defer srv.Close()
+	revs := func() []store.Revision {
+		t.Helper()
+		page, err := s.ListRevisions(ctx, "host-doc", 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page.Revisions
+	}
+	text := func(n int, path string) string {
+		t.Helper()
+		b, _, err := s.RevisionFileContent(ctx, "host-doc", n, path)
+		if err != nil {
+			t.Fatal(n, path, err)
+		}
+		return string(b)
+	}
+	if r := revs(); len(r) != 1 || r[0].Kind != "created" || text(1, "index.md") != initialText {
+		t.Fatalf("first revision %+v", r)
+	}
+	// A person edits; the next agent save keeps their text as a revision of
+	// its own before it overwrites the lines it changes.
 	editor := connect(t, srv.URL, "private")
 	editor.hello(t, nil)
 	edit(t, editor, "human", fixture(t).Independent)
 	editor.Close()
-	preserved, err := s.GetDocument(t.Context(), "host-doc", "")
+	preserved, err := s.GetDocument(ctx, "host-doc", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	target := strings.Repeat("rewritten\n", 200)
-	_, err = s.SaveVersion(t.Context(), "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(target)}}, core.SaveMeta{}, core.ViaMCP)
-	if err != nil {
+	if _, err = s.SaveVersion(ctx, "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(target)}}, core.SaveMeta{Message: "rewrite"}, core.ViaMCP); err != nil {
 		t.Fatal(err)
 	}
-	live, err := s.GetDocument(t.Context(), "host-doc", "")
-	if err != nil || len(live.Conflicts) != 1 || live.Conflicts[0].Bytes != int64(len(preserved.Markdown)) {
-		t.Fatal(live, err)
+	r := revs()
+	if len(r) != 3 || r[0].Kind != "agent" || r[0].Message != "rewrite" || len(r[0].Authors) != 1 || r[0].Authors[0] != "Agent" || r[1].Kind != "person" {
+		t.Fatalf("revisions after the save %+v", r)
 	}
-	generation := live.Conflicts[0].Generation
-	recovered, err := s.GetDocumentConflict(t.Context(), "host-doc", "", generation)
-	if err != nil || recovered.Markdown != preserved.Markdown || recovered.Source != "conflict" || recovered.Generation != generation {
-		t.Fatal(recovered, err)
+	if text(2, "index.md") != preserved.Markdown || text(3, "index.md") != target {
+		t.Fatal("revision texts")
 	}
-	h := (&api.Server{Svc: s}).Handler()
-	for _, query := range []string{"", fmt.Sprintf("?conflict=%d", generation)} {
-		req := httptest.NewRequest("GET", "/api/flats/host-doc/document"+query, nil)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code != 200 {
-			t.Fatal(rec.Code, rec.Body.String())
-		}
-		var out core.Document
-		if err = json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatal(err)
-		}
-		if query == "" {
-			if len(out.Conflicts) != 1 || out.Conflicts[0].Bytes != int64(len(preserved.Markdown)) || strings.Contains(rec.Body.String(), `"markdown":""`) {
-				t.Fatal(rec.Body.String())
-			}
-		} else if out.Markdown != preserved.Markdown {
-			t.Fatal(out)
-		}
+	if rev, files, err := s.GetRevision(ctx, "host-doc", 2); err != nil || len(files) != 2 || files[0].Path != "flats.json" || rev.Files != 2 {
+		t.Fatal("revision files", files, err)
 	}
+
+	// Rolling back within the running version restores the exact text.
 	mcpServer := httptest.NewServer(mcpx.Handler(s, mcpx.Options{Version: "test"}))
 	defer mcpServer.Close()
-	client := mcp.NewClient(&mcp.Implementation{Name: "conflict-test", Version: "1"}, nil)
-	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: mcpServer.URL}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "revision-test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: mcpServer.URL}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	for _, conflict := range []int64{0, generation, generation + 999} {
-		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "get_document", Arguments: map[string]any{"slug": "host-doc", "conflict": conflict}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if conflict == generation+999 {
-			if !result.IsError {
-				t.Fatal("missing generation accepted")
-			}
-			continue
-		}
-		if result.IsError {
-			t.Fatal(result)
-		}
-		data, err := json.Marshal(result.StructuredContent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out core.Document
-		if err = json.Unmarshal(data, &out); err != nil {
-			t.Fatal(err)
-		}
-		if conflict == 0 {
-			if len(out.Conflicts) != 1 || out.Conflicts[0].Bytes != int64(len(preserved.Markdown)) {
-				t.Fatal(string(data))
-			}
-		} else if out.Markdown != preserved.Markdown || out.Generation != generation {
-			t.Fatal(string(data))
-		}
+	var done struct {
+		Revision int `json:"revision"`
 	}
+	if out, failed := callTool(t, session, "rollback_revision", map[string]any{"slug": "host-doc", "revision": 2}, &done); failed || done.Revision != 4 {
+		t.Fatal(out)
+	}
+	if live, _ := s.GetDocument(ctx, "host-doc", ""); live.Markdown != preserved.Markdown {
+		t.Fatal("rollback did not restore the text", live.Markdown)
+	}
+	if r := revs(); r[0].Kind != "rollback" || r[0].RollbackOf != 2 || text(4, "index.md") != preserved.Markdown {
+		t.Fatalf("rollback revision %+v", r[0])
+	}
+	// A later save merges against the restored text: its own change lands
+	// and the restored lines it does not touch stay.
+	next := strings.Replace(preserved.Markdown, "Base line", "Base line, saved after the rollback", 1)
+	if _, err = s.SaveVersion(ctx, "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(next)}}, core.SaveMeta{}, core.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if live, _ := s.GetDocument(ctx, "host-doc", ""); live.Markdown != next {
+		t.Fatal("save after rollback", live.Markdown)
+	}
+
+	// A save that adds a document and an asset, then a rollback across that
+	// change: a new version without them, restored exactly.
+	before := revs()[0].Number
+	if _, err = s.SaveVersion(ctx, "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(next)}, {Path: "more.md", Data: []byte("# More\n")}, {Path: "notes.txt", Data: []byte("asset")}}, core.SaveMeta{}, core.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string) int {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if get("/notes.txt") != 200 || get("/more") != 200 {
+		t.Fatal("added files not served")
+	}
+	if out, failed := callTool(t, session, "rollback_revision", map[string]any{"slug": "host-doc", "revision": before}, &done); failed {
+		t.Fatal(out)
+	}
+	if get("/notes.txt") == 200 || get("/more") == 200 {
+		t.Fatal("rollback kept files the revision does not have")
+	}
+	if live, _ := s.GetDocument(ctx, "host-doc", ""); live.Markdown != next {
+		t.Fatal("rollback across versions", live.Markdown)
+	}
+	if r := revs(); r[0].Kind != "rollback" || r[0].RollbackOf != before || r[0].Files != 2 {
+		t.Fatalf("rollback revision %+v", r[0])
+	}
+
+	// The page's routes: Private only, with write protection.
+	call := func(h http.Handler, method, path string, headers map[string]string, body string) (int, string) {
+		req := httptest.NewRequest(method, "http://host-doc.localhost"+path, strings.NewReader(body))
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions", nil, ""); code != 200 || !strings.Contains(body, `"rollback_of"`) {
+		t.Fatal("private history", code, body)
+	}
+	// A revision names the one before it, which the page compares it with.
+	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions/3", nil, ""); code != 200 || !strings.Contains(body, `"previous":2`) {
+		t.Fatal("revision view", code, body)
+	}
+	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions/1", nil, ""); code != 200 || !strings.Contains(body, `"previous":0`) {
+		t.Fatal("first revision view", code, body)
+	}
+	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions/2/document?doc=index.md", nil, ""); code != 200 || !strings.Contains(body, "Person") {
+		t.Fatal("revision document", code, body)
+	}
+	write := map[string]string{"Content-Type": "application/json", "X-Flats-Docs": "1", "Sec-Fetch-Site": "same-origin"}
+	if code, _ := call(private.handler("host-doc"), "POST", "/_docs/api/revisions/2/pin", map[string]string{"Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}, `{"pinned":true}`); code != 403 {
+		t.Fatal("pin without the page header", code)
+	}
+	if code, _ := call(private.handler("host-doc"), "POST", "/_docs/api/revisions/2/pin", map[string]string{"Content-Type": "application/json", "X-Flats-Docs": "1", "Sec-Fetch-Site": "cross-site"}, `{"pinned":true}`); code != 403 {
+		t.Fatal("cross-site pin", code)
+	}
+	if code, body := call(private.handler("host-doc"), "POST", "/_docs/api/revisions/2/pin", write, `{"pinned":true}`); code != 200 {
+		t.Fatal("pin", code, body)
+	}
+	if rev, _, _ := s.GetRevision(ctx, "host-doc", 2); !rev.Pinned {
+		t.Fatal("not pinned")
+	}
+	// Host operations of the worker stay out of reach of browsers.
+	if code, _ := call(private.handler("host-doc"), "GET", "/_docs/host/revisions/outbox", map[string]string{"X-Flats-Host-Op": "revisions"}, ""); code != 403 {
+		t.Fatal("worker host operation reachable", code)
+	}
+	if err := s.SetProviderPermission(ctx, "host-doc", store.ProviderPortal, true, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.SetVisibility(ctx, "host-doc", store.Public, core.ViaMCP, "test")
+	approveAction(t, s, res, err)
+	if code, _ := call(public.handler("host-doc"), "GET", "/_docs/api/revisions", nil, ""); code != 404 {
+		t.Fatal("public history", code)
+	}
+	// get_document has no conflict records any more.
+	h := (&api.Server{Svc: s}).Handler()
+	req := httptest.NewRequest("GET", "/api/flats/host-doc/document", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "conflicts") {
+		t.Fatal(rec.Code, rec.Body.String())
+	}
+	// With a revision quota of 1, a rollback still finds and keeps its
+	// target while the history it imports first would push it out.
+	one := 1
+	if err := s.SetRevisionQuotas(ctx, "host-doc", &one, nil); err != nil {
+		t.Fatal(err)
+	}
+	quotaTarget := revs()[0].Number
+	editor = connect(t, srv.URL, "private")
+	editor.hello(t, nil)
+	// A change no revision holds yet: the rollback imports it first.
+	quotaEdit := fixture(t).Compact[0]
+	edit(t, editor, quotaEdit.ID, quotaEdit.U)
+	editor.Close()
+	if out, failed := callTool(t, session, "rollback_revision", map[string]any{"slug": "host-doc", "revision": quotaTarget}, &done); failed {
+		t.Fatal("rollback under quota 1", out)
+	}
+	if live, _ := s.GetDocument(ctx, "host-doc", ""); live.Markdown != text(revs()[0].Number, "index.md") {
+		t.Fatal("rollback under quota 1 did not restore the text")
+	}
+	// Only the rollback stays unpinned; revision 2 is pinned.
+	if r := revs(); len(r) != 2 || r[0].Kind != "rollback" || r[0].RollbackOf != quotaTarget || !r[1].Pinned {
+		t.Fatalf("history under quota 1 %+v", r)
+	}
+	if holds, _ := s.RevisionQuotas(ctx, "host-doc"); holds.RevisionQuota == nil {
+		t.Fatal("quota override lost")
+	}
+	if err := s.SetRevisionQuotas(ctx, "host-doc", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = json.Valid
+	_ = fmt.Sprint
 }

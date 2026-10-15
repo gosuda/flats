@@ -101,10 +101,11 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /<path>` | exact Markdown path, or `<path>.md` / `<path>.markdown` |
 | `GET /_docs/healthz` | Cheap `200 ok` without DB access for visitors; only trusted host health trials activate all documents atomically |
 | `GET /_docs/api/documents` | `{format:1, entry, title, documents: [{path, title}]}` |
-| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads additionally include `conflicts:[{generation,bytes}]`, and with `blocks=1` one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
+| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads with `blocks=1` add one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
 | `POST /_docs/api/edit?doc=<path>` | Host management only (`private` plus `X-Flats-Host-Op: edit`, see below): guarded live edit; others receive 403 |
 | `GET /_docs/api/receipt?doc=<path>&id=<id>` | Host management only: `{committed, seq?, chain?}` for a live-edit receipt id |
-| `GET /_docs/api/conflict?doc=<path>&generation=<id>` | Private only: `{generation,markdown}`; `view=1` returns `text/plain; charset=utf-8` with nosniff, restrictive CSP and no-store for viewing/copying; public receives 403, evicted/missing id 404 |
+| `/_docs/api/revisions…` | Served by the host before the worker (private only): the document page's history; see [document revisions](../spec/document-revisions-TECH.md) |
+| `/_docs/host/revisions/…` | Host management only (`private` plus `X-Flats-Host-Op: revisions`): revision capture, outbox, staging, intents and restore; see [document revisions](../spec/document-revisions-TECH.md) |
 | `GET /_docs/assets/client.js` | self-contained browser ESM bundle |
 | `GET /_docs/assets/client.css` | workspace CSS |
 | `GET /_docs/assets/mermaid-<hash>.js` | Mermaid browser ESM, loaded by the client only for documents with diagrams; `<hash>` is the first 16 hex digits of its SHA-256, and it is served `immutable` |
@@ -158,7 +159,10 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   * `checkpoints(doc PRIMARY KEY, seq, chain, state, created_at)`
   * `receipts(doc, seq, id, chain, hash, PRIMARY KEY(doc,seq), UNIQUE(doc,id))`
   * `activations(doc, hash, version, PRIMARY KEY(doc,hash))`
-  * `conflicts(doc, generation, markdown, PRIMARY KEY(doc,generation))`
+  * `conflicts(doc, generation, markdown, PRIMARY KEY(doc,generation))`: no
+    longer written; the first revision sync migrates its rows into revisions
+  * `meta`, `recorded`, `groups`, `outbox`, `texts`, `ops`: revision capture,
+    see [document revisions](../spec/document-revisions-TECH.md)
   Binary state/update data is canonical base64 TEXT; `updates.size` counts
   stored base64 bytes. Receipts retain SHA-256 of canonical update data,
   exact ids and chain history after log compaction. They are bounded and
@@ -179,19 +183,10 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   prefer the version. Myers line diff has no wall-clock timeout: each diff is bounded to 128
   edits and 16,000 combined input lines. Native newline searches count lines
   before allocating arrays; there is no additional character cap. On overflow or a combined result above 1 MiB the version wins;
-  whenever overlap discards human text absent from the version, or a fallback
-  replaces live text, the exact
-  pre-activation live Markdown is retained in `flats_docs_conflicts`
-  for private recovery. Routine private API and host/MCP responses list only
-  `conflicts: [{generation, bytes}]` (newest first); public responses omit it.
-  Full text is requested by generation through the private conflict API or
-  privileged MCP `get_document {slug, doc?, conflict: generation}`.
-  Each document retains the newest whole records that fit both 8 records and
-  2 MiB UTF-8. Older records are deleted in the same activation transaction,
-  including when rolling back to previously seen hashes. A new generation
-  also trims older unbounded records from prior app versions. This recovery
-  window is finite. Private editors receive a small notice and a view/copy link
-  on welcome or activation catch-up; it does not block editing.
+  the text a merge discards is in the revision captured just before it:
+  every new version is activated for the whole flat at once, and that
+  activation first records people's unrecorded text in the same
+  transaction ([document revisions](../spec/document-revisions-TECH.md)).
   A deterministic character diff is bounded to 64 edits and 65,536 combined
   UTF-16 code units; overflow replaces only the differing prefix/suffix span.
   Only the trusted host health signal activates every source document
@@ -314,7 +309,8 @@ update operations. The agent contract is guide `topic.docs`.
 * **Versions.** Live edits are not part of a published version or the Draft.
   The next activation merges `seed_text` → live → version exactly as for
   human edits: disjoint agent edits survive, overlapping ones prefer the
-  version and the discarded live text goes to `flats_docs_conflicts`.
+  version, and the live text before the merge is the revision captured
+  just before it.
 * **Audit and recovery.** Core records each applied edit in the flat event
   log (kind `document`): document, operation, line and removed/inserted
   counts, seq before/after, receipt id and resulting hash, never the text.
@@ -329,11 +325,9 @@ update operations. The agent contract is guide `topic.docs`.
   2 s margin has passed. The result is "committed at seq N", "did not apply"
   or, only when the app cannot answer, "outcome unknown". Core waits up to
   20 s for the edit itself.
-  Pre-edit text is not retained separately: conflict records are keyed by
-  activation generation and bounded to 8 per document, so sharing them would
-  let routine agent edits evict human recovery text. Edits are small and
-  guarded, the agent read the text it changed, and the result reports what
-  changed, so the reverse edit restores it.
+  Each applied edit is a revision, recorded in the edit's own transaction
+  together with a revision of people's unrecorded edits before it, so the
+  text before the edit can be restored by rollback.
 * **Public flats.** Live text is public at once. The tool description,
   MCP instructions, `topic.docs` and every result on a Public flat
   (`public_notice`) say so; there is deliberately no approval step, matching
@@ -373,7 +367,7 @@ Binary fields are canonical RFC 4648 base64. Client → server:
 
 | `t` | Fields | Meaning |
 |---|---|---|
-| `hello` | `v:1, doc, sv, known?:{epoch,seq,chain}, name?` | join; client state vector and last observed committed history |
+| `hello` | `v:1, doc, sv, known?:{epoch,seq,chain}, name?, editor?` | join; client state vector, last observed committed history, and the browser's random editor id that groups its edits into revisions |
 | `update` | `id, u` | local update, resent unchanged until ACK |
 | `aw` | `u` | one awareness client id, owned by the socket |
 | `ping` | — | heartbeat/catch-up, about every 15 seconds |
@@ -383,11 +377,10 @@ Every server envelope has a monotonically increasing per-socket `n`:
 
 | `t` | Fields (besides `n`) | Meaning |
 |---|---|---|
-| `welcome` | `v:1, doc, epoch, seq, chain, readonly, u, sv, you:{name,verified}, conflicts?` | server diff missing from client sv and server vector |
+| `welcome` | `v:1, doc, epoch, seq, chain, readonly, u, sv, you:{name,verified}` | server diff missing from client sv and server vector |
 | `update` | `u, seq, chain` | committed peer update or catch-up/full checkpoint |
 | `ack` | `id, seq, chain` | exact id durably committed; a retry can ACK an older seq |
 | `aw` | `u` | relayed/rewritten awareness state or removal |
-| `conflicts` | `conflicts:[{generation,bytes}]` | private activation catch-up notice metadata; no full text |
 | `pong` | `epoch, seq, chain` | catch-up watermark |
 | `diverged` | `epoch, seq` | known epoch/seq/chain is absent from retained committed history; do not push local state |
 | `error` | `code, message` | rejected message; fatal rejection closes socket |
@@ -414,7 +407,7 @@ Final application limits (bytes mean UTF-8 or decoded binary as indicated):
 | Document update room rate | 40/s, burst 80; 512 KiB/s, burst 512 KiB (wire bytes) |
 | App outstanding output / native queued output | 4 MiB per connection, 16 MiB per worker instance, including native in-flight frames |
 | Browser pending update buffer / WebSocket bufferedAmount | 2 MiB each; one edit still must fit decoded update limit |
-| Conflict recovery per document | Newest 8 records within 2 MiB UTF-8; full text only on private request |
+| Revision capture | Pending outbox entries and their texts until the host imports them; recorded texts of current documents |
 | Persistent admissions | Upload validates at most 128 Markdown documents (with a fix hint); 128 stored documents; seq <= 100,000 per document; 200,000 total receipts; 1,000 content hashes per document |
 | State-vector hello | 8 KiB decoded, 1,024 clients |
 | Idle sockets | unfinished hello 15 s; joined silence 60 s; checked on new admission |

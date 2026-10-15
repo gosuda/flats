@@ -93,8 +93,11 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				t.Fatalf("valid census operation failed: %s", text)
 			}
 			want := `"category":"not_docs"`
-			if strings.Contains(tool.Name, "design") || strings.Contains(tool.Name, "revision") {
+			if strings.Contains(tool.Name, "design") {
 				want = `"category":"not_design"`
+			}
+			if strings.Contains(tool.Name, "revision") {
+				want = `"category":"no_revisions"`
 			}
 			if docTool && (!failed || !strings.Contains(text, want)) {
 				t.Fatal("website must reject document reads and edits with a typed error", text)

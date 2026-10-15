@@ -474,7 +474,7 @@ type legacyPlan struct {
 	// keyFile is a Tailscale key file given with --authkey-file or
 	// --tailscale-authkey-file; the migration stores its key in flats.db.
 	keyFile, keyFlag string
-	grants   provider.File // the host file before this run's flags
+	grants           provider.File // the host file before this run's flags
 }
 
 // hostFlags are the legacy flags of the host.* keys, in config key order.

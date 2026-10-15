@@ -18,7 +18,7 @@ func TestErrorCategoriesListEveryCategory(t *testing.T) {
 		ErrStaleApproval, ErrPublicStopUnconfirmed, ErrProviderNotPermitted, ErrProviderUnavailable,
 		ErrRuntimeUnavailable, ErrUnavailable, ErrProviderInUse, ErrNotDeployed, ErrUnchangedContent,
 		ErrProviderNotReady, ErrConfigOverridden, ErrConfigChanged, &DeployError{Cause: ErrInvalid},
-		&DeployError{}, ErrEditConflict, ErrDocumentCapacity, ErrConflict, ErrForbidden, ErrNotDocs, ErrNotDesign, ErrDocumentNotFound, store.ErrNotFound, ErrInvalid,
+		&DeployError{}, ErrEditConflict, ErrDocumentCapacity, ErrConflict, ErrForbidden, ErrNotDocs, ErrNotDesign, ErrNoRevisions, ErrDocumentNotFound, store.ErrNotFound, ErrInvalid,
 	}
 	var got []string
 	for _, err := range errs {

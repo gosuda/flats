@@ -73,20 +73,12 @@ const MaxDocumentEditOps = 32
 // maxDocumentEditBody matches the docs app's edit request limit.
 const maxDocumentEditBody = 512 << 10
 
-// DocumentConflict describes retained private recovery text without including it.
-type DocumentConflict struct {
-	Generation int64 `json:"generation"`
-	Bytes      int64 `json:"bytes"`
-}
-
-// Document is exact Markdown from the live app, Current Draft, or preserved conflict.
+// Document is exact Markdown from the live app or the Current Draft.
 type Document struct {
-	Generation int64              `json:"generation,omitempty"`
-	Conflicts  []DocumentConflict `json:"conflicts,omitempty"`
-	Format     int                `json:"format"`
-	Doc        string             `json:"doc"`
-	Markdown   string             `json:"markdown"`
-	Hash       string             `json:"hash,omitempty"`
+	Format   int    `json:"format"`
+	Doc      string `json:"doc"`
+	Markdown string `json:"markdown"`
+	Hash     string `json:"hash,omitempty"`
 	// Blocks, BlocksTotal and BlockOffset are present (also when empty or
 	// zero) exactly when an outline of live text was requested. One page
 	// holds at most 1,000 blocks.
@@ -112,7 +104,7 @@ type DocumentBlock struct {
 // GetDocument prefers the running docs version, including collaborative edits.
 // It never starts a worker just to read an unpublished Draft.
 func (s *Service) GetDocument(ctx context.Context, slugName, doc string) (Document, error) {
-	return s.getDocument(ctx, slugName, doc, 0, -1)
+	return s.getDocument(ctx, slugName, doc, -1)
 }
 
 // GetDocumentBlocks is GetDocument plus one page of the live block outline
@@ -122,20 +114,12 @@ func (s *Service) GetDocumentBlocks(ctx context.Context, slugName, doc string, o
 	if offset < 0 {
 		return Document{}, invalidf("block_offset must not be negative")
 	}
-	return s.getDocument(ctx, slugName, doc, 0, offset)
-}
-
-// GetDocumentConflict reads preserved text through the trusted host route only.
-func (s *Service) GetDocumentConflict(ctx context.Context, slugName, doc string, generation int64) (Document, error) {
-	if generation < 1 {
-		return Document{}, invalidf("conflict must be a positive generation")
-	}
-	return s.getDocument(ctx, slugName, doc, generation, -1)
+	return s.getDocument(ctx, slugName, doc, offset)
 }
 
 // getDocument reads live or Draft text; blockOffset >= 0 also requests a
 // page of the live block outline.
-func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflict int64, blockOffset int) (Document, error) {
+func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOffset int) (Document, error) {
 	unlock := s.lock(slugName)
 	defer unlock()
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
@@ -150,9 +134,7 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflic
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		path := "/_docs/api/document?doc=" + url.QueryEscape(doc)
-		if conflict != 0 {
-			path = fmt.Sprintf("/_docs/api/conflict?doc=%s&generation=%d", url.QueryEscape(doc), conflict)
-		} else if blockOffset >= 0 {
+		if blockOffset >= 0 {
 			path += fmt.Sprintf("&blocks=1&block_offset=%d", blockOffset)
 		}
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal"+path, nil)
@@ -164,26 +146,6 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflic
 		if rec.Code != http.StatusOK {
 			return Document{}, fmt.Errorf("%w: docs app returned HTTP %d", ErrUnavailable, rec.Code)
 		}
-		if conflict != 0 {
-			var row struct {
-				Generation int64  `json:"generation"`
-				Markdown   string `json:"markdown"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &row); err != nil {
-				return Document{}, err
-			}
-			if row.Generation != conflict {
-				return Document{}, fmt.Errorf("invalid conflict response")
-			}
-			if doc == "" {
-				var m bundle.Manifest
-				if err := json.Unmarshal(live.version.Manifest, &m); err != nil {
-					return Document{}, err
-				}
-				doc = m.Entry
-			}
-			return Document{Format: 1, Doc: doc, Markdown: row.Markdown, Source: "conflict", Generation: conflict}, nil
-		}
 		var out Document
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 			return Document{}, fmt.Errorf("docs app document response: %w", err)
@@ -193,9 +155,6 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, conflic
 		}
 		out.Source = "live"
 		return out, nil
-	}
-	if conflict != 0 {
-		return Document{}, ErrDocumentNotFound
 	}
 	draft, err := s.st.GetDraft(ctx, slugName)
 	if errors.Is(err, store.ErrNotFound) {
@@ -261,18 +220,20 @@ type DocumentEditChange struct {
 
 // DocumentEdit is the result of a live edit.
 type DocumentEdit struct {
-	Format       int                  `json:"format"`
-	Doc          string               `json:"doc"`
-	SeqBefore    int64                `json:"seq_before"`
-	Seq          int64                `json:"seq"`
-	Chain        string               `json:"chain"`
-	Hash         string               `json:"hash"`
-	Bytes        int64                `json:"bytes"`
-	Changed      bool                 `json:"changed"`
-	ID           string               `json:"id,omitempty"`
-	Ops          []DocumentEditChange `json:"ops"`
-	Source       string               `json:"source"`
-	PublicNotice string               `json:"public_notice,omitempty"`
+	Format    int                  `json:"format"`
+	Doc       string               `json:"doc"`
+	SeqBefore int64                `json:"seq_before"`
+	Seq       int64                `json:"seq"`
+	Chain     string               `json:"chain"`
+	Hash      string               `json:"hash"`
+	Bytes     int64                `json:"bytes"`
+	Changed   bool                 `json:"changed"`
+	ID        string               `json:"id,omitempty"`
+	Ops       []DocumentEditChange `json:"ops"`
+	Source    string               `json:"source"`
+	// Revision is the revision the edit created, once it is in the history.
+	Revision     int    `json:"revision,omitempty"`
+	PublicNotice string `json:"public_notice,omitempty"`
 }
 
 // LiveEditPublicNotice is attached to every live edit result of a Public flat.
@@ -301,8 +262,10 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 		IfHash   *string          `json:"if_hash,omitempty"`
 		ID       string           `json:"id"`
 		Deadline int64            `json:"deadline_ms"`
+		Label    string           `json:"label"`
 	}
-	body, err := json.Marshal(editRequest{ops, ifHash, id, 0})
+	label := agentLabel(via)
+	body, err := json.Marshal(editRequest{ops, ifHash, id, 0, label})
 	if err != nil {
 		return DocumentEdit{}, err
 	}
@@ -339,7 +302,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	// cancelled request must still leave its event.
 	auditCtx := context.WithoutCancel(ctx)
 	deadline := time.Now().Add(editCommitWindow)
-	if body, err = json.Marshal(editRequest{ops, ifHash, id, deadline.UnixMilli()}); err != nil {
+	if body, err = json.Marshal(editRequest{ops, ifHash, id, deadline.UnixMilli(), label}); err != nil {
 		return DocumentEdit{}, err
 	}
 	// Longer than the worker's own request deadline, so the worker normally
@@ -388,6 +351,8 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 		out.PublicNotice = LiveEditPublicNotice
 	}
 	if out.Changed {
+		// The edit recorded its revision in the same worker transaction.
+		out.Revision = s.docsAfterWriteLocked(auditCtx, slugName).byOp[id]
 		auditCtx, cancelAudit := context.WithTimeout(auditCtx, 10*time.Second)
 		defer cancelAudit()
 		s.Event(auditCtx, slugName, "info", "document", editSummary(out, via), map[string]any{

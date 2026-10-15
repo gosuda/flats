@@ -7,7 +7,7 @@ refers to that spec's numbered rules.
 
 ### Storage
 
-A new `flats.db` migration (user_version 12) adds:
+A new `flats.db` migration (user_version 13) adds:
 
 ```sql
 CREATE TABLE host_keys (

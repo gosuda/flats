@@ -57,7 +57,7 @@ func TestDocumentAPIAndTypeViews(t *testing.T) {
 			for _, tt := range []struct {
 				name, path, category string
 				status               int
-			}{{"draft", "document/document", "", 200}, {"missing doc", "document/document?doc=missing.md", "document_not_found", 404}, {"not docs", "website/document", "not_docs", 400}, {"empty", "empty/document", "not_deployed", 409}, {"missing flat", "absent/document", "not_found", 404}, {"bad path", "document/document?doc=../index.md", "invalid", 400}, {"missing conflict", "document/document?conflict=4", "document_not_found", 404}, {"negative conflict", "document/document?conflict=-1", "invalid", 400}, {"bad conflict", "document/document?conflict=no", "invalid", 400}} {
+			}{{"draft", "document/document", "", 200}, {"missing doc", "document/document?doc=missing.md", "document_not_found", 404}, {"not docs", "website/document", "not_docs", 400}, {"empty", "empty/document", "not_deployed", 409}, {"missing flat", "absent/document", "not_found", 404}, {"bad path", "document/document?doc=../index.md", "invalid", 400}} {
 				t.Run(tt.name, func(t *testing.T) {
 					r := httptest.NewRequest("GET", prefix+"/flats/"+tt.path, nil)
 					r.Header.Set("X-Flats-Console", "1")

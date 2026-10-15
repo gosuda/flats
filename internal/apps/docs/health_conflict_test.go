@@ -2,7 +2,6 @@ package docs
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -112,97 +111,71 @@ func testConflictRollback(t *testing.T, characters int) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var generations []float64
 	for i := 0; i < 12; i++ {
 		x := connect(t, a.srv.URL, "private")
 		x.hello(t, nil)
 		var viewer *socket
 		if i == 0 {
 			viewer = connect(t, a.srv.URL, "public")
-			w := viewer.hello(t, nil)
-			if _, ok := w["conflicts"]; ok {
-				t.Fatal("public welcome conflict metadata")
-			}
+			viewer.hello(t, nil)
 		}
 		u := fixture(t).Compact[i]
 		edit(t, x, u.ID, u.U)
 		x.inbox = nil
 		next := startApp(t, data, texts[(i+1)%2], fmt.Sprintf("cycle-v%d", (i+1)%2+1))
 		got := next.document(t)
-		conflicts := got["conflicts"].([]any)
-		if len(conflicts) == 0 || len(conflicts) > 8 {
-			t.Fatal("metadata cap", len(conflicts))
+		if _, ok := got["conflicts"]; ok {
+			t.Fatal("documents no longer report conflict records")
 		}
-		for _, c := range conflicts {
-			if _, ok := c.(map[string]any)["markdown"]; ok {
-				t.Fatal("routine response contains full conflict text")
+		// The live text the switch replaced is the newest person entry, in
+		// the shape of the version before it.
+		entries := next.outbox(t)
+		var person revEntry
+		for _, e := range entries {
+			if e.Kind == "person" {
+				person = e
 			}
 		}
-		generation := conflicts[0].(map[string]any)["generation"].(float64)
-		generations = append(generations, generation)
-		for j, c := range conflicts {
-			if c.(map[string]any)["generation"] != generations[len(generations)-1-j] {
-				t.Fatal("retained older conflict instead of newest")
-			}
+		if person.Kind == "" || person.Source != fmt.Sprintf("cycle-v%d", i%2+1) || !strings.Contains(next.revisionText(t, person.hash("index.md")), texts[i%2]) {
+			t.Fatal("private text not kept in a revision", person)
 		}
-		status, body, _ := next.get(t, "/_docs/api/document")
-		var public map[string]any
-		if status != 200 || json.Unmarshal([]byte(body), &public) != nil {
-			t.Fatal(status, body)
+		if last := entries[len(entries)-1]; last.Kind != "agent" || last.Source != fmt.Sprintf("cycle-v%d", (i+1)%2+1) || last.hash("index.md") != digestOf(got["markdown"].(string)) {
+			t.Fatalf("activation entry %+v", last)
 		}
-		if _, ok := public["conflicts"]; ok {
-			t.Fatal("conflicts exposed publicly")
+		if status, _, _ := next.getHeaders(t, "/_docs/host/revisions/outbox", http.Header{"X-Flats-Access": {"public"}}); status != 403 {
+			t.Fatal("public outbox access", status)
 		}
-		path := fmt.Sprintf("/_docs/api/conflict?generation=%.0f", generation)
-		if status, _, _ := next.get(t, path); status != 403 {
-			t.Fatal("public conflict text accessible", status)
-		}
-		status, body, _ = next.getHeaders(t, path, http.Header{"X-Flats-Access": {"private"}})
-		var preserved map[string]any
-		if status != 200 || json.Unmarshal([]byte(body), &preserved) != nil || !strings.Contains(fmt.Sprint(preserved["markdown"]), texts[i%2]) {
-			t.Fatal("private text not preserved", status)
-		}
-		// The open editor learns about activation on catch-up without being stopped.
+		// The open editor keeps working across the switch.
 		x.send(t, map[string]any{"t": "ping"})
 		x.next(t, "pong")
-		m := x.next(t, "conflicts")
-		if len(m["conflicts"].([]any)) == 0 {
-			t.Fatal("private editor notice missing")
-		}
 		if viewer != nil {
 			viewer.send(t, map[string]any{"t": "ping"})
 			viewer.next(t, "pong")
-			for _, m := range viewer.inbox {
-				if m["t"] == "conflicts" {
-					t.Fatal("public viewer received conflict notice")
-				}
-			}
 			viewer.Close()
 		}
-		var count, bytes, hashes int
-		if err = db.QueryRow("SELECT count(*),coalesce(sum(length(CAST(markdown AS BLOB))),0) FROM flats_docs_conflicts WHERE doc='index.md'").Scan(&count, &bytes); err != nil {
-			t.Fatal(err)
-		}
-		if count > 8 || bytes > 2*1024*1024 {
-			t.Fatalf("rollback storage exceeded budget: %d records %d bytes", count, bytes)
+		var conflicts, hashes int
+		db.QueryRow("SELECT count(*) FROM flats_docs_conflicts").Scan(&conflicts)
+		if conflicts != 0 {
+			t.Fatal("the merge still writes conflict records", conflicts)
 		}
 		db.QueryRow("SELECT count(*) FROM flats_docs_activations WHERE doc='index.md'").Scan(&hashes)
 		if hashes != 2 {
 			t.Fatal("test did not revisit two hashes", hashes)
 		}
-		if i == 11 && ((characters == 90000 && count != 8) || (characters == 100000 && count != 6)) {
-			t.Fatal("retention did not keep newest fitting records", count)
-		}
-		t.Logf("rollback cycle %d: %d conflicts / %d UTF8 bytes", i+1, count, bytes)
-		if i == 11 {
-			status, _, _ := next.getHeaders(t, fmt.Sprintf("/_docs/api/conflict?generation=%.0f", generations[0]), http.Header{"X-Flats-Access": {"private"}})
-			if status != 404 {
-				t.Fatal("evicted conflict remains accessible", status)
-			}
-		}
 		x.Close()
 		a.stop()
 		a = next
+	}
+	// Acknowledging every entry leaves only the recorded texts.
+	entries := a.outbox(t)
+	_, out := a.hostOp(t, "POST", "sync", map[string]any{})
+	if status, res := a.hostOp(t, "POST", "ack", map[string]any{"store": out["store"], "through": entries[len(entries)-1].Seq}); status != 200 {
+		t.Fatal("ack", status, res)
+	}
+	var kept int
+	db.QueryRow("SELECT count(*) FROM flats_docs_texts").Scan(&kept)
+	if kept > 2 {
+		t.Fatal("acknowledged texts remain", kept)
 	}
 }
 

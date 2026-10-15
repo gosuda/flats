@@ -122,15 +122,9 @@ func TestDocumentTools(t *testing.T) {
 					t.Fatalf("bad path: %s", text)
 				}
 			}
-			for _, generation := range []int64{-1, 4} {
-				text, failed := call(t, client, "get_document", map[string]any{"slug": slug, "conflict": generation}, nil)
-				category := "document_not_found"
-				if generation < 0 {
-					category = "invalid"
-				}
-				if !failed || !strings.Contains(text, `"category":"`+category+`"`) {
-					t.Fatal(text)
-				}
+			// Conflict records were replaced by revisions.
+			if _, failed := call(t, client, "get_document", map[string]any{"slug": slug, "conflict": 4}, nil); !failed {
+				t.Fatal("get_document accepts conflict")
 			}
 			text, failed = call(t, client, "get_document", map[string]any{"slug": slug, "doc": "absent.md"}, nil)
 			if !failed || !strings.Contains(text, `"category":"document_not_found"`) {

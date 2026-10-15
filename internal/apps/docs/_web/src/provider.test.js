@@ -91,21 +91,3 @@ test("permanent error codes stop retries and retain Markdown and pending bytes",
     assert.equal(closed, 1);
   }
 });
-test("private conflict metadata reaches the notice without stopping sync", () => {
-  const p = Object.create(Provider.prototype),
-    model = new Pending(),
-    notices = [];
-  Object.assign(p, {
-    model,
-    onConflicts: (m) => notices.push(m),
-    send() {},
-    state() {},
-  });
-  const metadata = [{ generation: 2, bytes: 100 }];
-  p.receive({ t: "conflicts", conflicts: metadata, n: 1 });
-  assert.deepEqual(notices, [metadata]);
-  assert.equal(model.stopped, false);
-  model.readonly = true;
-  p.receive({ t: "conflicts", conflicts: metadata, n: 2 });
-  assert.equal(notices.length, 1);
-});

@@ -14,7 +14,6 @@ import {
 } from "./protocol.js";
 import {
   schema,
-  conflictList,
   current,
   rejectionCode,
   transaction,
@@ -29,10 +28,14 @@ import {
   validateIncremental,
 } from "./storage.js";
 import { EDIT_LIMITS, outline, planEdit } from "./edit.js";
+import * as revisions from "./revisions.js";
 const rooms = new Map(),
   connections = new Map();
 let queued = 0;
 const sourceFor = (path) => content.documents.find((d) => d.path === path);
+// The flat activation of this worker's version, for current().
+const ensureFlat = (generation) => (db) =>
+  revisions.ensureFlat(db, content, generation);
 const titleFor = (d) =>
   (d.path === content.entry && content.title) ||
   (/^#\s+(.+)$/m.exec(d.text) || [])[1] ||
@@ -83,7 +86,7 @@ function broadcast(room, m, except) {
     if (
       c !== except &&
       c.joined &&
-      (!["aw", "conflicts"].includes(m.t) || !c.readonly)
+      (m.t !== "aw" || !c.readonly)
     )
       send(c, m);
 }
@@ -133,7 +136,6 @@ function committed(room, s, except) {
         except,
       );
   if (s.activation) broadcast(room, s.activation, except);
-  if (s.conflicts) broadcast(room, { t: "conflicts", conflicts: s.conflicts });
   roomState(room, s);
 }
 function roomBudget(room, state, doc, readonly) {
@@ -239,6 +241,7 @@ function joined(c, m, env) {
       content.hash,
       room.row ? room : undefined,
       c.ws.runtimeGeneration,
+      ensureFlat(c.ws.runtimeGeneration),
     );
     roomBudget(room, { length: s.doc._flatsStateSize }, s.doc, c.readonly);
   } catch (e) {
@@ -255,10 +258,16 @@ function joined(c, m, env) {
     c.diverged = true;
     return;
   }
-  const verified =
-    c.ws.headers.get("tailscale-user-name") ||
-    c.ws.headers.get("tailscale-user-login");
+  const login = c.ws.headers.get("tailscale-user-login"),
+    verified = c.ws.headers.get("tailscale-user-name") || login;
   c.you = { name: cleanName(verified || m.name), verified: !!verified };
+  // Edit groups are per person: a verified login, else the browser's own id.
+  c.editor = login
+    ? "ts:" + login.slice(0, 256)
+    : "browser:" +
+      (typeof m.editor === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(m.editor)
+        ? m.editor
+        : crypto.randomUUID());
   c.joined = true;
   send(c, {
     t: "welcome",
@@ -271,7 +280,6 @@ function joined(c, m, env) {
     u: base64(Y.encodeStateAsUpdate(s.doc, sv)),
     sv: base64(Y.encodeStateVector(s.doc)),
     you: c.you,
-    ...(!c.readonly ? { conflicts: conflictList(db, room.path) } : {}),
   });
   const states = [...room.peers]
     .filter((p) => p.aw && p !== c)
@@ -287,7 +295,8 @@ function update(c, m, env, size) {
     !/^[A-Za-z0-9:_-]{1,128}$/.test(m.id) ||
     m.id.startsWith("activation:") ||
     m.id.startsWith("seed:") ||
-    m.id.startsWith("agent:")
+    m.id.startsWith("agent:") ||
+    m.id.startsWith("restore:")
   )
     throw new Error("invalid update id");
   const bytes = unbase64(m.u);
@@ -297,6 +306,12 @@ function update(c, m, env, size) {
   let result;
   try {
     result = transaction(db, () => {
+      revisions.ensureFlat(db, content, c.ws.runtimeGeneration);
+      // A newer version without this document would never record the edit.
+      if (revisions.removedByNewer(db, c.ws.runtimeGeneration, room.path))
+        throw Object.assign(new Error("this document was removed"), {
+          code: "readonly",
+        });
       const s = activate(
           db,
           sourceFor(room.path),
@@ -331,6 +346,7 @@ function update(c, m, env, size) {
       roomBudget(room, { length: size }, s.doc, c.readonly);
       const event = append(db, s, m.id, m.u);
       compact(db, s);
+      revisions.touchGroup(db, c.editor, c.you.name);
       return { s, event, ack: event };
     });
   } catch (e) {
@@ -341,8 +357,6 @@ function update(c, m, env, size) {
     }
     throw e;
   }
-  if (result.s.activation || result.s.reset || result.s.changes.length)
-    result.s.conflicts = conflictList(db, room.path);
   committed(room, result.s);
   if (result.event) broadcast(room, result.event, c);
   send(c, { t: "ack", id: m.id, seq: result.ack.seq, chain: result.ack.chain });
@@ -357,6 +371,7 @@ function catchUp(room, env, generation, readonly) {
       content.hash,
       room.row ? room : undefined,
       generation,
+      ensureFlat(generation),
     );
     roomBudget(room, { length: s.doc._flatsStateSize }, s.doc, readonly);
   } catch (e) {
@@ -367,8 +382,6 @@ function catchUp(room, env, generation, readonly) {
     }
     throw e;
   }
-  if (s.row.seq !== room.row?.seq)
-    s.conflicts = conflictList(env.DB, room.path);
   committed(room, s);
   return s;
 }
@@ -387,7 +400,7 @@ function html(d, readonly, url) {
     return new Response("Invalid host", { status: 400 });
   const csp = `default-src 'self'; script-src 'self'; connect-src 'self' ws://${host} wss://${host}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(titleFor(d))} · Flats</title><link rel="stylesheet" href="/_docs/assets/client.css"><script type="module" src="/_docs/assets/client.js"></script></head><body data-doc="${escapeHTML(d.path)}" data-readonly="${readonly}"><header><h1>${escapeHTML(titleFor(d))}</h1>${readonly ? "" : '<div id="modes" role="group" aria-label="Document mode"><button type="button" data-mode="edit" aria-pressed="true">Edit</button><button type="button" data-mode="view" aria-pressed="false">View</button></div>'}<span id="status" role="status" aria-live="polite">Connecting…</span><div id="presence" aria-label="People in this document"></div></header><div id="notice" role="alert" hidden></div><div id="conflict-notice" role="status" hidden></div><div class="workspace"><nav id="documents" aria-label="Documents" hidden></nav><main id="page"><div class="surface"><section id="editor" aria-label="Document editor" hidden></section><article id="content" aria-label="Document"></article><footer class="powered">Powered by <a href="https://github.com/gosuda/flats" target="_blank" rel="noopener noreferrer">Flats</a></footer></div></main></div></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(titleFor(d))} · Flats</title><link rel="stylesheet" href="/_docs/assets/client.css"><script type="module" src="/_docs/assets/client.js"></script></head><body data-doc="${escapeHTML(d.path)}" data-readonly="${readonly}"><header><h1>${escapeHTML(titleFor(d))}</h1>${readonly ? "" : '<div id="modes" role="group" aria-label="Document mode"><button type="button" data-mode="edit" aria-pressed="true">Edit</button><button type="button" data-mode="view" aria-pressed="false">View</button></div><button id="history-toggle" type="button" aria-expanded="false" aria-controls="history" hidden>History</button>'}<span id="status" role="status" aria-live="polite">Connecting…</span><div id="presence" aria-label="People in this document"></div></header><div id="notice" role="alert" hidden></div><div class="workspace"><nav id="documents" aria-label="Documents" hidden></nav><main id="page"><div class="surface">${readonly ? "" : '<section id="revision-view" tabindex="-1" aria-label="Revision" hidden><div id="revision-banner"></div><div id="revision-body"></div></section>'}<section id="editor" aria-label="Document editor" hidden></section><article id="content" aria-label="Document"></article><footer class="powered">Powered by <a href="https://github.com/gosuda/flats" target="_blank" rel="noopener noreferrer">Flats</a></footer></div></main>${readonly ? "" : '<aside id="history" aria-label="Revision history" hidden><div class="history-head"><h2>History</h2><button id="history-close" type="button" aria-label="Close history">Close</button></div><p id="history-note" role="status" hidden></p><ol id="history-list"></ol><button id="history-more" type="button" hidden>Load more</button></aside>'}</div></body></html>`,
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
@@ -441,7 +454,8 @@ async function edit(request, env, d) {
   }
   // The host chooses the receipt id so it can look the edit up when the
   // response is lost.
-  const id = body?.id === undefined ? "agent:" + crypto.randomUUID() : body.id;
+  const id = body?.id === undefined ? "agent:" + crypto.randomUUID() : body.id,
+    label = typeof body?.label === "string" ? body.label.slice(0, 200) : "";
   if (typeof id !== "string" || !/^agent:[A-Za-z0-9_-]{8,120}$/.test(id))
     return json(400, { code: "invalid", message: "invalid edit id" });
   // A host commit deadline (epoch ms): after it the edit rolls back instead
@@ -455,6 +469,7 @@ async function edit(request, env, d) {
   if (body && typeof body === "object") {
     delete body.id;
     delete body.deadline_ms;
+    delete body.label;
   }
   const db = env.DB;
   let result;
@@ -470,6 +485,18 @@ async function edit(request, env, d) {
           new Error(`this edit was already applied at seq ${applied.seq}`),
           { code: "edit_conflict" },
         );
+      const generation = request.runtimeGeneration;
+      revisions.ensureFlat(db, content, generation);
+      if (revisions.stale(db, generation))
+        throw Object.assign(new Error("obsolete worker"), { code: "deadline" });
+      const shape = {
+        source: content.hash,
+        paths: content.documents.map((x) => x.path),
+      };
+      // People's unrecorded edits become their own revision first.
+      if (revisions.textDirty(db))
+        revisions.record(db, { kind: "person", ...shape });
+      db.exec("DELETE FROM flats_docs_groups");
       const s = activate(
         db,
         d,
@@ -512,12 +539,24 @@ async function edit(request, env, d) {
           validateIncremental(s.doc, bytes.length);
           append(db, s, id, base64(bytes));
           compact(db, s);
-          // Checked last, immediately before COMMIT.
-          if (deadline !== undefined && Date.now() > deadline)
-            throw Object.assign(new Error("edit deadline passed"), {
-              code: "deadline",
-            });
+          revisions.record(db, {
+            kind: "agent",
+            ...shape,
+            authors: label ? [label] : [],
+            known: { [d.path]: plan.text },
+            op: id,
+          });
         }
+        revisions.dropUnused(db);
+        // Checked last, immediately before COMMIT.
+        if (
+          plan.splices.length &&
+          deadline !== undefined &&
+          Date.now() > deadline
+        )
+          throw Object.assign(new Error("edit deadline passed"), {
+            code: "deadline",
+          });
         return {
           format: 1,
           doc: d.path,
@@ -556,6 +595,88 @@ async function edit(request, env, d) {
   // Connected editors catch up now rather than at their next heartbeat.
   if (result.changed) globalThis.__flats_docsWake?.(d.path);
   return json(200, result);
+}
+// Host only: revision capture and its outbox (docs/spec/document-revisions-TECH.md).
+const revisionStatus = { invalid: 400, conflict: 409, not_found: 404, unavailable: 503 };
+async function revisionOp(request, env, url) {
+  if (
+    request.headers.get("x-flats-access") !== "private" ||
+    request.headers.get("x-flats-host-op") !== "revisions"
+  )
+    return json(403, { code: "readonly", message: "host only" });
+  const op = url.pathname.slice("/_docs/host/revisions/".length),
+    db = env.DB,
+    generation = request.runtimeGeneration,
+    method = request.method;
+  let body;
+  if (method === "POST") {
+    const raw = await request.text();
+    // One text of at most 1 MiB, JSON-escaped (up to six characters each);
+    // the runtime already bounds the request to 10 MiB.
+    if (raw.length > 8 * 1024 * 1024)
+      return json(413, { code: "invalid", message: "body too large" });
+    try {
+      body = JSON.parse(raw || "{}");
+    } catch {
+      return json(400, { code: "invalid", message: "body must be JSON" });
+    }
+  }
+  try {
+    schema(db);
+    let result;
+    if (op === "sync" && method === "POST")
+      result = transaction(db, () => revisions.sync(db, content, generation));
+    else if (op === "outbox" && method === "GET")
+      result = revisions.outbox(db, Number(url.searchParams.get("after") || 0));
+    else if (op === "text" && method === "GET") {
+      const text = revisions.textOf(db, url.searchParams.get("hash") || "");
+      if (text === undefined)
+        return json(404, { code: "not_found", message: "no such text" });
+      result = { hash: url.searchParams.get("hash"), text };
+    } else if (op === "ack" && method === "POST") {
+      transaction(db, () => revisions.ack(db, body.store, body.through));
+      result = { ok: true };
+    } else if (op === "stage" && method === "POST")
+      result = { hash: transaction(db, () => revisions.stage(db, body.text)) };
+    else if (op === "intent" && method === "POST") {
+      // An intent can be written while this version's own activation
+      // fails: a rollback is how such a flat recovers.
+      transaction(db, () => {
+        revisions.tryEnsureFlat(db, content, generation);
+        revisions.setIntent(db, body);
+      });
+      result = { ok: true };
+    } else if (op === "restore" && method === "POST") {
+      const deadline = body?.deadline_ms;
+      if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline < 0))
+        return json(400, { code: "invalid", message: "invalid deadline" });
+      result = transaction(db, () => {
+        const out = revisions.restore(db, content, generation, body);
+        if (deadline !== undefined && Date.now() > deadline)
+          throw Object.assign(new Error("restore deadline passed"), {
+            code: "unavailable",
+          });
+        return out;
+      });
+      for (const d of content.documents) globalThis.__flats_docsWake?.(d.path);
+    } else if (op === "op" && method === "GET")
+      result = revisions.opStatus(db, url.searchParams.get("id") || "");
+    else return json(404, { code: "not_found", message: "unknown revision operation" });
+    return json(200, result);
+  } catch (e) {
+    if (
+      e?.name === "InternalError" ||
+      /out of memory/i.test(String(e?.message))
+    )
+      throw e;
+    const code = rejectionCode(e);
+    if (code && Object.hasOwn(revisionStatus, code))
+      return json(revisionStatus[code], { code, message: String(e.message) });
+    if (code === "capacity")
+      return json(422, { code, message: String(e.message) });
+    console.warn("docs revision operation failed:", op, String(e?.message));
+    return json(503, { code: "unavailable", message: String(e?.message || "failed") });
+  }
 }
 // Only gzip and identity are available. Explicit coding preferences override
 // the wildcard; an absent/empty field retains the uncompressed response.
@@ -605,6 +726,7 @@ export default {
         ? json(200, { committed: true, seq: row.seq, chain: row.chain })
         : json(200, { committed: false });
     }
+    if (path.startsWith("/_docs/host/revisions/")) return revisionOp(request, env, url);
     if (path === "/_docs/api/edit" && request.method === "POST") {
       const d = sourceFor(url.searchParams.get("doc") || content.entry);
       if (!d)
@@ -618,6 +740,7 @@ export default {
         return new Response("ok");
       schema(env.DB);
       transaction(env.DB, () => {
+        revisions.ensureFlat(env.DB, content, request.runtimeGeneration);
         for (const d of content.documents) {
           const s = activate(
             env.DB,
@@ -680,7 +803,7 @@ export default {
         })),
       });
     let docpath;
-    if (path === "/_docs/api/document" || path === "/_docs/api/conflict")
+    if (path === "/_docs/api/document")
       docpath = url.searchParams.get("doc") || content.entry;
     else if (path === "/") docpath = content.entry;
     else {
@@ -695,39 +818,9 @@ export default {
       }
     }
     const d = sourceFor(docpath);
-    if (
-      !d ||
-      (path.startsWith("/_docs/") &&
-        path !== "/_docs/api/document" &&
-        path !== "/_docs/api/conflict")
-    )
+    if (!d || (path.startsWith("/_docs/") && path !== "/_docs/api/document"))
       return new Response("Unknown document", { status: 404 });
     const privateAccess = request.headers.get("x-flats-access") === "private";
-    if (path === "/_docs/api/conflict") {
-      if (!privateAccess) return new Response("Forbidden", { status: 403 });
-      const generation = Number(url.searchParams.get("generation"));
-      if (!Number.isSafeInteger(generation) || generation < 1)
-        return new Response("Not found", { status: 404 });
-      const row = env.DB.query(
-        "SELECT generation,markdown FROM flats_docs_conflicts WHERE doc=? AND generation=?",
-        [d.path, generation],
-      )[0];
-      if (!row) return new Response("Not found", { status: 404 });
-      const headers = {
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff",
-        "content-security-policy":
-          "default-src 'none'; frame-ancestors 'none'; sandbox",
-      };
-      return url.searchParams.get("view") === "1"
-        ? new Response(row.markdown, {
-            headers: {
-              ...headers,
-              "content-type": "text/plain; charset=utf-8",
-            },
-          })
-        : Response.json(row, { headers });
-    }
     if (path !== "/_docs/api/document")
       return html(d, request.headers.get("x-flats-access") !== "private", url);
     const s = current(
@@ -736,6 +829,7 @@ export default {
       content.hash,
       undefined,
       request.runtimeGeneration,
+      ensureFlat(request.runtimeGeneration),
     );
     const markdown = s.doc.getText("markdown").toString();
     const result = {
@@ -747,7 +841,6 @@ export default {
       seq: s.row.seq,
       chain: s.row.chain,
       source: "live",
-      ...(privateAccess ? { conflicts: conflictList(env.DB, d.path) } : {}),
       ...(privateAccess && url.searchParams.get("blocks") === "1"
         ? blockPage(markdown, url.searchParams.get("block_offset"))
         : {}),

@@ -18,6 +18,7 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 | Design screens, a prototype, posters or social images on a canvas people edit with you (runs Private at once; no publish or approval) | `topic.canvas`, `topic.design` | `create_flat {type: "design"}`, `save_design`, `get_design`, `list_revisions` |
 | Write a Markdown document (runs Private at once; no publish or approval) | `topic.docs` | `create_flat {type: "docs"}`, `save_document` |
 | Fix or add to a Markdown document (no approval; Public is visible at once) | `topic.docs` | `get_document`, `update_document` |
+| See or undo earlier changes of a document or design | `topic.docs`, `topic.canvas` | `list_revisions`, `get_revision`, `rollback_revision` |
 | Give an app settings, credentials or API access | `topic.env-secrets`, `topic.server.fetch` | `list_env`, `set_env`, `list_secrets`, `get_network` |
 | Make a flat public or private, or delete it | `topic.approvals` | `set_visibility`, `delete_flat` (ask the user first) |
 | Roll back code or restore data | `topic.rollback-data` | `rollback` |

@@ -9,7 +9,7 @@ private temporary data and free loopback ports (the product test excludes
 
 ## Test layers
 
-* Node unit tests cover merge/conflict recovery, protocol limits and provider behavior.
+* Node unit tests cover merging, protocol limits, provider behavior and history formatting.
 * Go tests execute the committed real bundle in the Flats QuickJS worker, covering
   persistence, concurrent edits, compaction, activation, private recovery and budgets.
 * `FLATS_FULL_SOAK=1` enables long ownership and document soaks. Routine counts
@@ -20,7 +20,7 @@ private temporary data and free loopback ports (the product test excludes
   fetches each) per response size by default and 100 in full mode, at 1 MiB and
   4 MiB responses.
 * The opt-in browser test uses separate Chromium contexts for collaboration,
-  private conflict recovery, read-only/mobile views and synthetic composition.
+  the history panel, read-only/mobile views and synthetic composition.
 * The real-binary product test covers console draft preview, publication,
   collaboration, rollback and restart with disposable host state.
 * The container smoke test checks built-in docs deployment, persistence across

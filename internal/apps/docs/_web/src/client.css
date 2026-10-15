@@ -104,6 +104,15 @@ header h1 {
   color: var(--accent);
   background: var(--active);
 }
+#history-toggle {
+  font-size: 12px;
+  padding: 6px 11px;
+}
+#history-toggle[aria-expanded="true"] {
+  color: var(--accent);
+  background: var(--active);
+  border-color: transparent;
+}
 #status {
   font-size: 12px;
   white-space: nowrap;
@@ -409,6 +418,289 @@ main {
 #notice button {
   margin-left: 8px;
 }
+/* History: a right-hand column of the flat's revisions. */
+#history {
+  width: 320px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--line);
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 16px 12px 20px;
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+.history-head h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+.history-head button {
+  font-size: 12px;
+  padding: 5px 10px;
+}
+#history-note {
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--error);
+  background: var(--canvas);
+  border-radius: 5px;
+}
+#history-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+}
+.revision {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: start;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 5px;
+}
+.revision.selected {
+  background: var(--active);
+}
+.revision-number {
+  padding-top: 9px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.revision-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  text-align: left;
+  border-color: transparent;
+  padding: 7px 8px;
+}
+.revision-open[aria-current="true"] .revision-who {
+  color: var(--accent);
+}
+.revision-who {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.revision-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.revision-pin {
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 4px 8px;
+  color: var(--muted);
+  border-color: transparent;
+}
+.revision-pin[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--line);
+}
+.revision-empty {
+  padding: 16px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+#history-more {
+  margin: 0 16px 20px;
+  font-size: 13px;
+}
+/* A revision replaces the document surface while it is viewed. */
+#revision-view:focus {
+  outline: none;
+}
+#revision-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 14px;
+  margin-bottom: 28px;
+  font-size: 13px;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.revision-title {
+  color: var(--muted);
+}
+.revision-title strong {
+  color: var(--ink);
+}
+.revision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.revision-actions button {
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.revision-message {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.revision-confirm {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+}
+.revision-confirm span {
+  flex: 1 1 240px;
+}
+.revision-confirm button {
+  font-size: 12px;
+  padding: 5px 12px;
+}
+.revision-confirm .primary {
+  color: var(--paper);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.revision-actions [aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--active);
+}
+/* What a viewed revision changed: tinted, underlined blocks, and a marker
+   where text was removed. The underline and marker keep it readable without
+   color. */
+.revision-rendered .rev-mark,
+.revision-rendered .rev-block.rev-changed {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 1px 2px;
+}
+.revision-rendered .rev-mark {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 75%, transparent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+.revision-rendered img.rev-changed {
+  outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 3px;
+}
+.revision-rendered tr.rev-changed td,
+.revision-rendered tr.rev-changed th {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* Blocks without text runs get an outline: a shape, not just a color. */
+.revision-rendered .rev-block.rev-changed,
+.revision-rendered table.rev-changed,
+.revision-rendered blockquote.rev-changed,
+.revision-rendered ul.rev-changed,
+.revision-rendered ol.rev-changed {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.revision-rendered tr.rev-changed td:first-child,
+.revision-rendered tr.rev-changed th:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.revision-rendered hr.rev-changed {
+  border: 0;
+  border-top: 3px dashed var(--accent);
+}
+.revision-rendered .rev-removed-note {
+  list-style: none;
+  width: fit-content;
+  margin: 0 0 8px;
+  padding: 1px 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border-radius: 3px;
+}
+.revision-rendered tr.rev-removed-note {
+  width: auto;
+  background: none;
+}
+.revision-rendered tr.rev-removed-note td {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+}
+.diff-caption {
+  font-size: 13px;
+  color: var(--muted);
+}
+.diff {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0;
+  padding: 10px 0;
+  background: var(--canvas);
+  border-radius: 5px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff > span {
+  display: block;
+  padding: 0 12px 0 0;
+}
+.diff-mark {
+  display: inline-block;
+  width: 28px;
+  text-align: center;
+  color: var(--muted);
+  user-select: none;
+}
+.diff-added {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.diff-added .diff-mark {
+  color: var(--accent);
+}
+.diff-removed {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--error) 50%, transparent);
+}
+.diff-removed .diff-mark {
+  color: var(--error);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 * {
   scrollbar-color: var(--line) var(--paper);
   scrollbar-width: thin;
@@ -454,19 +746,22 @@ main {
     font-size: 13px;
     padding: 8px 10px;
   }
+  #history {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    width: auto;
+    border-left: 0;
+  }
+  .history-head {
+    padding: 16px;
+  }
   .surface {
     padding: 24px 16px 60px;
   }
   #notice {
     padding: 16px;
   }
-}
-
-#conflict-notice {
-  padding: 8px 24px;
-  font-size: 13px;
-  background: var(--paper);
-  border-bottom: 1px solid var(--line);
 }
 
 /* Diagram actions stay within the document, with a focused reading view. */
