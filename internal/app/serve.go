@@ -109,7 +109,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "legacy alias of --tailscale-authkey-file")
 	fs.StringVar(&o.TailscaleKeyFile, "tailscale-authkey-file", "", "file holding a reusable Tailscale auth key; stored in flats.db when none is stored yet (also FLATS_TAILSCALE_AUTHKEY or FLATS_TAILSCALE_AUTHKEY_FILE)")
 	fs.StringVar(&o.ZrokTokenFile, "zrok-token-file", "", "file holding a zrok account token, used when no zrok account is connected (also FLATS_ZROK_TOKEN or FLATS_ZROK_TOKEN_FILE)")
-	fs.StringVar(&o.NetbirdKeyFile, "netbird-setup-key-file", "", "file holding a NetBird setup key, used when no NetBird peer is connected (also FLATS_NETBIRD_SETUP_KEY or FLATS_NETBIRD_SETUP_KEY_FILE)")
+	fs.StringVar(&o.NetbirdKeyFile, "netbird-setup-key-file", "", "file holding the NetBird setup key, stored in flats.db when none is stored yet (also FLATS_NETBIRD_SETUP_KEY or FLATS_NETBIRD_SETUP_KEY_FILE)")
 	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console for this run (replaces tailscale.console_hosts)")
 	fs.BoolVar(&o.Portal, "portal", false, "legacy mode: grant Portal and attach it as the legacy public network")
 	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal, zrok, cloudflare-quick. Local needs no grant. Recorded in config.json and does not publish a flat")
