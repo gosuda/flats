@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -906,10 +907,27 @@ func (n *Net) Close() error {
 	}
 	for name, c := range peers {
 		ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
-		if err := c.Stop(ctx); err != nil {
+		err := c.Stop(ctx)
+		cancel()
+		var torn teardownError
+		if errors.As(err, &torn) {
+			n.logf("netbird: %s: %v", name, err)
+		} else if err != nil {
 			errs = append(errs, fmt.Errorf("netbird: %s: stop the peer: %w", name, err))
 		}
-		cancel()
+	}
+	// Starts their callers abandoned still own their peer's state: wait for
+	// them, so the data directory is not released while they run.
+	n.mu.Lock()
+	pending := maps.Clone(n.starting)
+	n.mu.Unlock()
+	deadline := time.After(n.cfg.ShutdownTimeout)
+	for name, done := range pending {
+		select {
+		case <-done:
+		case <-deadline:
+			errs = append(errs, fmt.Errorf("netbird: %s: an earlier start of the peer is still running: %w", name, context.DeadlineExceeded))
+		}
 	}
 	return errors.Join(errs...)
 }

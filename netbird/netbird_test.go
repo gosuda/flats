@@ -973,3 +973,36 @@ func TestAbandonedStartBlocksTheName(t *testing.T) {
 		t.Fatal("the retirement after the start ended kept the identity")
 	}
 }
+
+// Close waits for starts their callers abandoned, and reports one that is
+// still running at its deadline.
+func TestCloseWaitsForAbandonedStarts(t *testing.T) {
+	fs := install(t)
+	release := make(chan struct{})
+	fs.prep = func(f *fakeClient) { f.block = release }
+	old := startTimeout
+	startTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { startTimeout = old })
+	n, err := New(Config{Dir: t.TempDir(), SetupKey: func() string { return testSetupKey }, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.ServePrivate(context.Background(), "slow", okHandler); err == nil {
+		t.Fatal("the slow start did not time out")
+	}
+	if err := n.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close with a start still running = %v", err)
+	}
+	close(release)
+	n2, err := New(Config{Dir: t.TempDir(), SetupKey: func() string { return testSetupKey }, ShutdownTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.prep = func(f *fakeClient) {}
+	if _, err := n2.ServePrivate(context.Background(), "fast", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	if err := n2.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
