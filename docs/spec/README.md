@@ -25,4 +25,5 @@ spec and leaves that list.
 | [Document revisions](document-revisions-TECH.md) (technical design of the Revision model for `type: "docs"`) | How the docs worker records revisions and the host keeps them; the document page's history |
 | [Page content type](page-type.md) ([technical design](page-type-TECH.md)) | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Operator keys and console domains](console-settings.md) ([technical design](console-settings-TECH.md)) | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |
+| [NetBird peers](netbird-peers.md) ([technical design](netbird-peers-TECH.md)) | One NetBird peer per flat and console domain, the stored setup key, NetBird console domains over HTTP |
 | [Agent self-update](agent-self-update.md) ([technical design](agent-self-update-TECH.md)) | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
