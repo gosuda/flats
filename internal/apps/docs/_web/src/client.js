@@ -10,6 +10,7 @@ import { createMarkdown, linkRules } from "./markdown.js";
 import { replaceRendered } from "./diagram-preview.js";
 import { coalescedRefresh } from "./render-budget.js";
 import { initHistory } from "./history.js";
+import { randomUUID } from "./uuid.js";
 import {
   onThemeChange,
   redrawDiagrams,
@@ -164,7 +165,7 @@ const adjectives = [
   pick = (list) => list[Math.floor(Math.random() * list.length)];
 let name = pick(adjectives) + " " + pick(animals),
   // A random id of this browser groups its edits into revisions.
-  editor = crypto.randomUUID().replaceAll("-", "");
+  editor = randomUUID().replaceAll("-", "");
 try {
   const saved = localStorage.getItem("flats-docs-name");
   if (saved) name = saved;

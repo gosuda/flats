@@ -634,8 +634,10 @@ async function revisionOp(request, env, url) {
     } else if (op === "stage" && method === "POST")
       result = { hash: transaction(db, () => revisions.stage(db, body.text)) };
     else if (op === "intent" && method === "POST") {
+      // An intent can be written while this version's own activation
+      // fails: a rollback is how such a flat recovers.
       transaction(db, () => {
-        revisions.ensureFlat(db, content, generation);
+        revisions.tryEnsureFlat(db, content, generation);
         revisions.setIntent(db, body);
       });
       result = { ok: true };

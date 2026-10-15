@@ -13,7 +13,8 @@ import { renderDiagrams, destroyDiagram } from "./diagrams.js";
 import { replaceRendered } from "./diagram-preview.js";
 
 const PAGE = 50,
-  REFRESH = 10000;
+  REFRESH = 10000,
+  narrow = matchMedia("(max-width: 899px)");
 const $ = (s) => document.querySelector(s);
 const el = (tag, props = {}, ...children) => {
   const node = document.createElement(tag);
@@ -105,7 +106,7 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
           }),
           el("span", { text: changed(r, titles, path) }),
         ),
-        r.message && r.kind !== "created"
+        r.message && r.kind !== "created" && r.kind !== "rollback"
           ? el("span", { class: "revision-message", text: r.message })
           : null,
       );
@@ -164,11 +165,15 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     clearInterval(timer);
     timer = setInterval(() => !document.hidden && load(), REFRESH);
   }
-  function close() {
+  // hide closes the panel and keeps a viewed revision on screen.
+  function hide() {
     panel.hidden = true;
     toggle.setAttribute("aria-expanded", "false");
     document.body.classList.remove("history-open");
     clearInterval(timer);
+  }
+  function close() {
+    hide();
     live();
     toggle.focus();
   }
@@ -209,70 +214,73 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
   function drawView() {
     const { revision, markdown, documents } = viewing,
       date = new Date(revision.created_at);
+    // replaceChildren would print a null; leave it out.
     banner.replaceChildren(
-      el(
-        "div",
-        { class: "revision-title" },
-        el("strong", { text: `Revision ${revision.number}` }),
-        el("span", { text: ` · ${who(revision)} · ` }),
-        el("time", {
-          datetime: date.toISOString(),
-          title: date.toLocaleString(),
-          text: ago(date),
-        }),
-      ),
-      el(
-        "div",
-        { class: "revision-actions" },
-        markdown === null
-          ? null
-          : el("button", {
-              type: "button",
-              "aria-pressed": String(showChanges),
-              text: "Show changes",
-              onclick: () => {
-                showChanges = !showChanges;
-                drawView();
-              },
-            }),
-        el("button", {
-          type: "button",
-          text: "Restore this revision",
-          onclick: () => {
-            confirming = true;
-            drawView();
-            banner.querySelector(".revision-confirm button")?.focus();
-          },
-        }),
-        el("button", { type: "button", text: "Back to live", onclick: live }),
-      ),
-      confirming
-        ? el(
-            "div",
-            {
-              class: "revision-confirm",
-              role: "group",
-              "aria-label": "Confirm restore",
+      ...[
+        el(
+          "div",
+          { class: "revision-title" },
+          el("strong", { text: `Revision ${revision.number}` }),
+          el("span", { text: ` · ${who(revision)} · ` }),
+          el("time", {
+            datetime: date.toISOString(),
+            title: date.toLocaleString(),
+            text: ago(date),
+          }),
+        ),
+        el(
+          "div",
+          { class: "revision-actions" },
+          markdown === null
+            ? null
+            : el("button", {
+                type: "button",
+                "aria-pressed": String(showChanges),
+                text: "Show changes",
+                onclick: () => {
+                  showChanges = !showChanges;
+                  drawView();
+                },
+              }),
+          el("button", {
+            type: "button",
+            text: "Restore this revision",
+            onclick: () => {
+              confirming = true;
+              drawView();
+              banner.querySelector(".revision-confirm button")?.focus();
             },
-            el("span", {
-              text: `Restore every document to revision ${revision.number}? The current text stays in the history.`,
-            }),
-            el("button", {
-              type: "button",
-              class: "primary",
-              text: "Restore",
-              onclick: restore,
-            }),
-            el("button", {
-              type: "button",
-              text: "Cancel",
-              onclick: () => {
-                confirming = false;
-                drawView();
+          }),
+          el("button", { type: "button", text: "Back to live", onclick: live }),
+        ),
+        confirming
+          ? el(
+              "div",
+              {
+                class: "revision-confirm",
+                role: "group",
+                "aria-label": "Confirm restore",
               },
-            }),
-          )
-        : null,
+              el("span", {
+                text: `Restore every document to revision ${revision.number}? The current text stays in the history.`,
+              }),
+              el("button", {
+                type: "button",
+                class: "primary",
+                text: "Restore",
+                onclick: restore,
+              }),
+              el("button", {
+                type: "button",
+                text: "Cancel",
+                onclick: () => {
+                  confirming = false;
+                  drawView();
+                },
+              }),
+            )
+          : null,
+      ].filter(Boolean),
     );
     if (markdown === null) {
       body.replaceChildren(
@@ -350,6 +358,8 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
       onView();
       drawView();
       render();
+      // On a phone the panel covers the page: show the revision instead.
+      if (narrow.matches) hide();
       view.focus();
     } catch (e) {
       say(e.message);
@@ -391,7 +401,7 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
   $("#history-close").addEventListener("click", close);
   more.addEventListener("click", () => load(false));
   document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || panel.hidden) return;
+    if (event.key !== "Escape" || (panel.hidden && !viewing)) return;
     if (document.querySelector(".mermaid-dialog[open], dialog[open]")) return;
     if (viewing) live();
     else close();

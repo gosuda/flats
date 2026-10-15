@@ -614,8 +614,17 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 			return tx.AddHold(ctx, op, n)
 		})
 	}
+	// A version whose activation reaches a history limit fails its sync;
+	// the import still ran, and the rollback below is how it recovers.
+	refresh := func() error {
+		_, err := s.refreshDocsLocked(ctx, slugName)
+		if errors.Is(err, errNotRunningDocs) || errors.Is(err, ErrDocumentCapacity) {
+			return nil
+		}
+		return err
+	}
 	if err := hold(); errors.Is(err, store.ErrNotFound) {
-		if _, err := s.refreshDocsLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
+		if err := refresh(); err != nil {
 			return 0, err
 		}
 		if err := hold(); err != nil {
@@ -636,7 +645,7 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 	if len(docs) > maxRevisionDocuments {
 		return 0, invalidf("revision %d holds %d documents, more than the %d a document can run; read its texts with get_revision and save them instead", n, len(docs), maxRevisionDocuments)
 	}
-	if _, err := s.refreshDocsLocked(ctx, slugName); err != nil {
+	if err := refresh(); err != nil {
 		return 0, err
 	}
 	live := s.state(slugName).cur.Load()

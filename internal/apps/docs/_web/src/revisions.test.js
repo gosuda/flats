@@ -386,3 +386,47 @@ test("a rollback whose version merge reaches the history limit resets instead", 
   assert.equal(row.seed_text, "old\n");
   assert.ok(row.seq < 100000);
 });
+
+test("a rollback recovers a version whose activation reaches a history limit", () => {
+  const db = database(),
+    v1 = content("v1", doc("a.md", "old\n"));
+  transaction(db, () => revisions.ensureFlat(db, v1, next()));
+  personEdit(db, v1, "a.md", "edit\n");
+  db.exec("UPDATE flats_docs_documents SET seq=100000 WHERE doc='a.md'");
+  const v2 = content("v2", doc("a.md", "saved\n"));
+  const gen = next();
+  // The new version cannot activate: its merge cannot append.
+  assert.throws(
+    () => transaction(db, () => revisions.ensureFlat(db, v2, gen)),
+    /capacity/,
+  );
+  assert.equal(revisions.getMeta(db, "active").hash, "v1");
+  // An intent can still be written, and a restore recovers the flat.
+  const hash = transaction(db, () => revisions.stage(db, "old\n"));
+  transaction(db, () =>
+    revisions.setIntent(db, {
+      id: "op-later-0001",
+      source: "v9",
+      kind: "agent",
+      label: "Agent",
+    }),
+  );
+  transaction(db, () =>
+    revisions.restore(db, v2, gen, {
+      id: "op-recover-01",
+      label: "Ada",
+      rollback_of: 1,
+      documents: [{ path: "a.md", hash }],
+    }),
+  );
+  const e = entries(db);
+  assert.deepEqual(
+    e.map((x) => x.kind),
+    ["created", "person", "rollback"],
+  );
+  assert.equal(textOf(db, e[1], "a.md"), "old\nedit\n");
+  assert.equal(e[1].source, "v1");
+  assert.equal(textOf(db, e[2], "a.md"), "old\n");
+  assert.equal(revisions.getMeta(db, "active").hash, "v2");
+  assert.equal(revisions.getMeta(db, "intent"), null);
+});

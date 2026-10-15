@@ -342,6 +342,12 @@ export function ensureFlat(db, content, generation) {
     });
   }
   if (intent) releaseIntent(db, intent);
+  finishActivation(db, content, generation);
+  return true;
+}
+
+// finishActivation marks this version as the flat's active one.
+function finishActivation(db, content, generation) {
   db.exec("DELETE FROM flats_docs_groups");
   // Documents this version no longer has stop holding their recorded text:
   // the entries above hold what they last contained.
@@ -356,7 +362,6 @@ export function ensureFlat(db, content, generation) {
     generation,
     docs: [...paths],
   });
-  return true;
 }
 
 // --- restoring text ---
@@ -548,10 +553,31 @@ export function setIntent(db, body) {
   });
 }
 
+// tryEnsureFlat runs the activation gate in a savepoint. When the version's
+// merge reaches a history limit, it undoes what the attempt wrote and
+// returns that error, so a rollback can still recover the flat; any other
+// failure is thrown.
+export function tryEnsureFlat(db, content, generation) {
+  db.exec("SAVEPOINT flats_docs_gate");
+  try {
+    ensureFlat(db, content, generation);
+    db.exec("RELEASE flats_docs_gate");
+    return null;
+  } catch (e) {
+    db.exec("ROLLBACK TO flats_docs_gate");
+    db.exec("RELEASE flats_docs_gate");
+    if (e?.code !== "capacity") throw e;
+    return e;
+  }
+}
+
 export function restore(db, content, generation, body) {
   if (!opID(body?.id) || !Number.isSafeInteger(body.rollback_of))
     throw coded("invalid", "invalid restore");
-  ensureFlat(db, content, generation);
+  // A version whose activation cannot finish is recovered by this restore:
+  // it replaces every document and then counts as that activation.
+  const failed = tryEnsureFlat(db, content, generation);
+  if (failed && !getMeta(db, "newest")) throw failed;
   if (stale(db, generation)) throw coded("unavailable", "obsolete worker");
   const documents = targetDocuments(db, body.documents),
     target = new Map(documents.map((d) => [d.path, d.hash]));
@@ -560,7 +586,7 @@ export function restore(db, content, generation, body) {
     content.documents.some((d) => !target.has(d.path))
   )
     throw coded("invalid", "documents differ from the running version");
-  recordPeople(db, currentShape(content));
+  recordPeople(db, failed ? beforeShape(db) : currentShape(content));
   for (const d of content.documents)
     restoreText(
       db,
@@ -578,6 +604,11 @@ export function restore(db, content, generation, body) {
     rollbackOf: body.rollback_of,
     op: body.id,
   });
+  if (failed) {
+    const intent = getMeta(db, "intent");
+    if (intent) releaseIntent(db, intent);
+    finishActivation(db, content, generation);
+  }
   return { store: getMeta(db, "store"), seq };
 }
 
