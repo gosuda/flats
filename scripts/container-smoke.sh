@@ -128,7 +128,7 @@ hits() {
 
 # json_field FIELD FILE reads only the named field from a CLI/API receipt.
 json_field() {
- python3 -c 'import json,sys
+	python3 -c 'import json,sys
 value=json.load(open(sys.argv[2]))
 for key in sys.argv[1].split("."): value=value[key]
 print(value)' "$1" "$2"
@@ -137,51 +137,51 @@ print(value)' "$1" "$2"
 # approval_applied checks exactly the requested approval, never a pending-list
 # candidate. The disposable test operator is separate from the CLI client.
 approval_applied() {
- curl -fsS --max-time 5 "$url/api/approvals/$1" >"$work/approval-result" || return 1
- decision_status=$(json_field status "$work/approval-result") || fail "invalid approval receipt"
- case "$decision_status" in
- approved) return 0;;
- pending|applying) return 1;;
- *) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")";;
- esac
+	curl -fsS --max-time 5 "$url/api/approvals/$1" >"$work/approval-result" || return 1
+	decision_status=$(json_field status "$work/approval-result") || fail "invalid approval receipt"
+	case "$decision_status" in
+	approved) return 0;;
+	pending|applying) return 1;;
+	*) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")";;
+	esac
 }
 
 # approve_requested LABEL REQUEST approves only the ID captured by that request.
 # This intervention is allowed only against this smoke test's own Docker data.
 approve_requested() {
- [ "$(json_field status "$2")" = pending_approval ] || fail "request $1 is not pending"
- request_id=$(json_field approval.id "$2") || fail "missing approval ID for $1"
- case "$request_id" in ''|*[!a-zA-Z0-9_-]*) fail "invalid approval ID for $1";; esac
- echo "OPERATOR INTERVENTION (disposable container): approve $request_id for $1" >&2
- console -X POST "$url/console/api/approvals/$request_id/approve" >/dev/null || fail "approving $request_id for $1 failed"
- wait_for "approval $request_id" approval_applied "$request_id"
+	[ "$(json_field status "$2")" = pending_approval ] || fail "request $1 is not pending"
+	request_id=$(json_field approval.id "$2") || fail "missing approval ID for $1"
+	case "$request_id" in ''|*[!a-zA-Z0-9_-]*) fail "invalid approval ID for $1";; esac
+	echo "OPERATOR INTERVENTION (disposable container): approve $request_id for $1" >&2
+	console -X POST "$url/console/api/approvals/$request_id/approve" >/dev/null || fail "approving $request_id for $1 failed"
+	wait_for "approval $request_id" approval_applied "$request_id"
 }
 
 # deploy_approved FLAT saves its Draft, freezes that exact receipt for an
 # approved version, then separately requests and approves that version's deploy.
 deploy_approved() {
- "$flats" --json save-draft "$1" "$work/$1" >"$work/save" || fail "saving Draft $1 failed: $(cat "$work/save")"
- draft_revision=$(json_field draft.revision "$work/save") || fail "missing Draft revision"
- draft_hash=$(json_field draft.hash "$work/save") || fail "missing Draft hash"
- "$flats" --json create-version "$1" --revision "$draft_revision" --hash "$draft_hash" >"$work/create" && status=0 || status=$?
- [ "$status" -eq 3 ] || fail "version creation of $1 did not wait for approval (exit $status): $(cat "$work/create")"
- approve_requested "creating $1 version" "$work/create"
- created_version=$(json_field result_data.version "$work/approval-result") || fail "creation receipt lacks version"
- case "$created_version" in ''|*[!0-9]*) fail "invalid created version: $created_version";; esac
- [ "$created_version" -gt 0 ] || fail "created version must be positive"
- "$flats" --json deploy --flat "$1" --version "$created_version" >"$work/deploy" && status=0 || status=$?
- [ "$status" -eq 3 ] || fail "deploy of $1 version $created_version did not wait for approval (exit $status): $(cat "$work/deploy")"
- approve_requested "deploying $1 version $created_version" "$work/deploy"
+	"$flats" --json save-draft "$1" "$work/$1" >"$work/save" || fail "saving Draft $1 failed: $(cat "$work/save")"
+	draft_revision=$(json_field draft.revision "$work/save") || fail "missing Draft revision"
+	draft_hash=$(json_field draft.hash "$work/save") || fail "missing Draft hash"
+	"$flats" --json create-version "$1" --revision "$draft_revision" --hash "$draft_hash" >"$work/create" && status=0 || status=$?
+	[ "$status" -eq 3 ] || fail "version creation of $1 did not wait for approval (exit $status): $(cat "$work/create")"
+	approve_requested "creating $1 version" "$work/create"
+	created_version=$(json_field result_data.version "$work/approval-result") || fail "creation receipt lacks version"
+	case "$created_version" in ''|*[!0-9]*) fail "invalid created version: $created_version";; esac
+	[ "$created_version" -gt 0 ] || fail "created version must be positive"
+	"$flats" --json deploy --flat "$1" --version "$created_version" >"$work/deploy" && status=0 || status=$?
+	[ "$status" -eq 3 ] || fail "deploy of $1 version $created_version did not wait for approval (exit $status): $(cat "$work/deploy")"
+	approve_requested "deploying $1 version $created_version" "$work/deploy"
 }
 
 # Documents run immediately. Their explicit whole-bundle save has no approval.
 deploy_document() {
- "$flats" --json save-document "$1" "$work/$1" >"$work/deploy" && status=0 || status=$?
- [ "$status" -eq 0 ] || fail "save of document $1 failed (exit $status): $(cat "$work/deploy")"
- [ "$(json_field flat.type "$work/deploy")" = docs ] || fail "document save returned wrong type"
- [ "$(json_field flat.running "$work/deploy")" = True ] || fail "saved document is not running"
- "$flats" approvals --status pending --json >"$work/approvals"
- ! grep -q '\"id\"' "$work/approvals" || fail "save of document $1 requested approval: $(cat "$work/approvals")"
+	"$flats" --json save-document "$1" "$work/$1" >"$work/deploy" && status=0 || status=$?
+	[ "$status" -eq 0 ] || fail "save of document $1 failed (exit $status): $(cat "$work/deploy")"
+	[ "$(json_field flat.type "$work/deploy")" = docs ] || fail "document save returned wrong type"
+	[ "$(json_field flat.running "$work/deploy")" = True ] || fail "saved document is not running"
+	"$flats" approvals --status pending --json >"$work/approvals"
+	! grep -q '"id"' "$work/approvals" || fail "save of document $1 requested approval: $(cat "$work/approvals")"
 }
 
 # smoke MODE runs the whole check with host networking (host) or published

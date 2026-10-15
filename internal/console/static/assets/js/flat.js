@@ -358,6 +358,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
             if (!ctx.alive()) return;
             if (changed) versionsSlot.focus();
             else if (page.contains(del)) del.focus();
+            else versionsSlot.focus();
           });
           actions.appendChild(del);
         }

@@ -71,3 +71,28 @@ func (s *Store) SettleVersionDeletion(ctx context.Context, id string, before, af
 	}
 	return nil
 }
+
+// ListPendingVersionDeletions returns every approved deletion awaiting cleanup.
+// Recovery must not use the display list's limit: a receipt can outlive hundreds
+// of subsequent approvals before the host restarts.
+func (s *Store) ListPendingVersionDeletions(ctx context.Context) ([]Approval, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalCols+` FROM approvals WHERE action='delete_version' AND status='approved' ORDER BY requested_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Approval
+	for rows.Next() {
+		a, err := scanApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		var receipt struct {
+			CleanupPending bool `json:"cleanup_pending"`
+		}
+		if json.Unmarshal(a.ResultData, &receipt) == nil && receipt.CleanupPending {
+			out = append(out, a)
+		}
+	}
+	return out, rows.Err()
+}

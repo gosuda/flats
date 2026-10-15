@@ -1,11 +1,12 @@
 """Regression checks for the review's concrete gate false-pass classes."""
 import os
+import socket
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
-from gate import Host, accepted, data_impact, failed, source_identity
+from gate import Host, accepted, data_impact, failed, mcp_payload, reserve_ports, source_identity
 
 
 class HarnessChecks(unittest.TestCase):
@@ -74,6 +75,56 @@ class HarnessChecks(unittest.TestCase):
                                               else {"status": "pending_approval", "approval": {"id": "wrong", "action": "publish"}})
             with self.assertRaises(AssertionError):
                 host.create_version("example")
+
+    def test_mcp_error_payload_accepts_only_a_complete_typed_object(self):
+        expected = {"category": "not_design", "error": "not a design"}
+        self.assertEqual(mcp_payload({"isError": True, "content": [{"text":
+            'not a design\nHint: use save_design.\n{"category":"not_design","error":"not a design"}'}]}), expected)
+        self.assertEqual(mcp_payload({"isError": True, "structuredContent": expected}), expected)
+        self.assertEqual(mcp_payload({"content": [{"text": '{"status":"pending_approval"}'}]}), {"status": "pending_approval"})
+        for text in ('prose {"category":"not_design"}', '{"category":"not_design"} trailing junk',
+                     'Hint: {"category":"not_design"}\nnot the structured suffix', '{"error":"missing category"}'):
+            with self.subTest(text=text), self.assertRaises(AssertionError):
+                mcp_payload({"isError": True, "content": [{"text": text}]})
+
+    def test_permission_readiness_error_requires_exact_category_and_saved_policy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            host = Host("unused", folder)
+            for code, category, saved, accepted_outcome in (
+                (200, None, True, True), (409, "provider_not_ready", True, True),
+                (409, "provider_not_ready", False, False), (200, None, False, False),
+                (409, "conflict", True, False), (503, "provider_not_ready", True, False)):
+                with self.subTest(code=code, category=category, saved=saved):
+                    host.request = lambda *args, **kwargs: (code, {"category": category})
+                    host.flat = lambda slug: {"providers": ["local", "tailscale"] if saved else ["local"]}
+                    if accepted_outcome:
+                        host.set_flat_permission("example", "tailscale")
+                    else:
+                        with self.assertRaises(AssertionError):
+                            host.set_flat_permission("example", "tailscale")
+
+    def test_owned_port_time_wait_is_reusable_but_live_listener_is_not(self):
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        # A running listener still prevents a reservation: REUSEPORT is not
+        # used, and no unrelated server can be silently replaced.
+        with self.assertRaises(OSError):
+            reserve_ports((port, 0))
+        client = socket.create_connection(("127.0.0.1", port))
+        accepted_socket, _ = listener.accept()
+        accepted_socket.close()  # active server close produces TIME_WAIT
+        self.assertEqual(client.recv(1), b"")
+        client.close()
+        listener.close()
+        sockets, ports = reserve_ports((port, 0))
+        try:
+            self.assertEqual(ports[0], port)
+        finally:
+            for sock in sockets:
+                sock.close()
 
     def test_stop_rejects_nonzero_exit_and_recovered_panic(self):
         for marker, exit_code in (("", 7), ("panic: simulated handler panic", 0)):

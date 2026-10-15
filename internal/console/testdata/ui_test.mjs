@@ -425,6 +425,7 @@ while (detachedRow.tagName !== 'TR') detachedRow = detachedRow.parentNode;
 detachedRow.remove();
 all(document.body, (e) => e.tagName === 'DIALOG')[0].close('cancel'); await tick();
 assert.equal(detachedDelete.focusCount || 0, detachedFocusCount);
+assert.equal(document.activeElement.getAttribute('aria-label'), 'Version history', 'a removed invoker falls back to the history region');
 stopDetached();
 
 const approvalsPage = await import('./approval.js');

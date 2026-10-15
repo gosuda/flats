@@ -140,10 +140,53 @@ export default { async fetch(request, env) {
 """.replace("VERSION", str(version)).replace("BROKEN", str(broken).lower()).replace("HEALTHY_WRITE", str(healthy_write).lower())}
 
 
+def reserve_ports(previous=None):
+    """Reserve only owned loopback ports, allowing their TIME_WAIT sockets."""
+    sockets = []
+    try:
+        for port in previous or (0, 0):
+            sock = socket.socket()
+            sockets.append(sock)
+            # Go listeners already use SO_REUSEADDR. Repeat it for the
+            # reservation too; never SO_REUSEPORT, which could admit a live
+            # listener belonging to another process.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", port))
+        return sockets, [sock.getsockname()[1] for sock in sockets]
+    except Exception:
+        for sock in sockets:
+            sock.close()
+        raise
+
+
+def mcp_payload(result):
+    """Read a structured object or the tool formatter's complete JSON line."""
+    structured = result.get('structuredContent')
+    candidates = [structured] if isinstance(structured, dict) else []
+    for item in reversed(result.get('content', [])):
+        text = item.get('text', '').strip()
+        # Error text ends with one complete JSON object after the human hint.
+        # Never find an arbitrary brace inside prose or accept trailing junk.
+        for raw in (text, text.rsplit('\n', 1)[-1]):
+            try:
+                value = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict):
+                candidates.append(value)
+    for value in candidates:
+        if result.get('isError'):
+            if not isinstance(value.get('category'), str) or not value['category']:
+                continue
+        return value
+    raise AssertionError(f"no typed MCP object: {result}")
+
+
 class Host:
-    def __init__(self, binary, work, adapter=False, legacy=False):
+    def __init__(self, binary, work, adapter=False, legacy=False, without_tailnet=False):
         self.binary, self.work, self.adapter = str(binary), Path(work), adapter
         self.legacy = legacy
+        self.without_tailnet = without_tailnet
         self.addresses = None
         self.work.mkdir(parents=True, exist_ok=True)
         self.data = self.work / "data"
@@ -158,10 +201,7 @@ class Host:
     def start(self):
         # Reserve both ports until immediately before spawn. Bind-race failures
         # fail the run; never kill another process or reuse the operator's port.
-        reservations = [socket.socket(), socket.socket()]
-        for index, sock in enumerate(reservations):
-            sock.bind(("127.0.0.1", self.addresses[index] if self.addresses else 0))
-        ports = [sock.getsockname()[1] for sock in reservations]
+        reservations, ports = reserve_ports(self.addresses)
         # A restart must repeat the configured listener addresses; changing
         # legacy flags against config.json correctly fails with EX_CONFIG.
         self.addresses = ports
@@ -169,6 +209,9 @@ class Host:
         self.local = f"http://127.0.0.1:{ports[1]}"
         argv = [self.binary, "serve", "--data", str(self.data), "--listen", f"127.0.0.1:{ports[0]}",
                 "--network", "local", "--local-addr", f"127.0.0.1:{ports[1]}", "--portal=false"]
+        if self.without_tailnet:
+            require(self.adapter and not self.legacy, "missing-backend flag belongs only to the test adapter")
+            argv.append("--without-tailnet")
         for sock in reservations:
             sock.close()
         env = os.environ.copy()
@@ -245,13 +288,21 @@ class Host:
         return status, value
 
     def set_host_permissions(self, permitted):
-        # Explicit disposable host permission file. This changes permission,
-        # never constructs a backend or restarts into a live network provider.
-        path = self.data / 'network-provider.json'
-        value = json.loads(path.read_text())
-        value['permitted'] = permitted
-        path.write_text(json.dumps(value) + '\n')
+        # The loopback adapter owns this current host-registry interface.
+        # Production provider toggles could construct real clients and are
+        # deliberately outside this gate's authority.
+        require(self.adapter and not self.legacy, "host permission changes require the loopback adapter")
+        self.ok('POST', '/__gate/host-permission', {'permitted': permitted})
         self.trace.append({'kind': 'disposable-host-permission', 'permitted': permitted})
+
+    def set_flat_permission(self, slug, provider, permitted=True):
+        code, out = self.request('POST', f'/console/api/flats/{slug}/providers',
+                                 {'provider': provider, 'permitted': permitted}, console=True)
+        require(code == 200 or (permitted and code == 409 and out.get('category') == 'provider_not_ready'),
+                f"unexpected permission outcome: {code}: {out}")
+        saved = provider in provider_ids(self.flat(slug))
+        require(saved == permitted, f"permission was not saved despite readiness response: {provider}: {out}")
+        return out
 
     def ok(self, method, path, body=None, status=200, **kwargs):
         code, value = self.request(method, path, body, **kwargs)
@@ -334,16 +385,7 @@ class Host:
     def mcp(self, name, **args):
         result = self.rpc("tools/call", {"name": name, "arguments": args})
         require(not result.get("isError"), f"MCP {name}: {result}")
-        if result.get("structuredContent"):
-            return result["structuredContent"]
-        for item in reversed(result.get("content", [])):
-            try:
-                value = json.loads(item.get("text", ""))
-                if isinstance(value, dict):
-                    return value
-            except ValueError:
-                pass
-        raise AssertionError(f"no structured MCP result: {result}")
+        return mcp_payload(result)
 
 
 def draft_saves(h):
@@ -425,7 +467,7 @@ def drift(h):
     require("NEW-DRAFT" in h.traffic("drift"), "fresh Draft positive control did not serve")
     h.save("drift", static("POLICY-CANDIDATE"))
     a = h.create_version("drift")
-    h.ok("POST", "/console/api/flats/drift/providers", {"provider": "tailscale", "permitted": True}, console=True)
+    h.set_flat_permission("drift", "tailscale")
     failed(h.decide(a), "policy-drift")
     require(h.flat("drift")["live_version"] == 1, "policy drift activated")
     h.ok("POST", "/console/api/flats/drift/providers", {"provider": "tailscale", "permitted": False}, console=True)
@@ -490,7 +532,9 @@ def api_pending(h):
 
 def version_quota_deletion(h):
     h.activate('quota', server(1))
+    require(h.traffic('quota', '/hit') == {'version': 1, 'hits': 1}, 'live DB witness was not created')
     h.activate('quota', server(2))
+    require(h.traffic('quota') == {'version': 2, 'hits': 1}, 'deployment lost live DB witness')
     before = h.flat('quota')
     require(before['version_count'] == 2 and before['effective_version_quota'] == 20
             and before['version_quota'] is None, 'host version quota default is not 20')
@@ -498,6 +542,9 @@ def version_quota_deletion(h):
     versions_before = h.versions('quota')
     snapshots_before = h.ok('GET', '/api/flats/quota/snapshots')
     require(snapshots_before.get('snapshots'), 'server deployments did not create snapshot evidence')
+    snapshot_dir = h.data / 'flats/quota/snapshots'
+    snapshot_bytes = {p.relative_to(snapshot_dir).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in snapshot_dir.rglob('*') if p.is_file()}
+    require(snapshot_bytes, 'snapshot metadata has no on-disk witness')
     h.ok('PUT', quota_path, {'version_quota': 1}, console=True)
     require(h.versions('quota') == versions_before, 'lower quota removed retained versions')
     h.save('quota', server(3))
@@ -523,7 +570,8 @@ def version_quota_deletion(h):
     require(h.request('GET', '/', local_host=preview['host'])[0] == 404, 'deleted version preview remains open')
     require(not (h.data / 'flats/quota/versions/1').exists(), 'deleted version files remain')
     require(h.ok('GET', '/api/flats/quota/snapshots') == snapshots_before, 'version deletion removed data snapshots')
-    require(h.traffic('quota')['version'] == 2, 'version deletion changed live traffic')
+    require(h.traffic('quota') == {'version': 2, 'hits': 1}, 'version deletion changed live traffic or data')
+    require({p.relative_to(snapshot_dir).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in snapshot_dir.rglob('*') if p.is_file()} == snapshot_bytes, 'version deletion changed snapshot files')
     require(h.decide(h.create_version('quota'))['status'] == 'approved', 'freed quota did not admit next version')
     require([v['number'] for v in h.versions('quota')] == [3, 2], 'version number reused after deletion')
     h.ok('DELETE', '/console/api/flats/quota/versions/3', console=True)
@@ -612,11 +660,7 @@ def approval_boundary(h):
         unknown = set(tool.get('inputSchema', {}).get('required', [])) - set(args)
         require(not unknown, f"behavioral census lacks valid inputs for {name}: {unknown}")
         result = h.rpc("tools/call", {"name": name, "arguments": args})
-        payload = result.get('structuredContent')
-        if not payload:
-            for item in result.get('content', []):
-                try: payload = json.loads(item.get('text', ''))
-                except (ValueError, TypeError): continue
+        payload = mcp_payload(result)
         if name in refusals:
             require(result.get('isError') and isinstance(payload, dict) and payload.get('category') == refusals[name],
                     f"MCP {name} must refuse the website with {refusals[name]}: {result}")
@@ -670,12 +714,14 @@ def denied_visibility(h, slug):
 
 
 def provider_failure(h):
+    capabilities = h.ok('GET', '/__gate/capabilities')
+    require(capabilities.get('tailnet_backend') is False, 'missing-backend population unexpectedly has a tailnet backend')
     h.activate("provider", static("PUBLISHED"))
     require(provider_ids(h.flat("provider")) <= {"local"}, "provider auto permitted")
     code, _ = h.request("POST", "/api/flats/provider/providers", {"provider": "portal", "permitted": True})
     require(code in (403, 404, 405), "agent can grant provider permission")
     denied_visibility(h, "provider")
-    h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale", "permitted": True}, console=True)
+    h.set_flat_permission("provider", "tailscale")
     require(h.flat("provider")["visibility"] == "private", "connection permission authorized Public")
     require("tailscale-funnel" not in provider_ids(h.flat("provider")), "Tailscale authorized Funnel")
     h.ok("POST", "/console/api/flats/provider/providers", {"provider": "tailscale-funnel", "permitted": True}, console=True)
@@ -968,7 +1014,7 @@ def provider_matrix(h):
     def public_request():
         return h.approval(h.ok("POST", "/api/flats/matrix/visibility", {"visibility": "public"}, status=202))
     def allow(provider, permitted=True):
-        h.ok("POST", "/console/api/flats/matrix/providers", {"provider": provider, "permitted": permitted}, console=True)
+        h.set_flat_permission("matrix", provider, permitted)
     denied_visibility(h, "matrix")
     allow("tailscale")
     denied_visibility(h, "matrix")
@@ -1114,13 +1160,14 @@ LOCAL_CASES = [("draft-save-conflict", draft_saves), ("archive-validation", inva
                ("approval-boundary-census", approval_boundary),
                ("version-quota-explicit-deletion", version_quota_deletion),
                ("production-fault-hooks-absent", production_hooks_absent),
-               ("provider-permission-failure", provider_failure), ("runtime-health-rollback-data", runtime_data),
+               ("runtime-health-rollback-data", runtime_data),
                ("historical-migration", migration),
                ("historical-mixed-migration", mixed_migration),
                ("runtime-initialization-data", runtime_initialization),
                ("rollback-approved-restore-data", restore_success),
                ("frozen-current-live", current_live_drift)]
-ADAPTER_CASES = [("visibility-all-surfaces-teardown", visibility_transitions),
+ADAPTER_CASES = [("provider-permission-failure", provider_failure),
+                 ("visibility-all-surfaces-teardown", visibility_transitions),
                  ("public-publish-rollback-route-binding", public_publish_rollback),
                  ("partial-provider-failures", partial_provider_failures),
                  ("frozen-visibility", visibility_drift),
@@ -1165,7 +1212,7 @@ def main():
             continue
         adapter = (name, test) in ADAPTER_CASES
         binary = args.crash_binary if name == 'restart-claimed-approval' else (args.adapter_binary if adapter else args.binary)
-        host = Host(binary or args.binary, work / name, adapter=adapter)
+        host = Host(binary or args.binary, work / name, adapter=adapter, without_tailnet=name == "provider-permission-failure")
         host.legacy_binary = args.legacy_binary
         host.legacy_adapter_binary = args.legacy_adapter_binary
         if args.prepare_only:

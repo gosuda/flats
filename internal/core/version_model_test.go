@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/store"
@@ -378,6 +380,24 @@ func TestVersionModelCheckpointFailureKeepsRecoverableFiles(t *testing.T) {
 				}
 			}
 			release()
+			if approved {
+				// Hide the deletion from the newest-200 display list. Startup
+				// recovery must still find this older cleanup receipt.
+				for i := range 201 {
+					if err := st.InsertApproval(ctx, store.Approval{ID: fmt.Sprintf("later-%d", i), Flat: "busy", Action: "deploy", Params: json.RawMessage(`{}`), Status: "approved", Via: "console", RequestedAt: before.RequestedAt.Add(time.Duration(i+1) * time.Second)}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				listed, err := st.ListApprovals(ctx, "approved")
+				if err != nil || len(listed) != 200 {
+					t.Fatalf("display-list fixture: %d %v", len(listed), err)
+				}
+				for _, a := range listed {
+					if a.ID == before.ID {
+						t.Fatal("old cleanup receipt is still in display list")
+					}
+				}
+			}
 			svc.Close()
 			svc = nil
 			st.Close()
@@ -400,6 +420,92 @@ func TestVersionModelCheckpointFailureKeepsRecoverableFiles(t *testing.T) {
 			}
 			if n := createModelVersion(t, svc, "busy", "two"); n != 2 {
 				t.Fatalf("number after cleanup: %d", n)
+			}
+		})
+	}
+}
+
+func TestVersionModelPendingReceiptSurvivesReusedFlatIdentity(t *testing.T) {
+	for _, change := range []string{"rename", "delete"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := t.Context()
+			dir := t.TempDir()
+			st, err := store.Open(filepath.Join(dir, "flats.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var svc *Service
+			t.Cleanup(func() {
+				if svc != nil {
+					svc.Close()
+				}
+				st.Close()
+			})
+			open := func() {
+				svc, err = New(ctx, Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			open()
+			createModelVersion(t, svc, "reused", "identical content")
+			if err := os.RemoveAll(svc.versionDir("reused", 1)); err != nil {
+				t.Fatal(err)
+			}
+			request, err := svc.DeleteVersion(ctx, "reused", 1, ViaMCP)
+			if err != nil {
+				t.Fatal(err)
+			}
+			release := holdVersionCheckpoint(t, svc)
+			before, err := svc.Decide(ctx, request.Approval.ID, true)
+			if err != nil || before.Status != "approved" || !execution(t, before).CleanupPending {
+				t.Fatalf("missing-files checkpoint outcome: %+v %v", before, err)
+			}
+			release()
+			if change == "rename" {
+				if _, err := svc.RenameSlug(ctx, "reused", "renamed", ViaConsole); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := svc.Delete(ctx, "reused", ViaConsole, "fixture"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Identical hashes cannot distinguish these two different flats.
+			if n := createModelVersion(t, svc, "reused", "identical content"); n != 1 {
+				t.Fatalf("replacement flat number: %d", n)
+			}
+			fresh, err := svc.GetVersion(ctx, "reused", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc.Close()
+			svc = nil
+			st.Close()
+			st, err = store.Open(filepath.Join(dir, "flats.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			open()
+			after, err := svc.GetApproval(ctx, before.ID)
+			if err != nil || after.Status != "approved" || execution(t, after).CleanupPending || after.Result != "deleted version 1" {
+				t.Fatalf("historical receipt not settled: %+v %v", after, err)
+			}
+			if after.DecidedBy != before.DecidedBy || !after.DecidedAt.Equal(*before.DecidedAt) || !after.AuthorizedAt.Equal(*before.AuthorizedAt) {
+				t.Fatal("recovery changed operator provenance")
+			}
+			retained, err := svc.GetVersion(ctx, "reused", 1)
+			if err != nil || retained.Hash != fresh.Hash {
+				t.Fatalf("replacement metadata changed: %+v %v", retained, err)
+			}
+			data, err := os.ReadFile(filepath.Join(svc.versionDir("reused", 1), "index.html"))
+			if err != nil || string(data) != "identical content" {
+				t.Fatalf("replacement files changed: %q %v", data, err)
+			}
+			if change == "rename" {
+				if _, err := svc.GetFlat(ctx, "renamed"); err != nil {
+					t.Fatal("renamed original flat lost", err)
+				}
 			}
 		})
 	}

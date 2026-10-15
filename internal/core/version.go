@@ -298,7 +298,7 @@ func (s *Service) recoverVersionDeletions(ctx context.Context) error {
 			}
 		}
 	}
-	approvals, err := s.st.ListApprovals(ctx, "approved")
+	approvals, err := s.st.ListPendingVersionDeletions(ctx)
 	if err != nil {
 		return err
 	}
@@ -320,12 +320,12 @@ func (s *Service) recoverVersionDeletions(ctx context.Context) error {
 		if receipt.Version <= 0 {
 			return fmt.Errorf("invalid cleanup-pending deletion receipt %s", a.ID)
 		}
-		if _, err := s.st.GetVersion(ctx, a.Flat, receipt.Version); !errors.Is(err, store.ErrNotFound) {
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("cleanup-pending deletion %s still has version metadata", a.ID)
-		}
+		// An approved receipt follows the atomic deletion commit in SQLite's
+		// ordered WAL. Once synced, it proves that original deletion survived.
+		// The flat may since have been renamed or deleted and its name reused;
+		// a current row or matching content hash cannot identify the old version.
+		// Staged directories were reconciled above. Never inspect or remove fresh
+		// files through this historical receipt's reusable slug/version identity.
 		receipt.CleanupPending = false
 		raw, _ := json.Marshal(receipt)
 		if err := s.st.SettleVersionDeletion(ctx, a.ID, a.ResultData, raw, fmt.Sprintf("deleted version %d", receipt.Version)); err != nil {

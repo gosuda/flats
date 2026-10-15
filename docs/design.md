@@ -440,12 +440,16 @@ answers:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | /api/flats/{slug}/document?doc= | live docs Markdown, else Current Draft |
+| GET | /api/flats/{slug}/document?doc= | live docs Markdown, or saved content when not running |
 | GET | /api/status | host, networks, limits, build version |
 | GET | /api/flats | list |
 | POST | /api/flats | `{slug, name}` create |
 | GET | /api/flats/{slug} | details (URLs, live version, notice) |
-| POST | /api/flats/{slug}/versions | body: tar/tar.gz/zip; query `git_sha`, `git_dirty`, `message`, `deploy=1` |
+| GET | /api/flats/{slug}/draft | current Private Draft metadata |
+| POST/PUT | /api/flats/{slug}/draft | tar/tar.gz/zip; query `expected_revision`, `git_sha`, `git_dirty`, `message`; saves only the Draft |
+| POST | /api/flats/{slug}/versions | JSON `{revision, hash}`; requests approval to create a version without deploying |
+| DELETE | /api/flats/{slug}/versions/{n} | requests approval to delete a non-live version; direct deletion in the console |
+| POST | /api/flats/{slug}/document | docs archive; explicitly replaces the whole live bundle without approval |
 | GET | /api/flats/{slug}/versions | list |
 | GET | /api/flats/{slug}/versions/{n} | one version |
 | GET | /api/flats/{slug}/versions/{n}/files/{path} | a file (thumbnails) |

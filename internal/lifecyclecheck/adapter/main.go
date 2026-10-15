@@ -206,6 +206,7 @@ func serve(args []string) error {
 	localAddr := fs.String("local-addr", "127.0.0.1:0", "loopback flat listener")
 	fs.String("network", "local", "compatibility flag; only loopback is used")
 	fs.Bool("portal", false, "compatibility flag; no real Portal is used")
+	withoutTailnet := fs.Bool("without-tailnet", false, "test-only: omit the loopback tailnet backend to verify unavailable outcomes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -240,8 +241,11 @@ func serve(args []string) error {
 		return err
 	}
 	defer tailPrivate.Close()
-	ts := &tailnet{Net: tailPrivate, public: private, faults: fault, funnel: map[string]string{}}
-	manager, err := provider.New(*data, provider.Options{Local: private, Tailscale: ts, Portal: public, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	var tailnetBackend provider.Tailnet
+	if !*withoutTailnet {
+		tailnetBackend = &tailnet{Net: tailPrivate, public: private, faults: fault, funnel: map[string]string{}}
+	}
+	manager, err := provider.New(*data, provider.Options{Local: private, Tailscale: tailnetBackend, Portal: public, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}})
 	if err != nil {
@@ -262,7 +266,7 @@ func serve(args []string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /__gate/capabilities", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"production_provider_manager":true,"legacy_public_fallback":false}`))
+		json.NewEncoder(w).Encode(map[string]any{"production_provider_manager": true, "legacy_public_fallback": false, "tailnet_backend": tailnetBackend != nil})
 	})
 	mux.HandleFunc("POST /__gate/host-permission", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
