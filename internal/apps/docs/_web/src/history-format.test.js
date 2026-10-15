@@ -168,3 +168,35 @@ test("change mapping covers blank replacements, tables, definitions and limits",
   assert.equal(changeLines(big("x"), big("y")), null);
   assert.ok(Date.now() - start < 3000);
 });
+
+test("a split paragraph and links to a changed definition are marked", async () => {
+  const { createMarkdown } = await import("./markdown.js");
+  const { lineChanges, markChanges } = await import("./history-format.js");
+  const md = createMarkdown();
+  // One paragraph becomes two: both are marked.
+  let tokens = md.parse("one\n\ntwo\n", {});
+  let out = markChanges(tokens, lineChanges("one\ntwo\n", "one\n\ntwo\n"));
+  assert.equal(out.marked, 2);
+  // Two splits next to each other mark all three paragraphs.
+  tokens = md.parse("a\n\nb\n\nc\n", {});
+  out = markChanges(tokens, lineChanges("a\nb\nc\n", "a\n\nb\n\nc\n"));
+  assert.equal(out.marked, 3);
+  // A tight list becomes loose: the items around the blank line are marked.
+  tokens = md.parse("- a\n\n- b\n", {});
+  out = markChanges(tokens, lineChanges("- a\n- b\n", "- a\n\n- b\n"));
+  assert.ok(out.marked >= 1);
+  // A link using a definition whose target changed is marked.
+  const before = "See [the docs][x].\n\nOther.\n\n[x]: /old\n",
+    after = "See [the docs][x].\n\nOther.\n\n[x]: /new\n";
+  tokens = md.parse(after, {});
+  out = markChanges(tokens, lineChanges(before, after), {
+    labels: new Set([md.utils.normalizeReference("x")]),
+    normalize: md.utils.normalizeReference,
+  });
+  const marked = tokens.filter((t) => t.meta?.revChanged);
+  assert.equal(marked.length, 1);
+  assert.equal(
+    tokens[tokens.indexOf(marked[0]) + 1].content,
+    "See [the docs][x].",
+  );
+});

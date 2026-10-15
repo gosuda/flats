@@ -98,7 +98,23 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     if (!changes) return null;
     const env = {},
       tokens = md.parse(markdown, env),
-      out = markChanges(tokens, changes);
+      // Reference definitions whose target changed: the links using them
+      // render differently although their own lines stayed.
+      old = {};
+    md.parse(before, old);
+    const labels = new Set(),
+      now = env.references || {},
+      was = old.references || {};
+    for (const label of new Set([...Object.keys(now), ...Object.keys(was)]))
+      if (
+        now[label]?.href !== was[label]?.href ||
+        now[label]?.title !== was[label]?.title
+      )
+        labels.add(label);
+    const out = markChanges(tokens, changes, {
+      labels,
+      normalize: md.utils.normalizeReference,
+    });
     for (const t of tokens) {
       if (!t.meta || t.type === "fence" || t.type === "code_block") continue;
       if (t.meta.revChanged) t.attrJoin("class", "rev-changed");
@@ -243,13 +259,16 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
   // Other changed blocks get the label before them, and removed text gets a
   // note of its own, a table row in a table.
   function decorate(container) {
-    const blocks = /^(UL|OL|P|PRE|DIV|TABLE|BLOCKQUOTE|H[1-6])$/;
+    // Only phrasing content goes into the span; rules, lists and other
+    // blocks inside a list item stay outside it.
+    const phrasing =
+      /^(A|ABBR|B|BDI|BDO|BR|CITE|CODE|DATA|DEL|DFN|EM|I|IMG|INPUT|INS|KBD|MARK|Q|S|SAMP|SMALL|SPAN|STRONG|SUB|SUP|TIME|U|VAR|WBR)$/;
     for (const block of container.querySelectorAll(
       "p.rev-changed, li.rev-changed, h1.rev-changed, h2.rev-changed, h3.rev-changed, h4.rev-changed, h5.rev-changed, h6.rev-changed",
     )) {
       let span = null;
       for (const node of [...block.childNodes]) {
-        if (node.nodeType === 1 && blocks.test(node.tagName)) {
+        if (node.nodeType === 1 && !phrasing.test(node.tagName)) {
           span = null;
           continue;
         }
@@ -285,10 +304,10 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
           { class: "rev-removed-note" },
           el("td", { colspan: String(node.children.length || 1), text }),
         );
-      else if (node.tagName === "LI")
-        note = el("li", { class: "rev-removed-note", text });
       else note = el("div", { class: "rev-removed-note", text });
       if (node.tagName === "DIV" && !node.className) node.replaceWith(note);
+      // Inside a list, a note of its own would take an item's number.
+      else if (node.tagName === "LI") node.prepend(note);
       else node.before(note);
       node.removeAttribute("data-removed");
     }
@@ -543,9 +562,10 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
                 `/${info.previous}/document?doc=${encodeURIComponent(path)}`,
               )
             ).markdown;
-          const old = new Map((prev.files || []).map((f) => [f.path, f.hash]));
-          for (const f of info.files || [])
-            if (old.get(f.path) !== f.hash) changedFiles.add(f.path);
+          const old = new Map((prev.files || []).map((f) => [f.path, f.hash])),
+            cur = new Map((info.files || []).map((f) => [f.path, f.hash]));
+          for (const p of new Set([...old.keys(), ...cur.keys()]))
+            if (old.get(p) !== cur.get(p)) changedFiles.add(p);
         }
       }
       if (mine !== selection) return;

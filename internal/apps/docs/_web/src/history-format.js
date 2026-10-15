@@ -92,21 +92,37 @@ export function lineChanges(before, after) {
     parts = diffLines(before, after, DIFF_LIMITS);
   if (!parts) return null;
   let line = 0;
+  const blanks = [];
   // Removed lines next to added visible lines were replaced: the added lines
   // show the change. Replaced by blank lines only, they are a removal.
   const visible = (part) => part?.added && part.value.trim() !== "";
   parts.forEach((part, i) => {
     const count = part.count ?? part.value.split("\n").length - 1;
-    // Blank lines render nothing: only lines with text are changes.
+    // Blank lines render nothing themselves: lines with text are changes.
     if (part.added)
       part.value
         .split("\n")
         .slice(0, count)
-        .forEach((text, j) => text.trim() && changed.add(line + j));
+        .forEach((text, j) =>
+          text.trim() ? changed.add(line + j) : blanks.push(line + j),
+        );
     if (part.removed && !visible(parts[i + 1]) && !visible(parts[i - 1]))
       removed.set(line, (removed.get(line) || 0) + count);
     if (!part.removed) line += count;
   });
+  // A blank line added between two lines that stayed splits a paragraph or
+  // loosens a list: the blocks on both sides changed.
+  if (blanks.length) {
+    const text = after.split("\n"),
+      added = new Set(blanks),
+      edited = new Set(changed),
+      kept = (l) => text[l]?.trim() && !edited.has(l) && !added.has(l);
+    for (const l of blanks)
+      if (kept(l - 1) && kept(l + 1)) {
+        changed.add(l - 1);
+        changed.add(l + 1);
+      }
+  }
   return { changed, removed, lines: line };
 }
 
@@ -136,7 +152,11 @@ const CONTAINER = new Set([
 // line no leaf covers marks its innermost container; one outside every
 // block, such as a link reference definition, is counted as unshown. It
 // returns {marked, tail, unshown, lines}.
-export function markChanges(tokens, { changed, removed, lines }) {
+export function markChanges(
+  tokens,
+  { changed, removed, lines },
+  references = { labels: new Set(), normalize: (s) => s },
+) {
   const items = [],
     covered = new Set();
   let marked = 0;
@@ -152,11 +172,22 @@ export function markChanges(tokens, { changed, removed, lines }) {
       ? items[items.length - 1]
       : t;
   };
+  // The block an inline token renders in, for links that use a changed
+  // reference definition.
+  let leaf = null;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type === "list_item_open") items.push(t);
     else if (t.type === "list_item_close") items.pop();
+    if (t.type === "inline" && leaf && references.labels.size) {
+      for (const m of t.content.matchAll(/\[([^\[\]]+)\]/g))
+        if (references.labels.has(references.normalize(m[1]))) {
+          mark(leaf);
+          break;
+        }
+    }
     if (!LEAF.has(t.type) || !t.map) continue;
+    leaf = target(i);
     const [start, end] = t.map,
       block = target(i);
     block.meta ||= {};
