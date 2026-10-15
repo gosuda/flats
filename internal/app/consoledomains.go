@@ -660,11 +660,12 @@ func (h *Host) AddConsoleDomain(ctx context.Context, prov, name, ifMatch string)
 		}
 		h.setOwned(k, true)
 		if err := b.serve(ctx, name, h.consoleHandler(k)); err != nil {
-			if derr := h.Store.DeleteConsoleNode(ctx, prov, name); derr != nil {
-				h.logf("console domain %s: %v", name, derr)
-				return err
+			// The node may have created an identity: retire it before the
+			// name is released. If that fails, the record stays as retiring
+			// and keeps the name reserved until a later retirement.
+			if rerr := h.retireConsoleNode(context.WithoutCancel(ctx), k); rerr != nil {
+				h.logf("console domain %s: retire the node after a failed start: %v", name, rerr)
 			}
-			h.setOwned(k, false)
 			return fmt.Errorf("%w: %v", core.ErrConflict, err)
 		}
 		h.setServed(k, true, "")

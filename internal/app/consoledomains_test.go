@@ -721,3 +721,33 @@ func TestNetbirdConsoleAcceptsHTTPChanges(t *testing.T) {
 		t.Fatal("a Tailscale domain accepted a change without Sec-Fetch-Site")
 	}
 }
+
+// A NetBird console domain whose peer fails to start is retired before its
+// name is released; if that fails too, the name stays reserved as retiring.
+func TestFailedNetbirdConsoleAddRetiresThePeer(t *testing.T) {
+	h, _, nb := netbirdConsoleHost(t)
+	ctx := context.Background()
+	nb.mu.Lock()
+	nb.serveErr = errors.New("start timed out")
+	nb.mu.Unlock()
+	if _, err := h.AddConsoleDomain(ctx, "netbird", "ops", ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("add with a failing peer: %v", err)
+	}
+	nb.mu.Lock()
+	retired := slices.Contains(nb.retired, "ops")
+	nb.retireErr = errors.New("still stopping")
+	nb.mu.Unlock()
+	if !retired || h.isOwned(cdKey{providerNetbird, "ops"}) {
+		t.Fatal("a failed add must retire its peer and release the name")
+	}
+	if _, err := h.AddConsoleDomain(ctx, "netbird", "ops2", ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("second failing add: %v", err)
+	}
+	if !h.isOwned(cdKey{providerNetbird, "ops2"}) || !slices.Contains(h.consoleReserved(), "ops2") {
+		t.Fatal("a peer that could not be retired must keep its name reserved")
+	}
+	nodes, _ := h.Store.ListConsoleNodes(ctx)
+	if !slices.ContainsFunc(nodes, func(n store.ConsoleNode) bool { return n.Provider == "netbird" && n.Name == "ops2" && n.Retiring }) {
+		t.Fatalf("records %+v", nodes)
+	}
+}

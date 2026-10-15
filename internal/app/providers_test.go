@@ -648,9 +648,11 @@ func (fakeNetbirdDriver) CleanupLegacy(dir string) (provider.NetbirdLegacyPeer, 
 
 // fakeNetbirdNet serves console peers in memory, like fakeTailnet.
 type fakeNetbirdNet struct {
-	mu      sync.Mutex
-	console map[string]http.Handler
-	retired []string
+	mu        sync.Mutex
+	console   map[string]http.Handler
+	retired   []string
+	serveErr  error
+	retireErr error
 }
 
 func newFakeNetbirdNet() *fakeNetbirdNet { return &fakeNetbirdNet{console: map[string]http.Handler{}} }
@@ -673,6 +675,9 @@ func (*fakeNetbirdNet) ServePublic(context.Context, string, http.Handler) (strin
 func (n *fakeNetbirdNet) ServeConsole(_ context.Context, name string, h http.Handler) (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.serveErr != nil {
+		return "", n.serveErr
+	}
 	n.console[name] = h
 	return "http://" + name + ".netbird.cloud/", nil
 }
@@ -680,6 +685,9 @@ func (n *fakeNetbirdNet) StopConsole(name string) error { return n.RetireConsole
 func (n *fakeNetbirdNet) RetireConsole(name string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.retireErr != nil {
+		return n.retireErr
+	}
 	delete(n.console, name)
 	n.retired = append(n.retired, name)
 	return nil
