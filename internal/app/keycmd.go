@@ -109,9 +109,12 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	if err := core.PutHostKeyValue(ctx, dataDir, st, id, value, core.KeySourceCLI, time.Now()); err != nil {
 		return err
 	}
-	if id == core.HostKeyTailscale {
+	switch id {
+	case core.HostKeyTailscale:
 		c.printf("stored the Tailscale auth key in %s; new tailnet nodes use it from the next start\n", dbPath)
-	} else {
+	case core.HostKeyNetbird:
+		c.printf("stored the NetBird setup key in %s; new NetBird peers register with it from the next start\n", dbPath)
+	default:
 		c.printf("stored the %s key in %s; the next start connects %s with it if none is connected yet\n", id, dbPath, id)
 	}
 	return nil
