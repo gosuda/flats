@@ -358,3 +358,18 @@ func TestSecretKeyMissingWithHostKeys(t *testing.T) {
 	}
 	h.Close()
 }
+
+// storedTailscaleKey reads the Tailscale key flats.db in dir holds.
+func storedTailscaleKey(t *testing.T, dir string) string {
+	t.Helper()
+	st, err := store.Open(filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	v, _, err := core.StoredHostKey(context.Background(), dir, st, core.HostKeyTailscale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}

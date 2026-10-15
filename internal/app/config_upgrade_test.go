@@ -711,7 +711,7 @@ func TestConfigInitIsIdempotent(t *testing.T) {
 // host from its flags, as the tailnet gate script does.
 func TestLegacyFreshStartInitializes(t *testing.T) {
 	dir := t.TempDir()
-	key := filepath.Join(t.TempDir(), "authkey")
+	key := writeKey(t, keyA)
 	o := legacyFlags(t, dir, "--listen", "127.0.0.1:27999", "--console-host", "gate-x", "--portal=false", "--authkey-file", key, "--permit", "portal")
 	o.Overrides = map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"}
 	// Stop before networking: only the config is under test here.
@@ -731,8 +731,12 @@ func TestLegacyFreshStartInitializes(t *testing.T) {
 	}
 	c, _ := l.Doc.Effective(nil)
 	if c.Host.ManagementAddr != "127.0.0.1:27999" || len(c.Tailscale.ConsoleHosts) != 0 || len(c.Network.Permitted) != 0 ||
-		c.Credentials.TailscaleAuthKeyFile != key || c.Host.DataDir != dir {
+		c.Credentials.TailscaleAuthKeyFile != "" || c.Host.DataDir != dir {
 		t.Fatalf("config = %+v %+v %+v", c.Host, c.Network, c.Credentials)
+	}
+	// The key of --authkey-file is in flats.db, not its path in config.json.
+	if got := storedTailscaleKey(t, dir); got != keyA {
+		t.Fatalf("stored key = %q", got)
 	}
 	if b := readBinding(t, dir); b == nil || b.MigratedAt != nil {
 		t.Fatalf("binding = %+v", b)

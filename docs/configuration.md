@@ -486,9 +486,10 @@ The migration converts exactly what the old release used:
   `--relays` wins over the stored relays, as before. Stored values the old
   release ignored become the value that was in effect, and the migration log
   lists them.
-- `--operator-credential-file` (kept but ignored) and `--authkey-file` paths.
-  File contents are not read; the first start stores the auth key in
-  `flats.db` and removes the path.
+- `--operator-credential-file` (kept but ignored) as a path. The key of
+  `--authkey-file` or `--tailscale-authkey-file` is stored in `flats.db`
+  (unless a key is stored already); its path is not written, and an
+  unreadable file stops the migration.
 - Pre-lifecycle flats waiting for the one-time Private Tailscale choice are
   decided by the old rules. If the choice is ambiguous (old Tailscale state but
   no `--network`), nothing is written and the start stops with the same

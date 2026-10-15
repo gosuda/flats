@@ -215,13 +215,22 @@ func TestEnsureConfigForInstall(t *testing.T) {
 			t.Errorf("%q on an existing host: %v", args, err)
 		}
 	}
-	// A new host records a Tailscale key file path for its first start.
+	// A new host stores the key of a Tailscale key file in flats.db; the
+	// config holds no key and no path.
 	fresh := filepath.Join(t.TempDir(), "data")
-	if _, _, err := EnsureConfig(ctx, "", fresh, []string{"--tailscale-authkey-file", "/k"}, &out); err != nil {
+	if _, _, err := EnsureConfig(ctx, "", fresh, []string{"--tailscale-authkey-file", writeKey(t, keyB)}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := os.ReadFile(filepath.Join(fresh, "config.json")); !strings.Contains(string(raw), `"tailscale_authkey_file": "/k"`) {
+	if raw, _ := os.ReadFile(filepath.Join(fresh, "config.json")); strings.Contains(string(raw), "tailscale_authkey_file") {
 		t.Fatalf("config.json = %s", raw)
+	}
+	if got := storedTailscaleKey(t, fresh); got != keyB {
+		t.Fatalf("stored key = %q", got)
+	}
+	// An unreadable key file stops the install before anything is written.
+	broken := filepath.Join(t.TempDir(), "data")
+	if _, _, err := EnsureConfig(ctx, "", broken, []string{"--authkey-file", filepath.Join(t.TempDir(), "missing")}, &out); exitCode(err) != ExitConfig {
+		t.Fatalf("unreadable key file: %v", err)
 	}
 	// A legacy data directory is migrated, to a config path of choice.
 	legacy := legacyDir(t)

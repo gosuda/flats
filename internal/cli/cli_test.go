@@ -762,7 +762,11 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 	hermeticInstall(t, home)
 	env := Env{Launchd: fl.run, Home: home, GOOS: "darwin", InstallWait: time.Second}
 	data := filepath.Join(home, "data")
-	r := runEnv(t, env, srv.URL, "install", "--executable", exe, "--data", data, "--", "--authkey-file", "/k")
+	key := filepath.Join(home, "authkey")
+	if err := os.WriteFile(key, []byte("tskey-auth-test-0123456789\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := runEnv(t, env, srv.URL, "install", "--executable", exe, "--data", data, "--", "--authkey-file", key)
 	if r.code != 0 {
 		t.Fatalf("install: %d %s %s", r.code, r.stdout, r.stderr)
 	}
@@ -782,7 +786,8 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 			t.Errorf("plist still has %q:\n%s", unwanted, plist)
 		}
 	}
-	if raw, err := os.ReadFile(config); err != nil || !strings.Contains(string(raw), `"tailscale_authkey_file": "/k"`) {
+	// The key went to flats.db; config.json holds neither it nor its path.
+	if raw, err := os.ReadFile(config); err != nil || strings.Contains(string(raw), "tailscale_authkey_file") || strings.Contains(string(raw), "tskey") {
 		t.Errorf("config.json = %s, %v", raw, err)
 	}
 	if !strings.Contains(r.stdout, "Flats is running at "+srv.URL) {

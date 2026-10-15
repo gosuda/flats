@@ -26,9 +26,9 @@ func TestReserveConsoleName(t *testing.T) {
 	if err := s.ReserveConsoleName(ctx, "blog", func() error { return nil }); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "flat") {
 		t.Fatalf("a flat's name: %v", err)
 	}
-	// While commit runs, flat creation of the same name is refused.
+	// While commit runs, flat creation of the same name waits, then is refused.
+	done := make(chan error, 1)
 	err := s.ReserveConsoleName(ctx, "admin", func() error {
-		done := make(chan error, 1)
 		go func() { _, err := s.CreateFlat(ctx, "admin", "", ViaAPI); done <- err }()
 		select {
 		case err := <-done:
@@ -38,11 +38,13 @@ func TestReserveConsoleName(t *testing.T) {
 		mu.Lock()
 		listed = append(listed, "admin")
 		mu.Unlock()
-		go func() { <-done }()
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "reserved for the Flats console") {
+		t.Fatalf("the waiting CreateFlat: %v", err)
 	}
 	if _, err := s.CreateFlat(ctx, "admin", "", ViaAPI); err == nil || !strings.Contains(err.Error(), "reserved for the Flats console") {
 		t.Fatalf("a flat took the console domain: %v", err)

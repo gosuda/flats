@@ -372,6 +372,9 @@ func (p *prepared) migrate(ctx context.Context, l *config.Loaded, plan *legacyPl
 	if err := prepareLegacyPrivateUpgrade(ctx, p.st, plan.flags, plan.grants); err != nil {
 		return err
 	}
+	if err := importLegacyKey(ctx, filepath.Dir(dbPath), p.st, plan); err != nil {
+		return err
+	}
 	if err := stop("db"); err != nil {
 		return err
 	}
@@ -468,6 +471,9 @@ type legacyPlan struct {
 	notes    []string
 	migrated bool // the database held a legacy host
 	flags    Options
+	// keyFile is a Tailscale key file given with --authkey-file or
+	// --tailscale-authkey-file; the migration stores its key in flats.db.
+	keyFile, keyFlag string
 	grants   provider.File // the host file before this run's flags
 }
 
@@ -765,16 +771,13 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 		}
 	}
 
-	// The key itself is read at the first start, which stores it in flats.db
-	// and removes the path again.
+	// A Tailscale key file goes to flats.db when the database is migrated;
+	// config.json never holds a key or its path.
 	for _, f := range []struct{ flag, path string }{{"tailscale-authkey-file", o.TailscaleKeyFile}, {"authkey-file", o.AuthKeyFile}} {
-		if !o.Set[f.flag] || f.path == "" {
-			continue
+		if o.Set[f.flag] && f.path != "" {
+			plan.keyFile, plan.keyFlag = f.path, f.flag
+			break
 		}
-		if err := doc.SetDeprecated("credentials.tailscale_authkey_file", f.path); err != nil {
-			return nil, actionf("--%s cannot be stored in config.json: %v", f.flag, err)
-		}
-		break
 	}
 	if o.Set["operator-credential-file"] && o.OperatorCredentialFile != "" {
 		if err := set("credentials.operator_file", o.OperatorCredentialFile, "--operator-credential-file"); err != nil {
@@ -924,4 +927,26 @@ func docDiff(a, b *config.Document) string {
 		}
 	}
 	return strings.Join(diff, "\n")
+}
+
+// importLegacyKey stores the key of a legacy service's Tailscale key file in
+// flats.db unless a key is stored already, as a start with that flag would.
+// Repeating it after an interruption changes nothing.
+func importLegacyKey(ctx context.Context, dataDir string, st *store.Store, plan *legacyPlan) error {
+	if plan.keyFile == "" {
+		return nil
+	}
+	from := "--" + plan.keyFlag
+	v, err := readKeyFile(plan.keyFile, from)
+	if err != nil {
+		return err
+	}
+	if err := core.CheckHostKeyValue(core.HostKeyTailscale, v); err != nil {
+		return actionf("%s: %v", from, err)
+	}
+	stored, _, err := core.StoredHostKey(ctx, dataDir, st, core.HostKeyTailscale)
+	if err != nil || stored != "" {
+		return err
+	}
+	return core.PutHostKeyValue(ctx, dataDir, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
 }

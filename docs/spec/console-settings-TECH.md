@@ -87,10 +87,11 @@ the lowest-priority external value above, and after the database step has
 committed removes the key from `config.json` through the config writer
 (keeping history). A crash between the two steps repeats the same idempotent
 import at the next start. A legacy service's `--authkey-file` is handled as
-the flag at start. The legacy migration (also run by `flats install`) still
-records that path, or a `--tailscale-authkey-file` one, as the deprecated key
-without reading the file (`Document.SetDeprecated`), so the first start
-imports it. `flats install` refuses `--zrok-token-file` and
+the flag at start. The legacy migration (also run by `flats install`) stores
+the key of that file, or of a `--tailscale-authkey-file` one, in `flats.db`
+when it migrates the database (unless a key is stored already); it never
+writes the path to `config.json`, so neither a key nor its path reaches the
+config file, its hash or the logs. An unreadable file stops the migration. `flats install` refuses `--zrok-token-file` and
 `--netbird-setup-key-file`, and the Tailscale key flags for a host that
 already has a config, since the installed service would lose them, and
 points to `flats key set`; and the per-start
