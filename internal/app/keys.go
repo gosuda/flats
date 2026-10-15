@@ -244,9 +244,11 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 	}
 	h.keyMu.Lock()
 	differs, given := h.tsKeyDiffers, h.tsKeyExternal != ""
-	nbDiffers, nbGiven := h.nbKeyDiffers, h.nbKeyExternal != ""
 	enrollErr := maps.Clone(h.enrollErr)
 	h.keyMu.Unlock()
+	h.nbMu.Lock()
+	nbDiffers, nbGiven := h.nbKeyDiffers, h.nbKeyExternal != ""
+	h.nbMu.Unlock()
 	out := make([]KeyInfo, 0, len(core.HostKeyIDs))
 	for _, id := range core.HostKeyIDs {
 		k := KeyInfo{ID: id, Managed: true}
@@ -353,8 +355,10 @@ func (h *Host) SetNetbirdKey(ctx context.Context, key string) error {
 		h.keyMu.Unlock()
 		return err
 	}
+	h.nbMu.Lock()
 	h.nbKey = key
 	h.nbKeyDiffers = h.nbKeyExternal != "" && !core.SameKey(h.nbKeyExternal, key)
+	h.nbMu.Unlock()
 	h.keyMu.Unlock()
 	h.logf("NetBird setup key registered from the console")
 	h.pmu.Lock()
@@ -372,7 +376,9 @@ func (h *Host) DeleteNetbirdKey(ctx context.Context) error {
 		h.keyMu.Unlock()
 		return err
 	}
+	h.nbMu.Lock()
 	h.nbKey, h.nbKeyDiffers = "", false
+	h.nbMu.Unlock()
 	h.keyMu.Unlock()
 	h.logf("NetBird setup key removed from the console")
 	h.pmu.Lock()
@@ -382,10 +388,10 @@ func (h *Host) DeleteNetbirdKey(ctx context.Context) error {
 }
 
 // currentNetbirdKey is the NetBird setup key in use; NetBird peers read it at
-// every start.
+// every start. nbMu is a leaf lock, so callers may hold pmu or keyMu.
 func (h *Host) currentNetbirdKey() string {
-	h.keyMu.Lock()
-	defer h.keyMu.Unlock()
+	h.nbMu.Lock()
+	defer h.nbMu.Unlock()
 	return h.nbKey
 }
 

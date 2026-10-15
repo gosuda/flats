@@ -241,8 +241,11 @@ type Host struct {
 	cd        consoleState
 	// Operator keys: keyMu guards the Tailscale key state the console shows.
 	keyMu         sync.Mutex
-	tsKeyExternal string            // the flag or environment Tailscale key of this run
-	tsKeyDiffers  bool              // tsKeyExternal differs from the stored key
+	tsKeyExternal string // the flag or environment Tailscale key of this run
+	tsKeyDiffers  bool   // tsKeyExternal differs from the stored key
+	// nbMu guards the NetBird key state below. It is a leaf lock: nothing
+	// else is acquired while it is held, so it nests under pmu and keyMu.
+	nbMu          sync.Mutex
 	nbKey         string            // the NetBird setup key in use
 	nbKeyExternal string            // the flag or environment NetBird key of this run
 	nbKeyDiffers  bool              // nbKeyExternal differs from the stored key
@@ -449,7 +452,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, id := range cfg.Network.Permitted {
 		grants.Permitted = append(grants.Permitted, provider.ID(id))
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet), netbirdConfiguration(cfg, h.nbKey)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet), netbirdConfiguration(cfg, h.currentNetbirdKey())), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}}
 	if h.portalNet != nil {

@@ -58,7 +58,9 @@ func (h *Host) prepareNetbird(ctx context.Context, dataDir string, st *store.Sto
 	if err != nil {
 		return err
 	}
+	h.nbMu.Lock()
 	h.nbKey, h.nbKeyExternal, h.nbKeyDiffers = key, in.value, differs
+	h.nbMu.Unlock()
 	return nil
 }
 
