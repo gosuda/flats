@@ -66,7 +66,7 @@ if gate_request rollback counter --restore-data >/dev/null && r=$(curl -s "$URL"
 # a pipeline early, and pipefail would then mistake SIGPIPE for no secret.
 # BEGIN secret log check
 if logs=$("$F" logs counter); then
-  if grep -q "s3cr3t-value" <<<"$logs"; then
+  if [[ $logs == *"s3cr3t-value"* ]]; then
     fail "secret value leaked into logs"
   else
     pass "secret value not in logs"

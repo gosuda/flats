@@ -107,6 +107,12 @@ class HarnessChecks(unittest.TestCase):
             host.flat = lambda slug: {"providers": ["local", "tailscale"]}
             with self.assertRaises(AssertionError):
                 host.set_flat_permission("example", "tailscale")
+            # Readiness tolerance is only for saving a grant. A revocation
+            # must never accept a 409, even with the opt-in enabled and the
+            # requested policy already absent from the subsequent read.
+            host.flat = lambda slug: {"providers": ["local"]}
+            with self.assertRaises(AssertionError):
+                host.set_flat_permission("example", "tailscale", permitted=False, allow_not_ready=True)
 
     def test_owned_port_time_wait_is_reusable_but_live_listener_is_not(self):
         listener = socket.socket()

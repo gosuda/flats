@@ -88,8 +88,8 @@ A deletion receipt may report `cleanup_pending: true` (with direct status
 `cleanup_pending` or in an approved request's `result_data`). The version has
 already been deleted, but durable storage cleanup is incomplete. While its
 `.version-delete-N` staging folder remains, guarded storage changes are blocked.
-A pending receipt alone is not a universal lock: if no staged files remain after a sync
-failure, actions such as renaming, deleting the flat or reusing its slug may
+A pending receipt alone is not a universal lock: if no staged files remain after
+a sync failure, actions such as renaming, deleting the flat or reusing its slug may
 still be admitted. Report its message; do not retry the version deletion.
 The operator must repair the storage issue and restart Flats for recovery.
 If recovery still fails, host startup may fail rather than discard data.

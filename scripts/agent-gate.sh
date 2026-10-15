@@ -17,6 +17,7 @@ BASE="http://127.0.0.1:$PORT"
 AGENTS=("$@")
 [ ${#AGENTS[@]} -eq 0 ] && AGENTS=(claude codex cursor)
 
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() { [ -n "${SERVE_PID:-}" ] && kill "$SERVE_PID" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT
 

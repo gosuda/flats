@@ -105,10 +105,13 @@ sys.exit(3)
 
 
 class SecretLogTests(unittest.TestCase):
-    def check_logs(self, mode):
+    def check_logs(self, mode, *, broken_grep=False):
         source = Path(__file__).with_name("server-flat-gate.sh").read_text()
         check = source.split("# BEGIN secret log check\n", 1)[1].split(
             "# END secret log check", 1)[0]
+        helpers = [line for line in source.splitlines()
+                   if line.startswith(("pass()", "fail()"))]
+        self.assertEqual(len(helpers), 2)
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "flats"
             executable.write_text("""#!/usr/bin/env python3
@@ -119,15 +122,19 @@ if mode=='failed':
  print('otherwise safe output');sys.exit(7)
 if mode=='secret': print('s3cr3t-value')
 # Exceed normal pipe capacity after the early match. The former grep -q
-# pipeline killed this writer with SIGPIPE and incorrectly reported PASS.
+# pipeline caused BrokenPipeError in this fake writer and incorrectly passed.
 sys.stdout.write('safe log entry\\n'*150000)
 """)
             executable.chmod(0o700)
+            if broken_grep:
+                grep = Path(directory) / "grep"
+                grep.write_text("#!/bin/sh\nexit 2\n")
+                grep.chmod(0o700)
             result = subprocess.run(
                 ["bash", "-uo", "pipefail", "-c",
-                 'FAIL=0; pass(){ echo "PASS: $*"; }; '
-                 'fail(){ echo "FAIL: $*"; FAIL=1; };\n' + check + '\nexit "$FAIL"'],
-                env={**os.environ, "F": str(executable), "LOG_MODE": mode},
+                 'FAIL=0;\n' + '\n'.join(helpers) + '\n' + check + '\nexit "$FAIL"'],
+                env={**os.environ, "F": str(executable), "LOG_MODE": mode,
+                     "PATH": directory + os.pathsep + os.environ["PATH"]},
                 capture_output=True, text=True, timeout=10)
         return result
 
@@ -147,6 +154,12 @@ sys.stdout.write('safe log entry\\n'*150000)
         result = self.check_logs("safe")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS: secret value not in logs", result.stdout)
+
+    def test_broken_grep_cannot_hide_secret(self):
+        result = self.check_logs("secret", broken_grep=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("secret value leaked", result.stdout)
+        self.assertNotIn("PASS:", result.stdout)
 
 
 class ContainerApprovalTests(unittest.TestCase):
