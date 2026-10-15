@@ -203,4 +203,9 @@ test("a split paragraph and links to a changed definition are marked", async () 
     tokens[tokens.indexOf(marked[0]) + 1].content,
     "See [the docs][x].",
   );
+  // A blank line added inside code changes the code block.
+  const fenced = "```js\na();\n\n\nb();\n```\n";
+  tokens = md.parse(fenced, {});
+  out = markChanges(tokens, lineChanges("```js\na();\n\nb();\n```\n", fenced));
+  assert.ok(tokens.find((t) => t.type === "fence").meta?.revChanged);
 });

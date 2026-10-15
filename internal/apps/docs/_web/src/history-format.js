@@ -130,7 +130,7 @@ export function lineChanges(before, after) {
       k = end + 1;
     }
   }
-  return { changed, removed, lines: line };
+  return { changed, removed, blank: new Set(blanks), lines: line };
 }
 
 // Block tokens a change is shown on: the innermost rendered block of the
@@ -161,7 +161,11 @@ const CONTAINER = new Set([
 // consumers holds the indexes of inline tokens that render differently for
 // another reason (links to a changed definition); their blocks are marked.
 // It returns {marked, tail, unshown, lines}.
-export function markChanges(tokens, { changed, removed, lines }, consumers) {
+export function markChanges(
+  tokens,
+  { changed, removed, blank = new Set(), lines },
+  consumers,
+) {
   const items = [],
     covered = new Set();
   let marked = 0;
@@ -190,8 +194,10 @@ export function markChanges(tokens, { changed, removed, lines }, consumers) {
     const [start, end] = t.map,
       block = target(i);
     block.meta ||= {};
+    // Code shows its blank lines: an added one changes the block.
+    const code = t.type === "fence" || t.type === "code_block";
     for (let l = start; l < end; l++)
-      if (changed.has(l)) {
+      if (changed.has(l) || (code && blank.has(l))) {
         covered.add(l);
         mark(block);
       }
