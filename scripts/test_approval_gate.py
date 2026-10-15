@@ -162,6 +162,26 @@ sys.stdout.write('safe log entry\\n'*150000)
         self.assertNotIn("PASS:", result.stdout)
 
 
+class ListenerOwnerTests(unittest.TestCase):
+    def test_listener_requires_live_owned_process_and_tailscale(self):
+        source = Path(__file__).with_name("tailnet-gate.sh").read_text()
+        check = 'if ! kill -0 "$PID"' + source.split(
+            'if ! kill -0 "$PID"', 1)[1].split('\nfi', 1)[0] + '\nfi'
+        # Override kill and tail only in this child shell: never probe or signal
+        # an actual process, start the gate, or contact a provider.
+        for owned in (0, 1):
+            for kind in ("tailscale", "local"):
+                with self.subTest(kill_exit=owned, kind=kind):
+                    result = subprocess.run(
+                        ["bash", "-euc", 'kill(){ return "$OWNED"; }; tail(){ :; }; '
+                         'PID=123; PORT=1; WORK=unused;\n' + check],
+                        env={**os.environ, "OWNED": str(owned), "kind": kind},
+                        capture_output=True, text=True, timeout=2)
+                    self.assertEqual(result.returncode,
+                                     0 if owned == 0 and kind == "tailscale" else 1,
+                                     result.stderr)
+
+
 class ContainerApprovalTests(unittest.TestCase):
     def test_container_cli_uses_exact_create_then_deploy_and_live_docs(self):
         # Execute the checked-in container helpers with fake executables only;

@@ -17,7 +17,7 @@ FLATS_GATE_DISPOSABLE_OPERATOR=1
 source "$ROOT/scripts/approval-gate.sh"
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAIL=1; }
-# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+# shellcheck disable=SC2317,SC2329 # Invoked indirectly by the EXIT trap.
 cleanup() { [ -n "${PID:-}" ] && kill "$PID" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT
 

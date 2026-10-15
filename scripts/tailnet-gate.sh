@@ -56,7 +56,7 @@ for p in (json.load(sys.stdin).get("Peer") or {}).values():
     if p.get("HostName") == sys.argv[1] and (p.get("Online") or not p.get("Expired")):
         sys.exit(1)' "$1"
 }
-# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+# shellcheck disable=SC2317,SC2329 # Invoked indirectly by the EXIT trap.
 cleanup() {
   if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
     for i in 1 2 3; do
@@ -96,7 +96,11 @@ for _ in $(seq 1 100); do
 done
 # Refuse to test against some other server already listening on the port.
 kind=$(curl -fsS --max-time 10 "$FLATS_URL/api/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["system"]["private"]["kind"])' 2>/dev/null)
-kill -0 "$PID" 2>/dev/null && [ "$kind" = tailscale ] || { echo "server on :$PORT is not this gate's tailscale server (kind=$kind)"; tail -5 "$WORK/serve.log"; exit 1; }
+if ! kill -0 "$PID" 2>/dev/null || [ "$kind" != tailscale ]; then
+  echo "server on :$PORT is not this gate's tailscale server (kind=$kind)"
+  tail -5 "$WORK/serve.log"
+  exit 1
+fi
 F="$WORK/flats"
 lsof -t -a -iTCP:"$PORT" -sTCP:LISTEN | /usr/bin/grep -qx "$PID" || { echo "gate does not own listener :$PORT" >&2; exit 1; }
 echo "Before approving deployment, enable Tailscale for each gate flat in this disposable host's console if not already permitted." >&2
