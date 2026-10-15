@@ -889,3 +889,56 @@ func TestPublicExposeUsesBoundedPrefix(t *testing.T) {
 		t.Fatalf("expose requests = %+v", f.requests)
 	}
 }
+
+// The adapter tears a peer down once: a Stop that times out leaves that
+// teardown running, and a later Stop waits for it instead of calling
+// NetBird's Stop again, which would only answer that nothing runs.
+func TestEmbedClientStopWaitsForTheOneTeardown(t *testing.T) {
+	release := make(chan struct{})
+	calls := 0
+	var mu sync.Mutex
+	e := &embedClient{stop: func(context.Context) error {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		<-release
+		return nil
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := e.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Stop = %v", err)
+	}
+	close(release)
+	if err := e.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("NetBird's Stop ran %d times", calls)
+	}
+	failed := &embedClient{stop: func(context.Context) error { return errors.New("wireguard down failed") }}
+	var torn teardownError
+	if err := failed.Stop(context.Background()); !errors.As(err, &torn) {
+		t.Fatalf("a failed teardown = %v, want teardownError", err)
+	}
+}
+
+// A peer whose teardown ended with an error is stopped: its identity can be
+// deleted and its name reused at once.
+func TestTeardownErrorStillRetires(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	if _, err := n.ServePrivate(context.Background(), "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	f := fs.last("blog")
+	f.mu.Lock()
+	f.stopErr = teardownError{errors.New("wireguard down failed")}
+	f.mu.Unlock()
+	if err := n.RetirePrivate("blog"); err != nil || exists(filepath.Join(dir, "peers", "blog")) {
+		t.Fatalf("retire after a teardown error: %v", err)
+	}
+}

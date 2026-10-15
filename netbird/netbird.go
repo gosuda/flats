@@ -365,6 +365,12 @@ func (n *Net) finishStop(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
 	err := c.Stop(ctx)
 	cancel()
+	var torn teardownError
+	if errors.As(err, &torn) {
+		// The peer no longer runs; only its teardown reported a problem.
+		n.logf("netbird: %s: %v", name, err)
+		err = nil
+	}
 	if err != nil {
 		n.logf("netbird: %s: stop the peer: %v", name, err)
 		return fmt.Errorf("netbird: %s: the peer did not stop: %w; retried by the next change of this name", name, err)

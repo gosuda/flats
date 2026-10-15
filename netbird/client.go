@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/netbirdio/netbird/client/embed"
@@ -96,7 +97,20 @@ func storedPrivateKey(path string) (string, error) {
 // with a misleading setup-key error, which Net reports as ErrPeerRejected.
 type embedClient struct {
 	c *embed.Client
+	// stop runs the embedded client's Stop; a field so tests can replace it.
+	stop func(context.Context) error
+
+	stopOnce sync.Once
+	stopDone chan struct{} // closed when the one teardown has ended
+	stopErr  error         // its error, readable after stopDone
 }
+
+// teardownError reports that a peer's teardown ended with an error: the peer
+// no longer runs, but NetBird reported a problem while stopping it.
+type teardownError struct{ err error }
+
+func (e teardownError) Error() string { return "the peer stopped with an error: " + e.err.Error() }
+func (e teardownError) Unwrap() error { return e.err }
 
 func newEmbedClient(o clientOptions) (*embedClient, error) {
 	if err := validateManagementURL(o.ManagementURL); err != nil {
@@ -126,7 +140,7 @@ func newEmbedClient(o clientOptions) (*embedClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &embedClient{c: c}, nil
+	return &embedClient{c: c, stop: c.Stop}, nil
 }
 
 // Start runs the embedded client's Start and returns when ctx ends. NetBird
@@ -155,7 +169,35 @@ func (e *embedClient) Start(ctx context.Context, finished func(error)) error {
 		return ctx.Err()
 	}
 }
-func (e *embedClient) Stop(ctx context.Context) error { return e.c.Stop(ctx) }
+
+// Stop tears the peer down once and waits for that teardown, or ctx. NetBird
+// v0.80.0's Stop forgets the client when its context ends, while the
+// teardown goes on, and answers ErrClientNotStarted to every later call; so
+// the teardown runs here without a deadline, and a later Stop after a timeout
+// waits for the same teardown instead of starting another. A teardown that
+// ended with an error is reported as teardownError: the peer no longer runs.
+func (e *embedClient) Stop(ctx context.Context) error {
+	e.stopOnce.Do(func() {
+		e.stopDone = make(chan struct{})
+		go func() {
+			err := e.stop(context.Background())
+			if errors.Is(err, embed.ErrClientNotStarted) {
+				err = nil
+			}
+			e.stopErr = err
+			close(e.stopDone)
+		}()
+	})
+	select {
+	case <-e.stopDone:
+		if e.stopErr != nil {
+			return teardownError{e.stopErr}
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func (e *embedClient) ListenTCP(addr string) (net.Listener, error) { return e.c.ListenTCP(addr) }
 
