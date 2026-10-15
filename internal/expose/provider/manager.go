@@ -217,7 +217,6 @@ type Manager struct {
 	zrok          ZrokNet
 	cfquick       QuickNet
 	netbird       NetbirdNet
-	nmu           sync.RWMutex // read-held across a NetBird open; DetachNetbird holds it to write
 	zmu           sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	tailscaleDir  string
 	zrokDir       string
@@ -347,25 +346,6 @@ func (m *Manager) AttachNetbird(n NetbirdNet) {
 	if m.netbird == nil {
 		m.netbird = n
 	}
-}
-
-// DetachNetbird removes the NetBird backend, for a peer disconnected while
-// the host runs. It refuses while any NetBird route is registered.
-func (m *Manager) DetachNetbird() bool {
-	m.nmu.Lock() // waits for NetBird opens in flight
-	defer m.nmu.Unlock()
-	m.mu.Lock()
-	for _, r := range m.routes {
-		if r.provider == Netbird || r.provider == NetbirdExpose {
-			m.mu.Unlock()
-			return false
-		}
-	}
-	m.mu.Unlock()
-	m.bmu.Lock()
-	m.netbird = nil
-	m.bmu.Unlock()
-	return true
 }
 
 // AttachTailnet configures the Tailscale backend once, for a provider the
@@ -884,9 +864,6 @@ func (m *Manager) openNetbird(ctx context.Context, req ExposureRequest) (Exposur
 	if !m.allows(Netbird) {
 		return refused(Netbird, "host permission absent"), fmt.Errorf("%w: netbird", ErrProviderNotPermitted)
 	}
-	// Hold the open against DetachNetbird from Serve through registration.
-	m.nmu.RLock()
-	defer m.nmu.RUnlock()
 	n := m.netbirdNet()
 	if n == nil {
 		return refused(Netbird, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird", ErrNotConfigured)
@@ -1001,8 +978,6 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		return ep, nil
 	case NetbirdExpose:
-		m.nmu.RLock()
-		defer m.nmu.RUnlock()
 		n := m.netbirdNet()
 		if n == nil {
 			return refused(NetbirdExpose, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird-expose", ErrNotConfigured)

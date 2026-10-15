@@ -18,8 +18,9 @@ not reachable until it has a key and a domain.
   change it, add the new one, move clients over, then delete the old one.
   Several may be used at once.
 
-NetBird console domains and console authentication are out of scope; see
-[Open questions](#open-questions).
+NetBird console domains and the NetBird setup key follow
+[netbird-peers.md](netbird-peers.md), which builds on the rules here. Console
+authentication is out of scope; see [Open questions](#open-questions).
 
 ## Keys
 
@@ -28,7 +29,7 @@ NetBird console domains and console authentication are out of scope; see
 | Key | Use | Kept by Flats |
 |---|---|---|
 | Tailscale auth key | logs in every new tailnet node (flats, previews, console domains) | yes, in `flats.db` |
-| NetBird setup key | enrolls the NetBird peer once | only until the peer is enrolled; the peer keeps its own identity |
+| NetBird setup key | registers every new NetBird peer (one per flat and console domain) | yes, in `flats.db` |
 | zrok account token | registers this machine as a zrok environment | yes, inside the zrok environment directory (exception below) |
 
 Identities that Flats or a provider creates itself, such as the node state in
@@ -68,20 +69,22 @@ not keys, and stay where they are.
    environment value differs from the stored key, the host keeps the stored
    key and warns in the log and in the console. Nothing about the external
    value is stored.
-7. **Enrollment keys.** For a key used once (the NetBird setup key) or one that
-   creates an account link (the zrok token), a flag or environment value means
-   "enroll or connect if not yet enrolled or connected". It never replaces a
-   connected peer or account; the console's replace and disconnect actions do.
+7. **Enrollment keys.** For a key that creates an account link (the zrok
+   token), a flag or environment value means "connect if not yet connected".
+   It never replaces a connected account; the console's replace and disconnect
+   actions do. The NetBird setup key is stored like the Tailscale key
+   (rules 4–6; netbird-peers.md).
 8. **Removing a key.** The console can remove the stored Tailscale key; new
-   nodes then wait for an interactive login and show its link. If a flag or
-   environment value is still present, the next start seeds it again, and the
-   console says so. NetBird and zrok keep their existing disconnect actions.
-9. **What the operator sees.** For each key: whether one is set (for zrok
-   and NetBird: whether an account or peer is connected, or an enrollment is
-   waiting), where it came from (flag, environment, offline CLI, console, or
-   unknown for a connection made before this feature), when, and non-secret
-   identity where one exists (zrok environment ID, NetBird device name). A
-   key is never shown again.
+   nodes then wait for an interactive login and show its link. It can remove
+   the NetBird setup key; running peers keep working and new ones cannot
+   register. If a flag or environment value is still present, the next start
+   seeds it again, and the console says so. zrok keeps its disconnect action.
+9. **What the operator sees.** For each key: whether one is set (for zrok:
+   whether an account is connected, or a connection is waiting), where it
+   came from (flag, environment, offline CLI, console, or unknown for a
+   connection made before this feature), when, and non-secret identity where
+   one exists (zrok environment ID, NetBird management server and running
+   peers). A key is never shown again.
 10. **Agents.** No MCP tool and no agent API route reads, sets or removes a
     key; keys are set only from the console, the offline CLI or the host's own
     start inputs. The console's routes are protected against cross-site
@@ -176,6 +179,4 @@ that path from `config.json`.
   refuse while it runs, and the agent-facing API must not carry keys; a local
   channel protected by OS permissions would be needed. Deferred: first
   installs use flags or the environment, and a running host uses the console.
-- NetBird console domains: how a NetBird peer serves a console name is not
-  settled. The list is kept per provider so NetBird can be added later.
 - Console authentication and authorization.

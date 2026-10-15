@@ -70,14 +70,23 @@ func TestConsoleNodes(t *testing.T) {
 	if err := s.PutConsoleNode(ctx, ConsoleNode{Name: "flats", Retiring: true}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ListConsoleNodes(ctx)
-	if err != nil || len(got) != 2 || got[0] != (ConsoleNode{Name: "admin", Retiring: true, LastError: "logout failed"}) || got[1] != (ConsoleNode{Name: "flats", Retiring: true}) {
-		t.Fatalf("ListConsoleNodes = %+v, %v", got, err)
-	}
-	if err := s.DeleteConsoleNode(ctx, "admin"); err != nil {
+	// The same name may be a NetBird console node too.
+	if err := s.PutConsoleNode(ctx, ConsoleNode{Provider: "netbird", Name: "flats"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.ListConsoleNodes(ctx); len(got) != 1 {
+	got, err := s.ListConsoleNodes(ctx)
+	if err != nil || len(got) != 3 || got[0] != (ConsoleNode{Provider: "netbird", Name: "flats"}) ||
+		got[1] != (ConsoleNode{Provider: "tailscale", Name: "admin", Retiring: true, LastError: "logout failed"}) ||
+		got[2] != (ConsoleNode{Provider: "tailscale", Name: "flats", Retiring: true}) {
+		t.Fatalf("ListConsoleNodes = %+v, %v", got, err)
+	}
+	if err := s.DeleteConsoleNode(ctx, "", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteConsoleNode(ctx, "netbird", "flats"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ListConsoleNodes(ctx); len(got) != 1 || got[0].Provider != "tailscale" {
 		t.Fatalf("after delete: %+v", got)
 	}
 }

@@ -46,7 +46,7 @@ OS user configuration directory under `flats-client/`, only the CLI and
   flats/.lifecycle/           unfinished rename/delete journals, deleted storage
                               being removed, and orphans/ (see below)
   tsnet/ portal/              provider node identities
-  netbird/                    the connected NetBird peer: identity (mode 0600), account record, port records (builds with NetBird only)
+  netbird/peers/<name>/       one NetBird peer per flat and console domain: identity (mode 0600) and state (builds with NetBird only)
   zrok/                       zrok names this host reserved, until released
   zrok-environment/           the connected zrok account: token and identity (mode 0600)
   cloudflare-quick/           Cloudflare quick tunnel credentials per flat (mode 0600)
@@ -81,7 +81,7 @@ stopped, never a plain copy of a live database), `secret.key` together with
 `flats.db`, `flats/<slug>/` except the temporary copies, `restore-journal.json`,
 `flats/.lifecycle/` and `network-retirements/` when present, and `tsnet/` and `portal/` (without
 them new node names and certificates are issued), `zrok/` (without it a
-deleted flat no longer releases its zrok name), and `netbird/` (without it the peer must be enrolled again with a new setup key). `cloudflare-quick/` is
+deleted flat no longer releases its zrok name), and `netbird/` (without it every NetBird peer registers again with the stored setup key and NetBird lists a new peer per name). `cloudflare-quick/` is
 optional: without it each public flat's quick tunnel gets a new random
 address. The operator keys are in `flats.db` and need `secret.key` from the
 same backup. Logs, caches, sockets and the lock are rebuilt.
@@ -99,7 +99,7 @@ written; `flats config unset KEY` removes it.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "host": {
     "instance_id": "63b57046-582f-48d9-a64f-877ae28d12aa",
     "data_dir": "/path/to/flats-data"
@@ -144,8 +144,8 @@ written; `flats config unset KEY` removes it.
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
-| `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to the next peer connected |
-| `netbird.device_name` | `flats` (a DNS label) | the same |
+| `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
+| `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console domains); otherwise restart |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
 
@@ -286,18 +286,18 @@ events or API responses:
 | Key | Use | Kept |
 | --- | --- | --- |
 | Tailscale auth key | logs in every new tailnet node | until removed |
-| NetBird setup key | enrolls the NetBird peer once | until the peer is enrolled |
+| NetBird setup key | registers every new NetBird peer (one per flat and console domain) | until removed |
 | zrok account token | connects the zrok account | until connected; the zrok environment in `zrok-environment/` then holds it |
 
 A key reaches Flats in one of these ways:
 
 - **Console**: Settings → Keys sets, replaces and removes keys while the host
-  runs. A new Tailscale key is used by nodes started afterwards; nodes on the
-  tailnet keep their identity.
+  runs. A new Tailscale key or NetBird setup key is used by nodes and peers
+  started afterwards; those already registered keep their identity.
 - **`flats key set tailscale|zrok|netbird`** while the host is stopped, with
   the key on standard input (a prompt without echo on a terminal) or
   `--from-file PATH`. `flats key ls` lists the keys without values and
-  `flats key rm` removes a stored key or a waiting zrok/NetBird key.
+  `flats key rm` removes a stored key or a waiting zrok token.
 - **At start**, in this order: the flags `--tailscale-authkey-file`
   (`--authkey-file` for a legacy service), `--zrok-token-file` and
   `--netbird-setup-key-file`, each naming a file; then the environment
@@ -308,12 +308,12 @@ A key reaches Flats in one of these ways:
   `TS_AUTHKEY` and `TS_AUTH_KEY`. Flats removes these variables from its
   environment after reading them.
 
-A key given at start only fills in what is missing: the Tailscale key is
-stored when `flats.db` holds none, and a zrok token or NetBird setup key is
-used when no account or peer is connected. A key registered in the console or
+A key given at start only fills in what is missing: the Tailscale key and the
+NetBird setup key are stored when `flats.db` holds none of that kind, and a
+zrok token is used when no account is connected. A key registered in the console or
 with `flats key set` therefore stays after restarts even while a service
 still passes an older flag or variable; a start value that differs from the
-stored Tailscale key is ignored, with a warning in the log and the console.
+stored Tailscale or NetBird key is ignored, with a warning in the log and the console.
 To replace a key, register the new one. An unreadable key file stops the
 start with status 78.
 

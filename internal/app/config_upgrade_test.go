@@ -151,7 +151,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 	instance := h.Config.Host.InstanceID
 	// --console-host named a tailnet console only with --network tailscale.
 	want := `{
-  "schema_version": 2,
+  "schema_version": 3,
   "host": {
     "instance_id": "` + instance + `",
     "data_dir": "` + dir + `"
@@ -501,7 +501,7 @@ func TestConfigModeRefusals(t *testing.T) {
 		dir := t.TempDir()
 		path := initConfig(t, dir)
 		raw, _ := os.ReadFile(path)
-		raw = bytes.Replace(raw, []byte(`"schema_version": 2`), []byte(`"schema_version": 3`), 1)
+		raw = bytes.Replace(raw, []byte(`"schema_version": 3`), []byte(`"schema_version": 4`), 1)
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -753,7 +753,7 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 	if !bytes.Contains(raw, []byte(`"keep_versions": 3`)) || !bytes.Contains(raw, []byte(`"relays": ["https://relay.example.com"]`)) {
 		t.Fatalf("config.json =\n%s", raw)
 	}
-	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v2.*.json")); len(hist) != 1 {
+	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v3.*.json")); len(hist) != 1 {
 		t.Fatalf("history = %q", hist)
 	}
 	if h.Svc.UploadLimit() != 20<<20 {

@@ -343,6 +343,12 @@ func (s *SettingsSource) setPermitted(ids []string, ifMatch string) (string, err
 // run's --console-host override, and what pins it ("" when the console may
 // change it).
 func (s *SettingsSource) consoleHosts() ([]string, string) {
+	return s.consoleHostsOf(ConsoleProviderTailscale)
+}
+
+// consoleHostsOf returns the console domains of one provider and, for
+// Tailscale, what pins them.
+func (s *SettingsSource) consoleHostsOf(provider string) ([]string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var overrides map[string]string
@@ -352,6 +358,9 @@ func (s *SettingsSource) consoleHosts() ([]string, string) {
 	c, err := s.doc.Effective(overrides)
 	if err != nil {
 		return nil, ""
+	}
+	if provider == ConsoleProviderNetbird {
+		return slices.Clone(c.Netbird.ConsoleHosts), ""
 	}
 	pin := s.pinned[consoleHostsKey]
 	if _, ok := overrides[consoleHostsKey]; ok {
@@ -365,17 +374,37 @@ func (s *SettingsSource) consoleHosts() ([]string, string) {
 // next start compares with the list.
 func (s *SettingsSource) PinConsoleHosts(by string) { s.Pin(consoleHostsKey, by) }
 
-const consoleHostsKey = "tailscale.console_hosts"
+const (
+	consoleHostsKey        = "tailscale.console_hosts"
+	netbirdConsoleHostsKey = "netbird.console_hosts"
+
+	// ConsoleProviderTailscale and ConsoleProviderNetbird name the networks
+	// console domains run on.
+	ConsoleProviderTailscale = "tailscale"
+	ConsoleProviderNetbird   = "netbird"
+)
 
 // setConsoleHosts saves tailscale.console_hosts, as a settings change does.
 // It refuses while a --console-host flag sets the list for this run.
 func (s *SettingsSource) setConsoleHosts(names []string, ifMatch string) (string, error) {
+	return s.setConsoleHostsOf(ConsoleProviderTailscale, names, ifMatch)
+}
+
+// setConsoleHostsOf saves one provider's console domain list.
+func (s *SettingsSource) setConsoleHostsOf(provider string, names []string, ifMatch string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	by := s.pinned[consoleHostsKey]
-	if s.file != nil {
-		if _, ok := s.file.Overrides[consoleHostsKey]; ok {
-			by = "the service's --console-host flag"
+	key := consoleHostsKey
+	if provider == ConsoleProviderNetbird {
+		key = netbirdConsoleHostsKey
+	}
+	by := ""
+	if key == consoleHostsKey {
+		by = s.pinned[consoleHostsKey]
+		if s.file != nil {
+			if _, ok := s.file.Overrides[consoleHostsKey]; ok {
+				by = "the service's --console-host flag"
+			}
 		}
 	}
 	if by != "" {
@@ -389,7 +418,7 @@ func (s *SettingsSource) setConsoleHosts(names []string, ifMatch string) (string
 		if err != nil {
 			return err
 		}
-		if err := d.Set(consoleHostsKey, string(raw)); err != nil {
+		if err := d.Set(key, string(raw)); err != nil {
 			return err
 		}
 		return d.Validate()
@@ -419,6 +448,18 @@ func (s *Service) ConsoleHosts() ([]string, string) { return s.settings.consoleH
 // SetConsoleHosts saves the console domain list against the settings ETag.
 func (s *Service) SetConsoleHosts(names []string, ifMatch string) (string, error) {
 	return s.settings.setConsoleHosts(names, ifMatch)
+}
+
+// ConsoleHostsOf returns the console domains of provider
+// (ConsoleProvider*) and, for Tailscale, what pins them.
+func (s *Service) ConsoleHostsOf(provider string) ([]string, string) {
+	return s.settings.consoleHostsOf(provider)
+}
+
+// SetConsoleHostsOf saves provider's console domain list against the
+// settings ETag.
+func (s *Service) SetConsoleHostsOf(provider string, names []string, ifMatch string) (string, error) {
+	return s.settings.setConsoleHostsOf(provider, names, ifMatch)
 }
 
 // DropDeprecatedAuthKeyFile removes credentials.tailscale_authkey_file from

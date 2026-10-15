@@ -76,17 +76,18 @@ export const api = {
   setProvider: (id, enabled, etag) => request('PUT', `/providers/${enc(id)}`, { enabled }, etag ? { 'If-Match': `"${etag}"` } : undefined),
   // The token is sent once and never returned.
   connectZrok: (token) => request('PUT', '/providers/zrok/account', { token }),
-  connectNetbird: (setup_key) => request('PUT', '/providers/netbird/account', { setup_key }),
-  disconnectNetbird: (force) => request('DELETE', '/providers/netbird/account' + (force ? '?force=1' : '')),
   disconnectZrok: (force) => request('DELETE', '/providers/zrok/account' + (force ? '?force=1' : '')),
   // Operator keys: values are sent once and never returned.
   keys: () => get('/keys'),
   setTailscaleKey: (key) => request('PUT', '/keys/tailscale', { key }),
   deleteTailscaleKey: () => request('DELETE', '/keys/tailscale'),
+  setNetbirdKey: (key) => request('PUT', '/keys/netbird', { key }),
+  deleteNetbirdKey: () => request('DELETE', '/keys/netbird'),
+  dismissNetbirdLegacyPeer: () => request('DELETE', '/keys/netbird/legacy-peer'),
   // Console domains; etag is config.etag (or the view's etag), as for saveSettings.
   consoleDomains: () => get('/console-domains'),
-  addConsoleDomain: (name, etag) => request('POST', '/console-domains', { name }, etag ? { 'If-Match': `"${etag}"` } : undefined),
-  deleteConsoleDomain: (name, etag) => request('DELETE', `/console-domains/${enc(name)}`, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  addConsoleDomain: (provider, name, etag) => request('POST', '/console-domains', { provider, name }, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  deleteConsoleDomain: (provider, name, etag) => request('DELETE', `/console-domains/${enc(provider)}/${enc(name)}`, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another
   // save since then makes the server refuse with 412.

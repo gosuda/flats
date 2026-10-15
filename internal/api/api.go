@@ -47,17 +47,6 @@ type ZrokAccountAdmin interface {
 	DisconnectZrok(ctx context.Context, force bool) error
 }
 
-// NetbirdAccountAdmin is a System that lets the console enroll the host as a
-// NetBird peer with a setup key, and disconnect it. The setup key is sent
-// once, used to register the peer and never stored or returned.
-type NetbirdAccountAdmin interface {
-	ConnectNetbird(ctx context.Context, setupKey string) error
-	// DisconnectNetbird removes the peer's local identity; force does so even
-	// when it cannot be confirmed. The peer may remain listed in the NetBird
-	// dashboard until the operator removes it there.
-	DisconnectNetbird(ctx context.Context, force bool) error
-}
-
 // KeyAdmin is a System whose console manages the operator keys. Values are
 // sent once and never returned.
 type KeyAdmin interface {
@@ -65,17 +54,23 @@ type KeyAdmin interface {
 	HostKeys(ctx context.Context) (any, error)
 	SetTailscaleKey(ctx context.Context, key string) error
 	DeleteTailscaleKey(ctx context.Context) error
+	SetNetbirdKey(ctx context.Context, key string) error
+	DeleteNetbirdKey(ctx context.Context) error
+	// DismissNetbirdLegacyPeer hides the notice about the shared NetBird
+	// peer an earlier version registered.
+	DismissNetbirdLegacyPeer(ctx context.Context) error
 }
 
 // ConsoleDomainAdmin is a System whose console manages its own Tailscale
-// domains. Changes are guarded by the settings ETag.
+// and NetBird domains. provider is "tailscale" or "netbird". Changes are
+// guarded by the settings ETag.
 type ConsoleDomainAdmin interface {
 	ConsoleDomains(ctx context.Context) (any, error)
-	AddConsoleDomain(ctx context.Context, name, ifMatch string) (etag string, err error)
+	AddConsoleDomain(ctx context.Context, provider, name, ifMatch string) (etag string, err error)
 	// DeleteConsoleDomain removes name. When the request came through name,
 	// redirect is a remaining console address and after, run once the
-	// response is written, logs the node out.
-	DeleteConsoleDomain(ctx context.Context, name, ifMatch string) (etag, redirect string, after func(), err error)
+	// response is written, retires the node.
+	DeleteConsoleDomain(ctx context.Context, provider, name, ifMatch string) (etag, redirect string, after func(), err error)
 }
 
 // Server serves /api and /console/api.
@@ -158,14 +153,15 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /providers/{id}", s.setHostProvider)
 			h("PUT /providers/zrok/account", s.connectZrok)
 			h("DELETE /providers/zrok/account", s.disconnectZrok)
-			h("PUT /providers/netbird/account", s.connectNetbird)
-			h("DELETE /providers/netbird/account", s.disconnectNetbird)
 			h("GET /keys", s.hostKeys)
 			h("PUT /keys/tailscale", s.setTailscaleKey)
 			h("DELETE /keys/tailscale", s.deleteTailscaleKey)
+			h("PUT /keys/netbird", s.setNetbirdKey)
+			h("DELETE /keys/netbird", s.deleteNetbirdKey)
+			h("DELETE /keys/netbird/legacy-peer", s.dismissNetbirdLegacyPeer)
 			h("GET /console-domains", s.consoleDomains)
 			h("POST /console-domains", s.addConsoleDomain)
-			h("DELETE /console-domains/{name}", s.deleteConsoleDomain)
+			h("DELETE /console-domains/{provider}/{name}", s.deleteConsoleDomain)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
@@ -963,49 +959,6 @@ func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.V
 	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
 }
 
-func (s *Server) netbirdAccountAdmin(w http.ResponseWriter) (NetbirdAccountAdmin, ProviderAdmin, bool) {
-	n, ok := s.System.(NetbirdAccountAdmin)
-	p, pok := s.System.(ProviderAdmin)
-	if !ok || !pok {
-		writeErr(w, http.StatusNotFound, errors.New("this host does not manage a NetBird peer"))
-		return nil, nil, false
-	}
-	return n, p, true
-}
-
-// connectNetbird enrolls the host as a NetBird peer with a setup key.
-func (s *Server) connectNetbird(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	n, p, ok := s.netbirdAccountAdmin(w)
-	if !ok {
-		return
-	}
-	var in struct {
-		SetupKey string `json:"setup_key"`
-	}
-	if err := decode(r, &in); err != nil || strings.TrimSpace(in.SetupKey) == "" {
-		writeErr(w, 400, errors.New(`body must be {"setup_key": "<NetBird setup key>"}`))
-		return
-	}
-	if err := n.ConnectNetbird(r.Context(), strings.TrimSpace(in.SetupKey)); err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
-}
-
-// disconnectNetbird removes the host's NetBird peer identity.
-func (s *Server) disconnectNetbird(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	n, p, ok := s.netbirdAccountAdmin(w)
-	if !ok {
-		return
-	}
-	if err := n.DisconnectNetbird(r.Context(), r.URL.Query().Get("force") == "1"); err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
-}
-
 func (s *Server) keyAdmin(w http.ResponseWriter) (KeyAdmin, bool) {
 	k, ok := s.System.(KeyAdmin)
 	if !ok {
@@ -1052,11 +1005,46 @@ func (s *Server) setTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.
 
 // deleteTailscaleKey removes the stored Tailscale auth key.
 func (s *Server) deleteTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	s.keyAction(w, r, KeyAdmin.DeleteTailscaleKey)
+}
+
+// setNetbirdKey stores the NetBird setup key new NetBird peers register with.
+func (s *Server) setNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	k, ok := s.keyAdmin(w)
 	if !ok {
 		return
 	}
-	if err := k.DeleteTailscaleKey(r.Context()); err != nil {
+	var in struct {
+		Key string `json:"key"`
+	}
+	if err := decode(r, &in); err != nil || strings.TrimSpace(in.Key) == "" {
+		writeErr(w, 400, errors.New(`body must be {"key": "<NetBird setup key>"}`))
+		return
+	}
+	if err := k.SetNetbirdKey(r.Context(), in.Key); err != nil {
+		fail(w, err)
+		return
+	}
+	s.writeKeys(w, r, k)
+}
+
+// deleteNetbirdKey removes the stored NetBird setup key.
+func (s *Server) deleteNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	s.keyAction(w, r, KeyAdmin.DeleteNetbirdKey)
+}
+
+// dismissNetbirdLegacyPeer hides the notice about the old shared peer.
+func (s *Server) dismissNetbirdLegacyPeer(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	s.keyAction(w, r, KeyAdmin.DismissNetbirdLegacyPeer)
+}
+
+// keyAction runs a body-less key change and answers with the key list.
+func (s *Server) keyAction(w http.ResponseWriter, r *http.Request, do func(KeyAdmin, context.Context) error) {
+	k, ok := s.keyAdmin(w)
+	if !ok {
+		return
+	}
+	if err := do(k, r.Context()); err != nil {
 		fail(w, err)
 		return
 	}
@@ -1091,13 +1079,17 @@ func (s *Server) addConsoleDomain(w http.ResponseWriter, r *http.Request, _ core
 		return
 	}
 	var in struct {
-		Name string `json:"name"`
+		Provider string `json:"provider"`
+		Name     string `json:"name"`
 	}
 	if err := decode(r, &in); err != nil || strings.TrimSpace(in.Name) == "" {
-		writeErr(w, 400, errors.New(`body must be {"name": "<tailnet host name>"}`))
+		writeErr(w, 400, errors.New(`body must be {"provider": "tailscale" or "netbird", "name": "<host name>"}`))
 		return
 	}
-	etag, err := d.AddConsoleDomain(r.Context(), strings.TrimSpace(in.Name), ifMatch(r))
+	if in.Provider == "" {
+		in.Provider = "tailscale"
+	}
+	etag, err := d.AddConsoleDomain(r.Context(), in.Provider, strings.TrimSpace(in.Name), ifMatch(r))
 	if err != nil {
 		fail(w, err)
 		return
@@ -1114,7 +1106,7 @@ func (s *Server) deleteConsoleDomain(w http.ResponseWriter, r *http.Request, _ c
 	if !ok {
 		return
 	}
-	etag, redirect, after, err := d.DeleteConsoleDomain(r.Context(), r.PathValue("name"), ifMatch(r))
+	etag, redirect, after, err := d.DeleteConsoleDomain(r.Context(), r.PathValue("provider"), r.PathValue("name"), ifMatch(r))
 	if err != nil {
 		fail(w, err)
 		return

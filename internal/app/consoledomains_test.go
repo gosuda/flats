@@ -104,8 +104,10 @@ func tailnetHost(t *testing.T) (*Host, *fakeTailnet, *http.Client) {
 }
 
 func viaDomain(name string) context.Context {
-	return context.WithValue(context.Background(), consoleDomainKey{}, name)
+	return context.WithValue(context.Background(), consoleDomainKey{}, cdKey{providerTailscale, name})
 }
+
+func tsView(v ConsoleDomainsView) *ConsoleProviderView { return v.Providers[providerTailscale] }
 
 func hosts(h *Host) []string { l, _ := h.Svc.ConsoleHosts(); return l }
 
@@ -120,7 +122,7 @@ func TestConsoleDomainsAddAndDelete(t *testing.T) {
 	if !tail.isServed("flats") || !slices.Equal(hosts(h), []string{"flats"}) {
 		t.Fatalf("after add: served %v list %v", tail.isServed("flats"), hosts(h))
 	}
-	if _, err := h.AddConsoleDomain(ctx, "flats-2", h.Svc.SettingsETag()); err != nil {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "flats-2", h.Svc.SettingsETag()); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(hosts(h), []string{"flats", "flats-2"}) {
@@ -130,7 +132,7 @@ func TestConsoleDomainsAddAndDelete(t *testing.T) {
 	if code := consoleCall(t, h, client, "GET", "/console/api/console-domains", nil, &view); code != 200 {
 		t.Fatalf("view: %d", code)
 	}
-	if len(view.Domains) != 2 || view.Domains[0].URL != "https://flats.tail1234.ts.net" || view.Domains[0].State != "ready" || !view.Loopback || !view.TailscaleOn {
+	if len(tsView(view).Domains) != 2 || tsView(view).Domains[0].URL != "https://flats.tail1234.ts.net" || tsView(view).Domains[0].State != "ready" || !view.Loopback || !tsView(view).On {
 		t.Fatalf("view = %+v", view)
 	}
 	nodes, _ := h.Store.ListConsoleNodes(ctx)
@@ -140,16 +142,16 @@ func TestConsoleDomainsAddAndDelete(t *testing.T) {
 
 	// Refusals change nothing.
 	for name, want := range map[string]error{"Flats": core.ErrInvalid, "a.b": core.ErrInvalid, "flats": core.ErrConflict} {
-		if _, err := h.AddConsoleDomain(ctx, name, ""); !errors.Is(err, want) {
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", name, ""); !errors.Is(err, want) {
 			t.Errorf("add %q: %v", name, err)
 		}
 	}
-	if _, err := h.AddConsoleDomain(ctx, "other", "stale-etag"); !errors.Is(err, core.ErrConfigChanged) || tail.isServed("other") {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "other", "stale-etag"); !errors.Is(err, core.ErrConfigChanged) || tail.isServed("other") {
 		t.Fatalf("stale ETag: %v served=%v", err, tail.isServed("other"))
 	}
 
 	// Delete from loopback: the list first, then the node.
-	if code := consoleCall(t, h, client, "DELETE", "/console/api/console-domains/flats", nil, nil); code != 200 {
+	if code := consoleCall(t, h, client, "DELETE", "/console/api/console-domains/tailscale/flats", nil, nil); code != 200 {
 		t.Fatalf("delete: %d", code)
 	}
 	if tail.isServed("flats") || !slices.Equal(hosts(h), []string{"flats-2"}) || !slices.Contains(tail.stopped(), "flats") {
@@ -159,13 +161,13 @@ func TestConsoleDomainsAddAndDelete(t *testing.T) {
 		t.Fatalf("nodes = %+v", nodes)
 	}
 	// The last domain: a console reached through it refuses, loopback may.
-	if _, _, _, err := h.DeleteConsoleDomain(viaDomain("flats-2"), "flats-2", ""); !errors.Is(err, core.ErrConflict) {
+	if _, _, _, err := h.DeleteConsoleDomain(viaDomain("flats-2"), "tailscale", "flats-2", ""); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("last via domain: %v", err)
 	}
-	if _, _, _, err := h.DeleteConsoleDomain(ctx, "flats-2", ""); err != nil || len(hosts(h)) != 0 {
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "flats-2", ""); err != nil || len(hosts(h)) != 0 {
 		t.Fatalf("last via loopback: %v %v", err, hosts(h))
 	}
-	if _, _, _, err := h.DeleteConsoleDomain(ctx, "flats-2", ""); !errors.Is(err, store.ErrNotFound) {
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "flats-2", ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("delete twice: %v", err)
 	}
 }
@@ -176,10 +178,10 @@ func TestConsoleDomainNamesAndFlats(t *testing.T) {
 	if _, err := h.Svc.CreateFlat(ctx, "blog", "", core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.AddConsoleDomain(ctx, "blog", ""); !errors.Is(err, core.ErrConflict) || tail.isServed("blog") {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "blog", ""); !errors.Is(err, core.ErrConflict) || tail.isServed("blog") {
 		t.Fatalf("a flat's name: %v", err)
 	}
-	if _, err := h.AddConsoleDomain(ctx, "admin", ""); err != nil {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "admin", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.Svc.CreateFlat(ctx, "admin", "", core.ViaAPI); err == nil {
@@ -200,11 +202,11 @@ func TestConsoleDomainSelfDelete(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
 	ctx := context.Background()
 	for _, n := range []string{"a", "b"} {
-		if _, err := h.AddConsoleDomain(ctx, n, ""); err != nil {
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", n, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, redirect, after, err := h.DeleteConsoleDomain(viaDomain("a"), "a", "")
+	_, redirect, after, err := h.DeleteConsoleDomain(viaDomain("a"), "tailscale", "a", "")
 	if err != nil || redirect != "https://b.tail1234.ts.net" || after == nil {
 		t.Fatalf("self delete: %q %v %v", redirect, after != nil, err)
 	}
@@ -230,7 +232,7 @@ func TestConsoleDomainSelfDeleteOverHTTP(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
 	ctx := context.Background()
 	for _, n := range []string{"a", "b"} {
-		if _, err := h.AddConsoleDomain(ctx, n, ""); err != nil {
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", n, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -244,7 +246,7 @@ func TestConsoleDomainSelfDeleteOverHTTP(t *testing.T) {
 	// a node stopped before the response is out loses the response.
 	tail.onStop = map[string]func(){"a": func() { srv.Config.Close() }}
 	tail.mu.Unlock()
-	req, _ := http.NewRequest("DELETE", srv.URL+"/console/api/console-domains/a", nil)
+	req, _ := http.NewRequest("DELETE", srv.URL+"/console/api/console-domains/tailscale/a", nil)
 	req.Host = "a.tail1234.ts.net"
 	req.Header.Set("X-Flats-Console", "1")
 	req.Header.Set("Origin", "https://a.tail1234.ts.net")
@@ -271,14 +273,14 @@ func TestConsoleDomainFailedLogout(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
 	ctx := context.Background()
 	for _, n := range []string{"keep", "gone"} {
-		if _, err := h.AddConsoleDomain(ctx, n, ""); err != nil {
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", n, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 	tail.mu.Lock()
 	tail.stopErr["gone"] = errors.New("logout refused")
 	tail.mu.Unlock()
-	if _, _, _, err := h.DeleteConsoleDomain(ctx, "gone", ""); !errors.Is(err, core.ErrUnavailable) {
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "gone", ""); !errors.Is(err, core.ErrUnavailable) {
 		t.Fatalf("failed logout: %v", err)
 	}
 	if !slices.Equal(hosts(h), []string{"keep"}) {
@@ -291,19 +293,19 @@ func TestConsoleDomainFailedLogout(t *testing.T) {
 	if _, err := h.Svc.CreateFlat(ctx, "gone", "", core.ViaAPI); err == nil {
 		t.Fatal("a flat took a retiring console node's name")
 	}
-	if _, err := h.AddConsoleDomain(ctx, "gone", ""); !errors.Is(err, core.ErrConflict) {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "gone", ""); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("re-adding a retiring name: %v", err)
 	}
 	var view ConsoleDomainsView
 	v, _ := h.ConsoleDomains(ctx)
 	view = v.(ConsoleDomainsView)
-	if len(view.Retiring) != 1 || view.Retiring[0].Error == "" {
-		t.Fatalf("view retiring = %+v", view.Retiring)
+	if len(tsView(view).Retiring) != 1 || tsView(view).Retiring[0].Error == "" {
+		t.Fatalf("view retiring = %+v", tsView(view).Retiring)
 	}
 	tail.mu.Lock()
 	delete(tail.stopErr, "gone")
 	tail.mu.Unlock()
-	if _, _, _, err := h.DeleteConsoleDomain(ctx, "gone", ""); err != nil {
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "gone", ""); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 1 {
@@ -319,7 +321,7 @@ func TestConsoleDomainAddRollsBack(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
 	ctx := context.Background()
 	tail.serveErr = errors.New("teardown still pending")
-	if _, err := h.AddConsoleDomain(ctx, "rolled", ""); !errors.Is(err, core.ErrConflict) {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "rolled", ""); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("serve error: %v", err)
 	}
 	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 0 || len(hosts(h)) != 0 {
@@ -334,7 +336,7 @@ func TestConsoleDomainAddRollsBack(t *testing.T) {
 	if err := os.WriteFile(h.ConfigPath, append(raw, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.AddConsoleDomain(ctx, "rolled", ""); err == nil {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "rolled", ""); err == nil {
 		t.Fatal("added although config.json changed on disk")
 	}
 	if tail.isServed("rolled") || !slices.Contains(tail.stopped(), "rolled") {
@@ -365,7 +367,7 @@ func TestConsoleDomainDeleteConflictKeepsTheFlatsNode(t *testing.T) {
 	if err := h.startConsoleDomains(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := h.DeleteConsoleDomain(ctx, "blog", ""); err != nil {
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "blog", ""); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(tail.stopped(), "blog") || !slices.Equal(hosts(h), []string{"keep"}) {
@@ -400,15 +402,15 @@ func TestConsoleDomainRetiringAndListedAtStart(t *testing.T) {
 	if err := h.startConsoleDomains(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return tail.isServed("again") && h.isServed("again") })
+	waitFor(t, func() bool { return tail.isServed("again") && h.isServed(cdKey{providerTailscale, "again"}) })
 	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 1 || nodes[0].Retiring {
 		t.Fatalf("nodes = %+v", nodes)
 	}
 	// The host's own state agrees: served, no conflict, and links use it.
 	time.Sleep(50 * time.Millisecond)
 	v, _ := h.ConsoleDomains(ctx)
-	if d := v.(ConsoleDomainsView).Domains[0]; d.Conflict != "" || !h.isServed("again") || h.ConsoleURL() != "https://again.tail1234.ts.net" {
-		t.Fatalf("after the logout: %+v served=%v url=%q", d, h.isServed("again"), h.ConsoleURL())
+	if d := tsView(v.(ConsoleDomainsView)).Domains[0]; d.Conflict != "" || !h.isServed(cdKey{providerTailscale, "again"}) || h.ConsoleURL() != "https://again.tail1234.ts.net" {
+		t.Fatalf("after the logout: %+v served=%v url=%q", d, h.isServed(cdKey{providerTailscale, "again"}), h.ConsoleURL())
 	}
 }
 
@@ -419,15 +421,15 @@ func TestConsoleDomainSelfDeleteNeedsReadyDomain(t *testing.T) {
 	if _, err := h.Svc.CreateFlat(ctx, "blog", "", core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.AddConsoleDomain(ctx, "admin", ""); err != nil {
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "admin", ""); err != nil {
 		t.Fatal(err)
 	}
 	// blog is listed but not served: it belongs to a flat.
 	if _, err := h.Svc.SetConsoleHosts([]string{"admin", "blog"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	h.setServed("blog", false, "used by the flat")
-	if _, _, _, err := h.DeleteConsoleDomain(viaDomain("admin"), "admin", ""); !errors.Is(err, core.ErrConflict) {
+	h.setServed(cdKey{providerTailscale, "blog"}, false, "used by the flat")
+	if _, _, _, err := h.DeleteConsoleDomain(viaDomain("admin"), "tailscale", "admin", ""); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("self delete without a ready domain: %v", err)
 	}
 	if !slices.Contains(hosts(h), "admin") {
@@ -448,11 +450,11 @@ func TestRequestOnLoopback(t *testing.T) {
 		t.Error("a console domain request counted as loopback")
 	}
 	h, _, _ := tailnetHost(t)
-	if _, err := h.AddConsoleDomain(context.Background(), "only", ""); err != nil {
+	if _, err := h.AddConsoleDomain(context.Background(), "tailscale", "only", ""); err != nil {
 		t.Fatal(err)
 	}
 	lan, _ := net.ResolveTCPAddr("tcp", "192.168.0.10:7878")
-	if _, _, _, err := h.DeleteConsoleDomain(context.WithValue(context.Background(), http.LocalAddrContextKey, lan), "only", ""); !errors.Is(err, core.ErrConflict) {
+	if _, _, _, err := h.DeleteConsoleDomain(context.WithValue(context.Background(), http.LocalAddrContextKey, lan), "tailscale", "only", ""); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("emptying the list from a LAN address: %v", err)
 	}
 }
@@ -497,8 +499,8 @@ func TestConsoleDomainsAtStart(t *testing.T) {
 	}
 	v, _ := h.ConsoleDomains(ctx)
 	view := v.(ConsoleDomainsView)
-	if view.Domains[0].Conflict == "" || view.Domains[1].Conflict != "" {
-		t.Fatalf("conflicts = %+v", view.Domains)
+	if tsView(view).Domains[0].Conflict == "" || tsView(view).Domains[1].Conflict != "" {
+		t.Fatalf("conflicts = %+v", tsView(view).Domains)
 	}
 	if got := h.ConsoleURL(); got != "https://fresh.tail1234.ts.net" {
 		t.Fatalf("console URL %q", got)
@@ -514,7 +516,7 @@ func TestConsoleURLFollowsTheRequest(t *testing.T) {
 		t.Fatalf("loopback console %q", loop)
 	}
 	for _, n := range []string{"one", "two"} {
-		if _, err := h.AddConsoleDomain(ctx, n, ""); err != nil {
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", n, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -552,7 +554,7 @@ func TestConsoleURLFollowsTheRequest(t *testing.T) {
 // domain for the request.
 func TestConsoleNodeHandler(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
-	if _, err := h.AddConsoleDomain(context.Background(), "admin", ""); err != nil {
+	if _, err := h.AddConsoleDomain(context.Background(), "tailscale", "admin", ""); err != nil {
 		t.Fatal(err)
 	}
 	tail.mu.Lock()
@@ -584,5 +586,138 @@ func (r *recorder) Write(b []byte) (int, error) {
 func (r *recorder) WriteHeader(code int) {
 	if r.code == 0 {
 		r.code = code
+	}
+}
+
+// netbirdConsoleHost starts a host whose NetBird console peers run on a fake,
+// with Tailscale (fake tailnet) and NetBird permitted.
+func netbirdConsoleHost(t *testing.T) (*Host, *fakeTailnet, *fakeNetbirdNet) {
+	t.Helper()
+	h, tail, _ := tailnetHost(t)
+	nb := newFakeNetbirdNet()
+	h.pmu.Lock()
+	h.testNetbirdConsole = nb
+	h.pmu.Unlock()
+	if _, err := h.Svc.SetPermittedNetworks(append(h.Svc.PermittedNetworks(), "netbird"), ""); err != nil {
+		t.Fatal(err)
+	}
+	return h, tail, nb
+}
+
+func nbHosts(h *Host) []string { l, _ := h.Svc.ConsoleHostsOf(providerNetbird); return l }
+
+func TestNetbirdConsoleDomains(t *testing.T) {
+	h, tail, nb := netbirdConsoleHost(t)
+	ctx := context.Background()
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "flats", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The same name may serve the console on both networks.
+	if _, err := h.AddConsoleDomain(ctx, "netbird", "flats", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !nb.isServed("flats") || !tail.isServed("flats") || !slices.Equal(nbHosts(h), []string{"flats"}) {
+		t.Fatalf("served: netbird %v tailscale %v list %v", nb.isServed("flats"), tail.isServed("flats"), nbHosts(h))
+	}
+	if _, err := h.AddConsoleDomain(ctx, "netbird", "flats", ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("a duplicate NetBird domain: %v", err)
+	}
+	if _, err := h.AddConsoleDomain(ctx, "netbird", "ops", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(h.consoleReserved(), "ops") {
+		t.Fatal("a NetBird console domain is not reserved against flats")
+	}
+	// Links prefer the HTTPS Tailscale domain; every domain is listed.
+	if h.ConsoleURL() != "https://flats.tail1234.ts.net" ||
+		!slices.Equal(h.ConsoleURLs(), []string{"https://flats.tail1234.ts.net", "http://flats.netbird.cloud/", "http://ops.netbird.cloud/"}) {
+		t.Fatalf("urls %q %q", h.ConsoleURL(), h.ConsoleURLs())
+	}
+	viaNB := context.WithValue(ctx, consoleDomainKey{}, cdKey{providerNetbird, "ops"})
+	if h.ConsoleURLFor(viaNB) != "http://ops.netbird.cloud/" {
+		t.Fatalf("link through NetBird = %q", h.ConsoleURLFor(viaNB))
+	}
+	view, err := h.consoleDomains(viaNB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nv := view.Providers[providerNetbird]
+	if !nv.On || len(nv.Domains) != 2 || nv.Domains[1].State != "ready" || !nv.Domains[1].Current || view.Via == nil || view.Via.Provider != "netbird" {
+		t.Fatalf("view %+v %+v", nv, view.Via)
+	}
+	// NetBird cannot be turned off while it serves console domains.
+	if _, err := h.SetNetworkProvider(ctx, "netbird", false, ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("turning NetBird off: %v", err)
+	}
+	// Deleting through itself moves the browser to a ready domain.
+	_, redirect, after, err := h.DeleteConsoleDomain(viaNB, "netbird", "ops", "")
+	if err != nil || redirect != "https://flats.tail1234.ts.net" || after == nil {
+		t.Fatalf("self-delete: %q %v", redirect, err)
+	}
+	after()
+	waitFor(t, func() bool { return !nb.isServed("ops") && !h.isOwned(cdKey{providerNetbird, "ops"}) })
+	// The last domains of both networks: emptying needs the loopback console.
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "flats", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := h.DeleteConsoleDomain(viaNB, "netbird", "flats", ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("deleting the last domain through a domain: %v", err)
+	}
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "netbird", "flats", ""); err != nil || len(nbHosts(h)) != 0 || nb.isServed("flats") {
+		t.Fatalf("delete from loopback: %v", err)
+	}
+	if _, err := h.AddConsoleDomain(ctx, "zerotier", "x", ""); !errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("an unknown network: %v", err)
+	}
+}
+
+// A NetBird console domain is plain HTTP: the browser sends no
+// Sec-Fetch-Site, so a change is accepted with the page's own http Origin.
+// Tailscale domains keep the strict rule.
+func TestNetbirdConsoleAcceptsHTTPChanges(t *testing.T) {
+	h, tail, nb := netbirdConsoleHost(t)
+	ctx := context.Background()
+	for _, prov := range []string{"tailscale", "netbird"} {
+		if _, err := h.AddConsoleDomain(ctx, prov, "flats", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	nb.mu.Lock()
+	nbHandler := nb.console["flats"]
+	nb.mu.Unlock()
+	tail.mu.Lock()
+	tsHandler := tail.served["flats"]
+	tail.mu.Unlock()
+	try := func(handler http.Handler, host, origin, site string) int {
+		req := httptest.NewRequest("PUT", "http://"+host+"/console/api/settings", strings.NewReader(`{"keep_versions":"4"}`))
+		req.Host = host
+		req.RemoteAddr = "127.0.0.1:5555"
+		req.Header.Set("X-Flats-Console", "1")
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := try(nbHandler, "flats.netbird.cloud", "http://flats.netbird.cloud", ""); code != 200 {
+		t.Fatalf("NetBird change over HTTP = %d", code)
+	}
+	for _, c := range []struct{ origin, site string }{
+		{"", ""},                                    // no Origin
+		{"https://flats.netbird.cloud", ""},         // wrong scheme for this listener
+		{"http://evil.netbird.cloud", ""},           // another origin
+		{"http://flats.netbird.cloud", "same-site"}, // Fetch Metadata, when sent, is strict
+	} {
+		if code := try(nbHandler, "flats.netbird.cloud", c.origin, c.site); code == 200 {
+			t.Errorf("NetBird change with origin %q site %q was accepted", c.origin, c.site)
+		}
+	}
+	if code := try(tsHandler, "flats.tail1234.ts.net", "https://flats.tail1234.ts.net", ""); code == 200 {
+		t.Fatal("a Tailscale domain accepted a change without Sec-Fetch-Site")
 	}
 }

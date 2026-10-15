@@ -3,6 +3,12 @@
 Technical design of [console-settings.md](console-settings.md). "Rule N"
 refers to that spec's numbered rules.
 
+The NetBird parts below (the `netbird` row as a connection record, NetBird
+enrollment from start inputs, `/console/api/providers/netbird/account`) are
+superseded by [netbird-peers-TECH.md](netbird-peers-TECH.md): the setup key is
+stored and used like the Tailscale key, and console domains run on NetBird
+too.
+
 ## Keys
 
 ### Storage

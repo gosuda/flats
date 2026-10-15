@@ -464,34 +464,42 @@ An operator-validated revocation confirms Manager teardown of that flat’s Tail
 `netbird.Net` (`netbird/`, a separate Go module linked only by
 `netbird/cmd/flats`, which `build-release.sh` builds for the release
 archives; `cmd/flats`, which `go install` builds, has a nil
-`provider.NetbirdDriver` and reports `ErrNetbirdNotBuilt`) owns the host's one embedded NetBird
-peer and serves two providers from it. `netbird` (Private, a mesh provider
-like `tailscale`) listens on the peer's overlay address with `ListenTCP`, one
-port per host from a persisted pool (21000–21999, `<data>/netbird/ports.json`),
-and reports `http://<peer FQDN>:<port>`. All flats share that one host name, so
-their browser cookies are shared (cookies are not scoped by port); this is a
-known limit, not isolated by Flats. `netbird-expose` (Public) listens the
-same way on a separate port, asks NetBird to expose it (`Expose` with the slug as
-name prefix, HTTP, no PIN or password) and keeps the session alive; a keep-alive
-error or lost listener exposes again with backoff, so the URL can change and
-`PublicURL` reports the current one. `ServePublic` returns once the first expose
-succeeded; a first failure removes the entry and fails the open.
+`provider.NetbirdDriver` and reports `ErrNetbirdNotBuilt`) runs one embedded
+NetBird peer per name, as tsnet runs one node per name
+([spec](spec/netbird-peers.md), [design](spec/netbird-peers-TECH.md)). A peer
+is named after the flat's slug or the console domain, asks NetBird for that
+name as an extra DNS label, keeps its identity in `<data>/netbird/peers/<name>/`
+and starts on the first route of its name. `netbird` (Private, a mesh provider
+like `tailscale`) and the console role listen on port 80 of the peer's overlay
+address and report `http://<name>.<NetBird domain>/`. `netbird-expose`
+(Public) listens on overlay port 8080 of the flat's peer, asks NetBird to
+expose it (`Expose` with the slug as name prefix, HTTP, no PIN or password)
+and keeps the session alive; a keep-alive error or lost listener exposes again
+with backoff, so the URL can change and `PublicURL` reports the current one.
+`ServePublic` returns once the first expose succeeded; a first failure removes
+the entry and fails the open.
 
-The peer is enrolled from the console with a setup key
-(`PUT /console/api/providers/netbird/account`), which `netbird.Enroll` uses in
-memory only; the peer identity (mode 0600) and an account record (management
-URL, device name and a fingerprint of the peer's public key) stay in
-`<data>/netbird/`. `DELETE` calls `netbird.Disconnect`, only while both
-providers are off and after `Manager.DetachNetbird` (which refuses while a
-NetBird route is registered and waits for opens in flight). The embedded client
-cannot deregister a peer, so the peer remains in the NetBird account.
+Every peer registers with the setup key stored in `flats.db` (host key
+`netbird`), read at each peer start: with a key, embed logs in with the stored
+identity and registers it again with the key only when management no longer
+knows it; without one, a peer that has an identity still logs in, and a
+rejection is reported as `ErrPeerRejected`. A key without "Allow extra DNS
+labels" is reported as `ErrKeyNoExtraLabels`. `embed.New` sets
+`NB_DNS_STATE_FILE` process-wide, so peer starts are serialized until NetBird's
+own start returns, which may be after Flats' start timeout. Registering a key
+in the console retries the NetBird routes of every flat that allows NetBird
+(`Service.RetryProviderRoutes`; public routes only within the approved
+exposure) and every NetBird console domain not yet served.
 
-`StopPublicRoutes` calls `StopPublic` (session ended, port kept) even without a
-registered route. `StopProviderRoutes(…, netbird)` and `StopExposure` call
-`StopPrivate`. `StopSlug` calls `RetirePublic` then `RetirePrivate`, which free
-the ports (a public port is quarantined for 24 hours first, because NetBird only
-logs a failed `StopExpose` and the proxy mapping may outlive the session); a failed retirement keeps the routes registered for retry. The
-approval policy token includes the management URL and peer fingerprint while a
-NetBird provider is granted, so an approval does not carry over to another
-peer. Public routes strip `Tailscale-User-*` identity headers like zrok;
-private routes strip them too.
+`StopPublicRoutes` calls `StopPublic` even without a registered route.
+`StopProviderRoutes(…, netbird)` and `StopExposure` call `StopPrivate`; a peer
+stops once it serves nothing, keeping its identity. `StopSlug` calls
+`RetirePublic` then `RetirePrivate`, which delete the peer's identity once no
+role uses it; without a backend it calls `RetireStored`. A failed retirement
+keeps the routes registered for retry. The embedded client cannot deregister
+a peer: an ephemeral one is removed by NetBird after ten minutes offline. The
+approval policy token includes the management URL and a fingerprint of the
+setup key while a NetBird provider is granted, so an approval does not carry
+over to another key. Public routes strip `Tailscale-User-*` identity headers
+like zrok; private routes strip them too.
+

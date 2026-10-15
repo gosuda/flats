@@ -25,7 +25,7 @@ func fileWith(pairs ...string) string {
 		sections[pairs[i]] = append(sections[pairs[i]], pairs[i+1])
 	}
 	var b strings.Builder
-	b.WriteString(`{"schema_version": 2`)
+	b.WriteString(`{"schema_version": 3`)
 	for _, s := range order {
 		fmt.Fprintf(&b, `, %q: {%s}`, s, strings.Join(sections[s], ", "))
 	}
@@ -382,7 +382,7 @@ func TestSetUnset(t *testing.T) {
 		}
 	}
 	want := `{
-  "schema_version": 2,
+  "schema_version": 3,
   "host": {
     "instance_id": "` + testID + `",
     "data_dir": "/var/lib/flats",

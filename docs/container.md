@@ -124,8 +124,9 @@ UDP is blocked).
 
 The published images include NetBird (see
 [Serving through NetBird](networking.md#serving-through-netbird)). It keeps the
-peer identity in `netbird/` on the data volume (the setup key itself is not
-stored), runs in userspace and needs no extra capabilities.
+identity of each flat's NetBird peer in `netbird/peers/` on the data volume
+(the setup key is in `flats.db`), runs in userspace and needs no extra
+capabilities.
 
 ## Configuration
 

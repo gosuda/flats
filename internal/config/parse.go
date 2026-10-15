@@ -52,7 +52,23 @@ type registry struct {
 // migrations is the production registry.
 var migrations = registry{current: CurrentSchemaVersion, steps: []Migration{
 	{From: 1, To: 2, Apply: consoleHostsV2},
+	{From: 2, To: 3, Apply: netbirdPeersV3},
 }}
+
+// netbirdPeersV3 drops netbird.device_name: every flat and console domain now
+// runs its own NetBird peer named after it. Nothing else changes, so the
+// step needs no confirmation.
+func netbirdPeersV3(doc map[string]any) error {
+	nb, ok := doc["netbird"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	delete(nb, "device_name")
+	if len(nb) == 0 {
+		delete(doc, "netbird")
+	}
+	return nil
+}
 
 // consoleHostsV2 replaces host.console_host with tailscale.console_hosts.
 // A console ran on the tailnet only with network.private_backend

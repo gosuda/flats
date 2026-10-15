@@ -28,6 +28,10 @@
     "discovery": false,
     "max_active_relays": 2147483647
   },
+  "netbird": {
+    "management_url": "https://netbird.example.com:443",
+    "device_name": "flats-box"
+  },
   "credentials": {
     "operator_file": "/etc/flats/operator.credential",
     "tailscale_authkey_file": "/etc/flats/tailscale.authkey"

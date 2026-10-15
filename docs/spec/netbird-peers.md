@@ -1,6 +1,6 @@
 # NetBird peers per flat and console domain
 
-Status: target. Technical design:
+Status: implemented. Technical design:
 [netbird-peers-TECH.md](netbird-peers-TECH.md).
 
 ## Summary

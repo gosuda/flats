@@ -610,7 +610,11 @@ const KEYS = [
   { id: 'zrok', set: true, managed: true, source: 'console', updated_at: '2026-10-01T00:00:00Z', environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io' },
 ];
 routes['GET /console/api/keys'] = { keys: KEYS };
-const DOMAINS = { domains: [], retiring: [], loopback: true, tailscale_on: false, pending_approvals: 0, etag: 'etag-1' };
+const DOMAINS = { providers: { tailscale: { domains: [], retiring: [], on: false }, netbird: { domains: [], retiring: [], on: false } },
+  loopback: true, pending_approvals: 0, etag: 'etag-1' };
+// dview builds a console domains view from per-network parts.
+const dview = (ts, nb, extra) => ({ ...DOMAINS, ...extra, providers: {
+  tailscale: { domains: [], retiring: [], on: false, ...ts }, netbird: { domains: [], retiring: [], on: false, ...nb } } });
 routes['GET /console/api/console-domains'] = DOMAINS;
 const mountSettings = async () => {
   const main = new Element('main');
@@ -879,28 +883,29 @@ assert.deepEqual(JSON.parse(connectCall.body), { token: 'test-token' });
 assert.ok(!calls.some((c) => c.key === 'PUT /console/api/providers/zrok'), 'connecting does not turn zrok on');
 assert.equal(tokenInput.value, '', 'the token is cleared from the form');
 
-// NetBird: without a peer the private panel offers the setup key form, the
-// Expose panel points at it, and neither has a switch. Connecting sends the
-// key once and does not turn anything on.
+// NetBird: the setup key lives under Keys and the providers can be turned on
+// without one; their panels say whether a key is stored and how many peers run.
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
-  { ...provider('netbird', 'private', false), management_url: 'https://api.netbird.io:443', connected: false },
-  { ...provider('netbird-expose', 'public', false), management_url: 'https://api.netbird.io:443', connected: false }] };
-routes['PUT /console/api/providers/netbird/account'] = { providers: [] };
+  { ...provider('netbird', 'private', false), management_url: 'https://api.netbird.io:443' },
+  { ...provider('netbird-expose', 'public', false), management_url: 'https://api.netbird.io:443' }] };
+routes['PUT /console/api/keys/netbird'] = { keys: KEYS };
 const nbMain = new Element('main');
 settingsPage.mount(nbMain, [], ctx);
 await tick();
-assert.equal(byText(byId(nbMain, 'provider-netbird'), 'Turn on').length, 0, 'NetBird without a peer has no switch');
+assert.equal(byText(byId(nbMain, 'provider-netbird'), 'Turn on').length, 1, 'NetBird can be turned on before a key is stored');
+assert.equal(byText(byId(nbMain, 'provider-netbird-expose'), 'Turn on').length, 1, 'NetBird Expose can be turned on before a key is stored');
+assert.ok(byId(nbMain, 'provider-netbird').textContent.includes('Not stored'), 'the panel says no key is stored');
+assert.ok(byId(nbMain, 'provider-netbird').textContent.includes('plain HTTP'), 'the panel explains the HTTP limits');
 const nbPanel = byId(nbMain, 'key-netbird');
-assert.equal(byText(byId(nbMain, 'provider-netbird-expose'), 'Turn on').length, 0, 'NetBird Expose without a peer has no switch');
-assert.ok(byId(nbMain, 'provider-netbird-expose').textContent.includes('Connect the NetBird peer under NetBird first'));
-const keyInput = byId(nbPanel, 'netbird-setup-key');
+assert.ok(nbPanel.textContent.includes('Allow extra DNS labels') && nbPanel.textContent.includes('ephemeral'), 'the recommended key options are named');
+const keyInput = byId(nbPanel, 'netbird-key');
 assert.equal(keyInput.getAttribute('type'), 'password', 'the setup key is typed into a password field');
-keyInput.value = '  nb-key  ';
+keyInput.value = '  8f3c2a1e-4b5d-4c6e-9f70-0123456789ab  ';
 all(nbPanel, (e) => e.tagName === 'FORM')[0].dispatch('submit');
 await tick();
 await tick();
-const nbCall = calls.find((c) => c.key === 'PUT /console/api/providers/netbird/account');
-assert.deepEqual(JSON.parse(nbCall.body), { setup_key: 'nb-key' });
+const nbCall = calls.find((c) => c.key === 'PUT /console/api/keys/netbird');
+assert.deepEqual(JSON.parse(nbCall.body), { key: '8f3c2a1e-4b5d-4c6e-9f70-0123456789ab' });
 assert.equal(keyInput.value, '', 'the setup key is cleared from the form');
 
 // A binary built without NetBird says so and offers neither a key form nor a switch.
@@ -916,18 +921,27 @@ assert.equal(byText(nbOff, 'Turn on').length, 0, 'no switch without NetBird');
 assert.equal(all(byId(nbMain3, 'key-netbird'), (e) => e.tagName === 'FORM').length, 0, 'no key form without NetBird');
 assert.ok(byId(nbMain3, 'key-netbird').textContent.includes('does not include NetBird'));
 
-// A connected peer is identified and can be disconnected while both are off.
+// A stored key can be replaced or removed; the old shared peer is named until
+// the operator dismisses the notice.
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
-  { ...provider('netbird', 'private', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' },
-  { ...provider('netbird-expose', 'public', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' }] };
-routes['GET /console/api/keys'] = { keys: [KEYS[0], { id: 'netbird', set: true, managed: true, device_name: 'flats-box', management_url: 'https://nb.example' }, KEYS[2]] };
+  { ...provider('netbird', 'private', true), management_url: 'https://nb.example', key_set: true, peers: 3 },
+  { ...provider('netbird-expose', 'public', false), management_url: 'https://nb.example', key_set: true }] };
+routes['GET /console/api/keys'] = { keys: [KEYS[0], { id: 'netbird', set: true, managed: true, peers: 3, management_url: 'https://nb.example',
+  legacy_peer: { device_name: 'flats-box', management_url: 'https://nb.example' } }, KEYS[2]] };
+routes['DELETE /console/api/keys/netbird/legacy-peer'] = { keys: KEYS };
 const nbMain2 = new Element('main');
 settingsPage.mount(nbMain2, [], ctx);
 await tick();
-const nbFacts = all(byId(nbMain2, 'provider-netbird'), (e) => e.tagName === 'CODE').map((e) => e.textContent);
-assert.deepEqual(nbFacts, ['flats-box', 'https://nb.example'], 'the connected peer is identified');
-assert.equal(byText(byId(nbMain2, 'key-netbird'), 'Disconnect peer').length, 1, 'a connected peer can be disconnected under Keys');
-assert.equal(byText(byId(nbMain2, 'provider-netbird'), 'Turn on').length, 1, 'a connected peer can be turned on');
+assert.ok(byId(nbMain2, 'provider-netbird').textContent.includes('Stored'), 'the panel shows the stored key');
+assert.ok(byId(nbMain2, 'provider-netbird').textContent.includes('3'), 'the panel counts running peers');
+const nbKey = byId(nbMain2, 'key-netbird');
+assert.equal(byText(nbKey, 'Replace key').length, 1, 'a stored key can be replaced');
+assert.equal(byText(nbKey, 'Remove key').length, 1, 'a stored key can be removed');
+assert.ok(nbKey.textContent.includes('flats-box') && nbKey.textContent.includes('NetBird dashboard'), 'the old shared peer is named');
+byText(nbKey, 'Done')[0].dispatch('click');
+await tick();
+await tick();
+assert.ok(calls.some((c) => c.key === 'DELETE /console/api/keys/netbird/legacy-peer'), 'the notice can be dismissed');
 routes['GET /console/api/keys'] = { keys: KEYS };
 
 // --- Tailscale auth key ---
@@ -976,14 +990,16 @@ settingsPage.mount(domMain, [], ctx);
 await tick();
 let domCard = byId(domMain, 'console-domains');
 assert.ok(domCard.textContent.includes('Turn Tailscale on'), 'adding needs Tailscale');
+assert.ok(domCard.textContent.includes('Turn NetBird on'), 'adding a NetBird domain needs NetBird');
 assert.equal(all(domCard, (e) => e.tagName === 'FORM').length, 0);
-routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', pending_approvals: 2, etag: 'etag-7',
+routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true },
     { name: 'blog', conflict: 'used by the flat "blog"' },
     { name: 'admin', assigned: 'admin-1', url: 'https://admin-1.tail1234.ts.net', state: 'ready' }],
-  retiring: [{ name: 'old', error: 'logout refused' }] };
+  retiring: [{ name: 'old', error: 'logout refused' }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, pending_approvals: 2, etag: 'etag-7' });
 routes['POST /console/api/console-domains'] = { etag: 'etag-8' };
-routes['DELETE /console/api/console-domains/blog'] = { etag: 'etag-8', redirect: '' };
+routes['DELETE /console/api/console-domains/tailscale/blog'] = { etag: 'etag-8', redirect: '' };
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
@@ -993,13 +1009,13 @@ assert.ok(domCard.textContent.includes('used by the flat'), 'a conflict is expla
 assert.ok(domCard.textContent.includes('The tailnet named this node admin-1'), 'a renamed node is explained');
 assert.ok(domCard.textContent.includes('Being removed') && domCard.textContent.includes('logout refused'), 'a failed logout is listed');
 assert.equal(all(domCard, (e) => e.tagName === 'A').some((e) => e.getAttribute('href') === 'https://flats.tail1234.ts.net/'), true, 'a domain links to its console');
-const nameInput = byId(domCard, 'console-domain-name');
+const nameInput = byId(domCard, 'console-domain-name-tailscale');
 nameInput.value = ' admin ';
 all(domCard, (e) => e.tagName === 'FORM')[0].dispatch('submit');
 await tick();
 await tick();
 const addCall = calls.find((c) => c.key === 'POST /console/api/console-domains');
-assert.deepEqual(JSON.parse(addCall.body), { name: 'admin' });
+assert.deepEqual(JSON.parse(addCall.body), { provider: 'tailscale', name: 'admin' });
 assert.equal(addCall.headers['If-Match'], '"etag-7"', 'adding is guarded by the settings ETag');
 const delButtons = all(domCard, (e) => e.tagName === 'BUTTON' && e.textContent === 'Delete');
 assert.equal(delButtons.length, 3);
@@ -1011,11 +1027,12 @@ assert.ok(delDialog.textContent.includes('2 approvals waiting'), 'pending approv
 delDialog.close('ok');
 await tick();
 await tick();
-const delCall = calls.find((c) => c.key === 'DELETE /console/api/console-domains/blog');
+const delCall = calls.find((c) => c.key === 'DELETE /console/api/console-domains/tailscale/blog');
 assert.ok(delCall && delCall.headers['If-Match'] === '"etag-7"', 'deleting is guarded by the settings ETag');
 // The last domain, seen through itself, cannot be deleted here.
-routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', etag: 'etag-7',
-  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] };
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-7' });
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
@@ -1024,26 +1041,45 @@ assert.equal(lastDel.getAttribute('disabled'), '', 'the last domain is deleted o
 // A disabled button gets no hover events: its wrapper carries the reason,
 // and screen readers get it as the button's description.
 const lastWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason')[0];
-assert.ok(lastWrap && lastWrap.getAttribute('data-reason').includes('last tailnet domain') && lastWrap.getAttribute('data-reason').includes('loopback'), 'the reason shows on hover');
+assert.ok(lastWrap && lastWrap.getAttribute('data-reason').includes('last domain') && lastWrap.getAttribute('data-reason').includes('loopback'), 'the reason shows on hover');
 assert.equal(lastWrap.getAttribute('tabindex'), '0', 'keyboard users can reach the reason');
-assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last tailnet domain'), 'the reason describes the button');
-// The domains are labeled as the tailnet's, in their own section.
-assert.ok(all(byId(domMain, 'console-domains'), (e) => e.tagName === 'H3').some((e) => e.textContent === 'Tailnet (Tailscale)'));
+assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last domain'), 'the reason describes the button');
+// Each network has its own section.
+const headings = all(byId(domMain, 'console-domains'), (e) => e.tagName === 'H3').map((e) => e.textContent);
+assert.deepEqual(headings, ['Tailnet (Tailscale)', 'NetBird']);
 // The domain in use cannot be deleted while no other one is ready.
-routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', etag: 'etag-7',
-  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] };
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-7' });
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
 const curWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason');
 assert.equal(curWrap.length, 1, 'only the domain in use is blocked');
-assert.ok(curWrap[0].getAttribute('data-reason').includes('no other tailnet domain is ready'));
-assert.equal(settingsPage.deleteBlocker({ name: 'a' }, { loopback: true }, 1, ['a']), '', 'the loopback console may delete the last domain');
+assert.ok(curWrap[0].getAttribute('data-reason').includes('no other console domain is ready'));
+// A ready NetBird domain counts: the last tailnet domain may go, and the
+// page can move there. NetBird domains are added with their network.
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] },
+{ on: true, domains: [{ name: 'flats', url: 'http://flats.netbird.cloud/', state: 'ready' }] },
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-9' });
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+assert.equal(all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason').length, 0, 'a ready NetBird domain lets the tailnet one go');
+assert.ok(byId(domMain, 'console-domains').textContent.includes('plain HTTP'), 'the NetBird section explains HTTP');
+const nbName = byId(byId(domMain, 'console-domains'), 'console-domain-name-netbird');
+nbName.value = 'ops';
+all(byId(domMain, 'console-domains'), (e) => e.tagName === 'FORM')[1].dispatch('submit');
+await tick();
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'POST /console/api/console-domains').pop().body), { provider: 'netbird', name: 'ops' });
+assert.equal(settingsPage.deleteBlocker({ name: 'a' }, { loopback: true }, 1, ['tailscale/a']), '', 'the loopback console may delete the last domain');
 routes['GET /console/api/console-domains'] = DOMAINS;
 // The cards refresh only while a node or an enrollment is still pending.
-assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }, [{ id: 'zrok' }]), false);
-assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'starting' }] }, []), true);
-assert.equal(settingsPage.pendingWork({ domains: [] }, [{ id: 'netbird', waiting: true }]), true);
+assert.equal(settingsPage.pendingWork(dview({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }), [{ id: 'zrok' }]), false);
+assert.equal(settingsPage.pendingWork(dview({}, { domains: [{ name: 'a', state: 'starting' }] }), []), true);
+assert.equal(settingsPage.pendingWork(dview({}), [{ id: 'zrok', waiting: true }]), true);
 
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over

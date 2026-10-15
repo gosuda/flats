@@ -381,8 +381,53 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 // route's error is logged, not returned. Rename aliases keep their routes
 // until the next restart re-serves them.
 func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
+	if !PrivateMeshProvider(provider) {
+		return nil
+	}
+	return s.reapplyExposure(ctx, f, provider)
+}
+
+// RetryProviderRoutes opens again, as a grant does, the routes of every
+// running flat that allows mesh (or, for a Public flat that does not, the
+// approved public routes of provider public), for a key registered while the
+// host runs: routes that failed for want of it open now. A public route is
+// only retried when the flat's approved exposure already used it, so this
+// never publishes anything new. Failures are recorded as flat events.
+func (s *Service) RetryProviderRoutes(ctx context.Context, mesh, public ProviderID) {
+	flats, err := s.st.ListFlats(ctx)
+	if err != nil {
+		return
+	}
+	for _, f := range flats {
+		permitted, err := s.permittedIDs(ctx, f.Slug)
+		if err != nil {
+			continue
+		}
+		p := mesh
+		if !slices.Contains(permitted, mesh) {
+			if !slices.Contains(permitted, public) || !f.Visibility.Public() {
+				continue
+			}
+			p = public
+		}
+		unlock := s.lock(f.Slug)
+		cur, err := s.st.GetFlat(ctx, f.Slug)
+		if err == nil {
+			err = s.reapplyExposure(ctx, cur, p)
+		}
+		unlock()
+		if err != nil {
+			s.Event(ctx, f.Slug, "warn", "exposure", fmt.Sprintf("retrying %s after a key change: %v", p, err), nil)
+		}
+	}
+}
+
+// reapplyExposure re-serves f's current private routes, and the public
+// routes its approved exposure already uses, and reports whether provider's
+// route opened.
+func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider ProviderID) error {
 	ln, ok := s.lifecycleNet()
-	if !ok || !PrivateMeshProvider(provider) || s.state(f.Slug).cur.Load() == nil {
+	if !ok || s.state(f.Slug).cur.Load() == nil {
 		return nil
 	}
 	permitted, err := s.permittedIDs(ctx, f.Slug)
