@@ -111,10 +111,29 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         now[label]?.title !== was[label]?.title
       )
         labels.add(label);
-    const out = markChanges(tokens, changes, {
-      labels,
-      normalize: md.utils.normalizeReference,
-    });
+    // The links and images that use a changed definition: parsed again
+    // with those definitions pointing at a marker, they are the ones whose
+    // destination is the marker. The parser fills only missing definitions,
+    // so the ones set here win.
+    const consumers = new Set();
+    if (labels.size) {
+      const marker = "#flats-revision-reference",
+        probe = { references: {} };
+      for (const label of labels)
+        probe.references[label] = { href: marker, title: "" };
+      md.parse(markdown, probe).forEach((t, i) => {
+        if (
+          t.type === "inline" &&
+          t.children?.some(
+            (c) =>
+              (c.type === "link_open" && c.attrGet("href") === marker) ||
+              (c.type === "image" && c.attrGet("src") === marker),
+          )
+        )
+          consumers.add(i);
+      });
+    }
+    const out = markChanges(tokens, changes, consumers);
     for (const t of tokens) {
       if (!t.meta || t.type === "fence" || t.type === "code_block") continue;
       if (t.meta.revChanged) t.attrJoin("class", "rev-changed");

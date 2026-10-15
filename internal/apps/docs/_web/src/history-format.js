@@ -117,11 +117,18 @@ export function lineChanges(before, after) {
       added = new Set(blanks),
       edited = new Set(changed),
       kept = (l) => text[l]?.trim() && !edited.has(l) && !added.has(l);
-    for (const l of blanks)
-      if (kept(l - 1) && kept(l + 1)) {
-        changed.add(l - 1);
-        changed.add(l + 1);
+    // Each run of added blank lines, judged by the lines around it.
+    for (let k = 0; k < blanks.length; ) {
+      let end = k;
+      while (blanks[end + 1] === blanks[end] + 1) end++;
+      const before = blanks[k] - 1,
+        after = blanks[end] + 1;
+      if (kept(before) && kept(after)) {
+        changed.add(before);
+        changed.add(after);
       }
+      k = end + 1;
+    }
   }
   return { changed, removed, lines: line };
 }
@@ -150,13 +157,11 @@ const CONTAINER = new Set([
 // (meta.revRemoved, the number of lines). A paragraph inside a tight list
 // renders no tag of its own, so its list item is marked instead. A changed
 // line no leaf covers marks its innermost container; one outside every
-// block, such as a link reference definition, is counted as unshown. It
-// returns {marked, tail, unshown, lines}.
-export function markChanges(
-  tokens,
-  { changed, removed, lines },
-  references = { labels: new Set(), normalize: (s) => s },
-) {
+// block, such as a link reference definition, is counted as unshown.
+// consumers holds the indexes of inline tokens that render differently for
+// another reason (links to a changed definition); their blocks are marked.
+// It returns {marked, tail, unshown, lines}.
+export function markChanges(tokens, { changed, removed, lines }, consumers) {
   const items = [],
     covered = new Set();
   let marked = 0;
@@ -179,13 +184,7 @@ export function markChanges(
     const t = tokens[i];
     if (t.type === "list_item_open") items.push(t);
     else if (t.type === "list_item_close") items.pop();
-    if (t.type === "inline" && leaf && references.labels.size) {
-      for (const m of t.content.matchAll(/\[([^\[\]]+)\]/g))
-        if (references.labels.has(references.normalize(m[1]))) {
-          mark(leaf);
-          break;
-        }
-    }
+    if (t.type === "inline" && leaf && consumers?.has(i)) mark(leaf);
     if (!LEAF.has(t.type) || !t.map) continue;
     leaf = target(i);
     const [start, end] = t.map,

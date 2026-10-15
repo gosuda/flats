@@ -185,14 +185,18 @@ test("a split paragraph and links to a changed definition are marked", async () 
   tokens = md.parse("- a\n\n- b\n", {});
   out = markChanges(tokens, lineChanges("- a\n- b\n", "- a\n\n- b\n"));
   assert.ok(out.marked >= 1);
-  // A link using a definition whose target changed is marked.
-  const before = "See [the docs][x].\n\nOther.\n\n[x]: /old\n",
-    after = "See [the docs][x].\n\nOther.\n\n[x]: /new\n";
+  // Several blank lines splitting a paragraph also mark both parts.
+  tokens = md.parse("one\n\n\ntwo\n", {});
+  out = markChanges(tokens, lineChanges("one\ntwo\n", "one\n\n\ntwo\n"));
+  assert.equal(out.marked, 2);
+  // The blocks holding consumers of a changed definition are marked.
+  const after = "See [the docs][x].\n\nOther.\n\n[x]: /new\n";
   tokens = md.parse(after, {});
-  out = markChanges(tokens, lineChanges(before, after), {
-    labels: new Set([md.utils.normalizeReference("x")]),
-    normalize: md.utils.normalizeReference,
-  });
+  out = markChanges(
+    tokens,
+    lineChanges(after.replace("/new", "/old"), after),
+    new Set([1]),
+  );
   const marked = tokens.filter((t) => t.meta?.revChanged);
   assert.equal(marked.length, 1);
   assert.equal(
