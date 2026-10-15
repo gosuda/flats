@@ -9,9 +9,11 @@ import (
 	"time"
 )
 
-// Revision-model content (designs): the current files ("head"), open groups
-// of a person's edits, and revisions with their files. File bytes live in a
-// content-addressed blob store owned by core; these tables hold references.
+// Revision-model content (designs and documents): the current files
+// ("head"), open groups of a person's edits, and revisions with their files.
+// File bytes live in a content-addressed blob store owned by core; these
+// tables hold references. A document's revisions are recorded by its docs
+// worker and imported here; ImportStore and ImportSeq are the import cursor.
 
 // ContentState is the per-flat row of a Revision-model flat. Its presence
 // marks the flat's type before the flat is first published.
@@ -22,6 +24,8 @@ type ContentState struct {
 	Seq           int64  `json:"seq"`
 	RevisionQuota *int   `json:"revision_quota,omitempty"`
 	PinQuota      *int   `json:"pin_quota,omitempty"`
+	ImportStore   string `json:"-"`
+	ImportSeq     int64  `json:"-"`
 }
 
 // HeadFile is one current file.
@@ -60,6 +64,11 @@ type Revision struct {
 	Changes    Changes   `json:"changes"`
 	Files      int       `json:"files"`
 	Size       int64     `json:"size"`
+	// Source names the content source whose files a document's revision
+	// holds besides its documents (see SourceFiles). Designs have none.
+	Source string `json:"-"`
+	// Held is true while a rollback in progress protects the revision.
+	Held bool `json:"held,omitempty"`
 }
 
 // RevisionFile is one file of a revision.
@@ -129,6 +138,51 @@ func addContentRevisions(ctx context.Context, x executor) error {
 	return nil
 }
 
+// addContentImport adds what document revisions need: the import cursor
+// (the docs worker's outbox id and the last entry imported from it), the
+// source of a revision, the non-document files of each source, and holds
+// of rollbacks in progress.
+func addContentImport(ctx context.Context, x executor) error {
+	for _, c := range []struct{ table, col, def string }{
+		{"content_state", "import_store", "TEXT NOT NULL DEFAULT ''"},
+		{"content_state", "import_seq", "INTEGER NOT NULL DEFAULT 0"},
+		{"revisions", "source", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		has, err := hasColumn(ctx, x, c.table, c.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := x.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN `+c.col+` `+c.def); err != nil {
+			return err
+		}
+	}
+	for _, q := range []string{
+		`CREATE TABLE IF NOT EXISTS content_sources (
+ flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+ source TEXT NOT NULL,
+ path TEXT NOT NULL,
+ hash TEXT NOT NULL,
+ size INTEGER NOT NULL,
+ PRIMARY KEY (flat, source, path)
+ )`,
+		`CREATE INDEX IF NOT EXISTS content_sources_hash ON content_sources(flat, hash)`,
+		`CREATE TABLE IF NOT EXISTS content_holds (
+ flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+ op TEXT NOT NULL,
+ number INTEGER NOT NULL,
+ PRIMARY KEY (flat, op)
+ )`,
+	} {
+		if _, err := x.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ContentTx is one transaction over a flat's Revision-model tables.
 type ContentTx struct {
 	tx   *sql.Tx
@@ -150,12 +204,12 @@ func (s *Store) ContentTx(ctx context.Context, flat string, fn func(*ContentTx) 
 
 // ContentState returns the state row of flat.
 func (s *Store) ContentState(ctx context.Context, flat string) (ContentState, error) {
-	return scanContentState(s.db.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota FROM content_state WHERE flat=?`, flat))
+	return scanContentState(s.db.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq FROM content_state WHERE flat=?`, flat))
 }
 
 // ContentStates lists every Revision-model flat.
 func (s *Store) ContentStates(ctx context.Context) ([]ContentState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota FROM content_state ORDER BY flat`)
+	rows, err := s.db.QueryContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq FROM content_state ORDER BY flat`)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +228,7 @@ func (s *Store) ContentStates(ctx context.Context) ([]ContentState, error) {
 func scanContentState(sc interface{ Scan(...any) error }) (ContentState, error) {
 	var st ContentState
 	var rq, pq sql.NullInt64
-	err := sc.Scan(&st.Flat, &st.Type, &st.Phase, &st.Seq, &rq, &pq)
+	err := sc.Scan(&st.Flat, &st.Type, &st.Phase, &st.Seq, &rq, &pq, &st.ImportStore, &st.ImportSeq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, fmt.Errorf("content state: %w", ErrNotFound)
 	}
@@ -191,13 +245,39 @@ func scanContentState(sc interface{ Scan(...any) error }) (ContentState, error) 
 
 // State returns the state row.
 func (c *ContentTx) State(ctx context.Context) (ContentState, error) {
-	return scanContentState(c.tx.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota FROM content_state WHERE flat=?`, c.flat))
+	return scanContentState(c.tx.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq FROM content_state WHERE flat=?`, c.flat))
 }
 
 // InitState inserts the state row of a new Revision-model flat.
 func (c *ContentTx) InitState(ctx context.Context, typ string) error {
 	_, err := c.tx.ExecContext(ctx, `INSERT INTO content_state(flat,type,phase,seq) VALUES(?,?,'init',0)`, c.flat, typ)
 	return err
+}
+
+// InitReadyState inserts the state row of a flat whose first revision is
+// written in the same transaction (documents).
+func (c *ContentTx) InitReadyState(ctx context.Context, typ string) error {
+	_, err := c.tx.ExecContext(ctx, `INSERT INTO content_state(flat,type,phase,seq) VALUES(?,?,'ready',0)`, c.flat, typ)
+	return err
+}
+
+// SetImport advances the import cursor.
+func (c *ContentTx) SetImport(ctx context.Context, store string, seq int64) error {
+	_, err := c.tx.ExecContext(ctx, `UPDATE content_state SET import_store=?,import_seq=? WHERE flat=?`, store, seq, c.flat)
+	return err
+}
+
+// ReplaceHead makes files the whole head.
+func (c *ContentTx) ReplaceHead(ctx context.Context, files []RevisionFile) error {
+	if _, err := c.tx.ExecContext(ctx, `DELETE FROM content_head WHERE flat=?`, c.flat); err != nil {
+		return err
+	}
+	for _, f := range files {
+		if _, err := c.tx.ExecContext(ctx, `INSERT INTO content_head(flat,path,hash,size,gen) VALUES(?,?,?,?,0)`, c.flat, f.Path, f.Hash, f.Size); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetPhase updates the creation phase.
@@ -334,8 +414,8 @@ func (c *ContentTx) InsertRevision(ctx context.Context, r Revision, files []Revi
 	if r.RollbackOf > 0 {
 		rb = r.RollbackOf
 	}
-	if _, err := c.tx.ExecContext(ctx, `INSERT INTO revisions(flat,number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		c.flat, r.Number, unix(r.CreatedAt), r.Kind, string(authors), r.Message, rb, boolInt(r.Pinned), string(changes), r.Files, r.Size); err != nil {
+	if _, err := c.tx.ExecContext(ctx, `INSERT INTO revisions(flat,number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.flat, r.Number, unix(r.CreatedAt), r.Kind, string(authors), r.Message, rb, boolInt(r.Pinned), string(changes), r.Files, r.Size, r.Source); err != nil {
 		return err
 	}
 	for _, f := range files {
@@ -387,7 +467,7 @@ func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]R
 	return out, rows.Err()
 }
 
-const revisionCols = `number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size`
+const revisionCols = `number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size,source,EXISTS(SELECT 1 FROM content_holds h WHERE h.flat=revisions.flat AND h.number=revisions.number)`
 
 func scanRevision(flat string, sc interface{ Scan(...any) error }) (Revision, error) {
 	r := Revision{Flat: flat}
@@ -395,7 +475,7 @@ func scanRevision(flat string, sc interface{ Scan(...any) error }) (Revision, er
 	var authors, changes string
 	var rb sql.NullInt64
 	var pinned int
-	err := sc.Scan(&r.Number, &created, &r.Kind, &authors, &r.Message, &rb, &pinned, &changes, &r.Files, &r.Size)
+	err := sc.Scan(&r.Number, &created, &r.Kind, &authors, &r.Message, &rb, &pinned, &changes, &r.Files, &r.Size, &r.Source, &r.Held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, fmt.Errorf("revision: %w", ErrNotFound)
 	}
@@ -473,9 +553,10 @@ func (c *ContentTx) SetPinned(ctx context.Context, n int, pinned bool) error {
 	return nil
 }
 
-// UnpinnedOldestFirst lists unpinned revision numbers, oldest first.
+// UnpinnedOldestFirst lists the revision numbers retention may delete,
+// oldest first: neither pinned nor held by a rollback in progress.
 func (c *ContentTx) UnpinnedOldestFirst(ctx context.Context) ([]int, error) {
-	rows, err := c.tx.QueryContext(ctx, `SELECT number FROM revisions WHERE flat=? AND pinned=0 ORDER BY number`, c.flat)
+	rows, err := c.tx.QueryContext(ctx, `SELECT number FROM revisions r WHERE flat=? AND pinned=0 AND NOT EXISTS(SELECT 1 FROM content_holds h WHERE h.flat=r.flat AND h.number=r.number) ORDER BY number`, c.flat)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +584,7 @@ func (c *ContentTx) DeleteRevision(ctx context.Context, n int) error {
 // ReferencedHashes returns every hash referenced by flat's head or
 // revisions.
 func (s *Store) ReferencedHashes(ctx context.Context, flat string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT hash FROM content_head WHERE flat=? UNION SELECT hash FROM revision_files WHERE flat=?`, flat, flat)
+	rows, err := s.db.QueryContext(ctx, `SELECT hash FROM content_head WHERE flat=? UNION SELECT hash FROM revision_files WHERE flat=? UNION SELECT hash FROM content_sources WHERE flat=?`, flat, flat, flat)
 	if err != nil {
 		return nil, err
 	}
@@ -539,4 +620,115 @@ func (s *Store) Checkpoint(ctx context.Context, mode string) error {
 		return fmt.Errorf("%w: busy=%d log=%d checkpointed=%d", ErrCheckpointBusy, busy, logFrames, done)
 	}
 	return nil
+}
+
+// --- document sources and holds ---
+
+// PutSource stores the non-document files of a content source; an existing
+// source keeps its rows.
+func (s *Store) PutSource(ctx context.Context, flat, source string, files []RevisionFile) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, f := range files {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO content_sources(flat,source,path,hash,size) VALUES(?,?,?,?,?)`, flat, source, f.Path, f.Hash, f.Size); err != nil {
+			return err
+		}
+	}
+	// A source without files still needs a row to be known.
+	if len(files) == 0 {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO content_sources(flat,source,path,hash,size) VALUES(?,?,'',?,0)`, flat, source, ""); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SourceFiles returns the files of a content source; ok is false when the
+// source is unknown.
+func (s *Store) SourceFiles(ctx context.Context, flat, source string) (files []RevisionFile, ok bool, err error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path,hash,size FROM content_sources WHERE flat=? AND source=? ORDER BY path`, flat, source)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f RevisionFile
+		if err := rows.Scan(&f.Path, &f.Hash, &f.Size); err != nil {
+			return nil, false, err
+		}
+		ok = true
+		if f.Path != "" {
+			files = append(files, f)
+		}
+	}
+	return files, ok, rows.Err()
+}
+
+// DeleteUnusedSources removes the sources of flat that no revision names
+// and keep does not list.
+func (s *Store) DeleteUnusedSources(ctx context.Context, flat string, keep map[string]bool) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT source FROM content_sources c WHERE flat=? AND NOT EXISTS(SELECT 1 FROM revisions r WHERE r.flat=c.flat AND r.source=c.source)`, flat)
+	if err != nil {
+		return err
+	}
+	var drop []string
+	for rows.Next() {
+		var src string
+		if err := rows.Scan(&src); err != nil {
+			rows.Close()
+			return err
+		}
+		if !keep[src] {
+			drop = append(drop, src)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, src := range drop {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM content_sources WHERE flat=? AND source=?`, flat, src); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Hold is a rollback in progress protecting its target revision.
+type Hold struct {
+	Op     string
+	Number int
+}
+
+// AddHold protects revision n for the rollback op.
+func (c *ContentTx) AddHold(ctx context.Context, op string, n int) error {
+	_, err := c.tx.ExecContext(ctx, `INSERT INTO content_holds(flat,op,number) VALUES(?,?,?)`, c.flat, op, n)
+	return err
+}
+
+// DeleteHold ends the hold of the rollback op.
+func (c *ContentTx) DeleteHold(ctx context.Context, op string) error {
+	_, err := c.tx.ExecContext(ctx, `DELETE FROM content_holds WHERE flat=? AND op=?`, c.flat, op)
+	return err
+}
+
+// Holds lists the holds of flat.
+func (s *Store) Holds(ctx context.Context, flat string) ([]Hold, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT op,number FROM content_holds WHERE flat=? ORDER BY op`, flat)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Hold
+	for rows.Next() {
+		var h Hold
+		if err := rows.Scan(&h.Op, &h.Number); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }

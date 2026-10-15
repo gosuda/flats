@@ -462,13 +462,6 @@ main {
   }
 }
 
-#conflict-notice {
-  padding: 8px 24px;
-  font-size: 13px;
-  background: var(--paper);
-  border-bottom: 1px solid var(--line);
-}
-
 /* Diagram actions stay within the document, with a focused reading view. */
 .mermaid-tools {
   display: flex;

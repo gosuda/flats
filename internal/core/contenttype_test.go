@@ -46,7 +46,7 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 			return
 		}
 		if r.URL.Path == "/_docs/api/document" {
-			_ = json.NewEncoder(w).Encode(Document{Format: 1, Doc: "index.md", Markdown: "live people's edits", Source: "live", Epoch: "epoch", Seq: 7, Conflicts: []DocumentConflict{{Generation: 4, Bytes: 27}}})
+			_ = json.NewEncoder(w).Encode(Document{Format: 1, Doc: "index.md", Markdown: "live people's edits", Source: "live", Epoch: "epoch", Seq: 7})
 			return
 		}
 		fmt.Fprint(w, r.Header.Get("X-Flats-Access"))
@@ -262,7 +262,7 @@ func TestGetDocumentAndFlatType(t *testing.T) {
 		t.Fatalf("document save requested approval: %+v", as)
 	}
 	out, err := s.GetDocument(ctx, "notes", "")
-	if err != nil || out.Source != "live" || out.Markdown != "live people's edits" || out.Seq != 7 || len(out.Conflicts) != 1 || out.Conflicts[0].Bytes != 27 {
+	if err != nil || out.Source != "live" || out.Markdown != "live people's edits" || out.Seq != 7 {
 		t.Fatalf("%+v %v", out, err)
 	}
 	if _, err := s.GetDocument(ctx, "notes", "../index.md"); !errors.Is(err, ErrInvalid) {

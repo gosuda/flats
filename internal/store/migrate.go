@@ -48,6 +48,7 @@ var migrations = []migration{
 	{9, "runtime generation", addRuntimeGeneration},
 	{10, "portal relay listing", addPortalListing},
 	{11, "content revisions", addContentRevisions},
+	{12, "document revision import cursor", addContentImport},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

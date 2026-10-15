@@ -30,9 +30,9 @@ slugs, `list_versions` for published version numbers, and use the
 
 ## document_not_found
 
-The docs flat has no such Markdown path, or the requested conflict generation
-is missing or was evicted. Read `get_document` without `doc` for the entry,
-or use a generation from the current `conflicts` list.
+The docs flat has no such Markdown path. Read `get_document` without `doc`
+for the entry. For text a document had earlier, use `list_revisions` and
+`get_revision {path}`.
 
 ## edit_conflict
 
@@ -63,6 +63,13 @@ Check `get_flat`; use `save_draft` for websites, or a new slug for a document.
 The tool needs a design (`type: "design"`), and this flat is another type.
 Check `get_flat`. Create a design with `create_flat {type: "design"}` or
 `save_design` on a new slug; designs keep their own revision history.
+
+## no_revisions
+
+The revision tools work on documents and designs, and this flat is a website
+or a page: those keep numbered versions instead (`list_versions`, `rollback`).
+A document that never ran has no revisions yet; save it with `save_document`
+first.
 
 ## conflict
 

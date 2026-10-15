@@ -313,14 +313,19 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 	if err != nil || len(events) != 1 || !strings.Contains(events[0].Message, "live edit of index.md via mcp: 2 op(s)") || strings.Contains(events[0].Message, "revised") || strings.Contains(string(events[0].Data), "revised") {
 		t.Fatal(events, err)
 	}
+	// The edit is a revision crediting the agent, after the person's.
+	page, err := s.ListRevisions(t.Context(), "host-doc", 0, 10)
+	if err != nil || len(page.Revisions) < 3 || page.Revisions[0].Kind != "agent" || page.Revisions[0].Number != out.Revision || page.Revisions[1].Kind != "person" {
+		t.Fatal("edit revisions", page, out.Revision, err)
+	}
 	// A later save changing other lines keeps the agent edit; one changing
-	// the same line wins and keeps the discarded live text for recovery.
+	// the same line wins, and the revision before it keeps the live text.
 	next := strings.Replace(initialText, "# Shared", "# Shared v2", 1)
 	if _, err = s.SaveVersion(t.Context(), "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte(next)}}, core.SaveMeta{}, core.ViaMCP); err != nil {
 		t.Fatal(err)
 	}
 	merged, err := s.GetDocument(t.Context(), "host-doc", "")
-	if err != nil || !strings.Contains(merged.Markdown, "# Shared v2") || !strings.Contains(merged.Markdown, "Agent line, revised live") || !strings.Contains(merged.Markdown, "Agent note.") || len(merged.Conflicts) != 0 {
+	if err != nil || !strings.Contains(merged.Markdown, "# Shared v2") || !strings.Contains(merged.Markdown, "Agent line, revised live") || !strings.Contains(merged.Markdown, "Agent note.") {
 		t.Fatal(merged, err)
 	}
 	overlap := strings.Replace(next, "Agent line", "Agent line from v3", 1)
@@ -328,11 +333,14 @@ func TestHostUpdateDocumentLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	v3, err := s.GetDocument(t.Context(), "host-doc", "")
-	if err != nil || !strings.Contains(v3.Markdown, "Agent line from v3") || strings.Contains(v3.Markdown, "revised live") || len(v3.Conflicts) != 1 {
+	if err != nil || !strings.Contains(v3.Markdown, "Agent line from v3") || strings.Contains(v3.Markdown, "revised live") {
 		t.Fatal(v3, err)
 	}
-	if kept, err := s.GetDocumentConflict(t.Context(), "host-doc", "", v3.Conflicts[0].Generation); err != nil || !strings.Contains(kept.Markdown, "Agent line, revised live") {
-		t.Fatal("discarded agent edit not recoverable", kept, err)
+	if page, err = s.ListRevisions(t.Context(), "host-doc", 0, 10); err != nil || len(page.Revisions) < 2 {
+		t.Fatal(page, err)
+	}
+	if kept, _, err := s.RevisionFileContent(t.Context(), "host-doc", page.Revisions[1].Number, "index.md"); err != nil || !strings.Contains(string(kept), "Agent line, revised live") {
+		t.Fatal("discarded agent edit not recoverable", string(kept), err)
 	}
 
 	// An explicit empty guard is refused, not dropped into an unguarded edit.

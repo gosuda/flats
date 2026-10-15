@@ -2,7 +2,6 @@ package docs
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -39,27 +38,26 @@ func TestFullRewriteActivation(t *testing.T) {
 			if got["markdown"] != target.String() {
 				t.Fatal("rewrite did not activate")
 			}
-			conflicts := got["conflicts"].([]any)
-			if len(conflicts) != 1 {
-				t.Fatal("conflict metadata missing", conflicts)
+			if _, ok := got["conflicts"]; ok {
+				t.Fatal("documents no longer report conflict records")
 			}
-			generation := conflicts[0].(map[string]any)["generation"].(float64)
-			status, body, _ := next.getHeaders(t, fmt.Sprintf("/_docs/api/conflict?generation=%.0f", generation), http.Header{"X-Flats-Access": {"private"}})
-			var preserved map[string]any
-			if status != 200 || json.Unmarshal([]byte(body), &preserved) != nil || preserved["markdown"] != live {
-				t.Fatal("live text not recoverable")
+			// The live text the rewrite replaced is the newest person entry.
+			var person revEntry
+			for _, e := range next.outbox(t) {
+				if e.Kind == "person" {
+					person = e
+				}
 			}
-			status, body, headers := next.getHeaders(t, fmt.Sprintf("/_docs/api/conflict?generation=%.0f&view=1", generation), http.Header{"X-Flats-Access": {"private"}})
-			if status != 200 || body != live || headers.Get("Content-Type") != "text/plain; charset=utf-8" || headers.Get("X-Content-Type-Options") != "nosniff" || headers.Get("Cache-Control") != "no-store" || headers.Get("Content-Security-Policy") == "" {
-				t.Fatal("unsafe conflict view", status, headers)
+			if person.Kind == "" || next.revisionText(t, person.hash("index.md")) != live {
+				t.Fatal("live text not kept in a revision")
+			}
+			if status, _, _ := next.getHeaders(t, "/_docs/api/conflict", http.Header{"X-Flats-Access": {"private"}}); status != 404 {
+				t.Fatal("conflict route still served", status)
 			}
 			y := connect(t, next.srv.URL, "private")
 			y.hello(t, nil)
 			y.send(t, map[string]any{"t": "ping"})
 			y.next(t, "pong")
-			if again := next.document(t)["conflicts"].([]any); len(again) != 1 {
-				t.Fatal("read duplicated conflict")
-			}
 			t.Logf("%d-line full rewrite + human edit: health activation %v; API and WebSocket working", n, elapsed)
 		})
 	}
@@ -150,7 +148,9 @@ func TestHealthActivatesEveryDocumentAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err = db.Exec("CREATE TRIGGER health_failure BEFORE INSERT ON flats_docs_documents WHEN NEW.doc='nested/other.md' BEGIN SELECT RAISE(ABORT,'health activation failure'); END"); err != nil {
+	// The flat activation of v1 seeded every document; fail v2's activation
+	// of the second one, after index.md already merged.
+	if _, err = db.Exec("CREATE TRIGGER health_failure BEFORE INSERT ON flats_docs_activations WHEN NEW.doc='nested/other.md' AND NEW.hash='v2' BEGIN SELECT RAISE(ABORT,'health activation failure'); END"); err != nil {
 		t.Fatal(err)
 	}
 	next := startApp(t, data, strings.ReplaceAll(initialText, "Agent", "New agent"), "v2")

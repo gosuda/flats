@@ -1071,18 +1071,7 @@ func (s *Server) settingsImpact(w http.ResponseWriter, r *http.Request, _ core.V
 var _ = time.Second
 
 func (s *Server) getDocument(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	var document core.Document
-	var err error
-	if raw := r.URL.Query().Get("conflict"); raw != "" {
-		generation, parseErr := strconv.ParseInt(raw, 10, 64)
-		if parseErr != nil || generation < 1 {
-			fail(w, core.ErrInvalid)
-			return
-		}
-		document, err = s.Svc.GetDocumentConflict(r.Context(), r.PathValue("slug"), r.URL.Query().Get("doc"), generation)
-	} else {
-		document, err = s.Svc.GetDocument(r.Context(), r.PathValue("slug"), r.URL.Query().Get("doc"))
-	}
+	document, err := s.Svc.GetDocument(r.Context(), r.PathValue("slug"), r.URL.Query().Get("doc"))
 	if err != nil {
 		fail(w, err)
 		return

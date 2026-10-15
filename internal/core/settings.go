@@ -519,7 +519,7 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 		s.applyHostListing(ctx)
 	}
 	if slices.Contains(changed, SetRevisionQuota) {
-		s.retainAllDesigns(ctx)
+		s.retainAllRevisions(ctx, true)
 	}
 	all, _ := s.Settings(ctx)
 	return SettingsUpdate{Settings: all, Changed: changed, ETag: etag}, nil

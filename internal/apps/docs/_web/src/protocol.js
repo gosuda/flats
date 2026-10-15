@@ -16,8 +16,6 @@ export const LIMITS = Object.freeze({
   documents: 128,
   totalReceipts: 200000,
   activations: 1000,
-  conflicts: 8,
-  conflictBytes: 2 * 1024 * 1024,
   sendBytes: 4 * 1024 * 1024,
   flatSendBytes: 16 * 1024 * 1024,
 });

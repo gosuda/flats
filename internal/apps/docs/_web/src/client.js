@@ -159,11 +159,16 @@ const adjectives = [
     "Robin",
   ],
   pick = (list) => list[Math.floor(Math.random() * list.length)];
-let name = pick(adjectives) + " " + pick(animals);
+let name = pick(adjectives) + " " + pick(animals),
+  // A random id of this browser groups its edits into revisions.
+  editor = crypto.randomUUID().replaceAll("-", "");
 try {
   const saved = localStorage.getItem("flats-docs-name");
   if (saved) name = saved;
   else localStorage.setItem("flats-docs-name", name);
+  const id = localStorage.getItem("flats-docs-editor");
+  if (id && /^[A-Za-z0-9_-]{8,64}$/.test(id)) editor = id;
+  else localStorage.setItem("flats-docs-editor", editor);
 } catch {}
 function download() {
   const a = document.createElement("a"),
@@ -190,31 +195,15 @@ function stopped(message) {
       effects: access.reconfigure(EditorState.readOnly.of(true)),
     });
 }
-function showConflicts(conflicts) {
-  if (initialReadonly || !conflicts?.length) return;
-  const el = $("#conflict-notice");
-  el.hidden = false;
-  el.replaceChildren(
-    document.createTextNode(
-      "Publication replaced some edits. Previous text is preserved. ",
-    ),
-  );
-  const link = document.createElement("a");
-  link.textContent = "View / copy previous text";
-  link.href = `/_docs/api/conflict?doc=${encodeURIComponent(path)}&generation=${conflicts[0].generation}&view=1`;
-  link.target = "_blank";
-  link.rel = "noopener";
-  el.append(link);
-}
 const provider = new Provider(doc, path, {
   readonly: initialReadonly,
   name,
+  editor,
   onState: (label) => {
     $("#status").textContent = label;
     $("#status").dataset.state = label;
   },
   onStop: stopped,
-  onConflicts: showConflicts,
   onWelcome: (m) => {
     if (!view && !m.readonly) {
       const undoManager = new Y.UndoManager(text, {

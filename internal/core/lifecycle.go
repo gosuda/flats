@@ -1134,7 +1134,11 @@ func (s *Service) saveDraftLocked(ctx context.Context, slugName string, files []
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return store.Version{}, err
 	}
-	res, err := bundle.Write(files, dir)
+	write := bundle.Write
+	if meta.historical {
+		write = bundle.WriteHistorical
+	}
+	res, err := write(files, dir)
 	if err != nil {
 		os.RemoveAll(dir)
 		return store.Version{}, err
@@ -1449,7 +1453,7 @@ var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
 	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed",
-	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "not_design", "document_not_found", "not_found", "invalid",
+	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "not_design", "no_revisions", "document_not_found", "not_found", "invalid",
 }
 
 // ErrorCategory defines cause precedence for persisted failures and transports.
@@ -1501,6 +1505,8 @@ func ErrorCategory(err error) string {
 		return "forbidden"
 	case errors.Is(err, ErrNotDocs):
 		return "not_docs"
+	case errors.Is(err, ErrNoRevisions):
+		return "no_revisions"
 	case errors.Is(err, ErrNotDesign):
 		return "not_design"
 	case errors.Is(err, ErrDocumentNotFound):
