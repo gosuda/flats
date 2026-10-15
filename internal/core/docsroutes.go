@@ -132,7 +132,15 @@ func (s *Service) docsRevisionView(r *http.Request, slugName string, n int) (map
 	if older, err := s.st.ListRevisions(r.Context(), slugName, n, 1); err == nil && len(older) == 1 {
 		previous = older[0].Number
 	}
-	return map[string]any{"revision": rev, "entry": entry, "documents": docs, "previous": previous}, nil
+	// Other files with their hashes, so the page can tell which changed
+	// between two revisions it compares.
+	other := []store.RevisionFile{}
+	for _, f := range files {
+		if !bundle.IsMarkdown(f.Path) {
+			other = append(other, f)
+		}
+	}
+	return map[string]any{"revision": rev, "entry": entry, "documents": docs, "previous": previous, "files": other}, nil
 }
 
 var firstHeading = regexp.MustCompile(`(?m)^#\s+(.+)$`)

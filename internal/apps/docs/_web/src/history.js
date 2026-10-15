@@ -64,9 +64,10 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     next = 0,
     timer = 0,
     viewing = null,
-    showChanges = false,
-    // Highlight what the viewed revision changed since the one before it.
-    highlight = true,
+    // How a viewed revision shows: "highlight" (what it changed since the
+    // revision before it), "source" (that as a line diff), "live" (a line
+    // diff against the live text) or "plain".
+    mode = "highlight",
     confirming = false,
     // Bumped by every selection, return to live and close, so a response
     // that arrives late cannot bring back what the person left.
@@ -74,9 +75,8 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     titles = new Map();
   const md = createMarkdown();
   // Blocks a revision changed carry rev-changed; a block after removed text
-  // carries rev-removed. Fences render through markdown.js's own rule, so
+  // carries data-removed. Fences render through markdown.js's own rule, so
   // they are wrapped instead.
-  const removedText = (n) => `${n} line${n === 1 ? "" : "s"} removed here`;
   for (const type of ["fence", "code_block"]) {
     const base =
       md.renderer.rules[type] ||
@@ -86,26 +86,27 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         meta = tokens[i].meta || {};
       if (!meta.revChanged && !meta.revRemoved) return html;
       const removed = meta.revRemoved
-        ? ` data-removed="${removedText(meta.revRemoved)}"`
+        ? ` data-removed="${Number(meta.revRemoved)}"`
         : "";
-      return `<div class="${meta.revChanged ? "rev-changed " : ""}${meta.revRemoved ? "rev-removed " : ""}rev-block"${removed}>${html}</div>`;
+      return `<div class="${meta.revChanged ? "rev-changed " : ""}rev-block"${removed}>${html}</div>`;
     };
   }
+  // renderChanges renders a revision with what it changed since before
+  // marked, or returns null when the texts differ too much to compare.
   function renderChanges(markdown, before) {
+    const changes = lineChanges(before, markdown);
+    if (!changes) return null;
     const env = {},
       tokens = md.parse(markdown, env),
-      out = markChanges(tokens, lineChanges(before, markdown));
+      out = markChanges(tokens, changes);
     for (const t of tokens) {
       if (!t.meta || t.type === "fence" || t.type === "code_block") continue;
       if (t.meta.revChanged) t.attrJoin("class", "rev-changed");
-      if (t.meta.revRemoved) {
-        t.attrJoin("class", "rev-removed");
-        t.attrSet("data-removed", removedText(t.meta.revRemoved));
-      }
+      if (t.meta.revRemoved)
+        t.attrSet("data-removed", String(t.meta.revRemoved));
     }
     let html = md.renderer.render(tokens, md.options, env);
-    if (out.tail)
-      html += `<p class="rev-removed rev-tail" data-removed="${removedText(out.tail)}"></p>`;
+    if (out.tail) html += `<div data-removed="${out.tail}"></div>`;
     return { html, ...out };
   }
 
@@ -232,10 +233,16 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     await load();
   }
 
-  // Changed text is highlighted run by run, as in the line it sits on, not
-  // across the block's whole width: the inline content of each changed block
-  // goes into a span.
-  function markText(container) {
+  const removedText = (n) => `${n} line${n === 1 ? "" : "s"} removed here`;
+  const srLabel = (text) => el("span", { class: "sr-only", text });
+
+  // decorate turns the marks of a rendered revision into what people see
+  // and hear. Changed text is highlighted run by run, as in the line it sits
+  // on, not across the block's width: the inline content of each changed
+  // block goes into a span that starts with a label for screen readers.
+  // Other changed blocks get the label before them, and removed text gets a
+  // note of its own, a table row in a table.
+  function decorate(container) {
     const blocks = /^(UL|OL|P|PRE|DIV|TABLE|BLOCKQUOTE|H[1-6])$/;
     for (const block of container.querySelectorAll(
       "p.rev-changed, li.rev-changed, h1.rev-changed, h2.rev-changed, h3.rev-changed, h4.rev-changed, h5.rev-changed, h6.rev-changed",
@@ -247,11 +254,43 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
           continue;
         }
         if (!span) {
-          span = el("span", { class: "rev-mark" });
+          span = el("span", { class: "rev-mark" }, srLabel("Changed: "));
           block.insertBefore(span, node);
         }
         span.append(node);
       }
+    }
+    for (const node of container.querySelectorAll(
+      "table.rev-changed, tr.rev-changed, hr.rev-changed, .rev-block.rev-changed, blockquote.rev-changed, ul.rev-changed, ol.rev-changed",
+    )) {
+      if (node.tagName === "TR")
+        node.firstElementChild?.prepend(srLabel("Changed row: "));
+      else if (node.tagName === "BLOCKQUOTE" || node.tagName === "DIV")
+        node.prepend(srLabel("Changed: "));
+      // A table, list or rule holds no free text: the label goes before it.
+      else
+        node.before(
+          el("p", {
+            class: "sr-only",
+            text: node.tagName === "HR" ? "Changed: a rule." : "Changed:",
+          }),
+        );
+    }
+    for (const node of container.querySelectorAll("[data-removed]")) {
+      const text = "− " + removedText(Number(node.dataset.removed));
+      let note;
+      if (node.tagName === "TR")
+        note = el(
+          "tr",
+          { class: "rev-removed-note" },
+          el("td", { colspan: String(node.children.length || 1), text }),
+        );
+      else if (node.tagName === "LI")
+        note = el("li", { class: "rev-removed-note", text });
+      else note = el("div", { class: "rev-removed-note", text });
+      if (node.tagName === "DIV" && !node.className) node.replaceWith(note);
+      else node.before(note);
+      node.removeAttribute("data-removed");
     }
   }
 
@@ -270,8 +309,10 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         continue; // a malformed link stays as written
       }
       if (url.origin !== location.origin) continue;
-      if (changed?.has(p) && node.tagName === "IMG")
+      if (changed?.has(p) && node.tagName === "IMG") {
         node.classList.add("rev-changed");
+        node.before(srLabel("Changed image: "));
+      }
       if (p && !p.startsWith("_docs/") && !isMarkdown(p))
         node.setAttribute(
           attr,
@@ -283,9 +324,55 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     }
   }
 
+  // A mode button: pressing the pressed one returns to the plain view.
+  const modeButton = (value, text, title) =>
+    el("button", {
+      type: "button",
+      "aria-pressed": String(mode === value),
+      text,
+      title,
+      onclick: () => {
+        mode = mode === value ? "plain" : value;
+        drawView();
+      },
+    });
+
+  function diffView(lines, caption) {
+    return [
+      el("p", { class: "diff-caption", text: caption }),
+      el(
+        "pre",
+        { class: "diff" },
+        ...lines.map((l) =>
+          el(
+            "span",
+            { class: "diff-" + l.kind },
+            el("span", {
+              class: "diff-mark",
+              "aria-hidden": "true",
+              text: l.kind === "added" ? "+" : l.kind === "removed" ? "−" : " ",
+            }),
+            srLabel(
+              l.kind === "added"
+                ? "Added: "
+                : l.kind === "removed"
+                  ? "Removed: "
+                  : "",
+            ),
+            l.line + "\n",
+          ),
+        ),
+      ),
+    ];
+  }
+
   function drawView() {
-    const { revision, markdown, documents } = viewing,
-      date = new Date(revision.created_at);
+    const { revision, markdown, documents, before, previous } = viewing,
+      date = new Date(revision.created_at),
+      comparable = markdown !== null && previous > 0;
+    // A mode the revision cannot show falls back to the plain view.
+    if (!comparable && (mode === "highlight" || mode === "source"))
+      mode = "plain";
     // replaceChildren would print a null; leave it out.
     banner.replaceChildren(
       ...[
@@ -303,30 +390,27 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         el(
           "div",
           { class: "revision-actions" },
-          markdown === null || viewing.before === null
-            ? null
-            : el("button", {
-                type: "button",
-                "aria-pressed": String(highlight && !showChanges),
-                text: "Highlight changes",
-                title: `What revision ${revision.number} changed since revision ${viewing.previous}`,
-                onclick: () => {
-                  highlight = showChanges || !highlight;
-                  showChanges = false;
-                  drawView();
-                },
-              }),
+          comparable
+            ? modeButton(
+                "highlight",
+                "Highlight changes",
+                `What revision ${revision.number} changed since revision ${previous}`,
+              )
+            : null,
+          comparable
+            ? modeButton(
+                "source",
+                "Source changes",
+                `The Markdown lines revision ${revision.number} changed since revision ${previous}`,
+              )
+            : null,
           markdown === null
             ? null
-            : el("button", {
-                type: "button",
-                "aria-pressed": String(showChanges),
-                text: "Compare with live",
-                onclick: () => {
-                  showChanges = !showChanges;
-                  drawView();
-                },
-              }),
+            : modeButton(
+                "live",
+                "Compare with live",
+                "Line changes from this revision to the live text",
+              ),
           el("button", {
             type: "button",
             text: "Restore this revision",
@@ -376,71 +460,56 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
       );
       return;
     }
-    if (showChanges) {
-      const lines = changeLines(markdown, liveText());
-      const hasChanges = lines.some((l) => l.kind !== "same");
+    const tooMany = "Too many changes to compare here.";
+    if (mode === "live" || mode === "source") {
+      const [from, to] =
+        mode === "live" ? [markdown, liveText()] : [before, markdown];
+      const lines = changeLines(from, to);
+      if (!lines) {
+        body.replaceChildren(el("p", { class: "diff-caption", text: tooMany }));
+        return;
+      }
+      const same = lines.every((l) => l.kind === "same");
       body.replaceChildren(
-        el("p", {
-          class: "diff-caption",
-          text: hasChanges
-            ? `Changes from revision ${revision.number} to the live text: − removed since, + added since.`
-            : `The live text is the same as revision ${revision.number}.`,
-        }),
-        el(
-          "pre",
-          { class: "diff" },
-          ...lines.map((l) =>
-            el(
-              "span",
-              { class: "diff-" + l.kind },
-              el("span", {
-                class: "diff-mark",
-                "aria-hidden": "true",
-                text:
-                  l.kind === "added" ? "+" : l.kind === "removed" ? "−" : " ",
-              }),
-              el("span", {
-                class: "sr-only",
-                text:
-                  l.kind === "added"
-                    ? "Added: "
-                    : l.kind === "removed"
-                      ? "Removed: "
-                      : "",
-              }),
-              l.line + "\n",
-            ),
-          ),
+        ...diffView(
+          lines,
+          mode === "live"
+            ? same
+              ? `The live text is the same as revision ${revision.number}.`
+              : `Changes from revision ${revision.number} to the live text: − removed since, + added since.`
+            : same
+              ? `Revision ${revision.number} did not change this document's text.`
+              : `What revision ${revision.number} changed since revision ${previous}: − removed, + added.`,
         ),
       );
       return;
     }
     const article = el("div", { class: "revision-rendered" });
     let caption = null;
-    if (highlight && viewing.before !== null) {
-      const shown = renderChanges(markdown, viewing.before);
+    const shown = mode === "highlight" ? renderChanges(markdown, before) : null;
+    if (shown) {
       replaceRendered(article, shown.html, destroyDiagram);
-      markText(article);
-      const files = revision.changes || {};
-      rewrite(
-        article,
-        revision.number,
-        new Set([...(files.added || []), ...(files.changed || [])]),
-      );
+      decorate(article);
+      rewrite(article, revision.number, viewing.changedFiles);
       const any =
         shown.marked ||
         shown.tail ||
-        article.querySelector(".rev-removed, img.rev-changed");
-      caption = el("p", {
-        class: "diff-caption",
-        text:
-          viewing.before === ""
-            ? `This document is new in revision ${revision.number}.`
-            : any
-              ? `Highlighted: what revision ${revision.number} changed in this document since revision ${viewing.previous}.`
-              : `Revision ${revision.number} did not change this document.`,
-      });
+        article.querySelector(".rev-removed-note, img.rev-changed");
+      let text = !viewing.existed
+        ? `This document is new in revision ${revision.number}.`
+        : any || shown.unshown
+          ? `Highlighted: what revision ${revision.number} changed in this document since revision ${previous}.`
+          : `Revision ${revision.number} did not change this document.`;
+      if (shown.unshown)
+        text +=
+          " Some changes have no visible text here, such as link targets: see Source changes.";
+      caption = el("p", { class: "diff-caption", text });
     } else {
+      if (mode === "highlight")
+        caption = el("p", {
+          class: "diff-caption",
+          text: tooMany + " Showing the revision as it was.",
+        });
       replaceRendered(article, md.render(markdown), destroyDiagram);
       rewrite(article, revision.number);
     }
@@ -455,24 +524,28 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
       if (mine !== selection) return;
       const documents = info.documents || [];
       let markdown = null,
-        before = null;
+        before = "",
+        existed = false,
+        changedFiles = new Set();
       if (documents.some((d) => d.path === path)) {
         const doc = await api(
           `/${number}/document?doc=${encodeURIComponent(path)}`,
         );
         markdown = doc.markdown;
-        // The same document one revision earlier; "" when it is new there.
         if (info.previous) {
-          try {
+          // The revision before it: this document's text there, and its
+          // files, so images that changed between the two are marked.
+          const prev = await api(`/${info.previous}`);
+          existed = (prev.documents || []).some((d) => d.path === path);
+          if (existed)
             before = (
               await api(
                 `/${info.previous}/document?doc=${encodeURIComponent(path)}`,
               )
             ).markdown;
-          } catch (e) {
-            if (e.status !== 404) throw e;
-            before = "";
-          }
+          const old = new Map((prev.files || []).map((f) => [f.path, f.hash]));
+          for (const f of info.files || [])
+            if (old.get(f.path) !== f.hash) changedFiles.add(f.path);
         }
       }
       if (mine !== selection) return;
@@ -481,9 +554,11 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         markdown,
         documents,
         before,
+        existed,
+        changedFiles,
         previous: info.previous,
       };
-      showChanges = false;
+      if (mode === "plain") mode = "highlight";
       confirming = false;
       view.hidden = false;
       onView();

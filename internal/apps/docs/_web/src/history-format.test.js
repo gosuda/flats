@@ -134,3 +134,37 @@ test("line changes map to the blocks that show them", async () => {
     0,
   );
 });
+
+test("change mapping covers blank replacements, tables, definitions and limits", async () => {
+  const { createMarkdown } = await import("./markdown.js");
+  const { lineChanges, markChanges, changeLines } = await import(
+    "./history-format.js"
+  );
+  const md = createMarkdown();
+  const run = (a, b) => {
+    const tokens = md.parse(b, {});
+    return { tokens, out: markChanges(tokens, lineChanges(a, b)) };
+  };
+  // Text replaced by a blank line is a removal, not nothing.
+  let { tokens, out } = run("one\n\ngone\n\nthree\n", "one\n\n\n\nthree\n");
+  assert.ok(out.tail || tokens.some((t) => t.meta?.revRemoved));
+  // A table's delimiter row marks the table.
+  ({ tokens, out } = run("|a|b|\n|-|-|\n|1|2|\n", "|a|b|\n|:-|-:|\n|1|2|\n"));
+  assert.ok(tokens.find((t) => t.type === "table_open").meta?.revChanged);
+  // A changed link definition is counted as not shown.
+  ({ out } = run("[x]\n\n[x]: /old\n", "[x]\n\n[x]: /new\n"));
+  assert.equal(out.unshown, 1);
+  // Adding a paragraph leaves no unshown blank line.
+  ({ out } = run("a\n", "a\n\nb\n"));
+  assert.equal(out.unshown, 0);
+  assert.equal(out.marked, 1);
+  // Texts too different to diff quickly are reported, not compared.
+  const big = (w) =>
+    Array.from({ length: 8192 }, (_, i) => w + i + " " + w.repeat(100)).join(
+      "\n",
+    );
+  const start = Date.now();
+  assert.equal(lineChanges(big("x"), big("y")), null);
+  assert.equal(changeLines(big("x"), big("y")), null);
+  assert.ok(Date.now() - start < 3000);
+});
