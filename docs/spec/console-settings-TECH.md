@@ -91,7 +91,8 @@ the flag at start. The legacy migration (also run by `flats install`) still
 records that path, or a `--tailscale-authkey-file` one, as the deprecated key
 without reading the file (`Document.SetDeprecated`), so the first start
 imports it. `flats install` refuses `--zrok-token-file` and
-`--netbird-setup-key-file`, which the installed service would lose, and
+`--netbird-setup-key-file`, and the Tailscale key flags for a host that
+already has a config, since the installed service would lose them, and
 points to `flats key set`; and the per-start
 flag comparison no longer checks that flag.
 
@@ -254,9 +255,9 @@ Under one console-domain mutex:
    failure keep it, record the error and return it; a later delete of the same
    name, or the next start, retries.
 4. When the request came through the name being deleted, the response
-   (with the URL of a remaining name) is sent before step 3, which then runs
-   in the background, because stopping the node closes the connection that
-   carries the request.
+   (with the URL of a remaining name) is sent first and step 3 runs in the
+   background a couple of seconds later, because stopping the node closes
+   the connection that carries the response.
 
 Turning the Tailscale provider off is refused while the list is not empty
 (the config rule refuses it). The provider is shown locked while the console

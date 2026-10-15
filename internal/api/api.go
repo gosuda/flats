@@ -1124,9 +1124,6 @@ func (s *Server) deleteConsoleDomain(w http.ResponseWriter, r *http.Request, _ c
 	}
 	writeJSON(w, 200, map[string]any{"etag": etag, "redirect": redirect})
 	if after != nil {
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
 		after()
 	}
 }

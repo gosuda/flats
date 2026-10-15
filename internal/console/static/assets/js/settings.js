@@ -116,8 +116,9 @@ export function mount(main, _params, ctx) {
       }
       const [d, k] = await Promise.allSettled([api.consoleDomains(), api.keys()]);
       if (!ctx.alive()) return;
-      if (d.status === 'fulfilled') fill(domainsSlot, consoleDomains(d.value, opts));
-      if (k.status === 'fulfilled') fill(keysSlot, keysCard(k.value.keys || [], lastProviders, opts));
+      // The operator may have started typing while the requests ran.
+      if (d.status === 'fulfilled' && !editing(domainsSlot)) fill(domainsSlot, consoleDomains(d.value, opts));
+      if (k.status === 'fulfilled' && !editing(keysSlot)) fill(keysSlot, keysCard(k.value.keys || [], lastProviders, opts));
       scheduleRefresh(d.value, k.value && k.value.keys, opts);
     }, 5000);
     // Never keep a test process alive (Node timers have unref; browsers ignore it).

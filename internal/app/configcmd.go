@@ -598,6 +598,16 @@ func EnsureConfig(ctx context.Context, configPath, dataDir string, serveArgs []s
 	if configPath, dataDir, err = c.paths(); err != nil {
 		return "", "", err
 	}
+	// Only a migration records a Tailscale key file path; for a host that
+	// has its config already, the installed service would lose the flag.
+	for _, flag := range []string{"tailscale-authkey-file", "authkey-file"} {
+		if !o.Set[flag] {
+			continue
+		}
+		if _, err := os.Stat(configPath); err == nil {
+			return "", "", usagef("--%s is not kept by install for a host that already has %s: stop the host and store the key with `flats key set tailscale --from-file PATH`, or register it in the console", flag, configPath)
+		}
+	}
 	// A configured, bound host whose flags match needs no lock: the service
 	// may be running and keeps running until install restarts it.
 	if l, err := config.Load(configPath); err == nil && !l.Migrated {

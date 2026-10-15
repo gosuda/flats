@@ -362,15 +362,20 @@ func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
 		{core.HostKeyNetbird, in.netbird, h.connectNetbird, h.netbirdEnrollable},
 	} {
 		connected, why := e.usable()
+		stored, row, err := core.StoredHostKey(ctx, h.Config.Host.DataDir, h.Store, e.id)
+		if err != nil {
+			h.logf("read the waiting %s key: %v", e.id, err)
+			stored = ""
+		}
+		if connected && stored != "" {
+			// Enrolled already: a waiting value is never kept after it.
+			h.logf("a waiting %s key is not needed: %s is already connected", e.id, e.id)
+			h.clearConnected(ctx, e.id)
+		}
 		value, source := e.input.value, e.input.source
 		waiting := false
 		if !e.input.given() {
-			v, r, err := core.StoredHostKey(ctx, h.Config.Host.DataDir, h.Store, e.id)
-			if err != nil {
-				h.logf("read the waiting %s key: %v", e.id, err)
-				continue
-			}
-			value, source, waiting = v, r.Source, v != ""
+			value, source, waiting = stored, row.Source, stored != ""
 		}
 		if value == "" {
 			continue
@@ -380,17 +385,13 @@ func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
 			if e.input.given() {
 				h.logf("%s is ignored: %s is already connected; replace or disconnect it in the console", e.input.from, e.id)
 			}
-			if waiting {
-				h.logf("a waiting %s key is not needed: %s is already connected", e.id, e.id)
-				h.clearConnected(ctx, e.id)
-			}
 			continue
 		case why != "":
 			h.logf("warning: the %s key is ignored: %s", e.id, why)
 			continue
 		}
 		// A start input never replaces an account or peer connected meanwhile.
-		err := e.connect(ctx, value, source, false)
+		err = e.connect(ctx, value, source, false)
 		switch {
 		case errors.Is(err, errAlreadyConnected):
 			h.logf("%s connected meanwhile; the key from %s is not used", e.id, source)

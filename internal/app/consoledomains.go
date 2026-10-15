@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/config"
@@ -189,6 +190,10 @@ func (h *Host) ConsoleURLs() []string {
 // console. A listed name whose earlier logout has not finished is served only
 // once that logout succeeds, with a new identity.
 func (h *Host) startConsoleDomains(ctx context.Context) error {
+	// Retirement workers take cdMu too, so none changes a name's state before
+	// this pass has set every listed name's.
+	h.cdMu.Lock()
+	defer h.cdMu.Unlock()
 	nodes, err := h.Store.ListConsoleNodes(ctx)
 	if err != nil {
 		return err
@@ -295,6 +300,10 @@ func (h *Host) retireConsoleNode(ctx context.Context, name string) error {
 	h.logf("console domain %s: tailnet node logged out and removed", name)
 	return nil
 }
+
+// selfRetireDelay is how long the node of a console domain deleted through
+// itself keeps serving after the response; a variable for tests.
+var selfRetireDelay = 2 * time.Second
 
 // consoleReady reports whether a console domain is served and its node is
 // ready, so a browser sent there finds the console.
@@ -536,6 +545,12 @@ func (h *Host) deleteConsoleDomain(ctx context.Context, name, ifMatch string) (D
 	if via == name {
 		res.After = func() {
 			h.background(func(ctx context.Context) {
+				// Stopping the node closes the connection that carries this
+				// response; give the response time to reach the browser.
+				select {
+				case <-time.After(selfRetireDelay):
+				case <-ctx.Done():
+				}
 				h.cdMu.Lock()
 				defer h.cdMu.Unlock()
 				if err := h.retireConsoleNode(ctx, name); err != nil {

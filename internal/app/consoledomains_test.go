@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -24,6 +26,7 @@ type fakeTailnet struct {
 	stops    []string
 	stopErr  map[string]error
 	serveErr error
+	onStop   map[string]func() // what stopping a node closes
 }
 
 func newFakeTailnet() *fakeTailnet {
@@ -44,6 +47,9 @@ func (n *fakeTailnet) Stop(host string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.stops = append(n.stops, host)
+	if f := n.onStop[host]; f != nil {
+		go f()
+	}
 	if err := n.stopErr[host]; err != nil {
 		return err
 	}
@@ -215,6 +221,45 @@ func TestConsoleDomainSelfDelete(t *testing.T) {
 	}
 }
 
+// Deleting a domain through itself over HTTP: the browser gets the whole
+// response, with the remaining domain, before the node goes away.
+func TestConsoleDomainSelfDeleteOverHTTP(t *testing.T) {
+	old := selfRetireDelay
+	selfRetireDelay = 200 * time.Millisecond
+	t.Cleanup(func() { selfRetireDelay = old })
+	h, tail, _ := tailnetHost(t)
+	ctx := context.Background()
+	for _, n := range []string{"a", "b"} {
+		if _, err := h.AddConsoleDomain(ctx, n, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail.mu.Lock()
+	handler := tail.served["a"]
+	tail.mu.Unlock()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	tail.mu.Lock()
+	tail.onStop = map[string]func(){"a": srv.Close}
+	tail.mu.Unlock()
+	req, _ := http.NewRequest("DELETE", srv.URL+"/console/api/console-domains/a", nil)
+	req.Host = "a.tail1234.ts.net"
+	req.Header.Set("X-Flats-Console", "1")
+	req.Header.Set("Origin", "https://a.tail1234.ts.net")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct{ Redirect string }
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != 200 || out.Redirect != "https://b.tail1234.ts.net" {
+		t.Fatalf("response %d %+v %v", resp.StatusCode, out, err)
+	}
+	waitFor(t, func() bool { return slices.Contains(tail.stopped(), "a") })
+}
+
 // A node whose logout fails stays reserved and is retried.
 func TestConsoleDomainFailedLogout(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
@@ -349,9 +394,15 @@ func TestConsoleDomainRetiringAndListedAtStart(t *testing.T) {
 	if err := h.startConsoleDomains(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return tail.isServed("again") })
+	waitFor(t, func() bool { return tail.isServed("again") && h.isServed("again") })
 	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 1 || nodes[0].Retiring {
 		t.Fatalf("nodes = %+v", nodes)
+	}
+	// The host's own state agrees: served, no conflict, and links use it.
+	time.Sleep(50 * time.Millisecond)
+	v, _ := h.ConsoleDomains(ctx)
+	if d := v.(ConsoleDomainsView).Domains[0]; d.Conflict != "" || !h.isServed("again") || h.ConsoleURL() != "https://again.tail1234.ts.net" {
+		t.Fatalf("after the logout: %+v served=%v url=%q", d, h.isServed("again"), h.ConsoleURL())
 	}
 }
 

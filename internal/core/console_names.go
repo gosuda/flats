@@ -16,6 +16,12 @@ func (s *Service) consoleNameReserved(name string) bool {
 	return slices.Contains(s.cfg.Reserved, name) || s.consoleNameInUse(name)
 }
 
+// consoleNameListed reports whether name is a fixed reserved name or a
+// console domain or node. It takes no lock of the Service.
+func (s *Service) consoleNameListed(name string) bool {
+	return slices.Contains(s.cfg.Reserved, name) || (s.cfg.ReservedNames != nil && slices.Contains(s.cfg.ReservedNames(), name))
+}
+
 // consoleNameInUse reports whether name is a console domain or node, or a
 // domain being added. Fixed reserved names stay free for console domains.
 func (s *Service) consoleNameInUse(name string) bool {
@@ -33,11 +39,10 @@ func (s *Service) consoleNameInUse(name string) bool {
 func (s *Service) previewHost(slugName string) (string, func()) {
 	for {
 		host := slug.PreviewHost(slugName)
-		if s.consoleNameReserved(host) {
-			continue
-		}
+		// Checked and reserved under one lock: a console addition reserves its
+		// name under s.mu too and keeps it until the list holds it.
 		s.mu.Lock()
-		if s.consoleAdding[host] || s.previewAdding[host] {
+		if s.consoleAdding[host] || s.previewAdding[host] || s.consoleNameListed(host) {
 			s.mu.Unlock()
 			continue
 		}
@@ -99,10 +104,13 @@ func (s *Service) ReserveConsoleName(ctx context.Context, name string, commit fu
 	if holder != "" {
 		return fmt.Errorf("%w: %q is used by %s; choose another name", ErrConflict, name, holder)
 	}
+	// Checked and reserved under one lock: a preview registers itself before
+	// it releases its own reservation, so one of the two always shows.
 	s.mu.Lock()
-	if s.previewAdding[name] || s.consoleAdding[name] {
+	_, isPreview := s.prevs[name]
+	if isPreview || s.previewAdding[name] || s.consoleAdding[name] {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: %q is being used by a new preview or console domain; try again", ErrConflict, name)
+		return fmt.Errorf("%w: %q is being used by a preview or another console domain; choose another name", ErrConflict, name)
 	}
 	if s.consoleAdding == nil {
 		s.consoleAdding = map[string]bool{}

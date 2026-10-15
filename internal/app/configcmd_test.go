@@ -208,6 +208,21 @@ func TestEnsureConfigForInstall(t *testing.T) {
 	if _, _, err := EnsureConfig(ctx, "", dir, []string{"--permit", "portal"}, &out); exitCode(err) != ExitConfig {
 		t.Fatalf("different flags: %v", err)
 	}
+	// Key flags the installed service would lose are refused, with the way to
+	// store the key instead.
+	for _, args := range [][]string{{"--tailscale-authkey-file", "/k"}, {"--authkey-file", "/k"}, {"--zrok-token-file", "/k"}, {"--netbird-setup-key-file", "/k"}} {
+		if _, _, err := EnsureConfig(ctx, "", dir, args, &out); exitCode(err) != 2 || !strings.Contains(err.Error(), "flats key set") {
+			t.Errorf("%q on an existing host: %v", args, err)
+		}
+	}
+	// A new host records a Tailscale key file path for its first start.
+	fresh := filepath.Join(t.TempDir(), "data")
+	if _, _, err := EnsureConfig(ctx, "", fresh, []string{"--tailscale-authkey-file", "/k"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(filepath.Join(fresh, "config.json")); !strings.Contains(string(raw), `"tailscale_authkey_file": "/k"`) {
+		t.Fatalf("config.json = %s", raw)
+	}
 	// A legacy data directory is migrated, to a config path of choice.
 	legacy := legacyDir(t)
 	custom := filepath.Join(t.TempDir(), "etc", "flats.json")
