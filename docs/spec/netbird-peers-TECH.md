@@ -10,8 +10,8 @@ that spec; "CS rule N" to [console-settings.md](console-settings.md).
 ```
 <data>/netbird/
   peers/<name>/netbird.json    embed config: the peer's WireGuard identity (0600)
-  peers/<name>/dns.json        embed state file
-  legacy-peer.json             notice of a dropped shared peer (rule 20)
+  peers/<name>/dns.json        embed state file (per peer; see the start lock)
+  legacy-peer.json             notice of a dropped shared peer (rule 21)
 ```
 
 The shared-peer files (`account.json`, `netbird.json`, `netbird-dns.json`,
@@ -22,7 +22,7 @@ The shared-peer files (`account.json`, `netbird.json`, `netbird-dns.json`,
 `Config{Dir, ManagementURL, SetupKey func() string, ShutdownTimeout, Logf}`.
 `SetupKey` returns the key currently stored (empty when none); it is read at
 every peer start, so a key registered in the console applies to the next
-peer without restarting anything (rule 12).
+peer without restarting anything (rule 13).
 
 A `peer` holds one embedded client and up to three roles on it:
 
@@ -36,13 +36,14 @@ A name is a flat or a console domain, never both (rule 1), so private and
 console never share a peer. The per-role run loop (listen, expose, keep-alive,
 backoff) stays as today; only the port allocation goes away.
 
-- **Start.** The first role of a name starts its peer under the peer's lock:
-  `embed.New` with `DeviceName = name`, `ConfigPath` and `StatePath` in
-  `peers/<name>/`, `ManagementURL`, and
+- **Start.** The first role of a name starts its peer under the name's lock:
+  `embed.New` with `DeviceName = name`, `DNSLabels = [name]` (the extra
+  label, rule 1), `ConfigPath` and `StatePath` in `peers/<name>/`,
+  `ManagementURL`, `WireguardPort = 0`, and
   - `SetupKey` = the current key when one is stored. embed reuses the identity
     in `ConfigPath` and logs in with it; only when management answers that the
     peer is unknown does it register with the setup key, keeping that identity
-    (rule 5);
+    (rule 6);
   - otherwise, when `ConfigPath` holds an identity, `PrivateKey` = that key, as
     the shared peer did. A management rejection is reported as
     `ErrPeerRejected` ("NetBird no longer recognises this peer; register a
@@ -50,22 +51,32 @@ backoff) stays as today; only the port allocation goes away.
     `InvalidArgument` registration fallback with an empty setup key);
   - otherwise `ErrNoSetupKey`.
 
-  The key is scrubbed from every returned error.
+  The key is scrubbed from every returned error. A registration refused with
+  `FailedPrecondition` "setup key doesn't allow extra DNS labels" becomes
+  `ErrKeyNoExtraLabels`, naming the missing key option (rule 11).
 - **Process-wide start lock.** `embed.New` sets `NB_DNS_STATE_FILE` in the
-  process environment and the engine reads it during `Start`. Peers therefore
-  start one at a time under a package mutex held from `embed.New` until
-  `Start` returns (bounded by `startTimeout`). `logrus` output and level are
-  process-wide as well and set identically for every peer. The WireGuard
-  port is 0 (random), so peers do not compete for 51820.
+  process environment and the engine reads it when it connects. Peers
+  therefore start one at a time under a package semaphore taken before
+  `embed.New` and released only when embed's own `Start` returns. That call
+  authenticates with a context of its own and may outlive Flats'
+  `startTimeout` (about two minutes of retries while management is
+  unreachable): `Start` then returns `context.DeadlineExceeded` to its caller
+  at the timeout, and the abandoned call keeps the semaphore until it ends,
+  then stops its client if it succeeded late. A waiter gives up when its own
+  context ends. A management outage therefore delays peer starts but never
+  lets two engines read the variable at once. `logrus` output and level are
+  process-wide as well and set identically for every peer.
 - **Stop.** When a peer's last role stops, its client stops; its directory
   stays.
 - **Retire.** `Retire*` stops the role; when the peer then has no role left,
-  its client stops and `peers/<name>/` is deleted (rule 6). Retirement
+  its client stops and `peers/<name>/` is deleted (rule 7). Retirement
   never contacts NetBird to delete the peer: the embedded client cannot.
-- **Assigned name.** `Status().LocalPeerState.FQDN` gives the assigned FQDN;
-  its first label differing from the name is reported as `assigned` (rule 1).
+- **URL.** `Status().LocalPeerState.FQDN` is the primary FQDN; the URL is
+  `http://<name>.<its domain>/` (the extra label), or the overlay IP when the
+  peer has no FQDN. Console HostGuards accept both the extra-label FQDN and
+  the primary FQDN.
 - **Identity.** `IdentityForIP(name, ip)` wraps `embed.Client.IdentityForIP`
-  for console decisions (rule 17).
+  for console decisions (rule 18).
 - **Close** stops every role, then every client.
 
 ### Driver (`provider.NetbirdDriver`)
@@ -79,33 +90,42 @@ bool, error)`, `DisconnectHint()` removed. `LoadAccount`, `Enroll` and
 
 `NetbirdNet` keeps the private and public methods (ports are gone, so
 "Retire" now means "delete the peer identity") and gains the console methods,
-`SetSetupKey(string)` and `PeerCount() int`. `Account()` is removed: the
-approval token's fingerprint comes from the stored key (below). The offline
-path in `StopSlug` calls `RetireStored(dir, host)`, which deletes the peer
-directory.
+`IdentityForIP` and `PeerCount() int`. `Account()` is removed: the approval
+token's fingerprint comes from the stored key (below). The offline path in
+`StopSlug` calls `RetireStored(dir, host)`, which deletes the peer directory.
+`StopProviderRoutes` (NetBird removed from a flat) keeps calling `Stop*`, so
+the identity stays until the flat is deleted (rule 8). Renames are unchanged:
+the old name's routes, NetBird ones included, serve the redirect and are
+retired through `StopSlug` when it expires (rule 7). `DetachNetbird` goes
+with the account APIs.
 
 ## Host (`internal/app`)
 
 ### Setup key
 
 - `host_keys` row `netbird` now holds the key value permanently, like
-  `tailscale` (rule 9). `resolveNetbirdKey` applies the same seed rule as
+  `tailscale` (rule 10). `resolveNetbirdKey` applies the same seed rule as
   `resolveTailscaleKey` (flag `--netbird-setup-key-file`, then
   `FLATS_NETBIRD_SETUP_KEY[_FILE]`, then the stored row) and reports
   `external_differs`. The NetBird branch of `enrollWaiting` and
   `netbirdEnrollable` are removed.
-- `core.CheckHostKeyValue(netbird, key)` requires a UUID (rule 11).
+- `core.CheckHostKeyValue(netbird, key)` requires a UUID (rule 12).
 - Console API: `PUT /console/api/keys/netbird {"key"}` and
-  `DELETE /console/api/keys/netbird`, implemented as for Tailscale; both call
-  `netbirdNet.SetSetupKey`. `PUT/DELETE /console/api/providers/netbird/account`
+  `DELETE /console/api/keys/netbird`, implemented as for Tailscale. The
+  backend reads the key through `NetbirdConfig.SetupKey`, which returns the
+  host's in-memory copy of the stored key, updated under `keyMu`.
+- After a key is stored, the host retries in the background (rule 13): core's
+  `RetryProviderGrants(ctx, netbird|netbird-expose)` runs `applyProviderGrant`
+  for every flat that allows the provider and has no open route for it, and
+  every listed NetBird console domain that is not served is served again. `PUT/DELETE /console/api/providers/netbird/account`
   and `ConnectNetbird`/`DisconnectNetbird` are removed.
 - `flats key set netbird` stores the key (not a waiting enrollment).
 - Keys card fields for NetBird: `set`, `source`, `updated_at`,
   `external_differs`, `management_url`, `peers` (running peer count), and
-  `legacy_peer` (rule 20).
+  `legacy_peer` (rule 21).
 - The approval policy token is `management_url + "\x00" +
   hex(sha256("flats-netbird-key:" + key))[:32]` while a NetBird provider is
-  granted (rule 13); it is recomputed when the key changes.
+  granted (rule 14); it is recomputed when the key changes.
 
 ### Backend
 
@@ -113,7 +133,7 @@ The NetBird backend is created whenever `netbird` or `netbird-expose` is
 permitted and the binary links NetBird, with or without a key: routes then
 report `ErrNoSetupKey` until one is stored.
 
-### Legacy shared peer (rule 20)
+### Legacy shared peer (rule 21)
 
 At start, before the backend is built, `CleanupLegacy` finds `account.json`,
 writes `legacy-peer.json` (device name, management URL), and deletes the
@@ -149,11 +169,11 @@ until the operator dismisses it
   `console_nodes` row.
 - **Handler.** A NetBird console domain is `HostGuard` (the name, the
   assigned FQDN and its first label; ports `""` and `80`) →
-  `withConsoleDomain` → `api.PlainHTTPConsole` (rule 19) →
-  `api.WithApprover(netbird identity)` (rule 17) → the management mux.
+  `withConsoleDomain` → `api.PlainHTTPConsole` (rule 20) →
+  `api.WithApprover(netbird identity)` (rule 18) → the management mux.
 - **Order.** `ConsoleURL` prefers the first served Tailscale domain (HTTPS),
   then the first served NetBird domain, then loopback.
-- **Delete (rule 15).** The last-domain check counts both lists; the redirect
+- **Delete (rule 16).** The last-domain check counts both lists; the redirect
   candidate for a self-delete is any ready domain, Tailscale first.
 - **Provider off.** `SetNetworkProvider` refuses to turn `netbird` off while
   `netbird.console_hosts` is not empty, as for Tailscale.
@@ -164,11 +184,12 @@ until the operator dismisses it
   `DELETE /console-domains/{provider}/{name}`. `--console-host` still pins the
   Tailscale list only.
 
-### CSRF guard over HTTP (rule 19)
+### CSRF guard over HTTP (rule 20)
 
 `api.PlainHTTPConsole(next)` marks the request context. `consoleRequest`
 accepts a mutation on a marked request when `Sec-Fetch-Site` is absent, the
-`Origin` header is present and `sameOrigin` holds. When `Sec-Fetch-Site` is
+`Origin` header is present, its scheme is `http`, and `sameOrigin` holds
+(host and port, a missing port being 80). When `Sec-Fetch-Site` is
 present, it must be `same-origin`, as everywhere. The other conditions
 (`X-Flats-Console: 1`, no `X-Flats-Client`, `HostGuard`'s Host and Origin
 checks) are unchanged, so a page on another origin, including another flat
@@ -187,8 +208,8 @@ listener and Tailscale domains keep the strict rule.
 ## Console
 
 - NetBird panels: no setup key form; the key lives on the Keys card, with the
-  recommendation of rule 10 and a link to the NetBird dashboard's setup keys.
-  The panels show the running peer count, the HTTP limits (rule 18) and the
+  recommendation of rule 11 and a link to the NetBird dashboard's setup keys.
+  The panels show the running peer count, the HTTP limits (rule 19) and the
   legacy notice.
 - Console domains card: one section per provider, each with its list, add
   form and state; NetBird domains show their `http://` URL.
