@@ -14,9 +14,9 @@ export class ApiError extends Error {
 }
 
 // extraHeaders adds request headers (If-Match for settings saves).
-export async function request(method, path, body, extraHeaders) {
+export async function request(method, path, body, extraHeaders, signal) {
   const headers = { 'X-Flats-Console': '1', Accept: 'application/json', ...extraHeaders };
-  const opts = { method, headers, credentials: 'same-origin', cache: 'no-store' };
+  const opts = { method, headers, credentials: 'same-origin', cache: 'no-store', ...(signal ? { signal } : {}) };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -68,7 +68,7 @@ export const api = {
   deleteSecret: (slug, name) => request('DELETE', `/flats/${enc(slug)}/secrets/${enc(name)}`),
   snapshots: (slug) => get(`/flats/${enc(slug)}/snapshots`),
   stats: (slug, days) => get(`/flats/${enc(slug)}/stats?days=${days || 30}`),
-  approvals: (status) => get('/approvals' + (status ? '?status=' + enc(status) : '')),
+  approvals: (status, signal) => request('GET', '/approvals' + (status ? '?status=' + enc(status) : ''), undefined, undefined, signal),
   approval: (id) => get(`/approvals/${enc(id)}`),
   decide: (id, approve) => post(`/approvals/${enc(id)}/${approve ? 'approve' : 'reject'}`),
   providers: () => get('/providers'),
