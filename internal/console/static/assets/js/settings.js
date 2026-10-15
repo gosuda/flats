@@ -9,14 +9,14 @@ import { describeApproval, statusBadge } from './approval.js';
 // Limits shown in human units; values are stored as integers in base units.
 const FIELDS = [
   { key: 'upload_max_bytes', label: 'Upload size limit', unit: 'MB', factor: 1 << 20, min: 0.001, help: 'Total uncompressed size of one saved version.' },
-  { key: 'keep_versions', label: 'Versions to keep', unit: 'versions', factor: 1, step: 1, help: 'Files of older versions are pruned after each deploy, which also closes the flat’s previews. The live version is always kept. 0 keeps every version.' },
+  { key: 'keep_versions', label: 'Versions to keep', unit: 'versions', factor: 1, step: 1, help: 'For websites and pages. Files of older versions are pruned after each deploy, which also closes the flat’s previews. The live version is always kept. 0 keeps every version.' },
   { key: 'disk_quota_bytes', label: 'Disk quota per flat', unit: 'GB', factor: 1 << 30, help: '0 means no quota.' },
   { key: 'preview_ttl_seconds', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
   { key: 'redirect_days', label: 'Redirect after a slug rename', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect to the new ones.' },
   { key: 'events_keep', label: 'Log events kept per flat', unit: 'events', factor: 1, step: 1, min: 1, help: 'Older events are deleted.' },
-  { key: 'revision_quota', label: 'Design revisions kept', unit: 'revisions', factor: 1, step: 1, help: 'Unpinned revisions each design keeps; older ones are deleted at once when lowered. A design can override it. 0 keeps all.' },
-  { key: 'pin_quota', label: 'Design pins', unit: 'pins', factor: 1, step: 1, help: 'Pinned revisions per design, never deleted automatically. A design can override it. 0 is unlimited.' },
+  { key: 'revision_quota', label: 'Revisions to keep', unit: 'revisions', factor: 1, step: 1, help: 'Unpinned revisions each document or design keeps; older ones are deleted at once when lowered. Each document or design can override it. 0 keeps all.' },
+  { key: 'pin_quota', label: 'Pinned revisions allowed', unit: 'pins', factor: 1, step: 1, help: 'Maximum pinned revisions per document or design. Pinned revisions are never deleted automatically. Each document or design can override it. 0 is unlimited.' },
   { key: 'portal_max_relays', label: 'Active Portal relays', unit: 'relays', factor: 1, step: 1, min: 1, portal: true, help: 'How many discovered relays a public flat uses at once. Used when Portal starts.' },
 ];
 
