@@ -128,6 +128,9 @@ every start may be added later.
     node out and retires it as other tailnet nodes are retired. A name removed
     outside the console is retired at the next start. A retirement that fails
     is retried later; the name cannot be added again until it finishes.
+    Tailscale keeps a logged-out machine listed, so reusing its name needs
+    that machine removed in the Tailscale admin console; otherwise the new
+    node gets another name and the console warns (rule 14).
     - A console reached over Tailscale refuses to delete the last name.
       Emptying the list, which leaves the console on the loopback address
       only, is possible only from the loopback console or with offline

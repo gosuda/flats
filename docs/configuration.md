@@ -253,7 +253,10 @@ one, point agents at it (`flats connect`), then delete the old one.
   name afterwards. `flats` stays reserved for the console even when it is not
   listed.
 - Deleting a name saves the list first, then logs its node out and deletes
-  its identity. A console reached over the tailnet refuses to delete the last
+  its identity. Tailscale keeps a logged-out machine in the tailnet's machine
+  list (as expired), so its name stays taken: to use the same name again,
+  remove that machine in the Tailscale admin console first; otherwise the
+  tailnet names the new node `NAME-1`, and the console says so. A console reached over the tailnet refuses to delete the last
   name; only the console on the loopback address, or `flats config set` while
   the host is stopped, can empty the list. Deleting the name the page is
   open on moves the page to a remaining name.
