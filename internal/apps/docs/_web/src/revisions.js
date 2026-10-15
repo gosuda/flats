@@ -48,12 +48,11 @@ function addRef(db, hash, text) {
   if (typeof text !== "string") throw new Error("revision text is missing");
   db.exec("INSERT INTO flats_docs_texts VALUES(?,?,1,NULL)", [hash, text]);
 }
+// release drops one reference. The text stays until dropUnused at the end
+// of the operation: a later document of the same operation may reference
+// it again.
 function release(db, hash) {
   db.exec("UPDATE flats_docs_texts SET refs=refs-1 WHERE hash=?", [hash]);
-  db.exec(
-    "DELETE FROM flats_docs_texts WHERE hash=? AND refs<=0 AND staged_at IS NULL",
-    [hash],
-  );
 }
 function textOf(db, hash) {
   return db.query("SELECT text FROM flats_docs_texts WHERE hash=?", [hash])[0]
@@ -204,8 +203,7 @@ export function record(db, o) {
 }
 
 // store keeps a text for an entry recorded later in the same transaction,
-// so the caller need not hold it meanwhile. Rows nothing ended up
-// referencing are deleted by dropUnused.
+// so the caller need not hold it meanwhile.
 function store(db, text) {
   const hash = digest(text);
   if (
@@ -214,7 +212,9 @@ function store(db, text) {
     db.exec("INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)", [hash, text]);
   return { hash, size: utf8Bytes(text) };
 }
-function dropUnused(db) {
+// dropUnused deletes the texts nothing references any more, except staged
+// ones. Every operation that releases or stores texts ends with it.
+export function dropUnused(db) {
   db.exec("DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NULL");
 }
 
@@ -368,10 +368,10 @@ export function ensureFlat(db, content, generation) {
       op: mine?.id,
       known,
     });
-    dropUnused(db);
   }
   if (intent) releaseIntent(db, intent);
   finishActivation(db, content, generation);
+  dropUnused(db);
   return true;
 }
 
@@ -477,6 +477,7 @@ export function sync(db, content, generation, now = Date.now()) {
     "DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NOT NULL AND staged_at<?",
     [now - STAGED_TTL],
   );
+  dropUnused(db);
   return {
     store: getMeta(db, "store"),
     ready: db.query("SELECT count(*) AS n FROM flats_docs_outbox")[0].n,
@@ -530,6 +531,7 @@ export function ack(db, store, through) {
     db.exec("DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
     db.exec("DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
   }
+  dropUnused(db);
 }
 
 export function stage(db, text, now = Date.now()) {
@@ -580,6 +582,7 @@ export function setIntent(db, body) {
       : undefined,
     documents,
   });
+  dropUnused(db);
 }
 
 // tryEnsureFlat runs the activation gate in a savepoint. When the version's
@@ -638,6 +641,7 @@ export function restore(db, content, generation, body) {
     if (intent) releaseIntent(db, intent);
     finishActivation(db, content, generation);
   }
+  dropUnused(db);
   return { store: getMeta(db, "store"), seq };
 }
 

@@ -546,6 +546,7 @@ async function edit(request, env, d) {
             known: { [d.path]: plan.text },
             op: id,
           });
+          revisions.dropUnused(db);
           // Checked last, immediately before COMMIT.
           if (deadline !== undefined && Date.now() > deadline)
             throw Object.assign(new Error("edit deadline passed"), {

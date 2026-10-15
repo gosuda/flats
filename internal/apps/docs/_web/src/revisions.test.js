@@ -430,3 +430,33 @@ test("a rollback recovers a version whose activation reaches a history limit", (
   assert.equal(revisions.getMeta(db, "active").hash, "v2");
   assert.equal(revisions.getMeta(db, "intent"), null);
 });
+
+test("a text one document releases can be taken up by another in the same activation", () => {
+  const db = database();
+  transaction(db, () =>
+    revisions.ensureFlat(
+      db,
+      content("v1", doc("a.md", "old A\n"), doc("b.md", "old B\n")),
+      next(),
+    ),
+  );
+  const store = revisions.getMeta(db, "store");
+  transaction(db, () => revisions.ack(db, store, entries(db).at(-1).seq));
+  // a.md moves on and b.md takes a.md's old text: recording a.md drops the
+  // last reference to "old A" before b.md needs it.
+  transaction(db, () =>
+    revisions.ensureFlat(
+      db,
+      content("v2", doc("a.md", "new A\n"), doc("b.md", "old A\n")),
+      next(),
+    ),
+  );
+  const e = entries(db);
+  assert.equal(textOf(db, e.at(-1), "b.md"), "old A\n");
+  assert.equal(textOf(db, e.at(-1), "a.md"), "new A\n");
+  transaction(db, () => revisions.ack(db, store, e.at(-1).seq));
+  assert.deepEqual(refs(db), {
+    [digest("new A\n")]: 1,
+    [digest("old A\n")]: 1,
+  });
+});
