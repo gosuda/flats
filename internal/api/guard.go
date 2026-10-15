@@ -154,10 +154,49 @@ func consoleRequest(r *http.Request) error {
 	if safeMethod(r.Method) {
 		return nil
 	}
-	if r.Header.Get("Sec-Fetch-Site") != "same-origin" || r.Header.Get("Origin") == "" {
+	site := r.Header.Get("Sec-Fetch-Site")
+	if site == "" && plainHTTPConsole(r) {
+		// Browsers send Fetch Metadata only to secure origins; a NetBird
+		// console domain is plain HTTP. The custom header above already needs
+		// a CORS preflight from any other origin, which is never granted;
+		// require the page's own http Origin as well.
+		if u, err := url.Parse(r.Header.Get("Origin")); err == nil && u.Scheme == "http" && sameOrigin(r) {
+			return nil
+		}
+	}
+	if site != "same-origin" || r.Header.Get("Origin") == "" {
 		return errors.New("console changes must come from the Flats console page in a browser (same-origin request with an Origin header)")
 	}
 	return nil
+}
+
+type plainHTTPKey struct{}
+
+// PlainHTTPConsole marks requests of a console served over plain HTTP (a
+// NetBird console domain), where browsers send no Sec-Fetch-Site: console
+// changes there are accepted with a same-origin http Origin instead.
+// Mount it only on such a listener.
+func PlainHTTPConsole(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), plainHTTPKey{}, true)))
+	})
+}
+
+func plainHTTPConsole(r *http.Request) bool {
+	v, _ := r.Context().Value(plainHTTPKey{}).(bool)
+	return v
+}
+
+// WithApprover records who(r) as the operator identity of console decisions,
+// as TailnetIdentity does for a tailnet login; "" records none. Client-sent
+// identity headers are not consulted.
+func WithApprover(who func(*http.Request) string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := who(r); id != "" {
+			r = r.WithContext(context.WithValue(r.Context(), approverKey{}, id))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type approverKey struct{}

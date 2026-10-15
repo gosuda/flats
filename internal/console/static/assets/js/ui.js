@@ -240,7 +240,7 @@ export function consoleOnServer() {
   return !host || loopbackHost(host);
 }
 
-export const SERVER_ONLY = 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale in this flat’s Settings → Networks → Private (turning Tailscale on in host Settings is not enough).';
+export const SERVER_ONLY = 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale or NetBird in this flat’s Settings → Networks → Private (turning one on in host Settings is not enough).';
 
 // extLink is an external link that opens in a new tab without an opener. A
 // URL that is not http(s) is shown as text instead, and so is a loopback URL
@@ -306,12 +306,16 @@ export function openLinks(f) {
 
 // openPrimary is the single open shortcut of the narrow layout: one link to
 // the flat's first public address while it is public, else its first private
-// one. Its glyph is the external-link arrow, so the globe and lock stay the
-// visibility's own icons; openMenuItems lists every address for the menu.
+// one, skipping addresses that only open on the Flats host when the console
+// is viewed from another device (a phone on the tailnet or NetBird would
+// otherwise get the Local address). Its glyph is the external-link arrow, so
+// the globe and lock stay the visibility's own icons; openMenuItems lists
+// every address for the menu.
 export function openPrimary(f) {
   const name = f.name || f.slug;
   const targets = linkTargets(f);
-  const t = targets.public[0] || targets.private[0];
+  const all = [...targets.public, ...targets.private];
+  const t = all.find((x) => !serverOnly(x.url)) || all[0];
   if (!t) return null;
   const note = t.public ? ' (anyone with the URL can open the flat)' : '';
   return extLink(t.url, icon('external', `Open ${name} ${t.public ? 'public' : 'private'}ly through ${t.label}${note}`), 'icon-btn open-primary');

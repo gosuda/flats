@@ -92,9 +92,21 @@ func (s *Service) ConsoleNameHolder(ctx context.Context, name string) (string, e
 // It refuses a name a flat, preview, redirect or another console name holds.
 // After commit returns, the console list or node record holds the name.
 func (s *Service) ReserveConsoleName(ctx context.Context, name string, commit func() error) error {
+	return s.reserveConsoleName(ctx, name, false, commit)
+}
+
+// ReserveSharedConsoleName is ReserveConsoleName for a name that may already
+// be a console domain of the other network (the caller checked that it is
+// not one of its own): the same name may serve the console on Tailscale and
+// on NetBird.
+func (s *Service) ReserveSharedConsoleName(ctx context.Context, name string, commit func() error) error {
+	return s.reserveConsoleName(ctx, name, true, commit)
+}
+
+func (s *Service) reserveConsoleName(ctx context.Context, name string, shared bool, commit func() error) error {
 	unlock := s.lock(name)
 	defer unlock()
-	if s.consoleNameInUse(name) {
+	if !shared && s.consoleNameInUse(name) {
 		return fmt.Errorf("%w: %q is already a console domain or is still being removed", ErrConflict, name)
 	}
 	holder, err := s.ConsoleNameHolder(ctx, name)

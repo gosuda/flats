@@ -52,12 +52,13 @@ type registry struct {
 // migrations is the production registry.
 var migrations = registry{current: CurrentSchemaVersion, steps: []Migration{
 	{From: 1, To: 2, Apply: consoleHostsV2},
-	{From: 2, To: 3, Apply: versionQuotaV3},
+	{From: 2, To: 3, Apply: netbirdPeersV3},
+	{From: 3, To: 4, Apply: versionQuotaV4},
 }}
 
-// versionQuotaV3 preserves only explicitly configured retention values.
+// versionQuotaV4 preserves only explicitly configured retention values.
 // An absent old setting adopts the new quota default of 20.
-func versionQuotaV3(doc map[string]any) error {
+func versionQuotaV4(doc map[string]any) error {
 	sys, ok := doc["system"].(map[string]any)
 	if !ok {
 		return nil
@@ -68,6 +69,21 @@ func versionQuotaV3(doc map[string]any) error {
 		}
 		sys["version_quota"] = old
 		delete(sys, "keep_versions")
+	}
+	return nil
+}
+
+// netbirdPeersV3 drops netbird.device_name: every flat and console domain now
+// runs its own NetBird peer named after it. Nothing else changes, so the
+// step needs no confirmation.
+func netbirdPeersV3(doc map[string]any) error {
+	nb, ok := doc["netbird"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	delete(nb, "device_name")
+	if len(nb) == 0 {
+		delete(doc, "netbird")
 	}
 	return nil
 }

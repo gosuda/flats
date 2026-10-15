@@ -7,7 +7,7 @@ import (
 )
 
 func TestVersionQuotaMigration(t *testing.T) {
-	for _, schema := range []int{1, 2} {
+	for _, schema := range []int{1, 2, 3} {
 		for _, old := range []string{"", "0", "3", "40"} {
 			t.Run(fmt.Sprintf("v%d/%s", schema, old), func(t *testing.T) {
 				sys := ""

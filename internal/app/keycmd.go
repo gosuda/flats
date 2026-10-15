@@ -25,8 +25,9 @@ const KeyUsage = `key ls [--config path | --data dir]
 // KeyCommand runs `flats key <subcommand>`: it manages the operator keys in
 // flats.db while the host is stopped, like `flats config set`. A key is read
 // from stdin (without echo on a terminal) or --from-file, never from the
-// command line. zrok and NetBird keys wait for the next start, which connects
-// them when no account or peer is connected yet.
+// command line. The Tailscale and NetBird keys are stored for every new node
+// or peer; a zrok token waits for the next start, which connects it when no
+// account is connected yet.
 func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer) error {
 	if len(args) == 0 {
 		return usagef("missing subcommand")
@@ -108,9 +109,12 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	if err := core.PutHostKeyValue(ctx, dataDir, st, id, value, core.KeySourceCLI, time.Now()); err != nil {
 		return err
 	}
-	if id == core.HostKeyTailscale {
+	switch id {
+	case core.HostKeyTailscale:
 		c.printf("stored the Tailscale auth key in %s; new tailnet nodes use it from the next start\n", dbPath)
-	} else {
+	case core.HostKeyNetbird:
+		c.printf("stored the NetBird setup key in %s; new NetBird peers register with it from the next start\n", dbPath)
+	default:
 		c.printf("stored the %s key in %s; the next start connects %s with it if none is connected yet\n", id, dbPath, id)
 	}
 	return nil
@@ -159,7 +163,7 @@ func listKeys(ctx context.Context, st *store.Store, out io.Writer) error {
 		state := "none"
 		switch {
 		case !ok:
-		case r.HasValue() && id == core.HostKeyTailscale:
+		case r.HasValue() && (id == core.HostKeyTailscale || id == core.HostKeyNetbird):
 			state = "stored"
 		case r.HasValue():
 			state = "waiting for the next start"
@@ -193,9 +197,12 @@ func removeKey(ctx context.Context, st *store.Store, id string, out io.Writer) e
 	if err := st.DeleteHostKey(ctx, id); err != nil {
 		return err
 	}
-	if id == core.HostKeyTailscale {
+	switch id {
+	case core.HostKeyTailscale:
 		fmt.Fprintln(out, "removed the Tailscale auth key; new tailnet nodes wait for an interactive login")
-	} else {
+	case core.HostKeyNetbird:
+		fmt.Fprintln(out, "removed the NetBird setup key; running peers keep working, new ones cannot register until a key is stored")
+	default:
 		fmt.Fprintf(out, "removed the waiting %s key\n", id)
 	}
 	return nil

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -157,23 +158,32 @@ func readKeyInputs(o Options, legacy bool, deprecatedFile string) (keyInputs, er
 	return in, nil
 }
 
-// resolveTailscaleKey applies the seed rule: an external value is stored
-// only when flats.db holds no Tailscale key. A stored key always wins; a
-// different external value is reported. It returns the key to use.
+// keyLabel names a stored key in messages.
+var keyLabel = map[string]string{core.HostKeyTailscale: "Tailscale auth key", core.HostKeyNetbird: "NetBird setup key"}
+
+// resolveTailscaleKey applies the seed rule to the Tailscale auth key.
 func resolveTailscaleKey(ctx context.Context, dataDir string, st *store.Store, in keyInput, now time.Time, logf func(string, ...any)) (key string, differs bool, err error) {
-	stored, _, err := core.StoredHostKey(ctx, dataDir, st, core.HostKeyTailscale)
+	return resolveStoredKey(ctx, dataDir, st, core.HostKeyTailscale, in, now, logf)
+}
+
+// resolveStoredKey applies the seed rule to a key Flats keeps (Tailscale,
+// NetBird): an external value is stored only when flats.db holds no key of
+// that kind. A stored key always wins; a different external value is
+// reported. It returns the key to use.
+func resolveStoredKey(ctx context.Context, dataDir string, st *store.Store, id string, in keyInput, now time.Time, logf func(string, ...any)) (key string, differs bool, err error) {
+	stored, _, err := core.StoredHostKey(ctx, dataDir, st, id)
 	if err != nil {
 		return "", false, &ActionError{err}
 	}
 	switch {
 	case stored == "" && in.given():
-		if err := core.PutHostKeyValue(ctx, dataDir, st, core.HostKeyTailscale, in.value, in.source, now); err != nil {
+		if err := core.PutHostKeyValue(ctx, dataDir, st, id, in.value, in.source, now); err != nil {
 			return "", false, err
 		}
-		logf("stored the Tailscale auth key from %s in flats.db", in.from)
+		logf("stored the %s from %s in flats.db", keyLabel[id], in.from)
 		return in.value, false, nil
 	case stored != "" && in.given() && !core.SameKey(stored, in.value):
-		logf("warning: %s differs from the Tailscale auth key stored in flats.db; using the stored key. Register a new key in the console (Settings > Keys) or with `flats key set tailscale` to replace it", in.from)
+		logf("warning: %s differs from the %s stored in flats.db; using the stored key. Register a new key in the console (Settings > Keys) or with `flats key set %s` to replace it", in.from, keyLabel[id], id)
 		return stored, true, nil
 	}
 	return stored, false, nil
@@ -211,10 +221,13 @@ type KeyInfo struct {
 	LastError       string     `json:"last_error,omitempty"`
 	EnvironmentID   string     `json:"environment_id,omitempty"` // zrok
 	APIEndpoint     string     `json:"api_endpoint,omitempty"`   // zrok
-	DeviceName      string     `json:"device_name,omitempty"`    // netbird
 	ManagementURL   string     `json:"management_url,omitempty"` // netbird
-	Managed         bool       `json:"managed"`                  // Flats manages it (zrok: no zrok.environment; netbird: built in)
-	Unsupported     string     `json:"unsupported,omitempty"`    // netbird: why this build cannot use it
+	Peers           int        `json:"peers,omitempty"`          // netbird: running peers
+	// LegacyPeer is the shared peer an earlier version registered (netbird),
+	// until the operator dismisses the notice.
+	LegacyPeer  *provider.NetbirdLegacyPeer `json:"legacy_peer,omitempty"`
+	Managed     bool                        `json:"managed"`               // Flats manages it (zrok: no zrok.environment; netbird: built in)
+	Unsupported string                      `json:"unsupported,omitempty"` // netbird: why this build cannot use it
 }
 
 // HostKeys implements api.KeyAdmin.
@@ -233,6 +246,9 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 	differs, given := h.tsKeyDiffers, h.tsKeyExternal != ""
 	enrollErr := maps.Clone(h.enrollErr)
 	h.keyMu.Unlock()
+	h.nbMu.Lock()
+	nbDiffers, nbGiven := h.nbKeyDiffers, h.nbKeyExternal != ""
+	h.nbMu.Unlock()
 	out := make([]KeyInfo, 0, len(core.HostKeyIDs))
 	for _, id := range core.HostKeyIDs {
 		k := KeyInfo{ID: id, Managed: true}
@@ -258,16 +274,18 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 			k.EnvironmentID, k.APIEndpoint = a.EnvironmentID, a.APIEndpoint
 			k.Waiting = !a.Connected && has && row.HasValue()
 		case core.HostKeyNetbird:
+			k.Set = has && row.HasValue()
+			k.ExternalDiffers, k.ExternalGiven = nbDiffers, nbGiven
 			k.ManagementURL = h.netbirdOptions.ManagementURL
-			if d, err := provider.LinkedNetbird(); err != nil {
+			if _, err := provider.LinkedNetbird(); err != nil {
 				k.Unsupported, k.Managed = err.Error(), false
-			} else if a, ok, err := d.LoadAccount(h.netbirdOptions.Dir); err == nil && ok {
-				k.Set, k.DeviceName = true, a.DeviceName
-				if a.ManagementURL != "" {
-					k.ManagementURL = a.ManagementURL
-				}
 			}
-			k.Waiting = !k.Set && has && row.HasValue()
+			k.LegacyPeer = h.netbirdLegacyPeer()
+			h.pmu.Lock()
+			if h.netbirdNet != nil {
+				k.Peers = h.netbirdNet.PeerCount()
+			}
+			h.pmu.Unlock()
 		}
 		if k.Set && !has {
 			k.Source = "unknown"
@@ -321,14 +339,69 @@ func (h *Host) DeleteTailscaleKey(ctx context.Context) error {
 	return nil
 }
 
+// SetNetbirdKey implements api.KeyAdmin: it stores key, which NetBird peers
+// started from now on register with, and retries the NetBird routes and
+// console domains that could not start without one.
+func (h *Host) SetNetbirdKey(ctx context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if err := core.CheckHostKeyValue(core.HostKeyNetbird, key); err != nil {
+		return err
+	}
+	if _, err := provider.LinkedNetbird(); err != nil {
+		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
+	}
+	h.keyMu.Lock()
+	if err := core.PutHostKeyValue(ctx, h.Config.Host.DataDir, h.Store, core.HostKeyNetbird, key, core.KeySourceConsole, time.Now()); err != nil {
+		h.keyMu.Unlock()
+		return err
+	}
+	h.nbMu.Lock()
+	h.nbKey = key
+	h.nbKeyDiffers = h.nbKeyExternal != "" && !core.SameKey(h.nbKeyExternal, key)
+	h.nbMu.Unlock()
+	h.keyMu.Unlock()
+	h.logf("NetBird setup key registered from the console")
+	h.pmu.Lock()
+	h.syncNetbirdConfigurationLocked()
+	h.pmu.Unlock()
+	h.retryNetbird()
+	return nil
+}
+
+// DeleteNetbirdKey implements api.KeyAdmin. Running peers keep working; a
+// peer that must register afterwards fails until a key is registered.
+func (h *Host) DeleteNetbirdKey(ctx context.Context) error {
+	h.keyMu.Lock()
+	if err := h.Store.DeleteHostKey(ctx, core.HostKeyNetbird); err != nil {
+		h.keyMu.Unlock()
+		return err
+	}
+	h.nbMu.Lock()
+	h.nbKey, h.nbKeyDiffers = "", false
+	h.nbMu.Unlock()
+	h.keyMu.Unlock()
+	h.logf("NetBird setup key removed from the console")
+	h.pmu.Lock()
+	h.syncNetbirdConfigurationLocked()
+	h.pmu.Unlock()
+	return nil
+}
+
+// currentNetbirdKey is the NetBird setup key in use; NetBird peers read it at
+// every start. nbMu is a leaf lock, so callers may hold pmu or keyMu.
+func (h *Host) currentNetbirdKey() string {
+	h.nbMu.Lock()
+	defer h.nbMu.Unlock()
+	return h.nbKey
+}
+
 // currentTailscaleKey is the stored key, for a backend the console turns on.
 func (h *Host) currentTailscaleKey(ctx context.Context) (string, error) {
 	v, _, err := core.StoredHostKey(ctx, h.Config.Host.DataDir, h.Store, core.HostKeyTailscale)
 	return v, err
 }
 
-// recordConnection notes in flats.db how a zrok account or NetBird peer was
-// connected, without the key: an enrollment's value is never kept after it.
+// recordConnection notes in flats.db how a zrok account was connected, without the key: an enrollment's value is never kept after it.
 // It runs after the connection succeeded and must not fail it; a waiting
 // value it could not clear is cleared at the next start (clearConnected).
 func (h *Host) recordConnection(ctx context.Context, id, source string) {
@@ -357,8 +430,8 @@ func (h *Host) forgetConnection(ctx context.Context, id string) {
 	}
 }
 
-// enrollWaiting connects zrok and NetBird with a key given at start, or a
-// waiting one from `flats key set`, when no account or peer is connected.
+// enrollWaiting connects zrok with a token given at start, or a waiting one
+// from `flats key set`, when no account is connected.
 // It runs after the host started, so a slow or refused enrollment never
 // keeps the console down.
 func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
@@ -369,7 +442,6 @@ func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
 		usable  func() (connected bool, why string)
 	}{
 		{core.HostKeyZrok, in.zrok, h.connectZrok, h.zrokEnrollable},
-		{core.HostKeyNetbird, in.netbird, h.connectNetbird, h.netbirdEnrollable},
 	} {
 		connected, why := e.usable()
 		stored, row, err := core.StoredHostKey(ctx, h.Config.Host.DataDir, h.Store, e.id)
@@ -433,18 +505,6 @@ func (h *Host) zrokEnrollable() (bool, string) {
 		return false, err.Error()
 	}
 	return a.Connected, ""
-}
-
-func (h *Host) netbirdEnrollable() (bool, string) {
-	d, err := provider.LinkedNetbird()
-	if err != nil {
-		return false, err.Error()
-	}
-	_, ok, err := d.LoadAccount(h.netbirdOptions.Dir)
-	if err != nil {
-		return false, err.Error()
-	}
-	return ok, ""
 }
 
 // deprecatedAuthKeyFile is credentials.tailscale_authkey_file of the config

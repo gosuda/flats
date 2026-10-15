@@ -50,7 +50,8 @@ var migrations = []migration{
 	{11, "content revisions", addContentRevisions},
 	{12, "document revision import cursor", addContentImport},
 	{13, "host keys and console nodes", addHostKeys},
-	{14, "version quota and number history", addVersionQuota},
+	{14, "console nodes per network", consoleNodeProviders},
+	{15, "version quota and number history", addVersionQuota},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

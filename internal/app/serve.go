@@ -109,7 +109,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.StringVar(&o.AuthKeyFile, "authkey-file", "", "legacy alias of --tailscale-authkey-file")
 	fs.StringVar(&o.TailscaleKeyFile, "tailscale-authkey-file", "", "file holding a reusable Tailscale auth key; stored in flats.db when none is stored yet (also FLATS_TAILSCALE_AUTHKEY or FLATS_TAILSCALE_AUTHKEY_FILE)")
 	fs.StringVar(&o.ZrokTokenFile, "zrok-token-file", "", "file holding a zrok account token, used when no zrok account is connected (also FLATS_ZROK_TOKEN or FLATS_ZROK_TOKEN_FILE)")
-	fs.StringVar(&o.NetbirdKeyFile, "netbird-setup-key-file", "", "file holding a NetBird setup key, used when no NetBird peer is connected (also FLATS_NETBIRD_SETUP_KEY or FLATS_NETBIRD_SETUP_KEY_FILE)")
+	fs.StringVar(&o.NetbirdKeyFile, "netbird-setup-key-file", "", "file holding the NetBird setup key, stored in flats.db when none is stored yet (also FLATS_NETBIRD_SETUP_KEY or FLATS_NETBIRD_SETUP_KEY_FILE)")
 	fs.StringVar(&o.ConsoleHost, "console-host", "flats", "tailnet host name of the console for this run (replaces tailscale.console_hosts)")
 	fs.BoolVar(&o.Portal, "portal", false, "legacy mode: grant Portal and attach it as the legacy public network")
 	fs.StringVar(&permit, "permit", "", "legacy mode: comma-separated host grants: tailscale, tailscale-funnel, portal, zrok, cloudflare-quick. Local needs no grant. Recorded in config.json and does not publish a flat")
@@ -220,10 +220,12 @@ type Host struct {
 	tsNet      *tsnetx.Net
 	// testTailnet replaces tsNet for console nodes in tests.
 	testTailnet core.PrivateNet
-	portalNet   *portal.Net
-	zrokNet     *zrok.Net
-	quickNet    *cfquick.Net
-	netbirdNet  provider.NetbirdNet
+	// testNetbirdConsole replaces netbirdNet for console peers in tests.
+	testNetbirdConsole netbirdConsoleNet
+	portalNet          *portal.Net
+	zrokNet            *zrok.Net
+	quickNet           *cfquick.Net
+	netbirdNet         provider.NetbirdNet
 	// For providers the console turns on while the host runs.
 	logf           func(string, ...any)
 	legacy         bool
@@ -239,8 +241,14 @@ type Host struct {
 	cd        consoleState
 	// Operator keys: keyMu guards the Tailscale key state the console shows.
 	keyMu         sync.Mutex
-	tsKeyExternal string            // the flag or environment Tailscale key of this run
-	tsKeyDiffers  bool              // tsKeyExternal differs from the stored key
+	tsKeyExternal string // the flag or environment Tailscale key of this run
+	tsKeyDiffers  bool   // tsKeyExternal differs from the stored key
+	// nbMu guards the NetBird key state below. It is a leaf lock: nothing
+	// else is acquired while it is held, so it nests under pmu and keyMu.
+	nbMu          sync.Mutex
+	nbKey         string            // the NetBird setup key in use
+	nbKeyExternal string            // the flag or environment NetBird key of this run
+	nbKeyDiffers  bool              // nbKeyExternal differs from the stored key
 	enrollErr     map[string]string // zrok/netbird enrollment errors from start inputs
 	// Background work (enrollment, node logouts) stops with the host.
 	bgMu      sync.Mutex // guards bgClosed against new background work
@@ -331,7 +339,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	cfg := p.cfg
 	h := &Host{Opts: o, Config: cfg, ConfigPath: p.path, Store: p.st, dataLock: p.lock, logf: logf, legacy: s.legacy,
-		enrollErr: map[string]string{}, cd: consoleState{owned: map[string]bool{}, served: map[string]bool{}, conflicts: map[string]string{}}}
+		enrollErr: map[string]string{}, cd: newConsoleState()}
 	h.bgCtx, h.bgCancel = context.WithCancel(context.Background())
 	ok := false
 	defer func() {
@@ -424,10 +432,12 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		h.quickNet = qn
 	}
 	h.netbirdOptions = provider.NetbirdConfig{Dir: filepath.Join(dataDir, "netbird"), ManagementURL: cfg.Netbird.ManagementURL,
-		DeviceName: cfg.Netbird.DeviceName, Instance: cfg.Host.InstanceID, Logf: logf}
+		SetupKey: h.currentNetbirdKey, Instance: cfg.Host.InstanceID, Logf: logf}
+	if err := h.prepareNetbird(ctx, dataDir, st, keys.netbird, logf); err != nil {
+		return nil, err
+	}
 	if permits(provider.Netbird) || permits(provider.NetbirdExpose) {
-		// A missing peer must not keep the console down: the operator
-		// connects one there. NetBird stays unconfigured until then.
+		// Without a setup key routes report it; the console stays up.
 		if nn, err := newNetbird(h.netbirdOptions); err != nil {
 			logf("warning: netbird is permitted but not started: %v", err)
 		} else {
@@ -442,7 +452,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, id := range cfg.Network.Permitted {
 		grants.Permitted = append(grants.Permitted, provider.ID(id))
 	}
-	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet), netbirdConfiguration(cfg, h.netbirdNet)), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
+	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet), netbirdConfiguration(cfg, h.currentNetbirdKey())), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
 	}}
 	if h.portalNet != nil {
@@ -619,22 +629,17 @@ func cfquickConfig(dataDir string, logf func(string, ...any)) cfquick.Config {
 
 // netbirdConfiguration is NetBird's part of the provider configuration
 // token, or "" when neither NetBird provider is permitted. It names the
-// management server and the enrolled peer (a fingerprint of its public key,
-// never a secret), so an approval granted for one NetBird peer does not
-// apply to another.
-func netbirdConfiguration(cfg *config.Config, nn provider.NetbirdNet) string {
+// management server and the setup key (a one-way fingerprint, never the key),
+// so an approval granted under one key does not apply to another.
+func netbirdConfiguration(cfg *config.Config, setupKey string) string {
 	if !slices.Contains(cfg.Network.Permitted, string(provider.Netbird)) && !slices.Contains(cfg.Network.Permitted, string(provider.NetbirdExpose)) {
 		return ""
 	}
-	account := ""
-	if nn != nil {
-		account = nn.Account()
-	}
-	return netbirdConfigurationOf(cfg.Netbird.ManagementURL, account)
+	return netbirdConfigurationOf(cfg.Netbird.ManagementURL, netbirdKeyFingerprint(setupKey))
 }
 
-func netbirdConfigurationOf(managementURL, account string) string {
-	return strings.Join([]string{managementURL, account}, "\x00")
+func netbirdConfigurationOf(managementURL, keyFingerprint string) string {
+	return strings.Join([]string{managementURL, keyFingerprint}, "\x00")
 }
 
 func providerConfiguration(cfg portal.Config, zrokConfig, netbirdConfig string) string {

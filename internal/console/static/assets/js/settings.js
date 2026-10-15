@@ -128,7 +128,8 @@ export function mount(main, _params, ctx) {
 
 // pendingWork reports a console node or an enrollment still in progress.
 export function pendingWork(domains, keys) {
-  const nodes = ((domains && domains.domains) || []).some((d) => !d.conflict && d.state !== 'ready');
+  const all = Object.keys(NETWORKS).flatMap((prov) => (domains ? networkOf(domains, prov).domains : []) || []);
+  const nodes = all.some((d) => !d.conflict && d.state !== 'ready');
   return nodes || (keys || []).some((k) => k.waiting);
 }
 
@@ -151,8 +152,8 @@ export const PROVIDER_INFO = {
   portal: { label: 'Portal', what: 'Anyone on the internet, through Portal relays.' },
   zrok: { label: 'zrok', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
   'cloudflare-quick': { label: 'Cloudflare Quick Tunnel', what: 'Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random trycloudflare.com address. No Cloudflare account or domain needed.' },
-  netbird: { label: 'NetBird', what: 'Peers your NetBird access policies allow. Flats are served on this host’s NetBird peer, one port per flat.' },
-  'netbird-expose': { label: 'NetBird Expose', what: 'Anyone on the internet, through NetBird’s reverse proxy on this host’s NetBird peer.' },
+  netbird: { label: 'NetBird', what: 'Peers your NetBird access policies allow. Each flat runs on its own NetBird peer, at http://SLUG.<NetBird domain>/.' },
+  'netbird-expose': { label: 'NetBird Expose', what: 'Anyone on the internet, through NetBird’s reverse proxy, from the flat’s own NetBird peer.' },
 };
 
 // providerGroups lists the providers as Private and Public groups. data is
@@ -225,7 +226,8 @@ function providerPanel(p, data, opts) {
   let toggle = null;
   if (!local) {
     // zrok can be turned on only once an account is connected.
-    const needsAccount = (p.id === 'zrok' || p.id === 'netbird' || p.id === 'netbird-expose') && !p.enabled && !p.connected;
+    // A build without NetBird cannot turn it on.
+    const needsAccount = (p.id === 'zrok' && !p.enabled && !p.connected) || (!!p.unsupported && !p.enabled);
     toggle = needsAccount ? null : h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
       'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
     if (toggle) {
@@ -296,26 +298,22 @@ function zrokDetails(p) {
     hosts];
 }
 
-// netbirdDetails shows the NetBird peer both NetBird providers share. The
-// setup key that enrolls it is managed under Keys.
+// netbirdDetails shows what both NetBird providers share: the setup key every
+// flat's peer registers with, managed under Keys, and the running peers.
 function netbirdDetails(p) {
-  // A binary built without NetBird cannot enroll a peer or turn it on.
+  // A binary built without NetBird cannot run a peer or turn it on.
   if (p.unsupported) return h('p', { class: 'alert alert-warn', text: p.unsupported });
   const facts = h('dl', { class: 'facts' },
-    p.connected ? [
-      h('dt', { text: 'Peer' }), h('dd', { text: 'Connected' }),
-      h('dt', { text: 'Name' }), h('dd', null, h('code', { text: p.device_name || '' })),
-      h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: p.management_url || '' })),
-    ] : [h('dt', { text: 'Peer' }), h('dd', { text: 'Not connected' }),
-      h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: p.management_url || '' }))]);
+    h('dt', { text: 'Setup key' }), h('dd', null, p.key_set ? 'Stored' : 'Not stored. ', p.key_set ? null : keysLink('Register one under Keys.')),
+    h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: p.management_url || '' })),
+    p.id === 'netbird' ? [h('dt', { text: 'Peers running' }), h('dd', { text: String(p.peers || 0) })] : null);
   const hosts = p.enabled && p.status ? hostsTable(p.status) : null;
   if (p.id === 'netbird-expose') {
-    return [facts, h('p', { class: 'muted small', text: p.connected
-      ? 'Uses the NetBird peer connected under NetBird. A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Anyone can open the URL.'
-      : 'Connect the NetBird peer under NetBird first.' }), hosts];
+    return [facts, h('p', { class: 'muted small', text: 'A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Anyone can open the URL.' }), hosts];
   }
-  return [facts, h('p', { class: 'muted small' }, p.connected ? '' : 'Connect a peer first, then turn NetBird on. ',
-    keysLink('Manage the setup key and the peer under Keys.')), hosts];
+  return [facts,
+    h('p', { class: 'muted small', text: 'NetBird routes are plain HTTP: traffic between peers is encrypted by WireGuard, but browsers treat the page as not secure, so features such as clipboard writes, crypto.subtle, service workers and Secure cookies do not work there.' }),
+    hosts];
 }
 
 // withReason disables button when reason is set and shows why. A disabled
@@ -339,34 +337,6 @@ function keysLink(text) {
   return h('a', { href: '#keys', text });
 }
 
-// netbirdKeyForm registers this machine as a NetBird peer with a setup key.
-function netbirdKeyForm(opts) {
-  const id = 'netbird-setup-key';
-  const input = h('input', { type: 'password', id, name: 'setup_key', autocomplete: 'off', spellcheck: 'false', required: true,
-    placeholder: 'NetBird setup key' });
-  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Connect' });
-  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: id, text: 'Setup key' }), input,
-    h('p', { class: 'muted small', text: 'Create a setup key in the NetBird dashboard (Setup Keys) and paste it here. Flats uses it once to register this machine as a peer and does not keep it. Turn NetBird on once the peer is connected.' }),
-    h('div', { class: 'form-actions' }, submit));
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const key = input.value.trim();
-    if (!key) { input.focus(); return; }
-    busy(submit, async () => {
-      try {
-        await api.connectNetbird(key);
-      } catch (err) {
-        await infoDialog('Cannot connect the NetBird peer', errorPanel(err));
-        return;
-      }
-      input.value = '';
-      toast('NetBird peer connected. Turn NetBird on to use it.', 'success');
-      await opts.reload();
-    });
-  });
-  return form;
-}
 
 // zrokTokenForm sends an account token to connect or replace the zrok account.
 function zrokTokenForm(opts, o) {
@@ -423,7 +393,7 @@ async function setHostProvider(p, info, enabled, etag) {
 
 const KEY_INFO = {
   tailscale: { label: 'Tailscale auth key', what: 'Logs in each new tailnet node: flats, previews and console domains. Nodes already on the tailnet keep their identity.' },
-  netbird: { label: 'NetBird setup key', what: 'Registers this machine as a NetBird peer once. Flats keeps it only until the peer is enrolled.' },
+  netbird: { label: 'NetBird setup key', what: 'Registers each flat and NetBird console domain as its own NetBird peer. Peers already registered keep their identity.' },
   zrok: { label: 'zrok account token', what: 'Registers this machine as an environment of your zrok account.' },
 };
 
@@ -445,15 +415,15 @@ export function keysCard(keys, providers, opts) {
 
 function keyRow(k, providers, opts) {
   const info = KEY_INFO[k.id] || { label: k.id, what: '' };
-  let state = k.set ? (k.id === 'tailscale' ? 'Stored' : 'Connected') : (k.waiting ? 'Waiting for the next start' : 'Not set');
+  let state = k.set ? (k.id === 'zrok' ? 'Connected' : 'Stored') : (k.waiting ? 'Waiting for the next start' : 'Not set');
   if (k.unsupported) state = 'Not available';
   const facts = [];
   if (k.source) facts.push(h('dt', { text: 'Source' }), h('dd', { text: KEY_SOURCES[k.source] || k.source }));
   if (k.updated_at) facts.push(h('dt', { text: 'Set' }), h('dd', null, h('time', { datetime: k.updated_at, title: dateTime(k.updated_at), text: relTime(k.updated_at) })));
   if (k.environment_id) facts.push(h('dt', { text: 'Environment ID' }), h('dd', null, h('code', { text: k.environment_id })));
   if (k.api_endpoint) facts.push(h('dt', { text: 'zrok service' }), h('dd', null, h('code', { text: k.api_endpoint })));
-  if (k.device_name) facts.push(h('dt', { text: 'Peer' }), h('dd', null, h('code', { text: k.device_name })));
   if (k.id === 'netbird' && k.management_url) facts.push(h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: k.management_url })));
+  if (k.id === 'netbird' && k.peers) facts.push(h('dt', { text: 'Peers running' }), h('dd', { text: String(k.peers) }));
   return h('article', { class: 'provider key' + (k.set ? ' is-on' : ''), id: 'key-' + k.id },
     h('div', { class: 'provider-head' },
       h('div', null, h('h4', null, info.label, h('span', { class: 'badge' + (k.set ? ' badge-ready' : ''), text: state })),
@@ -461,16 +431,15 @@ function keyRow(k, providers, opts) {
     facts.length ? h('dl', { class: 'facts' }, facts) : null,
     k.external_differs ? h('p', { class: 'alert alert-warn', text: 'The key given to this run by a flag or environment variable differs from the stored key. Flats uses the stored key; register a new one here to replace it.' }) : null,
     k.last_error ? h('p', { class: 'alert alert-warn', text: `The last attempt to use this key failed: ${k.last_error}` }) : null,
+    k.legacy_peer ? legacyPeerNotice(k.legacy_peer, opts) : null,
     keyActions(k, providers, opts));
 }
 
 function keyActions(k, providers, opts) {
-  if (k.id === 'tailscale') return tailscaleKeyActions(k, opts);
+  if (k.id === 'tailscale') return storedKeyActions(k, opts, TAILSCALE_KEY);
   if (k.id === 'netbird') {
     if (k.unsupported) return h('p', { class: 'alert alert-warn', text: k.unsupported });
-    const p = providers.netbird || {};
-    const expose = providers['netbird-expose'] || {};
-    return k.set ? netbirdDisconnect(!!(p.enabled || expose.enabled || p.in_use), opts) : netbirdKeyForm(opts);
+    return storedKeyActions(k, opts, NETBIRD_KEY);
   }
   if (k.id === 'zrok') {
     if (!k.managed) return h('p', { class: 'muted small', text: 'zrok.environment in config.json names an environment managed with the zrok CLI; manage its account there.' });
@@ -495,15 +464,30 @@ function keyActions(k, providers, opts) {
   return null;
 }
 
-// tailscaleKeyForm stores a Tailscale auth key; a stored one can be removed.
-function tailscaleKeyActions(k, opts) {
-  const id = 'tailscale-key';
-  const input = h('input', { type: 'password', id, name: 'key', autocomplete: 'off', spellcheck: 'false', required: true,
-    placeholder: 'tskey-auth-…' });
+// TAILSCALE_KEY and NETBIRD_KEY describe the keys Flats stores and uses for
+// every new node or peer.
+const TAILSCALE_KEY = {
+  id: 'tailscale-key', name: 'Tailscale auth key', placeholder: 'tskey-auth-…', label: 'Auth key', replace: 'Replace with a new auth key',
+  help: 'In the Tailscale admin console, open Settings › Keys and generate a reusable auth key. Leave it untagged so console decisions record who made them. New nodes use it from now on; nodes already on the tailnet are not affected.',
+  removeBody: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.',
+  set: (key) => api.setTailscaleKey(key), remove: () => api.deleteTailscaleKey(),
+};
+const NETBIRD_KEY = {
+  id: 'netbird-key', name: 'NetBird setup key', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', label: 'Setup key', replace: 'Replace with a new setup key',
+  help: 'In the NetBird dashboard, open Setup Keys and create a key with “Allow extra DNS labels” on (required: each flat is reached by its own name). Make it reusable and ephemeral, with an auto-assigned group your access policies use, and without an expiry or usage limit: Flats registers a peer with it for every flat and console domain, and again when NetBird has removed an offline ephemeral peer. Peers already registered keep working when the key changes.',
+  removeBody: 'Running peers keep working, but a new flat, a new NetBird console domain or a peer NetBird removed cannot register until you register a key again.',
+  set: (key) => api.setNetbirdKey(key), remove: () => api.deleteNetbirdKey(),
+};
+
+// storedKeyActions stores a key Flats keeps (Tailscale, NetBird); a stored
+// one can be replaced or removed.
+function storedKeyActions(k, opts, cfg) {
+  const input = h('input', { type: 'password', id: cfg.id, name: 'key', autocomplete: 'off', spellcheck: 'false', required: true,
+    placeholder: cfg.placeholder });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: k.set ? 'Replace key' : 'Save key' });
   const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: id, text: k.set ? 'Replace with a new auth key' : 'Auth key' }), input,
-    h('p', { class: 'muted small', text: 'In the Tailscale admin console, open Settings › Keys and generate a reusable auth key. Leave it untagged so console decisions record who made them. New nodes use it from now on; nodes already on the tailnet are not affected.' }),
+    h('label', { for: cfg.id, text: k.set ? cfg.replace : cfg.label }), input,
+    h('p', { class: 'muted small', text: cfg.help }),
     h('div', { class: 'form-actions' }, submit));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -511,13 +495,13 @@ function tailscaleKeyActions(k, opts) {
     if (!key) { input.focus(); return; }
     busy(submit, async () => {
       try {
-        await api.setTailscaleKey(key);
+        await cfg.set(key);
       } catch (err) {
-        await infoDialog('Cannot save the Tailscale auth key', errorPanel(err));
+        await infoDialog(`Cannot save the ${cfg.name}`, errorPanel(err));
         return;
       }
       input.value = '';
-      toast('Tailscale auth key saved.', 'success');
+      toast(`${cfg.name} saved.`, 'success');
       await opts.reload();
     });
   });
@@ -525,22 +509,41 @@ function tailscaleKeyActions(k, opts) {
   const remove = h('button', { type: 'button', class: 'btn btn-small', text: 'Remove key' });
   remove.addEventListener('click', () => busy(remove, async () => {
     const ok = await confirmDialog({
-      title: 'Remove the Tailscale auth key?',
-      body: [h('p', { text: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.' }),
+      title: `Remove the ${cfg.name}?`,
+      body: [h('p', { text: cfg.removeBody }),
         k.external_given ? h('p', { class: 'alert alert-warn', text: 'This run got the key from a flats serve flag or environment variable. Remove that too, or the next start stores the key again.' }) : null],
       confirmLabel: 'Remove', danger: true,
     });
     if (!ok) return;
     try {
-      await api.deleteTailscaleKey();
+      await cfg.remove();
     } catch (err) {
-      await infoDialog('Cannot remove the Tailscale auth key', errorPanel(err));
+      await infoDialog(`Cannot remove the ${cfg.name}`, errorPanel(err));
       return;
     }
-    toast('Tailscale auth key removed.', 'success');
+    toast(`${cfg.name} removed.`, 'success');
     await opts.reload();
   }));
   return [form, h('div', { class: 'form-actions' }, remove)];
+}
+
+// legacyPeerNotice asks the operator to delete the shared NetBird peer an
+// earlier version registered for the whole host.
+function legacyPeerNotice(p, opts) {
+  const done = h('button', { type: 'button', class: 'btn btn-small', text: 'Done' });
+  done.addEventListener('click', () => busy(done, async () => {
+    try {
+      await api.dismissNetbirdLegacyPeer();
+    } catch (err) {
+      await infoDialog('Cannot dismiss the notice', errorPanel(err));
+      return;
+    }
+    await opts.reload();
+  }));
+  return h('div', { class: 'alert alert-warn', role: 'status' },
+    h('p', null, 'Flats no longer uses the single NetBird peer ', h('code', { text: p.device_name || '(unnamed)' }),
+      ' this host registered before: each flat now runs on its own peer. Its local identity was removed. Delete that peer in the NetBird dashboard (Peers), then choose Done.'),
+    h('div', { class: 'form-actions' }, done));
 }
 
 function zrokDisconnect(k, enabled, opts) {
@@ -578,101 +581,104 @@ function zrokDisconnect(k, enabled, opts) {
   return h('div', { class: 'form-actions' }, withReason(disconnect, enabled ? 'zrok is on. Turn it off under Network providers before disconnecting its account.' : ''));
 }
 
-function netbirdDisconnect(inUse, opts) {
-  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect peer' });
-  disconnect.addEventListener('click', () => busy(disconnect, async () => {
-    const ok = await confirmDialog({
-      title: 'Disconnect the NetBird peer?',
-      body: [h('p', { text: 'Flats deletes this peer’s identity from the data directory. The peer stays listed in the NetBird dashboard until you remove it there.' })],
-      confirmLabel: 'Disconnect',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await api.disconnectNetbird(false);
-    } catch (err) {
-      const force = await confirmDialog({
-        title: 'The NetBird peer could not be disconnected',
-        body: [errorPanel(err), h('p', { text: 'Forget the peer on this machine anyway? It may stay registered in NetBird; remove it in the dashboard.' })],
-        confirmLabel: 'Forget it here',
-        danger: true,
-      });
-      if (!force) return;
-      try {
-        await api.disconnectNetbird(true);
-      } catch (err2) {
-        await infoDialog('Cannot disconnect the NetBird peer', errorPanel(err2));
-        return;
-      }
-    }
-    toast('NetBird peer disconnected.', 'success');
-    await opts.reload();
-  }));
-  return h('div', { class: 'form-actions' }, withReason(disconnect, inUse ? 'NetBird is on. Turn NetBird and NetBird Expose off under Network providers before disconnecting the peer.' : ''));
-}
-
 // --- console domains ---
 
-// consoleDomains lists the console's Tailscale names. Each is its own tailnet
+// NETWORKS describes the networks console domains run on, in the order the
+// card lists them.
+const NETWORKS = {
+  tailscale: {
+    heading: 'Tailnet (Tailscale)', noun: 'tailnet domain', node: 'tailnet node',
+    what: 'Each name is its own tailnet node at https://NAME.<tailnet>.ts.net, open to the devices your tailnet ACL allows.',
+    off: 'Turn Tailscale on under Network providers to add a tailnet domain.',
+    add: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name. The new tailnet node logs in with the Tailscale auth key under Keys, or shows a login link here.',
+    added: 'Its node joins the tailnet in a minute or two.',
+    removed: 'These names were deleted, but their tailnet nodes are not logged out yet. They stay reserved until that succeeds; Flats retries at the next start.',
+    assigned: (d) => `The tailnet named this node ${d.assigned}: another machine already uses ${d.name}. Rename or remove that machine in the Tailscale admin console, or use this address.`,
+  },
+  netbird: {
+    heading: 'NetBird', noun: 'NetBird domain', node: 'NetBird peer',
+    what: 'Each name is its own NetBird peer at http://NAME.<NetBird domain>/, open to the peers your NetBird access policies allow. NetBird gives peers no certificates, so the console is plain HTTP there; traffic between peers is still encrypted by WireGuard.',
+    off: 'Turn NetBird on under Network providers to add a NetBird domain.',
+    add: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name, but may match a tailnet domain. The new peer registers with the NetBird setup key under Keys.',
+    added: 'Its peer joins NetBird in a minute.',
+    removed: 'These names were deleted, but their NetBird peers are not stopped yet. They stay reserved until that succeeds; Flats retries at the next start.',
+    assigned: (d) => `NetBird answers this peer as ${d.assigned} as well.`,
+  },
+};
+
+// consoleDomains lists the console's names on each network. Each is its own
 // node; names are only added and deleted, so a change of name is an addition
 // followed by a deletion.
 export function consoleDomains(view, opts) {
   return [
     h('p', { class: 'muted' }, 'The addresses where this console opens, one list per network. To change an address, add the new one, move your agents to it (',
       h('code', { text: 'flats connect' }), '), then delete the old one. Several can be used together.'),
-    tailnetDomains(view, opts),
+    ...Object.keys(NETWORKS).map((prov) => networkDomains(view, prov, opts)),
   ];
 }
 
-// tailnetDomains is the Tailscale part of the Console domains card: each
-// name is its own tailnet node.
-function tailnetDomains(view, opts) {
-  const domains = view.domains || [];
-  const ready = domains.filter((d) => !d.conflict && d.state === 'ready').map((d) => d.name);
-  const rows = domains.map((d) => domainRow(d, view, domains.length, ready, opts));
-  const retiring = (view.retiring || []).map((d) => retiringRow(d, view, opts));
-  const parts = [
-    h('h3', { id: 'console-domains-tailnet', text: 'Tailnet (Tailscale)' }),
-    h('p', { class: 'muted small', text: 'Each name is its own tailnet node at https://NAME.<tailnet>.ts.net, open to the devices your tailnet ACL allows.' }),
-  ];
-  if (view.pinned) parts.push(h('p', { class: 'muted small', text: `Set by ${view.pinned}. Reinstall the service with flats install to manage the tailnet domains here.` }));
+// networkOf returns one network's part of the view.
+function networkOf(view, prov) {
+  return (view.providers && view.providers[prov]) || { domains: [], retiring: [], on: false };
+}
+
+// readyDomains lists every ready domain, on any network, as provider/name.
+function readyDomains(view) {
+  return Object.keys(NETWORKS).flatMap((prov) => (networkOf(view, prov).domains || [])
+    .filter((d) => !d.conflict && d.state === 'ready').map((d) => prov + '/' + d.name));
+}
+
+function networkDomains(view, prov, opts) {
+  const net = NETWORKS[prov];
+  const pv = networkOf(view, prov);
+  const domains = pv.domains || [];
+  const id = 'console-domains-' + prov;
+  const rows = domains.map((d) => domainRow(d, prov, view, opts));
+  const retiring = (pv.retiring || []).map((d) => retiringRow(d, prov, view, opts));
+  const parts = [h('h3', { id, text: net.heading }), h('p', { class: 'muted small', text: net.what })];
+  if (pv.pinned) parts.push(h('p', { class: 'muted small', text: `Set by ${pv.pinned}. Reinstall the service with flats install to manage the ${net.noun}s here.` }));
   if (!domains.length) {
-    parts.push(h('p', { class: 'muted small', text: view.loopback
-      ? 'No tailnet domain: the console is only on this machine’s loopback address.'
-      : 'No tailnet domain.' }));
+    parts.push(h('p', { class: 'muted small', text: `No ${net.noun}.` }));
   } else {
-    parts.push(h('div', { class: 'table-wrap' }, h('table', { class: 'table', 'aria-labelledby': 'console-domains-tailnet' },
+    parts.push(h('div', { class: 'table-wrap' }, h('table', { class: 'table', 'aria-labelledby': id },
       h('thead', null, h('tr', null, ['Name', 'State', 'Address', ''].map((t) => h('th', { scope: 'col', text: t })))),
       h('tbody', null, rows))));
   }
   if (retiring.length) {
-    parts.push(h('h4', { text: 'Being removed' }),
-      h('p', { class: 'muted small', text: 'These names were deleted, but their tailnet nodes are not logged out yet. They stay reserved until that succeeds; Flats retries at the next start.' }),
+    parts.push(h('h4', { text: 'Being removed' }), h('p', { class: 'muted small', text: net.removed }),
       h('ul', { class: 'plain-list' }, retiring));
   }
-  if (!view.pinned) parts.push(view.tailscale_on ? domainAddForm(view, opts)
-    : h('p', { class: 'muted small', text: 'Turn Tailscale on under Network providers to add a tailnet domain.' }));
-  return h('section', { class: 'domain-network', 'aria-labelledby': 'console-domains-tailnet' }, parts);
+  if (!pv.pinned) parts.push(pv.on ? domainAddForm(prov, view, opts) : h('p', { class: 'muted small', text: net.off }));
+  return h('section', { class: 'domain-network', 'aria-labelledby': id }, parts);
 }
 
-// deleteBlocker is why a tailnet domain cannot be deleted from this page,
-// or '' when it can. The server checks the same rules.
-export function deleteBlocker(d, view, count, ready) {
+// totalDomains counts the console domains of every network.
+function totalDomains(view) {
+  return Object.keys(NETWORKS).reduce((n, prov) => n + (networkOf(view, prov).domains || []).length, 0);
+}
+
+// deleteBlocker is why a console domain cannot be deleted from this page,
+// or '' when it can. count is the number of console domains on every
+// network, ready the ready ones as provider/name. The server checks the same
+// rules.
+export function deleteBlocker(d, view, count, ready, prov = 'tailscale') {
   if (count === 1 && !view.loopback) {
-    return 'This is the console’s last tailnet domain. Add another one first, or delete it from the console on this machine’s loopback address.';
+    return 'This is the console’s last domain. Add another one first, or delete it from the console on this machine’s loopback address.';
   }
-  if (d.current && !ready.some((n) => n !== d.name)) {
-    return 'You are using this domain and no other tailnet domain is ready yet. Wait until another one shows ready, then delete this one.';
+  if (d.current && !ready.some((n) => n !== prov + '/' + d.name && n !== d.name)) {
+    return 'You are using this domain and no other console domain is ready yet. Wait until another one shows ready, then delete this one.';
   }
   return '';
 }
 
-function domainRow(d, view, count, ready, opts) {
+function domainRow(d, prov, view, opts) {
+  const net = NETWORKS[prov];
   const login = d.state === 'needs-login' && (d.detail || '').match(/https?:\/\/\S+/)?.[0];
   const state = d.conflict ? h('span', { class: 'badge badge-error', text: 'not served' })
     : h('span', { class: 'badge badge-' + (d.state || 'starting'), text: d.state || 'starting' });
-  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', 'aria-label': `Delete tailnet domain ${d.name}` });
-  del.addEventListener('click', () => busy(del, () => deleteDomain(d, view, opts)));
+  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', 'aria-label': `Delete ${net.noun} ${d.name}` });
+  del.addEventListener('click', () => busy(del, () => deleteDomain(d, prov, view, opts)));
+  const pinned = networkOf(view, prov).pinned;
   return h('tr', null,
     h('th', { scope: 'row' }, h('code', { text: d.name }), d.current ? h('span', { class: 'badge', text: 'this page' }) : null),
     h('td', null, state),
@@ -680,16 +686,16 @@ function domainRow(d, view, count, ready, opts) {
       login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
       d.url ? extLink(d.url) : null,
       d.conflict ? h('div', { class: 'muted small', text: `Not served: ${d.conflict}. Delete this domain or rename that flat.` }) : null,
-      d.assigned ? h('div', { class: 'warn-text small', text: `The tailnet named this node ${d.assigned}: another machine already uses ${d.name}. Rename or remove that machine in the Tailscale admin console, or use this address.` }) : null,
+      d.assigned && prov === 'tailscale' ? h('div', { class: 'warn-text small', text: net.assigned(d) }) : null,
       d.detail && !login && !d.conflict ? h('div', { class: 'muted small' }, linkify(d.detail)) : null),
-    h('td', null, view.pinned ? null : withReason(del, deleteBlocker(d, view, count, ready))));
+    h('td', null, pinned ? null : withReason(del, deleteBlocker(d, view, totalDomains(view), readyDomains(view), prov))));
 }
 
-function retiringRow(d, view, opts) {
+function retiringRow(d, prov, view, opts) {
   const retry = h('button', { type: 'button', class: 'btn btn-small', text: 'Retry', 'aria-label': `Retry removing ${d.name}` });
   retry.addEventListener('click', () => busy(retry, async () => {
     try {
-      await api.deleteConsoleDomain(d.name, view.etag);
+      await api.deleteConsoleDomain(prov, d.name, view.etag);
     } catch (err) {
       await infoDialog(`Cannot remove ${d.name}`, errorPanel(err));
       return;
@@ -701,17 +707,19 @@ function retiringRow(d, view, opts) {
     h('div', null, h('code', { text: d.name }), d.error ? h('div', { class: 'muted small', text: d.error }) : null), retry);
 }
 
-async function deleteDomain(d, view, opts) {
-  const others = (view.domains || []).filter((x) => x.name !== d.name).map((x) => x.name);
-  const body = [h('p', { text: 'Flats removes the name from the tailnet domains and logs its tailnet node out. Agents connected through it must reconnect to another console address.' })];
+async function deleteDomain(d, prov, view, opts) {
+  const net = NETWORKS[prov];
+  const others = Object.keys(NETWORKS).flatMap((p) => (networkOf(view, p).domains || [])
+    .filter((x) => !(p === prov && x.name === d.name)).map((x) => x.name));
+  const body = [h('p', { text: `Flats removes the name from the ${net.noun}s and retires its ${net.node}. Agents connected through it must reconnect to another console address.` })];
   if (d.current) body.push(h('p', { class: 'alert alert-warn', text: `You are using this domain. The page moves to ${others[0] || 'another domain'}.` }));
   if (others.length) body.push(h('p', { class: 'muted small', text: `Remaining: ${others.join(', ')}.` }));
   if (view.pending_approvals) body.push(h('p', { class: 'muted small', text: `${plural(view.pending_approvals, 'approval')} waiting; links that name this domain stop working. Open them from Approvals on another domain.` }));
-  const ok = await confirmDialog({ title: `Delete tailnet domain ${d.name}?`, body, confirmLabel: 'Delete', danger: true });
+  const ok = await confirmDialog({ title: `Delete ${net.noun} ${d.name}?`, body, confirmLabel: 'Delete', danger: true });
   if (!ok) return;
   let res;
   try {
-    res = await api.deleteConsoleDomain(d.name, view.etag);
+    res = await api.deleteConsoleDomain(prov, d.name, view.etag);
   } catch (err) {
     await infoDialog(`Cannot delete ${d.name}`, errorPanel(err));
     await opts.reload();
@@ -725,14 +733,15 @@ async function deleteDomain(d, view, opts) {
   await opts.reload();
 }
 
-function domainAddForm(view, opts) {
-  const id = 'console-domain-name';
+function domainAddForm(prov, view, opts) {
+  const net = NETWORKS[prov];
+  const id = 'console-domain-name-' + prov;
   const input = h('input', { type: 'text', id, name: 'name', autocomplete: 'off', spellcheck: 'false', required: true,
     pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?', placeholder: 'flats' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Add' });
   const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: id, text: 'Add a tailnet domain' }), input,
-    h('p', { class: 'muted small', text: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name. The new tailnet node logs in with the Tailscale auth key under Keys, or shows a login link here.' }),
+    h('label', { for: id, text: `Add a ${net.noun}` }), input,
+    h('p', { class: 'muted small', text: net.add }),
     h('div', { class: 'form-actions' }, submit));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -740,13 +749,13 @@ function domainAddForm(view, opts) {
     if (!name) { input.focus(); return; }
     busy(submit, async () => {
       try {
-        await api.addConsoleDomain(name, view.etag);
+        await api.addConsoleDomain(prov, name, view.etag);
       } catch (err) {
         await infoDialog(`Cannot add ${name}`, errorPanel(err));
         return;
       }
       input.value = '';
-      toast(`${name} added. Its node joins the tailnet in a minute or two.`, 'success');
+      toast(`${name} added. ${net.added}`, 'success');
       await opts.reload();
     });
   });

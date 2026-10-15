@@ -8,7 +8,7 @@
     "permitted": ["portal"]
   },
   "system": {
-    "version_quota": 20
+    "keep_versions": 20
   },
   "portal": {
     "relays": ["https://relay.example.com"]

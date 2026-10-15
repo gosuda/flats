@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "host": {
     "instance_id": "0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b",
     "data_dir": "/srv/flats & data",
@@ -27,6 +27,9 @@
     "relays": ["https://relay.example.com", "https://relay.example.com:8443"],
     "discovery": false,
     "max_active_relays": 2147483647
+  },
+  "netbird": {
+    "management_url": "https://netbird.example.com:443"
   },
   "credentials": {
     "operator_file": "/etc/flats/operator.credential",

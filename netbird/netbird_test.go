@@ -13,9 +13,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
-const testSetupKey = "SETUPKEY-do-not-leak-0123456789"
+const testSetupKey = "8f3c2a1e-4b5d-4c6e-9f70-0123456789ab"
 
 type fakeSession struct {
 	url        string
@@ -29,7 +32,7 @@ func (s *fakeSession) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.once.Do(func() { close(s.terminated) })
-		return ctx.Err()
+		return nil
 	case err := <-s.fail:
 		return err
 	}
@@ -41,33 +44,57 @@ type fakeClient struct {
 	started   bool
 	stopped   int
 	startErr  error
+	block     chan struct{} // Start waits for it (or ctx), then the underlying start ends
 	exposeErr error
+	stopErr   error // returned once by Stop
 	listeners []net.Listener
 	addrs     []string
 	requests  []exposeRequest
 	sessions  []*fakeSession
 	fqdn, ip  string
-	pub       string
 }
 
-func (f *fakeClient) Start(ctx context.Context) error {
+func (f *fakeClient) Start(ctx context.Context, finished func(error)) error {
+	if f.block != nil {
+		done := make(chan error, 1)
+		go func() {
+			<-f.block
+			done <- f.startErr
+		}()
+		select {
+		case err := <-done:
+			finished(err)
+			return err
+		case <-ctx.Done():
+			go func() { finished(<-done) }()
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.startErr != nil {
+		finished(f.startErr)
 		return f.startErr
 	}
 	f.started = true
-	if f.opts.ConfigPath != "" && f.opts.SetupKey != "" {
-		// embed persists the generated identity next to ConfigPath.
-		if err := os.WriteFile(f.opts.ConfigPath, []byte(`{"PrivateKey":"stored"}`), 0o600); err != nil {
-			return err
+	if f.opts.SetupKey != "" {
+		// embed persists the generated identity in ConfigPath.
+		if _, err := os.Stat(f.opts.ConfigPath); err != nil {
+			if err := os.WriteFile(f.opts.ConfigPath, []byte(`{"PrivateKey":"stored"}`), 0o644); err != nil {
+				return err
+			}
 		}
 	}
+	finished(nil)
 	return nil
 }
 func (f *fakeClient) Stop(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.stopErr; err != nil {
+		f.stopErr = nil
+		return err
+	}
 	f.stopped++
 	return nil
 }
@@ -95,7 +122,12 @@ func (f *fakeClient) Expose(ctx context.Context, req exposeRequest) (session, er
 	return s, nil
 }
 func (f *fakeClient) Identity() (string, string, error) { return f.fqdn, f.ip, nil }
-func (f *fakeClient) PublicKey() string                 { return f.pub }
+func (f *fakeClient) PeerFQDN(ip string) string {
+	if ip == "100.64.9.9" {
+		return "laptop.netbird.cloud"
+	}
+	return ""
+}
 
 func (f *fakeClient) session(i int) *fakeSession {
 	f.mu.Lock()
@@ -106,50 +138,79 @@ func (f *fakeClient) session(i int) *fakeSession {
 	return nil
 }
 
-// install replaces the client factory with one returning fakes.
-func install(t *testing.T) (clients *[]*fakeClient, mu *sync.Mutex) {
+func (f *fakeClient) stops() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopped
+}
+
+// fakes records every fake client built, by name.
+type fakes struct {
+	mu   sync.Mutex
+	all  []*fakeClient
+	prep func(*fakeClient) // adjusts a client before it is returned
+}
+
+func (fs *fakes) last(name string) *fakeClient {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	for i := len(fs.all) - 1; i >= 0; i-- {
+		if fs.all[i].opts.DeviceName == name {
+			return fs.all[i]
+		}
+	}
+	return nil
+}
+
+func (fs *fakes) count() int {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return len(fs.all)
+}
+
+// install replaces the client factory with one returning fakes whose primary
+// FQDN carries the overlay IP, as NetBird names an ephemeral peer.
+func install(t *testing.T) *fakes {
 	t.Helper()
 	old := newClient
-	var cs []*fakeClient
-	var m sync.Mutex
+	fs := &fakes{}
 	newClient = func(o clientOptions) (client, error) {
-		m.Lock()
-		defer m.Unlock()
-		f := &fakeClient{opts: o, fqdn: "host.netbird.cloud", ip: "100.64.0.7", pub: "PUBKEY=="}
-		cs = append(cs, f)
+		f := &fakeClient{opts: o, fqdn: o.DeviceName + "-1-2.netbird.cloud", ip: "100.64.0.7"}
+		fs.mu.Lock()
+		prep := fs.prep
+		fs.all = append(fs.all, f)
+		fs.mu.Unlock()
+		if prep != nil {
+			prep(f)
+		}
 		return f, nil
 	}
 	t.Cleanup(func() { newClient = old })
-	return &cs, &m
+	return fs
 }
 
-func last(cs *[]*fakeClient, mu *sync.Mutex) *fakeClient {
-	mu.Lock()
-	defer mu.Unlock()
-	if len(*cs) == 0 {
-		return nil
-	}
-	return (*cs)[len(*cs)-1]
+// keyHolder is a setup key the test can change.
+type keyHolder struct {
+	mu  sync.Mutex
+	key string
 }
 
-func enrolled(t *testing.T) string {
+func (k *keyHolder) get() string  { k.mu.Lock(); defer k.mu.Unlock(); return k.key }
+func (k *keyHolder) set(v string) { k.mu.Lock(); k.key = v; k.mu.Unlock() }
+
+func newNetKey(t *testing.T, dir string, key *keyHolder, logf func(string, ...any)) *Net {
 	t.Helper()
-	dir := t.TempDir()
-	if _, err := Enroll(context.Background(), dir, "", testSetupKey, "dev"); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-func newNet(t *testing.T, dir string) *Net {
-	t.Helper()
-	n, err := New(Config{Dir: dir, ShutdownTimeout: 2 * time.Second})
+	n, err := New(Config{Dir: dir, SetupKey: key.get, ShutdownTimeout: 2 * time.Second, Logf: logf})
 	if err != nil {
 		t.Fatal(err)
 	}
 	n.retryMin, n.retryMax = 10*time.Millisecond, 40*time.Millisecond
 	t.Cleanup(func() { n.Close() })
 	return n
+}
+
+func newNet(t *testing.T, dir string) *Net {
+	return newNetKey(t, dir, &keyHolder{key: testSetupKey}, nil)
 }
 
 var okHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,218 +243,96 @@ func eventually(t *testing.T, what string, f func() bool) {
 	t.Fatalf("timeout: %s", what)
 }
 
-func TestEnrollSuccessStoresNoSecret(t *testing.T) {
-	cs, mu := install(t)
+func exists(path string) bool { _, err := os.Stat(path); return err == nil }
+
+func TestEachNameRunsItsOwnPeer(t *testing.T) {
+	fs := install(t)
 	dir := t.TempDir()
-	acct, err := Enroll(context.Background(), dir, "https://nb.example.com", testSetupKey, "laptop")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if acct.ManagementURL != "https://nb.example.com" || acct.DeviceName != "laptop" || acct.Fingerprint == "" {
-		t.Fatalf("account %+v", acct)
-	}
-	f := last(cs, mu)
-	if f.opts.SetupKey != testSetupKey || f.stopped != 1 {
-		t.Fatalf("setup key used once, client stopped: %+v stopped=%d", f.opts, f.stopped)
-	}
-	got, ok, err := LoadAccount(dir)
-	if err != nil || !ok || got != acct {
-		t.Fatalf("LoadAccount = %+v %v %v", got, ok, err)
-	}
-	filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		b, _ := os.ReadFile(p)
-		if strings.Contains(string(b), testSetupKey) {
-			t.Errorf("%s contains the setup key", p)
-		}
-		if info.Mode().Perm() != 0o600 {
-			t.Errorf("%s mode %v", p, info.Mode().Perm())
-		}
-		return nil
-	})
-	// A second enrollment is refused until Disconnect.
-	if _, err := Enroll(context.Background(), dir, "", testSetupKey, ""); err == nil {
-		t.Fatal("second Enroll succeeded")
-	}
-}
-
-func TestEnrollFailureCleansAndScrubsKey(t *testing.T) {
-	old := newClient
-	t.Cleanup(func() { newClient = old })
-	newClient = func(o clientOptions) (client, error) {
-		return &fakeClient{opts: o, startErr: fmt.Errorf("login with %s rejected", o.SetupKey)}, nil
-	}
-	dir := t.TempDir()
-	_, err := Enroll(context.Background(), dir, "", testSetupKey, "x")
-	if err == nil || strings.Contains(err.Error(), testSetupKey) {
-		t.Fatalf("err = %v", err)
-	}
-	if _, ok, _ := LoadAccount(dir); ok {
-		t.Fatal("account recorded after failure")
-	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("leftovers: %v", entries)
-	}
-	if _, err := Enroll(context.Background(), dir, "ftp://x", testSetupKey, ""); err == nil {
-		t.Fatal("bad management URL accepted")
-	}
-	if _, err := Enroll(context.Background(), dir, "", " ", ""); err == nil {
-		t.Fatal("empty setup key accepted")
-	}
-}
-
-func TestDisconnect(t *testing.T) {
-	install(t)
-	dir := enrolled(t)
-	if err := Disconnect(context.Background(), dir, false); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := LoadAccount(dir); ok {
-		t.Fatal("still connected")
-	}
-	if err := Disconnect(context.Background(), dir, false); err == nil {
-		t.Fatal("disconnect of a disconnected host succeeded")
-	}
-	if err := Disconnect(context.Background(), dir, true); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestServeBeforeEnrollmentFails(t *testing.T) {
-	install(t)
-	n := newNet(t, t.TempDir())
-	if n.Account() != "" {
-		t.Fatal("fingerprint without enrollment")
-	}
-	if st := n.PublicStatus(); st.Detail != "not connected" || st.Kind != "netbird-expose" {
-		t.Fatalf("status %+v", st)
-	}
-	if _, err := n.ServePrivate(context.Background(), "h", okHandler); !errors.Is(err, ErrNotConnected) {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := n.ServePublic(context.Background(), "s", okHandler); !errors.Is(err, ErrNotConnected) {
-		t.Fatalf("err = %v", err)
-	}
-	// Enrolling afterwards works without a restart.
-	if _, err := Enroll(context.Background(), n.cfg.Dir, "", testSetupKey, "d"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := n.ServePrivate(context.Background(), "h", okHandler); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPrivateServeStopRetireStablePorts(t *testing.T) {
-	cs, mu := install(t)
-	dir := enrolled(t)
 	n := newNet(t, dir)
-	url, err := n.ServePrivate(context.Background(), "alpha", okHandler)
+	ctx := context.Background()
+	url, err := n.ServePrivate(ctx, "alpha", okHandler)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if url != "http://host.netbird.cloud:21000" {
-		t.Fatalf("url = %q", url)
+	if url != "http://alpha.netbird.cloud/" {
+		t.Fatalf("url = %q, want the extra label", url)
 	}
-	f := last(cs, mu)
-	if f.opts.SetupKey != "" || f.opts.ConfigPath != filepath.Join(dir, configFile) {
-		t.Fatalf("restart must not use a setup key: %+v", f.opts)
+	f := fs.last("alpha")
+	want := clientOptions{DeviceName: "alpha", SetupKey: testSetupKey, DNSLabels: []string{"alpha"},
+		ConfigPath: filepath.Join(dir, "peers", "alpha", configFile), StatePath: filepath.Join(dir, "peers", "alpha", dnsFile)}
+	if f.opts.DeviceName != want.DeviceName || f.opts.SetupKey != want.SetupKey || strings.Join(f.opts.DNSLabels, ",") != "alpha" ||
+		f.opts.ConfigPath != want.ConfigPath || f.opts.StatePath != want.StatePath {
+		t.Fatalf("client options = %+v", f.opts)
+	}
+	if f.addrs[0] != ":80" {
+		t.Fatalf("private listens on %q, want :80", f.addrs[0])
+	}
+	if st, err := os.Stat(f.opts.ConfigPath); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("identity file: %v %v", st, err)
 	}
 	if got := get(t, f.listeners[0], map[string]string{"Tailscale-User-Login": "evil", "Tailscale_User_Name": "evil"}); got != "hi |" {
 		t.Fatalf("identity headers leaked: %q", got)
 	}
-	if f.addrs[0] != ":21000" {
-		t.Fatalf("addr = %q", f.addrs[0])
-	}
-	u2, err := n.ServePrivate(context.Background(), "beta", okHandler)
-	if err != nil || u2 != "http://host.netbird.cloud:21001" {
+	u2, err := n.ServePrivate(ctx, "beta", okHandler)
+	if err != nil || u2 != "http://beta.netbird.cloud/" {
 		t.Fatalf("beta %q %v", u2, err)
 	}
-	if n.PrivateURL("alpha") != url || n.PublicURL("alpha") != "" {
-		t.Fatal("urls")
+	if fs.last("beta") == f || n.PeerCount() != 2 {
+		t.Fatalf("beta must run its own peer; peers = %d", n.PeerCount())
 	}
-	// Replacing the handler keeps the listener.
-	if u, _ := n.ServePrivate(context.Background(), "alpha", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "new") })); u != url {
+	// Replacing the handler keeps the listener and the peer.
+	if u, _ := n.ServePrivate(ctx, "alpha", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "new") })); u != url {
 		t.Fatalf("replace url %q", u)
 	}
 	if got := get(t, f.listeners[0], nil); got != "new" {
 		t.Fatalf("handler not replaced: %q", got)
 	}
-	if st := n.PrivateStatus(); st.Kind != "netbird" || len(st.Hosts) != 2 || st.Hosts[0].State != "ready" {
+	if fs.count() != 2 {
+		t.Fatalf("clients built = %d", fs.count())
+	}
+	if st := n.PrivateStatus(); st.Kind != "netbird" || len(st.Hosts) != 2 || st.Hosts[0].State != "ready" || st.Hosts[0].URL != url {
 		t.Fatalf("status %+v", st)
 	}
+	// Stop ends the peer but keeps its identity.
 	if err := n.StopPrivate("alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if n.PrivateURL("alpha") != "" {
-		t.Fatal("still served")
+	if n.PrivateURL("alpha") != "" || f.stops() != 1 || n.PeerCount() != 1 {
+		t.Fatalf("after stop: url %q stops %d peers %d", n.PrivateURL("alpha"), f.stops(), n.PeerCount())
+	}
+	if !exists(f.opts.ConfigPath) {
+		t.Fatal("stop deleted the identity")
 	}
 	if _, err := http.Get("http://" + f.listeners[0].Addr().String()); err == nil {
 		t.Fatal("listener still open after stop")
 	}
-	n.Close()
-
-	// A new process keeps the ports.
-	n2 := newNet(t, dir)
-	if u, err := n2.ServePrivate(context.Background(), "beta", okHandler); err != nil || u != u2 {
-		t.Fatalf("beta after restart %q %v", u, err)
-	}
-	if u, _ := n2.ServePrivate(context.Background(), "alpha", okHandler); u != url {
-		t.Fatalf("alpha after restart %q", u)
-	}
-	// Retire frees the port for reuse.
-	if err := n2.RetirePrivate("alpha"); err != nil {
-		t.Fatal(err)
-	}
-	if u, _ := n2.ServePrivate(context.Background(), "gamma", okHandler); u != "http://host.netbird.cloud:21000" {
-		t.Fatalf("gamma reuses the freed port: %q", u)
-	}
-	if err := n2.StopPrivate("unknown"); err != nil {
+	if err := n.StopPrivate("unknown"); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestPrivateFallsBackToIP(t *testing.T) {
-	cs, mu := install(t)
-	dir := enrolled(t)
-	old := newClient
-	newClient = func(o clientOptions) (client, error) {
-		f := &fakeClient{opts: o, ip: "100.64.0.9", pub: "k"}
-		mu.Lock()
-		*cs = append(*cs, f)
-		mu.Unlock()
-		return f, nil
+func TestPublicSharesTheFlatsPeer(t *testing.T) {
+	fs := install(t)
+	n := newNet(t, t.TempDir())
+	ctx := context.Background()
+	if _, err := n.ServePrivate(ctx, "blog", okHandler); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { newClient = old })
-	n := newNet(t, dir)
-	if u, err := n.ServePrivate(context.Background(), "a", okHandler); err != nil || u != "http://100.64.0.9:21000" {
-		t.Fatalf("%q %v", u, err)
-	}
-}
-
-func TestPublicServeExposeFieldsAndStop(t *testing.T) {
-	cs, mu := install(t)
-	n := newNet(t, enrolled(t))
-	url, err := n.ServePublic(context.Background(), "blog", okHandler)
+	url, err := n.ServePublic(ctx, "blog", okHandler)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if url != "https://blog-1.proxy.example" {
-		t.Fatalf("url = %q", url)
+	if url != "https://blog-1.proxy.example" || fs.count() != 1 {
+		t.Fatalf("url %q, clients %d", url, fs.count())
 	}
-	f := last(cs, mu)
-	if len(f.requests) != 1 || f.requests[0] != (exposeRequest{NamePrefix: "blog", Port: 21000}) {
-		t.Fatalf("requests %+v", f.requests)
+	f := fs.last("blog")
+	if len(f.requests) != 1 || f.requests[0] != (exposeRequest{NamePrefix: "blog", Port: publicPort}) || f.addrs[1] != ":8080" {
+		t.Fatalf("expose %+v on %v", f.requests, f.addrs)
 	}
-	if got := get(t, f.listeners[0], map[string]string{"tailscale-user-login": "evil"}); got != "hi |" {
+	if got := get(t, f.listeners[1], map[string]string{"tailscale-user-login": "evil"}); got != "hi |" {
 		t.Fatalf("leaked: %q", got)
 	}
-	// Private and public ports are independent.
-	if u, _ := n.ServePrivate(context.Background(), "blog", okHandler); !strings.HasSuffix(u, ":21001") {
-		t.Fatalf("private port %q", u)
-	}
-	if st := n.PublicStatus(); st.Kind != "netbird-expose" || len(st.Hosts) != 1 || st.Hosts[0].State != "ready" || st.Hosts[0].URL != url {
+	if st := n.PublicStatus(); st.Kind != "netbird-expose" || len(st.Hosts) != 1 || st.Hosts[0].URL != url {
 		t.Fatalf("status %+v", st)
 	}
 	if err := n.StopPublic("blog"); err != nil {
@@ -404,39 +343,311 @@ func TestPublicServeExposeFieldsAndStop(t *testing.T) {
 	default:
 		t.Fatal("session not terminated by stop")
 	}
-	if _, err := http.Get("http://" + f.listeners[0].Addr().String()); err == nil {
-		t.Fatal("server still up")
+	if f.stops() != 0 {
+		t.Fatal("the peer stopped while its private route still runs")
 	}
-	if n.PublicURL("blog") != "" {
-		t.Fatal("still served")
-	}
-	// Port record kept across stop; retired afterwards.
-	if u, err := n.ServePublic(context.Background(), "blog", okHandler); err != nil || u == "" {
+	if err := n.StopPrivate("blog"); err != nil {
 		t.Fatal(err)
 	}
-	if r := f.requests; r[len(r)-1].Port != 21000 {
-		t.Fatalf("port changed after stop: %+v", r)
+	if f.stops() != 1 {
+		t.Fatalf("stops = %d", f.stops())
 	}
+}
+
+func TestRetireDeletesTheIdentityOnceNothingIsServed(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	ctx := context.Background()
+	for _, serve := range []func(context.Context, string, http.Handler) (string, error){n.ServePrivate, n.ServePublic} {
+		if _, err := serve(ctx, "blog", okHandler); err != nil {
+			t.Fatal(err)
+		}
+	}
+	peer := filepath.Join(dir, "peers", "blog")
 	if err := n.RetirePublic("blog"); err != nil {
 		t.Fatal(err)
+	}
+	if !exists(peer) || fs.last("blog").stops() != 0 {
+		t.Fatal("retiring one role removed the peer another role uses")
+	}
+	if err := n.RetirePrivate("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(peer) || fs.last("blog").stops() != 1 {
+		t.Fatal("the last retirement must stop the peer and delete its identity")
+	}
+	// A new flat with the same name registers a new peer.
+	if _, err := n.ServePrivate(ctx, "blog", okHandler); err != nil || fs.count() != 2 {
+		t.Fatalf("serve after retire: %v, clients %d", err, fs.count())
+	}
+}
+
+func TestRestartKeepsTheIdentity(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	if _, err := n.ServePrivate(context.Background(), "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	n.Close()
+	b1, _ := os.ReadFile(filepath.Join(dir, "peers", "blog", configFile))
+	// Without a key the stored identity still logs in.
+	n2 := newNetKey(t, dir, &keyHolder{}, nil)
+	if _, err := n2.ServePrivate(context.Background(), "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	if f := fs.last("blog"); f.opts.SetupKey != "" {
+		t.Fatalf("restart without a key used %q", f.opts.SetupKey)
+	}
+	b2, _ := os.ReadFile(filepath.Join(dir, "peers", "blog", configFile))
+	if string(b1) != string(b2) || len(b1) == 0 {
+		t.Fatal("the identity changed across restarts")
+	}
+}
+
+func TestNoSetupKeyAndNoIdentity(t *testing.T) {
+	fs := install(t)
+	n := newNetKey(t, t.TempDir(), &keyHolder{}, nil)
+	if _, err := n.ServePrivate(context.Background(), "blog", okHandler); !errors.Is(err, ErrNoSetupKey) {
+		t.Fatalf("err = %v, want ErrNoSetupKey", err)
+	}
+	if fs.count() != 0 {
+		t.Fatal("a client was built without a key or identity")
+	}
+	if d := n.PrivateStatus().Detail; d != "no setup key" {
+		t.Fatalf("status detail %q", d)
+	}
+}
+
+func TestSetupKeyIsReadAtEveryStart(t *testing.T) {
+	fs := install(t)
+	key := &keyHolder{}
+	n := newNetKey(t, t.TempDir(), key, nil)
+	if _, err := n.ServePrivate(context.Background(), "a", okHandler); !errors.Is(err, ErrNoSetupKey) {
+		t.Fatal(err)
+	}
+	key.set(testSetupKey)
+	if _, err := n.ServePrivate(context.Background(), "a", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	key.set("11111111-2222-4333-8444-555555555555")
+	if _, err := n.ServePrivate(context.Background(), "b", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	if fs.last("a").opts.SetupKey != testSetupKey || fs.last("b").opts.SetupKey != "11111111-2222-4333-8444-555555555555" {
+		t.Fatal("peers did not use the key current at their start")
+	}
+}
+
+// rejectedLoginErr is what NetBird v0.80.0's embed Start returns when
+// management refuses the stored peer and auth.Login falls back to registering
+// with the empty setup key.
+var rejectedLoginErr = fmt.Errorf("login: %w", status.Error(codes.InvalidArgument,
+	"invalid setup-key or no sso information provided, err: invalid UUID length: 0"))
+
+func TestRejectedIdentityWithoutKey(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	if _, err := newNet(t, dir).ServePrivate(context.Background(), "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	fs.prep = func(f *fakeClient) { f.startErr = rejectedLoginErr }
+	n := newNetKey(t, dir, &keyHolder{}, nil)
+	_, err := n.ServePrivate(context.Background(), "blog", okHandler)
+	if !errors.Is(err, ErrPeerRejected) || strings.Contains(err.Error(), "UUID") {
+		t.Fatalf("err = %v, want ErrPeerRejected", err)
+	}
+	// With a key the same error is NetBird's own answer about that key.
+	n2 := newNet(t, dir)
+	if _, err := n2.ServePrivate(context.Background(), "blog", okHandler); err == nil || errors.Is(err, ErrPeerRejected) {
+		t.Fatalf("err with a key = %v", err)
+	}
+}
+
+var noExtraLabelsErr = fmt.Errorf("login: %w", status.Error(codes.FailedPrecondition,
+	"couldn't add peer: setup key doesn't allow extra DNS labels"))
+
+func TestKeyWithoutExtraLabelsFailsFastAfterwards(t *testing.T) {
+	fs := install(t)
+	fs.prep = func(f *fakeClient) {
+		if f.opts.SetupKey == testSetupKey {
+			f.startErr = noExtraLabelsErr
+		}
+	}
+	key := &keyHolder{key: testSetupKey}
+	n := newNetKey(t, t.TempDir(), key, nil)
+	for i := 0; i < 2; i++ {
+		if _, err := n.ServePrivate(context.Background(), "blog", okHandler); !errors.Is(err, ErrKeyNoExtraLabels) {
+			t.Fatalf("attempt %d: err = %v", i, err)
+		}
+	}
+	if fs.count() != 1 {
+		t.Fatalf("clients built = %d: the refused key was tried again", fs.count())
+	}
+	key.set("11111111-2222-4333-8444-555555555555")
+	if _, err := n.ServePrivate(context.Background(), "blog", okHandler); err != nil {
+		t.Fatalf("a new key: %v", err)
+	}
+}
+
+func TestStartErrorsDoNotLeakTheKey(t *testing.T) {
+	fs := install(t)
+	fs.prep = func(f *fakeClient) { f.startErr = fmt.Errorf("register with %s failed", f.opts.SetupKey) }
+	_, err := newNet(t, t.TempDir()).ServePrivate(context.Background(), "blog", okHandler)
+	if err == nil || strings.Contains(err.Error(), testSetupKey) || !strings.Contains(err.Error(), "***") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A start that outlives its timeout keeps the start lock until NetBird's own
+// start ends, so no other peer starts meanwhile; waiters give up with their
+// own context.
+func TestStartLockIsHeldUntilTheUnderlyingStartEnds(t *testing.T) {
+	fs := install(t)
+	release := make(chan struct{})
+	fs.prep = func(f *fakeClient) {
+		if f.opts.DeviceName == "slow" {
+			f.block = release
+			f.startErr = noExtraLabelsErr
+		}
+	}
+	old := startTimeout
+	startTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { startTimeout = old })
+	var logMu sync.Mutex
+	var logs []string
+	n := newNetKey(t, t.TempDir(), &keyHolder{key: testSetupKey}, func(f string, a ...any) {
+		logMu.Lock()
+		logs = append(logs, fmt.Sprintf(f, a...))
+		logMu.Unlock()
+	})
+	_, err := n.ServePrivate(context.Background(), "slow", okHandler)
+	if err == nil || !strings.Contains(err.Error(), "did not connect within") {
+		t.Fatalf("slow start: %v", err)
+	}
+	if _, err := n.ServePrivate(context.Background(), "other", okHandler); err == nil || !strings.Contains(err.Error(), "still starting") {
+		t.Fatalf("a second start must wait for the first: %v", err)
+	}
+	if fs.last("other") != nil {
+		t.Fatal("a client was built while another start held the lock")
+	}
+	close(release)
+	eventually(t, "the late outcome is logged", func() bool {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return len(logs) > 0 && strings.Contains(strings.Join(logs, "\n"), "extra DNS labels")
+	})
+	if _, err := n.ServePrivate(context.Background(), "other", okHandler); err != nil {
+		t.Fatalf("after the slow start ended: %v", err)
+	}
+	if _, err := n.ServePrivate(context.Background(), "slow", okHandler); !errors.Is(err, ErrKeyNoExtraLabels) {
+		t.Fatalf("the late refusal must be remembered: %v", err)
+	}
+}
+
+func TestConsoleRole(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	url, err := n.ServeConsole(context.Background(), "flats", okHandler)
+	if err != nil || url != "http://flats.netbird.cloud/" {
+		t.Fatalf("console %q %v", url, err)
+	}
+	if n.ConsoleURL("flats") != url || len(n.PrivateStatus().Hosts) != 0 || len(n.ConsoleStatus().Hosts) != 1 {
+		t.Fatal("the console role must be reported apart from private flats")
+	}
+	if got := strings.Join(n.Hostnames("flats"), ","); got != "flats.netbird.cloud,flats-1-2.netbird.cloud,100.64.0.7" {
+		t.Fatalf("hostnames %q", got)
+	}
+	if got := n.IdentityForIP("flats", "100.64.9.9"); got != "laptop.netbird.cloud" {
+		t.Fatalf("identity %q", got)
+	}
+	if fs.last("flats").addrs[0] != ":80" {
+		t.Fatal("the console listens on port 80")
+	}
+	if err := n.RetireConsole("flats"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, "peers", "flats")) || n.Hostnames("flats") != nil {
+		t.Fatal("retiring a console domain must delete its peer")
+	}
+}
+
+// A peer whose Stop fails keeps its identity and its name: nothing starts on
+// that name, and the retirement fails, until a later Stop succeeds.
+func TestFailedStopKeepsTheNameUntilItStops(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	ctx := context.Background()
+	if _, err := n.ServePrivate(ctx, "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	f := fs.last("blog")
+	f.mu.Lock()
+	f.stopErr = context.DeadlineExceeded
+	f.mu.Unlock()
+	if err := n.RetirePrivate("blog"); err == nil {
+		t.Fatal("a retirement whose peer did not stop succeeded")
+	}
+	if !exists(filepath.Join(dir, "peers", "blog")) {
+		t.Fatal("the identity of a peer still stopping was deleted")
+	}
+	// The next change of the name stops the old peer first.
+	if err := n.RetirePrivate("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, "peers", "blog")) || f.stops() != 1 {
+		t.Fatal("the retried retirement must stop the peer and delete its identity")
+	}
+	// A serve after a failed stop waits for that stop too.
+	if _, err := n.ServePrivate(ctx, "news", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	g := fs.last("news")
+	g.mu.Lock()
+	g.stopErr = context.DeadlineExceeded
+	g.mu.Unlock()
+	if err := n.StopPrivate("news"); err == nil {
+		t.Fatal("a failed stop was not reported")
+	}
+	if _, err := n.ServePrivate(ctx, "news", okHandler); err != nil || g.stops() != 1 || fs.count() != 3 {
+		t.Fatalf("serve after a failed stop: %v, stops %d, clients %d", err, g.stops(), fs.count())
+	}
+}
+
+func TestInvalidNamesAreRefused(t *testing.T) {
+	install(t)
+	n := newNet(t, t.TempDir())
+	for _, name := range []string{"", "../x", "Blog", "-a", "a-", strings.Repeat("a", 64), "a.b"} {
+		if _, err := n.ServePrivate(context.Background(), name, okHandler); err == nil {
+			t.Errorf("ServePrivate(%q) succeeded", name)
+		}
+		if err := RetireStored(t.TempDir(), name); err != nil {
+			t.Errorf("RetireStored(%q) = %v", name, err)
+		}
+	}
+}
+
+func TestPrivateFallsBackToIP(t *testing.T) {
+	fs := install(t)
+	fs.prep = func(f *fakeClient) { f.fqdn, f.ip = "", "100.64.0.9" }
+	if u, err := newNet(t, t.TempDir()).ServePrivate(context.Background(), "a", okHandler); err != nil || u != "http://100.64.0.9/" {
+		t.Fatalf("%q %v", u, err)
 	}
 }
 
 func TestPublicKeepAliveErrorReexposes(t *testing.T) {
-	cs, mu := install(t)
-	n := newNet(t, enrolled(t))
+	fs := install(t)
+	n := newNet(t, t.TempDir())
 	if _, err := n.ServePublic(context.Background(), "blog", okHandler); err != nil {
 		t.Fatal(err)
 	}
-	f := last(cs, mu)
+	f := fs.last("blog")
 	f.session(0).fail <- errors.New("keepalive refused")
 	eventually(t, "second expose", func() bool { return n.PublicURL("blog") == "https://blog-2.proxy.example" })
 	eventually(t, "ready again", func() bool { return n.PublicStatus().Hosts[0].State == "ready" })
-	select {
-	case <-f.session(0).terminated:
-		t.Fatal("a failed session cannot be terminated again") // Wait returned via fail, not ctx
-	default:
-	}
 	f.mu.Lock()
 	nl := len(f.listeners)
 	f.mu.Unlock()
@@ -446,22 +657,20 @@ func TestPublicKeepAliveErrorReexposes(t *testing.T) {
 }
 
 func TestPublicExposeFailureAtServeAndRecovery(t *testing.T) {
-	cs, mu := install(t)
-	n := newNet(t, enrolled(t))
-	// Start the client first with a working route.
-	if _, err := n.ServePrivate(context.Background(), "p", okHandler); err != nil {
+	fs := install(t)
+	n := newNet(t, t.TempDir())
+	if _, err := n.ServePrivate(context.Background(), "blog", okHandler); err != nil {
 		t.Fatal(err)
 	}
-	f := last(cs, mu)
+	f := fs.last("blog")
 	f.mu.Lock()
 	f.exposeErr = errors.New("quota exceeded")
 	f.mu.Unlock()
-	_, err := n.ServePublic(context.Background(), "blog", okHandler)
-	if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
+	if _, err := n.ServePublic(context.Background(), "blog", okHandler); err == nil || !strings.Contains(err.Error(), "quota exceeded") {
 		t.Fatalf("err = %v", err)
 	}
-	if n.PublicURL("blog") != "" || len(n.PublicStatus().Hosts) != 0 {
-		t.Fatal("failed first serve left an entry")
+	if n.PublicURL("blog") != "" || len(n.PublicStatus().Hosts) != 0 || f.stops() != 0 {
+		t.Fatal("a failed public serve left an entry or stopped the private route's peer")
 	}
 	f.mu.Lock()
 	f.exposeErr = nil
@@ -469,7 +678,6 @@ func TestPublicExposeFailureAtServeAndRecovery(t *testing.T) {
 	if _, err := n.ServePublic(context.Background(), "blog", okHandler); err != nil {
 		t.Fatal(err)
 	}
-	// An expose failure after being up retries with backoff.
 	f.mu.Lock()
 	f.exposeErr = errors.New("flaky")
 	f.mu.Unlock()
@@ -484,70 +692,47 @@ func TestPublicExposeFailureAtServeAndRecovery(t *testing.T) {
 	eventually(t, "recovered", func() bool { return n.PublicStatus().Hosts[0].State == "ready" })
 }
 
-func TestListenFailureReportsError(t *testing.T) {
+type listenFail struct{ *fakeClient }
+
+func (l listenFail) ListenTCP(string) (net.Listener, error) { return nil, errors.New("overlay down") }
+
+func TestListenFailureStopsTheNewPeer(t *testing.T) {
 	old := newClient
 	t.Cleanup(func() { newClient = old })
-	dir := func() string {
-		install(t)
-		return enrolled(t)
-	}()
-	newClient = func(o clientOptions) (client, error) { return &listenFail{fakeClient{opts: o}}, nil }
-	n := newNet(t, dir)
+	var f *fakeClient
+	newClient = func(o clientOptions) (client, error) {
+		f = &fakeClient{opts: o, fqdn: "h.netbird.cloud"}
+		return listenFail{f}, nil
+	}
+	n := newNet(t, t.TempDir())
 	if _, err := n.ServePrivate(context.Background(), "h", okHandler); err == nil || !strings.Contains(err.Error(), "overlay") {
 		t.Fatalf("err = %v", err)
 	}
-}
-
-type listenFail struct{ fakeClient }
-
-func (l *listenFail) ListenTCP(string) (net.Listener, error) { return nil, errors.New("overlay down") }
-
-func TestClientStartFailureRetriesLater(t *testing.T) {
-	cs, mu := install(t)
-	dir := enrolled(t)
-	n := newNet(t, dir)
-	old := newClient
-	first := true
-	newClient = func(o clientOptions) (client, error) {
-		f := &fakeClient{opts: o, fqdn: "h.nb", pub: "k"}
-		if first {
-			f.startErr, first = errors.New("management unreachable"), false
-		}
-		mu.Lock()
-		*cs = append(*cs, f)
-		mu.Unlock()
-		return f, nil
-	}
-	t.Cleanup(func() { newClient = old })
-	if _, err := n.ServePrivate(context.Background(), "h", okHandler); err == nil {
-		t.Fatal("expected start failure")
-	}
-	if _, err := n.ServePrivate(context.Background(), "h", okHandler); err != nil {
-		t.Fatal(err)
+	if f.stops() != 1 || n.PeerCount() != 0 {
+		t.Fatal("a peer whose only route failed must stop")
 	}
 }
 
 func TestCloseStopsEverythingAndIsIdempotent(t *testing.T) {
-	cs, mu := install(t)
-	n := newNet(t, enrolled(t))
+	fs := install(t)
+	n := newNet(t, t.TempDir())
 	if _, err := n.ServePublic(context.Background(), "a", okHandler); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := n.ServePrivate(context.Background(), "a", okHandler); err != nil {
-		t.Fatal(err)
-	}
-	f := last(cs, mu)
-	if err := n.Close(); err != nil {
+	if _, err := n.ServeConsole(context.Background(), "c", okHandler); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if f.stopped != 1 {
-		t.Fatalf("stopped = %d", f.stopped)
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if fs.last("a").stops() != 1 || fs.last("c").stops() != 1 {
+		t.Fatal("close must stop every peer once")
 	}
 	select {
-	case <-f.session(0).terminated:
+	case <-fs.last("a").session(0).terminated:
 	default:
 		t.Fatal("session not terminated on close")
 	}
@@ -564,7 +749,7 @@ func TestCloseStopsEverythingAndIsIdempotent(t *testing.T) {
 
 func TestConcurrentServeStopRace(t *testing.T) {
 	install(t)
-	n := newNet(t, enrolled(t))
+	n := newNet(t, t.TempDir())
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
 		wg.Add(1)
@@ -581,12 +766,16 @@ func TestConcurrentServeStopRace(t *testing.T) {
 					return
 				}
 				n.PublicStatus()
+				n.PeerCount()
 				n.StopPublic(name)
 				n.StopPrivate(name)
 			}
 		}(i)
 	}
 	wg.Wait()
+	if n.PeerCount() != 0 {
+		t.Fatalf("peers left = %d", n.PeerCount())
+	}
 }
 
 func TestIdentityHeader(t *testing.T) {
@@ -598,93 +787,59 @@ func TestIdentityHeader(t *testing.T) {
 	}
 }
 
-// A retired public port stays out of the pool until the quarantine ends:
-// NetBird only logs a failed StopExpose, so the proxy may still forward to the
-// old port. A private flat must not inherit it.
-func TestRetiredPublicPortIsQuarantined(t *testing.T) {
-	install(t)
-	dir := enrolled(t)
-	n := newNet(t, dir)
-	ctx := context.Background()
-	if _, err := n.ServePublic(ctx, "blog", okHandler); err != nil {
-		t.Fatal(err)
+func TestCleanupLegacy(t *testing.T) {
+	dir := t.TempDir()
+	if _, found, err := CleanupLegacy(dir); err != nil || found {
+		t.Fatalf("empty dir: %v %v", found, err)
 	}
-	if err := n.RetirePublic("blog"); err != nil {
-		t.Fatal(err)
+	for name, body := range map[string]string{
+		legacyAccountFile: `{"management_url":"https://nb.example","device_name":"flats-box","fingerprint":"abc"}`,
+		legacyConfigFile:  `{"PrivateKey":"x"}`, legacyDNSFile: `{}`, legacyPortsFile: `{"private/blog":21000}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	u, err := n.ServePrivate(ctx, "notes", okHandler)
-	if err != nil || strings.HasSuffix(u, ":21000") {
-		t.Fatalf("a private flat reused the retired public port: %q %v", u, err)
+	keep := filepath.Join(dir, "peers", "blog", configFile)
+	os.MkdirAll(filepath.Dir(keep), 0o700)
+	os.WriteFile(keep, []byte(`{}`), 0o600)
+	p, found, err := CleanupLegacy(dir)
+	if err != nil || !found || p.DeviceName != "flats-box" || p.ManagementURL != "https://nb.example" {
+		t.Fatalf("cleanup = %+v %v %v", p, found, err)
 	}
-	// Retiring a private port still frees it at once.
-	if err := n.RetirePrivate("notes"); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{legacyAccountFile, legacyConfigFile, legacyDNSFile, legacyPortsFile} {
+		if exists(filepath.Join(dir, name)) {
+			t.Fatalf("%s kept", name)
+		}
 	}
-	if u, _ := n.ServePrivate(ctx, "again", okHandler); !strings.HasSuffix(u, ":21001") {
-		t.Fatalf("a retired private port was not reused: %q", u)
+	if !exists(keep) {
+		t.Fatal("a per-flat peer was removed")
 	}
-	// After the quarantine the port is available again.
-	old := quarantineTTL
-	quarantineTTL = -time.Second
-	defer func() { quarantineTTL = old }()
-	p, err := readPorts(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.quarantine(21000, time.Now())
-	if !p.expire(time.Now()) {
-		t.Fatal("an ended quarantine was not dropped")
-	}
-	if port, _, err := p.allocate("private/late"); err != nil || port != 21000 {
-		t.Fatalf("port after the quarantine = %d, %v", port, err)
+	if _, found, _ := CleanupLegacy(dir); found {
+		t.Fatal("found twice")
 	}
 }
 
-// RetireStored releases ports with no Net running: the private port is freed
-// at once, the public one is quarantined.
-func TestRetireStoredWithoutBackend(t *testing.T) {
-	install(t)
-	dir := enrolled(t)
-	n := newNet(t, dir)
-	ctx := context.Background()
-	if _, err := n.ServePrivate(ctx, "blog", okHandler); err != nil {
-		t.Fatal(err)
+func TestRetireStoredDeletesThePeer(t *testing.T) {
+	dir := t.TempDir()
+	peer := filepath.Join(dir, "peers", "blog")
+	os.MkdirAll(peer, 0o700)
+	os.WriteFile(filepath.Join(peer, configFile), []byte(`{}`), 0o600)
+	if err := RetireStored(dir, "blog"); err != nil || exists(peer) {
+		t.Fatalf("%v, exists %v", err, exists(peer))
 	}
-	if _, err := n.ServePublic(ctx, "blog", okHandler); err != nil {
-		t.Fatal(err)
-	}
-	n.Close()
 	if err := RetireStored(dir, "blog"); err != nil {
 		t.Fatal(err)
-	}
-	if err := RetireStored(dir, "unknown"); err != nil {
-		t.Fatal(err)
-	}
-	p, err := readPorts(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := p["private/blog"]; ok {
-		t.Fatalf("private record kept: %v", p)
-	}
-	if _, ok := p["public/blog"]; ok {
-		t.Fatalf("public record kept: %v", p)
-	}
-	if _, ok := p[quarantinePrefix+"21001"]; !ok {
-		t.Fatalf("public port not quarantined: %v", p)
-	}
-	n2 := newNet(t, dir)
-	if u, _ := n2.ServePrivate(ctx, "new", okHandler); !strings.HasSuffix(u, ":21000") {
-		t.Fatalf("the freed private port is not reused first: %q", u)
 	}
 }
 
 // The real client honors a start deadline even though NetBird's own Start
-// authenticates before it looks at the context.
+// authenticates before it looks at the context, and reports when that start
+// really ended.
 func TestEmbedClientStartHonorsDeadline(t *testing.T) {
 	c, err := newEmbedClient(clientOptions{DeviceName: "probe", ManagementURL: "https://127.0.0.1:1",
-		SetupKey: "00000000-0000-0000-0000-000000000000", ConfigPath: filepath.Join(t.TempDir(), "nb.json"),
-		StatePath: filepath.Join(t.TempDir(), "dns.json"), LogOutput: io.Discard})
+		SetupKey: "00000000-0000-0000-0000-000000000000", DNSLabels: []string{"probe"},
+		ConfigPath: filepath.Join(t.TempDir(), "nb.json"), StatePath: filepath.Join(t.TempDir(), "dns.json"), LogOutput: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +847,8 @@ func TestEmbedClientStartHonorsDeadline(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	done := make(chan error, 1)
-	go func() { done <- c.Start(ctx) }()
+	finished := make(chan error, 1)
+	go func() { done <- c.Start(ctx, func(err error) { finished <- err }) }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -720,16 +876,142 @@ func TestNamePrefixFitsNetBirdLimit(t *testing.T) {
 }
 
 func TestPublicExposeUsesBoundedPrefix(t *testing.T) {
-	cs, mu := install(t)
-	n := newNet(t, enrolled(t))
+	fs := install(t)
+	n := newNet(t, t.TempDir())
 	slug := strings.Repeat("d", 54)
 	if _, err := n.ServePublic(context.Background(), slug, okHandler); err != nil {
 		t.Fatal(err)
 	}
-	f := last(cs, mu)
+	f := fs.last(slug)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.requests) != 1 || f.requests[0].NamePrefix != strings.Repeat("d", 32) {
 		t.Fatalf("expose requests = %+v", f.requests)
+	}
+}
+
+// The adapter tears a peer down once: a Stop that times out leaves that
+// teardown running, and a later Stop waits for it instead of calling
+// NetBird's Stop again, which would only answer that nothing runs.
+func TestEmbedClientStopWaitsForTheOneTeardown(t *testing.T) {
+	release := make(chan struct{})
+	calls := 0
+	var mu sync.Mutex
+	e := &embedClient{stop: func(context.Context) error {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		<-release
+		return nil
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := e.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Stop = %v", err)
+	}
+	close(release)
+	if err := e.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("NetBird's Stop ran %d times", calls)
+	}
+	failed := &embedClient{stop: func(context.Context) error { return errors.New("wireguard down failed") }}
+	var torn teardownError
+	if err := failed.Stop(context.Background()); !errors.As(err, &torn) {
+		t.Fatalf("a failed teardown = %v, want teardownError", err)
+	}
+}
+
+// A peer whose teardown ended with an error is stopped: its identity can be
+// deleted and its name reused at once.
+func TestTeardownErrorStillRetires(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	if _, err := n.ServePrivate(context.Background(), "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	f := fs.last("blog")
+	f.mu.Lock()
+	f.stopErr = teardownError{errors.New("wireguard down failed")}
+	f.mu.Unlock()
+	if err := n.RetirePrivate("blog"); err != nil || exists(filepath.Join(dir, "peers", "blog")) {
+		t.Fatalf("retire after a teardown error: %v", err)
+	}
+}
+
+// A start its caller abandoned keeps the name busy: the peer is neither
+// started again nor retired until that start has ended.
+func TestAbandonedStartBlocksTheName(t *testing.T) {
+	fs := install(t)
+	release := make(chan struct{})
+	fs.prep = func(f *fakeClient) {
+		if f.opts.DeviceName == "slow" && f.block == nil && fs.count() == 1 {
+			f.block = release
+		}
+	}
+	old := startTimeout
+	startTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { startTimeout = old })
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	if _, err := n.ServePrivate(context.Background(), "slow", okHandler); err == nil {
+		t.Fatal("the slow start did not time out")
+	}
+	if err := n.RetirePrivate("slow"); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("retire during an abandoned start: %v", err)
+	}
+	if !exists(filepath.Join(dir, "peers", "slow")) {
+		t.Fatal("the identity was deleted while a start still ran")
+	}
+	close(release)
+	eventually(t, "the abandoned start ends", func() bool { return n.RetirePrivate("slow") == nil })
+	if exists(filepath.Join(dir, "peers", "slow")) {
+		t.Fatal("the retirement after the start ended kept the identity")
+	}
+}
+
+// Close waits for starts their callers abandoned, and reports one that is
+// still running at its deadline.
+func TestCloseWaitsForAbandonedStarts(t *testing.T) {
+	fs := install(t)
+	release := make(chan struct{})
+	fs.prep = func(f *fakeClient) { f.block = release }
+	old := startTimeout
+	startTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { startTimeout = old })
+	n, err := New(Config{Dir: t.TempDir(), SetupKey: func() string { return testSetupKey }, ShutdownTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.ServePrivate(context.Background(), "slow", okHandler); err == nil {
+		t.Fatal("the slow start did not time out")
+	}
+	if err := n.Close(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close with a start still running = %v", err)
+	}
+	close(release)
+	n2, err := New(Config{Dir: t.TempDir(), SetupKey: func() string { return testSetupKey }, ShutdownTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.prep = func(f *fakeClient) {}
+	if _, err := n2.ServePrivate(context.Background(), "fast", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	if err := n2.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPeerDirStaysInsidePeers(t *testing.T) {
+	for _, name := range []string{"blog", "../x", "../../etc", "a/../../b"} {
+		got := peerDir("/data/netbird", name)
+		if !strings.HasPrefix(got, "/data/netbird/peers/") {
+			t.Errorf("peerDir(%q) = %q", name, got)
+		}
 	}
 }

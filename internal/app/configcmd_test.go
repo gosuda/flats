@@ -25,7 +25,7 @@ func TestConfigShowValidateSetUnset(t *testing.T) {
 	dir := t.TempDir()
 	path := initConfig(t, dir)
 	out, err := runConfig(t, "show", "--config", path)
-	if err != nil || !strings.Contains(out, `"schema_version": 3`) || !strings.Contains(out, `system.version_quota               20 (default)`) ||
+	if err != nil || !strings.Contains(out, `"schema_version": 4`) || !strings.Contains(out, `system.version_quota               20 (default)`) ||
 		!strings.Contains(out, `host.data_dir                      "`+dir+`" (file)`) {
 		t.Fatalf("show: %v\n%s", err, out)
 	}

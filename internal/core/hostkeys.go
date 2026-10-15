@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -49,6 +50,12 @@ func CheckHostKeyValue(id, v string) error {
 	case strings.ContainsAny(v, " \t\r\n"):
 		return invalidf("the %s key contains white space", id)
 	}
+	if id == HostKeyNetbird {
+		if !setupKeyRE.MatchString(v) {
+			return invalidf("a NetBird setup key is a UUID such as 8f3c2a1e-4b5d-4c6e-9f70-0123456789ab; copy it from Setup Keys in the NetBird dashboard")
+		}
+		return nil
+	}
 	if id != HostKeyTailscale {
 		return nil
 	}
@@ -63,6 +70,9 @@ func CheckHostKeyValue(id, v string) error {
 		return invalidf("a Tailscale auth key starts with tskey-auth-; create a reusable auth key under Settings > Keys in the Tailscale admin console")
 	}
 }
+
+// setupKeyRE matches a NetBird setup key, which NetBird parses as a UUID.
+var setupKeyRE = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
 func hostKeyAAD(id string) []byte { return []byte("host-key\x00" + id) }
 

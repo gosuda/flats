@@ -181,44 +181,74 @@ directives apply to that binary too; among them,
 note that this build does not include it, and it cannot connect a peer or turn
 NetBird on.
 
-NetBird gives Flats two providers that share one NetBird peer: **NetBird**
-(Private) and **NetBird Expose** (Public). Under **Settings → Network
-providers → NetBird**, paste a setup key from the NetBird dashboard (Setup
-Keys) and choose **Connect**. Flats uses the key once to register this machine
-as a peer, keeps only the peer identity in `netbird/` in the data directory
-(mode 0600), and does not store or show the key again. The peer talks to the
-management server in `netbird.management_url` (default NetBird Cloud) and is
-named `netbird.device_name` (default `flats`). The embedded client runs in
-userspace, so Flats needs no root rights or tunnel interface. **Turn on** NetBird
-and/or NetBird Expose, then allow them on a flat.
+NetBird gives Flats two providers: **NetBird** (Private) and **NetBird
+Expose** (Public). Like Tailscale, every flat runs on its own NetBird peer,
+named after its slug, and the console can have NetBird domains of its own
+(Settings → Console domains → NetBird). The embedded client runs in userspace,
+so Flats needs no root rights or tunnel interface.
 
-- **NetBird (Private)** serves each flat on the peer's overlay address, on its
-  own TCP port (21000–21999, kept across restarts), over plain HTTP. Reach it
-  from another peer that your NetBird access policies allow, at the URL the
-  flat's page shows. Previews and drafts do not use NetBird. **Flats on the
-  same peer share one browser cookie jar.** The peer has a single host name and
-  the flats differ only by port, and browsers do not scope cookies by port, so
-  a cookie one flat sets is also sent to the others on that peer, which can read
-  or overwrite it. This matters only for server flats that set cookies, such as
-  a session; static flats are unaffected. Use NetBird for flats you trust
-  together, and serve a flat that needs its own cookies through NetBird Expose,
-  Tailscale (each flat has its own host name) or another provider.
+**Setup key.** In the NetBird dashboard, open Setup Keys and create a key with
+**Allow extra DNS labels** on: Flats asks NetBird for each flat's name as an
+extra DNS label, and NetBird refuses the registration otherwise. Make it also
+
+- **reusable**: every flat and console domain registers a peer with it;
+- **ephemeral**: NetBird removes a peer about ten minutes after it goes
+  offline, so peers of deleted flats do not pile up in the dashboard;
+- assigned to an **auto group** your access policies use, because peers come
+  and go;
+- without an expiry or usage limit, because Flats registers a peer again with
+  it when NetBird has removed it.
+
+Register the key under **Settings → Keys** (or `flats key set netbird`, the
+`--netbird-setup-key-file` flag or `FLATS_NETBIRD_SETUP_KEY[_FILE]`). Flats keeps
+it in `flats.db`, encrypted, like the Tailscale auth key, and never shows it
+again. Peers talk to the management server in `netbird.management_url` (default
+NetBird Cloud). **Turn on** NetBird and/or NetBird Expose, then allow them on a
+flat; without a key, NetBird routes report that one is missing, and registering
+one opens them.
+
+- **NetBird (Private)** serves a flat as plain HTTP on port 80 of its own peer,
+  at `http://SLUG.<NetBird domain>/` (for NetBird Cloud, `netbird.cloud`), to
+  the peers your NetBird access policies allow. Previews and drafts do not use
+  NetBird. NetBird gives each peer a primary name of its own as well (for an
+  ephemeral peer it carries the overlay IP, such as `blog-12-34`); Flats uses
+  the extra label. NetBird does not keep extra labels unique: if a peer it
+  still lists asks for the same name, for example a flat deleted and created
+  again within ten minutes, both answer it until NetBird removes the old one.
 - **NetBird Expose (Public)** exposes a public flat through NetBird's reverse
-  proxy, which must be enabled on your NetBird account or server. Flats asks
-  for an expose named after the slug and keeps the session alive; the URL NetBird
-  returns is the flat's public URL. If NetBird ends the session Flats exposes again, and
-  the URL changes: NetBird adds a random suffix to each expose, so a flat that
-  goes Private and Public again, or whose session is exposed again, gets a new
-  address (read the current one from the console or `get_flat`). Public is not access control: Flats sets no PIN or
-  password, and anyone with the URL can open the flat.
+  proxy from the flat's own peer; the proxy must be enabled on your NetBird
+  account or server. Flats asks for an expose named after the slug and keeps
+  the session alive; the URL NetBird returns is the flat's public URL. If
+  NetBird ends the session Flats exposes again, and the URL changes: NetBird
+  adds a random suffix to each expose, so a flat that goes Private and Public
+  again, or whose session is exposed again, gets a new address (read the current
+  one from the console or `get_flat`). Public is not access control: Flats sets
+  no PIN or password, and anyone with the URL can open the flat.
 
-**Disconnect peer** deletes the peer identity from this machine; turn both
-providers off first. NetBird's embedded client cannot remove a peer, so remove
-it in the NetBird dashboard (Peers) and revoke a reusable setup key. If the peer
-was removed in the dashboard, connect again with a new key. Deleting a flat
-ends its expose session and releases its port; a public flat's port stays
-out of use for 24 hours, because NetBird only logs a failed attempt to end an
-expose session and its proxy might still forward to that port.
+**HTTP only.** NetBird issues no certificates for peer names, so NetBird routes
+and NetBird console domains are plain HTTP. Traffic between peers is encrypted
+by WireGuard, but browsers treat the page as not secure: clipboard writes,
+`crypto.subtle`, service workers and `Secure` cookies do not work there. The
+console accepts changes over HTTP only on its NetBird domains, from its own
+page (same-origin `http` Origin and the console's own header).
+
+**Lifecycle.** Each peer keeps its identity in `netbird/peers/<name>/` (mode
+0600) and logs in with it after a restart. When NetBird has removed it (an
+ephemeral peer offline for ten minutes, or one deleted in the dashboard), Flats
+registers it again with the stored key, asking for the same name. Removing
+NetBird from a flat stops its peer and keeps its identity; deleting the flat
+deletes it. A renamed flat's old peer serves the redirect until it expires.
+Flats cannot delete a peer in NetBird: an ephemeral one disappears by itself,
+a non-ephemeral one stays in the dashboard until you delete it there.
+Replacing the key affects peers that register afterwards; removing it keeps
+running peers but stops new ones from registering.
+
+**Upgrading** from a version that ran one shared peer for the whole host: the
+first start deletes that peer's local state and the console names it under
+Keys so you can delete it in the NetBird dashboard. A setup key that was waiting
+for enrollment becomes the stored key; otherwise register one. Flats keep their
+NetBird grants, and their URLs change from `http://<peer>:<port>` to
+`http://SLUG.<NetBird domain>/`.
 
 ## Visibility
 
