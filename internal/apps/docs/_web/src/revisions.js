@@ -27,8 +27,7 @@ export function getMeta(db, key) {
   return row ? JSON.parse(row.value) : null;
 }
 function setMeta(db, key, value) {
-  if (value === null)
-    db.exec("DELETE FROM flats_docs_meta WHERE key=?", [key]);
+  if (value === null) db.exec("DELETE FROM flats_docs_meta WHERE key=?", [key]);
   else
     db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [
       key,
@@ -64,10 +63,9 @@ function textOf(db, hash) {
 // --- documents ---
 
 function position(db, path) {
-  return db.query(
-    "SELECT epoch,seq FROM flats_docs_documents WHERE doc=?",
-    [path],
-  )[0];
+  return db.query("SELECT epoch,seq FROM flats_docs_documents WHERE doc=?", [
+    path,
+  ])[0];
 }
 function committedText(db, path) {
   const s = load(db, path);
@@ -89,7 +87,8 @@ function documentFile(db, path, known) {
   ])[0];
   if (rec && rec.epoch === pos.epoch && rec.seq === pos.seq)
     return { path, hash: rec.hash, size: rec.bytes };
-  const text = known && Object.hasOwn(known, path) ? known[path] : committedText(db, path);
+  const text =
+    known && Object.hasOwn(known, path) ? known[path] : committedText(db, path);
   const hash = digest(text),
     size = utf8Bytes(text);
   addRef(db, hash, text);
@@ -225,11 +224,17 @@ export function stale(db, generation) {
 // has: writes to it would never reach a revision.
 export function removedByNewer(db, generation, path) {
   const active = getMeta(db, "active");
-  return !!active && generation < active.generation && !active.docs.includes(path);
+  return (
+    !!active && generation < active.generation && !active.docs.includes(path)
+  );
 }
 
 function initialize(db, content, generation) {
   setMeta(db, "store", crypto.randomUUID());
+  // A document that already had text starts its history here; a new one is
+  // simply created.
+  const existing =
+    db.query("SELECT count(*) AS n FROM flats_docs_documents")[0].n > 0;
   for (const d of content.documents)
     if (!position(db, d.path))
       activate(db, d, content.hash, undefined, generation).doc.destroy();
@@ -257,7 +262,7 @@ function initialize(db, content, generation) {
   }
   record(db, {
     kind: "created",
-    message: "revision history started",
+    message: existing ? "revision history started" : "",
     ...shape,
     force: true,
     authors: [],
@@ -278,14 +283,13 @@ export function ensureFlat(db, content, generation) {
     throw new Error("host runtime generation unavailable");
   const active = getMeta(db, "active");
   if (active?.hash === content.hash) return false;
-  if (generation < highestGeneration(db) || stale(db, generation))
-    return false;
+  if (generation < highestGeneration(db) || stale(db, generation)) return false;
   if (!getMeta(db, "store")) initialize(db, content, generation);
-  if (getMeta(db, "newest")) recordPeople(db, beforeShape(db));
   const intent = getMeta(db, "intent"),
     mine = intent && intent.source === content.hash ? intent : null;
   const shape = currentShape(content);
   if (mine?.kind === "rollback") {
+    recordPeople(db, beforeShape(db));
     const target = new Map(mine.documents.map((d) => [d.path, d.hash]));
     for (const d of content.documents) {
       const text = textOf(db, target.get(d.path));
@@ -303,13 +307,31 @@ export function ensureFlat(db, content, generation) {
       op: mine.id,
     });
   } else {
-    // The merged texts are at hand: recording them needs no reload.
-    const known = {};
+    // People's text a merge may discard is kept first, as the flat was
+    // before this version. The activation loads every document anyway, so
+    // both entries use the texts it has instead of loading them again.
+    const dirty = textDirty(db),
+      known = {},
+      before = {};
     for (const d of content.documents) {
       const s = activate(db, d, content.hash, undefined, generation);
       known[d.path] = s.doc.getText("markdown").toString();
+      before[d.path] = s.before ?? known[d.path];
       s.doc.destroy();
     }
+    if (dirty) {
+      const prior = beforeShape(db),
+        overrides = {};
+      for (const path of prior.paths)
+        if (Object.hasOwn(before, path)) overrides[path] = before[path];
+      record(db, {
+        kind: "person",
+        source: prior.source,
+        paths: prior.paths.filter((p) => !Object.hasOwn(overrides, p)),
+        overrides,
+      });
+    }
+    db.exec("DELETE FROM flats_docs_groups");
     record(db, {
       kind: "agent",
       message: mine?.message || "",
@@ -466,7 +488,8 @@ export function stage(db, text, now = Date.now()) {
   return hash;
 }
 
-const opID = (id) => typeof id === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(id);
+const opID = (id) =>
+  typeof id === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(id);
 function targetDocuments(db, documents) {
   if (!Array.isArray(documents) || documents.length > 128)
     throw coded("invalid", "documents must list at most 128 documents");

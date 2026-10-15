@@ -42,17 +42,15 @@ workers from reversing a source merge. Three-way line merge preserves
 independent edits; overlapping source edits prefer the new version. A bounded
 character diff preserves unaffected CRDT positions. Neither diff uses a clock:
 line diff has a 128-edit / 16,000-line bound without a character cap; character diff a 64-edit /
-65,536-code-unit bound. Line overflow or a combined result above 1 MiB applies the version and preserves exact
-live Markdown in `flats_docs_conflicts`. Discarding overlapping human text absent from the new version
-also saves the complete pre-activation live text through the same recovery path.
-Newest whole records are retained
-within 8 records and 2 MiB UTF-8 per document, including repeat-hash rollbacks;
-older records are evicted atomically. Only private API and internal host/MCP
-reads list metadata (`generation`, `bytes`); public reads omit conflicts.
-The private `/_docs/api/conflict?doc=...&generation=...` returns full text;
-`view=1` serves text/plain UTF-8 with nosniff, restrictive CSP and no-store.
-Agents can use privileged `get_document {slug, doc?, conflict: generation}`
-(or host API `?conflict=<generation>`) to retrieve that preserved Markdown. Private editors see a non-blocking notice. The publish health check activates every document on
+65,536-code-unit bound. Line overflow or a combined result above 1 MiB applies the version.
+Revision capture (`revisions.js`) records the whole flat in an outbox in the
+same transaction as every revision boundary: agent writes, people's edit
+groups, a new version's flat-wide activation (which first keeps people's
+unrecorded text, so nothing a merge discards is lost) and rollbacks. The host
+imports the outbox into its revision store; the page's History panel
+(`history.js`) reads it back through host routes. See
+[document revisions](../../../docs/spec/document-revisions-TECH.md). The
+publish health check activates every document on
 an isolated data copy; failures block publish without touching live data.
 
 The browser uses CodeMirror 6, Markdown language support and y-codemirror.next
@@ -154,7 +152,7 @@ committed state. Rejection preserves the room position across cache invalidation
 and other-worker compaction.
 
 Persistent receipts/activations have explicit admission caps and are never
-silently evicted. Conflict recovery is a separate, evictable bounded window. A document can reach its structure/history cap before its
+silently evicted. A document can reach its structure/history cap before its
 visible text cap; operators must recover/export rather than erase receipts
 to keep accepting edits. Code rollback merges the target text into live data using the current
 seed as base, preserving independent human edits even for an observed hash. Presence expiry is opportunistic; there are no server timers.

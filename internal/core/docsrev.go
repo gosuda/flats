@@ -423,18 +423,27 @@ func (s *Service) refreshDocsLocked(ctx context.Context, slugName string) (docsI
 	if errors.Is(syncErr, errNotRunningDocs) {
 		return docsImport{}, syncErr
 	}
+	if syncErr == nil && sync.Ready == 0 {
+		// Nothing to import or acknowledge: ready counts every entry the
+		// worker still holds.
+		s.settleHoldsLocked(ctx, slugName, intentID(sync))
+		return docsImport{byOp: map[string]int{}}, nil
+	}
 	res, err := s.importDocsLocked(ctx, slugName)
 	if err != nil {
 		return res, err
 	}
 	if syncErr == nil {
-		intent := ""
-		if sync.Intent != nil {
-			intent = *sync.Intent
-		}
-		s.settleHoldsLocked(ctx, slugName, intent)
+		s.settleHoldsLocked(ctx, slugName, intentID(sync))
 	}
 	return res, syncErr
+}
+
+func intentID(r docsSyncResult) string {
+	if r.Intent == nil {
+		return ""
+	}
+	return *r.Intent
 }
 
 // settleHoldsLocked releases the holds of rollbacks that did not commit.

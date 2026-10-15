@@ -220,17 +220,17 @@ type DocumentEditChange struct {
 
 // DocumentEdit is the result of a live edit.
 type DocumentEdit struct {
-	Format       int                  `json:"format"`
-	Doc          string               `json:"doc"`
-	SeqBefore    int64                `json:"seq_before"`
-	Seq          int64                `json:"seq"`
-	Chain        string               `json:"chain"`
-	Hash         string               `json:"hash"`
-	Bytes        int64                `json:"bytes"`
-	Changed      bool                 `json:"changed"`
-	ID           string               `json:"id,omitempty"`
-	Ops          []DocumentEditChange `json:"ops"`
-	Source       string               `json:"source"`
+	Format    int                  `json:"format"`
+	Doc       string               `json:"doc"`
+	SeqBefore int64                `json:"seq_before"`
+	Seq       int64                `json:"seq"`
+	Chain     string               `json:"chain"`
+	Hash      string               `json:"hash"`
+	Bytes     int64                `json:"bytes"`
+	Changed   bool                 `json:"changed"`
+	ID        string               `json:"id,omitempty"`
+	Ops       []DocumentEditChange `json:"ops"`
+	Source    string               `json:"source"`
 	// Revision is the revision the edit created, once it is in the history.
 	Revision     int    `json:"revision,omitempty"`
 	PublicNotice string `json:"public_notice,omitempty"`

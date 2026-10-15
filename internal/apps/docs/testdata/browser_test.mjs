@@ -390,17 +390,12 @@ try {
     path: path.join(screenshots, "readonly.png"),
     fullPage: true,
   });
-  const beforeConflict = await editorText(a);
+  // A new version merges into live text; the editor keeps working. The
+  // history panel is on Private pages only (its routes are the host's).
   assert.equal(await a.evaluate(async () => (await fetch("/test-activate")).status), 204);
-  await a.locator("#conflict-notice").waitFor({state: "visible", timeout: 30000});
-  assert.equal(await a.locator("#status").innerText(), "Saved");
-  const recovery = await a.locator("#conflict-notice a").getAttribute("href");
-  const recovered = await a.evaluate(async href => (await fetch(href)).text(), recovery);
-  assert.ok(recovered.includes("Public live change"));
-  assert.ok(beforeConflict.includes("Public live change"));
-  assert.equal(await publicPage.locator("#conflict-notice").isVisible(), false);
-  assert.equal(await publicPage.evaluate(async href => (await fetch(href)).status, recovery), 403);
-  await a.screenshot({path: path.join(screenshots, "conflict-notice.png"),fullPage: true});
+  await a.waitForFunction(() => document.querySelector("#status")?.textContent === "Saved");
+  assert.equal(await a.locator("#history-toggle").isVisible(), true);
+  assert.equal(await publicPage.locator("#history-toggle").count(), 0);
   assert.deepEqual(errors, []);
   console.log(
     "PASS: independent contexts, concurrent convergence, remote cursors, Korean composition/emoji, local undo, persistence, offline reconnect, live-preview Edit and View toggle, mobile, public read-only.",

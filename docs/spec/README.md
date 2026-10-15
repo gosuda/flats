@@ -22,5 +22,6 @@ spec and leaves that list.
 | --- | --- |
 | [Content data models](content-models.md) | The Version model (websites, pages) and the Revision model (documents, design) |
 | [Design content type](design-type.md) ([technical design](design-type-TECH.md)) | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
+| [Document revisions](document-revisions-TECH.md) (technical design of the Revision model for `type: "docs"`) | How the docs worker records revisions and the host keeps them; the document page's history |
 | [Page content type](page-type.md) ([technical design](page-type-TECH.md)) | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Agent self-update](agent-self-update.md) ([technical design](agent-self-update-TECH.md)) | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |

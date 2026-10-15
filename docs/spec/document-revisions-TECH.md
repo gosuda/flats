@@ -323,11 +323,16 @@ replaced some edits" notice; `get_document {conflict}` and
   import.
 - One store migration adds `import_store TEXT` and `import_seq INTEGER` to
   `content_state` (the worker store and the last entry seq imported),
-  and the `content_sources` and `content_holds` tables (below).
+  `source TEXT` to `revisions`, and the `content_sources` and
+  `content_holds` tables (below).
 - Blobs live under `<flat>/revisions/` (designs keep `<flat>/design/`). The
   blob helpers take the store root; the root follows the type.
-- `content_head` holds the files of the newest imported entry, so the sweep
-  treats documents like designs. `content_groups` is unused for documents.
+- A document's revision stores its documents in `revision_files` and names
+  its other files by `revisions.source`; reading a revision expands the
+  source (`GetRevision`, `changes`, rollback), and its `files` and `size`
+  count both. A bundle of 20,000 assets therefore adds no rows per revision.
+- Documents leave `content_head` and `content_groups` empty: the newest
+  revision references what the head would, and groups live in the worker.
 - **Sources.** A new table `content_sources(flat, source, path, hash, size)`
   holds the non-document files of every docs version the host started. When
   a docs runtime is built on the live data directory, the host stores its
@@ -362,9 +367,9 @@ that stops at its budget leaves the next call only the missing ones.
    blobs already fetched and continues with the rest.
 4. For the entries whose blobs are complete, one content transaction inserts
    each as the next revision (kind, authors, message, `rollback_of`, time,
-   and its documents plus its source's files; `changes` against the previous
-   revision), deletes the hold whose rollback id is the entry's `op`, sets
-   `content_head` to the last one, and advances the cursor. Then acknowledge.
+   its documents and its source; `changes` against the previous revision,
+   both expanded), deletes the hold whose rollback id is the entry's `op`,
+   and advances the cursor. Then acknowledge.
 5. After the last page, run `retainTx` once.
 
 An entry whose `source` the host cannot resolve (no rows and no stored
@@ -523,8 +528,9 @@ these routes.
 - `list_revisions`, `get_revision`, `pin_revision` and `rollback_revision`
   accept documents. `get_revision {path}` returns a document's text, or an
   asset as base64, as of that revision.
-- `get_document` loses `conflict`. `save_document` and `update_document`
-  results gain `revision` when one was created.
+- `get_document` loses `conflict`. `update_document` results gain
+  `revision`, the revision the edit created, once it is imported. Saves
+  report nothing new: `list_revisions` shows their revision.
 - `topic.docs` describes revisions instead of conflict records; the
   instructions keep their byte cap; the generated references are rebuilt.
 

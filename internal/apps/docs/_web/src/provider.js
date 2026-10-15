@@ -128,6 +128,11 @@ export class Provider {
   state() {
     this.onState(this.model.label(), this.model);
   }
+  // catchUp asks for committed changes now instead of at the next
+  // heartbeat, for example after a restore.
+  catchUp() {
+    if (this.model.connected) this.send({ t: "ping" });
+  }
   send(m) {
     if (this.socket?.readyState === 1 && !this.model.stopped) {
       if (this.socket.bufferedAmount > 2 * 1024 * 1024) {

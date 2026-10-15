@@ -566,8 +566,8 @@ The editor id is a random id in `sessionStorage`. The author label is
     - overlapping boards.
 - **`get_design {slug, path?}`** returns the state, or one file's text or
   base64, with its hash and `gen`.
-- **Revision tools.** They refuse non-revision flats, and documents until
-  documents adopt this store.
+- **Revision tools.** They refuse websites and pages (`no_revisions`), and
+  serve documents too ([document-revisions-TECH.md](document-revisions-TECH.md)).
   - `list_revisions {slug, before?, limit?}` returns newest first, at most 100,
     with `next`.
   - `get_revision {slug, revision, path?}`.
@@ -665,6 +665,5 @@ tweaks and notes.
 
 ## Out of scope
 
-The PRD's non-goals, and moving documents onto this store. Documents keep
-`flats_docs_conflicts` until they move, as content-models' "Current state"
-records.
+The PRD's non-goals. Documents use this store through
+[document-revisions-TECH.md](document-revisions-TECH.md).

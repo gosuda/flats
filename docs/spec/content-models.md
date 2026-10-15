@@ -203,8 +203,8 @@ These rules apply to the version, revision and pin quotas alike.
 |---|---|---|
 | website (`flat`) | Version | creation and deployment are separate; quotas, deletion and tool names are not implemented |
 | page (`page`) | Version | as for websites |
-| document (`docs`) | Revision | no revisions yet; planned next |
-| design | Revision | planned type |
+| document (`docs`) | Revision | revisions, quotas, pins and rollback; saving one document while keeping the others is not implemented |
+| design | Revision | implemented |
 
 A flat keeps its first save's type, so its model never changes.
 
@@ -238,12 +238,20 @@ deployment (gosuda/flats PR #95):
     [design-type-TECH.md](design-type-TECH.md): whole-flat revisions, shared
     content-addressed storage, per-editor edit groups, revision and pin
     quotas, rollback and the revision tools.
-  - Documents do not use that store yet and have no revisions. When a new document version overwrites live
-    text, the overwritten text is preserved separately in
-    `flats_docs_conflicts` (up to 8 records and 2 MiB per document); revisions
-    replace this store.
-  - A docs bundle with several documents or assets is saved with
-    `save_version`, although documents have no versions.
+  - Documents use the same store, quotas, retention, pins and revision tools.
+    The docs worker records each revision boundary (agent writes, people's
+    edit groups, a new version's merge and rollbacks) in the same database
+    transaction as the change, and the host imports it
+    ([document-revisions-TECH.md](document-revisions-TECH.md)). Existing
+    `flats_docs_conflicts` records were migrated into `recovered` revisions,
+    and that store is no longer written.
+  - Rule 8 is not complete for documents: `save_document` still replaces the
+    bundle with the one document it saves, and a docs bundle with several
+    documents or assets is saved with `save_version`, although documents have
+    no versions. Both are recoverable through revisions.
+  - Quota rule 3 is not complete for documents: a person's live edit is not
+    checked against the disk quota, and the revision recording it is stored
+    without that check.
 
 ## Migration
 

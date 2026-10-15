@@ -126,9 +126,11 @@ type Service struct {
 	routeEpochs   sync.Map         // route key -> *routeEpoch
 	designOnce    sync.Once
 	design        *designState
-	settings      *SettingsSource
-	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits     sync.Map // slug -> *logLimit
+	// docsCatchUps holds when each document last imported for a read.
+	docsCatchUps sync.Map
+	settings     *SettingsSource
+	eventCount   sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits    sync.Map // slug -> *logLimit
 }
 
 // redirect owns an old slug while its route is served or provider teardown is

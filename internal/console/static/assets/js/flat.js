@@ -17,9 +17,9 @@ import { shareDialog } from './share.js';
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
 
-// revisionQuotaBlock edits a design's revision and pin quotas. An empty
+// revisionQuotaBlock edits a document's or design's revision and pin quotas. An empty
 // field follows the host default; 0 means unlimited.
-function revisionQuotaBlock(slug) {
+function revisionQuotaBlock(slug, type) {
   const slot = h('div', null, loading());
   (async () => {
     let q;
@@ -38,7 +38,7 @@ function revisionQuotaBlock(slug) {
       try { await api.setRevisionQuota(slug, body); toast('Saved. Revisions over the new quota were deleted.', 'success'); }
       catch (err) { toast(err.message, 'error'); }
     }));
-    fill(slot, h('p', { class: 'muted small', text: 'People and agents manage revisions on the design itself: open it and choose History.' }), rev.row, pin.row, h('div', { class: 'setting-row' }, h('span'), save));
+    fill(slot, h('p', { class: 'muted small', text: `People and agents manage revisions on the ${type === 'docs' ? 'document' : 'design'} itself: open it and choose History.` }), rev.row, pin.row, h('div', { class: 'setting-row' }, h('span'), save));
   })();
   return slot;
 }
@@ -168,7 +168,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       netSlot,
-      flat.type === 'design' ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug)) : null,
+      flat.type === 'design' || flat.type === 'docs' ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, flat.type)) : null,
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),

@@ -307,6 +307,11 @@ func (s *Service) catchUpDocs(ctx context.Context, slugName string) error {
 	if docs, err := s.isDocs(ctx, f); err != nil || !docs {
 		return err
 	}
+	// The page's history refreshes every few seconds; the ticker and every
+	// write import too, so frequent reads need not each reach the worker.
+	if last, ok := s.docsCatchUps.Load(slugName); ok && time.Since(last.(time.Time)) < 2*time.Second {
+		return nil
+	}
 	unlock, err := s.lockStorageCtx(ctx, slugName)
 	if err != nil {
 		return err
@@ -315,6 +320,7 @@ func (s *Service) catchUpDocs(ctx context.Context, slugName string) error {
 	if _, err := s.refreshDocsLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
 		s.logf("document revisions of %s: %v", slugName, err)
 	}
+	s.docsCatchUps.Store(slugName, time.Now())
 	return nil
 }
 
@@ -552,9 +558,18 @@ func (s *Service) startPendingDesigns(ctx context.Context) {
 	}
 }
 
+// agentLabel credits a write by where it came from: agents through MCP,
+// and the CLI, API and console by name.
 func agentLabel(via Via) string {
-	if via == ViaMCP {
+	switch via {
+	case ViaMCP:
 		return "Agent"
+	case ViaCLI:
+		return "CLI"
+	case ViaAPI:
+		return "API"
+	case ViaConsole:
+		return "Console"
 	}
 	return string(via)
 }

@@ -212,6 +212,8 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
   if (!Number.isSafeInteger(runtimeGeneration) || runtimeGeneration < 1)
     throw new Error("host runtime generation unavailable");
   let s = load(db, source.path, cached),
+    // The committed text before a merge, for revision capture.
+    before,
     activation = null,
     activationState;
   const highest = db.query(
@@ -283,11 +285,12 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
         code: "capacity",
       });
     if (s.row.seed_hash !== source.hash) {
+      before = s.doc.getText("markdown").toString();
       const merged = mergeText(
           db.query("SELECT seed_text FROM flats_docs_documents WHERE doc=?", [
             source.path,
           ])[0].seed_text,
-          s.doc.getText("markdown").toString(),
+          before,
           source.text,
         ),
         sv = Y.encodeStateVector(s.doc);
@@ -312,7 +315,7 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
     );
   }
   if (activation) compact(db, s, activationState);
-  return { ...s, activation };
+  return { ...s, activation, before };
 }
 export function transaction(db, fn) {
   db.exec("BEGIN IMMEDIATE");
@@ -387,7 +390,14 @@ export function structureCount(doc) {
 // needed. ensureFlat(db) runs the flat activation of the running version in
 // the same write transaction (revisions.js); the read-only fast path is taken
 // only once that activation ran, or when a newer worker owns the flat.
-export function current(db, source, versionHash, cached, generation, ensureFlat) {
+export function current(
+  db,
+  source,
+  versionHash,
+  cached,
+  generation,
+  ensureFlat,
+) {
   db.exec("BEGIN");
   try {
     const ready = db.query(
@@ -397,7 +407,9 @@ export function current(db, source, versionHash, cached, generation, ensureFlat)
     const highest = db.query(
       "SELECT coalesce(max(version),0) AS version FROM flats_docs_activations",
     )[0].version;
-    const raw = db.query("SELECT value FROM flats_docs_meta WHERE key='active'")[0],
+    const raw = db.query(
+        "SELECT value FROM flats_docs_meta WHERE key='active'",
+      )[0],
       active = raw ? JSON.parse(raw.value) : null,
       flatReady =
         !ensureFlat ||

@@ -4,9 +4,10 @@ A docs flat runs the built-in collaborative editor: people edit live Markdown
 in the browser. A Private link opens the editor and can toggle between Edit
 and View; a Public link is view only (a read-only rendered document).
 
-A document has **no Draft, versions, previews, publish or rollback**: those
-are for websites. Creating or saving a document runs it at once, Private, with
-no approval, and its Private URL serves it as soon as the host is ready.
+A document has **no Draft, versions, previews or publish**: those are for
+websites. Creating or saving a document runs it at once, Private, with no
+approval, and its Private URL serves it as soon as the host is ready. Its
+history is kept as **revisions** instead (below).
 Visibility still works as for websites: making it Public (or Private again)
 and deleting it wait for the operator's approval (`topic.approvals`). On
 documents, `list_versions`, `get_draft`, `publish`, `deploy`, `open_preview`
@@ -74,11 +75,11 @@ rewrite, several documents or assets, or when the document is not running
    Read again and rebuild your operations; never overwrite people's text to
    win. `if_hash` (from `get_document`) additionally refuses the call if
    anything in the document changed.
-4. The result gives the new `seq` and `hash` and, per operation, the line and
-   the characters removed and inserted. Each applied edit is recorded in
-   `get_logs` (kind `document`) with that summary, not the text. Flats keeps
-   no separate copy of the text an edit replaced: to undo, apply the reverse
-   edit while the text is still there.
+4. The result gives the new `seq` and `hash`, the `revision` the edit
+   created and, per operation, the line and the characters removed and
+   inserted. Each applied edit is also recorded in `get_logs` (kind
+   `document`) with that summary, not the text. To undo an edit, roll back to
+   the revision before it (below) or apply the reverse edit.
 
 Limits: a request of at most 512 KiB, one resulting update of at most
 256 KiB, Markdown up to 1 MiB per document, the document's stored history,
@@ -91,16 +92,40 @@ before retrying so an insert is not applied twice.
 
 Live edits change only the live text, not the files the document was last
 saved with. The next `save_document` merges into them exactly as into
-people's edits (below): where the save changes the same lines, the save wins
-and the discarded live text is kept for recovery. To keep a live edit in a
-save, start from the live text that `get_document` returns.
+people's edits (below): where the save changes the same lines, the save wins,
+and the live text before the save stays in the revision closed just before
+it. To keep a live edit in a save, start from the live text that
+`get_document` returns.
 
 When a document is saved, its Markdown is merged line by line into the live
 text: disjoint and adjacent human edits survive; overlapping lines prefer the
-saved text. When a merge discards human text, the previous live Markdown is kept
-for private recovery: responses list `conflicts: [{generation, bytes}]`, and
-`get_document {slug, doc?, conflict: <generation>}` returns the preserved text.
-Each document keeps the newest 8 records within 2 MiB; older ones are gone.
+saved text.
+
+### Revisions
+
+Every change of a document is kept as a revision of the whole flat (all its
+documents and assets):
+
+* each `save_document`, docs bundle save or `update_document` call is one
+  revision, credited to you;
+* people's edits in the browser are grouped per person: a group becomes one
+  revision when that person has been idle for 30 seconds or 5 minutes after
+  it began;
+* before your save or edit applies, people's edits not yet in a revision
+  become one, so the state just before your write is always kept.
+
+| Tool | Use |
+| --- | --- |
+| `list_revisions {slug, before?, limit?}` | newest first, with kind (`created`, `agent`, `person`, `rollback`, `recovered`), authors, message, pinned and changed paths; pass `next` as `before` for older ones |
+| `get_revision {slug, revision, path?}` | one revision's files, or with `path` a document's Markdown (or an asset as base64) as it was then |
+| `rollback_revision {slug, revision}` | every document and asset becomes as it was in that revision, as a new revision; it can be undone the same way. Live at once; on a Public flat everyone sees it |
+| `pin_revision {slug, revision, pinned}` | pinned revisions are never deleted automatically; a full pin quota refuses a new pin |
+
+None of them needs approval. Old unpinned revisions are deleted beyond the
+host's quota (default 100 kept, 20 pins); the operator can change both per
+flat. People see the same history in the document's History panel on its
+Private link. `recovered` revisions hold text that an older Flats preserved
+when a save overwrote people's edits.
 
 ### Bundle rules
 

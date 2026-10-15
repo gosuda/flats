@@ -9,6 +9,7 @@ import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
 import { replaceRendered } from "./diagram-preview.js";
 import { coalescedRefresh } from "./render-budget.js";
+import { initHistory } from "./history.js";
 import {
   onThemeChange,
   redrawDiagrams,
@@ -117,10 +118,12 @@ function modesGroup() {
   }
   return group;
 }
+let viewingRevision = false;
 function setMode(next) {
   mode = next;
   for (const b of document.querySelectorAll("#modes [data-mode]"))
     b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  if (viewingRevision) return;
   showRendered(!view || !writable || mode === "view");
   if (view && writable && mode === "edit") view.requestMeasure();
 }
@@ -195,6 +198,28 @@ function stopped(message) {
       effects: access.reconfigure(EditorState.readOnly.of(true)),
     });
 }
+// The history panel views a revision in place of the live surface; the
+// editor stays connected meanwhile.
+const history = initHistory({
+  path,
+  name: () => name,
+  liveText: () => text.toString(),
+  onView() {
+    viewingRevision = true;
+    $("#editor").hidden = true;
+    $("#content").hidden = true;
+  },
+  onLive() {
+    viewingRevision = false;
+    $("#content").hidden = true;
+    setMode(mode);
+  },
+  status(message) {
+    $("#status").textContent = message;
+    $("#status").dataset.state = "Saved";
+    provider.catchUp();
+  },
+});
 const provider = new Provider(doc, path, {
   readonly: initialReadonly,
   name,
@@ -252,6 +277,7 @@ const provider = new Provider(doc, path, {
     writable = !m.readonly;
     const group = writable ? modesGroup() : $("#modes");
     if (group) group.hidden = !writable;
+    history.enable(writable);
     view?.dispatch({
       effects: access.reconfigure(
         EditorState.readOnly.of(!writable || provider.model.stopped),
