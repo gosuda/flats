@@ -751,3 +751,33 @@ func TestFailedNetbirdConsoleAddRetiresThePeer(t *testing.T) {
 		t.Fatalf("records %+v", nodes)
 	}
 }
+
+// The retry after a NetBird key is registered finishes a pending retirement
+// before it serves a name again, and leaves the name alone when it cannot.
+func TestNetbirdRetryFinishesPendingRetirement(t *testing.T) {
+	h, _, nb := netbirdConsoleHost(t)
+	ctx := context.Background()
+	if err := h.Store.PutConsoleNode(ctx, store.ConsoleNode{Provider: "netbird", Name: "ops", Retiring: true}); err != nil {
+		t.Fatal(err)
+	}
+	h.setOwned(cdKey{providerNetbird, "ops"}, true)
+	if _, err := h.Svc.SetConsoleHostsOf(providerNetbird, []string{"ops"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	nb.mu.Lock()
+	nb.retireErr = errors.New("still stopping")
+	nb.mu.Unlock()
+	h.retryConsoleDomains(ctx, providerNetbird)
+	nodes, _ := h.Store.ListConsoleNodes(ctx)
+	if nb.isServed("ops") || len(nodes) != 1 || !nodes[0].Retiring {
+		t.Fatalf("served %v records %+v", nb.isServed("ops"), nodes)
+	}
+	nb.mu.Lock()
+	nb.retireErr = nil
+	nb.mu.Unlock()
+	h.retryConsoleDomains(ctx, providerNetbird)
+	nodes, _ = h.Store.ListConsoleNodes(ctx)
+	if !nb.isServed("ops") || len(nodes) != 1 || nodes[0].Retiring {
+		t.Fatalf("after the retirement: served %v records %+v", nb.isServed("ops"), nodes)
+	}
+}

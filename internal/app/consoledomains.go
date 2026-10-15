@@ -424,10 +424,23 @@ func (h *Host) startConsoleDomains(ctx context.Context) error {
 func (h *Host) retryConsoleDomains(ctx context.Context, prov string) {
 	h.cdMu.Lock()
 	defer h.cdMu.Unlock()
+	nodes, err := h.Store.ListConsoleNodes(ctx)
+	if err != nil {
+		h.logf("console domains (%s): %v", providerLabel[prov], err)
+		return
+	}
 	for _, name := range h.consoleHostsOf(prov) {
 		k := cdKey{prov, name}
 		if h.isServed(k) {
 			continue
+		}
+		// A name listed again while its earlier node is still being retired
+		// is served only once that retirement succeeds, with a new identity.
+		if slices.ContainsFunc(nodes, func(n store.ConsoleNode) bool { return n.Provider == prov && n.Name == name && n.Retiring }) {
+			if err := h.retireConsoleNode(ctx, k); err != nil {
+				h.logf("console domain %s (%s): retire its previous node: %v", name, providerLabel[prov], err)
+				continue
+			}
 		}
 		if err := h.serveConsoleDomain(ctx, k); err != nil {
 			h.logf("console domain %s (%s): %v", name, providerLabel[prov], err)
