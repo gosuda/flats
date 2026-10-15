@@ -329,10 +329,10 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 // Only the console may call it. It does not publish the flat or change visibility.
 //
 // A revocation stops the provider's routes before the permission is removed.
-// A grant is committed first; a Tailscale grant is then applied to the live
-// runtime (see applyProviderGrant), so its route opens without a deploy or
+// A grant is committed first, then applied to the live runtime when visibility
+// permits that provider (see applyProviderGrant), without a deploy or
 // restart. If that route fails to open, the grant stays recorded (a repeated
-// grant, the next deploy, visibility change or restart retries it), an
+// grant, the next deploy or restart retries it), an
 // exposure error event is logged and the returned error wraps
 // ErrProviderNotReady.
 func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider string, permitted bool, via Via) error {
@@ -366,25 +366,22 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 	}
 	if err := s.applyProviderGrant(ctx, f, ProviderID(provider)); err != nil {
 		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but its route did not open: %v", provider, err), nil)
-		return fmt.Errorf("%w: %s is permitted, but its route did not open (retried on the next deploy, visibility change or restart): %v", ErrProviderNotReady, provider, err)
+		return fmt.Errorf("%w: %s is permitted, but its route did not open (allow this provider again, deploy or restart to retry): %v", ErrProviderNotReady, provider, err)
 	}
 	return nil
 }
 
-// applyProviderGrant opens the current route a fresh grant adds without a new
-// approval: Private Tailscale for a flat with a live runtime. Granting Portal
-// or Funnel opens nothing here, so a grant alone never widens public
-// exposure; on a Private flat they cannot serve, and on a Public flat they are
-// served when ensureExposure next runs (redeploy, approved transition or host
-// restart). The legacy backend serves its private host whatever the grant, so
-// it needs no re-run. Only the Tailscale endpoint decides success; a sibling
-// route's error is logged, not returned. Rename aliases keep their routes
-// until the next restart re-serves them.
+// applyProviderGrant opens the explicitly granted current route on a live flat:
+// private mesh providers may serve either visibility; public providers may
+// serve only an already Public flat. The legacy backend needs no re-run.
+// Only the granted endpoint decides success; a sibling route's error is logged,
+// not returned. Rename aliases keep their routes until the next restart.
 func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
-	if !PrivateMeshProvider(provider) {
+	publicGrant := PublicProvider(provider) && f.Visibility.Public()
+	if !PrivateMeshProvider(provider) && !publicGrant {
 		return nil
 	}
-	return s.reapplyExposure(ctx, f, provider)
+	return s.reapplyExposure(ctx, f, provider, publicGrant)
 }
 
 // RetryProviderRoutes opens again, as a grant does, the routes of every
@@ -413,7 +410,7 @@ func (s *Service) RetryProviderRoutes(ctx context.Context, mesh, public Provider
 		unlock := s.lock(f.Slug)
 		cur, err := s.st.GetFlat(ctx, f.Slug)
 		if err == nil {
-			err = s.reapplyExposure(ctx, cur, p)
+			err = s.reapplyExposure(ctx, cur, p, false)
 		}
 		unlock()
 		if err != nil {
@@ -424,8 +421,9 @@ func (s *Service) RetryProviderRoutes(ctx context.Context, mesh, public Provider
 
 // reapplyExposure re-serves f's current private routes, and the public
 // routes its approved exposure already uses, and reports whether provider's
-// route opened.
-func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider ProviderID) error {
+// route opened. Only an explicit public grant may add the provider to that set;
+// a key-change retry must leave publicGrant false.
+func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider ProviderID, publicGrant bool) error {
 	ln, ok := s.lifecycleNet()
 	if !ok || s.state(f.Slug).cur.Load() == nil {
 		return nil
@@ -441,12 +439,12 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 	if f.Visibility.Public() {
 		// The provider manager records one status per host, so re-issue the
 		// public request to keep the public endpoints observable, limited to
-		// the public providers the last exposure already used. Degraded,
+		// the explicitly granted provider and those the last exposure used. Degraded,
 		// unavailable and failed endpoints stay in that request: re-serving a
 		// registered route is idempotent, and a provider whose last open
 		// failed is retried as part of the approved exposure, as a redeploy
-		// or restart would. Only a stopped route is left out, so a grant
-		// never reopens one.
+		// or restart would. A stopped sibling is left out; explicitly granting
+		// that provider again may reopen it.
 		observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
 		if !ok {
 			return errors.New("cannot read the current public routes")
@@ -456,6 +454,9 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 			return fmt.Errorf("read current routes: %w", err)
 		}
 		serving := req.Permitted
+		if publicGrant {
+			serving = append(serving, provider)
+		}
 		for _, ep := range status.Endpoints {
 			if PublicProvider(ep.Provider) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
 				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) &&
@@ -465,6 +466,9 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 		}
 		if len(serving) > len(req.Permitted) {
 			req.Visibility, req.Handler, req.PrivateHandler, req.Permitted = "public", s.siteHandler(f.Slug, true), s.siteHandler(f.Slug, false), serving
+			if req.Hidden, err = s.portalHidden(ctx, f.Slug); err != nil {
+				return err
+			}
 		}
 	}
 	res, err := ln.ServeExposure(ctx, req)

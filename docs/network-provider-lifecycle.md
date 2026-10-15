@@ -25,6 +25,16 @@ is not an alias of `tailscale-funnel`. A failed provider is not replaced by
 another one. Every requested public provider is attempted independently; that
 is not a fallback.
 
+An explicit per-flat public-provider grant on a live Public flat reconciles
+that provider immediately. The request retains the observed non-stopped
+permitted public siblings and private routes, using the effective Portal
+listing preference. It does not reopen stopped siblings or add other merely
+permitted public providers. On a Private flat or without a live runtime, a
+public grant records permission only. A failed startup keeps the grant and
+endpoint error, logs an exposure error and returns `provider_not_ready`;
+repeating the grant retries. Asynchronous registration may return `starting`
+and later become `ready` or `error` through ordinary status polling.
+
 | Request | Providers that may open |
 | --- | --- |
 | Draft, or visibility private | `local` always. `tailscale` and `netbird` only when both gates allow them (`netbird` never for an ephemeral preview). |
