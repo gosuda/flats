@@ -469,7 +469,7 @@ for migrated recovery text.
 | Route | Purpose |
 |---|---|
 | `GET /_docs/api/revisions?before=&limit=` | newest first: the design page shape `{revisions, next, pins, pin_quota, revision_quota}` |
-| `GET /_docs/api/revisions/{n}` | `{revision, documents: [{path, title}]}`; titles as the app derives them (manifest name for the entry, else the first `#` heading, else the path) |
+| `GET /_docs/api/revisions/{n}` | `{revision, documents: [{path, title}], files: [{path, hash, size}], previous}`; titles as the app derives them (manifest name for the entry, else the first `#` heading, else the path); `files` are the other files; `previous` is the newest kept revision before `n`, or 0 |
 | `GET /_docs/api/revisions/{n}/document?doc=` | `{doc, markdown, hash}` |
 | `GET /_docs/api/revisions/{n}/files/<path>` | a non-document file of that revision, under the inert-asset rules of current assets (fixed MIME types, `nosniff`, the asset CSP, attachment for other types) |
 | `POST /_docs/api/revisions/{n}/pin` | `{pinned}` |
@@ -511,9 +511,18 @@ these routes.
   12 · 3 hours ago" with "Show changes", "Restore this revision" and "Back to
   live". The editor stays connected in the background.
   - Images and links to the flat's files resolve to the revision's file route.
-  - "Show changes" toggles a line diff against the live text (`diffLines` from
-    the bundled `diff` package) with `+`/`−` markers, so color is not the only
-    signal.
+  - **Highlight changes** (the default) marks, in the rendered document, what
+    this revision changed since the revision before it that still exists
+    (`previous` in the revision route): changed text tinted and underlined
+    line by line, changed tables, lists, code and rules outlined, images whose
+    file changed between the two outlined, and a "− N lines removed here" note
+    where text went. Links that use a changed reference definition count as
+    changed. Every mark has a screen-reader label.
+  - **Source changes** shows the same comparison as a Markdown line diff, and
+    **Compare with live** a line diff against the live text, both with
+    `+`/`−` markers.
+  - The page diffs on its main thread with a 400 ms and 2,000-edit limit;
+    texts that differ more show a note instead of a comparison.
   - A document missing from that revision says so and lists the revision's
     documents.
 - **Restore** confirms first ("Restore every document to revision 12? The
