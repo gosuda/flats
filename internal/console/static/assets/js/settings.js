@@ -93,10 +93,49 @@ export function mount(main, _params, ctx) {
     const [prov, domains, keys] = await Promise.allSettled([api.providers(), api.consoleDomains(), api.keys()]);
     if (!ctx.alive()) return;
     const providers = prov.status === 'fulfilled' ? (prov.value.providers || []) : [];
+    lastProviders = providers;
     fill(providersSlot, prov.status === 'fulfilled' ? providerGroups(providers, data, opts) : errorPanel(prov.reason, 'Cannot load network providers'));
     fill(domainsSlot, domains.status === 'fulfilled' ? consoleDomains(domains.value, opts) : errorPanel(domains.reason, 'Cannot load the console domains'));
     fill(keysSlot, keys.status === 'fulfilled' ? keysCard(keys.value.keys || [], providers, opts) : errorPanel(keys.reason, 'Cannot load the keys'));
+    scheduleRefresh(domains.value, keys.value && keys.value.keys, opts);
   }
+
+  // Tailnet nodes and enrollments finish in the background: while one is
+  // pending, the domain and key cards refresh every few seconds, except
+  // while the operator is typing in them.
+  let lastProviders = [];
+  let refreshTimer = null;
+  function scheduleRefresh(domains, keys, opts) {
+    clearTimeout(refreshTimer);
+    if (!pendingWork(domains, keys)) return;
+    refreshTimer = setTimeout(async () => {
+      if (!ctx.alive()) return;
+      if ([domainsSlot, keysSlot].some(editing)) {
+        scheduleRefresh(domains, keys, opts);
+        return;
+      }
+      const [d, k] = await Promise.allSettled([api.consoleDomains(), api.keys()]);
+      if (!ctx.alive()) return;
+      if (d.status === 'fulfilled') fill(domainsSlot, consoleDomains(d.value, opts));
+      if (k.status === 'fulfilled') fill(keysSlot, keysCard(k.value.keys || [], lastProviders, opts));
+      scheduleRefresh(d.value, k.value && k.value.keys, opts);
+    }, 5000);
+    // Never keep a test process alive (Node timers have unref; browsers ignore it).
+    if (refreshTimer && typeof refreshTimer.unref === 'function') refreshTimer.unref();
+  }
+}
+
+// pendingWork reports a console node or an enrollment still in progress.
+export function pendingWork(domains, keys) {
+  const nodes = ((domains && domains.domains) || []).some((d) => !d.conflict && d.state !== 'ready');
+  return nodes || (keys || []).some((k) => k.waiting);
+}
+
+// editing reports whether the operator is typing in a card.
+function editing(slot) {
+  const active = globalThis.document && document.activeElement;
+  if (active && typeof slot.contains === 'function' && slot.contains(active)) return true;
+  return typeof slot.querySelectorAll === 'function' && [...slot.querySelectorAll('input')].some((i) => i.value);
 }
 
 // --- network providers ---
@@ -467,7 +506,8 @@ function tailscaleKeyActions(k, opts) {
   remove.addEventListener('click', () => busy(remove, async () => {
     const ok = await confirmDialog({
       title: 'Remove the Tailscale auth key?',
-      body: [h('p', { text: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.' })],
+      body: [h('p', { text: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.' }),
+        k.external_given ? h('p', { class: 'alert alert-warn', text: 'This run got the key from a flats serve flag or environment variable. Remove that too, or the next start stores the key again.' }) : null],
       confirmLabel: 'Remove', danger: true,
     });
     if (!ok) return;
@@ -601,6 +641,7 @@ function domainRow(d, view, count, opts) {
       login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
       d.url ? extLink(d.url) : null,
       d.conflict ? h('div', { class: 'muted small', text: `Not served: ${d.conflict}. Delete this domain or rename that flat.` }) : null,
+      d.assigned ? h('div', { class: 'warn-text small', text: `The tailnet named this node ${d.assigned}: another machine already uses ${d.name}. Rename or remove that machine in the Tailscale admin console, or use this address.` }) : null,
       d.detail && !login && !d.conflict ? h('div', { class: 'muted small' }, linkify(d.detail)) : null),
     h('td', null, view.pinned ? null : del));
 }

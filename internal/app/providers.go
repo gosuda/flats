@@ -369,11 +369,11 @@ func (h *Host) syncNetbirdConfigurationLocked() { h.syncZrokConfigurationLocked(
 // logged. A connected peer must be disconnected first. When a NetBird
 // provider is granted, its backend runs on the new peer afterwards.
 func (h *Host) ConnectNetbird(ctx context.Context, setupKey string) error {
-	return h.connectNetbird(ctx, setupKey, core.KeySourceConsole)
+	return h.connectNetbird(ctx, setupKey, core.KeySourceConsole, true)
 }
 
 // connectNetbird enrolls the peer and records where the setup key came from.
-func (h *Host) connectNetbird(ctx context.Context, setupKey, source string) error {
+func (h *Host) connectNetbird(ctx context.Context, setupKey, source string, console bool) error {
 	h.pmu.Lock()
 	defer h.pmu.Unlock()
 	dir := h.netbirdOptions.Dir
@@ -384,6 +384,9 @@ func (h *Host) connectNetbird(ctx context.Context, setupKey, source string) erro
 	if _, ok, err := d.LoadAccount(dir); err != nil {
 		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
 	} else if ok {
+		if !console {
+			return errAlreadyConnected
+		}
 		return fmt.Errorf("%w: a NetBird peer is already connected; disconnect it first", core.ErrConflict)
 	}
 	if _, err := d.Enroll(ctx, dir, h.netbirdOptions.ManagementURL, setupKey, h.netbirdOptions.DeviceName); err != nil {
@@ -462,12 +465,17 @@ func (h *Host) DisconnectNetbird(ctx context.Context, force bool) error {
 // is public through zrok. When zrok is granted, its backend runs on the new
 // account afterwards.
 func (h *Host) ConnectZrok(ctx context.Context, token string) error {
-	return h.connectZrok(ctx, token, core.KeySourceConsole)
+	return h.connectZrok(ctx, token, core.KeySourceConsole, true)
 }
 
-// connectZrok connects or replaces the zrok account and records where the
-// token came from.
-func (h *Host) connectZrok(ctx context.Context, token, source string) error {
+// errAlreadyConnected reports that an enrollment found an account or peer
+// connected meanwhile; a start input never replaces one.
+var errAlreadyConnected = errors.New("already connected")
+
+// connectZrok connects the zrok account, or replaces a connected one when
+// replace is set (console actions only), and records where the token came
+// from.
+func (h *Host) connectZrok(ctx context.Context, token, source string, replace bool) error {
 	if h.Config.Zrok.Environment != "" {
 		return fmt.Errorf("%w: zrok.environment points to an environment managed outside Flats; enable it with the zrok CLI", core.ErrConflict)
 	}
@@ -487,6 +495,9 @@ func (h *Host) connectZrok(ctx context.Context, token, source string) error {
 		h.logf("zrok account connected (token from %s)", source)
 		h.recordConnection(ctx, core.HostKeyZrok, source)
 		return h.startZrokLocked(ctx)
+	}
+	if !replace {
+		return errAlreadyConnected
 	}
 	// Replace: the running backend holds the old account; take it down first.
 	wasRunning := h.zrokNet != nil

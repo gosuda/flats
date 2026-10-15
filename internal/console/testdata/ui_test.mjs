@@ -947,7 +947,7 @@ await tick();
 await tick();
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'PUT /console/api/keys/tailscale').body), { key: 'tskey-auth-abc' });
 assert.equal(tsInput.value, '', 'the key is cleared from the form');
-routes['GET /console/api/keys'] = { keys: [{ id: 'tailscale', set: true, managed: true, source: 'env', updated_at: '2026-10-01T00:00:00Z', external_differs: true }, KEYS[1], KEYS[2]] };
+routes['GET /console/api/keys'] = { keys: [{ id: 'tailscale', set: true, managed: true, source: 'env', updated_at: '2026-10-01T00:00:00Z', external_differs: true, external_given: true }, KEYS[1], KEYS[2]] };
 routes['DELETE /console/api/keys/tailscale'] = { keys: KEYS };
 const tsMain2 = new Element('main');
 settingsPage.mount(tsMain2, [], ctx);
@@ -960,6 +960,7 @@ byText(tsKey2, 'Remove key')[0].dispatch('click');
 await tick();
 const removeDialog = all(document.body, (e) => e.tagName === 'DIALOG').pop();
 assert.ok(removeDialog.textContent.includes('interactive login'));
+assert.ok(removeDialog.textContent.includes('the next start stores the key again'), 'removing a key given at start warns that it comes back');
 removeDialog.close('ok');
 await tick();
 assert.ok(calls.some((c) => c.key === 'DELETE /console/api/keys/tailscale'), 'the key is removed after confirmation');
@@ -977,7 +978,8 @@ assert.ok(domCard.textContent.includes('Turn Tailscale on'), 'adding needs Tails
 assert.equal(all(domCard, (e) => e.tagName === 'FORM').length, 0);
 routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', pending_approvals: 2, etag: 'etag-7',
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true },
-    { name: 'blog', conflict: 'used by the flat "blog"' }],
+    { name: 'blog', conflict: 'used by the flat "blog"' },
+    { name: 'admin', assigned: 'admin-1', url: 'https://admin-1.tail1234.ts.net', state: 'ready' }],
   retiring: [{ name: 'old', error: 'logout refused' }] };
 routes['POST /console/api/console-domains'] = { etag: 'etag-8' };
 routes['DELETE /console/api/console-domains/blog'] = { etag: 'etag-8', redirect: '' };
@@ -987,6 +989,7 @@ await tick();
 domCard = byId(domMain, 'console-domains');
 assert.ok(domCard.textContent.includes('this page'), 'the domain in use is marked');
 assert.ok(domCard.textContent.includes('used by the flat'), 'a conflict is explained');
+assert.ok(domCard.textContent.includes('The tailnet named this node admin-1'), 'a renamed node is explained');
 assert.ok(domCard.textContent.includes('Being removed') && domCard.textContent.includes('logout refused'), 'a failed logout is listed');
 assert.equal(all(domCard, (e) => e.tagName === 'A').some((e) => e.getAttribute('href') === 'https://flats.tail1234.ts.net/'), true, 'a domain links to its console');
 const nameInput = byId(domCard, 'console-domain-name');
@@ -998,11 +1001,11 @@ const addCall = calls.find((c) => c.key === 'POST /console/api/console-domains')
 assert.deepEqual(JSON.parse(addCall.body), { name: 'admin' });
 assert.equal(addCall.headers['If-Match'], '"etag-7"', 'adding is guarded by the settings ETag');
 const delButtons = all(domCard, (e) => e.tagName === 'BUTTON' && e.textContent === 'Delete');
-assert.equal(delButtons.length, 2);
+assert.equal(delButtons.length, 3);
 delButtons[1].dispatch('click');
 await tick();
 const delDialog = all(document.body, (e) => e.tagName === 'DIALOG').pop();
-assert.ok(delDialog.textContent.includes('Remaining: flats.'), 'the remaining names are listed');
+assert.ok(delDialog.textContent.includes('Remaining: flats, admin.'), 'the remaining names are listed');
 assert.ok(delDialog.textContent.includes('2 approvals waiting'), 'pending approvals are mentioned');
 delDialog.close('ok');
 await tick();
@@ -1019,6 +1022,10 @@ const lastDel = all(byId(domMain, 'console-domains'), (e) => e.tagName === 'BUTT
 assert.equal(lastDel.getAttribute('disabled'), '', 'the last domain is deleted only from the loopback console');
 assert.ok(lastDel.getAttribute('title').includes('loopback'));
 routes['GET /console/api/console-domains'] = DOMAINS;
+// The cards refresh only while a node or an enrollment is still pending.
+assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }, [{ id: 'zrok' }]), false);
+assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'starting' }] }, []), true);
+assert.equal(settingsPage.pendingWork({ domains: [] }, [{ id: 'netbird', waiting: true }]), true);
 
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over

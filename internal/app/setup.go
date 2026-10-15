@@ -528,15 +528,17 @@ func legacyHostValues(o Options) (map[string]string, []string) {
 // --console-host name (default flats) on the tailnet when the private
 // backend is Tailscale and tsnet accepts the name, else none.
 func legacyConsoleHosts(o Options, backend string) ([]string, string) {
+	// An explicit empty name never served a console; only an absent flag
+	// means the default.
 	name := o.ConsoleHost
-	if !o.Set["console-host"] || name == "" {
+	if !o.Set["console-host"] {
 		name = "flats"
 	}
 	if backend != "tailscale" {
 		return []string{}, ""
 	}
 	if !config.ConsoleHostRE.MatchString(name) {
-		return []string{}, fmt.Sprintf("--console-host %s is not a tailnet host name, so the console never ran on the tailnet; tailscale.console_hosts stays empty", name)
+		return []string{}, fmt.Sprintf("--console-host %q is not a tailnet host name, so the console never ran on the tailnet; tailscale.console_hosts stays empty", name)
 	}
 	return []string{name}, ""
 }
@@ -765,10 +767,14 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 
 	// The key itself is read at the first start, which stores it in flats.db
 	// and removes the path again.
-	if o.AuthKeyFile != "" {
-		if err := doc.SetDeprecated("credentials.tailscale_authkey_file", o.AuthKeyFile); err != nil {
-			return nil, actionf("--authkey-file cannot be stored in config.json: %v", err)
+	for _, f := range []struct{ flag, path string }{{"tailscale-authkey-file", o.TailscaleKeyFile}, {"authkey-file", o.AuthKeyFile}} {
+		if !o.Set[f.flag] || f.path == "" {
+			continue
 		}
+		if err := doc.SetDeprecated("credentials.tailscale_authkey_file", f.path); err != nil {
+			return nil, actionf("--%s cannot be stored in config.json: %v", f.flag, err)
+		}
+		break
 	}
 	if o.Set["operator-credential-file"] && o.OperatorCredentialFile != "" {
 		if err := set("credentials.operator_file", o.OperatorCredentialFile, "--operator-credential-file"); err != nil {

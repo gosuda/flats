@@ -197,6 +197,7 @@ type KeyInfo struct {
 	Source          string     `json:"source,omitempty"`  // console, cli, flag, env, config or unknown
 	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 	ExternalDiffers bool       `json:"external_differs,omitempty"`
+	ExternalGiven   bool       `json:"external_given,omitempty"` // this run got the key from a flag or environment variable, which seeds it again if it is removed
 	LastError       string     `json:"last_error,omitempty"`
 	EnvironmentID   string     `json:"environment_id,omitempty"` // zrok
 	APIEndpoint     string     `json:"api_endpoint,omitempty"`   // zrok
@@ -219,7 +220,7 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 		byID[r.ID] = r
 	}
 	h.keyMu.Lock()
-	differs := h.tsKeyDiffers
+	differs, given := h.tsKeyDiffers, h.tsKeyExternal != ""
 	enrollErr := maps.Clone(h.enrollErr)
 	h.keyMu.Unlock()
 	out := make([]KeyInfo, 0, len(core.HostKeyIDs))
@@ -236,7 +237,7 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 		switch id {
 		case core.HostKeyTailscale:
 			k.Set = has && row.HasValue()
-			k.ExternalDiffers = differs
+			k.ExternalDiffers, k.ExternalGiven = differs, given
 		case core.HostKeyZrok:
 			k.Managed = h.Config.Zrok.Environment == ""
 			a, err := zrok.Describe(h.zrokOptions.Environment)
@@ -318,9 +319,24 @@ func (h *Host) currentTailscaleKey(ctx context.Context) (string, error) {
 
 // recordConnection notes in flats.db how a zrok account or NetBird peer was
 // connected, without the key: an enrollment's value is never kept after it.
+// It runs after the connection succeeded and must not fail it; a waiting
+// value it could not clear is cleared at the next start (clearConnected).
 func (h *Host) recordConnection(ctx context.Context, id, source string) {
-	if err := h.Store.PutHostKey(ctx, store.HostKey{ID: id, Source: source, UpdatedAt: time.Now()}); err != nil {
-		h.logf("record the %s connection: %v", id, err)
+	if err := h.Store.PutHostKey(context.WithoutCancel(ctx), store.HostKey{ID: id, Source: source, UpdatedAt: time.Now()}); err != nil {
+		h.logf("record the %s connection: %v; the waiting key is removed at the next start", id, err)
+	}
+}
+
+// clearConnected removes the value of a waiting enrollment whose account or
+// peer is connected, keeping where it came from.
+func (h *Host) clearConnected(ctx context.Context, id string) {
+	r, err := h.Store.GetHostKey(ctx, id)
+	if err != nil || !r.HasValue() {
+		return
+	}
+	r.Nonce, r.Ciphertext, r.LastError = nil, nil, ""
+	if err := h.Store.PutHostKey(ctx, r); err != nil {
+		h.logf("remove the used %s key: %v", id, err)
 	}
 }
 
@@ -339,7 +355,7 @@ func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
 	for _, e := range []struct {
 		id      string
 		input   keyInput
-		connect func(context.Context, string, string) error
+		connect func(context.Context, string, string, bool) error
 		usable  func() (connected bool, why string)
 	}{
 		{core.HostKeyZrok, in.zrok, h.connectZrok, h.zrokEnrollable},
@@ -365,15 +381,22 @@ func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
 				h.logf("%s is ignored: %s is already connected; replace or disconnect it in the console", e.input.from, e.id)
 			}
 			if waiting {
-				h.logf("a waiting %s key from `flats key set` is ignored: %s is already connected", e.id, e.id)
+				h.logf("a waiting %s key is not needed: %s is already connected", e.id, e.id)
+				h.clearConnected(ctx, e.id)
 			}
 			continue
 		case why != "":
 			h.logf("warning: the %s key is ignored: %s", e.id, why)
 			continue
 		}
-		err := e.connect(ctx, value, source)
+		// A start input never replaces an account or peer connected meanwhile.
+		err := e.connect(ctx, value, source, false)
 		switch {
+		case errors.Is(err, errAlreadyConnected):
+			h.logf("%s connected meanwhile; the key from %s is not used", e.id, source)
+			if waiting {
+				h.clearConnected(ctx, e.id)
+			}
 		case err == nil:
 			h.logf("%s connected with the key from %s", e.id, source)
 		case waiting:

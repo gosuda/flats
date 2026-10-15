@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -144,7 +145,7 @@ func TestResolveTailscaleKeySeeds(t *testing.T) {
 	dir, st := openKeyStore(t)
 	ctx := context.Background()
 	var logs []string
-	logf := func(f string, a ...any) { logs = append(logs, f) }
+	logf := func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
 	key, differs, err := resolveTailscaleKey(ctx, dir, st, keyInput{}, time.Now(), logf)
 	if err != nil || key != "" || differs {
 		t.Fatalf("empty: %q %v %v", key, differs, err)
@@ -171,9 +172,14 @@ func TestResolveTailscaleKeySeeds(t *testing.T) {
 	if key != keyB || differs {
 		t.Fatalf("same value: %q %v", key, differs)
 	}
+	if len(logs) == 0 {
+		t.Fatal("nothing was logged")
+	}
 	for _, l := range logs {
-		if strings.Contains(l, "tskey") {
-			t.Fatalf("a key reached the log: %q", l)
+		for _, k := range []string{keyA, keyB} {
+			if strings.Contains(l, k) {
+				t.Fatalf("a key reached the log: %q", l)
+			}
 		}
 	}
 }

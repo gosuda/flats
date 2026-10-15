@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -182,9 +183,11 @@ func (h *Host) ConsoleURLs() []string {
 	return out
 }
 
-// startConsoleDomains retires console nodes no longer listed and serves the
-// listed ones. A listed name a flat, preview or redirect already uses is not
-// served: tsnet would hand that node to the console.
+// startConsoleDomains retires console nodes no longer listed, or still being
+// retired, and serves the listed ones. A listed name a flat, preview or
+// redirect already uses is not served: tsnet would hand that node to the
+// console. A listed name whose earlier logout has not finished is served only
+// once that logout succeeds, with a new identity.
 func (h *Host) startConsoleDomains(ctx context.Context) error {
 	nodes, err := h.Store.ListConsoleNodes(ctx)
 	if err != nil {
@@ -195,10 +198,12 @@ func (h *Host) startConsoleDomains(ctx context.Context) error {
 		h.setOwned(n.Name, true)
 	}
 	ts := h.tailnet()
+	retiring := map[string]bool{}
 	for _, n := range nodes {
-		if slices.Contains(list, n.Name) {
+		if slices.Contains(list, n.Name) && !n.Retiring {
 			continue
 		}
+		retiring[n.Name] = true
 		if ts == nil {
 			h.logf("console domain %s was removed; its tailnet node is logged out once Tailscale is on again", n.Name)
 			continue
@@ -210,41 +215,67 @@ func (h *Host) startConsoleDomains(ctx context.Context) error {
 		}
 		name := n.Name
 		h.background(func(ctx context.Context) {
+			h.cdMu.Lock()
+			defer h.cdMu.Unlock()
 			if err := h.retireConsoleNode(ctx, name); err != nil {
 				h.logf("console domain %s: log out its tailnet node: %v; retried at the next start", name, err)
+				return
+			}
+			// Listed again (offline) while its logout was unfinished: serve it now.
+			if slices.Contains(h.consoleHostList(), name) {
+				if err := h.serveConsoleDomain(ctx, name); err != nil {
+					h.logf("console domain %s: %v", name, err)
+				}
 			}
 		})
 	}
 	for _, name := range list {
-		if ts == nil {
+		switch {
+		case ts == nil:
 			h.setServed(name, false, "Tailscale is not running")
-			continue
+		case retiring[name]:
+			h.setServed(name, false, "its previous tailnet node is still being logged out")
+		default:
+			if err := h.serveConsoleDomain(ctx, name); err != nil {
+				h.logf("console domain %s: %v", name, err)
+			}
 		}
-		holder, err := h.Svc.ConsoleNameHolder(ctx, name)
-		if err != nil {
-			return err
-		}
-		if holder != "" {
-			h.logf("warning: console domain %s is not served: %s uses that name; delete the domain or rename that flat", name, holder)
-			h.setServed(name, false, "used by "+holder)
-			continue
-		}
-		if err := h.Store.PutConsoleNode(ctx, store.ConsoleNode{Name: name}); err != nil {
-			return err
-		}
-		h.setOwned(name, true)
-		if _, err := ts.Serve(ctx, name, h.consoleHandler(name), false); err != nil {
-			h.logf("console domain %s: %v", name, err)
-			h.setServed(name, false, err.Error())
-			continue
-		}
-		h.setServed(name, true, "")
 	}
+	return nil
+}
+
+// serveConsoleDomain records and serves the node of a listed name, unless a
+// flat, preview or redirect uses that name.
+func (h *Host) serveConsoleDomain(ctx context.Context, name string) error {
+	ts := h.tailnet()
+	if ts == nil {
+		h.setServed(name, false, "Tailscale is not running")
+		return nil
+	}
+	holder, err := h.Svc.ConsoleNameHolder(ctx, name)
+	if err != nil {
+		return err
+	}
+	if holder != "" {
+		h.logf("warning: console domain %s is not served: %s uses that name; delete the domain or rename that flat", name, holder)
+		h.setServed(name, false, "used by "+holder)
+		return nil
+	}
+	if err := h.Store.PutConsoleNode(ctx, store.ConsoleNode{Name: name}); err != nil {
+		return err
+	}
+	h.setOwned(name, true)
+	if _, err := ts.Serve(ctx, name, h.consoleHandler(name), false); err != nil {
+		h.setServed(name, false, err.Error())
+		return err
+	}
+	h.setServed(name, true, "")
 	return nil
 }
 
 // retireConsoleNode logs a console node out and deletes its identity and
 // record. On failure the record stays, marked retiring, with the error.
+// h.cdMu is held, so retirements and domain changes do not interleave.
 func (h *Host) retireConsoleNode(ctx context.Context, name string) error {
 	ts := h.tailnet()
 	if ts == nil {
@@ -265,9 +296,45 @@ func (h *Host) retireConsoleNode(ctx context.Context, name string) error {
 	return nil
 }
 
+// consoleReady reports whether a console domain is served and its node is
+// ready, so a browser sent there finds the console.
+func (h *Host) consoleReady(name string) bool {
+	ts := h.tailnet()
+	if ts == nil || !h.isServed(name) {
+		return false
+	}
+	for _, hi := range ts.Status().Hosts {
+		if hi.Host == name {
+			return hi.State == "ready"
+		}
+	}
+	return false
+}
+
+// requestOnLoopback reports whether a request reached the management
+// listener on a loopback address, as opposed to a console domain or a
+// management address on another interface. Calls without a request (tests,
+// the host itself) count as loopback.
+func requestOnLoopback(ctx context.Context) bool {
+	if _, ok := consoleDomainFrom(ctx); ok {
+		return false
+	}
+	la, ok := ctx.Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok || la == nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(la.String())
+	if err != nil {
+		host = la.String()
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
 // ConsoleDomainInfo is one console domain as the console shows it.
 type ConsoleDomainInfo struct {
 	Name     string `json:"name"`
+	Assigned string `json:"assigned,omitempty"` // the tailnet's name, when it differs (e.g. flats-1)
 	URL      string `json:"url,omitempty"`
 	State    string `json:"state,omitempty"`  // the node's state while served
 	Detail   string `json:"detail,omitempty"` // e.g. a login link
@@ -295,7 +362,7 @@ func (h *Host) consoleDomains(ctx context.Context) (ConsoleDomainsView, error) {
 	list, pin := h.Svc.ConsoleHosts()
 	v := ConsoleDomainsView{Domains: []ConsoleDomainInfo{}, Retiring: []ConsoleDomainInfo{}, Pinned: pin, ETag: h.Svc.SettingsETag()}
 	v.Via, _ = consoleDomainFrom(ctx)
-	v.Loopback = v.Via == ""
+	v.Loopback = requestOnLoopback(ctx)
 	ts := h.tailnet()
 	v.TailscaleOn = ts != nil && slices.Contains(h.Svc.PermittedNetworks(), "tailscale")
 	states := map[string]core.HostInfo{}
@@ -316,6 +383,11 @@ func (h *Host) consoleDomains(ctx context.Context) (ConsoleDomainsView, error) {
 			d.State, d.Detail = hi.State, hi.Detail
 			if d.URL == "" {
 				d.URL = hi.URL
+			}
+		}
+		if u, err := url.Parse(d.URL); err == nil && u.Hostname() != "" && !strings.Contains(u.Hostname(), "<") {
+			if first, _, _ := strings.Cut(u.Hostname(), "."); first != name {
+				d.Assigned = first
 			}
 		}
 		v.Domains = append(v.Domains, d)
@@ -425,29 +497,47 @@ func (h *Host) deleteConsoleDomain(ctx context.Context, name, ifMatch string) (D
 		}
 		return DeleteResult{ETag: h.Svc.SettingsETag()}, nil
 	}
-	via, fromDomain := consoleDomainFrom(ctx)
-	if fromDomain && len(list) == 1 {
+	via, _ := consoleDomainFrom(ctx)
+	next := slices.DeleteFunc(slices.Clone(list), func(n string) bool { return n == name })
+	if len(next) == 0 && !requestOnLoopback(ctx) {
 		return DeleteResult{}, fmt.Errorf("%w: %s is the console's last Tailscale domain; add another one first, or delete it from the console on the loopback address", core.ErrConflict, name)
 	}
-	next := slices.DeleteFunc(slices.Clone(list), func(n string) bool { return n == name })
+	redirect := ""
+	if via == name {
+		// The page moves to a remaining domain that already answers.
+		for _, n := range next {
+			if h.consoleReady(n) {
+				redirect = h.consoleURLOf(n)
+				break
+			}
+		}
+		if redirect == "" {
+			return DeleteResult{}, fmt.Errorf("%w: no other console domain is ready yet; wait until one is, or delete %s from another console address", core.ErrConflict, name)
+		}
+	}
 	etag, err := h.Svc.SetConsoleHosts(next, ifMatch)
 	if err != nil {
 		return DeleteResult{}, err
 	}
+	h.logf("console domain %s deleted from the console", name)
+	res := DeleteResult{ETag: etag, Redirect: redirect}
+	h.cdNamesMu.Lock()
+	owned := h.cd.owned[name]
+	h.cdNamesMu.Unlock()
+	if !owned {
+		// Never served (its name was in use elsewhere): there is no node of
+		// the console to log out, and the name's owner keeps its own.
+		h.setServed(name, false, "")
+		return res, nil
+	}
 	if err := h.Store.PutConsoleNode(ctx, store.ConsoleNode{Name: name, Retiring: true}); err != nil {
 		h.logf("console domain %s: mark retiring: %v", name, err)
 	}
-	h.logf("console domain %s deleted from the console", name)
-	res := DeleteResult{ETag: etag}
-	if fromDomain && via == name {
-		for _, n := range next {
-			if u := h.consoleURLOf(n); u != "" {
-				res.Redirect = u
-				break
-			}
-		}
+	if via == name {
 		res.After = func() {
 			h.background(func(ctx context.Context) {
+				h.cdMu.Lock()
+				defer h.cdMu.Unlock()
 				if err := h.retireConsoleNode(ctx, name); err != nil {
 					h.logf("console domain %s: log out its tailnet node: %v; retry from the console or at the next start", name, err)
 				}

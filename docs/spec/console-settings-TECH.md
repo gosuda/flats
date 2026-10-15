@@ -55,15 +55,17 @@ which needs no `secret.key`.
 
 - Setting both the value and the `_FILE` variable of one key is refused
   (status 78).
-- Every variable in the table, including the legacy `TS_AUTHKEY` and
-  `TS_AUTH_KEY`, is read and then removed from the process environment
-  before any backend or child process starts, whether or not a
-  higher-priority input wins. The embedded Tailscale client falls back to
-  `TS_AUTHKEY`/`TS_AUTH_KEY` when a node has no key, so a key removed in the
-  console would otherwise come back from the environment.
-- Config mode keeps refusing the remaining `TS_*` variables
-  (`TS_CLIENT_SECRET`, `TS_CLIENT_ID`, `TS_ID_TOKEN`, `TS_CONTROL_URL`) when
-  Tailscale is permitted; legacy mode is unchanged for those.
+- Every `FLATS_*` variable in the table is read and then removed from the
+  process environment before any backend or child process starts, whether or
+  not a higher-priority input wins. Legacy mode reads and removes
+  `TS_AUTHKEY` and `TS_AUTH_KEY` the same way: the embedded Tailscale client
+  falls back to them when a node has no key, so a key removed in the console
+  would otherwise come back from the environment.
+- Config mode never reads `TS_*` variables. It refuses all of them
+  (`TS_AUTHKEY`, `TS_AUTH_KEY`, `TS_CLIENT_SECRET`, `TS_CLIENT_ID`,
+  `TS_ID_TOKEN`, `TS_CONTROL_URL`) whenever a Tailscale backend starts: at
+  start when Tailscale is permitted, and when the console turns it on. They
+  therefore never reach tsnet; legacy mode is unchanged for the non-key ones.
 - A file input is read whole and trimmed of surrounding white space. A
   missing or unreadable file, or an empty value, stops the start (status 78).
 - The new flags are added to the config-mode flag allow-list.
@@ -86,14 +88,20 @@ committed removes the key from `config.json` through the config writer
 (keeping history). A crash between the two steps repeats the same idempotent
 import at the next start. A legacy service's `--authkey-file` is handled as
 the flag at start. The legacy migration (also run by `flats install`) still
-records that path as the deprecated key without reading the file
-(`Document.SetDeprecated`), so the first start imports it, and the per-start
+records that path, or a `--tailscale-authkey-file` one, as the deprecated key
+without reading the file (`Document.SetDeprecated`), so the first start
+imports it. `flats install` refuses `--zrok-token-file` and
+`--netbird-setup-key-file`, which the installed service would lose, and
+points to `flats key set`; and the per-start
 flag comparison no longer checks that flag.
 
 zrok and NetBird (rule 7): the highest-priority value (flag, environment,
 then a waiting row) is used only when no account or peer is connected. The
 host starts normally and connects in the background afterwards through the
-existing `ConnectZrok` and `ConnectNetbird` paths. Success clears the value
+existing connect paths, which check the connection again under the provider
+lock and never replace an account or peer connected meanwhile (only a console
+action replaces one). A waiting row whose account or peer is already
+connected has its value cleared, keeping its source. Success clears the value
 and records the source and time; failure keeps a waiting row (an external
 value is not stored) and records `last_error`; the next start retries. When
 `zrok.environment` names an outside environment, or the binary has no
@@ -186,7 +194,9 @@ when the name leaves the list, and deleted once `tsNet.Stop` succeeds.
 
 ### Reservation
 
-Core's reserved names gain a function (`Config.ReservedNames`): the effective
+Preview hosts are reserved the same way: a chosen preview host is held
+against console additions until the preview is registered. Core's reserved
+names gain a function (`Config.ReservedNames`): the effective
 console list plus every `console_nodes` row, and core adds names whose
 addition is in progress. The fixed name `flats` stays reserved for flats but
 may be added as a console domain.
@@ -201,9 +211,12 @@ random name that is reserved.
 
 After core restores flat routes and before the console nodes are served:
 
-1. For each `console_nodes` row not in the effective list: mark it retiring
-   and call `tsNet.Stop` (in the background; failures are recorded and
-   retried at the next start). Without a Tailscale backend the rows wait.
+1. For each `console_nodes` row not in the effective list, or already marked
+   retiring: mark it retiring and call `tsNet.Stop` in the background under
+   the console-domain mutex (failures are recorded and retried at the next
+   start). A retiring name that is listed again is served, with a new
+   identity, only after its logout succeeds. Without a Tailscale backend the
+   rows wait.
 2. For each listed name: if a flat, preview or redirect holds it, it is not
    served and the console shows the conflict; otherwise write its row and
    serve it with `tsNet.Serve(name, handler, false)`, whatever
@@ -228,9 +241,15 @@ Under one console-domain mutex:
 
 ### Deleting (rule 15)
 
-1. Check the ETag and the pin. Refuse the last name when the request came
-   through a console domain; the loopback console may empty the list.
-2. Save the list without the name. Nothing has changed if this fails.
+1. Check the pin. Emptying the list is refused unless the request reached the
+   management listener on a loopback address (judged from the connection's
+   local address, so a management address on another interface does not
+   count). Deleting the domain the request came through is refused unless
+   another listed domain is served and ready.
+2. Save the list without the name (ETag-guarded). Nothing has changed if
+   this fails. A name that was never served (a conflict) has no console node:
+   it is only removed from the list, and the node of whatever owns the name
+   is left alone.
 3. Mark the row retiring and call `tsNet.Stop`. On success delete the row; on
    failure keep it, record the error and return it; a later delete of the same
    name, or the next start, retries.

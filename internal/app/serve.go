@@ -741,7 +741,6 @@ func (h *Host) Close() error {
 				collect("management close", h.srv.Close())
 			}
 		}
-		h.bg.Wait()
 		if h.Svc != nil {
 			collect("core shutdown", h.Svc.Close())
 		}
@@ -774,6 +773,9 @@ func (h *Host) Close() error {
 		if h.localNet != nil && h.Private != h.localNet {
 			collect("local shutdown", h.localNet.Close())
 		}
+		// Background work may wait on a console request served by a network
+		// closed above; it needs the store until it returns.
+		h.bg.Wait()
 		if h.Store != nil {
 			collect("store shutdown", h.Store.Close())
 		}

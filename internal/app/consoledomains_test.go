@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -261,20 +263,151 @@ func TestConsoleDomainFailedLogout(t *testing.T) {
 	}
 }
 
-// A failed save after the node started stops it again.
+// A failed save after the node started stops it again, and the name is free.
 func TestConsoleDomainAddRollsBack(t *testing.T) {
 	h, tail, _ := tailnetHost(t)
 	ctx := context.Background()
 	tail.serveErr = errors.New("teardown still pending")
-	if _, err := h.AddConsoleDomain(ctx, "x", ""); !errors.Is(err, core.ErrConflict) {
+	if _, err := h.AddConsoleDomain(ctx, "rolled", ""); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("serve error: %v", err)
 	}
 	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 0 || len(hosts(h)) != 0 {
 		t.Fatalf("left behind: %+v %v", nodes, hosts(h))
 	}
 	tail.serveErr = nil
-	if _, err := h.Svc.CreateFlat(ctx, "xyz", "", core.ViaAPI); err != nil {
+	// config.json changed on disk: the save fails after the node started.
+	raw, err := os.ReadFile(h.ConfigPath)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.ConfigPath, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.AddConsoleDomain(ctx, "rolled", ""); err == nil {
+		t.Fatal("added although config.json changed on disk")
+	}
+	if tail.isServed("rolled") || !slices.Contains(tail.stopped(), "rolled") {
+		t.Fatalf("node not stopped after the failed save: stops %v", tail.stopped())
+	}
+	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 0 {
+		t.Fatalf("record left: %+v", nodes)
+	}
+	if err := os.WriteFile(h.ConfigPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Svc.CreateFlat(ctx, "rolled", "", core.ViaAPI); err != nil {
+		t.Fatalf("name not released: %v", err)
+	}
+}
+
+// Deleting a domain that was never served (its name belongs to a flat) only
+// removes it from the list: the flat's tailnet node is left alone.
+func TestConsoleDomainDeleteConflictKeepsTheFlatsNode(t *testing.T) {
+	h, tail, _ := tailnetHost(t)
+	ctx := context.Background()
+	if _, err := h.Svc.CreateFlat(ctx, "blog", "", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Svc.SetConsoleHosts([]string{"keep", "blog"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.startConsoleDomains(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "blog", ""); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(tail.stopped(), "blog") || !slices.Equal(hosts(h), []string{"keep"}) {
+		t.Fatalf("stops %v list %v", tail.stopped(), hosts(h))
+	}
+}
+
+// A name listed again offline while its old node's logout is unfinished is
+// served only after that logout succeeds.
+func TestConsoleDomainRetiringAndListedAtStart(t *testing.T) {
+	h, tail, _ := tailnetHost(t)
+	ctx := context.Background()
+	if err := h.Store.PutConsoleNode(ctx, store.ConsoleNode{Name: "again", Retiring: true, LastError: "logout refused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Svc.SetConsoleHosts([]string{"again"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	tail.mu.Lock()
+	tail.stopErr["again"] = errors.New("logout refused")
+	tail.mu.Unlock()
+	if err := h.startConsoleDomains(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return slices.Contains(tail.stopped(), "again") })
+	if tail.isServed("again") {
+		t.Fatal("served before its old node was logged out")
+	}
+	tail.mu.Lock()
+	delete(tail.stopErr, "again")
+	tail.mu.Unlock()
+	if err := h.startConsoleDomains(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return tail.isServed("again") })
+	if nodes, _ := h.Store.ListConsoleNodes(ctx); len(nodes) != 1 || nodes[0].Retiring {
+		t.Fatalf("nodes = %+v", nodes)
+	}
+}
+
+// Deleting the domain a request came through needs another ready domain.
+func TestConsoleDomainSelfDeleteNeedsReadyDomain(t *testing.T) {
+	h, _, _ := tailnetHost(t)
+	ctx := context.Background()
+	if _, err := h.Svc.CreateFlat(ctx, "blog", "", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.AddConsoleDomain(ctx, "admin", ""); err != nil {
+		t.Fatal(err)
+	}
+	// blog is listed but not served: it belongs to a flat.
+	if _, err := h.Svc.SetConsoleHosts([]string{"admin", "blog"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	h.setServed("blog", false, "used by the flat")
+	if _, _, _, err := h.DeleteConsoleDomain(viaDomain("admin"), "admin", ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("self delete without a ready domain: %v", err)
+	}
+	if !slices.Contains(hosts(h), "admin") {
+		t.Fatal("the list changed")
+	}
+}
+
+// Only a request on a loopback address may empty the list.
+func TestRequestOnLoopback(t *testing.T) {
+	for addr, want := range map[string]bool{"127.0.0.1:7878": true, "[::1]:7878": true, "192.168.0.10:7878": false, "100.64.1.2:7878": false} {
+		la, _ := net.ResolveTCPAddr("tcp", addr)
+		ctx := context.WithValue(context.Background(), http.LocalAddrContextKey, la)
+		if got := requestOnLoopback(ctx); got != want {
+			t.Errorf("%s: %v", addr, got)
+		}
+	}
+	if requestOnLoopback(viaDomain("flats")) {
+		t.Error("a console domain request counted as loopback")
+	}
+	h, _, _ := tailnetHost(t)
+	if _, err := h.AddConsoleDomain(context.Background(), "only", ""); err != nil {
+		t.Fatal(err)
+	}
+	lan, _ := net.ResolveTCPAddr("tcp", "192.168.0.10:7878")
+	if _, _, _, err := h.DeleteConsoleDomain(context.WithValue(context.Background(), http.LocalAddrContextKey, lan), "only", ""); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("emptying the list from a LAN address: %v", err)
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not reached")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

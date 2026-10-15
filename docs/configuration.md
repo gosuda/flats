@@ -262,7 +262,11 @@ one, point agents at it (`flats connect`), then delete the old one.
   logout that fails keeps the name reserved; the console lists it and retries
   on request, and the next start retries it.
 - A listed name that a flat, preview or redirect already uses is not served;
-  the console shows the conflict.
+  the console shows the conflict, and deleting it leaves that owner's node
+  alone. A name listed again while its old node is still being logged out is
+  served once that logout succeeds.
+- Deleting the name the page is open on needs another console domain that is
+  ready. Emptying the list needs the console on a loopback address.
 - Approval links and `console_url` / `mcp_url` in `flats status` use the
   console domain the request came through, else the first listed name, else
   the loopback address. `console_urls` lists every served name.

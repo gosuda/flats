@@ -257,6 +257,25 @@ func TestLegacyPlanSettings(t *testing.T) {
 	if err != nil || c.Host.ManagementAddr != "localhost:80" || c.Host.LocalAddr != ":7999" || len(c.Tailscale.ConsoleHosts) != 0 || len(notes) != 1 {
 		t.Fatalf("host flags: %+v notes=%q %v", c.Host, notes, err)
 	}
+	// --console-host named a tailnet console only with --network tailscale,
+	// and only a name tsnet accepted; an explicit empty name never served.
+	for _, tt := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"--network", "tailscale"}, []string{"flats"}},
+		{[]string{"--network", "tailscale", "--console-host", "admin"}, []string{"admin"}},
+		{[]string{"--network", "tailscale", "--console-host", ""}, []string{}},
+		{[]string{"--network", "tailscale", "--console-host", "My_Console"}, []string{}},
+		{[]string{"--network", "local", "--console-host", "admin"}, []string{}},
+	} {
+		if c, _, err := plan(nil, flags(tt.args...)); err != nil || !slices.Equal(c.Tailscale.ConsoleHosts, tt.want) {
+			t.Errorf("%q: console hosts %q %v", tt.args, c.Tailscale.ConsoleHosts, err)
+		}
+		if got, _ := legacyConsoleHosts(flags(tt.args...), map[bool]string{true: "tailscale", false: "local"}[slices.Contains(tt.args, "tailscale")]); !slices.Equal(got, tt.want) {
+			t.Errorf("%q: compared as %q", tt.args, got)
+		}
+	}
 	c, notes, err = plan(nil, flags("--listen", "nonsense", "--relays", "ftp://bad host"))
 	if err != nil || c.Host.ManagementAddr != "127.0.0.1:7878" || len(c.Portal.Relays) != 0 || len(notes) != 2 {
 		t.Fatalf("unusable flags: %+v %+v notes=%q %v", c.Host, c.Portal, notes, err)

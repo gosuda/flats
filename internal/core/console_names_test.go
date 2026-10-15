@@ -68,16 +68,26 @@ func TestReserveConsoleName(t *testing.T) {
 	}
 }
 
-// Preview hosts never take a console name.
+// Preview hosts never take a console name: a chosen host is reserved until
+// its preview is registered, and console additions of it are refused.
 func TestPreviewHostAvoidsConsoleNames(t *testing.T) {
+	ctx := context.Background()
 	s, _ := newTestService(t)
 	calls := 0
 	s.cfg.ReservedNames = func() []string {
 		calls++
 		return nil
 	}
-	if h := s.previewHost("site"); !strings.HasPrefix(h, "site-") || calls == 0 {
-		t.Fatalf("preview host %q (checks %d)", h, calls)
+	host, release := s.previewHost("site")
+	if !strings.HasPrefix(host, "site-") || calls == 0 {
+		t.Fatalf("preview host %q (checks %d)", host, calls)
+	}
+	if err := s.ReserveConsoleName(ctx, host, func() error { return nil }); !errors.Is(err, ErrConflict) {
+		t.Fatalf("console addition of a preview host being opened: %v", err)
+	}
+	release()
+	if err := s.ReserveConsoleName(ctx, host, func() error { return nil }); err != nil {
+		t.Fatalf("after release: %v", err)
 	}
 }
 

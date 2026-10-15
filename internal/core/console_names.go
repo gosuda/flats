@@ -28,11 +28,28 @@ func (s *Service) consoleNameInUse(name string) bool {
 }
 
 // previewHost returns a new random preview host for slugName that is not a
-// console name.
-func (s *Service) previewHost(slugName string) string {
+// console name, reserved against console domain additions until release is
+// called; the caller releases it once the preview is registered or failed.
+func (s *Service) previewHost(slugName string) (string, func()) {
 	for {
-		if host := slug.PreviewHost(slugName); !s.consoleNameReserved(host) {
-			return host
+		host := slug.PreviewHost(slugName)
+		if s.consoleNameReserved(host) {
+			continue
+		}
+		s.mu.Lock()
+		if s.consoleAdding[host] || s.previewAdding[host] {
+			s.mu.Unlock()
+			continue
+		}
+		if s.previewAdding == nil {
+			s.previewAdding = map[string]bool{}
+		}
+		s.previewAdding[host] = true
+		s.mu.Unlock()
+		return host, func() {
+			s.mu.Lock()
+			delete(s.previewAdding, host)
+			s.mu.Unlock()
 		}
 	}
 }
@@ -83,6 +100,10 @@ func (s *Service) ReserveConsoleName(ctx context.Context, name string, commit fu
 		return fmt.Errorf("%w: %q is used by %s; choose another name", ErrConflict, name, holder)
 	}
 	s.mu.Lock()
+	if s.previewAdding[name] || s.consoleAdding[name] {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: %q is being used by a new preview or console domain; try again", ErrConflict, name)
+	}
 	if s.consoleAdding == nil {
 		s.consoleAdding = map[string]bool{}
 	}

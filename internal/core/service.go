@@ -127,6 +127,9 @@ type Service struct {
 	// consoleAdding holds console domains whose addition is in progress;
 	// guarded by mu.
 	consoleAdding map[string]bool
+	// previewAdding holds preview hosts chosen but not yet registered;
+	// guarded by mu.
+	previewAdding map[string]bool
 	quotaWarned   map[string]time.Time
 	stop          chan struct{}
 	wg            sync.WaitGroup
@@ -1983,7 +1986,8 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 	} else if len(ps) >= maxPreviews {
 		return PreviewView{}, fmt.Errorf("%w: %d previews are already open; close one first", ErrConflict, len(ps))
 	}
-	host := s.previewHost(slugName)
+	host, release := s.previewHost(slugName)
+	defer release()
 	dataDir := filepath.Join(s.flatDir(slugName), "previews", host)
 	if v.Kind == "server" {
 		if quota := s.diskQuota(); quota > 0 {

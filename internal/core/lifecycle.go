@@ -1242,7 +1242,8 @@ func (s *Service) openDraftPreviewLocked(ctx context.Context, slugName string) (
 	} else if len(ps) >= maxPreviews {
 		return PreviewView{}, fmt.Errorf("%w: %d previews are already open; close one first", ErrConflict, len(ps))
 	}
-	host := s.previewHost(slugName)
+	host, release := s.previewHost(slugName)
+	defer release()
 	dataDir := filepath.Join(s.flatDir(slugName), "previews", host)
 	if rev.Kind == "server" {
 		if err := snapshotData(s.dataDirOf(slugName), dataDir); err != nil {

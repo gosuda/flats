@@ -581,6 +581,13 @@ func EnsureConfig(ctx context.Context, configPath, dataDir string, serveArgs []s
 	if o.Set["config"] {
 		return "", "", usagef("pass --config to install, not as a serve flag")
 	}
+	// The service runs from config.json alone; a zrok or NetBird key given
+	// only as a flag would be lost, so it goes to flats.db first.
+	for _, f := range []struct{ flag, id string }{{"zrok-token-file", "zrok"}, {"netbird-setup-key-file", "netbird"}} {
+		if o.Set[f.flag] {
+			return "", "", usagef("--%s is not kept by install: store the key with `flats key set %s --from-file PATH` before or after installing", f.flag, f.id)
+		}
+	}
 	c := &configCmd{configFlag: configPath, dataFlag: dataDir}
 	if o.Set["data"] {
 		if dataDir != "" && o.DataDir != mustAbs(dataDir) {
