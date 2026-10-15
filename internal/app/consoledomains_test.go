@@ -240,7 +240,9 @@ func TestConsoleDomainSelfDeleteOverHTTP(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	tail.mu.Lock()
-	tail.onStop = map[string]func(){"a": srv.Close}
+	// Like tsnet's retirement, stopping closes active connections at once, so
+	// a node stopped before the response is out loses the response.
+	tail.onStop = map[string]func(){"a": func() { srv.Config.Close() }}
 	tail.mu.Unlock()
 	req, _ := http.NewRequest("DELETE", srv.URL+"/console/api/console-domains/a", nil)
 	req.Host = "a.tail1234.ts.net"
@@ -256,6 +258,10 @@ func TestConsoleDomainSelfDeleteOverHTTP(t *testing.T) {
 	resp.Body.Close()
 	if err != nil || resp.StatusCode != 200 || out.Redirect != "https://b.tail1234.ts.net" {
 		t.Fatalf("response %d %+v %v", resp.StatusCode, out, err)
+	}
+	// The node is still up when the browser has the answer, and stops after.
+	if slices.Contains(tail.stopped(), "a") {
+		t.Fatal("the node was stopped before the response could reach the browser")
 	}
 	waitFor(t, func() bool { return slices.Contains(tail.stopped(), "a") })
 }
