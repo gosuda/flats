@@ -95,3 +95,65 @@ func TestDocumentQuotaRefusalsUseDocumentModel(t *testing.T) {
 		})
 	}
 }
+
+func TestDocumentSaveRequiresExplicitContent(t *testing.T) {
+	for _, remote := range []bool{false, true} {
+		t.Run(map[bool]string{false: "local", true: "remote"}[remote], func(t *testing.T) {
+			e := newEnvRuntime(t)
+			client := e.local
+			if remote {
+				client = e.remote
+			}
+			ctx := context.Background()
+			raw := func(args map[string]any) (*mcp.CallToolResult, error) {
+				return client.CallTool(ctx, &mcp.CallToolParams{Name: "save_document", Arguments: args})
+			}
+			if r, err := raw(map[string]any{"slug": "required", "markdown": "# Keep"}); err != nil || r.IsError {
+				t.Fatalf("seed document: %+v %v", r, err)
+			}
+			before, err := e.st.GetDraft(ctx, "required")
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := []any{file("index.md", "# Bundle", ""), file("flats.json", `{"type":"docs"}`, "")}
+			for _, args := range []map[string]any{
+				{"slug": "required"},
+				{"slug": "required", "markdown": nil},
+				{"slug": "required", "files": files},
+				{"slug": "required", "replace_bundle": true},
+				{"slug": "required", "replace_bundle": true, "files": []any{}},
+				{"slug": "required", "files": []any{}, "markdown": ""},
+				{"slug": "required", "replace_bundle": true, "files": files, "markdown": ""},
+			} {
+				// Raw SDK calls deliberately bypass the fixture's convenience
+				// helper so absence/null/empty values reach the public schema.
+				r, callErr := raw(args)
+				after, sourceErr := e.st.GetDraft(ctx, "required")
+				doc, liveErr := e.svc.GetDocument(ctx, "required", "index.md")
+				if callErr == nil && (r == nil || !r.IsError) {
+					t.Fatalf("accepted missing or mixed content: %+v; live text %q (error %v), source revision %d -> %d", args, doc.Markdown, liveErr, before.Revision, after.Revision)
+				}
+				if sourceErr != nil || after.Hash != before.Hash || after.Revision != before.Revision {
+					t.Fatalf("refusal changed saved source: %+v %v", after, sourceErr)
+				}
+				if liveErr != nil || doc.Markdown != "# Keep" {
+					t.Fatalf("refusal changed live document: %+v %v", doc, liveErr)
+				}
+			}
+			// Presence, rather than nonempty text, is required: clearing is valid
+			// only when the client explicitly supplies the empty string.
+			if r, err := raw(map[string]any{"slug": "required", "markdown": ""}); err != nil || r.IsError {
+				t.Fatalf("explicit empty text refused: %+v %v", r, err)
+			}
+			if doc, err := e.svc.GetDocument(ctx, "required", "index.md"); err != nil || doc.Markdown != "" {
+				t.Fatalf("intentional clear did not apply: %+v %v", doc, err)
+			}
+			if r, err := raw(map[string]any{"slug": "required", "replace_bundle": true, "files": files}); err != nil || r.IsError {
+				t.Fatalf("explicit files-only bundle refused: %+v %v", r, err)
+			}
+			if doc, err := e.svc.GetDocument(ctx, "required", "index.md"); err != nil || doc.Markdown != "# Bundle" {
+				t.Fatalf("explicit bundle did not apply: %+v %v", doc, err)
+			}
+		})
+	}
+}

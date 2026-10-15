@@ -16,7 +16,7 @@ import (
 
 type SaveDocumentIn struct {
 	Slug          string   `json:"slug"`
-	Markdown      string   `json:"markdown,omitempty"`
+	Markdown      *string  `json:"markdown,omitempty" jsonschema:"required for a single-document save; an explicit empty string intentionally clears the document; omit only for files with replace_bundle true"`
 	Files         []FileIn `json:"files,omitempty" jsonschema:"complete docs bundle, including flats.json with type docs; requires replace_bundle true"`
 	ReplaceBundle bool     `json:"replace_bundle,omitempty" jsonschema:"explicitly replace every document and asset with files; omitted files are deleted"`
 	Title         string   `json:"title,omitempty"`
@@ -25,8 +25,8 @@ type SaveDocumentIn struct {
 }
 
 func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in SaveDocumentIn) (*mcp.CallToolResult, SaveOut, error) {
-	if in.ReplaceBundle || len(in.Files) > 0 {
-		if !in.ReplaceBundle || len(in.Files) == 0 || in.Markdown != "" || in.Path != "" || in.Title != "" {
+	if in.ReplaceBundle || in.Files != nil {
+		if !in.ReplaceBundle || len(in.Files) == 0 || in.Markdown != nil || in.Path != "" || in.Title != "" {
 			return nil, SaveOut{}, toolErr(fmt.Errorf("%w: files requires replace_bundle=true and cannot be combined with markdown, path or title", core.ErrInvalid), "")
 		}
 		raw, err := decodeFiles(in.Files)
@@ -42,13 +42,16 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 		}
 		return t.save(ctx, in.Slug, files, core.SaveMeta{Message: in.Message}, nil)
 	}
+	if in.Markdown == nil {
+		return nil, SaveOut{}, toolErr(fmt.Errorf("%w: markdown is required for a single-document save", core.ErrInvalid), "provide markdown (an empty string intentionally clears the document), or send files with replace_bundle=true")
+	}
 	if in.Path == "" {
 		in.Path = "index.md"
 	}
 	if !fs.ValidPath(in.Path) || !bundle.IsMarkdown(in.Path) {
 		return nil, SaveOut{}, toolErr(fmt.Errorf("%w: path must be a relative .md or .markdown path", core.ErrInvalid), "use index.md or a path inside the bundle")
 	}
-	v, err := t.svc.SaveDocument(ctx, in.Slug, in.Path, in.Markdown, in.Title, core.SaveMeta{Message: in.Message}, core.ViaMCP)
+	v, err := t.svc.SaveDocument(ctx, in.Slug, in.Path, *in.Markdown, in.Title, core.SaveMeta{Message: in.Message}, core.ViaMCP)
 	return t.savedDocument(ctx, in.Slug, in.Path, v, err)
 }
 
