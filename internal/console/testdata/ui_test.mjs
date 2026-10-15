@@ -1178,6 +1178,16 @@ assert.deepEqual(ui.openMenuItems(twoNets).map((i) => [i.label, i.detail, i.href
   ['Open publicly · Portal', 'blog.rly.best/', 'https://blog.rly.best/', 'menu-narrow'],
   ['Open privately · Local', 'blog.localhost:7879/', 'http://blog.localhost:7879/', 'menu-narrow']]);
 assert.deepEqual(ui.openMenuItems({ ...twoNets, visibility: 'private' }).map((i) => i.label), ['Open privately · Local']);
+// Seen from another device (a phone on NetBird), the narrow link skips the
+// Local address, which only opens on the host, for one that opens there.
+const meshNets = { ...blog, visibility: 'private', live_version: 1,
+  endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('netbird', 'http://blog.netbird.cloud/')] };
+globalThis.location = { origin: 'http://flats.netbird.cloud', hostname: 'flats.netbird.cloud' };
+assert.equal(ui.openPrimary(meshNets).getAttribute('href'), 'http://blog.netbird.cloud/', 'a remote viewer gets the NetBird address');
+assert.equal(ui.openPrimary({ ...meshNets, endpoints: [meshNets.endpoints[0]] }).tagName, 'BUTTON', 'with only Local it stays server only');
+assert.ok(ui.SERVER_ONLY.includes('NetBird'), 'the server-only note names NetBird too');
+globalThis.location = { origin: 'http://127.0.0.1:7878' };
+assert.equal(ui.openPrimary(meshNets).getAttribute('href'), 'http://blog.localhost:7879/', 'on the host the first address is kept');
 // Public routes the flat may not use (unpermitted, another flat's, stopped)
 // never become its public button; only the server's public_url backs it.
 const local = ep('local', 'http://blog.localhost:7879/');
