@@ -1029,7 +1029,11 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 	}
 	if quota := s.diskQuota(); quota > 0 {
 		if used := dirSize(s.flatDir(slugName)); used+size > quota {
-			return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Message: fmt.Sprintf("flat would use %d bytes, over its %d-byte disk quota", used+size, quota), Fix: "delete old versions/data, or raise the per-flat disk quota in system settings"}}}
+			fix := "delete old versions/data, or raise the per-flat disk quota in system settings"
+			if docs {
+				fix = documentDiskQuotaFix
+			}
+			return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Message: fmt.Sprintf("flat would use %d bytes, over its %d-byte disk quota", used+size, quota), Fix: fix}}}
 		}
 	}
 	v, err := s.saveDraftLocked(ctx, slugName, files, meta, via)

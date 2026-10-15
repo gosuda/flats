@@ -2,6 +2,10 @@
 
 Status: approved for implementation after independent Claude and Codex GO.
 
+Version-model integration: the former “Versions to keep” row is superseded by
+“Version quota” (default 20, 0 unlimited). Versions are never automatically
+deleted. The revision and pin labels below remain current.
+
 ## Problem and outcome
 
 Settings calls the shared revision and pin limits “Design” limits although

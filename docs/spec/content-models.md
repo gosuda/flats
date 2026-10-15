@@ -203,7 +203,7 @@ These rules apply to the version, revision and pin quotas alike.
 |---|---|---|
 | website (`flat`) | Version | implemented: separate creation/deployment approvals, quota and explicit deletion |
 | page (`page`) | Version | as for websites |
-| document (`docs`) | Revision | revisions, quotas, pins and rollback; saving one document while keeping the others is not implemented |
+| document (`docs`) | Revision | revisions, quotas, pins, rollback and single-document preservation; a person's live edit is not yet checked against the disk quota |
 | design | Revision | implemented |
 
 A flat keeps its first save's type, so its model never changes.

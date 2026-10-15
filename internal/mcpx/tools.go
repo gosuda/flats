@@ -494,7 +494,7 @@ type SaveOut struct {
 	Document string         `json:"doc,omitempty" jsonschema:"save_document: exact Markdown path saved"`
 	Entry    string         `json:"entry,omitempty" jsonschema:"save_document: entry document path; get_document defaults to this"`
 	Draft    api.SavedDraft `json:"draft,omitzero" jsonschema:"websites: the saved Private Draft; absent for documents"`
-	Flat     *FlatInfo      `json:"flat,omitempty" jsonschema:"documents: the document, running at once without publish or approval"`
+	Flat     *FlatInfo      `json:"flat,omitempty" jsonschema:"documents: current metadata when available; saving needs no publish or approval"`
 	// Warnings never block the save (guide topic.design).
 	Warnings []bundle.Problem `json:"warnings,omitempty" jsonschema:"non-blocking page-quality warnings with a fix each; the Draft was saved anyway"`
 }
@@ -589,16 +589,28 @@ func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta
 		meta.ExpectedRevision, meta.CheckRevision = *expected, true
 	}
 	v, err := t.svc.SaveVersion(ctx, slug, files, meta, core.ViaMCP)
-	return t.saved(ctx, slug, files, v, err)
+	return t.saved(ctx, slug, files, v, err, docsBundle(files))
 }
 
-func (t *tools) saved(ctx context.Context, slug string, files []bundle.File, v store.Version, err error) (*mcp.CallToolResult, SaveOut, error) {
+func (t *tools) saved(ctx context.Context, slug string, files []bundle.File, v store.Version, err error, document bool) (*mcp.CallToolResult, SaveOut, error) {
+	// The request identifies refused saves; the captured receipt identifies
+	// successful ones even if the flat is deleted or its slug is reused later.
+	document = document || contenttype.FromManifest(v.Manifest) == contenttype.Docs
 	if err != nil {
 		hint := "no Draft was saved; fix the problem above and save again"
 		if _, ok := bundle.IsValidation(err); ok {
 			hint = "no Draft was saved; fix every listed problem and save again"
 		}
-		if f, ferr := t.svc.GetFlat(ctx, slug); ferr == nil && f.Type == contenttype.Docs && v.Revision > 0 {
+		if document {
+			hint = "no document content was saved; fix the problem above and save again"
+			if _, ok := bundle.IsValidation(err); ok {
+				hint = "no document content was saved; fix every listed problem and save again"
+			}
+			if v.Revision > 0 {
+				hint = "the document save did not complete; check get_flat and get_logs for its current state before retrying"
+			}
+		}
+		if f, ferr := t.svc.GetFlat(ctx, slug); document && ferr == nil && f.Type == contenttype.Docs && v.Revision > 0 {
 			switch {
 			case f.Running:
 				hint = "the running document is unchanged; this save did not become live. Check get_logs, fix the problem and repeat this same save; a sibling-document save will not carry this failed change"
@@ -610,11 +622,14 @@ func (t *tools) saved(ctx context.Context, slug string, files []bundle.File, v s
 		}
 		return nil, SaveOut{}, toolErr(err, hint)
 	}
-	f, _ := t.svc.GetFlat(ctx, slug)
-	if f.Type == contenttype.Docs {
-		fi := flatInfo(f)
-		out := SaveOut{Flat: &fi}
-		return result(documentText("Saved document", fi), out), out, nil
+	f, ferr := t.svc.GetFlat(ctx, slug)
+	if document {
+		out := SaveOut{}
+		if ferr == nil && f.Type == contenttype.Docs {
+			fi := flatInfo(f)
+			out.Flat = &fi
+		}
+		return result(savedDocumentText(slug, out.Flat), out), out, nil
 	}
 	out := SaveOut{Draft: api.SavedDraftFrom(v), Warnings: t.lint(files)}
 	text := fmt.Sprintf("Saved Private Draft revision %d of %s (%d files, %d bytes). Current version is unchanged (%s).", v.Revision, slug, v.Files, v.Size, liveText(f.LiveVersion))

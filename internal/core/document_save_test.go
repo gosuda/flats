@@ -271,6 +271,48 @@ func TestSaveDocumentRefusalsPreserveSource(t *testing.T) {
 	}
 }
 
+func TestSaveDocumentDiskQuotaGuidance(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime, s.cfg.DocsApp = &contentRuntime{}, testDocsApp()
+	ctx := t.Context()
+	if _, err := s.SaveDocument(ctx, "quota-guidance", "index.md", "saved", "", SaveMeta{}, ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.st.GetDraft(ctx, "quota-guidance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"single-document", "complete-bundle"} {
+		t.Run(mode, func(t *testing.T) {
+			if mode == "single-document" {
+				_, err = s.SaveDocument(ctx, "quota-guidance", "index.md", "replacement", "", SaveMeta{}, ViaMCP)
+			} else {
+				_, err = s.SaveVersion(ctx, "quota-guidance", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("replacement")}}, SaveMeta{}, ViaMCP)
+			}
+			validation, ok := bundle.IsValidation(err)
+			if !ok || len(validation.Problems) != 1 || !strings.Contains(validation.Problems[0].Message, "disk quota") {
+				t.Fatalf("disk quota must remain a structured upload validation refusal: %T %v", err, err)
+			}
+			fix := validation.Problems[0].Fix
+			for _, want := range []string{"raise the per-flat disk quota", "reduce document or asset sizes", "complete bundle omitting unwanted files", "retain sibling files and revision history"} {
+				if !strings.Contains(fix, want) {
+					t.Fatalf("missing document-model remedy %q: %s", want, fix)
+				}
+			}
+			if strings.Contains(fix, "old versions") || strings.Contains(fix, "delete_version") || strings.Contains(fix, "versions/data") {
+				t.Fatalf("document refusal recommends unavailable Version tools: %s", fix)
+			}
+			after, err := s.st.GetDraft(ctx, "quota-guidance")
+			if err != nil || after.Hash != before.Hash || after.Revision != before.Revision {
+				t.Fatalf("quota refusal changed saved source: %+v %v", after, err)
+			}
+		})
+	}
+}
+
 func TestSaveDocumentCanShrinkOverLimitSource(t *testing.T) {
 	t.Parallel()
 	t.Run("lowered upload limit", func(t *testing.T) {

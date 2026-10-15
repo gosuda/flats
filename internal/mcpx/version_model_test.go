@@ -84,8 +84,16 @@ func TestDocumentBundleAndSinglePathSaveKeepDistinctContracts(t *testing.T) {
 		t.Fatalf("single-path receipt: %s %+v", text, saved)
 	}
 	var doc core.Document
+	if text, failed := call(t, e.local, "get_document", map[string]any{"slug": "preserved", "doc": "index.md"}, &doc); failed || doc.Markdown != "# Updated" {
+		t.Fatalf("target document was not saved: %s %+v", text, doc)
+	}
 	if text, failed := call(t, e.local, "get_document", map[string]any{"slug": "preserved"}, &doc); failed || doc.Doc != "guide.md" || doc.Markdown != "# Guide" {
 		t.Fatalf("entry/sibling changed by single-path save: %s %+v", text, doc)
+	}
+	draft, err := e.st.GetDraft(context.Background(), "preserved")
+	var manifest struct{ Name, Entry string }
+	if err != nil || json.Unmarshal(draft.Manifest, &manifest) != nil || manifest.Name != "Original" || manifest.Entry != "guide.md" {
+		t.Fatalf("saved manifest lost name/entry: %s %v", draft.Manifest, err)
 	}
 	args["files"] = []any{file("index.md", "# Replacement", ""), file("flats.json", `{"type":"docs"}`, "")}
 	saved = SaveOut{}
@@ -94,6 +102,9 @@ func TestDocumentBundleAndSinglePathSaveKeepDistinctContracts(t *testing.T) {
 	}
 	if text, failed := call(t, e.local, "get_document", map[string]any{"slug": "preserved", "doc": "guide.md"}, nil); !failed || !strings.Contains(text, "document_not_found") {
 		t.Fatalf("explicit bundle kept omitted sibling: %s", text)
+	}
+	if text, failed := call(t, e.local, "get_document", map[string]any{"slug": "preserved"}, &doc); failed || doc.Doc != "index.md" || doc.Markdown != "# Replacement" {
+		t.Fatalf("replacement entry/content incorrect: %s %+v", text, doc)
 	}
 	pending, err := e.svc.ListApprovals(context.Background(), "pending")
 	if err != nil || len(pending) != 0 {

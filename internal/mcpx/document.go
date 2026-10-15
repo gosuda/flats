@@ -10,6 +10,7 @@ import (
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -48,19 +49,33 @@ func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in Sav
 		return nil, SaveOut{}, toolErr(fmt.Errorf("%w: path must be a relative .md or .markdown path", core.ErrInvalid), "use index.md or a path inside the bundle")
 	}
 	v, err := t.svc.SaveDocument(ctx, in.Slug, in.Path, in.Markdown, in.Title, core.SaveMeta{Message: in.Message}, core.ViaMCP)
-	res, out, err := t.saved(ctx, in.Slug, nil, v, err)
+	return t.savedDocument(ctx, in.Slug, in.Path, v, err)
+}
+
+func (t *tools) savedDocument(ctx context.Context, slug, path string, v store.Version, saveErr error) (*mcp.CallToolResult, SaveOut, error) {
+	res, out, err := t.saved(ctx, slug, nil, v, saveErr, true)
 	if err != nil {
 		return res, out, err
 	}
+	out.Document = path
+	details := fmt.Sprintf("Saved path: %s.", path)
 	var m bundle.Manifest
-	if err := json.Unmarshal(v.Manifest, &m); err != nil {
-		return nil, SaveOut{}, toolErr(err, "read get_flat to inspect the saved document")
+	if json.Unmarshal(v.Manifest, &m) == nil && m.Entry != "" {
+		out.Entry = m.Entry
+		details += fmt.Sprintf(" Entry document: %s; get_document without doc reads that entry.", m.Entry)
 	}
-	out.Document, out.Entry = in.Path, m.Entry
-	if out.Flat != nil {
-		res = result(documentText("Saved document", *out.Flat, fmt.Sprintf("Saved path: %s. Entry document: %s; get_document without doc reads that entry.", in.Path, m.Entry)), out)
+	return result(savedDocumentText(slug, out.Flat, details), out), out, nil
+}
+
+func savedDocumentText(slug string, flat *FlatInfo, details ...string) string {
+	if flat != nil {
+		return documentText("Saved document", *flat, details...)
 	}
-	return res, out, nil
+	text := fmt.Sprintf("Saved document %s. This save succeeded, but current metadata is unavailable. Read get_flat to check its current state; do not repeat this save.", slug)
+	for _, detail := range details {
+		text += " " + detail
+	}
+	return text
 }
 
 type GetDocumentIn struct {

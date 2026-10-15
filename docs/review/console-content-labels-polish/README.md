@@ -1,5 +1,10 @@
 # Console content-label verification
 
+These captures record the original public-main console-label change. The
+Version-model integration supersedes their old “Versions to keep” row with
+“Version quota” (default 20, 0 unlimited, no automatic deletion). The screenshots
+remain historical evidence; they do not depict that later quota control.
+
 The implementation follows [the approved spec](../../spec/console-content-labels-polish.md).
 Independent Claude reviews of both the document and code returned GO; Codex
 accepted the scope and verified the result. No required code correction came

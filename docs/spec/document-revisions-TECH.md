@@ -401,7 +401,8 @@ is never deleted.
 
 All run under `lockStorage(slug)`.
 
-- **Docs saves** (`SaveVersion` with a docs manifest: `save_document`,
+- **Docs saves** (`SaveDocument` for a single path, or `SaveVersion` with a
+  docs manifest for an explicit bundle: `save_document`,
   `create_flat {type: docs}`, explicit bundle replacement through
   `save_document`, `flats save-document`, the REST `/document` upload):
   1. When a docs version is running: `intent {kind: agent, label:

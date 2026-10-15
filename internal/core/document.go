@@ -196,6 +196,8 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOf
 	return Document{Format: 1, Doc: doc, Markdown: string(b), Hash: hex.EncodeToString(sum[:]), Source: "draft"}, nil
 }
 
+const documentDiskQuotaFix = "raise the per-flat disk quota to provide room for this save; reduce document or asset sizes, or explicitly save a complete bundle omitting unwanted files; single-document saves retain sibling files and revision history"
+
 // SaveDocument writes one Markdown file, preserving the saved source of every
 // sibling and the existing manifest. Keep source text (not live collaborative
 // text): activating the resulting bundle must retain each sibling's merge base.
@@ -351,7 +353,7 @@ func (s *Service) SaveDocument(ctx context.Context, slugName, path, markdown, ti
 			case strings.Contains(p.Message, "docs bundle exceeds"):
 				p.Fix = "update an existing document, or explicitly save a complete bundle with at most 128 documents; omitted files are deleted"
 			case strings.Contains(p.Message, "disk quota"):
-				p.Fix = "this save preserves other files and history; explicitly delete old versions/data or raise the per-flat disk quota"
+				p.Fix = documentDiskQuotaFix
 			}
 		}
 		return v, &bundle.ValidationError{Problems: problems}
