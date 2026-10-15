@@ -60,7 +60,7 @@ func (t *tools) getDocument(ctx context.Context, _ *mcp.CallToolRequest, in GetD
 		out, err = t.svc.GetDocument(ctx, in.Slug, in.Doc)
 	}
 	if err != nil {
-		return nil, core.Document{}, toolErr(err, "read get_flat for type and Current Draft; doc must be a Markdown path in the bundle")
+		return nil, core.Document{}, toolErr(err, "read get_flat for type; doc must be a Markdown path in the document bundle (omit doc to read the entry)")
 	}
 	return result(out.Markdown, out), out, nil
 }

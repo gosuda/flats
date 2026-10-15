@@ -43,7 +43,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
 		Description: "Request operator approval to activate a saved version (version > 0). Save the Draft as a new version with publish first. Nothing changes before approval. Websites only."}, t.deploy)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft", Annotations: write,
-		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. Saving allocates no version number. Optional deploy=true requests pending version creation; after approval creates vN, call deploy(version=N) to make it live. A docs bundle runs at once instead (topic.docs)."}, t.saveVersion)
+		Description: "Save complete inline build content as a Private Draft; expected_revision detects conflicting edits. Saving allocates no version number. Optional deploy=true requests pending version creation; after approval creates vN, call deploy(version=N) to make it live. This is a complete bundle replacement: omitted files are deleted. A docs bundle runs at once instead (no Draft or publish step); use save_document to change one Markdown path while preserving other files (topic.docs)."}, t.saveVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_draft", Annotations: ro,
 		Description: "Read the current Private Draft revision and hash of a website. Documents have no Draft."}, t.getDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "publish", Annotations: write,

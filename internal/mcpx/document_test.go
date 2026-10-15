@@ -135,8 +135,8 @@ func TestDocumentTools(t *testing.T) {
 				t.Fatal("get_document accepts conflict")
 			}
 			text, failed = call(t, client, "get_document", map[string]any{"slug": slug, "doc": "absent.md"}, nil)
-			if !failed || !strings.Contains(text, `"category":"document_not_found"`) {
-				t.Fatalf("missing document: %s", text)
+			if !failed || !strings.Contains(text, `"category":"document_not_found"`) || !strings.Contains(text, "omit doc to read the entry") || strings.Contains(text, "Draft") {
+				t.Fatalf("missing document or misleading recovery hint: %s", text)
 			}
 		})
 	}
@@ -158,8 +158,13 @@ func TestContentTypesDiscovery(t *testing.T) {
 			if failed || text != out.Markdown || out.Markdown != runtimeref.ContentTypesMarkdown || out.URI != runtimeref.ContentTypesURI || out.DocumentationVersion != "1" || out.UploadLimitBytes != e.svc.UploadLimit() {
 				t.Fatalf("reference: %+v", out)
 			}
-			list, _ := client.ListTools(context.Background(), nil)
+			list, err := client.ListTools(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptions := make(map[string]string)
 			for _, tool := range list.Tools {
+				descriptions[tool.Name] = strings.ToLower(tool.Description)
 				if tool.Name == "get_document" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint) {
 					t.Fatal("live reads must advertise possible non-destructive activation")
 				}
@@ -167,6 +172,18 @@ func TestContentTypesDiscovery(t *testing.T) {
 					t.Fatal("reference tool mutates")
 				}
 			}
+			// All complete-bundle entry points must disclose destructive omission
+			// semantics to agents; the single-document tool preserves siblings.
+			for _, tool := range []string{"save_version", "save_draft", "save_version_from_dir"} {
+				description := descriptions[tool]
+				if !strings.Contains(description, "complete") || !strings.Contains(description, "replac") || !strings.Contains(description, "delet") || !(strings.Contains(description, "omitted") || strings.Contains(description, "omissions")) || !strings.Contains(description, "docs") || !(strings.Contains(description, "runs at once") || strings.Contains(description, "run at once")) {
+					t.Errorf("%s must disclose complete replacement, deletion of omitted files and immediate docs activation: %s", tool, description)
+				}
+			}
+			if description := descriptions["save_document"]; !strings.Contains(description, "preserving other documents") {
+				t.Errorf("single-document preservation guidance missing: %s", description)
+			}
+
 		})
 	}
 	f, _ := e.svc.ListFlats(context.Background())
