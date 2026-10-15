@@ -59,7 +59,8 @@ supported metrics, correct presence/absence of history counts, and unchanged
 flow with synthetic settings. Run `go test -p 1 ./internal/console -run TestConsole -count=1`.
 Also test an unknown type, quota validation labels and saved summaries. After
 independent code review, inspect actual browser rendering and interactions at
-desktop and mobile sizes on a disposable local development server. Public
-screenshots contain only synthetic names/data and no local host details,
+desktop and mobile sizes on a disposable local development server. Keep review
+screenshots outside Git. Any shared screenshots contain only synthetic
+names/data and no local host details,
 private addresses, credentials or internal metadata. Record review outcomes
 and any limitations separately; no production/provider activation.

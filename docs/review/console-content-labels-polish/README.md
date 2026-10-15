@@ -24,12 +24,10 @@ Validation on the change:
   Some initial captures included a fixed header or toast; the final images
   were recaptured from stable document regions without modifying DOM/styles.
 
-| Surface | Desktop | Mobile |
-| --- | --- | --- |
-| Document analytics | [Image](docs-analytics-desktop.png) | [Image](docs-analytics-mobile.png) |
-| Design analytics | [Image](design-analytics-desktop.png) | [Image](design-analytics-mobile.png) |
-| Website analytics | [Image](website-analytics-desktop.png) | [Image](website-analytics-mobile.png) |
-| Settings limits | [Image](settings-limits-desktop.png) | [Image](settings-limits-mobile.png) |
+The eight desktop/mobile screenshots for document, design and website
+analytics and Settings limits are retained outside the Git repository in the
+local review artifacts. Screenshots are not repository source assets. The
+verification above records the completed checks without image-file links.
 
 This does not change retention, tracking, or network behavior. The existing
 absence of a revision-limit decrease impact confirmation remains outside
