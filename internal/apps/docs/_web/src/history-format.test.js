@@ -95,3 +95,42 @@ test("times are relative", () => {
   assert.match(ago(new Date(now - 5 * 60 * 1000), now), /5 minutes ago/);
   assert.match(ago(new Date(now - 3 * 3600 * 1000), now), /3 hours ago/);
 });
+
+test("line changes map to the blocks that show them", async () => {
+  const { createMarkdown } = await import("./markdown.js");
+  const { lineChanges, markChanges } = await import("./history-format.js");
+  const md = createMarkdown();
+  const before =
+    "# Title\n\nKeep this.\n\nOld line.\n\n- one\n- two\n\nGone.\n\nLast.\n";
+  const after =
+    "# Title\n\nKeep this.\n\nNew line.\n\n- one\n- two changed\n\nLast.\n";
+  const changes = lineChanges(before, after);
+  const tokens = md.parse(after, {});
+  const out = markChanges(tokens, changes);
+  const marked = tokens.filter((t) => t.meta?.revChanged);
+  assert.equal(out.marked, 2);
+  // The changed paragraph, and the tight list's item (its paragraph has no tag).
+  assert.deepEqual(
+    marked.map((t) => t.type),
+    ["paragraph_open", "list_item_open"],
+  );
+  assert.equal(tokens[tokens.indexOf(marked[1]) + 2].content, "two changed");
+  // A replaced line is a change, not a removal.
+  assert.equal(tokens.filter((t) => t.meta?.revRemoved).length, 1);
+  // "Gone." was removed before "Last.".
+  const last = tokens.find(
+    (t) =>
+      t.type === "paragraph_open" &&
+      tokens[tokens.indexOf(t) + 1].content === "Last.",
+  );
+  assert.equal(last.meta.revRemoved, 2);
+  assert.equal(out.tail, 0);
+  // Removed at the end.
+  const end = markChanges(md.parse("a\n", {}), lineChanges("a\n\nb\n", "a\n"));
+  assert.equal(end.tail, 2);
+  // Nothing changed.
+  assert.equal(
+    markChanges(md.parse(after, {}), lineChanges(after, after)).marked,
+    0,
+  );
+});

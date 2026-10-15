@@ -588,6 +588,56 @@ main {
   color: var(--accent);
   background: var(--active);
 }
+/* What a viewed revision changed: tinted, underlined blocks, and a marker
+   where text was removed. The underline and marker keep it readable without
+   color. */
+.revision-rendered .rev-mark,
+.revision-rendered .rev-block.rev-changed {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 1px 2px;
+}
+.revision-rendered .rev-mark {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 75%, transparent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+}
+.revision-rendered img.rev-changed {
+  outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 3px;
+}
+.revision-rendered tr.rev-changed td,
+.revision-rendered tr.rev-changed th {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.revision-rendered .rev-block.rev-changed {
+  padding: 4px;
+}
+.revision-rendered .rev-removed::before {
+  content: "− " attr(data-removed);
+  display: block;
+  width: fit-content;
+  margin: 0 0 6px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.6;
+  letter-spacing: 0;
+  text-decoration: none;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border-radius: 3px;
+}
+.revision-rendered tr.rev-removed::before {
+  display: none;
+}
+.revision-rendered .rev-tail {
+  margin-top: 24px;
+}
 .diff-caption {
   font-size: 13px;
   color: var(--muted);

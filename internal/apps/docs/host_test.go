@@ -294,6 +294,13 @@ func TestHostDocumentRevisions(t *testing.T) {
 	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions", nil, ""); code != 200 || !strings.Contains(body, `"rollback_of"`) {
 		t.Fatal("private history", code, body)
 	}
+	// A revision names the one before it, which the page compares it with.
+	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions/3", nil, ""); code != 200 || !strings.Contains(body, `"previous":2`) {
+		t.Fatal("revision view", code, body)
+	}
+	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions/1", nil, ""); code != 200 || !strings.Contains(body, `"previous":0`) {
+		t.Fatal("first revision view", code, body)
+	}
 	if code, body := call(private.handler("host-doc"), "GET", "/_docs/api/revisions/2/document?doc=index.md", nil, ""); code != 200 || !strings.Contains(body, "Person") {
 		t.Fatal("revision document", code, body)
 	}

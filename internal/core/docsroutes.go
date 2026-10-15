@@ -126,7 +126,13 @@ func (s *Service) docsRevisionView(r *http.Request, slugName string, n int) (map
 		}
 		docs = append(docs, docInfo{Path: p, Title: title})
 	}
-	return map[string]any{"revision": rev, "entry": entry, "documents": docs}, nil
+	// The revision before it that still exists, so the page can show what
+	// this one changed; 0 when it is the oldest kept.
+	previous := 0
+	if older, err := s.st.ListRevisions(r.Context(), slugName, n, 1); err == nil && len(older) == 1 {
+		previous = older[0].Number
+	}
+	return map[string]any{"revision": rev, "entry": entry, "documents": docs, "previous": previous}, nil
 }
 
 var firstHeading = regexp.MustCompile(`(?m)^#\s+(.+)$`)

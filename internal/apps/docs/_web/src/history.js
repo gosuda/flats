@@ -8,6 +8,8 @@ import {
   changed,
   changeLines,
   isMarkdown,
+  lineChanges,
+  markChanges,
 } from "./history-format.js";
 import { renderDiagrams, destroyDiagram } from "./diagrams.js";
 import { replaceRendered } from "./diagram-preview.js";
@@ -63,12 +65,49 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     timer = 0,
     viewing = null,
     showChanges = false,
+    // Highlight what the viewed revision changed since the one before it.
+    highlight = true,
     confirming = false,
     // Bumped by every selection, return to live and close, so a response
     // that arrives late cannot bring back what the person left.
     selection = 0,
     titles = new Map();
   const md = createMarkdown();
+  // Blocks a revision changed carry rev-changed; a block after removed text
+  // carries rev-removed. Fences render through markdown.js's own rule, so
+  // they are wrapped instead.
+  const removedText = (n) => `${n} line${n === 1 ? "" : "s"} removed here`;
+  for (const type of ["fence", "code_block"]) {
+    const base =
+      md.renderer.rules[type] ||
+      ((tokens, i, options, env, self) => self.renderToken(tokens, i, options));
+    md.renderer.rules[type] = (tokens, i, options, env, self) => {
+      const html = base(tokens, i, options, env, self),
+        meta = tokens[i].meta || {};
+      if (!meta.revChanged && !meta.revRemoved) return html;
+      const removed = meta.revRemoved
+        ? ` data-removed="${removedText(meta.revRemoved)}"`
+        : "";
+      return `<div class="${meta.revChanged ? "rev-changed " : ""}${meta.revRemoved ? "rev-removed " : ""}rev-block"${removed}>${html}</div>`;
+    };
+  }
+  function renderChanges(markdown, before) {
+    const env = {},
+      tokens = md.parse(markdown, env),
+      out = markChanges(tokens, lineChanges(before, markdown));
+    for (const t of tokens) {
+      if (!t.meta || t.type === "fence" || t.type === "code_block") continue;
+      if (t.meta.revChanged) t.attrJoin("class", "rev-changed");
+      if (t.meta.revRemoved) {
+        t.attrJoin("class", "rev-removed");
+        t.attrSet("data-removed", removedText(t.meta.revRemoved));
+      }
+    }
+    let html = md.renderer.render(tokens, md.options, env);
+    if (out.tail)
+      html += `<p class="rev-removed rev-tail" data-removed="${removedText(out.tail)}"></p>`;
+    return { html, ...out };
+  }
 
   fetch("/_docs/api/documents")
     .then((r) => r.json())
@@ -193,9 +232,33 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     await load();
   }
 
+  // Changed text is highlighted run by run, as in the line it sits on, not
+  // across the block's whole width: the inline content of each changed block
+  // goes into a span.
+  function markText(container) {
+    const blocks = /^(UL|OL|P|PRE|DIV|TABLE|BLOCKQUOTE|H[1-6])$/;
+    for (const block of container.querySelectorAll(
+      "p.rev-changed, li.rev-changed, h1.rev-changed, h2.rev-changed, h3.rev-changed, h4.rev-changed, h5.rev-changed, h6.rev-changed",
+    )) {
+      let span = null;
+      for (const node of [...block.childNodes]) {
+        if (node.nodeType === 1 && blocks.test(node.tagName)) {
+          span = null;
+          continue;
+        }
+        if (!span) {
+          span = el("span", { class: "rev-mark" });
+          block.insertBefore(span, node);
+        }
+        span.append(node);
+      }
+    }
+  }
+
   // A revision's links and images to the flat's files resolve to that
   // revision's copy; the host answers 404 for a file it does not hold.
-  function rewrite(container, number) {
+  // With changed, images whose file the revision changed are marked too.
+  function rewrite(container, number, changed) {
     const base = new URL("/" + path, location.origin);
     for (const node of container.querySelectorAll("img[src], a[href]")) {
       const attr = node.tagName === "IMG" ? "src" : "href";
@@ -207,6 +270,8 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         continue; // a malformed link stays as written
       }
       if (url.origin !== location.origin) continue;
+      if (changed?.has(p) && node.tagName === "IMG")
+        node.classList.add("rev-changed");
       if (p && !p.startsWith("_docs/") && !isMarkdown(p))
         node.setAttribute(
           attr,
@@ -238,12 +303,25 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
         el(
           "div",
           { class: "revision-actions" },
+          markdown === null || viewing.before === null
+            ? null
+            : el("button", {
+                type: "button",
+                "aria-pressed": String(highlight && !showChanges),
+                text: "Highlight changes",
+                title: `What revision ${revision.number} changed since revision ${viewing.previous}`,
+                onclick: () => {
+                  highlight = showChanges || !highlight;
+                  showChanges = false;
+                  drawView();
+                },
+              }),
           markdown === null
             ? null
             : el("button", {
                 type: "button",
                 "aria-pressed": String(showChanges),
-                text: "Show changes",
+                text: "Compare with live",
                 onclick: () => {
                   showChanges = !showChanges;
                   drawView();
@@ -338,9 +416,35 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
       return;
     }
     const article = el("div", { class: "revision-rendered" });
-    replaceRendered(article, md.render(markdown), destroyDiagram);
-    rewrite(article, revision.number);
-    body.replaceChildren(article);
+    let caption = null;
+    if (highlight && viewing.before !== null) {
+      const shown = renderChanges(markdown, viewing.before);
+      replaceRendered(article, shown.html, destroyDiagram);
+      markText(article);
+      const files = revision.changes || {};
+      rewrite(
+        article,
+        revision.number,
+        new Set([...(files.added || []), ...(files.changed || [])]),
+      );
+      const any =
+        shown.marked ||
+        shown.tail ||
+        article.querySelector(".rev-removed, img.rev-changed");
+      caption = el("p", {
+        class: "diff-caption",
+        text:
+          viewing.before === ""
+            ? `This document is new in revision ${revision.number}.`
+            : any
+              ? `Highlighted: what revision ${revision.number} changed in this document since revision ${viewing.previous}.`
+              : `Revision ${revision.number} did not change this document.`,
+      });
+    } else {
+      replaceRendered(article, md.render(markdown), destroyDiagram);
+      rewrite(article, revision.number);
+    }
+    body.replaceChildren(...[caption, article].filter(Boolean));
     renderDiagrams(article);
   }
 
@@ -350,15 +454,35 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
       const info = await api(`/${number}`);
       if (mine !== selection) return;
       const documents = info.documents || [];
-      let markdown = null;
+      let markdown = null,
+        before = null;
       if (documents.some((d) => d.path === path)) {
         const doc = await api(
           `/${number}/document?doc=${encodeURIComponent(path)}`,
         );
         markdown = doc.markdown;
+        // The same document one revision earlier; "" when it is new there.
+        if (info.previous) {
+          try {
+            before = (
+              await api(
+                `/${info.previous}/document?doc=${encodeURIComponent(path)}`,
+              )
+            ).markdown;
+          } catch (e) {
+            if (e.status !== 404) throw e;
+            before = "";
+          }
+        }
       }
       if (mine !== selection) return;
-      viewing = { revision: info.revision, markdown, documents };
+      viewing = {
+        revision: info.revision,
+        markdown,
+        documents,
+        before,
+        previous: info.previous,
+      };
       showChanges = false;
       confirming = false;
       view.hidden = false;
