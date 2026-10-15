@@ -109,28 +109,47 @@ type QuickNet interface {
 	Close() error
 }
 
-// NetbirdNet is the NetBird backend: the host's one peer serves a flat's
-// Private route inside the mesh (netbird) and a Public route through
-// NetBird's reverse proxy (netbird-expose). A non-nil value is not permission.
+// NetbirdNet is the NetBird backend: every flat runs on its own peer, named
+// after its slug, which serves the flat's Private route inside the mesh
+// (netbird) and its Public route through NetBird's reverse proxy
+// (netbird-expose). Console domains run on peers of their own. A non-nil
+// value is not permission.
 type NetbirdNet interface {
 	ServePrivate(ctx context.Context, host string, h http.Handler) (string, error)
-	// StopPrivate stops serving host and keeps its port reserved.
+	// StopPrivate stops serving host; its peer keeps its identity.
 	StopPrivate(host string) error
-	// RetirePrivate stops host and releases its port.
+	// RetirePrivate stops host and, once its peer serves nothing else,
+	// deletes the peer's identity.
 	RetirePrivate(host string) error
 	PrivateURL(host string) string
 	PrivateStatus() core.NetStatus
 
 	ServePublic(ctx context.Context, slug string, h http.Handler) (string, error)
-	// StopPublic ends slug's expose session and keeps its port reserved.
+	// StopPublic ends slug's expose session; its peer keeps its identity.
 	StopPublic(slug string) error
-	// RetirePublic ends slug's expose session and releases its port.
+	// RetirePublic ends slug's expose session and retires its peer as
+	// RetirePrivate does.
 	RetirePublic(slug string) error
 	PublicURL(slug string) string
 	PublicStatus() core.NetStatus
 
-	// Account identifies the enrolled peer without revealing a secret.
-	Account() string
+	// ServeConsole serves a console domain on a peer of that name.
+	ServeConsole(ctx context.Context, name string, h http.Handler) (string, error)
+	StopConsole(name string) error
+	// RetireConsole stops a console domain and deletes its peer identity.
+	RetireConsole(name string) error
+	ConsoleURL(name string) string
+	ConsoleStatus() core.NetStatus
+	// Hostnames returns the names console domain name's peer answers to in
+	// NetBird DNS (its extra label and primary FQDN), or nil while it does
+	// not run.
+	Hostnames(name string) []string
+	// IdentityForIP returns the FQDN of the NetBird peer at ip as console
+	// domain name's peer sees it, or "".
+	IdentityForIP(name, ip string) string
+
+	// PeerCount reports how many peers run.
+	PeerCount() int
 	Close() error
 }
 

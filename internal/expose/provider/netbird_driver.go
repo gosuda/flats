@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"errors"
 	"sync"
 )
@@ -13,20 +12,21 @@ import (
 // archives and container images ship (docs/networking.md).
 var ErrNetbirdNotBuilt = errors.New("this Flats build does not include NetBird; use a release binary (install.sh or the container image) or build ./netbird/cmd/flats from the source tree (see docs/networking.md)")
 
-// NetbirdAccount describes the enrolled NetBird peer. It holds no secret.
-type NetbirdAccount struct {
+// NetbirdLegacyPeer describes the single shared peer earlier versions
+// registered for the whole host. It holds no secret.
+type NetbirdLegacyPeer struct {
 	ManagementURL string `json:"management_url"`
 	DeviceName    string `json:"device_name"`
-	// Fingerprint identifies the peer (a hash of its public key).
-	Fingerprint string `json:"fingerprint"`
 }
 
 // NetbirdConfig configures a NetBird backend.
 type NetbirdConfig struct {
-	// Dir holds the peer identity, the account record and the port records.
+	// Dir holds one directory per peer (its identity and state).
 	Dir           string
 	ManagementURL string
-	DeviceName    string
+	// SetupKey returns the setup key stored now, or "". It is read at every
+	// peer start.
+	SetupKey func() string
 	// Instance is the Flats host instance id.
 	Instance string
 	Logf     func(string, ...any)
@@ -36,17 +36,13 @@ type NetbirdConfig struct {
 // RegisterNetbird. The main module has none.
 type NetbirdDriver interface {
 	New(NetbirdConfig) (NetbirdNet, error)
-	// LoadAccount reads the account enrolled in dir; ok is false when none is.
-	LoadAccount(dir string) (acct NetbirdAccount, ok bool, err error)
-	// Enroll registers this host as a peer with a setup key, which it neither
-	// stores nor logs.
-	Enroll(ctx context.Context, dir, managementURL, setupKey, deviceName string) (NetbirdAccount, error)
-	Disconnect(ctx context.Context, dir string, force bool) error
-	// RetireStored releases the ports recorded for host in dir when no backend
-	// runs, so deleting a flat while NetBird is off does not keep them.
-	RetireStored(dir, host string) error
-	// DisconnectHint tells the operator what remains after Disconnect.
-	DisconnectHint() string
+	// RetireStored deletes the identity of name's peer in dir when no backend
+	// runs, so deleting a flat while NetBird is off does not keep it.
+	RetireStored(dir, name string) error
+	// CleanupLegacy deletes the local state of the shared peer earlier
+	// versions ran in dir and describes it; found is false when there was
+	// none.
+	CleanupLegacy(dir string) (peer NetbirdLegacyPeer, found bool, err error)
 }
 
 var (

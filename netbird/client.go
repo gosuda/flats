@@ -2,8 +2,6 @@ package netbird
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +13,6 @@ import (
 	"time"
 
 	"github.com/netbirdio/netbird/client/embed"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // clientOptions is what the package needs to build an embedded NetBird peer.
@@ -24,10 +21,12 @@ type clientOptions struct {
 	ManagementURL string
 	ConfigPath    string
 	StatePath     string
-	// SetupKey enrolls a new peer. It is only set by Enroll and never
-	// stored. Empty means: restart from the identity persisted in
-	// ConfigPath.
-	SetupKey  string
+	// SetupKey registers the peer when management does not know it. The
+	// identity in ConfigPath, when present, is kept either way. Empty means:
+	// log in with the identity persisted in ConfigPath only.
+	SetupKey string
+	// DNSLabels are extra DNS labels the peer asks NetBird for.
+	DNSLabels []string
 	LogOutput io.Writer
 }
 
@@ -50,7 +49,10 @@ type session interface {
 
 // client is the part of an embedded NetBird peer that Net needs.
 type client interface {
-	Start(ctx context.Context) error
+	// Start connects the peer and returns when it is up, fails, or ctx ends.
+	// finished is called exactly once, with the outcome, when the underlying
+	// start has really ended, which may be after Start returned.
+	Start(ctx context.Context, finished func(error)) error
 	Stop(ctx context.Context) error
 	// ListenTCP listens on the peer's overlay address; only the port of
 	// addr is used.
@@ -58,8 +60,9 @@ type client interface {
 	Expose(ctx context.Context, req exposeRequest) (session, error)
 	// Identity returns the peer's overlay FQDN and IP (either may be "").
 	Identity() (fqdn, ip string, err error)
-	// PublicKey returns the peer's WireGuard public key.
-	PublicKey() string
+	// PeerFQDN returns the FQDN of the NetBird peer with overlay address ip,
+	// or "".
+	PeerFQDN(ip string) string
 }
 
 // newClient builds a client; tests replace it with a fake.
@@ -83,15 +86,14 @@ func storedPrivateKey(path string) (string, error) {
 
 // embedClient adapts embed.Client.
 //
-// Restart from persisted state: embed.New demands exactly one of SetupKey,
-// JWTToken or PrivateKey, but a registered peer needs none of them. embed's
-// Start first attempts an ordinary management Login with the stored key
-// pair; the setup key is consulted only when management answers that the
-// peer is unknown (registration needed). So a restart passes the private key
-// stored in ConfigPath as PrivateKey, which equals what New would load from
-// the file anyway and satisfies the validation without any new secret. If
-// management no longer knows the peer (removed in the dashboard), Login
-// fails with a registration error and the operator must enroll again.
+// embed.New demands exactly one of SetupKey, JWTToken or PrivateKey. With a
+// setup key, embed loads (or creates) the identity in ConfigPath, and Start
+// first attempts an ordinary management Login with it; the setup key is used
+// only when management answers that the peer is unknown, and registers the
+// same identity again. Without a setup key, the private key stored in
+// ConfigPath is passed as PrivateKey, which equals what New would load from
+// the file anyway; if management no longer knows the peer, Login then fails
+// with a misleading setup-key error, which Net reports as ErrPeerRejected.
 type embedClient struct {
 	c *embed.Client
 }
@@ -107,6 +109,9 @@ func newEmbedClient(o clientOptions) (*embedClient, error) {
 		StatePath:     o.StatePath,
 		LogOutput:     o.LogOutput,
 		LogLevel:      "warn",
+		DNSLabels:     o.DNSLabels,
+		// Several peers run in one process: let each pick a free port.
+		WireguardPort: new(int),
 	}
 	if o.SetupKey != "" {
 		opts.SetupKey = o.SetupKey
@@ -126,24 +131,26 @@ func newEmbedClient(o clientOptions) (*embedClient, error) {
 
 // Start runs the embedded client's Start and returns when ctx ends. NetBird
 // v0.80.0 authenticates with its own background context before it looks at
-// ctx, so against an unreachable management server Start alone ignores the
-// deadline. The abandoned call finishes in the background; its client is then
-// stopped, so a late success does not keep a connection nobody owns. (The
-// management server may still register the peer if the abandoned login later
-// succeeds; the operator removes such a peer in the NetBird dashboard.)
-func (e *embedClient) Start(ctx context.Context) error {
+// ctx, retrying for up to two minutes, so against an unreachable management
+// server Start alone ignores the deadline. The abandoned call finishes in the
+// background; its client is then stopped, so a late success does not keep a
+// connection nobody owns. finished reports when that call really ended.
+func (e *embedClient) Start(ctx context.Context, finished func(error)) error {
 	done := make(chan error, 1)
 	go func() { done <- e.c.Start(ctx) }()
 	select {
 	case err := <-done:
+		finished(err)
 		return err
 	case <-ctx.Done():
 		go func() {
-			if err := <-done; err == nil {
+			err := <-done
+			if err == nil {
 				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
 				_ = e.c.Stop(sctx)
+				cancel()
 			}
+			finished(err)
 		}()
 		return ctx.Err()
 	}
@@ -187,21 +194,14 @@ func (e *embedClient) Identity() (string, string, error) {
 	return fqdn, ip, nil
 }
 
-func (e *embedClient) PublicKey() string {
-	cfg, err := e.c.GetConfig()
+func (e *embedClient) PeerFQDN(ip string) string {
+	a, err := netip.ParseAddr(ip)
 	if err != nil {
 		return ""
 	}
-	k, err := wgtypes.ParseKey(cfg.PrivateKey)
-	if err != nil {
+	_, fqdn, ok := e.c.IdentityForIP(a.Unmap())
+	if !ok {
 		return ""
 	}
-	return k.PublicKey().String()
-}
-
-// fingerprintOf derives the account fingerprint from the peer public key.
-// The hash keeps the value stable and short; it is not a secret.
-func fingerprintOf(publicKey string) string {
-	sum := sha256.Sum256([]byte("flats-netbird:" + publicKey))
-	return hex.EncodeToString(sum[:16])
+	return strings.TrimSuffix(fqdn, ".")
 }
