@@ -10,17 +10,23 @@ console integration and the complete acceptance gate have separate owners.
 
 Each save statically validates the bundle and stores one immutable Draft
 revision under `flats/<slug>/draft-revs/<revision>`. `drafts` points at the
-current revision; saves do not allocate a published number or run server code.
+current revision; saves do not allocate a version number or run server code.
 `SaveMeta.CheckRevision` and `ExpectedRevision` reject competing stale saves.
 Draft saves preserve Current, visibility, permissions and live data. A save
-whose bytes match Current is clean; publishing identical bytes is rejected
-with `ErrUnchangedContent` and does not create a user version for metadata.
+whose bytes match the latest saved version is clean; publishing identical bytes
+is rejected with `ErrUnchangedContent` and does not create a user version for
+metadata.
 
-Only a validated operator's successful publish creates `vN`, under
-`flats/<slug>/versions/<N>`. The version row, live pointer and deployment history
-commit in one transaction. Failed health checks consume no number. Existing
-published versions can be activated or rolled back without a new number.
-Published status persists through connection failures. Visibility is independently
+Creating a version and making it live are separate approved steps. Only a
+validated operator's successful publish creates `vN`, under
+`flats/<slug>/versions/<N>`: the version row and the Draft's new base commit in
+one transaction (`store.CommitVersion`), without changing the live pointer,
+running server code or recording a deployment. An approved activation of a
+saved version health-checks it, then commits the live pointer and deployment
+history in one transaction. A failed activation keeps `vN` saved and the
+previous version live. Saved versions can be activated or rolled back without
+a new number. A flat is Published once one of its versions has been live, and
+that status persists through connection failures. Visibility is independently
 `private|public`; legacy listed/unlisted inputs canonicalize to `public`.
 Unpublished flats cannot become Public.
 
@@ -53,11 +59,12 @@ Decide(ctx context.Context, approvalID string, approve bool) (store.Approval, er
 `SaveDraft` always checks the supplied revision. `SaveVersion` supports legacy
 transport callers using `SaveMeta`'s optional check. Draft results have
 `number:0, published:false, role:"draft", revision:<n>`. Lists of versions contain
-only numbered published versions. `Publish` returns an `ActionResult` with
-`status:"pending_approval"`; `Deploy`, rollback and snapshot restore return
-`*PendingApproval`, which embeds that result and wraps `ErrPending`.
-`Deploy(number:0)` requests Current Draft publication; positive numbers request
-activation of an existing published version. `OpenPreview(number:0)` targets
+only numbered versions; `deployed` marks those that were ever live. `Publish`
+returns an `ActionResult` with `status:"pending_approval"`; `Deploy`, rollback
+and snapshot restore return `*PendingApproval`, which embeds that result and
+wraps `ErrPending`. `Deploy` takes a positive number and requests activation of
+an existing saved version; `number:0` is refused, since the Draft must first be
+saved as a version with `Publish`. `OpenPreview(number:0)` targets
 Draft. Publish revision zero selects Current; an explicit revision/hash must
 match it. No `Via`, including Console, skips approval for these actions.
 
@@ -86,8 +93,10 @@ tailnet login when one is known); otherwise it is `console`.
 This does not prove a human was present: a local process that can reach the
 console routes can decide. A separate operator credential is an open design item.
 
-All critical requests freeze the candidate, live version, visibility and sorted
-per-flat permissions plus the manager's stable host/configuration policy token.
+All critical requests freeze the candidate, visibility and sorted per-flat
+permissions plus the manager's stable host/configuration policy token.
+Activation, rollback and data restore also freeze the live version; publish,
+which changes nothing live, freezes the latest saved version instead.
 Publish additionally rechecks that Current Draft revision/hash still equal the
 candidate at decision time: retaining old bytes does not authorize stale Draft
 publication. Candidate content hashes are checked from disk. Rollback freezes
@@ -121,8 +130,9 @@ Preview execution is a separate explicit action using isolated data.
 `data_impact`: `none|runtime_start|restore_data|unknown`.
 `health_data`: `not_run|isolated_copy`.
 `live_data`: `untouched|runtime_may_write|restored|unknown`.
-Static publication reports none; server publication reports runtime_start;
-explicit restore reports restore_data. Recovery reconstructs the corresponding
+Saving a version reports none, as it starts nothing. Static activation reports
+none; server activation reports runtime_start; explicit restore reports
+restore_data. Recovery reconstructs the corresponding
 result. Failed recovery/start/swap paths conservatively use unknown where the
 prior runtime may have restarted and written data. `failure_code` is additive:
 `stale_approval`, `health_check_failed`, `runtime_start_failed`,

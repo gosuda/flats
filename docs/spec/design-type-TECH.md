@@ -16,7 +16,8 @@ A design runs on the host itself, not in a JavaScript worker:
   `internal/design/web`. It has no build step and no third-party code.
 
 Designs therefore need no runtime: they work on `--runtime=false` hosts. The
-same store is meant for documents later.
+same store also keeps document revisions
+([document-revisions-TECH.md](document-revisions-TECH.md)).
 
 ## Type and lifecycle integration
 

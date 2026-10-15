@@ -179,9 +179,10 @@ previews, changes are live at once, and history is kept as revisions.
 
 ## Current state
 
-Before this spec, Flats has no design type and no revision store. The first
-release adds the revision store described in content-models.md for designs
-only; documents adopt it later.
+The first release is implemented (gosuda/flats PR #96), including the
+revision store described in content-models.md. Documents now keep their
+revisions in the same store
+([document-revisions-TECH.md](document-revisions-TECH.md)).
 
 ## Open questions
 

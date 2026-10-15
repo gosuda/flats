@@ -15,7 +15,7 @@ them.
 | | Version model | Revision model |
 |---|---|---|
 | For | content an agent prepares and an operator releases | content people and agents edit live |
-| Types | websites (`flat`, static or server), pages (`page`) | documents (`docs`), design (planned) |
+| Types | websites (`flat`, static or server), pages (`page`) | documents (`docs`), designs (`design`) |
 | Working copy | a Private Draft | the live content itself |
 | History unit | a numbered version (v1, v2, v3, ...) | a revision of the whole flat per edit unit |
 | Needs operator approval | creating or deleting a version, every deployment, rollback | no content change; visibility changes and deleting the flat do |
@@ -89,7 +89,7 @@ Applies to websites (the `flat` type, static and server) and pages.
 
 ## Revision model
 
-Applies to documents (`docs`), the planned design type and any later type that
+Applies to documents (`docs`), designs (`design`) and any later type that
 people and agents edit live.
 
 1. **No Draft, versions or publish.** The content is always live, and the
