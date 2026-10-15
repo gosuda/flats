@@ -208,4 +208,10 @@ test("a split paragraph and links to a changed definition are marked", async () 
   tokens = md.parse(fenced, {});
   out = markChanges(tokens, lineChanges("```js\na();\n\nb();\n```\n", fenced));
   assert.ok(tokens.find((t) => t.type === "fence").meta?.revChanged);
+  // A blank line after a heading changes nothing.
+  out = markChanges(
+    md.parse("# T\n\ntext\n", {}),
+    lineChanges("# T\ntext\n", "# T\n\ntext\n"),
+  );
+  assert.equal(out.marked, 0);
 });

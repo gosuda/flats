@@ -123,7 +123,9 @@ export function lineChanges(before, after) {
       while (blanks[end + 1] === blanks[end] + 1) end++;
       const before = blanks[k] - 1,
         after = blanks[end] + 1;
-      if (kept(before) && kept(after)) {
+      // A heading is its own block: a blank line next to it changes nothing.
+      const heading = (l) => /^ {0,3}#{1,6}(\s|$)/.test(text[l]);
+      if (kept(before) && kept(after) && !heading(before) && !heading(after)) {
         changed.add(before);
         changed.add(after);
       }
