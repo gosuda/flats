@@ -32,6 +32,13 @@ Permitting Tailscale does not permit Funnel, and permitting NetBird does not
 permit NetBird Expose. Neither permission publishes a
 version or changes visibility.
 
+On a running Public flat, allowing another public provider starts its route
+immediately, while existing addresses keep serving. Its endpoint shows
+connecting, ready or the provider's error without a redeploy or restart.
+If startup fails, the permission stays allowed; allowing it again retries.
+On a Private flat or one without live content running, allowing a public provider
+only records the permission. It never makes the flat Public.
+
 Each mode has a **default for new flats** in Settings → Network providers. A
 new flat starts allowed on Local plus the private and public defaults only,
 even when more providers are on for the host, and it is always created

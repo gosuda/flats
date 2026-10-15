@@ -69,6 +69,38 @@ func TestSaveDocumentBundleRoute(t *testing.T) {
 	}
 }
 
+func TestDocumentBundleAndSinglePathSaveKeepDistinctContracts(t *testing.T) {
+	e := newEnvRuntime(t)
+	args := map[string]any{"slug": "preserved", "replace_bundle": true, "files": []any{
+		file("index.md", "# First", ""), file("guide.md", "# Guide", ""),
+		file("flats.json", `{"type":"docs","entry":"guide.md","name":"Original"}`, ""),
+	}}
+	if text, failed := call(t, e.local, "save_document", args, nil); failed {
+		t.Fatal(text)
+	}
+	var saved SaveOut
+	text, failed := call(t, e.local, "save_document", map[string]any{"slug": "preserved", "markdown": "# Updated"}, &saved)
+	if failed || saved.Document != "index.md" || saved.Entry != "guide.md" || saved.Flat == nil || saved.Flat.Name != "Original" || !saved.Flat.Running {
+		t.Fatalf("single-path receipt: %s %+v", text, saved)
+	}
+	var doc core.Document
+	if text, failed := call(t, e.local, "get_document", map[string]any{"slug": "preserved"}, &doc); failed || doc.Doc != "guide.md" || doc.Markdown != "# Guide" {
+		t.Fatalf("entry/sibling changed by single-path save: %s %+v", text, doc)
+	}
+	args["files"] = []any{file("index.md", "# Replacement", ""), file("flats.json", `{"type":"docs"}`, "")}
+	saved = SaveOut{}
+	if text, failed := call(t, e.local, "save_document", args, &saved); failed || saved.Flat == nil || saved.Draft.Revision != 0 || saved.Document != "" || saved.Entry != "" {
+		t.Fatalf("explicit bundle receipt: %s %+v", text, saved)
+	}
+	if text, failed := call(t, e.local, "get_document", map[string]any{"slug": "preserved", "doc": "guide.md"}, nil); !failed || !strings.Contains(text, "document_not_found") {
+		t.Fatalf("explicit bundle kept omitted sibling: %s", text)
+	}
+	pending, err := e.svc.ListApprovals(context.Background(), "pending")
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("document saves requested version/deployment approval: %+v %v", pending, err)
+	}
+}
+
 func TestConcurrentMCPDraftReceiptsKeepOwnContent(t *testing.T) {
 	e := newEnv(t)
 	call(t, e.local, "save_draft", map[string]any{"slug": "receipts", "files": []any{file("index.html", "seed", "")}}, nil)

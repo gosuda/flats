@@ -241,9 +241,11 @@ Compared with the Version-model completion:
     ([document-revisions-TECH.md](document-revisions-TECH.md)). Existing
     `flats_docs_conflicts` records were migrated into `recovered` revisions,
     and that store is no longer written.
-  - Rule 8 is not complete for documents: `save_document` still replaces the
-    bundle with the one document it saves, and remains recoverable through revisions. Whole docs bundles now use
-    `save_document {replace_bundle: true, files: [...]}` explicitly.
+  - Rule 8 is implemented: `save_document` preserves sibling documents,
+    assets and manifest settings, and adding a document keeps the existing
+    entry. `title` changes only the manifest name. Explicit whole-bundle
+    replacement uses `save_document {replace_bundle: true, files: [...]}`;
+    omitted documents and assets are deleted.
   - Quota rule 3 is not complete for documents: a person's live edit is not
     checked against the disk quota, and the revision recording it is stored
     without that check.

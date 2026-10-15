@@ -35,10 +35,10 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
 		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; or with type docs a Private document that runs at once (no publish or approval). Optional: save_draft, save_page and save_document create the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft", Annotations: write,
-		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). Saving never creates a version or deployment; call create_version separately to request approval. For one Markdown document use save_document. Documents must use save_document (including bundles)."}, t.saveDraft)
+		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). This replaces the complete Draft; omitted files are deleted. Saving never creates a version or deployment; call create_version separately to request approval. For one Markdown document use save_document. Documents must use save_document (including bundles)."}, t.saveDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft_from_dir", Annotations: write,
 		Description: "Save a Private Draft from a directory on the Flats host (absolute path). " +
-			"Only works when the agent runs on the Flats host itself (loopback); otherwise use save_draft or the flats CLI."}, t.saveDraftFromDir)
+			"This replaces the complete Draft; omitted files are deleted. Documents must use save_document. Only works when the agent runs on the Flats host itself (loopback); otherwise use save_draft or the flats CLI."}, t.saveDraftFromDir)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_versions", Annotations: ro,
 		Description: "List retained website versions, newest first, with the current version marked. Documents have no versions."}, t.listVersions)
 	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
@@ -54,7 +54,7 @@ func register(s *mcp.Server, t *tools) {
 			"Saving never creates a version or deployment; call create_version separately to request approval. Replaces the whole Draft: send the html and every asset each time. " +
 			"Flats writes flats.json (type page); other saves into a page need {\"type\":\"page\"} (topic.page)."}, t.savePage)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_document", Annotations: write,
-		Description: "Save one Markdown document, creating the flat when absent. It runs at once, Private unless the operator already made it Public: documents have no Draft, versions, publish or approval. It replaces the document; people's concurrent edits on other lines are kept, and the text before the save stays in the revisions. Read get_document first to preserve live edits; prefer update_document for small changes; read flats://docs/content-types/v1 for docs bundles. Use files with replace_bundle=true for multiple documents/assets."}, t.saveDocument)
+		Description: "Save one Markdown document, creating the flat when absent. It runs at once, Private unless the operator already made it Public: documents have no Draft, versions, publish or approval. It changes only this Markdown path, preserving other documents, assets and flats.json settings (title changes only the name). People's concurrent edits on other lines are kept, and the text before the save stays in the revisions. Read get_document first to preserve live edits; prefer update_document for small changes; read flats://docs/content-types/v1 for docs bundles. Repeat save_document to add or edit individual documents. Use files with replace_bundle=true only for explicit whole-bundle replacement; omitted files are deleted."}, t.saveDocument)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_document", Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no},
 		Description: "Read exact live Markdown including people's edits from a docs flat (from its saved files if it is not running). doc is an exact Markdown path (default: the entry). Returns hash (whole document); blocks=true also lists live blocks with the hashes update_document guards on. May seed or activate live state; idempotent and non-destructive. Earlier text is in list_revisions and get_revision. Read before save_document or update_document."}, t.getDocument)
 	mcp.AddTool(s, &mcp.Tool{Name: "update_document", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no},
@@ -253,7 +253,7 @@ func toolErr(err error, hint string) error {
 		}
 	}
 	if errors.Is(err, core.ErrDocsUnversioned) {
-		hint = "this flat is a document: save_document replaces it and update_document edits its live text, both at once without publish or approval; check get_flat"
+		hint = "this flat is a document: save_document saves one Markdown path and update_document edits its live text, both at once without publish or approval; check get_flat"
 	}
 	// Every refusal names its category and the guide page that explains it.
 	see := "See guide refusal." + category + "."
@@ -445,12 +445,15 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 }
 
 // documentText describes a document that was just created or saved.
-func documentText(what string, fi FlatInfo) string {
+func documentText(what string, fi FlatInfo, details ...string) string {
 	var b strings.Builder
 	if fi.Running {
 		fmt.Fprintf(&b, "%s %s. It is running now, %s, at %s; there is no publish step. Edit it with update_document or save_document.", what, fi.Slug, fi.Visibility, fi.PrivateURL)
 	} else {
 		fmt.Fprintf(&b, "%s %s, but it is not running; get_logs has details.", what, fi.Slug)
+	}
+	for _, detail := range details {
+		b.WriteString(" " + detail)
 	}
 	writePending(&b, fi.PrivateState, fi.PrivateDetail)
 	writePublic(&b, fi.PublicURL, fi.PublicNotice)
@@ -488,8 +491,10 @@ type SaveDirIn struct {
 
 // SaveOut is the receipt of one exact Private Draft save, or a live document.
 type SaveOut struct {
-	Draft api.SavedDraft `json:"draft,omitzero" jsonschema:"websites: the saved Private Draft; absent for documents"`
-	Flat  *FlatInfo      `json:"flat,omitempty" jsonschema:"documents: the document, running at once without publish or approval"`
+	Document string         `json:"doc,omitempty" jsonschema:"save_document: exact Markdown path saved"`
+	Entry    string         `json:"entry,omitempty" jsonschema:"save_document: entry document path; get_document defaults to this"`
+	Draft    api.SavedDraft `json:"draft,omitzero" jsonschema:"websites: the saved Private Draft; absent for documents"`
+	Flat     *FlatInfo      `json:"flat,omitempty" jsonschema:"documents: the document, running at once without publish or approval"`
 	// Warnings never block the save (guide topic.design).
 	Warnings []bundle.Problem `json:"warnings,omitempty" jsonschema:"non-blocking page-quality warnings with a fix each; the Draft was saved anyway"`
 }
@@ -584,13 +589,24 @@ func (t *tools) save(ctx context.Context, slug string, files []bundle.File, meta
 		meta.ExpectedRevision, meta.CheckRevision = *expected, true
 	}
 	v, err := t.svc.SaveVersion(ctx, slug, files, meta, core.ViaMCP)
+	return t.saved(ctx, slug, files, v, err)
+}
+
+func (t *tools) saved(ctx context.Context, slug string, files []bundle.File, v store.Version, err error) (*mcp.CallToolResult, SaveOut, error) {
 	if err != nil {
 		hint := "no Draft was saved; fix the problem above and save again"
 		if _, ok := bundle.IsValidation(err); ok {
 			hint = "no Draft was saved; fix every listed problem and save again"
 		}
 		if f, ferr := t.svc.GetFlat(ctx, slug); ferr == nil && f.Type == contenttype.Docs && v.Revision > 0 {
-			hint = "the document was saved but did not start; get_logs has details. Fix the problem and save it again"
+			switch {
+			case f.Running:
+				hint = "the running document is unchanged; this save did not become live. Check get_logs, fix the problem and repeat this same save; a sibling-document save will not carry this failed change"
+			case f.LiveVersion > 0:
+				hint = "the previously active content is unchanged but is not running. Check get_logs, fix the problem and repeat this same save; a sibling-document save will not carry this failed change"
+			default:
+				hint = "the files were saved internally but no document is running yet. Check get_logs, fix the problem and repeat this same save to start it"
+			}
 		}
 		return nil, SaveOut{}, toolErr(err, hint)
 	}

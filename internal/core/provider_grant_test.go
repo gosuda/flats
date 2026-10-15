@@ -81,13 +81,15 @@ func TestProviderGrantToPrivateFlatOpensNoPublicRoute(t *testing.T) {
 	s.cfg.Lifecycle = network
 	lifecycleSave(t, s, "quiet", "one")
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "quiet"))
-	for _, p := range []string{store.ProviderPortal, store.ProviderFunnel} {
+	for _, p := range []string{store.ProviderPortal, store.ProviderFunnel, store.ProviderZrok, store.ProviderCFQuick, store.ProviderNetbirdExpose} {
 		if err := s.SetProviderPermission(t.Context(), "quiet", p, true, ViaConsole); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if network.serves("quiet", ProviderPortal) || network.serves("quiet", ProviderFunnel) {
-		t.Fatal("grant opened a public route on a private flat")
+	for _, p := range []ProviderID{ProviderPortal, ProviderFunnel, ProviderZrok, ProviderCloudflareQuick, ProviderNetbirdExpose} {
+		if network.serves("quiet", p) {
+			t.Fatalf("grant opened %s on a private flat", p)
+		}
 	}
 	if !network.serves("quiet", ProviderLocal) {
 		t.Fatal("re-exposure dropped the local route")
@@ -107,14 +109,16 @@ func TestProviderGrantWithoutRuntimeRecordsOnly(t *testing.T) {
 	network := newLifecycleRouteNet()
 	s.cfg.Lifecycle = network
 	lifecycleSave(t, s, "idle", "one")
-	if err := s.SetProviderPermission(t.Context(), "idle", store.ProviderTailscale, true, ViaConsole); err != nil {
-		t.Fatal(err)
-	}
-	if network.serves("idle", ProviderTailscale) || network.serves("idle", ProviderLocal) {
-		t.Fatal("grant served a flat with no live version")
-	}
-	if ok, err := s.st.ProviderPermitted(t.Context(), "idle", store.ProviderTailscale); err != nil || !ok {
-		t.Fatalf("grant not recorded: %t %v", ok, err)
+	for _, p := range []string{store.ProviderTailscale, store.ProviderPortal, store.ProviderFunnel, store.ProviderZrok, store.ProviderCFQuick, store.ProviderNetbirdExpose} {
+		if err := s.SetProviderPermission(t.Context(), "idle", p, true, ViaConsole); err != nil {
+			t.Fatal(err)
+		}
+		if network.serves("idle", ProviderID(p)) || network.serves("idle", ProviderLocal) {
+			t.Fatalf("grant served %s with no live version", p)
+		}
+		if ok, err := s.st.ProviderPermitted(t.Context(), "idle", p); err != nil || !ok {
+			t.Fatalf("grant not recorded: %t %v", ok, err)
+		}
 	}
 }
 
@@ -176,71 +180,120 @@ func publicLifecycleFlat(t *testing.T, s *Service, slugName string, providers ..
 	}
 }
 
-// A grant must not widen public exposure: a public provider granted to a
-// flat that is already Public waits for the next approved transition, and a
-// later Tailscale grant does not open it through the back door either.
-func TestProviderGrantDoesNotWidenPublicExposure(t *testing.T) {
+// Explicitly allowing a public provider on an already Public flat opens that
+// route immediately and keeps the previously serving public and private paths.
+func TestProviderGrantAddsPublicRoute(t *testing.T) {
+	for _, provider := range []ProviderID{ProviderPortal, ProviderFunnel, ProviderZrok, ProviderCloudflareQuick, ProviderNetbirdExpose} {
+		t.Run(string(provider), func(t *testing.T) {
+			s, _ := newTestService(t)
+			network := newLifecycleRouteNet()
+			s.cfg.Lifecycle = network
+			sibling := ProviderFunnel
+			if provider == sibling {
+				sibling = ProviderPortal
+			}
+			publicLifecycleFlat(t, s, "wide", string(sibling))
+			if err := s.SetProviderPermission(t.Context(), "wide", string(provider), true, ViaConsole); err != nil {
+				t.Fatal(err)
+			}
+			if !network.serves("wide", provider) {
+				t.Fatal("grant did not open the public route without a redeploy or restart")
+			}
+			if !network.serves("wide", sibling) || !network.serves("wide", ProviderLocal) {
+				t.Fatal("public grant dropped an existing route")
+			}
+			if err := s.SetProviderPermission(t.Context(), "wide", store.ProviderTailscale, true, ViaConsole); err != nil {
+				t.Fatal(err)
+			}
+			if !network.serves("wide", provider) || !network.serves("wide", sibling) || !network.serves("wide", ProviderTailscale) {
+				t.Fatal("private grant dropped a public route")
+			}
+			fv, err := s.GetFlat(t.Context(), "wide")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fv.Visibility != store.Public || fv.PublicURL == "" || fv.PrivateURL != "https://wide.tailscale.test" {
+				t.Fatalf("grant changed visibility or lost an endpoint: %+v", fv)
+			}
+		})
+	}
+}
+
+// Permission alone is not evidence that a sibling public route was serving.
+// A private or public grant must add only its own route to the observed set.
+func TestProviderGrantDoesNotOpenUnobservedPublicSibling(t *testing.T) {
+	for _, provider := range []ProviderID{ProviderTailscale, ProviderCloudflareQuick} {
+		t.Run(string(provider), func(t *testing.T) {
+			s, _ := newTestService(t)
+			network := newLifecycleRouteNet()
+			s.cfg.Lifecycle = network
+			publicLifecycleFlat(t, s, "narrow", store.ProviderFunnel)
+			// Seed a permission whose route is absent from the last exposure,
+			// as with a previously deferred grant before this fix.
+			if err := s.st.SetProviderPermission(t.Context(), "narrow", store.ProviderPortal, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetProviderPermission(t.Context(), "narrow", string(provider), true, ViaConsole); err != nil {
+				t.Fatal(err)
+			}
+			if network.serves("narrow", ProviderPortal) {
+				t.Fatal("grant opened a merely permitted, unobserved public sibling")
+			}
+			if !network.serves("narrow", provider) || !network.serves("narrow", ProviderFunnel) {
+				t.Fatal("grant lost its own or the observed public route")
+			}
+		})
+	}
+}
+
+// Registering a provider key retries an existing public exposure; unlike an
+// explicit grant, it must not add a permitted but never-observed public target.
+func TestProviderKeyRetryDoesNotOpenUnobservedPublicTarget(t *testing.T) {
 	s, _ := newTestService(t)
 	network := newLifecycleRouteNet()
 	s.cfg.Lifecycle = network
-	publicLifecycleFlat(t, s, "wide", store.ProviderFunnel)
-	if !network.serves("wide", ProviderFunnel) {
-		t.Fatal("approved Funnel route not serving")
-	}
-	if err := s.SetProviderPermission(t.Context(), "wide", store.ProviderPortal, true, ViaConsole); err != nil {
+	publicLifecycleFlat(t, s, "key-retry", store.ProviderFunnel)
+	if err := s.st.SetProviderPermission(t.Context(), "key-retry", store.ProviderPortal, true); err != nil {
 		t.Fatal(err)
 	}
-	if network.serves("wide", ProviderPortal) {
-		t.Fatal("Portal grant opened a new public route without approval")
+	s.RetryProviderRoutes(t.Context(), ProviderTailscale, ProviderPortal)
+	if network.serves("key-retry", ProviderPortal) || network.serves("key-retry", ProviderTailscale) {
+		t.Fatal("key retry opened a route outside the observed permitted exposure")
 	}
-	if err := s.SetProviderPermission(t.Context(), "wide", store.ProviderTailscale, true, ViaConsole); err != nil {
-		t.Fatal(err)
-	}
-	if !network.serves("wide", ProviderTailscale) {
-		t.Fatal("Tailscale grant did not open its route")
-	}
-	if network.serves("wide", ProviderPortal) {
-		t.Fatal("Tailscale grant opened the unapproved Portal route")
-	}
-	if !network.serves("wide", ProviderFunnel) {
-		t.Fatal("Tailscale grant dropped the approved Funnel route")
-	}
-	fv, err := s.GetFlat(t.Context(), "wide")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fv.PublicURL != "https://wide.tailscale-funnel.test" || fv.PrivateURL != "https://wide.tailscale.test" {
-		t.Fatalf("status lost an endpoint: public=%q private=%q", fv.PublicURL, fv.PrivateURL)
+	if !network.serves("key-retry", ProviderFunnel) || !network.serves("key-retry", ProviderLocal) {
+		t.Fatal("key retry lost a serving route")
 	}
 }
 
 // Only the granted provider's own route decides the outcome: a broken
 // sibling neither fails a grant nor is blamed on it.
 func TestProviderGrantIgnoresSiblingFailures(t *testing.T) {
-	t.Run("public sibling", func(t *testing.T) {
-		s, _ := newTestService(t)
-		network := newLifecycleRouteNet()
-		s.cfg.Lifecycle = network
-		publicLifecycleFlat(t, s, "sib", store.ProviderPortal, store.ProviderFunnel)
-		network.failOpen = map[ProviderID]error{ProviderFunnel: fmt.Errorf("funnel down: %w", ErrProviderUnavailable)}
-		if err := s.SetProviderPermission(t.Context(), "sib", store.ProviderTailscale, true, ViaConsole); err != nil {
-			t.Fatalf("Tailscale grant failed for a Funnel error: %v", err)
-		}
-		if !network.serves("sib", ProviderTailscale) {
-			t.Fatal("Tailscale route not opened")
-		}
-		evs, err := s.st.ListEvents(t.Context(), "sib", "exposure", 0, 50)
-		if err != nil {
-			t.Fatal(err)
-		}
-		warned := false
-		for _, e := range evs {
-			warned = warned || (e.Level == "warn" && strings.Contains(e.Message, "funnel down"))
-		}
-		if !warned {
-			t.Fatal("sibling error was not logged")
-		}
-	})
+	for _, provider := range []ProviderID{ProviderTailscale, ProviderCloudflareQuick} {
+		t.Run("public sibling/"+string(provider), func(t *testing.T) {
+			s, _ := newTestService(t)
+			network := newLifecycleRouteNet()
+			s.cfg.Lifecycle = network
+			publicLifecycleFlat(t, s, "sib", store.ProviderPortal, store.ProviderFunnel)
+			network.failOpen = map[ProviderID]error{ProviderFunnel: fmt.Errorf("funnel down: %w", ErrProviderUnavailable)}
+			if err := s.SetProviderPermission(t.Context(), "sib", string(provider), true, ViaConsole); err != nil {
+				t.Fatalf("%s grant failed for a Funnel error: %v", provider, err)
+			}
+			if !network.serves("sib", provider) {
+				t.Fatalf("%s route not opened", provider)
+			}
+			evs, err := s.st.ListEvents(t.Context(), "sib", "exposure", 0, 50)
+			if err != nil {
+				t.Fatal(err)
+			}
+			warned := false
+			for _, e := range evs {
+				warned = warned || (e.Level == "warn" && strings.Contains(e.Message, "funnel down"))
+			}
+			if !warned {
+				t.Fatal("sibling error was not logged")
+			}
+		})
+	}
 	t.Run("public grant on private flat", func(t *testing.T) {
 		s, _ := newTestService(t)
 		network := newLifecycleRouteNet()
@@ -319,7 +372,8 @@ func TestProviderGrantKeepsPublicStatus(t *testing.T) {
 	}
 }
 
-// A public route that was stopped is not reopened by a later grant.
+// A grant does not reopen a stopped public sibling; explicitly granting that
+// stopped provider again retries its route.
 func TestProviderGrantDoesNotReopenStoppedPublicRoute(t *testing.T) {
 	s, _ := newTestService(t)
 	network := newLifecycleRouteNet()
@@ -328,14 +382,22 @@ func TestProviderGrantDoesNotReopenStoppedPublicRoute(t *testing.T) {
 	if err := network.StopProviderRoutes(t.Context(), "halt", ProviderPortal); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetProviderPermission(t.Context(), "halt", store.ProviderTailscale, true, ViaConsole); err != nil {
+	for _, provider := range []ProviderID{ProviderTailscale, ProviderCloudflareQuick} {
+		if err := s.SetProviderPermission(t.Context(), "halt", string(provider), true, ViaConsole); err != nil {
+			t.Fatal(err)
+		}
+		if network.serves("halt", ProviderPortal) {
+			t.Fatal("grant reopened a stopped public sibling")
+		}
+		if !network.serves("halt", ProviderFunnel) || !network.serves("halt", provider) {
+			t.Fatal("grant lost a serving route")
+		}
+	}
+	if err := s.SetProviderPermission(t.Context(), "halt", store.ProviderPortal, true, ViaConsole); err != nil {
 		t.Fatal(err)
 	}
-	if network.serves("halt", ProviderPortal) {
-		t.Fatal("grant reopened a stopped public route")
-	}
-	if !network.serves("halt", ProviderFunnel) || !network.serves("halt", ProviderTailscale) {
-		t.Fatal("grant lost a serving route")
+	if !network.serves("halt", ProviderPortal) {
+		t.Fatal("explicit re-grant did not reopen its stopped route")
 	}
 }
 
