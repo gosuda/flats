@@ -114,6 +114,10 @@ type Net struct {
 	entries map[string]*entry // role/name
 	locks   map[string]*sync.Mutex
 	ops     sync.WaitGroup
+	// stopping holds, by name, peers whose Stop failed: their teardown may
+	// still run, so the name is neither started again nor its identity
+	// deleted until a later Stop succeeds.
+	stopping map[string]client
 	// keyRefused records, by name, the setup key a late start found unable
 	// to register (ErrKeyNoExtraLabels), so the next start with the same key
 	// fails at once instead of waiting for NetBird's retries again.
@@ -177,7 +181,7 @@ func New(cfg Config) (*Net, error) {
 		logf = func(string, ...any) {}
 	}
 	return &Net{cfg: cfg, logf: logf, retryMin: 2 * time.Second, retryMax: time.Minute,
-		peers: map[string]client{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}, keyRefused: map[string]string{}}, nil
+		peers: map[string]client{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}, stopping: map[string]client{}, keyRefused: map[string]string{}}, nil
 }
 
 type logWriter struct{ logf func(string, ...any) }
@@ -245,6 +249,9 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 	n.mu.Unlock()
 	if c != nil {
 		return c, nil
+	}
+	if err := n.finishStop(name); err != nil {
+		return nil, err
 	}
 	dir := peerDir(n.cfg.Dir, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -346,6 +353,30 @@ func isPeerRejected(err error) bool {
 	return ok && st.Code() == codes.InvalidArgument && strings.Contains(st.Message(), registrationFallbackMsg)
 }
 
+// finishStop stops name's peer left as stopping, if any. It runs under name's
+// lock.
+func (n *Net) finishStop(name string) error {
+	n.mu.Lock()
+	c := n.stopping[name]
+	n.mu.Unlock()
+	if c == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
+	err := c.Stop(ctx)
+	cancel()
+	if err != nil {
+		n.logf("netbird: %s: stop the peer: %v", name, err)
+		return fmt.Errorf("netbird: %s: the peer did not stop: %w; retried by the next change of this name", name, err)
+	}
+	n.mu.Lock()
+	if n.stopping[name] == c {
+		delete(n.stopping, name)
+	}
+	n.mu.Unlock()
+	return nil
+}
+
 // isKeyNoExtraLabels reports whether err is NetBird's refusal to register a
 // peer that asks for extra DNS labels with a key that does not allow them.
 func isKeyNoExtraLabels(err error) bool {
@@ -354,7 +385,8 @@ func isKeyNoExtraLabels(err error) bool {
 }
 
 // releasePeer stops name's peer once no role uses it, and with retire deletes
-// its identity. It runs under name's lock.
+// its identity. It runs under name's lock. A peer whose Stop fails is kept as
+// stopping, and its identity stays, until a later call stops it.
 func (n *Net) releasePeer(name string, retire bool) error {
 	n.mu.Lock()
 	for _, e := range n.entries {
@@ -363,16 +395,13 @@ func (n *Net) releasePeer(name string, retire bool) error {
 			return nil
 		}
 	}
-	c := n.peers[name]
-	delete(n.peers, name)
+	if c := n.peers[name]; c != nil {
+		delete(n.peers, name)
+		n.stopping[name] = c
+	}
 	n.mu.Unlock()
-	if c != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), n.cfg.ShutdownTimeout)
-		err := c.Stop(ctx)
-		cancel()
-		if err != nil {
-			n.logf("netbird: %s: stop the peer: %v", name, err)
-		}
+	if err := n.finishStop(name); err != nil {
+		return err
 	}
 	if retire {
 		if err := os.RemoveAll(peerDir(n.cfg.Dir, name)); err != nil {
@@ -493,9 +522,9 @@ func peerURL(c client, name string) (string, error) {
 	return "http://" + ip + "/", nil
 }
 
-// Hostnames returns the names name's peer answers to in NetBird DNS: its
-// extra label and its primary FQDN. It is empty while the peer is not
-// running.
+// Hostnames returns the names name's peer answers to: its extra label and
+// primary FQDN in NetBird DNS, and its overlay IP. It is empty while the peer
+// is not running.
 func (n *Net) Hostnames(name string) []string {
 	n.mu.Lock()
 	c := n.peers[name]
@@ -503,13 +532,19 @@ func (n *Net) Hostnames(name string) []string {
 	if c == nil {
 		return nil
 	}
-	fqdn, _, err := c.Identity()
-	if err != nil || fqdn == "" {
+	fqdn, ip, err := c.Identity()
+	if err != nil {
 		return nil
 	}
-	out := []string{fqdn}
+	var out []string
 	if _, domain, ok := strings.Cut(fqdn, "."); ok && domain != "" && name+"."+domain != fqdn {
-		out = append([]string{name + "." + domain}, out...)
+		out = append(out, name+"."+domain)
+	}
+	if fqdn != "" {
+		out = append(out, fqdn)
+	}
+	if ip != "" {
+		out = append(out, ip) // the URL when the peer has no FQDN
 	}
 	return out
 }
@@ -814,6 +849,10 @@ func (n *Net) Close() error {
 	n.entries = map[string]*entry{}
 	peers := n.peers
 	n.peers = map[string]client{}
+	for name, c := range n.stopping {
+		peers[name] = c
+	}
+	n.stopping = map[string]client{}
 	n.mu.Unlock()
 	var errs []error
 	for _, e := range entries {

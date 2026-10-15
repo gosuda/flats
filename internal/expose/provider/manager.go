@@ -140,9 +140,9 @@ type NetbirdNet interface {
 	RetireConsole(name string) error
 	ConsoleURL(name string) string
 	ConsoleStatus() core.NetStatus
-	// Hostnames returns the names console domain name's peer answers to in
-	// NetBird DNS (its extra label and primary FQDN), or nil while it does
-	// not run.
+	// Hostnames returns the names console domain name's peer answers to
+	// (its extra label and primary FQDN in NetBird DNS, and its overlay IP),
+	// or nil while it does not run.
 	Hostnames(name string) []string
 	// IdentityForIP returns the FQDN of the NetBird peer at ip as console
 	// domain name's peer sees it, or "".

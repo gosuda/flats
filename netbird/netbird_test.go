@@ -46,6 +46,7 @@ type fakeClient struct {
 	startErr  error
 	block     chan struct{} // Start waits for it (or ctx), then the underlying start ends
 	exposeErr error
+	stopErr   error // returned once by Stop
 	listeners []net.Listener
 	addrs     []string
 	requests  []exposeRequest
@@ -90,6 +91,10 @@ func (f *fakeClient) Start(ctx context.Context, finished func(error)) error {
 func (f *fakeClient) Stop(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.stopErr; err != nil {
+		f.stopErr = nil
+		return err
+	}
 	f.stopped++
 	return nil
 }
@@ -552,7 +557,7 @@ func TestConsoleRole(t *testing.T) {
 	if n.ConsoleURL("flats") != url || len(n.PrivateStatus().Hosts) != 0 || len(n.ConsoleStatus().Hosts) != 1 {
 		t.Fatal("the console role must be reported apart from private flats")
 	}
-	if got := strings.Join(n.Hostnames("flats"), ","); got != "flats.netbird.cloud,flats-1-2.netbird.cloud" {
+	if got := strings.Join(n.Hostnames("flats"), ","); got != "flats.netbird.cloud,flats-1-2.netbird.cloud,100.64.0.7" {
 		t.Fatalf("hostnames %q", got)
 	}
 	if got := n.IdentityForIP("flats", "100.64.9.9"); got != "laptop.netbird.cloud" {
@@ -566,6 +571,49 @@ func TestConsoleRole(t *testing.T) {
 	}
 	if exists(filepath.Join(dir, "peers", "flats")) || n.Hostnames("flats") != nil {
 		t.Fatal("retiring a console domain must delete its peer")
+	}
+}
+
+// A peer whose Stop fails keeps its identity and its name: nothing starts on
+// that name, and the retirement fails, until a later Stop succeeds.
+func TestFailedStopKeepsTheNameUntilItStops(t *testing.T) {
+	fs := install(t)
+	dir := t.TempDir()
+	n := newNet(t, dir)
+	ctx := context.Background()
+	if _, err := n.ServePrivate(ctx, "blog", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	f := fs.last("blog")
+	f.mu.Lock()
+	f.stopErr = context.DeadlineExceeded
+	f.mu.Unlock()
+	if err := n.RetirePrivate("blog"); err == nil {
+		t.Fatal("a retirement whose peer did not stop succeeded")
+	}
+	if !exists(filepath.Join(dir, "peers", "blog")) {
+		t.Fatal("the identity of a peer still stopping was deleted")
+	}
+	// The next change of the name stops the old peer first.
+	if err := n.RetirePrivate("blog"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, "peers", "blog")) || f.stops() != 1 {
+		t.Fatal("the retried retirement must stop the peer and delete its identity")
+	}
+	// A serve after a failed stop waits for that stop too.
+	if _, err := n.ServePrivate(ctx, "news", okHandler); err != nil {
+		t.Fatal(err)
+	}
+	g := fs.last("news")
+	g.mu.Lock()
+	g.stopErr = context.DeadlineExceeded
+	g.mu.Unlock()
+	if err := n.StopPrivate("news"); err == nil {
+		t.Fatal("a failed stop was not reported")
+	}
+	if _, err := n.ServePrivate(ctx, "news", okHandler); err != nil || g.stops() != 1 || fs.count() != 3 {
+		t.Fatalf("serve after a failed stop: %v, stops %d, clients %d", err, g.stops(), fs.count())
 	}
 }
 
