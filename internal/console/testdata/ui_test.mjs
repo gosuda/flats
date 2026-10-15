@@ -517,6 +517,11 @@ const access = all(share, (e) => e.tagName === 'SELECT')[0];
 access.value = 'private';
 access.dispatch('change');
 await tick();
+const refreshDuringVisibility = byText(share, 'Refresh')[0];
+assert.equal(refreshDuringVisibility.getAttribute('aria-disabled'), 'true');
+const visibilityCalls = calls.length;
+refreshDuringVisibility.dispatch('click');
+assert.equal(calls.length, visibilityCalls, 'refresh waits for visibility changes');
 const permissionConfirm = all(document.body, (e) => e.tagName === 'DIALOG' && e !== share)[0];
 assert.ok(permissionConfirm.textContent.includes('Make Blog private?'));
 routes['POST /console/api/flats/blog/visibility'] = pending('apr-vis');
@@ -525,7 +530,7 @@ routes['GET /console/api/flats/blog'] = { ...blog, visibility: 'private', public
 permissionConfirm.close('ok');
 await tick();
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/visibility').body), { visibility: 'private', reason: '' });
-assert.ok(share.textContent.includes('devices allowed by your tailnet'));
+assert.ok(share.textContent.includes('access rules of the network serving this link'));
 assert.equal(all(share, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0].getAttribute('href'), new URL(blog.private_url).href);
 share.close();
 // Before a private flat goes public, the warning must not say it already is.
@@ -1215,4 +1220,93 @@ assert.equal(pathOf(glyphOf(pubLines[1])), pathOf(icon('globe')));
 assert.equal(all(pubLines[1], (e) => e.tagName === 'A')[0].getAttribute('href'), new URL(blog.public_url).href);
 assert.equal(lines({ ...blog, visibility: 'private' }).length, 1, 'no public line while private');
 globalThis.location = savedLocation;
+// Share readiness and refresh use current routes, never draft or stopped links.
+const { shareRoute } = await import('./share.js');
+const shareFixture = { ...blog, visibility: 'private', running: true, endpoints: [], private_state: 'ready' };
+const routeFixture = (provider, state, ready = false) => ({ provider, state, ready, permitted: true,
+  audience: 'current', host: blog.slug, url: 'https://guide.example.com' });
+for (const provider of ['tailscale', 'netbird']) {
+  for (const [state, ready, usable] of [['ready', true, true], ['key-expiring', true, true],
+    ['starting', false, false], ['error', false, false], ['needs-login', false, false], ['unknown', false, false]]) {
+    const stateFlat = { ...shareFixture, endpoints: [routeFixture(provider, state, ready)] };
+    assert.equal(shareRoute(stateFlat).usable, usable, provider + ':' + state);
+    if (state === 'unknown') assert.ok(!shareRoute(stateFlat).message.includes('being prepared'));
+    shareDialog(stateFlat);
+    const dialog = all(document.body, e => e.tagName === 'DIALOG').pop();
+    assert.ok(dialog.textContent.includes(provider === 'netbird' ? 'NetBird access policies' : 'Tailscale access rules'));
+    dialog.close();
+  }
+}
+for (const patch of [{ permitted: false }, { state: 'stopped' }]) {
+  assert.equal(shareRoute({ ...shareFixture, endpoints: [{ ...routeFixture('netbird', 'ready', true), ...patch }] }).usable, false);
+}
+for (const patch of [{ audience: 'draft' }, { host: 'another-flat' }, { provider: 'portal' }]) {
+  assert.equal(shareRoute({ ...shareFixture, endpoints: [{ ...routeFixture('netbird', 'ready', true), ...patch }] }).url, shareFixture.private_url, 'unrelated route does not mask legacy selected URL');
+}
+assert.equal(shareRoute({ ...shareFixture, endpoints: [{ ...routeFixture('tailscale', 'ready', true), url: '' }, routeFixture('netbird', 'ready', true)] }).provider, 'netbird');
+for (const state of ['error', 'needs-login', 'unavailable']) {
+  assert.ok(shareRoute({ ...shareFixture, endpoints: [routeFixture('netbird', state)] }).message.includes('unavailable'));
+}
+assert.ok(shareRoute({ ...shareFixture, running: false }).message.includes('not running'));
+for (const provider of ['portal', 'tailscale-funnel', 'zrok', 'cloudflare-quick', 'netbird-expose']) {
+  const publicRoute = routeFixture(provider, 'ready', true);
+  assert.equal(shareRoute({ ...shareFixture, visibility: 'public', endpoints: [routeFixture('netbird', 'ready', true), publicRoute] }).provider, provider);
+}
+const shareLocation = globalThis.location;
+globalThis.location = { origin: 'https://console.example.com' };
+const localRoute = { ...routeFixture('local', 'ready', true), url: 'http://blog.localhost:7879' };
+assert.equal(shareRoute({ ...shareFixture, endpoints: [localRoute, routeFixture('netbird', 'starting')] }).provider, 'netbird');
+shareDialog({ ...shareFixture, endpoints: [localRoute] });
+const localShare = all(document.body, e => e.tagName === 'DIALOG').pop();
+assert.ok(localShare.textContent.includes('This private link opens only on the Flats host machine.'));
+localShare.close();
+globalThis.location = shareLocation;
+assert.ok(shareRoute({ ...shareFixture, private_url: '', private_state: '' }).message.includes('No link'));
+assert.ok(shareRoute({ ...shareFixture, live_version: 0 }).message.includes('not been published'));
+for (const type of ['docs', 'design']) {
+  const message = shareRoute({ ...shareFixture, type, running: false }).message;
+  assert.ok(message.includes('not running') && !message.includes('publish'));
+}
+assert.equal(shareRoute({ ...shareFixture, private_state: 'starting' }).usable, false);
+assert.equal(shareRoute({ ...shareFixture, private_state: undefined }).message, 'Link available.');
+assert.equal(shareRoute({ ...shareFixture, endpoints: [routeFixture('tailscale', 'starting'), routeFixture('netbird', 'ready', true)] }).provider, 'netbird');
+let observedChanges = 0;
+shareDialog({ ...shareFixture, private_state: 'starting' }, () => observedChanges++);
+const refreshDialog = all(document.body, e => e.tagName === 'DIALOG').pop();
+const refreshButton = byText(refreshDialog, 'Refresh')[0];
+let finishRefresh;
+routes['GET /console/api/flats/blog'] = () => new Promise(resolve => { finishRefresh = resolve; });
+refreshButton.focus = () => { document.activeElement = refreshButton; };
+refreshButton.focus();
+refreshButton.dispatch('click');
+assert.equal(all(refreshDialog, e => e.tagName === 'SELECT')[0].disabled, true);
+assert.notEqual(refreshButton.disabled, true, 'refresh remains focusable while pending');
+assert.equal(refreshButton.getAttribute('aria-disabled'), 'true');
+const requestsBeforeDuplicate = calls.length;
+refreshButton.dispatch('click');
+assert.equal(calls.length, requestsBeforeDuplicate, 'refresh is single-flight');
+finishRefresh(shareFixture);
+await tick();
+assert.ok(refreshDialog.textContent.includes('Link is ready.'));
+assert.equal(byText(refreshDialog, 'Refresh')[0], refreshButton, 'refresh keeps the same focused element');
+assert.equal(document.activeElement, refreshButton);
+const focusedVisit = all(refreshDialog, e => e.tagName === 'A' && e.textContent === 'Visit')[0];
+assert.ok(focusedVisit);
+assert.equal(all(refreshDialog, e => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0].disabled, false);
+document.activeElement = focusedVisit;
+routes['GET /console/api/flats/blog'] = { __status: 503, error: 'unavailable' };
+refreshButton.dispatch('click');
+await tick();
+assert.ok(refreshDialog.textContent.includes('last known state'));
+assert.equal(all(refreshDialog, e => e.tagName === 'A' && e.textContent === 'Visit')[0], focusedVisit, 'unchanged refresh keeps Visit element');
+assert.equal(document.activeElement, focusedVisit, 'unchanged Visit retains focus');
+assert.ok(refreshDialog.textContent.includes(shareFixture.private_url));
+routes['GET /console/api/flats/blog'] = () => new Promise(resolve => { finishRefresh = resolve; });
+refreshButton.dispatch('click');
+refreshDialog.close();
+const closedText = refreshDialog.textContent;
+finishRefresh({ ...shareFixture, private_url: 'https://changed.example.com' });
+await tick();
+assert.equal(refreshDialog.textContent, closedText, 'late response does not redraw a closed dialog');
+assert.equal(observedChanges, 1, 'parent refreshes after an observed change');
 console.log('ok');
