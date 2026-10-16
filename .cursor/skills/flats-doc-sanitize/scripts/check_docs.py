@@ -32,11 +32,12 @@ FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
 LIST_MARKER_RE = re.compile(r"^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]+)")
 CONTAINER_PREFIX_RE = re.compile(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)+")
-HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
-SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
+HEADING_RE = re.compile(r"^[ \t]*(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
+SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]*(?:=+|-+)[ \t]*$")
+SPACED_THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(_[ \t]*){3,}|(-[ \t]+){2,}-[ \t]*)$")
 REF_DEF_FULL_RE = re.compile(
-    r"(?m)^[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(?:\n[ \t]*)?(<[^>\n]+>|\S+)"
-    r"(?:(?:[ \t]+|[ \t]*\n[ \t]*)(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+    r"(?m)^(?:[ \t]*>[ \t]?)*[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(?:\n(?:[ \t]*>[ \t]?)*[ \t]*)?(<[^>\n]+>|\S+)"
+    r"(?:(?:[ \t]+|[ \t]*\n(?:[ \t]*>[ \t]?)*[ \t]*)(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
 HTML_LINK_TAG_NAMES = {"a", "img", "link", "script", "source"}
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
@@ -243,8 +244,17 @@ def strip_fences_and_comments(text: str) -> str:
             continue
 
         indent = leading_spaces(line)
-        while list_stack and indent < list_stack[-1][0]:
-            list_stack.pop()
+        is_new_list_marker = bool(
+            not THEMATIC_BREAK_RE.match(line) and LIST_MARKER_RE.match(line)
+        )
+        while list_stack:
+            marker_col, content_col = list_stack[-1]
+            if indent < marker_col:
+                list_stack.pop()
+            elif prev_blank and indent < content_col and not (is_new_list_marker and indent == marker_col):
+                list_stack.pop()
+            else:
+                break
 
         code_threshold = (list_stack[-1][1] + 4) if list_stack else 4
         if indent >= code_threshold and (prev_blank or in_indented_code):
@@ -253,9 +263,11 @@ def strip_fences_and_comments(text: str) -> str:
             continue
 
         in_indented_code = False
-        if not THEMATIC_BREAK_RE.match(line):
+        if is_new_list_marker:
             lm = LIST_MARKER_RE.match(line)
             if lm and indent < code_threshold:
+                if list_stack and list_stack[-1][0] == indent:
+                    list_stack.pop()
                 marker_end_col = visual_width(lm.group(1))
                 total_col = visual_width(lm.group(0))
                 if total_col - marker_end_col >= 5:
@@ -292,7 +304,7 @@ def strip_inline_code(text: str) -> str:
 def strip_emphasis_markers(s: str) -> str:
     """Strip Markdown emphasis/strong markers (*, _) while keeping intraword underscores."""
     s = re.sub(r"(\*{1,3})(.+?)\1", r"\2", s)
-    s = re.sub(r"(?<![0-9A-Za-z])(_{1,3})([^_]+?)\1(?![0-9A-Za-z])", r"\2", s)
+    s = re.sub(r"(?<![0-9A-Za-z])(_{1,3})(.+?)\1(?![0-9A-Za-z])", r"\2", s)
     return s
 
 
@@ -393,18 +405,22 @@ def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inl
             i += 1
             continue
 
-        if para_lines and SETEXT_UNDERLINE_RE.match(unprefixed_no_inline):
-            # Only treat as Setext if container prefixes match (not a thematic break after list item)
+        if (
+            para_lines
+            and not SPACED_THEMATIC_BREAK_RE.match(no_inline)
+            and SETEXT_UNDERLINE_RE.match(unprefixed_no_inline)
+        ):
             register_heading(" ".join(p.strip() for p in para_lines))
             para_lines.clear()
             i += 1
             continue
 
-        stripped = no_inline.strip()
+        stripped_unprefixed = unprefixed_no_inline.strip()
         if (
-            not stripped
+            not stripped_unprefixed
             or line_in_ref_def(i)
-            or stripped.startswith(("#", "-", "*", "+", ">", "|", "<"))
+            or THEMATIC_BREAK_RE.match(no_inline)
+            or stripped_unprefixed.startswith(("#", "|", "<"))
         ):
             para_lines.clear()
         else:
