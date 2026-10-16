@@ -1,0 +1,21 @@
+name: Commit images (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full 40-character SHA reachable from origin/main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/commit-images.yml
+    with:
+      commit: ${{ inputs.commit }}

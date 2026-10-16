@@ -79,27 +79,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: .release-tools
-          sparse-checkout: scripts/ci-test.sh
+          sparse-checkout: |
+            scripts/ci-test.sh
+            .github/actions/setup-go
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - uses: actions/setup-go@v5
+      - uses: ./.release-tools/.github/actions/setup-go
         with:
-          go-version-file: go.mod
-          cache: true
+          cache-key: test-${{ matrix.shard }}
       - name: Vet
         if: matrix.shard == 'other'
         run: go vet ./...
       - name: Test
         run: .release-tools/scripts/ci-test.sh "${{ matrix.shard }}"
 
-  release:
-    needs: [resolve, test]
+  # Compile while tests run; only publication waits for both to succeed.
+  build:
+    needs: resolve
+    outputs:
+      archives: ${{ steps.archives.outputs.artifact-id }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
     steps:
       # Build the exact commit the resolve job checked, even if the tag moved.
       - uses: actions/checkout@v4
@@ -111,16 +111,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: .release-tools
-          sparse-checkout: scripts/build-release.sh
+          sparse-checkout: |
+            scripts/build-release.sh
+            .github/actions/setup-go
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Keep the tools checkout out of the source status
         # Go stamps vcs.modified=true when git status shows untracked files.
         run: echo '/.release-tools/' >>.git/info/exclude
-      - uses: actions/setup-go@v5
+      - uses: ./.release-tools/.github/actions/setup-go
         with:
-          go-version-file: go.mod
-          cache: true
+          cache-key: container
+          module-scope: netbird
       - name: Build archives
         env:
           COMMIT: ${{ needs.resolve.outputs.commit }}
@@ -135,6 +137,33 @@ jobs:
               exit 1
             fi
           done
+      - name: Stage verified archives for publication
+        id: archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archives-${{ needs.resolve.outputs.commit }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    needs: [resolve, test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download this run's verified archives
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.archives }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+      - name: Verify staged archives
+        run: (cd "$RUNNER_TEMP/dist" && sha256sum -c checksums.txt)
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
@@ -189,7 +218,6 @@ jobs:
           for archive in dist/flats_linux_*.tar.gz; do
             gh attestation verify "$archive" --repo "$GH_REPO"
           done
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:

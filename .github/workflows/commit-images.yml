@@ -1,31 +1,39 @@
 name: Commit images
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      verified-commit:
+        description: Exact main push SHA whose complete CI test matrix succeeded
+        required: false
+        default: ""
+        type: string
       commit:
-        description: Full 40-character SHA reachable from origin/main
-        required: true
+        description: Full SHA for the manual caller; ignored for main pushes
+        required: false
+        default: ""
         type: string
 
-permissions:
-  contents: read
+# Inherit the caller token. Explicit nested write permissions can exceed the
+# read-only cap on fork/Dependabot PRs even when the calling job is skipped.
 
 # No path filter or cancelling concurrency group: every introduced commit is
 # retained, including the intermediate main commits in a multi-commit push.
 jobs:
   select:
-    if: github.event_name == 'workflow_dispatch' || !github.event.deleted
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || !github.event.deleted) }}
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.commits.outputs.matrix }}
       count: ${{ steps.commits.outputs.count }}
+      verified-commit: ${{ steps.commits.outputs.verified-commit }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Require main for manual runs
@@ -35,28 +43,30 @@ jobs:
         id: commits
         env:
           REQUESTED_COMMIT: ${{ inputs.commit }}
+          VERIFIED_COMMIT: ${{ inputs.verified-commit }}
         run: python3 scripts/image-commits.py
 
   image:
     needs: select
-    if: needs.select.outputs.count != '0'
+    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.count != '0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    permissions:
-      contents: read
-      packages: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go
         with:
-          go-version-file: go.mod
-          cache: true
+          # Same CGO-free Linux builds as CI/container. Reuse compiler objects,
+          # not its differently versioned binaries; container is the sole writer.
+          cache-key: container
+          module-scope: netbird
+          save-build: "false"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -65,6 +75,7 @@ jobs:
           password: ${{ github.token }}
       - name: Build, test and publish each commit
         env:
+          VERIFIED_COMMIT: ${{ needs.select.outputs.verified-commit }}
           COMMIT_BATCH: ${{ toJSON(matrix.commits) }}
           IMAGE: ghcr.io/${{ github.repository }}
         run: scripts/build-commit-images.sh

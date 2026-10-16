@@ -38,6 +38,11 @@ jobs:
       - name: Vet
         if: matrix.shard == 'other'
         run: go vet ./...
+      - name: CI workflow helper regressions
+        if: matrix.shard == 'other'
+        run: |
+          python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
+          python3 -B -m unittest discover -s scripts -p test_image_commits.py
       # Uncached, unlike TestRepositoryDocs: go test cannot see every Git
       # index change that adds or removes a link target.
       - name: Documentation links
@@ -56,6 +61,8 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-key: netbird
+          module-scope: netbird
+          save-modules: "true"
       - name: Verify module files
         working-directory: netbird
         run: |
@@ -105,6 +112,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-key: install-script
+          module-scope: netbird
           save-modules: ${{ runner.os == 'macOS' }}
       - name: Lint
         if: runner.os == 'Linux'
@@ -148,6 +156,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-key: darwin-cross-build
+          module-scope: netbird
       - name: Build Intel macOS release archive
         run: FLATS_RELEASE_TARGETS="darwin/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
 
@@ -159,9 +168,9 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-key: container
+          module-scope: netbird
       - name: Build Linux release archives
         run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build the image for every release platform
         run: docker buildx build --platform linux/amd64,linux/arm64 .
@@ -171,3 +180,17 @@ jobs:
         run: |
           tar -xzf dist/flats_linux_amd64.tar.gz -C "$RUNNER_TEMP" flats
           scripts/container-smoke.sh flats:ci v0.0.0-ci "$RUNNER_TEMP/flats"
+
+  # Reuse this exact main tip's root-module verification. The called workflow
+  # keeps the original push range and fully verifies every unproven commit.
+  # Dispatch even after failed tests: a broken tip must not suppress
+  # valid intermediate commits. Main CI completion now includes SHA images.
+  commit-images:
+    needs: test
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && !github.event.deleted }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/commit-images.yml
+    with:
+      verified-commit: ${{ needs.test.result == 'success' && github.sha || '' }}

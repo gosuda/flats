@@ -27,6 +27,11 @@ resolves to the highest released semantic version (prereleases excluded)
 rather than `main`, possibly after a Go module proxy delay; use `@main` for
 unreleased changes.
 
+Release archive builds run alongside tests; publication waits for both. Verified
+archives are staged for seven days. If a failed publication is retried after
+that artifact expires, use **Re-run all jobs** to rebuild it (already published
+release assets are never overwritten).
+
 ## Build version
 
 Every build reports its version in `flats version`, `/api/status`
@@ -168,18 +173,25 @@ only selects its own new range, so it does not recover those skipped commits;
 manually dispatch each missing SHA using the command below.
 
 A commit is published only after vet, tests, clean revision verification and
-the container smoke test succeed. The tests run CI's shards
-(`scripts/ci-test.sh`) one after another, so the docs tests' wall-clock
-budgets run alone. A failure prevents that commit's publication;
+the container smoke test succeed. Main CI calls the image workflow after its
+complete test matrix settles. Only its exact successfully tested tip reuses
+that vet/test result; intermediate commits, manual builds and tips without
+successful verification run all shards (`scripts/ci-test.sh`) one after another,
+so the docs tests' wall-clock budgets run alone. A failure prevents that commit's publication;
 later commits in its build lane are still attempted and the lane reports failure.
 Each lane has a 360-minute timeout and remains subject to GitHub Actions runtime
 limits; a timeout can leave unattempted commits that need manual recovery.
 
-To build an older commit explicitly, run `Commit images`
-(`.github/workflows/commit-images.yml`) from `main` with its full SHA:
+A deliberate workflow cancellation stops image work; recover missing commits
+manually. Retrying a main CI run skips full-SHA images already in the registry.
+Manual dispatch always rebuilds, including when repairing an existing image.
+Main CI's overall completion and conclusion now include image publication.
+
+To build an older commit explicitly, run `Commit images (manual)`
+(`.github/workflows/commit-images-dispatch.yml`) from `main` with its full SHA:
 
 ```sh
-gh workflow run commit-images.yml --repo gosuda/flats --ref main \
+gh workflow run commit-images-dispatch.yml --repo gosuda/flats --ref main \
   -f commit=<full-sha>
 ```
 
