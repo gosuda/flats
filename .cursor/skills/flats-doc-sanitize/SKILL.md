@@ -78,7 +78,7 @@ Sanitize Progress:
 
 ### Step 1: Discover Current Doc Graph & Code Contracts
 
-1. Run `python3 .cursor/skills/flats-doc-sanitize/scripts/check_docs.py` to validate relative Markdown/HTML links, case-exact paths, heading anchors (`#fragment`), reachability from `README.md` and code consumers, `docs/agent/` relative-link warnings, and 40/64-char hash literals.
+1. Run `python3 .cursor/skills/flats-doc-sanitize/scripts/check_docs.py` (a lightweight heuristic auditor for standard repository Markdown: fenced/inline code, ATX `#` headings, single-line Markdown/reference/HTML links, case-exact paths, reachability from `README.md` and code consumers, `docs/agent/` relative-link warnings, and 40/64-char hash literals).
 2. Inspect `docs/README.md`, `docs/spec/README.md`, and documentation tests to understand the active structure and automated invariants.
 
 ### Step 2: Audit for Contradictions, Spec-vs-Code Gaps, Drift, Overlap & Volatility

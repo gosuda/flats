@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Structure-agnostic Markdown link, anchor, and reachability auditor.
+"""Lightweight, structure-agnostic Markdown link, anchor, and reachability auditor.
 
-Does not hardcode directory layouts or file naming conventions:
-1. Discovers non-ignored repository files via `git ls-files --cached --others --exclude-standard`
-   from the Git top-level root (covering both tracked and newly created unstaged docs while
-   rejecting links to gitignored or outside-repo paths).
-2. Validates relative Markdown/reference/HTML links, case-exact file names, and case-sensitive
-   `#anchor` fragments (ATX & Setext headings plus HTML id/name attributes inside HTML tags).
-3. Builds a BFS reachability graph starting from root `README.md` and runtime/build code entrypoints
-   (`//go:embed`, build/config files) while reporting test-only or colocated Markdown files separately.
-4. Flags relative links inside `docs/agent/` (which break when served via MCP/llms.txt)
-   and lines containing 40-char (SHA-1) or 64-char (SHA-256) hex hashes.
+Intentional scope (standard repository Markdown, not a full CommonMark parser):
+- Discovers non-ignored repository files via `git ls-files --cached --others --exclude-standard`.
+- Strips fenced code blocks (``` / ~~~), inline code spans (`...`), and HTML comments (<!-- ... -->).
+- Validates single-line Markdown links (`[text](dest)`, `[text][ref]`), reference definitions
+  (`[ref]: dest`), HTML `<a href>` / `<img src>` tags, case-exact file paths, and ATX `#` heading
+  `#anchor` fragments.
+- Computes BFS reachability from root `README.md` + runtime/build code references (`//go:embed`,
+  scripts/configs), separating test-only or colocated package notes (`internal/`, `examples/`, `cmd/`).
+- Flags relative links inside `docs/agent/` and 40/64-char hex hashes.
 """
 
 from __future__ import annotations
@@ -28,30 +27,11 @@ import urllib.parse
 
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
-FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
-THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
-SPACED_THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(_[ \t]*){3,}|(-[ \t]+){2,}-[ \t]*)$")
-LIST_MARKER_RE = re.compile(r"^([ \t]{0,3}(?:[-*+]|\d{1,9}[.)]))([ \t]+)")
-BLOCKQUOTE_PREFIX_RE = re.compile(r"^[ \t]{0,3}>[ \t]?")
-HTML_BLOCK_START_RE = re.compile(
-    r"^[ \t]{0,3}<(?:/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|"
-    r"dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
-    r"h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|"
-    r"noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|"
-    r"tbody|td|textarea|tfoot|th|thead|title|tr|track|ul)\b|!|[?])",
-    re.IGNORECASE,
+FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+ATX_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$")
+REF_DEF_RE = re.compile(
+    r"^[ \t]{0,3}\[([^\^\]][^\]]*)\]:[ \t]*(<[^>\s]+>|\S+)(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
-HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
-SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
-REF_DEF_FULL_RE = re.compile(
-    r"(?m)^(?:[ \t]*>[ \t]?)*[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(?:\n(?:[ \t]*>[ \t]?)*[ \t]*)?(<[^>\n]+>|\S+)"
-    r"(?:(?:[ \t]+|[ \t]*\n(?:[ \t]*>[ \t]?)*[ \t]*)(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
-)
-CLOSED_RAW_HTML_RE = re.compile(
-    r"<(script|style|textarea|title)\b[^>]*>[\s\S]*?</\1\s*>",
-    re.IGNORECASE,
-)
-HTML_LINK_TAG_NAMES = {"a", "img", "link", "script", "source"}
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
 QUOTED_MD_RE = re.compile(r"""["'`]([A-Za-z0-9_./*-]+\.(?:md|markdown))["'`]""")
 
@@ -62,90 +42,30 @@ TEST_FILE_RE = re.compile(
 )
 
 
-class _DocHTMLScanner(html.parser.HTMLParser):
-    """Spec-compliant HTML start-tag scanner for links (href/src) and anchors (id/name)."""
-
+class _HTMLScanner(html.parser.HTMLParser):
     def __init__(self, line_offset: int = 0) -> None:
         super().__init__(convert_charrefs=True)
         self.line_offset = line_offset
         self.anchors: set[str] = set()
         self.links: list[tuple[int, str]] = []
 
-    def _record_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def _handle(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_l = tag.lower()
         line_no = self.line_offset + self.getpos()[0]
-        for attr_name, attr_val in attrs:
-            if not attr_val:
+        for k, v in attrs:
+            if not v or not v.strip():
                 continue
-            name_l = attr_name.lower()
-            val = attr_val.strip()
-            if not val:
-                continue
-            if name_l == "id" or (name_l == "name" and tag_l == "a"):
+            kl, val = k.lower(), v.strip()
+            if kl == "id" or (kl == "name" and tag_l == "a"):
                 self.anchors.add(val)
-            if tag_l in HTML_LINK_TAG_NAMES and name_l in ("href", "src"):
+            if tag_l in ("a", "img", "link", "script", "source") and kl in ("href", "src"):
                 self.links.append((line_no, val))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._record_tag(tag, attrs)
+        self._handle(tag, attrs)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._record_tag(tag, attrs)
-
-
-def strip_closed_raw_html_elements(text: str) -> str:
-    """Blank out bodies of matched <script>/<style>/<textarea>/<title>...</tag> blocks
-    on text that ALREADY has inline code stripped, preserving opening tag attributes and line numbers."""
-
-    def _replace(m: re.Match[str]) -> str:
-        full = m.group(0)
-        gt = full.find(">")
-        if gt == -1:
-            return full
-        open_tag = full[: gt + 1]
-        rest = full[gt + 1 :]
-        return open_tag + ("\n" * rest.count("\n"))
-
-    return CLOSED_RAW_HTML_RE.sub(_replace, text)
-
-
-def scan_html_in_prose(prose_no_inline: str) -> tuple[set[str], list[tuple[int, str]]]:
-    """Scan HTML tags per blank-line-separated block so an unclosed `<tag` or quote in
-    one paragraph cannot swallow HTML links/anchors in subsequent paragraphs."""
-    cleaned = strip_closed_raw_html_elements(prose_no_inline)
-    anchors: set[str] = set()
-    links: list[tuple[int, str]] = []
-    lines = cleaned.splitlines(keepends=True)
-    block_lines: list[str] = []
-    block_start_line = 0
-
-    def _flush(buf: list[str], start_idx: int) -> None:
-        if not buf:
-            return
-        chunk = "".join(buf)
-        if "<" not in chunk:
-            return
-        scanner = _DocHTMLScanner(line_offset=start_idx)
-        scanner.CDATA_CONTENT_ELEMENTS = ()
-        scanner.RCDATA_CONTENT_ELEMENTS = ()
-        try:
-            scanner.feed(chunk)
-            scanner.close()
-        except Exception:
-            pass
-        anchors.update(scanner.anchors)
-        links.extend(scanner.links)
-
-    for idx, line in enumerate(lines):
-        if line.strip() == "":
-            _flush(block_lines, block_start_line)
-            block_lines = []
-        else:
-            if not block_lines:
-                block_start_line = idx
-            block_lines.append(line)
-    _flush(block_lines, block_start_line)
-    return anchors, links
+        self._handle(tag, attrs)
 
 
 def find_repo_root() -> pathlib.Path:
@@ -165,7 +85,6 @@ def find_repo_root() -> pathlib.Path:
 
 
 def list_repo_files(root: pathlib.Path) -> list[pathlib.Path]:
-    """Return all tracked + untracked non-ignored files in the repository."""
     out = subprocess.check_output(
         ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         stderr=subprocess.PIPE,
@@ -174,64 +93,8 @@ def list_repo_files(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted((root / rel) for rel in rels if (root / rel).is_file())
 
 
-def visual_width(s: str) -> int:
-    col = 0
-    for ch in s:
-        if ch == "\t":
-            col += 4 - (col % 4)
-        else:
-            col += 1
-    return col
-
-
-def leading_spaces(line: str) -> int:
-    col = 0
-    for ch in line:
-        if ch == " ":
-            col += 1
-        elif ch == "\t":
-            col += 4 - (col % 4)
-        else:
-            break
-    return col
-
-
-def drop_visual_cols(line: str, cols: int) -> str:
-    """Drop up to `cols` leading visual spaces/tabs from `line`."""
-    col = 0
-    for i, ch in enumerate(line):
-        if col >= cols:
-            return line[i:]
-        if ch == " ":
-            col += 1
-        elif ch == "\t":
-            step = 4 - (col % 4)
-            if col + step > cols:
-                return (" " * (col + step - cols)) + line[i + 1 :]
-            col += step
-        else:
-            return line[i:]
-    return "" if col <= cols else line
-
-
-def peel_blockquotes(line: str) -> tuple[int, str]:
-    depth = 0
-    cur = line
-    while True:
-        m = BLOCKQUOTE_PREFIX_RE.match(cur)
-        if not m:
-            break
-        depth += 1
-        cur = cur[m.end() :]
-    return depth, cur
-
-
-def strip_fences_and_comments(text: str) -> str:
-    """Replace fenced code blocks, indented code blocks, and HTML comments with newlines.
-
-    Fenced code blocks are stripped BEFORE HTML comments so `<!--` inside a fenced
-    code block cannot swallow subsequent prose.
-    """
+def strip_code_and_comments(text: str) -> tuple[str, str]:
+    """Return (without_fences_or_comments, without_inline_code_or_comments), preserving line numbers."""
     lines = text.splitlines(keepends=True)
     fenced_out: list[str] = []
     in_fence = False
@@ -239,14 +102,8 @@ def strip_fences_and_comments(text: str) -> str:
     fence_len = 0
 
     for line in lines:
-        _, rest = peel_blockquotes(line)
-        while True:
-            lm = LIST_MARKER_RE.match(rest)
-            if not lm or THEMATIC_BREAK_RE.match(rest):
-                break
-            rest = rest[lm.end() :]
+        m = FENCE_RE.match(line)
         if not in_fence:
-            m = FENCE_OPEN_RE.match(rest)
             if m:
                 marker = m.group(1)
                 in_fence = True
@@ -256,449 +113,184 @@ def strip_fences_and_comments(text: str) -> str:
                 continue
             fenced_out.append(line)
         else:
-            close_re = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*\r?\n?$")
-            if close_re.match(rest):
+            if m and m.group(1)[0] == fence_char and len(m.group(1)) >= fence_len and line[m.end() :].strip() == "":
                 in_fence = False
             fenced_out.append("\n" if line.endswith("\n") else "")
 
-    without_fences = "".join(fenced_out)
-    without_comments = re.sub(
-        r"<!--[\s\S]*?-->",
-        lambda m: "\n" * m.group(0).count("\n"),
-        without_fences,
-    )
-
-    out: list[str] = []
-    prev_blank = True
-    in_indented_code = False
-    # Each entry: (bq_depth, marker_col, content_col)
-    list_stack: list[tuple[int, int, int]] = []
-
-    for line in without_comments.splitlines(keepends=True):
-        bq_depth, after_bq = peel_blockquotes(line)
-        if after_bq.strip() == "":
-            prev_blank = True
-            while list_stack and list_stack[-1][0] > bq_depth:
-                list_stack.pop()
-            out.append(line)
-            continue
-
-        indent = leading_spaces(after_bq)
-        is_thematic = bool(THEMATIC_BREAK_RE.match(after_bq))
-        is_atx = bool(HEADING_RE.match(after_bq))
-        is_html_block = bool(HTML_BLOCK_START_RE.match(after_bq))
-        is_new_list_marker = bool(not is_thematic and LIST_MARKER_RE.match(after_bq))
-
-        while list_stack:
-            top_bq, marker_col, content_col = list_stack[-1]
-            if bq_depth != top_bq:
-                list_stack.pop()
-            elif indent < content_col and (
-                prev_blank
-                or is_atx
-                or is_thematic
-                or is_html_block
-                or (is_new_list_marker and indent <= marker_col)
-            ):
-                list_stack.pop()
-            else:
-                break
-
-        code_threshold = (list_stack[-1][2] + 4) if list_stack else 4
-        if indent >= code_threshold and (prev_blank or in_indented_code):
-            in_indented_code = True
-            out.append("\n" if line.endswith("\n") else "")
-            continue
-
-        in_indented_code = False
-        # Peel one or more list markers on this line (e.g., `- - nested`)
-        cur_after = after_bq
-        cur_base_col = 0
-        while True:
-            if THEMATIC_BREAK_RE.match(cur_after):
-                break
-            lm = LIST_MARKER_RE.match(cur_after)
-            if not lm:
-                break
-            rel_indent = leading_spaces(cur_after)
-            cur_thresh = (list_stack[-1][2] + 4) if list_stack else 4
-            if cur_base_col + rel_indent >= cur_thresh:
-                break
-            marker_end = cur_base_col + visual_width(lm.group(1))
-            total_col = cur_base_col + visual_width(lm.group(0))
-            rest_after_marker = cur_after[len(lm.group(0)) :]
-            if total_col - marker_end >= 5:
-                list_stack.append((bq_depth, cur_base_col + rel_indent, marker_end + 1))
-                in_indented_code = True
-                prev_blank = False
-                out.append("\n" if line.endswith("\n") else "")
-                break
-            elif rest_after_marker.strip() == "":
-                list_stack.append((bq_depth, cur_base_col + rel_indent, marker_end + 1))
-                break
-            else:
-                list_stack.append((bq_depth, cur_base_col + rel_indent, total_col))
-                cur_base_col = total_col
-                cur_after = rest_after_marker
-        if in_indented_code:
-            continue
-
-        prev_blank = False
-        out.append(line)
-
-    return "".join(out)
-
-
-def strip_inline_code(text: str) -> str:
-    """Replace inline code spans (`...`, ``...``) with spaces, preserving newlines.
-
-    Does not match across blank lines (paragraph boundaries) so a stray unmatched
-    backtick cannot blank out subsequent paragraphs.
-    """
-    return re.sub(
+    no_fences = "".join(fenced_out)
+    # Strip inline code BEFORE HTML comments so `<!--` inside inline code cannot swallow prose
+    no_inline = re.sub(
         r"(`+)((?:(?!\n[ \t]*\n).)+?)\1",
         lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)),
-        text,
+        no_fences,
         flags=re.DOTALL,
     )
+    # Blank out HTML comments at the exact character positions found in no_inline
+    comment_spans = [m.span() for m in re.finditer(r"<!--[\s\S]*?-->", no_inline)]
+    if comment_spans:
+        buf_f = list(no_fences)
+        buf_i = list(no_inline)
+        for s, e in comment_spans:
+            for idx in range(s, e):
+                if buf_f[idx] != "\n":
+                    buf_f[idx] = " "
+                if buf_i[idx] != "\n":
+                    buf_i[idx] = " "
+        no_fences = "".join(buf_f)
+        no_inline = "".join(buf_i)
 
-
-def _is_alnum_unicode(ch: str) -> bool:
-    if not ch:
-        return False
-    cat = unicodedata.category(ch)
-    return cat.startswith(("L", "N"))
-
-
-def strip_emphasis_markers(s: str) -> str:
-    """Strip Markdown emphasis/strong markers (*, _) while keeping intraword underscores."""
-    s = re.sub(r"(\*{1,3})(.+?)\1", r"\2", s)
-
-    # Unicode-aware intraword check for _..._, __...__, ___...___
-    def _repl_underscore(m: re.Match[str]) -> str:
-        start, end = m.start(), m.end()
-        before = s[start - 1] if start > 0 else ""
-        after = s[end] if end < len(s) else ""
-        if _is_alnum_unicode(before) or _is_alnum_unicode(after):
-            return m.group(0)
-        return m.group(2)
-
-    return re.sub(r"(_{1,3})(.+?)\1", _repl_underscore, s)
+    return no_fences, no_inline
 
 
 def github_slug(heading_text: str) -> str:
-    # Strip HTML tags and emphasis markers only outside inline code spans
     parts = re.split(r"(`+[^`]*`+)", heading_text)
-    cleaned_parts: list[str] = []
+    cleaned: list[str] = []
     for part in parts:
         if part.startswith("`") and part.endswith("`"):
-            cleaned_parts.append(part.strip("`"))
+            cleaned.append(part.strip("`"))
         else:
             no_tags = re.sub(r"<[^>]+>", "", part)
             no_links = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", no_tags)
-            cleaned_parts.append(strip_emphasis_markers(no_links))
-    s = "".join(cleaned_parts).strip().lower()
+            no_emph = re.sub(r"(\*{1,3})(.+?)\1", r"\2", no_links)
+            cleaned.append(no_emph)
+    s = "".join(cleaned).strip().lower()
     out: list[str] = []
     for ch in s:
         if ch in (" ", "\t"):
             out.append("-")
-        elif ch == "-" or ch == "_":
+        elif ch in ("-", "_"):
             out.append(ch)
-        else:
-            cat = unicodedata.category(ch)
-            if cat.startswith(("L", "N")):
-                out.append(ch)
+        elif unicodedata.category(ch).startswith(("L", "N")):
+            out.append(ch)
     return "".join(out)
 
 
-def build_line_starts(text: str) -> list[int]:
-    starts = [0]
-    for idx, ch in enumerate(text):
-        if ch == "\n":
-            starts.append(idx + 1)
-    return starts
+def scan_html(prose_no_inline: str) -> tuple[set[str], list[tuple[int, str]]]:
+    anchors: set[str] = set()
+    links: list[tuple[int, str]] = []
+    lines = prose_no_inline.splitlines(keepends=True)
+    buf: list[str] = []
+    start_line = 0
 
-
-def line_of_offset(line_starts: list[int], pos: int) -> int:
-    lo, hi = 0, len(line_starts) - 1
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        if line_starts[mid] <= pos:
-            lo = mid + 1
-        else:
-            hi = mid - 1
-    return hi + 1
-
-
-def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inline: str) -> set[str]:
-    heading_anchors: set[str] = set()
-    counts: dict[str, int] = {}
-
-    def register_heading(raw_heading: str) -> None:
-        base = github_slug(raw_heading)
-        if not base:
+    def _flush() -> None:
+        if not buf:
             return
+        chunk = "".join(buf)
+        if "<" in chunk:
+            sc = _HTMLScanner(line_offset=start_line)
+            sc.CDATA_CONTENT_ELEMENTS = ()
+            sc.RCDATA_CONTENT_ELEMENTS = ()
+            try:
+                sc.feed(chunk)
+                sc.close()
+            except Exception:
+                pass
+            anchors.update(sc.anchors)
+            links.extend(sc.links)
+
+    for idx, line in enumerate(lines):
+        if line.strip() == "":
+            _flush()
+            buf = []
+        else:
+            if not buf:
+                start_line = idx
+            buf.append(line)
+    _flush()
+    return anchors, links
+
+
+def extract_anchors(prose_with_inline: str, html_anchors: set[str]) -> set[str]:
+    anchors: set[str] = set()
+    counts: dict[str, int] = {}
+    for line in prose_with_inline.splitlines():
+        m = ATX_HEADING_RE.match(line)
+        if not m:
+            continue
+        base = github_slug(m.group(1))
+        if not base:
+            continue
         idx = counts.get(base, 0)
         counts[base] = idx + 1
         slug = base if idx == 0 else f"{base}-{idx}"
-        while slug in heading_anchors:
+        while slug in anchors:
             idx += 1
             counts[base] = idx + 1
             slug = f"{base}-{idx}"
-        heading_anchors.add(slug)
-
-    ref_def_spans = [(m.start(), m.end()) for m in REF_DEF_FULL_RE.finditer(prose_no_inline)]
-    line_starts = build_line_starts(prose_no_inline)
-
-    def line_in_ref_def(line_idx: int) -> bool:
-        if line_idx >= len(line_starts):
-            return False
-        pos = line_starts[line_idx]
-        return any(s <= pos < e for s, e in ref_def_spans)
-
-    lines_with_inline = prose_with_inline.splitlines()
-    lines_no_inline = prose_no_inline.splitlines()
-    n = len(lines_with_inline)
-    i = 0
-    para_lines: list[str] = []
-    para_ctx: tuple[int, int] | None = None
-    list_stack: list[tuple[int, int, int]] = []
-    prev_blank = True
-
-    if n > 0 and lines_no_inline[0].strip() == "---":
-        j = 1
-        while j < n and lines_no_inline[j].strip() not in ("---", "..."):
-            j += 1
-        if j < n:
-            i = j + 1
-
-    while i < n:
-        line_w = lines_with_inline[i]
-        line_n = lines_no_inline[i]
-        bq_depth, after_bq_w = peel_blockquotes(line_w)
-        _, after_bq_n = peel_blockquotes(line_n)
-
-        if after_bq_n.strip() == "":
-            para_lines.clear()
-            para_ctx = None
-            prev_blank = True
-            while list_stack and list_stack[-1][0] > bq_depth:
-                list_stack.pop()
-            i += 1
-            continue
-
-        indent = leading_spaces(after_bq_n)
-        is_thematic = bool(THEMATIC_BREAK_RE.match(after_bq_n))
-        is_atx_top = bool(HEADING_RE.match(after_bq_w))
-        is_html_block = bool(HTML_BLOCK_START_RE.match(after_bq_n))
-        is_new_list_marker = bool(not is_thematic and LIST_MARKER_RE.match(after_bq_n))
-
-        while list_stack:
-            top_bq, marker_col, content_col = list_stack[-1]
-            if bq_depth != top_bq:
-                list_stack.pop()
-            elif indent < content_col and (
-                prev_blank
-                or is_atx_top
-                or is_thematic
-                or is_html_block
-                or (is_new_list_marker and indent <= marker_col)
-            ):
-                list_stack.pop()
-            else:
-                break
-
-        # Peel any new list markers on this line
-        started_new_item = False
-        if is_new_list_marker:
-            cur_w = after_bq_w
-            cur_n = after_bq_n
-            cur_base = 0
-            while True:
-                if THEMATIC_BREAK_RE.match(cur_n):
-                    break
-                lm_n = LIST_MARKER_RE.match(cur_n)
-                lm_w = LIST_MARKER_RE.match(cur_w)
-                if not lm_n or not lm_w:
-                    break
-                rel_ind = leading_spaces(cur_n)
-                marker_end = cur_base + visual_width(lm_n.group(1))
-                total_col = cur_base + visual_width(lm_n.group(0))
-                rest_n = cur_n[len(lm_n.group(0)) :]
-                rest_w = cur_w[len(lm_w.group(0)) :]
-                started_new_item = True
-                if rest_n.strip() == "" or total_col - marker_end >= 5:
-                    list_stack.append((bq_depth, cur_base + rel_ind, marker_end + 1))
-                    cur_w = ""
-                    cur_n = ""
-                    break
-                else:
-                    list_stack.append((bq_depth, cur_base + rel_ind, total_col))
-                    cur_base = total_col
-                    cur_n = rest_n
-                    cur_w = rest_w
-            inner_w = cur_w
-            inner_n = cur_n
-            active_content_col = list_stack[-1][2] if list_stack else 0
-        elif list_stack and indent >= list_stack[-1][2]:
-            active_content_col = list_stack[-1][2]
-            inner_w = drop_visual_cols(after_bq_w, active_content_col)
-            inner_n = drop_visual_cols(after_bq_n, active_content_col)
-        else:
-            active_content_col = list_stack[-1][2] if list_stack else 0
-            inner_w = after_bq_w
-            inner_n = after_bq_n
-
-        if started_new_item:
-            para_lines.clear()
-            para_ctx = None
-
-        cur_ctx = (bq_depth, active_content_col)
-        prev_blank = False
-
-        m = HEADING_RE.match(inner_w)
-        if m:
-            para_lines.clear()
-            para_ctx = None
-            if m.group(2):
-                register_heading(m.group(2))
-            i += 1
-            continue
-
-        if (
-            para_lines
-            and para_ctx == cur_ctx
-            and not started_new_item
-            and (active_content_col == 0 or indent >= active_content_col)
-            and not SPACED_THEMATIC_BREAK_RE.match(inner_n)
-            and SETEXT_UNDERLINE_RE.match(inner_n)
-        ):
-            register_heading(" ".join(p.strip() for p in para_lines))
-            para_lines.clear()
-            para_ctx = None
-            i += 1
-            continue
-
-        stripped_inner = inner_n.strip()
-        if (
-            not stripped_inner
-            or line_in_ref_def(i)
-            or THEMATIC_BREAK_RE.match(inner_n)
-            or HTML_BLOCK_START_RE.match(inner_n)
-            or stripped_inner.startswith("|")
-        ):
-            para_lines.clear()
-            para_ctx = None
-        else:
-            if para_ctx != cur_ctx:
-                para_lines.clear()
-                para_ctx = cur_ctx
-            para_lines.append(inner_w)
-        i += 1
-
-    return heading_anchors | html_anchors
+        anchors.add(slug)
+    return anchors | html_anchors
 
 
 def clean_destination(raw_dest: str) -> str:
     s = raw_dest.strip()
     if s.startswith("<") and ">" in s:
         return s[1 : s.index(">")].strip()
-    m = re.match(r'^(\S+?)(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?$', s, flags=re.DOTALL)
-    if m:
-        return m.group(1)
-    return s.split()[0] if s.split() else ""
+    m = re.match(r'^(\S+?)(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?$', s)
+    return m.group(1) if m else (s.split()[0] if s.split() else "")
 
 
-def scan_markdown_links(
-    text: str,
-    ref_defs: dict[str, tuple[int, str]],
-    used_refs: set[str],
-    skip_spans: list[tuple[int, int]],
-) -> list[tuple[int, str]]:
-    """Scan full document text for inline `[text](dest)`, `[text][ref]`, and `[ref]`.
-
-    Supports multiline link text/destinations and nested images inside links.
-    Returns list of (1-based line_no, resolved_destination).
-    """
-    results: list[tuple[int, str]] = []
-    line_starts = build_line_starts(text)
-
-    n = len(text)
+def scan_line_links(line: str, ref_defs: dict[str, tuple[int, str]], used_refs: set[str]) -> list[str]:
+    results: list[str] = []
+    n = len(line)
     i = 0
-    span_idx = 0
     while i < n:
-        while span_idx < len(skip_spans) and skip_spans[span_idx][1] <= i:
-            span_idx += 1
-        if span_idx < len(skip_spans) and skip_spans[span_idx][0] <= i < skip_spans[span_idx][1]:
-            i = skip_spans[span_idx][1]
-            continue
-
-        if text[i] == "\\":
+        if line[i] == "\\":
             i += 2
             continue
-
-        if text[i] == "[":
+        if line[i] == "[":
             depth = 1
             j = i + 1
             while j < n and depth > 0:
-                if text[j] == "\\":
+                if line[j] == "\\":
                     j += 2
                     continue
-                if text[j] == "\n" and j + 1 < n and text[j + 1] == "\n":
-                    break
-                if text[j] == "[":
+                if line[j] == "[":
                     depth += 1
-                elif text[j] == "]":
+                elif line[j] == "]":
                     depth -= 1
                 j += 1
-
             if depth == 0:
-                label_text = text[i + 1 : j - 1]
-                if "[" in label_text:
-                    inner_line_base = line_of_offset(line_starts, i + 1) - 1
-                    for sub_line, sub_dest in scan_markdown_links(label_text, ref_defs, used_refs, []):
-                        results.append((inner_line_base + sub_line, sub_dest))
-
-                if j < n and text[j] == "(":
+                label = line[i + 1 : j - 1]
+                if "[" in label:
+                    results.extend(scan_line_links(label, ref_defs, used_refs))
+                if j < n and line[j] == "(":
                     p_depth = 1
                     k = j + 1
                     in_angles = False
                     while k < n and p_depth > 0:
-                        if text[k] == "\\":
+                        if line[k] == "\\":
                             k += 2
                             continue
-                        if text[k] == "\n" and k + 1 < n and text[k + 1] == "\n":
-                            break
-                        if text[k] == "<":
+                        if line[k] == "<":
                             in_angles = True
-                        elif text[k] == ">":
+                        elif line[k] == ">":
                             in_angles = False
                         elif not in_angles:
-                            if text[k] == "(":
+                            if line[k] == "(":
                                 p_depth += 1
-                            elif text[k] == ")":
+                            elif line[k] == ")":
                                 p_depth -= 1
                         k += 1
                     if p_depth == 0:
-                        dest = clean_destination(text[j + 1 : k - 1])
+                        dest = clean_destination(line[j + 1 : k - 1])
                         if dest:
-                            results.append((line_of_offset(line_starts, i), dest))
+                            results.append(dest)
                         i = k
                         continue
-                elif j < n and text[j] == "[":
-                    k = text.find("]", j + 1)
-                    if k != -1 and "\n\n" not in text[j + 1 : k]:
-                        ref_label = (" ".join(text[j + 1 : k].split()) or " ".join(label_text.split())).lower()
-                        if ref_label in ref_defs:
-                            used_refs.add(ref_label)
-                            results.append((line_of_offset(line_starts, i), ref_defs[ref_label][1]))
+                elif j < n and line[j] == "[":
+                    k = line.find("]", j + 1)
+                    if k != -1:
+                        ref_key = (" ".join(line[j + 1 : k].split()) or " ".join(label.split())).lower()
+                        if ref_key in ref_defs:
+                            used_refs.add(ref_key)
+                            results.append(ref_defs[ref_key][1])
                         i = k + 1
                         continue
                 else:
-                    norm_label = " ".join(label_text.split()).lower()
-                    if norm_label and norm_label in ref_defs:
-                        used_refs.add(norm_label)
-                        results.append((line_of_offset(line_starts, i), ref_defs[norm_label][1]))
+                    ref_key = " ".join(label.split()).lower()
+                    if ref_key in ref_defs:
+                        used_refs.add(ref_key)
+                        results.append(ref_defs[ref_key][1])
                     i = j
                     continue
         i += 1
@@ -719,31 +311,28 @@ def parse_links_in_file(
     prose_no_inline: str,
     html_links: list[tuple[int, str]],
 ) -> list[LinkRef]:
-    cleaned = strip_closed_raw_html_elements(prose_no_inline)
-    line_starts = build_line_starts(cleaned)
+    lines = prose_no_inline.splitlines()
     ref_defs: dict[str, tuple[int, str]] = {}
-    extra_ref_defs: list[tuple[int, str]] = []
     used_refs: set[str] = set()
     raw_occurrences: list[tuple[int, str]] = []
-    skip_spans: list[tuple[int, int]] = []
 
-    for m in REF_DEF_FULL_RE.finditer(cleaned):
-        label = " ".join(m.group(1).split()).lower()
-        dest = clean_destination(m.group(2))
-        line_no = line_of_offset(line_starts, m.start())
-        skip_spans.append((m.start(), m.end()))
-        if label and dest:
-            if label not in ref_defs:
-                ref_defs[label] = (line_no, dest)
-            else:
-                extra_ref_defs.append((line_no, dest))
+    for idx, line in enumerate(lines, start=1):
+        m = REF_DEF_RE.match(line)
+        if m:
+            key = " ".join(m.group(1).split()).lower()
+            dest = clean_destination(m.group(2))
+            if key and dest and key not in ref_defs:
+                ref_defs[key] = (idx, dest)
 
-    raw_occurrences.extend(scan_markdown_links(cleaned, ref_defs, used_refs, skip_spans))
+    for idx, line in enumerate(lines, start=1):
+        if REF_DEF_RE.match(line):
+            continue
+        for dest in scan_line_links(line, ref_defs, used_refs):
+            raw_occurrences.append((idx, dest))
 
-    for label, (def_line, dest) in ref_defs.items():
-        if label not in used_refs:
+    for key, (def_line, dest) in ref_defs.items():
+        if key not in used_refs:
             raw_occurrences.append((def_line, dest))
-    raw_occurrences.extend(extra_ref_defs)
     raw_occurrences.extend(html_links)
 
     links: list[LinkRef] = []
@@ -753,24 +342,14 @@ def parse_links_in_file(
         if raw.startswith("#"):
             links.append(LinkRef(line_no, raw, md_file, urllib.parse.unquote(raw[1:].strip())))
             continue
-
         path_part, _, frag = raw.partition("#")
-        path_part = path_part.split("?", 1)[0].strip()
-        path_part = urllib.parse.unquote(path_part)
+        path_part = urllib.parse.unquote(path_part.split("?", 1)[0].strip())
         frag = urllib.parse.unquote(frag.strip())
-
         if not path_part:
             links.append(LinkRef(line_no, raw, md_file, frag))
             continue
-
-        if path_part.startswith("/"):
-            candidate = root / path_part.lstrip("/")
-        else:
-            candidate = md_file.parent / path_part
-
-        norm = pathlib.Path(os.path.normpath(str(candidate)))
-        links.append(LinkRef(line_no, raw, norm, frag))
-
+        candidate = (root / path_part.lstrip("/")) if path_part.startswith("/") else (md_file.parent / path_part)
+        links.append(LinkRef(line_no, raw, pathlib.Path(os.path.normpath(str(candidate))), frag))
     return links
 
 
@@ -784,10 +363,8 @@ def check_target_valid(
         rel = target.relative_to(root)
     except ValueError:
         return False, "link points outside repository root"
-
     if target in repo_file_set or target in repo_dirs:
         return True, ""
-
     if target.exists():
         cur = root
         for part in rel.parts:
@@ -799,14 +376,7 @@ def check_target_valid(
                 return False, f"case mismatch on '{part}' (breaks on Linux/GitHub)"
             cur = cur / part
         return False, "target is gitignored (will break on GitHub)"
-
     return False, "file not found"
-
-
-def is_test_source(rel_parts: tuple[str, ...], file_name: str) -> bool:
-    if any(p in ("testdata", "test", "tests", "__tests__") for p in rel_parts[:-1]):
-        return True
-    return bool(TEST_FILE_RE.search(file_name))
 
 
 def discover_code_references(
@@ -814,7 +384,6 @@ def discover_code_references(
     repo_files: list[pathlib.Path],
     md_set: set[pathlib.Path],
 ) -> tuple[set[pathlib.Path], set[pathlib.Path]]:
-    """Return (runtime_seeds, test_only_refs)."""
     runtime_seeds: set[pathlib.Path] = set()
     test_refs: set[pathlib.Path] = set()
 
@@ -824,7 +393,9 @@ def discover_code_references(
         rel_parts = f.relative_to(root).parts
         if rel_parts and rel_parts[0] in (".cursor", ".claude", ".agents"):
             continue
-        is_test = is_test_source(rel_parts, f.name)
+        is_test = any(p in ("testdata", "test", "tests", "__tests__") for p in rel_parts[:-1]) or bool(
+            TEST_FILE_RE.search(f.name)
+        )
         text = f.read_text(encoding="utf-8", errors="replace")
 
         if f.suffix == ".go":
@@ -840,7 +411,6 @@ def discover_code_references(
                     exact_direct = (f.parent / pat).resolve()
                     for matched in f.parent.glob(pat):
                         if matched.is_file() and matched in md_set:
-                            # Go //go:embed embeds hidden/_ files when named directly by path
                             if (
                                 not allow_hidden
                                 and matched.resolve() != exact_direct
@@ -902,11 +472,10 @@ def main() -> int:
 
     for md in md_files:
         raw_text = md.read_text(encoding="utf-8", errors="replace")
-        prose_with_inline = strip_fences_and_comments(raw_text)
-        prose_no_inline = strip_inline_code(prose_with_inline)
-        html_anchors, html_links = scan_html_in_prose(prose_no_inline)
+        prose_with_inline, prose_no_inline = strip_code_and_comments(raw_text)
+        html_anchors, html_links = scan_html(prose_no_inline)
 
-        anchors_by_file[md] = extract_anchors(prose_with_inline, html_anchors, prose_no_inline)
+        anchors_by_file[md] = extract_anchors(prose_with_inline, html_anchors)
         links = parse_links_in_file(root, md, prose_no_inline, html_links)
         links_by_file[md] = links
 
@@ -918,14 +487,11 @@ def main() -> int:
                         f"{rel_md}:{lk.line_no}: relative link '{lk.raw}' inside docs/agent/ (breaks when served via MCP/llms.txt)"
                     )
 
-        hash_lines: list[int] = []
-        for idx, line in enumerate(prose_with_inline.splitlines(), start=1):
-            if HEX_HASH_RE.search(line):
-                hash_lines.append(idx)
+        hash_lines = [
+            idx for idx, line in enumerate(prose_with_inline.splitlines(), start=1) if HEX_HASH_RE.search(line)
+        ]
         if hash_lines:
-            preview = ", ".join(str(n) for n in hash_lines[:8])
-            if len(hash_lines) > 8:
-                preview += ", ..."
+            preview = ", ".join(str(n) for n in hash_lines[:8]) + (", ..." if len(hash_lines) > 8 else "")
             hash_findings.append(f"{rel_md}: {len(hash_lines)} line(s) with 40/64-char hashes (lines {preview})")
 
     broken_links: list[str] = []
@@ -946,18 +512,15 @@ def main() -> int:
                 target_md = lk.target_path / "README.md"
 
             if lk.fragment and target_md is not None:
-                known_anchors = anchors_by_file.get(target_md, set())
-                if lk.fragment not in known_anchors:
+                if lk.fragment not in anchors_by_file.get(target_md, set()):
                     broken_links.append(
                         f"{rel_md}:{lk.line_no}: broken anchor '{lk.raw}' (#{lk.fragment} not found in {target_md.relative_to(root)})"
                     )
 
-    # Reachability BFS from root README.md + runtime/build code seeds
     runtime_seeds, test_only_refs = discover_code_references(root, repo_files, md_set)
     seeds: set[pathlib.Path] = set(runtime_seeds)
-    root_readme = root / "README.md"
-    if root_readme in md_set:
-        seeds.add(root_readme)
+    if (root / "README.md") in md_set:
+        seeds.add(root / "README.md")
 
     queue: collections.deque[pathlib.Path] = collections.deque(sorted(seeds))
     visited: set[pathlib.Path] = set(seeds)
@@ -970,27 +533,19 @@ def main() -> int:
             candidates: list[pathlib.Path] = []
             if lk.target_path in md_set:
                 candidates.append(lk.target_path)
-            elif lk.target_path in repo_dirs:
-                dir_readme = lk.target_path / "README.md"
-                if dir_readme in md_set:
-                    candidates.append(dir_readme)
-            elif lk.target_path in repo_file_set:
-                sibling_readme = lk.target_path.parent / "README.md"
-                if sibling_readme in md_set:
-                    candidates.append(sibling_readme)
-
+            elif lk.target_path in repo_dirs and (lk.target_path / "README.md") in md_set:
+                candidates.append(lk.target_path / "README.md")
+            elif lk.target_path in repo_file_set and (lk.target_path.parent / "README.md") in md_set:
+                candidates.append(lk.target_path.parent / "README.md")
             for c in candidates:
                 if c not in visited:
                     visited.add(c)
                     queue.append(c)
 
-    unreached = sorted(md_set - visited)
     doc_orphans: list[pathlib.Path] = []
     colocated_notes: list[pathlib.Path] = []
-
-    for u in unreached:
-        rel_parts = u.relative_to(root).parts
-        if rel_parts[0] in ("internal", "examples", "cmd") or u in test_only_refs:
+    for u in sorted(md_set - visited):
+        if u.relative_to(root).parts[0] in ("internal", "examples", "cmd") or u in test_only_refs:
             colocated_notes.append(u)
         else:
             doc_orphans.append(u)
