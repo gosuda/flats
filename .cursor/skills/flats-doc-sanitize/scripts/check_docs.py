@@ -16,6 +16,7 @@ Does not hardcode directory layouts or file naming conventions:
 from __future__ import annotations
 
 import collections
+import html.parser
 import os
 import pathlib
 import re
@@ -28,22 +29,14 @@ import urllib.parse
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
 LIST_MARKER_RE = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])([ \t]+)")
 HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
 REF_DEF_RE = re.compile(
     r"^[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(\S+)(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
-HTML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9:-]*)\b((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)>", re.DOTALL)
 HTML_LINK_TAG_NAMES = {"a", "img", "link", "script", "source"}
-HTML_HREF_SRC_ATTR_RE = re.compile(
-    r"""\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'=]+))""",
-    re.IGNORECASE | re.DOTALL,
-)
-HTML_ID_NAME_ATTR_RE = re.compile(
-    r"""\b(?:id|name)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'=]+))""",
-    re.IGNORECASE | re.DOTALL,
-)
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
 QUOTED_MD_RE = re.compile(r"""["'`]([A-Za-z0-9_./*-]+\.(?:md|markdown))["'`]""")
 
@@ -52,6 +45,46 @@ TEST_FILE_RE = re.compile(
     r"(?:_test\.go$|(?:^|[._-])(?:test|tests)\.[A-Za-z0-9]+$|(?:^|[._-])spec\.(?:mjs|js|ts|py|sh)$|^test_)",
     re.IGNORECASE,
 )
+
+
+class _DocHTMLScanner(html.parser.HTMLParser):
+    """Spec-compliant HTML start-tag scanner for links (href/src) and anchors (id/name)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.anchors: set[str] = set()
+        self.links: list[tuple[int, str]] = []
+
+    def _record_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_l = tag.lower()
+        line_no = self.getpos()[0]
+        for attr_name, attr_val in attrs:
+            if not attr_val:
+                continue
+            name_l = attr_name.lower()
+            val = attr_val.strip()
+            if not val:
+                continue
+            if name_l == "id" or (name_l == "name" and tag_l == "a"):
+                self.anchors.add(val)
+            if tag_l in HTML_LINK_TAG_NAMES and name_l in ("href", "src"):
+                self.links.append((line_no, val))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record_tag(tag, attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._record_tag(tag, attrs)
+
+
+def scan_html_in_prose(prose_no_inline: str) -> tuple[set[str], list[tuple[int, str]]]:
+    scanner = _DocHTMLScanner()
+    try:
+        scanner.feed(prose_no_inline)
+        scanner.close()
+    except Exception:
+        pass
+    return scanner.anchors, scanner.links
 
 
 def find_repo_root() -> pathlib.Path:
@@ -80,6 +113,16 @@ def list_repo_files(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted((root / rel) for rel in rels if (root / rel).is_file())
 
 
+def visual_width(s: str) -> int:
+    col = 0
+    for ch in s:
+        if ch == "\t":
+            col += 4 - (col % 4)
+        else:
+            col += 1
+    return col
+
+
 def leading_spaces(line: str) -> int:
     col = 0
     for ch in line:
@@ -106,7 +149,7 @@ def strip_fences_and_comments(text: str) -> str:
     fence_len = 0
     prev_blank = True
     in_indented_code = False
-    list_content_col: int | None = None
+    list_stack: list[int] = []
 
     for line in lines:
         if not in_fence:
@@ -127,24 +170,24 @@ def strip_fences_and_comments(text: str) -> str:
                 continue
 
             indent = leading_spaces(line)
-            lm = LIST_MARKER_RE.match(line)
-            if lm and (list_content_col is None or indent <= list_content_col):
-                list_content_col = leading_spaces(lm.group(0))
-                in_indented_code = False
-                prev_blank = False
-                out.append(line)
-                continue
 
-            code_threshold = (list_content_col + 4) if list_content_col is not None else 4
+            # Pop list contexts whose content column is strictly greater than this line's indent
+            # unless this line is a new sibling list item at that level.
+            while list_stack and indent < list_stack[-1]:
+                list_stack.pop()
+
+            code_threshold = (list_stack[-1] + 4) if list_stack else 4
             if indent >= code_threshold and (prev_blank or in_indented_code):
                 in_indented_code = True
                 out.append("\n" if line.endswith("\n") else "")
                 continue
 
-            if list_content_col is not None and indent < list_content_col:
-                list_content_col = None
-
             in_indented_code = False
+            if not THEMATIC_BREAK_RE.match(line):
+                lm = LIST_MARKER_RE.match(line)
+                if lm and indent < code_threshold:
+                    list_stack.append(visual_width(lm.group(0)))
+
             prev_blank = False
             out.append(line)
         else:
@@ -214,16 +257,9 @@ def line_of_offset(line_starts: list[int], pos: int) -> int:
     return hi + 1
 
 
-def extract_anchors(prose_with_inline: str, prose_no_inline: str) -> set[str]:
-    anchors: set[str] = set()
+def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inline: str) -> set[str]:
+    heading_anchors: set[str] = set()
     counts: dict[str, int] = {}
-
-    for tag_m in HTML_TAG_RE.finditer(prose_no_inline):
-        attrs = tag_m.group(2)
-        for attr_m in HTML_ID_NAME_ATTR_RE.finditer(attrs):
-            val = (attr_m.group(1) or attr_m.group(2) or attr_m.group(3) or "").strip()
-            if val:
-                anchors.add(val)
 
     def register_heading(raw_heading: str) -> None:
         base = github_slug(raw_heading)
@@ -232,11 +268,11 @@ def extract_anchors(prose_with_inline: str, prose_no_inline: str) -> set[str]:
         idx = counts.get(base, 0)
         counts[base] = idx + 1
         slug = base if idx == 0 else f"{base}-{idx}"
-        while slug in anchors:
+        while slug in heading_anchors:
             idx += 1
             counts[base] = idx + 1
             slug = f"{base}-{idx}"
-        anchors.add(slug)
+        heading_anchors.add(slug)
 
     lines_with_inline = prose_with_inline.splitlines()
     lines_no_inline = prose_no_inline.splitlines()
@@ -266,7 +302,7 @@ def extract_anchors(prose_with_inline: str, prose_no_inline: str) -> set[str]:
             para_lines.append(line)
         i += 1
 
-    return anchors
+    return heading_anchors | html_anchors
 
 
 def clean_destination(raw_dest: str) -> str:
@@ -383,9 +419,15 @@ class LinkRef:
         self.fragment = fragment
 
 
-def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inline: str) -> list[LinkRef]:
+def parse_links_in_file(
+    root: pathlib.Path,
+    md_file: pathlib.Path,
+    prose_no_inline: str,
+    html_links: list[tuple[int, str]],
+) -> list[LinkRef]:
     lines = prose_no_inline.splitlines()
     ref_defs: dict[str, tuple[int, str]] = {}
+    extra_ref_defs: list[tuple[int, str]] = []
     used_refs: set[str] = set()
     raw_occurrences: list[tuple[int, str]] = []
 
@@ -395,26 +437,19 @@ def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inli
             label = " ".join(m.group(1).split()).lower()
             dest = clean_destination(m.group(2))
             if label and dest:
-                ref_defs[label] = (idx, dest)
+                # CommonMark: first reference definition wins; keep later duplicates for validation too
+                if label not in ref_defs:
+                    ref_defs[label] = (idx, dest)
+                else:
+                    extra_ref_defs.append((idx, dest))
 
     raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs, used_refs))
 
-    # Also validate any unused reference definitions so broken unused defs don't hide
     for label, (def_line, dest) in ref_defs.items():
         if label not in used_refs:
             raw_occurrences.append((def_line, dest))
-
-    line_starts = build_line_starts(prose_no_inline)
-    for tag_m in HTML_TAG_RE.finditer(prose_no_inline):
-        tag_name = tag_m.group(1).lower()
-        if tag_name not in HTML_LINK_TAG_NAMES:
-            continue
-        attrs = tag_m.group(2)
-        for attr_m in HTML_HREF_SRC_ATTR_RE.finditer(attrs):
-            attr_val = (attr_m.group(1) or attr_m.group(2) or attr_m.group(3) or "").strip()
-            if attr_val:
-                line_no = line_of_offset(line_starts, tag_m.start() + attr_m.start())
-                raw_occurrences.append((line_no, attr_val))
+    raw_occurrences.extend(extra_ref_defs)
+    raw_occurrences.extend(html_links)
 
     links: list[LinkRef] = []
     for line_no, raw in raw_occurrences:
@@ -570,9 +605,10 @@ def main() -> int:
         raw_text = md.read_text(encoding="utf-8", errors="replace")
         prose_with_inline = strip_fences_and_comments(raw_text)
         prose_no_inline = strip_inline_code(prose_with_inline)
+        html_anchors, html_links = scan_html_in_prose(prose_no_inline)
 
-        anchors_by_file[md] = extract_anchors(prose_with_inline, prose_no_inline)
-        links = parse_links_in_file(root, md, prose_no_inline)
+        anchors_by_file[md] = extract_anchors(prose_with_inline, html_anchors, prose_no_inline)
+        links = parse_links_in_file(root, md, prose_no_inline, html_links)
         links_by_file[md] = links
 
         rel_md = md.relative_to(root)
