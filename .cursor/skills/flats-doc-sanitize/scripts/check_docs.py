@@ -30,14 +30,26 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
-LIST_MARKER_RE = re.compile(r"^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]+)")
-CONTAINER_PREFIX_RE = re.compile(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)+")
-HEADING_RE = re.compile(r"^[ \t]*(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
-SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]*(?:=+|-+)[ \t]*$")
 SPACED_THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(_[ \t]*){3,}|(-[ \t]+){2,}-[ \t]*)$")
+LIST_MARKER_RE = re.compile(r"^([ \t]{0,3}(?:[-*+]|\d{1,9}[.)]))([ \t]+)")
+BLOCKQUOTE_PREFIX_RE = re.compile(r"^[ \t]{0,3}>[ \t]?")
+HTML_BLOCK_START_RE = re.compile(
+    r"^[ \t]{0,3}<(?:/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|"
+    r"dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
+    r"h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|"
+    r"noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|"
+    r"tbody|td|textarea|tfoot|th|thead|title|tr|track|ul)\b|!|[?])",
+    re.IGNORECASE,
+)
+HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
+SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
 REF_DEF_FULL_RE = re.compile(
     r"(?m)^(?:[ \t]*>[ \t]?)*[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(?:\n(?:[ \t]*>[ \t]?)*[ \t]*)?(<[^>\n]+>|\S+)"
     r"(?:(?:[ \t]+|[ \t]*\n(?:[ \t]*>[ \t]?)*[ \t]*)(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+)
+CLOSED_RAW_HTML_RE = re.compile(
+    r"<(script|style|textarea|title)\b[^>]*>[\s\S]*?</\1\s*>",
+    re.IGNORECASE,
 )
 HTML_LINK_TAG_NAMES = {"a", "img", "link", "script", "source"}
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
@@ -81,15 +93,9 @@ class _DocHTMLScanner(html.parser.HTMLParser):
         self._record_tag(tag, attrs)
 
 
-CLOSED_RAW_HTML_RE = re.compile(
-    r"<(script|style|textarea|title)\b[^>]*>[\s\S]*?</\1\s*>",
-    re.IGNORECASE,
-)
-
-
 def strip_closed_raw_html_elements(text: str) -> str:
     """Blank out bodies of matched <script>/<style>/<textarea>/<title>...</tag> blocks
-    while preserving any src/href/id attributes on the opening tag and line numbers."""
+    on text that ALREADY has inline code stripped, preserving opening tag attributes and line numbers."""
 
     def _replace(m: re.Match[str]) -> str:
         full = m.group(0)
@@ -106,9 +112,10 @@ def strip_closed_raw_html_elements(text: str) -> str:
 def scan_html_in_prose(prose_no_inline: str) -> tuple[set[str], list[tuple[int, str]]]:
     """Scan HTML tags per blank-line-separated block so an unclosed `<tag` or quote in
     one paragraph cannot swallow HTML links/anchors in subsequent paragraphs."""
+    cleaned = strip_closed_raw_html_elements(prose_no_inline)
     anchors: set[str] = set()
     links: list[tuple[int, str]] = []
-    lines = prose_no_inline.splitlines(keepends=True)
+    lines = cleaned.splitlines(keepends=True)
     block_lines: list[str] = []
     block_start_line = 0
 
@@ -189,8 +196,34 @@ def leading_spaces(line: str) -> int:
     return col
 
 
-def strip_container_prefix(line: str) -> str:
-    return CONTAINER_PREFIX_RE.sub("", line, count=1)
+def drop_visual_cols(line: str, cols: int) -> str:
+    """Drop up to `cols` leading visual spaces/tabs from `line`."""
+    col = 0
+    for i, ch in enumerate(line):
+        if col >= cols:
+            return line[i:]
+        if ch == " ":
+            col += 1
+        elif ch == "\t":
+            step = 4 - (col % 4)
+            if col + step > cols:
+                return (" " * (col + step - cols)) + line[i + 1 :]
+            col += step
+        else:
+            return line[i:]
+    return "" if col <= cols else line
+
+
+def peel_blockquotes(line: str) -> tuple[int, str]:
+    depth = 0
+    cur = line
+    while True:
+        m = BLOCKQUOTE_PREFIX_RE.match(cur)
+        if not m:
+            break
+        depth += 1
+        cur = cur[m.end() :]
+    return depth, cur
 
 
 def strip_fences_and_comments(text: str) -> str:
@@ -206,9 +239,14 @@ def strip_fences_and_comments(text: str) -> str:
     fence_len = 0
 
     for line in lines:
-        unprefixed = strip_container_prefix(line)
+        _, rest = peel_blockquotes(line)
+        while True:
+            lm = LIST_MARKER_RE.match(rest)
+            if not lm or THEMATIC_BREAK_RE.match(rest):
+                break
+            rest = rest[lm.end() :]
         if not in_fence:
-            m = FENCE_OPEN_RE.match(unprefixed)
+            m = FENCE_OPEN_RE.match(rest)
             if m:
                 marker = m.group(1)
                 in_fence = True
@@ -219,7 +257,7 @@ def strip_fences_and_comments(text: str) -> str:
             fenced_out.append(line)
         else:
             close_re = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*\r?\n?$")
-            if close_re.match(unprefixed):
+            if close_re.match(rest):
                 in_fence = False
             fenced_out.append("\n" if line.endswith("\n") else "")
 
@@ -229,57 +267,81 @@ def strip_fences_and_comments(text: str) -> str:
         lambda m: "\n" * m.group(0).count("\n"),
         without_fences,
     )
-    without_raw_html = strip_closed_raw_html_elements(without_comments)
 
     out: list[str] = []
     prev_blank = True
     in_indented_code = False
-    list_stack: list[tuple[int, int]] = []
+    # Each entry: (bq_depth, marker_col, content_col)
+    list_stack: list[tuple[int, int, int]] = []
 
-    for line in without_raw_html.splitlines(keepends=True):
-        is_blank = line.strip() == ""
-        if is_blank:
+    for line in without_comments.splitlines(keepends=True):
+        bq_depth, after_bq = peel_blockquotes(line)
+        if after_bq.strip() == "":
             prev_blank = True
+            while list_stack and list_stack[-1][0] > bq_depth:
+                list_stack.pop()
             out.append(line)
             continue
 
-        indent = leading_spaces(line)
-        is_new_list_marker = bool(
-            not THEMATIC_BREAK_RE.match(line) and LIST_MARKER_RE.match(line)
-        )
+        indent = leading_spaces(after_bq)
+        is_thematic = bool(THEMATIC_BREAK_RE.match(after_bq))
+        is_atx = bool(HEADING_RE.match(after_bq))
+        is_html_block = bool(HTML_BLOCK_START_RE.match(after_bq))
+        is_new_list_marker = bool(not is_thematic and LIST_MARKER_RE.match(after_bq))
+
         while list_stack:
-            marker_col, content_col = list_stack[-1]
-            if indent < marker_col:
+            top_bq, marker_col, content_col = list_stack[-1]
+            if bq_depth != top_bq:
                 list_stack.pop()
-            elif prev_blank and indent < content_col and not (is_new_list_marker and indent == marker_col):
+            elif indent < content_col and (
+                prev_blank
+                or is_atx
+                or is_thematic
+                or is_html_block
+                or (is_new_list_marker and indent <= marker_col)
+            ):
                 list_stack.pop()
             else:
                 break
 
-        code_threshold = (list_stack[-1][1] + 4) if list_stack else 4
+        code_threshold = (list_stack[-1][2] + 4) if list_stack else 4
         if indent >= code_threshold and (prev_blank or in_indented_code):
             in_indented_code = True
             out.append("\n" if line.endswith("\n") else "")
             continue
 
         in_indented_code = False
-        if is_new_list_marker:
-            lm = LIST_MARKER_RE.match(line)
-            if lm and indent < code_threshold:
-                if list_stack and list_stack[-1][0] == indent:
-                    list_stack.pop()
-                marker_end_col = visual_width(lm.group(1))
-                total_col = visual_width(lm.group(0))
-                if total_col - marker_end_col >= 5:
-                    list_stack.append((indent, marker_end_col + 1))
-                    in_indented_code = True
-                    prev_blank = False
-                    out.append("\n" if line.endswith("\n") else "")
-                    continue
-                elif line[len(lm.group(0)) :].strip() == "":
-                    list_stack.append((indent, marker_end_col + 1))
-                else:
-                    list_stack.append((indent, total_col))
+        # Peel one or more list markers on this line (e.g., `- - nested`)
+        cur_after = after_bq
+        cur_base_col = 0
+        while True:
+            if THEMATIC_BREAK_RE.match(cur_after):
+                break
+            lm = LIST_MARKER_RE.match(cur_after)
+            if not lm:
+                break
+            rel_indent = leading_spaces(cur_after)
+            cur_thresh = (list_stack[-1][2] + 4) if list_stack else 4
+            if cur_base_col + rel_indent >= cur_thresh:
+                break
+            marker_end = cur_base_col + visual_width(lm.group(1))
+            total_col = cur_base_col + visual_width(lm.group(0))
+            rest_after_marker = cur_after[len(lm.group(0)) :]
+            if total_col - marker_end >= 5:
+                list_stack.append((bq_depth, cur_base_col + rel_indent, marker_end + 1))
+                in_indented_code = True
+                prev_blank = False
+                out.append("\n" if line.endswith("\n") else "")
+                break
+            elif rest_after_marker.strip() == "":
+                list_stack.append((bq_depth, cur_base_col + rel_indent, marker_end + 1))
+                break
+            else:
+                list_stack.append((bq_depth, cur_base_col + rel_indent, total_col))
+                cur_base_col = total_col
+                cur_after = rest_after_marker
+        if in_indented_code:
+            continue
 
         prev_blank = False
         out.append(line)
@@ -301,11 +363,27 @@ def strip_inline_code(text: str) -> str:
     )
 
 
+def _is_alnum_unicode(ch: str) -> bool:
+    if not ch:
+        return False
+    cat = unicodedata.category(ch)
+    return cat.startswith(("L", "N"))
+
+
 def strip_emphasis_markers(s: str) -> str:
     """Strip Markdown emphasis/strong markers (*, _) while keeping intraword underscores."""
     s = re.sub(r"(\*{1,3})(.+?)\1", r"\2", s)
-    s = re.sub(r"(?<![0-9A-Za-z])(_{1,3})(.+?)\1(?![0-9A-Za-z])", r"\2", s)
-    return s
+
+    # Unicode-aware intraword check for _..._, __...__, ___...___
+    def _repl_underscore(m: re.Match[str]) -> str:
+        start, end = m.start(), m.end()
+        before = s[start - 1] if start > 0 else ""
+        after = s[end] if end < len(s) else ""
+        if _is_alnum_unicode(before) or _is_alnum_unicode(after):
+            return m.group(0)
+        return m.group(2)
+
+    return re.sub(r"(_{1,3})(.+?)\1", _repl_underscore, s)
 
 
 def github_slug(heading_text: str) -> str:
@@ -383,7 +461,10 @@ def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inl
     n = len(lines_with_inline)
     i = 0
     para_lines: list[str] = []
-    # Skip YAML frontmatter at top of file if present
+    para_ctx: tuple[int, int] | None = None
+    list_stack: list[tuple[int, int, int]] = []
+    prev_blank = True
+
     if n > 0 and lines_no_inline[0].strip() == "---":
         j = 1
         while j < n and lines_no_inline[j].strip() not in ("---", "..."):
@@ -392,14 +473,93 @@ def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inl
             i = j + 1
 
     while i < n:
-        line = lines_with_inline[i]
-        no_inline = lines_no_inline[i]
-        unprefixed = strip_container_prefix(line)
-        unprefixed_no_inline = strip_container_prefix(no_inline)
+        line_w = lines_with_inline[i]
+        line_n = lines_no_inline[i]
+        bq_depth, after_bq_w = peel_blockquotes(line_w)
+        _, after_bq_n = peel_blockquotes(line_n)
 
-        m = HEADING_RE.match(unprefixed)
+        if after_bq_n.strip() == "":
+            para_lines.clear()
+            para_ctx = None
+            prev_blank = True
+            while list_stack and list_stack[-1][0] > bq_depth:
+                list_stack.pop()
+            i += 1
+            continue
+
+        indent = leading_spaces(after_bq_n)
+        is_thematic = bool(THEMATIC_BREAK_RE.match(after_bq_n))
+        is_atx_top = bool(HEADING_RE.match(after_bq_w))
+        is_html_block = bool(HTML_BLOCK_START_RE.match(after_bq_n))
+        is_new_list_marker = bool(not is_thematic and LIST_MARKER_RE.match(after_bq_n))
+
+        while list_stack:
+            top_bq, marker_col, content_col = list_stack[-1]
+            if bq_depth != top_bq:
+                list_stack.pop()
+            elif indent < content_col and (
+                prev_blank
+                or is_atx_top
+                or is_thematic
+                or is_html_block
+                or (is_new_list_marker and indent <= marker_col)
+            ):
+                list_stack.pop()
+            else:
+                break
+
+        # Peel any new list markers on this line
+        started_new_item = False
+        if is_new_list_marker:
+            cur_w = after_bq_w
+            cur_n = after_bq_n
+            cur_base = 0
+            while True:
+                if THEMATIC_BREAK_RE.match(cur_n):
+                    break
+                lm_n = LIST_MARKER_RE.match(cur_n)
+                lm_w = LIST_MARKER_RE.match(cur_w)
+                if not lm_n or not lm_w:
+                    break
+                rel_ind = leading_spaces(cur_n)
+                marker_end = cur_base + visual_width(lm_n.group(1))
+                total_col = cur_base + visual_width(lm_n.group(0))
+                rest_n = cur_n[len(lm_n.group(0)) :]
+                rest_w = cur_w[len(lm_w.group(0)) :]
+                started_new_item = True
+                if rest_n.strip() == "" or total_col - marker_end >= 5:
+                    list_stack.append((bq_depth, cur_base + rel_ind, marker_end + 1))
+                    cur_w = ""
+                    cur_n = ""
+                    break
+                else:
+                    list_stack.append((bq_depth, cur_base + rel_ind, total_col))
+                    cur_base = total_col
+                    cur_n = rest_n
+                    cur_w = rest_w
+            inner_w = cur_w
+            inner_n = cur_n
+            active_content_col = list_stack[-1][2] if list_stack else 0
+        elif list_stack and indent >= list_stack[-1][2]:
+            active_content_col = list_stack[-1][2]
+            inner_w = drop_visual_cols(after_bq_w, active_content_col)
+            inner_n = drop_visual_cols(after_bq_n, active_content_col)
+        else:
+            active_content_col = list_stack[-1][2] if list_stack else 0
+            inner_w = after_bq_w
+            inner_n = after_bq_n
+
+        if started_new_item:
+            para_lines.clear()
+            para_ctx = None
+
+        cur_ctx = (bq_depth, active_content_col)
+        prev_blank = False
+
+        m = HEADING_RE.match(inner_w)
         if m:
             para_lines.clear()
+            para_ctx = None
             if m.group(2):
                 register_heading(m.group(2))
             i += 1
@@ -407,24 +567,33 @@ def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inl
 
         if (
             para_lines
-            and not SPACED_THEMATIC_BREAK_RE.match(no_inline)
-            and SETEXT_UNDERLINE_RE.match(unprefixed_no_inline)
+            and para_ctx == cur_ctx
+            and not started_new_item
+            and (active_content_col == 0 or indent >= active_content_col)
+            and not SPACED_THEMATIC_BREAK_RE.match(inner_n)
+            and SETEXT_UNDERLINE_RE.match(inner_n)
         ):
             register_heading(" ".join(p.strip() for p in para_lines))
             para_lines.clear()
+            para_ctx = None
             i += 1
             continue
 
-        stripped_unprefixed = unprefixed_no_inline.strip()
+        stripped_inner = inner_n.strip()
         if (
-            not stripped_unprefixed
+            not stripped_inner
             or line_in_ref_def(i)
-            or THEMATIC_BREAK_RE.match(no_inline)
-            or stripped_unprefixed.startswith(("#", "|", "<"))
+            or THEMATIC_BREAK_RE.match(inner_n)
+            or HTML_BLOCK_START_RE.match(inner_n)
+            or stripped_inner.startswith("|")
         ):
             para_lines.clear()
+            para_ctx = None
         else:
-            para_lines.append(unprefixed)
+            if para_ctx != cur_ctx:
+                para_lines.clear()
+                para_ctx = cur_ctx
+            para_lines.append(inner_w)
         i += 1
 
     return heading_anchors | html_anchors
@@ -550,14 +719,15 @@ def parse_links_in_file(
     prose_no_inline: str,
     html_links: list[tuple[int, str]],
 ) -> list[LinkRef]:
-    line_starts = build_line_starts(prose_no_inline)
+    cleaned = strip_closed_raw_html_elements(prose_no_inline)
+    line_starts = build_line_starts(cleaned)
     ref_defs: dict[str, tuple[int, str]] = {}
     extra_ref_defs: list[tuple[int, str]] = []
     used_refs: set[str] = set()
     raw_occurrences: list[tuple[int, str]] = []
     skip_spans: list[tuple[int, int]] = []
 
-    for m in REF_DEF_FULL_RE.finditer(prose_no_inline):
+    for m in REF_DEF_FULL_RE.finditer(cleaned):
         label = " ".join(m.group(1).split()).lower()
         dest = clean_destination(m.group(2))
         line_no = line_of_offset(line_starts, m.start())
@@ -568,7 +738,7 @@ def parse_links_in_file(
             else:
                 extra_ref_defs.append((line_no, dest))
 
-    raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs, used_refs, skip_spans))
+    raw_occurrences.extend(scan_markdown_links(cleaned, ref_defs, used_refs, skip_spans))
 
     for label, (def_line, dest) in ref_defs.items():
         if label not in used_refs:
