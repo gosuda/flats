@@ -36,10 +36,10 @@ together the shards always run the whole suite. Tests in those packages call
 environment (see the comment above each package's `TestMain`). A local
 `go test ./...` runs both packages at once, so one package's parallel tests
 can slow the other's serial timing tests; on a busy machine, run the shards
-one at a time or use `go test -p 1 ./...`. The `install-script` and
-`container` jobs build every release archive CGO-free:
-darwin/amd64 and darwin/arm64 on macOS, linux/amd64 and linux/arm64 in the
-container job.
+one at a time or use `go test -p 1 ./...`. Every release archive is built
+CGO-free somewhere: darwin/arm64 by the macOS `install-script` leg,
+darwin/amd64 by the `darwin-cross-build` job on Linux, and linux/amd64 and
+linux/arm64 by the `container` job.
 
 The `netbird` job covers the nested `netbird` module, which `go test ./...`
 does not reach: no go.mod/go.sum diff after `go mod tidy`, `go vet ./...`,
