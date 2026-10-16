@@ -103,11 +103,11 @@ func TestCreate(t *testing.T) {
 func TestSave(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	orig := fileWith("system", `"keep_versions": 3`)
+	orig := fileWith("system", `"version_quota": 3`)
 	hash := writeFile(t, path, orig)
 	w := NewWriter(path)
 
-	if _, err := w.Save(Hash([]byte("stale")), set("system.keep_versions", "4")); !errors.Is(err, ErrConflict) {
+	if _, err := w.Save(Hash([]byte("stale")), set("system.version_quota", "4")); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale hash: err = %v, want ErrConflict", err)
 	}
 	var ce *ConflictError
@@ -125,12 +125,12 @@ func TestSave(t *testing.T) {
 		t.Fatal("a rejected save changed the file or history")
 	}
 
-	newHash, err := w.Save(hash, set("system.keep_versions", "4"))
+	newHash, err := w.Save(hash, set("system.version_quota", "4"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := readString(t, path)
-	if newHash != Hash([]byte(data)) || !strings.Contains(data, `"keep_versions": 4`) {
+	if newHash != Hash([]byte(data)) || !strings.Contains(data, `"version_quota": 4`) {
 		t.Fatalf("saved %q hash %s", data, newHash)
 	}
 	if m := mode(t, path); m != 0o600 {
@@ -148,7 +148,7 @@ func TestSave(t *testing.T) {
 	}
 
 	// Saving canonical bytes again writes nothing.
-	again, err := w.Save(newHash, set("system.keep_versions", "4"))
+	again, err := w.Save(newHash, set("system.version_quota", "4"))
 	if err != nil || again != newHash || len(historyFiles(t, dir)) != 1 {
 		t.Fatalf("no-op save: hash %s err %v history %v", again, err, historyFiles(t, dir))
 	}
@@ -170,7 +170,7 @@ func TestSaveSerialized(t *testing.T) {
 	for i := range errs {
 		wg.Go(func() {
 			<-start
-			_, errs[i] = w.Save(hash, set("system.keep_versions", []string{"1", "2"}[i]))
+			_, errs[i] = w.Save(hash, set("system.version_quota", []string{"1", "2"}[i]))
 		})
 	}
 	close(start)
@@ -204,7 +204,7 @@ func TestHistoryPruning(t *testing.T) {
 	for i := range 13 {
 		prev = readString(t, path)
 		var err error
-		if hash, err = w.Save(hash, set("system.keep_versions", string(rune('1'+i%9))+"0")); err != nil {
+		if hash, err = w.Save(hash, set("system.version_quota", string(rune('1'+i%9))+"0")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -224,7 +224,7 @@ func TestSaveHistoryFailureAborts(t *testing.T) {
 	orig := fileWith()
 	hash := writeFile(t, path, orig)
 	writeFile(t, filepath.Join(dir, historyDir), "not a directory")
-	if _, err := NewWriter(path).Save(hash, set("system.keep_versions", "1")); err == nil {
+	if _, err := NewWriter(path).Save(hash, set("system.version_quota", "1")); err == nil {
 		t.Fatal("Save succeeded without a history copy")
 	}
 	if readString(t, path) != orig {
@@ -240,13 +240,13 @@ func TestSaveMissingFile(t *testing.T) {
 }
 
 // fakeRegistry is a schema_version 2 that renamed system.old_keep to
-// system.keep_versions.
+// system.version_quota.
 var fakeRegistry = registry{current: 2, steps: []Migration{{
 	From: 1, To: 2, NeedsConfirm: true,
 	Apply: func(doc map[string]any) error {
 		sys, _ := doc["system"].(map[string]any)
 		if v, ok := sys["old_keep"]; ok {
-			sys["keep_versions"] = v
+			sys["version_quota"] = v
 			delete(sys, "old_keep")
 		}
 		return nil
@@ -263,8 +263,8 @@ func TestMigration(t *testing.T) {
 		t.Fatalf("Loaded = %+v", l)
 	}
 	c, err := l.Doc.Effective(nil)
-	if err != nil || c.System.KeepVersions != 5 {
-		t.Fatalf("keep_versions = %d, %v", c.System.KeepVersions, err)
+	if err != nil || c.System.VersionQuota != 5 {
+		t.Fatalf("version_quota = %d, %v", c.System.VersionQuota, err)
 	}
 	out := l.Doc.Encode()
 	var probe map[string]any
@@ -310,11 +310,11 @@ func TestMigration(t *testing.T) {
 func TestTooNew(t *testing.T) {
 	// A newer file may use keys, nulls or duplicates this binary rejects;
 	// the version check comes first.
-	newer := `{"schema_version": 3, "host": {"x": null, "x": 1}, "future": {}}`
+	newer := `{"schema_version": 5, "host": {"x": null, "x": 1}, "future": {}}`
 	for _, r := range []registry{migrations, fakeRegistry} {
 		_, err := r.parse([]byte(newer))
 		var tn *TooNewError
-		if !errors.Is(err, ErrTooNew) || !errors.As(err, &tn) || tn.Version != 3 || tn.Supported != r.current {
+		if !errors.Is(err, ErrTooNew) || !errors.As(err, &tn) || tn.Version != 5 || tn.Supported != r.current {
 			t.Fatalf("registry v%d: err = %v", r.current, err)
 		}
 	}

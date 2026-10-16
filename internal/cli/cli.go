@@ -106,12 +106,16 @@ var commands []*command
 
 func init() {
 	commands = []*command{
+		{"save-document", "replace a whole live document bundle", "save-document <slug> <dir|archive> [--message m]", (*app).saveDocument},
+		{"save-draft", "save complete output as a Private Draft", "save-draft <slug> <dir|archive> [--expected-revision n] [--message m]", (*app).saveDraft},
+		{"get-draft", "read Private Draft metadata", "get-draft <slug>", (*app).getDraft},
 		{"draft", "read or save a Private Draft", "draft <slug> [<dir|archive>] [--expected-revision n] [--message m]", (*app).draft},
-		{"publish", "request operator approval to save Draft as a new version", "publish <slug> [--revision n] [--hash hash]", (*app).publish},
-		{"deploy", "save Draft and request version creation, or activate a saved version", "deploy <dir|archive> --flat <slug> [--save-only] [--message m]\n       flats deploy --flat <slug> --version <n>", (*app).deploy},
+		{"create-version", "request operator approval to save Draft as a new version", "create-version <slug> [--revision n] [--hash hash]", (*app).createVersion},
+		{"deploy", "request approval to deploy a saved version", "deploy --flat <slug> --version <n>", (*app).deploy},
 		{"list", "list flats", "list", (*app).list},
 		{"info", "show one flat", "info <slug>", (*app).info},
-		{"versions", "list published versions", "versions <slug>", (*app).versions},
+		{"delete-version", "request operator approval to delete a retained version", "delete-version <slug> --version n", (*app).deleteVersion},
+		{"versions", "list retained versions", "versions <slug>", (*app).versions},
 		{"rollback", "request approval to activate an earlier version", "rollback <slug> [--to n] [--restore-data]", (*app).rollback},
 		{"preview", "open a private preview of a version", "preview <slug> [--version n]", (*app).preview},
 		{"visibility", "change who can open a flat", "visibility <slug> private|public [--reason r]", (*app).visibility},

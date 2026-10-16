@@ -47,17 +47,6 @@ type ZrokAccountAdmin interface {
 	DisconnectZrok(ctx context.Context, force bool) error
 }
 
-// NetbirdAccountAdmin is a System that lets the console enroll the host as a
-// NetBird peer with a setup key, and disconnect it. The setup key is sent
-// once, used to register the peer and never stored or returned.
-type NetbirdAccountAdmin interface {
-	ConnectNetbird(ctx context.Context, setupKey string) error
-	// DisconnectNetbird removes the peer's local identity; force does so even
-	// when it cannot be confirmed. The peer may remain listed in the NetBird
-	// dashboard until the operator removes it there.
-	DisconnectNetbird(ctx context.Context, force bool) error
-}
-
 // KeyAdmin is a System whose console manages the operator keys. Values are
 // sent once and never returned.
 type KeyAdmin interface {
@@ -65,17 +54,23 @@ type KeyAdmin interface {
 	HostKeys(ctx context.Context) (any, error)
 	SetTailscaleKey(ctx context.Context, key string) error
 	DeleteTailscaleKey(ctx context.Context) error
+	SetNetbirdKey(ctx context.Context, key string) error
+	DeleteNetbirdKey(ctx context.Context) error
+	// DismissNetbirdLegacyPeer hides the notice about the shared NetBird
+	// peer an earlier version registered.
+	DismissNetbirdLegacyPeer(ctx context.Context) error
 }
 
 // ConsoleDomainAdmin is a System whose console manages its own Tailscale
-// domains. Changes are guarded by the settings ETag.
+// and NetBird domains. provider is "tailscale" or "netbird". Changes are
+// guarded by the settings ETag.
 type ConsoleDomainAdmin interface {
 	ConsoleDomains(ctx context.Context) (any, error)
-	AddConsoleDomain(ctx context.Context, name, ifMatch string) (etag string, err error)
+	AddConsoleDomain(ctx context.Context, provider, name, ifMatch string) (etag string, err error)
 	// DeleteConsoleDomain removes name. When the request came through name,
 	// redirect is a remaining console address and after, run once the
-	// response is written, logs the node out.
-	DeleteConsoleDomain(ctx context.Context, name, ifMatch string) (etag, redirect string, after func(), err error)
+	// response is written, retires the node.
+	DeleteConsoleDomain(ctx context.Context, provider, name, ifMatch string) (etag, redirect string, after func(), err error)
 }
 
 // Server serves /api and /console/api.
@@ -117,9 +112,11 @@ func (s *Server) Handler() http.Handler {
 		h("GET /flats/{slug}", s.getFlat)
 		h("GET /flats/{slug}/document", s.getDocument)
 		h("GET /flats/{slug}/draft", s.getDraft)
-		h("POST /flats/{slug}/draft", s.saveVersion)
-		h("PUT /flats/{slug}/draft", s.saveVersion)
-		h("POST /flats/{slug}/publish", s.publish)
+		h("POST /flats/{slug}/draft", s.saveContent)
+		h("PUT /flats/{slug}/draft", s.saveContent)
+		h("POST /flats/{slug}/versions", s.createVersion)
+		h("DELETE /flats/{slug}/versions/{n}", s.deleteVersion)
+		h("POST /flats/{slug}/document", s.saveContent)
 		h("POST /flats/{slug}/providers", s.providers)
 		h("GET /flats/{slug}/versions", s.listVersions)
 		h("GET /flats/{slug}/versions/{n}", s.getVersion)
@@ -147,31 +144,32 @@ func (s *Server) Handler() http.Handler {
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
-			h("POST /flats/{slug}/versions", s.saveVersion)
 			h("POST /approvals/{id}/approve", s.decide(true))
 			h("POST /approvals/{id}/reject", s.decide(false))
 			h("POST /flats/{slug}/name", s.setName)
 			h("PUT /flats/{slug}/listing", s.setListing)
+			h("GET /flats/{slug}/version-quota", s.getFlat)
+			h("PUT /flats/{slug}/version-quota", s.putVersionQuota)
 			h("GET /flats/{slug}/revision-quota", s.revisionQuota)
 			h("PUT /flats/{slug}/revision-quota", s.putRevisionQuota)
 			h("GET /providers", s.hostProviders)
 			h("PUT /providers/{id}", s.setHostProvider)
 			h("PUT /providers/zrok/account", s.connectZrok)
 			h("DELETE /providers/zrok/account", s.disconnectZrok)
-			h("PUT /providers/netbird/account", s.connectNetbird)
-			h("DELETE /providers/netbird/account", s.disconnectNetbird)
 			h("GET /keys", s.hostKeys)
 			h("PUT /keys/tailscale", s.setTailscaleKey)
 			h("DELETE /keys/tailscale", s.deleteTailscaleKey)
+			h("PUT /keys/netbird", s.setNetbirdKey)
+			h("DELETE /keys/netbird", s.deleteNetbirdKey)
+			h("DELETE /keys/netbird/legacy-peer", s.dismissNetbirdLegacyPeer)
 			h("GET /console-domains", s.consoleDomains)
 			h("POST /console-domains", s.addConsoleDomain)
-			h("DELETE /console-domains/{name}", s.deleteConsoleDomain)
+			h("DELETE /console-domains/{provider}/{name}", s.deleteConsoleDomain)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
 		} else {
 			h("POST /flats", s.createFlat)
-			h("POST /flats/{slug}/versions", s.saveVersion)
 		}
 	}
 	return mux
@@ -361,20 +359,40 @@ func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, 201, f)
 }
 
-// SaveResponse keeps the archive-upload compatibility object and the current
-// Draft separate. A pending request is never represented as a live version.
+// SaveResponse describes a Private Draft or a live document.
+// Saving never creates a numbered version or requests approval.
 type SaveResponse struct {
-	Version store.Version      `json:"version"`
-	Draft   store.Draft        `json:"draft"`
-	Deploy  *core.ActionResult `json:"deploy,omitempty"`
-	// Flat is set for a document, which runs at once: it has no Draft or
-	// publish step, so deploy is ignored.
-	Flat *core.FlatView `json:"flat,omitempty"`
-	core.ActionResult
+	Draft *SavedDraft    `json:"draft,omitempty"`
+	Flat  *core.FlatView `json:"flat,omitempty"`
 }
 
-func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
+// SavedDraft is metadata of this exact save, captured under the core storage
+// lock. Current mutable metadata (dirty/base_version) is read through GET draft.
+type SavedDraft struct {
+	Type     string    `json:"type"`
+	Flat     string    `json:"flat"`
+	Revision int       `json:"revision"`
+	Hash     string    `json:"hash"`
+	Size     int64     `json:"size"`
+	Files    int       `json:"files"`
+	Kind     string    `json:"kind"`
+	GitSHA   string    `json:"git_sha,omitempty"`
+	GitDirty bool      `json:"git_dirty"`
+	Message  string    `json:"message,omitempty"`
+	SavedAt  time.Time `json:"saved_at"`
+}
+
+// SavedDraftFrom projects the atomic core save receipt without version fields.
+func SavedDraftFrom(v store.Version) SavedDraft {
+	return SavedDraft{Type: contenttype.FromManifest(v.Manifest), Flat: v.Flat, Revision: v.Revision, Hash: v.Hash, Size: v.Size, Files: v.Files, Kind: v.Kind, GitSHA: v.GitSHA, GitDirty: v.GitDirty, Message: v.Message, SavedAt: v.CreatedAt}
+}
+
+func (s *Server) saveContent(w http.ResponseWriter, r *http.Request, via core.Via) {
 	q := r.URL.Query()
+	if q.Has("deploy") {
+		writeErr(w, 400, errors.New("Draft saves never create a version; request creation separately with POST /versions"))
+		return
+	}
 	dirty, _ := strconv.ParseBool(q.Get("git_dirty"))
 	meta := core.SaveMeta{GitSHA: q.Get("git_sha"), GitDirty: dirty, Message: q.Get("message")}
 	if values, present := q["expected_revision"]; present {
@@ -394,34 +412,27 @@ func (s *Server) saveVersion(w http.ResponseWriter, r *http.Request, via core.Vi
 		fail(w, err)
 		return
 	}
-	v, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
+	manifest, err := bundle.ParseManifest(files)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	documentRoute := strings.HasSuffix(r.URL.Path, "/document")
+	if (manifest.Type == contenttype.Docs) != documentRoute {
+		writeErr(w, 400, errors.New("documents must use /document; websites and pages must use /draft"))
+		return
+	}
+	saved, err := s.Svc.SaveVersion(r.Context(), r.PathValue("slug"), files, meta, via)
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	if f, err := s.Svc.GetFlat(r.Context(), r.PathValue("slug")); err == nil && f.Type == contenttype.Docs {
-		writeJSON(w, http.StatusCreated, SaveResponse{Version: v, Flat: &f})
+		writeJSON(w, http.StatusCreated, SaveResponse{Flat: &f})
 		return
 	}
-	draft, err := s.Svc.GetDraft(r.Context(), r.PathValue("slug"))
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	out := SaveResponse{Version: v, Draft: draft}
-	if deploy, _ := strconv.ParseBool(q.Get("deploy")); deploy {
-		res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), v.Revision, v.Hash, via)
-		if err != nil {
-			writeJSON(w, statusOf(err), struct {
-				SaveResponse
-				DeployError ErrorBody `json:"deploy_error"`
-			}{out, errorBody(err)})
-			return
-		}
-		out.ActionResult, out.Deploy = res, &res
-		writeJSON(w, http.StatusAccepted, out)
-		return
-	}
+	draft := SavedDraftFrom(saved)
+	out := SaveResponse{Draft: &draft}
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -434,20 +445,20 @@ func (s *Server) getDraft(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	writeJSON(w, http.StatusOK, draft)
 }
 
-// PublishRequest freezes the selected current revision and optional content
+// CreateVersionRequest freezes the selected current revision and optional content
 // hash. Revision zero selects current, and cannot substitute a stale revision.
-type PublishRequest struct {
+type CreateVersionRequest struct {
 	Revision int    `json:"revision"`
 	Hash     string `json:"hash,omitempty"`
 }
 
-func (s *Server) publish(w http.ResponseWriter, r *http.Request, via core.Via) {
-	var in PublishRequest
+func (s *Server) createVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in CreateVersionRequest
 	if err := decode(r, &in); err != nil || in.Revision < 0 {
-		writeErr(w, 400, errors.New("publish body requires a nonnegative revision and optional hash"))
+		writeErr(w, 400, errors.New("version creation body requires a nonnegative revision and optional hash"))
 		return
 	}
-	res, err := s.Svc.RequestPublish(r.Context(), r.PathValue("slug"), in.Revision, in.Hash, via)
+	res, err := s.Svc.RequestCreateVersion(r.Context(), r.PathValue("slug"), in.Revision, in.Hash, via)
 	if err != nil {
 		fail(w, err)
 		return
@@ -963,49 +974,6 @@ func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.V
 	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
 }
 
-func (s *Server) netbirdAccountAdmin(w http.ResponseWriter) (NetbirdAccountAdmin, ProviderAdmin, bool) {
-	n, ok := s.System.(NetbirdAccountAdmin)
-	p, pok := s.System.(ProviderAdmin)
-	if !ok || !pok {
-		writeErr(w, http.StatusNotFound, errors.New("this host does not manage a NetBird peer"))
-		return nil, nil, false
-	}
-	return n, p, true
-}
-
-// connectNetbird enrolls the host as a NetBird peer with a setup key.
-func (s *Server) connectNetbird(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	n, p, ok := s.netbirdAccountAdmin(w)
-	if !ok {
-		return
-	}
-	var in struct {
-		SetupKey string `json:"setup_key"`
-	}
-	if err := decode(r, &in); err != nil || strings.TrimSpace(in.SetupKey) == "" {
-		writeErr(w, 400, errors.New(`body must be {"setup_key": "<NetBird setup key>"}`))
-		return
-	}
-	if err := n.ConnectNetbird(r.Context(), strings.TrimSpace(in.SetupKey)); err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
-}
-
-// disconnectNetbird removes the host's NetBird peer identity.
-func (s *Server) disconnectNetbird(w http.ResponseWriter, r *http.Request, _ core.Via) {
-	n, p, ok := s.netbirdAccountAdmin(w)
-	if !ok {
-		return
-	}
-	if err := n.DisconnectNetbird(r.Context(), r.URL.Query().Get("force") == "1"); err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
-}
-
 func (s *Server) keyAdmin(w http.ResponseWriter) (KeyAdmin, bool) {
 	k, ok := s.System.(KeyAdmin)
 	if !ok {
@@ -1052,11 +1020,46 @@ func (s *Server) setTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.
 
 // deleteTailscaleKey removes the stored Tailscale auth key.
 func (s *Server) deleteTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	s.keyAction(w, r, KeyAdmin.DeleteTailscaleKey)
+}
+
+// setNetbirdKey stores the NetBird setup key new NetBird peers register with.
+func (s *Server) setNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	k, ok := s.keyAdmin(w)
 	if !ok {
 		return
 	}
-	if err := k.DeleteTailscaleKey(r.Context()); err != nil {
+	var in struct {
+		Key string `json:"key"`
+	}
+	if err := decode(r, &in); err != nil || strings.TrimSpace(in.Key) == "" {
+		writeErr(w, 400, errors.New(`body must be {"key": "<NetBird setup key>"}`))
+		return
+	}
+	if err := k.SetNetbirdKey(r.Context(), in.Key); err != nil {
+		fail(w, err)
+		return
+	}
+	s.writeKeys(w, r, k)
+}
+
+// deleteNetbirdKey removes the stored NetBird setup key.
+func (s *Server) deleteNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	s.keyAction(w, r, KeyAdmin.DeleteNetbirdKey)
+}
+
+// dismissNetbirdLegacyPeer hides the notice about the old shared peer.
+func (s *Server) dismissNetbirdLegacyPeer(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	s.keyAction(w, r, KeyAdmin.DismissNetbirdLegacyPeer)
+}
+
+// keyAction runs a body-less key change and answers with the key list.
+func (s *Server) keyAction(w http.ResponseWriter, r *http.Request, do func(KeyAdmin, context.Context) error) {
+	k, ok := s.keyAdmin(w)
+	if !ok {
+		return
+	}
+	if err := do(k, r.Context()); err != nil {
 		fail(w, err)
 		return
 	}
@@ -1091,13 +1094,17 @@ func (s *Server) addConsoleDomain(w http.ResponseWriter, r *http.Request, _ core
 		return
 	}
 	var in struct {
-		Name string `json:"name"`
+		Provider string `json:"provider"`
+		Name     string `json:"name"`
 	}
 	if err := decode(r, &in); err != nil || strings.TrimSpace(in.Name) == "" {
-		writeErr(w, 400, errors.New(`body must be {"name": "<tailnet host name>"}`))
+		writeErr(w, 400, errors.New(`body must be {"provider": "tailscale" or "netbird", "name": "<host name>"}`))
 		return
 	}
-	etag, err := d.AddConsoleDomain(r.Context(), strings.TrimSpace(in.Name), ifMatch(r))
+	if in.Provider == "" {
+		in.Provider = "tailscale"
+	}
+	etag, err := d.AddConsoleDomain(r.Context(), in.Provider, strings.TrimSpace(in.Name), ifMatch(r))
 	if err != nil {
 		fail(w, err)
 		return
@@ -1114,7 +1121,7 @@ func (s *Server) deleteConsoleDomain(w http.ResponseWriter, r *http.Request, _ c
 	if !ok {
 		return
 	}
-	etag, redirect, after, err := d.DeleteConsoleDomain(r.Context(), r.PathValue("name"), ifMatch(r))
+	etag, redirect, after, err := d.DeleteConsoleDomain(r.Context(), r.PathValue("provider"), r.PathValue("name"), ifMatch(r))
 	if err != nil {
 		fail(w, err)
 		return
@@ -1225,4 +1232,45 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request, _ core.Via)
 		return
 	}
 	writeJSON(w, http.StatusOK, document)
+}
+
+func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request, via core.Via) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n <= 0 {
+		writeErr(w, 400, errors.New("version must be a positive integer"))
+		return
+	}
+	out, err := s.Svc.RequestDeleteVersion(r.Context(), r.PathValue("slug"), n, via)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	code := http.StatusOK
+	if out.Status == "pending_approval" {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, out)
+}
+func (s *Server) putVersionQuota(w http.ResponseWriter, r *http.Request, via core.Via) {
+	var in struct {
+		VersionQuota json.RawMessage `json:"version_quota"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	var quota *int
+	if len(in.VersionQuota) == 0 {
+		writeErr(w, 400, errors.New("version_quota is required; use null to follow the host"))
+		return
+	}
+	if err := json.Unmarshal(in.VersionQuota, &quota); err != nil {
+		writeErr(w, 400, errors.New("version_quota must be an integer or null"))
+		return
+	}
+	if err := s.Svc.SetVersionQuotaOverride(r.Context(), r.PathValue("slug"), quota); err != nil {
+		fail(w, err)
+		return
+	}
+	s.getFlat(w, r, via)
 }

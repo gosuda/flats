@@ -10,33 +10,75 @@ import (
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type SaveDocumentIn struct {
-	Slug     string `json:"slug"`
-	Markdown string `json:"markdown"`
-	Title    string `json:"title,omitempty"`
-	Path     string `json:"path,omitempty" jsonschema:"relative .md or .markdown path; default index.md; complete Draft replacement"`
-	Message  string `json:"message,omitempty"`
+	Slug          string   `json:"slug"`
+	Markdown      *string  `json:"markdown,omitempty" jsonschema:"required for a single-document save; an explicit empty string intentionally clears the document; omit only for files with replace_bundle true"`
+	Files         []FileIn `json:"files,omitempty" jsonschema:"complete docs bundle, including flats.json with type docs; requires replace_bundle true"`
+	ReplaceBundle bool     `json:"replace_bundle,omitempty" jsonschema:"explicitly replace every document and asset with files; omitted files are deleted"`
+	Title         string   `json:"title,omitempty"`
+	Path          string   `json:"path,omitempty" jsonschema:"relative .md or .markdown path; default index.md; only this document changes; other files and settings are preserved"`
+	Message       string   `json:"message,omitempty"`
 }
 
 func (t *tools) saveDocument(ctx context.Context, _ *mcp.CallToolRequest, in SaveDocumentIn) (*mcp.CallToolResult, SaveOut, error) {
+	if in.ReplaceBundle || in.Files != nil {
+		if !in.ReplaceBundle || len(in.Files) == 0 || in.Markdown != nil || in.Path != "" || in.Title != "" {
+			return nil, SaveOut{}, toolErr(fmt.Errorf("%w: files requires replace_bundle=true and cannot be combined with markdown, path or title", core.ErrInvalid), "")
+		}
+		raw, err := decodeFiles(in.Files)
+		if err != nil {
+			return nil, SaveOut{}, toolErr(err, "")
+		}
+		files, err := bundle.FromFiles(raw, bundle.Limits{MaxBytes: t.svc.UploadLimit()})
+		if err != nil {
+			return nil, SaveOut{}, toolErr(err, "")
+		}
+		if !docsBundle(files) {
+			return nil, SaveOut{}, toolErr(fmt.Errorf("%w: save_document files must be a docs bundle", core.ErrInvalid), "include flats.json with type docs")
+		}
+		return t.save(ctx, in.Slug, files, core.SaveMeta{Message: in.Message}, nil)
+	}
+	if in.Markdown == nil {
+		return nil, SaveOut{}, toolErr(fmt.Errorf("%w: markdown is required for a single-document save", core.ErrInvalid), "provide markdown (an empty string intentionally clears the document), or send files with replace_bundle=true")
+	}
 	if in.Path == "" {
 		in.Path = "index.md"
 	}
 	if !fs.ValidPath(in.Path) || !bundle.IsMarkdown(in.Path) {
 		return nil, SaveOut{}, toolErr(fmt.Errorf("%w: path must be a relative .md or .markdown path", core.ErrInvalid), "use index.md or a path inside the bundle")
 	}
-	manifest := map[string]string{"type": "docs"}
-	if in.Title != "" {
-		manifest["name"] = in.Title
-	}
-	b, err := json.Marshal(manifest)
+	v, err := t.svc.SaveDocument(ctx, in.Slug, in.Path, *in.Markdown, in.Title, core.SaveMeta{Message: in.Message}, core.ViaMCP)
+	return t.savedDocument(ctx, in.Slug, in.Path, v, err)
+}
+
+func (t *tools) savedDocument(ctx context.Context, slug, path string, v store.Version, saveErr error) (*mcp.CallToolResult, SaveOut, error) {
+	res, out, err := t.saved(ctx, slug, nil, v, saveErr, true)
 	if err != nil {
-		return nil, SaveOut{}, toolErr(err, "")
+		return res, out, err
 	}
-	return t.save(ctx, in.Slug, []bundle.File{{Path: in.Path, Data: []byte(in.Markdown)}, {Path: bundle.ManifestName, Data: b}}, core.SaveMeta{Message: in.Message}, false, nil)
+	out.Document = path
+	details := fmt.Sprintf("Saved path: %s.", path)
+	var m bundle.Manifest
+	if json.Unmarshal(v.Manifest, &m) == nil && m.Entry != "" {
+		out.Entry = m.Entry
+		details += fmt.Sprintf(" Entry document: %s; get_document without doc reads that entry.", m.Entry)
+	}
+	return result(savedDocumentText(slug, out.Flat, details), out), out, nil
+}
+
+func savedDocumentText(slug string, flat *FlatInfo, details ...string) string {
+	if flat != nil {
+		return documentText("Saved document", *flat, details...)
+	}
+	text := fmt.Sprintf("Saved document %s. This save succeeded, but current metadata is unavailable. Read get_flat to check its current state; do not repeat this save.", slug)
+	for _, detail := range details {
+		text += " " + detail
+	}
+	return text
 }
 
 type GetDocumentIn struct {
@@ -55,7 +97,7 @@ func (t *tools) getDocument(ctx context.Context, _ *mcp.CallToolRequest, in GetD
 		out, err = t.svc.GetDocument(ctx, in.Slug, in.Doc)
 	}
 	if err != nil {
-		return nil, core.Document{}, toolErr(err, "read get_flat for type and Current Draft; doc must be a Markdown path in the bundle")
+		return nil, core.Document{}, toolErr(err, "read get_flat for type; doc must be a Markdown path in the document bundle (omit doc to read the entry)")
 	}
 	return result(out.Markdown, out), out, nil
 }
@@ -112,4 +154,9 @@ func editHint(err error, slug string) string {
 		hint = notFoundHint(err, slug)
 	}
 	return hint
+}
+
+func docsBundle(files []bundle.File) bool {
+	m, err := bundle.ParseManifest(files)
+	return err == nil && m.Type == "docs"
 }

@@ -103,7 +103,17 @@ jobs:
           save-modules: ${{ runner.os == 'macOS' }}
       - name: Lint
         if: runner.os == 'Linux'
-        run: shellcheck -s sh install.sh scripts/ci-test.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh
+        run: |
+          shellcheck -s sh install.sh scripts/ci-test.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh
+          shellcheck -s bash scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh
+      - name: Approval gate helper regressions
+        timeout-minutes: 2
+        run: |
+          sh -n scripts/container-smoke.sh
+          for gate_script in scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh; do
+            bash -n "$gate_script" || exit 1
+          done
+          python3 -B scripts/test_approval_gate.py
       - name: Build release archives
         run: |
           # Each leg builds the archive it installs. The macOS leg also builds

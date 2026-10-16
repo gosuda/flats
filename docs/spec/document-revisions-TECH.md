@@ -1,5 +1,18 @@
 # Document revisions: technical design
 
+Interface update (Version-model completion): current MCP tools save Private
+Drafts with `save_draft`, `save_draft_from_dir` or `save_page` without any
+creation/deployment shortcut. `create_version` requests explicit approval to
+freeze the Draft as a numbered version; `deploy` requires that positive
+version and separate approval. Removed `save_version`,
+`save_version_from_dir` and `publish` names below describe the earlier
+implementation only. Docs bundles now use `save_document` with
+`replace_bundle: true` and complete `files`. CLI uses `save-draft`,
+`create-version`, then `deploy --version`; saved Draft output is `draft`,
+with no synthetic version 0. The current interface is detailed in
+[content-models.md](content-models.md).
+
+
 Behavior: the Revision model in [content-models.md](content-models.md).
 Store: the revision store of [design-type-TECH.md](design-type-TECH.md),
 reused for documents.
@@ -16,15 +29,13 @@ Documents (`type: "docs"`) get revisions as the Revision model requires:
 - `flats_docs_conflicts` replaced by revisions, including a migration of the
   records that exist today.
 
-This is a milestone of the Revision model, not all of it. These rules of
-content-models stay open and are listed in its "Current state":
+Single-document saves now preserve sibling files, manifest settings and the
+existing entry. Explicit whole-bundle replacement uses
+`save_document {replace_bundle: true, files: [...]}`.
 
-- rule 8: `save_document` still replaces the bundle with the one document it
-  saves, and docs bundles are still saved with `save_version`. Both are now
-  recoverable through revisions; saving one document while keeping the others
-  is a separate change;
-- quota rule 3: a person's live edit is not checked against the disk quota,
-  as today.
+This is a milestone of the Revision model, not all of it. Quota rule 3 stays
+open in content-models' "Current state": a person's live edit is not checked
+against the disk quota, as today.
 
 ## Where history is captured
 
@@ -390,9 +401,10 @@ is never deleted.
 
 All run under `lockStorage(slug)`.
 
-- **Docs saves** (`SaveVersion` with a docs manifest: `save_document`,
-  `create_flat {type: docs}`, `save_version` with a docs bundle, `flats
-  deploy`, the REST upload):
+- **Docs saves** (`SaveDocument` for a single path, or `SaveVersion` with a
+  docs manifest for an explicit bundle: `save_document`,
+  `create_flat {type: docs}`, explicit bundle replacement through
+  `save_document`, `flats save-document`, the REST `/document` upload):
   1. When a docs version is running: `intent {kind: agent, label:
      agentLabel(via), message, source: <the Draft's hash>, id}`.
   2. `saveDraftLocked`, `applyDocsLocked` (health check, then the switch), as
@@ -593,5 +605,5 @@ defaults are the existing `system.revision_quota` and `system.pin_quota`.
 
 ## Out of scope
 
-The two open rules under [Goal](#goal), and moving live text into the host
+The open quota rule under [Goal](#goal), and moving live text into the host
 revision store.

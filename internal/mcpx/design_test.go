@@ -16,7 +16,7 @@ func TestDesignFlatText(t *testing.T) {
 	if failed || !strings.Contains(text, "design, running") {
 		t.Fatalf("get_flat must describe a running design: %s", text)
 	}
-	for _, wrong := range []string{"not deployed", "version(s)", "publish"} {
+	for _, wrong := range []string{"not deployed", "version(s)", "create_version"} {
 		if strings.Contains(text, wrong) {
 			t.Errorf("get_flat describes a design with website lifecycle text %q: %s", wrong, text)
 		}

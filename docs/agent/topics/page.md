@@ -18,8 +18,7 @@ database or file storage.
 ### Bundle rules
 
 * `flats.json` must say `"type": "page"`. `save_page` and
-  `create_flat {type: "page"}` write it for you; `save_draft`,
-  `save_version`, `save_version_from_dir` and `flats deploy` need it in the
+  `create_flat {type: "page"}` write it for you; `save_draft`, `save_draft_from_dir` and `flats save-draft` need it in the
   upload. A flat keeps its type: saving a website into a page (for example an
   upload without the manifest) is refused (`refusal.conflict`).
 * Exactly one HTML file, the entry (`index.html` by default; `entry` may
@@ -36,14 +35,14 @@ database or file storage.
 1. `create_flat {slug, name, type: "page"}` makes an unpublished page with a
    starter Draft (revision 1). Optional: `save_page` also creates the flat.
 2. `save_page {slug, html, title?, screenshot?, files?, expected_revision?,
-   message?, deploy?}` saves the Draft. `html` is the whole document (saved as
+   message?}` saves the Draft. `html` is the whole document (saved as
    `index.html`); `files` are the assets (`[{path, content, encoding}]`, utf8
    or base64), omitted for a self-contained page; `screenshot` names one of
    those files as the console thumbnail. It replaces the whole Draft: send
    the html, every asset and the screenshot each time.
 3. Read the save `warnings`, then `open_preview {slug, version: 0}` and look
    at it in your browser (`topic.preview-check`).
-4. `publish` (or `deploy: true` on the save) requests approval to save the
+4. `create_version` requests approval to save the
    Draft as a numbered version (`v1`, `v2`, ...), and `deploy {slug, version:
    N}` requests approval to activate that saved version (`topic.approvals`).
    `rollback` returns to an earlier version; a page has no data, so

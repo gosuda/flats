@@ -411,7 +411,7 @@ Claude Code:
 Codex (~/.codex/config.toml):
 %s
   or: %s
-  Flats requires operator approval for every publish, activation, rollback,
+  Flats requires operator approval for every version creation, deployment, rollback,
   deletion and visibility change in both directions. Client auto-approval
   permits Draft edits and pending requests; it does not make a version live
   or grant operator authority. Use only with trusted agents.
@@ -423,7 +423,7 @@ Cursor (.cursor/mcp.json in a project, or ~/.cursor/mcp.json for all projects):
 `, endpoint, claude, indent(codexTOML, "  "), codexCmd, indent(string(cursor)+"\n", "  "))
 	fmt.Fprintln(a.out, "\nThe Flats plugin for these clients runs `flats mcp` instead; choose its host with `flats connect <url>`.")
 	if !isLoopbackURL(a.url) {
-		fmt.Fprintln(a.out, "\nNote: save_version_from_dir only works for agents on the Flats host (loopback URL).")
+		fmt.Fprintln(a.out, "\nNote: save_draft_from_dir only works for agents on the Flats host (loopback URL).")
 	}
 	return nil
 }

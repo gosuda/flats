@@ -73,8 +73,8 @@ docker run -d --name flats --restart unless-stopped --network flats \
 The host logs a warning that the management API is not on loopback; that is
 expected here. Never publish without `127.0.0.1:`, which would let your
 network approve deploys. Connections through published ports are not loopback
-to Flats, so MCP's `save_version_from_dir` is unavailable: agents use
-`save_version` or the `flats` CLI, which uploads the files.
+to Flats, so MCP's `save_draft_from_dir` is unavailable: agents use
+`save_draft` or the `flats` CLI, which uploads the files.
 
 **Tailscale.** Permit Tailscale and make it the private backend while the
 host is stopped, then start it; the console and permitted flats get their own
@@ -124,8 +124,9 @@ UDP is blocked).
 
 The published images include NetBird (see
 [Serving through NetBird](networking.md#serving-through-netbird)). It keeps the
-peer identity in `netbird/` on the data volume (the setup key itself is not
-stored), runs in userspace and needs no extra capabilities.
+identity of each flat's NetBird peer in `netbird/peers/` on the data volume
+(the setup key is in `flats.db`), runs in userspace and needs no extra
+capabilities.
 
 ## Configuration
 
@@ -135,7 +136,7 @@ volume, and start it again:
 
 ```sh
 docker stop flats
-docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set system.keep_versions 20
+docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set system.version_quota 20
 docker start flats
 docker exec flats flats config show
 ```
@@ -160,9 +161,11 @@ docker exec flats flats status
 docker exec flats flats approvals
 ```
 
-`docker exec` runs inside the container, so `flats deploy` there needs the site
-files inside it as well; deploying from the host CLI or an agent is usually
-simpler. The image healthcheck runs `flats status`; if you move the listener
+`docker exec` runs inside the container, so `flats save-draft <slug> <dir>`
+and `flats save-document <slug> <dir>` need their files inside it as well;
+uploading from the host CLI or an agent is usually simpler. Creating a version
+and deploying its number are separate approval requests and need no local build
+directory. The image healthcheck runs `flats status`; if you move the listener
 to another port, also set `-e FLATS_URL=http://127.0.0.1:<port>`.
 
 The image has no shell. To look at the volume, stop the host and mount it in a

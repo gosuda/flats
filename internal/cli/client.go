@@ -224,12 +224,13 @@ type approval struct {
 }
 
 type actionResult struct {
-	Status      string    `json:"status"`
-	Approval    *approval `json:"approval,omitempty"`
-	ApprovalURL string    `json:"approval_url,omitempty"`
-	Flat        *flatView `json:"flat,omitempty"`
-	Notice      string    `json:"notice,omitempty"`
-	Message     string    `json:"message"`
+	CleanupPending bool      `json:"cleanup_pending,omitempty"`
+	Status         string    `json:"status"`
+	Approval       *approval `json:"approval,omitempty"`
+	ApprovalURL    string    `json:"approval_url,omitempty"`
+	Flat           *flatView `json:"flat,omitempty"`
+	Notice         string    `json:"notice,omitempty"`
+	Message        string    `json:"message"`
 }
 
 type event struct {
@@ -262,6 +263,8 @@ type previewView struct {
 }
 
 type draftView struct {
+	GitSHA      string    `json:"git_sha"`
+	GitDirty    bool      `json:"git_dirty"`
 	Type        string    `json:"type"`
 	Flat        string    `json:"flat"`
 	Revision    int       `json:"revision"`
@@ -285,9 +288,10 @@ type endpointView struct {
 	Host       string `json:"host,omitempty"`
 }
 type executionResult struct {
-	Status      string `json:"status"`
-	FailureCode string `json:"failure_code,omitempty"`
-	DataImpact  string `json:"data_impact"`
-	HealthData  string `json:"health_data"`
-	LiveData    string `json:"live_data"`
+	CleanupPending bool   `json:"cleanup_pending,omitempty"`
+	Status         string `json:"status"`
+	FailureCode    string `json:"failure_code,omitempty"`
+	DataImpact     string `json:"data_impact"`
+	HealthData     string `json:"health_data"`
+	LiveData       string `json:"live_data"`
 }

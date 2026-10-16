@@ -34,11 +34,10 @@ checks. Console requests never skip the core approval request. Existing unrelate
 
 | Method / flat-relative path | Input | Response |
 | --- | --- | --- |
-| POST/PUT `draft` | Complete archive; optional `expected_revision`, git metadata, message query | 201 Draft plus compatibility `version` with number 0, role draft, revision and published false |
+| POST/PUT `draft` | Complete archive; optional `expected_revision`, git metadata, message query | 201 `{draft:{revision, hash, ...}}`; no version or approval |
 | GET `draft` | None | Current Draft metadata, or 404 |
-| POST `versions` | Same complete archive | Draft save compatibility; no published vN |
-| POST `versions?deploy=1` | Same archive | 202 pending publish, top-level approval/status/link and nested deploy request |
-| POST `publish` | `{revision, hash?}`; revision 0 selects current | 202 frozen current-candidate request to save Draft as a new version |
+| POST `versions` | `{revision, hash?}`; revision 0 selects current | 202 frozen current-candidate request to save Draft as a new version |
+| POST `document` | Complete docs archive; explicitly replaces the whole bundle | 201 live document; no Draft or version |
 | POST `deploy` | `{version}` (`version > 0`) | 202 pending request to activate an existing saved version |
 | POST `rollback` | `{version, restore_data?}` | 202 frozen request; default retains data |
 | POST `visibility` | `{visibility, reason?}` | Both directions 202; same value 200 with status done and message visibility unchanged; Unpublished Public is 409 |
@@ -79,9 +78,10 @@ converts a setup/read/provider connection into consent to run these actions.
 ## CLI and MCP
 
 `flats draft <slug>` reads metadata; adding a build directory/archive saves
-complete content. `--expected-revision` detects conflicts. `flats publish
-<slug> [--revision n] [--hash h]` requests saving the Draft as a new version. Existing `deploy` uploads
-Draft and requests version creation unless `--save-only`; explicit positive `--version <n>` selects an already saved version for activation. Default
+complete content. `--expected-revision` detects conflicts. `flats create-version
+<slug> [--revision n] [--hash h]` requests saving the Draft as a new version. `flats save-draft <slug> <dir>` only saves, and `flats deploy --flat <slug>
+--version <n>` requests activation of an already created version. Directory
+arguments to deploy are refused with migration guidance. Default
 `preview` opens current Draft; positive `--version` previews published content.
 Publish, activation, rollback and both visibility directions return exit 3 while
 pending in text and JSON modes, with approval URL/status and read-only poll
@@ -90,10 +90,13 @@ begin only after approval succeeds; it never describes the flat as already Publi
 `approvals` only reads; no approve/decide/reject/operator/provider
 commands are added.
 
-MCP adds `save_draft`, `get_draft`, `publish` and retains existing save/deploy/
+MCP provides `save_draft`, `save_draft_from_dir`, `get_draft`, `create_version`,
+`delete_version` and deployment/
 rollback/preview tools. Saves contain actual inline files or validated host
 build-directory content, optional expected_revision, git metadata and message.
-Typed output separates Draft revisions from published versions, includes pending
+Typed output names Draft content only as `draft`; there is no synthetic version
+0. Documents return `flat` without Draft or version content. Version operations
+use positive version numbers, include pending
 approval/status/link, and exposes execution/audit DTOs. There is no
 decision or provider grant tool. MCP handler
 never imports an authenticated console context. Every listed tool is behaviorally
@@ -139,4 +142,29 @@ application checks those prerequisites. Same visibility remains unchanged HTTP
 
 Local is default; Portal is off. Legacy schema 5 records eligible pre-lifecycle flats. On hosts with historical tsnet state, explicit `--network tailscale` (or a stored explicit Tailscale backend/grant) preserves only those flats’ Private Tailscale opt-in once, honoring explicit denials. Explicit `--network local` consumes that choice as Local-only; an ambiguous historical-default startup refuses before constructing backends. With neither historical tsnet state nor a persisted Tailscale choice, the first upgrade consumes eligibility as Local-only; a later host grant cannot opt those flats in. Neither choice grants Funnel or Portal. See [Private and public access](networking.md#upgrading-provider-grants-from-an-older-host) for the upgrade commands.
 
-`get_flat` retains its publication/visibility/current-version summary when appending Draft preview text. `save_draft` saves without allocating a number; its compatibility `deploy:true` option requests pending publication, whose successful approval later allocates vN. Tool and CLI guidance never treats pending as live.
+`get_flat` retains its publication/visibility/current-version summary when appending Draft preview text. `save_draft` saves without allocating a number; version creation is requested separately with `create_version`, whose successful approval later allocates vN. Tool and CLI guidance never treats pending as live.
+
+Version-model completion adds `DELETE versions/{n}` (agent approval, direct
+console operator deletion), and console `GET/PUT version-quota` with
+`{version_quota: null|integer}`. Flat views expose the nullable override,
+`effective_version_quota` and available `version_count`. Versions are never
+automatically pruned. Removed MCP tools have no aliases; client and bootstrap
+contracts are revision 2. Old pending publish approvals lacking the required frozen live state are
+refused as stale with upgrade/re-request guidance; new creation approvals retain
+the full frozen-state guard.
+
+Draft save receipts describe the exact saved content (`type`, `flat`,
+`revision`, `hash`, `size`, `files`, `kind`, git metadata, `message`,
+`saved_at`) captured by the core operation. They never reread a later current
+Draft to choose the returned revision/hash. GET `draft` remains a read of the
+current Draft with `base_version`, `dirty`, `created_at` and `updated_at`.
+
+Deletion can return `status: cleanup_pending` and `cleanup_pending: true` after
+the metadata deletion was applied but durable storage cleanup is incomplete.
+An approved deletion's `result_data.cleanup_pending` carries the same state.
+Report the returned message: the version is already deleted; do not repeat
+its deletion. Guarded storage changes are blocked while the `.version-delete-N`
+staging folder remains. The pending receipt can survive a sync failure without
+staged files, so it does not universally block rename, flat deletion or slug
+reuse. Repair the reported storage issue and restart the host to recover;
+a repeated cleanup failure can prevent host startup.

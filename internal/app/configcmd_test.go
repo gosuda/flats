@@ -25,32 +25,32 @@ func TestConfigShowValidateSetUnset(t *testing.T) {
 	dir := t.TempDir()
 	path := initConfig(t, dir)
 	out, err := runConfig(t, "show", "--config", path)
-	if err != nil || !strings.Contains(out, `"schema_version": 2`) || !strings.Contains(out, `system.keep_versions               10 (default)`) ||
+	if err != nil || !strings.Contains(out, `"schema_version": 4`) || !strings.Contains(out, `system.version_quota               20 (default)`) ||
 		!strings.Contains(out, `host.data_dir                      "`+dir+`" (file)`) {
 		t.Fatalf("show: %v\n%s", err, out)
 	}
 	if out, err := runConfig(t, "validate", "--data", dir); err != nil || !strings.Contains(out, "is valid") {
 		t.Fatalf("validate: %v %s", err, out)
 	}
-	if _, err := runConfig(t, "set", "system.keep_versions", "3", "--config", path); err != nil {
+	if _, err := runConfig(t, "set", "system.version_quota", "3", "--config", path); err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := os.ReadFile(path); !bytes.Contains(raw, []byte(`"keep_versions": 3`)) {
+	if raw, _ := os.ReadFile(path); !bytes.Contains(raw, []byte(`"version_quota": 3`)) {
 		t.Fatalf("set did not write:\n%s", raw)
 	}
-	if _, err := runConfig(t, "set", "--config", path, "--", "system.keep_versions", "-1"); exitCode(err) != ExitConfig {
+	if _, err := runConfig(t, "set", "--config", path, "--", "system.version_quota", "-1"); exitCode(err) != ExitConfig {
 		t.Fatalf("invalid value: %v", err)
 	}
 	if _, err := runConfig(t, "set", "host.instance_id", config.NewInstanceID(), "--config", path); exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "rebind") {
 		t.Fatalf("instance id: %v", err)
 	}
-	if _, err := runConfig(t, "unset", "system.keep_versions", "--config", path); err != nil {
+	if _, err := runConfig(t, "unset", "system.version_quota", "--config", path); err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := os.ReadFile(path); bytes.Contains(raw, []byte(`keep_versions`)) {
+	if raw, _ := os.ReadFile(path); bytes.Contains(raw, []byte(`version_quota`)) {
 		t.Fatalf("unset did not remove the key:\n%s", raw)
 	}
-	if _, err := runConfig(t, "set", "system.keep_versions", "--config", path); exitCode(err) != 2 {
+	if _, err := runConfig(t, "set", "system.version_quota", "--config", path); exitCode(err) != 2 {
 		t.Fatalf("missing value: %v", err)
 	}
 
@@ -59,7 +59,7 @@ func TestConfigShowValidateSetUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runConfig(t, "set", "system.keep_versions", "4", "--config", path); exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "stop the running") {
+	if _, err := runConfig(t, "set", "system.version_quota", "4", "--config", path); exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "stop the running") {
 		t.Fatalf("set while running: %v", err)
 	}
 	// show and validate only read.

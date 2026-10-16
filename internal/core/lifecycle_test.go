@@ -38,7 +38,7 @@ func lifecycleApprove(t *testing.T, s *Service, p *PendingApproval) store.Approv
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Action == "publish" {
+	if a.Action == "publish" || a.Action == "create_version" {
 		var d ApprovalExecution
 		_ = json.Unmarshal(a.ResultData, &d)
 		n := d.Version
@@ -595,7 +595,7 @@ func TestLifecycleNeverPublishedLegacyFirstVersionIsOne(t *testing.T) {
 	}
 }
 
-func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
+func TestWebsiteVersionsNeverAutoPrunedWithPendingApprovals(t *testing.T) {
 	s, _ := newTestService(t)
 	// Save and deploy v1, v2, v3 so LiveVersion == 3.
 	lifecycleSave(t, s, "prune", "v1")
@@ -604,8 +604,6 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "prune"))
 	lifecycleSave(t, s, "prune", "v3")
 	lifecycleApprove(t, s, lifecycleRequest(t, s, "prune"))
-	// Lower keep_versions only after creating v4, v5 and the pending approvals.
-
 	// Save v4 without deploying it yet, and create a pending deploy for v4 and pending rollback for v1.
 	lifecycleSave(t, s, "prune", "v4")
 	pub := lifecycleRequest(t, s, "prune")
@@ -623,40 +621,37 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 		t.Fatalf("wanted pending rollback for v1: %v", err)
 	}
 
-	// Save v5, then lower keep_versions=1. keep_versions counts deployed
-	// history only: v3 is live, v2 is the one kept deployed version, v1 is
-	// protected by its pending rollback, and v4 and v5 were never deployed.
+	// A quota lower than the retained count preserves all deployed and saved
+	// versions, regardless of the pending deployment and rollback approvals.
 	lifecycleSave(t, s, "prune", "v5")
 	pub5 := lifecycleRequest(t, s, "prune")
 	if _, err := s.Decide(t.Context(), pub5.Approval.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetKeepVersions: "1"}); err != nil {
+	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetVersionQuota: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	s.pruneVersions(t.Context(), "prune")
 	for _, n := range []int{1, 2, 3, 4, 5} {
 		v, err := s.st.GetVersion(t.Context(), "prune", n)
 		if err != nil || v.Pruned {
-			t.Fatalf("version %d was pruned despite protection: %+v %v", n, v, err)
+			t.Fatalf("version %d was pruned automatically: %+v %v", n, v, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(s.versionDir("prune", n), "index.html")); err != nil || string(data) != []string{"v1", "v2", "v3", "v4", "v5"}[n-1] {
+			t.Fatalf("retained version %d lost its bytes: %q %v", n, data, err)
 		}
 	}
 
-	// The retention-impact preview counts the same protections as pruning:
-	// keep_versions 0 never prunes, and at 1 nothing is removable because v1
-	// is held by its pending rollback.
-	impact, err := s.RetentionImpact(t.Context(), map[string]string{SetKeepVersions: "1"})
+	// Changing a Version quota has no automatic deletion impact.
+	impact, err := s.RetentionImpact(t.Context(), map[string]string{SetVersionQuota: "1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, fi := range impact[SetKeepVersions].Flats {
-		if fi.Slug == "prune" {
-			t.Fatalf("impact lists versions a pending approval or deployment rule protects: %+v", fi)
-		}
+	if len(impact) != 0 {
+		t.Fatalf("version quota incorrectly has retention impact: %+v", impact)
 	}
 
-	// Reject the pending approvals for v4 and v1, then prune again: v1 loses
-	// its protection and is pruned; v4 and v5 were never deployed and stay.
+	// Rejecting those approvals must still leave every version intact.
 	if _, err := s.Decide(t.Context(), dep4.Approval.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -667,17 +662,16 @@ func TestPrunableVersionsProtectsPendingApprovals(t *testing.T) {
 	for _, n := range []int{2, 3, 4, 5} {
 		v, err := s.st.GetVersion(t.Context(), "prune", n)
 		if err != nil || v.Pruned {
-			t.Fatalf("protected version %d was pruned: %+v %v", n, v, err)
+			t.Fatalf("version %d was pruned after rejecting approvals: %+v %v", n, v, err)
 		}
 	}
-	if v1, err := s.st.GetVersion(t.Context(), "prune", 1); err != nil || !v1.Pruned {
-		t.Fatalf("unprotected deployed version 1 was not pruned: %+v %v", v1, err)
+	if v1, err := s.st.GetVersion(t.Context(), "prune", 1); err != nil || v1.Pruned {
+		t.Fatalf("deployed version 1 was pruned automatically: %+v %v", v1, err)
 	}
 }
 
-// A pending deployment of an older, previously deployed version keeps it from
-// retention until the approval is decided.
-func TestPendingActivationProtectsDeployedVersion(t *testing.T) {
+// Previously deployed website versions remain after a deployment is rejected.
+func TestWebsiteDeployedVersionNeverAutoPrunedAfterRejectingActivation(t *testing.T) {
 	s, _ := newTestService(t)
 	for _, body := range []string{"v1", "v2", "v3"} {
 		lifecycleSave(t, s, "act", body)
@@ -688,10 +682,10 @@ func TestPendingActivationProtectsDeployedVersion(t *testing.T) {
 	if !errors.As(err, &dep) {
 		t.Fatalf("wanted pending deploy for v1: %v", err)
 	}
-	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetKeepVersions: "1"}); err != nil {
+	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetVersionQuota: "1"}); err != nil {
 		t.Fatal(err)
 	}
-	// v3 is live, v2 fills keep_versions=1 and v1 is held by the approval.
+	// v3 is live; v1 and v2 remain even with a quota lower than the count.
 	s.pruneVersions(t.Context(), "act")
 	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || v1.Pruned || !v1.Deployed {
 		t.Fatalf("v1 with a pending deployment: %+v %v", v1, err)
@@ -700,8 +694,8 @@ func TestPendingActivationProtectsDeployedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.pruneVersions(t.Context(), "act")
-	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || !v1.Pruned {
-		t.Fatalf("v1 after rejecting its deployment: %+v %v", v1, err)
+	if v1, err := s.GetVersion(t.Context(), "act", 1); err != nil || v1.Pruned {
+		t.Fatalf("v1 must remain after rejecting its deployment: %+v %v", v1, err)
 	}
 	f, err := s.GetFlat(t.Context(), "act")
 	if err != nil || f.Live == nil || !f.Live.Deployed || !f.LatestDeployed {
@@ -709,9 +703,9 @@ func TestPendingActivationProtectsDeployedVersion(t *testing.T) {
 	}
 }
 
-// A saved version that was never deployed is never pruned, however low
-// keep_versions is, and a flat is published only once something was deployed.
-func TestUndeployedVersionsAreNotPrunedOrPublished(t *testing.T) {
+// A saved website version is never automatically removed. A flat is deployed
+// only after a separate deployment approval.
+func TestWebsiteUndeployedVersionsNeverAutoPrunedOrDeployed(t *testing.T) {
 	s, _ := newTestService(t)
 	for _, body := range []string{"v1", "v2", "v3"} {
 		lifecycleSave(t, s, "saved", body)
@@ -719,7 +713,7 @@ func TestUndeployedVersionsAreNotPrunedOrPublished(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetKeepVersions: "1"}); err != nil {
+	if _, err := s.UpdateSettings(t.Context(), map[string]string{SetVersionQuota: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	s.pruneVersions(t.Context(), "saved")

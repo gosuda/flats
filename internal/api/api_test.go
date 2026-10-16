@@ -72,6 +72,31 @@ func archive(files map[string]string) []byte {
 
 func req(t *testing.T, method, url string, body io.Reader, hdr map[string]string) (int, map[string]any) {
 	t.Helper()
+	if method == "POST" && strings.Contains(url, "/draft?") && strings.Contains(url, "deploy=1") {
+		code, saved := req(t, method, strings.ReplaceAll(url, "deploy=1", ""), body, hdr)
+		if code != 201 || saved["flat"] != nil {
+			return code, saved
+		}
+		endpoint := strings.Split(url, "/draft?")[0] + "/versions"
+		frozen, _ := json.Marshal(saved["draft"])
+		var d struct {
+			Revision int    `json:"revision"`
+			Hash     string `json:"hash"`
+		}
+		_ = json.Unmarshal(frozen, &d)
+		payload, _ := json.Marshal(map[string]any{"revision": d.Revision, "hash": d.Hash})
+		code, action := req(t, "POST", endpoint, bytes.NewReader(payload), hdr)
+		if code == 202 {
+			saved["deploy"] = action
+			for k, v := range action {
+				saved[k] = v
+			}
+			return code, saved
+		}
+		saved["deploy_error"] = action
+		return code, saved
+	}
+
 	r, _ := http.NewRequest(method, url, body)
 	if !strings.Contains(url, "/console/api/") {
 		// Agent API mutations need a client header (CSRF protection).
@@ -96,15 +121,15 @@ func req(t *testing.T, method, url string, body io.Reader, hdr map[string]string
 
 func TestUploadValidationAndDeploy(t *testing.T) {
 	srv, _ := setup(t)
-	code, out := req(t, "POST", srv.URL+"/api/flats/site/versions", bytes.NewReader(archive(map[string]string{"app.js": "x"})), nil)
+	code, out := req(t, "POST", srv.URL+"/api/flats/site/draft", bytes.NewReader(archive(map[string]string{"app.js": "x"})), nil)
 	if code != 422 || out["problems"] == nil {
 		t.Fatalf("want 422 with problems, got %d %v", code, out)
 	}
-	code, out = req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1&git_sha=abc&git_dirty=true", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	code, out = req(t, "POST", srv.URL+"/api/flats/site/draft?deploy=1&git_sha=abc&git_dirty=true", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	if code != 202 || out["status"] != "pending_approval" || out["deploy"] == nil {
 		t.Fatalf("upload+deploy: %d %v", code, out)
 	}
-	v := out["version"].(map[string]any)
+	v := out["draft"].(map[string]any)
 	if v["git_sha"] != "abc" || v["git_dirty"] != true {
 		t.Fatalf("git metadata lost: %v", v)
 	}
@@ -120,7 +145,7 @@ func TestUploadValidationAndDeploy(t *testing.T) {
 
 func saveAndPublish(t *testing.T, srv *httptest.Server, slug, content string) {
 	t.Helper()
-	code, out := req(t, "POST", srv.URL+"/api/flats/"+slug+"/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": content})), nil)
+	code, out := req(t, "POST", srv.URL+"/api/flats/"+slug+"/draft?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": content})), nil)
 	if code != 202 || out["status"] != "pending_approval" {
 		t.Fatalf("publish request: %d %v", code, out)
 	}
@@ -179,7 +204,7 @@ func TestApprovalFlowAndConsoleGuard(t *testing.T) {
 
 func TestSecretsOperatorOnlyAndNeverReturned(t *testing.T) {
 	srv, _ := setup(t)
-	req(t, "POST", srv.URL+"/api/flats/site/versions", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	req(t, "POST", srv.URL+"/api/flats/site/draft", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	if code, _ := req(t, "PUT", srv.URL+"/api/flats/site/secrets/API_KEY", strings.NewReader(`{"value":"s3cr3t"}`), nil); code != 403 {
 		t.Fatalf("agent set secret = %d", code)
 	}
@@ -206,7 +231,7 @@ func TestSecretsOperatorOnlyAndNeverReturned(t *testing.T) {
 // preflight, and the browser marks them with Sec-Fetch-Site and Origin.
 func TestAgentAPIRefusesCrossSiteRequests(t *testing.T) {
 	srv, _ := setup(t)
-	if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "legit"})), nil); code != 202 {
+	if code, out := req(t, "POST", srv.URL+"/api/flats/site/draft?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "legit"})), nil); code != 202 {
 		t.Fatalf("setup upload: %d %v", code, out)
 	}
 	deface := func() io.Reader { return bytes.NewReader(archive(map[string]string{"index.html": "defaced"})) }
@@ -223,7 +248,7 @@ func TestAgentAPIRefusesCrossSiteRequests(t *testing.T) {
 		{"form post", map[string]string{"X-Flats-Client": "", "Content-Type": "application/x-www-form-urlencoded"}, 415},
 	}
 	for _, c := range cases {
-		if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", deface(), c.hdr); code != c.want {
+		if code, out := req(t, "POST", srv.URL+"/api/flats/site/draft?deploy=1", deface(), c.hdr); code != c.want {
 			t.Errorf("%s: upload = %d %v, want %d", c.name, code, out, c.want)
 		}
 	}
@@ -242,7 +267,7 @@ func TestAgentAPIRefusesCrossSiteRequests(t *testing.T) {
 
 	// Real clients: an archive or JSON Content-Type works without a client
 	// header, and the same-origin console origin is fine.
-	if code, out := req(t, "POST", srv.URL+"/api/flats/site/versions", deface(), map[string]string{"X-Flats-Client": "", "Content-Type": "application/gzip"}); code != 201 {
+	if code, out := req(t, "POST", srv.URL+"/api/flats/site/draft", deface(), map[string]string{"X-Flats-Client": "", "Content-Type": "application/gzip"}); code != 201 {
 		t.Errorf("archive upload without client header = %d %v", code, out)
 	}
 	if code, out := req(t, "POST", srv.URL+"/api/flats", strings.NewReader(`{"slug":"other"}`), map[string]string{"X-Flats-Client": "", "Content-Type": "application/json; charset=utf-8", "Origin": srv.URL}); code != 201 {
@@ -257,7 +282,7 @@ func TestAgentAPIRefusesCrossSiteRequests(t *testing.T) {
 // client, and mutations without a same-origin browser Origin.
 func TestConsoleRefusesClientsAndForeignOrigins(t *testing.T) {
 	srv, _ := setup(t)
-	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	req(t, "POST", srv.URL+"/api/flats/site/draft?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	_, out := req(t, "DELETE", srv.URL+"/api/flats/site?reason=x", nil, nil)
 	id := out["approval"].(map[string]any)["id"].(string)
 	approve := srv.URL + "/console/api/approvals/" + id + "/approve"
@@ -291,7 +316,7 @@ func TestDecisionRecordsTailnetLogin(t *testing.T) {
 	srv, svc := setup(t)
 	tail := httptest.NewServer(api.TailnetIdentity((&api.Server{Svc: svc}).Handler()))
 	t.Cleanup(tail.Close)
-	req(t, "POST", srv.URL+"/api/flats/site/versions?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
+	req(t, "POST", srv.URL+"/api/flats/site/draft?deploy=1", bytes.NewReader(archive(map[string]string{"index.html": "ok"})), nil)
 	pending := func() string {
 		_, out := req(t, "DELETE", srv.URL+"/api/flats/site", nil, nil)
 		return out["approval"].(map[string]any)["id"].(string)
@@ -331,7 +356,7 @@ func TestSettingsReportRestartRequired(t *testing.T) {
 	if code != 200 || fmt.Sprint(out["restart_required"]) != "[portal_relays]" || out["note"] == nil {
 		t.Fatalf("relay change: %d %v", code, out)
 	}
-	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"keep_versions":"5","portal_relays":"https://relay.example"}`), consoleHdr(t, srv))
+	code, out = req(t, "PUT", srv.URL+"/console/api/settings", strings.NewReader(`{"version_quota":"5","portal_relays":"https://relay.example"}`), consoleHdr(t, srv))
 	if code != 200 || fmt.Sprint(out["restart_required"]) != "[]" {
 		t.Fatalf("unchanged relays: %d %v", code, out)
 	}

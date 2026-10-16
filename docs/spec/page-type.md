@@ -1,5 +1,18 @@
 # Page content type
 
+Interface update (Version-model completion): current MCP tools save Private
+Drafts with `save_draft`, `save_draft_from_dir` or `save_page` without any
+creation/deployment shortcut. `create_version` requests explicit approval to
+freeze the Draft as a numbered version; `deploy` requires that positive
+version and separate approval. Removed `save_version`,
+`save_version_from_dir` and `publish` names below describe the earlier
+implementation only. Docs bundles now use `save_document` with
+`replace_bundle: true` and complete `files`. CLI uses `save-draft`,
+`create-version`, then `deploy --version`; saved Draft output is `draft`,
+with no synthetic version 0. The current interface is detailed in
+[content-models.md](content-models.md).
+
+
 ## Summary
 
 A **page** (`type: "page"`) is a static document written as one HTML page. It

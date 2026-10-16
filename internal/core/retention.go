@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-// RetentionImpact is what the next pruning removes under a candidate
-// retention setting: versions for keep_versions, events for events_keep
-// and previews for preview_ttl_seconds.
+// RetentionImpact reports event and preview retention. Version quotas never delete history.
 type RetentionImpact struct {
 	Current   string `json:"current"`
 	Candidate string `json:"candidate"`
@@ -38,13 +36,8 @@ const (
 	impactItems = 10
 )
 
-// RetentionImpact reports, for each decrease of keep_versions, events_keep
-// or preview_ttl_seconds in candidate, what the next pruning would remove
-// with the candidate value: the version files pruned after a flat's next
-// deploy that keeps its live version live (the deploy closes the flat's
-// previews first), the log events trimmed by the next sweep and the
-// previews it closes. It changes nothing. Other settings in candidate are validated
-// but have no impact.
+// RetentionImpact reports what event and preview retention would remove.
+// Version quota changes preserve all versions and have no retention impact.
 func (s *Service) RetentionImpact(ctx context.Context, candidate map[string]string) (map[string]RetentionImpact, error) {
 	clean, err := cleanSettings(candidate)
 	if err != nil {
@@ -52,7 +45,7 @@ func (s *Service) RetentionImpact(ctx context.Context, candidate map[string]stri
 	}
 	current := s.settings.all()
 	out := map[string]RetentionImpact{}
-	for _, k := range []string{SetKeepVersions, SetEventsKeep, SetPreviewTTL} {
+	for _, k := range []string{SetEventsKeep, SetPreviewTTL} {
 		v, ok := clean[k]
 		if !ok {
 			continue
@@ -64,8 +57,6 @@ func (s *Service) RetentionImpact(ctx context.Context, candidate map[string]stri
 		}
 		var flats []FlatImpact
 		switch k {
-		case SetKeepVersions:
-			flats, err = s.versionImpact(ctx, clampInt(n))
 		case SetEventsKeep:
 			flats, err = s.eventImpact(ctx, clampInt(n))
 		case SetPreviewTTL:
@@ -79,34 +70,7 @@ func (s *Service) RetentionImpact(ctx context.Context, candidate map[string]stri
 	return out, nil
 }
 
-// retentionDecrease reports whether n keeps less than cur. keep_versions 0
-// keeps every version.
-func retentionDecrease(k string, cur, n int64) bool {
-	if k == SetKeepVersions {
-		return n != 0 && (cur == 0 || n < cur)
-	}
-	return n < cur
-}
-
-func (s *Service) versionImpact(ctx context.Context, keep int) ([]FlatImpact, error) {
-	fs, err := s.st.ListFlats(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []FlatImpact
-	for _, f := range fs {
-		// Pruning runs only at the end of a deploy, which closes the
-		// flat's previews first: they protect no version then.
-		prune, err := s.prunableVersions(ctx, f.Slug, keep, false)
-		if err != nil {
-			return nil, err
-		}
-		if len(prune) > 0 {
-			out = append(out, FlatImpact{Slug: f.Slug, Count: int64(len(prune)), Versions: prune[:min(len(prune), impactItems)]})
-		}
-	}
-	return out, nil
-}
+func retentionDecrease(_ string, cur, n int64) bool { return n < cur }
 
 func (s *Service) eventImpact(ctx context.Context, keep int) ([]FlatImpact, error) {
 	flats, err := s.st.EventFlats(ctx)

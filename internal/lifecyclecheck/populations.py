@@ -27,7 +27,7 @@ def seed_mixed(h):
     Host, _, require, _, static = helpers()
     require(h.legacy_binary and h.legacy_adapter_binary, 'mixed seed needs archived real binary and archived-core provider fixture')
     h.stop()
-    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed')
+    old = Host(h.legacy_adapter_binary, h.work / 'legacy-mixed', legacy=True)
     try:
         old.start()
         old.save('mixed', static('UNDEPLOYED-ONE'))
@@ -75,6 +75,7 @@ def seed_mixed(h):
         old.stop()
         h.trace.extend(old.trace)
     h.data = old.data
+    h.addresses = old.addresses
     return manifest
 
 
@@ -156,7 +157,7 @@ def mixed_migration(h):
     require('UNDEPLOYED-FOUR' in h.traffic(p['host']), 'newest historical working content lost')
     # Discriminate new publication identity from an alias of saved legacy v4.
     h.save('mixed', static('NEW-PUBLISH-DISTINCT-FROM-LEGACY-FOUR'))
-    a = h.publish('mixed')
+    a = h.create_version('mixed')
     require(h.decide(a)['status'] == 'approved', 'migrated draft publish failed')
     dep = h.deploy_version('mixed', 4)
     require(h.decide(dep)['status'] == 'approved', 'migrated v4 deploy failed')
@@ -272,7 +273,7 @@ def runtime_initialization(h):
     h.activate('startup', startup_server())
     before = h.traffic('startup')
     h.save('startup', startup_server(broken=True))
-    pub = h.publish('startup')
+    pub = h.create_version('startup')
     require(h.decide(pub)['status'] == 'approved', 'saving broken version 2 failed')
     a = h.deploy_version('startup', 2)
     require(h.traffic('startup') == before, 'candidate initialized before approval')
@@ -290,7 +291,7 @@ def runtime_initialization(h):
     candidate = startup_server()
     candidate['server.js'] += '\n// DISTINCT-RECOVERY-CANDIDATE\n'
     h.save('startup', candidate)
-    pub = h.publish('startup')
+    pub = h.create_version('startup')
     require(h.decide(pub)['status'] == 'approved', 'saving recovery version 3 failed')
     a = h.deploy_version('startup', 3)
     dbpaths = list((h.data / 'flats/startup/data').glob('db.sqlite'))
@@ -315,7 +316,19 @@ def current_live_drift(h):
     h.activate('live-drift', static('LIVE-ONE'))
     h.activate('live-drift', static('LIVE-TWO'))
     h.save('live-drift', static('PENDING-THREE'))
-    pub = h.publish('live-drift')
+    # Creation freezes the current live version too. A rollback while its
+    # decision is pending must fail it before allocating a number.
+    stale_creation = h.create_version('live-drift')
+    rollback = h.approval(h.ok('POST', '/api/flats/live-drift/rollback', {'version': 1}, status=202))
+    require(h.decide(rollback)['status'] == 'approved', 'creation drift setup rollback failed')
+    from gate import failed
+    failed(h.decide(stale_creation), 'live-drift')
+    require(sorted(v['number'] for v in h.versions('live-drift')) == [1, 2],
+            'stale version creation allocated a number')
+    require(h.flat('live-drift')['live_version'] == 1 and 'LIVE-ONE' in h.traffic('live-drift'),
+            'stale version creation changed serving bytes')
+    require(h.decide(h.deploy_version('live-drift', 2))['status'] == 'approved', 'restore live setup failed')
+    pub = h.create_version('live-drift')
     require(h.decide(pub)['status'] == 'approved', 'saving version 3 failed')
     pending = h.deploy_version('live-drift', 3)
     rollback = h.approval(h.ok('POST', '/api/flats/live-drift/rollback', {'version': 1}, status=202))
@@ -336,7 +349,7 @@ def visibility_drift(h):
     h.ok('POST', '/console/api/flats/visibility-drift/providers',
          {'provider': 'portal', 'permitted': True}, console=True)
     h.save('visibility-drift', static('STALE-CANDIDATE'))
-    pending = h.publish('visibility-drift')
+    pending = h.create_version('visibility-drift')
     public = h.approval(h.ok('POST', '/api/flats/visibility-drift/visibility',
                             {'visibility': 'public'}, status=202))
     require(h.decide(public)['status'] == 'approved', 'visibility drift setup failed')
@@ -344,6 +357,6 @@ def visibility_drift(h):
     failed(h.decide(pending), 'visibility-drift')
     require('CURRENT' in h.traffic('pub-visibility-drift'), 'stale visibility approval changed public bytes')
     require([v['number'] for v in h.versions('visibility-drift')] == [1], 'stale visibility allocated number')
-    require(h.decide(h.publish('visibility-drift'))['status'] == 'approved', 'fresh visibility approval poisoned')
+    require(h.decide(h.create_version('visibility-drift'))['status'] == 'approved', 'fresh visibility approval poisoned')
     require(h.decide(h.deploy_version('visibility-drift', 2))['status'] == 'approved', 'fresh visibility deploy approval poisoned')
     require('STALE-CANDIDATE' in h.traffic('pub-visibility-drift'), 'fresh visibility candidate did not serve')

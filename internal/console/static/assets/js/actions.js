@@ -36,7 +36,7 @@ function restoreBox(flat) {
 //             publishing an earlier version again.
 
 // nextVersion is the number the next saved version is expected to get.
-export const nextVersion = (flat) => (flat.latest_version || 0) + 1;
+export const nextVersion = (flat) => flat.next_version || (flat.latest_version || 0) + 1;
 
 // publishVersion makes version n live; kind 'rollback' publishes an earlier
 // version again and offers to restore its data.
@@ -67,7 +67,7 @@ export async function publishVersion(flat, n, kind = 'publish') {
 export async function saveVersion(flat) {
   const draft = flat.draft;
   if (!draft || !draft.dirty) {
-    await infoDialog('Nothing to save', 'The draft has no changes since the latest saved version. An agent updates the draft with save_draft or save_version (MCP), or `flats deploy`.');
+    await infoDialog('Nothing to save', 'The draft has no changes since the latest saved version. An agent updates the draft with save_draft or save_draft_from_dir (MCP), or `flats save-draft <slug> <dir>`.');
     return false;
   }
   const n = nextVersion(flat);
@@ -81,7 +81,7 @@ export async function saveVersion(flat) {
   });
   if (!ok) return false;
   try {
-    const decided = await approve(await api.publish(flat.slug, draft));
+    const decided = await approve(await api.createVersion(flat.slug, draft));
     const v = decided?.result_data?.version;
     toast(v ? `Saved version ${v}. It is not live yet: publish it when ready.` : 'Saved as a new version. It is not live yet.', 'success');
     return true;
@@ -141,6 +141,38 @@ export async function previewVersion(flat, n) {
     return true;
   } catch (err) {
     await report('Preview failed', err);
+    return false;
+  }
+}
+
+// Deletion is a direct operator action; agent requests have their own approval.
+export async function deleteVersion(flat, n) {
+  if (n === flat.live_version) {
+    await infoDialog('Cannot delete the live version', 'Publish another version before deleting this one.');
+    return false;
+  }
+  const ok = await confirmDialog({
+    title: `Delete version ${n} of ${label(flat)}?`,
+    body: [
+      h('p', { text: `This permanently deletes version ${n} and closes its open previews. Its number will never be reused.` }),
+      h('p', { class: 'muted', text: 'The live version keeps serving. Server data and data snapshots are kept. Deleting this version frees one place in the version quota.' }),
+    ],
+    confirmLabel: `Delete v${n}`, danger: true,
+  });
+  if (!ok) return false;
+  try {
+    const result = await api.deleteVersion(flat.slug, n);
+    if (result?.status === 'cleanup_pending' || result?.cleanup_pending) {
+      await infoDialog('Version removed; cleanup pending', [
+        h('p', { text: `Version ${n} was removed from the version list. Private storage cleanup is still pending.` }),
+        h('p', { class: 'alert alert-warn', text: result.message || 'Restart Flats before saving, creating, deploying, or previewing this flat so storage cleanup can finish.' }),
+      ]);
+    } else {
+      toast(`Version ${n} deleted.`, 'success');
+    }
+    return true;
+  } catch (err) {
+    await report('Version deletion failed', err);
     return false;
   }
 }

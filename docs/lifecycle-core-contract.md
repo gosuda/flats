@@ -13,12 +13,13 @@ revision under `flats/<slug>/draft-revs/<revision>`. `drafts` points at the
 current revision; saves do not allocate a version number or run server code.
 `SaveMeta.CheckRevision` and `ExpectedRevision` reject competing stale saves.
 Draft saves preserve Current, visibility, permissions and live data. A save
-whose bytes match the latest saved version is clean; publishing identical bytes
-is rejected with `ErrUnchangedContent` and does not create a user version for
-metadata.
+whose bytes match the latest saved version is clean; creating a version from
+identical bytes is rejected with `ErrUnchangedContent` and does not create a
+user version for metadata.
 
 Creating a version and making it live are separate approved steps. Only a
-validated operator's successful publish creates `vN`, under
+validated operator's approved version creation (`CreateVersion`, approval
+action `create_version`) creates `vN`, under
 `flats/<slug>/versions/<N>`: the version row and the Draft's new base commit in
 one transaction (`store.CommitVersion`), without changing the live pointer,
 running server code or recording a deployment. An approved activation of a
@@ -57,14 +58,14 @@ Decide(ctx context.Context, approvalID string, approve bool) (store.Approval, er
 ```
 
 `SaveDraft` always checks the supplied revision. `SaveVersion` supports legacy
-transport callers using `SaveMeta`'s optional check. Draft results have
-`number:0, published:false, role:"draft", revision:<n>`. Lists of versions contain
-only numbered versions; `deployed` marks those that were ever live. `Publish`
-returns an `ActionResult` with `status:"pending_approval"`; `Deploy`, rollback
-and snapshot restore return `*PendingApproval`, which embeds that result and
-wraps `ErrPending`. `Deploy` takes a positive number and requests activation of
-an existing saved version; `number:0` is refused, since the Draft must first be
-saved as a version with `Publish`. `OpenPreview(number:0)` targets
+transport callers using `SaveMeta`'s optional check. Internal save results use
+a compatibility store.Version, while public transports expose only Draft
+metadata under `draft` with revision/hash. Lists of versions contain only
+numbered versions. `CreateVersion` returns an `ActionResult` with
+`status:"pending_approval"`; `Deploy`, rollback and snapshot restore return
+`*PendingApproval`, which embeds that result and wraps `ErrPending`.
+`Deploy` requires a positive version number and requests activation of an
+existing saved version. `OpenPreview(number:0)` targets
 Draft. Publish revision zero selects Current; an explicit revision/hash must
 match it. No `Via`, including Console, skips approval for these actions.
 
@@ -93,11 +94,10 @@ tailnet login when one is known); otherwise it is `console`.
 This does not prove a human was present: a local process that can reach the
 console routes can decide. A separate operator credential is an open design item.
 
-All critical requests freeze the candidate, visibility and sorted per-flat
-permissions plus the manager's stable host/configuration policy token.
-Activation, rollback and data restore also freeze the live version; publish,
-which changes nothing live, freezes the latest saved version instead.
-Publish additionally rechecks that Current Draft revision/hash still equal the
+All critical requests freeze the candidate, live version, visibility and sorted
+per-flat permissions plus the manager's stable host/configuration policy token.
+Version creation also freezes the latest saved version and rechecks that
+Current Draft revision/hash still equal the
 candidate at decision time: retaining old bytes does not authorize stale Draft
 publication. Candidate content hashes are checked from disk. Rollback freezes
 target hash and explicit `restore_data`; restores freeze snapshot identity/hash.
@@ -130,7 +130,7 @@ Preview execution is a separate explicit action using isolated data.
 `data_impact`: `none|runtime_start|restore_data|unknown`.
 `health_data`: `not_run|isolated_copy`.
 `live_data`: `untouched|runtime_may_write|restored|unknown`.
-Saving a version reports none, as it starts nothing. Static activation reports
+Creating a version reports none, as it starts nothing. Static activation reports
 none; server activation reports runtime_start; explicit restore reports
 restore_data. Recovery reconstructs the corresponding
 result. Failed recovery/start/swap paths conservatively use unknown where the

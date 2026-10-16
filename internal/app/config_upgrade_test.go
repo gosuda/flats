@@ -41,7 +41,7 @@ func legacyDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for k, v := range map[string]string{
-		core.SetKeepVersions:    "20",
+		"keep_versions":         "20",
 		core.SetRateLimit:       "50", // equal to the default: not written
 		core.SetUploadMaxBytes:  "lots",
 		core.SetPortalRelays:    "https://relay.example.com/",
@@ -151,7 +151,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 	instance := h.Config.Host.InstanceID
 	// --console-host named a tailnet console only with --network tailscale.
 	want := `{
-  "schema_version": 2,
+  "schema_version": 4,
   "host": {
     "instance_id": "` + instance + `",
     "data_dir": "` + dir + `"
@@ -161,7 +161,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
     "private_backend": "local"
   },
   "system": {
-    "keep_versions": 20,
+    "version_quota": 20,
     "disk_quota_bytes": 0,
     "preview_ttl_seconds": 3600,
     "redirect_days": 14
@@ -184,7 +184,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 	}
 	// Effective values equal what serve applied before the upgrade.
 	settings, _ := h.Svc.Settings(context.Background())
-	for k, v := range map[string]string{core.SetKeepVersions: "20", core.SetUploadMaxBytes: core.Defaults[core.SetUploadMaxBytes],
+	for k, v := range map[string]string{core.SetVersionQuota: "20", core.SetUploadMaxBytes: core.Defaults[core.SetUploadMaxBytes],
 		core.SetPortalRelays: "https://relay.example.com", core.SetPortalDiscover: "false", core.SetPortalMaxRelay: "5", core.SetDiskQuotaBytes: "0"} {
 		if settings[k] != v {
 			t.Errorf("setting %s = %q, want %q", k, settings[k], v)
@@ -501,7 +501,7 @@ func TestConfigModeRefusals(t *testing.T) {
 		dir := t.TempDir()
 		path := initConfig(t, dir)
 		raw, _ := os.ReadFile(path)
-		raw = bytes.Replace(raw, []byte(`"schema_version": 2`), []byte(`"schema_version": 3`), 1)
+		raw = bytes.Replace(raw, []byte(`"schema_version": 4`), []byte(`"schema_version": 5`), 1)
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -746,36 +746,36 @@ func TestLegacyFreshStartInitializes(t *testing.T) {
 func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 	h, client := consoleHost(t)
 	path := h.ConfigPath
-	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"3","portal_relays":"https://relay.example.com"}`), nil); code != 200 {
+	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"version_quota":"3","portal_relays":"https://relay.example.com"}`), nil); code != 200 {
 		t.Fatalf("PUT settings = %d", code)
 	}
 	raw, _ := os.ReadFile(path)
-	if !bytes.Contains(raw, []byte(`"keep_versions": 3`)) || !bytes.Contains(raw, []byte(`"relays": ["https://relay.example.com"]`)) {
+	if !bytes.Contains(raw, []byte(`"version_quota": 3`)) || !bytes.Contains(raw, []byte(`"relays": ["https://relay.example.com"]`)) {
 		t.Fatalf("config.json =\n%s", raw)
 	}
-	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v2.*.json")); len(hist) != 1 {
+	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v4.*.json")); len(hist) != 1 {
 		t.Fatalf("history = %q", hist)
 	}
 	if h.Svc.UploadLimit() != 20<<20 {
 		t.Fatal("upload limit changed")
 	}
 	// An out-of-range value is invalid, not a server error.
-	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"9007199254740992"}`), nil); code != 400 {
+	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"version_quota":"9007199254740992"}`), nil); code != 400 {
 		t.Fatalf("out of range = %d", code)
 	}
 	// An edit on disk while the host runs makes console saves conflict.
-	edited := bytes.Replace(raw, []byte(`"keep_versions": 3`), []byte(`"keep_versions": 4`), 1)
+	edited := bytes.Replace(raw, []byte(`"version_quota": 3`), []byte(`"version_quota": 4`), 1)
 	if err := os.WriteFile(path, edited, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var out map[string]any
-	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"keep_versions":"5"}`), &out); code != 409 || !strings.Contains(out["error"].(string), "restart") {
+	if code := consoleCall(t, h, client, "PUT", "/console/api/settings", strings.NewReader(`{"version_quota":"5"}`), &out); code != 409 || !strings.Contains(out["error"].(string), "restart") {
 		t.Fatalf("conflicting save = %d %v", code, out)
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, edited) {
 		t.Fatal("conflicting save overwrote the edit")
 	}
-	if _, err := h.Svc.UpdateSettings(context.Background(), map[string]string{core.SetKeepVersions: "6"}); !errors.Is(err, core.ErrConflict) {
+	if _, err := h.Svc.UpdateSettings(context.Background(), map[string]string{core.SetVersionQuota: "6"}); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("direct save after edit: %v", err)
 	}
 }
@@ -808,7 +808,7 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	if hashFile(t, path) != before {
 		t.Fatal("rejected change was saved")
 	}
-	if code, out := put(`{"portal_relays":"https://relay.example.com/","keep_versions":"4"}`); code != 200 {
+	if code, out := put(`{"portal_relays":"https://relay.example.com/","version_quota":"4"}`); code != 200 {
 		t.Fatalf("unchanged relays with another setting = %d %v", code, out)
 	}
 	if err := h.Close(); err != nil {

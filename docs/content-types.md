@@ -36,7 +36,7 @@ approval, and its Private URL serves it as soon as the host is ready. Its
 history is kept as **revisions** instead (below).
 Visibility still works as for websites: making it Public (or Private again)
 and deleting it wait for the operator's approval (`topic.approvals`). On
-documents, `list_versions`, `get_draft`, `publish`, `deploy`, `open_preview`
+documents, `list_versions`, `get_draft`, `create_version`, `deploy`, `open_preview`
 and `rollback` are refused (`refusal.invalid`).
 
 ### Create and write
@@ -49,19 +49,33 @@ and `rollback` are refused (`refusal.invalid`).
    and non-destructive but may seed or activate live state. For a small
    change, prefer `update_document` (below) over saving the whole document.
 3. `save_document {slug, markdown, title?, path?, message?}` saves one
-   Markdown document (`index.md` by default) plus a `flats.json` with
-   `type: "docs"` and `name` from `title`, creating a missing flat, and runs it
-   at once. It replaces the document's files; people's concurrent edits are
-   merged as described below. The result's `flat` shows `running`.
-4. For several documents or assets, use `save_version` with the complete
-   bundle and a `flats.json` of `{"type":"docs"}`. A docs bundle is not a
-   Draft either: it runs at once.
+   Markdown document (`index.md` by default), creating a missing flat, and
+   runs it at once. Other documents, images and assets are preserved, as are
+   existing `flats.json` settings. An optional `title` changes only the
+   manifest's `name`. Adding a document keeps the current entry; if it was
+   implicit, the host makes it explicit when needed. People's concurrent edits
+   are merged as described below. The result names the saved `doc` and the
+   `entry`; `get_document` without `doc` reads the entry, which may differ
+   from the default save path `index.md`. The result's `flat` shows `running`.
+4. For several documents or assets, use `save_document {slug, replace_bundle: true,
+   files: [{path, content, encoding}]}` with the complete bundle, including
+   `flats.json` with `{"type":"docs"}`. This explicitly replaces the whole
+   bundle: omitted documents and assets are deleted. It runs at once.
+   The CLI equivalent is `flats save-document <slug> <dir|archive>`; the HTTP
+   archive route is `POST /api/flats/{slug}/document`. Both replace the whole
+   bundle explicitly. Draft tools and routes refuse document content.
 5. A slug keeps its type: saving a document into a website or a page, or
    either into a document, is refused (`refusal.conflict`); use another slug.
 
 If a saved document cannot start (for example its health check fails), the
-save is refused and the document keeps running its previous text; the next
-successful save starts it. **On a Public document a save, like a live edit,
+save is refused and the running document keeps its previous text. Fix the
+startup problem and repeat that same save: a different sibling save does not
+carry the failed change. If no document has ever started, the files remain
+saved internally until its first successful start. A single-document save validates the resulting
+bundle against upload limits. If retained files put it over a limit, shrink the
+target document further, raise `upload_max_bytes` for an upload-size refusal,
+or explicitly save the complete desired bundle. No files are deleted to make
+room; the disk quota still applies. **On a Public document a save, like a live edit,
 is visible to everyone at once**; tell the user.
 
 ### Edit live text
@@ -73,8 +87,9 @@ change at once and their own concurrent edits elsewhere are kept.
 **On a Public flat the change is visible to everyone on the internet as soon
 as the call returns**; such results carry `public_notice`, so tell the user.
 Use it for small corrections and additions; use `save_document` for a
-rewrite, several documents or assets, or when the document is not running
-(that refuses with `not_deployed`).
+rewrite of one document, or when the document is not running (which refuses
+`update_document` with `not_deployed`). Repeat `save_document` to write other
+documents; use an explicit whole-bundle save for assets or replacement.
 
 1. Read `get_document {slug, doc?, blocks: true}`. It returns `hash` (of the
    whole document) and `blocks: [{hash, kind, level?, line, preview}]`. A
@@ -214,8 +229,7 @@ database or file storage.
 ### Bundle rules
 
 * `flats.json` must say `"type": "page"`. `save_page` and
-  `create_flat {type: "page"}` write it for you; `save_draft`,
-  `save_version`, `save_version_from_dir` and `flats deploy` need it in the
+  `create_flat {type: "page"}` write it for you; `save_draft`, `save_draft_from_dir` and `flats save-draft` need it in the
   upload. A flat keeps its type: saving a website into a page (for example an
   upload without the manifest) is refused (`refusal.conflict`).
 * Exactly one HTML file, the entry (`index.html` by default; `entry` may
@@ -232,14 +246,14 @@ database or file storage.
 1. `create_flat {slug, name, type: "page"}` makes an unpublished page with a
    starter Draft (revision 1). Optional: `save_page` also creates the flat.
 2. `save_page {slug, html, title?, screenshot?, files?, expected_revision?,
-   message?, deploy?}` saves the Draft. `html` is the whole document (saved as
+   message?}` saves the Draft. `html` is the whole document (saved as
    `index.html`); `files` are the assets (`[{path, content, encoding}]`, utf8
    or base64), omitted for a self-contained page; `screenshot` names one of
    those files as the console thumbnail. It replaces the whole Draft: send
    the html, every asset and the screenshot each time.
 3. Read the save `warnings`, then `open_preview {slug, version: 0}` and look
    at it in your browser (`topic.preview-check`).
-4. `publish` (or `deploy: true` on the save) requests approval to save the
+4. `create_version` requests approval to save the
    Draft as a numbered version (`v1`, `v2`, ...), and `deploy {slug, version:
    N}` requests approval to activate that saved version (`topic.approvals`).
    `rollback` returns to an earlier version; a page has no data, so
@@ -576,7 +590,7 @@ content. Do not rewrite it from an older copy.
 - Old unpinned revisions are deleted beyond the host's quota (default 100).
   Pins have their own quota (default 20).
 - None of this needs approval.
-- Version tools (`save_draft`, `publish`, `deploy`, `rollback`,
+- Version tools (`save_draft`, `create_version`, `deploy`, `rollback`,
   `open_preview`, `list_versions`) refuse a design.
 
 ### Verify

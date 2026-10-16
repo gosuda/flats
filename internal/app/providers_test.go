@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gosuda/flats/internal/config"
@@ -493,31 +494,38 @@ func TestConsoleCloudflareQuickTurnsOnAndPolicyMatchesRestart(t *testing.T) {
 }
 
 // The NetBird part of the provider configuration token follows the management
-// server and is empty without a NetBird grant, so hosts without NetBird keep
-// their token.
+// server and the setup key, and is empty without a NetBird grant, so hosts
+// without NetBird keep their token.
 func TestNetbirdConfigurationToken(t *testing.T) {
 	base := &config.Config{}
-	base.Netbird = config.NetbirdConfig{ManagementURL: "https://a.example", DeviceName: "flats"}
-	if got := netbirdConfiguration(base, nil); got != "" {
+	base.Netbird = config.NetbirdConfig{ManagementURL: "https://a.example"}
+	if got := netbirdConfiguration(base, testNetbirdKey); got != "" {
 		t.Fatalf("without a grant: %q", got)
 	}
 	base.Network.Permitted = []string{"netbird-expose"}
-	first := netbirdConfiguration(base, nil)
+	first := netbirdConfiguration(base, testNetbirdKey)
 	other := *base
 	other.Netbird.ManagementURL = "https://b.example"
-	if first == "" || netbirdConfiguration(&other, nil) == first {
+	if first == "" || netbirdConfiguration(&other, testNetbirdKey) == first {
 		t.Fatal("changing netbird.management_url did not change the token")
+	}
+	if netbirdConfiguration(base, "11111111-2222-4333-8444-555555555555") == first || netbirdConfiguration(base, "") == first {
+		t.Fatal("changing the setup key did not change the token")
+	}
+	if strings.Contains(first, testNetbirdKey) {
+		t.Fatal("the token carries the setup key")
 	}
 	if providerConfiguration(portal.Config{}, "", "") == providerConfiguration(portal.Config{}, "", first) {
 		t.Fatal("the NetBird part does not reach the provider token")
 	}
 }
 
-// A NetBird provider turned on before a peer exists runs without a peer. When
-// the peer is enrolled afterwards the policy token carries its fingerprint at
+const testNetbirdKey = "8f3c2a1e-4b5d-4c6e-9f70-0123456789ab"
+
+// A setup key registered while NetBird is on changes the policy token at
 // once, as the next start computes it, so a pending approval is not left
-// bound to the empty one.
-func TestConsoleNetbirdEnrollmentRefreshesPolicy(t *testing.T) {
+// bound to the previous key.
+func TestConsoleNetbirdKeyRefreshesPolicy(t *testing.T) {
 	provider.RegisterNetbird(fakeNetbirdDriver{})
 	t.Cleanup(func() { provider.RegisterNetbird(nil) })
 	dir := t.TempDir()
@@ -529,75 +537,126 @@ func TestConsoleNetbirdEnrollmentRefreshesPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nbDir := filepath.Join(dir, "netbird")
-	if err := os.MkdirAll(nbDir, 0o700); err != nil {
-		t.Fatal(err)
+	var out map[string]any
+	if code := consoleCall(t, h, client, "PUT", "/console/api/keys/netbird", strings.NewReader(`{"key": "`+testNetbirdKey+`"}`), &out); code != 200 {
+		t.Fatalf("set key: %d %v", code, out)
 	}
-	if err := os.WriteFile(filepath.Join(nbDir, "account.json"), []byte(`{"management_url":"https://api.netbird.io:443","device_name":"flats","fingerprint":"abc123"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nbDir, "netbird.json"), []byte(`{}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h.pmu.Lock()
-	err = h.peerEnrolledLocked()
-	h.pmu.Unlock()
-	if err != nil {
-		t.Fatal(err)
+	if h.currentNetbirdKey() != testNetbirdKey {
+		t.Fatal("the backend does not see the registered key")
 	}
 	live, err := h.Providers.ExposurePolicy(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if live == before {
-		t.Fatal("enrolling the peer did not change the policy token")
+		t.Fatal("registering the key did not change the policy token")
+	}
+	if p := providerByID(t, h, client, "netbird"); !p.KeySet {
+		t.Fatalf("provider: %+v", p)
 	}
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
 	}
-	h, _ = consoleHostWith(t, dir, nil)
+	h, client = consoleHostWith(t, dir, nil)
 	restarted, err := h.Providers.ExposurePolicy(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if live != restarted {
-		t.Fatal("the policy token after a restart differs from the one after enrolling the peer")
+	if live != restarted || h.currentNetbirdKey() != testNetbirdKey {
+		t.Fatal("the key or policy token did not survive a restart")
 	}
+	// Removing the key keeps the host running without one.
+	if code := consoleCall(t, h, client, "DELETE", "/console/api/keys/netbird", nil, &out); code != 200 || h.currentNetbirdKey() != "" {
+		t.Fatalf("delete key: %d %v", code, out)
+	}
+}
+
+func TestConsoleNetbirdKeyIsChecked(t *testing.T) {
+	provider.RegisterNetbird(fakeNetbirdDriver{})
+	t.Cleanup(func() { provider.RegisterNetbird(nil) })
+	h, client := consoleHostWith(t, t.TempDir(), nil)
+	var out map[string]any
+	if code := consoleCall(t, h, client, "PUT", "/console/api/keys/netbird", strings.NewReader(`{"key": "tskey-auth-abc"}`), &out); code != 400 {
+		t.Fatalf("a non-UUID key: %d %v", code, out)
+	}
+	if h.currentNetbirdKey() != "" {
+		t.Fatal("a refused key was stored")
+	}
+}
+
+// The shared peer of earlier versions is dropped at start: its files go, and
+// the Keys card names it until the operator dismisses the notice.
+func TestNetbirdLegacyPeerIsDropped(t *testing.T) {
+	provider.RegisterNetbird(fakeNetbirdDriver{})
+	t.Cleanup(func() { provider.RegisterNetbird(nil) })
+	dir := t.TempDir()
+	nbDir := filepath.Join(dir, "netbird")
+	if err := os.MkdirAll(nbDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nbDir, "account.json"), []byte(`{"management_url":"https://api.netbird.io:443","device_name":"flats-box","fingerprint":"abc123"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, client := consoleHostWith(t, dir, nil)
+	if _, err := os.Stat(filepath.Join(nbDir, "account.json")); err == nil {
+		t.Fatal("the shared peer's account record was kept")
+	}
+	var keys struct{ Keys []KeyInfo }
+	if code := consoleCall(t, h, client, "GET", "/console/api/keys", nil, &keys); code != 200 {
+		t.Fatal(code)
+	}
+	nb := keyByID(t, keys.Keys, "netbird")
+	if nb.LegacyPeer == nil || nb.LegacyPeer.DeviceName != "flats-box" || nb.Set {
+		t.Fatalf("netbird key: %+v", nb)
+	}
+	var after struct{ Keys []KeyInfo }
+	if code := consoleCall(t, h, client, "DELETE", "/console/api/keys/netbird/legacy-peer", nil, &after); code != 200 || keyByID(t, after.Keys, "netbird").LegacyPeer != nil {
+		t.Fatalf("dismiss: %d %+v", code, after)
+	}
+}
+
+func keyByID(t *testing.T, keys []KeyInfo, id string) KeyInfo {
+	t.Helper()
+	for _, k := range keys {
+		if k.ID == id {
+			return k
+		}
+	}
+	t.Fatalf("key %s missing", id)
+	return KeyInfo{}
 }
 
 // fakeNetbirdDriver stands in for the NetBird module, which the main module
-// does not link. Its backend reads the account record like the real one.
+// does not link. CleanupLegacy reads the account record like the real one.
 type fakeNetbirdDriver struct{}
 
 func (fakeNetbirdDriver) New(c provider.NetbirdConfig) (provider.NetbirdNet, error) {
-	return &fakeNetbirdNet{dir: c.Dir}, nil
+	return newFakeNetbirdNet(), nil
 }
 
-func (fakeNetbirdDriver) LoadAccount(dir string) (provider.NetbirdAccount, bool, error) {
+func (fakeNetbirdDriver) RetireStored(string, string) error { return nil }
+
+func (fakeNetbirdDriver) CleanupLegacy(dir string) (provider.NetbirdLegacyPeer, bool, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, "account.json"))
 	if err != nil {
-		return provider.NetbirdAccount{}, false, nil
+		return provider.NetbirdLegacyPeer{}, false, nil
 	}
-	var a provider.NetbirdAccount
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return provider.NetbirdAccount{}, false, err
-	}
-	return a, true, nil
+	var p provider.NetbirdLegacyPeer
+	_ = json.Unmarshal(raw, &p)
+	return p, true, os.Remove(filepath.Join(dir, "account.json"))
 }
 
-func (fakeNetbirdDriver) Enroll(context.Context, string, string, string, string) (provider.NetbirdAccount, error) {
-	return provider.NetbirdAccount{}, errors.New("not used")
+// fakeNetbirdNet serves console peers in memory, like fakeTailnet.
+type fakeNetbirdNet struct {
+	mu        sync.Mutex
+	console   map[string]http.Handler
+	retired   []string
+	serveErr  error
+	retireErr error
 }
-func (fakeNetbirdDriver) Disconnect(context.Context, string, bool) error { return nil }
-func (fakeNetbirdDriver) RetireStored(string, string) error              { return nil }
-func (fakeNetbirdDriver) DisconnectHint() string                         { return "" }
 
-type fakeNetbirdNet struct{ dir string }
+func newFakeNetbirdNet() *fakeNetbirdNet { return &fakeNetbirdNet{console: map[string]http.Handler{}} }
 
-func (n *fakeNetbirdNet) Account() string {
-	a, _, _ := fakeNetbirdDriver{}.LoadAccount(n.dir)
-	return a.Fingerprint
-}
 func (*fakeNetbirdNet) ServePrivate(context.Context, string, http.Handler) (string, error) {
 	return "", errors.New("not used")
 }
@@ -613,18 +672,75 @@ func (*fakeNetbirdNet) Close() error                  { return nil }
 func (*fakeNetbirdNet) ServePublic(context.Context, string, http.Handler) (string, error) {
 	return "", errors.New("not used")
 }
+func (n *fakeNetbirdNet) ServeConsole(_ context.Context, name string, h http.Handler) (string, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.serveErr != nil {
+		return "", n.serveErr
+	}
+	n.console[name] = h
+	return "http://" + name + ".netbird.cloud/", nil
+}
+func (n *fakeNetbirdNet) StopConsole(name string) error { return n.RetireConsole(name) }
+func (n *fakeNetbirdNet) RetireConsole(name string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.retireErr != nil {
+		return n.retireErr
+	}
+	delete(n.console, name)
+	n.retired = append(n.retired, name)
+	return nil
+}
+func (n *fakeNetbirdNet) ConsoleURL(name string) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if _, ok := n.console[name]; !ok {
+		return ""
+	}
+	return "http://" + name + ".netbird.cloud/"
+}
+func (n *fakeNetbirdNet) ConsoleStatus() core.NetStatus {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	st := core.NetStatus{Kind: "netbird"}
+	for name := range n.console {
+		st.Hosts = append(st.Hosts, core.HostInfo{Host: name, URL: "http://" + name + ".netbird.cloud/", State: "ready"})
+	}
+	return st
+}
+func (n *fakeNetbirdNet) Hostnames(name string) []string {
+	return []string{name + ".netbird.cloud", name + "-1-2.netbird.cloud"}
+}
+func (n *fakeNetbirdNet) IdentityForIP(_, ip string) string {
+	if ip == "127.0.0.1" {
+		return "laptop.netbird.cloud"
+	}
+	return ""
+}
+func (n *fakeNetbirdNet) PeerCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.console)
+}
+func (n *fakeNetbirdNet) isServed(name string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	_, ok := n.console[name]
+	return ok
+}
 
-// Without a linked NetBird, the providers report why they cannot run and the
-// peer cannot be enrolled; the host keeps starting.
+// Without a linked NetBird, the providers report why they cannot run and no
+// setup key is accepted; the host keeps starting.
 func TestConsoleNetbirdNotBuilt(t *testing.T) {
 	provider.RegisterNetbird(nil)
 	dir := t.TempDir()
 	h, client := consoleHostWith(t, dir, nil)
 	p := providerByID(t, h, client, "netbird")
-	if p.Unsupported == "" || p.Connected {
+	if p.Unsupported == "" || p.KeySet {
 		t.Fatalf("netbird in a build without it: %+v", p)
 	}
-	if err := h.ConnectNetbird(context.Background(), "key"); !errors.Is(err, core.ErrUnavailable) {
-		t.Fatalf("ConnectNetbird without a driver: %v", err)
+	if err := h.SetNetbirdKey(context.Background(), testNetbirdKey); !errors.Is(err, core.ErrUnavailable) {
+		t.Fatalf("SetNetbirdKey without a driver: %v", err)
 	}
 }

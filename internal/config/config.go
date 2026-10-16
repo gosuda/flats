@@ -30,7 +30,7 @@ import (
 )
 
 // CurrentSchemaVersion is the config.json format this binary reads and writes.
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 4
 
 // Source tells where an effective value came from.
 type Source string
@@ -104,7 +104,7 @@ var specs = []spec{
 	{key: "tailscale.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts, override: true,
 		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off the tailnet"},
 	intSpec("system.upload_max_bytes", 20<<20, 1, MaxInt),
-	intSpec("system.keep_versions", 10, 0, MaxInt),
+	intSpec("system.version_quota", 20, 0, MaxInt),
 	intSpec("system.disk_quota_bytes", 30<<30, 0, MaxInt),
 	intSpec("system.preview_ttl_seconds", 24*3600, 1, MaxInt),
 	intSpec("system.rate_limit_rps", 50, 1, MaxInt),
@@ -132,8 +132,10 @@ var specs = []spec{
 	// default is NetBird Cloud; a self-hosted server sets its own URL.
 	{key: "netbird.management_url", kind: kindString, def: "https://api.netbird.io:443", check: checkManagementURL,
 		hint: "use the https URL of a NetBird management server, such as https://api.netbird.io:443"},
-	{key: "netbird.device_name", kind: kindString, def: "flats", check: checkDeviceName,
-		hint: "use a peer name of 1 to 63 lowercase letters, digits and '-'"},
+	// The console's NetBird names, in the order they were added. Each one is
+	// its own NetBird peer.
+	{key: "netbird.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts,
+		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off NetBird"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
 	// Read once at start into flats.db, then removed from the file.
@@ -517,20 +519,6 @@ func checkManagementURL(v any) (any, error) {
 	return s, nil
 }
 
-// checkDeviceName accepts a DNS label for the NetBird peer name.
-func checkDeviceName(v any) (any, error) {
-	s := v.(string)
-	if s == "" || len(s) > 63 || s[0] == '-' || s[len(s)-1] == '-' {
-		return nil, fmt.Errorf("device name %q must be 1 to 63 characters and not start or end with '-'", s)
-	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
-			return nil, fmt.Errorf("device name %q may contain only lowercase letters, digits and '-'", s)
-		}
-	}
-	return s, nil
-}
-
 // checkNamespace accepts a zrok namespace token: letters, digits, '-' and
 // '_', up to 64 characters.
 func checkNamespace(v any) (any, error) {
@@ -625,7 +613,7 @@ func (n NetworkConfig) EffectiveDefaultPrivate() string {
 
 type SystemConfig struct {
 	UploadMaxBytes    int64
-	KeepVersions      int64 // 0 = no pruning
+	VersionQuota      int64 // 0 = unlimited
 	DiskQuotaBytes    int64 // 0 = off
 	PreviewTTLSeconds int64
 	RateLimitRPS      int64
@@ -642,7 +630,7 @@ type PortalConfig struct {
 
 type NetbirdConfig struct {
 	ManagementURL string
-	DeviceName    string
+	ConsoleHosts  []string // the console's NetBird names, in order
 }
 
 type ZrokConfig struct {
@@ -729,12 +717,12 @@ func (c *Config) fill() error {
 	c.Tailscale = TailscaleConfig{list("tailscale.console_hosts")}
 	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
 		str("network.default_private"), str("network.default_public")}
-	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.keep_versions"),
+	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.version_quota"),
 		num("system.disk_quota_bytes"), num("system.preview_ttl_seconds"), num("system.rate_limit_rps"),
 		num("system.redirect_days"), num("system.events_keep")}
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
-	c.Netbird = NetbirdConfig{str("netbird.management_url"), str("netbird.device_name")}
+	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error
@@ -750,6 +738,10 @@ func (c *Config) fill() error {
 	if len(c.Tailscale.ConsoleHosts) > 0 && !slices.Contains(c.Network.Permitted, "tailscale") {
 		errs = append(errs, fieldErr("tailscale.console_hosts", `add "tailscale" to network.permitted or remove the console hosts`,
 			"tailscale is not permitted"))
+	}
+	if len(c.Netbird.ConsoleHosts) > 0 && !slices.Contains(c.Network.Permitted, "netbird") {
+		errs = append(errs, fieldErr("netbird.console_hosts", `add "netbird" to network.permitted or remove the console hosts`,
+			"netbird is not permitted"))
 	}
 	if p := c.Network.DefaultPrivate; (p == "tailscale" || p == "netbird") && !slices.Contains(c.Network.Permitted, p) {
 		errs = append(errs, fieldErr("network.default_private", fmt.Sprintf(`add %q to network.permitted or use "local"`, p),

@@ -1,5 +1,13 @@
 # Phase gates: evidence
 
+Current interface note: historical receipts below retain their original tool
+names and behavior. Client contract 2 uses `save_draft` / `save_draft_from_dir`
+for Draft content, `create_version` for separately approved version creation,
+and `deploy` for a separately approved deployment of a positive version.
+`save_version`, `save_version_from_dir` and `publish` are removed tools;
+these historical receipts are not instructions to invoke them.
+
+
 Measured on the development Mac (Apple Silicon, macOS, Go 1.27.1), 2026-10-03.
 "Local network" means `flats serve --network local` (flats at
 `http://<flat>.localhost:<port>`), used where a real tailnet was not

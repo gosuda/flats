@@ -14,9 +14,9 @@ export class ApiError extends Error {
 }
 
 // extraHeaders adds request headers (If-Match for settings saves).
-export async function request(method, path, body, extraHeaders) {
+export async function request(method, path, body, extraHeaders, signal) {
   const headers = { 'X-Flats-Console': '1', Accept: 'application/json', ...extraHeaders };
-  const opts = { method, headers, credentials: 'same-origin', cache: 'no-store' };
+  const opts = { method, headers, credentials: 'same-origin', cache: 'no-store', ...(signal ? { signal } : {}) };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
@@ -42,10 +42,12 @@ export const api = {
   flats: (q) => get('/flats' + (q ? '?q=' + enc(q) : '')),
   flat: (slug) => get(`/flats/${enc(slug)}`),
   versions: (slug) => get(`/flats/${enc(slug)}/versions`),
+  deleteVersion: (slug, version) => request('DELETE', `/flats/${enc(slug)}/versions/${version}`),
+  setVersionQuota: (slug, version_quota) => request('PUT', `/flats/${enc(slug)}/version-quota`, { version_quota }),
   deploy: (slug, version) => post(`/flats/${enc(slug)}/deploy`, { version }),
   rollback: (slug, version, restoreData) => post(`/flats/${enc(slug)}/rollback`, { version: version || 0, restore_data: !!restoreData }),
   deployments: (slug) => get(`/flats/${enc(slug)}/deployments`),
-  publish: (slug, draft) => post(`/flats/${enc(slug)}/publish`, { revision: draft.revision, hash: draft.hash }),
+  createVersion: (slug, draft) => post(`/flats/${enc(slug)}/versions`, { revision: draft.revision, hash: draft.hash }),
   setFlatProvider: (slug, provider, permitted) => post(`/flats/${enc(slug)}/providers`, { provider, permitted }),
   openPreview: (slug, version) => post(`/flats/${enc(slug)}/previews`, version ? { version } : { target: 'draft', version: 0 }),
   previews: (slug) => get(`/flats/${enc(slug)}/previews`),
@@ -68,7 +70,7 @@ export const api = {
   deleteSecret: (slug, name) => request('DELETE', `/flats/${enc(slug)}/secrets/${enc(name)}`),
   snapshots: (slug) => get(`/flats/${enc(slug)}/snapshots`),
   stats: (slug, days) => get(`/flats/${enc(slug)}/stats?days=${days || 30}`),
-  approvals: (status) => get('/approvals' + (status ? '?status=' + enc(status) : '')),
+  approvals: (status, signal) => request('GET', '/approvals' + (status ? '?status=' + enc(status) : ''), undefined, undefined, signal),
   approval: (id) => get(`/approvals/${enc(id)}`),
   decide: (id, approve) => post(`/approvals/${enc(id)}/${approve ? 'approve' : 'reject'}`),
   providers: () => get('/providers'),
@@ -76,17 +78,18 @@ export const api = {
   setProvider: (id, enabled, etag) => request('PUT', `/providers/${enc(id)}`, { enabled }, etag ? { 'If-Match': `"${etag}"` } : undefined),
   // The token is sent once and never returned.
   connectZrok: (token) => request('PUT', '/providers/zrok/account', { token }),
-  connectNetbird: (setup_key) => request('PUT', '/providers/netbird/account', { setup_key }),
-  disconnectNetbird: (force) => request('DELETE', '/providers/netbird/account' + (force ? '?force=1' : '')),
   disconnectZrok: (force) => request('DELETE', '/providers/zrok/account' + (force ? '?force=1' : '')),
   // Operator keys: values are sent once and never returned.
   keys: () => get('/keys'),
   setTailscaleKey: (key) => request('PUT', '/keys/tailscale', { key }),
   deleteTailscaleKey: () => request('DELETE', '/keys/tailscale'),
+  setNetbirdKey: (key) => request('PUT', '/keys/netbird', { key }),
+  deleteNetbirdKey: () => request('DELETE', '/keys/netbird'),
+  dismissNetbirdLegacyPeer: () => request('DELETE', '/keys/netbird/legacy-peer'),
   // Console domains; etag is config.etag (or the view's etag), as for saveSettings.
   consoleDomains: () => get('/console-domains'),
-  addConsoleDomain: (name, etag) => request('POST', '/console-domains', { name }, etag ? { 'If-Match': `"${etag}"` } : undefined),
-  deleteConsoleDomain: (name, etag) => request('DELETE', `/console-domains/${enc(name)}`, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  addConsoleDomain: (provider, name, etag) => request('POST', '/console-domains', { provider, name }, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  deleteConsoleDomain: (provider, name, etag) => request('DELETE', `/console-domains/${enc(provider)}/${enc(name)}`, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another
   // save since then makes the server refuse with 412.

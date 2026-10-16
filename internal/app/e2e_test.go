@@ -108,7 +108,11 @@ func TestMVPGate(t *testing.T) {
 	}
 	start := time.Now()
 	var pending map[string]any
-	code := call(t, "POST", base+"/api/flats/big-site/versions?deploy=1&git_sha=deadbeef", bytes.NewReader(archive), &pending)
+	code := call(t, "POST", base+"/api/flats/big-site/draft?git_sha=deadbeef", bytes.NewReader(archive), nil)
+	if code != 201 {
+		t.Fatalf("draft save: %d", code)
+	}
+	code = call(t, "POST", base+"/api/flats/big-site/versions", strings.NewReader(`{}`), &pending)
 	if code != 202 {
 		t.Fatalf("upload pending status: %d %+v", code, pending)
 	}
@@ -130,7 +134,10 @@ func TestMVPGate(t *testing.T) {
 		t.Fatalf("upload to live took %s", uploadToLive)
 	}
 	small := tarGz(t, map[string][]byte{"index.html": []byte("<h1>v2</h1>")})
-	if code := call(t, "POST", base+"/api/flats/big-site/versions?deploy=1", bytes.NewReader(small), &pending); code != 202 {
+	if code := call(t, "POST", base+"/api/flats/big-site/draft", bytes.NewReader(small), nil); code != 201 {
+		t.Fatalf("v2 draft: %d", code)
+	}
+	if code := call(t, "POST", base+"/api/flats/big-site/versions", strings.NewReader(`{}`), &pending); code != 202 {
 		t.Fatalf("v2 pending: %d", code)
 	}
 	if _, body := fetch(t, liveURL); !strings.Contains(body, "v1") {
@@ -165,7 +172,10 @@ func TestMVPGate(t *testing.T) {
 	}
 
 	// Separate origins: every flat and preview has its own host.
-	if code := call(t, "POST", base+"/api/flats/second/versions?deploy=1", bytes.NewReader(small), &pending); code != 202 {
+	if code := call(t, "POST", base+"/api/flats/second/draft", bytes.NewReader(small), nil); code != 201 {
+		t.Fatalf("second draft: %d", code)
+	}
+	if code := call(t, "POST", base+"/api/flats/second/versions", strings.NewReader(`{}`), &pending); code != 202 {
 		t.Fatalf("second flat pending: %d", code)
 	}
 	approve(pending)

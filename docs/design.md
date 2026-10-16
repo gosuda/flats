@@ -95,11 +95,12 @@ failures or an injected implementation that ignores the network contract.
   live before the current one), recorded with kind `rollback`.
 * **Data belongs to the flat** (`data/`), not to versions; rollback restores
   code only.
-* **Retention.** After every deploy (publish, redeploy or rollback), files of
-  versions beyond the newest `keep_versions` (default 10) are deleted unless
-  the version is live; the deploy closes the flat's previews first, so a
-  previewed version is protected only if its preview failed to close. The row
-  stays with `pruned=1`.
+* **Versions and quota.** Versions are never deleted automatically. A host
+  version quota defaults to 20; each flat may override it and 0 is unlimited.
+  Full quotas refuse creation at request and approval time. Operators delete
+  non-live versions directly; agent deletions require explicit approval.
+  Previews close before deletion. Data snapshots belong to the flat and stay.
+  Previously pruned rows remain unavailable and do not count toward the quota.
 
 ## Manifest (`flats.json`, optional)
 
@@ -439,12 +440,16 @@ answers:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | /api/flats/{slug}/document?doc= | live docs Markdown, else Current Draft |
+| GET | /api/flats/{slug}/document?doc= | live docs Markdown, or saved content when not running |
 | GET | /api/status | host, networks, limits, build version |
 | GET | /api/flats | list |
 | POST | /api/flats | `{slug, name}` create |
 | GET | /api/flats/{slug} | details (URLs, live version, notice) |
-| POST | /api/flats/{slug}/versions | body: tar/tar.gz/zip; query `git_sha`, `git_dirty`, `message`, `deploy=1` |
+| GET | /api/flats/{slug}/draft | current Private Draft metadata |
+| POST/PUT | /api/flats/{slug}/draft | tar/tar.gz/zip; query `expected_revision`, `git_sha`, `git_dirty`, `message`; saves only the Draft |
+| POST | /api/flats/{slug}/versions | JSON `{revision, hash}`; requests approval to create a version without deploying |
+| DELETE | /api/flats/{slug}/versions/{n} | requests approval to delete a non-live version; direct deletion in the console |
+| POST | /api/flats/{slug}/document | docs archive; explicitly replaces the whole live bundle without approval |
 | GET | /api/flats/{slug}/versions | list |
 | GET | /api/flats/{slug}/versions/{n} | one version |
 | GET | /api/flats/{slug}/versions/{n}/files/{path} | a file (thumbnails) |
@@ -481,14 +486,14 @@ The console sends `If-Match`; a save answers 412 `config_changed` when
 `config.json` changed since the host read it or the page is stale, and 409
 when the key is pinned by a flag of a service that still runs without
 `--config`. `POST settings/impact` reports, without writing, what the next
-pruning would remove after lowering `keep_versions`, `events_keep` or
+pruning would remove after lowering `events_keep` or
 `preview_ttl_seconds`; the console shows it before such a save.
 
 MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
-`create_flat`, `save_version` (inline files, text or base64), `save_version_from_dir`
+`create_flat`, `save_draft` (inline files, text or base64), `save_draft_from_dir`
 (loopback callers only), `deploy`, `rollback`, `list_versions`,
 `open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
-`get_approval`, `get_network`, `list_env`, `set_env`, `delete_env`, `list_secrets`, `save_draft`, `get_draft`, `publish`,
+`get_approval`, `get_network`, `list_env`, `set_env`, `delete_env`, `list_secrets`, `save_draft`, `get_draft`, `create_version`,
 `save_document`, `get_document`, `update_document` (guarded live edits of a
 running docs flat, no approval), `get_runtime_reference`, `get_content_types`.
 Content type discovery: resource `flats://docs/content-types/v1`.

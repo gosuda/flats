@@ -27,6 +27,25 @@ CREATE TABLE IF NOT EXISTS console_nodes (
 	return err
 }
 
+// consoleNodeProviders keys console nodes by network as well as name: the
+// same name may serve the console on Tailscale and on NetBird. Existing rows
+// are Tailscale nodes.
+func consoleNodeProviders(ctx context.Context, x executor) error {
+	_, err := x.ExecContext(ctx, `
+CREATE TABLE console_nodes_v14 (
+  provider TEXT NOT NULL DEFAULT 'tailscale' CHECK (provider IN ('tailscale', 'netbird')),
+  name TEXT NOT NULL,
+  retiring INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (provider, name)
+);
+INSERT INTO console_nodes_v14 (provider, name, retiring, last_error)
+  SELECT 'tailscale', name, retiring, last_error FROM console_nodes;
+DROP TABLE console_nodes;
+ALTER TABLE console_nodes_v14 RENAME TO console_nodes;`)
+	return err
+}
+
 // HostKey is one operator key record. Nonce and Ciphertext are nil when the
 // row only records a connection (zrok, NetBird) without a value.
 type HostKey struct {
@@ -111,6 +130,9 @@ func (s *Store) HasSealedHostKeys(ctx context.Context) (bool, error) {
 
 // ConsoleNode records a tailnet node Flats runs for the console.
 type ConsoleNode struct {
+	// Provider is the network the node runs on: "tailscale" or "netbird".
+	// "" means "tailscale".
+	Provider  string
 	Name      string
 	Retiring  bool
 	LastError string
@@ -118,7 +140,7 @@ type ConsoleNode struct {
 
 // ListConsoleNodes returns the console node records, ordered by name.
 func (s *Store) ListConsoleNodes(ctx context.Context) ([]ConsoleNode, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, retiring, last_error FROM console_nodes ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT provider, name, retiring, last_error FROM console_nodes ORDER BY provider, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +148,7 @@ func (s *Store) ListConsoleNodes(ctx context.Context) ([]ConsoleNode, error) {
 	var out []ConsoleNode
 	for rows.Next() {
 		var n ConsoleNode
-		if err := rows.Scan(&n.Name, &n.Retiring, &n.LastError); err != nil {
+		if err := rows.Scan(&n.Provider, &n.Name, &n.Retiring, &n.LastError); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -136,13 +158,21 @@ func (s *Store) ListConsoleNodes(ctx context.Context) ([]ConsoleNode, error) {
 
 // PutConsoleNode inserts or replaces a console node record.
 func (s *Store) PutConsoleNode(ctx context.Context, n ConsoleNode) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO console_nodes (name, retiring, last_error) VALUES (?,?,?)
-ON CONFLICT(name) DO UPDATE SET retiring=excluded.retiring, last_error=excluded.last_error`, n.Name, n.Retiring, n.LastError)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO console_nodes (provider, name, retiring, last_error) VALUES (?,?,?,?)
+ON CONFLICT(provider, name) DO UPDATE SET retiring=excluded.retiring, last_error=excluded.last_error`, nodeProvider(n.Provider), n.Name, n.Retiring, n.LastError)
 	return err
 }
 
-// DeleteConsoleNode removes a console node record.
-func (s *Store) DeleteConsoleNode(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM console_nodes WHERE name=?`, name)
+// DeleteConsoleNode removes a console node record of provider ("" is
+// Tailscale).
+func (s *Store) DeleteConsoleNode(ctx context.Context, provider, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM console_nodes WHERE provider=? AND name=?`, nodeProvider(provider), name)
 	return err
+}
+
+func nodeProvider(p string) string {
+	if p == "" {
+		return "tailscale"
+	}
+	return p
 }

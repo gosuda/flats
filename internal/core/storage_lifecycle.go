@@ -177,6 +177,15 @@ func (s *Service) checkStorageJournal(slugName string) error {
 			return withKind(ErrConflict, fmt.Errorf("flat %q has unfinished %s storage cleanup; its storage cannot change until Flats restarts and recovers it", slugName, op.Kind))
 		}
 	}
+	entries, err := os.ReadDir(s.flatDir(slugName))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), versionDeletePrefix) {
+			return fmt.Errorf("%w: flat %q has unfinished version deletion cleanup; restart Flats to recover it", ErrConflict, slugName)
+		}
+	}
 	return nil
 }
 

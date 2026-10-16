@@ -17,6 +17,7 @@ BASE="http://127.0.0.1:$PORT"
 AGENTS=("$@")
 [ ${#AGENTS[@]} -eq 0 ] && AGENTS=(claude codex cursor)
 
+# shellcheck disable=SC2317,SC2329 # Invoked indirectly by the EXIT trap.
 cleanup() { [ -n "${SERVE_PID:-}" ] && kill "$SERVE_PID" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT
 
@@ -34,8 +35,9 @@ mk_site() { # $1 dir $2 label
 
 prompt() { # $1 slug $2 site dir
   cat <<EOF
-Use the "flats" MCP server (its tools: save_version, deploy, get_flat, ...) to deploy the static site in the directory $2 as a flat with slug "$1".
-Read the files in that directory and call save_version with them (encoding utf8) and deploy=true.
+Use the "flats" MCP server (its tools: save_draft, create_version, deploy, get_flat, ...) to deploy the static site in the directory $2 as a flat with slug "$1".
+Read the files in that directory and call save_draft with them (encoding utf8), then create_version for its revision/hash.
+Return its approval_url and wait for the operator before requesting deploy of the created version.
 Then call get_flat for "$1" and reply with the private_url and the live version number. Do not change visibility.
 EOF
 }
@@ -50,7 +52,7 @@ for a in "${AGENTS[@]}"; do
   claude)
     printf '{"mcpServers":{"flats":{"type":"http","url":"%s/mcp"}}}' "$BASE" >"$dir/mcp.json"
     (cd "$dir" && timeout 600 claude -p "$(prompt "$slug" "$dir/site")" --mcp-config "$dir/mcp.json" --strict-mcp-config \
-      --allowedTools "mcp__flats__save_version,mcp__flats__deploy,mcp__flats__get_flat,mcp__flats__list_flats,Read,Glob,LS" \
+      --allowedTools "mcp__flats__save_draft,mcp__flats__create_version,mcp__flats__deploy,mcp__flats__get_flat,mcp__flats__list_flats,Read,Glob,LS" \
       </dev/null >"$WORK/$a.out" 2>&1)
     ;;
   codex)

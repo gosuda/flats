@@ -145,7 +145,7 @@ func cliUpdateEnv(t *testing.T) Env {
 		}
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 	}), CandidateProbe: func(context.Context, string) (selfupdate.Identity, error) {
-		return selfupdate.Identity{Info: buildinfo.Info{Version: "v1.2.3", Release: true, OS: runtime.GOOS, Arch: runtime.GOARCH}, ClientContract: 2}, nil
+		return selfupdate.Identity{Info: buildinfo.Info{Version: "v1.2.3", Release: true, OS: runtime.GOOS, Arch: runtime.GOARCH}, ClientContract: clientstate.ContractRevision + 1}, nil
 	}}
 }
 func TestClientUpdateExplicitIndependent(t *testing.T) {
@@ -169,10 +169,10 @@ func TestClientUpdateDefaultAndRace(t *testing.T) {
 			api.routes["GET /api/client"] = func(w http.ResponseWriter, r *http.Request, b []byte) {
 				n++
 				if name != "current" {
-					m.ClientContract = 2
+					m.ClientContract = clientstate.ContractRevision + 1
 				}
 				if name == "race" && n > 1 {
-					m.ClientContract = 3
+					m.ClientContract = clientstate.ContractRevision + 2
 				}
 				if name == "dev" {
 					m.Server.Release = false
@@ -206,7 +206,7 @@ func TestClientUpdateDefaultAndRace(t *testing.T) {
 }
 func TestClientVersionContract(t *testing.T) {
 	r := run(t, "http://127.0.0.1:1", "", "--json", "version")
-	if r.code != 0 || !strings.Contains(r.stdout, `"client_contract": 1`) {
+	if r.code != 0 || !strings.Contains(r.stdout, `"client_contract": 2`) {
 		t.Fatalf("%+v", r)
 	}
 }

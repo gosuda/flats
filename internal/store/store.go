@@ -60,14 +60,15 @@ func (v Visibility) Rank() int {
 
 // Flat is one hosted site.
 type Flat struct {
-	Slug        string     `json:"slug"`
-	Name        string     `json:"name"`
-	Visibility  Visibility `json:"visibility"`
-	LiveVersion int        `json:"live_version"` // 0 when never deployed
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	OldSlug     string     `json:"old_slug,omitempty"`
-	OldSlugTill *time.Time `json:"old_slug_until,omitempty"`
+	VersionQuota *int       `json:"version_quota"`
+	Slug         string     `json:"slug"`
+	Name         string     `json:"name"`
+	Visibility   Visibility `json:"visibility"`
+	LiveVersion  int        `json:"live_version"` // 0 when never deployed
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	OldSlug      string     `json:"old_slug,omitempty"`
+	OldSlugTill  *time.Time `json:"old_slug_until,omitempty"`
 }
 
 // Version is an immutable uploaded build.
@@ -149,7 +150,8 @@ CREATE TABLE IF NOT EXISTS flats (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   old_slug TEXT,
-  old_slug_until INTEGER
+  old_slug_until INTEGER,
+  version_quota INTEGER CHECK(version_quota IS NULL OR version_quota >= 0)
 );
 CREATE TABLE IF NOT EXISTS versions (
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -386,20 +388,24 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	return tx.Commit()
 }
 
-const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until`
+const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota`
 
 func scanFlat(sc interface{ Scan(...any) error }) (Flat, error) {
 	var f Flat
 	var vis string
 	var created, updated int64
 	var old sql.NullString
-	var till sql.NullInt64
-	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till); err != nil {
+	var till, quota sql.NullInt64
+	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota); err != nil {
 		return f, err
 	}
 	f.Visibility = Visibility(vis)
 	f.CreatedAt, f.UpdatedAt = fromUnix(created), fromUnix(updated)
 	f.OldSlug = old.String
+	if quota.Valid {
+		n := int(quota.Int64)
+		f.VersionQuota = &n
+	}
 	if till.Valid {
 		t := fromUnix(till.Int64)
 		f.OldSlugTill = &t
@@ -576,7 +582,7 @@ func (s *Store) DeleteExpiredRedirects(ctx context.Context, now time.Time) error
 // NextVersionNumber returns the number the next saved version will get.
 func (s *Store) NextVersionNumber(ctx context.Context, flat string) (int, error) {
 	var n sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT MAX(number) FROM versions WHERE flat=?`, flat).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(number) FROM (SELECT number FROM version_numbers WHERE flat=? UNION ALL SELECT number FROM versions WHERE flat=?)`, flat, flat).Scan(&n); err != nil {
 		return 0, err
 	}
 	return int(n.Int64) + 1, nil

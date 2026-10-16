@@ -10,6 +10,16 @@ function params(a) {
   try { return JSON.parse(a.params); } catch { return {}; }
 }
 
+// An approved deletion can still need durable storage cleanup. Its decision
+// stays approved because metadata was deleted; keep the pending work visible.
+export function cleanupPending(a) {
+  let result = a.result_data;
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result); } catch { return false; }
+  }
+  return !!result?.cleanup_pending;
+}
+
 const visLabel = (v) => VISIBILITY[visibilityOf(v)].label;
 
 // describeApproval is a one-line summary for lists.
@@ -17,8 +27,9 @@ export function describeApproval(a) {
   const p = params(a);
   if (a.action === 'set_visibility') return `Make ${a.flat} ${visLabel(p.visibility).toLowerCase()}`;
   if (a.action === 'delete') return `Delete ${a.flat}`;
-  // The "publish" action saves a new version; "activate" publishes one.
-  if (a.action === 'publish') return `Save the draft of ${a.flat} as a new version (does not go live)`;
+  // Version creation and deployment remain separate approvals.
+  if (a.action === 'create_version' || a.action === 'publish') return `Save the draft of ${a.flat} as a new version (does not go live)`;
+  if (a.action === 'delete_version') return `Delete version ${p.version} of ${a.flat}`;
   if (a.action === 'activate') return `Publish version ${p.version} of ${a.flat} (put it live)`;
   if (a.action === 'rollback') return `Roll back ${a.flat} to version ${p.version}` + (p.restore_data ? ' and restore its data' : '');
   if (a.action === 'restore_data') return `Restore the data of ${a.flat}`;
@@ -78,14 +89,20 @@ export function mount(main, [id], ctx) {
     if (a.result) rows.push(['Result', a.result]);
     body.appendChild(h('dl', { class: 'facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)])));
 
+    if (cleanupPending(a)) {
+      body.appendChild(h('p', { class: 'alert alert-warn', role: 'alert', text: a.result || 'Version metadata was deleted, but storage cleanup is pending. Restart Flats before saving, creating, deploying, or previewing this flat.' }));
+    }
     const notice = a.action === 'set_visibility' ? becomingNoticeFor(p.visibility) : '';
     if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
+    if (a.action === 'delete_version' && a.status === 'pending') {
+      body.appendChild(h('p', { class: 'alert alert-warn', text: `Approving permanently deletes version ${p.version} and closes its open previews. Server data and data snapshots are kept. The live version cannot be deleted.` }));
+    }
     if (a.action === 'delete' && a.status === 'pending') {
       body.appendChild(h('p', { class: 'alert alert-warn', text: 'Approving permanently deletes the flat, its versions, data, environment variables, secrets and logs.' }));
     }
 
     if (a.status !== 'pending') {
-      body.appendChild(h('p', { class: 'muted', text: `This request was ${a.status}. Nothing else to do.` }));
+      body.appendChild(h('p', { class: 'muted', text: cleanupPending(a) ? `This request was ${a.status}. Restart Flats to finish storage cleanup.` : `This request was ${a.status}. Nothing else to do.` }));
       return;
     }
     if (!flat) {
@@ -108,14 +125,15 @@ export function mount(main, [id], ctx) {
         notice ? h('p', { class: 'alert alert-warn', text: notice }) : null,
       ],
       confirmLabel: yes ? 'Approve' : 'Reject',
-      danger: yes && (a.action === 'delete' || !!notice),
+      danger: yes && (a.action === 'delete' || a.action === 'delete_version' || !!notice),
       requireText: yes && a.action === 'delete' ? a.flat : undefined,
     });
     if (!ok) return;
     clear(errSlot);
     try {
       const res = await api.decide(a.id, yes);
-      toast(`Request ${res.status}.`, res.status === 'failed' ? 'error' : 'success');
+      if (cleanupPending(res)) toast('Request approved; storage cleanup is pending. Restart Flats before changing this flat.');
+      else toast(`Request ${res.status}.`, res.status === 'failed' ? 'error' : 'success');
     } catch (err) {
       if (ctx.alive()) errSlot.appendChild(errorPanel(err, yes ? 'Approval failed' : 'Rejection failed'));
     }

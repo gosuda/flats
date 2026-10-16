@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "host": {
     "instance_id": "0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b",
     "data_dir": "/srv/flats & data",
@@ -16,7 +16,7 @@
   },
   "system": {
     "upload_max_bytes": 1073741824,
-    "keep_versions": 0,
+    "version_quota": 0,
     "disk_quota_bytes": 0,
     "preview_ttl_seconds": 86400,
     "rate_limit_rps": 1000000,

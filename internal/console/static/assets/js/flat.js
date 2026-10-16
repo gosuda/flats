@@ -9,7 +9,7 @@
 import { h, icon, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
-import { publishVersion, saveVersion, nextVersion, previewVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
+import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
 import { hasServer } from './list.js';
 import { shareDialog } from './share.js';
@@ -60,7 +60,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
 
   const headSlot = h('div', null, loading());
   const netSlot = h('div');
-  const versionsSlot = h('div', null, loading());
+  const versionsSlot = h('div', { tabindex: '-1', 'aria-label': 'Version history' }, loading());
   const previewsSlot = h('div', null, loading());
   const envSlot = h('div', null, loading());
   const networkSlot = h('div', null, loading());
@@ -101,7 +101,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         if (serverParts()) { loadEnv(); loadSecrets(); loadNetwork(); }
         loadHostProviders();
       } else {
-        if (!isDocs()) { loadVersions(); loadPreviews(); }
+        if (!isDocs()) await Promise.all([loadVersions(), loadPreviews()]);
         logs.poll();
       }
     }
@@ -168,11 +168,58 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       netSlot,
+      isDocs() ? null : section('Version history', 'version-history', versionQuotaBlock()),
       flat.type === 'design' || flat.type === 'docs' ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, flat.type)) : null,
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()));
+  }
+
+  function versionQuotaBlock() {
+    const id = 'version-quota';
+    const input = h('input', { id, type: 'number', min: '0', step: '1', inputmode: 'numeric',
+      value: flat.version_quota == null ? '' : String(flat.version_quota),
+      placeholder: 'Follow host default', 'aria-describedby': id + '-help ' + id + '-error' });
+    const error = h('p', { id: id + '-error', class: 'small', role: 'alert' });
+    const save = h('button', { type: 'submit', class: 'btn btn-small', text: 'Save version quota' });
+    const form = h('form', { novalidate: true },
+      h('div', { class: 'setting-row' }, h('div', null,
+        h('label', { for: id, text: 'Version quota' }),
+        h('p', { id: id + '-help', class: 'muted small', text: 'Leave empty to follow the host default. 0 is unlimited. Lowering this quota keeps every existing version; new versions are refused until there is room.' })), input),
+      versionQuotaSummary(), error, h('div', { class: 'actions' }, save));
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      error.textContent = '';
+      input.removeAttribute('aria-invalid');
+      const value = input.value.trim() === '' ? null : Number(input.value);
+      if (value !== null && (!Number.isSafeInteger(value) || value < 0)) {
+        error.textContent = 'Use a whole number of 0 or more, or leave empty for the host default.';
+        input.setAttribute('aria-invalid', 'true'); input.focus(); return;
+      }
+      busy(save, async () => {
+        input.disabled = true;
+        try {
+          await api.setVersionQuota(slug, value);
+          await loadFlat();
+          page.querySelector('#version-quota')?.focus();
+          toast('Version quota saved. Existing versions were kept.', 'success');
+        } catch (err) {
+          error.textContent = err.message; input.setAttribute('aria-invalid', 'true'); input.disabled = false; input.focus();
+        } finally { input.disabled = false; }
+      });
+    });
+    return form;
+  }
+
+  function versionQuotaSummary() {
+    const count = flat.version_count ?? flat.versions ?? 0;
+    const quota = flat.effective_version_quota ?? 20;
+    const full = quota > 0 && count >= quota;
+    return h('p', { class: full ? 'alert alert-warn small' : 'muted small', role: 'status' },
+      `${plural(count, 'version')} stored · ${quota === 0 ? 'Unlimited quota' : `Quota: ${quota}`}`,
+      flat.version_quota == null ? ' (host default).' : ' (override for this flat).',
+      full ? ' The quota is full. Delete older versions or raise the quota to save another version.' : ' Versions are never deleted automatically.');
   }
 
   // --- networks ---
@@ -270,30 +317,51 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   function drawVersions(vs) {
     const draft = flat.draft && flat.draft.dirty ? flat.draft : null;
     if (!vs.length && !draft) {
-      fill(versionsSlot, h('p', { class: 'muted', text: 'No draft or saved versions yet. Agents update the draft with save_draft or save_version (MCP), or `flats deploy`.' }));
+      fill(versionsSlot, h('p', { class: 'muted', text: 'No draft or saved versions yet. Agents update the draft with save_draft or save_draft_from_dir (MCP), or `flats save-draft <slug> <dir>`.' }));
+      versionsSlot.prepend(versionQuotaSummary());
       return;
     }
     const live = flat.live_version;
     const rows = vs.map((v) => {
       const actions = h('div', { class: 'cell-actions' });
-      const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', disabled: v.pruned, 'aria-label': `Preview version ${v.number}` });
-      prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
-      actions.appendChild(prev);
-      if (v.number === live) {
-        // A page has no environment to apply.
-        if (serverParts()) actions.appendChild(redeployButton());
-      } else {
-        // Publishing puts a saved version live; an earlier one is a rollback.
-        const back = live && v.number < live;
-        const btn = h('button', {
-          type: 'button', class: 'btn btn-small' + (back ? '' : ' btn-primary'), disabled: v.pruned,
-          text: back ? `Roll back to v${v.number}` : `Publish v${v.number}`,
-          'aria-label': back ? `Roll back to version ${v.number}` : `Publish version ${v.number}`,
-        });
-        btn.addEventListener('click', () => busy(btn, async () => {
-          if (await publishVersion(flat, v.number, back ? 'rollback' : 'publish')) refresh();
-        }));
-        actions.appendChild(btn);
+      if (!v.pruned) {
+        const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': `Preview version ${v.number}` });
+        prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
+        actions.appendChild(prev);
+        if (v.number === live) {
+          // A page has no environment to apply.
+          if (serverParts()) actions.appendChild(redeployButton());
+        } else {
+          // Publishing puts a saved version live; an earlier one is a rollback.
+          const back = live && v.number < live;
+          const btn = h('button', {
+            type: 'button', class: 'btn btn-small' + (back ? '' : ' btn-primary'),
+            text: back ? `Roll back to v${v.number}` : `Publish v${v.number}`,
+            'aria-label': back ? `Roll back to version ${v.number}` : `Publish version ${v.number}`,
+          });
+          btn.addEventListener('click', () => busy(btn, async () => {
+            if (await publishVersion(flat, v.number, back ? 'rollback' : 'publish')) refresh();
+          }));
+          actions.appendChild(btn);
+        }
+        if (v.number !== live) {
+          const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete version ${v.number}` });
+          del.addEventListener('click', async () => {
+            let changed = false;
+            await busy(del, async () => {
+              changed = await deleteVersion(flat, v.number);
+              if (changed && ctx.alive()) await refresh();
+            });
+            // Native dialog restoration cannot focus a disabled invoker.
+            // Wait until busy re-enables it, and never focus an old row after
+            // a concurrent refresh or navigation removed it.
+            if (!ctx.alive()) return;
+            if (changed) versionsSlot.focus();
+            else if (page.contains(del)) del.focus();
+            else versionsSlot.focus();
+          });
+          actions.appendChild(del);
+        }
       }
       return h('tr', { class: v.number === live ? 'is-live' : '' },
         h('th', { scope: 'row' }, `v${v.number}`, versionBadge(v, live)),
@@ -306,7 +374,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           v.pruned ? h('span', { class: 'badge', text: 'files pruned', title: 'Removed by retention; cannot be deployed or previewed' }) : null),
         h('td', null, actions));
     });
-    fill(versionsSlot, h('div', { class: 'table-wrap' },
+    fill(versionsSlot, versionQuotaSummary(), h('div', { class: 'table-wrap' },
       h('table', { class: 'table table-versions' },
         h('caption', { class: 'sr-only', text: 'Draft and saved versions, newest first' }),
         h('thead', null, h('tr', null, ['Version', 'Created', 'Hash', 'Git', 'Message', 'Size', 'Actions'].map((t) => h('th', { scope: 'col', text: t })))),
@@ -316,6 +384,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // versionBadge says where a saved version stands: live now, live before,
   // or saved and never published.
   function versionBadge(v, live) {
+    if (v.pruned) return h('span', { class: 'badge', text: 'Unavailable', title: 'Version files were pruned by an earlier retention policy' });
     if (v.number === live) return h('span', { class: 'badge badge-live', text: 'Live' });
     if (v.deployed) return h('span', { class: 'badge', text: 'Previously live' });
     return h('span', { class: 'badge badge-draft', text: 'Not published', title: 'Saved, never live. Publish it to put it live.' });

@@ -164,7 +164,7 @@ func TestPinnedSettingRefusesChanges(t *testing.T) {
 	if !errors.Is(err, core.ErrConfigOverridden) || !errors.Is(err, core.ErrConflict) || core.ErrorCategory(err) != "config_overridden" {
 		t.Fatalf("pinned change: %v", err)
 	}
-	if all, _ := svc.Settings(ctx); all[core.SetKeepVersions] != "10" {
+	if all, _ := svc.Settings(ctx); all[core.SetKeepVersions] != "20" {
 		t.Fatal("a refused update applied another setting")
 	}
 	if _, err := svc.UpdateSettings(ctx, map[string]string{core.SetPortalRelays: "", core.SetKeepVersions: "2"}); err != nil {

@@ -177,7 +177,7 @@ func TestMixedTypeContentNeverGoesLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	unlock = s.lock("site")
-	res, err := s.requestFrozen(ctx, "site", "publish", publishParams{Revision: rev.Revision, Hash: rev.Hash, BaseVersion: f.LiveVersion, Visibility: string(f.Visibility.Canonical()), Providers: key}, ViaAPI, "")
+	res, err := s.requestFrozen(ctx, "site", "publish", publishParams{Revision: rev.Revision, Hash: rev.Hash, BaseVersion: f.LiveVersion, ExpectedLive: f.LiveVersion, Visibility: string(f.Visibility.Canonical()), Providers: key}, ViaAPI, "")
 	unlock()
 	if err != nil {
 		t.Fatal(err)

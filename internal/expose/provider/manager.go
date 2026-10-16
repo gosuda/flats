@@ -109,28 +109,47 @@ type QuickNet interface {
 	Close() error
 }
 
-// NetbirdNet is the NetBird backend: the host's one peer serves a flat's
-// Private route inside the mesh (netbird) and a Public route through
-// NetBird's reverse proxy (netbird-expose). A non-nil value is not permission.
+// NetbirdNet is the NetBird backend: every flat runs on its own peer, named
+// after its slug, which serves the flat's Private route inside the mesh
+// (netbird) and its Public route through NetBird's reverse proxy
+// (netbird-expose). Console domains run on peers of their own. A non-nil
+// value is not permission.
 type NetbirdNet interface {
 	ServePrivate(ctx context.Context, host string, h http.Handler) (string, error)
-	// StopPrivate stops serving host and keeps its port reserved.
+	// StopPrivate stops serving host; its peer keeps its identity.
 	StopPrivate(host string) error
-	// RetirePrivate stops host and releases its port.
+	// RetirePrivate stops host and, once its peer serves nothing else,
+	// deletes the peer's identity.
 	RetirePrivate(host string) error
 	PrivateURL(host string) string
 	PrivateStatus() core.NetStatus
 
 	ServePublic(ctx context.Context, slug string, h http.Handler) (string, error)
-	// StopPublic ends slug's expose session and keeps its port reserved.
+	// StopPublic ends slug's expose session; its peer keeps its identity.
 	StopPublic(slug string) error
-	// RetirePublic ends slug's expose session and releases its port.
+	// RetirePublic ends slug's expose session and retires its peer as
+	// RetirePrivate does.
 	RetirePublic(slug string) error
 	PublicURL(slug string) string
 	PublicStatus() core.NetStatus
 
-	// Account identifies the enrolled peer without revealing a secret.
-	Account() string
+	// ServeConsole serves a console domain on a peer of that name.
+	ServeConsole(ctx context.Context, name string, h http.Handler) (string, error)
+	StopConsole(name string) error
+	// RetireConsole stops a console domain and deletes its peer identity.
+	RetireConsole(name string) error
+	ConsoleURL(name string) string
+	ConsoleStatus() core.NetStatus
+	// Hostnames returns the names console domain name's peer answers to
+	// (its extra label and primary FQDN in NetBird DNS, and its overlay IP),
+	// or nil while it does not run.
+	Hostnames(name string) []string
+	// IdentityForIP returns the FQDN of the NetBird peer at ip as console
+	// domain name's peer sees it, or "".
+	IdentityForIP(name, ip string) string
+
+	// PeerCount reports how many peers run.
+	PeerCount() int
 	Close() error
 }
 
@@ -198,7 +217,6 @@ type Manager struct {
 	zrok          ZrokNet
 	cfquick       QuickNet
 	netbird       NetbirdNet
-	nmu           sync.RWMutex // read-held across a NetBird open; DetachNetbird holds it to write
 	zmu           sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	tailscaleDir  string
 	zrokDir       string
@@ -328,25 +346,6 @@ func (m *Manager) AttachNetbird(n NetbirdNet) {
 	if m.netbird == nil {
 		m.netbird = n
 	}
-}
-
-// DetachNetbird removes the NetBird backend, for a peer disconnected while
-// the host runs. It refuses while any NetBird route is registered.
-func (m *Manager) DetachNetbird() bool {
-	m.nmu.Lock() // waits for NetBird opens in flight
-	defer m.nmu.Unlock()
-	m.mu.Lock()
-	for _, r := range m.routes {
-		if r.provider == Netbird || r.provider == NetbirdExpose {
-			m.mu.Unlock()
-			return false
-		}
-	}
-	m.mu.Unlock()
-	m.bmu.Lock()
-	m.netbird = nil
-	m.bmu.Unlock()
-	return true
 }
 
 // AttachTailnet configures the Tailscale backend once, for a provider the
@@ -865,9 +864,6 @@ func (m *Manager) openNetbird(ctx context.Context, req ExposureRequest) (Exposur
 	if !m.allows(Netbird) {
 		return refused(Netbird, "host permission absent"), fmt.Errorf("%w: netbird", ErrProviderNotPermitted)
 	}
-	// Hold the open against DetachNetbird from Serve through registration.
-	m.nmu.RLock()
-	defer m.nmu.RUnlock()
 	n := m.netbirdNet()
 	if n == nil {
 		return refused(Netbird, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird", ErrNotConfigured)
@@ -982,8 +978,6 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		return ep, nil
 	case NetbirdExpose:
-		m.nmu.RLock()
-		defer m.nmu.RUnlock()
 		n := m.netbirdNet()
 		if n == nil {
 			return refused(NetbirdExpose, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird-expose", ErrNotConfigured)

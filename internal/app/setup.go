@@ -695,6 +695,9 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 
 	for _, k := range systemSettings {
 		v, ok := old.Settings[k]
+		if k == core.SetVersionQuota && !ok {
+			v, ok = old.Settings["keep_versions"]
+		}
 		if !ok {
 			continue
 		}
@@ -708,7 +711,7 @@ func planLegacy(dataDir string, info store.Info, o Options, instanceID string) (
 			note("setting %s=%s: %s; %s is %d", k, v, why, key, c)
 			n = c
 		}
-		if strconv.FormatInt(n, 10) == core.Defaults[k] {
+		if k != core.SetVersionQuota && strconv.FormatInt(n, 10) == core.Defaults[k] {
 			continue
 		}
 		if err := set(key, strconv.FormatInt(n, 10), fmt.Sprintf("setting %s=%s", k, v)); err != nil {

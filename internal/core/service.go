@@ -222,6 +222,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err := s.migrateLegacyDrafts(ctx); err != nil {
 		return nil, err
 	}
+	if err := s.recoverVersionDeletions(ctx); err != nil {
+		return nil, err
+	}
 	if err := s.recoverRestoreJournals(ctx); err != nil {
 		return nil, err
 	}
@@ -636,13 +639,16 @@ type FlatView struct {
 	// PrivateState is the private host's state once it is served: "ready"
 	// when the URL answers, "starting" while the node joins the tailnet or
 	// waits for its HTTPS certificate (PrivateDetail says which).
-	PrivateState  string         `json:"private_state,omitempty"`
-	PrivateDetail string         `json:"private_detail,omitempty"`
-	PublicURL     string         `json:"public_url,omitempty"`
-	PublicNotice  string         `json:"public_notice,omitempty"`
-	Live          *store.Version `json:"live,omitempty"`
-	Versions      int            `json:"versions"`
-	LatestVersion int            `json:"latest_version,omitempty"`
+	PrivateState          string         `json:"private_state,omitempty"`
+	PrivateDetail         string         `json:"private_detail,omitempty"`
+	PublicURL             string         `json:"public_url,omitempty"`
+	PublicNotice          string         `json:"public_notice,omitempty"`
+	Live                  *store.Version `json:"live,omitempty"`
+	Versions              int            `json:"versions"`
+	EffectiveVersionQuota int            `json:"effective_version_quota"`
+	VersionCount          int            `json:"version_count"`
+	NextVersion           int            `json:"next_version"`
+	LatestVersion         int            `json:"latest_version,omitempty"`
 	// LatestDeployed reports whether LatestVersion was ever made live. False
 	// means the newest saved version still waits to be published.
 	LatestDeployed bool   `json:"latest_deployed,omitempty"`
@@ -684,6 +690,8 @@ const PendingPublicAccessNotice = "If approved, this flat becomes Public: anyone
 
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
+	v.EffectiveVersionQuota = s.versionQuota(f)
+	v.NextVersion, _ = s.st.NextVersionNumber(ctx, f.Slug)
 	s.mu.Lock()
 	lf := s.live[f.Slug]
 	s.mu.Unlock()
@@ -767,6 +775,11 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	var latestManifest json.RawMessage
 	if vs, err := s.st.ListVersions(ctx, f.Slug); err == nil {
 		v.Versions = len(vs)
+		for _, version := range vs {
+			if !version.Pruned {
+				v.VersionCount++
+			}
+		}
 		if len(vs) > 0 {
 			v.LatestVersion = vs[0].Number
 			latestManifest = vs[0].Manifest
@@ -974,6 +987,18 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 	if err := slug.Validate(slugName); err != nil {
 		return store.Version{}, invalid(err)
 	}
+	unlock, err := s.lockStorage(slugName)
+	if err != nil {
+		return store.Version{}, err
+	}
+	defer unlock()
+	return s.saveVersionLocked(ctx, slugName, files, meta, via)
+}
+
+// saveVersionLocked validates and saves a complete bundle while the caller
+// holds the flat's storage lock. Partial document saves assemble their source
+// bundle under that same lock, so simultaneous saves cannot lose sibling files.
+func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files []bundle.File, meta SaveMeta, via Via) (store.Version, error) {
 	files, err := bundle.FromFiles(files, bundle.Limits{MaxBytes: s.UploadLimit()})
 	if err != nil {
 		return store.Version{}, err
@@ -989,11 +1014,6 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 		return store.Version{}, ErrDesignUnversioned
 	}
 	docs := m.Type == contenttype.Docs
-	unlock, err := s.lockStorage(slugName)
-	if err != nil {
-		return store.Version{}, err
-	}
-	defer unlock()
 	if f, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
 		if _, err := s.createFlatLocked(ctx, slugName, m.Name, via); err != nil && !errors.Is(err, store.ErrExists) {
 			return store.Version{}, err
@@ -1009,7 +1029,11 @@ func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bund
 	}
 	if quota := s.diskQuota(); quota > 0 {
 		if used := dirSize(s.flatDir(slugName)); used+size > quota {
-			return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Message: fmt.Sprintf("flat would use %d bytes, over its %d-byte disk quota", used+size, quota), Fix: "delete old versions/data, or raise the per-flat disk quota in system settings"}}}
+			fix := "delete old versions/data, or raise the per-flat disk quota in system settings"
+			if docs {
+				fix = documentDiskQuotaFix
+			}
+			return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Message: fmt.Sprintf("flat would use %d bytes, over its %d-byte disk quota", used+size, quota), Fix: fix}}}
 		}
 	}
 	v, err := s.saveDraftLocked(ctx, slugName, files, meta, via)
@@ -1082,42 +1106,33 @@ func (s *Service) VersionFile(slugName string, n int, rel string) (string, error
 }
 
 func (s *Service) pruneVersions(ctx context.Context, slugName string) {
-	keep := s.keepVersions()
-	prune, err := s.prunableVersions(ctx, slugName, keep, true)
+	prune, err := s.prunableVersions(ctx, slugName, true)
 	if err != nil {
 		return
 	}
 	for _, n := range prune {
 		if err := os.RemoveAll(s.versionDir(slugName, n)); err == nil {
 			_ = s.st.MarkPruned(ctx, slugName, n)
-			s.Event(ctx, slugName, "info", "retention", fmt.Sprintf("pruned files of version %d (keeping the newest %d plus the live version)", n, keep), nil)
+			s.Event(ctx, slugName, "info", "retention", fmt.Sprintf("pruned internal backing bundle %d (keeping the live and previous bundles)", n), nil)
 		}
 	}
 }
 
-// prunableVersions returns the versions of a flat whose files pruning
-// removes when keep_versions is keep, newest first. 0 prunes nothing. The
-// live version is kept on top of keep, and so are the versions of open
-// previews when keepPreviewed is set.
-func (s *Service) prunableVersions(ctx context.Context, slugName string, keep int, keepPreviewed bool) ([]int, error) {
+// prunableVersions returns obsolete internal backing bundles for Revision-model
+// flats. It retains the live bundle, the newest non-live bundle, and any pinned
+// bundles. User-facing Version-model snapshots are never automatically pruned.
+func (s *Service) prunableVersions(ctx context.Context, slugName string, keepPreviewed bool) ([]int, error) {
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return nil, err
 	}
-	// A document has no versions to go back to, so keep_versions does not
-	// apply: keep the running bundle and the one before it, which a draining
-	// runtime may still serve assets from.
-	// Documents and designs (Revision model) have no versions to go back
-	// to; they keep the running bundle and the one before it.
+	// Documents and designs keep internal bundles for their running and
+	// draining runtimes; their user-facing history uses Revisions.
 	t, err := s.flatType(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	docs := contenttype.RevisionModel(t)
-	if docs {
-		keep = 1
-	}
-	if keep <= 0 {
+	if !contenttype.RevisionModel(t) {
 		return nil, nil
 	}
 	vs, err := s.st.ListVersions(ctx, slugName)
@@ -1132,9 +1147,8 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 			}
 		}
 	}
-	// A version an open deploy, rollback or restore approval names is kept
-	// whether or not previews count, so a retention-impact report matches
-	// what pruning really removes.
+	// Preserve any historical approval pins conservatively even though new
+	// Revision-model operations do not create these approvals.
 	for _, st := range []string{"pending", "applying"} {
 		if aps, err := s.st.ListApprovals(ctx, st); err == nil {
 			for _, a := range aps {
@@ -1150,27 +1164,14 @@ func (s *Service) prunableVersions(ctx context.Context, slugName string, keep in
 			}
 		}
 	}
-	// A saved website or page version that was never deployed is never
-	// pruned: versions are not deleted automatically before anyone could
-	// deploy them (docs/spec/content-models.md). keep_versions still bounds
-	// deployed history until version quotas replace it.
-	var deployed map[int]bool
-	if !docs {
-		if deployed, err = s.st.DeployedVersions(ctx, slugName); err != nil {
-			return nil, err
-		}
-	}
 	var prune []int
 	kept := 0
 	for _, v := range vs { // newest first
-		// The live, previewed and pending-approval versions are kept on top of keep_versions.
+		// Pinned bundles do not consume the one previous-bundle allowance.
 		if v.Pruned || v.Number == f.LiveVersion || inPreview[v.Number] {
 			continue
 		}
-		if !docs && !deployed[v.Number] {
-			continue
-		}
-		if kept < keep {
+		if kept < 1 {
 			kept++
 			continue
 		}
@@ -1358,7 +1359,7 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	}
 	lifecyclePhase(ctx, "after_health", slugName, approvalID)
 	if snap, serr := s.snapshotDB(slugName, n, f.LiveVersion); serr != nil {
-		s.Event(ctx, slugName, "warn", "snapshot", "could not snapshot the database before deploy: "+serr.Error(), nil)
+		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: fmt.Errorf("%w: %w", ErrSnapshotFailed, serr), Data: dataIsolated, DataImpact: "none", HealthData: "isolated_copy", LiveData: "untouched"}
 	} else if snap != "" {
 		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
 	}
@@ -1469,18 +1470,11 @@ func (s *Service) rollbackLocked(ctx context.Context, f store.Flat, to int, rest
 
 // previousLive returns the version that was live before the current one.
 func (s *Service) previousLive(ctx context.Context, f store.Flat) (int, error) {
-	hist, err := s.st.ListDeployments(ctx, f.Slug, 200)
-	if err != nil {
-		return 0, err
+	n, err := s.st.PreviousAvailableDeployment(ctx, f.Slug, f.LiveVersion)
+	if errors.Is(err, store.ErrNotFound) {
+		return 0, fmt.Errorf("%w: there is no available earlier deployed version to roll back to", ErrConflict)
 	}
-	for _, d := range hist {
-		// A redeploy of the live version (to apply secrets) records itself
-		// as its previous version; it says nothing about what came before.
-		if d.Version == f.LiveVersion && d.Previous > 0 && d.Previous != d.Version {
-			return d.Previous, nil
-		}
-	}
-	return 0, fmt.Errorf("%w: there is no earlier deployed version to roll back to", ErrConflict)
+	return n, err
 }
 
 // RestoreSnapshot puts back database snapshot name (see Snapshots) and
@@ -1701,16 +1695,17 @@ func (s *Service) Deployments(ctx context.Context, slugName string) ([]store.Dep
 
 // ActionResult is returned by actions that may need approval.
 type ActionResult struct {
-	Status      string          `json:"status"` // done | pending_approval
-	Approval    *store.Approval `json:"approval,omitempty"`
-	ApprovalURL string          `json:"approval_url,omitempty"`
-	Flat        *FlatView       `json:"flat,omitempty"`
-	Version     int             `json:"version,omitempty"`
-	Notice      string          `json:"notice,omitempty"`
-	Message     string          `json:"message"`
-	DataImpact  string          `json:"data_impact,omitempty"`
-	HealthData  string          `json:"health_data,omitempty"`
-	LiveData    string          `json:"live_data,omitempty"`
+	Status         string          `json:"status"` // done | pending_approval | cleanup_pending
+	CleanupPending bool            `json:"cleanup_pending,omitempty"`
+	Approval       *store.Approval `json:"approval,omitempty"`
+	ApprovalURL    string          `json:"approval_url,omitempty"`
+	Flat           *FlatView       `json:"flat,omitempty"`
+	Version        int             `json:"version,omitempty"`
+	Notice         string          `json:"notice,omitempty"`
+	Message        string          `json:"message"`
+	DataImpact     string          `json:"data_impact,omitempty"`
+	HealthData     string          `json:"health_data,omitempty"`
+	LiveData       string          `json:"live_data,omitempty"`
 }
 
 func (s *Service) requestApproval(ctx context.Context, slugName, action string, params any, via Via, reason string) (ActionResult, error) {

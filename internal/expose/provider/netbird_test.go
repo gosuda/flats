@@ -72,8 +72,17 @@ func (f *fakeNetbird) RetirePublic(slug string) error {
 }
 func (f *fakeNetbird) PublicURL(slug string) string { return f.net.URL("nbx-" + slug) }
 func (f *fakeNetbird) PublicStatus() core.NetStatus { return f.status("nbx-", "netbird-expose") }
-func (f *fakeNetbird) Account() string              { return "peer-fingerprint" }
-func (f *fakeNetbird) Close() error                 { return nil }
+func (f *fakeNetbird) ServeConsole(context.Context, string, http.Handler) (string, error) {
+	return "", errors.New("not used")
+}
+func (f *fakeNetbird) StopConsole(string) error            { return nil }
+func (f *fakeNetbird) RetireConsole(string) error          { return nil }
+func (f *fakeNetbird) ConsoleURL(string) string            { return "" }
+func (f *fakeNetbird) ConsoleStatus() core.NetStatus       { return core.NetStatus{} }
+func (f *fakeNetbird) Hostnames(string) []string           { return nil }
+func (f *fakeNetbird) IdentityForIP(string, string) string { return "" }
+func (f *fakeNetbird) PeerCount() int                      { return 0 }
+func (f *fakeNetbird) Close() error                        { return nil }
 
 func (f *fakeNetbird) status(prefix, kind string) core.NetStatus {
 	st := f.net.Status()
@@ -275,24 +284,6 @@ func TestNetbirdPolicyCountsGrantedBackendOnly(t *testing.T) {
 	}
 }
 
-func TestDetachNetbirdRefusesWhileRoutesExist(t *testing.T) {
-	n := newFakeNetbird(t)
-	m := netbirdManager(t, []ID{Netbird}, n)
-	if _, err := m.ServeExposure(context.Background(), ExposureRequest{Slug: "notes", Host: "notes", Visibility: "private",
-		Audience: AudienceCurrent, Handler: text("private"), Permitted: []ID{Netbird}}); err != nil {
-		t.Fatal(err)
-	}
-	if m.DetachNetbird() {
-		t.Fatal("detached with a registered route")
-	}
-	if err := m.StopProviderRoutes(context.Background(), "notes", Netbird); err != nil {
-		t.Fatal(err)
-	}
-	if !m.DetachNetbird() {
-		t.Fatal("could not detach without routes")
-	}
-}
-
 type retireDriver struct {
 	NetbirdDriver
 	dirs, hosts []string
@@ -304,8 +295,8 @@ func (d *retireDriver) RetireStored(dir, host string) error {
 	return d.err
 }
 
-// Deleting a flat while no NetBird backend runs still releases the ports an
-// earlier run recorded for it, through the linked driver.
+// Deleting a flat while no NetBird backend runs still deletes the peer
+// identity an earlier run kept for it, through the linked driver.
 func TestStopSlugRetiresStoredNetbirdPortsWithoutBackend(t *testing.T) {
 	d := &retireDriver{}
 	RegisterNetbird(d)

@@ -77,7 +77,7 @@ func TestLogsLimitRange(t *testing.T) {
 
 func TestDeployArchiveFile(t *testing.T) {
 	api, srv := newFakeAPI(t)
-	api.handle("POST /api/flats/blog/versions", 201, `{"version": {"flat": "blog", "number": 1, "files": 1, "size": 5}}`)
+	api.handle("POST /api/flats/blog/draft", 201, `{"draft":{"flat":"blog","revision":1,"hash":"saved-one","files":1,"size":5}}`)
 	site := t.TempDir()
 	writeTree(t, site, map[string]string{"index.html": "hello"})
 	tgz, _, err := packDir(site, 0)
@@ -88,10 +88,10 @@ func TestDeployArchiveFile(t *testing.T) {
 	if err := os.WriteFile(archive, tgz, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if r := run(t, srv.URL, "", "deploy", archive, "--flat", "blog", "--save-only"); r.code != 0 {
+	if r := run(t, srv.URL, "", "save-draft", "blog", archive); r.code != 0 {
 		t.Fatalf("exit %d: %s", r.code, r.stderr)
 	}
-	if got := api.last("POST /api/flats/blog/versions").body; !bytes.Equal(got, tgz) {
+	if got := api.last("POST /api/flats/blog/draft").body; !bytes.Equal(got, tgz) {
 		t.Fatal("archive was not sent as is")
 	}
 
@@ -104,7 +104,7 @@ func TestDeployArchiveFile(t *testing.T) {
 	api.mu.Lock()
 	before := len(api.reqs)
 	api.mu.Unlock()
-	r := run(t, srv.URL, "", "deploy", big, "--flat", "blog")
+	r := run(t, srv.URL, "", "save-draft", "blog", big)
 	if r.code != ExitError || !strings.Contains(r.stderr, "upload limit") {
 		t.Fatalf("big archive: exit %d %s", r.code, r.stderr)
 	}

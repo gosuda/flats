@@ -6,194 +6,58 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
 )
 
+// Files of the single shared peer earlier versions ran for every flat.
 const (
-	accountFile = "account.json"
-	configFile  = "netbird.json"     // embed's persisted config (holds the peer private key)
-	dnsFile     = "netbird-dns.json" // embed's state file
-	portsFile   = "ports.json"
-
-	portMin = 21000
-	portMax = 21999
+	legacyAccountFile = "account.json"
+	legacyConfigFile  = "netbird.json"
+	legacyDNSFile     = "netbird-dns.json"
+	legacyPortsFile   = "ports.json"
 )
 
-// Account describes the enrolled NetBird peer. It holds no secrets.
-type Account struct {
-	// ManagementURL is the NetBird management server ("" is the NetBird
-	// default).
+// LegacyPeer describes the shared peer an earlier version registered.
+type LegacyPeer struct {
 	ManagementURL string `json:"management_url"`
 	DeviceName    string `json:"device_name"`
-	// Fingerprint identifies the peer (a hash of its WireGuard public key).
-	Fingerprint string `json:"fingerprint"`
 }
 
-// ErrNotConnected is returned by Serve calls while no NetBird peer is enrolled.
-var ErrNotConnected = errors.New("netbird: not connected; enroll this host with a setup key first")
-
-// LoadAccount reads the account enrolled in dir. ok is false when none is.
-func LoadAccount(dir string) (a Account, ok bool, err error) {
-	b, err := os.ReadFile(filepath.Join(dir, accountFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return Account{}, false, nil
+// CleanupLegacy deletes the local state of the shared peer earlier versions
+// ran (identity, account record, DNS state and port records) and returns
+// what it was, so the operator can delete it in the NetBird dashboard: the
+// embedded client cannot deregister a peer. found is false when there was
+// none. Every removal is attempted before an error is returned.
+func CleanupLegacy(dir string) (p LegacyPeer, found bool, err error) {
+	b, rerr := os.ReadFile(filepath.Join(dir, legacyAccountFile))
+	if rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return LegacyPeer{}, false, rerr
 	}
-	if err != nil {
-		return Account{}, false, err
+	if rerr == nil {
+		found = true
+		_ = json.Unmarshal(b, &p) // an unreadable record still means a peer existed
+	} else if _, serr := os.Stat(filepath.Join(dir, legacyConfigFile)); serr == nil {
+		found = true // an identity without its account record
 	}
-	if err := json.Unmarshal(b, &a); err != nil || a.Fingerprint == "" {
-		return Account{}, false, fmt.Errorf("unreadable %s", filepath.Join(dir, accountFile))
-	}
-	if _, err := os.Stat(filepath.Join(dir, configFile)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Account{}, false, nil // account without identity: not usable
+	var errs []error
+	for _, name := range []string{legacyAccountFile, legacyConfigFile, legacyDNSFile, legacyPortsFile} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
 		}
-		return Account{}, false, err
 	}
-	return a, true, nil
+	if len(errs) > 0 {
+		return p, found, fmt.Errorf("netbird: remove the shared peer's state: %w", errors.Join(errs...))
+	}
+	return p, found, nil
 }
 
-func writeJSON(path string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	_, werr := tmp.Write(append(b, '\n'))
-	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o600)); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return nil
-}
-
-// ports maps "private/<host>" and "public/<slug>" to the overlay TCP port
-// reserved for it. Both roles share one pool so a Public flat's private
-// route never collides with its public listener.
-//
-// A retired public port is quarantined under "quarantine/<port>", whose value
-// is the Unix time it may be reused. NetBird's expose termination is
-// best-effort (the client only logs a failed StopExpose), so the proxy may keep
-// forwarding to that port until the service expires on the management side.
-// Reusing the port at once could put another flat behind the old public URL.
-type ports map[string]int
-
-// portsMu guards ports.json across every Net and RetireStored.
-var portsMu sync.Mutex
-
-// RetireStored releases host's recorded ports when no Net is running, for a
-// flat deleted while NetBird is off: the private port is freed and the public
-// one quarantined, as Retire does. A host with no record is not an error.
-func RetireStored(dir, host string) error {
-	portsMu.Lock()
-	defer portsMu.Unlock()
-	p, err := readPorts(dir)
-	if err != nil {
-		return err
-	}
-	changed := false
-	if _, ok := p[key(rolePrivate, host)]; ok {
-		delete(p, key(rolePrivate, host))
-		changed = true
-	}
-	if port, ok := p[key(rolePublic, host)]; ok {
-		delete(p, key(rolePublic, host))
-		p.quarantine(port, time.Now())
-		changed = true
-	}
-	if !changed {
+// RetireStored deletes name's peer identity when no Net is running, for a
+// flat deleted while NetBird is off. A name without a peer is not an error.
+func RetireStored(dir, name string) error {
+	if !validName(name) {
 		return nil
 	}
-	return writeJSON(filepath.Join(dir, portsFile), p)
-}
-
-const quarantinePrefix = "quarantine/"
-
-// quarantineTTL is how long a retired public port stays unavailable.
-var quarantineTTL = 24 * time.Hour
-
-// quarantinedPort parses a quarantine key.
-func quarantinedPort(key string) (int, bool) {
-	s, ok := strings.CutPrefix(key, quarantinePrefix)
-	if !ok {
-		return 0, false
+	if err := os.RemoveAll(peerDir(dir, name)); err != nil {
+		return fmt.Errorf("netbird: %s: delete the peer identity: %w", name, err)
 	}
-	v, err := strconv.Atoi(s)
-	return v, err == nil
-}
-
-// quarantine keeps port out of the pool until now+quarantineTTL.
-func (p ports) quarantine(port int, now time.Time) {
-	p[quarantinePrefix+strconv.Itoa(port)] = int(now.Add(quarantineTTL).Unix())
-}
-
-// expire drops quarantines that ended and reports whether any did.
-func (p ports) expire(now time.Time) bool {
-	changed := false
-	for k, until := range p {
-		if _, ok := quarantinedPort(k); ok && int64(until) <= now.Unix() {
-			delete(p, k)
-			changed = true
-		}
-	}
-	return changed
-}
-
-func readPorts(dir string) (ports, error) {
-	b, err := os.ReadFile(filepath.Join(dir, portsFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return ports{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	p := ports{}
-	if err := json.Unmarshal(b, &p); err != nil {
-		return nil, fmt.Errorf("unreadable %s", filepath.Join(dir, portsFile))
-	}
-	return p, nil
-}
-
-// allocate returns key's port, reserving the lowest free one if needed.
-func (p ports) allocate(key string) (port int, added bool, err error) {
-	if v, ok := p[key]; ok {
-		return v, false, nil
-	}
-	p.expire(time.Now())
-	used := make([]int, 0, len(p))
-	for k, v := range p {
-		if q, ok := quarantinedPort(k); ok {
-			used = append(used, q)
-			continue
-		}
-		used = append(used, v)
-	}
-	sort.Ints(used)
-	next := portMin
-	for _, v := range used {
-		if v == next {
-			next++
-		}
-	}
-	if next > portMax {
-		return 0, false, fmt.Errorf("no free overlay port in %d-%d", portMin, portMax)
-	}
-	p[key] = next
-	return next, true, nil
+	return nil
 }

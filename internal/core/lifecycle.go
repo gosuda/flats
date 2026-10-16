@@ -43,11 +43,12 @@ func (e *PendingApproval) Error() string {
 func (e *PendingApproval) Unwrap() error { return ErrPending }
 
 type publishParams struct {
-	Revision    int    `json:"revision"`
-	Hash        string `json:"hash"`
-	BaseVersion int    `json:"base_version"`
-	Visibility  string `json:"visibility"`
-	Providers   string `json:"providers"`
+	Revision     int    `json:"revision"`
+	Hash         string `json:"hash"`
+	BaseVersion  int    `json:"base_version"`
+	ExpectedLive int    `json:"expected_live"`
+	Visibility   string `json:"visibility"`
+	Providers    string `json:"providers"`
 }
 
 type activateParams struct {
@@ -329,10 +330,10 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 // Only the console may call it. It does not publish the flat or change visibility.
 //
 // A revocation stops the provider's routes before the permission is removed.
-// A grant is committed first; a Tailscale grant is then applied to the live
-// runtime (see applyProviderGrant), so its route opens without a deploy or
+// A grant is committed first, then applied to the live runtime when visibility
+// permits that provider (see applyProviderGrant), without a deploy or
 // restart. If that route fails to open, the grant stays recorded (a repeated
-// grant, the next deploy, visibility change or restart retries it), an
+// grant, the next deploy or restart retries it), an
 // exposure error event is logged and the returned error wraps
 // ErrProviderNotReady.
 func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider string, permitted bool, via Via) error {
@@ -366,23 +367,66 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 	}
 	if err := s.applyProviderGrant(ctx, f, ProviderID(provider)); err != nil {
 		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but its route did not open: %v", provider, err), nil)
-		return fmt.Errorf("%w: %s is permitted, but its route did not open (retried on the next deploy, visibility change or restart): %v", ErrProviderNotReady, provider, err)
+		return fmt.Errorf("%w: %s is permitted, but its route did not open (allow this provider again, deploy or restart to retry): %v", ErrProviderNotReady, provider, err)
 	}
 	return nil
 }
 
-// applyProviderGrant opens the current route a fresh grant adds without a new
-// approval: Private Tailscale for a flat with a live runtime. Granting Portal
-// or Funnel opens nothing here, so a grant alone never widens public
-// exposure; on a Private flat they cannot serve, and on a Public flat they are
-// served when ensureExposure next runs (redeploy, approved transition or host
-// restart). The legacy backend serves its private host whatever the grant, so
-// it needs no re-run. Only the Tailscale endpoint decides success; a sibling
-// route's error is logged, not returned. Rename aliases keep their routes
-// until the next restart re-serves them.
+// applyProviderGrant opens the explicitly granted current route on a live flat:
+// private mesh providers may serve either visibility; public providers may
+// serve only an already Public flat. The legacy backend needs no re-run.
+// Only the granted endpoint decides success; a sibling route's error is logged,
+// not returned. Rename aliases keep their routes until the next restart.
 func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
+	publicGrant := PublicProvider(provider) && f.Visibility.Public()
+	if !PrivateMeshProvider(provider) && !publicGrant {
+		return nil
+	}
+	return s.reapplyExposure(ctx, f, provider, publicGrant)
+}
+
+// RetryProviderRoutes opens again, as a grant does, the routes of every
+// running flat that allows mesh (or, for a Public flat that does not, the
+// approved public routes of provider public), for a key registered while the
+// host runs: routes that failed for want of it open now. A public route is
+// only retried when the flat's approved exposure already used it, so this
+// never publishes anything new. Failures are recorded as flat events.
+func (s *Service) RetryProviderRoutes(ctx context.Context, mesh, public ProviderID) {
+	flats, err := s.st.ListFlats(ctx)
+	if err != nil {
+		return
+	}
+	for _, f := range flats {
+		permitted, err := s.permittedIDs(ctx, f.Slug)
+		if err != nil {
+			continue
+		}
+		p := mesh
+		if !slices.Contains(permitted, mesh) {
+			if !slices.Contains(permitted, public) || !f.Visibility.Public() {
+				continue
+			}
+			p = public
+		}
+		unlock := s.lock(f.Slug)
+		cur, err := s.st.GetFlat(ctx, f.Slug)
+		if err == nil {
+			err = s.reapplyExposure(ctx, cur, p, false)
+		}
+		unlock()
+		if err != nil {
+			s.Event(ctx, f.Slug, "warn", "exposure", fmt.Sprintf("retrying %s after a key change: %v", p, err), nil)
+		}
+	}
+}
+
+// reapplyExposure re-serves f's current private routes, and the public
+// routes its approved exposure already uses, and reports whether provider's
+// route opened. Only an explicit public grant may add the provider to that set;
+// a key-change retry must leave publicGrant false.
+func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider ProviderID, publicGrant bool) error {
 	ln, ok := s.lifecycleNet()
-	if !ok || !PrivateMeshProvider(provider) || s.state(f.Slug).cur.Load() == nil {
+	if !ok || s.state(f.Slug).cur.Load() == nil {
 		return nil
 	}
 	permitted, err := s.permittedIDs(ctx, f.Slug)
@@ -396,12 +440,12 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 	if f.Visibility.Public() {
 		// The provider manager records one status per host, so re-issue the
 		// public request to keep the public endpoints observable, limited to
-		// the public providers the last exposure already used. Degraded,
+		// the explicitly granted provider and those the last exposure used. Degraded,
 		// unavailable and failed endpoints stay in that request: re-serving a
 		// registered route is idempotent, and a provider whose last open
 		// failed is retried as part of the approved exposure, as a redeploy
-		// or restart would. Only a stopped route is left out, so a grant
-		// never reopens one.
+		// or restart would. A stopped sibling is left out; explicitly granting
+		// that provider again may reopen it.
 		observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
 		if !ok {
 			return errors.New("cannot read the current public routes")
@@ -411,6 +455,9 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 			return fmt.Errorf("read current routes: %w", err)
 		}
 		serving := req.Permitted
+		if publicGrant {
+			serving = append(serving, provider)
+		}
 		for _, ep := range status.Endpoints {
 			if PublicProvider(ep.Provider) && ep.Audience == AudienceCurrent && ep.Host == f.Slug &&
 				slices.Contains(permitted, ep.Provider) && !slices.Contains(serving, ep.Provider) &&
@@ -420,6 +467,9 @@ func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider
 		}
 		if len(serving) > len(req.Permitted) {
 			req.Visibility, req.Handler, req.PrivateHandler, req.Permitted = "public", s.siteHandler(f.Slug, true), s.siteHandler(f.Slug, false), serving
+			if req.Hidden, err = s.portalHidden(ctx, f.Slug); err != nil {
+				return err
+			}
 		}
 	}
 	res, err := ln.ServeExposure(ctx, req)
@@ -471,10 +521,16 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	var receipt ApprovalExecution
 	if json.Unmarshal(a.ResultData, &receipt) == nil && receipt.Status == "applied" {
 		receipt.Status = "approved"
+		if a.Action == "delete_version" {
+			receipt.CleanupPending = false
+		}
 		raw, _ := json.Marshal(receipt)
 		msg := "visibility applied"
-		if a.Action == "publish" && receipt.Version > 0 {
+		if (a.Action == "publish" || a.Action == "create_version") && receipt.Version > 0 {
 			msg = fmt.Sprintf("saved version %d", receipt.Version)
+		}
+		if a.Action == "delete_version" {
+			msg = fmt.Sprintf("deleted version %d", receipt.Version)
 		}
 		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err
@@ -509,7 +565,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	if err != nil {
 		status, result = "failed", err.Error()
 	}
-	dto := ApprovalExecution{Status: status, Version: res.Version, DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}
+	dto := ApprovalExecution{Status: status, CleanupPending: res.CleanupPending, Version: res.Version, DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}
 	if dto.DataImpact == "" {
 		dto.DataImpact, dto.HealthData, dto.LiveData = "none", "not_run", "untouched"
 	}
@@ -543,8 +599,10 @@ func (s *Service) applyApproval(ctx context.Context, a store.Approval) (ActionRe
 		return s.applyDelete(ctx, a.Flat, ViaConsole, a.ID)
 	case "set_visibility":
 		return s.applyVisibilityApproval(ctx, a)
-	case "publish":
+	case "publish", "create_version":
 		return s.applyPublishApproval(ctx, a)
+	case "delete_version":
+		return s.applyDeleteVersionApproval(ctx, a)
 	case "activate":
 		return s.applyActivateApproval(ctx, a)
 	case "rollback", "restore_data":
@@ -563,6 +621,14 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if err := json.Unmarshal(a.Params, &p); err != nil {
 		return ActionResult{}, err
 	}
+	var frozen map[string]json.RawMessage
+	if err := json.Unmarshal(a.Params, &frozen); err != nil {
+		return ActionResult{}, err
+	}
+	live, hasLive := frozen["expected_live"]
+	if !hasLive || string(live) == "null" {
+		return ActionResult{}, fmt.Errorf("%w: %w: this approval does not record the frozen live version (older Flats approvals lack this state); request a new create_version approval", ErrConflict, ErrStaleApproval)
+	}
 	unlock, err := s.lockStorage(a.Flat)
 	if err != nil {
 		return ActionResult{}, err
@@ -575,6 +641,9 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	latest, hasLatest, err := s.latestVersion(ctx, a.Flat)
 	if err != nil {
 		return ActionResult{}, err
+	}
+	if f.LiveVersion != p.ExpectedLive {
+		return ActionResult{}, mismatch(strconv.Itoa(p.ExpectedLive), strconv.Itoa(f.LiveVersion), "live version")
 	}
 	if latest.Number != p.BaseVersion {
 		return ActionResult{}, mismatch(strconv.Itoa(p.BaseVersion), strconv.Itoa(latest.Number), "the latest version")
@@ -624,6 +693,12 @@ func (s *Service) saveVersionFromDraft(ctx context.Context, f store.Flat, rev st
 	if strings.Contains(f.Slug, "..") || strings.ContainsAny(f.Slug, `/\`) {
 		return ActionResult{}, invalidf("flat slug %q is not a plain directory name", f.Slug)
 	}
+	if err := s.checkVersionQuota(ctx, f); err != nil {
+		return ActionResult{}, err
+	}
+	if err := s.checkVersionDiskQuota(f.Slug, rev.Size); err != nil {
+		return ActionResult{}, err
+	}
 	candidate := versionFromRevision(rev)
 	n, err := s.st.NextVersionNumber(ctx, f.Slug)
 	if err != nil {
@@ -652,6 +727,15 @@ func (s *Service) saveVersionFromDraft(ctx context.Context, f store.Flat, rev st
 		HealthData: "not_run",
 		LiveData:   "untouched",
 	})
+	// Recheck after copying, so a quota lowered while staging cannot admit a version.
+	if err := s.checkVersionQuota(ctx, f); err != nil {
+		os.RemoveAll(dir)
+		return ActionResult{}, err
+	}
+	if err := s.checkVersionDiskQuota(f.Slug, 0); err != nil {
+		os.RemoveAll(dir)
+		return ActionResult{}, err
+	}
 	if err := s.st.CommitVersion(ctx, v, rev.Revision, approvalID, raw, now); err != nil {
 		os.RemoveAll(dir)
 		return ActionResult{}, err
@@ -858,7 +942,7 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 	if p.RestoreData {
 		msg += " and restored its database snapshot"
 	}
-	return ActionResult{Status: "done", Flat: &res.Flat, Message: msg, DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}, nil
+	return ActionResult{Status: "done", Flat: &res.Flat, Version: res.Version, Message: msg, DataImpact: res.DataImpact, HealthData: res.HealthData, LiveData: res.LiveData}, nil
 }
 
 func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval) (ActionResult, error) {
@@ -1433,12 +1517,13 @@ var ErrPublicStopUnconfirmed = errors.New("public stop unconfirmed")
 
 // ApprovalExecution is persisted as Approval.result_data for transport serialization.
 type ApprovalExecution struct {
-	Status      string `json:"status"`
-	Version     int    `json:"version,omitempty"`
-	FailureCode string `json:"failure_code,omitempty"`
-	DataImpact  string `json:"data_impact"`
-	HealthData  string `json:"health_data"`
-	LiveData    string `json:"live_data"`
+	CleanupPending bool   `json:"cleanup_pending,omitempty"`
+	Status         string `json:"status"`
+	Version        int    `json:"version,omitempty"`
+	FailureCode    string `json:"failure_code,omitempty"`
+	DataImpact     string `json:"data_impact"`
+	HealthData     string `json:"health_data"`
+	LiveData       string `json:"live_data"`
 }
 
 func failureCode(err error) string {
@@ -1453,7 +1538,7 @@ func failureCode(err error) string {
 var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
-	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed",
+	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed", "snapshot_failed",
 	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "not_design", "no_revisions", "document_not_found", "not_found", "invalid",
 }
 
@@ -1487,6 +1572,8 @@ func ErrorCategory(err error) string {
 		return "config_overridden"
 	case errors.Is(err, ErrConfigChanged):
 		return "config_changed"
+	case errors.Is(err, ErrSnapshotFailed):
+		return "snapshot_failed"
 	}
 	var de *DeployError
 	if errors.As(err, &de) {
@@ -1532,16 +1619,22 @@ func (s *Service) GetDraft(ctx context.Context, flat string) (store.Draft, error
 	return s.st.GetDraft(ctx, flat)
 }
 
-// Publish requests saving the current draft revision as a new numbered version;
+// CreateVersion requests saving the current draft revision as a new numbered version;
 // zero selects the current draft revision.
-func (s *Service) Publish(ctx context.Context, flat string, revision int, hash string, via Via) (ActionResult, error) {
-	unlock := s.lock(flat)
+func (s *Service) CreateVersion(ctx context.Context, flat string, revision int, hash string, via Via) (ActionResult, error) {
+	unlock, err := s.lockStorageCtx(ctx, flat)
+	if err != nil {
+		return ActionResult{}, err
+	}
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, flat)
 	if err != nil {
 		return ActionResult{}, err
 	}
 	if err := s.refuseUnversioned(ctx, f); err != nil {
+		return ActionResult{}, err
+	}
+	if err := s.checkVersionQuota(ctx, f); err != nil {
 		return ActionResult{}, err
 	}
 	d, err := s.st.GetDraft(ctx, flat)
@@ -1572,7 +1665,7 @@ func (s *Service) Publish(ctx context.Context, flat string, revision int, hash s
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return s.requestFrozen(ctx, flat, "publish", publishParams{Revision: d.Revision, Hash: d.Hash, BaseVersion: latest.Number, Visibility: string(f.Visibility.Canonical()), Providers: key}, via, "")
+	return s.requestFrozen(ctx, flat, "create_version", publishParams{Revision: d.Revision, Hash: d.Hash, BaseVersion: latest.Number, ExpectedLive: f.LiveVersion, Visibility: string(f.Visibility.Canonical()), Providers: key}, via, "")
 }
 
 // SaveDraft is the explicit Draft save facade with optimistic revision checking.
@@ -1778,4 +1871,14 @@ func (s *Service) providerNotInUse(ctx context.Context, slug string, id Provider
 		return fmt.Errorf("%w: cannot confirm %s routes are stopped", ErrProviderInUse, id)
 	}
 	return nil
+}
+
+// RequestCreateVersion records a frozen version creation approval.
+func (s *Service) RequestCreateVersion(ctx context.Context, flat string, revision int, hash string, via Via) (ActionResult, error) {
+	return s.CreateVersion(ctx, flat, revision, hash, via)
+}
+
+// Publish is retained internally for existing core callers and pending approvals.
+func (s *Service) Publish(ctx context.Context, flat string, revision int, hash string, via Via) (ActionResult, error) {
+	return s.CreateVersion(ctx, flat, revision, hash, via)
 }

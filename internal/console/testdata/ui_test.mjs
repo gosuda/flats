@@ -66,7 +66,7 @@ class Element extends Node {
   querySelectorAll() { return []; }
   get childElementCount() { return this.childNodes.filter((c) => c instanceof Element).length; }
   get lastElementChild() { return [...this.childNodes].reverse().find((c) => c instanceof Element) || null; }
-  focus() {}
+  focus() { document.activeElement = this; this.focusedWhileDisabled = !!this.disabled; this.focusCount = (this.focusCount || 0) + 1; }
   select() {}
   showModal() { this.open = true; }
   close(v) { this.open = false; this.returnValue = v; this.dispatch('close'); }
@@ -95,7 +95,7 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 // --- stubbed API ---
 const PUBLIC = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
 const blog = {
-  type: 'flat', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, latest_version: 2, latest_deployed: true, providers: ['portal'],
+  version_quota: null, effective_version_quota: 20, version_count: 2, type: 'flat', slug: 'blog', name: 'Blog', visibility: 'public', live_version: 2, versions: 2, latest_version: 2, latest_deployed: true, providers: ['portal'],
   portal_listing: 'default', portal_hidden: false,
   private_url: 'https://blog.tail.ts.net', public_url: 'https://blog.portal.example', public_notice: PUBLIC,
   draft: { revision: 3, hash: 'c', dirty: true, size: 1, files: 1, kind: 'server', updated_at: '2026-10-03T00:00:00Z' },
@@ -291,7 +291,7 @@ await tick();
 // the exact revision shown as a new version.
 const draftRow = all(flatMain, (e) => e.tagName === 'TR' && e.className === 'is-draft')[0];
 assert.ok(draftRow, 'want a draft row');
-routes['POST /console/api/flats/blog/publish'] = pending('apr-publish');
+routes['POST /console/api/flats/blog/versions'] = pending('apr-publish');
 routes['POST /console/api/approvals/apr-publish/approve'] = { id: 'apr-publish', status: 'approved', result: 'saved version 3', result_data: { version: 3 } };
 const pubToastBox = new Element('div');
 pubToastBox.setAttribute('id', 'toasts');
@@ -305,11 +305,164 @@ assert.ok(dialogs[0].textContent.includes('Saving does not publish: version 2 st
 dialogs[0].close('ok');
 await tick();
 document.getElementById = origGetElementById;
-assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/publish').body), { revision: 3, hash: 'c' });
+assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/versions').body), { revision: 3, hash: 'c' });
 assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/approve'));
 assert.ok(pubToastBox.textContent.includes('Saved version 3. It is not live yet: publish it when ready.'), pubToastBox.textContent);
 all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
 await tick();
+
+// The operator deletes one non-live version directly, after an explicit
+// destructive confirmation. The live version and old pruned records cannot
+// be selected for deletion.
+assert.equal(byText(liveRow, 'Delete').length, 0);
+let oldRow = all(flatMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1'))[0];
+assert.equal(byText(oldRow, 'Delete').length, 1);
+const deletedBefore = calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length;
+byText(oldRow, 'Delete')[0].dispatch('click');
+await tick();
+dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
+assert.ok(dialogs[0].textContent.includes('closes its open previews'));
+assert.ok(dialogs[0].textContent.includes('Server data and data snapshots are kept'));
+dialogs[0].close('cancel');
+await tick();
+assert.equal(document.activeElement, byText(oldRow, 'Delete')[0], 'cancelling restores the invoking Delete button');
+assert.equal(document.activeElement.focusedWhileDisabled, false, 'focus is restored after the invoker is enabled');
+assert.equal(calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length, deletedBefore);
+// If the live version changed while the confirmation was open, the server
+// refuses deletion and the page reports the error rather than claiming success.
+byText(oldRow, 'Delete')[0].dispatch('click');
+await tick();
+routes['DELETE /console/api/flats/blog/versions/1'] = { __status: 409, error: 'the live version cannot be deleted' };
+all(document.body, (e) => e.tagName === 'DIALOG')[0].close('ok');
+await tick();
+dialogs = all(document.body, (e) => e.tagName === 'DIALOG');
+assert.ok(dialogs[0].textContent.includes('Version deletion failed'));
+assert.ok(dialogs[0].textContent.includes('the live version cannot be deleted'));
+dialogs[0].close('ok'); await tick();
+byText(oldRow, 'Delete')[0].dispatch('click');
+await tick();
+const beforeDeletionVersions = routes['GET /console/api/flats/blog/versions'];
+routes['DELETE /console/api/flats/blog/versions/1'] = () => {
+  routes['GET /console/api/flats/blog'] = { ...blog, version_count: 1 };
+  routes['GET /console/api/flats/blog/versions'] = { versions: beforeDeletionVersions.versions.filter((v) => v.number !== 1) };
+  return { status: 'deleted' };
+};
+const approvalsBeforeDelete = calls.filter((c) => c.key.includes('/approvals/') && c.key.endsWith('/approve')).length;
+all(document.body, (e) => e.tagName === 'DIALOG')[0].close('ok');
+await tick();
+assert.equal(calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length, deletedBefore + 2);
+assert.equal(calls.filter((c) => c.key.includes('/approvals/') && c.key.endsWith('/approve')).length, approvalsBeforeDelete);
+assert.ok(flatMain.textContent.includes('1 version stored · Quota: 20 (host default).'));
+assert.equal(all(flatMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1')).length, 0);
+routes['GET /console/api/flats/blog'] = blog;
+routes['GET /console/api/flats/blog/versions'] = beforeDeletionVersions;
+
+// Per-flat quota supports a host default, explicit unlimited and safe integer
+// validation. A refusal preserves the input and exposes an accessible error.
+const quotaMain = new Element('main');
+const stopQuota = flat.mountSettings(quotaMain, ['blog'], ctx);
+await tick();
+const quotaInput = all(quotaMain, (e) => e.getAttribute('id') === 'version-quota')[0];
+const quotaForm = quotaInput.parentNode.parentNode;
+assert.equal(quotaInput.value, '');
+assert.ok(quotaMain.textContent.includes('Lowering this quota keeps every existing version'));
+quotaInput.value = '1.5'; quotaForm.dispatch('submit'); await tick();
+assert.equal(quotaInput.getAttribute('aria-invalid'), 'true');
+assert.equal(calls.some((c) => c.key === 'PUT /console/api/flats/blog/version-quota'), false);
+routes['PUT /console/api/flats/blog/version-quota'] = { __status: 409, error: 'quota changed; try again' };
+quotaInput.value = '0'; quotaForm.dispatch('submit'); await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/version-quota').at(-1).body), { version_quota: 0 });
+assert.equal(quotaInput.value, '0');
+assert.ok(quotaForm.textContent.includes('quota changed; try again'));
+routes['PUT /console/api/flats/blog/version-quota'] = blog;
+quotaInput.value = ''; quotaForm.dispatch('submit'); await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/version-quota').at(-1).body), { version_quota: null });
+stopQuota();
+
+// A migrated flat above its quota keeps its history and explains recovery;
+// pruned historical records offer no actions and don't count as stored.
+routes['GET /console/api/flats/blog'] = { ...blog, latest_version: 3, effective_version_quota: 1 };
+routes['GET /console/api/flats/blog/versions'] = { versions: [
+  ...beforeDeletionVersions.versions.map((v) => v.number === 1 ? { ...v, pruned: true } : v),
+  { number: 3, kind: 'server', hash: 'new', size: 1, files: 1, created_at: '2026-10-03T00:00:00Z' }] };
+const fullMain = new Element('main');
+const stopFull = flat.mount(fullMain, ['blog'], ctx); await tick();
+assert.ok(fullMain.textContent.includes('The quota is full. Delete older versions or raise the quota'));
+const prunedRow = all(fullMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1'))[0];
+assert.ok(prunedRow.textContent.includes('Unavailable'));
+assert.equal(all(prunedRow, (e) => e.tagName === 'BUTTON').length, 0);
+stopFull();
+routes['GET /console/api/flats/blog'] = { ...blog, effective_version_quota: 0, version_quota: 0 };
+const unlimitedMain = new Element('main');
+const stopUnlimited = flat.mount(unlimitedMain, ['blog'], ctx); await tick();
+assert.ok(unlimitedMain.textContent.includes('Unlimited quota (override for this flat).'));
+assert.equal(unlimitedMain.textContent.includes('The quota is full'), false);
+stopUnlimited();
+routes['GET /console/api/flats/blog'] = blog;
+routes['GET /console/api/flats/blog/versions'] = beforeDeletionVersions;
+
+// Deleting the highest stored version, or every version, never reuses its
+// number in either the management page or list Save action.
+routes['GET /console/api/flats/blog'] = { ...blog, latest_version: 2, next_version: 5 };
+const highwaterMain = new Element('main');
+const stopHighwater = flat.mount(highwaterMain, ['blog'], ctx); await tick();
+assert.equal(byText(highwaterMain, 'Save as v5').length, 1);
+assert.equal(byText(highwaterMain, 'Save as v3').length, 0);
+stopHighwater();
+const versionActions = await import('./actions.js');
+assert.equal(versionActions.nextVersion({ latest_version: 0, next_version: 5 }), 5);
+routes['GET /console/api/flats/blog'] = blog;
+
+// A refresh can remove the invoker while its confirmation is open. Closing
+// it must never focus a detached button from the earlier version table.
+const detachedMain = new Element('main');
+const stopDetached = flat.mount(detachedMain, ['blog'], ctx); await tick();
+const detachedHistory = all(detachedMain, (e) => e.getAttribute('aria-label') === 'Version history')[0];
+const detachedDelete = all(detachedMain, (e) => e.getAttribute('aria-label') === 'Delete version 1')[0];
+const detachedFocusCount = detachedDelete.focusCount || 0;
+detachedDelete.dispatch('click'); await tick();
+let detachedRow = detachedDelete;
+while (detachedRow.tagName !== 'TR') detachedRow = detachedRow.parentNode;
+detachedRow.remove();
+all(document.body, (e) => e.tagName === 'DIALOG')[0].close('cancel'); await tick();
+assert.equal(detachedDelete.focusCount || 0, detachedFocusCount);
+assert.equal(document.activeElement, detachedHistory, 'a removed invoker falls back to this page’s history region');
+stopDetached();
+
+const approvalsPage = await import('./approval.js');
+assert.equal(approvalsPage.describeApproval({ action: 'create_version', flat: 'blog' }), 'Save the draft of blog as a new version (does not go live)');
+assert.equal(approvalsPage.describeApproval({ action: 'delete_version', flat: 'blog', params: { version: 1 } }), 'Delete version 1 of blog');
+routes['GET /console/api/approvals/delete-one'] = { id: 'delete-one', flat: 'blog', action: 'delete_version', params: { version: 1 }, status: 'pending', via: 'mcp' };
+const deleteApprovalMain = new Element('main');
+approvalsPage.mount(deleteApprovalMain, ['delete-one'], ctx); await tick();
+assert.ok(deleteApprovalMain.textContent.includes('closes its open previews'));
+assert.ok(deleteApprovalMain.textContent.includes('The live version cannot be deleted'));
+// Durable deletion can apply metadata while private storage cleanup is
+// pending. The console acknowledges that outcome without retrying or showing
+// a fully completed success toast; approved receipts keep the warning too.
+const cleanupMessage = 'Version 1 was deleted from metadata; restart Flats before saving, creating, deploying, or previewing this flat.';
+routes['DELETE /console/api/flats/blog/versions/1'] = { status: 'cleanup_pending', cleanup_pending: true, version: 1, message: cleanupMessage };
+const cleanupToasts = new Element('div');
+document.getElementById = (id) => id === 'toasts' ? cleanupToasts : origGetElementById?.(id);
+const cleanupCallsBefore = calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length;
+const cleanupPromise = versionActions.deleteVersion(blog, 1);
+await tick();
+all(document.body, (e) => e.tagName === 'DIALOG')[0].close('ok'); await tick();
+const cleanupDialog = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(cleanupDialog.textContent.includes('Version removed; cleanup pending'));
+assert.ok(cleanupDialog.textContent.includes(cleanupMessage));
+assert.equal(cleanupToasts.textContent.includes('Version 1 deleted.'), false);
+cleanupDialog.close('ok');
+assert.equal(await cleanupPromise, true, 'metadata change still refreshes the list');
+assert.equal(calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length, cleanupCallsBefore + 1);
+document.getElementById = origGetElementById;
+routes['GET /console/api/approvals/delete-pending-cleanup'] = { id: 'delete-pending-cleanup', flat: 'blog', action: 'delete_version', params: { version: 1 }, status: 'approved', via: 'mcp', result: cleanupMessage, result_data: JSON.stringify({ cleanup_pending: true }) };
+const cleanupApprovalMain = new Element('main');
+approvalsPage.mount(cleanupApprovalMain, ['delete-pending-cleanup'], ctx); await tick();
+assert.ok(cleanupApprovalMain.textContent.includes('Restart Flats to finish storage cleanup'));
+assert.equal(cleanupApprovalMain.textContent.includes('Nothing else to do'), false);
+assert.equal(all(cleanupApprovalMain, (e) => e.getAttribute('role') === 'alert' && e.textContent.includes(cleanupMessage)).length, 1);
+
 
 stopFlat();
 // A document's page has an Overview with status and logs but no versions,
@@ -581,7 +734,7 @@ globalThis.confirm = () => { throw new Error('window.confirm used'); };
 globalThis.location = { origin: 'http://127.0.0.1:7878' };
 const settingsPage = await import('./settings.js');
 const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
-const SETTINGS = { upload_max_bytes: '20971520', keep_versions: '10', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
+const SETTINGS = { upload_max_bytes: '20971520', version_quota: '20', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
   rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://relay.example.com', portal_discovery: 'true', portal_max_relays: '3', portal_hide: 'false' };
 const CONFIG = {
   mode: 'config', schema_version: 2, etag: 'etag-1', changed_on_disk: false,
@@ -589,12 +742,12 @@ const CONFIG = {
   network: { permitted: ['portal'], private_backend: 'local' },
   tailscale: { console_hosts: [] },
   credentials: { operator_file: true, tailscale_authkey_file: false },
-  keys: { upload_max_bytes: 'system.upload_max_bytes', keep_versions: 'system.keep_versions', disk_quota_bytes: 'system.disk_quota_bytes',
+  keys: { upload_max_bytes: 'system.upload_max_bytes', version_quota: 'system.version_quota', disk_quota_bytes: 'system.disk_quota_bytes',
     preview_ttl_seconds: 'system.preview_ttl_seconds', rate_limit_rps: 'system.rate_limit_rps', redirect_days: 'system.redirect_days',
     events_keep: 'system.events_keep', portal_relays: 'portal.relays', portal_discovery: 'portal.discovery', portal_max_relays: 'portal.max_active_relays', portal_hide: 'portal.hide' },
   sources: { 'host.management_addr': 'flag', 'host.local_addr': 'default', 'tailscale.console_hosts': 'default', 'host.server_runtime': 'default',
     'network.permitted': 'file', 'network.private_backend': 'default', 'credentials.operator_file': 'file', 'credentials.tailscale_authkey_file': 'default',
-    'system.keep_versions': 'file', 'system.events_keep': 'default', 'portal.relays': 'file' },
+    'system.version_quota': 'file', 'system.events_keep': 'default', 'portal.relays': 'file' },
   pinned: { portal_relays: "the service's --relays flag" },
 };
 const settingsRoute = (config) => ({ settings: SETTINGS, defaults: SETTINGS, apply_on_restart: ['portal_relays'], config });
@@ -610,7 +763,11 @@ const KEYS = [
   { id: 'zrok', set: true, managed: true, source: 'console', updated_at: '2026-10-01T00:00:00Z', environment_id: 'zenv-123', api_endpoint: 'https://api-v2.zrok.io' },
 ];
 routes['GET /console/api/keys'] = { keys: KEYS };
-const DOMAINS = { domains: [], retiring: [], loopback: true, tailscale_on: false, pending_approvals: 0, etag: 'etag-1' };
+const DOMAINS = { providers: { tailscale: { domains: [], retiring: [], on: false }, netbird: { domains: [], retiring: [], on: false } },
+  loopback: true, pending_approvals: 0, etag: 'etag-1' };
+// dview builds a console domains view from per-network parts.
+const dview = (ts, nb, extra) => ({ ...DOMAINS, ...extra, providers: {
+  tailscale: { domains: [], retiring: [], on: false, ...ts }, netbird: { domains: [], retiring: [], on: false, ...nb } } });
 routes['GET /console/api/console-domains'] = DOMAINS;
 const mountSettings = async () => {
   const main = new Element('main');
@@ -622,6 +779,11 @@ const puts = () => calls.filter((c) => c.key === 'PUT /console/api/settings');
 
 // Host, network and credentials are read only, with their sources.
 let page = await mountSettings();
+assert.ok(page.textContent.includes('flats save-draft <slug> ./dist'));
+assert.ok(page.textContent.includes('flats create-version <slug> --revision <revision> --hash <hash>'));
+assert.ok(page.textContent.includes('flats deploy --flat <slug> --version <version>'));
+assert.equal(page.textContent.includes('flats deploy ./dist'), false);
+
 const configCard = byId(page, 'configuration');
 for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Network', 'Private routes',
   'flats config set', 'apply after Flats restarts']) {
@@ -634,13 +796,13 @@ assert.equal(configCard.textContent.includes('flats install'), false);
 // pinned relays cannot be changed and say why.
 const legends = all(page, (e) => e.tagName === 'LEGEND').map((e) => e.textContent);
 assert.deepEqual(legends, ['Portal settings', 'System']);
-assert.ok(byId(page, 'set-keep_versions-help').textContent.includes('Source: config.json.'));
+assert.ok(byId(page, 'set-version_quota-help').textContent.includes('Source: config.json.'));
 assert.ok(byId(page, 'set-events_keep-help').textContent.includes('Source: default.'));
 const relaysInput = byId(page, 'set-portal_relays');
 assert.equal(relaysInput.getAttribute('disabled'), '');
 assert.ok(relaysInput.getAttribute('aria-describedby').split(' ').includes('set-portal_relays-pin'));
 assert.ok(byId(page, 'set-portal_relays-pin').textContent.includes("Set by the service's --relays flag"));
-assert.equal(byId(page, 'set-keep_versions').getAttribute('disabled'), null);
+assert.equal(byId(page, 'set-version_quota').getAttribute('disabled'), null);
 
 // A file changed on disk and legacy mode are both explained.
 routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, mode: 'legacy', changed_on_disk: true });
@@ -677,24 +839,42 @@ assert.equal(upload.getAttribute('aria-invalid'), 'true');
 assert.ok(upload.getAttribute('aria-describedby').split(' ').includes('set-upload_max_bytes-error'));
 assert.ok(byId(page, 'set-upload_max_bytes-error').textContent.includes('out of range'));
 
+// Lowering version quota never enters destructive retention confirmation.
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['version_quota'], restart_required: [] };
+page = await mountSettings();
+form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
+byId(page, 'set-version_quota').value = '1.5';
+let quotaPutCount = puts().length;
+form.dispatch('submit'); await tick();
+assert.equal(puts().length, quotaPutCount);
+assert.equal(byId(page, 'set-version_quota').getAttribute('aria-invalid'), 'true');
+byId(page, 'set-version_quota').value = '1';
+let quotaImpactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+form.dispatch('submit'); await tick();
+assert.equal(puts().length, quotaPutCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { version_quota: '1' });
+assert.equal(calls.filter((c) => c.key === 'POST /console/api/settings/impact').length, quotaImpactCount);
+assert.equal(all(page, (e) => e.className === 'impact').length, 0);
+
 // Lowering a retention setting first shows what the next pruning removes
 // and saves only after a second, explicit confirmation.
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 page = await mountSettings();
 form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
-routes['POST /console/api/settings/impact'] = { impact: { keep_versions: { current: '10', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3, versions: [3, 2, 1] }] } } };
-routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['keep_versions'], restart_required: ['portal_max_relays'], etag: 'etag-2' };
-byId(page, 'set-keep_versions').value = '2';
+routes['POST /console/api/settings/impact'] = { impact: { events_keep: { current: '5000', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3,  }] } } };
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['events_keep'], restart_required: ['portal_max_relays'], etag: 'etag-2' };
+byId(page, 'set-events_keep').value = '2';
 let putCount = puts().length;
 form.dispatch('submit');
 await tick();
 const impactCall = calls.filter((c) => c.key === 'POST /console/api/settings/impact').at(-1);
-assert.deepEqual(JSON.parse(impactCall.body), { keep_versions: '2' });
+assert.deepEqual(JSON.parse(impactCall.body), { events_keep: '2' });
 assert.equal(puts().length, putCount, 'a decrease must not save before the confirmation');
 let panel = all(page, (e) => e.className === 'impact')[0];
 assert.ok(panel.textContent.includes('Saving removes data'));
-assert.ok(panel.textContent.includes('Versions to keep: 10 → 2 versions.'));
-assert.ok(panel.textContent.includes('blog: 3 versions (3, 2, 1)'));
+assert.ok(panel.textContent.includes('Log events kept per flat: 5000 → 2 events.'));
+assert.ok(panel.textContent.includes('blog: 3 events'));
 // Keep editing closes the panel without saving.
 byText(panel, 'Keep editing')[0].dispatch('click');
 await tick();
@@ -714,9 +894,9 @@ await tick();
 put = puts().at(-1);
 assert.equal(puts().length, putCount + 1);
 assert.equal(put.headers['If-Match'], '"etag-1"');
-assert.deepEqual(JSON.parse(put.body), { keep_versions: '2' });
+assert.deepEqual(JSON.parse(put.body), { events_keep: '2' });
 const limits = byId(page, 'limits');
-assert.ok(limits.textContent.includes('Versions to keep: saved, applied now.'), limits.textContent);
+assert.ok(limits.textContent.includes('Log events kept per flat: saved, applied now.'), limits.textContent);
 assert.ok(limits.textContent.includes('Active Portal relays: saved, applies after Flats restarts.'));
 
 // A decrease that removes nothing still asks once, with a plain Save.
@@ -736,52 +916,52 @@ assert.equal(puts().length, putCount + 1);
 
 // An edit while the impact request is in flight drops its late answer, so
 // the older value can never be confirmed and saved.
-const IMPACT_2 = { impact: { keep_versions: { current: '10', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3, versions: [3, 2, 1] }] } } };
+const IMPACT_2 = { impact: { events_keep: { current: '5000', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3,  }] } } };
 let release;
 routes['POST /console/api/settings/impact'] = () => new Promise((resolve) => { release = () => resolve(IMPACT_2); });
 page = await mountSettings();
 form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
-byId(page, 'set-keep_versions').value = '2';
+byId(page, 'set-events_keep').value = '2';
 putCount = puts().length;
 form.dispatch('submit');
 await tick();
 assert.equal(typeof release, 'function', 'the impact request must be pending');
-byId(page, 'set-keep_versions').value = '9';
+byId(page, 'set-events_keep').value = '9';
 form.dispatch('input');
 release();
 await tick();
 assert.equal(all(page, (e) => e.className === 'impact').length, 0, 'a late impact answer must not show');
 assert.equal(puts().length, putCount);
-assert.equal(byId(page, 'set-keep_versions').value, '9');
+assert.equal(byId(page, 'set-events_keep').value, '9');
 
 // The confirmation saves only the values it described.
 routes['POST /console/api/settings/impact'] = IMPACT_2;
 page = await mountSettings();
 form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
-byId(page, 'set-keep_versions').value = '2';
+byId(page, 'set-events_keep').value = '2';
 form.dispatch('submit');
 await tick();
 panel = all(page, (e) => e.className === 'impact')[0];
-byId(page, 'set-keep_versions').value = '9'; // changed without an input event
+byId(page, 'set-events_keep').value = '9'; // changed without an input event
 byText(panel, 'Save and remove')[0].dispatch('click');
 await tick();
 assert.equal(puts().length, putCount);
 assert.equal(all(page, (e) => e.className === 'impact').length, 0);
 assert.ok(page.textContent.includes('The form changed after the preview.'));
-assert.equal(byId(page, 'set-keep_versions').value, '9');
+assert.equal(byId(page, 'set-events_keep').value, '9');
 
 // Raising a limit saves at once.
 page = await mountSettings();
 form = all(byId(page, 'limits'), (e) => e.tagName === 'FORM')[0];
-byId(page, 'set-keep_versions').value = '20';
+byId(page, 'set-version_quota').value = '30';
 const impactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
 putCount = puts().length;
 form.dispatch('submit');
 await tick();
 assert.equal(calls.filter((c) => c.key === 'POST /console/api/settings/impact').length, impactCount);
 assert.equal(puts().length, putCount + 1);
-assert.equal(settingsPage.isDecrease('keep_versions', '0', '5'), true);
-assert.equal(settingsPage.isDecrease('keep_versions', '5', '0'), false);
+assert.equal(settingsPage.isDecrease('events_keep', '100', '5'), true);
+assert.equal(settingsPage.isDecrease('events_keep', '5', '100'), false);
 
 // The Portal settings save from their own form in the Portal provider panel.
 routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, pinned: {} });
@@ -879,28 +1059,29 @@ assert.deepEqual(JSON.parse(connectCall.body), { token: 'test-token' });
 assert.ok(!calls.some((c) => c.key === 'PUT /console/api/providers/zrok'), 'connecting does not turn zrok on');
 assert.equal(tokenInput.value, '', 'the token is cleared from the form');
 
-// NetBird: without a peer the private panel offers the setup key form, the
-// Expose panel points at it, and neither has a switch. Connecting sends the
-// key once and does not turn anything on.
+// NetBird: the setup key lives under Keys and the providers can be turned on
+// without one; their panels say whether a key is stored and how many peers run.
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
-  { ...provider('netbird', 'private', false), management_url: 'https://api.netbird.io:443', connected: false },
-  { ...provider('netbird-expose', 'public', false), management_url: 'https://api.netbird.io:443', connected: false }] };
-routes['PUT /console/api/providers/netbird/account'] = { providers: [] };
+  { ...provider('netbird', 'private', false), management_url: 'https://api.netbird.io:443' },
+  { ...provider('netbird-expose', 'public', false), management_url: 'https://api.netbird.io:443' }] };
+routes['PUT /console/api/keys/netbird'] = { keys: KEYS };
 const nbMain = new Element('main');
 settingsPage.mount(nbMain, [], ctx);
 await tick();
-assert.equal(byText(byId(nbMain, 'provider-netbird'), 'Turn on').length, 0, 'NetBird without a peer has no switch');
+assert.equal(byText(byId(nbMain, 'provider-netbird'), 'Turn on').length, 1, 'NetBird can be turned on before a key is stored');
+assert.equal(byText(byId(nbMain, 'provider-netbird-expose'), 'Turn on').length, 1, 'NetBird Expose can be turned on before a key is stored');
+assert.ok(byId(nbMain, 'provider-netbird').textContent.includes('Not stored'), 'the panel says no key is stored');
+assert.ok(byId(nbMain, 'provider-netbird').textContent.includes('plain HTTP'), 'the panel explains the HTTP limits');
 const nbPanel = byId(nbMain, 'key-netbird');
-assert.equal(byText(byId(nbMain, 'provider-netbird-expose'), 'Turn on').length, 0, 'NetBird Expose without a peer has no switch');
-assert.ok(byId(nbMain, 'provider-netbird-expose').textContent.includes('Connect the NetBird peer under NetBird first'));
-const keyInput = byId(nbPanel, 'netbird-setup-key');
+assert.ok(nbPanel.textContent.includes('Allow extra DNS labels') && nbPanel.textContent.includes('ephemeral'), 'the recommended key options are named');
+const keyInput = byId(nbPanel, 'netbird-key');
 assert.equal(keyInput.getAttribute('type'), 'password', 'the setup key is typed into a password field');
-keyInput.value = '  nb-key  ';
+keyInput.value = '  8f3c2a1e-4b5d-4c6e-9f70-0123456789ab  ';
 all(nbPanel, (e) => e.tagName === 'FORM')[0].dispatch('submit');
 await tick();
 await tick();
-const nbCall = calls.find((c) => c.key === 'PUT /console/api/providers/netbird/account');
-assert.deepEqual(JSON.parse(nbCall.body), { setup_key: 'nb-key' });
+const nbCall = calls.find((c) => c.key === 'PUT /console/api/keys/netbird');
+assert.deepEqual(JSON.parse(nbCall.body), { key: '8f3c2a1e-4b5d-4c6e-9f70-0123456789ab' });
 assert.equal(keyInput.value, '', 'the setup key is cleared from the form');
 
 // A binary built without NetBird says so and offers neither a key form nor a switch.
@@ -916,18 +1097,27 @@ assert.equal(byText(nbOff, 'Turn on').length, 0, 'no switch without NetBird');
 assert.equal(all(byId(nbMain3, 'key-netbird'), (e) => e.tagName === 'FORM').length, 0, 'no key form without NetBird');
 assert.ok(byId(nbMain3, 'key-netbird').textContent.includes('does not include NetBird'));
 
-// A connected peer is identified and can be disconnected while both are off.
+// A stored key can be replaced or removed; the old shared peer is named until
+// the operator dismisses the notice.
 routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
-  { ...provider('netbird', 'private', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' },
-  { ...provider('netbird-expose', 'public', false), management_url: 'https://nb.example', connected: true, device_name: 'flats-box' }] };
-routes['GET /console/api/keys'] = { keys: [KEYS[0], { id: 'netbird', set: true, managed: true, device_name: 'flats-box', management_url: 'https://nb.example' }, KEYS[2]] };
+  { ...provider('netbird', 'private', true), management_url: 'https://nb.example', key_set: true, peers: 3 },
+  { ...provider('netbird-expose', 'public', false), management_url: 'https://nb.example', key_set: true }] };
+routes['GET /console/api/keys'] = { keys: [KEYS[0], { id: 'netbird', set: true, managed: true, peers: 3, management_url: 'https://nb.example',
+  legacy_peer: { device_name: 'flats-box', management_url: 'https://nb.example' } }, KEYS[2]] };
+routes['DELETE /console/api/keys/netbird/legacy-peer'] = { keys: KEYS };
 const nbMain2 = new Element('main');
 settingsPage.mount(nbMain2, [], ctx);
 await tick();
-const nbFacts = all(byId(nbMain2, 'provider-netbird'), (e) => e.tagName === 'CODE').map((e) => e.textContent);
-assert.deepEqual(nbFacts, ['flats-box', 'https://nb.example'], 'the connected peer is identified');
-assert.equal(byText(byId(nbMain2, 'key-netbird'), 'Disconnect peer').length, 1, 'a connected peer can be disconnected under Keys');
-assert.equal(byText(byId(nbMain2, 'provider-netbird'), 'Turn on').length, 1, 'a connected peer can be turned on');
+assert.ok(byId(nbMain2, 'provider-netbird').textContent.includes('Stored'), 'the panel shows the stored key');
+assert.ok(byId(nbMain2, 'provider-netbird').textContent.includes('3'), 'the panel counts running peers');
+const nbKey = byId(nbMain2, 'key-netbird');
+assert.equal(byText(nbKey, 'Replace key').length, 1, 'a stored key can be replaced');
+assert.equal(byText(nbKey, 'Remove key').length, 1, 'a stored key can be removed');
+assert.ok(nbKey.textContent.includes('flats-box') && nbKey.textContent.includes('NetBird dashboard'), 'the old shared peer is named');
+byText(nbKey, 'Done')[0].dispatch('click');
+await tick();
+await tick();
+assert.ok(calls.some((c) => c.key === 'DELETE /console/api/keys/netbird/legacy-peer'), 'the notice can be dismissed');
 routes['GET /console/api/keys'] = { keys: KEYS };
 
 // --- Tailscale auth key ---
@@ -976,14 +1166,16 @@ settingsPage.mount(domMain, [], ctx);
 await tick();
 let domCard = byId(domMain, 'console-domains');
 assert.ok(domCard.textContent.includes('Turn Tailscale on'), 'adding needs Tailscale');
+assert.ok(domCard.textContent.includes('Turn NetBird on'), 'adding a NetBird domain needs NetBird');
 assert.equal(all(domCard, (e) => e.tagName === 'FORM').length, 0);
-routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', pending_approvals: 2, etag: 'etag-7',
+routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true },
     { name: 'blog', conflict: 'used by the flat "blog"' },
     { name: 'admin', assigned: 'admin-1', url: 'https://admin-1.tail1234.ts.net', state: 'ready' }],
-  retiring: [{ name: 'old', error: 'logout refused' }] };
+  retiring: [{ name: 'old', error: 'logout refused' }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, pending_approvals: 2, etag: 'etag-7' });
 routes['POST /console/api/console-domains'] = { etag: 'etag-8' };
-routes['DELETE /console/api/console-domains/blog'] = { etag: 'etag-8', redirect: '' };
+routes['DELETE /console/api/console-domains/tailscale/blog'] = { etag: 'etag-8', redirect: '' };
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
@@ -993,13 +1185,13 @@ assert.ok(domCard.textContent.includes('used by the flat'), 'a conflict is expla
 assert.ok(domCard.textContent.includes('The tailnet named this node admin-1'), 'a renamed node is explained');
 assert.ok(domCard.textContent.includes('Being removed') && domCard.textContent.includes('logout refused'), 'a failed logout is listed');
 assert.equal(all(domCard, (e) => e.tagName === 'A').some((e) => e.getAttribute('href') === 'https://flats.tail1234.ts.net/'), true, 'a domain links to its console');
-const nameInput = byId(domCard, 'console-domain-name');
+const nameInput = byId(domCard, 'console-domain-name-tailscale');
 nameInput.value = ' admin ';
 all(domCard, (e) => e.tagName === 'FORM')[0].dispatch('submit');
 await tick();
 await tick();
 const addCall = calls.find((c) => c.key === 'POST /console/api/console-domains');
-assert.deepEqual(JSON.parse(addCall.body), { name: 'admin' });
+assert.deepEqual(JSON.parse(addCall.body), { provider: 'tailscale', name: 'admin' });
 assert.equal(addCall.headers['If-Match'], '"etag-7"', 'adding is guarded by the settings ETag');
 const delButtons = all(domCard, (e) => e.tagName === 'BUTTON' && e.textContent === 'Delete');
 assert.equal(delButtons.length, 3);
@@ -1011,11 +1203,12 @@ assert.ok(delDialog.textContent.includes('2 approvals waiting'), 'pending approv
 delDialog.close('ok');
 await tick();
 await tick();
-const delCall = calls.find((c) => c.key === 'DELETE /console/api/console-domains/blog');
+const delCall = calls.find((c) => c.key === 'DELETE /console/api/console-domains/tailscale/blog');
 assert.ok(delCall && delCall.headers['If-Match'] === '"etag-7"', 'deleting is guarded by the settings ETag');
 // The last domain, seen through itself, cannot be deleted here.
-routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', etag: 'etag-7',
-  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] };
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-7' });
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
@@ -1024,26 +1217,45 @@ assert.equal(lastDel.getAttribute('disabled'), '', 'the last domain is deleted o
 // A disabled button gets no hover events: its wrapper carries the reason,
 // and screen readers get it as the button's description.
 const lastWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason')[0];
-assert.ok(lastWrap && lastWrap.getAttribute('data-reason').includes('last tailnet domain') && lastWrap.getAttribute('data-reason').includes('loopback'), 'the reason shows on hover');
+assert.ok(lastWrap && lastWrap.getAttribute('data-reason').includes('last domain') && lastWrap.getAttribute('data-reason').includes('loopback'), 'the reason shows on hover');
 assert.equal(lastWrap.getAttribute('tabindex'), '0', 'keyboard users can reach the reason');
-assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last tailnet domain'), 'the reason describes the button');
-// The domains are labeled as the tailnet's, in their own section.
-assert.ok(all(byId(domMain, 'console-domains'), (e) => e.tagName === 'H3').some((e) => e.textContent === 'Tailnet (Tailscale)'));
+assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last domain'), 'the reason describes the button');
+// Each network has its own section.
+const headings = all(byId(domMain, 'console-domains'), (e) => e.tagName === 'H3').map((e) => e.textContent);
+assert.deepEqual(headings, ['Tailnet (Tailscale)', 'NetBird']);
 // The domain in use cannot be deleted while no other one is ready.
-routes['GET /console/api/console-domains'] = { ...DOMAINS, tailscale_on: true, loopback: false, via: 'flats', etag: 'etag-7',
-  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] };
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-7' });
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
 const curWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason');
 assert.equal(curWrap.length, 1, 'only the domain in use is blocked');
-assert.ok(curWrap[0].getAttribute('data-reason').includes('no other tailnet domain is ready'));
-assert.equal(settingsPage.deleteBlocker({ name: 'a' }, { loopback: true }, 1, ['a']), '', 'the loopback console may delete the last domain');
+assert.ok(curWrap[0].getAttribute('data-reason').includes('no other console domain is ready'));
+// A ready NetBird domain counts: the last tailnet domain may go, and the
+// page can move there. NetBird domains are added with their network.
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }] },
+{ on: true, domains: [{ name: 'flats', url: 'http://flats.netbird.cloud/', state: 'ready' }] },
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-9' });
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+assert.equal(all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason').length, 0, 'a ready NetBird domain lets the tailnet one go');
+assert.ok(byId(domMain, 'console-domains').textContent.includes('plain HTTP'), 'the NetBird section explains HTTP');
+const nbName = byId(byId(domMain, 'console-domains'), 'console-domain-name-netbird');
+nbName.value = 'ops';
+all(byId(domMain, 'console-domains'), (e) => e.tagName === 'FORM')[1].dispatch('submit');
+await tick();
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'POST /console/api/console-domains').pop().body), { provider: 'netbird', name: 'ops' });
+assert.equal(settingsPage.deleteBlocker({ name: 'a' }, { loopback: true }, 1, ['tailscale/a']), '', 'the loopback console may delete the last domain');
 routes['GET /console/api/console-domains'] = DOMAINS;
 // The cards refresh only while a node or an enrollment is still pending.
-assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }, [{ id: 'zrok' }]), false);
-assert.equal(settingsPage.pendingWork({ domains: [{ name: 'a', state: 'starting' }] }, []), true);
-assert.equal(settingsPage.pendingWork({ domains: [] }, [{ id: 'netbird', waiting: true }]), true);
+assert.equal(settingsPage.pendingWork(dview({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }), [{ id: 'zrok' }]), false);
+assert.equal(settingsPage.pendingWork(dview({}, { domains: [{ name: 'a', state: 'starting' }] }), []), true);
+assert.equal(settingsPage.pendingWork(dview({}), [{ id: 'zrok', waiting: true }]), true);
 
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over
@@ -1142,6 +1354,16 @@ assert.deepEqual(ui.openMenuItems(twoNets).map((i) => [i.label, i.detail, i.href
   ['Open publicly · Portal', 'blog.rly.best/', 'https://blog.rly.best/', 'menu-narrow'],
   ['Open privately · Local', 'blog.localhost:7879/', 'http://blog.localhost:7879/', 'menu-narrow']]);
 assert.deepEqual(ui.openMenuItems({ ...twoNets, visibility: 'private' }).map((i) => i.label), ['Open privately · Local']);
+// Seen from another device (a phone on NetBird), the narrow link skips the
+// Local address, which only opens on the host, for one that opens there.
+const meshNets = { ...blog, visibility: 'private', live_version: 1,
+  endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('netbird', 'http://blog.netbird.cloud/')] };
+globalThis.location = { origin: 'http://flats.netbird.cloud', hostname: 'flats.netbird.cloud' };
+assert.equal(ui.openPrimary(meshNets).getAttribute('href'), 'http://blog.netbird.cloud/', 'a remote viewer gets the NetBird address');
+assert.equal(ui.openPrimary({ ...meshNets, endpoints: [meshNets.endpoints[0]] }).tagName, 'BUTTON', 'with only Local it stays server only');
+assert.ok(ui.SERVER_ONLY.includes('NetBird'), 'the server-only note names NetBird too');
+globalThis.location = { origin: 'http://127.0.0.1:7878' };
+assert.equal(ui.openPrimary(meshNets).getAttribute('href'), 'http://blog.localhost:7879/', 'on the host the first address is kept');
 // Public routes the flat may not use (unpermitted, another flat's, stopped)
 // never become its public button; only the server's public_url backs it.
 const local = ep('local', 'http://blog.localhost:7879/');

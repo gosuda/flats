@@ -203,7 +203,7 @@ func skipName(p string) bool {
 func expansionError(budget int64) error {
 	return &ValidationError{Problems: []Problem{{
 		Message: fmt.Sprintf("archive expands to more than %d bytes of tar data", budget),
-		Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats deploy <dir>`",
+		Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats save-draft <slug> <dir>`",
 	}}}
 }
 
@@ -263,7 +263,7 @@ func (c *collector) readTar(r io.Reader) error {
 		}
 		if err != nil {
 			if !seen {
-				return &ValidationError{Problems: []Problem{{Message: "not a tar, tar.gz or zip archive (" + err.Error() + ")", Fix: "pack the build directory with `tar czf site.tgz -C dist .` or use `flats deploy <dir>`"}}}
+				return &ValidationError{Problems: []Problem{{Message: "not a tar, tar.gz or zip archive (" + err.Error() + ")", Fix: "pack the build directory with `tar czf site.tgz -C dist .` or use `flats save-draft <slug> <dir>`"}}}
 			}
 			return &ValidationError{Problems: []Problem{{Message: "corrupt tar archive: " + err.Error(), Fix: "re-create the archive"}}}
 		}
@@ -272,7 +272,7 @@ func (c *collector) readTar(r io.Reader) error {
 		if entries > maxTarEntries {
 			return &ValidationError{Problems: []Problem{{
 				Message: fmt.Sprintf("archive has more than %d entries, counting directories and skipped files", maxTarEntries),
-				Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats deploy <dir>`",
+				Fix:     "pack only the build output, without node_modules, .git or other files the upload skips, or use `flats save-draft <slug> <dir>`",
 			}}}
 		}
 		switch h.Typeflag {

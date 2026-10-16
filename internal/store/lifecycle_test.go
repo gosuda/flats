@@ -37,7 +37,7 @@ func TestLifecycleMigrationPublishedIdentityAndExplicitPermissions(t *testing.T)
 	}
 	// Exercise the migration entry with the baseline schema shape, not just
 	// new-store helpers. No provider permission exists in the historical DB.
-	for _, stmt := range []string{`ALTER TABLE versions DROP COLUMN published`, `DROP INDEX approvals_open_key`, `ALTER TABLE approvals DROP COLUMN idempotency_key`, `ALTER TABLE approvals DROP COLUMN result_data`, `ALTER TABLE approvals DROP COLUMN decided_by`, `ALTER TABLE approvals DROP COLUMN authorized_at`, `ALTER TABLE deployments DROP COLUMN approval_id`, `ALTER TABLE previews DROP COLUMN target`, `ALTER TABLE previews DROP COLUMN revision`, `PRAGMA user_version=1`} {
+	for _, stmt := range []string{`DROP TRIGGER version_number_history`, `DROP TABLE version_numbers`, `ALTER TABLE flats DROP COLUMN version_quota`, `ALTER TABLE versions DROP COLUMN published`, `DROP INDEX approvals_open_key`, `ALTER TABLE approvals DROP COLUMN idempotency_key`, `ALTER TABLE approvals DROP COLUMN result_data`, `ALTER TABLE approvals DROP COLUMN decided_by`, `ALTER TABLE approvals DROP COLUMN authorized_at`, `ALTER TABLE deployments DROP COLUMN approval_id`, `ALTER TABLE previews DROP COLUMN target`, `ALTER TABLE previews DROP COLUMN revision`, `PRAGMA user_version=1`} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			t.Fatal(stmt, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -72,10 +73,17 @@ func TestDocumentTools(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			slug := "doc-" + name
 			for i, path := range []string{"", "notes/chapter.markdown"} {
-				var saved SaveOut
+				var saved saveFixtureOut
 				text, failed := call(t, client, "save_document", map[string]any{"slug": slug, "markdown": "# Hello\n한글 😀", "title": "Title", "path": path, "message": "edit"}, &saved)
 				if failed || saved.Flat == nil || saved.Flat.Type != "docs" || !saved.Flat.Running || saved.Flat.Visibility != "private" || saved.Flat.LiveVersion != 0 || saved.Flat.Publication != "" || saved.Flat.Draft != nil || saved.Draft.Revision != 0 || saved.Deploy != nil || !strings.Contains(text, "running now") {
 					t.Fatalf("save %d: %s %+v", i, text, saved)
+				}
+				wantPath := path
+				if wantPath == "" {
+					wantPath = "index.md"
+				}
+				if saved.Document != wantPath || saved.Entry != "index.md" || !strings.Contains(text, wantPath) || !strings.Contains(text, "Entry document: index.md") {
+					t.Fatalf("saved path/entry missing: %s %+v", text, saved)
 				}
 				if strings.Contains(text, `"draft":{`) || strings.Contains(text, `"version":{`) {
 					t.Fatalf("document save reports a Draft or version: %s", text)
@@ -92,7 +100,7 @@ func TestDocumentTools(t *testing.T) {
 				for _, tool := range []struct {
 					name string
 					args map[string]any
-				}{{"list_versions", nil}, {"get_draft", nil}, {"publish", nil}, {"deploy", map[string]any{"version": 0}}, {"rollback", nil}, {"open_preview", map[string]any{"version": 0}}} {
+				}{{"list_versions", nil}, {"get_draft", nil}, {"create_version", nil}, {"deploy", map[string]any{"version": 0}}, {"rollback", nil}, {"open_preview", map[string]any{"version": 0}}} {
 					args := map[string]any{"slug": slug}
 					for k, v := range tool.args {
 						args[k] = v
@@ -127,8 +135,8 @@ func TestDocumentTools(t *testing.T) {
 				t.Fatal("get_document accepts conflict")
 			}
 			text, failed = call(t, client, "get_document", map[string]any{"slug": slug, "doc": "absent.md"}, nil)
-			if !failed || !strings.Contains(text, `"category":"document_not_found"`) {
-				t.Fatalf("missing document: %s", text)
+			if !failed || !strings.Contains(text, `"category":"document_not_found"`) || !strings.Contains(text, "omit doc to read the entry") || strings.Contains(text, "Draft") {
+				t.Fatalf("missing document or misleading recovery hint: %s", text)
 			}
 		})
 	}
@@ -150,8 +158,13 @@ func TestContentTypesDiscovery(t *testing.T) {
 			if failed || text != out.Markdown || out.Markdown != runtimeref.ContentTypesMarkdown || out.URI != runtimeref.ContentTypesURI || out.DocumentationVersion != "1" || out.UploadLimitBytes != e.svc.UploadLimit() {
 				t.Fatalf("reference: %+v", out)
 			}
-			list, _ := client.ListTools(context.Background(), nil)
+			list, err := client.ListTools(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptions := make(map[string]string)
 			for _, tool := range list.Tools {
+				descriptions[tool.Name] = strings.ToLower(tool.Description)
 				if tool.Name == "get_document" && (tool.Annotations == nil || tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint) {
 					t.Fatal("live reads must advertise possible non-destructive activation")
 				}
@@ -159,6 +172,18 @@ func TestContentTypesDiscovery(t *testing.T) {
 					t.Fatal("reference tool mutates")
 				}
 			}
+			// Draft replacement must disclose omissions without advertising docs
+			// activation. Only explicit save_document bundles activate docs.
+			for _, tool := range []string{"save_draft", "save_draft_from_dir"} {
+				description := descriptions[tool]
+				if !strings.Contains(description, "complete") || !strings.Contains(description, "replac") || !strings.Contains(description, "delet") || !strings.Contains(description, "omitted") || !strings.Contains(description, "documents must use save_document") {
+					t.Errorf("%s must disclose complete Draft replacement, deletion of omissions and explicit docs route: %s", tool, description)
+				}
+			}
+			if description := descriptions["save_document"]; !strings.Contains(description, "preserving other documents") || !strings.Contains(description, "replace_bundle=true") || !strings.Contains(description, "omitted files are deleted") || !strings.Contains(description, "runs at once") {
+				t.Errorf("single-document preservation and explicit live bundle replacement guidance missing: %s", description)
+			}
+
 		})
 	}
 	f, _ := e.svc.ListFlats(context.Background())
@@ -183,5 +208,39 @@ func TestEditHintFollowsOutcome(t *testing.T) {
 	}
 	if h := editHint(&core.EditOutcomeError{Outcome: core.EditApplied, Seq: 7}, "doc"); strings.Contains(h, "retry") {
 		t.Fatal("applied edit hint suggests a retry:", h)
+	}
+}
+
+type documentFailureRuntime struct{ fail atomic.Bool }
+
+func (rt *documentFailureRuntime) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instance, error) {
+	if rt.fail.Load() {
+		return nil, fmt.Errorf("test startup failure")
+	}
+	return (documentRuntime{}).Start(ctx, spec)
+}
+func TestDocumentSaveStartupHints(t *testing.T) {
+	t.Parallel()
+	rt := &documentFailureRuntime{}
+	rt.fail.Store(true)
+	e := newEnvWithRuntime(t, rt)
+	text, failed := call(t, e.local, "save_document", map[string]any{"slug": "failed-start", "markdown": "initial"}, nil)
+	if !failed || !strings.Contains(text, "no document is running yet") || !strings.Contains(text, "repeat this same save") {
+		t.Fatal(text)
+	}
+	rt.fail.Store(false)
+	if text, failed := call(t, e.local, "save_document", map[string]any{"slug": "failed-start", "markdown": "initial"}, nil); failed {
+		t.Fatal(text)
+	}
+	rt.fail.Store(true)
+	text, failed = call(t, e.local, "save_document", map[string]any{"slug": "failed-start", "path": "new.md", "markdown": "failed new document"}, nil)
+	if !failed || !strings.Contains(text, "running document is unchanged") || !strings.Contains(text, "sibling-document save will not carry this failed change") {
+		t.Fatal(text)
+	}
+}
+func TestDocumentSaveTextKeepsPublicNoticeSeparate(t *testing.T) {
+	text := documentText("Saved document", FlatInfo{Slug: "handbook", Running: true, Visibility: "public", PublicNotice: "Public notice"}, "Saved path: chapter.md. Entry document: README.md.")
+	if !strings.HasPrefix(text, "Saved document handbook.") || !strings.Contains(text, "Entry document: README.md.\nNotice: Public notice") {
+		t.Fatal(text)
 	}
 }

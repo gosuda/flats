@@ -5,25 +5,23 @@ import (
 	"testing"
 )
 
-const pendingLifecycle = `{"status":"pending_approval","approval":{"id":"apr-control","status":"pending","action":"publish"},"approval_url":"http://console.test/approvals/apr-control","message":"Waiting for an explicit operator decision; current version keeps serving."}`
+const pendingLifecycle = `{"status":"pending_approval","approval":{"id":"apr-control","status":"pending","action":"create_version"},"approval_url":"http://console.test/approvals/apr-control","message":"Waiting for an explicit operator decision; current version keeps serving."}`
 
 const pendingPublicLifecycle = `{"status":"pending_approval","approval":{"id":"apr-control","status":"pending","action":"set_visibility"},"approval_url":"http://console.test/approvals/apr-control","message":"Waiting for an explicit operator decision; current version keeps serving.","notice":"This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public."}`
 
 func TestLifecyclePendingExitAcrossCLI(t *testing.T) {
 	for _, jsonMode := range []bool{false, true} {
-		for _, operation := range []string{"upload", "publish", "deploy", "rollback", "public", "private"} {
+		for _, operation := range []string{"delete-version", "create-version", "deploy", "rollback", "public", "private"} {
 			t.Run(operation+map[bool]string{false: "-text", true: "-json"}[jsonMode], func(t *testing.T) {
 				f, srv := newFakeAPI(t)
 				var args []string
 				switch operation {
-				case "upload":
-					dir := t.TempDir()
-					writeTree(t, dir, map[string]string{"index.html": "DRAFT"})
-					f.handle("POST /api/flats/demo/versions", 202, `{"version":{"number":0,"role":"draft","revision":2},"deploy":`+pendingLifecycle+`}`)
-					args = []string{"deploy", dir, "--flat", "demo"}
-				case "publish":
-					f.handle("POST /api/flats/demo/publish", 202, pendingLifecycle)
-					args = []string{"publish", "demo", "--revision", "2"}
+				case "delete-version":
+					f.handle("DELETE /api/flats/demo/versions/2", 202, strings.ReplaceAll(pendingLifecycle, "create_version", "delete_version"))
+					args = []string{"delete-version", "demo", "--version", "2"}
+				case "create-version":
+					f.handle("POST /api/flats/demo/versions", 202, pendingLifecycle)
+					args = []string{"create-version", "demo", "--revision", "2"}
 				case "deploy":
 					f.handle("POST /api/flats/demo/deploy", 202, pendingLifecycle)
 					args = []string{"deploy", "--flat", "demo", "--version", "1"}
@@ -63,7 +61,7 @@ func TestLifecyclePendingExitAcrossCLI(t *testing.T) {
 
 func TestCLIApprovalSurfaceIsReadOnly(t *testing.T) {
 	f, srv := newFakeAPI(t)
-	f.handle("GET /api/approvals", 200, `{"approvals":[{"id":"apr-control","flat":"demo","action":"publish","status":"pending"}]}`)
+	f.handle("GET /api/approvals", 200, `{"approvals":[{"id":"apr-control","flat":"demo","action":"create_version","status":"pending"}]}`)
 	r := run(t, srv.URL, "", "approvals")
 	if r.code != ExitOK || !strings.Contains(r.stdout, "pending") {
 		t.Fatalf("approval read: %+v", r)
@@ -77,5 +75,25 @@ func TestCLIApprovalSurfaceIsReadOnly(t *testing.T) {
 		if request.method != "GET" || request.path != "/api/approvals" {
 			t.Fatalf("approval census mutated server: %+v", request)
 		}
+	}
+}
+
+func TestDeletionCleanupPendingIsExplicit(t *testing.T) {
+	for _, jsonMode := range []bool{false, true} {
+		t.Run(map[bool]string{false: "text", true: "json"}[jsonMode], func(t *testing.T) {
+			f, srv := newFakeAPI(t)
+			f.handle("DELETE /api/flats/demo/versions/2", 200, `{"status":"cleanup_pending","cleanup_pending":true,"message":"Version 2 was deleted; repair storage and restart Flats. Do not repeat deletion."}`)
+			args := []string{"delete-version", "demo", "--version", "2"}
+			if jsonMode {
+				args = append([]string{"--json"}, args...)
+			}
+			r := run(t, srv.URL, "", args...)
+			if r.code != ExitOK || !strings.Contains(r.stdout, "cleanup_pending") || !strings.Contains(r.stdout, "Do not repeat deletion") {
+				t.Fatalf("cleanup output: %+v", r)
+			}
+			if !jsonMode && !strings.Contains(r.stdout, "Status: cleanup_pending") {
+				t.Fatal(r.stdout)
+			}
+		})
 	}
 }

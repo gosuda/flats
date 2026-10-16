@@ -568,16 +568,19 @@ func TestEventsPrunedAndRuntimeLogsLimited(t *testing.T) {
 	}
 }
 
-// Regression (spec F10): keep_versions counts versions besides the live one.
-func TestRetentionKeepsNPlusLive(t *testing.T) {
+// Lowering a Version quota preserves all existing snapshots.
+func TestLoweringVersionQuotaKeepsAllVersions(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
-	e.svc.UpdateSettings(ctx, map[string]string{core.SetKeepVersions: "3"})
+	e.svc.UpdateSettings(ctx, map[string]string{core.SetVersionQuota: "0"})
 	for i := 1; i <= 6; i++ {
 		e.svc.SaveVersion(ctx, "ret", files("index.html", fmt.Sprint(i)), core.SaveMeta{}, core.ViaAPI)
 		if _, err := approvedTestDeploy(t, e.svc, ctx, "ret", i); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := e.svc.UpdateSettings(ctx, map[string]string{core.SetVersionQuota: "3"}); err != nil {
+		t.Fatal(err)
 	}
 	vs, _ := e.svc.ListVersions(ctx, "ret")
 	kept := 0
@@ -586,8 +589,8 @@ func TestRetentionKeepsNPlusLive(t *testing.T) {
 			kept++
 		}
 	}
-	if kept != 4 {
-		t.Fatalf("kept %d versions, want 3 plus the live one", kept)
+	if kept != 6 {
+		t.Fatalf("kept %d versions, want all 6", kept)
 	}
 }
 

@@ -2,6 +2,7 @@ import { h, icon, bytes } from './dom.js';
 import { api } from './api.js';
 import { fill, loading, errorPanel } from './ui.js';
 import { siteHeader } from './site.js';
+import { isLive } from './list.js';
 
 export function mount(main, [slug], ctx) {
   let days = 30, generation = 0;
@@ -26,10 +27,10 @@ export function mount(main, [slug], ctx) {
         return btn;
       }));
       const rows = stats.top_pages || [];
+      const revisionModel = isLive(flat);
       fill(content,
         h('div', { class: 'analytics-summary' },
           h('dl', { class: 'analytics-metrics' },
-            h('div', null, h('dt', { text: 'Unique Visitors' }), h('dd', { text: '—', title: 'Unique visitors are not tracked.' })),
             h('div', null, h('dt', { text: 'Page Views' }), h('dd', { text: total.toLocaleString() }))), range),
         h('section', { class: 'analytics-panel' }, h('h2', { text: 'Traffic over time' }),
           h('p', { class: 'muted small', text: 'Daily · UTC' }), trafficChart(data),
@@ -43,8 +44,8 @@ export function mount(main, [slug], ctx) {
         h('p', { class: 'muted small', text: stats.note || 'Page views count page requests. Unique visitors are not tracked.' }),
         h('section', { class: 'analytics-panel' }, h('h2', { text: 'Storage' }),
           h('dl', { class: 'facts' },
-            h('dt', { text: 'Disk' }), h('dd', { text: `${bytes(flat.disk_bytes)} (versions, data and previews)` }),
-            h('dt', { text: 'Versions' }), h('dd', { text: String(flat.versions) }))));
+            h('dt', { text: 'Disk' }), h('dd', { text: revisionModel ? bytes(flat.disk_bytes) : `${bytes(flat.disk_bytes)} (versions, data and previews)` }),
+            revisionModel ? null : [h('dt', { text: 'Versions' }), h('dd', { text: String(flat.versions) })])));
     } catch (err) { if (ctx.alive() && gen === generation) fill(content, errorPanel(err, 'Cannot load analytics')); }
   }
   load();

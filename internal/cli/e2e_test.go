@@ -90,7 +90,11 @@ func TestAgainstRealAPI(t *testing.T) {
 	}
 	site := t.TempDir()
 	writeTree(t, site, map[string]string{"index.html": "<h1>v1</h1>", "about.html": "about", ".DS_Store": "x"})
-	r := run(t, srv.URL, "", "deploy", site, "--flat", "demo", "--message", "first")
+	r := run(t, srv.URL, "", "save-draft", "demo", site, "--message", "first")
+	if r.code != ExitOK {
+		t.Fatalf("first save: %+v", r)
+	}
+	r = run(t, srv.URL, "", "create-version", "demo", "--revision", "1")
 	if r.code != ExitPending || !strings.Contains(r.stdout, "pending_approval") || strings.Contains(r.stdout, " is live") {
 		t.Fatalf("first pending: %+v", r)
 	}
@@ -107,7 +111,10 @@ func TestAgainstRealAPI(t *testing.T) {
 	approvePending()
 	assertState(1, "private", "<h1>v1</h1>")
 	writeTree(t, site, map[string]string{"index.html": "<h1>v2</h1>"})
-	if r := run(t, srv.URL, "", "deploy", site, "--flat", "demo", "--expected-revision", "1"); r.code != ExitPending {
+	if r := run(t, srv.URL, "", "save-draft", "demo", site, "--expected-revision", "1"); r.code != ExitOK {
+		t.Fatalf("second save: %+v", r)
+	}
+	if r := run(t, srv.URL, "", "create-version", "demo", "--revision", "2"); r.code != ExitPending {
 		t.Fatalf("second pending: %+v", r)
 	}
 	assertState(1, "private", "<h1>v1</h1>")
@@ -140,7 +147,7 @@ func TestAgainstRealAPI(t *testing.T) {
 	assertState(1, "private", "<h1>v1</h1>")
 	bad := t.TempDir()
 	writeTree(t, bad, map[string]string{"flats.json": `{"knd":"static"}`, "index.html": "x"})
-	if r := run(t, srv.URL, "", "deploy", bad, "--flat", "demo"); r.code != ExitError || !strings.Contains(r.stderr, "fix:") {
+	if r := run(t, srv.URL, "", "save-draft", "demo", bad); r.code != ExitError || !strings.Contains(r.stderr, "fix:") {
 		t.Fatalf("validation: %+v", r)
 	}
 	if r := run(t, srv.URL, "", "visibility", "demo", "public"); r.code != ExitPending || !strings.Contains(r.stdout, "http://console.test/approvals/apr-") {
@@ -200,7 +207,7 @@ func TestAgainstRealAPI(t *testing.T) {
 	if r := run(t, srv.URL, "", "preview", "demo", "--version", "2"); r.code != 0 || !strings.Contains(r.stdout, "version 2") {
 		t.Fatalf("published preview: %+v", r)
 	}
-	if r := run(t, srv.URL, "", "--json", "publish", "demo", "--revision", "3"); r.code != ExitPending || !strings.Contains(r.stdout, `"pending_approval"`) {
+	if r := run(t, srv.URL, "", "--json", "create-version", "demo", "--revision", "3"); r.code != ExitPending || !strings.Contains(r.stdout, `"pending_approval"`) {
 		t.Fatalf("explicit publish: %+v", r)
 	}
 	assertState(1, "private", "<h1>v1</h1>")

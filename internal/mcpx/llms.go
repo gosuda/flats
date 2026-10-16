@@ -116,7 +116,7 @@ func llmsIndex(origin, version string) string {
 	endpoint := origin + "/mcp"
 	return fmt.Sprintf(`# Flats
 
-> Flats hosts collaborative Markdown documents, websites and small server apps ("flats") on the operator's own machine. Agents save Private Draft content and request publication through MCP or the flats CLI; every publish, activation, rollback, deletion and visibility change waits for explicit operator approval.
+> Flats hosts collaborative Markdown documents, websites and small server apps ("flats") on the operator's own machine. Agents save Private Draft content and request publication through MCP or the flats CLI; every version creation, deployment, rollback, deletion and visibility change waits for explicit operator approval.
 
 This file is served by the Flats host at %s (version %s). Give the operator each approval_url exactly as returned, poll the approval, and report a version as live only after get_flat shows it current with a ready endpoint and you have fetched the page. Approval and provider decisions use the CSRF-protected console; it has no separate authentication, so only trusted local agents should run on the host.
 
@@ -184,9 +184,9 @@ These are the instructions the MCP server sends at initialization.
 
 On the Flats host, the flats CLI talks to the same server. Commands that request approval exit with code 3 while pending, also with --json.
 
-- ` + "`flats draft <slug> <dir> --expected-revision N`" + `: save a Private Draft from a build directory.
-- ` + "`flats deploy <dir> --flat <slug>`" + `: save Draft and request publish approval (` + "`--save-only`" + ` only saves).
-- ` + "`flats publish <slug> --revision N --hash HASH`" + `: request approval to publish a frozen Draft.
+- ` + "`flats save-draft <slug> <dir> --expected-revision N`" + `: save a Private Draft from a build directory.
+- ` + "`flats deploy --flat <slug> --version N`" + `: request approval to deploy a previously created version. Does not upload or create versions.
+- ` + "`flats create-version <slug> --revision N --hash HASH`" + `: request approval to create a version from a frozen Draft.
 - ` + "`flats approvals --json`" + `, ` + "`flats info <slug>`" + `, ` + "`flats logs <slug>`" + `: follow approvals, endpoints and events.
 - ` + "`flats help`" + ` lists every command.
 
