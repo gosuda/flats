@@ -118,40 +118,73 @@ def strip_code_and_comments(text: str) -> tuple[str, str]:
             fenced_out.append("\n" if line.endswith("\n") else "")
 
     no_fences = "".join(fenced_out)
-    # Strip inline code BEFORE HTML comments so `<!--` inside inline code cannot swallow prose
-    no_inline = re.sub(
-        r"(`+)((?:(?!\n[ \t]*\n).)+?)\1",
-        lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)),
-        no_fences,
-        flags=re.DOTALL,
-    )
-    # Blank out HTML comments at the exact character positions found in no_inline
-    comment_spans = [m.span() for m in re.finditer(r"<!--[\s\S]*?-->", no_inline)]
-    if comment_spans:
-        buf_f = list(no_fences)
-        buf_i = list(no_inline)
-        for s, e in comment_spans:
-            for idx in range(s, e):
-                if buf_f[idx] != "\n":
-                    buf_f[idx] = " "
-                if buf_i[idx] != "\n":
-                    buf_i[idx] = " "
-        no_fences = "".join(buf_f)
-        no_inline = "".join(buf_i)
+    # Single-pass scanner for unescaped inline code (`...`) and HTML comments (<!-- ... -->)
+    # so neither escaped backticks (\`), backticks inside comments, nor `<!--` inside inline code
+    # can corrupt the other.
+    buf_f = list(no_fences)
+    buf_i = list(no_fences)
+    n = len(no_fences)
+    i = 0
+    while i < n:
+        if no_fences[i] == "\\":
+            i += 2
+            continue
+        if no_fences.startswith("<!--", i):
+            end_c = no_fences.find("-->", i + 4)
+            end_idx = (end_c + 3) if end_c != -1 else n
+            for k in range(i, end_idx):
+                if buf_f[k] != "\n":
+                    buf_f[k] = " "
+                if buf_i[k] != "\n":
+                    buf_i[k] = " "
+            i = end_idx
+            continue
+        if no_fences[i] == "`":
+            j = i
+            while j < n and no_fences[j] == "`":
+                j += 1
+            ticks = no_fences[i:j]
+            # Search for matching closing ticks of the exact same length before a blank line
+            k = j
+            closed_end = -1
+            while k < n:
+                if no_fences[k] == "\n" and k + 1 < n and no_fences[k + 1] == "\n":
+                    break
+                if no_fences[k] == "`":
+                    m_end = k
+                    while m_end < n and no_fences[m_end] == "`":
+                        m_end += 1
+                    if (m_end - k) == len(ticks):
+                        closed_end = m_end
+                        break
+                    k = m_end
+                    continue
+                k += 1
+            if closed_end != -1:
+                for p in range(i, closed_end):
+                    if buf_i[p] != "\n":
+                        buf_i[p] = " "
+                i = closed_end
+                continue
+            i = j
+            continue
+        i += 1
 
-    return no_fences, no_inline
+    return "".join(buf_f), "".join(buf_i)
 
 
 def github_slug(heading_text: str) -> str:
-    parts = re.split(r"(`+[^`]*`+)", heading_text)
+    parts = re.split(r"((?<!\\)`+[^`]*`+)", heading_text)
     cleaned: list[str] = []
     for part in parts:
         if part.startswith("`") and part.endswith("`"):
             cleaned.append(part.strip("`"))
         else:
             no_tags = re.sub(r"<[^>]+>", "", part)
-            no_links = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", no_tags)
-            no_emph = re.sub(r"(\*{1,3})(.+?)\1", r"\2", no_links)
+            no_inline_links = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", no_tags)
+            no_ref_links = re.sub(r"!?\[([^\]]+)\]\s*\[[^\]]*\]", r"\1", no_inline_links)
+            no_shortcut_links = re.sub(r"!?\[([^\]]+)\]", r"\1", no_ref_links)
+            no_emph = re.sub(r"(\*{1,3})(.+?)\1", r"\2", no_shortcut_links)
             cleaned.append(no_emph)
     s = "".join(cleaned).strip().lower()
     out: list[str] = []
@@ -160,7 +193,7 @@ def github_slug(heading_text: str) -> str:
             out.append("-")
         elif ch in ("-", "_"):
             out.append(ch)
-        elif unicodedata.category(ch).startswith(("L", "N")):
+        elif unicodedata.category(ch).startswith(("L", "N", "M")):
             out.append(ch)
     return "".join(out)
 
