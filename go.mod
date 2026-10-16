@@ -12,6 +12,7 @@ require (
 	github.com/openziti/zrok/v2 v2.0.8
 	github.com/rs/zerolog v1.35.1
 	github.com/tetratelabs/wazero v1.12.0
+	github.com/yuin/goldmark v1.7.8
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0

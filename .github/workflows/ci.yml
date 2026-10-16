@@ -38,6 +38,11 @@ jobs:
       - name: Vet
         if: matrix.shard == 'other'
         run: go vet ./...
+      # Uncached, unlike TestRepositoryDocs: go test cannot see every Git
+      # index change that adds or removes a link target.
+      - name: Documentation links
+        if: matrix.shard == 'other'
+        run: make docs-check
       - name: Tests
         run: scripts/ci-test.sh "${{ matrix.shard }}"
 

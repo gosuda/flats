@@ -58,7 +58,7 @@ Organize documentation by **audience and purpose** into clear domain directories
 
 Before moving, renaming, or deleting any file, discover programmatic contracts from the codebase:
 - **Protected blocks**: Never modify `<!-- PROTECTED ... -->` blocks in Markdown files (including embedded asset paths such as logos).
-- **Generated references**: Search for update flags (`rg 'flag\.Bool\("update"'`) and run the generator (e.g., `go test ./docs -run TestGeneratedReferences -update`) after editing source topics under `docs/agent/`. Never hand-edit generated files.
+- **Generated references**: Search for update flags (`rg 'flag\.Bool\("update"'`) and run the generator (`make docs-generate` for the references built from `docs/agent/`) after editing source topics. Never hand-edit generated files.
 - **Code & test consumers of paths and prose**: Search across all source/build/test files (`rg` across `.go`, `.mjs`, `.js`, `.sh`, `.yml`, `.json`) for any path you plan to move or delete (Markdown files, example scripts/manifests, plugin manifests, assets) and check `*reference_test.go` for pinned sentences. Note that `/docs/*.md` routes in `internal/mcpx/llms.go` are HTTP endpoints served by the host, distinct from repository file paths.
 - **No review screenshots in Git**: Never keep or commit verification screenshots in the repository.
 
@@ -78,7 +78,10 @@ Sanitize Progress:
 
 ### Step 1: Discover Current Doc Graph & Code Contracts
 
-1. Run `python3 .cursor/skills/flats-doc-sanitize/scripts/check_docs.py` (a lightweight heuristic auditor for standard repository Markdown: fenced/inline code, ATX `#` headings, single-line Markdown/reference/HTML links, case-exact paths, reachability from `README.md` and code consumers, `docs/agent/` relative-link warnings, and 40/64-char hash literals).
+1. Run `make docs-audit`. It parses every repository Markdown file with a CommonMark/GFM parser (`internal/doccheck`) and reports:
+   - **Errors** (CI runs `make docs-check`, and `TestRepositoryDocs` runs the same check under `go test`): broken relative links and `#anchor` fragments, case mismatches, links to files Git does not ship or outside the repository, and relative links inside `docs/agent/`.
+   - **Review lists**: docs nothing reaches from `README.md` or code (`//go:embed`, quoted `.md` paths), colocated `internal/`, `examples/` and `cmd/` notes, and lines with 40/64-character hex literals.
+   Run `make help` for every documentation target.
 2. Inspect `docs/README.md`, `docs/spec/README.md`, and documentation tests to understand the active structure and automated invariants.
 
 ### Step 2: Audit for Contradictions, Spec-vs-Code Gaps, Drift, Overlap & Volatility
@@ -105,20 +108,18 @@ If any conflict, unimplemented/partial spec requirement, or proposed document me
 
 ### Step 5: Sync Generated Docs & Update Cross-Links
 
-1. Regenerate any derived documentation (e.g., `go test ./docs -run TestGeneratedReferences -update`).
+1. Regenerate any derived documentation (`make docs-generate`).
 2. Update all relative links and anchor fragments across Markdown indexes and any source/test files referencing moved paths.
 
 ### Step 6: Run Verification Suite & Report Implementation Gaps
 
 1. Verify link/anchor graph integrity and repository test contracts:
    ```bash
-   python3 .cursor/skills/flats-doc-sanitize/scripts/check_docs.py
-   go test -run '^$' ./...
-   go test ./docs/... ./plugins/... ./internal/mcpx/... ./internal/runtime/...
+   make docs-verify   # docs-check, compile every package, then docs-test
+   make docs-audit    # review lists for the final pass
    ```
    **Pass criteria**:
-   - `check_docs.py` must report **zero** broken links, case mismatches, broken `#anchor` fragments, or links to gitignored/outside-repo files (exit code 0).
-   - `check_docs.py` must report **zero** relative-link warnings inside `docs/agent/`.
-   - Unreachable (orphan) files must either be linked from the appropriate index, deleted (if obsolete and confirmed), or accounted for as intentional colocated package/command/example docs (`internal/...`, `examples/...`, `cmd/...`).
-   - 40/64-char hash findings must be reviewed to ensure ephemeral worker receipts are removed while valid test vectors/pins are preserved.
+   - `make docs-verify` exits 0: no broken links, anchors, case mismatches, links to unshipped or outside-repository files, or relative links inside `docs/agent/`; every package compiles; the documentation tests pass.
+   - Every unreachable doc that `make docs-audit` lists is linked from the appropriate index, deleted (if obsolete and confirmed), or accounted for as an intentional colocated package/command/example note.
+   - Every hash literal it lists has been reviewed: ephemeral worker receipts removed, valid test vectors and pins preserved.
 2. In the final summary, explicitly list any **Spec-vs-Implementation Gaps** discovered during the audit so the user can decide on follow-up code fixes.
