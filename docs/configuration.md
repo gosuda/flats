@@ -294,8 +294,10 @@ events or API responses:
 | NetBird setup key | registers every new NetBird peer (one per flat and console domain) | until removed |
 | zrok account token | connects the zrok account | until connected; the zrok environment in `zrok-environment/` then holds it |
 
-Each value is sealed with AES-256-GCM under `secret.key`, with the key's name
-as additional data, so a stored value cannot be moved to another key. A
+Each value is sealed with AES-256-GCM under `secret.key`, with
+`"host-key\x00"` followed by the key's name as additional data, so a stored
+value cannot be moved to another key, and the prefix keeps operator keys
+apart from flat secrets sealed under the same `secret.key`. A
 value has no white space and at most 4096 bytes. A Tailscale key must be an
 auth key (`tskey-auth-…`); OAuth client secrets (`tskey-client-…`) and API
 tokens (`tskey-api-…`) are refused. Use a reusable key so every new node can

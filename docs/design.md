@@ -28,8 +28,9 @@ flats serve                     (one long-running process; launchd on macOS, sys
 The default private network is `local`: Flats serves each flat and preview at
 `http://<host>.localhost:<port>` on a loopback port. A flat gets a route on
 another network only when the host permits that provider and the flat holds
-its grant. Tailscale and NetBird give every permitted flat, preview and
-console domain its own node or peer; the console runs on a tailnet or NetBird
+its grant. Tailscale gives every permitted flat, preview and console domain
+its own node; NetBird gives every permitted flat and console domain its own
+peer, but no preview; the console runs on a tailnet or NetBird
 only when `tailscale.console_hosts` or `netbird.console_hosts` lists names
 (both empty by default). Public providers serve only Public flats. The
 operator guide is [Private and public access](networking.md) and the provider
@@ -235,6 +236,39 @@ guard on what they change: a text edit names the editable element and the
 SHA-256 of its inner source, a tweak or canvas edit names the base value. A
 stale guard is refused with `conflict`. Text edits are sanitized to an inline
 allow-list with only `class` and `style` attributes.
+
+**Person operations** (`POST /_design/api/ops`, `{editor, op}`;
+`internal/design/ops.go`):
+
+| Operation | Guard |
+| --- | --- |
+| `text.set {path, gen, node, tag, inner_hash, html}` | `gen` is current, node `node` has tag `tag` and the SHA-256 of its exact inner source equals `inner_hash`; the sanitized result is at most 64 KiB and has text |
+| `tweak.set {path, gen, name, value, base_value}` | `gen` is current and `base_value` equals the current value; the new value is validated for its tweak type |
+| `board.set {path, fields, base}` (`x`, `y`, `w`, `h`, `title`) | `gen` of `canvas.json` is current and each field's `base` equals its current value |
+| `board.order {path, to: front\|back, base_index}` | the board's current index in `order` equals `base_index` |
+| `note.add {id?, fields}` | the id does not exist yet (a missing id is generated) |
+| `note.set {id, fields, base}` | as `board.set` |
+| `note.delete {id, base}` | `base` is the complete note (`x`, `y`, `w`, `text`, `color`) and equals it |
+
+Canvas operations keep unknown keys and validate the resulting canvas as
+above. The canvas app reads an element's `inner_hash` and inner source from
+`GET /_design/api/node`, never from the artboard.
+
+**Routes** (`internal/design/handler.go`):
+
+| Route | Access | Purpose |
+| --- | --- | --- |
+| `GET /` | all | canvas app shell |
+| `GET /_design/app/<file>` | all | embedded app assets |
+| `POST /_design/api/session` | all | issue a resource capability |
+| `GET /_design/api/state` | all | `{slug, access, seq, revision, pending, visibility, canvas, files, artboards}`; public responses omit file `gen` |
+| `GET /_design/api/events` | all | event stream: `hello`, `change`, `resync`; heartbeat every 25 s |
+| `GET /_design/api/node?path=&node=` | private | `{tag, inner, inner_hash, gen}` of an editable element |
+| `POST /_design/api/ops` | private | one person operation |
+| `GET /_design/api/revisions[/{n}]`, `POST …/{n}/pin`, `POST …/{n}/rollback` | private | history, pins and rollback ([revision store](revision-store.md)) |
+| `GET /_design/c/<cap>/<path>` | holder of `cap` | a file of the capability's scope |
+| `GET /_design/export.zip` | all | export of one coherent head snapshot |
+| `GET /<path>` | all | a head file, for opening an artboard directly |
 
 **Access and write protection.** The handler reads access from
 `X-Flats-Access`, which core sets; anything but `private` is public. A public

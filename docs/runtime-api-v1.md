@@ -1129,10 +1129,11 @@ Rules:
 * An approval freezes what it approves (Draft revision and hash, version,
   snapshot, visibility, providers). If that changes before the decision, it
   fails as `stale_approval`; request again. An identical pending request is
-  reused rather than duplicated. A document's live version changes with every
-  `save_document`, `update_document` or `rollback_revision` that changes its
-  content, so a pending `set_visibility` for a document fails as stale after
-  such a call.
+  reused rather than duplicated. A `save_document` that changes a document's
+  content moves its live version, and so does a `rollback_revision` whose
+  target has other non-document files or another set of documents; a pending
+  `set_visibility` for that document then fails as stale. Live edits
+  (`update_document`, people's edits) and other revision rollbacks do not.
 * After a decision, `get_approval` `result_data` reports `failure_code` (a
   `refusal.<category>` name, or `apply_failed`), `data_impact` (`none`,
   `runtime_start`, `restore_data` or `unknown`), `health_data` and

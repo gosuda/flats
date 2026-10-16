@@ -156,9 +156,11 @@ frozen value:
 - `delete_version` freezes the version hash.
 - `set_visibility` freezes the source visibility and the live version.
 
-A changed save of a document moves its live version, so a pending visibility
-approval for a document fails as `stale_approval` after any changed save; the
-operator then approves a fresh request. Designs are not affected, since their
+A changed save of a document moves its live version, and so does a revision
+rollback whose target has other non-document files or another set of
+documents ([revision store](revision-store.md)); a pending visibility approval
+for that document then fails as `stale_approval` and the operator approves a
+fresh request. Live edits keep the live version. Designs are not affected, since their
 shell version never changes. The product rule that content changes do not make
 a visibility approval stale is not implemented for documents; see the
 Current state of [content-models.md](spec/content-models.md#current-state).
