@@ -131,7 +131,10 @@ def strip_code_and_comments(text: str) -> tuple[str, str]:
             continue
         if no_fences.startswith("<!--", i):
             end_c = no_fences.find("-->", i + 4)
-            end_idx = (end_c + 3) if end_c != -1 else n
+            if end_c == -1:
+                i += 4
+                continue
+            end_idx = end_c + 3
             for k in range(i, end_idx):
                 if buf_f[k] != "\n":
                     buf_f[k] = " "
@@ -144,12 +147,16 @@ def strip_code_and_comments(text: str) -> tuple[str, str]:
             while j < n and no_fences[j] == "`":
                 j += 1
             ticks = no_fences[i:j]
-            # Search for matching closing ticks of the exact same length before a blank line
+            # Search for matching closing ticks of the exact same length before a blank line (\n[ \t]*\n)
             k = j
             closed_end = -1
             while k < n:
-                if no_fences[k] == "\n" and k + 1 < n and no_fences[k + 1] == "\n":
-                    break
+                if no_fences[k] == "\n":
+                    ws = k + 1
+                    while ws < n and no_fences[ws] in (" ", "\t", "\r"):
+                        ws += 1
+                    if ws < n and no_fences[ws] == "\n":
+                        break
                 if no_fences[k] == "`":
                     m_end = k
                     while m_end < n and no_fences[m_end] == "`":
@@ -174,19 +181,23 @@ def strip_code_and_comments(text: str) -> tuple[str, str]:
 
 
 def github_slug(heading_text: str) -> str:
-    parts = re.split(r"((?<!\\)`+[^`]*`+)", heading_text)
-    cleaned: list[str] = []
-    for part in parts:
-        if part.startswith("`") and part.endswith("`"):
-            cleaned.append(part.strip("`"))
-        else:
-            no_tags = re.sub(r"<[^>]+>", "", part)
-            no_inline_links = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", no_tags)
-            no_ref_links = re.sub(r"!?\[([^\]]+)\]\s*\[[^\]]*\]", r"\1", no_inline_links)
-            no_shortcut_links = re.sub(r"!?\[([^\]]+)\]", r"\1", no_ref_links)
-            no_emph = re.sub(r"(\*{1,3})(.+?)\1", r"\2", no_shortcut_links)
-            cleaned.append(no_emph)
-    s = "".join(cleaned).strip().lower()
+    # Protect inline code spans with placeholders first so links wrapping inline code
+    # (e.g., `# [Use `flats`][ref]`) strip cleanly before inline code is restored.
+    code_spans: list[str] = []
+
+    def _save_code(m: re.Match[str]) -> str:
+        idx = len(code_spans)
+        code_spans.append(m.group(0).strip("`"))
+        return f"\x00CODE{idx}\x00"
+
+    s = re.sub(r"(?<!\\)`+[^`]*`+", _save_code, heading_text)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"!?\[([^\]]+)\]\[[^\]]*\]", r"\1", s)
+    s = re.sub(r"!?\[([^\]]+)\]", r"\1", s)
+    s = re.sub(r"(\*{1,3})(.+?)\1", r"\2", s)
+    s = re.sub(r"\x00CODE(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
+    s = s.strip().lower()
     out: list[str] = []
     for ch in s:
         if ch in (" ", "\t"):
