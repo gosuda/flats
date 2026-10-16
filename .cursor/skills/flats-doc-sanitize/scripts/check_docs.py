@@ -2,11 +2,14 @@
 """Structure-agnostic Markdown link, anchor, and reachability auditor.
 
 Does not hardcode directory layouts or file naming conventions:
-1. Discovers tracked Markdown files via `git ls-files` from the Git top-level root.
-2. Validates relative Markdown/reference/HTML links, case-exact file names, and `#anchor` fragments.
+1. Discovers non-ignored repository files via `git ls-files --cached --others --exclude-standard`
+   from the Git top-level root (covering both tracked and newly created unstaged docs while
+   rejecting links to gitignored or outside-repo paths).
+2. Validates relative Markdown/reference/HTML links, case-exact file names, and case-sensitive
+   `#anchor` fragments (ATX & Setext headings plus HTML id/name attributes).
 3. Builds a BFS reachability graph starting from root `README.md` and runtime/build code entrypoints
-   (`//go:embed`, build scripts) while reporting test-only or colocated Markdown files separately.
-4. Flags relative links inside `docs/agent/topics/` (which break when served via MCP/llms.txt)
+   (`//go:embed`, build/config files) while reporting test-only or colocated Markdown files separately.
+4. Flags relative links inside `docs/agent/` (which break when served via MCP/llms.txt)
    and lines containing 40-char (SHA-1) or 64-char (SHA-256) hex hashes.
 """
 
@@ -26,18 +29,28 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
-REF_DEF_RE = re.compile(r"^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$")
-HTML_ATTR_RE = re.compile(r"""<(?:a|img)\b[^>]*?\b(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
+SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
+REF_DEF_RE = re.compile(
+    r"^[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(\S+)(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+)
+HTML_ATTR_RE = re.compile(
+    r"""<(?:a|img|link|script|source)\b[^>]*?\b(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>"']+))""",
+    re.IGNORECASE,
+)
 HTML_ID_RE = re.compile(r"""\b(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
 QUOTED_MD_RE = re.compile(r"""["'`]([A-Za-z0-9_./*-]+\.(?:md|markdown))["'`]""")
 
-CODE_SUFFIXES = {".go", ".mjs", ".js", ".ts", ".sh", ".py", ".yml", ".yaml"}
+CODE_SUFFIXES = {".go", ".mjs", ".js", ".ts", ".sh", ".py", ".yml", ".yaml", ".json"}
+TEST_FILE_RE = re.compile(
+    r"(?:_test\.go$|(?:^|[._-])(?:test|tests|spec)\.[A-Za-z0-9]+$|^test_)",
+    re.IGNORECASE,
+)
 
 
 def find_repo_root() -> pathlib.Path:
     script_dir = pathlib.Path(__file__).resolve().parent
-    for start in (pathlib.Path.cwd().resolve(), script_dir):
+    for start in (script_dir, pathlib.Path.cwd().resolve()):
         try:
             out = subprocess.check_output(
                 ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
@@ -48,26 +61,21 @@ def find_repo_root() -> pathlib.Path:
                 return pathlib.Path(out).resolve()
         except Exception:
             pass
-    for parent in [script_dir, *script_dir.parents]:
-        if (parent / ".git").exists():
-            return parent.resolve()
-    return pathlib.Path.cwd().resolve()
+    raise RuntimeError(f"Could not determine Git repository root from {script_dir}")
 
 
-def list_tracked_files(root: pathlib.Path) -> list[pathlib.Path]:
-    try:
-        out = subprocess.check_output(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            stderr=subprocess.DEVNULL,
-        )
-        rels = [p for p in out.decode("utf-8", errors="replace").split("\0") if p]
-        return sorted((root / rel) for rel in rels if (root / rel).is_file())
-    except Exception:
-        return sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts)
+def list_repo_files(root: pathlib.Path) -> list[pathlib.Path]:
+    """Return all tracked + untracked non-ignored files in the repository."""
+    out = subprocess.check_output(
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        stderr=subprocess.PIPE,
+    )
+    rels = {p for p in out.decode("utf-8", errors="replace").split("\0") if p}
+    return sorted((root / rel) for rel in rels if (root / rel).is_file())
 
 
 def strip_fences_and_comments(text: str) -> str:
-    """Replace fenced code blocks and HTML comments with newlines to preserve line numbers."""
+    """Replace fenced code blocks, indented code blocks, and HTML comments with newlines."""
     text = re.sub(
         r"<!--[\s\S]*?-->",
         lambda m: "\n" * m.group(0).count("\n"),
@@ -78,6 +86,8 @@ def strip_fences_and_comments(text: str) -> str:
     in_fence = False
     fence_char = ""
     fence_len = 0
+    prev_blank = True
+    in_indented_code = False
 
     for line in lines:
         if not in_fence:
@@ -85,23 +95,39 @@ def strip_fences_and_comments(text: str) -> str:
             if m:
                 marker = m.group(1)
                 in_fence = True
+                in_indented_code = False
                 fence_char = marker[0]
                 fence_len = len(marker)
                 out.append("\n" if line.endswith("\n") else "")
                 continue
+
+            is_blank = line.strip() == ""
+            is_indented = line.startswith("    ") or line.startswith("\t")
+            if is_indented and (prev_blank or in_indented_code):
+                in_indented_code = True
+                out.append("\n" if line.endswith("\n") else "")
+                continue
+            if not is_blank:
+                in_indented_code = False
+            prev_blank = is_blank
             out.append(line)
         else:
             close_re = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*\r?\n?$")
             if close_re.match(line):
                 in_fence = False
+                prev_blank = True
             out.append("\n" if line.endswith("\n") else "")
     return "".join(out)
 
 
 def strip_inline_code(text: str) -> str:
-    """Replace inline code spans (`...`, ``...``) with spaces, preserving newlines."""
+    """Replace inline code spans (`...`, ``...``) with spaces, preserving newlines.
+
+    Does not match across blank lines (paragraph boundaries) so a stray unmatched
+    backtick cannot blank out subsequent paragraphs.
+    """
     return re.sub(
-        r"(`+)(.+?)\1",
+        r"(`+)((?:(?!\n[ \t]*\n).)+?)\1",
         lambda m: "".join("\n" if ch == "\n" else " " for ch in m.group(0)),
         text,
         flags=re.DOTALL,
@@ -109,8 +135,15 @@ def strip_inline_code(text: str) -> str:
 
 
 def github_slug(heading_text: str) -> str:
-    s = re.sub(r"`+", "", heading_text)
-    s = re.sub(r"<[^>]+>", "", s)
+    # Strip HTML tags only outside inline code spans, while keeping text inside `...`
+    parts = re.split(r"(`+[^`]*`+)", heading_text)
+    cleaned_parts: list[str] = []
+    for part in parts:
+        if part.startswith("`") and part.endswith("`"):
+            cleaned_parts.append(part.strip("`"))
+        else:
+            cleaned_parts.append(re.sub(r"<[^>]+>", "", part))
+    s = "".join(cleaned_parts)
     s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s)
     s = s.strip().lower()
     out: list[str] = []
@@ -134,19 +167,38 @@ def extract_anchors(prose_with_inline: str, prose_no_inline: str) -> set[str]:
         val = (m.group(1) or m.group(2) or "").strip()
         if val:
             anchors.add(val)
-            anchors.add(val.lower())
 
-    for line in prose_with_inline.splitlines():
-        m = HEADING_RE.match(line)
-        if not m:
-            continue
-        base = github_slug(m.group(2))
+    def register_heading(raw_heading: str) -> None:
+        base = github_slug(raw_heading)
         if not base:
-            continue
+            return
         idx = counts.get(base, 0)
         counts[base] = idx + 1
         slug = base if idx == 0 else f"{base}-{idx}"
         anchors.add(slug)
+
+    lines_with_inline = prose_with_inline.splitlines()
+    lines_no_inline = prose_no_inline.splitlines()
+    n = len(lines_with_inline)
+    i = 0
+    while i < n:
+        line = lines_with_inline[i]
+        m = HEADING_RE.match(line)
+        if m:
+            register_heading(m.group(2))
+            i += 1
+            continue
+        # Setext heading: non-empty paragraph line followed by === or ---
+        if i + 1 < n and lines_no_inline[i].strip() and not REF_DEF_RE.match(lines_no_inline[i]):
+            stripped = lines_no_inline[i].lstrip()
+            if not stripped.startswith(("#", "-", "*", "+", ">", "|")):
+                um = SETEXT_UNDERLINE_RE.match(lines_no_inline[i + 1])
+                if um:
+                    register_heading(line.strip())
+                    i += 2
+                    continue
+        i += 1
+
     return anchors
 
 
@@ -154,66 +206,117 @@ def clean_destination(raw_dest: str) -> str:
     s = raw_dest.strip()
     if s.startswith("<") and ">" in s:
         return s[1 : s.index(">")].strip()
-    # Strip optional title: path "title" or path 'title' or path (title)
-    m = re.match(r'^(\S+?)(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?$', s)
+    m = re.match(r'^(\S+?)(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?$', s, flags=re.DOTALL)
     if m:
         return m.group(1)
     return s.split()[0] if s.split() else ""
 
 
-def scan_inline_links(line: str) -> list[tuple[str, bool]]:
-    """Return (destination, is_ref) from inline `[text](dest)` and `[text][ref]`."""
-    results: list[tuple[str, bool]] = []
-    n = len(line)
+def scan_markdown_links(text: str, ref_defs: dict[str, str]) -> list[tuple[int, str]]:
+    """Scan full document text for inline `[text](dest)`, `[text][ref]`, and `[ref]`.
+
+    Supports multiline link text/destinations and nested images inside links.
+    Returns list of (1-based line_no, resolved_destination).
+    """
+    results: list[tuple[int, str]] = []
+    # Precompute newline offsets for O(log N) line lookup
+    line_starts = [0]
+    for idx, ch in enumerate(text):
+        if ch == "\n":
+            line_starts.append(idx + 1)
+
+    def line_of(pos: int) -> int:
+        lo, hi = 0, len(line_starts) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if line_starts[mid] <= pos:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return hi + 1
+
+    n = len(text)
     i = 0
     while i < n:
-        if line[i] == "[":
-            # Find matching ']' handling nested brackets
+        # Skip reference definition lines at start of line
+        if i == 0 or text[i - 1] == "\n":
+            line_end = text.find("\n", i)
+            if line_end == -1:
+                line_end = n
+            if REF_DEF_RE.match(text[i:line_end]):
+                i = line_end + 1
+                continue
+
+        if text[i] == "\\":
+            i += 2
+            continue
+
+        if text[i] == "[":
             depth = 1
             j = i + 1
             while j < n and depth > 0:
-                if line[j] == "\\":
+                if text[j] == "\\":
                     j += 2
                     continue
-                if line[j] == "[":
+                if text[j] == "\n" and j + 1 < n and text[j + 1] == "\n":
+                    # Blank line breaks link label
+                    break
+                if text[j] == "[":
                     depth += 1
-                elif line[j] == "]":
+                elif text[j] == "]":
                     depth -= 1
                 j += 1
-            if depth == 0 and j < n:
-                if line[j] == "(":
-                    # Find matching ')' handling nested parentheses and angle brackets
+
+            if depth == 0:
+                label_text = text[i + 1 : j - 1]
+                # Recursively scan inner label for nested image/link destinations
+                if "[" in label_text:
+                    inner_line_base = line_of(i + 1) - 1
+                    for sub_line, sub_dest in scan_markdown_links(label_text, ref_defs):
+                        results.append((inner_line_base + sub_line, sub_dest))
+
+                if j < n and text[j] == "(":
                     p_depth = 1
                     k = j + 1
                     in_angles = False
                     while k < n and p_depth > 0:
-                        if line[k] == "\\":
+                        if text[k] == "\\":
                             k += 2
                             continue
-                        if line[k] == "<":
+                        if text[k] == "\n" and k + 1 < n and text[k + 1] == "\n":
+                            break
+                        if text[k] == "<":
                             in_angles = True
-                        elif line[k] == ">":
+                        elif text[k] == ">":
                             in_angles = False
                         elif not in_angles:
-                            if line[k] == "(":
+                            if text[k] == "(":
                                 p_depth += 1
-                            elif line[k] == ")":
+                            elif text[k] == ")":
                                 p_depth -= 1
                         k += 1
                     if p_depth == 0:
-                        dest = clean_destination(line[j + 1 : k - 1])
+                        dest = clean_destination(text[j + 1 : k - 1])
                         if dest:
-                            results.append((dest, False))
+                            results.append((line_of(i), dest))
                         i = k
                         continue
-                elif line[j] == "[":
-                    k = line.find("]", j + 1)
-                    if k != -1:
-                        ref_label = line[j + 1 : k].strip() or line[i + 1 : j - 1].strip()
-                        if ref_label:
-                            results.append((ref_label, True))
+                elif j < n and text[j] == "[":
+                    k = text.find("]", j + 1)
+                    if k != -1 and "\n\n" not in text[j + 1 : k]:
+                        ref_label = " ".join(text[j + 1 : k].split()) or " ".join(label_text.split())
+                        resolved_def = ref_defs.get(ref_label.lower())
+                        if resolved_def:
+                            results.append((line_of(i), resolved_def))
                         i = k + 1
                         continue
+                else:
+                    # Shortcut reference link `[label]`
+                    norm_label = " ".join(label_text.split()).lower()
+                    if norm_label and norm_label in ref_defs:
+                        results.append((line_of(i), ref_defs[norm_label]))
+                    i = j
+                    continue
         i += 1
     return results
 
@@ -229,31 +332,22 @@ class LinkRef:
 def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inline: str) -> list[LinkRef]:
     lines = prose_no_inline.splitlines()
     ref_defs: dict[str, str] = {}
+    raw_occurrences: list[tuple[int, str]] = []
 
-    for line in lines:
+    for idx, line in enumerate(lines, start=1):
         m = REF_DEF_RE.match(line)
         if m:
-            label = m.group(1).strip().lower()
+            label = " ".join(m.group(1).split()).lower()
             dest = clean_destination(m.group(2))
             if label and dest:
                 ref_defs[label] = dest
-
-    raw_occurrences: list[tuple[int, str]] = []
-    for idx, line in enumerate(lines, start=1):
-        if REF_DEF_RE.match(line):
-            m = REF_DEF_RE.match(line)
-            if m:
-                raw_occurrences.append((idx, clean_destination(m.group(2))))
-            continue
-        for dest, is_ref in scan_inline_links(line):
-            if is_ref:
-                resolved_def = ref_defs.get(dest.lower())
-                if resolved_def:
-                    raw_occurrences.append((idx, resolved_def))
-            else:
                 raw_occurrences.append((idx, dest))
+
+    raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs))
+
+    for idx, line in enumerate(lines, start=1):
         for hm in HTML_ATTR_RE.finditer(line):
-            attr_val = (hm.group(1) or hm.group(2) or "").strip()
+            attr_val = (hm.group(1) or hm.group(2) or hm.group(3) or "").strip()
             if attr_val:
                 raw_occurrences.append((idx, attr_val))
 
@@ -262,7 +356,7 @@ def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inli
         if not raw or raw.startswith("//") or SCHEME_RE.match(raw):
             continue
         if raw.startswith("#"):
-            links.append(LinkRef(line_no, raw, md_file, raw[1:]))
+            links.append(LinkRef(line_no, raw, md_file, urllib.parse.unquote(raw[1:].strip())))
             continue
 
         path_part, _, frag = raw.partition("#")
@@ -279,51 +373,63 @@ def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inli
         else:
             candidate = md_file.parent / path_part
 
-        # Normalize '..' without resolving case on macOS APFS
         norm = pathlib.Path(os.path.normpath(str(candidate)))
         links.append(LinkRef(line_no, raw, norm, frag))
 
     return links
 
 
-def check_exact_case_exists(root: pathlib.Path, target: pathlib.Path, tracked_set: set[pathlib.Path], tracked_dirs: set[pathlib.Path]) -> tuple[bool, str]:
-    if target in tracked_set or target in tracked_dirs or target == root:
+def check_target_valid(
+    root: pathlib.Path,
+    target: pathlib.Path,
+    repo_file_set: set[pathlib.Path],
+    repo_dirs: set[pathlib.Path],
+) -> tuple[bool, str]:
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return False, "link points outside repository root"
+
+    if target in repo_file_set or target in repo_dirs:
         return True, ""
+
     if target.exists():
-        # Verify case-exact components from root
-        try:
-            rel = target.relative_to(root)
-        except ValueError:
-            return True, ""
         cur = root
         for part in rel.parts:
             try:
                 entries = set(os.listdir(cur))
             except OSError:
-                return False, "not found"
+                return False, "file not found"
             if part not in entries:
                 return False, f"case mismatch on '{part}' (breaks on Linux/GitHub)"
             cur = cur / part
-        return True, ""
+        return False, "target is gitignored (will break on GitHub)"
+
     return False, "file not found"
+
+
+def is_test_source(rel_parts: tuple[str, ...], file_name: str) -> bool:
+    if any(p in ("testdata", "test", "tests", "__tests__") for p in rel_parts[:-1]):
+        return True
+    return bool(TEST_FILE_RE.search(file_name))
 
 
 def discover_code_references(
     root: pathlib.Path,
-    tracked_files: list[pathlib.Path],
+    repo_files: list[pathlib.Path],
     md_set: set[pathlib.Path],
 ) -> tuple[set[pathlib.Path], set[pathlib.Path]]:
     """Return (runtime_seeds, test_only_refs)."""
     runtime_seeds: set[pathlib.Path] = set()
     test_refs: set[pathlib.Path] = set()
 
-    for f in tracked_files:
-        if f.suffix not in CODE_SUFFIXES:
+    for f in repo_files:
+        if f.suffix.lower() not in CODE_SUFFIXES:
             continue
         rel_parts = f.relative_to(root).parts
         if rel_parts and rel_parts[0] in (".cursor", ".claude", ".agents"):
             continue
-        is_test = f.name.endswith("_test.go") or "test" in f.name.lower() or "testdata" in rel_parts
+        is_test = is_test_source(rel_parts, f.name)
         text = f.read_text(encoding="utf-8", errors="replace")
 
         if f.suffix == ".go":
@@ -365,13 +471,16 @@ def discover_code_references(
 
 
 def main() -> int:
-    root = find_repo_root()
-    tracked = list_tracked_files(root)
+    try:
+        root = find_repo_root()
+        repo_files = list_repo_files(root)
+    except Exception as exc:
+        print(f"[FAIL] Repository discovery failed: {exc}", file=sys.stderr)
+        return 1
 
-    # Exclude tool/skill dirs from project doc audit
     md_files = [
         p
-        for p in tracked
+        for p in repo_files
         if p.suffix.lower() in (".md", ".markdown")
         and p.relative_to(root).parts[0] not in (".cursor", ".claude", ".agents")
     ]
@@ -379,12 +488,12 @@ def main() -> int:
         print(f"[FAIL] Scanned 0 Markdown files under {root}. Check repository root.", file=sys.stderr)
         return 1
 
-    tracked_set = set(tracked)
-    tracked_dirs: set[pathlib.Path] = {root}
-    for p in tracked:
+    repo_file_set = set(repo_files)
+    repo_dirs: set[pathlib.Path] = {root}
+    for p in repo_files:
         for parent in p.parents:
             if parent == root or root in parent.parents:
-                tracked_dirs.add(parent)
+                repo_dirs.add(parent)
 
     md_set = set(md_files)
     anchors_by_file: dict[pathlib.Path, set[str]] = {}
@@ -425,7 +534,7 @@ def main() -> int:
         for lk in links_by_file[md]:
             if lk.target_path is None:
                 continue
-            ok, reason = check_exact_case_exists(root, lk.target_path, tracked_set, tracked_dirs)
+            ok, reason = check_target_valid(root, lk.target_path, repo_file_set, repo_dirs)
             if not ok:
                 broken_links.append(f"{rel_md}:{lk.line_no}: broken link '{lk.raw}' ({reason})")
                 continue
@@ -433,18 +542,18 @@ def main() -> int:
             target_md: pathlib.Path | None = None
             if lk.target_path in md_set:
                 target_md = lk.target_path
-            elif lk.target_path in tracked_dirs and (lk.target_path / "README.md") in md_set:
+            elif lk.target_path in repo_dirs and (lk.target_path / "README.md") in md_set:
                 target_md = lk.target_path / "README.md"
 
             if lk.fragment and target_md is not None:
                 known_anchors = anchors_by_file.get(target_md, set())
-                if lk.fragment not in known_anchors and lk.fragment.lower() not in known_anchors:
+                if lk.fragment not in known_anchors:
                     broken_links.append(
                         f"{rel_md}:{lk.line_no}: broken anchor '{lk.raw}' (#{lk.fragment} not found in {target_md.relative_to(root)})"
                     )
 
     # Reachability BFS from root README.md + runtime/build code seeds
-    runtime_seeds, test_only_refs = discover_code_references(root, tracked, md_set)
+    runtime_seeds, test_only_refs = discover_code_references(root, repo_files, md_set)
     seeds: set[pathlib.Path] = set(runtime_seeds)
     root_readme = root / "README.md"
     if root_readme in md_set:
@@ -461,13 +570,11 @@ def main() -> int:
             candidates: list[pathlib.Path] = []
             if lk.target_path in md_set:
                 candidates.append(lk.target_path)
-            elif lk.target_path in tracked_dirs:
+            elif lk.target_path in repo_dirs:
                 dir_readme = lk.target_path / "README.md"
                 if dir_readme in md_set:
                     candidates.append(dir_readme)
-            elif lk.target_path in tracked_set:
-                # Linking to a non-Markdown file inside a directory (e.g. examples/foo/server.js)
-                # also credits that directory's README.md if present.
+            elif lk.target_path in repo_file_set:
                 sibling_readme = lk.target_path.parent / "README.md"
                 if sibling_readme in md_set:
                     candidates.append(sibling_readme)
@@ -489,7 +596,7 @@ def main() -> int:
             doc_orphans.append(u)
 
     print(f"=== Documentation Graph Audit ({root}) ===")
-    print(f"Scanned {len(md_files)} tracked Markdown files.\n")
+    print(f"Scanned {len(md_files)} repository Markdown files.\n")
 
     if broken_links:
         print(f"[FAIL] Broken links / case mismatches / broken anchors ({len(broken_links)}):")

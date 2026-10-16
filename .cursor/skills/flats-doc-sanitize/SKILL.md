@@ -40,7 +40,7 @@ When the codebase does not faithfully or completely implement a specification (P
      - **Operational, Architecture & Agent Docs**: Describe only what the running code actually supports today so users and agents are not misled into calling unimplemented behavior.
      - **Implementation Gap Report**: Surface a dedicated list of spec-vs-code omissions in the final sanitize summary.
    - **If (c) Intentional design change (confirmed by user)**:
-     - Update the spec body first ("a change that needs to break a spec updates the page first"), and remove the corresponding stale bullets from `Current state` and `Open questions`.
+     - Update the spec body first ("a change that needs to break one updates the page first"), and remove the corresponding stale bullets from `Current state` and `Open questions`.
    - **If (d) Undecided**:
      - Record the open decision under the spec's `Open questions` section.
 
@@ -52,7 +52,7 @@ Organize documentation by **audience and purpose** into clear domain directories
 - **Architecture (maintainer design contracts)**: How the implemented system works internally. Each file should own one cohesive subsystem.
 - **Product Specs (PRDs)**: What the product must do and why, independent of implementation. Follow the conventions in `docs/spec/README.md` (status line, `Current state`, `Open questions`).
 - **Verification (repeatable gate guides)**: Repeatable verification procedures, CI shard rules, and acceptance criteria. Keep *how to run and what must pass*; prune ephemeral worker handoff logs while asking the user before deleting indexed gate evidence.
-- **Generated & Embedded Agent Docs (`docs/agent/`)**: Single source of truth for MCP `guide` topics (`TopicOrder` in `docs/runtime_reference.go`, routed from `topic.index`), `refusals.md` (`## <category>` sections), and generated references. Avoid relative Markdown links inside `docs/agent/topics/` that break when served via MCP or `llms.txt`.
+- **Generated & Embedded Agent Docs (`docs/agent/`)**: Single source of truth for MCP `guide` topics (`TopicOrder` in `docs/runtime_reference.go`, routed from `topic.index`), `refusals.md` (`## <category>` sections), and generated references. Avoid relative Markdown links inside `docs/agent/` that break when served via MCP or `llms.txt`.
 
 ## Repository Invariants (Discover Dynamically)
 
@@ -117,7 +117,8 @@ If any conflict, unimplemented/partial spec requirement, or proposed document me
    go test ./docs/... ./plugins/... ./internal/mcpx/... ./internal/runtime/...
    ```
    **Pass criteria**:
-   - `check_docs.py` must report **zero** broken links, case mismatches, or broken `#anchor` fragments (exit code 0).
-   - Unreachable (orphan) files must either be linked from the appropriate index, deleted (if obsolete and confirmed), or accounted for as intentional colocated package docs (`internal/...`, `examples/...`).
+   - `check_docs.py` must report **zero** broken links, case mismatches, broken `#anchor` fragments, or links to gitignored/outside-repo files (exit code 0).
+   - `check_docs.py` must report **zero** relative-link warnings inside `docs/agent/`.
+   - Unreachable (orphan) files must either be linked from the appropriate index, deleted (if obsolete and confirmed), or accounted for as intentional colocated package/command/example docs (`internal/...`, `examples/...`, `cmd/...`).
    - 40/64-char hash findings must be reviewed to ensure ephemeral worker receipts are removed while valid test vectors/pins are preserved.
 2. In the final summary, explicitly list any **Spec-vs-Implementation Gaps** discovered during the audit so the user can decide on follow-up code fixes.
