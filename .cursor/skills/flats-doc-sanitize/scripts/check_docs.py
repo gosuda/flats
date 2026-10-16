@@ -30,11 +30,13 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
-LIST_MARKER_RE = re.compile(r"^([ \t]*(?:[-*+]|\d+[.)]))([ \t]+)")
-HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+LIST_MARKER_RE = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])([ \t]+)")
+CONTAINER_PREFIX_RE = re.compile(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d+[.)])[ \t]+)+")
+HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
-REF_DEF_RE = re.compile(
-    r"^[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(\S+)(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
+REF_DEF_FULL_RE = re.compile(
+    r"(?m)^[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(?:\n[ \t]*)?(<[^>\n]+>|\S+)"
+    r"(?:(?:[ \t]+|[ \t]*\n[ \t]*)(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
 HTML_LINK_TAG_NAMES = {"a", "img", "link", "script", "source"}
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
@@ -50,18 +52,14 @@ TEST_FILE_RE = re.compile(
 class _DocHTMLScanner(html.parser.HTMLParser):
     """Spec-compliant HTML start-tag scanner for links (href/src) and anchors (id/name)."""
 
+    # Disable CDATA/RCDATA mode so an unclosed <script>/<style>/<title> tag in prose
+    # never swallows subsequent HTML tags in the document.
     CDATA_CONTENT_ELEMENTS = ()
-    RCDATA_CONTENT_ELEMENTS = ()
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.anchors: set[str] = set()
         self.links: list[tuple[int, str]] = []
-
-    def set_cdata_mode(self, *args: object, **kwargs: object) -> None:
-        # In Markdown prose, an unclosed <script>, <style>, <title>, or <textarea>
-        # mention must not swallow subsequent HTML tags in the document.
-        return
 
     def _record_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_l = tag.lower()
@@ -143,80 +141,78 @@ def leading_spaces(line: str) -> int:
     return col
 
 
+def strip_container_prefix(line: str) -> str:
+    return CONTAINER_PREFIX_RE.sub("", line, count=1)
+
+
 def strip_fences_and_comments(text: str) -> str:
-    """Replace fenced code blocks, indented code blocks, and HTML comments with newlines."""
-    text = re.sub(
-        r"<!--[\s\S]*?-->",
-        lambda m: "\n" * m.group(0).count("\n"),
-        text,
-    )
+    """Replace fenced code blocks, indented code blocks, and HTML comments with newlines.
+
+    Fenced code blocks are stripped BEFORE HTML comments so `<!--` inside a fenced
+    code block cannot swallow subsequent prose.
+    """
     lines = text.splitlines(keepends=True)
-    out: list[str] = []
+    fenced_out: list[str] = []
     in_fence = False
     fence_char = ""
     fence_len = 0
-    prev_blank = True
-    in_indented_code = False
-    list_stack: list[int] = []
 
     for line in lines:
+        unprefixed = strip_container_prefix(line)
         if not in_fence:
-            m = FENCE_OPEN_RE.match(line)
+            m = FENCE_OPEN_RE.match(unprefixed)
             if m:
                 marker = m.group(1)
                 in_fence = True
-                in_indented_code = False
                 fence_char = marker[0]
                 fence_len = len(marker)
-                out.append("\n" if line.endswith("\n") else "")
+                fenced_out.append("\n" if line.endswith("\n") else "")
                 continue
-
-            is_blank = line.strip() == ""
-            if is_blank:
-                prev_blank = True
-                out.append(line)
-                continue
-
-            indent = leading_spaces(line)
-
-            # Pop list contexts whose content column is strictly greater than this line's indent
-            # unless this line is a new sibling list item at that level.
-            while list_stack and indent < list_stack[-1]:
-                list_stack.pop()
-
-            code_threshold = (list_stack[-1] + 4) if list_stack else 4
-            if indent >= code_threshold and (prev_blank or in_indented_code):
-                in_indented_code = True
-                out.append("\n" if line.endswith("\n") else "")
-                continue
-
-            in_indented_code = False
-            if not THEMATIC_BREAK_RE.match(line):
-                lm = LIST_MARKER_RE.match(line)
-                if lm and indent < code_threshold:
-                    marker_end_col = visual_width(lm.group(1))
-                    total_col = visual_width(lm.group(0))
-                    # CommonMark: if >= 5 spaces follow the list marker (or the rest of the line is blank),
-                    # the list item content column is marker_end_col + 1 and the extra spaces start indented code.
-                    if total_col - marker_end_col >= 5:
-                        list_stack.append(marker_end_col + 1)
-                        in_indented_code = True
-                        prev_blank = False
-                        out.append("\n" if line.endswith("\n") else "")
-                        continue
-                    elif line[len(lm.group(0)) :].strip() == "":
-                        list_stack.append(marker_end_col + 1)
-                    else:
-                        list_stack.append(total_col)
-
-            prev_blank = False
-            out.append(line)
+            fenced_out.append(line)
         else:
             close_re = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*\r?\n?$")
-            if close_re.match(line):
+            if close_re.match(unprefixed):
                 in_fence = False
-                prev_blank = True
+            fenced_out.append("\n" if line.endswith("\n") else "")
+
+    without_fences = "".join(fenced_out)
+    without_comments = re.sub(
+        r"<!--[\s\S]*?-->",
+        lambda m: "\n" * m.group(0).count("\n"),
+        without_fences,
+    )
+
+    out: list[str] = []
+    prev_blank = True
+    in_indented_code = False
+    list_stack: list[tuple[int, int]] = []
+
+    for line in without_comments.splitlines(keepends=True):
+        is_blank = line.strip() == ""
+        if is_blank:
+            prev_blank = True
+            out.append(line)
+            continue
+
+        indent = leading_spaces(line)
+        while list_stack and indent < list_stack[-1][0]:
+            list_stack.pop()
+
+        code_threshold = (list_stack[-1][1] + 4) if list_stack else 4
+        if indent >= code_threshold and (prev_blank or in_indented_code):
+            in_indented_code = True
             out.append("\n" if line.endswith("\n") else "")
+            continue
+
+        in_indented_code = False
+        if not THEMATIC_BREAK_RE.match(line):
+            lm = LIST_MARKER_RE.match(line)
+            if lm and indent < code_threshold:
+                list_stack.append((indent, visual_width(lm.group(0))))
+
+        prev_blank = False
+        out.append(line)
+
     return "".join(out)
 
 
@@ -234,18 +230,25 @@ def strip_inline_code(text: str) -> str:
     )
 
 
+def strip_emphasis_markers(s: str) -> str:
+    """Strip Markdown emphasis/strong markers (*, _) while keeping intraword underscores."""
+    s = re.sub(r"(\*{1,3})(.+?)\1", r"\2", s)
+    s = re.sub(r"(?<![0-9A-Za-z])(_{1,3})([^_]+?)\1(?![0-9A-Za-z])", r"\2", s)
+    return s
+
+
 def github_slug(heading_text: str) -> str:
-    # Strip HTML tags only outside inline code spans, while keeping text inside `...`
+    # Strip HTML tags and emphasis markers only outside inline code spans
     parts = re.split(r"(`+[^`]*`+)", heading_text)
     cleaned_parts: list[str] = []
     for part in parts:
         if part.startswith("`") and part.endswith("`"):
             cleaned_parts.append(part.strip("`"))
         else:
-            cleaned_parts.append(re.sub(r"<[^>]+>", "", part))
-    s = "".join(cleaned_parts)
-    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s)
-    s = s.strip().lower()
+            no_tags = re.sub(r"<[^>]+>", "", part)
+            no_links = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", no_tags)
+            cleaned_parts.append(strip_emphasis_markers(no_links))
+    s = "".join(cleaned_parts).strip().lower()
     out: list[str] = []
     for ch in s:
         if ch in (" ", "\t"):
@@ -295,32 +298,58 @@ def extract_anchors(prose_with_inline: str, html_anchors: set[str], prose_no_inl
             slug = f"{base}-{idx}"
         heading_anchors.add(slug)
 
+    ref_def_spans = [(m.start(), m.end()) for m in REF_DEF_FULL_RE.finditer(prose_no_inline)]
+    line_starts = build_line_starts(prose_no_inline)
+
+    def line_in_ref_def(line_idx: int) -> bool:
+        if line_idx >= len(line_starts):
+            return False
+        pos = line_starts[line_idx]
+        return any(s <= pos < e for s, e in ref_def_spans)
+
     lines_with_inline = prose_with_inline.splitlines()
     lines_no_inline = prose_no_inline.splitlines()
     n = len(lines_with_inline)
     i = 0
     para_lines: list[str] = []
+    # Skip YAML frontmatter at top of file if present
+    if n > 0 and lines_no_inline[0].strip() == "---":
+        j = 1
+        while j < n and lines_no_inline[j].strip() not in ("---", "..."):
+            j += 1
+        if j < n:
+            i = j + 1
+
     while i < n:
         line = lines_with_inline[i]
         no_inline = lines_no_inline[i]
-        m = HEADING_RE.match(line)
+        unprefixed = strip_container_prefix(line)
+        unprefixed_no_inline = strip_container_prefix(no_inline)
+
+        m = HEADING_RE.match(unprefixed)
         if m:
             para_lines.clear()
-            register_heading(m.group(2))
+            if m.group(2):
+                register_heading(m.group(2))
             i += 1
             continue
 
-        if para_lines and SETEXT_UNDERLINE_RE.match(no_inline):
+        if para_lines and SETEXT_UNDERLINE_RE.match(unprefixed_no_inline):
+            # Only treat as Setext if container prefixes match (not a thematic break after list item)
             register_heading(" ".join(p.strip() for p in para_lines))
             para_lines.clear()
             i += 1
             continue
 
         stripped = no_inline.strip()
-        if not stripped or REF_DEF_RE.match(no_inline) or stripped.startswith(("#", "-", "*", "+", ">", "|")):
+        if (
+            not stripped
+            or line_in_ref_def(i)
+            or stripped.startswith(("#", "-", "*", "+", ">", "|", "<"))
+        ):
             para_lines.clear()
         else:
-            para_lines.append(line)
+            para_lines.append(unprefixed)
         i += 1
 
     return heading_anchors | html_anchors
@@ -340,6 +369,7 @@ def scan_markdown_links(
     text: str,
     ref_defs: dict[str, tuple[int, str]],
     used_refs: set[str],
+    skip_spans: list[tuple[int, int]],
 ) -> list[tuple[int, str]]:
     """Scan full document text for inline `[text](dest)`, `[text][ref]`, and `[ref]`.
 
@@ -351,14 +381,13 @@ def scan_markdown_links(
 
     n = len(text)
     i = 0
+    span_idx = 0
     while i < n:
-        if i == 0 or text[i - 1] == "\n":
-            line_end = text.find("\n", i)
-            if line_end == -1:
-                line_end = n
-            if REF_DEF_RE.match(text[i:line_end]):
-                i = line_end + 1
-                continue
+        while span_idx < len(skip_spans) and skip_spans[span_idx][1] <= i:
+            span_idx += 1
+        if span_idx < len(skip_spans) and skip_spans[span_idx][0] <= i < skip_spans[span_idx][1]:
+            i = skip_spans[span_idx][1]
+            continue
 
         if text[i] == "\\":
             i += 2
@@ -383,7 +412,7 @@ def scan_markdown_links(
                 label_text = text[i + 1 : j - 1]
                 if "[" in label_text:
                     inner_line_base = line_of_offset(line_starts, i + 1) - 1
-                    for sub_line, sub_dest in scan_markdown_links(label_text, ref_defs, used_refs):
+                    for sub_line, sub_dest in scan_markdown_links(label_text, ref_defs, used_refs, []):
                         results.append((inner_line_base + sub_line, sub_dest))
 
                 if j < n and text[j] == "(":
@@ -446,25 +475,25 @@ def parse_links_in_file(
     prose_no_inline: str,
     html_links: list[tuple[int, str]],
 ) -> list[LinkRef]:
-    lines = prose_no_inline.splitlines()
+    line_starts = build_line_starts(prose_no_inline)
     ref_defs: dict[str, tuple[int, str]] = {}
     extra_ref_defs: list[tuple[int, str]] = []
     used_refs: set[str] = set()
     raw_occurrences: list[tuple[int, str]] = []
+    skip_spans: list[tuple[int, int]] = []
 
-    for idx, line in enumerate(lines, start=1):
-        m = REF_DEF_RE.match(line)
-        if m:
-            label = " ".join(m.group(1).split()).lower()
-            dest = clean_destination(m.group(2))
-            if label and dest:
-                # CommonMark: first reference definition wins; keep later duplicates for validation too
-                if label not in ref_defs:
-                    ref_defs[label] = (idx, dest)
-                else:
-                    extra_ref_defs.append((idx, dest))
+    for m in REF_DEF_FULL_RE.finditer(prose_no_inline):
+        label = " ".join(m.group(1).split()).lower()
+        dest = clean_destination(m.group(2))
+        line_no = line_of_offset(line_starts, m.start())
+        skip_spans.append((m.start(), m.end()))
+        if label and dest:
+            if label not in ref_defs:
+                ref_defs[label] = (line_no, dest)
+            else:
+                extra_ref_defs.append((line_no, dest))
 
-    raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs, used_refs))
+    raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs, used_refs, skip_spans))
 
     for label, (def_line, dest) in ref_defs.items():
         if label not in used_refs:
@@ -563,10 +592,14 @@ def discover_code_references(
                     allow_hidden = pat.startswith("all:")
                     if allow_hidden:
                         pat = pat[4:]
+                    exact_direct = (f.parent / pat).resolve()
                     for matched in f.parent.glob(pat):
                         if matched.is_file() and matched in md_set:
-                            if not allow_hidden and any(
-                                p.startswith((".", "_")) for p in matched.relative_to(f.parent).parts
+                            # Go //go:embed embeds hidden/_ files when named directly by path
+                            if (
+                                not allow_hidden
+                                and matched.resolve() != exact_direct
+                                and any(p.startswith((".", "_")) for p in matched.relative_to(f.parent).parts)
                             ):
                                 continue
                             (test_refs if is_test else runtime_seeds).add(matched)
