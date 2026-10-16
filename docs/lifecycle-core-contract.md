@@ -17,17 +17,28 @@ whose bytes match the latest saved version is clean; creating a version from
 identical bytes is rejected with `ErrUnchangedContent` and does not create a
 user version for metadata.
 
-Creating a version and making it live are separate approved steps. Only a
-validated operator's approved version creation (`CreateVersion`, approval
-action `create_version`) creates `vN`, under
-`flats/<slug>/versions/<N>`: the version row and the Draft's new base commit in
-one transaction (`store.CommitVersion`), without changing the live pointer,
-running server code or recording a deployment. An approved activation of a
-saved version health-checks it, then commits the live pointer and deployment
-history in one transaction. A failed activation keeps `vN` saved and the
-previous version live. Saved versions can be activated or rolled back without
-a new number. A flat is Published once one of its versions has been live, and
-that status persists through connection failures. Visibility is independently
+For the Version-model types (websites and pages), creating a version and
+making it live are separate approved steps. Only a validated operator's
+approved version creation (`CreateVersion`, approval action `create_version`)
+creates `vN`, under `flats/<slug>/versions/<N>`: the version row and the
+Draft's new base commit in one transaction (`store.CommitVersion`), without
+changing the live pointer, running server code or recording a deployment. An
+approved activation of a saved version health-checks it on a copy of the data,
+snapshots the data, starts the version on live data, and only then commits the
+live pointer and deployment history in one transaction (`store.SetLive`). A
+failed activation keeps `vN` saved and the previous version live, but a failure
+after the start can leave live DB/FILES already written (see
+[Data and result DTOs](#data-and-result-dtos)). Saved versions can be activated
+or rolled back without a new number.
+
+Revision-model saves take another path. A document save, and a design's shell
+when the design is created, go live through `publishRevision` with kind
+`save`: it allocates the next number and commits the version row, live pointer
+and deployment together (`store.CommitPublished`), with no approval and no
+approval ID.
+
+A flat is Published once one of its versions has been live, and that status
+persists through connection failures. Visibility is independently
 `private|public`; legacy listed/unlisted inputs canonicalize to `public`.
 Unpublished flats cannot become Public.
 
@@ -46,8 +57,10 @@ open previews, preserving the existing deployment behavior.
 SaveVersion(ctx context.Context, slug string, files []bundle.File, meta SaveMeta, via Via) (store.Version, error)
 SaveDraft(ctx context.Context, slug string, files []bundle.File, meta SaveMeta, expectedRevision int, via Via) (store.Version, error)
 GetDraft(ctx context.Context, slug string) (store.Draft, error)
-Publish(ctx context.Context, slug string, revision int, hash string, via Via) (ActionResult, error)
-RequestPublish(ctx context.Context, slug string, revision int, hash string, via Via) (ActionResult, error)
+CreateVersion(ctx context.Context, slug string, revision int, hash string, via Via) (ActionResult, error)
+RequestCreateVersion(ctx context.Context, slug string, revision int, hash string, via Via) (ActionResult, error)
+Publish(ctx context.Context, slug string, revision int, hash string, via Via) (ActionResult, error)        // legacy alias of CreateVersion
+RequestPublish(ctx context.Context, slug string, revision int, hash string, via Via) (ActionResult, error) // legacy alias of CreateVersion
 Deploy(ctx context.Context, slug string, number int, via Via) (DeployResult, error)
 RollbackWithData(ctx context.Context, slug string, number int, restoreData bool, via Via) (DeployResult, error)
 RestoreSnapshot(ctx context.Context, slug string, snapshot string, via Via) (DeployResult, error)
@@ -66,8 +79,8 @@ numbered versions. `CreateVersion` returns an `ActionResult` with
 `*PendingApproval`, which embeds that result and wraps `ErrPending`.
 `Deploy` requires a positive version number and requests activation of an
 existing saved version. `OpenPreview(number:0)` targets
-Draft. Publish revision zero selects Current; an explicit revision/hash must
-match it. No `Via`, including Console, skips approval for these actions.
+Draft. `CreateVersion` revision zero selects Current; an explicit revision/hash
+must match it. No `Via`, including Console, skips approval for these actions.
 
 Flat views add `publication`, `draft`, permitted provider IDs, `connection_state`
 and `endpoints`. Endpoint DTOs carry JSON `provider`, `url`, `state`, `detail`,
@@ -96,10 +109,12 @@ console routes can decide. A separate operator credential is an open design item
 
 All critical requests freeze the candidate, live version, visibility and sorted
 per-flat permissions plus the manager's stable host/configuration policy token.
-Version creation also freezes the latest saved version and rechecks that
-Current Draft revision/hash still equal the
-candidate at decision time: retaining old bytes does not authorize stale Draft
-publication. Candidate content hashes are checked from disk. Rollback freezes
+Version creation also freezes the latest saved version. At decision time it
+rechecks the live version, the latest saved version, visibility, permissions
+and that Current Draft revision/hash still equal the candidate: retaining old
+bytes does not authorize stale version creation. A Draft whose bytes match the
+latest saved version is refused with `ErrUnchangedContent`. Candidate content
+hashes are checked from disk. Rollback freezes
 target hash and explicit `restore_data`; restores freeze snapshot identity/hash.
 Transient connection readiness is excluded from the policy token.
 
@@ -154,11 +169,16 @@ Runtime restart side effects are not exactly-once application side effects.
 
 Store migration uses `PRAGMA user_version=5` and idempotent column additions.
 Historical deployed version numbers, hashes, metadata, histories, secrets,
-pageviews and data stay intact. Live/deployment references mark published rows.
-Saved-but-never-deployed rows become Draft revisions; files copy before DB
-pointer/reference migration, and their source files remain until number reuse.
-Restart can safely resume between immutable metadata and mutable pointer commit.
-The first successful publish of a never-deployed flat is v1.
+pageviews and data stay intact. The migration marks rows that were live or
+named by a deployment as `published=1`. Saved-but-never-deployed rows become
+Draft revisions; files copy before DB pointer/reference migration, and their
+source files remain until number reuse. Restart can safely resume between
+immutable metadata and mutable pointer commit. Since version creation was split
+from deployment, every new version is stored with `published=1`, deployed or
+not; whether a flat is Published comes from its live version or recorded
+deployments (`HasDeployment`), not from that column. For websites and pages,
+numbers are allocated by approved version creation, never by activation; a
+flat's first one is v1 when it has no recorded numbers.
 
 Legacy preview numeric references migrate to explicit Draft revision references.
 Pending numeric activation/rollback references to removed saved-only versions
@@ -221,6 +241,6 @@ Schema 5 records eligible pre-lifecycle flats for a one-time explicit Private Ta
 
 ### Derived Draft state and joined failures
 
-Draft `dirty` is derived at read time from its content hash versus the current live version in the same SQL query. An approved activation or rollback changes that comparison immediately without changing Draft content or revision. Pending requests do not change it.
+Draft `dirty` is derived at read time from its content hash versus the newest saved version (`published=1`, highest number) in the same SQL query (`store.GetDraft`). Creating or deleting a version can change that comparison without changing Draft content or revision; activation and rollback do not, because they move the live pointer, not the newest saved version. Pending requests do not change it.
 
 Core persisted `failure_code`, HTTP `category`, and MCP categories use `core.ErrorCategory`. Joined causes follow the same precedence regardless of join order: stale approval, permission, provider unavailable, runtime unavailable, generic unavailable, provider in use, not deployed, unchanged content, provider readiness, unconfirmed Public stop, runtime/health failure, then generic conflict/forbidden/not-found/invalid. Unknown execution failures remain `apply_failed` in persisted receipts.

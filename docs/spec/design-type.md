@@ -1,7 +1,7 @@
 # Design content type
 
-Status: agreed product spec (PRD) for the first design release. Technical
-design: [design-type-TECH.md](design-type-TECH.md). Background:
+Status: implemented (the first design release). Technical design:
+[design-type-TECH.md](design-type-TECH.md). Background:
 [how Claude Artifacts' Design works](../research/claude-artifacts-design.md).
 
 ## Summary
