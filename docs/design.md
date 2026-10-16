@@ -243,15 +243,18 @@ allow-list with only `class` and `style` attributes.
 | Operation | Guard |
 | --- | --- |
 | `text.set {path, gen, node, tag, inner_hash, html}` | `gen` is current, node `node` has tag `tag` and the SHA-256 of its exact inner source equals `inner_hash`; the sanitized result is at most 64 KiB and has text |
-| `tweak.set {path, gen, name, value, base_value}` | `gen` is current and `base_value` equals the current value; the new value is validated for its tweak type |
-| `board.set {path, fields, base}` (`x`, `y`, `w`, `h`, `title`) | `gen` of `canvas.json` is current and each field's `base` equals its current value |
-| `board.order {path, to: front\|back, base_index}` | the board's current index in `order` equals `base_index` |
-| `note.add {id?, fields}` | the id does not exist yet (a missing id is generated) |
-| `note.set {id, fields, base}` | as `board.set` |
-| `note.delete {id, base}` | `base` is the complete note (`x`, `y`, `w`, `text`, `color`) and equals it |
+| `tweak.set {path, gen, name, value, base_value?}` | `gen` is current and, when given, `base_value` equals the current value; the new value is validated for its tweak type |
+| `board.set {path, gen, fields, base}` (`x`, `y`, `w`, `h`, `title`) | each field given in `base` equals its current value |
+| `board.order {path, gen, to: front\|back, base_index}` | the board's current index in `order` equals `base_index` |
+| `note.add {gen, id?, fields}` | the id does not exist yet (a missing id is generated) |
+| `note.set {gen, id, fields, base}` | as `board.set` |
+| `note.delete {gen, id, base}` | `base` is the complete note (`x`, `y`, `w`, `text`, `color`) and equals it |
 
-Canvas operations keep unknown keys and validate the resulting canvas as
-above. The canvas app reads an element's `inner_hash` and inner source from
+Every canvas operation also requires the current `gen` of `canvas.json`.
+The `base` and `base_value` guards are checked only for what the caller
+sends; an omitted guard does not protect against an intervening edit. Canvas
+operations keep unknown keys and validate the resulting canvas as above. The
+canvas app reads an element's `inner_hash` and inner source from
 `GET /_design/api/node`, never from the artboard.
 
 **Routes** (`internal/design/handler.go`):
@@ -263,7 +266,7 @@ above. The canvas app reads an element's `inner_hash` and inner source from
 | `POST /_design/api/session` | all | issue a resource capability |
 | `GET /_design/api/state` | all | `{slug, access, seq, revision, pending, visibility, canvas, files, artboards}`; public responses omit file `gen` |
 | `GET /_design/api/events` | all | event stream: `hello`, `change`, `resync`; heartbeat every 25 s |
-| `GET /_design/api/node?path=&node=` | private | `{tag, inner, inner_hash, gen}` of an editable element |
+| `GET /_design/api/node?path=&node=&gen=` | private | `{tag, inner, inner_hash, gen}` of an editable element |
 | `POST /_design/api/ops` | private | one person operation |
 | `GET /_design/api/revisions[/{n}]`, `POST …/{n}/pin`, `POST …/{n}/rollback` | private | history, pins and rollback ([revision store](revision-store.md)) |
 | `GET /_design/c/<cap>/<path>` | holder of `cap` | a file of the capability's scope |
