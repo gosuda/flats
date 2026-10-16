@@ -6,7 +6,7 @@ Does not hardcode directory layouts or file naming conventions:
    from the Git top-level root (covering both tracked and newly created unstaged docs while
    rejecting links to gitignored or outside-repo paths).
 2. Validates relative Markdown/reference/HTML links, case-exact file names, and case-sensitive
-   `#anchor` fragments (ATX & Setext headings plus HTML id/name attributes).
+   `#anchor` fragments (ATX & Setext headings plus HTML id/name attributes inside HTML tags).
 3. Builds a BFS reachability graph starting from root `README.md` and runtime/build code entrypoints
    (`//go:embed`, build/config files) while reporting test-only or colocated Markdown files separately.
 4. Flags relative links inside `docs/agent/` (which break when served via MCP/llms.txt)
@@ -28,22 +28,28 @@ import urllib.parse
 SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+LIST_MARKER_RE = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])([ \t]+)")
 HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
 REF_DEF_RE = re.compile(
     r"^[ \t]{0,3}\[([^\^\]][^\]]*|[^^\]]?)\]:[ \t]*(\S+)(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*$"
 )
-HTML_ATTR_RE = re.compile(
-    r"""<(?:a|img|link|script|source)\b[^>]*?\b(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>"']+))""",
-    re.IGNORECASE,
+HTML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9:-]*)\b((?:[^<>\"']|\"[^\"]*\"|'[^']*')*)>", re.DOTALL)
+HTML_LINK_TAG_NAMES = {"a", "img", "link", "script", "source"}
+HTML_HREF_SRC_ATTR_RE = re.compile(
+    r"""\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'=]+))""",
+    re.IGNORECASE | re.DOTALL,
 )
-HTML_ID_RE = re.compile(r"""\b(?:id|name)\s*=\s*(?:"([^"]+)"|'([^']+)')""", re.IGNORECASE)
+HTML_ID_NAME_ATTR_RE = re.compile(
+    r"""\b(?:id|name)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>"'=]+))""",
+    re.IGNORECASE | re.DOTALL,
+)
 EMBED_LINE_RE = re.compile(r"^[ \t]*//go:embed[ \t]+(.+)$", re.MULTILINE)
 QUOTED_MD_RE = re.compile(r"""["'`]([A-Za-z0-9_./*-]+\.(?:md|markdown))["'`]""")
 
 CODE_SUFFIXES = {".go", ".mjs", ".js", ".ts", ".sh", ".py", ".yml", ".yaml", ".json"}
 TEST_FILE_RE = re.compile(
-    r"(?:_test\.go$|(?:^|[._-])(?:test|tests|spec)\.[A-Za-z0-9]+$|^test_)",
+    r"(?:_test\.go$|(?:^|[._-])(?:test|tests)\.[A-Za-z0-9]+$|(?:^|[._-])spec\.(?:mjs|js|ts|py|sh)$|^test_)",
     re.IGNORECASE,
 )
 
@@ -74,6 +80,18 @@ def list_repo_files(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted((root / rel) for rel in rels if (root / rel).is_file())
 
 
+def leading_spaces(line: str) -> int:
+    col = 0
+    for ch in line:
+        if ch == " ":
+            col += 1
+        elif ch == "\t":
+            col += 4 - (col % 4)
+        else:
+            break
+    return col
+
+
 def strip_fences_and_comments(text: str) -> str:
     """Replace fenced code blocks, indented code blocks, and HTML comments with newlines."""
     text = re.sub(
@@ -88,6 +106,7 @@ def strip_fences_and_comments(text: str) -> str:
     fence_len = 0
     prev_blank = True
     in_indented_code = False
+    list_content_col: int | None = None
 
     for line in lines:
         if not in_fence:
@@ -102,14 +121,31 @@ def strip_fences_and_comments(text: str) -> str:
                 continue
 
             is_blank = line.strip() == ""
-            is_indented = line.startswith("    ") or line.startswith("\t")
-            if is_indented and (prev_blank or in_indented_code):
+            if is_blank:
+                prev_blank = True
+                out.append(line)
+                continue
+
+            indent = leading_spaces(line)
+            lm = LIST_MARKER_RE.match(line)
+            if lm and (list_content_col is None or indent <= list_content_col):
+                list_content_col = leading_spaces(lm.group(0))
+                in_indented_code = False
+                prev_blank = False
+                out.append(line)
+                continue
+
+            code_threshold = (list_content_col + 4) if list_content_col is not None else 4
+            if indent >= code_threshold and (prev_blank or in_indented_code):
                 in_indented_code = True
                 out.append("\n" if line.endswith("\n") else "")
                 continue
-            if not is_blank:
-                in_indented_code = False
-            prev_blank = is_blank
+
+            if list_content_col is not None and indent < list_content_col:
+                list_content_col = None
+
+            in_indented_code = False
+            prev_blank = False
             out.append(line)
         else:
             close_re = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*\r?\n?$")
@@ -159,14 +195,35 @@ def github_slug(heading_text: str) -> str:
     return "".join(out)
 
 
+def build_line_starts(text: str) -> list[int]:
+    starts = [0]
+    for idx, ch in enumerate(text):
+        if ch == "\n":
+            starts.append(idx + 1)
+    return starts
+
+
+def line_of_offset(line_starts: list[int], pos: int) -> int:
+    lo, hi = 0, len(line_starts) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if line_starts[mid] <= pos:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return hi + 1
+
+
 def extract_anchors(prose_with_inline: str, prose_no_inline: str) -> set[str]:
     anchors: set[str] = set()
     counts: dict[str, int] = {}
 
-    for m in HTML_ID_RE.finditer(prose_no_inline):
-        val = (m.group(1) or m.group(2) or "").strip()
-        if val:
-            anchors.add(val)
+    for tag_m in HTML_TAG_RE.finditer(prose_no_inline):
+        attrs = tag_m.group(2)
+        for attr_m in HTML_ID_NAME_ATTR_RE.finditer(attrs):
+            val = (attr_m.group(1) or attr_m.group(2) or attr_m.group(3) or "").strip()
+            if val:
+                anchors.add(val)
 
     def register_heading(raw_heading: str) -> None:
         base = github_slug(raw_heading)
@@ -175,28 +232,38 @@ def extract_anchors(prose_with_inline: str, prose_no_inline: str) -> set[str]:
         idx = counts.get(base, 0)
         counts[base] = idx + 1
         slug = base if idx == 0 else f"{base}-{idx}"
+        while slug in anchors:
+            idx += 1
+            counts[base] = idx + 1
+            slug = f"{base}-{idx}"
         anchors.add(slug)
 
     lines_with_inline = prose_with_inline.splitlines()
     lines_no_inline = prose_no_inline.splitlines()
     n = len(lines_with_inline)
     i = 0
+    para_lines: list[str] = []
     while i < n:
         line = lines_with_inline[i]
+        no_inline = lines_no_inline[i]
         m = HEADING_RE.match(line)
         if m:
+            para_lines.clear()
             register_heading(m.group(2))
             i += 1
             continue
-        # Setext heading: non-empty paragraph line followed by === or ---
-        if i + 1 < n and lines_no_inline[i].strip() and not REF_DEF_RE.match(lines_no_inline[i]):
-            stripped = lines_no_inline[i].lstrip()
-            if not stripped.startswith(("#", "-", "*", "+", ">", "|")):
-                um = SETEXT_UNDERLINE_RE.match(lines_no_inline[i + 1])
-                if um:
-                    register_heading(line.strip())
-                    i += 2
-                    continue
+
+        if para_lines and SETEXT_UNDERLINE_RE.match(no_inline):
+            register_heading(" ".join(p.strip() for p in para_lines))
+            para_lines.clear()
+            i += 1
+            continue
+
+        stripped = no_inline.strip()
+        if not stripped or REF_DEF_RE.match(no_inline) or stripped.startswith(("#", "-", "*", "+", ">", "|")):
+            para_lines.clear()
+        else:
+            para_lines.append(line)
         i += 1
 
     return anchors
@@ -212,33 +279,22 @@ def clean_destination(raw_dest: str) -> str:
     return s.split()[0] if s.split() else ""
 
 
-def scan_markdown_links(text: str, ref_defs: dict[str, str]) -> list[tuple[int, str]]:
+def scan_markdown_links(
+    text: str,
+    ref_defs: dict[str, tuple[int, str]],
+    used_refs: set[str],
+) -> list[tuple[int, str]]:
     """Scan full document text for inline `[text](dest)`, `[text][ref]`, and `[ref]`.
 
     Supports multiline link text/destinations and nested images inside links.
     Returns list of (1-based line_no, resolved_destination).
     """
     results: list[tuple[int, str]] = []
-    # Precompute newline offsets for O(log N) line lookup
-    line_starts = [0]
-    for idx, ch in enumerate(text):
-        if ch == "\n":
-            line_starts.append(idx + 1)
-
-    def line_of(pos: int) -> int:
-        lo, hi = 0, len(line_starts) - 1
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if line_starts[mid] <= pos:
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        return hi + 1
+    line_starts = build_line_starts(text)
 
     n = len(text)
     i = 0
     while i < n:
-        # Skip reference definition lines at start of line
         if i == 0 or text[i - 1] == "\n":
             line_end = text.find("\n", i)
             if line_end == -1:
@@ -259,7 +315,6 @@ def scan_markdown_links(text: str, ref_defs: dict[str, str]) -> list[tuple[int, 
                     j += 2
                     continue
                 if text[j] == "\n" and j + 1 < n and text[j + 1] == "\n":
-                    # Blank line breaks link label
                     break
                 if text[j] == "[":
                     depth += 1
@@ -269,10 +324,9 @@ def scan_markdown_links(text: str, ref_defs: dict[str, str]) -> list[tuple[int, 
 
             if depth == 0:
                 label_text = text[i + 1 : j - 1]
-                # Recursively scan inner label for nested image/link destinations
                 if "[" in label_text:
-                    inner_line_base = line_of(i + 1) - 1
-                    for sub_line, sub_dest in scan_markdown_links(label_text, ref_defs):
+                    inner_line_base = line_of_offset(line_starts, i + 1) - 1
+                    for sub_line, sub_dest in scan_markdown_links(label_text, ref_defs, used_refs):
                         results.append((inner_line_base + sub_line, sub_dest))
 
                 if j < n and text[j] == "(":
@@ -298,23 +352,23 @@ def scan_markdown_links(text: str, ref_defs: dict[str, str]) -> list[tuple[int, 
                     if p_depth == 0:
                         dest = clean_destination(text[j + 1 : k - 1])
                         if dest:
-                            results.append((line_of(i), dest))
+                            results.append((line_of_offset(line_starts, i), dest))
                         i = k
                         continue
                 elif j < n and text[j] == "[":
                     k = text.find("]", j + 1)
                     if k != -1 and "\n\n" not in text[j + 1 : k]:
-                        ref_label = " ".join(text[j + 1 : k].split()) or " ".join(label_text.split())
-                        resolved_def = ref_defs.get(ref_label.lower())
-                        if resolved_def:
-                            results.append((line_of(i), resolved_def))
+                        ref_label = (" ".join(text[j + 1 : k].split()) or " ".join(label_text.split())).lower()
+                        if ref_label in ref_defs:
+                            used_refs.add(ref_label)
+                            results.append((line_of_offset(line_starts, i), ref_defs[ref_label][1]))
                         i = k + 1
                         continue
                 else:
-                    # Shortcut reference link `[label]`
                     norm_label = " ".join(label_text.split()).lower()
                     if norm_label and norm_label in ref_defs:
-                        results.append((line_of(i), ref_defs[norm_label]))
+                        used_refs.add(norm_label)
+                        results.append((line_of_offset(line_starts, i), ref_defs[norm_label][1]))
                     i = j
                     continue
         i += 1
@@ -331,7 +385,8 @@ class LinkRef:
 
 def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inline: str) -> list[LinkRef]:
     lines = prose_no_inline.splitlines()
-    ref_defs: dict[str, str] = {}
+    ref_defs: dict[str, tuple[int, str]] = {}
+    used_refs: set[str] = set()
     raw_occurrences: list[tuple[int, str]] = []
 
     for idx, line in enumerate(lines, start=1):
@@ -340,16 +395,26 @@ def parse_links_in_file(root: pathlib.Path, md_file: pathlib.Path, prose_no_inli
             label = " ".join(m.group(1).split()).lower()
             dest = clean_destination(m.group(2))
             if label and dest:
-                ref_defs[label] = dest
-                raw_occurrences.append((idx, dest))
+                ref_defs[label] = (idx, dest)
 
-    raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs))
+    raw_occurrences.extend(scan_markdown_links(prose_no_inline, ref_defs, used_refs))
 
-    for idx, line in enumerate(lines, start=1):
-        for hm in HTML_ATTR_RE.finditer(line):
-            attr_val = (hm.group(1) or hm.group(2) or hm.group(3) or "").strip()
+    # Also validate any unused reference definitions so broken unused defs don't hide
+    for label, (def_line, dest) in ref_defs.items():
+        if label not in used_refs:
+            raw_occurrences.append((def_line, dest))
+
+    line_starts = build_line_starts(prose_no_inline)
+    for tag_m in HTML_TAG_RE.finditer(prose_no_inline):
+        tag_name = tag_m.group(1).lower()
+        if tag_name not in HTML_LINK_TAG_NAMES:
+            continue
+        attrs = tag_m.group(2)
+        for attr_m in HTML_HREF_SRC_ATTR_RE.finditer(attrs):
+            attr_val = (attr_m.group(1) or attr_m.group(2) or attr_m.group(3) or "").strip()
             if attr_val:
-                raw_occurrences.append((idx, attr_val))
+                line_no = line_of_offset(line_starts, tag_m.start() + attr_m.start())
+                raw_occurrences.append((line_no, attr_val))
 
     links: list[LinkRef] = []
     for line_no, raw in raw_occurrences:
