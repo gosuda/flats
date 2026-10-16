@@ -121,14 +121,9 @@ jobs:
           python3 -B scripts/test_approval_gate.py
       - name: Build release archives
         run: |
-          # Each leg builds the archive it installs. The macOS leg also builds
-          # darwin/amd64; the container job builds both Linux archives, so
-          # every release platform is built CGO-free somewhere.
-          if [ "$RUNNER_OS" = macOS ]; then
-            FLATS_RELEASE_TARGETS="darwin/amd64 darwin/arm64"
-          else
-            FLATS_RELEASE_TARGETS="$(go env GOOS)/$(go env GOARCH)"
-          fi
+          # Build only the archive this runner installs. The separate Darwin
+          # cross-build and container jobs cover the remaining release targets.
+          FLATS_RELEASE_TARGETS="$(go env GOOS)/$(go env GOARCH)"
           export FLATS_RELEASE_TARGETS
           scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
       - name: Start the systemd user manager
@@ -141,6 +136,20 @@ jobs:
           echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - name: Install, upgrade, crash and uninstall the service
         run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci
+
+  # The Intel macOS archive is compile-only coverage; building it on Linux
+  # keeps it off the native macOS install/launchd critical path. Release uses
+  # the same CGO-free cross-build on Linux.
+  darwin-cross-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: darwin-cross-build
+      - name: Build Intel macOS release archive
+        run: FLATS_RELEASE_TARGETS="darwin/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
 
   container:
     runs-on: ubuntu-latest
