@@ -1,6 +1,8 @@
 # Operator keys and console domains
 
-Technical design: [console-settings-TECH.md](console-settings-TECH.md).
+Status: implemented. The design is in the architecture docs:
+[operator keys](../configuration.md#operator-keys) and
+[console domains](../configuration.md#console-domains).
 
 ## Summary
 
@@ -145,9 +147,11 @@ every start may be added later.
       a domain.
 16. **Links.** Approval links and the `console_url` and `mcp_url` in status
     use the console domain the request came in on. A request on any other
-    address (loopback, or an unknown host) gets the first name in the list;
-    with an empty list, the loopback address. Status also lists every console
-    URL. There is no "main domain" setting.
+    address (loopback, or an unknown host) gets the first served Tailscale
+    console domain, else the first served NetBird console domain
+    ([netbird-peers.md](netbird-peers.md) adds that list), else the loopback
+    address. Status also lists every served console URL, Tailscale first.
+    There is no "main domain" setting.
 
 ## First install without the console
 

@@ -1,5 +1,9 @@
 # Agent self-update
 
+Status: implemented. The design is in the architecture docs:
+[updating a client](../release.md#updating-a-client) and
+[keeping clients current](../agents.md#keeping-clients-current).
+
 ## Summary
 
 A Flats agent can discover whether its local CLI, connection skill and loaded guidance match the connected server, refresh stale guidance, and explicitly update local resources. The same flow works when the agent and server are on different machines and when an agent connects directly over HTTP without a CLI.

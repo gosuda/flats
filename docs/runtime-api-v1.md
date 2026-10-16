@@ -1129,7 +1129,10 @@ Rules:
 * An approval freezes what it approves (Draft revision and hash, version,
   snapshot, visibility, providers). If that changes before the decision, it
   fails as `stale_approval`; request again. An identical pending request is
-  reused rather than duplicated.
+  reused rather than duplicated. A document's live version changes with every
+  `save_document`, `update_document` or `rollback_revision` that changes its
+  content, so a pending `set_visibility` for a document fails as stale after
+  such a call.
 * After a decision, `get_approval` `result_data` reports `failure_code` (a
   `refusal.<category>` name, or `apply_failed`), `data_impact` (`none`,
   `runtime_start`, `restore_data` or `unknown`), `health_data` and
@@ -1140,8 +1143,9 @@ Rules:
 * Visibility is only `private` or `public`. New flats are Unpublished and
   Private.
 * **Private** means Local loopback on the host (plain HTTP at
-  `<slug>.localhost:<port>`) or Tailscale for people and devices the existing
-  tailnet ACL allows. It is not owner-only access.
+  `<slug>.localhost:<port>`), Tailscale for people and devices the existing
+  tailnet ACL allows, or NetBird for peers the NetBird access policies allow.
+  It is not owner-only access.
 * **Public** means anyone on the internet, through a provider the operator
   permitted for this flat: Portal relay, zrok public share, NetBird Expose,
   Tailscale Funnel (Funnel visitors do not need Tailscale; Tailscale Serve is

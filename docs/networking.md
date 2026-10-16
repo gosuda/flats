@@ -62,14 +62,9 @@ flats key set tailscale < tailscale-authkey    # optional: or follow the login l
 ```
 
 Enable MagicDNS and HTTPS certificates in your tailnet. Without an auth key,
-each new node shows a login link in the console and the log. Keys can also be
-registered in Settings → Keys or given at start; see
-[Operator keys](configuration.md#operator-keys). A host started with
-`--config` refuses `TS_AUTHKEY` and the other `TS_*` variables, which would
-bypass Flats.
-
-To change the console's name, add the new domain, move agents to it with
-`flats connect`, then delete the old one; several can be used at once. See
+each new node shows a login link in the console and the log. Other ways to
+give the key are under [Operator keys](configuration.md#operator-keys);
+adding, renaming and deleting console names is under
 [Console domains](configuration.md#console-domains).
 
 To also put new flats' private routes on the tailnet, set the private backend
@@ -79,8 +74,9 @@ while the host is stopped:
 flats config set network.private_backend tailscale
 ```
 
-With the private backend on Tailscale, a new flat is allowed on Tailscale from
-the start, so its private and preview links use the tailnet:
+With the private backend on Tailscale and no other private default chosen
+(`network.default_private` empty), a new flat is allowed on Tailscale from the
+start, so its private and preview links use the tailnet:
 
 - Choosing that backend is your standing permission for the Private Tailscale
   routes of every flat created afterwards, including flats an agent creates.
@@ -116,29 +112,60 @@ device rather than the Flats host.
 
 ## Publishing through zrok
 
-Under **Settings → Network providers → zrok**, paste your zrok account token
-and choose **Connect**. The token is on myzrok.io: open the zrok API console
-and copy it from the getting-started wizard. Flats registers this machine as
-an environment of the account and keeps the token in its data directory; no
-zrok CLI is needed. The panel then shows the connected environment's ID and
-zrok service, and **Turn on** makes zrok available; allow it on a flat to use
-it. To switch to another token, for example after regenerating it, enter it
-under **Replace with a new account token**: the current account stays
-connected if the new token is refused, and replacing is refused while a flat
-is public through zrok. **Disconnect account** unregisters the environment
-and deletes the token; turn zrok off first. If zrok refuses the stored token
-(for example after you regenerated it), the console says so and offers to
-forget the account on this machine; remove the environment it names in the
-zrok console. Replacing works after a regenerated token: the new token
-unregisters the old environment of the same account. Each flat served through zrok reserves its slug as a name in
-`zrok.namespace` (default `public`), so its URL survives restarts, and the
-share exists only while the flat is public. A name already reserved in your
-zrok account by something other than this host is refused. On the free zrok
-plan, a visitor's browser first sees a zrok warning page with a **Visit
-Share** button, once per visitor; programs can skip it with a
-`skip_zrok_interstitial` request header. See
-[Configuration and storage](configuration.md) for `zrok.environment` and
-`zrok.namespace`.
+zrok serves public flats as zrok public shares on your zrok account.
+
+**Connecting the account.** Under **Settings → Network providers → zrok**,
+paste your zrok account token and choose **Connect**. The token is on
+myzrok.io: open the zrok API console and copy it from the getting-started
+wizard. Flats registers this machine as an environment of the account, as
+`zrok2 enable` would, and keeps the token and identity in
+`zrok-environment/` in its data directory (mode 0600); no zrok CLI is needed.
+The token is never shown again, logged or written to `config.json`: the panel
+shows only the environment ID and zrok service. **Turn on** then makes zrok
+available; allow it on a flat to use it. With `zrok` permitted and no account
+connected, the host still starts and zrok stays unconfigured. A token can
+also be given at start or with `flats key set zrok`; see
+[Operator keys](configuration.md#operator-keys).
+
+- **Replacing** (under **Replace with a new account token**, for example
+  after regenerating it) stages the new environment beside the current one,
+  so a refused token keeps the current account. It is refused while a flat is
+  public through zrok. A new token of the same account unregisters the old
+  environment, and name records the new account holds move to it.
+- **Disconnect account** unregisters the environment and deletes the token;
+  turn zrok off first. If zrok refuses the stored token, the console says so
+  and offers to forget the account on this machine; remove the environment it
+  names in the zrok console.
+- To use an environment managed with the zrok CLI instead, set
+  `zrok.environment` to its directory; the console then cannot connect or
+  disconnect it. The zrok client also honors its own `ZROK2_*` environment
+  variables, such as `ZROK2_API_ENDPOINT` for a self-hosted zrok instance.
+
+**Names.** Each flat served through zrok reserves its slug as a name in
+`zrok.namespace` (default `public`), so its URL survives restarts and
+Private↔Public changes; the share itself exists only while the flat is public
+and the host runs. `zrok/` in the data directory records every name the host
+reserved:
+
+- Deleting a flat, or the expiry of a rename redirect, releases its name,
+  also when the flat went Private or lost its zrok permission earlier.
+  Deleting such a flat while zrok is turned off is refused until zrok is on
+  again.
+- Flats uses, removes and releases only names and shares it created. A name
+  already reserved in your account by the zrok CLI or another Flats host is
+  refused (release it with `zrok2 delete name` or rename the flat), and a
+  share you run under a name Flats reserved is left alone. A name another
+  zrok account owns cannot be used; rename the flat. When the account's name
+  limit is reached, the route reports the zrok controller's reason.
+- Switching `zrok.environment` to another account keeps the old account's
+  records: flats using them report the conflict until you switch back or
+  remove the record in `zrok/`. zrok identifies an account only by its
+  token, so after switching to a regenerated token of the same account,
+  release such names with `zrok2 delete name` and remove their records.
+
+On the free zrok plan, a visitor's browser first sees a zrok warning page
+with a **Visit Share** button, once per visitor; programs can skip it with a
+`skip_zrok_interstitial` request header.
 
 ## Publishing through a Cloudflare quick tunnel
 
@@ -179,12 +206,9 @@ git clone https://github.com/gosuda/flats && cd flats/netbird
 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o flats ./cmd/flats
 ```
 
-Including NetBird makes the binary 10–16 MB larger (about 80 MB to 95 MB on
-linux/amd64) and its archive about 5 MB larger. Its `replace`
-directives apply to that binary too; among them,
-`github.com/cloudflare/circl` is replaced by NetBird's pinned 2023 fork
-(`codeberg.org/cunicu/circl`). A build without NetBird (`go install`, or
-`go build ./cmd/flats`) shows NetBird under Settings → Network providers with a
+Including NetBird makes the binary noticeably larger, and NetBird's `replace`
+directives apply to that binary too. A build without NetBird (`go install`, or
+`go build ./cmd/flats` at the repository root) shows NetBird under Settings → Network providers with a
 note that this build does not include it, and it cannot connect a peer or turn
 NetBird on.
 
@@ -194,7 +218,8 @@ named after its slug, and the console can have NetBird domains of its own
 (Settings → Console domains → NetBird). The embedded client runs in userspace,
 so Flats needs no root rights or tunnel interface.
 
-**Setup key.** In the NetBird dashboard, open Setup Keys and create a key with
+**Setup key.** A setup key is a UUID. In the NetBird dashboard, open Setup
+Keys and create a key with
 **Allow extra DNS labels** on: Flats asks NetBird for each flat's name as an
 extra DNS label, and NetBird refuses the registration otherwise. Make it also
 
@@ -206,13 +231,13 @@ extra DNS label, and NetBird refuses the registration otherwise. Make it also
 - without an expiry or usage limit, because Flats registers a peer again with
   it when NetBird has removed it.
 
-Register the key under **Settings → Keys** (or `flats key set netbird`, the
-`--netbird-setup-key-file` flag or `FLATS_NETBIRD_SETUP_KEY[_FILE]`). Flats keeps
-it in `flats.db`, encrypted, like the Tailscale auth key, and never shows it
-again. Peers talk to the management server in `netbird.management_url` (default
-NetBird Cloud). **Turn on** NetBird and/or NetBird Expose, then allow them on a
-flat; without a key, NetBird routes report that one is missing, and registering
-one opens them.
+Register the key under **Settings → Keys**; the other ways are under
+[Operator keys](configuration.md#operator-keys). Flats keeps it in `flats.db`,
+encrypted, like the Tailscale auth key, and never shows it again. Peers talk
+to the management server in `netbird.management_url` (default NetBird Cloud).
+**Turn on** NetBird and/or NetBird Expose, then allow them on a flat. Without a
+key, NetBird routes report that one is missing; registering one opens them and
+the unserved NetBird console domains in the background, without a restart.
 
 - **NetBird (Private)** serves a flat as plain HTTP on port 80 of its own peer,
   at `http://SLUG.<NetBird domain>/` (for NetBird Cloud, `netbird.cloud`), to
@@ -236,8 +261,12 @@ one opens them.
 and NetBird console domains are plain HTTP. Traffic between peers is encrypted
 by WireGuard, but browsers treat the page as not secure: clipboard writes,
 `crypto.subtle`, service workers and `Secure` cookies do not work there. The
-console accepts changes over HTTP only on its NetBird domains, from its own
-page (same-origin `http` Origin and the console's own header).
+console accepts changes over HTTP only on its NetBird domains, and only from
+its own page: the request must carry the console's own header and a
+same-origin `http` `Origin`, and a `Sec-Fetch-Site` header, when sent, must be
+`same-origin`. A page on another origin, including another flat on the same
+NetBird domain, cannot pass that check. On the loopback listener and tailnet
+console domains a change also needs `Sec-Fetch-Site: same-origin`.
 
 **Lifecycle.** Each peer keeps its identity in `netbird/peers/<name>/` (mode
 0600) and logs in with it after a restart. When NetBird has removed it (an
@@ -248,14 +277,8 @@ deletes it. A renamed flat's old peer serves the redirect until it expires.
 Flats cannot delete a peer in NetBird: an ephemeral one disappears by itself,
 a non-ephemeral one stays in the dashboard until you delete it there.
 Replacing the key affects peers that register afterwards; removing it keeps
-running peers but stops new ones from registering.
-
-**Upgrading** from a version that ran one shared peer for the whole host: the
-first start deletes that peer's local state and the console names it under
-Keys so you can delete it in the NetBird dashboard. A setup key that was waiting
-for enrollment becomes the stored key; otherwise register one. Flats keep their
-NetBird grants, and their URLs change from `http://<peer>:<port>` to
-`http://SLUG.<NetBird domain>/`.
+running peers but stops new ones from registering. Peers start one at a time,
+so an unreachable management server delays every peer start behind it.
 
 ## Visibility
 
@@ -269,9 +292,16 @@ state.
   Public is not access control: anyone with the URL can open the flat.
 
 Configuration alone never publishes a version or changes visibility. Public
-requires a published version and an approved transition with a registered,
-configured and permitted public route. Both directions, Private → Public and
+requires an approved transition with a registered, configured and permitted
+public route. Websites and pages also need a deployed version; documents and
+designs run without publication. Both directions, Private → Public and
 Public → Private, wait for an approval in the console.
+
+An approval freezes the live version it was requested for. A save, an
+`update_document` edit or a revision rollback that changes a document's
+content makes a new live version, so a pending visibility request for that
+document fails as stale after it and has to be requested again. A design's
+live version does not change with its edits.
 
 A route may still be Connecting after approval; open its link only after it
 reports ready. Legacy listed/unlisted inputs map to Public. Relay availability
@@ -302,7 +332,8 @@ allow each desired provider separately under Networks on each flat's page.
 
 ### Pre-lifecycle flats
 
-Schema 5 records pre-lifecycle flats as eligible for a one-time Private
+Database schema 5 (`flats.db` `user_version` 5, not the `config.json`
+`schema_version`) records pre-lifecycle flats as eligible for a one-time Private
 Tailscale choice:
 
 - An old default-Tailscale host with historical tsnet state must explicitly

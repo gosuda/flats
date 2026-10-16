@@ -1,7 +1,9 @@
 # NetBird peers per flat and console domain
 
-Status: implemented. Technical design:
-[netbird-peers-TECH.md](netbird-peers-TECH.md).
+Status: implemented. The design is in the architecture docs:
+[serving through NetBird](../networking.md#serving-through-netbird),
+[network provider lifecycle](../network-provider-lifecycle.md) and
+[configuration](../configuration.md).
 
 ## Summary
 

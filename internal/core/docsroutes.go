@@ -15,7 +15,7 @@ import (
 )
 
 // docsRevisionRoutes serves a document's history to its own Private page
-// (docs/spec/document-revisions-TECH.md, "Serving revisions"). Everything
+// (docs/internal/docs-app.md, "History routes"). Everything
 // else goes to next. A Public route gets 404 for every revision path.
 func (s *Service) docsRevisionRoutes(slugName string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

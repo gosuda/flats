@@ -41,10 +41,10 @@ the full list.
 
 | Page | Covers |
 | --- | --- |
-| [Design](design.md) | Process layout, manifest, exposure, secrets, approvals, handler ABI, HTTP API |
-| [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, publication, versions, approvals and data in the core store |
-| [Lifecycle transport](lifecycle-transport.md) | Console decisions and the API/CLI/MCP surfaces |
-| [Lifecycle console](lifecycle-console.md) | Routes and screens of the web console |
+| [Design](design.md) | Architecture and trust model: process layout, manifest, content types, exposure, approvals, secrets, handler ABI |
+| [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, versions, deploys, approvals, data and store migrations in the core |
+| [Surfaces](surfaces.md) | HTTP API routes, CLI, MCP tools and the web console |
+| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents and designs |
 | [Network provider lifecycle](network-provider-lifecycle.md) | Provider manager states and teardown |
 | [Docs app internals](internal/docs-app.md) | Host integration of the collaborative Markdown editor |
 | [WebSocket handshake](internal/websocket-handshake.md) | Why the RFC 6455 accept hash uses SHA-1 |

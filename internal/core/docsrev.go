@@ -24,7 +24,7 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-// Document revisions (docs/spec/document-revisions-TECH.md): the docs worker
+// Document revisions (docs/revision-store.md, docs/internal/docs-app.md): the docs worker
 // records each revision boundary in an outbox, in the same transaction as
 // the change; core imports it into the revision store shared with designs.
 

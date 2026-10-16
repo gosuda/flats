@@ -1,12 +1,12 @@
 # Runtime discovery: unfamiliar-agent evidence
 
-Current interface note: historical receipts below retain their original tool
-names and behavior. Client contract 2 uses `save_draft` / `save_draft_from_dir`
-for Draft content, `create_version` for separately approved version creation,
-and `deploy` for a separately approved deployment of a positive version.
-`save_version`, `save_version_from_dir` and `publish` are removed tools;
-these historical receipts are not instructions to invoke them.
-
+Commits, trees and hashes on this page are evidence identities. Several are
+pre-squash branch commits that are not reachable from main, so a reproduction
+builds current main and records its own identity. The runs used the tools of
+their time: `save_version`, `save_version_from_dir` and `publish` are removed.
+The current tools are `save_draft` / `save_draft_from_dir` for Draft content,
+`create_version` for separately approved version creation and `deploy` for a
+separately approved deployment of a positive version.
 
 On 2026-10-03 an actual fresh Claude Code 2.1.288 client, model
 `claude-opus-5-5`, authored a private notebook using the connected Flats MCP.
@@ -120,9 +120,10 @@ needed. The continuation requests were:
 
 ## Reproduction and scope
 
-Build the identified commit with `CGO_ENABLED=0 go build -o flats ./cmd/flats`;
-record binary hash because toolchain/build differences can change it. Start a
-host with fresh disposable data (`GATE_DATA` names the new directory):
+Build current main with `CGO_ENABLED=0 go build -o flats ./cmd/flats`; record
+its commit, tree and binary hash because toolchain/build differences can change
+the hash. Start a host with fresh disposable data (`GATE_DATA` names the new
+directory):
 
 ```sh
 ./flats serve --data "$GATE_DATA" --listen 127.0.0.1:61663 \
@@ -135,31 +136,33 @@ In a fresh source-free client directory, use this `mcp.json`:
 {"mcpServers":{"flats":{"type":"http","url":"http://127.0.0.1:61663/mcp"}}}
 ```
 
-Use the exact ordinary
-requests and restrictions above, retain each initialization inventory and result,
-and independently run the HTTP assertion sequence above between phases. Record
-returned URLs, live versions, reference/payload hashes, health logs, all exits
-and interventions. Shut down only the owned host and preserve evidence.
+Use the ordinary requests and restrictions above with the current tool names:
+`--disallowedTools mcp__flats__save_draft_from_dir` and `--allowedTools
+mcp__flats`, as in the guide-route run below. Draft saves go through
+`save_draft`, then `create_version` and `deploy`, each approved by the operator
+in the host's console and recorded as an intervention. Retain each
+initialization inventory and result, and independently run the HTTP assertion
+sequence above between phases. Record returned URLs, live versions,
+reference/payload hashes, health logs, all exits and interventions. Shut down
+only the owned host and preserve evidence.
 
 The test establishes this model/client's authoring and runtime storage usability
 on the identified candidate, with operator HTTP verification. It does not test
 browser interactions, actual tailnet access, public exposure, service recovery,
-other clients or OS isolation. Accepted-main integration, final frozen-binary
-revalidation of the existing generated app, and independent review must be
-recorded separately before final acceptance; this historical run cannot certify
-a later binary merely because its reference text remains identical.
-
+other clients or OS isolation. A run certifies only its identified binary,
+even when a later binary serves identical reference text; the revalidations
+below are recorded separately.
 
 ## Integrated frozen-binary revalidation
 
-On 2026-10-03, after integration onto the explicitly authorized merged main,
-the operator restarted the existing test host with the frozen integrated binary
+On 2026-10-03, after integration onto the merged main below, the operator
+restarted the existing test host with the frozen integrated binary
 against the same retained data. This checks the historical generated app on the
 final binary; it is separate from the unfamiliar-agent authoring run above.
 
 | Item | Value |
 |---|---|
-| Authorized merged-main base | `313ef2557d28350cb91a0daff719aca5bf6813c9` |
+| Merged-main base | `313ef2557d28350cb91a0daff719aca5bf6813c9` |
 | Base tree | `c7ff38c3cfa5fe5a2c4c683707368adae66e3f1c` |
 | Binary source commit | `e3ab93f0c6df28fbb9e36915c7f32fc73343009f` |
 | Binary source tree | `df49ff3fda26e16fbefbd9333546b28af7a61399` |
@@ -167,15 +170,16 @@ final binary; it is separate from the unfamiliar-agent authoring run above.
 | Served reference text SHA256 | `9bec2dc57e4b75382062a8203824b58d7364e240dde36a354c86d41d42b6451a` |
 | Documentation version | `1` |
 
-The two issue-9 commits rebased without conflicts from their historical base;
-range comparison showed unchanged patches. The independent base fixes and
-console files were retained, and runtime API v1 bytes did not change. Full Go
-tests and vet, core/API/MCP/runtime/portal races, focused reference/limits/FILES
-concurrency/WASI checks, static/API/CLI/app/console tests, module tidy with zero
-module diff, module verification, native and CGO-free Linux amd64/arm64 builds,
-and the real-binary server gate all passed. The server gate used separate data
-and disposable ports. Build metadata recorded the binary source commit above,
-`vcs.modified=false`, Go 1.27.1 and `CGO_ENABLED=0` on darwin/arm64.
+The two runtime-discovery commits rebased without conflicts from their
+historical base; range comparison showed unchanged patches. The independent base
+fixes and console files were retained, and runtime API v1 bytes did not change.
+Full Go tests and vet, core/API/MCP/runtime/portal races, focused
+reference/limits/FILES concurrency/WASI checks, static/API/CLI/app/console
+tests, module tidy with zero module diff, module verification, native and
+CGO-free Linux amd64/arm64 builds, and the real-binary server gate all passed.
+The server gate used separate data and disposable ports. Build metadata recorded
+the binary source commit above, `vcs.modified=false`, Go 1.27.1 and
+`CGO_ENABLED=0` on darwin/arm64.
 
 The operator verified the old test process identity, stopped only that process,
 confirmed exit and released ports, and launched the exact hashed binary on the
@@ -190,16 +194,7 @@ same data and ports. The separate restart and HTTP verification receipts record:
 The retained v3 health-503 log belongs to the historical failed deployment.
 This restart check did not perform another failed deployment or fresh-agent run;
 it does not extend the historical side-effect-free failure result to arbitrary
-candidate storage mutations. Receipt copies were kept separately from the
-historical observations. The documentation append itself follows the binary
-source commit above and does not identify a newly built binary.
-
-The coordinator reported main CI run `37122887675` passed on the exact authorized
-base. That merged tree also contains an unrelated three-file console change;
-independent review of that base delta and final issue-9 source acceptance were
-still pending when this revalidation was recorded. These results complete local
-integration and final-binary restart validation, with final acceptance remaining
-subject to those independent reviews.
+candidate storage mutations.
 
 ## Corrected-reference authoring and final-contract revalidation
 
@@ -247,7 +242,7 @@ contract binary, separately from that fresh-client run:
 
 | Item | Final contract binary |
 |---|---|
-| Authorized base | `313ef2557d28350cb91a0daff719aca5bf6813c9` |
+| Base | `313ef2557d28350cb91a0daff719aca5bf6813c9` |
 | Binary source commit | `f57c70f7362d39b195b7db14b58b4f55b781a8ff` |
 | Binary source tree | `b4540d1c7994151ab9f1fc43d85c1c133827c32d` |
 | Native binary SHA256 | `d90c6d74fd5e4f4354133b16098954e3f3bb2796399370dd2e9e3d895397d74c` |
@@ -270,14 +265,11 @@ at `http://notebook-gate.localhost:61664`, and new `notebook-final` live v4/reje
 v5 at its URL above. Both kept their exact pages, SQLite notes and Unicode files.
 Those restart checks performed no new failed deployment or fresh authoring on
 the final reference. The new authoring run remains bound to its earlier hash.
+No new three-client prepared-static run was made on the final contract binary;
+the static gates rest on executed static/API/MCP tests and the earlier
+three-client evidence.
 
-The coordinator classifies unchanged static product plus executed static/API/MCP
-tests and historical three-client evidence as continued static gates; no new
-three-client prepared-static script run is claimed. This evidence-only appendix
-follows the final binary source and does not identify a rebuilt binary. Exact
-final-head independent review remains required before acceptance.
-
-## Guide-route authoring run (PR #35)
+## Guide-route authoring run
 
 On 2026-10-09 (UTC) a fresh restricted client authored, published, changed
 and deliberately broke a private notebook using only the MCP `guide` tool and
@@ -286,15 +278,15 @@ the action tools. No skill was installed, and the client never called
 [gates.md](../gates.md) passed.
 
 This host has operator approvals, so publication waits for the operator. The
-tested client never approved anything. The root operator approved each request
-in the disposable host's console, under the user's standing authorization for
-development hosts. Each approval is listed below as an operator intervention.
+tested client never approved anything. The operator approved each request in
+the disposable host's console. Each approval is listed below as an operator
+intervention.
 
 ### Identity
 
 | Item | Value |
 |---|---|
-| Host commit | `956cedff17bee47930e0bb45f541cce867e5fdcb` (PR #35 head) |
+| Host commit | `956cedff17bee47930e0bb45f541cce867e5fdcb` (pre-squash branch commit) |
 | Host tree | `4a617c8418ef3e903c1a8fe7624927abdafa8534` |
 | `docs/agent` tree | `2ebb03ade2f0b2953360c93b41f377982fa0a450` |
 | Native binary SHA256 | `288934474fa2d076966a7596d32147a3288325f24183e20fbb47781e09f120ff` (Go 1.27.1, `CGO_ENABLED=0`, darwin/arm64) |
@@ -366,11 +358,11 @@ The revision 1 handler calls `env.FILES.get`, `put`, `delete` and `list`, and
 
 ### Operator interventions
 
-| UTC | Approval | Action | Result |
-|---|---|---|---|
-| 22:28:25 | `apr-bwcbm9ep9lvz` | publish Draft revision 1 | `approved`: v1 live; `data_impact` `runtime_start`, `health_data` `isolated_copy` |
-| 22:32:12 | `apr-jgl818dlydml` | publish Draft revision 2 | `approved`: v2 live |
-| 22:35:16 | `apr-bgfxxu7muixb` | publish unhealthy Draft revision 3 | `failed`: `failure_code` `health_check_failed`, `data_impact` `none`, `live_data` `untouched` |
+| UTC | Action | Result |
+|---|---|---|
+| 22:28:25 | publish Draft revision 1 | `approved`: v1 live; `data_impact` `runtime_start`, `health_data` `isolated_copy` |
+| 22:32:12 | publish Draft revision 2 | `approved`: v2 live |
+| 22:35:16 | publish unhealthy Draft revision 3 | `failed`: `failure_code` `health_check_failed`, `data_impact` `none`, `live_data` `untouched` |
 
 There were no other operator actions, repair prompts or retries.
 
@@ -391,7 +383,7 @@ All requests went to the returned URL through the loopback site port, with
    * the host still served v2: `/healthz` returned 200 and `/api/stats` was unchanged;
    * notes and the seeded attachment were intact;
    * `live_version` was 2 with two published versions;
-   * the unhealthy code remained the Current Draft (revision 3, hash `3234529f…`);
+   * the unhealthy code remained the Current Draft (revision 3);
    * the log recorded `GET /healthz -> 503` for the candidate.
 
    The client's MCP report matched this.
@@ -410,9 +402,3 @@ The raw transcripts stay in private local storage, not in this repository.
 
 The operator stopped only the owned test host process. Its listeners were gone
 afterwards.
-
-### Observations outside this PR
-
-* Every worker start logs `flats: ignoring the saved connection: $HOME is not defined` at error level. This is the inherited worker warning from #30, and the client reported it as unexplained noise.
-* A failed Draft publication is reported as "deploy of version 0". The client correctly read 0 as the Draft.
-* The pre-deploy snapshot event names only the `.sqlite` file, although current snapshots also hold FILES in a sidecar. The client flagged that it could not confirm FILES were captured.

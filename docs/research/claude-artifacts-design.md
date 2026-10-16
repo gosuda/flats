@@ -154,6 +154,12 @@ The type's instructions direct the agent to:
 
 ## What this means for Flats
 
+This comparison predates the Flats design type. Its "Flats today" column
+describes Flats before that type shipped; [design-type.md](../spec/design-type.md)
+is authoritative for what Flats does, and some ideas here were not adopted
+(for example, the viewer's selection as agent context through MCP is a
+non-goal there).
+
 | Claude Design | Flats today | Fit |
 |---|---|---|
 | Type = shipped editor + per-canvas files | the built-in docs app plus flat bundles | same shape: a built-in design app plus the flat's files |

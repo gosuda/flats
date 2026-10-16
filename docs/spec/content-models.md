@@ -1,11 +1,9 @@
 # Content data models: Version and Revision
 
-Status: agreed product principles (PRD) for future development. This page
-describes the target. Several parts are not implemented yet:
-[Current state](#current-state) lists the differences, and
-[Open questions](#open-questions) lists what is still undecided. Agent guides
-(`docs/agent/`) keep describing implemented behavior only; they change when
-each part ships.
+Status: partly implemented. The Version model and the Revision model are in
+place for every type; two rules are not yet met for documents, listed under
+[Current state](#current-state). Agent guides (`docs/agent/`) describe
+implemented behavior only.
 
 ## Summary
 
@@ -203,7 +201,7 @@ These rules apply to the version, revision and pin quotas alike.
 |---|---|---|
 | website (`flat`) | Version | implemented: separate creation/deployment approvals, quota and explicit deletion |
 | page (`page`) | Version | as for websites |
-| document (`docs`) | Revision | revisions, quotas, pins, rollback and single-document preservation; live edits (people and `update_document`) are not yet checked against the disk quota |
+| document (`docs`) | Revision | implemented, except the two gaps under [Current state](#current-state) |
 | design | Revision | implemented |
 
 A flat keeps its first save's type, so its model never changes.
@@ -215,69 +213,41 @@ sense: it has no pins, quotas or rollback.
 
 ## Current state
 
-Compared with the Version-model completion:
+Differences between this page and the implementation:
 
-- **Version model.**
-  - `save_draft`, `save_draft_from_dir` and `save_page` only save Private Draft
-    content. `create_version` freezes revision/hash and requests approval to
-    create the next number. Deployment remains a separate approved action.
-    Legacy `save_version` and `save_version_from_dir` tools are removed.
-  - Versions are never pruned automatically. The host default quota is 20,
-    each flat can override it, and 0 is unlimited. Full quotas refuse creation
-    at request and approval time. Lowering quotas preserves all versions.
-  - The console deletes non-live versions directly; agents use `delete_version`
-    to request explicit approval. Deletion rechecks frozen state and live
-    protection, closes previews, and preserves data snapshots. New version
-    numbers never reuse deleted numbers.
-- **Revision model.**
-  - Designs implement the Revision model with the revision store described in
-    [design-type-TECH.md](design-type-TECH.md): whole-flat revisions, shared
-    content-addressed storage, per-editor edit groups, revision and pin
-    quotas, rollback and the revision tools.
-  - Documents use the same store, quotas, retention, pins and revision tools.
-    The docs worker records each revision boundary (agent writes, people's
-    edit groups, a new version's merge and rollbacks) in the same database
-    transaction as the change, and the host imports it
-    ([document-revisions-TECH.md](document-revisions-TECH.md)). Existing
-    `flats_docs_conflicts` records were migrated into `recovered` revisions,
-    and that store is no longer written.
-  - Rule 8 is implemented: `save_document` preserves sibling documents,
-    assets and manifest settings, and adding a document keeps the existing
-    entry. `title` changes only the manifest name. Explicit whole-bundle
-    replacement uses `save_document {replace_bundle: true, files: [...]}`;
-    omitted documents and assets are deleted.
-  - Quota rule 3 is not complete for documents: live edits by people and
-    through `update_document` are not checked against the disk quota, and the
-    revisions recording them are stored without that check.
+- **Disk quota for documents (Quotas rule 3).** Live edits of a document, by
+  people and through `update_document`, are not checked against the disk
+  quota, and the revisions recording them are stored without that check.
+  Saves are checked.
+- **Pending visibility approvals of documents (Revision model rule 2).** A
+  document save that changes its content starts a new running version, and a
+  visibility approval freezes the live version it was requested against, so
+  a pending visibility approval fails as stale after such a save, and after
+  a revision rollback whose target has other assets, another manifest or
+  another set of documents. Live edits do not affect it. Designs are not
+  affected.
 
-## Migration
+## Upgrading older hosts
 
-1. **Documents.** A record of overwritten text in `flats_docs_conflicts` holds
-   one document's text, not the whole flat, so each record becomes a synthetic
-   recovery revision, oldest first: the flat's current content with only that
-   document replaced by the preserved text. A document that no longer exists
-   is restored with that text; assets and the manifest are the current ones.
-   These revisions are marked as migrated, not as historical snapshots. Then
-   one revision holds the flat's current content, so it is the latest. The
-   preserved text can be recovered by rollback, and the separate store is
-   removed afterwards. Migrated revisions follow the revision quota like any
-   other: when a flat has more records than the quota allows, the oldest
-   migrated revisions are deleted, as accepted for this rare case.
+1. **Recovery records of documents.** A record of overwritten text in
+   `flats_docs_conflicts` holds one document's text, not the whole flat, so
+   each record becomes a synthetic recovery revision, oldest first: the
+   flat's current content with only that document replaced by the preserved
+   text. These revisions are marked as recovered, not as historical
+   snapshots, and follow the revision quota like any other. Then one
+   revision holds the flat's current content, so it is the latest. The old
+   store is no longer written.
 2. **Versions keep their numbers.** Existing versions keep their numbers, and
    new numbers continue after the highest one.
 3. **Nothing is deleted to fit the quota.** A flat that already holds more
    versions than its quota keeps them all; creating a version is refused until
    the user deletes enough versions or raises the quota.
-4. **Pruned versions do not count.** A version whose files `keep_versions`
-   already deleted (`pruned`) stays only as a record. It does not count toward
-   the version quota and cannot be deployed.
-5. **`keep_versions` becomes the version quota.** A host that set
-   `system.keep_versions` explicitly uses that value as its default version
-   quota (`0`, never prune, becomes unlimited); otherwise the default is 20.
-   Automatic pruning stops. The migrated count includes the live version:
-   it is N total retained available versions, not N historical versions plus
-   the live one. A deployed flat migrated from `keep_versions: 1` needs its
-   quota raised before another version can be created; existing versions stay.
+4. **Pruned versions do not count.** A version whose files an older release
+   already pruned stays only as a record. It does not count toward the
+   version quota and cannot be deployed.
+5. **The old retention count becomes the version quota.** See
+   [moving an existing installation](../configuration.md#moving-an-existing-installation)
+   for how `system.keep_versions` becomes `system.version_quota`.
 
 ## Open questions
 

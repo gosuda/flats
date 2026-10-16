@@ -1,48 +1,47 @@
 # Flats design
 
-Flats is one CGO-free Go binary (`flats`) that hosts agent-built websites
-("flats") on the operator's own machine. This document fixes the decisions the
-PRD left to design: the manifest format, the server-flat handler ABI, node key
-expiry, secret storage and the process layout. It also records the HTTP API
-that every surface shares.
+Flats is one CGO-free Go binary (`flats`) that hosts agent-built websites,
+pages, documents and designs ("flats") on the operator's own machine. This
+document is the architecture overview and trust model: the process layout,
+the manifest and content types, how content becomes live, exposure, app
+settings and secrets, approvals and the server-flat handler ABI. The HTTP API,
+CLI, MCP and console that share one service are described in
+[surfaces.md](surfaces.md).
 
 ## Process layout
 
 ```
 flats serve                     (one long-running process; launchd on macOS, systemd on Linux)
-├── core.Service                flats, versions, deploys, previews, approvals (internal/core)
-├── store                       SQLite metadata  <data>/flats.db (modernc.org/sqlite, WAL)
-├── private network             one tsnet node per flat, per preview, plus "flats" for the console
-│                               (internal/expose/tsnet; internal/expose/local for dev/tests)
-├── public network              one Portal exposure per public flat (internal/expose/portal)
-├── management server           HTTP API + MCP (/mcp) + web console, on the "flats" tsnet node
-│                               and on 127.0.0.1:7878 for local agents and the CLI
+├── core.Service                flats, Drafts, versions, deploys, previews, approvals and
+│                               revisions (internal/core)
+├── store                       SQLite metadata <data>/flats.db (modernc.org/sqlite, WAL)
+├── provider manager            network providers (internal/expose/provider): local,
+│                               tailscale, tailscale-funnel, portal, zrok, cloudflare-quick,
+│                               netbird, netbird-expose
+├── management server           HTTP API + MCP (/mcp) + web console on 127.0.0.1:7878, and on
+│                               each configured console domain
+├── design instances            in-process canvas handlers, one per live design (internal/design)
 └── server-flat workers         `flats worker` child processes, one per running server flat
-                                version (re-exec of the same binary; internal/runtime)
+                                version or document (re-exec of the same binary; internal/runtime)
 ```
 
-Data directory (default `~/Library/Application Support/Flats`; `host.data_dir`
-in `config.json`, or `--data`/`FLATS_DATA` for a host started without
-`--config`; a relative path is made absolute at startup, since workers run
-with `/` as their working directory). [Configuration and
-storage](configuration.md) is the full map, including what to back up:
+The default private network is `local`: Flats serves each flat and preview at
+`http://<host>.localhost:<port>` on a loopback port. A flat gets a route on
+another network only when the host permits that provider and the flat holds
+its grant. Tailscale and NetBird give every permitted flat, preview and
+console domain its own node or peer; the console runs on a tailnet or NetBird
+only when `tailscale.console_hosts` or `netbird.console_hosts` lists names
+(both empty by default). Public providers serve only Public flats. The
+operator guide is [Private and public access](networking.md) and the provider
+contract is [Network provider lifecycle](network-provider-lifecycle.md).
 
-```
-config.json                     operator configuration (see configuration.md)
-config-history/                 previous config.json copies
-flats.lock                      lifetime exclusive advisory lock (never unlink while hosts run)
-flats.db                        metadata and durable runtime activation generations
-backups/                        flats.db copies taken before schema migrations
-secret.key                      32-byte AES-256-GCM key for flat secrets (0600)
-flats/<slug>/versions/<n>/      immutable version files (read-only, 0444)
-flats/<slug>/data/              server-flat data: db.sqlite and files/
-flats/<slug>/previews/<host>/   preview copy of data/ (removed with the preview)
-flats/.lifecycle/               rename/delete journals, deleted storage, orphans/
-tsnet/<host>/                   tsnet node state (one directory per node)
-runtime/docs/<app>-<content>/  read-only embedded docs modules and generated content.js
-portal/<slug>.json              Portal identity (keeps the canonical public hostname stable)
-portal/<slug>.alias             friendly aliases last shown, per relay (to warn when one is lost)
-```
+The data directory defaults to `~/Library/Application Support/Flats` on macOS
+(`host.data_dir` in `config.json`, or `--data`/`FLATS_DATA` for a host started
+without `--config`; a relative path is made absolute at startup, since
+workers run with `/` as their working directory). [Configuration and
+storage](configuration.md#where-data-lives) maps every file and says what to
+back up; the revision blob directories of documents and designs are described
+in [Revision store](revision-store.md#blobs).
 
 The host acquires `<data>/flats.lock` immediately after creating the directory,
 before opening SQLite, restoring flats or initializing runtime/network state.
@@ -52,55 +51,66 @@ before releasing it. `secret.key` is generated into a private synced temporary
 file and atomically linked into place without replacing a concurrent winner;
 readers see either no key or all 32 bytes.
 
-Shutdown drains the management server (5s; force-close on failure), stops core
-workers, closes public then private networks, closes SQLite and releases the
-lock. Failures are joined with component names and returned to the caller;
+Shutdown drains the management server (5 s; force-close on failure), stops
+core workers, closes public then private networks, closes SQLite and releases
+the lock. Failures are joined with component names and returned to the caller;
 `flats serve` reports them as command errors. Host and Portal Close are
-idempotent, including concurrent calls. Portal has one outer 30s network bound
-and a 30s per-exposure bound spanning HTTP/watch drain, SDK close and listener
-pump. Normal Portal shutdown drains HTTP and explicitly closes exposures before
-cancelling their SDK parent context, so unregister errors reach the caller.
-The outer bound also covers admitted Serve/Stop/SetHidden operations; cancellation
-at the deadline unblocks context-aware SDK work. SDK close is attempted even if
-drain times out. A Portal Stop that fails keeps the exposure tracked, and a
-retry resumes the pending stages instead of reporting success: it waits for
-requests that outlived the SDK's HTTP shutdown timeout, while an error from a
-stage that has finished is reported once. The SDK closes
-an exposure only once, so a failed unregister stays reported until the relay
-must have dropped the unrenewed lease (2 minutes after close); Serve and
-SetHidden never revive an exposure being torn down. Portal Close reports the
-failures of exposures whose teardown is still unconfirmed when it finishes; a
-Stop failure whose teardown a later retry confirmed is not reported again by
-Close. Tailscale already bounds
-Stop/Close at 30s. Expected listener closure/context cancellation is ignored;
-other errors and exceeded deadlines are reported. A stuck third-party call
-cannot be forcibly stopped in Go: cleanup may finish later, or only at process
-exit. On any shutdown deadline, the host retains its directory lock until
-process exit to prevent another host from racing background state cleanup.
-These bounds cover the network implementations, not arbitrary worker/store
-failures or an injected implementation that ignores the network contract.
+idempotent, including concurrent calls. Portal has one outer 30 s network
+bound and a 30 s per-exposure bound spanning HTTP/watch drain, SDK close and
+listener pump. Normal Portal shutdown drains HTTP and explicitly closes
+exposures before cancelling their SDK parent context, so unregister errors
+reach the caller; SDK close is attempted even if drain times out. A Portal Stop
+that fails keeps the exposure tracked, and a retry resumes the pending stages
+instead of reporting success. The SDK closes an exposure only once, so a
+failed unregister stays reported until the relay must have dropped the
+unrenewed lease (2 minutes after close); Serve and SetHidden never revive an
+exposure being torn down. Tailscale bounds Stop/Close at 30 s. Expected
+listener closure and context cancellation are ignored; other errors and
+exceeded deadlines are reported. A stuck third-party call cannot be forcibly
+stopped in Go: cleanup may finish later, or only at process exit, so on any
+shutdown deadline the host keeps its directory lock until process exit. These
+bounds cover the network implementations, not arbitrary worker/store failures
+or an injected implementation that ignores the network contract.
 
 ## Model and flows
 
-* **Version** = the validated upload written to `versions/<n>` plus a row with
-  number, content hash (SHA-256 over sorted `path NUL sha256` lines), size, file
-  count, kind, manifest, optional git SHA and dirty flag. Versions never change.
-* **Save vs deploy.** Saving never touches live. `deploy(n)` builds the
-  handler for version n, runs the health check (GET manifest `health`, default
-  `/`, 15 s timeout, 2xx/3xx passes), then moves the live pointer in one SQLite
-  transaction (compare-and-swap on the previous live version) and swaps an
-  in-memory atomic pointer. A failed check stops the new handler and keeps the
-  old one live; the error carries the status and the first 300 bytes of body.
-* **Rollback** = deploy of an earlier version (default: the version that was
-  live before the current one), recorded with kind `rollback`.
-* **Data belongs to the flat** (`data/`), not to versions; rollback restores
-  code only.
-* **Versions and quota.** Versions are never deleted automatically. A host
-  version quota defaults to 20; each flat may override it and 0 is unlimited.
-  Full quotas refuse creation at request and approval time. Operators delete
-  non-live versions directly; agent deletions require explicit approval.
-  Previews close before deletion. Data snapshots belong to the flat and stay.
-  Previously pruned rows remain unavailable and do not count toward the quota.
+Every flat follows one of two content models
+([content-models.md](spec/content-models.md)). A flat keeps the type of its
+first save, so its model never changes.
+
+**Version model** (websites and pages):
+
+* **Draft.** Every save validates the bundle and stores an immutable Draft
+  revision; the Draft is always Private and never touches live content.
+* **Version.** Only an approved `create_version` freezes the Draft as `vN`: the
+  files go to `versions/<n>` and a row records number, content hash (SHA-256
+  over sorted `path NUL sha256` lines), size, file count, kind, manifest,
+  optional git SHA and dirty flag. Versions never change, are never deleted
+  automatically and their numbers are never reused.
+* **Deploy.** An approved activation of a saved version health-checks it on a
+  copy of the data (GET manifest `health`, default `/`, 15 s timeout, 2xx/3xx
+  passes; a failure reports the status and the first 300 bytes of body),
+  snapshots the data, starts the version on live data and then moves the live
+  pointer and records the deployment in one SQLite transaction
+  (compare-and-swap on the previous live version). The previous handler
+  drains for 5 s before it stops.
+* **Rollback** is an activation of an earlier saved version (default: the
+  version that was live before the current one), recorded with kind
+  `rollback`. Data belongs to the flat (`data/`), not to versions: a rollback
+  keeps the live data unless it is requested with `restore_data`, which
+  restores the snapshot taken before the current version was deployed.
+* **Quota.** A host version quota (default 20; each flat may override it, 0 is
+  unlimited) refuses creation at request and approval time. Deleting a
+  non-live version closes its previews and keeps data snapshots.
+
+**Revision model** (documents and designs): there is no Draft, version,
+preview or deployment. A save or an edit changes the live content at once,
+without approval, and records a whole-flat revision; history, pins and
+rollback live in the [revision store](revision-store.md). Visibility changes
+and deleting the flat still need approval.
+
+The lifecycle state machine, approval freezing and data effects are specified
+in the [lifecycle core contract](lifecycle-core-contract.md).
 
 ## Manifest (`flats.json`, optional)
 
@@ -117,7 +127,11 @@ failures or an injected implementation that ignores the network contract.
 }
 ```
 
-* `type`: `flat` (default website) or `docs` (Markdown documents).
+* `type`: `flat` (website, the default), `page` (one static HTML page),
+  `docs` (Markdown documents) or `design` (canvas of HTML artboards; only core
+  writes a design manifest, see [Designs](#designs)). A bundle without `type`,
+  `kind`, `index.html` or a server entry that holds a Markdown entry is a
+  `docs` bundle.
 * `kind`: `static` (default) or `server`.
 * static `entry` defaults to `index.html` and must exist at the bundle root.
   `spa: true` serves the entry for unknown extension-less paths. `/about`
@@ -137,110 +151,214 @@ failures or an injected implementation that ignores the network contract.
 
 ## Content types
 
-The [content types contract](content-types.md) describes `flat` websites and
-`docs` Markdown documents. Docs uploads retain their original files and run
-through the embedded docs app on the existing server-flat worker. Core writes
-read-only modules under `runtime/docs/`, serves uploaded assets, and sets
-`X-Flats-Access: private|public` according to each route. Types are derived
-from stored manifest JSON; there is no additional type store column. A durable
-host counter orders runtime activations independently of published versions;
-rollback merges target Markdown against the live document's current seed.
-Public and preview route lifetimes cancel admitted requests, closing upgraded
-connections when exposure is withdrawn.
+The [content types contract](content-types.md) is the agent-facing
+reference. Version-model types (`flat`, `page`) are read from the stored
+manifest. A Revision-model flat also has a `content_state` row whose `type` is
+its durable type marker ([Revision store](revision-store.md#schema)).
+
+**Type stickiness.** A flat's type is that of its live version; while nothing
+runs, that of its latest saved version, else of its Draft, else of its
+`content_state` row; a flat never saved is untyped and takes the type of its
+first save. A save of another type is refused with `conflict` and a fix that
+names the right tool. Activation re-checks the candidate's type at request
+time and again when the approval applies, against the live (else latest
+saved) version, so content of another type that an earlier release stored
+can never go live.
+
+**Revision-model refusals.** Documents and designs refuse Deploy, Rollback,
+CreateVersion, DeleteVersion, version quota overrides, previews,
+ListVersions and GetDraft (`invalid`, with a message naming the type's own
+tools). Revision tools refuse websites and pages (`no_revisions`).
+
+### Pages
+
+A page is one static HTML document, typically with charts or visualizations,
+with the website lifecycle. Its manifest may omit `kind` or set `static`;
+`spa`, `not_found` and `health` are refused. The entry defaults to
+`index.html`, must end in `.html` or `.htm` and exist, and every other HTML
+file is refused. A page is served by the static path, with no runtime. Saving
+adds one non-blocking lint warning, `externalData`: a string literal naming an
+absolute `http(s)`/`ws(s)` or protocol-relative URL as the first argument of
+`fetch`, `new EventSource`, `new WebSocket`, `Papa.parse` or a d3-fetch style
+loader (`.json`, `.csv`, `.tsv`, `.text`, `.xml`), or as the URL of
+`XMLHttpRequest.open`, in the entry's inline scripts or bundled `.js`/`.mjs`
+files. Data scripts (`importmap`, JSON, `text/plain`, `text/template`) and
+code loading are not inspected, and dynamic URLs are not detected. A page has
+no data, so `rollback` with `restore_data` is refused before an approval is
+created.
+
+### Documents
+
+Docs uploads keep their original files and run through the embedded docs app
+on the server-flat worker (so they need server flats enabled); core writes
+read-only modules under `runtime/docs/`, serves uploaded assets and sets
+`X-Flats-Access: private|public` on every request according to its route. A
+durable host counter orders runtime activations independently of versions.
+Each changed save starts a new internal version without approval; people's and
+agents' live edits change the worker's text directly. The worker side is in
+[the docs app internals](internal/docs-app.md).
+
+### Designs
+
+A design is a canvas of plain-HTML artboards that people and agents edit
+live. It runs in the host process, not in a worker, so it needs no runtime.
+Its files live in the [revision store](revision-store.md); its only bundle is
+a shell `flats.json` that core writes once at creation, and every public
+bundle path refuses a design manifest. A Go handler (`internal/design`)
+serves the canvas app (plain JavaScript and CSS embedded from
+`internal/design/web`, with no build step and no third-party code), the
+design's files, a JSON API and an event stream on the flat's own origin.
+
+**Paths.** Every path follows one grammar: segments match
+`[A-Za-z0-9_][A-Za-z0-9._-]{0,99}`, at most 8 segments and 255 bytes, no `.`
+or `..`, and not `flats.json`, `_design/...` or `.well-known/...`. Two paths
+may not differ only in letter case, and no file may also be a directory of
+another. A design holds at most 512 files; each file and each agent write is
+at most `upload_max_bytes`. Artboards are the `.html` files; each is UTF-8
+with at most one tweaks block (`<script type="application/json"
+data-flats-tweaks>`).
+
+**`canvas.json`** is required, a JSON object of at most 256 KiB: `title` (at
+most 200 characters); `boards` keyed by artboard paths in the design, each
+with finite `x`/`y`, `w`/`h` from 40 to 8000, optional `title` (200
+characters) and `fill`; `order`, a permutation of the board keys (missing
+keys are appended in path order); at most 200 `notes` keyed by
+`[A-Za-z0-9_-]{1,40}`, each with `x`, `y`, `text` (4000 characters) and
+optional `w` and `color` (`gray`, `yellow`, `blue`, `green`, `pink`,
+`purple`); and `launch`, `{"view":"canvas"}` or
+`{"view":"focused","board":<key>}`. Unknown top-level keys are kept. Every
+problem is reported at once.
+
+**Editing guards.** People's operations carry the file's generation (`gen`,
+renewed when an agent write changes the file or a rollback restores it) and an exact
+guard on what they change: a text edit names the editable element and the
+SHA-256 of its inner source, a tweak or canvas edit names the base value. A
+stale guard is refused with `conflict`. Text edits are sanitized to an inline
+allow-list with only `class` and `style` attributes.
+
+**Access and write protection.** The handler reads access from
+`X-Flats-Access`, which core sets; anything but `private` is public. A public
+route is view only: no editing, history, node or revision routes, and state
+responses omit `gen`. Every POST except the session request requires private
+access, `Content-Type: application/json`, `X-Flats-Design: 1` and
+`Sec-Fetch-Site: same-origin` (or, when that header is absent, an `Origin`
+equal to the request's scheme and host). The session request follows the same
+origin rule without the access requirement. Person operations go through the
+flat's request limiter and a per-design limit of 20 operations per second.
+
+**Artboard isolation.** Every design file response carries
+`Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups
+allow-modals allow-downloads`, `Referrer-Policy: no-referrer`,
+`X-Content-Type-Options: nosniff` and `Cache-Control: no-cache` with a content
+ETag, so an artboard always runs at an opaque origin, even when opened
+directly, and cannot call the API. The app shell sends
+`Content-Security-Policy: default-src 'self'; frame-src 'self'; img-src 'self'
+data:; style-src 'self'; script-src 'self'; connect-src 'self';
+frame-ancestors 'self'; base-uri 'none'; form-action 'none'` and
+`X-Frame-Options: SAMEORIGIN`. Artboard iframes carry no `sandbox` attribute,
+since some embedded browsers refuse sandboxed frames and the response CSP
+already isolates them.
+
+**Capabilities.** An artboard at an opaque origin needs CORS to load its
+bundled data or fonts, but a Private design's files must not be readable by
+other sites, so CORS is granted only under a capability path. The app shell
+obtains a 128-bit random token bound to the flat, the request's access level
+and one scope (the head, or one revision on a private route only); the canvas
+loads each artboard from `/_design/c/<cap>/<path>`, so relative URLs inside it
+stay under the same token. Those responses send
+`Access-Control-Allow-Origin: *`; an unknown token gets 404. Tokens live in
+memory, at most 256 per flat with the least recently extended evicted; each
+use extends a token to 12 hours, and all tokens end when the instance stops.
+A direct `GET /<path>` sends CORS only on a Public route, whose content is
+world-readable anyway.
+
+**The bridge is untrusted.** A script in each served artboard reports picks
+and navigation to the canvas, but any artboard script can send the same
+messages. The canvas accepts messages only from iframes it created, treats
+each as a hint, fetches the element's current source and guard from the API
+itself, and edits in its own `contenteditable` box: keystrokes and
+confirmation never reach the artboard, so every write needs input the person
+made in the canvas app.
+
+**Events and teardown.** A write publishes `change` after its transaction
+commits; a stream starts with `hello {seq}` and sends a heartbeat every 25 s.
+At most 32 streams per flat; each queue holds 16 events, and a full queue is
+cleared and gets `resync`. Event-stream and export writes run under a 15 s
+write deadline. Stopping the instance (rename, delete, replacement, shutdown)
+refuses new requests with 503, cancels every request and interrupts blocked
+writes, and waits up to 5 s for handlers to return.
 
 ## Exposure
 
-* **Private.** Each deployed flat gets its own operator-owned (untagged) tsnet
-  node with hostname `<slug>`; the URL is `https://<slug>.<tailnet>.ts.net`
-  (ListenTLS; port 80 redirects to HTTPS). The node is created at first deploy
-  and logged out (removed) when the flat is deleted. The middleware deletes any
-  client-sent `Tailscale-User-*` header and sets `Tailscale-User-Login` and
-  `Tailscale-User-Name` from `WhoIs` (left empty for tagged peers).
-* **Origins.** Each flat and each preview is its own host, so cookies and
-  storage never mix (`<slug>` vs `<slug>-<8 random>`).
-* **Public.** One Portal exposure per public flat, using a persisted identity
-  named `<slug>` (the relay rejects a name owned by another key: the console
-  shows the conflict). Visibility is only `private` or `public`; older stored
-  `public-listed`/`public-unlisted` values read as `public`. Whether a public
-  flat appears in relay listings is a separate operator choice: the
-  `portal.hide` host default (off, so flats are listed) and a per-flat
-  override (`default`, `hidden` or `listed`, stored in `portal_listing`).
-  Changing either updates a served route with `UpdateMetadata` at once;
-  relays pick it up at their next lease renewal. `portal_hidden` on the flat
-  view is that requested listing, not the relays' observed state. Hiding is not access
-  control: anyone with the URL can still open the flat. Rename redirect
-  aliases are always hidden. Relays: the
-  Portal CLI default (discovery, up to 3 active relays) unless
-  `portal.relays` in `config.json` lists explicit relays.
-  `portal.discovery: false` uses only the explicit relays (it requires at
-  least one) and `portal.max_active_relays` caps the relays discovery adds
-  (default 3). These settings are read when `flats serve` starts; the
-  settings API reports them in `apply_on_restart` and returns
-  `restart_required` when a change needs a restart.
-  With discovery and no explicit relays, the first discovered relay that
-  becomes ready for a flat is pinned: added as an explicit relay (which
-  discovery never drops) and saved to `portal/<slug>.relay`, so the flat's
-  public URL survives discovery reshuffles and restarts. On a real run,
-  discovery replaced both relays of a public flat within two minutes, which
-  broke the link the operator had shared. The pin moves only when its relay
-  fails permanently (for example it rejects the name) or has not been
-  ready for 24 hours while another relay is; other relays keep serving
-  meanwhile.
-  Each relay gives a flat two hostnames. The canonical
-  `<slug>-<address>.<relay>` (a hash replaces slugs over 22 characters) is
-  bound to the flat's Portal identity and never changes. The friendly
-  `<slug>.<relay>` alias is granted only while no other Portal identity
-  holds that name. Flats shows the alias when the relay granted it and the
-  canonical URL otherwise. It remembers each alias it showed in
-  `portal/<slug>.alias`. When a ready relay no longer grants that alias
-  (another identity took the name, for example while the flat was
-  offline), the status detail and log say that links to the alias can now
-  reach another service. The warning stays while that relay lacks the
-  alias; deleting `portal/<slug>.alias` clears it. A renamed flat starts
-  without alias memory, so links to its old slug's alias are not tracked.
-  Discovery-only startup can take about
-  a minute; the API returns the public URL once a relay is ready. Public is
-  never described as access control; every API response that returns a public
-  URL carries the notice. Identity headers are stripped on this path.
-* **Previews.** `open_preview(n)` creates an ephemeral tsnet node
-  `<slug>-<8 random>` serving version n; server flats get a copy of the live
-  data directory. Previews close on deploy of that flat or 24 h after the last
-  visit.
-* **Certificates and readiness.** When the tailnet issues certificates, a
-  node serving HTTPS fetches its certificate as soon as it listens, retrying
-  with backoff (30 s doubling to 10 min, 5 min per attempt) until it has one.
-  Tailscale gets it from Let's Encrypt with a DNS-01 challenge: on a real
-  tailnet that took about 78 s per host and sometimes more than 2 min. Until
-  then the host is `starting` with detail "waiting for its HTTPS
-  certificate"; it becomes `ready` only once a certificate was obtained (by
-  the fetch or by a visitor's handshake). Flat views carry this as
-  `private_state`/`private_detail`, previews as `state`/`detail`, so agents
-  wait instead of treating a TLS error as a failed deploy. Each host's name
-  appears in Certificate Transparency logs, and each new host uses one
-  certificate of the Let's Encrypt per-domain weekly limit.
-* **Stopping.** `Stop` (delete, preview close) logs the node out, closes it
-  and removes its state. It waits at most 30 s: a node whose Tailscale backend
-  hangs (seen once on a real tailnet, where a deploy then waited 10 minutes
-  for a preview to close) is removed from the served set and finishes in the
-  background, so deploys and deletes never block on it. `Close` at shutdown
-  is bounded the same way.
-* **One ACME account.** tailscaled keeps a node's Let's Encrypt account key
-  in `<node dir>/certs`; Flats gives every node the same key
+Each flat and each preview is its own host and origin (`<slug>` and
+`<slug>-<8 random>`), so cookies and storage never mix. Local always serves
+the Private route on loopback. Tailscale and NetBird add Private routes only
+for flats that hold their grant. A Public flat is also served by its permitted
+public providers (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or
+NetBird Expose); Public is never access control, and every response that
+returns a public URL carries that notice. Draft and version previews
+(`open_preview`; version 0 is the Draft) are Private only, on Local and, when
+the flat holds the grant, Tailscale; they get an isolated copy of server data,
+close on the flat's next activation and expire after `preview_ttl_seconds`
+(24 h) without a visit. Identity headers are stripped on public routes. The
+operator guide is [Private and public access](networking.md); the provider
+manager's contract is [Network provider lifecycle](network-provider-lifecycle.md).
+
+Implementation notes that the provider docs do not repeat:
+
+* **Tailscale nodes.** A Tailscale route is an operator-owned (untagged) tsnet
+  node with hostname `<slug>` at `https://<slug>.<tailnet>.ts.net` (ListenTLS;
+  port 80 redirects to HTTPS). It is created when the route opens and logged
+  out (removed) when the flat is deleted or the grant revoked. The middleware
+  deletes client-sent `Tailscale-User-*` headers and sets
+  `Tailscale-User-Login` and `Tailscale-User-Name` from `WhoIs` (empty for
+  tagged peers).
+* **Certificates and readiness.** When the tailnet issues certificates, a node
+  fetches its certificate as soon as it listens, retrying with backoff (30 s
+  doubling to 10 min, 5 min per attempt). Until it has one the host is
+  `starting` with detail "waiting for its HTTPS certificate"; it is `ready`
+  only once a certificate was obtained. Flat views carry this as
+  `private_state`/`private_detail`, previews as `state`/`detail`. Each host's
+  name appears in Certificate Transparency logs and uses one certificate of
+  the Let's Encrypt per-domain weekly limit.
+* **One ACME account.** Every node uses the same Let's Encrypt account key
   (`tsnet/acme-account.key.pem`, adopted from an existing node the first
-  time), because Let's Encrypt allows only 10 new accounts per IP address
-  in 3 hours.
+  time), because Let's Encrypt allows only 10 new accounts per IP address in
+  3 hours.
+* **Stopping.** `Stop` (delete, revocation, preview close) logs the node out,
+  closes it and removes its state. It waits at most 30 s; a node whose backend
+  hangs is removed from the served set and finishes in the background, so
+  deploys and deletes never block on it.
 * **macOS fork safety.** A fork in this multi-threaded process can wedge the
-  child in Network.framework's atfork handler (golang/go#56784); the parent
-  then holds `syscall.ForkLock`, which darwin socket creation also needs,
-  and the process loses its networking. tailscale's LocalAPI client forked
-  `lsof` on every request to find the GUI app's token; Flats sets fixed
-  in-process credentials so it never does (the in-process LocalAPI needs no
-  token), and `internal/forkwatch` kills a child that stays between fork and
-  exec for over 10 s (no `P_EXEC` flag), which releases the lock. Worker
-  starts are the only forks left.
-* **Measured cost** (spike, testcontrol, darwin/arm64): first node ≈14 MB RSS,
-  each further node ≈4.2 MB RSS, ≈1 MB live heap and ≈94 goroutines; `Up`
-  ≈0.33 s.
+  child in Network.framework's atfork handler (golang/go#56784) while the
+  parent holds `syscall.ForkLock`, which darwin socket creation also needs.
+  Flats gives tsnet fixed in-process LocalAPI credentials so it never forks
+  `lsof`, and `internal/forkwatch` kills a child that stays between fork and
+  exec for over 10 s. Worker starts are the only forks left.
+* **Portal listing.** Whether a Public flat appears in relay listings is the
+  `portal.hide` host default (off) and a per-flat override (`default`,
+  `hidden` or `listed`); a change updates a served route's metadata at once.
+  `portal_hidden` on the flat view is the requested listing, not the relays'
+  observed state. Hiding is not access control. Rename redirect aliases are
+  always hidden.
+* **Portal relays.** Relays come from the Portal defaults (discovery, up to 3
+  active relays) unless `portal.relays` lists explicit ones;
+  `portal.discovery: false` uses only the explicit relays and
+  `portal.max_active_relays` caps those discovery adds. These settings apply
+  at startup. With discovery and no explicit relays, the first discovered
+  relay that becomes ready for a flat is pinned (kept as an explicit relay and
+  saved to `portal/<slug>.relay`), so the flat's public URL survives discovery
+  changes and restarts; the pin moves only when its relay fails permanently or
+  has not been ready for 24 hours while another relay is.
+* **Portal hostnames.** Each relay gives a flat a canonical
+  `<slug>-<address>.<relay>` (a hash replaces slugs over 22 characters),
+  bound to its Portal identity, and a friendly `<slug>.<relay>` alias granted
+  only while no other identity holds that name. Flats shows the alias when
+  granted and the canonical URL otherwise, and remembers each alias it showed
+  in `portal/<slug>.alias`. When a ready relay no longer grants it, the status
+  detail and log warn that links to the alias can reach another service, until
+  the alias returns or the file is deleted. A renamed flat starts without
+  alias memory.
 
 ## Node key expiry
 
@@ -314,49 +432,60 @@ or Flats host restart; automatic worker restarts reuse the captured settings.
 
 ## Approvals
 
-Agents (MCP, CLI, HTTP API) cannot publish, activate, roll back, restore
-data, change visibility in either direction (private → public or public →
-private) or delete a flat on their own. Each such request freezes its
-parameters in a pending approval and returns
-`approval_url` = `<console>/approvals/<id>`. Nothing changes until the
-operator approves it in the console; a frozen parameter that changed before
-the decision makes the approval fail as `stale_approval`. Deleting a flat
-from the console itself applies directly after its confirm dialog.
+Agents (MCP, CLI, HTTP API) cannot create or delete a version, deploy,
+roll back, restore data, change visibility in either direction (private →
+public or public → private) or delete a flat on their own. Each such request
+freezes its parameters in a pending approval (`create_version`,
+`delete_version`, `activate`, `rollback`, `restore_data`, `set_visibility`,
+`delete`) and returns `approval_url` = `<console>/approvals/<id>`. Nothing
+changes until the operator approves it in the console; a frozen parameter that
+changed before the decision makes the approval fail as `stale_approval`. A
+console request for these actions also creates an approval, except two
+destructive ones that apply directly after their confirm dialog: deleting a
+flat and deleting a non-live version. Saves of documents and designs, and all
+revision operations, need no approval (see [Model and flows](#model-and-flows)).
 
 There are no accounts, so operator authority rests on where a request comes
 from and what it carries. Enforced:
 
 * MCP, the CLI and `/api` have no approve, reject or settings operation, and
-  their visibility and delete calls only create approvals. `flats config`
-  edits `config.json` only while no host runs (it takes the data lock).
-* Every request to the management server (loopback listener and console
-  node) must name the server in `Host`: `127.0.0.1`, `localhost` or `[::1]`
-  with the listen port, or the console node's tailnet names (configured host,
-  MagicDNS name and its first label, ports 80/443). Any `Origin` must be one
-  of those too. This defeats DNS rebinding and cross-site requests.
+  their approval-gated calls only create approvals. `flats config` edits
+  `config.json` only while no host runs (it takes the data lock).
+* Every request to the management server must name that listener in `Host`,
+  from a list the guard reads per request: on the loopback listener
+  `127.0.0.1`, `localhost` or `[::1]` (and a specific listen IP) with the
+  listen port; on a Tailscale console domain its configured name, its MagicDNS
+  name and that name's first label, on ports 80 and 443; on a NetBird console
+  domain its configured name and the peer's NetBird names, on port 80. Any
+  `Origin` must be one of those too. This defeats DNS rebinding and
+  cross-site requests.
 * `/console/api` requires `X-Flats-Console: 1` and refuses requests carrying
   `X-Flats-Client` (the CLI and other clients identify themselves with it).
   Mutations also need `Sec-Fetch-Site: same-origin` and an `Origin` equal to
   the requested host, which the console page sends and cross-origin pages
-  cannot.
-* On the console node, the approver's tailnet login (from `WhoIs`, which the
-  node sets after dropping client-sent `Tailscale-User-*` headers) is
-  returned as `decided_by` and recorded in the flat's approval event (an
-  approved delete removes the flat with its events, so only the response
-  carries it). Decisions on the loopback listener are recorded without an
-  identity.
+  cannot. A NetBird console domain is plain HTTP, where browsers send no Fetch
+  Metadata; there a same-origin `http` `Origin` is accepted instead, while the
+  custom header still forces a preflight that Flats never grants.
+* Console decisions record who decided, as `decided_by` in the response and
+  in the flat's approval event (an approved delete removes the flat with its
+  events, so only the response carries it): on a Tailscale console domain the
+  approver's tailnet login from `WhoIs` (client-sent `Tailscale-User-*`
+  headers are dropped first), on a NetBird console domain `netbird:<peer
+  name>` of the requesting peer. Decisions on the loopback listener are
+  recorded without an identity.
 
 Not enforced: all of the console checks are request headers. A process that
 can send arbitrary HTTP from one of the operator's devices (for example an
-agent with a shell on the Flats host, or on a device the tailnet ACL lets
-reach the console node) can imitate the console page and approve or act
-directly, and a process that can read the Flats data directory can read the
-database and secret key. Approvals therefore hold against agents that only
-use MCP, the CLI or the API, and against web pages, not against arbitrary
-code running as the operator. Mitigations: write Tailscale ACLs so that only
-the operator's browser devices can reach the console node (tag or name it in
-the ACL), and run untrusted agents under another OS user or on another
-machine, so they reach Flats only through MCP or the API.
+agent with a shell on the Flats host, or on a device the tailnet or NetBird
+access policy lets reach a console domain) can imitate the console page and
+approve or act directly, and a process that can read the Flats data directory
+can read the database and secret key. There is no separate operator
+credential, so an approval does not prove that a human decided. Approvals hold
+against agents that only use MCP, the CLI or the API, and against web pages,
+not against arbitrary code running as the operator. Mitigations: write
+Tailscale ACLs or NetBird policies so that only the operator's browser devices
+can reach the console domains, and run untrusted agents under another OS user
+or on another machine, so they reach Flats only through MCP or the API.
 
 ## Server flats (handler ABI)
 
@@ -422,97 +551,21 @@ These are executable contracts in `internal/runtime` tests, including rejected
 JS host imports, absent arbitrary filesystem/socket access, bounded outbound fetch, app-scoped environment,
 clocks/randomness, and no WebSocket negotiation.
 
-## HTTP API
+## Analytics
 
-All JSON. Errors: `{"error": "...", "problems": [{"path","message","fix"}], "health": {...}}`.
-Status codes come from typed errors: 400 invalid input, 403 not allowed from
-this surface, 404 not found, 409 conflict, not deployed or a feature disabled
-on this host, 415 missing client header (below), 422 bundle validation or a
-failed deploy health check, 500 server fault.
-Agent surface (`/api`, `via` = `api`, or `cli` with `X-Flats-Client: cli`).
-Browser requests with `Sec-Fetch-Site: cross-site` or `same-site`, or with an
-`Origin` other than the requested host, are refused (403). Requests other than
-GET/HEAD must send `Content-Type: application/json`, an archive type
-(`application/gzip`, `application/x-tar`, `application/zip`,
-`application/octet-stream`) or an `X-Flats-Client` header (415 otherwise), so
-a web page cannot send them without a CORS preflight, which Flats never
-answers:
+Each flat counts page requests per UTC day and per path; unique visitors are
+not tracked. Query strings never enter analytics, since they may hold private
+information. Path counts are buffered in memory per flat, bounded to 1000
+day/path keys (further paths and paths over 1024 bytes count as `(other)`),
+and flushed in transactional batches alongside the daily counters. Counters
+follow slug renames and are deleted with the flat. The stats API returns up to
+365 UTC calendar days (default 30); the console shows 7 or 30.
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | /api/flats/{slug}/document?doc= | live docs Markdown, or saved content when not running |
-| GET | /api/status | host, networks, limits, build version |
-| GET | /api/flats | list |
-| POST | /api/flats | `{slug, name}` create |
-| GET | /api/flats/{slug} | details (URLs, live version, notice) |
-| GET | /api/flats/{slug}/draft | current Private Draft metadata |
-| POST/PUT | /api/flats/{slug}/draft | tar/tar.gz/zip; query `expected_revision`, `git_sha`, `git_dirty`, `message`; saves only the Draft |
-| POST | /api/flats/{slug}/versions | JSON `{revision, hash}`; requests approval to create a version without deploying |
-| DELETE | /api/flats/{slug}/versions/{n} | requests approval to delete a non-live version; direct deletion in the console |
-| POST | /api/flats/{slug}/document | docs archive; explicitly replaces the whole live bundle without approval |
-| GET | /api/flats/{slug}/versions | list |
-| GET | /api/flats/{slug}/versions/{n} | one version |
-| GET | /api/flats/{slug}/versions/{n}/files/{path} | a file (thumbnails) |
-| POST | /api/flats/{slug}/deploy | `{version}` |
-| POST | /api/flats/{slug}/rollback | `{version}` (0 = previous) |
-| GET | /api/flats/{slug}/deployments | history |
-| POST | /api/flats/{slug}/previews | `{version}` |
-| GET | /api/flats/{slug}/previews | open previews |
-| DELETE | /api/previews/{host} | close a preview |
-| POST | /api/flats/{slug}/visibility | `{visibility, reason}` (may return pending_approval) |
-| POST | /api/flats/{slug}/rename | `{slug}` |
-| DELETE | /api/flats/{slug} | `?reason=` (returns pending_approval) |
-| GET | /api/flats/{slug}/logs | `?kind=&after=&limit=` |
-| GET | /api/flats/{slug}/network | `{origins, updated_at, note}`; desired server HTTP(S) grants |
-| PUT | /api/flats/{slug}/network | `{origins: [...]}`; operator console or local CLI on loopback; `[]` clears |
-| GET | /api/flats/{slug}/env | `{env: [{name, value, updated_at}], note}`; ordinary values only |
-| PUT | /api/flats/{slug}/env/{name} | `{value}` (string, including empty); save desired config |
-| DELETE | /api/flats/{slug}/env/{name} | remove ordinary variable |
-| GET | /api/flats/{slug}/secrets | names only |
-| PUT/DELETE | /api/flats/{slug}/secrets/{name} | CLI on loopback only (operator) |
-| GET | /api/flats/{slug}/stats | daily page views and top paths (`?days=7` or `30`, up to 365 UTC calendar days) |
-| GET | /api/approvals/{id} | poll an approval |
+## Surfaces
 
-Console surface (`/console/api`, `via` = `console`, guarded as above): the same
-reads plus `POST /console/api/approvals/{id}/{approve|reject}`, deploy,
-rollback, visibility, rename, delete, preview, env, secrets, `GET/PUT settings`,
-`GET system`. Approve/reject return the approval plus `decided_by` (tailnet
-login, console node only). `GET settings` lists `apply_on_restart`; `PUT
-settings` saves to `config.json` and returns `applied` and
-`restart_required` with the changed keys among them. `GET settings` also
-describes the file (`config`: mode, ETag, `changed_on_disk`, read-only host,
-network and credential values without paths, per-key sources and flag pins).
-The console sends `If-Match`; a save answers 412 `config_changed` when
-`config.json` changed since the host read it or the page is stale, and 409
-when the key is pinned by a flag of a service that still runs without
-`--config`. `POST settings/impact` reports, without writing, what the next
-pruning would remove after lowering `events_keep` or
-`preview_ttl_seconds`; the console shows it before such a save.
-
-MCP (`/mcp`, Streamable HTTP, stateless): tools `list_flats`, `get_flat`,
-`create_flat`, `save_draft` (inline files, text or base64), `save_draft_from_dir`
-(loopback callers only), `deploy`, `rollback`, `list_versions`,
-`open_preview`, `set_visibility`, `delete_flat`, `get_logs`,
-`get_approval`, `get_network`, `list_env`, `set_env`, `delete_env`, `list_secrets`, `save_draft`, `get_draft`, `create_version`,
-`save_document`, `get_document`, `update_document` (guarded live edits of a
-running docs flat, no approval), `get_runtime_reference`, `get_content_types`.
-Content type discovery: resource `flats://docs/content-types/v1`.
-
-
-## Per-flat console management
-
-The flat list's menu offers Share, Analytics and Settings. Share changes the
-private / public visibility (an approval request either way) and provides Visit
-and Copy link. Private means access through tailnet ACLs, not owner-only access.
-Email invitations, profile showcasing and custom domains are not supported.
-
-`/flats/{slug}/settings`, `/analytics` and `/database` share Settings, Analytics
-and Database navigation; there is no Scheduled tab. Settings manages the display
-name, slug, sharing, ordinary environment variables, encrypted secrets and deletion. The existing
-`/flats/{slug}` page retains versions, previews, deployment and logs. Database
-lists actual pre-deploy snapshots and links to deployment/rollback controls.
-
-Analytics displays daily page requests and top paths for 7 or 30 days. Unique
-visitors are not tracked. Per-path counters start with this update, omit query
-strings, follow slug renames and disappear on deletion. In-memory path buffers
-are bounded and flushed in transactional batches alongside existing counters.
+The HTTP API (`/api`), the CLI, MCP (`/mcp`) and the web console
+(`/console/api`) all call the same core service. Their routes, status codes,
+request guards and the console's screens are described in one place,
+[HTTP API, CLI, MCP and console](surfaces.md). MCP tools and their guidance
+are served by the host itself: the [runtime API v1 reference](runtime-api-v1.md),
+the [content types contract](content-types.md) and the MCP `guide` tool.

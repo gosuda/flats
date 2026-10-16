@@ -76,10 +76,9 @@ On macOS or Linux, with an amd64 or arm64 machine:
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
-The installer verifies the release checksum, installs to `~/.local/bin` and
-starts a background service: launchd on macOS, a systemd user service on
-Linux. It uses no sudo and does not edit shell profiles. The default network
-is Local; other providers are off.
+The installer verifies the release, installs `flats` to `~/.local/bin` and
+starts it as a background service, without sudo. The default network is
+Local; other providers are off.
 
 ### 2. Deploy your first site
 
@@ -108,10 +107,9 @@ Then visit [hello.localhost:7879](http://hello.localhost:7879).
 > including with `--json`. Saving a Draft or a version does not make a site
 > live; only deploying a version does.
 
-Run `flats status` to check the host. Run the installer again to upgrade;
-`flats uninstall` removes the service and keeps your data. See
-[installation, upgrades and backups](docs/release.md) before upgrading an
-existing host.
+Run `flats status` to check the host. See
+[installation and upgrades](docs/release.md#installing-a-host) for installer
+options, upgrades and backups.
 
 <details>
 <summary><strong>Other ways to run Flats: container, foreground or source</strong></summary>
@@ -149,70 +147,26 @@ Requires Go 1.27.1 or newer:
 go install github.com/gosuda/flats/cmd/flats@latest
 ```
 
-Use `@main` for unreleased changes. This build does not include NetBird,
-which needs `replace` directives that `go install` refuses. From a checkout,
-build the release binary, NetBird included, from the `netbird` module:
-
-```sh
-cd netbird && CGO_ENABLED=0 go build -o flats ./cmd/flats
-```
-
-or `CGO_ENABLED=0 go build -o flats ./cmd/flats` at the root for the build
-without NetBird.
+Use `@main` for unreleased changes. This build does not include NetBird; see
+[Serving through NetBird](docs/networking.md#serving-through-netbird) to build
+the release binary from a checkout.
 
 </details>
 
 ## Agent integration
 
-Connect **Claude Code, Codex or Cursor** with the Flats plugin. The plugin
-runs `flats mcp`, which relays the selected host's MCP endpoint.
-Install the CLI on the agent's machine and make sure `flats` is on its `PATH`.
-For a client-only machine, use the installer's `--no-service` option.
-On the host itself, loopback is the default; for a remote host, select it once:
+Connect **Claude Code, Codex or Cursor** with the Flats plugin, which runs
+`flats mcp` (the `flats` CLI must be on the agent's `PATH`) to relay the
+selected host's MCP endpoint; any other MCP client registers
+`http://127.0.0.1:7878/mcp` directly. For example, in Claude Code:
 
 ```sh
-flats connect https://flats.example.ts.net
+claude plugin marketplace add gosuda/flats && claude plugin install flats@flats
 ```
 
-<details open>
-<summary><strong>Claude Code</strong></summary>
-
-```sh
-claude plugin marketplace add gosuda/flats
-claude plugin install flats@flats
-```
-
-</details>
-
-<details>
-<summary><strong>Codex</strong></summary>
-
-```sh
-codex plugin marketplace add gosuda/flats
-codex plugin add flats@flats
-```
-
-</details>
-
-<details>
-<summary><strong>Cursor and other MCP clients</strong></summary>
-
-For Cursor, add the marketplace, then install Flats from Cursor's plugin list:
-
-```sh
-cursor-agent plugin marketplace add https://github.com/gosuda/flats
-```
-
-Without a plugin, register the Streamable HTTP endpoint
-`http://127.0.0.1:7878/mcp` directly. `flats mcp-config` prints setup instructions
-for each client. Remote clients use the host's reachable console URL plus
-`/mcp`.
-
-</details>
-
-Restart or reconnect the client and list its tools. The agent starts with
+[Connecting agents](docs/agents.md) covers the other clients, remote hosts
+(`flats connect`), client updates and llms.txt. The agent starts with
 read-only `check_client`, then reads the server's current `guide`.
-[Connecting agents](docs/agents.md) covers setup, client updates and llms.txt.
 For the whole server contract in one document, read resource
 `flats://docs/runtime-api/v1` or call **`get_runtime_reference` with `{}`**.
 The [runtime API v1 reference](docs/runtime-api-v1.md) is embedded in the host

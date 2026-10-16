@@ -11,12 +11,9 @@ ghcr.io/gosuda/flats:sha-<40-hex commit>  # the full commit identity
 ```
 
 A versioned release image runs the same `flats` binary as that release's
-`flats_linux_<arch>.tar.gz`. A commit image builds that commit separately,
-stamps `flats version` as `v0.0.0-sha-<7-character SHA>`, and does not publish
-a GitHub release or replace `latest`. Prefer the full SHA tag when pinning
-a commit; short SHAs can collide. See [Commit images](release.md#commit-images)
-for push coverage and provenance details. Historical release `sha-` tags
-remain release images until an explicit commit build replaces them.
+`flats_linux_<arch>.tar.gz`. A `sha-` image is a separate development build
+of one `main` commit; prefer its full SHA tag. See
+[Commit images](release.md#commit-images).
 
 Both kinds run on distroless (`gcr.io/distroless/static-debian12:nonroot`:
 CA certificates and tzdata, no shell or package manager), as the unprivileged
@@ -89,28 +86,23 @@ docker run -d --name flats --restart unless-stopped \
   -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-`tailscale.console_hosts` puts the console on the tailnet as
-`https://flats.<tailnet>.ts.net`; add or delete names later under Settings →
-Console domains. Each node prints a login link to `docker logs flats` and
-shows it in `docker exec flats flats status` until you log it in. To log nodes
-in automatically, give Flats a reusable, untagged auth key, in one of these
-ways:
+The console is then served as `https://flats.<tailnet>.ts.net`
+([Console domains](configuration.md#console-domains)). Each node prints a
+login link to `docker logs flats` and shows it in `docker exec flats flats
+status` until you log it in. To log nodes in automatically, give Flats a
+reusable, untagged auth key: store it once on the volume while the container
+is stopped,
 
-- Store it once on the volume while the container is stopped:
-  `docker run --rm -i -v flats-data:/data ghcr.io/gosuda/flats:latest key set tailscale < tailscale-authkey`.
-- Mount it as a secret and name it with `FLATS_TAILSCALE_AUTHKEY_FILE`, for
-  example `-v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro" -e
-  FLATS_TAILSCALE_AUTHKEY_FILE=/run/secrets/tailscale-authkey` (uid `65532`
-  must be able to read it).
-- Register it later in Settings → Keys.
+```sh
+docker run --rm -i -v flats-data:/data ghcr.io/gosuda/flats:latest key set tailscale < tailscale-authkey
+```
 
-Flats stores the key in `flats.db`, encrypted with `secret.key`. A mounted
-key only fills in a missing one: after a key is stored, replacing the mounted
-file changes nothing, and a different value is reported as a warning.
-Register the new key in Settings → Keys or with `flats key set`. A host
-started from `config.json` refuses `TS_AUTHKEY` and other `TS_*` variables.
-zrok and NetBird keys work the same way with `flats key set zrok|netbird`,
-`FLATS_ZROK_TOKEN_FILE` or `FLATS_NETBIRD_SETUP_KEY_FILE`.
+or mount it read-only and name it with `FLATS_TAILSCALE_AUTHKEY_FILE`, for
+example `-v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro" -e
+FLATS_TAILSCALE_AUTHKEY_FILE=/run/secrets/tailscale-authkey` (uid `65532` must
+be able to read it), or register it later in Settings → Keys. A mounted key
+only seeds a missing one; zrok and NetBird keys work the same way. See
+[Operator keys](configuration.md#operator-keys).
 
 For zrok, connect the account in the console with its account token. Flats
 keeps the zrok environment in `zrok-environment/` on the data volume, so it
@@ -201,8 +193,8 @@ docker run -d --name flats ...   # the same command as before
 
 Pin a version tag rather than `latest` when you want upgrades to happen only
 when you choose them. Back up before upgrades whose release notes mention data
-changes. Stop the container first, so `flats.db` is not copied while live, then
-copy the whole volume:
+changes: stop the container, so `flats.db` is not copied while live, and copy
+the whole volume ([What to back up](configuration.md#what-to-back-up)):
 
 ```sh
 docker stop flats
@@ -211,10 +203,8 @@ docker run --rm -v flats-data:/data:ro -v "$PWD:/backup" alpine \
 docker start flats
 ```
 
-The volume holds the operator keys in `flats.db` and the `secret.key` that
-opens them; keep the backup as private as the keys. Restore with
-the same or a newer release: an older binary refuses a newer `config.json` or
-database.
+The backup holds the operator keys and the `secret.key` that opens them; keep
+it as private as the keys.
 
 ## Building the image
 

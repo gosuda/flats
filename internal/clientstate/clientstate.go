@@ -15,7 +15,7 @@ import (
 )
 
 const ContractRevision = 2
-const BootstrapRevision = 2
+const BootstrapRevision = 3
 const MaxSkillBytes = 32 << 10
 
 type Manifest struct {

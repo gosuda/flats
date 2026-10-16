@@ -19,7 +19,7 @@ func TestBootstrapReleaseContract(t *testing.T) {
 		t.Fatalf("skill revision %d != server revision %d", revision, clientstate.BootstrapRevision)
 	}
 	// Every bootstrap behavior revision is paired with an explicit plugin release.
-	versions := map[int]string{1: "0.3.0", 2: "0.4.0"}
+	versions := map[int]string{1: "0.3.0", 2: "0.4.0", 3: "0.5.0"}
 	want, ok := versions[revision]
 	if !ok {
 		t.Fatal("add the plugin release paired with the new bootstrap revision")

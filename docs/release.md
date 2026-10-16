@@ -9,9 +9,8 @@ Every `v*` tag on `main` produces a GitHub release with:
 
 - `flats_<os>_<arch>.tar.gz` for `darwin` and `linux` on `amd64` and `arm64`.
   Each archive holds the CGO-free `flats` binary (built with `-trimpath`, the
-  tag stamped into `flats version`), `LICENSE` and `README.md`. The binary is
-  built from the `netbird` module (`netbird/cmd/flats`), so it includes
-  NetBird; `go install` builds `cmd/flats`, which does not (see
+  tag stamped into `flats version`), `LICENSE` and `README.md`. The binary
+  includes NetBird, which `go install` builds do not (see
   [Serving through NetBird](networking.md#serving-through-netbird)).
 - `checksums.txt`: SHA-256 of every archive, in `sha256sum` format.
 - A GitHub build provenance attestation for every archive.
@@ -94,11 +93,11 @@ tagged versions, and operators may already have verified its checksums.
 
 ## Backfilling a release without binaries
 
-`v0.1.0` was published before the release tooling existed. Attach archives
-to such a release by running the workflow manually from `main` with its tag:
+To attach archives to a published release that has none, run the workflow
+manually from `main` with its tag:
 
 ```sh
-gh workflow run release.yml --repo gosuda/flats --ref main -f tag=v0.1.0
+gh workflow run release.yml --repo gosuda/flats --ref main -f tag=v1.2.3
 ```
 
 The workflow tests the tag's source with the shard script and builds it with
@@ -140,8 +139,7 @@ the leading `v`:
 A backfill (`workflow_dispatch`) pushes only the exact version, so it never
 moves `1.2` or `latest` back to an older release. Releases do not write
 `sha-` tags: those identify the separate [commit builds](#commit-images).
-Previously published release `sha-` tags remain until a commit build replaces
-them. The `sha256-<digest>` tag is not a commit: it holds the image's
+The `sha256-<digest>` tag is not a commit: it holds the image's
 provenance attestation. Re-running the job rebuilds
 the version tag from the same archives. The Dockerfile comes from the
 workflow's commit, like `build-release.sh`.
@@ -260,28 +258,47 @@ It:
    shell profiles.
 3. Registers the service with `flats install`: a launchd agent
    (`dev.flats.serve`) on macOS or a systemd user unit (`flats.service`) on
-   Linux. It starts at login and restarts when it exits. The service runs
-   `flats serve` with the defaults: Local network, Portal off, and the
-   default data directory. On Linux the installer also enables lingering when
-   polkit allows it.
-4. Waits until `http://127.0.0.1:7878` answers.
+   Linux. It starts at login and restarts when it exits. A new service runs
+   `flats serve --config <data-dir>/config.json` with the defaults: Local
+   network, every other provider off, and the default data directory. On
+   Linux the installer also enables lingering when polkit allows it.
+4. Waits up to 30 seconds until the service runs and its console answers, at
+   the `--listen` address when one is given, else `host.management_addr` in
+   `config.json` (default `http://127.0.0.1:7878`).
 
 Service registration is the default because a host is meant to stay up.
 `--no-service` installs only the binary, for hosts that run `flats serve`
-under another supervisor or in the foreground. Non-local providers
-(Tailscale, Funnel, Portal) are never enabled by the installer; pass `flats
-serve` flags after a second `--` to choose them explicitly:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
-```
+under another supervisor or in the foreground. The installer never enables a
+non-local provider (Tailscale, Funnel, NetBird, NetBird Expose, Portal, zrok or
+Cloudflare quick tunnels) on its own. Turn providers on in the console
+(Settings → Network providers) or with `flats config set` while the host is
+stopped; see [Private and public access](networking.md).
 
 | Option (after `sh -s --`) | Effect |
 | --- | --- |
 | `--version v1.2.3` | Install a specific release |
 | `--dir DIR` | Install the binary somewhere other than `~/.local/bin` |
 | `--no-service` | Install only the binary |
-| `-- <serve flags>` | Reinstall the service with those flags written into `config.json` |
+| `-- <serve flags>` | Register the service with these `flats serve` flags (see below) |
+
+Serve flags after a second `--` are older `flats serve` flags that
+`flats install` turns into `config.json` once, when it creates the
+configuration of a new host or migrates a data directory from before
+`config.json`. For example, on a new host
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh -s -- -- --network tailscale
+```
+
+permits Tailscale, makes it the private backend and puts the console on the
+tailnet as `flats`. On a host that already has `config.json`, the flags never
+rewrite it: they must match it, or the installation stops (change the
+configuration with `flats config set` while the host is stopped, or in the
+console). Key flags are not kept in the service definition:
+`--zrok-token-file` and `--netbird-setup-key-file` are refused, and so is
+`--tailscale-authkey-file` once `config.json` exists; store keys with
+`flats key set` or in the console instead (see
+[Operator keys](configuration.md#operator-keys)).
 
 `flats status` shows whether the host answers. To check an archive you
 downloaded yourself, run
@@ -291,9 +308,7 @@ downloaded yourself, run
 
 Run the installer again. It replaces the binary and, when the service is
 running, restarts it with its existing settings. A stopped service stays
-stopped; the installer prints the command that starts it. Passing `flats
-serve` flags after `--` reinstalls the service with those flags written into
-`config.json` instead.
+stopped; the installer prints the command that starts it.
 
 A service installed before `config.json` existed still passes `flats serve`
 flags. Its first start on the new release moves those flags, the console
@@ -301,23 +316,21 @@ settings and `network-provider.json` into `<data>/config.json`, after backing
 up `flats.db` to `<data>/backups/`. The installer then prints the `flats
 install` command that switches the service to `serve --config`. See
 [Configuration and storage](configuration.md#moving-an-existing-installation).
+A host from before the Draft and version lifecycle keeps its published
+version numbers, and versions that were saved but never published become
+Private Draft revisions. Network grants are not carried over from historical
+defaults; see
+[Private and public access](networking.md#upgrading-provider-grants-from-an-older-host).
 
 The installer does not back up data. When the release notes mention data
-changes, back up first:
-
-1. Stop the service: `launchctl bootout gui/$(id -u)/dev.flats.serve` on
-   macOS, `systemctl --user stop flats.service` on Linux.
-2. Copy the whole data directory, including `config.json` and `secret.key`.
-   It is `host.data_dir` in the service's `config.json`, or `FLATS_DATA` or
-   the service's `--data` when set, otherwise
-   `~/Library/Application Support/Flats` on macOS and
-   `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux.
-3. Run the installer, then start the service with the command it prints.
-
-Published versions keep their numbers across the upgrade; versions that were
-saved but never published become Private Draft revisions. Network grants are
-not carried over from historical defaults; see
-[Private and public access](networking.md#upgrading-provider-grants-from-an-older-host).
+changes, back up first: stop the service (`launchctl bootout
+gui/$(id -u)/dev.flats.serve` on macOS, `systemctl --user stop
+flats.service` on Linux), copy the data directory as described in
+[What to back up](configuration.md#what-to-back-up), then run the installer
+and start the service with the command it prints. The data directory is
+`host.data_dir` in the service's `config.json`, or `FLATS_DATA` or the
+service's `--data` when set, otherwise `~/Library/Application Support/Flats`
+on macOS and `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux.
 
 Install a specific release with `--version v1.2.3`. Downgrading across a data
 migration is not supported; restore the backup taken before the upgrade.
@@ -325,40 +338,137 @@ migration is not supported; restore the backup taken before the upgrade.
 
 ## Updating a client
 
-On the agent machine, inspect compatibility with the selected server and then
-explicitly update if required:
+A client machine runs the `flats` CLI and the `flats mcp` bridge against a
+host that may run another release. Three commands keep it aligned; each takes
+the usual `--url` and `--json`:
 
 ```sh
-flats --url https://flats.example.ts.net --json client check
-flats --url https://flats.example.ts.net --json update
+flats --url https://flats.example.ts.net --json client check [--skill-file /chosen/flats-deploy/SKILL.md]
+flats --url https://flats.example.ts.net --json update [--version v1.2.3]
+flats --url https://flats.example.ts.net --json skill sync --output /chosen/flats-deploy/SKILL.md [--expected-sha256 <hash>]
 ```
 
-`flats update` compares client contract revisions. A compatible CLI is a no-op;
-an incompatible CLI targets the connected server's exact published release.
-It never substitutes latest for a development build or unavailable asset.
-`flats --json update --version v1.2.3` explicitly selects an official release,
-including a downgrade, without a server connection; check compatibility after
-that installation. Results report the path, version, direction and pending
-reconnection, not a claim that an active bridge has already changed.
+How an agent uses them, and with what authorization, is in
+[Connecting agents](agents.md#keeping-clients-current).
 
-The updater downloads the platform archive and checksums from gosuda/flats on
-GitHub over HTTPS, verifies SHA-256 and the candidate's version/contract, then
-atomically replaces the invoking executable. The checksum provides consistency
-with that publisher; it is not independent signature verification. Defaults
-also recheck the server target and contract immediately before replacement.
-A failed check/download before replacement preserves the original binary;
-post-replacement durability errors may already have installed new bytes.
+### Manifest and statuses
 
-It refuses paths resolving through symlinks, known package-managed and temporary
-build paths, and binaries referenced by the installed Flats launchd/systemd
-service. Use the owning installation manager or a separate client installation.
-Custom/foreground servers cannot be universally detected: do not update a path
-shared with one, because newly spawned workers can use the replacement
-immediately. No service is installed or restarted and no remote server is
-upgraded. Existing MCP processes keep their old code until reconnected.
+Each command reads the host's manifest from `GET /api/client` (the MCP tools
+`check_client` and `get_client_skill` serve the same data). The client
+refuses a manifest unless its client contract and bootstrap revisions are
+positive, its digests are well-formed SHA-256 values, the embedded skill is a
+`flats-deploy` SKILL.md of at most 32 KiB whose visible revision and digest
+match the manifest, and its CLI target is the host's own release for a clean
+release build and absent otherwise.
+
+`client check` writes nothing and exits 0 even when an update is due. It
+reports the manifest, the statuses for this CLI, its `executable` path and,
+with
+`--skill-file`, `skill_file`, `skill_sha256` and `skill_exists` (a missing
+file means `bootstrap_status: refresh_required`). The statuses are the whole
+action contract; none of them authorizes a write:
+
+| Status | Values | Next step |
+| --- | --- | --- |
+| `cli_status` | `compatible`, `not_applicable` | continue |
+| | `update_required` | update the CLI and reconnect the bridge, or report that no target exists |
+| | `unknown` | report the bridge identity if known; otherwise it stays unknown |
+| `guide_status` | `current` | use the loaded guide |
+| | `refresh_required`, `unknown` | read the `guide` topics for the task |
+| `bootstrap_status` | `current`, `not_applicable` | nothing |
+| | `refresh_required` | read `get_client_skill` now; update a standalone skill or report the managed plugin's mismatch |
+| | `unknown` | report the loaded skill's visible revision, or read `get_client_skill` for this task |
+
+Compatibility means an equal client contract, not an equal release number.
+
+### `flats update`
+
+Without `--version`, a compatible CLI is left as it is. Otherwise the target
+is the host's exact published release; a development host has none, and the
+update fails with `dev_target` rather than choosing the latest release.
+`--version vX.Y.Z` selects an official release, including a downgrade,
+without contacting a host; the result then says `compatibility_assessed:
+false`, so check the host afterwards.
+
+The update downloads
+`https://github.com/gosuda/flats/releases/download/<tag>/flats_<os>_<arch>.tar.gz`
+and `checksums.txt` (macOS and Linux, amd64 and arm64), following only HTTPS
+redirects, with limits of 1 MiB for the checksums, 128 MiB for the archive
+and 256 MiB for the executable. `checksums.txt` must hold exactly one
+well-formed line for the archive, and the archive exactly one regular file
+named `flats`; unsafe entry names are refused. The checksum proves
+consistency with the gosuda/flats GitHub publisher, not an independent
+signature.
+
+The candidate is written beside the target, mode 0755, and run as
+`flats --json version`: it must report exactly the requested release, a
+clean release build for this OS and CPU and a positive client contract, and,
+without `--version`, the host's contract. Without `--version`, the host's
+target and contract are read again just before the replacement, and a change
+fails with `server_changed`. The target file must also still be unchanged.
+The candidate then replaces the target by an atomic rename, and the directory
+is synced. A failure before the rename leaves the old binary in place; a
+failure after it may already have installed the new bytes.
+
+The update replaces only the executable it runs from, and refuses one that:
+
+- resolves through a symlink, is not a regular file or is not writable;
+- lies in Homebrew's `Cellar` or `Caskroom` or the Nix store
+  (`package_managed`), or is a temporary `go build` executable;
+- is the executable of the installed Flats launchd agent or systemd user unit
+  (`service_binary`), or the service definition cannot be read.
+
+Use the owning installation manager or a separate client installation. A
+server started by hand or by another supervisor cannot be detected: do not
+update a binary such a server uses, because its new workers start the
+replacement at once. The update restarts no service and does not upgrade the
+host. A running `flats mcp` keeps its old code until it is reconnected.
+
+The JSON result has `status` (`updated` or `current`), `path`, `server_url`
+(without `--version`), `version`, `client_contract`, `previous_version`,
+`direction` (`upgrade`, `downgrade`, `same` or `unordered` for development
+builds), `reconnect_required`, `compatibility_assessed` and `notice`.
+
+### `flats skill sync`
+
+`skill sync` writes the host's embedded skill to a standalone `SKILL.md` you
+name; it never searches agent directories, and managed plugins are updated
+with their own plugin manager. Parent directories are created; a symlink at
+the path is refused. Identical content is a no-op. Replacing a different
+file needs `--expected-sha256` equal to its current SHA-256 (from
+`client check --skill-file`); a mismatch, or an expected file that is
+missing, fails with `file_conflict`. The host's bootstrap revision, digest,
+contract and target are read again just before the rename (`server_changed`
+on a change). Other editors of the file are not coordinated with it. The
+result has `status`, `path`, `server_url`, `bootstrap_revision`,
+`bootstrap_sha256` and `reload_required`.
+
+### Locks, errors and the bridge identity
+
+`update` and `skill sync` take a non-blocking lock per target file, in
+`<user config dir>/flats-client/locks/`; a second run on the same file fails
+with `locked`. The lock files stay; the lock ends with the process.
+
+With `--json`, a failure prints `{"error":{"code":"…","message":"…"}}`. Usage
+errors exit 2 (code `invalid_target`), other failures exit 1, and completed
+checks and changes exit 0. The codes are `invalid_manifest`, `transport`,
+`invalid_target`, `package_managed`, `service_binary`, `locked`,
+`dev_target`, `assets_unavailable`, `checksum`, `candidate_mismatch`,
+`server_changed`, `file_conflict`, `filesystem` and `cancelled`.
+
+`flats mcp` appends one line to the host's MCP instructions at
+initialization: `Running local Flats MCP bridge (JSON):` followed by its
+`cli_version`, `client_contract`, absolute `executable` and selected
+`server_url`. The process keeps that identity until it is reconnected, and a
+different executable on the shell's `PATH` is not that bridge.
+
+### Revisions
 
 Maintainers bump the client contract only for incompatible local behavior,
-not every release. Bootstrap changes require increasing the visible revision
-and plugin metadata version together. The server embeds that exact skill and
-hashes it separately; guides have their own content revision. Review the
+not every release. A change to the bootstrap skill raises its visible
+`Flats bootstrap revision` and the plugin release version together; a
+contract test pairs each revision with its plugin release. The host embeds
+that exact skill and reports its SHA-256 separately. The guide revision is a
+hash over every guide topic and refusal page, both references and the
+rendered MCP instructions, so any guide change is visible to `check_client`. Review the
 [agent update design](spec/agent-self-update.md) when changing this contract.

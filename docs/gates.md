@@ -1,17 +1,16 @@
 # Phase gates: evidence
 
-Current interface note: historical receipts below retain their original tool
-names and behavior. Client contract 2 uses `save_draft` / `save_draft_from_dir`
-for Draft content, `create_version` for separately approved version creation,
-and `deploy` for a separately approved deployment of a positive version.
-`save_version`, `save_version_from_dir` and `publish` are removed tools;
-these historical receipts are not instructions to invoke them.
+This page lists the checks CI runs on every change and the recorded evidence
+of the phase gates. The phase evidence names the tools of its time:
+`save_version`, `save_version_from_dir` and `publish` are removed. The current
+tools are `save_draft` / `save_draft_from_dir` for Draft content,
+`create_version` for separately approved version creation and `deploy` for a
+separately approved deployment of a positive version.
 
-
-Measured on the development Mac (Apple Silicon, macOS, Go 1.27.1), 2026-10-03.
-"Local network" means `flats serve --network local` (flats at
-`http://<flat>.localhost:<port>`), used where a real tailnet was not
-available.
+Phase measurements were recorded on 2026-10-03 on the development Mac (Apple
+Silicon, macOS, Go 1.27.1). "Local network" means `flats serve --network
+local` (flats at `http://<flat>.localhost:<port>`), used where a real tailnet
+was not available.
 
 ## Pull-request baseline
 
@@ -22,9 +21,11 @@ and runs these checks in parallel jobs:
 ```sh
 go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
+make docs-check                     # Markdown links and anchors, uncached
 go test ./...                       # as seven shards: scripts/ci-test.sh <shard>
 go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
 go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
+go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|IdleReadDeadline|ControlFramesKeepReadAlive|ServerPingsKeepIdleClientAlive|DefaultByteLimits)$'
 ```
 
 `scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into
@@ -40,14 +41,32 @@ one at a time or use `go test -p 1 ./...`. The `install-script` and
 darwin/amd64 and darwin/arm64 on macOS, linux/amd64 and linux/arm64 in the
 container job.
 
+The `netbird` job covers the nested `netbird` module, which `go test ./...`
+does not reach: no go.mod/go.sum diff after `go mod tidy`, `go vet ./...`,
+`go test -race ./...` and a CGO-free build of its `./cmd/flats`. It also fails
+when the root `cmd/flats` links any `github.com/netbirdio` package, or when the
+root `go.mod` has a `replace` directive, which `go install pkg@version`
+refuses.
+
+The `install-script` job runs on Linux and macOS. On Linux it runs
+`shellcheck` on the POSIX and Bash scripts. Both legs syntax-check the gate
+scripts, run `scripts/test_approval_gate.py` (fake-client tests of the
+approval helper the gates share; it never starts Flats or a provider), build
+the release archive for their platform and run `scripts/install-smoke.sh`:
+`install.sh` installs the real per-user service from those archives, a rerun
+restarts it, it recovers from a crash, a stopped service stays stopped on
+upgrade, and uninstall removes it.
+
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the
 runner's image, once with host networking and once with ports published on
 `127.0.0.1` from a dedicated network: `flats serve` bootstrapping an empty
 volume, static and JavaScript server deploys from the runner's `flats` CLI
-approved through the console API, restart persistence of config, flats and
-data without a second bootstrap, and a clean SIGTERM exit, all with a
-read-only root, no capabilities and `no-new-privileges`.
+(Draft save, then version creation and deploy, each approved through the
+console API), a built-in docs flat saved without any approval request with its
+generated modules under `/data`, restart persistence of config, flats and data
+without a second bootstrap, and a clean SIGTERM exit, all with a read-only
+root, no capabilities and `no-new-privileges`.
 
 Tests use disposable hosts/data and local test-control infrastructure. Portal
 relay E2E remains opt-in (`FLATS_PORTAL_E2E=1`); ordinary CI never enables it.
@@ -55,15 +74,19 @@ Real tailnet/control, Portal relay, Claude/Codex/Cursor agent, launchd/systemd
 recovery and reboot gates below remain manual external checks. A Linux cross
 build does not establish real Linux service recovery or tailnet behavior.
 
-The new local regressions cover lifetime directory locking (including another
+Local regressions also cover lifetime directory locking (including another
 process with different ephemeral listen addresses), complete atomic first-key
 publication, concurrent FILES quota/accounting, JS/WASI capabilities, joined
 Host shutdown errors, and bounded Portal teardown with stalled SDK/drain/pump
 or per-slug locks. The runtime suite shares only a disposable process-local
 compilation cache. `scripts/server-flat-gate.sh` can run a disposable local
 host with `FLATS_GATE_PORT` and `FLATS_BIN`; it does not need credentials.
-Public `go install github.com/gosuda/flats/cmd/flats@latest` must be verified
-outside the checkout after the canonical module migration reaches main.
+
+To check a public install, run `go install
+github.com/gosuda/flats/cmd/flats@latest` (`@main` for unreleased changes)
+outside the checkout, then `go version -m` on the installed binary: the module
+proxy can resolve `@latest` to an earlier version for a while. See
+[Build version](release.md#build-version).
 
 ## Phase 0 — spike
 
@@ -81,10 +104,11 @@ node and a per-flat node both reach `needs-login` and the system status (and
 console) shows each node's real `https://login.tailscale.com/a/...` URL; no
 node joined the tailnet.
 
-### Real tailnet (`scripts/tailnet-gate.sh <keyfile>`, 2026-10-03)
+### Real tailnet (`scripts/tailnet-gate.sh <keyfile>`)
 
 **PASS** twice on the operator's tailnet (macOS, Tailscale 1.102 client on
-the same Mac, reusable untagged auth key), the last run at commit `6771a6c`:
+the same Mac, reusable untagged auth key), the last run at `6771a6c`, a
+pre-squash branch commit that is not reachable from main:
 
 | Check | Result |
 |---|---|
@@ -95,8 +119,7 @@ the same Mac, reusable untagged auth key), the last run at commit `6771a6c`:
 | Management API on a flat host | 404 |
 | Identity headers from a real peer (server flat echoing them) | `Tailscale-User-Login` is the peer's real login, `-Name` set, a spoofed `Tailscale-User-Profile-Pic` removed |
 
-Earlier runs failed and found four product bugs, fixed in `c188497` and
-`6771a6c`:
+Earlier runs failed and found four product bugs, all fixed:
 
 1. **Certificates stopped after ~10 new hosts.** Each node registered its
    own Let's Encrypt account; Let's Encrypt answered "too many new
@@ -162,14 +185,14 @@ SQLite growth is reported against the disk quota, not hard-capped.
 | Thumbnails: agent screenshot, else favicon, else initials | **PASS** | `TestThumbnailFallsBackToFavicon`, console |
 | Linux | **PASS**: linux/amd64 and linux/arm64 build CGO-free. On Linux 6.6 aarch64 (Debian 12 containers, non-root user): all 16 package test binaries pass; the server-flat gate passes; `flats install` installs a real systemd user service (systemd 252, lingering user) that comes back after `kill -9` and after a container reboot with the flat served; `flats uninstall` removes it. | cross-compiled `go test -c` binaries and `scripts/server-flat-gate.sh` (`FLATS_BIN`) in containers, run with Rancher Desktop |
 
-## Final review (2026-10-03)
+## Final review
 
 A four-lens adversarial review (security, correctness, spec compliance,
 interfaces; every finding checked by two independent verifiers) confirmed 37
 findings. All were addressed; independent re-verification confirmed 32 fixed
-and the rest either fixed later in this session (snapshot eviction, repeated
-restore_data, wording) or documented because
-they cannot be enforced without accounts:
+and the rest either fixed afterwards (snapshot eviction, repeated
+restore_data, wording) or documented because they cannot be enforced without
+accounts:
 
 - an agent that can send arbitrary HTTP from the operator's own devices can
   imitate the console's browser headers and approve its own request;
@@ -186,7 +209,7 @@ values, and their common encodings. Short secrets can therefore obscure unrelate
 log text. Ordinary environment variables are readable settings and are not added
 to the secret redaction set.
 
-## Runtime API discovery and unfamiliar-agent gate (issue 9)
+## Runtime API discovery and unfamiliar-agent gate
 
 The host embeds [runtime API v1](runtime-api-v1.md), discoverable from MCP
 initialization through `flats://docs/runtime-api/v1` or the read-only
@@ -198,20 +221,12 @@ end-to-end unfamiliar-agent usability evidence**.
 
 The same text is also split into task-sized topics served by the read-only
 `guide` tool (`topic.index` first), and the short MCP instructions point there.
-The 2026-10-03 run below predates `guide`; it used `get_runtime_reference`.
-A second run on PR #35 (`956cedf`) passed every step through `guide` alone,
-with no skill installed and without calling `get_runtime_reference`; see the
-guide-route section of the [evidence](gates/runtime-discovery.md). Since the
-lifecycle work, each publication waits for operator approval. The isolated
-client must never approve; the operator approves in the disposable host's
-console, and each approval is recorded as an operator intervention.
+Recorded runs, through `get_runtime_reference` and later through `guide` alone
+with no skill installed, are in the [evidence](gates/runtime-discovery.md).
 
-The historical three-client static gate above supplies prepared HTML. Keep it
-as a static deployment regression; it does not establish source-free authoring.
-A genuine runtime authoring gate **passed on the pre-integration candidate**;
-see the [sanitized run evidence](gates/runtime-discovery.md). Accepted-base
-integration and final-binary revalidation remain separate gates. Reproduce the
-authoring check with these steps:
+The three-client static gate above supplies prepared HTML. Keep it as a static
+deployment regression; it does not establish source-free authoring. Reproduce
+the authoring check with these steps:
 
 1. Start a disposable local host with runtime enabled, Portal disabled, fresh
    synthetic data and free management/site ports. Supply only README host/MCP
@@ -220,28 +235,33 @@ authoring check with these steps:
 2. Enforce lack of source access. One supported route is a fresh Claude client
    outside the checkout with `--tools '' --restricted --strict-mcp-config
    --disable-slash-commands --setting-sources ''`, only the Flats MCP config,
-   and `--disallowedTools mcp__flats__save_version_from_dir`. Without native
+   and `--disallowedTools mcp__flats__save_draft_from_dir`. Without native
    shell/file/browser/skill tools or host-directory uploads, the client can
-   author inline files through save_version and discover APIs through MCP.
+   author inline files through `save_draft` and discover APIs through MCP.
    Verify the effective tool inventory and injected context; allowlisting
    permissions alone or a promise not to read source is insufficient. Another
    route is a disposable container with no source mount. Never give an isolated
-   test client an orchestration preamble that requires restoring shell access.
-3. Have the client author/deploy a private app using all four FILES operations
-   and DB query/exec. Independently fetch the **returned** URL, exercise write/
+   test client a preamble that requires restoring shell access.
+3. Have the client author and deploy a private app using all four FILES
+   operations and DB query/exec. Version creation and deploy each wait for
+   operator approval: the client must never approve; the operator approves in
+   the disposable host's console, and each approval is recorded as an operator
+   intervention. Independently fetch the **returned** URL, exercise write/
    read/list/delete and structured-data behavior, and retain HTTP observations.
 4. Seed random data, ask that client to change and redeploy the app, then verify
    both DB and FILES data persist at the returned URL. Ask it to deploy a
-   deliberately unhealthy candidate with side-effect-free startup/health;
-   confirm the MCP failure, saved candidate, failed health log and unchanged
-   prior live version, URL behavior and stored data.
+   deliberately unhealthy candidate with side-effect-free startup/health. Its
+   version is created, and the approved deploy ends `failed` with
+   `failure_code` `health_check_failed` in `get_approval` `result_data`.
+   Confirm that result, the saved version, the failed health log and the
+   unchanged prior live version, URL behavior and stored data.
 5. Record client/version/model, host commit/tree/binary hash, documentation
    version and text hash, effective isolation/tool restrictions, supplied inputs,
    transcript, authored-file hashes, URLs/HTTP results and every intervention.
    Keep private local logs/credentials out of the public repository. Label
    failed or manually repaired attempts honestly. Cleanup only owned PIDs/data.
 
-Only a real run with this provenance can satisfy issue 9 acceptance. Passing
-runtime tests, prepared-app scripts, a planned command or an unexecuted harness
-cannot substitute for that evidence. Static client/service/tailnet gates remain
-separate and keep their original scope.
+Only a real run with this provenance establishes unfamiliar-agent acceptance.
+Passing runtime tests, prepared-app scripts, a planned command or an unexecuted
+harness cannot substitute for that evidence. Static client/service/tailnet
+gates remain separate and keep their original scope.

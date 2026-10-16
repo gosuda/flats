@@ -21,7 +21,11 @@ flats secret set hello API_TOKEN
 clears it. Only HTTP on port 80 and HTTPS on port 443 are supported. Origins
 have no path beyond an optional trailing `/`, query, fragment or user information. Wildcards and arbitrary
 ports are unsupported. Agents may read grants with MCP `get_network`, but
-cannot grant network access. Ordinary API clients cannot set grants.
+cannot grant network access: MCP and remote API callers cannot set grants.
+Only the console and the `flats` CLI on the Flats host itself (a loopback
+request that identifies itself as the CLI) can. That identification is not
+authentication: a local process that sends the CLI's header from loopback can
+set grants too, so run only trusted agents on the host.
 
 Grants are captured alongside env/secrets when activation begins: approved
 deploy/redeploy, rollback, data snapshot restoration, host restart and new

@@ -1,14 +1,12 @@
 # Network provider lifecycle
 
-This document describes the integrated provider Manager. Production app and disposable gate host wire the exact exported core `LifecycleNet`, observer and preview contracts through `Config.Lifecycle`; legacy `Config.Public` is unset. Historical branch/test checkpoints below are receipts, not the current integration boundary.
-
-## Historical revisions
-
-- `git cat-file -p 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0` shows one parent, `313ef2557d28350cb91a0daff719aca5bf6813c9`. `29edc2a6` is the child. `313ef255` is the parent. `git merge-base --is-ancestor 313ef2557d28350cb91a0daff719aca5bf6813c9 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0` exits 0, and the reverse exits 1.
-- This branch started at the child `29edc2a6e13e27867603a23ff5b1b5a8d1b84df0`.
-- Grant and Funnel listener commit: `e906e929b8312cdf28d5df15e04bd344573db6b0`.
-- AllowFunnel rollback: `992e39afdf57c8dfbd154352b20d8c5cbdcd79bf`.
-- The commit that corrects this ancestry note and `--portal=false` is the candidate HEAD when it is the branch tip. The worker result repeats `git rev-parse HEAD`.
+This document describes the provider Manager (`internal/expose/provider`) and
+the backends it drives. The app and the deterministic integration host wire it
+into core through `Config.Lifecycle`, which carries the exported
+`LifecycleNet`, `LifecycleObserver` and `LifecyclePreviewNet` contracts
+([Network contract](lifecycle-core-contract.md#network-contract)); legacy
+`Config.Public` stays unset. Operator setup is in
+[Private and public access](networking.md).
 
 ## Contract
 
@@ -17,7 +15,7 @@ available with no grant. Tailscale, NetBird, Tailscale Funnel, Portal, zrok,
 Cloudflare quick tunnels (`cloudflare-quick`) and NetBird Expose start
 only when both of these are true:
 
-1. The host file grants that provider.
+1. The host grants that provider (`network.permitted`).
 2. The exposure request lists it in `Permitted`.
 
 A grant, a tailnet login, or a running node does not publish a flat. `"funnel"`
@@ -69,77 +67,122 @@ absent. An endpoint that was refused or failed before registration keeps its
 original `unavailable` or `error` detail instead of being mislabeled stopped.
 Failed teardown keeps the registration and observation for retry.
 
-## Host file
+## Host grants
 
-Host grants now live in `config.json` (`network.permitted` and
+Host grants live in `config.json` (`network.permitted` and
 `network.private_backend`; see [Configuration and storage](configuration.md)).
-`network-provider.json` and the serve flags below are read only by a host
-started without `--config` before its one-time migration, which converts them
-and moves the file into `backups/`. The rest of this section describes that
-legacy input.
+The app passes them to the Manager as `Options.Grants`, so the Manager neither
+reads nor writes a host file, and `Reload` keeps those grants until the process
+restarts. `local` needs no grant and cannot be turned off.
 
-`network-provider.json` (mode `0600`, version 1) lives in the data directory.
-A missing file is written with an empty `permitted` list and a migration
-record. Existing `tsnet/<node>/` directories and `portal/*.json` files are
-recorded in `migration` and are not grants. `grants_from_state` must stay
-empty; validation rejects a non-empty list. `private_backend` is `local` or
-`tailscale` and is not itself a grant. Auth keys are not stored in this file.
-
-## Flags
-
-Defaults changed so a process does not opt in by omission:
-
-- `--network` defaults to `local`. The previous default was `tailscale`.
-- `--portal` defaults to `false`. The previous default was `true`.
-- `--permit` accepts a comma-separated list of canonical ids.
-
-The console's Settings page can also turn a provider on or off for the host
-(`PUT /console/api/providers/{id}` with `{"enabled": bool}` and the settings
-ETag in `If-Match`). Turning one on saves `network.permitted` in config.json,
-updates the running Manager's grants (`SetGrant`) and attaches the provider's
-backend (`AttachTailnet`/`AttachPortal`, nil to set only); constructing a
-backend does not contact a tailnet or relay. Portal started this way uses the
+The console turns a provider on or off for the host with
+`PUT /console/api/providers/{id}` `{"enabled": bool}` and the settings ETag in
+`If-Match` ([HTTP routes](surfaces.md#http-routes)). Turning one on saves
+`network.permitted`, updates the running Manager (`SetGrant`) and attaches the
+provider's backend (`AttachTailnet`, `AttachPortal`, `AttachZrok`,
+`AttachCFQuick`, `AttachNetbird`; nil to set only). Constructing a backend does
+not contact a tailnet, relay or controller. Portal started this way uses the
 Portal settings saved at that moment. Turning one off is refused with
-`provider_in_use` while any flat still allows it, and `local` cannot be turned
-off. A legacy service whose `--portal`, `--permit` or `--network tailscale`
-flag fixes a provider refuses the change, and Tailscale cannot be turned off
-while it carries the console and private routes.
+`provider_in_use` while any flat still allows it; Tailscale and NetBird are
+also refused while that network carries console domains, and Tailscale while
+it carries the private routes.
 
-`--network tailscale` grants `tailscale` only and sets `private_backend`. It
-does not grant Funnel. `--network local`, when the flag is present, sets
-`private_backend` to `local` and does not revoke other grants. `--portal`
-grants `portal` and starts it. `--relays` does not grant portal.
+### Legacy host file and flags
 
-`--portal=false` keeps a portal grant that is already stored and does not
-start Portal for this process. The legacy public network stays unset and the
-manager receives no portal backend, so this process cannot publish through
-Portal. The next start that omits `--portal` uses the stored grant and starts
-Portal again. Omitting `--portal` never creates a grant by itself.
+A host started without `--config` (legacy mode) converts its older inputs into
+`config.json` once, then moves `network-provider.json` into `backups/`. That
+file (mode `0600`, version 1) holds a `permitted` list and `private_backend`
+(`local` or `tailscale`, not itself a grant); existing `tsnet/<node>/`
+directories and `portal/*.json` files were recorded in its `migration` block
+and are not grants, and `grants_from_state` must stay empty. Auth keys were
+never stored in it.
 
-On a later start, if `--network` is omitted, `private_backend` is `tailscale`,
-and that grant exists, the legacy private path is tsnet again. A backend is
-constructed only for a granted provider that this process is allowed to start.
-Local is always constructed.
+The legacy flags map to grants so that a process never opts in by omission:
 
-`scripts/tailnet-gate.sh` already passes `--network tailscale --portal=false`
-on a fresh data directory, so those explicit flags still grant tailscale and
-not portal. That script was not run here.
+- `--network` defaults to `local`. `--network tailscale` grants `tailscale` and
+  sets `private_backend`; it does not grant Funnel. An explicit
+  `--network local` sets `private_backend` to `local` and revokes nothing.
+- `--portal` defaults to `false`. `--portal` grants `portal`. An explicit
+  `--portal=false` leaves `portal` out of `network.permitted`; flats' own
+  Portal permissions stay in the database. Omitting `--portal` never creates
+  a grant: pass `--portal` or `--permit portal` once.
+- `--permit` takes a comma-separated list of canonical IDs. `"funnel"` is not
+  an alias of `tailscale-funnel`.
+- `--relays` sets `portal.relays` and does not grant Portal.
 
-## Adapters
+After the conversion, each legacy flag given must match `config.json`; a
+different value stops the start with status 78. A provider fixed by a legacy
+service's `--network tailscale`, `--portal` or `--permit` flag is pinned: the
+console refuses to turn it on or off. `scripts/tailnet-gate.sh` passes
+`--network tailscale --portal=false` on a fresh data directory, so it grants
+Tailscale and not Portal.
 
-`provider.New(dir, provider.Options)` loads the host file and keeps the
-backends. It does not serve a flat.
+Pre-lifecycle flats' grants: see
+[Upgrading provider grants from an older host](networking.md#upgrading-provider-grants-from-an-older-host).
+
+## Manager
+
+`provider.New(dir, provider.Options)` keeps the supplied backends. It does not
+serve a flat.
 
 - `Options.Local` is required.
-- `Options.Tailscale` is the `Tailnet` interface. `provider.TSNet` adapts `*tsnet.Net` and adds `FunnelState`.
-- `Options.Portal` is the `PortalNet` interface. `*portal.Net` satisfies it.
+- `Options.Tailscale` is the `Tailnet` interface. `provider.TSNet` adapts
+  `*tsnet.Net` and adds `FunnelState`.
+- `Options.Portal` is `PortalNet` (`*portal.Net` satisfies it),
+  `Options.Zrok` is `ZrokNet`, `Options.CFQuick` is `QuickNet` and
+  `Options.Netbird` is `NetbirdNet`. The app assigns an interface only when its
+  concrete backend is non-nil, so a skipped backend is unconfigured rather than
+  a typed nil.
+- `TailscaleStateDir`, `ZrokStateDir`, `CFQuickStateDir` and `NetbirdStateDir`
+  name the local state the Manager cleans up for a deleted flat when that
+  backend is not configured (defaults under the data directory).
+- `Configuration` is the canonical, non-secret desired backend configuration
+  hashed into approval policy; `Permission` reads per-flat opt-ins for status;
+  `Grants` are the host grants above.
 
 A non-nil backend is not permission. Tests inject fakes through these
-interfaces. There is no permit-skipping constructor.
+interfaces; there is no permit-skipping constructor.
 
-Manager implements the exact exported core contracts and aliases core DTOs; core does not import expose. Policy tokens include host grants and effective backend configuration, excluding transient readiness. Per-flat permissions are read freshly for status. In-use revocation is refused before any policy write, including starting/error routes, previews and redirects. Public may commit with a registered permitted/configured current route in `starting`; links remain unavailable until ready. A Funnel node waiting for login or device approval remains a registered, permitted route in `needs-login`; it is not reported as an absent provider permission. Teardown uses confirmed Manager stops across delete/rename/expiry, retaining unconfirmed routes for retry. `StopSlug` is the authoritative delete/redirect-expiry operation. It includes the exact slug as a deterministic tsnet identity candidate even when no Funnel or Tailscale route remains in memory, then stops every Funnel listener and confirms every candidate node retirement before it stops Portal or Local. A public listener or node failure therefore leaves Local reachable and keeps the appropriate route or cleanup record for retry; sibling slug routes are untouched. When no tailnet backend exists because neither Tailscale provider is granted, `StopSlug` removes only the validated host's local `tsnet/<host>` directory. It does not start a backend or contact control, and it prevents a later flat with the same slug from loading the historical identity. The old offline machine may remain visible in the tailnet administration plane until it expires or an operator removes it.
+Manager implements the core contracts and aliases core DTOs; core does not
+import expose. `ExposurePolicy` hashes host grants, the private backend, which
+backends are configured and `Configuration`, excluding transient readiness, so
+a pending approval does not carry over to changed provider configuration. A
+backend skipped by an explicit `--portal=false` is absent from it. Canonical
+nonsecret relay origins and settings bind provider configuration changes
+without binding secrets.
 
-Legacy schema 5 eligibility is consumed once by an explicit Private Tailscale/Local upgrade choice. An ambiguous historical-default host refuses before networking; the choice never authorizes Public providers. See [Private and public access](networking.md#upgrading-provider-grants-from-an-older-host) for the operator upgrade commands.
+Routes and observed endpoints are keyed by exact host, audience and provider.
+Per-flat permissions are read freshly for status. Confirmed stops prune the
+matching endpoint state, and Manager shutdown clears all observations, so
+closed previews and routes do not accumulate in status. Preview cleanup
+(`StopExposure`) stops only Draft private routes for the requested host;
+another preview and the current site remain reachable. Public opening
+preserves an independent Local route, and core rebinding refreshes both current
+handlers before each public activation.
+
+In-use revocation is refused before any policy write, including starting/error
+routes, previews and redirects. Public may commit with a registered
+permitted/configured current route in `starting`; links remain unavailable
+until ready. A Funnel node waiting for login or device approval remains a
+registered, permitted route in `needs-login`; it is not reported as an absent
+provider permission. Teardown uses confirmed Manager stops across
+delete/rename/expiry, retaining unconfirmed routes for retry.
+
+`StopSlug` is the authoritative delete/redirect-expiry operation. It includes
+the exact slug as a deterministic tsnet identity candidate even when no Funnel
+or Tailscale route remains in memory, then stops every Funnel listener and
+confirms every candidate node retirement before it stops Portal or Local. A
+public listener or node failure therefore leaves Local reachable and keeps the
+appropriate route or cleanup record for retry; sibling slug routes are
+untouched. When no tailnet backend exists because neither Tailscale provider
+is granted, `StopSlug` removes only the validated host's local `tsnet/<host>`
+directory. It does not start a backend or contact control, and it prevents a
+later flat with the same slug from loading the historical identity. The old
+offline machine may remain visible in the tailnet administration plane until it
+expires or an operator removes it.
+
+New flats' default provider permissions come from host configuration; see
+[Operator authority](lifecycle-core-contract.md#operator-authority-and-frozen-approvals).
 
 ## Funnel
 
@@ -186,6 +229,12 @@ already present is left alone. Funnel stays `starting` until the
 certificate fetch succeeds, unless a test certificate source is installed, in
 which case it is `ready` immediately. Funnel strips `Tailscale-User-*` headers
 and does not set identity.
+
+`TestServeFunnelRoutesIngressAndLeavesPrivate` (`internal/expose/tsnet`)
+checks these listener rules against the testcontrol harness, not a live
+tailnet: listen-on-both collides with private HTTPS, a failed FunnelOnly
+attempt is rolled back, ingress reaches the public handler while tailnet
+clients reach the private one, and `StopFunnel` leaves private HTTPS serving.
 
 ## Cloudflare quick tunnels
 
@@ -356,116 +405,7 @@ when its predecessor has finished and no `tailscaled.state` remains. State is
 deleted only after confirmation. `Net.Close` waits for all in-flight retirement attempts,
 closes every remaining backend, and reports any retained failure.
 
-## Historical network-slice tests
-
-Commands run from this worktree. Exit 0 for each.
-
-```text
-go test ./internal/expose/provider/ ./internal/app/ ./internal/expose/portal/ ./internal/expose/tsnet/ -count=1 -timeout 300s
-```
-
-`provider` 0.709s, `app` 1.219s, `portal` 2.816s, `tsnet` 8.221s.
-
-```text
-go test -race ./internal/app ./internal/expose/portal ./internal/expose/provider -count=1 -timeout 300s
-```
-
-`app` 4.756s, `portal` 3.187s, `provider` 3.525s.
-
-```text
-go test ./internal/expose/tsnet/ ./internal/expose/provider/ -count=1 -timeout 180s
-```
-
-After the AllowFunnel rollback: `tsnet` 7.375s, `provider` 0.711s. Exit 0.
-
-`TestServeFunnelRoutesIngressAndLeavesPrivate` uses the existing testcontrol
-harness, not a live tailnet. It serves private HTTPS first. `ListenFunnel`
-without `FunnelOnly` returns an error containing `listener already open` and
-leaves `AllowFunnel` set; the test asserts that entry, then clears it so the
-later stop assertion belongs to our listener. A FunnelOnly attempt that
-writes `AllowFunnel` and then returns that same listen error is rolled back:
-state is `error`, `AllowFunnel` is clear, and private HTTPS still serves.
-The successful `FunnelOnly` listener then shares `:443` with the private
-listener. Ingress through PeerAPI `/v0/ingress` receives the public handler.
-A tailnet client still receives the private handler. `StopFunnel` clears
-`AllowFunnel` and ingress fails while private HTTPS still serves. A later
-failure after the listener exists closes it, leaves state `error`, clears
-`AllowFunnel`, and does not replace the private route. The verbose run of
-this test passed in 1.15s, with certificate SNI `flat.tail-scale.ts.net`
-twice.
-
-Provider tests cover historical directories, the rejected `funnel` alias, a
-grant that does not serve, draft and private requests that do not call public
-backends, a Funnel failure that does not call Portal, and a public stop that
-leaves local HTTP up and reports Funnel unconfirmed when `StopFunnel` fails.
-App tests cover default flags, a data directory whose old tsnet and portal
-files do not construct those backends, and `TestExplicitPortalFalseKeepsGrantAndDoesNotStart`:
-`--portal` stores the grant and starts Portal, `--portal=false` leaves that
-grant stored and starts nothing, and a later start that omits the flag starts
-Portal from the stored grant. That test passed in 0.03s (`go test ./internal/app/ -count=1 -run TestExplicitPortalFalseKeepsGrantAndDoesNotStart -timeout 60s`, exit 0).
-
-Not run, because this task does not authorize live publication or a new
-tailnet node: `FLATS_PORTAL_E2E`, `scripts/tailnet-gate.sh`, and any command
-against an operator data directory or auth key. `cmd/flats` has no test files;
-flag parsing lives in `internal/app`.
-
-## Limitations
-
-- Core integration uses the exact exported `LifecycleNet`, `LifecycleObserver`
-  and `LifecyclePreviewNet` contracts through `Config.Lifecycle`. The app and
-  deterministic integration host leave legacy `Config.Public` unset. Private and
-  public current routes are rebound through Manager before public activation.
-- Portal SDK end-to-end publication was not repeated. The manager calls
-  `PortalNet`; policy tests use a loopback double for call counts.
-- Owner-only authentication is deferred. Private access remains the tailnet ACL.
-- A restart that omits `--portal` starts Portal only when a grant is already
-  stored. `--portal=false` does not delete that grant and does not start
-  Portal for that process. Operators who relied on the old default must pass
-  `--portal` or `--permit portal` once; after the grant is stored, omitting
-  the flag starts Portal again.
-
-## Historical interface-only checkpoint
-
-The purpose integration worktree adopted the exact frozen network, console and
-gate artifacts without conflicts, followed by core prerequisite
-`d0d4aaf07a86024469e4ad43034230d15a33f7d7`. Manager aliases the exact exported
-core DTOs and has a compile-time `core.LifecycleNet` assertion. App and the test
-host now assign `core.Config.Lifecycle`; the legacy Public fallback is unset.
-At this checkpoint the prerequisite defined interfaces only; later exact
-committed grants supplied core lifecycle behavior and operator authority.
-
-Startup assigns a Portal interface only when its concrete backend is non-nil.
-The extended `TestExplicitPortalFalseKeepsGrantAndDoesNotStart` calls Manager
-with an explicitly permitted Portal request after runtime disable and requires
-`ErrNotConfigured` plus an unavailable endpoint, while retaining the host grant.
-This avoids the typed-nil interface panic and preserves `--portal=false`.
-
-The integrated Manager implements `LifecycleObserver` and
-`LifecyclePreviewNet` from the granted core exports. Host permission plus
-effective runtime configuration is hashed into approval policy; readiness is
-observed separately. Explicit `--portal=false` changes effective policy while
-retaining the grant. Canonical nonsecret relay origins and settings bind provider
-configuration changes without binding secrets or transient readiness.
-
-Routes and observed endpoints are keyed by exact host, audience and provider.
-Confirmed stops prune the matching endpoint state, and Manager shutdown clears
-all observations, so closed previews and routes do not accumulate in status.
-Preview cleanup stops only Draft private routes for the requested host; another
-preview and the current site remain reachable. Public opening preserves an
-independent Local route on a fresh Manager, and normal core rebinding refreshes
-both current handlers before each public activation.
-
-### Default Private Tailscale permission
-
-On a host whose `network.private_backend` is `tailscale`, creating a flat (by
-an agent, or by its first save) stores its Tailscale permission in the same
-transaction as the flat and logs a `provider` event. Choosing the tailnet for
-the console and private routes is the operator's grant for Private routes of
-new flats; Funnel and Portal still need their own per-flat permission. A host
-on the `local` backend keeps new flats Local-only. Existing flats are not
-changed.
-
-### Per-flat Private Tailscale revocation
+## Private Tailscale revocation
 
 An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route or race a second teardown. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure closes the consumed backend and preserves its persistent state; the next `StopPrivate` call starts a fresh backend over that state and performs a real logout retry in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.
 
@@ -476,40 +416,148 @@ An operator-validated revocation confirms Manager teardown of that flat’s Tail
 archives; `cmd/flats`, which `go install` builds, has a nil
 `provider.NetbirdDriver` and reports `ErrNetbirdNotBuilt`) runs one embedded
 NetBird peer per name, as tsnet runs one node per name
-([spec](spec/netbird-peers.md), [design](spec/netbird-peers-TECH.md)). A peer
-is named after the flat's slug or the console domain, asks NetBird for that
-name as an extra DNS label, keeps its identity in `<data>/netbird/peers/<name>/`
-and starts on the first route of its name. `netbird` (Private, a mesh provider
-like `tailscale`) and the console role listen on port 80 of the peer's overlay
-address and report `http://<name>.<NetBird domain>/`. `netbird-expose`
-(Public) listens on overlay port 8080 of the flat's peer, asks NetBird to
-expose it (`Expose` with the slug as name prefix, HTTP, no PIN or password)
-and keeps the session alive; a keep-alive error or lost listener exposes again
-with backoff, so the URL can change and `PublicURL` reports the current one.
-`ServePublic` returns once the first expose succeeded; a first failure removes
-the entry and fails the open.
+([spec](spec/netbird-peers.md)). A name is a flat's slug or a console domain.
+Each peer asks NetBird for its name as an extra DNS label and keeps its state
+under `<data>/netbird/`:
 
+```
+peers/<name>/netbird.json    embed config: the peer's WireGuard identity (0600)
+peers/<name>/dns.json        embed state file
+legacy-peer.json             notice about an earlier version's shared peer
+```
+
+A peer plays up to three roles: private (`netbird`, a mesh provider like
+`tailscale`) and console listen on port 80 of the peer's overlay address and
+report `http://<name>.<NetBird domain>/` (the extra label; the overlay IP when
+the peer has no FQDN); public (`netbird-expose`) listens on overlay port 8080
+of the flat's peer, asks NetBird to expose it (`Expose` with the slug as name
+prefix, HTTP, no PIN or password) and keeps the session alive. A keep-alive
+error or lost listener exposes again with backoff, so the URL can change and
+`PublicURL` reports the current one. `ServePublic` returns once the first
+expose succeeded; a first failure removes the entry and fails the open. Console
+host guards accept both the extra-label FQDN and the primary FQDN.
+
+**Start.** The first role of a name starts its peer under the name's lock.
 Every peer registers with the setup key stored in `flats.db` (host key
-`netbird`), read at each peer start: with a key, embed logs in with the stored
-identity and registers it again with the key only when management no longer
-knows it; without one, a peer that has an identity still logs in, and a
-rejection is reported as `ErrPeerRejected`. A key without "Allow extra DNS
-labels" is reported as `ErrKeyNoExtraLabels`. `embed.New` sets
-`NB_DNS_STATE_FILE` process-wide, so peer starts are serialized until NetBird's
-own start returns, which may be after Flats' start timeout. Registering a key
-in the console retries the NetBird routes of every flat that allows NetBird
-(`Service.RetryProviderRoutes`; public routes only within the approved
-exposure) and every NetBird console domain not yet served.
+`netbird`), read through `Config.SetupKey` at each peer start, so a key
+registered in the console applies to the next peer without a restart. With a
+key, embed logs in with the stored identity and registers it again with the key
+only when management no longer knows it. Without one, a peer that has an
+identity still logs in, and a rejection is reported as `ErrPeerRejected`; a
+peer with neither fails with `ErrNoSetupKey`. A key without "Allow extra DNS
+labels" is reported as `ErrKeyNoExtraLabels`, and a later start with the same
+key fails at once. The key is scrubbed from every returned error.
 
-`StopPublicRoutes` calls `StopPublic` even without a registered route.
-`StopProviderRoutes(…, netbird)` and `StopExposure` call `StopPrivate`; a peer
-stops once it serves nothing, keeping its identity. `StopSlug` calls
-`RetirePublic` then `RetirePrivate`, which delete the peer's identity once no
-role uses it; without a backend it calls `RetireStored`. A failed retirement
-keeps the routes registered for retry. The embedded client cannot deregister
-a peer: an ephemeral one is removed by NetBird after ten minutes offline. The
-approval policy token includes the management URL and a fingerprint of the
-setup key while a NetBird provider is granted, so an approval does not carry
-over to another key. Public routes strip `Tailscale-User-*` identity headers
-like zrok; private routes strip them too.
+**Process-wide start lock.** `embed.New` sets `NB_DNS_STATE_FILE` in the
+process environment and the engine reads it while it connects, so two peers
+starting at once could swap state files. Peer starts therefore take one
+package-wide semaphore before `embed.New` and release it only when NetBird's
+own start returns. That start may outlive Flats' start timeout (60 seconds):
+the caller then gets an error saying NetBird keeps trying, the abandoned start
+keeps the semaphore and the name busy until it ends, and a start that connected
+late is stopped so the next route retries. A waiter gives up when its own
+context ends. A management outage therefore delays peer starts but never lets
+two engines read the variable at once.
 
+**Backend.** The app creates the NetBird backend whenever `netbird` or
+`netbird-expose` is permitted and the binary links NetBird, with or without a
+key: routes then report the missing key until one is stored.
+
+**Legacy shared peer.** At start, before the backend is built,
+`CleanupLegacy` looks for the files of the single shared peer earlier versions
+ran (`account.json`, `netbird.json`, `netbird-dns.json`, `ports.json`),
+deletes them, and the app writes `legacy-peer.json` (device name, management
+URL) so the console can ask the operator to delete that peer in the NetBird
+dashboard. A `netbird` host key row without a value (the old connection
+record) is deleted; one with a value (a waiting enrollment) becomes the stored
+key. The notice stays until the operator dismisses it
+(`DELETE /console/api/keys/netbird/legacy-peer`).
+
+**Approval policy.** While `netbird` or `netbird-expose` is granted, the
+policy configuration includes `management_url + "\x00" + fingerprint`, where
+the fingerprint is the first 16 bytes of `sha256("flats-netbird-key:" + key)`
+in hex (empty without a key). It is recomputed when the key changes, so an
+approval does not carry over to another key.
+
+**Key change.** Registering a key in the console retries in the background:
+core's `RetryProviderRoutes(ctx, netbird, netbird-expose)` reapplies the
+exposure of every flat that allows `netbird`, or, for a Public flat that does
+not, its `netbird-expose` route, with `publicGrant` false. A public route is
+retried only where the flat's approved exposure already used it, so the retry
+never publishes anything new; failures are recorded as flat events. Every
+listed NetBird console domain not yet served is served again.
+
+**Stop and retire.** `StopPublicRoutes` calls `StopPublic` even without a
+registered route. `StopProviderRoutes(…, netbird)` and `StopExposure` call
+`StopPrivate`; a peer stops once it serves nothing, keeping its identity.
+`StopSlug` calls `RetirePublic` then `RetirePrivate`, which delete
+`peers/<name>/` once no role uses it; without a backend it calls the driver's
+`RetireStored(dir, name)`. A failed retirement keeps the routes registered for
+retry. Retirement never contacts NetBird: the embedded client cannot
+deregister a peer, and an ephemeral one is removed by NetBird after ten minutes
+offline. Renames keep the old name's routes, NetBird included, for the
+redirect and retire them through `StopSlug` when it expires. Public and private
+routes strip `Tailscale-User-*` identity headers.
+
+## Console domains
+
+The console runs on one tsnet node per Tailscale console domain and one
+NetBird peer (console role) per NetBird console domain
+([Console domains](configuration.md#console-domains); routes in
+[Console addresses](surfaces.md#console-addresses)).
+
+**Ownership record.** `flats.db` table `console_nodes` has one row per
+`(provider, name)` with `retiring` and `last_error`. A row is written before a
+console node is first served, marked `retiring` when the name leaves its list,
+and deleted once the node is retired (`tsnet` `Stop` or NetBird
+`RetireConsole`). Because the record outlives the list, a name removed offline
+is still retired at the next start. A failed retirement keeps the row, marked
+retiring with its error, so the name stays reserved.
+
+**Reservation.** Core's reserved names are the fixed reserved names plus a
+function the app supplies: both console lists and every `console_nodes` row.
+`ReserveConsoleName(ctx, name, commit)` runs under the per-slug operation lock
+that flat creation and rename take: it refuses a name held by a flat, an open
+preview, a redirect or another console name, marks it as being added, runs
+`commit`, and drops the mark afterwards (the saved list or the row then holds
+it). `ReserveSharedConsoleName` is the same for a name that is a console domain
+only of the other network, which may share it. Preview hosts are reserved the
+same way against console additions until the preview is registered; preview
+host generation retries a random name that is reserved. The fixed name `flats`
+stays reserved for flats but may be a console domain.
+
+**Start.** After core restores flat routes, under the console-domain mutex:
+every row whose name is no longer listed, or still marked retiring, is marked
+retiring and retired in the background (failures are recorded and retried at
+the next start; without that network's backend the row waits). A name listed
+again while its retirement is unfinished is served, with a new identity, only
+after the retirement succeeds. Each other listed name is served unless a flat,
+preview or redirect already holds it, in which case the console shows the
+conflict.
+
+**Adding**, under the console-domain mutex:
+
+1. Refuse a pinned list, a stale settings ETag, an invalid label, a duplicate,
+   a name still being retired, or a network that is off.
+2. Reserve the name and, inside the reservation, write the `console_nodes`
+   row, serve the node (a synchronous error retires it and ends here), then
+   save the list through the settings source. If the save fails the node is
+   retired; if that fails too, the row stays as retiring, keeping the name
+   reserved until a later retirement succeeds.
+
+**Deleting**, under the console-domain mutex:
+
+1. Refuse a pinned list. Refuse emptying both lists unless the request reached
+   the management listener on a loopback address (judged from the connection's
+   local address; a console domain never counts). When the request came through
+   the name being deleted, refuse unless another listed domain is served and
+   ready (Tailscale first) and use it as the redirect.
+2. Save the list without the name (ETag-guarded); nothing has changed if this
+   fails. A name that was never served (a conflict) has no console node: it is
+   only removed from the list, and the owner of the name keeps its node.
+3. Mark the row retiring and retire the node. On success delete the row; on
+   failure keep it with the error and return it; deleting the same name again,
+   or the next start, retries.
+4. When the request came through the name being deleted, the response is sent
+   first and step 3 runs in the background about two seconds later, because
+   retiring the node closes the connection that carries the response.

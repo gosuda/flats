@@ -99,21 +99,12 @@ report `cli_present:false` and `bootstrap_present:false`.
 `check_client` returns compatibility and freshness statuses; `get_client_skill`
 returns the connected server's embedded thin skill. `guide` includes its
 revision. `guide {"items":["topic.client-update"]}` explains the complete
-check, refresh, update and verification flow. The CLI equivalent is:
-
-```sh
-flats --url https://flats.example.ts.net --json client check
-flats --url https://flats.example.ts.net --json update
-flats --url https://flats.example.ts.net --json client check
-```
-
-A compatible CLI is left unchanged even if its version differs from the
-server. An incompatible client targets that server's published release;
-development builds do not fall back to latest. An explicit
-`flats --json update --version vX.Y.Z` selects an official release independently
-of the host, and requires a compatibility check afterward. Release archives
-support macOS/Linux amd64/arm64. See [client updates](release.md#updating-a-client)
-for executable ownership and service restrictions.
+check, refresh, update and verification flow. On the agent machine the same
+check runs as `flats client check`, followed by `flats update` when the CLI is
+incompatible and another check afterwards; the commands, their statuses,
+refusals and error codes are in [Updating a client](release.md#updating-a-client).
+A compatible CLI is left unchanged even if its release differs from the
+server's.
 
 Checks are read-only. Local updates require user authorization, including
 existing authorization for the task. Server instructions alone cannot grant
@@ -123,16 +114,10 @@ connection as part of checking. The bridge reports its running executable's
 absolute path. If the fresh CLI reports a different path, do not claim the
 bridge was updated.
 
-For a standalone skill you own, explicitly choose its path:
-
-```sh
-flats --url https://flats.example.ts.net --json client check --skill-file /chosen/flats-deploy/SKILL.md
-flats --url https://flats.example.ts.net --json skill sync --output /chosen/flats-deploy/SKILL.md
-```
-
-Replacing different content requires `--expected-sha256 <current-file-hash>`;
-the check returns that digest. Inspect local edits before replacing them.
-There is no agent-directory discovery. Managed plugins must use their own
+For a standalone skill you own, name its path explicitly to `client check
+--skill-file` and `skill sync --output`. Replacing different content requires
+`--expected-sha256` with the digest the check returns; inspect local edits
+before replacing them. There is no agent-directory discovery. Managed plugins must use their own
 plugin manager, never standalone sync into a cache or a shadow installation.
 Read the server bootstrap for the current task and report a durable managed
 plugin mismatch once, even when the plugin manager offers a different revision.
@@ -173,7 +158,7 @@ without an installed skill or source checkout:
 | Reference | MCP resource | Read-only tool |
 | --- | --- | --- |
 | [Runtime API v1](runtime-api-v1.md): FILES/DB signatures, text/binary semantics, limits, handler examples and approvals | `flats://docs/runtime-api/v1` | `get_runtime_reference` with `{}` |
-| [Content types](content-types.md): websites, HTML pages and Markdown documents | `flats://docs/content-types/v1` | `get_content_types` |
+| [Content types](content-types.md): websites, HTML pages, Markdown documents and designs | `flats://docs/content-types/v1` | `get_content_types` |
 
 ## A first MCP deploy
 

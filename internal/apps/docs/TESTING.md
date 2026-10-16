@@ -21,8 +21,12 @@ private temporary data and free loopback ports (the product test excludes
   4 MiB responses.
 * The opt-in browser test uses separate Chromium contexts for collaboration,
   the history panel, read-only/mobile views and synthetic composition.
-* The real-binary product test covers console draft preview, publication,
-  collaboration, rollback and restart with disposable host state.
+* The opt-in real-binary product test (`testdata/product_test.mjs`) drives
+  collaboration and restart with disposable host state. It predates
+  documents without versions: it still opens a docs Draft preview, calls the
+  removed MCP tool `publish` and rolls back with the version rollback API, so
+  it currently fails until it is updated to `save_document`, which starts a
+  document at once, and to `rollback_revision`.
 * The container smoke test checks built-in docs deployment, persistence across
   restart and hardened container operation; it requires a Docker host.
 

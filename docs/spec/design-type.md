@@ -1,7 +1,8 @@
 # Design content type
 
-Status: implemented (the first design release). Technical design:
-[design-type-TECH.md](design-type-TECH.md). Background:
+Status: implemented (the first design release). The design is in the
+architecture docs: the [revision store](../revision-store.md),
+[design.md](../design.md) and [surfaces.md](../surfaces.md). Background:
 [how Claude Artifacts' Design works](../research/claude-artifacts-design.md).
 
 ## Summary
@@ -179,10 +180,9 @@ previews, changes are live at once, and history is kept as revisions.
 
 ## Current state
 
-The first release is implemented (gosuda/flats PR #96), including the
-revision store described in content-models.md. Documents now keep their
-revisions in the same store
-([document-revisions-TECH.md](document-revisions-TECH.md)).
+The first release is implemented, including the
+[revision store](../revision-store.md) that documents share. There are no
+differences from this page.
 
 ## Open questions
 
