@@ -30,7 +30,7 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
-LIST_MARKER_RE = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])([ \t]+)")
+LIST_MARKER_RE = re.compile(r"^([ \t]*(?:[-*+]|\d+[.)]))([ \t]+)")
 HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
 REF_DEF_RE = re.compile(
@@ -50,10 +50,18 @@ TEST_FILE_RE = re.compile(
 class _DocHTMLScanner(html.parser.HTMLParser):
     """Spec-compliant HTML start-tag scanner for links (href/src) and anchors (id/name)."""
 
+    CDATA_CONTENT_ELEMENTS = ()
+    RCDATA_CONTENT_ELEMENTS = ()
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.anchors: set[str] = set()
         self.links: list[tuple[int, str]] = []
+
+    def set_cdata_mode(self, *args: object, **kwargs: object) -> None:
+        # In Markdown prose, an unclosed <script>, <style>, <title>, or <textarea>
+        # mention must not swallow subsequent HTML tags in the document.
+        return
 
     def _record_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_l = tag.lower()
@@ -186,7 +194,20 @@ def strip_fences_and_comments(text: str) -> str:
             if not THEMATIC_BREAK_RE.match(line):
                 lm = LIST_MARKER_RE.match(line)
                 if lm and indent < code_threshold:
-                    list_stack.append(visual_width(lm.group(0)))
+                    marker_end_col = visual_width(lm.group(1))
+                    total_col = visual_width(lm.group(0))
+                    # CommonMark: if >= 5 spaces follow the list marker (or the rest of the line is blank),
+                    # the list item content column is marker_end_col + 1 and the extra spaces start indented code.
+                    if total_col - marker_end_col >= 5:
+                        list_stack.append(marker_end_col + 1)
+                        in_indented_code = True
+                        prev_blank = False
+                        out.append("\n" if line.endswith("\n") else "")
+                        continue
+                    elif line[len(lm.group(0)) :].strip() == "":
+                        list_stack.append(marker_end_col + 1)
+                    else:
+                        list_stack.append(total_col)
 
             prev_blank = False
             out.append(line)
