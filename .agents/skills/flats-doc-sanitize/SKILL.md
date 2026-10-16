@@ -1,7 +1,6 @@
 ---
 name: flats-doc-sanitize
 description: Sanitize, restructure, deduplicate, and verify documentation in the Flats repository. Use when the user asks to sanitize docs, clean up outdated or contradictory documentation, reorganize documentation directories, merge duplicate specs, or prune volatile verification receipts in the flats repo.
-disable-model-invocation: true
 ---
 
 # Flats Document Sanitize
@@ -12,7 +11,7 @@ Maintain a contradiction-free, single-source-of-truth documentation tree by dyna
 
 1. **Resolve contradictions**: Cross-check claims across documents and against the actual codebase. Eliminate conflicting statements so every behavior is defined consistently.
 2. **Update outdated content**: Sync operational, architecture, and agent-reference documentation with current implementation (CLI commands/flags, MCP tools, HTTP routes, storage layout, limits, and UI behavior).
-3. **Never guess on ambiguity**: When documents conflict with each other or with code and the intended product policy is unclear, or when a file/section deletion or structural split is ambiguous, stop and ask the user (using `AskQuestion` when available, or structured numbered questions otherwise) before editing. Batch questions into a single round and skip asking about gaps that are already accurately documented under a spec's `Current state` or `Open questions`.
+3. **Never guess on ambiguity**: When documents conflict with each other or with code and the intended product policy is unclear, or when a file/section deletion or structural split is ambiguous, stop and ask the user before editing (use your host's interactive question tool if it has one, or numbered questions in plain text otherwise). Batch questions into a single round and skip asking about gaps that are already accurately documented under a spec's `Current state` or `Open questions`.
 4. **Deduplicate (Single Source of Truth)**: Each concept, rule, or state machine belongs in one canonical document; other documents should summarize briefly and link to the canonical source.
    - **Exception**: Preserve intentional projections and test-enforced duplicated safety/discovery statements (e.g., generated references assembled from agent topics, or exact sentences asserted across multiple docs by `*reference_test.go`).
 5. **Re-split blurry boundaries**: When multiple documents have tangled or overlapping scopes, collect them and re-split cleanly along domain boundaries (e.g., turning N overlapping files into M focused domain documents).
@@ -58,13 +57,13 @@ Organize documentation by **audience and purpose** into clear domain directories
 
 Before moving, renaming, or deleting any file, discover programmatic contracts from the codebase:
 - **Protected blocks**: Never modify `<!-- PROTECTED ... -->` blocks in Markdown files (including embedded asset paths such as logos).
-- **Generated references**: Search for update flags (`rg 'flag\.Bool\("update"'`) and run the generator (`make docs-generate` for the references built from `docs/agent/`) after editing source topics. Never hand-edit generated files.
-- **Code & test consumers of paths and prose**: Search across all source/build/test files (`rg` across `.go`, `.mjs`, `.js`, `.sh`, `.yml`, `.json`) for any path you plan to move or delete (Markdown files, example scripts/manifests, plugin manifests, assets) and check `*reference_test.go` for pinned sentences. Note that `/docs/*.md` routes in `internal/mcpx/llms.go` are HTTP endpoints served by the host, distinct from repository file paths.
+- **Generated references**: Search for update flags (`grep -rn 'flag.Bool("update"' --include='*_test.go' .`) and run the generator (`make docs-generate` for the references built from `docs/agent/`) after editing source topics. Never hand-edit generated files.
+- **Code & test consumers of paths and prose**: Search across all source/build/test files (`.go`, `.mjs`, `.js`, `.sh`, `.yml`, `.json`; `grep -rn` or `rg`) for any path you plan to move or delete (Markdown files, example scripts/manifests, plugin manifests, assets) and check `*reference_test.go` for pinned sentences. Note that `/docs/*.md` routes in `internal/mcpx/llms.go` are HTTP endpoints served by the host, distinct from repository file paths.
 - **No review screenshots in Git**: Never keep or commit verification screenshots in the repository.
 
 ## Sanitize Workflow
 
-Copy this checklist and track progress during execution:
+Copy this checklist (or mirror it in your task-tracking tool, if you have one) and track progress during execution:
 
 ```markdown
 Sanitize Progress:

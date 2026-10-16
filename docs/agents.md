@@ -48,6 +48,23 @@ The thin skill connects the agent, calls `check_client`, and hands off to the
 server instructions and `guide`. Its visible bootstrap revision is separate
 from the server guide revision and the CLI compatibility contract.
 
+## Skills for Flats and skills for this repository
+
+The repository holds two kinds of agent skills. Only the first is packaged.
+
+| Kind | Location | Audience | Distribution |
+| --- | --- | --- | --- |
+| Flats integration | `plugins/flats/skills/` | Agents that deploy to a Flats host | The Flats plugin (Claude Code, Codex, Cursor) and the server's `get_client_skill` |
+| Repository development | `.agents/skills/` | Agents that work on the Flats source | The checkout only; never in a plugin or marketplace |
+
+`.agents/skills/` is the one copy of each development skill. `.claude/skills/`
+and `.cursor/skills/` are symlinks to it, so Claude Code and Cursor find the
+same file that Codex and other agents read from `.agents/`. Add a development
+skill under `.agents/skills/` and link it from both; add an integration skill
+under `plugins/flats/skills/` and release the plugin. `TestPluginSkillBoundary`
+fails when a skill sits on both sides or a plugin manifest points outside
+`plugins/`.
+
 ## MCP without the plugin
 
 Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp`
