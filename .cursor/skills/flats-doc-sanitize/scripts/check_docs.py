@@ -30,8 +30,8 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 HEX_HASH_RE = re.compile(r"\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 THEMATIC_BREAK_RE = re.compile(r"^[ \t]{0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$")
-LIST_MARKER_RE = re.compile(r"^([ \t]*)(?:[-*+]|\d+[.)])([ \t]+)")
-CONTAINER_PREFIX_RE = re.compile(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d+[.)])[ \t]+)+")
+LIST_MARKER_RE = re.compile(r"^([ \t]*(?:[-*+]|\d{1,9}[.)]))([ \t]+)")
+CONTAINER_PREFIX_RE = re.compile(r"^(?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)+")
 HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.+?))?[ \t]*#*[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
 REF_DEF_FULL_RE = re.compile(
@@ -52,18 +52,15 @@ TEST_FILE_RE = re.compile(
 class _DocHTMLScanner(html.parser.HTMLParser):
     """Spec-compliant HTML start-tag scanner for links (href/src) and anchors (id/name)."""
 
-    # Disable CDATA/RCDATA mode so an unclosed <script>/<style>/<title> tag in prose
-    # never swallows subsequent HTML tags in the document.
-    CDATA_CONTENT_ELEMENTS = ()
-
-    def __init__(self) -> None:
+    def __init__(self, line_offset: int = 0) -> None:
         super().__init__(convert_charrefs=True)
+        self.line_offset = line_offset
         self.anchors: set[str] = set()
         self.links: list[tuple[int, str]] = []
 
     def _record_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_l = tag.lower()
-        line_no = self.getpos()[0]
+        line_no = self.line_offset + self.getpos()[0]
         for attr_name, attr_val in attrs:
             if not attr_val:
                 continue
@@ -83,14 +80,64 @@ class _DocHTMLScanner(html.parser.HTMLParser):
         self._record_tag(tag, attrs)
 
 
+CLOSED_RAW_HTML_RE = re.compile(
+    r"<(script|style|textarea|title)\b[^>]*>[\s\S]*?</\1\s*>",
+    re.IGNORECASE,
+)
+
+
+def strip_closed_raw_html_elements(text: str) -> str:
+    """Blank out bodies of matched <script>/<style>/<textarea>/<title>...</tag> blocks
+    while preserving any src/href/id attributes on the opening tag and line numbers."""
+
+    def _replace(m: re.Match[str]) -> str:
+        full = m.group(0)
+        gt = full.find(">")
+        if gt == -1:
+            return full
+        open_tag = full[: gt + 1]
+        rest = full[gt + 1 :]
+        return open_tag + ("\n" * rest.count("\n"))
+
+    return CLOSED_RAW_HTML_RE.sub(_replace, text)
+
+
 def scan_html_in_prose(prose_no_inline: str) -> tuple[set[str], list[tuple[int, str]]]:
-    scanner = _DocHTMLScanner()
-    try:
-        scanner.feed(prose_no_inline)
-        scanner.close()
-    except Exception:
-        pass
-    return scanner.anchors, scanner.links
+    """Scan HTML tags per blank-line-separated block so an unclosed `<tag` or quote in
+    one paragraph cannot swallow HTML links/anchors in subsequent paragraphs."""
+    anchors: set[str] = set()
+    links: list[tuple[int, str]] = []
+    lines = prose_no_inline.splitlines(keepends=True)
+    block_lines: list[str] = []
+    block_start_line = 0
+
+    def _flush(buf: list[str], start_idx: int) -> None:
+        if not buf:
+            return
+        chunk = "".join(buf)
+        if "<" not in chunk:
+            return
+        scanner = _DocHTMLScanner(line_offset=start_idx)
+        scanner.CDATA_CONTENT_ELEMENTS = ()
+        scanner.RCDATA_CONTENT_ELEMENTS = ()
+        try:
+            scanner.feed(chunk)
+            scanner.close()
+        except Exception:
+            pass
+        anchors.update(scanner.anchors)
+        links.extend(scanner.links)
+
+    for idx, line in enumerate(lines):
+        if line.strip() == "":
+            _flush(block_lines, block_start_line)
+            block_lines = []
+        else:
+            if not block_lines:
+                block_start_line = idx
+            block_lines.append(line)
+    _flush(block_lines, block_start_line)
+    return anchors, links
 
 
 def find_repo_root() -> pathlib.Path:
@@ -181,13 +228,14 @@ def strip_fences_and_comments(text: str) -> str:
         lambda m: "\n" * m.group(0).count("\n"),
         without_fences,
     )
+    without_raw_html = strip_closed_raw_html_elements(without_comments)
 
     out: list[str] = []
     prev_blank = True
     in_indented_code = False
     list_stack: list[tuple[int, int]] = []
 
-    for line in without_comments.splitlines(keepends=True):
+    for line in without_raw_html.splitlines(keepends=True):
         is_blank = line.strip() == ""
         if is_blank:
             prev_blank = True
@@ -208,7 +256,18 @@ def strip_fences_and_comments(text: str) -> str:
         if not THEMATIC_BREAK_RE.match(line):
             lm = LIST_MARKER_RE.match(line)
             if lm and indent < code_threshold:
-                list_stack.append((indent, visual_width(lm.group(0))))
+                marker_end_col = visual_width(lm.group(1))
+                total_col = visual_width(lm.group(0))
+                if total_col - marker_end_col >= 5:
+                    list_stack.append((indent, marker_end_col + 1))
+                    in_indented_code = True
+                    prev_blank = False
+                    out.append("\n" if line.endswith("\n") else "")
+                    continue
+                elif line[len(lm.group(0)) :].strip() == "":
+                    list_stack.append((indent, marker_end_col + 1))
+                else:
+                    list_stack.append((indent, total_col))
 
         prev_blank = False
         out.append(line)
