@@ -14,6 +14,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  docs-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: internal/apps/docs/_web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: internal/apps/docs/_web/package-lock.json
+      - run: npm ci
+      - run: npm test
+
   # go test ./... split into parallel shards; see scripts/ci-test.sh.
   test:
     name: test (${{ matrix.shard }})
