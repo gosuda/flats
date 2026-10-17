@@ -254,8 +254,10 @@ func serve(args []string) error {
 	defer manager.Close()
 	// Public is deliberately nil: the legacy adapter must never satisfy this lane.
 	var clockOffset atomic.Int64
+	rt := &runtime.Manager{DataDir: *data}
+	defer rt.Close() // after svc.Close stopped the instances
 	cfg := core.Config{Now: func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())).UTC() }, DataDir: *data, Store: st, Private: private, Lifecycle: manager,
-		Runtime: &runtime.Manager{DataDir: *data}, Reserved: []string{"flats"}, Logf: log.Printf,
+		Runtime: rt, Reserved: []string{"flats"}, Logf: log.Printf,
 		ConsoleURL: func() string { return "http://" + *listen }}
 	svc, err := core.New(ctx, cfg)
 	if err != nil {

@@ -129,6 +129,7 @@ func newIdleHost(t *testing.T) *idleHost {
 	}
 	t.Cleanup(func() { os.RemoveAll(runtimeDir) })
 	h.rt = &idleRuntime{manager: &flatsruntime.Manager{DataDir: runtimeDir, Exe: exe, Env: []string{"FLATS_DOCS_TEST_WORKER=1"}}, pids: map[string][]int{}}
+	t.Cleanup(h.rt.manager.Close) // after the host stopped its documents
 	t.Cleanup(func() { h.close(); h.st.Close() })
 	h.open(t)
 	return h
@@ -388,7 +389,7 @@ func TestHostIdleStoredDocumentScaling(t *testing.T) {
 			if running != 0 {
 				t.Fatalf("%d saved docs retained %d workers", i, running)
 			}
-			logIdleMemory(t, i, "dormant")
+			logIdleMemory(t, h, i, "dormant")
 		}
 	}
 	// Restore has a logical route per doc but starts no physical children.
@@ -409,7 +410,7 @@ func TestHostIdleStoredDocumentScaling(t *testing.T) {
 	if after != before {
 		t.Fatal("100-doc restore started workers")
 	}
-	logIdleMemory(t, 100, "restored-dormant")
+	logIdleMemory(t, h, 100, "restored-dormant")
 	var sockets []*socket
 	var servers []*httptest.Server
 	defer func() {
@@ -427,7 +428,7 @@ func TestHostIdleStoredDocumentScaling(t *testing.T) {
 		x.hello(t, nil)
 		sockets = append(sockets, x)
 		if i == 1 || i == 5 || i == 10 {
-			logIdleMemory(t, 100, fmt.Sprintf("active-%d", i))
+			logIdleMemory(t, h, 100, fmt.Sprintf("active-%d", i))
 			for j := 1; j <= i; j++ {
 				pid := h.rt.pid(fmt.Sprintf("idle-%03d", j))
 				if !alive(pid) {
@@ -445,6 +446,9 @@ func TestHostIdleColdCompilationWakeTimings(t *testing.T) {
 		t.Skip("set FLATS_IDLE_MEASURE=1 for 20 cold-compilation process wakes")
 	}
 	h := newIdleHost(t)
+	// Every wake takes the exec path: a pre-started worker would have
+	// compiled before the cache is removed, and would be a live child.
+	h.rt.manager.NoSpare = true
 	h.save(t, "idle-doc")
 	server := httptest.NewServer(h.net.handler("idle-doc"))
 	defer server.Close()
@@ -465,7 +469,11 @@ func TestHostIdleColdCompilationWakeTimings(t *testing.T) {
 		t.Logf("IDLE_COLD_WAKE sample=%d pid=%d page_us=%d hello_us=%d", i+1, h.rt.pid("idle-doc"), page.Microseconds(), hello.Microseconds())
 	}
 }
-func logIdleMemory(t *testing.T, n int, phase string) {
+
+// logIdleMemory reports the host's children and memory. The host's one
+// pre-started worker is reported separately; a dormant host has no other
+// child, and that one has not been given a flat.
+func logIdleMemory(t *testing.T, h *idleHost, n int, phase string) {
 	t.Helper()
 	if tasks, err := os.ReadDir("/proc/self/task"); err == nil {
 		seen := map[string]bool{}
@@ -478,9 +486,20 @@ func logIdleMemory(t *testing.T, n int, phase string) {
 				seen[pid] = true
 			}
 		}
-		t.Logf("IDLE_CHILDREN docs=%d phase=%s count=%d pids=%v", n, phase, len(seen), seen)
+		spare := h.rt.manager.SparePID()
+		if spare != 0 && seen[strconv.Itoa(spare)] {
+			delete(seen, strconv.Itoa(spare))
+			raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", spare))
+			t.Logf("IDLE_SPARE docs=%d phase=%s pid=%d error=%v\n%s", n, phase, spare, err, raw)
+		} else {
+			spare = 0
+		}
+		t.Logf("IDLE_CHILDREN docs=%d phase=%s count=%d pids=%v spare=%d", n, phase, len(seen), seen, spare)
 		if (phase == "dormant" || phase == "restored-dormant") && len(seen) != 0 {
-			t.Fatalf("dormant host retained children: %v", seen)
+			t.Fatalf("dormant host retained children other than the pre-started worker: %v", seen)
+		}
+		if spare != 0 && h.rt.manager.SparePID() != spare {
+			t.Fatalf("pre-started worker %d was given a flat while the host was dormant", spare)
 		}
 	}
 	for _, path := range []string{"/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat", "/proc/self/smaps_rollup"} {
@@ -505,9 +524,16 @@ func idleResourceSnapshot(t *testing.T, h *idleHost) idleResources {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sockets, err := filepath.Glob(filepath.Join(h.rt.manager.DataDir, "run", "*.sock"))
+	all, err := filepath.Glob(filepath.Join(h.rt.manager.DataDir, "run", "*.sock"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var sockets []string
+	for _, p := range all {
+		// The pre-started worker's socket (s*.sock) belongs to no document.
+		if !strings.HasPrefix(filepath.Base(p), "s") {
+			sockets = append(sockets, p)
+		}
 	}
 	if len(sockets) != 0 {
 		t.Fatalf("dormant worker sockets remain: %v", sockets)

@@ -226,6 +226,7 @@ type Host struct {
 	zrokNet            *zrok.Net
 	quickNet           *cfquick.Net
 	netbirdNet         provider.NetbirdNet
+	workers            *runtime.Manager // nil without server flats
 	// For providers the console turns on while the host runs.
 	logf           func(string, ...any)
 	legacy         bool
@@ -491,7 +492,8 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	var rt core.Runtime
 	if cfg.Host.ServerRuntime {
-		rt = &runtime.Manager{DataDir: dataDir, Logf: logf}
+		h.workers = &runtime.Manager{DataDir: dataDir, Logf: logf}
+		rt = h.workers
 	}
 	// Settings are saved to config.json against the hash this process last
 	// read or wrote; SettingsSource keeps that hash as the settings ETag.
@@ -757,6 +759,9 @@ func (h *Host) Close() error {
 		}
 		if h.Svc != nil {
 			collect("core shutdown", h.Svc.Close())
+		}
+		if h.workers != nil {
+			h.workers.Close() // the pre-started worker; core stopped the others
 		}
 		if h.Providers != nil {
 			collect("provider routes", h.Providers.Close())

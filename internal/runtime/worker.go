@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -48,14 +49,37 @@ const listenerFD = 3
 
 // WorkerMain is the entry point of "flats worker": it reads its spec from
 // stdin, serves HTTP on the inherited socket and exits when stdin closes
-// (the parent stopped it or died).
+// (the parent stopped it or died). A pre-started worker first receives a
+// prewarm line, prepares what does not depend on a flat, and then waits for
+// its spec; stdin EOF before the spec ends it quietly.
 func WorkerMain(args []string) error {
 	_ = args
 	log := stderrLog
 	start := time.Now()
 	stdin := bufio.NewReaderSize(os.Stdin, 64<<10)
 	line, err := stdin.ReadBytes('\n')
+	prewarmed := false
+	if err == nil && bytes.HasPrefix(line, []byte(`{"prewarm":`)) {
+		var msg struct {
+			Prewarm *prewarmSpec `json:"prewarm"`
+		}
+		if jerr := json.Unmarshal(line, &msg); jerr != nil || msg.Prewarm == nil {
+			return fmt.Errorf("worker: bad prewarm line: %v", jerr)
+		}
+		startPrewarm(*msg.Prewarm)
+		prewarmed = true
+		line, err = stdin.ReadBytes('\n')
+		start = time.Now() // the worker's startup begins with its spec
+	}
 	if err != nil {
+		if errors.Is(err, io.EOF) && len(bytes.TrimSpace(line)) == 0 {
+			// Stopped (or the parent died) before it was given a flat. Let a
+			// compilation cache write in progress finish.
+			if prewarmed {
+				waitPrewarm()
+			}
+			return nil
+		}
 		return fmt.Errorf("worker: read spec: %w", err)
 	}
 	var spec workerSpec
@@ -70,6 +94,9 @@ func WorkerMain(args []string) error {
 		return err
 	}
 	w := &worker{spec: spec, log: log, data: newDataStore(spec.DataDir)}
+	if prewarmed {
+		waitPrewarm() // a spec that arrives during prewarm uses its result
+	}
 	if err := w.init(); err != nil {
 		log.send(childMsg{T: "fatal", Msg: err.Error()})
 		return err
@@ -78,6 +105,9 @@ func WorkerMain(args []string) error {
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	log.send(childMsg{T: "ready", MS: time.Since(start).Milliseconds()})
+	if w.js != nil {
+		w.js.afterReady()
+	}
 
 	// Stdin EOF means "stop" (or the parent is gone).
 	stopped := make(chan struct{})

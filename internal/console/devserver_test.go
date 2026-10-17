@@ -81,8 +81,10 @@ func TestDevServer(t *testing.T) {
 	// The runtime and docs app serve server flats and documents, as in
 	// flats serve.
 	docs := core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}
+	workers := &runtime.Manager{DataDir: dir, Env: []string{devWorkerEnv + "=1"}, Logf: t.Logf}
+	t.Cleanup(workers.Close)
 	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
-		Runtime: &runtime.Manager{DataDir: dir, Env: []string{devWorkerEnv + "=1"}, Logf: t.Logf}, DocsApp: docs,
+		Runtime: workers, DocsApp: docs,
 		ConsoleURL: func() string { return "http://" + addr }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)

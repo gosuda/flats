@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,14 @@ import (
 
 const testWorkerEnv = "FLATS_TEST_WORKER"
 
+// Test worker switches: testUnassignedLogEnv makes the worker log a line
+// before it receives its spec; a pre-started worker given a flat named
+// testDieAdoptedFlat exits after receiving its spec.
+const (
+	testUnassignedLogEnv = "FLATS_TEST_UNASSIGNED_LOG"
+	testDieAdoptedFlat   = "die-when-adopted"
+)
+
 // Tests call t.Parallel unless their result depends on elapsed time or the
 // process environment: t.Setenv, wall-clock latency or activation budgets,
 // rate limits that refill over time, and requests that take a large share of
@@ -38,6 +47,9 @@ const testWorkerEnv = "FLATS_TEST_WORKER"
 // binary with FLATS_TEST_WORKER=1 (the only variable in its environment).
 func TestMain(m *testing.M) {
 	if os.Getenv(testWorkerEnv) == "1" {
+		if os.Getenv(testUnassignedLogEnv) == "1" {
+			stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-worker-unassigned"})
+		}
 		keys := []string{}
 		for _, kv := range os.Environ() {
 			k, _, _ := strings.Cut(kv, "=")
@@ -45,7 +57,15 @@ func TestMain(m *testing.M) {
 		}
 		sort.Strings(keys)
 		// Variable NAMES only, so the sandbox test can check the environment.
-		stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-env-keys: " + strings.Join(keys, ",")})
+		// Logged once the worker has its flat, so that a pre-started worker
+		// reports them to its instance rather than to the Manager log.
+		afterSpec(func(spec []byte, prewarmed bool) {
+			var ws workerSpec
+			if prewarmed && json.Unmarshal(spec, &ws) == nil && ws.Flat == testDieAdoptedFlat {
+				os.Exit(3)
+			}
+			stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-env-keys: " + strings.Join(keys, ",")})
+		})
 		if err := WorkerMain(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "worker:", err)
 			os.Exit(1)
@@ -97,7 +117,42 @@ func newManager(t *testing.T) *Manager {
 	if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
 		t.Fatal(err)
 	}
-	return &Manager{DataDir: dir, Exe: exe, Env: []string{testWorkerEnv + "=1"}, Logf: t.Logf}
+	m := &Manager{DataDir: dir, Exe: exe, Env: []string{testWorkerEnv + "=1"}, Logf: t.Logf}
+	t.Cleanup(m.Close)
+	return m
+}
+
+// afterSpec runs fn in a test worker just before WorkerMain reads the spec
+// line from stdin, which follows the prewarm line of a pre-started worker.
+func afterSpec(fn func(spec []byte, prewarmed bool)) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	in := os.Stdin
+	os.Stdin = r
+	go func() {
+		defer w.Close()
+		br := bufio.NewReader(in)
+		prewarmed, done := false, false
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 {
+				if !done && strings.HasPrefix(string(line), `{"prewarm":`) {
+					prewarmed = true
+				} else if !done {
+					done = true
+					fn(line, prewarmed)
+				}
+				if _, werr := w.Write(line); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 }
 
 type logs struct {
