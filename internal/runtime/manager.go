@@ -35,10 +35,15 @@ type Manager struct {
 	Env          []string             // the worker's entire environment; nil = empty (tests add a dispatch variable)
 	Timeout      time.Duration        // per request; 0 = DefaultTimeout
 	StartTimeout time.Duration        // worker start; 0 = 60s
+	// NoSpare disables the pre-started worker (tests sensitive to process
+	// counts or to the timing of the exec path).
+	NoSpare bool
 
-	once    sync.Once
-	sockDir string
-	initErr error
+	once       sync.Once
+	sockDir    string
+	scratchDir string // parent of pre-started workers' database warm-up directories; "" = none
+	initErr    error
+	spare      spareState
 }
 
 var _ core.Runtime = (*Manager)(nil)
@@ -72,12 +77,25 @@ func (m *Manager) init() error {
 			return
 		}
 		m.sockDir = dir
+		scratch := filepath.Join(dir, "prewarm")
 		if m.DataDir != "" && dir == filepath.Join(m.DataDir, "run") {
-			// Private to this data dir: sockets left by an unclean exit are stale.
-			stale, _ := filepath.Glob(filepath.Join(dir, "w*.sock"))
-			for _, p := range stale {
-				os.Remove(p)
+			// Private to this data dir: sockets left by an unclean exit are
+			// stale, both instances' (w) and pre-started workers' (s), and
+			// so is anything a pre-started worker left in its scratch
+			// directory.
+			for _, pattern := range []string{"w*.sock", "s*.sock"} {
+				stale, _ := filepath.Glob(filepath.Join(dir, pattern))
+				for _, p := range stale {
+					os.Remove(p)
+				}
 			}
+			os.RemoveAll(scratch)
+		}
+		// Pre-started workers warm up SQLite with throwaway databases in
+		// their own subdirectories of it (newSpare); without it they skip
+		// that.
+		if privateDir(scratch) == nil {
+			m.scratchDir = scratch
 		}
 	})
 	return m.initErr
@@ -122,7 +140,15 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 	if spec.Lazy {
 		return nil, errors.New("lazy runtime requires managed docs")
 	}
-	return m.startChild(ctx, spec)
+	untrack := m.track()
+	in, err := m.startChild(ctx, spec)
+	if err != nil {
+		untrack()
+		return nil, err
+	}
+	in.untrack = untrack
+	m.instanceReady()
+	return in, nil
 }
 
 func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*instance, error) {
@@ -139,7 +165,8 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 		spec: spec,
 		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
-			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds()},
+			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds(),
+			ImagePath: spec.ImagePath},
 	}
 	if in.ws.Env == nil {
 		in.ws.Env = map[string]string{}
@@ -216,6 +243,7 @@ type instance struct {
 	retryAt  time.Time
 	starting chan struct{} // non-nil while a restart is in progress
 	lastErr  error         // result of the last restart
+	untrack  func()        // ends the Manager's count of this instance; nil for docs children
 }
 
 type proc struct {
@@ -223,10 +251,37 @@ type proc struct {
 	stdin   io.WriteCloser
 	done    chan struct{} // closed when the process exited and stderr drained
 	err     error         // exit status
-	started time.Time
+	started time.Time     // exec, or adoption of a pre-started worker
 	tail    *tailBuf
 	rdone   chan struct{} // stderr fully read
 	stopped atomic.Bool   // exit was requested
+	warmDir string        // a pre-started worker's database warm-up directory, removed after exit; "" = none
+	// A pre-started worker reports "warm" when it finished preparing and
+	// "spec" once it received its flat (every worker sends the latter).
+	warmAt    atomic.Int64 // UnixNano of "warm"; 0 before
+	specAcked atomic.Bool
+
+	// The instance the process serves and its readiness report; nil for a
+	// pre-started worker until spawn adopts it.
+	mu    sync.Mutex
+	owner *instance
+	ready chan<- error
+}
+
+// assign gives a pre-started worker to in. Lines read from its stderr from
+// now on are in's; earlier ones went to the Manager log.
+func (p *proc) assign(in *instance, ready chan<- error) {
+	p.tail.reset()
+	p.mu.Lock()
+	p.started = time.Now()
+	p.owner, p.ready = in, ready
+	p.mu.Unlock()
+}
+
+func (p *proc) assigned() (*instance, chan<- error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.owner, p.ready
 }
 
 // tailBuf keeps the last lines of plain stderr output for error messages.
@@ -242,6 +297,12 @@ func (t *tailBuf) add(s string) {
 	if len(t.lines) > 20 {
 		t.lines = t.lines[len(t.lines)-20:]
 	}
+}
+
+func (t *tailBuf) reset() {
+	t.mu.Lock()
+	t.lines = nil
+	t.mu.Unlock()
 }
 
 func (t *tailBuf) String() string {
@@ -262,58 +323,147 @@ func (m *Manager) command() *exec.Cmd {
 	return cmd
 }
 
-// spawn starts a worker process and waits for it to report ready.
-func (in *instance) spawn(ctx context.Context) (err error) {
-	os.Remove(in.sock)
-	ln, err := net.Listen("unix", in.sock)
-	if err != nil {
-		return fmt.Errorf("worker socket: %w", err)
-	}
-	defer func() {
-		if err != nil { // no worker serves it (e.g. a startup error)
-			os.Remove(in.sock)
+// spawn starts a worker process and waits for it to report ready. It adopts
+// the Manager's pre-started worker when there is one and starts a new process
+// when that is gone or fails before reporting ready or a startup error.
+func (in *instance) spawn(ctx context.Context) error {
+	if sp := in.m.takeSpare(); sp != nil {
+		adopted, err := in.adopt(ctx, sp)
+		in.m.refillSpare()
+		if adopted {
+			return err
 		}
-	}()
+		in.m.logf("flat %s v%d: pre-started worker unavailable; starting a new one", in.spec.Flat, in.spec.Version)
+	}
+	return in.spawnExec(ctx)
+}
+
+// listenFile binds a Unix socket at path and returns its listening file
+// for a child's fd 3. The socket file outlives the returned file.
+func listenFile(path string) (*os.File, error) {
+	os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("worker socket: %w", err)
+	}
 	ul := ln.(*net.UnixListener)
 	ul.SetUnlinkOnClose(false)
 	lf, err := ul.File()
 	ul.Close()
 	if err != nil {
-		os.Remove(in.sock)
-		return fmt.Errorf("worker socket: %w", err)
+		os.Remove(path)
+		return nil, fmt.Errorf("worker socket: %w", err)
 	}
-	defer lf.Close()
+	return lf, nil
+}
 
-	cmd := in.m.command()
+// startProc starts a worker process on the listening socket lf. owner is
+// nil for a pre-started worker, whose warm-up directory warmDir is removed
+// after the process exited, before done is closed.
+func (m *Manager) startProc(lf *os.File, owner *instance, ready chan<- error, warmDir string) (*proc, error) {
+	cmd := m.command()
 	cmd.ExtraFiles = []*os.File{lf} // fd 3
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cmd.Stdout = nil // /dev/null
 	if err := cmd.Start(); err != nil {
-		os.Remove(in.sock)
-		return fmt.Errorf("start worker: %w", err)
+		return nil, fmt.Errorf("start worker: %w", err)
 	}
-	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{})}
-	ready := make(chan error, 1)
-	go in.readStderr(p, stderr, ready)
+	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{}), warmDir: warmDir, owner: owner, ready: ready}
+	go p.readStderr(m, stderr)
 	go func() {
 		<-p.rdone // Wait must not run before all reads from the pipe completed
 		p.err = cmd.Wait()
+		if p.warmDir != "" {
+			// The worker removes it itself unless it was killed or
+			// crashed during the warm-up.
+			os.RemoveAll(p.warmDir)
+		}
 		close(p.done)
-		in.exited(p)
+		if in, _ := p.assigned(); in != nil {
+			in.exited(p)
+		} else {
+			m.spareExited(p)
+		}
 	}()
+	return p, nil
+}
+
+// spawnExec starts a new worker process.
+func (in *instance) spawnExec(ctx context.Context) (err error) {
+	lf, err := listenFile(in.sock)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	defer func() {
+		if err != nil { // no worker serves it (e.g. a startup error)
+			os.Remove(in.sock)
+		}
+	}()
+	ready := make(chan error, 1)
+	p, err := in.m.startProc(lf, in, ready, "")
+	if err != nil {
+		return err
+	}
 	b, _ := json.Marshal(in.ws)
-	if _, err := stdin.Write(append(b, '\n')); err != nil {
-		cmd.Process.Kill()
+	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
+		p.cmd.Process.Kill()
 		<-p.done
 		return fmt.Errorf("start worker: %w", err)
 	}
+	_, err = in.await(ctx, p, ready, false)
+	return err
+}
+
+// adopt gives the pre-started worker sp this instance's socket path and
+// spec. adopted is false when sp could not start the flat for reasons of its
+// own (it had exited, the socket could not be moved, the spec could not be
+// written, or it exited before acknowledging the spec); sp is then gone and
+// the caller starts a new process. Once sp acknowledged the spec, the flat's
+// startup has begun in it, and its outcome is the flat's, as for a new
+// process.
+func (in *instance) adopt(ctx context.Context, sp *spare) (adopted bool, err error) {
+	p := sp.p
+	select {
+	case <-p.done:
+		os.Remove(sp.sock)
+		return false, nil
+	default:
+	}
+	// The bound socket follows its file: a rename moves the worker's listener
+	// to this instance's path.
+	if err := os.Rename(sp.sock, in.sock); err != nil {
+		sp.stop()
+		return false, nil
+	}
+	ready := make(chan error, 1)
+	p.assign(in, ready)
+	b, _ := json.Marshal(in.ws)
+	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
+		p.stopped.Store(true)
+		p.cmd.Process.Kill()
+		<-p.done
+		os.Remove(in.sock)
+		return false, nil
+	}
+	adopted, err = in.await(ctx, p, ready, true)
+	if err != nil || !adopted {
+		os.Remove(in.sock)
+	}
+	return adopted, err
+}
+
+// await waits until p, which received its spec, reports ready. For an
+// adopted worker an exit before it acknowledged the spec is not the flat's
+// failure: adopted is false and the caller starts a new process instead.
+func (in *instance) await(ctx context.Context, p *proc, ready <-chan error, isAdopted bool) (adopted bool, err error) {
 	timeout := in.m.StartTimeout
 	if timeout == 0 {
 		timeout = 60 * time.Second
@@ -324,26 +474,38 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 	case err := <-ready:
 		if err != nil {
 			p.stopped.Store(true)
-			cmd.Process.Kill()
+			p.cmd.Process.Kill()
 			<-p.done
-			return err
+			return true, err
 		}
 	case <-p.done:
+		if isAdopted {
+			select {
+			case err := <-ready:
+				if err != nil { // a startup error, then the exit
+					return true, err
+				}
+			default:
+			}
+			if !p.specAcked.Load() { // readStderr finished before done closed
+				return false, nil
+			}
+		}
 		msg := strings.TrimSpace(p.tail.String())
 		if msg == "" {
 			msg = fmt.Sprint(p.err)
 		}
-		return fmt.Errorf("server flat worker exited during startup: %s", msg)
+		return true, fmt.Errorf("server flat worker exited during startup: %s", msg)
 	case <-timer.C:
 		p.stopped.Store(true)
-		cmd.Process.Kill()
+		p.cmd.Process.Kill()
 		<-p.done
-		return fmt.Errorf("server flat did not become ready within %s", timeout)
+		return true, fmt.Errorf("server flat did not become ready within %s", timeout)
 	case <-ctx.Done():
 		p.stopped.Store(true)
-		cmd.Process.Kill()
+		p.cmd.Process.Kill()
 		<-p.done
-		return ctx.Err()
+		return true, ctx.Err()
 	}
 	in.mu.Lock()
 	in.p = p
@@ -355,40 +517,53 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 			in.p = nil
 		}
 		in.mu.Unlock()
-		return fmt.Errorf("server flat worker exited right after starting: %v", p.err)
+		return true, fmt.Errorf("server flat worker exited right after starting: %v", p.err)
 	default:
 	}
-	return nil
+	return true, nil
 }
 
-// readStderr forwards the worker's log lines and reports readiness.
-func (in *instance) readStderr(p *proc, r io.Reader, ready chan<- error) {
+// readStderr forwards the worker's log lines and reports readiness. Lines of
+// a pre-started worker that has no instance yet go to the Manager log.
+func (p *proc) readStderr(m *Manager, r io.Reader) {
 	defer close(p.rdone)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	sentReady := false
 	for sc.Scan() {
 		line := sc.Text()
+		in, ready := p.assigned()
+		logf := func(level, msg string) {
+			if in != nil {
+				in.spec.Log(level, msg)
+			} else {
+				m.logf("pre-started worker %d: %s: %s", p.cmd.Process.Pid, level, msg)
+			}
+		}
 		var msg childMsg
 		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &msg) == nil && msg.T != "" {
 			switch msg.T {
+			case "warm": // a pre-started worker finished preparing
+				p.warmAt.Store(time.Now().UnixNano())
+			case "spec": // the worker received its spec
+				p.specAcked.Store(true)
 			case "ready":
-				if !sentReady {
+				if in != nil && !sentReady {
 					sentReady = true
 					ready <- nil
 				}
 			case "fatal":
-				if !sentReady {
+				if in != nil && !sentReady {
 					sentReady = true
 					ready <- fmt.Errorf("server flat failed to start: %s", msg.Msg)
 				}
-				in.spec.Log("error", msg.Msg)
+				logf("error", msg.Msg)
 			default:
 				level := msg.Level
 				if level == "" {
 					level = "info"
 				}
-				in.spec.Log(level, msg.Msg)
+				logf(level, msg.Msg)
 			}
 			continue
 		}
@@ -396,7 +571,7 @@ func (in *instance) readStderr(p *proc, r io.Reader, ready chan<- error) {
 			continue
 		}
 		p.tail.add(line)
-		in.spec.Log("error", line)
+		logf("error", line)
 	}
 	io.Copy(io.Discard, r)
 }
@@ -635,6 +810,9 @@ func (in *instance) Stop() {
 	}
 	in.tr.CloseIdleConnections()
 	os.Remove(in.sock)
+	if in.untrack != nil {
+		in.untrack()
+	}
 }
 
 func (in *instance) terminate(p *proc) {

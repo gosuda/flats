@@ -40,6 +40,7 @@ type jsVM struct {
 	gcMemory      uint32
 	networkActive bool
 	networkCalls  int
+	hostUsed      bool
 
 	db     *sql.Conn // per-VM connection (opened on first use)
 	dbUsed bool
@@ -73,12 +74,36 @@ type errVMFailed struct {
 func (e *errVMFailed) Error() string { return e.err.Error() }
 
 func newJSVM(w *worker, ws wsSink) (*jsVM, error) {
-	var err error
-	vm := &jsVM{w: w, ws: ws, ctx: newSwapCtx(),
+	if w.spec.ImagePath != "" && imagesEnabled() {
+		return newDocumentVM(w, ws) // image.go
+	}
+	return newPlainVM(w, ws)
+}
+
+// newPlainVM loads the prelude and the flat's module into a new runtime.
+func newPlainVM(w *worker, ws wsSink) (*jsVM, error) {
+	vm := allocJSVM(w, ws)
+	if err := vm.newRuntime(vm.options()); err != nil {
+		return nil, err
+	}
+	if err := vm.startup(func(c *qjs.Context) error { return vm.load(c, true) }); err != nil {
+		vm.close()
+		return nil, err
+	}
+	return vm, nil
+}
+
+func allocJSVM(w *worker, ws wsSink) *jsVM {
+	return &jsVM{w: w, ws: ws, ctx: newSwapCtx(),
 		out:    &lineWriter{log: w.log, level: "info"},
 		errOut: &lineWriter{log: w.log, level: "error"},
 	}
-	vm.rt, err = qjs.New(qjs.Option{
+}
+
+// options are the qjs options of every runtime of the worker.
+func (vm *jsVM) options() qjs.Option {
+	w := vm.w
+	return qjs.Option{
 		Context:            vm.ctx,
 		ReadOnlyDir:        w.spec.Dir,
 		CloseOnContextDone: true,
@@ -89,51 +114,89 @@ func newJSVM(w *worker, ws wsSink) (*jsVM, error) {
 		MemoryLimit: int(w.spec.pages()) * 65536 * 3 / 4,
 		Stdout:      vm.out,
 		Stderr:      vm.errOut,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("start JavaScript runtime: %w", err)
 	}
-	ok := false
-	defer func() {
-		if !ok {
-			vm.close()
+}
+
+// newRuntime creates vm.rt, from the worker's prewarmed shell when it fits.
+// Any failure with the shell is retried without it.
+func (vm *jsVM) newRuntime(opt qjs.Option) (err error) {
+	if s := takePrewarmedShell(opt); s != nil {
+		o := opt
+		o.Shell = s
+		if vm.rt, err = qjs.New(o); err == nil {
+			return nil
 		}
-	}()
+	}
+	if vm.rt, err = qjs.New(opt); err != nil {
+		return fmt.Errorf("start JavaScript runtime: %w", err)
+	}
+	return nil
+}
+
+// startup runs a loading step within the worker's timeout and maps its
+// failures to the startup errors the host reports.
+func (vm *jsVM) startup(f func(*qjs.Context) error) error {
+	w := vm.w
 	ctx, cancel := context.WithTimeout(context.Background(), w.spec.timeout())
 	defer cancel()
-	err = vm.guard(ctx, func(c *qjs.Context) error {
-		vm.gc = c.Global().GetPropertyStr("gc")
-		c.SetFunc("__flats_host", vm.hostCall)
-		c.SetFunc("__flats_docs_codec", vm.docsCodec)
-		v, err := c.Eval("flats:prelude.js", qjs.Code(preludeJS))
-		if err != nil {
-			return fmt.Errorf("prelude: %w", err)
-		}
-		v.Free()
-		entry := "/" + path.Clean(strings.TrimPrefix(w.spec.Entry, "/"))
-		boot := fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", jsString(entry))
-		v, err = c.Eval("/__flats_boot__.js", qjs.Code(boot), qjs.TypeModule())
-		if err != nil {
-			return errors.New(cleanLoadError(err.Error(), w.spec.Entry))
-		}
-		if v != nil {
-			v.Free()
-		}
-		return nil
-	})
+	err := vm.guard(ctx, f)
 	if err != nil {
 		var fe *errVMFailed
 		if errors.As(err, &fe) && fe.timedOut {
-			return nil, fmt.Errorf("%s did not finish loading within %s (top-level code must not block)", w.spec.Entry, w.spec.timeout())
+			return fmt.Errorf("%s did not finish loading within %s (top-level code must not block)", w.spec.Entry, w.spec.timeout())
 		}
-		return nil, err
+		return err
 	}
 	if !vm.rt.StackIntact() {
-		return nil, fmt.Errorf("loading %s: maximum call stack size exceeded (recursion too deep)", w.spec.Entry)
+		return fmt.Errorf("loading %s: maximum call stack size exceeded (recursion too deep)", w.spec.Entry)
 	}
 	vm.gcMemory = vm.rt.MemorySize()
-	ok = true
-	return vm, nil
+	return nil
+}
+
+// jsBindingOrder names what load registers and evaluates, in order; it is
+// part of the document image key (image.go).
+const jsBindingOrder = "gc,__flats_host,__flats_docs_codec,prelude,boot"
+
+// load registers the host functions, evaluates the prelude and imports the
+// flat's module. With init, __flats_init hands the runtime its generation
+// and env before the module loads; without it the caller must call
+// initRuntime before the first request.
+func (vm *jsVM) load(c *qjs.Context, init bool) error {
+	vm.gc = c.Global().GetPropertyStr("gc")
+	c.SetFunc("__flats_host", vm.hostCall)
+	c.SetFunc("__flats_docs_codec", vm.docsCodec)
+	v, err := c.Eval("flats:prelude.js", qjs.Code(preludeJS))
+	if err != nil {
+		return fmt.Errorf("prelude: %w", err)
+	}
+	v.Free()
+	if init {
+		if err := vm.initRuntime(c); err != nil {
+			return err
+		}
+	}
+	entry := "/" + path.Clean(strings.TrimPrefix(vm.w.spec.Entry, "/"))
+	boot := fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", jsString(entry))
+	v, err = c.Eval("/__flats_boot__.js", qjs.Code(boot), qjs.TypeModule())
+	if err != nil {
+		return errors.New(cleanLoadError(err.Error(), vm.w.spec.Entry))
+	}
+	if v != nil {
+		v.Free()
+	}
+	return nil
+}
+
+// initRuntime calls the prelude's one-shot __flats_init, which fetches this
+// runtime's generation and env from the host.
+func (vm *jsVM) initRuntime(c *qjs.Context) error {
+	v, err := c.Global().InvokeJS("__flats_init")
+	if err != nil {
+		return fmt.Errorf("prelude: %w", err)
+	}
+	v.Free()
+	return nil
 }
 
 // swapCtx is the context.Context a qjs runtime passes to every wasm call.
@@ -374,6 +437,11 @@ func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
 	}()
 	if len(args) != 2 {
 		return nil, errors.New("bad host call")
+	}
+	if !vm.hostUsed {
+		// The runtime now holds host data: never capture it (image.go).
+		vm.hostUsed = true
+		vm.rt.Taint("host operation")
 	}
 	op := args[0].String()
 	raw := args[1].String()
@@ -778,5 +846,13 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		return newString(string(out)), nil
 	default:
 		return nil, errors.New("unknown docs codec")
+	}
+}
+
+// afterReady runs once the worker has reported ready: it writes a document
+// image captured during startup (image.go).
+func (e *jsEngine) afterReady() {
+	if e.w.spec.ImagePath != "" {
+		documentImageFor(e.w.spec.ImagePath).ready(e.w)
 	}
 }

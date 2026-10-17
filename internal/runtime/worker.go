@@ -2,11 +2,15 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"net"
@@ -34,34 +38,67 @@ type outboundClient interface {
 }
 
 type worker struct {
-	spec    workerSpec
-	log     *childLog
-	data    *dataStore
-	eng     engine
-	js      *jsEngine      // nil for WASI
-	network outboundClient // shared by all JS request and WebSocket VMs
-	bodies  bodyBudget     // request body bytes held at once
+	spec      workerSpec
+	versionFP string // fingerprint of the version files, for document images
+	log       *childLog
+	data      *dataStore
+	eng       engine
+	js        *jsEngine      // nil for WASI
+	network   outboundClient // shared by all JS request and WebSocket VMs
+	bodies    bodyBudget     // request body bytes held at once
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
 const listenerFD = 3
 
+// specAcknowledged runs after the worker acknowledged its spec. A variable
+// for tests.
+var specAcknowledged = func(workerSpec) {}
+
 // WorkerMain is the entry point of "flats worker": it reads its spec from
 // stdin, serves HTTP on the inherited socket and exits when stdin closes
-// (the parent stopped it or died).
+// (the parent stopped it or died). A pre-started worker first receives a
+// prewarm line, prepares what does not depend on a flat, and then waits for
+// its spec; stdin EOF before the spec ends it quietly.
 func WorkerMain(args []string) error {
 	_ = args
 	log := stderrLog
 	start := time.Now()
 	stdin := bufio.NewReaderSize(os.Stdin, 64<<10)
 	line, err := stdin.ReadBytes('\n')
+	prewarmed := false
+	if err == nil && bytes.HasPrefix(line, []byte(`{"prewarm":`)) {
+		var msg struct {
+			Prewarm *prewarmSpec `json:"prewarm"`
+		}
+		if jerr := json.Unmarshal(line, &msg); jerr != nil || msg.Prewarm == nil {
+			return fmt.Errorf("worker: bad prewarm line: %v", jerr)
+		}
+		startPrewarm(*msg.Prewarm)
+		prewarmed = true
+		line, err = stdin.ReadBytes('\n')
+		start = time.Now() // the worker's startup begins with its spec
+	}
 	if err != nil {
+		if errors.Is(err, io.EOF) && len(bytes.TrimSpace(line)) == 0 {
+			// Stopped (or the parent died) before it was given a flat. Let a
+			// compilation cache write in progress finish.
+			if prewarmed {
+				waitPrewarm()
+			}
+			return nil
+		}
 		return fmt.Errorf("worker: read spec: %w", err)
 	}
 	var spec workerSpec
 	if err := json.Unmarshal(line, &spec); err != nil {
 		return fmt.Errorf("worker: bad spec: %w", err)
 	}
+	// From here on the flat's startup has begun: an adopted pre-started
+	// worker that exits now is the flat's startup failure, not a reason to
+	// start the flat again in a new process.
+	log.send(childMsg{T: "spec"})
+	specAcknowledged(spec)
 	f := os.NewFile(listenerFD, "listener")
 	ln, err := net.FileListener(f)
 	f.Close()
@@ -70,6 +107,9 @@ func WorkerMain(args []string) error {
 		return err
 	}
 	w := &worker{spec: spec, log: log, data: newDataStore(spec.DataDir)}
+	if prewarmed {
+		waitPrewarm() // a spec that arrives during prewarm uses its result
+	}
 	if err := w.init(); err != nil {
 		log.send(childMsg{T: "fatal", Msg: err.Error()})
 		return err
@@ -78,6 +118,9 @@ func WorkerMain(args []string) error {
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	log.send(childMsg{T: "ready", MS: time.Since(start).Milliseconds()})
+	if w.js != nil {
+		w.js.afterReady()
+	}
 
 	// Stdin EOF means "stop" (or the parent is gone).
 	stopped := make(chan struct{})
@@ -101,7 +144,10 @@ func WorkerMain(args []string) error {
 	return nil
 }
 
+// init prepares the worker's engine. A prewarmed shell that the engine did
+// not take is released afterwards.
 func (w *worker) init() error {
+	defer releasePrewarmedShell()
 	entry := path.Clean("/" + strings.TrimPrefix(w.spec.Entry, "/"))[1:]
 	if entry == "" || entry == "." {
 		return errors.New("server flat has no entry file")
@@ -111,11 +157,13 @@ func (w *worker) init() error {
 	case ".js", ".mjs":
 		// The version files are mounted read-only at "/" for the module
 		// loader and std.loadFile; wazero follows symlinks out of a mount.
-		dir, err := checkVersionDir(w.spec.Dir)
+		// A document runtime's image key covers the version files; the same
+		// walk fingerprints them.
+		dir, fp, err := checkVersionDir(w.spec.Dir, w.spec.ImagePath != "" && imagesEnabled())
 		if err != nil {
 			return err
 		}
-		w.spec.Dir = dir
+		w.spec.Dir, w.versionFP = dir, fp
 		client, err := egress.New(w.spec.NetworkOrigins)
 		if err != nil {
 			return err
@@ -142,11 +190,17 @@ func (w *worker) init() error {
 // checkVersionDir resolves the version directory and refuses symlinks and
 // special files in it: wazero's directory mount follows symlinks, so a link
 // in the version files would expose the host file it points to. Bundles never
-// contain symlinks; this is defence in depth.
-func checkVersionDir(dir string) (string, error) {
+// contain symlinks; this is defence in depth. With fingerprint it also
+// returns the version files' fingerprint (fingerprintFile), or "" when a
+// file could not be fingerprinted: the worker then starts without an image.
+func checkVersionDir(dir string, fingerprint bool) (string, string, error) {
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return "", fmt.Errorf("version files: %w", err)
+		return "", "", fmt.Errorf("version files: %w", err)
+	}
+	var fp hash.Hash
+	if fingerprint {
+		fp = sha256.New()
 	}
 	n := 0
 	err = filepath.WalkDir(real, func(p string, d fs.DirEntry, err error) error {
@@ -156,16 +210,23 @@ func checkVersionDir(dir string) (string, error) {
 		if n++; n > 200000 {
 			return errors.New("version files: too many files")
 		}
-		if t := d.Type(); p == real || t.IsDir() || t.IsRegular() {
+		t := d.Type()
+		if t.IsRegular() && fp != nil && fingerprintFile(fp, real, p, d) != nil {
+			fp = nil
+		}
+		if p == real || t.IsDir() || t.IsRegular() {
 			return nil
 		}
 		rel, _ := filepath.Rel(real, p)
 		return fmt.Errorf("version files: %s is a symlink or special file; a server flat may only contain regular files", rel)
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return real, nil
+	if fp == nil {
+		return real, "", nil
+	}
+	return real, hex.EncodeToString(fp.Sum(nil)), nil
 }
 
 type reqPayload struct {

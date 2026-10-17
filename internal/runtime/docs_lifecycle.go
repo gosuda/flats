@@ -35,19 +35,23 @@ type docsInstance struct {
 	retryAt        time.Time
 	idleRetryAt    time.Time
 	idleFailures   int
+	untrack        func() // ends the Manager's count of this logical instance
 }
 
 var _ core.ManagedDocsInstance = (*docsInstance)(nil)
 
 func (m *Manager) startDocs(ctx context.Context, spec core.RuntimeSpec) (core.Instance, error) {
-	d := &docsInstance{m: m, spec: spec}
+	// A sleeping document counts as an instance: its wake adopts the spare.
+	d := &docsInstance{m: m, spec: spec, untrack: m.track()}
 	if !spec.Lazy {
 		child, err := d.spawn(ctx)
 		if err != nil {
+			d.untrack()
 			return nil, err
 		}
 		d.child = child // deliberately unready until committed core preparation
 	}
+	m.instanceReady() // a lazy document is ready once registered
 	return d, nil
 }
 
@@ -438,4 +442,7 @@ func (d *docsInstance) Stop() {
 		q.Suspend(false)
 	}
 	<-done
+	if d.untrack != nil {
+		d.untrack()
+	}
 }

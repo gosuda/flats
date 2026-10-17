@@ -66,3 +66,34 @@ an atomically swapped per-request context instead (internal/runtime does).
     even when timeout cancellation makes JS teardown fail. The original teardown
     panic remains observable, and a subsequent Close is safe. ForEach propagates
     throwing getters after clearing their pending JS exception and owned values.
+13. clock.go (new), nanotime_unix.go/nanotime_windows.go (new), runtime.go:
+    every runtime has its own guest clocks (ModuleConfig WithWalltime/
+    WithNanotime) instead of wazero's system clocks. Wall time is time.Now
+    as before; the monotonic clock is the host's (runtime.nanotime, what
+    WithSysNanotime reads; a package-local base on Windows) plus a
+    per-runtime offset that is 0 for every fresh runtime. Readings handed to
+    the guest while New_QJS runs are recorded to locate JSContext's
+    random_state. Option.Census counts clock reads, output bytes and file
+    opens/closes of the ReadOnlyDir mount (tests only; with it the mount is
+    the same read-only DirFS through a counting wrapper).
+14. image.go (new), runtime.go, options.go: runtime images. Runtime.Image
+    captures linear memory (the 64 KiB pages that differ from a freshly
+    instantiated module), __stack_pointer and the Go-side wrappers (handles,
+    global object, intrinsics, relocated stack, proxy registry kinds, caller
+    raw values); New(Option{Image, ImageFunctions}) instantiates the module,
+    writes the image instead of calling New_QJS, reseeds random_state from
+    crypto/rand, continues the captured monotonic clock and re-registers the
+    registry in order. Images are keyed (format, SHA-256 of the patched
+    qjs.wasm, memory-shaping options, mount presence, Option.ImageBinding)
+    and serialized with a CRC-32C. Capture is refused unless, over the
+    runtime's whole life, the caller never called Runtime.Taint, the guest
+    wrote no output, random_state is unchanged, no Go-converted JS function
+    is retained, the registry holds exactly ids 1..n of Go functions and the
+    runtime's context, and the stack canary is intact. New's output writers
+    are wrapped to count bytes.
+15. shell.go (new), runtime.go: NewShell builds the flat-independent part of
+    New (wazero runtime, WASI, host module, compiled module) ahead of time;
+    New(Option{Shell}) consumes it once when the runtime-wide options match.
+    New also no longer dereferences its nil named result on error paths
+    (before, those errors became a recovered nil-pointer panic and the
+    wazero runtime leaked).

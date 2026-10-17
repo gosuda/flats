@@ -73,6 +73,16 @@ func (a *app) readConnection() (string, error) {
 	return u, nil
 }
 
+// resolveURL sets the server URL unless --url chose it (defaultURL). It
+// reads the saved connection either way, so an unreadable one is reported
+// once whether or not --url was given.
+func (a *app) resolveURL() {
+	u, source := a.defaultURL()
+	if a.urlSource != "flag" {
+		a.url, a.urlSource = u, source
+	}
+}
+
 // defaultURL picks the server URL when --url is absent: FLATS_URL, then the
 // saved connection, then the loopback default.
 func (a *app) defaultURL() (string, string) {
