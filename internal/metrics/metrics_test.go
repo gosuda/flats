@@ -68,7 +68,7 @@ func testSnapshot() core.MetricsSnapshot {
 		},
 		Flats: []core.FlatMetrics{
 			{
-				Slug: "shop", Type: "server",
+				Slug: "shop", Traffic: true, Type: "server",
 				Requests: map[string]map[string]uint64{
 					core.RoutePublic:  {core.Class2xx: 10, core.Class5xx: 2, core.ClassClosed: 1},
 					core.RoutePrivate: {core.Class4xx: 3},
@@ -80,15 +80,17 @@ func testSnapshot() core.MetricsSnapshot {
 			},
 			{
 				// A document without memory figures (not Linux), never measured on disk.
-				Slug: "notes", Type: "docs", HasWorker: true, CPUSeconds: 0.5, MemoryOK: false,
+				Slug: "notes", Traffic: true, Type: "docs", HasWorker: true, CPUSeconds: 0.5, MemoryOK: false,
 				MemoryBytes: 99, State: core.WorkerSleeping,
 			},
-			{Slug: "site", Type: "flat", DiskBytes: 10, DiskMeasuredAt: diskAt},
+			{Slug: "site", Traffic: true, Type: "flat", DiskBytes: 10, DiskMeasuredAt: diskAt},
 			// Never labels: not a slug, and a duplicate.
-			{Slug: "bad/slug.example:80", Type: "flat"},
-			{Slug: "shop", Type: "server", RateLimited: 999},
+			{Slug: "bad/slug.example:80", Traffic: true, Type: "flat"},
+			{Slug: "shop", Traffic: true, Type: "server", RateLimited: 999},
 			// A type that is not an enum word is reported as other.
-			{Slug: "odd", Type: "x/y:z"},
+			{Slug: "odd", Traffic: true, Type: "x/y:z"},
+			// No live state (a rename in progress): disk figures only.
+			{Slug: "moving", Type: "server", DiskBytes: 5, DiskMeasuredAt: diskAt, RateLimited: 9, HasWorker: true, CPUSeconds: 3},
 		},
 		RoleCPU: []core.RoleCPU{
 			{Slug: "shop", Type: "server", Role: core.UsageRolePreview, CPUSeconds: 0.25},
@@ -508,5 +510,22 @@ func TestScrapeDoesNotCallBackendStatus(t *testing.T) {
 	m.RefreshEndpoints()
 	if v, ok := value(samplesOf(t, m), "flats_route_endpoints", map[string]string{"provider": "tailscale", "state": "ready"}); !ok || v != 1 {
 		t.Fatalf("after the refresh, tailscale ready = %v %v", v, ok)
+	}
+}
+
+// A flat without live state (a rename in progress) keeps its disk figures but
+// exposes no traffic or worker series, so its counters never appear to reset.
+func TestFlatWithoutTrafficShowsDiskOnly(t *testing.T) {
+	m, _, _ := newTest(t)
+	_, body := scrape(t, m.Handler(), nil)
+	vec := samples(t, body)
+	if v, ok := value(vec, "flats_disk_bytes", map[string]string{"flat": "moving", "type": "server"}); !ok || v != 5 {
+		t.Fatalf("disk of moving = %v, %v", v, ok)
+	}
+	for _, s := range vec {
+		name := string(s.Metric[model.MetricNameLabel])
+		if string(s.Metric["flat"]) == "moving" && !strings.HasPrefix(name, "flats_disk_") {
+			t.Errorf("unexpected series %s for a flat without live state", s.Metric)
+		}
 	}
 }

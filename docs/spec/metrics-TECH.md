@@ -30,9 +30,12 @@ system, workers or provider backends (spec rule 4).
 `github.com/prometheus/client_golang` v1.24.1 is already in the module graph
 and linked into `flats` through `github.com/oesni/libtunnel` (`go list -deps
 ./cmd/flats` lists `prometheus` and `promhttp`). Using it directly turns the
-`// indirect` requirement into a direct one at the same version, in `go.mod`
-and in the nested `netbird/go.mod` that builds the release binary; module
-selection does not change. The new `prometheus/collectors` package and Flats'
+`// indirect` requirements of `client_golang` and `prometheus/common` (the
+tests parse the exposition with `expfmt`) into direct ones at the same
+versions in `go.mod`. The nested `netbird/go.mod` that builds the release
+binary keeps them `// indirect`, since no package in that module imports them
+and `go mod tidy` would restore the marker. `go list -m all` is identical
+before and after in both modules. The new `prometheus/collectors` package and Flats'
 own code are new in the binary.
 
 Flats uses a private `prometheus.Registry`. It never uses `promauto`,
@@ -81,7 +84,10 @@ histogram (spec rule 11). HTTP/2 extended `CONNECT` WebSockets need no branch:
 Go 1.27 keeps them disabled unless `GODEBUG=http2xconnect=1` is set, and
 Flats sets no such option; a test pins that.
 
-Closed requests (spec rule 10): the wrapper keeps the request's original
+Closed requests (spec rule 10) are not observed in the duration histogram.
+Since only the handler's return tells whether a `502` or `503` becomes
+`closed`, those two statuses are counted when the handler returns; every other
+status is counted when it is sent. The wrapper keeps the request's original
 context when it is entered, before the public route replaces it with an
 epoch-derived one (`siteHandler`), so a route revocation is never mistaken for
 a departed visitor. When the handler returns, a request whose original context
@@ -234,12 +240,6 @@ meaning (spec rule 13).
   calls `Service.ListFlats` or `view`, which walk disks and call
   `ExposureStatus` with its permission callback. Joined with `s.live` for the
   running state;
-- route endpoints by provider and state: a new
-  `provider.Manager.EndpointStates()` computes, for every observed endpoint in
-  `m.states`, the same fresh state that `ExposureStatus` computes from each
-  backend's in-memory `Status()`, without the permission callback (which can
-  read SQLite). The stored `m.states` state alone is not used: it is written
-  only when a route opens;
 - pending approvals (`SELECT COUNT(*)`);
 - the size of `flats.db` plus `flats.db-wal`;
 - the sweep's own completion time, exported as
@@ -252,16 +252,27 @@ running flat and from the snapshot otherwise. Disk series for flats without a
 flats in the last snapshot or with a `liveFlat` that has a bound uid and a
 current version: `s.state()` can create an empty `liveFlat` for any slug, and
 those never become series. During a rename the flat is briefly out of
-`s.live`; a scrape in that window may miss its traffic series, which return
-under the new slug with the same counters.
+`s.live`; `Service.Metrics` then reports it with `Traffic: false` and the
+collector exposes only its disk series, so no counter appears to reset. Its
+traffic series return under the new slug with the same counters.
 
 Disk usage: `checkQuotas` already walks each live flat every sweep when the
 quota is on; it now also records the result and its time. Independently,
-every flat in the store, live or not, is walked at most once every 5
-minutes, spread over sweeps, so disk figures exist for every flat and are at
-most 5 minutes old (spec rule 4). This adds one walk per flat per 5 minutes on
-hosts with the quota off. The flat view's `disk_bytes` keeps measuring on
+every flat in the store, live or not, whose figure is missing or at least 4.5
+minutes old is walked, oldest first, up to about a ninth of all flats per
+sweep, so disk figures exist for every flat and are about 5 minutes old at
+most (spec rule 4). This adds about one walk per flat per 5 minutes on hosts
+with the quota off. The flat view's `disk_bytes` keeps measuring on
 read; the console keeps showing that figure.
+
+Route endpoints by provider and state are not part of the core snapshot. A
+new `provider.Manager.EndpointStates()` computes, for every observed endpoint
+in `m.states`, the same fresh state that `ExposureStatus` computes from each
+backend's in-memory `Status()` (shared code, `refreshed()`), without the
+permission callback (which can read SQLite). The stored `m.states` state alone
+is not used: it is written only when a route opens. `internal/metrics` calls
+it once at start and then every 30 seconds from its own loop and caches the
+counts; a scrape reads the cache. Unknown states are reported as `other`.
 
 ## Management server accounting
 
@@ -276,13 +287,15 @@ There is no management duration histogram.
 
 ## `/metrics`
 
-Registered on the management mux as `GET /metrics` with `promhttp.HandlerFor`
-over the private registry (`EnableOpenMetrics: true`; promhttp negotiates the
-format and gzip). It is reached through the same host guards as the rest of
+Registered on the management mux as `/metrics` (not `GET /metrics`, which
+would send other methods to the console's `/` handler) with
+`promhttp.HandlerFor` over the private registry (`EnableOpenMetrics: true`;
+promhttp negotiates the format and gzip). The handler serves `GET` and `HEAD`
+and answers other methods 405 with `Allow: GET, HEAD`. It is reached through the same host guards as the rest of
 the mux and applies the `/api` browser rule from `agentRequest`
 (`internal/api/guard.go`): `Sec-Fetch-Site: cross-site` or `same-site`, or an
-`Origin` other than the requested host, is 403. Other methods are 405. The
-console page no longer answers `/metrics`.
+`Origin` other than the requested host, is 403. The console page no longer
+answers `/metrics`.
 
 Metric names (per-flat series carry `flat` = slug and `type`):
 

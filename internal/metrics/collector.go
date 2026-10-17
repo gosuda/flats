@@ -172,6 +172,16 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 func (c *collector) flat(ch chan<- prometheus.Metric, f core.FlatMetrics,
 	gauge, counter func(*prometheus.Desc, float64, ...string)) {
 	s, t := f.Slug, enumLabel(f.Type)
+	if !f.DiskMeasuredAt.IsZero() {
+		gauge(descDiskBytes, float64(f.DiskBytes), s, t)
+		gauge(descDiskAt, unix(f.DiskMeasuredAt), s, t)
+	}
+	// Without live state (a rename in progress, or a flat deleted since the
+	// last sweep) only the disk figures are known; leaving the counters out
+	// keeps them from appearing to reset.
+	if !f.Traffic {
+		return
+	}
 	for _, route := range routeKinds {
 		for _, class := range core.UsageClasses {
 			counter(descRequests, float64(f.Requests[route][class]), s, t, route, class)
@@ -195,10 +205,6 @@ func (c *collector) flat(ch chan<- prometheus.Metric, f core.FlatMetrics,
 			gauge(descWorkerState, 1, s, t, string(f.State))
 		}
 		counter(descWorkerExits, float64(f.UnexpectedExits), s, t)
-	}
-	if !f.DiskMeasuredAt.IsZero() {
-		gauge(descDiskBytes, float64(f.DiskBytes), s, t)
-		gauge(descDiskAt, unix(f.DiskMeasuredAt), s, t)
 	}
 }
 

@@ -32,7 +32,8 @@ On top of that:
   `X-Flats-Client` header (the CLI and the MCP relay send one), and needs a
   same-origin `Origin` when one is present. Mutations also need
   `Sec-Fetch-Site: same-origin` and an `Origin` header.
-- **`/metrics`** answers `GET` only; other methods are 405. It
+- **`/metrics`** answers `GET` and `HEAD`; other methods are 405 with
+  `Allow: GET, HEAD`. It
   applies the `/api` browser rule: `Sec-Fetch-Site: cross-site` or
   `same-site`, or an `Origin` other than the requested host, is 403. A
   scraper sends neither header and needs no credential. It is never served on

@@ -636,10 +636,12 @@ in [Private and public access](networking.md#scraping-metrics).
 A scrape reads only values the host keeps in memory: it never wakes a sleeping
 document, starts a worker, reads SQLite, walks files or calls a network
 provider. Traffic counters are current. Workers report their CPU and memory
-every 15 seconds. Host-wide counts, endpoint states, pending approvals and the
-size of `flats.db` are refreshed by each host sweep (normally every 30
-seconds), whose time is `flats_snapshot_timestamp_seconds`; disk usage is
-measured for every flat at least every 5 minutes. Counters start at zero when
+every 15 seconds. Host-wide counts, pending approvals and the size of
+`flats.db` are refreshed by each host sweep (normally every 30 seconds), whose
+time is `flats_snapshot_timestamp_seconds`; disk usage is measured for every
+flat about every 5 minutes. Route endpoint states are recomputed every 30
+seconds, and once at start, from the providers' in-memory status by the
+metrics endpoint itself. Counters start at zero when
 the host starts; a renamed flat's series continue under the new slug and a
 deleted flat's disappear.
 
@@ -678,7 +680,10 @@ running even while its worker sleeps. `flats_worker_state` is the diagnostic
 state of the worker serving the current version (`running`, `starting`,
 `quiescing`, `sleeping`, `backoff`, `stopped`); `preview` and `check` CPU
 belong to the flat's preview and activation-check workers, not to its usage.
-The histogram buckets are 5 ms to 30 s.
+The histogram buckets are 5 ms to 30 s; `closed` requests are not in it. An
+endpoint state other than the known ones is reported as `other`, and so is a
+flat type or visibility that is not a known word. Management requests are
+counted by `1xx` … `5xx` only.
 
 Worker CPU is user plus system time from the worker itself and, after it
 exits, from its process state, so it includes workers that later stopped,
