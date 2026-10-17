@@ -297,13 +297,13 @@ public route. Websites and pages also need a deployed version; documents and
 designs run without publication. Both directions, Private → Public and
 Public → Private, wait for an approval in the console.
 
-An approval freezes the live version it was requested for. A save that
-changes a document's content makes a new live version, and so does a revision
-rollback whose target has other non-document files or another set of
-documents, so a pending visibility request for that document fails as stale
-after it and has to be requested again. Live edits, including
-`update_document`, and other revision rollbacks keep the live version. A
-design's live version does not change with its edits.
+A visibility approval of a website or page freezes the live version it was
+requested for: a deployment or rollback while it is pending makes it stale,
+and it has to be requested again. A visibility approval of a document or
+design covers the flat, not its content: saves, live edits and revision
+rollbacks while it is pending do not make it stale, and approving it exposes
+the content as it is when the change applies. Both kinds still freeze the
+source visibility and provider permissions.
 
 A route may still be Connecting after approval; open its link only after it
 reports ready. Legacy listed/unlisted inputs map to Public. Relay availability

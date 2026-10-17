@@ -15,15 +15,13 @@ first runs the health check on an isolated copy of the data; a failure
 refuses the save and leaves the running document as it was. A document keeps
 no data snapshots, and previews of a document are refused.
 
-Because a changed save moves the flat's live version, a pending visibility
-approval, which freezes the live version it was requested against, fails as
-stale after such a save, and after a revision rollback whose target has
-other non-document files or another set of documents, which starts a new
-version too.
-Live edits by people and through `update_document`, and a rollback within
-the running version, do not move the live version. The
-[content models](../spec/content-models.md#current-state) spec records this
-as a gap.
+A changed save moves the flat's live version, and so does a revision
+rollback whose target has other non-document files or another set of
+documents. Live edits by people and through `update_document`, and a
+rollback within the running version, do not. A visibility approval of a
+document does not freeze the live version, so none of these makes a pending
+one stale; approving it exposes the document as it is then
+([content models](../spec/content-models.md), Revision model rule 2).
 
 ## Docs runtime layout
 

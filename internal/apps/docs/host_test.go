@@ -370,3 +370,61 @@ func TestHostDocumentRevisions(t *testing.T) {
 	_ = json.Valid
 	_ = fmt.Sprint
 }
+
+// Revision model rule 2 with the real document worker: a pending visibility
+// approval survives saves and a rollback that runs a new internal version,
+// and approving it exposes the text as it is then.
+func TestHostVisibilityApprovalSurvivesRevisions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s, _, public := hostService(t)
+	if err := s.SetProviderPermission(ctx, "host-doc", store.ProviderPortal, true, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	live := func() int {
+		t.Helper()
+		f, err := s.GetFlat(ctx, "host-doc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.LiveVersion
+	}
+	first := live()
+	res, err := s.SetVisibility(ctx, "host-doc", store.Public, core.ViaMCP, "test")
+	if err != nil || res.Approval == nil {
+		t.Fatal(res, err)
+	}
+	// A save that adds a document and an asset, then a rollback to the
+	// first revision: each runs a new internal version.
+	if _, err := s.SaveVersion(ctx, "host-doc", []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# Changed\n")}, {Path: "more.md", Data: []byte("# More\n")}, {Path: "notes.txt", Data: []byte("asset")}}, core.SaveMeta{}, core.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	saved := live()
+	if _, err := s.RollbackRevision(ctx, "host-doc", 1, "", core.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if rolled := live(); saved == first || rolled == saved {
+		t.Fatal("no new internal version; the test proves nothing", first, saved, rolled)
+	}
+	if public.handler("host-doc") != nil {
+		t.Fatal("public before approval")
+	}
+	if a, err := s.Decide(ctx, res.Approval.ID, true); err != nil || a.Status != "approved" {
+		t.Fatal(a, err)
+	}
+	h := public.handler("host-doc")
+	if h == nil {
+		t.Fatal("no public route")
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://host-doc.localhost/_docs/api/document", nil))
+	var doc core.Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); rec.Code != 200 || err != nil || doc.Markdown != initialText {
+		t.Fatal("public text", rec.Code, rec.Body.String(), err)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "http://host-doc.localhost/notes.txt", nil))
+	if rec.Code == 200 {
+		t.Fatal("public route serves a file the restored revision does not have")
+	}
+}

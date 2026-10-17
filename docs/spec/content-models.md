@@ -1,7 +1,7 @@
 # Content data models: Version and Revision
 
 Status: partly implemented. The Version model and the Revision model are in
-place for every type; two rules are not yet met for documents, listed under
+place for every type; one rule is not yet met for documents, listed under
 [Current state](#current-state). Agent guides (`docs/agent/`) describe
 implemented behavior only.
 
@@ -201,7 +201,7 @@ These rules apply to the version, revision and pin quotas alike.
 |---|---|---|
 | website (`flat`) | Version | implemented: separate creation/deployment approvals, quota and explicit deletion |
 | page (`page`) | Version | as for websites |
-| document (`docs`) | Revision | implemented, except the two gaps under [Current state](#current-state) |
+| document (`docs`) | Revision | implemented, except the gap under [Current state](#current-state) |
 | design | Revision | implemented |
 
 A flat keeps its first save's type, so its model never changes.
@@ -219,13 +219,6 @@ Differences between this page and the implementation:
   people and through `update_document`, are not checked against the disk
   quota, and the revisions recording them are stored without that check.
   Saves are checked.
-- **Pending visibility approvals of documents (Revision model rule 2).** A
-  document save that changes its content starts a new running version, and a
-  visibility approval freezes the live version it was requested against, so
-  a pending visibility approval fails as stale after such a save, and after
-  a revision rollback whose target has other assets, another manifest or
-  another set of documents. Live edits do not affect it. Designs are not
-  affected.
 
 ## Upgrading older hosts
 

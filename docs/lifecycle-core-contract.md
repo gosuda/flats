@@ -154,16 +154,17 @@ frozen value:
   snapshot name and hash it would restore; `restore_data` (snapshot restore)
   freezes snapshot identity/hash.
 - `delete_version` freezes the version hash.
-- `set_visibility` freezes the source visibility and the live version.
-
-A changed save of a document moves its live version, and so does a revision
-rollback whose target has other non-document files or another set of
-documents ([revision store](revision-store.md)); a pending visibility approval
-for that document then fails as `stale_approval` and the operator approves a
-fresh request. Live edits keep the live version. Designs are not affected, since their
-shell version never changes. The product rule that content changes do not make
-a visibility approval stale is not implemented for documents; see the
-Current state of [content-models.md](spec/content-models.md#current-state).
+- `set_visibility` freezes the source visibility and provider permissions,
+  and for a website or page also the live version. A document or design
+  freezes no live version: the approval covers the flat, not one revision
+  ([content models](spec/content-models.md), Revision model rule 2). A
+  changed save of a document moves its internal live version, and so does a
+  revision rollback whose target has other non-document files or another set
+  of documents ([revision store](revision-store.md)); neither makes a pending
+  visibility approval stale, and approving it exposes the content running
+  when it applies. Requests stored before this rule froze a document's live
+  version; that field is ignored for documents and designs. An approval whose
+  flat was deleted and created again after the request is stale.
 
 Pending requests deduplicate across caller surfaces by canonical
 action/params. Decisions serialize by approval ID and atomically claim pending

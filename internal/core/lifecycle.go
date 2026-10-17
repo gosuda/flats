@@ -70,10 +70,16 @@ type rollbackParams struct {
 	Providers    string `json:"providers"`
 }
 
+// visibilityParams is the frozen state of a set_visibility request. A
+// Version-model flat (website, page) also freezes its live version: the
+// approval covers that version. A Revision-model flat (document, design)
+// omits it: the approval covers the flat, so content changes while it is
+// pending do not make it stale, and approving it exposes the content as it
+// is when the change applies.
 type visibilityParams struct {
 	Visibility   string `json:"visibility"`
 	From         string `json:"from"`
-	ExpectedLive int    `json:"expected_live"`
+	ExpectedLive *int   `json:"expected_live,omitempty"`
 	Providers    string `json:"providers"`
 }
 
@@ -280,10 +286,16 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	res, err := s.requestFrozen(ctx, slugName, "set_visibility", visibilityParams{
-		Visibility: string(vis), From: string(f.Visibility.Canonical()),
-		ExpectedLive: f.LiveVersion, Providers: providers,
-	}, via, reason)
+	t, err := s.flatType(ctx, f)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	p := visibilityParams{Visibility: string(vis), From: string(f.Visibility.Canonical()), Providers: providers}
+	if !contenttype.RevisionModel(t) {
+		live := f.LiveVersion
+		p.ExpectedLive = &live
+	}
+	res, err := s.requestFrozen(ctx, slugName, "set_visibility", p, via, reason)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -963,11 +975,29 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	if err != nil {
 		return ActionResult{}, err
 	}
+	// The approval covers the flat it was requested for, not a later flat
+	// created under the same slug after a deletion. A rename keeps the
+	// creation time and moves the approval with the flat.
+	if f.CreatedAt.After(a.RequestedAt) {
+		return ActionResult{}, fmt.Errorf("%w: %w: flat %s was deleted and created again after the request; request a new visibility change", ErrConflict, ErrStaleApproval, a.Flat)
+	}
 	if string(f.Visibility.Canonical()) != p.From {
 		return ActionResult{}, mismatch(p.From, string(f.Visibility.Canonical()), "visibility")
 	}
-	if f.LiveVersion != p.ExpectedLive {
-		return ActionResult{}, mismatch(strconv.Itoa(p.ExpectedLive), strconv.Itoa(f.LiveVersion), "the live version")
+	// A Revision-model flat ignores the live version, also one frozen by
+	// an approval requested before this rule: its content changes in place.
+	t, err := s.flatType(ctx, f)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if !contenttype.RevisionModel(t) {
+		expected := 0
+		if p.ExpectedLive != nil {
+			expected = *p.ExpectedLive
+		}
+		if f.LiveVersion != expected {
+			return ActionResult{}, mismatch(strconv.Itoa(expected), strconv.Itoa(f.LiveVersion), "the live version")
+		}
 	}
 	providers, err := s.providerKey(ctx, a.Flat)
 	if err != nil {
