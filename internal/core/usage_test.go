@@ -688,6 +688,30 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 	}
 	sinkIs("version preview", rt.since(n)[0], lf.previewSink())
 
+	if _, err := s.SaveVersion(ctx, "app", append(serverFiles[:1:1], bundle.File{Path: "server.js", Data: []byte("export default {} // draft")}), SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	n = rt.count()
+	if _, err := s.OpenPreview(ctx, "app", 0); err != nil {
+		t.Fatal(err)
+	}
+	sinkIs("draft preview", rt.since(n)[0], lf.previewSink())
+	if err := s.dropPreviews(ctx, "app"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A document save publishes through publishRevision.
+	s.cfg.DocsApp = testDocsApp()
+	n = rt.count()
+	saveDocs(t, s, "notes")
+	docs := s.state("notes")
+	if got := rt.since(n); len(got) != 2 {
+		t.Fatalf("document save started %d workers", len(got))
+	} else {
+		sinkIs("document check", got[0], docs.checkSink())
+		sinkIs("document activation", got[1], docs.liveSink())
+	}
+
 	n = rt.count()
 	if _, err := s.RenameSlug(ctx, "app", "renamed", ViaAPI); err != nil {
 		t.Fatal(err)
@@ -730,6 +754,9 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 	lf = s.state("renamed")
 	var live, preview int
 	for _, spec := range rt.since(0) {
+		if spec.Flat != "renamed" {
+			continue // the document needs a docs app this host lacks
+		}
 		switch spec.Usage {
 		case lf.liveSink():
 			live++
