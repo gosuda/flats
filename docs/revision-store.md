@@ -222,7 +222,9 @@ worker keeps it and later entries.
 - **Saves** (`save_document`, `create_flat {type: docs}`, `flats
   save-document`, the REST document upload): when a docs version runs and
   the save starts a new one, the host first writes an `agent` intent with the
-  agent's label and message through the running worker. Then the save
+  agent's label and message through the running worker (waking a healthy
+  sleeper). A broken or terminating old worker does not prevent repair by
+  changed save: missing attribution is recorded as an event. Then the save
   applies, and the host syncs and imports. A save that cannot record (the
   worker refuses or is unreachable after the switch) still succeeded; an
   event says so and the ticker imports later.
@@ -232,8 +234,9 @@ worker keeps it and later entries.
 - **Ticker**: every 15 seconds each running document whose lock is free is
   synced and imported. Import also runs when sync failed, so the worker's
   transport routes drain the backlog while an activation keeps failing. At
-  startup every running document is synced, imported (which also migrates
-  it) and then retained.
+  startup already-live documents restore lazily; their worker-dependent migration,
+  import and sweep wait for actual use. Awake documents still receive the
+  regular refresh. Revision list/get/pin/quota calls do not wake sleepers.
 
 ### Document rollback to n
 
@@ -275,7 +278,9 @@ revisions. For each flat it:
 
 1. takes the flat lock, refusing (skipping the flat) while a rename or delete
    journal names the slug;
-2. for a document: imports first and skips the flat when the document is not
+2. for a document: imports first, or accepts an in-memory clean-sleep certificate
+   proving the outbox was drained and no child/replacement ran since. A certificate
+   is never restored after host restart. Otherwise skips the flat when the document is not
    running, the import failed or entries remain in the outbox, since a
    pending entry may name blobs no revision references yet. It then drops
    sources that no revision names and that are not the running version, an

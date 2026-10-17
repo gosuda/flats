@@ -22,6 +22,7 @@ list.
 
 | Spec | Status | Covers |
 | --- | --- | --- |
+| [Idle document workers](docs-worker-idle.md) | implemented | Automatic idle sleep and demand-driven recovery of built-in document workers |
 | [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |

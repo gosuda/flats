@@ -132,6 +132,11 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOf
 	lf := s.state(slugName)
 	live := lf.cur.Load()
 	if live != nil && contenttype.FromManifest(live.version.Manifest) == contenttype.Docs {
+		ctx, release, err := s.acquireDocsLocked(ctx, slugName, live)
+		if err != nil {
+			return Document{}, err
+		}
+		defer release()
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		path := "/_docs/api/document?doc=" + url.QueryEscape(doc)
@@ -464,6 +469,11 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 		}
 		return DocumentEdit{}, fmt.Errorf("%w: the document is not running, so there is no live text to edit; save it with save_document (it starts at once)", ErrNotDeployed)
 	}
+	ctx, release, err := s.acquireDocsLocked(ctx, slugName, live)
+	if err != nil {
+		return DocumentEdit{}, err
+	}
+	defer release()
 	if !lf.editLimiter.allow() {
 		return DocumentEdit{}, fmt.Errorf("%w: too many live edits of this flat; wait a second and retry", ErrUnavailable)
 	}
@@ -546,12 +556,12 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 // conclusive only after the edit's commit deadline has passed: until then
 // it waits and looks again.
 func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, deadline time.Time, public bool) error {
-	committed, seq, known := s.editReceipt(auditCtx, live, doc, id)
+	committed, seq, known := s.editReceipt(auditCtx, live, slugName, doc, id)
 	if known && !committed {
 		if wait := time.Until(deadline.Add(editSettleMargin)); wait > 0 {
 			time.Sleep(wait)
 		}
-		committed, seq, known = s.editReceipt(auditCtx, live, doc, id)
+		committed, seq, known = s.editReceipt(auditCtx, live, slugName, doc, id)
 	}
 	// The audit write has its own deadline, after any lookup timed out.
 	ctx, cancel := context.WithTimeout(auditCtx, 10*time.Second)
@@ -580,7 +590,19 @@ func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugNa
 
 // editReceipt asks the docs app whether a live edit committed. known is
 // false when the app could not answer.
-func (s *Service) editReceipt(ctx context.Context, live *deployed, doc, id string) (committed bool, seq int64, known bool) {
+func (s *Service) editReceipt(ctx context.Context, live *deployed, slugName, doc, id string) (committed bool, seq int64, known bool) {
+	if docsManaged(live) != nil {
+		// A failed request may have lost its pinned child; reacquire for reconciliation.
+		ctx = context.WithValue(ctx, docsDispatchKey{}, docsDispatch{})
+		var release func()
+		var err error
+		ctx, release, err = s.acquireDocsLocked(ctx, slugName, live)
+		if err != nil {
+			return false, 0, false
+		}
+		defer release()
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, receiptLookupTimeout)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)

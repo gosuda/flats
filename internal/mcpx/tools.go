@@ -255,6 +255,9 @@ func toolErr(err error, hint string) error {
 	if errors.Is(err, core.ErrDocsUnversioned) {
 		hint = "this flat is a document: save_document saves one Markdown path and update_document edits its live text, both at once without publish or approval; check get_flat"
 	}
+	if errors.As(err, &de) && de.Committed {
+		hint = "the content is saved as the live document; serving retries on the next request. Do not repeat the save or pick another slug. Inspect get_logs for the serving failure and get_flat for current state"
+	}
 	// Every refusal names its category and the guide page that explains it.
 	see := "See guide refusal." + category + "."
 	if hint == "" {

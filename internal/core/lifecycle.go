@@ -852,20 +852,23 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
 	}
 	res, err := s.activate(ctx, f, d, h, kind, via, approvalID, time.Now())
-	if err != nil {
+	var de *DeployError
+	committed := err == nil || (errors.As(err, &de) && de.Committed)
+	if !committed {
 		if d.inst != nil {
 			d.inst.Stop()
 		}
 		os.RemoveAll(dir)
 		return DeployResult{}, err
 	}
+	ctx = context.WithoutCancel(ctx)
 	if cur, err := s.st.GetDraft(ctx, f.Slug); err == nil && cur.Revision == rev.Revision && cur.Hash == rev.Hash {
 		cur.Dirty = false
 		cur.BaseVersion = n
 		cur.UpdatedAt = s.now()
 		_ = s.st.PutDraft(ctx, cur)
 	}
-	return res, nil
+	return res, err
 }
 
 func versionFromRevision(r store.DraftRevision) store.Version {

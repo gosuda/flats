@@ -116,6 +116,16 @@ func (m *Manager) cacheDir() string {
 // Start implements core.Runtime: it starts a worker and waits until it is
 // ready (or returns its startup error, e.g. a syntax error in the script).
 func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instance, error) {
+	if spec.ManagedDocs {
+		return m.startDocs(ctx, spec)
+	}
+	if spec.Lazy {
+		return nil, errors.New("lazy runtime requires managed docs")
+	}
+	return m.startChild(ctx, spec)
+}
+
+func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*instance, error) {
 	if err := m.init(); err != nil {
 		return nil, err
 	}
@@ -394,13 +404,14 @@ func (in *instance) readStderr(p *proc, r io.Reader, ready chan<- error) {
 // exited is called when a worker process ends.
 func (in *instance) exited(p *proc) {
 	in.mu.Lock()
-	defer in.mu.Unlock()
 	if in.p != p {
+		in.mu.Unlock()
 		return
 	}
 	in.p = nil
 	in.tr.CloseIdleConnections()
 	if p.stopped.Load() || in.stopped {
+		in.mu.Unlock()
 		return
 	}
 	if time.Since(p.started) > time.Minute {
@@ -412,6 +423,7 @@ func (in *instance) exited(p *proc) {
 	if t := strings.TrimSpace(p.tail.String()); t != "" {
 		msg += ": " + lastLines(t, 5)
 	}
+	in.mu.Unlock()
 	in.spec.Log("error", fmt.Sprintf("worker exited unexpectedly (%s); it restarts on the next request", msg))
 }
 
@@ -514,10 +526,14 @@ func (in *instance) ensure(ctx context.Context) error {
 	if err != nil {
 		in.failures++
 		in.retryAt = time.Now().Add(backoff(in.failures))
+		in.mu.Unlock()
 		in.spec.Log("error", fmt.Sprintf("worker restart failed: %v", err))
+		in.mu.Lock()
 		return err
 	}
+	in.mu.Unlock()
 	in.spec.Log("info", fmt.Sprintf("worker restarted in %dms", time.Since(t0).Milliseconds()))
+	in.mu.Lock()
 	return nil
 }
 
@@ -527,6 +543,11 @@ func (in *instance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Service Unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	in.serveChild(w, r)
+}
+
+// serveChild never restarts: managed docs leases target this exact socket.
+func (in *instance) serveChild(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && r.Body != nil && r.Body != http.NoBody {
 		// The worker's own body deadline only ends its side of the proxy;
 		// the transport would still wait for a stalled visitor. Apply the

@@ -62,6 +62,9 @@ type Runtime interface {
 
 // RuntimeSpec describes one server flat instance.
 type RuntimeSpec struct {
+	Now            func() time.Time // managed document activity clock; nil uses time.Now
+	ManagedDocs    bool             // live built-in document; core owns readiness and idle sleep
+	Lazy           bool             // restore a logical document without starting its child
 	Flat           string
 	Version        int
 	Generation     int64                                // host activation order, independent of Version
@@ -248,14 +251,22 @@ func (s *Service) Close() error {
 	s.routeEpochs.Range(func(key, value any) bool { value.(*routeEpoch).cancel(); return true })
 	s.wg.Wait()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	live := make(map[string]*liveFlat, len(s.live))
 	for slug, lf := range s.live {
+		live[slug] = lf
+	}
+	previews := make([]*preview, 0, len(s.prevs))
+	for _, p := range s.prevs {
+		previews = append(previews, p)
+	}
+	s.mu.Unlock()
+	for slug, lf := range live {
 		s.flushViews(context.Background(), slug, lf)
 		if d := lf.cur.Load(); d != nil && d.inst != nil {
 			d.inst.Stop()
 		}
 	}
-	for _, p := range s.prevs {
+	for _, p := range previews {
 		if p.inst != nil {
 			p.inst.Stop()
 		}
@@ -369,7 +380,7 @@ func (s *Service) restore(ctx context.Context) error {
 				s.logf("restore %s: %v", f.Slug, err)
 				continue
 			}
-			d, err := s.build(ctx, f.Slug, v, s.dataDirOf(f.Slug))
+			d, err := s.build(context.WithValue(ctx, lazyDocsKey{}, true), f.Slug, v, s.dataDirOf(f.Slug))
 			if err != nil {
 				s.Event(ctx, f.Slug, "error", "restore", "could not start live version after restart: "+err.Error(), nil)
 				continue
@@ -463,12 +474,20 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			entry = s.cfg.DocsApp.Entry
 			networkOrigins = nil // The embedded docs app has no outbound capability.
 		}
+		managedDocs := assets != nil && dataDir == s.dataDirOf(slugName)
+		if managedDocs {
+			if old := docsManaged(s.state(slugName).cur.Load()); old != nil {
+				old.InvalidateClean()
+			}
+		}
 		generation, nextGeneration, undoGeneration, err := s.runtimeGeneration(ctx, dataDir)
 		if err != nil {
 			release()
 			return nil, err
 		}
+		lazy, _ := ctx.Value(lazyDocsKey{}).(bool)
 		inst, err := s.cfg.Runtime.Start(ctx, RuntimeSpec{
+			ManagedDocs: managedDocs, Lazy: managedDocs && lazy, Now: s.now,
 			Flat: slugName, Version: v.Number,
 			Generation: generation, NextGeneration: nextGeneration,
 			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins,
@@ -481,18 +500,24 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			// Start errors can carry the worker's stderr.
 			return nil, errors.New(redact(err.Error()))
 		}
-		var managed Instance = &runtimeInstance{Instance: inst, release: func() {
-			release()
-			undoGeneration()
-		}}
+		base := &runtimeInstance{Instance: inst, release: func() { release(); undoGeneration() }}
+		var managed Instance = base
+		if control, ok := inst.(ManagedDocsInstance); ok && managedDocs {
+			managed = &managedDocsRuntime{runtimeInstance: base, control: control}
+		}
+		d := &deployed{version: v, inst: managed, redact: redact, environment: snapshot}
 		var handler http.Handler = managed
+		if managedDocs && docsManaged(d) != nil {
+			handler = s.docsDemand(slugName, d)
+		}
 		if assets != nil {
-			handler = docsAssets(managed, dir, assets)
-			if dataDir == s.dataDirOf(slugName) {
+			handler = docsAssets(handler, dir, assets)
+			if managedDocs {
 				handler = s.docsRevisionRoutes(slugName, handler)
 			}
 		}
-		return &deployed{version: v, handler: handler, inst: managed, redact: redact, environment: snapshot}, nil
+		d.handler = handler
+		return d, nil
 	default:
 		return &deployed{version: v, handler: &site.Static{Dir: dir, Entry: m.Entry, SPA: m.SPA, NotFound: m.NotFound, ModTime: v.CreatedAt},
 			redact: func(s string) string { return s }}, nil
@@ -654,9 +679,9 @@ type FlatView struct {
 	LatestDeployed bool   `json:"latest_deployed,omitempty"`
 	DiskBytes      int64  `json:"disk_bytes"`
 	Thumbnail      string `json:"thumbnail,omitempty"`
-	// Running reports whether a version is serving now on this host: false
-	// when the live version could not start (for example after a restart),
-	// even though LiveVersion still names it.
+	// Running reports a logical serving instance on this host. Documents
+	// retain it while asleep or lazily restored before their first wake;
+	// physical wake errors are reported on requests and in runtime events.
 	Running bool `json:"running"`
 	// Publication is unpublished until the first successful activation, then
 	// published. It does not follow connection state.
@@ -1043,7 +1068,9 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 	// A document has no publish step: its save runs at once, Private
 	// unless the operator already approved Public. Its revision is recorded
 	// by the new version's activation, labelled through the intent.
-	s.docsIntentLocked(ctx, slugName, v.Hash, agentLabel(via), meta.Message)
+	if err := s.docsIntentLocked(ctx, slugName, v.Hash, agentLabel(via), meta.Message); err != nil {
+		return v, err
+	}
 	err = s.applyDocsLocked(ctx, slugName, v.Revision, via)
 	s.docsAfterWriteLocked(ctx, slugName)
 	if err != nil {
@@ -1206,10 +1233,11 @@ type DeployResult struct {
 
 // DeployError carries the failed health check.
 type DeployError struct {
-	Version  int
-	Previous int // live version when the deploy started (0 = none)
-	Health   HealthResult
-	Cause    error
+	Committed bool // live commit succeeded; never delete/undo this version on error
+	Version   int
+	Previous  int // live version when the deploy started (0 = none)
+	Health    HealthResult
+	Cause     error
 	// Data says what happened to the flat's data when the deploy may have
 	// touched it.
 	Data       string
@@ -1222,6 +1250,9 @@ type DeployError struct {
 }
 
 func (e *DeployError) Error() string {
+	if e.Committed {
+		return fmt.Sprintf("content saved and committed; serving initialization failed: %v. Do not repeat the save or create another flat; a later request retries serving. Inspect the flat logs for details", e.Cause)
+	}
 	if e.Document {
 		tail := "(the document keeps running with its previous text)"
 		if e.Previous == 0 {
@@ -1390,11 +1421,16 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 		}
 		return DeployResult{}, err
 	}
+	// From here the committed live version must survive caller cancellation.
+	ctx = context.WithoutCancel(ctx)
 	lf := s.state(slugName)
 	if d.version.Kind != "server" {
 		s.retireRuntime(s.dataDirOf(slugName))
 	}
 	old := lf.cur.Swap(d)
+	if control := docsManaged(old); control != nil {
+		control.Retire()
+	}
 	if old != nil && old.inst != nil {
 		s.wg.Add(1)
 		go func() {
@@ -1408,6 +1444,12 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 			old.inst.Stop()
 		}()
 	}
+	var preparationErr error
+	if docsManaged(d) != nil {
+		_, release, err := s.acquireDocsLocked(ctx, slugName, d)
+		release()
+		preparationErr = err
+	}
 	f.LiveVersion = n
 	if err := s.ensureExposure(ctx, f); err != nil {
 		s.Event(ctx, slugName, "error", "exposure", err.Error(), nil)
@@ -1416,7 +1458,11 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	if kind == "save" && contenttype.FromManifest(d.version.Manifest) == contenttype.Design {
 		// The design shell goes live once, at creation; that is logged as a design event.
 	} else if kind == "save" {
-		s.Event(ctx, slugName, "info", "deploy", fmt.Sprintf("document saved and running via %s", via), map[string]int{"version": n, "previous": prev})
+		message := fmt.Sprintf("document saved and running via %s", via)
+		if preparationErr != nil {
+			message = fmt.Sprintf("document saved via %s; serving initialization will retry", via)
+		}
+		s.Event(ctx, slugName, "info", "deploy", message, map[string]int{"version": n, "previous": prev})
 	} else {
 		s.Event(ctx, slugName, "info", "deploy", fmt.Sprintf("%s: version %d is live (was %d) via %s", kind, n, prev, via), map[string]int{"version": n, "previous": prev})
 	}
@@ -1426,7 +1472,11 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	if d.version.Kind == "server" {
 		impact, live = "runtime_start", "runtime_may_write"
 	}
-	return DeployResult{Flat: s.view(ctx, fv), Version: n, Previous: prev, Health: h, Millis: time.Since(start).Milliseconds(), DataImpact: impact, HealthData: "isolated_copy", LiveData: live}, nil
+	result := DeployResult{Flat: s.view(ctx, fv), Version: n, Previous: prev, Health: h, Millis: time.Since(start).Milliseconds(), DataImpact: impact, HealthData: "isolated_copy", LiveData: live}
+	if preparationErr != nil {
+		return result, &DeployError{Committed: true, Version: n, Previous: prev, Cause: preparationErr, Data: "Saved content remains committed; a later request retries serving.", DataImpact: impact, HealthData: "isolated_copy", LiveData: live}
+	}
+	return result, nil
 }
 
 // Rollback redeploys an earlier version. to=0 picks the version that was
@@ -1604,6 +1654,10 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 	}
 	res, err := s.activate(ctx, f, d, h, kind, via, approvalID, start)
 	if err != nil {
+		var committed *DeployError
+		if errors.As(err, &committed) && committed.Committed {
+			return res, err
+		}
 		return fail(&DeployError{Cause: err})
 	}
 	res.DataImpact, res.LiveData = "restore_data", "restored"
@@ -1663,7 +1717,7 @@ func (s *Service) restart(ctx context.Context, slugName string, old *deployed) e
 	d := old
 	if old.inst != nil {
 		var err error
-		if d, err = s.buildWithEnvironment(ctx, slugName, old.version, s.dataDirOf(slugName), old.environment); err != nil {
+		if d, err = s.buildWithEnvironment(context.WithValue(ctx, lazyDocsKey{}, true), slugName, old.version, s.dataDirOf(slugName), old.environment); err != nil {
 			s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("could not restart version %d: %v", old.version.Number, err), nil)
 			return fmt.Errorf("version %d could not be restarted (%v); the flat answers 503 until a version is deployed", old.version.Number, err)
 		}

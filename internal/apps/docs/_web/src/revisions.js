@@ -513,6 +513,9 @@ export function sync(db, content, generation, now = Date.now()) {
     store: getMeta(db, "store"),
     ready: db.query("SELECT count(*) AS n FROM flats_docs_outbox")[0].n,
     intent: getMeta(db, "intent")?.id ?? null,
+    quiescent: !stale(db, generation) && !textDirty(db) &&
+      !getMeta(db, "intent") &&
+      db.query("SELECT count(*) AS n FROM flats_docs_groups")[0].n === 0,
   };
 }
 
@@ -719,6 +722,12 @@ function clearReservations(db) {
 // whose deadline is no later than the new one and not yet half expired is
 // not written again, so an idle document does not grow its write-ahead
 // log; a shorter lifetime always replaces a longer one.
+// A resumed worker must never reuse a persisted budget from before sleep.
+// Preserve pending reservations while disabling edits until a fresh budget arrives.
+export function revokeBudget(db) {
+  setMeta(db, "budget", null);
+}
+
 export function setBudget(db, body) {
   const { quota, other, ttl_ms: ttl, stored = [] } = body || {};
   if (

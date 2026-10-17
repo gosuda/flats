@@ -642,6 +642,9 @@ async function revisionOp(request, env, url) {
       // truncate it, so the host measures a small log.
       const row = db.query("PRAGMA wal_checkpoint(TRUNCATE)")[0];
       result = { busy: !!row?.busy };
+    } else if (op === "budget/revoke" && method === "POST") {
+      transaction(db, () => revisions.revokeBudget(db));
+      result = { ok: true };
     } else if (op === "budget" && method === "POST") {
       transaction(db, () => revisions.setBudget(db, body));
       result = { ok: true };

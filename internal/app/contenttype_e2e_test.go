@@ -42,6 +42,14 @@ export default { async fetch(request, env) {
  const u=new URL(request.url);
  const access=request.headers.get("x-flats-access");
  if (u.pathname==="/_docs/healthz") return new Response(access==="private" ? "ok" : "untrusted health", {status: access==="private" ? 200 : 500});
+ if (u.pathname.startsWith("/_docs/host/revisions/")) {
+  if (access!=="private" || request.headers.get("x-flats-host-op")!=="revisions") return new Response("untrusted", {status:403});
+  const op=u.pathname.slice("/_docs/host/revisions/".length);
+  if (op==="sync") return Response.json({store:"test",ready:0,quiescent:true});
+  if (op==="outbox") return Response.json({store:"test",entries:[],more:false});
+  if (["budget/revoke","budget","ack","checkpoint"].includes(op)) return Response.json({ok:true});
+  return new Response("unknown host operation", {status:404});
+ }
  if (u.pathname==="/edit") {env.FILES.put("live", "# People's live edits\n한글 😀");return new Response("edited");}
  if (u.pathname==="/_docs/api/document") {
   if (access!=="private") return new Response("untrusted", {status:403});

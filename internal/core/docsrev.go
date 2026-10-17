@@ -67,6 +67,11 @@ func (s *Service) docsHost(ctx context.Context, slugName, method, op string, bod
 	if d == nil || d.inst == nil || contenttype.FromManifest(d.version.Manifest) != contenttype.Docs {
 		return errNotRunningDocs
 	}
+	ctx, release, running := withRunningDocs(ctx, d)
+	if !running {
+		return errNotRunningDocs
+	}
+	defer release()
 	var r io.Reader
 	if body != nil {
 		// No HTML escaping: a staged text full of < would otherwise grow
@@ -88,7 +93,11 @@ func (s *Service) docsHost(ctx context.Context, slugName, method, op string, bod
 		req.Header.Set("Content-Type", "application/json")
 	}
 	rec := httptest.NewRecorder()
-	d.inst.ServeHTTP(rec, req)
+	if direct := docsDirect(ctx, d); direct != nil {
+		direct.ServeHTTP(rec, req)
+	} else {
+		d.inst.ServeHTTP(rec, req)
+	}
 	if rec.Code != http.StatusOK {
 		var refusal struct {
 			Code    string `json:"code"`
@@ -209,9 +218,10 @@ func (s *Service) revisionFiles(ctx context.Context, slugName string, r store.Re
 // --- sync and import ---
 
 type docsSyncResult struct {
-	Store  string  `json:"store"`
-	Ready  int     `json:"ready"`
-	Intent *string `json:"intent"`
+	Quiescent bool    `json:"quiescent"`
+	Store     string  `json:"store"`
+	Ready     int     `json:"ready"`
+	Intent    *string `json:"intent"`
 }
 
 type docsEntry struct {
@@ -444,6 +454,11 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 // returned after the import still ran, so a failing activation does not
 // stop the backlog from draining.
 func (s *Service) refreshDocsLocked(ctx context.Context, slugName string) (docsImport, error) {
+	ctx, release, ok := withRunningDocs(ctx, s.state(slugName).cur.Load())
+	if !ok {
+		return docsImport{}, errNotRunningDocs
+	}
+	defer release()
 	res, err := s.syncImportDocsLocked(ctx, slugName)
 	if !errors.Is(err, errNotRunningDocs) {
 		if berr := s.pushDocsBudgetStoredLocked(ctx, slugName, res.stored); berr != nil && !errors.Is(berr, errNotRunningDocs) {
@@ -521,6 +536,11 @@ func (s *Service) docsBudget(ctx context.Context, slugName string, stored map[st
 // pushDocsBudgetLocked installs a freshly measured budget in the running
 // docs worker. The caller holds the flat lock.
 func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) error {
+	ctx, release, ok := withRunningDocs(ctx, s.state(slugName).cur.Load())
+	if !ok {
+		return errNotRunningDocs
+	}
+	defer release()
 	return s.pushDocsBudgetStoredLocked(ctx, slugName, nil)
 }
 
@@ -582,22 +602,31 @@ func (s *Service) settleHoldsLocked(ctx context.Context, slugName, intent string
 // docsIntentLocked tells the running docs worker which agent save the next
 // version is, so its activation records it with the agent's label. It
 // does nothing when no document runs or the save starts no new version.
-func (s *Service) docsIntentLocked(ctx context.Context, slugName, source, label, message string) {
+func (s *Service) docsIntentLocked(ctx context.Context, slugName, source, label, message string) error {
 	d := s.state(slugName).cur.Load()
 	if d == nil || contenttype.FromManifest(d.version.Manifest) != contenttype.Docs || d.version.Hash == source {
-		return
+		return nil
 	}
-	body := map[string]any{"id": newOpID(), "source": source, "kind": "agent", "label": label, "message": message}
-	if err := s.docsHost(ctx, slugName, http.MethodPost, "intent", body, nil); err != nil {
-		s.logf("revision intent of %s: %v", slugName, err)
+	ctx, release, err := s.acquireDocsLocked(ctx, slugName, d)
+	defer release()
+	if err == nil {
+		body := map[string]any{"id": newOpID(), "source": source, "kind": "agent", "label": label, "message": message}
+		err = s.docsHost(ctx, slugName, http.MethodPost, "intent", body, nil)
 	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		s.Event(ctx, slugName, "warn", "revision", "save attribution could not be recorded; attempting the changed save: "+d.redact(err.Error()), nil)
+	}
+	return nil
 }
 
 // docsAfterWriteLocked imports what a document write recorded. A failure
 // is logged: the write itself succeeded, and the ticker imports later.
 func (s *Service) docsAfterWriteLocked(ctx context.Context, slugName string) docsImport {
 	res, err := s.refreshDocsLocked(ctx, slugName)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNotRunningDocs) {
 		s.Event(ctx, slugName, "warn", "revision", "could not record the revision yet: "+err.Error(), nil)
 	}
 	return res
@@ -614,6 +643,10 @@ func (s *Service) TickDocs(ctx context.Context) {
 			continue
 		}
 		if err := s.checkStorageJournal(slugName); err == nil {
+			if s.idleDocsLocked(ctx, slugName, s.state(slugName).cur.Load()) {
+				mu.Unlock()
+				continue
+			}
 			if _, err := s.refreshDocsLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
 				s.logf("document revisions of %s: %v", slugName, err)
 			}
@@ -644,6 +677,14 @@ func (s *Service) startDocsRevisions(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		if m := docsManaged(s.state(slugName).cur.Load()); m != nil {
+			lease, ok := m.TryAcquire(false)
+			if !ok {
+				unlock()
+				continue
+			}
+			lease.Release()
+		}
 		if _, err := s.refreshDocsLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
 			s.logf("document revisions of %s: %v", slugName, err)
 		}
@@ -657,8 +698,19 @@ func (s *Service) startDocsRevisions(ctx context.Context) {
 // an entry still in the worker may name blobs no revision references yet.
 func (s *Service) prepareDocsSweepLocked(ctx context.Context, slugName string) bool {
 	if d := s.state(slugName).cur.Load(); d != nil && contenttype.FromManifest(d.version.Manifest) == contenttype.Docs {
-		if res, err := s.importDocsLocked(ctx, slugName); err != nil || res.more {
-			return false
+		if m := docsManaged(d); m != nil && m.CleanDormant() {
+			// Verified final drain, with no child or replacement since its generation.
+		} else {
+			var release func()
+			var ok bool
+			ctx, release, ok = withRunningDocs(ctx, d)
+			if !ok {
+				return false
+			}
+			defer release()
+			if res, err := s.importDocsLocked(ctx, slugName); err != nil || res.more {
+				return false
+			}
 		}
 	} else {
 		// A document that is not running cannot hand over its outbox.
@@ -695,9 +747,24 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 		return 0, err
 	}
 	defer unlock()
+	ctx, release, err := s.acquireDocsLocked(ctx, slugName, s.state(slugName).cur.Load())
+	if err != nil {
+		return 0, err
+	}
+	defer func() { release() }()
+	reacquire := func(c context.Context) error {
+		release()
+		c = context.WithValue(c, docsDispatchKey{}, docsDispatch{})
+		var acquireErr error
+		ctx, release, acquireErr = s.acquireDocsLocked(c, slugName, s.currentDeployment(slugName))
+		return acquireErr
+	}
+
 	// Hold n before anything can run retention; only a revision that does
 	// not exist yet needs an import first.
 	op := newOpID()
+	capture := &docsOpCapture{op: op}
+	ctx = context.WithValue(ctx, docsOpCaptureKey{}, capture)
 	s.docsRollbacks.Store(op, true)
 	held := false
 	defer func() {
@@ -705,6 +772,9 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 		// with the rollback, or released when it did not commit.
 		s.docsRollbacks.Delete(op)
 		if !held {
+			return
+		}
+		if err := reacquire(context.WithoutCancel(ctx)); err != nil {
 			return
 		}
 		if _, err := s.refreshDocsLocked(context.WithoutCancel(ctx), slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
@@ -761,8 +831,8 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 	if err != nil {
 		return 0, err
 	}
-	release := s.lease(slugName, hashesOf(docs, src))
-	defer release()
+	releaseBlobs := s.lease(slugName, hashesOf(docs, src))
+	defer releaseBlobs()
 	root := s.docsStoreDir(slugName)
 	targets := make([]map[string]string, 0, len(docs))
 	texts := map[string][]byte{}
@@ -797,11 +867,16 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 			// The response may be lost after COMMIT: ask once the restore
 			// can no longer commit.
 			time.Sleep(time.Until(deadline.Add(editSettleMargin)))
+			if rerr := reacquire(context.WithoutCancel(ctx)); rerr != nil {
+				return 0, err
+			}
 			var status struct {
 				Committed bool `json:"committed"`
 			}
-			if serr := s.docsHost(ctx, slugName, http.MethodGet, "op?id="+op, nil, &status); serr != nil || !status.Committed {
-				return 0, err
+			if capture.recorded() == 0 {
+				if serr := s.docsHost(ctx, slugName, http.MethodGet, "op?id="+op, nil, &status); serr != nil || !status.Committed {
+					return 0, err
+				}
 			}
 		}
 	} else {
@@ -830,9 +905,21 @@ func (s *Service) rollbackDocs(ctx context.Context, slugName string, n int, labe
 		if err := s.applyDocsLocked(ctx, slugName, v.Revision, via); err != nil {
 			return 0, err
 		}
+		release()
+		ctx, release, err = s.acquireDocsLocked(ctx, slugName, s.state(slugName).cur.Load())
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err := reacquire(ctx); err != nil {
+		return 0, err
 	}
 	res, err := s.refreshDocsLocked(ctx, slugName)
-	if num, ok := res.byOp[op]; ok {
+	num := res.byOp[op]
+	if num == 0 {
+		num = capture.recorded()
+	}
+	if num > 0 {
 		s.Event(ctx, slugName, "info", "revision", fmt.Sprintf("restored revision %d as revision %d via %s", n, num, via), map[string]int{"revision": num, "rollback_of": n})
 		return num, nil
 	}

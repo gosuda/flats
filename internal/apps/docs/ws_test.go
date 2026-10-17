@@ -52,9 +52,13 @@ func connect(t *testing.T, url, access string, documents ...string) *socket {
 	t.Cleanup(func() { c.Close() })
 	return s
 }
-func (s *socket) write(data []byte) error {
+func (s *socket) write(data []byte) error { return s.writeFrame(1, data) }
+func (s *socket) writeFrame(opcode byte, data []byte) error {
+	if opcode >= 8 && len(data) > 125 {
+		return fmt.Errorf("oversized control frame")
+	}
 	s.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	header := []byte{0x81}
+	header := []byte{0x80 | opcode}
 	n := len(data)
 	switch {
 	case n < 126:
@@ -88,40 +92,55 @@ func (s *socket) send(t *testing.T, m any) {
 }
 func (s *socket) read() (map[string]any, error) {
 	s.SetReadDeadline(time.Now().Add(15 * time.Second))
-	var h [2]byte
-	if _, err := io.ReadFull(s.reader, h[:]); err != nil {
-		return nil, err
-	}
-	n := int(h[1] & 127)
-	if n == 126 {
-		var size [2]byte
-		if _, err := io.ReadFull(s.reader, size[:]); err != nil {
+	for {
+		var h [2]byte
+		if _, err := io.ReadFull(s.reader, h[:]); err != nil {
 			return nil, err
 		}
-		n = int(binary.BigEndian.Uint16(size[:]))
-	} else if n == 127 {
-		var size [8]byte
-		if _, err := io.ReadFull(s.reader, size[:]); err != nil {
+		n := int(h[1] & 127)
+		if n == 126 {
+			var size [2]byte
+			if _, err := io.ReadFull(s.reader, size[:]); err != nil {
+				return nil, err
+			}
+			n = int(binary.BigEndian.Uint16(size[:]))
+		} else if n == 127 {
+			var size [8]byte
+			if _, err := io.ReadFull(s.reader, size[:]); err != nil {
+				return nil, err
+			}
+			n = int(binary.BigEndian.Uint64(size[:]))
+		}
+		if n > 4<<20 {
+			return nil, fmt.Errorf("large frame: %d", n)
+		}
+		b := make([]byte, n)
+		if _, err := io.ReadFull(s.reader, b); err != nil {
 			return nil, err
 		}
-		n = int(binary.BigEndian.Uint64(size[:]))
-	}
-	if n > 4<<20 {
-		return nil, fmt.Errorf("large frame: %d", n)
-	}
-	b := make([]byte, n)
-	if _, err := io.ReadFull(s.reader, b); err != nil {
-		return nil, err
-	}
-	if h[0]&15 == 8 {
-		if len(b) < 2 {
-			return nil, fmt.Errorf("invalid close")
+		opcode := h[0] & 15
+		if opcode >= 8 && (h[0]&0x80 == 0 || len(b) > 125) {
+			return nil, fmt.Errorf("invalid control frame")
 		}
-		return nil, &socketClose{binary.BigEndian.Uint16(b[:2]), string(b[2:])}
+		if opcode == 9 {
+			if err := s.writeFrame(10, b); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if opcode == 10 {
+			continue
+		}
+		if opcode == 8 {
+			if len(b) < 2 {
+				return nil, fmt.Errorf("invalid close")
+			}
+			return nil, &socketClose{binary.BigEndian.Uint16(b[:2]), string(b[2:])}
+		}
+		var m map[string]any
+		err := json.Unmarshal(b, &m)
+		return m, err
 	}
-	var m map[string]any
-	err := json.Unmarshal(b, &m)
-	return m, err
 }
 func (s *socket) next(t *testing.T, kind string) map[string]any {
 	t.Helper()

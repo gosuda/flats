@@ -628,8 +628,9 @@ of the active worker.
 * Groups that are not due survive a `person` entry but lose `dirty`, so a
   later entry credits them again only after they edit again. A due group
   without unrecorded edits is just deleted.
-* The host calls `sync` every 15 seconds for each running document, so a
-  group closes at most about 15 seconds after it is due.
+* The host calls `sync` every 15 seconds for each awake document. Sleeping
+  documents are not woken by maintenance; groups/outbox are drained before
+  clean sleep. After host restart, pending recovery waits for demand.
 
 **Editor identity.** `hello` carries `editor`, a random id (8–64 characters
 of `A-Z a-z 0-9 _ -`) the page keeps in local storage next to its
@@ -658,8 +659,9 @@ belong to a rollback. Operation ids are 8–120 characters of
 * Flat activation consumes it as above. `sync` runs the activation gate first
   and then deletes any intent that remains: the version it named either never
   started (a failed health check, a crash before the switch) or already
-  activated. The host calls `sync` after every operation and at startup, so an
-  intent does not outlive its operation.
+  activated. The host calls `sync` after operations while awake and on demand
+  after lazy restoration. Unrecovered dormant documents do not authorize blob
+  sweeping.
 * A rollback intent's texts must be staged (`stage`) or present before the
   intent is written; the intent holds one reference on each until it is
   consumed or deleted.
@@ -908,3 +910,38 @@ the history routes. The panel follows `_web/DESIGN.md`.
   current text stays in the history."), calls rollback, returns to live and
   shows "Restored revision 12". The text arrives through the normal sync,
   or, after a reset, through the page's reload offer.
+
+## Idle worker lifecycle
+
+Only live built-in docs use managed workers. After two minutes without a
+foreground request or WebSocket connection, a maintenance tick reserves the
+child, syncs/imports and confirms an empty outbox, no dirty groups/intent and
+no unresolved holds. Failed drains back off from 30 seconds to five minutes; ordinary maintenance
+continues, and foreground use resets the cooldown. Physical shutdown is asynchronous; its logical route,
+provider grants and materialized runtime remain. Static attachments and
+history/quota polling do not wake it. Normal JavaScript/WASI apps and scratch
+activation trials keep their existing lifecycle.
+
+First demand uses one storage-locked start/preparation; ready requests use a
+short lease fast path. Leases span response streaming and upgraded WebSocket
+connections. `running` denotes a logical live document, including a lazy
+restored document before first physical startup. Failed wake produces a
+retryable error and an event. The management-only `budget/revoke` operation
+removes a persisted budget without clearing reservations. Wake explicitly
+revokes, syncs/imports, and installs a fresh budget before normal mutations;
+failed budget installation leaves reads/recovery available with writes refused.
+Import backlog or capacity errors do not themselves make a document unreadable.
+
+The internal sync response includes `quiescent` (no dirty document, live group,
+intent or obsolete generation); clean sleep additionally requires `ready == 0`
+and resolved host holds. Clean certificates are process-local, invalidated
+before replacement builds (including a later commit failure), and installed
+only after confirmed child exit. They allow retention/sweep while cleanly asleep;
+a lazy-restored document without a certificate defers worker-dependent sweep.
+
+Changed-save scratch checks remain eager. The new live child's activation and
+readiness run only after the durable live-version commit, so failed commits
+cannot stale the old document. A successful commit followed by readiness failure
+keeps the new content committed and retries serving on later demand. Replacement
+retires old admission immediately while existing requests drain under generation
+guards. No worker restart of one logical instance overlaps its unconfirmed exit.
