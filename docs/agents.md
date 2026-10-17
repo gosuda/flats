@@ -193,3 +193,10 @@ with the MCP endpoint and client setup, and links:
 - `/docs/runtime-api-v1.md` and `/docs/content-types.md`.
 
 `/llms-full.txt` concatenates the discovery page and the agent guide.
+
+These documents name the MCP endpoint at the address they were fetched from
+(`http://127.0.0.1:7878/mcp` on the loopback address, the console domain's
+address through a console domain), because that is the address the reading
+agent can reach. They do not follow the console's preferred address
+([Preferred console](configuration.md#preferred-console)), which applies to
+links handed to people, such as approval links.

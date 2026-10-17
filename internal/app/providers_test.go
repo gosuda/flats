@@ -653,9 +653,12 @@ type fakeNetbirdNet struct {
 	retired   []string
 	serveErr  error
 	retireErr error
+	starting  map[string]bool // console peers not ready yet
 }
 
-func newFakeNetbirdNet() *fakeNetbirdNet { return &fakeNetbirdNet{console: map[string]http.Handler{}} }
+func newFakeNetbirdNet() *fakeNetbirdNet {
+	return &fakeNetbirdNet{console: map[string]http.Handler{}, starting: map[string]bool{}}
+}
 
 func (*fakeNetbirdNet) ServePrivate(context.Context, string, http.Handler) (string, error) {
 	return "", errors.New("not used")
@@ -705,7 +708,11 @@ func (n *fakeNetbirdNet) ConsoleStatus() core.NetStatus {
 	defer n.mu.Unlock()
 	st := core.NetStatus{Kind: "netbird"}
 	for name := range n.console {
-		st.Hosts = append(st.Hosts, core.HostInfo{Host: name, URL: "http://" + name + ".netbird.cloud/", State: "ready"})
+		state := "ready"
+		if n.starting[name] {
+			state = "starting"
+		}
+		st.Hosts = append(st.Hosts, core.HostInfo{Host: name, URL: "http://" + name + ".netbird.cloud/", State: state})
 	}
 	return st
 }

@@ -354,8 +354,13 @@ func (h *Host) preferredConsole() (value string, k cdKey, local, ok bool) {
 	return value, cdKey{network, name}, false, true
 }
 
-// preferredURL is the URL of the preferred console while it is served, or
-// "" without a preference in effect or while its domain is not served.
+// preferredURL is the URL of the preferred console while it is ready, or ""
+// without a preference in effect or while its domain is not ready. A domain
+// counts as served from the moment its node is started, while a tailnet node
+// may still be logging in or getting its certificate; a link that the
+// operator chose must open, so the preferred domain needs its node ready
+// (consoleReady, as the redirect after a self-delete does). The fallback
+// order keeps its served test unchanged.
 func (h *Host) preferredURL() string {
 	_, k, local, ok := h.preferredConsole()
 	switch {
@@ -363,6 +368,8 @@ func (h *Host) preferredURL() string {
 		return ""
 	case local:
 		return h.console
+	case !h.consoleReady(k):
+		return ""
 	}
 	return h.consoleURLOf(k)
 }
@@ -609,10 +616,10 @@ type ConsoleDomainsView struct {
 	// Preferred is console.preferred_host: "", "local", "tailscale:NAME" or
 	// "netbird:NAME".
 	Preferred string `json:"preferred"`
-	// PreferredState is "" without a preference, "served" while links can
-	// use it, "not_served" while its domain is listed but not served (so
-	// links fall back), or "unlisted" when it names a domain its list does
-	// not hold (ignored).
+	// PreferredState is "" without a preference, "served" while links use
+	// it, "starting" while its domain's node runs but is not ready yet and
+	// "not_served" while it is not served (links fall back in both), or
+	// "unlisted" when it names a domain its list does not hold (ignored).
 	PreferredState string `json:"preferred_state,omitempty"`
 	// LinkURL is where links go when they cannot follow the request, as for
 	// a request on the loopback address.
@@ -623,6 +630,7 @@ type ConsoleDomainsView struct {
 // Preferred states of ConsoleDomainsView.PreferredState.
 const (
 	preferredServed    = "served"
+	preferredStarting  = "starting"
 	preferredNotServed = "not_served"
 	preferredUnlisted  = "unlisted"
 )
@@ -685,8 +693,10 @@ func (h *Host) consoleDomains(ctx context.Context) (ConsoleDomainsView, error) {
 	case value == "":
 	case !ok:
 		v.PreferredState = preferredUnlisted
-	case local || h.consoleURLOf(k) != "":
+	case local || h.consoleReady(k):
 		v.PreferredState = preferredServed
+	case h.isServed(k):
+		v.PreferredState = preferredStarting
 	default:
 		v.PreferredState = preferredNotServed
 	}

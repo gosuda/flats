@@ -272,10 +272,13 @@ old one.
   the console shows the conflict, and deleting it leaves that owner's node
   alone. A name listed again while its old node is still being retired is
   served once that retirement succeeds.
-- Approval links, `console_url` / `mcp_url` in `flats status` and every other
-  place that names the console use the console domain the request came
-  through while it is served (see [Preferred console](#preferred-console)
-  for the other requests). `console_urls` lists every served name, tailnet
+- Approval links and their event messages, `console_url` / `mcp_url` in
+  `flats status` and the page the console moves to after deleting the
+  domain it is open on use the console domain the request came through
+  while it is served (see [Preferred console](#preferred-console) for the
+  other requests). The agent discovery documents (`/llms.txt`,
+  `/llms-full.txt`, the agent guide) name the address they were fetched
+  from instead ([llms.txt](agents.md#llmstxt)). `console_urls` lists every served name, tailnet
   names first, whatever the preference.
 - `--console-host NAME` on `flats serve` replaces `tailscale.console_hosts`
   with `[NAME]` for that run and pins it: the console cannot change the
@@ -296,13 +299,17 @@ served, such as one being deleted) names the preferred console,
   `netbird.console_hosts`. It is never a free URL, so a link only ever names
   an address Flats serves itself. The Host header of a request never
   changes a link.
-- Unset, or while the named domain is not served (still starting, its
-  network off, or being retired), links use the first served tailnet name,
-  then the first served NetBird name, then the loopback address. The order
-  is fixed, and unset gives exactly the links of hosts without the setting.
+- A preferred domain is used only once its node is ready (a tailnet node
+  has logged in and has its certificate; a NetBird peer is up). Unset, or
+  while the named domain is not ready (still starting, its network off, or
+  being retired), links use the first served tailnet name, then the first
+  served NetBird name, then the loopback address, where served means, as
+  before the setting existed, that the domain's node has been started. The
+  order is fixed, and unset gives exactly the links of hosts without the
+  setting.
 - The console's Settings → Console domains chooses it among the loopback
   address and the listed names (`PUT /console/api/console-domains/preferred`)
-  and warns when the preferred domain is not served. `flats config set
+  and warns when the preferred domain is still starting or not served. `flats config set
   console.preferred_host tailscale:flats` sets it while the host is stopped.
   Both refuse a NAME that is not in its list in `config.json`. Agents cannot
   change it.

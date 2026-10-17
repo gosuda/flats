@@ -1302,6 +1302,16 @@ let prefWarn = all(byId(domMain, 'console-domains'), (e) => e.className === 'ale
 assert.equal(prefWarn.length, 1);
 assert.ok(prefWarn[0].textContent.includes('tailnet domain next') && prefWarn[0].textContent.includes('not served')
   && prefWarn[0].textContent.includes('https://flats.tail1234.ts.net'), prefWarn[0].textContent);
+// A preferred domain whose node is still starting is warned about too.
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', url: 'https://next.tail1234.ts.net', state: 'starting' }] }, {},
+{ preferred: 'tailscale:next', preferred_state: 'starting', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p3' });
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+prefWarn = all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn');
+assert.ok(prefWarn.length === 1 && prefWarn[0].textContent.includes('still starting') && prefWarn[0].textContent.includes('https://flats.tail1234.ts.net'),
+  'a starting preferred domain is warned about');
 // A file edit that names an unlisted domain is shown as chosen, and ignored.
 routes['GET /console/api/console-domains'] = dview({ on: true, domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }] }, {},
   { preferred: 'netbird:gone', preferred_state: 'unlisted', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p4' });

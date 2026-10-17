@@ -542,8 +542,10 @@ does not hold and unsets the preference whenever a list write (`Set` or
 `Unset` of `tailscale.console_hosts` or `netbird.console_hosts`) removes the
 name it names; every writer (console, offline `flats config`, legacy
 upgrade) goes through it. Links are resolved on each use: the request's
-served console domain, else the preferred console while it is served, else
-the fixed order.
+served console domain, else the preferred console once its node reports
+`ready` (the readiness check the self-delete redirect uses; a node counts as
+served as soon as it is started, while a tailnet node may still be logging
+in), else the first served domain in the fixed order, unchanged.
 
 **Adding**, under the console-domain mutex:
 

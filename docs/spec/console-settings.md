@@ -145,10 +145,13 @@ every start may be added later.
       them before that node is retired.
     - The console warns when approvals are pending, because their links name
       a domain.
-16. **Links follow the request.** Approval links, and the `console_url` and
-    `mcp_url` in status, use the console domain the request came in on, while
-    that domain is still served. Every other place that tells someone where
-    the console is uses the same rule.
+16. **Links follow the request.** Approval links (and their event
+    messages), the `console_url` and `mcp_url` in status, and the console
+    address the browser is sent to after deleting the domain it is open on
+    use the console domain the request came in on, while that domain is still
+    served. The agent discovery documents (`llms.txt`, `llms-full.txt` and
+    the agent guide) are not links handed to someone: they describe the
+    address they were fetched from, for the agent that fetched it.
 17. **Preferred console.** When a link cannot follow the request (it came in
     on the loopback address, or on a console domain that is no longer
     served), Flats uses the preferred console: one setting,
@@ -157,17 +160,20 @@ every start may be added later.
       `netbird:NAME`, where NAME is in that provider's console domain list.
       It is never a free URL, so a link can only name an address Flats
       itself serves.
-    - Unset, or naming a domain that is not served right now (still
-      starting, or being retired), Flats falls back to the first served
-      Tailscale console domain, then the first served NetBird console
-      domain, then the loopback address. The order is fixed, never random,
-      so the same request always gets the same link.
+    - The preferred domain is used only once its node is ready. Unset, or
+      naming a domain that is not ready right now (still starting, or being
+      retired), Flats falls back to the first served Tailscale console
+      domain, then the first served NetBird console domain, then the
+      loopback address. In this fallback "served" keeps the meaning it had
+      before the setting existed (the domain's node has been started). The
+      order is fixed, never random, so the same request always gets the
+      same link.
     - Setting a NAME that is not in its list is refused. Deleting the
       preferred domain from its list unsets the preference in the same
       change. A preference left pointing at an unlisted domain by a file edit
       is ignored with a warning.
     - The console shows the preference with the console domains and warns
-      when the preferred domain is not served.
+      when the preferred domain is still starting or not served.
     - Unset, links are exactly what they were before this setting existed.
 18. **Every console URL.** Status also lists every served console URL,
     Tailscale first, whatever the preference.

@@ -657,7 +657,9 @@ export function preferredConsole(view, opts) {
     }
   });
   let warning = null;
-  if (view.preferred_state === 'not_served') {
+  if (view.preferred_state === 'starting') {
+    warning = `The preferred console, ${preferredLabel(current)}, is still starting, so links use ${view.link_url || 'the next served address'} until it is ready.`;
+  } else if (view.preferred_state === 'not_served') {
     warning = `The preferred console, ${preferredLabel(current)}, is not served right now, so links use ${view.link_url || 'the next served address'} until it is.`;
   } else if (view.preferred_state === 'unlisted') {
     warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or no preference.`;

@@ -314,13 +314,16 @@ Approval links, their event messages and `console_url` / `mcp_url` in
 `flats status` follow the request: the console domain the request came
 through while it is still listed and served. Otherwise (the loopback
 listener, or a domain being deleted) they use the preferred console,
-`console.preferred_host`, while it is served, else the first served Tailscale
+`console.preferred_host`, once its node is ready, else the first served Tailscale
 domain, then the first served NetBird domain, then the loopback address
 ([Preferred console](configuration.md#preferred-console)). Unset, the
 preference changes nothing. The Host header never changes a link. MCP
 requests carry the same context, so an agent's approval links use the domain
 it connected to. `console_urls` lists every served domain, Tailscale first,
-whatever the preference.
+whatever the preference. The agent discovery documents (`/llms.txt`,
+`/llms-full.txt`, `/docs/agent-guide.md`) do not follow this rule: they name
+the MCP endpoint at the address the agent fetched them from (a Host the
+listener accepts), which is the address that agent can reach.
 
 Console domains are managed in Settings → Console domains
 ([Console domains](configuration.md#console-domains)). At the surface:
@@ -343,7 +346,8 @@ Console domains are managed in Settings → Console domains
 - The preferred console is `local` or a listed domain, set with the settings
   ETag; a NAME not in its list is refused (400 `invalid`), and deleting the
   preferred domain unsets it in the same change. The view reports it as
-  `preferred`, with `preferred_state` (`served`, `not_served` or `unlisted`
+  `preferred`, with `preferred_state` (`served` while links use it,
+  `starting` while its node is not ready yet, `not_served`, or `unlisted`
   for a file edit naming a domain that is not listed) and `link_url`, where
   links go when they cannot follow the request.
 

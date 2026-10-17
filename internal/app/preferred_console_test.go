@@ -85,7 +85,7 @@ func TestPreferredConsoleUnsetKeepsLinks(t *testing.T) {
 }
 
 func TestPreferredConsoleLinks(t *testing.T) {
-	h, _, _ := preferredHost(t)
+	h, tail, nb := preferredHost(t)
 	ctx := context.Background()
 	all := []string{"https://one.tail1234.ts.net", "https://two.tail1234.ts.net", "http://ops.netbird.cloud/"}
 	for _, tc := range []struct{ pref, loopback string }{
@@ -119,8 +119,55 @@ func TestPreferredConsoleLinks(t *testing.T) {
 		}
 	}
 
-	// A preferred domain that is not served (still starting) falls back in
-	// the fixed order, and the console says so.
+	// A preferred domain whose node is served but not ready yet (logging in,
+	// getting its certificate) falls back in the fixed order, and the console
+	// says it is starting. This is the state right after a domain is added:
+	// the served marker is set and the node has a URL.
+	setPreferred(t, h, "tailscale:two")
+	setStarting := func(name string, on bool) {
+		tail.mu.Lock()
+		tail.starting[name] = on
+		tail.mu.Unlock()
+	}
+	setStarting("two", true)
+	if !h.isServed(cdKey{providerTailscale, "two"}) || h.consoleURLOf(cdKey{providerTailscale, "two"}) == "" {
+		t.Fatal("the starting node must keep its served marker and URL, as in production")
+	}
+	if got := h.ConsoleURLFor(ctx); got != "https://one.tail1234.ts.net" {
+		t.Fatalf("preferred domain starting: %q", got)
+	}
+	if view, _ := h.consoleDomains(ctx); view.PreferredState != "starting" || view.LinkURL != "https://one.tail1234.ts.net" {
+		t.Fatalf("starting view %q %q", view.PreferredState, view.LinkURL)
+	}
+	// Without a preference the fallback keeps today's served test: a
+	// starting first domain still gets the links, exactly as on main.
+	setPreferred(t, h, "")
+	setStarting("one", true)
+	if got := h.ConsoleURLFor(ctx); got != "https://one.tail1234.ts.net" {
+		t.Fatalf("unset with a starting first domain: %q", got)
+	}
+	setStarting("one", false)
+	setStarting("two", false)
+	// The same for a NetBird peer.
+	setPreferred(t, h, "netbird:ops")
+	nb.mu.Lock()
+	nb.starting["ops"] = true
+	nb.mu.Unlock()
+	if got := h.ConsoleURLFor(ctx); got != "https://one.tail1234.ts.net" {
+		t.Fatalf("preferred NetBird peer starting: %q", got)
+	}
+	if view, _ := h.consoleDomains(ctx); view.PreferredState != "starting" {
+		t.Fatalf("NetBird starting view %q", view.PreferredState)
+	}
+	nb.mu.Lock()
+	nb.starting["ops"] = false
+	nb.mu.Unlock()
+	if got := h.ConsoleURLFor(ctx); got != "http://ops.netbird.cloud/" {
+		t.Fatalf("preferred NetBird peer ready: %q", got)
+	}
+
+	// A preferred domain that is not served falls back in the fixed order,
+	// and the console says so.
 	setPreferred(t, h, "tailscale:two")
 	h.setServed(cdKey{providerTailscale, "two"}, false, "")
 	if got := h.ConsoleURLFor(ctx); got != "https://one.tail1234.ts.net" {
@@ -456,5 +503,116 @@ func TestPreferredConsoleOffline(t *testing.T) {
 	}
 	if out, err := runConfig(t, "validate", "--config", path); err != nil || !strings.Contains(out, "warning: console.preferred_host") || !strings.Contains(out, "is valid") {
 		t.Fatalf("validate: %v\n%s", err, out)
+	}
+}
+
+// A preference change and the deletion of the domain it names never leave a
+// preference naming an unlisted domain: with the same ETag one of them is
+// refused (412), and without one the deletion either clears the preference
+// or the preference is refused as unlisted.
+func TestPreferredConsoleRacesDomainDelete(t *testing.T) {
+	h, tail, client := tailnetHost(t)
+	ctx := context.Background()
+	if _, err := h.AddConsoleDomain(ctx, "tailscale", "one", ""); err != nil {
+		t.Fatal(err)
+	}
+	consistent := func(step string) {
+		t.Helper()
+		l, err := config.Load(h.ConfigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := l.Doc.Effective(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.PreferredHostProblem() != "" {
+			t.Fatalf("%s: dangling preference in config.json: %s", step, c.PreferredHostProblem())
+		}
+		if v, _, _, ok := h.Svc.ConsolePreferred(); v != "" && !ok {
+			t.Fatalf("%s: dangling preference in effect: %q", step, v)
+		}
+	}
+	addTwo := func() {
+		t.Helper()
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", "two", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Sequentially, through HTTP: a page that loaded the view before the
+	// deletion cannot then prefer the deleted domain.
+	addTwo()
+	var view ConsoleDomainsView
+	if code := consoleCall(t, h, client, "GET", "/console/api/console-domains", nil, &view); code != 200 {
+		t.Fatalf("view: %d", code)
+	}
+	if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "two", view.ETag); err != nil {
+		t.Fatal(err)
+	}
+	base := "http://" + h.Addr()
+	req, _ := http.NewRequest("PUT", base+"/console/api/console-domains/preferred", strings.NewReader(`{"preferred": "tailscale:two"}`))
+	req.Header.Set("X-Flats-Console", "1")
+	req.Header.Set("Origin", base)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", `"`+view.ETag+`"`)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPreconditionFailed || preferred(h) != "" {
+		t.Fatalf("stale preference: %d %q", resp.StatusCode, preferred(h))
+	}
+	consistent("stale page")
+
+	// Concurrently, with and without the ETag.
+	for i := 0; i < 20; i++ {
+		addTwo()
+		etag := ""
+		if i%2 == 0 {
+			etag = h.Svc.SettingsETag()
+		}
+		errs := make(chan error, 2)
+		start := make(chan struct{})
+		go func() {
+			<-start
+			_, err := h.SetPreferredConsole(ctx, "tailscale:two", etag)
+			errs <- err
+		}()
+		go func() {
+			<-start
+			_, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "two", etag)
+			errs <- err
+		}()
+		close(start)
+		e1, e2 := <-errs, <-errs
+		failed := 0
+		for _, err := range []error{e1, e2} {
+			switch {
+			case err == nil:
+			case etag != "" && errors.Is(err, core.ErrConfigChanged):
+				failed++
+			case etag == "" && errors.Is(err, core.ErrInvalid): // preferring a name already deleted
+				failed++
+			default:
+				t.Fatalf("round %d: unexpected error %v", i, err)
+			}
+		}
+		if etag != "" && failed != 1 {
+			t.Fatalf("round %d: with one ETag exactly one change wins: %v, %v", i, e1, e2)
+		}
+		if slices.Contains(hosts(h), "two") {
+			// The deletion lost: the preference may name two, which is listed.
+			if _, _, _, err := h.DeleteConsoleDomain(ctx, "tailscale", "two", ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		consistent("race")
+		if preferred(h) != "" {
+			t.Fatalf("round %d: preference %q survived the deletion of its domain", i, preferred(h))
+		}
+		waitFor(t, func() bool { return !tail.isServed("two") && !h.isOwned(cdKey{providerTailscale, "two"}) })
 	}
 }
