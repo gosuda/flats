@@ -31,10 +31,15 @@ go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUp
 `scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into
 their long soak tests, the serial codec ownership soak and the serial docs
 budget tests (`-run`), and everything else (`-skip` on the same patterns), so
-together the shards always run the whole suite. Tests in those packages call
-`t.Parallel` unless their result depends on elapsed time or the process
-environment (see the comment above each package's `TestMain`). A local
-`go test ./...` runs both packages at once, so one package's parallel tests
+together the shards always run the whole suite. Where `/dev/shm` is writable,
+the docs budget shard runs its test binary with `TMPDIR` and `GOTMPDIR` set to
+it (the go command still builds on disk), so the worker databases under
+`t.TempDir` live on tmpfs. The budgets measure the docs engine: on a GitHub
+runner's disk one edit in five took 20-300 ms before its ACK, while on tmpfs in
+the same job none took over 6.2 ms. They therefore do not cover disk latency or
+durability cost. Tests in those packages call `t.Parallel` unless their result
+depends on elapsed time or the process environment (see the comment above each
+package's `TestMain`). A local `go test ./...` runs both packages at once, so one package's parallel tests
 can slow the other's serial timing tests; on a busy machine, run the shards
 one at a time or use `go test -p 1 ./...`. Every release archive is built
 CGO-free somewhere: darwin/arm64 by the macOS `install-script` leg,

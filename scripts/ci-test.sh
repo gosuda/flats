@@ -45,7 +45,22 @@ runtime-soak) need internal/runtime && exec go test "$@" -run "$runtime_soak" ./
 runtime-codec) need internal/runtime && exec go test "$@" -run "$runtime_codec" ./internal/runtime ;;
 runtime) need internal/runtime && exec go test "$@" -skip "$runtime_soak|$runtime_codec" ./internal/runtime ;;
 docs-soak) need internal/apps/docs && exec go test "$@" -run "$docs_soak" ./internal/apps/docs ;;
-docs-budget) need internal/apps/docs && exec go test "$@" -run "$docs_budget" ./internal/apps/docs ;;
+docs-budget)
+	need internal/apps/docs
+	# The budgets measure the docs engine, not the disk. Each edit commits to
+	# the worker's SQLite WAL under t.TempDir; on a GitHub runner's disk one
+	# edit in five took 20-300 ms before its ACK, while on tmpfs in the same
+	# job none took over 6.2 ms. So, where /dev/shm is writable, only the
+	# test binary gets it as TMPDIR and GOTMPDIR (t.TempDir prefers
+	# GOTMPDIR). The go command keeps its build directory where it was:
+	# /dev/shm can be small or mounted noexec (as in Docker), and the test
+	# binary has to run. Without /dev/shm (macOS), the environment is
+	# unchanged.
+	if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+		exec go test -exec 'env TMPDIR=/dev/shm GOTMPDIR=/dev/shm' "$@" -run "$docs_budget" ./internal/apps/docs
+	fi
+	exec go test "$@" -run "$docs_budget" ./internal/apps/docs
+	;;
 docs) need internal/apps/docs && exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
 other)
 	# Separate assignments, so set -e stops on a failing go list instead of
