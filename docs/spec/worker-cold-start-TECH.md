@@ -237,7 +237,11 @@ apart from the prelude init split and the shell.
   top-level code never runs twice for one start.
 - After the worker's engine is prepared, a prewarmed shell it did not take
   (a WASI flat) is closed.
-- After every adoption a new spare is requested. A spare that exits before
+- After every adoption a new spare is requested 1 s after the adoption
+  finished (the adopted worker reported ready, or the adoption failed), so
+  that its exec, Go init and preparation do not compete for CPU with the
+  woken worker and the requests that prepare it; at most one request is
+  pending at a time. A spare that exits before
   adoption is discarded and replaced with exponential backoff (1 s doubling
   to 10 min); never disabled permanently.
 - Spare logs before adoption go to the Manager log.
@@ -310,8 +314,9 @@ generation or data), so documents sharing a runtime directory may share it.
 | first page request | ~1–2 ms |
 | WebSocket hello (WebSocket runtime: ~12 ms compile + restore) | ~15 ms |
 
-Requirements 1 and 2 hold when the spare is ready; the first wake within
-~150 ms of a previous spawn (spare refill) takes the exec path.
+Requirements 1 and 2 hold when the spare is ready; a wake within ~1 s plus
+the spare's preparation (~150 ms) after a previous adoption finished (spare
+refill) takes the exec path.
 
 ## Risks and fallbacks
 

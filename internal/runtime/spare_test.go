@@ -376,6 +376,111 @@ func TestSpareDelayFromReady(t *testing.T) {
 	getOK(t, f)
 }
 
+func spareDue(m *Manager) (time.Time, bool) {
+	m.spare.mu.Lock()
+	defer m.spare.mu.Unlock()
+	return m.spare.due, m.spare.timer != nil
+}
+
+// The replacement spare is requested spareRefillDelay after the adoption
+// finished (the adopted worker reported ready), not when it began, so that
+// it does not compete with the woken worker for CPU.
+func TestSpareRefillDelayFromAdoptionEnd(t *testing.T) {
+	t.Parallel()
+	m, _ := spareManager(t)
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	pid := waitSpare(t, m, 0).p.cmd.Process.Pid
+	busy := 300 * time.Millisecond
+	slow := fmt.Sprintf("const t0 = Date.now(); while (Date.now() - t0 < %d) {}\n%s", busy.Milliseconds(), spareTestScript)
+	begin := time.Now()
+	f := mustStart(t, m, "slow", map[string]string{"index.js": slow}, "index.js", nil)
+	end := time.Now()
+	if got := f.inst.(*instance).pid(); got != pid {
+		t.Fatalf("instance pid %d, want the pre-started worker %d", got, pid)
+	}
+	due, pending := spareDue(m)
+	if !pending || currentSpare(m) != nil {
+		t.Fatal("no replacement pending after the adoption")
+	}
+	if earliest := begin.Add(busy + spareRefillDelay); due.Before(earliest) {
+		t.Fatalf("replacement due %v after the adoption began, want at least %v", due.Sub(begin), busy+spareRefillDelay)
+	}
+	if latest := end.Add(spareRefillDelay); due.After(latest) {
+		t.Fatalf("replacement due %v after the adoption finished, want at most %v", due.Sub(end), spareRefillDelay)
+	}
+	next := waitSpare(t, m, pid)
+	if next.p.started.Before(due) {
+		t.Fatalf("replacement started %v before it was due", due.Sub(next.p.started))
+	}
+	getOK(t, f)
+}
+
+// Adoptions within the refill window leave one pending replacement, which
+// keeps its due time and starts one spare.
+func TestSpareRefillOnePending(t *testing.T) {
+	t.Parallel()
+	m, _ := spareManager(t)
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	pid := waitSpare(t, m, 0).p.cmd.Process.Pid
+	mustStart(t, m, "second", spareTestFiles(), "index.js", nil)
+	due, pending := spareDue(m)
+	if !pending {
+		t.Fatal("no replacement pending after the adoption")
+	}
+	m.spare.mu.Lock()
+	seq := m.spare.seq
+	m.spare.mu.Unlock()
+	m.refillSpare()
+	m.instanceReady() // an instance that became ready meanwhile
+	m.spare.mu.Lock()
+	again, seqAgain := m.spare.due, m.spare.seq
+	m.spare.mu.Unlock()
+	if !again.Equal(due) || seqAgain != seq {
+		t.Fatalf("pending replacement rescheduled: due %v -> %v, seq %d -> %d", due, again, seq, seqAgain)
+	}
+	// A spawn in the window starts a process the ordinary way.
+	third := mustStart(t, m, "third", spareTestFiles(), "index.js", nil)
+	getOK(t, third)
+	if again, _ := spareDue(m); !again.Equal(due) {
+		t.Fatalf("a spawn without a spare rescheduled the replacement: %v -> %v", due, again)
+	}
+	next := waitSpare(t, m, pid)
+	time.Sleep(100 * time.Millisecond) // a second start would have begun with the first
+	if socks := spareSockets(t, m); len(socks) != 1 || socks[0] != next.sock {
+		t.Fatalf("spare sockets %v, want only %s", socks, next.sock)
+	}
+}
+
+// Stopping the last instance or Close cancels a pending replacement.
+func TestSpareRefillCancelled(t *testing.T) {
+	t.Parallel()
+	for _, how := range []string{"stop", "close"} {
+		t.Run(how, func(t *testing.T) {
+			t.Parallel()
+			m, _ := spareManager(t)
+			first := mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+			waitSpare(t, m, 0)
+			second := mustStart(t, m, "second", spareTestFiles(), "index.js", nil)
+			if _, pending := spareDue(m); !pending {
+				t.Fatal("no replacement pending after the adoption")
+			}
+			if how == "stop" {
+				first.inst.Stop()
+				second.inst.Stop()
+			} else {
+				m.Close()
+			}
+			if _, pending := spareDue(m); pending {
+				t.Fatal("replacement still pending")
+			}
+			time.Sleep(spareRefillDelay + 200*time.Millisecond)
+			if m.SparePID() != 0 || len(spareSockets(t, m)) != 0 {
+				t.Fatal("a replacement started after it was cancelled")
+			}
+		})
+	}
+}
+
 // SpareReady reports a spare that is waiting, alive and prepared.
 func TestSpareReady(t *testing.T) {
 	t.Parallel()

@@ -26,6 +26,13 @@ import (
 // instance before then cancels it. A variable for tests.
 var spareDelay = 250 * time.Millisecond
 
+// spareRefillDelay is how long after an adoption finished (the adopted
+// worker reported ready, or the adoption failed) the replacement spare
+// starts, so that its exec, Go init and preparation do not compete for CPU
+// with the worker that was just woken and the requests that prepare it.
+// A variable for tests.
+var spareRefillDelay = time.Second
+
 // A spare that exits before adoption is replaced after spareRetryMin,
 // doubling up to spareRetryMax; it is never disabled for good.
 const (
@@ -149,11 +156,12 @@ func (m *Manager) takeSpare() *spare {
 	return sp
 }
 
-// refillSpare requests a new spare after an adoption.
+// refillSpare requests a new spare spareRefillDelay after an adoption
+// finished, unless one exists or is already requested.
 func (m *Manager) refillSpare() {
 	s := &m.spare
 	s.mu.Lock()
-	m.scheduleSpareLocked(0)
+	m.scheduleSpareLocked(spareRefillDelay)
 	s.mu.Unlock()
 }
 
