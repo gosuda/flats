@@ -1,6 +1,6 @@
 # Metrics
 
-Status: partly implemented (target; nothing shipped yet).
+Status: implemented.
 
 ## Summary
 
@@ -134,13 +134,6 @@ Page views stay as they are. Usage adds to them; it does not replace them.
 - An MCP tool for usage. Agents and the CLI read it through
   `GET /api/flats/{slug}/stats`; the console through the same route under
   `/console/api`.
-
-## Current state
-
-Nothing on this page is implemented yet. Today Flats has page views and top
-paths per day (`GET /api/flats/{slug}/stats`) and a flat's `disk_bytes`, and no
-`/metrics` endpoint, request status or timing counts, or worker CPU and
-memory figures.
 
 ## Open questions
 

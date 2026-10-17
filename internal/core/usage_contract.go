@@ -4,7 +4,7 @@ import "time"
 
 // This file is the contract between core (request and worker usage), the
 // runtime (worker samples and states) and the metrics endpoint. See
-// docs/spec/metrics.md and docs/spec/metrics-TECH.md.
+// docs/spec/metrics.md and docs/internal/metrics.md.
 
 // UsageSink receives the CPU and memory of the worker processes started for
 // one RuntimeSpec. id is unique per process within the host run.

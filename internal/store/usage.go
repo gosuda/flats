@@ -9,7 +9,7 @@ import (
 )
 
 // UsageDay is one flat's request and worker usage on one UTC day
-// (docs/spec/metrics-TECH.md, Storage).
+// (docs/internal/metrics.md, Storage).
 type UsageDay struct {
 	Day         string
 	C1xx        int64
@@ -229,15 +229,20 @@ func (s *Store) PendingApprovals(ctx context.Context) (int, error) {
 
 // Size is the size in bytes of the database file and its write-ahead log.
 // It reads file sizes only and never queries the database.
-func (s *Store) Size() int64 {
+func (s *Store) Size() (int64, error) {
 	if s.path == "" {
-		return 0
+		return 0, errors.New("store has no file")
 	}
-	var n int64
-	for _, p := range []string{s.path, s.path + "-wal"} {
-		if fi, err := os.Stat(p); err == nil {
-			n += fi.Size()
-		}
+	fi, err := os.Stat(s.path)
+	if err != nil {
+		return 0, err
 	}
-	return n
+	n := fi.Size()
+	// The log may legitimately be absent (fully checkpointed).
+	if fi, err := os.Stat(s.path + "-wal"); err == nil {
+		n += fi.Size()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	return n, nil
 }

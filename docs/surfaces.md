@@ -181,7 +181,9 @@ permissions and the Portal listing take effect immediately.
   - `totals` for the period: `requests`, `errors` (`5xx` only),
     `error_rate` (`null` with no requests), `p50_ms` and `p95_ms`
     (interpolated from the response-time histogram, `null` when no request
-    was timed), `cpu_seconds` and `memory_peak_bytes`.
+    was timed), `cpu_seconds` and `memory_peak_bytes`. In `days` and
+    `totals`, `cpu_seconds` and `memory_peak_bytes` are omitted where that
+    figure is not measured, never reported as zero.
   - `now`: `cpu` and `memory` are `measured`, `not_separate` (websites,
     pages and designs, which run inside the host process; the other `now`
     fields are then omitted) or `unsupported` (memory on hosts other than

@@ -111,7 +111,7 @@ export const STATUS_CLASSES = [
   ['2xx', '2xx'], ['3xx', '3xx'], ['4xx', '4xx'], ['5xx', '5xx'], ['closed', 'Closed'], ['1xx', '1xx'],
 ];
 
-// Worker states and their console labels (docs/spec/metrics-TECH.md).
+// Worker states and their console labels (docs/internal/metrics.md).
 export const WORKER_STATES = {
   running: 'Running', starting: 'Starting', quiescing: 'Going to sleep',
   sleeping: 'Sleeping', backoff: 'Restarting', stopped: 'Stopped',

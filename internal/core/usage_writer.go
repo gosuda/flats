@@ -12,7 +12,7 @@ import (
 )
 
 // usageWriter counts one request of a flat's live route: its status class,
-// response bytes and response time (docs/spec/metrics-TECH.md, Request
+// response bytes and response time (docs/internal/metrics.md, Request
 // accounting). It is used by one handler goroutine, like the ResponseWriter
 // it wraps.
 type usageWriter struct {

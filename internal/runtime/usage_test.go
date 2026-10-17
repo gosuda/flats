@@ -503,3 +503,22 @@ func TestServerFlatUsageEndToEnd(t *testing.T) {
 		t.Fatalf("memory measured %t on %s", after.MemoryOK, goruntime.GOOS)
 	}
 }
+
+// A worker whose startup fails is an unexpected exit, whether it exits on its
+// own first or is killed after reporting the failure.
+func TestFailedStartupIsUnexpectedExit(t *testing.T) {
+	m := newManager(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "versions", "1")
+	writeFiles(t, dir, map[string]string{"server.js": `throw new Error("broken at load");`})
+	sink := &recSink{}
+	spec := core.RuntimeSpec{Flat: "broken", Version: 1, Dir: dir, Entry: "server.js", DataDir: filepath.Join(root, "data"), Log: (&logs{}).add, Usage: sink}
+	if inst, err := m.Start(context.Background(), spec); err == nil {
+		inst.Stop()
+		t.Fatal("a flat that throws at load started")
+	}
+	ev, ok := sink.last("exited")
+	if !ok || !ev.unexpected {
+		t.Fatalf("exit event %+v (found %v), want unexpected", ev, ok)
+	}
+}

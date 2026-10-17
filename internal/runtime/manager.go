@@ -232,6 +232,7 @@ type proc struct {
 	tail    *tailBuf
 	rdone   chan struct{} // stderr fully read
 	stopped atomic.Bool   // exit was requested
+	failed  atomic.Bool   // killed because startup failed: still an unexpected exit
 
 	// Written by readStderr only; read by the Wait goroutine after rdone.
 	lastCPU      int64 // latest valid CPU sample (ns)
@@ -325,13 +326,14 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 			if ps := cmd.ProcessState; ps != nil {
 				cpu = (ps.UserTime() + ps.SystemTime()).Nanoseconds()
 			}
-			u.Exited(p.id, cpu, !p.stopped.Load())
+			u.Exited(p.id, cpu, p.failed.Load() || !p.stopped.Load())
 		}
 		close(p.done)
 		in.exited(p)
 	}()
 	b, _ := json.Marshal(in.ws)
 	if _, err := stdin.Write(append(b, '\n')); err != nil {
+		p.failed.Store(true)
 		p.stopped.Store(true)
 		cmd.Process.Kill()
 		<-p.done
@@ -346,6 +348,7 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 	select {
 	case err := <-ready:
 		if err != nil {
+			p.failed.Store(true)
 			p.stopped.Store(true)
 			cmd.Process.Kill()
 			<-p.done
@@ -358,6 +361,7 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 		}
 		return fmt.Errorf("server flat worker exited during startup: %s", msg)
 	case <-timer.C:
+		p.failed.Store(true)
 		p.stopped.Store(true)
 		cmd.Process.Kill()
 		<-p.done

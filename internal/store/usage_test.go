@@ -190,8 +190,8 @@ func TestPendingApprovalsAndSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if size := s.Size(); size < fi.Size() {
-		t.Fatalf("size %d below the file's %d", size, fi.Size())
+	if size, err := s.Size(); err != nil || size < fi.Size() {
+		t.Fatalf("size %d (%v) below the file's %d", size, err, fi.Size())
 	}
 }
 

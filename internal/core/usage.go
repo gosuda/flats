@@ -10,7 +10,7 @@ import (
 )
 
 // Flat usage: request counts, response times and worker CPU and memory of a
-// flat's live route (docs/spec/metrics.md, docs/spec/metrics-TECH.md).
+// flat's live route (docs/spec/metrics.md, docs/internal/metrics.md).
 // Counting a request only touches atomics and a short in-memory buffer;
 // Sweep persists the buffer per UTC day, and the request path never waits for
 // SQLite.
@@ -188,10 +188,13 @@ func (u *flatUsage) capture() {
 	peak, peaked := u.worker.takePeak()
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if total < u.cpuSeenNS {
-		u.cpuSeenNS = total
+	// total never decreases, but two concurrent captures can read it in one
+	// order and lock in the other: an older, smaller read adds nothing
+	// rather than rewinding cpuSeenNS, which would count the gap twice.
+	var ms int64
+	if total > u.cpuSeenNS {
+		ms = (total - u.cpuSeenNS) / int64(time.Millisecond)
 	}
-	ms := (total - u.cpuSeenNS) / int64(time.Millisecond)
 	if ms <= 0 && !peaked {
 		return
 	}

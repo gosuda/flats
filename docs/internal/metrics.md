@@ -1,7 +1,9 @@
-# Metrics: technical design
+# Metrics internals
 
-Technical design for [Metrics](metrics.md). It moves into the architecture
-docs when the feature ships.
+How host metrics and per-flat usage are measured, stored and exposed. The
+product rules ("spec rule N" below) are in [Metrics](../spec/metrics.md); the
+operator-facing summary is in [design.md](../design.md#metrics) and the routes
+in [surfaces.md](../surfaces.md).
 
 ## Overview
 
@@ -27,16 +29,13 @@ system, workers or provider backends (spec rule 4).
 
 ## Library
 
-`github.com/prometheus/client_golang` v1.24.1 is already in the module graph
-and linked into `flats` through `github.com/oesni/libtunnel` (`go list -deps
-./cmd/flats` lists `prometheus` and `promhttp`). Using it directly turns the
-`// indirect` requirements of `client_golang` and `prometheus/common` (the
-tests parse the exposition with `expfmt`) into direct ones at the same
-versions in `go.mod`. The nested `netbird/go.mod` that builds the release
-binary keeps them `// indirect`, since no package in that module imports them
-and `go mod tidy` would restore the marker. `go list -m all` is identical
-before and after in both modules. The new `prometheus/collectors` package and Flats'
-own code are new in the binary.
+`github.com/prometheus/client_golang` (v1.24.1) was already linked into
+`flats` through `github.com/oesni/libtunnel` before Flats used it directly.
+`go.mod` requires it and `prometheus/common` (the tests parse the exposition
+with `expfmt`) directly, at the versions the module graph already selected,
+so adding metrics changed no module version. The nested `netbird/go.mod` that
+builds the release binary keeps them `// indirect`, since no package in that
+module imports them and `go mod tidy` would restore the marker.
 
 Flats uses a private `prometheus.Registry`. It never uses `promauto`,
 `promhttp.Handler()` or `prometheus.DefaultRegisterer`, which libtunnel
@@ -132,7 +131,7 @@ Workers already send JSON control lines (`childMsg`) on stderr; control
 messages are never rate limited (`internal/runtime/protocol.go`). Flat code
 cannot write raw stderr lines: QuickJS console output and WASI stderr reach
 the parent only inside the `msg` field of `"log"` lines
-(`internal/qjs/options.go`, `internal/runtime/wasi.go`). A new type
+(`internal/qjs/options.go`, `internal/runtime/wasi.go`). The type
 `"usage"` carries:
 
 ```json
@@ -157,8 +156,8 @@ process); an invalid sample is dropped and logged once per process.
 
 `runtime.Manager` holds no per-flat state: instances are owned by core.
 Core therefore passes a sink in the spec. `build` and `buildWithEnvironment`
-(`internal/core/service.go`) gain an explicit `usage UsageSink` argument,
-since their callers differ today only by data directory:
+(`internal/core/service.go`) take an explicit `usage UsageSink` argument,
+since their callers otherwise differ only by data directory:
 
 ```go
 // RuntimeSpec
@@ -167,8 +166,8 @@ Usage UsageSink // nil: not accounted
 
 ```go
 type UsageSink interface {
-	Started(id uint64)                  // a worker process of this sink started
-	Sample(id uint64, cpuNS, mem int64) // latest sample of that process
+	Started(id uint64)                                 // a worker process of this sink started
+	Sample(id uint64, cpuNS int64, mem int64, memOK bool) // latest sample of that process
 	Exited(id uint64, cpuNS int64, unexpected bool)
 }
 ```
@@ -186,8 +185,8 @@ type UsageSink interface {
   `lifecycle.go`) pass the host `preview` role sink; activation trials
   (`checkIsolated` in `lifecycle.go`) and the restore check pass the `check`
   role sink (spec rule 12). Role sinks only keep a CPU total per flat and
-  role, for host metrics. The PR lists every call site with its sink, and a
-  test asserts each one's sink.
+  role, for host metrics. `TestUsageSinkOfEveryBuild` asserts the sink of
+  each call site.
 - Each process gets a manager-wide `id` at spawn. `Started` is called after
   `cmd.Start` succeeds.
 - Exit accounting runs in the `cmd.Wait` goroutine that every spawned process
@@ -211,13 +210,13 @@ type UsageSink interface {
 ### Worker state
 
 The state lives in runtime: `instance` (process, failures, backoff) and
-`docsInstance` (`internal/runtime/docs_lifecycle.go`). Both implement a new
+`docsInstance` (`internal/runtime/docs_lifecycle.go`). Both implement the
 optional `core.StateReporter`; core's wrappers `runtimeInstance` and
 `managedDocsRuntime` forward it, since they promote only `ServeHTTP` and
 `Stop`. It reads state under the instance's lock without waking or messaging
 the child. The state shown for a flat is that of `lf.cur`'s instance, not of
 an old version still draining. A docs wake is not a restart and is not an
-unexpected exit. [Idle document workers](docs-worker-idle.md) rule 11 allows
+unexpected exit. [Idle document workers](../spec/docs-worker-idle.md) rule 11 allows
 this diagnostic state while the console and API `running` keep their logical
 meaning (spec rule 13).
 
@@ -234,8 +233,8 @@ meaning (spec rule 13).
 
 `Sweep` (every 30 s) refreshes `hostSnapshot`:
 
-- every flat's slug, uid, visibility and type: a new store query
-  (`FlatTypes`) returning them in one read, with the type taken as `view`
+- every flat's slug, uid, visibility and type: the store query
+  `FlatTypes` returning them in one read, with the type taken as `view`
   takes it (live version, else latest version, else Draft). Sweep never
   calls `Service.ListFlats` or `view`, which walk disks and call
   `ExposureStatus` with its permission callback. Joined with `s.live` for the
@@ -257,7 +256,7 @@ collector exposes only its disk series, so no counter appears to reset. Its
 traffic series return under the new slug with the same counters.
 
 Disk usage: `checkQuotas` already walks each live flat every sweep when the
-quota is on; it now also records the result and its time. Independently,
+quota is on, and records the result and its time. Independently,
 every flat in the store, live or not, whose figure is missing or at least 4.5
 minutes old is walked, oldest first, up to about a ninth of all flats per
 sweep, so disk figures exist for every flat and are about 5 minutes old at
@@ -265,8 +264,8 @@ most (spec rule 4). This adds about one walk per flat per 5 minutes on hosts
 with the quota off. The flat view's `disk_bytes` keeps measuring on
 read; the console keeps showing that figure.
 
-Route endpoints by provider and state are not part of the core snapshot. A
-new `provider.Manager.EndpointStates()` computes, for every observed endpoint
+Route endpoints by provider and state are not part of the core snapshot.
+`provider.Manager.EndpointStates()` computes, for every observed endpoint
 in `m.states`, the same fresh state that `ExposureStatus` computes from each
 backend's in-memory `Status()` (shared code, `refreshed()`), without the
 permission callback (which can read SQLite). The stored `m.states` state alone
@@ -291,11 +290,11 @@ Registered on the management mux as `/metrics` (not `GET /metrics`, which
 would send other methods to the console's `/` handler) with
 `promhttp.HandlerFor` over the private registry (`EnableOpenMetrics: true`;
 promhttp negotiates the format and gzip). The handler serves `GET` and `HEAD`
-and answers other methods 405 with `Allow: GET, HEAD`. It is reached through the same host guards as the rest of
-the mux and applies the `/api` browser rule from `agentRequest`
-(`internal/api/guard.go`): `Sec-Fetch-Site: cross-site` or `same-site`, or an
-`Origin` other than the requested host, is 403. The console page no longer
-answers `/metrics`.
+and answers other methods 405 with `Allow: GET, HEAD`. It is reached
+through the same host guards as the rest of the mux and applies the `/api`
+browser rule from `agentRequest` (`internal/api/guard.go`): `Sec-Fetch-Site: cross-site` or `same-site`, or an
+`Origin` other than the requested host, is 403. The console page does not
+answer `/metrics`.
 
 Metric names (per-flat series carry `flat` = slug and `type`):
 
@@ -328,7 +327,7 @@ flats exposes roughly 2500 series.
 
 ## Storage
 
-New table, created by the next migration in `internal/store/migrate.go`:
+Migration 17 in `internal/store/migrate.go` creates the table:
 
 ```sql
 CREATE TABLE IF NOT EXISTS usagedays (
@@ -367,8 +366,8 @@ CREATE TABLE IF NOT EXISTS usagedays (
   is deleted, like page views. `docs/configuration.md` lists the table among
   the `flats.db` contents.
 
-Shutdown: `Service.Close` today flushes page views before it stops workers.
-Usage is flushed after all workers have stopped and their exit accounting has
+Shutdown: `Service.Close` flushes page views before it stops workers, but
+usage only after all workers have stopped and their exit accounting has
 run, so the last CPU reaches `flats.db` (spec rule 15).
 
 ## Stats API
@@ -403,63 +402,18 @@ fields are unchanged:
 
 ## Console
 
-Analytics (`internal/console/static/assets/js/analytics.js`) gains a
+Analytics (`internal/console/static/assets/js/analytics.js`) shows a
 **Usage** section under Page Views, from the same `stats` response:
 
 - tiles for the period: Requests, Error rate, Median and p95 response time,
   CPU time, Peak memory;
-- a "now" line: worker state (labels in the table above) and current memory, with the sample age when stale;
+- a "now" line: worker state (labels in the table above) and current memory,
+  with the sample age when stale;
 - a daily requests chart stacked by status class.
 
 For websites, pages and designs the CPU and memory tiles are replaced by one
 note: "CPU and memory are not measured separately for this type; it runs
 inside the Flats process." On a non-Linux host the memory tiles say "Memory
-is not measured on this system." The existing Storage tile is unchanged.
-`docs/surfaces.md` updates the Analytics labels ("Page Views is the only
-traffic metric" no longer holds).
-
-## Documentation
-
-- `docs/spec/docs-worker-idle.md`: rule 11 allows the diagnostic worker state.
-- `docs/surfaces.md`: `/metrics` in the surface table and request guards; the
-  `stats` response; Analytics labels.
-- `docs/design.md`: Analytics covers usage; a Metrics subsection with the
-  metric table, the Linux-only memory and the macOS host memory gap.
-- `docs/configuration.md`: `usagedays` in the `flats.db` contents.
-- `docs/networking.md`: a short note on scraping through a console domain.
-- `docs/agent/`: the stats route if the guide lists it; regenerate the
-  references.
-
-## Testing
-
-- `usageWriter`: status capture at `WriteHeader`, first `Write` and `Hijack`;
-  implicit 200; bytes; `ResponseController` Flush/Hijack/deadlines through
-  `Unwrap`; WebSocket upgrade through the server-flat proxy and the design
-  instance; event stream excluded from timing; `ErrAbortHandler` keeps the
-  sent status; other panics count `5xx`; a cancelled visitor counts `closed`,
-  including the proxy's 502.
-- `siteHandler`: 429 and both 503 paths counted; previews not counted.
-- Usage flush: a blocked SQLite write does not block a concurrent request
-  (the request completes while the flush waits); a failed flush is merged
-  back and written once by the next sweep.
-- Worker sampling with a real `flats worker`: `cpu_ns` rises under a
-  CPU-bound handler; on Linux `mem` rises after allocating wasm memory and
-  after a large SQLite cache; a `console.log` of a usage-shaped JSON line is
-  not parsed as a sample.
-- Attribution: exit during a scrape is seen exactly once (no dip, no double);
-  a restart, a docs sleep and wake, a rename and a version switch keep the
-  flat's CPU monotonic and on the flat; preview and trial CPU land in their
-  roles only; shutdown persists the final CPU.
-- Sleeping documents: scraping `/metrics` and reading stats do not start a
-  worker (spawn count unchanged), and the flat stays `running` in the flat
-  view while its worker state is `sleeping`.
-- Endpoint states: a route that moves from starting to ready shows `ready`
-  within one sweep.
-- Store: migration from the previous schema; delete and recreate of a slug
-  starts empty usage; bucket version handling.
-- `/metrics`: exposition parses with `expfmt`; no series from libtunnel or
-  other libraries; cross-site browser request refused; a label census
-  contains no path, host or URL values; a scrape performs no store query
-  (store spy) and no file walk.
-- Console: Usage section for a server flat and a document, and the note for a
-  website, checked in a real browser on a disposable dev host.
+is not measured on this system", and the stats API omits
+`memory_peak_bytes`. The Storage tile is the flat view's `disk_bytes`.
+[surfaces.md](../surfaces.md) lists the Analytics labels.

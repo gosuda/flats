@@ -80,13 +80,17 @@ func (s *Service) storeSnapshot(ctx context.Context, flats []snapshotFlat) {
 	if flats == nil {
 		return
 	}
-	prev := s.snapshot.Load()
-	snap := &hostSnapshot{flats: flats, dbBytes: s.st.Size()}
-	if n, err := s.st.PendingApprovals(ctx); err == nil {
-		snap.pending = n
-	} else if prev != nil {
-		snap.pending = prev.pending
+	// A failed read keeps the whole previous snapshot, so its time shows the
+	// stalled refresh instead of publishing an old or zero value as fresh.
+	dbBytes, err := s.st.Size()
+	if err != nil {
+		return
 	}
+	pending, err := s.st.PendingApprovals(ctx)
+	if err != nil {
+		return
+	}
+	snap := &hostSnapshot{flats: flats, dbBytes: dbBytes, pending: pending}
 	uids := make(map[string]bool, len(flats))
 	for _, f := range flats {
 		uids[f.uid] = true
@@ -191,6 +195,7 @@ func (s *Service) Metrics() MetricsSnapshot {
 		bySlug[f.slug] = f
 	}
 	emitted := map[string]bool{} // flat IDs
+	emittedSlugs := map[string]bool{}
 	running := map[string]bool{} // slugs of included live flats with a current version
 	for slug, lf := range live {
 		cur := lf.cur.Load()
@@ -199,9 +204,9 @@ func (s *Service) Metrics() MetricsSnapshot {
 		if !(inSnap && (uid == "" || uid == sf.uid)) && !(uid != "" && cur != nil) {
 			continue
 		}
-		if uid == "" {
-			uid = sf.uid
-		}
+		// An unbound state is never given the snapshot's ID: the slug may have
+		// been deleted and created again since that sweep. It shows no disk
+		// figures until a sweep binds it.
 		typ, kind := sf.typ, sf.kind
 		if cur != nil {
 			typ, kind = contenttype.FromManifest(cur.version.Manifest), cur.version.Kind
@@ -210,7 +215,10 @@ func (s *Service) Metrics() MetricsSnapshot {
 			typ = contenttype.Flat
 		}
 		out.Flats = append(out.Flats, s.flatMetrics(slug, typ, kind, uid, lf, cur))
-		emitted[uid] = true
+		emittedSlugs[slug] = true
+		if uid != "" {
+			emitted[uid] = true
+		}
 		for _, role := range []struct {
 			name string
 			w    *workerUsage
@@ -230,8 +238,8 @@ func (s *Service) Metrics() MetricsSnapshot {
 			}
 		}
 		counts[FlatCount{Type: typ, Visibility: f.visibility, Running: isRunning}]++
-		if emitted[f.uid] {
-			continue
+		if emitted[f.uid] || emittedSlugs[f.slug] {
+			continue // never two entries for one slug
 		}
 		// No live state (a rename in progress, a flat just deleted): only its
 		// disk figures are known.
@@ -312,7 +320,7 @@ func (s *Service) flatMetrics(slug, typ, kind, uid string, lf *liveFlat, cur *de
 // --- stats API ---
 
 // UsageReport is the "usage" object of a flat's stats
-// (docs/spec/metrics-TECH.md, Stats API).
+// (docs/internal/metrics.md, Stats API).
 type UsageReport struct {
 	Days   []UsageDayView `json:"days"`
 	Totals UsageTotals    `json:"totals"`
@@ -414,7 +422,10 @@ func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageRe
 		}
 		if worker {
 			cpu, mem := float64(row.CPUMS)/1000, row.MemoryPeak
-			day.CPUSeconds, day.MemoryPeakBytes = &cpu, &mem
+			day.CPUSeconds = &cpu
+			if memoryMeasured { // never a zero peak where memory is not measured
+				day.MemoryPeakBytes = &mem
+			}
 		}
 		rep.Days = append(rep.Days, day)
 		rep.Totals.Requests += day.Requests
@@ -440,7 +451,10 @@ func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageRe
 	rep.Now = UsageNow{CPU: UsageNotSeparate, Memory: UsageNotSeparate}
 	if worker {
 		cpu := float64(cpuMS) / 1000
-		rep.Totals.CPUSeconds, rep.Totals.MemoryPeakBytes = &cpu, &peak
+		rep.Totals.CPUSeconds = &cpu
+		if memoryMeasured {
+			rep.Totals.MemoryPeakBytes = &peak
+		}
 		rep.Now.CPU, rep.Now.Memory = UsageMeasured, UsageUnsupported
 		rep.Now.State = workerStateOf(cur)
 		var mem workerMemory

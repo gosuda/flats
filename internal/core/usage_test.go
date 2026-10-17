@@ -1012,8 +1012,16 @@ func TestUsageReport(t *testing.T) {
 		t.Fatalf("p50 %v p95 %v", *tot.P50MS, *tot.P95MS)
 	}
 	// The activation's sampled second was flushed with the read.
-	if *tot.CPUSeconds != 2.5 || *tot.MemoryPeakBytes != 1<<20 {
-		t.Fatalf("cpu %v mem %v", *tot.CPUSeconds, *tot.MemoryPeakBytes)
+	if *tot.CPUSeconds != 2.5 {
+		t.Fatalf("cpu %v", *tot.CPUSeconds)
+	}
+	// Where memory is not measured there is no peak at all, never a zero.
+	if memoryMeasured {
+		if tot.MemoryPeakBytes == nil || *tot.MemoryPeakBytes != 1<<20 || rep.Days[0].MemoryPeakBytes == nil {
+			t.Fatalf("mem %v", tot.MemoryPeakBytes)
+		}
+	} else if tot.MemoryPeakBytes != nil || rep.Days[0].MemoryPeakBytes != nil {
+		t.Fatalf("memory peak reported where memory is not measured: %v", tot.MemoryPeakBytes)
 	}
 	if rep.Now.CPU != UsageMeasured || rep.Now.State != WorkerRunning || *rep.Now.Workers != 1 {
 		t.Fatalf("now %+v", rep.Now)
@@ -1076,11 +1084,43 @@ func TestUsageDeleteAndRecreateStartsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.flushUsage(ctx, old) // a late flush of the deleted flat's state
+	// Before the next sweep the snapshot still lists the deleted flat: the
+	// recreated slug is one entry and never shows the old flat's disk.
+	s.state("site")
+	var entries []FlatMetrics
+	for _, f := range s.Metrics().Flats {
+		if f.Slug == "site" {
+			entries = append(entries, f)
+		}
+	}
+	if len(entries) != 1 || !entries[0].DiskMeasuredAt.IsZero() {
+		t.Fatalf("entries for the recreated slug: %+v", entries)
+	}
 	rep, err := s.Usage(ctx, "site", 30)
 	if err != nil || len(rep.Days) != 0 || rep.Totals.Requests != 0 {
 		t.Fatalf("%+v %v", rep, err)
 	}
 	if lf := s.state("site"); lf == old || lf.uidOf() == old.uidOf() {
 		t.Fatal("the recreated flat kept the old state")
+	}
+}
+
+// A capture that read an older, smaller CPU total than a concurrent one must
+// add nothing instead of rewinding, or the gap is counted twice.
+func TestUsageCaptureNeverRewindsCPU(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	u := newFlatUsage(func() time.Time { return now })
+	u.worker.Started(1)
+	u.worker.Sample(1, int64(110*time.Millisecond), 0, false)
+	// A concurrent capture already moved 200 ms (it read a later sample).
+	u.cpuSeenNS = int64(200 * time.Millisecond)
+	u.capture()
+	if u.cpuSeenNS != int64(200*time.Millisecond) {
+		t.Fatalf("cpuSeenNS rewound to %v", time.Duration(u.cpuSeenNS))
+	}
+	u.worker.Sample(1, int64(250*time.Millisecond), 0, false)
+	u.capture()
+	if got := time.Duration(u.days[u.today()].cpuNS); got != 50*time.Millisecond {
+		t.Fatalf("day CPU = %v, want 50ms", got)
 	}
 }
