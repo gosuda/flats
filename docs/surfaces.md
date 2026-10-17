@@ -1,6 +1,6 @@
 # HTTP API, CLI, MCP and console
 
-The management server serves four surfaces from one mux:
+The management server serves these surfaces from one mux:
 
 | Path | Surface | `via` recorded in events and approvals |
 | --- | --- | --- |
@@ -8,6 +8,7 @@ The management server serves four surfaces from one mux:
 | `/mcp` | MCP (Streamable HTTP, stateless) | `mcp` |
 | `/console/api/` | the web console's API | `console` |
 | `/llms.txt`, `/llms-full.txt`, `/docs/…` | agent discovery documents ([Connecting agents](agents.md#llmstxt)) | none |
+| `/metrics` | host metrics in the Prometheus text format ([Metrics](design.md#metrics)) | none |
 
 Everything else under `/` is the console page itself. Core behavior behind
 these surfaces (Draft, versions, frozen approvals, result DTOs, provider IDs)
@@ -31,6 +32,12 @@ On top of that:
   `X-Flats-Client` header (the CLI and the MCP relay send one), and needs a
   same-origin `Origin` when one is present. Mutations also need
   `Sec-Fetch-Site: same-origin` and an `Origin` header.
+- **`/metrics`** answers `GET` and `HEAD`; other methods are 405 with
+  `Allow: GET, HEAD`. It
+  applies the `/api` browser rule: `Sec-Fetch-Site: cross-site` or
+  `same-site`, or an `Origin` other than the requested host, is 403. A
+  scraper sends neither header and needs no credential. It is never served on
+  a flat's route, a preview or a public provider.
 - **NetBird console domains** are plain HTTP, where browsers send no Fetch
   Metadata. Only their handler marks requests as plain-HTTP console requests;
   on those, a mutation without `Sec-Fetch-Site` is accepted when `Origin` is
@@ -43,7 +50,10 @@ On top of that:
 These checks are CSRF protection, not authentication: a local process that
 sends the same headers to the loopback listener can act as the console,
 including deciding approvals. A separate operator credential is an open design
-item.
+item. Likewise whoever can reach the console can read `/metrics`, which shows
+what no other route does (CPU, memory and response times, and the slugs of
+Private and unpublished flats): trust a system that scrapes it like someone
+with console access.
 
 The approver recorded with a decision is the tailnet login on a Tailscale
 console domain, `netbird:<peer FQDN>` on a NetBird console domain, and none on
@@ -108,7 +118,7 @@ mounted under both prefixes; **console** routes exist only under
 | PUT | `/flats/{slug}/network` | both | `{origins: [...]}`, `[]` clears. Console, or the CLI on loopback; 403 otherwise |
 | GET | `/flats/{slug}/secrets` | both | Secret names; values are never returned |
 | PUT, DELETE | `/flats/{slug}/secrets/{name}` | both | `{value}`. Console, or the CLI on loopback; 403 otherwise |
-| GET | `/flats/{slug}/stats` | both | `?days=` (1–365, default 30): daily page views and top paths |
+| GET | `/flats/{slug}/stats` | both | `?days=` (1–365, default 30): daily page views, top paths and `usage` (below) |
 | GET | `/flats/{slug}/snapshots` | both | Data snapshots taken before deploys |
 | POST | `/flats/{slug}/providers` | both | `{provider, permitted}`: per-flat network permission. Console only: other surfaces get 403 |
 | GET | `/approvals` | both | `?status=pending\|approved\|rejected\|failed` |
@@ -163,6 +173,30 @@ permissions and the Portal listing take effect immediately.
   repeat the deletion: repair the reported storage issue and restart the host.
   Guarded storage changes are blocked while the `.version-delete-N` staging
   folder remains; a repeated cleanup failure can prevent host startup.
+- **Stats.** Besides `page_views` and `top_pages`, `stats` returns `usage`
+  for the same `?days=` window ([Metrics](spec/metrics.md#flat-usage)):
+  - `days`: one entry per UTC day with usage (days without it are omitted):
+    `day`, `requests`, `status` (counts by `1xx` … `5xx` and `closed`),
+    `rate_limited`, `cpu_seconds` and `memory_peak_bytes`.
+  - `totals` for the period: `requests`, `errors` (`5xx` only),
+    `error_rate` (`null` with no requests), `p50_ms` and `p95_ms`
+    (interpolated from the response-time histogram, `null` when no request
+    was timed), `cpu_seconds` and `memory_peak_bytes`. In `days` and
+    `totals`, `cpu_seconds` and `memory_peak_bytes` are omitted where that
+    figure is not measured, never reported as zero.
+  - `now`: `cpu` and `memory` are `measured`, `not_separate` (websites,
+    pages and designs, which run inside the host process; the other `now`
+    fields are then omitted) or `unsupported` (memory on hosts other than
+    Linux). With a worker: `state` (`running`, `starting`, `quiescing`,
+    `sleeping`, `backoff` or `stopped`; diagnostic only, `running` in the
+    flat view keeps its meaning), `workers`, and with measured memory
+    `memory_bytes`, `memory_sampled_at` and `memory_stale` (no sample for 60
+    seconds).
+
+  A `closed` request is one whose visitor left before the response was sent;
+  it is not an error. WebSocket connections and event streams count with
+  their status but are left out of response times. Reading `stats` never
+  wakes a sleeping document.
 - **Settings.** `GET settings` returns the settings, defaults,
   `apply_on_restart` and `config` (mode, ETag, `changed_on_disk`, read-only
   host, network and credential values without paths, per-key sources and flag
@@ -301,8 +335,20 @@ Labels match the data the server returns:
 - Limits uses the shared labels **Revisions to keep** and **Pinned revisions
   allowed** for the revision and pin quotas of documents and designs, and
   **Version quota** for websites and pages.
-- Analytics shows **Page Views** as the only traffic metric, with the note
-  that unique visitors are not tracked.
+- Analytics shows **Page Views** (requests for pages), with the note that
+  unique visitors are not tracked, and under it **Usage** (every request to
+  the live route): **Requests**, **Error rate**, **Median response time**,
+  **p95 response time**, **CPU time** and **Peak memory** for the period; a
+  "Now" line with the worker state (**Running**, **Starting**, **Going to
+  sleep**, **Sleeping**, **Restarting**, **Stopped**) and current memory,
+  with the sample age when the sample is stale; and daily requests stacked by
+  status class (2xx, 3xx, 4xx, 5xx, Closed, and 1xx when there were
+  upgrades). A missing value is shown as an em dash, never as zero.
+- For websites, pages and designs the CPU and memory tiles are replaced by the
+  note "CPU and memory are not measured separately for this type; it runs
+  inside the Flats process." On a host that does not measure worker memory
+  (not Linux), Peak memory says "Memory is not measured on this system." A
+  server that returns no `usage` shows no Usage section.
 - For documents and designs, Analytics hides the Versions count and shows disk
   usage as a plain byte value. Websites, pages and an unknown type show the
   Versions count and the disk value with its "(versions, data and previews)"

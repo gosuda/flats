@@ -93,6 +93,30 @@ data stay on your machine.
 Local loopback also binds in Tailscale mode: concurrent hosts need distinct
 `host.management_addr`, `host.local_addr` and data directories.
 
+## Scraping metrics
+
+The host serves [`/metrics`](design.md#metrics) in the Prometheus text format
+on the loopback listener and on every console domain. A scraper on the host
+itself uses `http://127.0.0.1:7878/metrics` (`host.management_addr`); one on
+another machine uses a console domain, such as
+`https://NAME.<tailnet>.ts.net/metrics` or `http://NAME.<NetBird domain>/metrics`:
+
+```yaml
+scrape_configs:
+  - job_name: flats
+    scheme: https
+    static_configs:
+      - targets: ["flats.example-tailnet.ts.net"]
+```
+
+The request's `Host` must be that console domain (scrapers send the target's
+name by default); a flat's address, a preview or a public route does not serve
+`/metrics`. Access is the same as access to the console there: tailnet ACLs or
+NetBird access policies decide which devices reach it, and Flats asks for no
+credential. The metrics include CPU, memory, response times and the slugs of
+Private and unpublished flats, so allow only scrapers you trust like someone
+with console access.
+
 ## Removing a permission
 
 Removing a flat's Tailscale permission stops its Private Tailscale current,

@@ -145,7 +145,8 @@ type Preview struct {
 
 // Store wraps the metadata database.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 const schema = `
@@ -324,7 +325,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, path: path}, nil
 }
 
 // Close closes the database.
@@ -534,6 +535,11 @@ func (s *Store) DeleteFlat(ctx context.Context, slug string) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Usage rows are keyed by the flat's ID: delete them before the flat row
+	// that names it, so a recreated slug starts with no usage.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usagedays WHERE flat_uid IN (SELECT uid FROM flats WHERE slug=? AND uid IS NOT NULL AND uid<>'')`, slug); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM flats WHERE slug=?`, slug)
 	if err != nil {
 		return err

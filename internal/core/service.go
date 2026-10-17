@@ -75,6 +75,7 @@ type RuntimeSpec struct {
 	Env            map[string]string
 	NetworkOrigins []string // operator-approved exact origins; JS only, default deny
 	Log            func(level, msg string)
+	Usage          UsageSink // CPU and memory of the instance's processes; nil: not accounted
 }
 
 // Instance is a running server flat.
@@ -150,6 +151,10 @@ type Service struct {
 	settings      *SettingsSource
 	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
 	logLimits     sync.Map // slug -> *logLimit
+	// snapshot holds the host-wide figures of the last Sweep for Metrics.
+	snapshot atomic.Pointer[hostSnapshot]
+	diskMu   sync.Mutex
+	disk     map[string]diskSample // flat ID -> its last disk measurement
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -172,6 +177,14 @@ type liveFlat struct {
 	views         atomic.Int64
 	trafficMu     sync.Mutex
 	traffic       map[trafficKey]int64
+	// usage counts the live route's requests and its workers' CPU and
+	// memory; previewCPU and checkCPU the CPU of its preview and activation
+	// check workers. uid is the stored flat's ID, bound the first time this
+	// state serves a stored flat; usage is persisted under it only.
+	usage      *flatUsage
+	previewCPU *workerUsage
+	checkCPU   *workerUsage
+	uid        atomic.Pointer[string]
 }
 
 type deployed struct {
@@ -239,6 +252,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	s.startPendingDesigns(ctx)
 	s.retainAllRevisions(ctx, false)
 	s.CloseDueGroups(ctx)
+	s.storeSnapshot(ctx, s.flatTypes(ctx, s.liveFlats()))
 	s.wg.Add(2)
 	go s.sweeper()
 	go s.designLoop()
@@ -270,6 +284,11 @@ func (s *Service) Close() error {
 		if p.inst != nil {
 			p.inst.Stop()
 		}
+	}
+	// Every worker has stopped and its exit accounting has run (Stop returns
+	// after it), so the last CPU reaches flats.db.
+	for _, lf := range live {
+		s.flushUsage(context.Background(), lf)
 	}
 	return nil
 }
@@ -374,13 +393,14 @@ func (s *Service) restore(ctx context.Context) error {
 	}
 	for _, f := range flats {
 		lf := s.state(f.Slug)
+		lf.bindUID(f.ID)
 		if f.LiveVersion > 0 {
 			v, err := s.st.GetVersion(ctx, f.Slug, f.LiveVersion)
 			if err != nil {
 				s.logf("restore %s: %v", f.Slug, err)
 				continue
 			}
-			d, err := s.build(context.WithValue(ctx, lazyDocsKey{}, true), f.Slug, v, s.dataDirOf(f.Slug))
+			d, err := s.build(context.WithValue(ctx, lazyDocsKey{}, true), f.Slug, v, s.dataDirOf(f.Slug), lf.liveSink())
 			if err != nil {
 				s.Event(ctx, f.Slug, "error", "restore", "could not start live version after restart: "+err.Error(), nil)
 				continue
@@ -421,22 +441,26 @@ func (s *Service) state(slug string) *liveFlat {
 	defer s.mu.Unlock()
 	lf, ok := s.live[slug]
 	if !ok {
-		lf = &liveFlat{limiter: newLimiter(s.rateLimit()), editLimiter: newLimiter(documentEditRate)}
+		lf = &liveFlat{limiter: newLimiter(s.rateLimit()), editLimiter: newLimiter(documentEditRate),
+			usage: newFlatUsage(s.now), previewCPU: newWorkerUsage(s.now), checkCPU: newWorkerUsage(s.now)}
+		lf.usage.worker.owner = lf
 		s.live[slug] = lf
 	}
 	return lf
 }
 
-// build creates the handler for a version.
-func (s *Service) build(ctx context.Context, slugName string, v store.Version, dataDir string) (*deployed, error) {
+// build creates the handler for a version. usage receives the CPU and memory
+// of its worker processes: the live flat's sink for a live build, a role sink
+// for previews and activation checks.
+func (s *Service) build(ctx context.Context, slugName string, v store.Version, dataDir string, usage UsageSink) (*deployed, error) {
 	env, err := s.captureEnvironment(ctx, slugName, v)
 	if err != nil {
 		return nil, err
 	}
-	return s.buildWithEnvironment(ctx, slugName, v, dataDir, env)
+	return s.buildWithEnvironment(ctx, slugName, v, dataDir, env, usage)
 }
 
-func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v store.Version, dataDir string, snapshot *runtimeEnvironment) (*deployed, error) {
+func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v store.Version, dataDir string, snapshot *runtimeEnvironment, usage UsageSink) (*deployed, error) {
 	if v.Pruned {
 		return nil, fmt.Errorf("version %d was pruned by the retention policy", v.Number)
 	}
@@ -476,7 +500,13 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		}
 		managedDocs := assets != nil && dataDir == s.dataDirOf(slugName)
 		if managedDocs {
-			if old := docsManaged(s.state(slugName).cur.Load()); old != nil {
+			// The flat whose live sink this build reports to; a rename holds
+			// it out of s.live while it rebuilds, so it is not looked up.
+			lf := liveFlatOf(usage)
+			if lf == nil {
+				lf = s.state(slugName)
+			}
+			if old := docsManaged(lf.cur.Load()); old != nil {
 				old.InvalidateClean()
 			}
 		}
@@ -491,6 +521,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			Flat: slugName, Version: v.Number,
 			Generation: generation, NextGeneration: nextGeneration,
 			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins,
+			Usage: usage,
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))
 			}})
@@ -531,40 +562,54 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 	if public {
 		epoch = s.routeEpoch("public:" + slugName)
 	}
+	route := routePrivate
+	if public {
+		route = routePublic
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if public {
-			var done func()
-			r, done = epoch.request(r)
-			defer done()
-			if r.Context().Err() != nil {
-				http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
-				return
-			}
-			f, err := s.st.GetFlat(r.Context(), slugName)
-			if err != nil || !f.Visibility.Public() {
-				http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
-				return
-			}
-			stripIdentity(r)
-		}
-		if !lf.limiter.allow() {
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
-			return
-		}
-		d := lf.cur.Load()
-		if d == nil {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, "<!doctype html><title>%s</title><p>This flat has not been deployed yet.</p>", slugName)
-			return
-		}
-		if isPageView(r) {
-			lf.views.Add(1)
-			lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
-		}
-		d.handler.ServeHTTP(w, trustedAccess(r, public))
+		// Counted before any check, so Flats' own answers (the public
+		// epoch's and "not deployed" 503s, the rate limit's 429) count too.
+		serveCounted(lf.usage, route, w, r, func(w http.ResponseWriter, r *http.Request) { s.serveSite(lf, slugName, public, epoch, w, r) })
 	})
+}
+
+// serveSite answers one request of slug's live route.
+func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *routeEpoch, w http.ResponseWriter, r *http.Request) {
+	if public {
+		var done func()
+		r, done = epoch.request(r)
+		defer done()
+		if r.Context().Err() != nil {
+			http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
+			return
+		}
+		f, err := s.st.GetFlat(r.Context(), slugName)
+		if err != nil || !f.Visibility.Public() {
+			http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
+			return
+		}
+		stripIdentity(r)
+	}
+	if !lf.limiter.allow() {
+		if lf.usage != nil {
+			lf.usage.countRateLimited(lf.usage.today())
+		}
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	d := lf.cur.Load()
+	if d == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "<!doctype html><title>%s</title><p>This flat has not been deployed yet.</p>", slugName)
+		return
+	}
+	if isPageView(r) {
+		lf.views.Add(1)
+		lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
+	}
+	d.handler.ServeHTTP(w, trustedAccess(r, public))
 }
 
 // stripIdentity removes Tailscale identity headers a client may have sent.
@@ -1394,7 +1439,9 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 	} else if snap != "" {
 		s.Event(ctx, slugName, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before deploying version %d", snap, n), nil)
 	}
-	d, err := s.buildWithEnvironment(ctx, slugName, v, s.dataDirOf(slugName), env)
+	lf := s.state(slugName)
+	lf.bindUID(f.ID)
+	d, err := s.buildWithEnvironment(ctx, slugName, v, s.dataDirOf(slugName), env, lf.liveSink())
 	if err != nil {
 		s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("%s of version %d failed to start: %v", kind, n, err), nil)
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
@@ -1424,6 +1471,7 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	// From here the committed live version must survive caller cancellation.
 	ctx = context.WithoutCancel(ctx)
 	lf := s.state(slugName)
+	lf.bindUID(f.ID)
 	if d.version.Kind != "server" {
 		s.retireRuntime(s.dataDirOf(slugName))
 	}
@@ -1643,7 +1691,8 @@ func (s *Service) restoreLocked(ctx context.Context, f store.Flat, snap string, 
 	if err := s.installSnapshot(slugName, snapPath); err != nil {
 		return fail(&DeployError{Cause: fmt.Errorf("install snapshot %s: %w", snap, err)})
 	}
-	d, err := s.buildWithEnvironment(ctx, slugName, v, s.dataDirOf(slugName), env)
+	lf.bindUID(f.ID)
+	d, err := s.buildWithEnvironment(ctx, slugName, v, s.dataDirOf(slugName), env, lf.liveSink())
 	if err != nil {
 		return fail(&DeployError{Cause: err})
 	}
@@ -1692,7 +1741,7 @@ func (s *Service) trialRun(ctx context.Context, f store.Flat, v store.Version, s
 			return &DeployError{Cause: err, Data: untouched}
 		}
 	}
-	d, err := s.buildWithEnvironment(ctx, f.Slug, v, dir, env)
+	d, err := s.buildWithEnvironment(ctx, f.Slug, v, dir, env, s.state(f.Slug).checkSink())
 	if err != nil {
 		return &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: untouched}
 	}
@@ -1715,14 +1764,15 @@ func (s *Service) restart(ctx context.Context, slugName string, old *deployed) e
 		return nil
 	}
 	d := old
+	lf := s.state(slugName)
 	if old.inst != nil {
 		var err error
-		if d, err = s.buildWithEnvironment(context.WithValue(ctx, lazyDocsKey{}, true), slugName, old.version, s.dataDirOf(slugName), old.environment); err != nil {
+		if d, err = s.buildWithEnvironment(context.WithValue(ctx, lazyDocsKey{}, true), slugName, old.version, s.dataDirOf(slugName), old.environment, lf.liveSink()); err != nil {
 			s.Event(ctx, slugName, "error", "deploy", fmt.Sprintf("could not restart version %d: %v", old.version.Number, err), nil)
 			return fmt.Errorf("version %d could not be restarted (%v); the flat answers 503 until a version is deployed", old.version.Number, err)
 		}
 	}
-	s.state(slugName).cur.Store(d)
+	lf.cur.Store(d)
 	return nil
 }
 
@@ -2077,7 +2127,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 			return PreviewView{}, fmt.Errorf("copy live data for preview: %w", err)
 		}
 	}
-	d, err := s.build(ctx, slugName, v, dataDir)
+	d, err := s.build(ctx, slugName, v, dataDir, s.state(slugName).previewSink())
 	if err != nil {
 		os.RemoveAll(dataDir)
 		return PreviewView{}, err
@@ -2256,8 +2306,12 @@ func (s *Service) Sweep(ctx context.Context) {
 		s.Event(ctx, p.flat, "info", "preview", fmt.Sprintf("preview %s expired after %s without visits", p.host, ttl), nil)
 	}
 	s.syncRedirects(ctx)
+	// One read of every flat's ID, visibility and type; it also binds flat
+	// IDs, so usage counted before a flat's first activation is flushed.
+	types := s.flatTypes(ctx, live)
 	for slugName, lf := range live {
 		s.flushViews(ctx, slugName, lf)
+		s.flushUsage(ctx, lf)
 	}
 	s.logLimits.Range(func(k, v any) bool {
 		s.reportDroppedLogs(k.(string), v.(*logLimit))
@@ -2269,6 +2323,8 @@ func (s *Service) Sweep(ctx context.Context) {
 		}
 	}
 	s.checkQuotas(ctx, live, now)
+	s.walkDisks(types)
+	s.storeSnapshot(ctx, types)
 }
 
 // expiredPreviews returns the open previews without a visit for longer
@@ -2293,8 +2349,9 @@ func (s *Service) checkQuotas(ctx context.Context, live map[string]*liveFlat, no
 	if quota <= 0 {
 		return
 	}
-	for slugName := range live {
+	for slugName, lf := range live {
 		used := dirSize(s.flatDir(slugName))
+		s.recordDisk(lf.uidOf(), used)
 		if used <= quota {
 			continue
 		}

@@ -115,16 +115,35 @@ var (
 	errNoClient  = errors.New("requests that change something must send Content-Type: application/json (or an archive type for uploads) or an X-Flats-Client header; this keeps web pages from calling the API")
 )
 
+// crossSiteBrowser reports whether r is a browser request from another site
+// (Sec-Fetch-Site cross-site or same-site) or carries an Origin other than
+// the requested host.
+func crossSiteBrowser(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "cross-site", "same-site":
+		return true
+	}
+	return !sameOrigin(r)
+}
+
+// RefuseCrossSite applies the /api browser rule to another read-only route
+// of the management server, such as /metrics: it answers a cross-site or
+// foreign-Origin browser request with 403, as /api does, and reports whether
+// it did.
+func RefuseCrossSite(w http.ResponseWriter, r *http.Request) bool {
+	if !crossSiteBrowser(r) {
+		return false
+	}
+	writeErr(w, http.StatusForbidden, errCrossSite)
+	return true
+}
+
 // agentRequest guards /api against cross-site browser requests (CSRF). Real
 // clients never send Sec-Fetch-Site; a browser sends it on every request.
 // Mutations must carry a header no cross-origin page can send without a
 // preflight, which this server never grants.
 func agentRequest(r *http.Request) (int, error) {
-	switch r.Header.Get("Sec-Fetch-Site") {
-	case "cross-site", "same-site":
-		return http.StatusForbidden, errCrossSite
-	}
-	if !sameOrigin(r) {
+	if crossSiteBrowser(r) {
 		return http.StatusForbidden, errCrossSite
 	}
 	if safeMethod(r.Method) || r.Header.Get("X-Flats-Client") != "" {
