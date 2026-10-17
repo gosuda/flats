@@ -72,9 +72,10 @@ type Info struct {
 }
 
 // Inspect reports the state of the database at path without writing to it.
-// It sets no pragmas and runs no DDL; see openReadOnly for how sidecar
-// files are avoided. A missing or empty file is a new database. The
-// returned Info is filled as far as it could be read, also on error.
+// It changes no setting of the database and runs no DDL; see openReadOnly
+// for how sidecar files are avoided. A missing or empty file is a new
+// database. The returned Info is filled as far as it could be read, also on
+// error.
 func Inspect(path string) (Info, error) {
 	info := Info{Latest: latestVersion(), IsFlats: true, New: true}
 	fi, err := os.Stat(path)
@@ -158,13 +159,14 @@ func fileURI(path string) string {
 // so it uses a plain read-only open; a hot rollback journal then fails
 // instead of being replayed. That open never changes the database or its
 // WAL, but SQLite may create or update the -shm index it reads the WAL
-// through.
+// through. A busy timeout makes it wait for a concurrent opener's locks
+// instead of failing with SQLITE_BUSY.
 func openReadOnly(path string) (*sql.DB, error) {
 	query := "?mode=ro&immutable=1"
 	if sidecarSize(path+"-wal") > 0 || sidecarSize(path+"-journal") > 0 {
 		query = "?mode=ro"
 	}
-	db, err := sql.Open("sqlite", fileURI(path)+query)
+	db, err := sql.Open("sqlite", fileURI(path)+query+"&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
