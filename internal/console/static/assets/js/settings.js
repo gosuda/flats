@@ -935,14 +935,24 @@ function byteText(base, preferred) {
   return value === '' ? '' : `${value} ${unit}`;
 }
 
-// toBase converts an entered number in a unit to an integer of base units,
-// or returns null for a value that is not a number of 0 or more, a
-// fraction of a whole-number unit, or too large to store exactly.
+// toBase converts an entered decimal number in a unit (factor base units)
+// to an integer of base units, rounding half up, or returns null for text
+// that is not a number of 0 or more, is not whole when whole is set, or is
+// too large to store exactly. It computes on the decimal digits, so no
+// fraction is lost to floating point before the checks.
 export function toBase(text, factor, whole) {
-  const n = Number(text);
-  if (String(text).trim() === '' || !Number.isFinite(n) || n < 0 || (whole && !Number.isInteger(n))) return null;
-  const base = Math.round(n * factor);
-  return Number.isSafeInteger(base) ? base : null;
+  const m = /^\s*\+?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?\s*$/.exec(String(text ?? ''));
+  if (!m || !(m[1] || m[2])) return null;
+  const frac = m[2] || '';
+  const scale = frac.length - Number(m[3] || 0); // value = digits / 10^scale
+  if (Math.abs(scale) > 400) return null;
+  let num = BigInt((m[1] || '') + frac || '0') * BigInt(factor);
+  let den = 1n;
+  if (scale > 0) den = 10n ** BigInt(scale);
+  else num *= 10n ** BigInt(-scale);
+  if (whole && num % den !== 0n) return null;
+  const base = (num * 2n + den) / (2n * den);
+  return base <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(base) : null;
 }
 
 // Only destructive retention settings use isDecrease. Version quotas keep all existing versions.

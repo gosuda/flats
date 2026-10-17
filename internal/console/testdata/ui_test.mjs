@@ -988,6 +988,23 @@ assert.equal(settingsPage.toBase('1.5', 1, true), null);
 assert.equal(settingsPage.toBase('-1', 1, false), null);
 assert.equal(settingsPage.toBase('', 1, false), null);
 assert.equal(settingsPage.toBase('1e300', 1 << 30, false), null);
+assert.equal(settingsPage.toBase('1.0000000000000001', 1, true), null, 'a fraction of a byte is refused even below float precision');
+assert.equal(settingsPage.toBase('9007199254740991.1', 1, true), null);
+assert.equal(settingsPage.toBase('9007199254740991', 1, true), 9007199254740991);
+assert.equal(settingsPage.toBase('9007199254740992', 1, true), null);
+assert.equal(settingsPage.toBase('8388607.999999999', 1 << 30, false), 9007199254740991);
+assert.equal(settingsPage.toBase('8388608', 1 << 30, false), null);
+assert.equal(settingsPage.toBase('1.5e3', 1, true), 1500);
+assert.equal(settingsPage.toBase('15e-1', 1, true), null);
+assert.equal(settingsPage.toBase('1e-500', 1, false), null);
+assert.equal(settingsPage.toBase('.5', 1 << 20, false), 524288);
+assert.equal(settingsPage.toBase('0.0000001', 1 << 30, false), 107, 'rounds half up to whole bytes');
+assert.equal(settingsPage.toBase('1.', 1, true), 1);
+assert.equal(settingsPage.toBase('.', 1, true), null);
+assert.equal(settingsPage.toBase('-0', 1, true), null);
+assert.equal(settingsPage.toBase('abc', 1, true), null);
+assert.equal(settingsPage.toBase('1.5', 1, true), null);
+assert.equal(settingsPage.toBase('2.5', 3, false), 8);
 
 const withSettings = (extra, config = CONFIG) => ({ ...settingsRoute(config), settings: { ...SETTINGS, ...extra } });
 const submitLimits = async (p) => { all(byId(p, 'limits'), (e) => e.tagName === 'FORM')[0].dispatch('submit'); await tick(); };
@@ -1057,11 +1074,15 @@ diskUnit.value = 'MB';
 await submitLimits(page);
 assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: String(1.5 * 1048576) });
 // Changing only the unit is an edit too.
+routes['GET /console/api/settings'] = withSettings({ disk_quota_bytes: '1024' });
 page = await mountSettings();
-byId(page, 'set-disk_quota_bytes').value = '1';
-byId(page, 'set-disk_quota_bytes-unit').value = 'KB';
+assert.equal(byId(page, 'set-disk_quota_bytes').value, '1');
+assert.equal(byId(page, 'set-disk_quota_bytes-unit').value, 'KB');
+putCount = puts().length;
+byId(page, 'set-disk_quota_bytes-unit').value = 'MB';
 await submitLimits(page);
-assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: '1024' });
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: '1048576' });
 
 // A pinned byte size cannot change its unit either.
 routes['GET /console/api/settings'] = withSettings({}, { ...CONFIG, pinned: { ...CONFIG.pinned, disk_quota_bytes: 'a test flag' } });
