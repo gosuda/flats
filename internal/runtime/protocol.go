@@ -62,6 +62,13 @@ type workerSpec struct {
 	MemoryPages    uint32            `json:"memory_pages,omitempty"`
 	PoolSize       int               `json:"pool_size,omitempty"`
 	NetworkOrigins []string          `json:"network_origins,omitempty"`
+	ImagePath      string            `json:"image_path,omitempty"` // document image file; live managed documents only
+}
+
+// prewarmSpec is the optional first stdin line of a pre-started worker,
+// sent before it is assigned a flat: {"prewarm": {...}}.
+type prewarmSpec struct {
+	CacheDir string `json:"cache_dir"`
 }
 
 func (s *workerSpec) timeout() time.Duration {

@@ -780,3 +780,6 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		return nil, errors.New("unknown docs codec")
 	}
 }
+
+// afterReady runs once the worker has reported ready.
+func (e *jsEngine) afterReady() {}
