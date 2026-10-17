@@ -1270,10 +1270,13 @@ routes['PUT /console/api/console-domains/preferred'] = { etag: 'etag-p2' };
 domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
+// hasURL reports whether text names exactly url as one of its URLs, not as a
+// substring of a longer one.
+const hasURL = (text, url) => (text.match(/https?:\/\/[^\s,;)]+/g) || []).some((u) => u.replace(/\.$/, '') === url);
 let prefSel = byId(byId(domMain, 'console-domains'), 'console-preferred');
 assert.deepEqual(optionValues(prefSel), ['', 'local', 'tailscale:flats', 'tailscale:next', 'netbird:ops'], 'none, loopback and every listed domain');
 assert.equal(prefSel.value, '', 'no preference is chosen');
-assert.ok(byId(domMain, 'console-domains').textContent.includes('https://flats.tail1234.ts.net'), 'where links go now is shown');
+assert.ok(hasURL(byId(domMain, 'console-domains').textContent, 'https://flats.tail1234.ts.net'), 'where links go now is shown');
 assert.equal(all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn').length, 0, 'no warning without a preference');
 prefSel.value = 'tailscale:next';
 prefSel.dispatch('change');
@@ -1301,7 +1304,7 @@ assert.equal(prefSel.value, 'tailscale:next', 'the preference is shown');
 let prefWarn = all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn');
 assert.equal(prefWarn.length, 1);
 assert.ok(prefWarn[0].textContent.includes('tailnet domain next') && prefWarn[0].textContent.includes('not served')
-  && prefWarn[0].textContent.includes('https://flats.tail1234.ts.net'), prefWarn[0].textContent);
+  && hasURL(prefWarn[0].textContent, 'https://flats.tail1234.ts.net'), prefWarn[0].textContent);
 // A preferred domain whose node is still starting is warned about too.
 routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', url: 'https://next.tail1234.ts.net', state: 'starting' }] }, {},
@@ -1310,7 +1313,7 @@ domMain = new Element('main');
 settingsPage.mount(domMain, [], ctx);
 await tick();
 prefWarn = all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn');
-assert.ok(prefWarn.length === 1 && prefWarn[0].textContent.includes('still starting') && prefWarn[0].textContent.includes('https://flats.tail1234.ts.net'),
+assert.ok(prefWarn.length === 1 && prefWarn[0].textContent.includes('still starting') && hasURL(prefWarn[0].textContent, 'https://flats.tail1234.ts.net'),
   'a starting preferred domain is warned about');
 // A file edit that names an unlisted domain is shown as chosen, and ignored.
 routes['GET /console/api/console-domains'] = dview({ on: true, domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }] }, {},
