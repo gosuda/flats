@@ -35,9 +35,6 @@ var ErrNoRevisions = fmt.Errorf("%w: flat has no revisions: only documents and d
 const (
 	// docsTick is how often each running document syncs and imports.
 	docsTick = 15 * time.Second
-	// docsImportBudget bounds the text one import fetches; the rest
-	// follows in the next call.
-	docsImportBudget = 64 << 20
 	// maxRevisionDocuments is the most documents a restored revision may
 	// hold: the docs app's stored-document limit.
 	maxRevisionDocuments = 128
@@ -46,7 +43,13 @@ const (
 	// docsBudgetTTL is how long a docs worker relies on a disk budget
 	// without a refresh: several ticks, so a skipped tick does not matter.
 	docsBudgetTTL = 2 * time.Minute
+	// maxStoredReport bounds the blob hashes one budget reports stored.
+	maxStoredReport = 10_000
 )
+
+// docsImportBudget bounds the text one import fetches; the rest follows in
+// the next call. Tests lower it.
+var docsImportBudget = 64 << 20
 
 var errNotRunningDocs = fmt.Errorf("%w: the document is not running", ErrNotDeployed)
 
@@ -228,6 +231,11 @@ type docsImport struct {
 	revisions []int          // imported revision numbers, in order
 	byOp      map[string]int // revision of each entry with an op
 	more      bool           // entries remain in the outbox
+	// stored lists the texts of entries the import read whose blobs are
+	// stored, acknowledged or not: a partial import stores some blobs of an
+	// entry it cannot finish yet. The next budget reports them, so the worker
+	// stops reserving what the measured flat directory already holds.
+	stored map[string]bool
 }
 
 func (s *Service) syncDocsLocked(ctx context.Context, slugName string) (docsSyncResult, error) {
@@ -240,7 +248,7 @@ func (s *Service) syncDocsLocked(ctx context.Context, slugName string) (docsSync
 // within docsImportBudget of fetched text, and acknowledges it. The caller
 // holds the flat lock.
 func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsImport, error) {
-	res := docsImport{byOp: map[string]int{}}
+	res := docsImport{byOp: map[string]int{}, stored: map[string]bool{}}
 	st, err := s.st.ContentState(ctx, slugName)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return res, err
@@ -250,7 +258,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 	}
 	// Repair an acknowledgement a crash lost: the cursor is durable.
 	if st.ImportStore != "" && st.ImportSeq > 0 {
-		if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": st.ImportStore, "through": st.ImportSeq, "budget": s.docsBudget(slugName)}, nil); err != nil && !errors.Is(err, ErrConflict) {
+		if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": st.ImportStore, "through": st.ImportSeq, "budget": s.docsBudget(slugName, nil)}, nil); err != nil && !errors.Is(err, ErrConflict) {
 			return res, err
 		}
 	}
@@ -283,6 +291,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 					return res, fmt.Errorf("%w: invalid revision entry", ErrUnavailable)
 				}
 				if _, err := os.Stat(blobPath(root, d.Hash)); err == nil {
+					res.stored[d.Hash] = true
 					continue
 				}
 				if budget <= 0 {
@@ -301,6 +310,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 				if _, err := putBlob(root, []byte(t.Text)); err != nil {
 					return res, err
 				}
+				res.stored[d.Hash] = true
 				budget -= int64(len(t.Text))
 			}
 			if stop {
@@ -323,7 +333,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 			}
 			last := ready[len(ready)-1].Seq
 			st.ImportStore, st.ImportSeq, after = page.Store, last, last
-			if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": page.Store, "through": last, "budget": s.docsBudget(slugName)}, nil); err != nil {
+			if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": page.Store, "through": last, "budget": s.docsBudget(slugName, res.stored)}, nil); err != nil {
 				s.logf("acknowledge revisions of %s: %v", slugName, err)
 			}
 		}
@@ -430,7 +440,7 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 func (s *Service) refreshDocsLocked(ctx context.Context, slugName string) (docsImport, error) {
 	res, err := s.syncImportDocsLocked(ctx, slugName)
 	if !errors.Is(err, errNotRunningDocs) {
-		if berr := s.pushDocsBudgetLocked(ctx, slugName); berr != nil && !errors.Is(berr, errNotRunningDocs) {
+		if berr := s.pushDocsBudgetStoredLocked(ctx, slugName, res.stored); berr != nil && !errors.Is(berr, errNotRunningDocs) {
 			s.logf("disk budget of %s: %v", slugName, berr)
 		}
 	}
@@ -465,23 +475,41 @@ func (s *Service) syncImportDocsLocked(ctx context.Context, slugName string) (do
 // edits against it in the transaction that would commit them, counting its
 // database as it is then and the revisions still to be stored; it admits no
 // live edit while its budget is missing or expired
-// (docs/revision-store.md#disk-quota). The caller holds the flat lock.
-func (s *Service) docsBudget(slugName string) map[string]int64 {
-	body := map[string]int64{"quota": 0, "other": 0, "ttl_ms": docsBudgetTTL.Milliseconds()}
-	if quota := s.diskQuota(); quota > 0 {
+// (docs/revision-store.md#disk-quota). stored lists texts whose blobs the
+// measurement includes, so the worker stops reserving them. The caller
+// holds the flat lock.
+func (s *Service) docsBudget(slugName string, stored map[string]bool) map[string]any {
+	quota, other := s.diskQuota(), int64(0)
+	if quota > 0 {
 		var db int64
 		if fi, err := os.Stat(filepath.Join(s.dataDirOf(slugName), dbName)); err == nil {
 			db = fi.Size()
 		}
-		body["quota"], body["other"] = quota, max(0, dirSize(s.flatDir(slugName))-db)
+		other = max(0, dirSize(s.flatDir(slugName))-db)
+	} else {
+		quota = 0
 	}
-	return body
+	// Hashes past the bound stay reserved until their entries are
+	// acknowledged: conservative, never undercounted.
+	hashes := make([]string, 0, min(len(stored), maxStoredReport))
+	for h := range stored {
+		if len(hashes) == maxStoredReport {
+			break
+		}
+		hashes = append(hashes, h)
+	}
+	sort.Strings(hashes)
+	return map[string]any{"quota": quota, "other": other, "ttl_ms": docsBudgetTTL.Milliseconds(), "stored": hashes}
 }
 
 // pushDocsBudgetLocked installs a freshly measured budget in the running
 // docs worker. The caller holds the flat lock.
 func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) error {
-	return s.docsHost(ctx, slugName, http.MethodPost, "budget", s.docsBudget(slugName), nil)
+	return s.pushDocsBudgetStoredLocked(ctx, slugName, nil)
+}
+
+func (s *Service) pushDocsBudgetStoredLocked(ctx context.Context, slugName string, stored map[string]bool) error {
+	return s.docsHost(ctx, slugName, http.MethodPost, "budget", s.docsBudget(slugName, stored), nil)
 }
 
 // pushAllDocsBudgets applies a changed disk quota to every running

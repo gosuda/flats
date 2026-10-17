@@ -199,17 +199,18 @@ export function record(db, o) {
   const seq = db.query("SELECT last_insert_rowid() AS seq")[0].seq;
   for (const d of documents) addRef(db, d.hash, texts[d.hash]);
   // The host stores every text the previous entry did not list as a new
-  // blob when it imports this one; until then it counts toward the disk
-  // quota (see checkDiskQuota). The documents are recorded now, so their
-  // pending reservation ends.
+  // blob when it imports this one; until it reports that blob stored, the
+  // text counts toward the disk quota (see checkDiskQuota). The documents
+  // are recorded now, so their pending reservation ends.
   const listed = new Set((newest?.documents || []).map((d) => d.hash)),
-    added = new Map();
-  for (const d of documents) if (!listed.has(d.hash)) added.set(d.hash, d.size);
-  if (added.size) {
-    const unimported = getMeta(db, "unimported") || {};
-    unimported[seq] = [...added.values()].reduce((a, b) => a + b, 0);
-    setMeta(db, "unimported", unimported);
-  }
+    unimported = getMeta(db, "unimported") || {};
+  let added = false;
+  for (const d of documents)
+    if (!listed.has(d.hash) && !Object.hasOwn(unimported, d.hash)) {
+      unimported[d.hash] = d.size;
+      added = true;
+    }
+  if (added) setMeta(db, "unimported", unimported);
   setMeta(db, "pending", null);
   setMeta(db, "newest", { source: o.source, documents });
   db.exec("UPDATE flats_docs_groups SET dirty=0");
@@ -549,21 +550,15 @@ export function ack(db, store, through, budget) {
       [through],
     )[0];
     if (!row) break;
-    for (const d of JSON.parse(row.documents)) release(db, d.hash);
+    const documents = JSON.parse(row.documents);
+    for (const d of documents) release(db, d.hash);
+    // An imported entry's texts are host blobs now, which the host measures.
+    forgetUnimported(
+      db,
+      documents.map((d) => d.hash),
+    );
     db.exec("DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
     db.exec("DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
-  }
-  // The acknowledged entries' texts are host blobs now, which the host
-  // measures.
-  const unimported = getMeta(db, "unimported");
-  if (unimported) {
-    for (const seq of Object.keys(unimported))
-      if (Number(seq) <= through) delete unimported[seq];
-    setMeta(
-      db,
-      "unimported",
-      Object.keys(unimported).length ? unimported : null,
-    );
   }
   dropUnused(db);
 }
@@ -688,19 +683,27 @@ export { textOf };
 
 // --- disk quota (docs/revision-store.md#disk-quota) ---
 
-const MAX_BUDGET_TTL = 24 * 60 * 60 * 1000;
+const MAX_BUDGET_TTL = 24 * 60 * 60 * 1000,
+  MAX_STORED = 10000;
 
 // setBudget installs the host's budget: the flat's disk quota (0 = off),
 // "other", the bytes the flat's directory uses apart from this database
-// file, and ttl_ms, how long it stays valid without a refresh.
+// file, ttl_ms, how long it stays valid without a refresh, and stored, the
+// texts whose host blobs that measurement includes (a partial import
+// stores some before their entry is acknowledged).
 export function setBudget(db, body) {
-  const { quota, other, ttl_ms: ttl } = body || {};
+  const { quota, other, ttl_ms: ttl, stored = [] } = body || {};
   if (
     ![quota, other, ttl].every((n) => Number.isSafeInteger(n) && n >= 0) ||
     ttl < 1 ||
-    ttl > MAX_BUDGET_TTL
+    ttl > MAX_BUDGET_TTL ||
+    !Array.isArray(stored) ||
+    stored.length > MAX_STORED ||
+    !stored.every((h) => typeof h === "string" && /^[0-9a-f]{64}$/.test(h))
   )
     throw coded("invalid", "invalid budget");
+  // other was measured with these blobs in place.
+  forgetUnimported(db, stored);
   const old = getMeta(db, "budget");
   // Pending reservations are kept only while a quota applies: when one
   // starts, reserve what people already edited.
@@ -728,6 +731,23 @@ let pageSize = 0;
 function databaseBytes(db) {
   if (!pageSize) pageSize = db.query("PRAGMA page_size")[0].page_size;
   return db.query("PRAGMA page_count")[0].page_count * pageSize;
+}
+// forgetUnimported ends the reservations of texts whose host blobs exist.
+function forgetUnimported(db, hashes) {
+  const unimported = getMeta(db, "unimported");
+  if (!unimported) return;
+  let changed = false;
+  for (const h of hashes)
+    if (Object.hasOwn(unimported, h)) {
+      delete unimported[h];
+      changed = true;
+    }
+  if (changed)
+    setMeta(
+      db,
+      "unimported",
+      Object.keys(unimported).length ? unimported : null,
+    );
 }
 function unimportedBytes(db) {
   let n = 0;

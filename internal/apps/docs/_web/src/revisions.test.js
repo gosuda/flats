@@ -463,8 +463,8 @@ test("a text one document releases can be taken up by another in the same activa
 
 // A person's edit as the WebSocket path commits it, quota check included:
 // insert text at the end, or delete the last remove characters.
-function checkedEdit(db, c, path, text, remove = 0) {
-  transaction(db, () => {
+function editBody(db, c, path, text, remove = 0) {
+  {
     const s = activate(
       db,
       c.documents.find((d) => d.path === path),
@@ -488,8 +488,10 @@ function checkedEdit(db, c, path, text, remove = 0) {
     } finally {
       s.doc.destroy();
     }
-  });
+  }
 }
+const checkedEdit = (db, c, path, text, remove = 0) =>
+  transaction(db, () => editBody(db, c, path, text, remove));
 const committed = (db, c, path) => {
   const s = current(
     db,
@@ -563,13 +565,18 @@ test("an admitted person's edit always leaves room for the revision its group st
   // The edit's own pages, measured in a transaction that is undone.
   budget(db, 1 << 30);
   let after = 0;
-  assert.throws(() =>
-    transaction(db, () => {
-      checkedEdit(db, c, "a.md", big);
-      after = dbBytes(db);
-      throw new Error("undo");
-    }),
+  const undo = new Error("undo");
+  assert.throws(
+    () =>
+      transaction(db, () => {
+        editBody(db, c, "a.md", big);
+        after = dbBytes(db);
+        throw undo;
+      }),
+    (e) => e === undo,
   );
+  assert.ok(after > dbBytes(db), "the edit took no pages");
+  assert.equal(committed(db, c, "a.md"), "x\n");
   // Reserving only twice the text is not enough: recording it takes pages
   // and rows besides the text, so that quota refuses the edit.
   const twice = after + 2 * (2 + big.length);
@@ -668,6 +675,44 @@ test("an acknowledgement ends only its entries' reservations and installs the ne
       ),
     (x) => x.code === "invalid",
   );
+});
+
+test("a budget ends the reservations of texts whose blobs the host already stored", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  checkedEdit(db, c, "a.md", "one\n");
+  checkedEdit(db, c, "b.md", "two\n");
+  closeGroups(db, c);
+  const [entry] = entries(db),
+    a = entry.documents.find((d) => d.path === "a.md"),
+    b = entry.documents.find((d) => d.path === "b.md");
+  assert.equal(unimported(db), a.size + b.size);
+  // A partial import stored a's blob but not b's before it ran out of
+  // budget: the entry stays unacknowledged, and the budget measured with
+  // a's blob in place stops reserving it (an unknown hash changes nothing).
+  transaction(db, () =>
+    revisions.setBudget(db, {
+      quota: 1 << 30,
+      other: 100,
+      ttl_ms: DAY,
+      stored: [a.hash, "f".repeat(64)],
+    }),
+  );
+  assert.equal(entries(db).length, 1);
+  assert.equal(unimported(db), b.size);
+  ackAll(db, { quota: 1 << 30, other: 200, ttl_ms: DAY, stored: [b.hash] });
+  assert.equal(revisions.getMeta(db, "unimported"), null);
+  for (const stored of [["x"], "nope", Array(10_001).fill("f".repeat(64))])
+    assert.throws(
+      () =>
+        transaction(db, () =>
+          revisions.setBudget(db, { quota: 1, other: 0, ttl_ms: 1, stored }),
+        ),
+      (e) => e.code === "invalid",
+    );
 });
 
 test("a quota that starts reserves what people already edited; a rollback is never refused", () => {

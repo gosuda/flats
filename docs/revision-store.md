@@ -314,6 +314,10 @@ would commit them and after its writes:
     every document write and rollback, history reads), before each
     `update_document`, and on every running document before a changed
     `system.disk_quota_bytes` returns.
+  A budget after an import also lists the texts of the entries it read whose
+  blobs are stored (at most 10,000), acknowledged or not: an import that runs
+  out of its fetch budget or fails stores some blobs of an entry it cannot
+  finish, and the worker must not reserve what `other` already includes.
   Quota 0 turns the check off. The worker keeps the budget in its database,
   so a restarted worker keeps it until it expires.
 - **No current budget, no edits.** While the worker has no budget or its

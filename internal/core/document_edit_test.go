@@ -374,3 +374,48 @@ func TestDocsDiskBudget(t *testing.T) {
 		t.Fatal("failed budget push not logged", events)
 	}
 }
+
+// A partial import stores some blobs of an entry it cannot finish; the
+// budget measured with them in place reports them stored, so the worker
+// stops reserving them while the entry stays unacknowledged.
+func TestDocsBudgetReportsBlobsOfPartialImports(t *testing.T) {
+	importBudget := docsImportBudget
+	docsImportBudget = 150
+	t.Cleanup(func() { docsImportBudget = importBudget })
+	s, _ := newTestService(t)
+	rt := &contentRuntime{}
+	s.cfg.Runtime = rt
+	s.cfg.DocsApp = testDocsApp()
+	ctx := context.Background()
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "10485760"}); err != nil {
+		t.Fatal(err)
+	}
+	v := saveDocs(t, s, "notes")
+	texts := map[string]string{}
+	var docs []store.RevisionFile
+	for i, p := range []string{"a.md", "b.md", "c.md"} {
+		text := strings.Repeat(string(rune('a'+i)), 100)
+		h := hashBytes([]byte(text))
+		texts[h] = text
+		docs = append(docs, store.RevisionFile{Path: p, Hash: h, Size: 100})
+	}
+	rt.outbox = &fakeOutbox{texts: texts, entries: []docsEntry{{Seq: 1, Kind: "person", Source: v.Hash, Documents: docs}}}
+	s.TickDocs(ctx)
+	if len(rt.outbox.acks) != 0 {
+		t.Fatal("an unfinished entry was acknowledged", rt.outbox.acks)
+	}
+	root := s.docsStoreDir("notes")
+	for i, d := range docs {
+		if _, err := os.Stat(blobPath(root, d.Hash)); (err == nil) != (i < 2) {
+			t.Fatal("blob", d.Path, err)
+		}
+	}
+	b := rt.budgets[len(rt.budgets)-1]
+	stored, _ := json.Marshal(b["stored"])
+	if want, _ := json.Marshal([]string{min(docs[0].Hash, docs[1].Hash), max(docs[0].Hash, docs[1].Hash)}); string(stored) != string(want) {
+		t.Fatal("stored blobs not reported", string(stored), string(want))
+	}
+	if b["other"] != float64(dirSize(s.flatDir("notes"))) {
+		t.Fatal("budget not measured with the stored blobs", b["other"], dirSize(s.flatDir("notes")))
+	}
+}

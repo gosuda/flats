@@ -541,11 +541,10 @@ for a shape (a source and a list of document paths):
    `recorded`.
 3. When the entry is not forced and its source and documents equal
    `meta.newest`, delete `meta.pending` and stop: no entry.
-4. Otherwise insert the entry, add a reference to each listed text, record
-   the size of the texts `meta.newest` did not list under the entry's seq in
-   `meta.unimported`, delete `meta.pending`, set `meta.newest`, clear `dirty`
-   on every group, and for a rollback record its operation id in `ops` with
-   the entry's seq.
+4. Otherwise insert the entry, add a reference to each listed text, add
+   the texts `meta.newest` did not list to `meta.unimported`, delete
+   `meta.pending`, set `meta.newest`, clear `dirty` on every group, and for a
+   rollback record its operation id in `ops` with the entry's seq.
 
 Authors are the given label (an agent's or a rollback's), else the labels of
 the groups that are `dirty` at that moment, in first-edit order; at most 32,
@@ -704,12 +703,12 @@ even while an activation keeps failing.
 | `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null |
 | `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, message, rollback_of?, op?, source, documents}], more}` |
 | `GET /_docs/host/revisions/text?hash=` | `{hash, text}` from `texts`; 404 when absent |
-| `POST /_docs/host/revisions/ack` | `{store, through, budget?}`: deletes entries up to `through` with their `ops` rows and `meta.unimported` sizes, releasing their texts, and installs `budget` (as `budget` below) in the same transaction. Idempotent; another `store` is refused with 409 |
+| `POST /_docs/host/revisions/ack` | `{store, through, budget?}`: deletes entries up to `through` with their `ops` rows and their texts' `meta.unimported` sizes, releasing their texts, and installs `budget` (as `budget` below) in the same transaction. Idempotent; another `store` is refused with 409 |
 | `POST /_docs/host/revisions/stage` | `{text}` (at most 1 MiB UTF-8): stores it with `staged_at`; returns `{hash}` |
 | `POST /_docs/host/revisions/intent` | `{id, source, kind, label, message, rollback_of, documents}`: writes `meta.intent` (texts must be staged or present) |
 | `POST /_docs/host/revisions/restore` | `{id, label, rollback_of, documents: [{path, hash}], deadline_ms}`: a rollback within the running version; its documents must be exactly the running version's. Returns `{store, seq}` |
 | `GET /_docs/host/revisions/op?id=` | `{committed, seq?}`: whether a rollback with this id committed and its entry is still unacknowledged |
-| `POST /_docs/host/revisions/budget` | `{quota, other, ttl_ms}` (non-negative integers, `ttl_ms` 1 ms to 24 hours): sets `meta.budget` for the [disk quota](#disk-quota) check; quota 0 turns the check off and deletes `meta.pending` |
+| `POST /_docs/host/revisions/budget` | `{quota, other, ttl_ms, stored?}` (non-negative integers, `ttl_ms` 1 ms to 24 hours; `stored` at most 10,000 text hashes whose host blobs `other` includes): sets `meta.budget` for the [disk quota](#disk-quota) check and deletes the `stored` texts from `meta.unimported`; quota 0 turns the check off and deletes `meta.pending` |
 
 Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
 `conflict`, 422 `capacity` or 503 `unavailable`.
@@ -752,9 +751,10 @@ disk quota; the host side, what it measures and when, is in the
   `sync` deletes it when no document is dirty. When a quota starts where
   none applied, the map starts with the exact sizes of the documents whose
   committed position differs from their `recorded` row.
-* `meta.unimported` maps each entry's seq to the size of the texts it added
-  that the previous entry did not list; `ack` deletes the entries it
-  acknowledges.
+* `meta.unimported` maps the hash of each text an entry added (one the
+  previous entry did not list) to its size, until the host reports its blob
+  stored: `ack` deletes the texts of the entries it acknowledges, and a
+  budget deletes the texts it lists as `stored`.
 * The check runs last in the transaction, after every write: a WebSocket
   `update` (not a duplicate) and a changed `POST /_docs/api/edit`. The total
   is `other` + `page_count` × `page_size` + `unimported` + the bound of the
