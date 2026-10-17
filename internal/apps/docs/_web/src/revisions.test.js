@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as Y from "yjs";
 import {
   schema,
@@ -9,14 +12,25 @@ import {
   activate,
   append,
   digest,
+  walOptions,
 } from "./storage.js";
 import { base64 } from "./protocol.js";
 import * as revisions from "./revisions.js";
 
-// The worker's env.DB shape over an in-memory SQLite database.
-function database() {
-  const raw = new DatabaseSync(":memory:");
+// The worker's env.DB shape over an in-memory SQLite database, or with
+// file: true over a database file in write-ahead log mode, as the worker
+// uses, whose log tests can measure (walBytes).
+function database({ file = false, schema: create = true } = {}) {
+  let path = ":memory:";
+  if (file) {
+    const dir = mkdtempSync(join(tmpdir(), "flats-docs-"));
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+    path = join(dir, "db.sqlite");
+  }
+  const raw = new DatabaseSync(path);
+  if (file) raw.exec("PRAGMA journal_mode=WAL");
   const db = {
+    path: file ? path : null,
     exec(sql, params) {
       if (!params) raw.exec(sql);
       else raw.prepare(sql).run(...params);
@@ -28,9 +42,16 @@ function database() {
         .map((r) => ({ ...r }));
     },
   };
-  schema(db);
+  if (create) schema(db);
   return db;
 }
+const walBytes = (db) => {
+  try {
+    return statSync(db.path + "-wal").size;
+  } catch {
+    return 0;
+  }
+};
 
 const doc = (path, text) => ({ path, text, hash: digest(text) });
 const content = (hash, ...documents) => ({ hash, documents });
@@ -75,7 +96,7 @@ const textOf = (db, e, path) =>
 const refs = (db) =>
   Object.fromEntries(
     db
-      .query("SELECT hash,refs FROM flats_docs_texts")
+      .query("SELECT hash,refs FROM flats_docs_text_refs")
       .map((r) => [r.hash, r.refs]),
   );
 
@@ -545,11 +566,16 @@ const ackAll = (db, budget) => {
 const refused = (e) => e.code === "disk_quota";
 // fits checks that the recorded revisions, this database plus the blobs the
 // host will store, leave the write-ahead log its smallest room.
-const fits = (db, quota) =>
+// For a database file the log it actually holds counts too, within the
+// quota rather than its smallest reserve.
+const fits = (db, quota) => {
+  const wal = db.path ? walBytes(db) : MIN_WAL;
   assert.ok(
-    dbBytes(db) + unimported(db) <= quota - MIN_WAL,
-    `${dbBytes(db)} + ${unimported(db)} > ${quota} - ${MIN_WAL}`,
+    dbBytes(db) + unimported(db) + wal <= quota,
+    `${dbBytes(db)} + ${unimported(db)} + ${wal} > ${quota}`,
   );
+  if (db.path) assert.ok(wal <= MIN_WAL * 2, `log of ${wal} bytes`);
+};
 
 test("live edits need a budget the host refreshed; quota 0 checks nothing", async () => {
   const db = database(),
@@ -582,7 +608,7 @@ test("live edits need a budget the host refreshed; quota 0 checks nothing", asyn
 });
 
 test("an admitted person's edit always leaves room for the revision its group stores", () => {
-  const db = database(),
+  const db = database({ file: true }),
     c = content("v1", doc("a.md", "x\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
   budget(db, 0);
@@ -633,7 +659,7 @@ test("documents with one text count as separate copies", () => {
   // recording them still fits.
   const big = "y".repeat(400_000);
   const setup = () => {
-    const db = database(),
+    const db = database({ file: true }),
       c = content(
         "v1",
         ...["a", "b", "c", "d"].map((n) => doc(n + ".md", big)),
@@ -715,7 +741,7 @@ test("text an update makes visible by completing an earlier one counts", () => {
 });
 
 test("near the quota only the edited text is sized; others once", () => {
-  const db = database(),
+  const db = database({ file: true }),
     c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
   budget(db, 1 << 30);
@@ -866,4 +892,65 @@ test("a quota that starts reserves what people already edited; a rollback is nev
     }),
   );
   assert.equal(committed(db, c, "b.md"), "b\n");
+});
+
+test("recording rewrites no large text to count its references", () => {
+  // A tiny document next to ten large ones, all recorded and imported.
+  const db = database({ file: true }),
+    c = content(
+      "v1",
+      doc("tiny.md", "t\n"),
+      ...Array.from({ length: 10 }, (_, i) =>
+        doc(`big${i}.md`, String(i).repeat(400_000)),
+      ),
+    );
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  transaction(db, () => {}); // a small commit after the checkpoint
+  const quota = dbBytes(db) + walBytes(db) + 1_200_000;
+  budget(db, quota);
+  checkedEdit(db, c, "tiny.md", "!");
+  // Closing the group references every document's text once more; that
+  // changes small reference rows only. Kept without the truncation that
+  // follows a large transaction, its log shows what it wrote.
+  const before = walBytes(db);
+  walOptions.truncate = false;
+  try {
+    closeGroups(db, c);
+  } finally {
+    walOptions.truncate = true;
+  }
+  assert.ok(
+    walBytes(db) - before < 64 * 4120,
+    `closing the group wrote ${walBytes(db) - before} bytes of log`,
+  );
+  fits(db, quota);
+});
+
+test("an older database moves its text references into their own table", () => {
+  const db = database({ schema: false });
+  db.exec(
+    "CREATE TABLE flats_docs_texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)",
+  );
+  db.exec("INSERT INTO flats_docs_texts VALUES('a','A',2,NULL),('b','B',0,5)");
+  schema(db);
+  assert.deepEqual(
+    db.query(
+      "SELECT hash,refs,staged_at FROM flats_docs_text_refs ORDER BY hash",
+    ),
+    [
+      { hash: "a", refs: 2, staged_at: null },
+      { hash: "b", refs: 0, staged_at: 5 },
+    ],
+  );
+  // The staged text stays until its staging expires, as before.
+  transaction(db, () => revisions.dropUnused(db));
+  assert.equal(revisions.textOf(db, "b"), "B");
+  // A second run changes nothing.
+  schema(db);
+  assert.equal(
+    db.query("SELECT count(*) AS n FROM flats_docs_text_refs")[0].n,
+    2,
+  );
 });

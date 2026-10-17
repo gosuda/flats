@@ -504,6 +504,9 @@ outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
   -- source: content hash of the version whose non-document files the entry has
   -- documents: JSON [{path, hash, size}], at most 129 (128 plus a migration override)
 texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)
+  -- the payload only; refs and staged_at here are unused (0 and NULL)
+text_refs(hash TEXT PRIMARY KEY, refs INTEGER NOT NULL, staged_at INTEGER)
+  -- each text's references and staging time, one row per texts row
 ops(id TEXT PRIMARY KEY, seq INTEGER NOT NULL)
   -- rollbacks that committed, with their entry; deleted when that entry is acknowledged
 ```
@@ -515,15 +518,17 @@ version, not file by file: a bundle may hold 20,000 files, whose list must
 not travel through the outbox. The host keeps the file list of every source
 it started. Documents are listed in the entry itself.
 
-**Text references.** `refs` counts every place that needs a text: one per
+**Text references.** `text_refs.refs` counts every place that needs a text:
+they live apart from the text rows, so changing a count rewrites a small
+row and never a large text's overflow pages. It counts one per
 document of each unacknowledged entry (two paths with the same text count
 twice), one per `recorded` row and one per document of a pending rollback
 intent. A text therefore stays in `texts` while it is the recorded text of a
 document, even after every entry that listed it is acknowledged, and later
 entries reuse it without loading the document. Every operation that releases
-texts ends by deleting rows with `refs <= 0`, except staged rows (a non-null
-`staged_at`), which wait for the operation that staged them; `sync` deletes
-unreferenced staged rows after one hour.
+texts ends by deleting texts with `refs <= 0` (both rows), except staged
+ones (a non-null `staged_at`), which wait for the operation that staged
+them; `sync` deletes unreferenced staged texts after one hour.
 
 ### Recording
 
@@ -774,9 +779,16 @@ disk quota; the host side, what it measures and when, is in the
   back, so a refused edit records and changes nothing. `restore`, rollback
   intents and activations are not checked.
 * Each VM's connection sets `PRAGMA wal_autocheckpoint = 64` before its
-  first transaction. Every transaction counts what it writes (string
-  lengths × 3 for text, base64 lengths for data); after one that wrote more
-  than 128 KiB, `PRAGMA wal_checkpoint(TRUNCATE)` follows the commit.
+  first transaction. Every INSERT, UPDATE and DELETE of the app goes
+  through `write`, which counts an upper bound of the log frames it writes:
+  the pages its values span and two pages per row it changed (`changes()`).
+  Values count at the size the caller passes (base64 data, texts whose
+  UTF-8 size is known), else as UTF-8 up to 4,096 characters and three
+  bytes per character above. After a transaction counted above 32 pages, `PRAGMA
+  wal_checkpoint(TRUNCATE)` follows the commit. The log reserve's
+  transaction terms are this transaction's count + 16 pages, and the
+  recording's pages + 2 per listed document (the reference and recorded
+  rows it rewrites) + 16.
 * `setBudget` writes nothing when the budget is unchanged, its deadline is
   no later than the new one, and more than half of the lifetime is left; a
   shorter lifetime always replaces a longer one.
@@ -788,6 +800,12 @@ disk quota; the host side, what it measures and when, is in the
   closed.
 
 ### Initialization and migration
+
+A database without `text_refs` (from before it existed) gets it before its
+first transaction or schema pass, in one `BEGIN IMMEDIATE` transaction that
+creates the table and copies every text's `refs` and `staged_at` into it.
+The table's existence marks the move as done; references and staging then
+behave exactly as before.
 
 A database without `meta.store` is initialized by the first transaction that
 passes the activation gate, before anything else in it:

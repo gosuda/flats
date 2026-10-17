@@ -26,6 +26,7 @@ import {
   validateUpdate,
   structureCount,
   validateIncremental,
+  write,
 } from "./storage.js";
 import { EDIT_LIMITS, outline, planEdit } from "./edit.js";
 import * as revisions from "./revisions.js";
@@ -506,7 +507,7 @@ async function edit(request, env, d) {
       // People's unrecorded edits become their own revision first.
       if (revisions.textDirty(db))
         revisions.record(db, { kind: "person", ...shape });
-      db.exec("DELETE FROM flats_docs_groups");
+      write(db, "DELETE FROM flats_docs_groups");
       const s = activate(
         db,
         d,

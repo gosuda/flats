@@ -357,9 +357,11 @@ would commit them and after its writes:
 
 **Write-ahead log.** The worker's connections restart the log after 64
 frames (`PRAGMA wal_autocheckpoint = 64`), and the worker truncates it
-(`PRAGMA wal_checkpoint(TRUNCATE)`) right after every transaction that
-wrote more than 128 KiB, such as a compaction, a recorded revision or a
-large edit. Before each budget measurement the host also truncates a log
+(`PRAGMA wal_checkpoint(TRUNCATE)`) right after every transaction that may
+have written more than 32 pages (each write counts the pages its values
+span and two per changed row), such as a compaction, a recorded revision or
+a large edit. Text reference counts are kept apart from the texts, so
+recording a revision rewrites no unchanged document's text. Before each budget measurement the host also truncates a log
 above 256 KiB (`checkpoint` host operation), so `other` holds at most about
 that much log. The check reserves room for the log beyond it: 64 frames
 plus the largest of a 128-page transaction, the checked transaction's own
@@ -368,7 +370,7 @@ writes and the coming revision's pages, with 4 KiB pages at least about
 edits to be admitted. An idle document writes nothing to its log: an
 unchanged budget is rewritten only when it is half expired, and a sync
 with nothing to do changes no page. The remaining slack: during a
-transaction that writes more than 128 KiB the log holds it until the
+transaction above that size the log holds it until the
 truncation right after its commit, and a reader that keeps SQLite from
 restarting or truncating the log for long leaves it larger until the next
 measurement, which includes it and truncates it again.

@@ -12,8 +12,8 @@ import {
   compact,
   digest,
   validateIncremental,
-  noteWrite,
-  writtenBytes,
+  write,
+  writtenPages,
   WAL_AUTOCHECKPOINT,
 } from "./storage.js";
 
@@ -30,33 +30,57 @@ export function getMeta(db, key) {
   return row ? JSON.parse(row.value) : null;
 }
 function setMeta(db, key, value) {
-  if (value === null) db.exec("DELETE FROM flats_docs_meta WHERE key=?", [key]);
+  if (value === null)
+    write(db, "DELETE FROM flats_docs_meta WHERE key=?", [key]);
   else {
     const json = JSON.stringify(value);
-    noteWrite(3 * json.length);
-    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [key, json]);
+    write(db, "INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [
+      key,
+      json,
+    ]);
   }
 }
 
 // --- texts and their references ---
 
-function addRef(db, hash, text) {
-  const row = db.query("SELECT refs FROM flats_docs_texts WHERE hash=?", [
+// A text's reference count and staging time live in flats_docs_text_refs,
+// apart from its row in flats_docs_texts, so changing them never rewrites
+// a large text (storage.js ensureTextRefs). Every text row has a refs row.
+function refsOf(db, hash) {
+  return db.query("SELECT refs FROM flats_docs_text_refs WHERE hash=?", [
     hash,
   ])[0];
-  if (row) {
-    db.exec("UPDATE flats_docs_texts SET refs=refs+1 WHERE hash=?", [hash]);
+}
+function insertText(db, hash, text, refs, stagedAt, size) {
+  write(
+    db,
+    "INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)",
+    [hash, text],
+    size === undefined ? undefined : size + 1024,
+  );
+  write(db, "INSERT INTO flats_docs_text_refs VALUES(?,?,?)", [
+    hash,
+    refs,
+    stagedAt,
+  ]);
+}
+// addRef adds a reference, storing the text when it is new; size, when the
+// caller has it, is its UTF-8 size.
+function addRef(db, hash, text, size) {
+  if (refsOf(db, hash)) {
+    write(db, "UPDATE flats_docs_text_refs SET refs=refs+1 WHERE hash=?", [
+      hash,
+    ]);
     return;
   }
   if (typeof text !== "string") throw new Error("revision text is missing");
-  noteWrite(3 * text.length);
-  db.exec("INSERT INTO flats_docs_texts VALUES(?,?,1,NULL)", [hash, text]);
+  insertText(db, hash, text, 1, null, size);
 }
 // release drops one reference. The text stays until dropUnused at the end
 // of the operation: a later document of the same operation may reference
 // it again.
 function release(db, hash) {
-  db.exec("UPDATE flats_docs_texts SET refs=refs-1 WHERE hash=?", [hash]);
+  write(db, "UPDATE flats_docs_text_refs SET refs=refs-1 WHERE hash=?", [hash]);
 }
 function textOf(db, hash) {
   return db.query("SELECT text FROM flats_docs_texts WHERE hash=?", [hash])[0]
@@ -99,10 +123,10 @@ function documentFile(db, path, known) {
     const text = given ?? committedText(db, path);
     hash = digest(text);
     size = utf8Bytes(text);
-    addRef(db, hash, text);
+    addRef(db, hash, text, size);
   }
   if (rec) release(db, rec.hash);
-  db.exec("INSERT OR REPLACE INTO flats_docs_recorded VALUES(?,?,?,?,?)", [
+  write(db, "INSERT OR REPLACE INTO flats_docs_recorded VALUES(?,?,?,?,?)", [
     path,
     pos.epoch,
     pos.seq,
@@ -130,7 +154,8 @@ export function textDirty(db) {
 // --- groups ---
 
 export function touchGroup(db, editor, label, now = Date.now()) {
-  db.exec(
+  write(
+    db,
     "INSERT INTO flats_docs_groups VALUES(?,?,?,?,1) ON CONFLICT(editor) DO UPDATE SET label=excluded.label,last_at=excluded.last_at,dirty=1",
     [editor, String(label).slice(0, 200), now, now],
   );
@@ -187,8 +212,8 @@ export function record(db, o) {
     .filter((a) => typeof a === "string" && a)
     .map((a) => a.slice(0, 200))
     .slice(0, MAX_AUTHORS);
-  noteWrite(3 * JSON.stringify(documents).length + 4096);
-  db.exec(
+  write(
+    db,
     "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,rollback_of,op,source,documents) VALUES(?,?,?,?,?,?,?,?)",
     [
       Date.now(),
@@ -202,7 +227,7 @@ export function record(db, o) {
     ],
   );
   const seq = db.query("SELECT last_insert_rowid() AS seq")[0].seq;
-  for (const d of documents) addRef(db, d.hash, texts[d.hash]);
+  for (const d of documents) addRef(db, d.hash, texts[d.hash], d.size);
   // The host stores every text the previous entry did not list as a new
   // blob when it imports this one; until it reports that blob stored, the
   // text counts toward the disk quota (see checkDiskQuota). The documents
@@ -218,9 +243,9 @@ export function record(db, o) {
   if (added) setMeta(db, "unimported", unimported);
   clearReservations(db);
   setMeta(db, "newest", { source: o.source, documents });
-  db.exec("UPDATE flats_docs_groups SET dirty=0");
+  write(db, "UPDATE flats_docs_groups SET dirty=0");
   if (o.op && o.kind === "rollback")
-    db.exec("INSERT OR REPLACE INTO flats_docs_ops VALUES(?,?)", [o.op, seq]);
+    write(db, "INSERT OR REPLACE INTO flats_docs_ops VALUES(?,?)", [o.op, seq]);
   return seq;
 }
 
@@ -228,18 +253,23 @@ export function record(db, o) {
 // so the caller need not hold it meanwhile.
 function store(db, text) {
   const hash = digest(text);
-  if (
-    !db.query("SELECT 1 AS x FROM flats_docs_texts WHERE hash=?", [hash]).length
-  ) {
-    noteWrite(3 * text.length);
-    db.exec("INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)", [hash, text]);
-  }
-  return { hash, size: utf8Bytes(text) };
+  const size = utf8Bytes(text);
+  if (!refsOf(db, hash)) insertText(db, hash, text, 0, null, size);
+  return { hash, size };
 }
 // dropUnused deletes the texts nothing references any more, except staged
 // ones. Every operation that releases or stores texts ends with it.
 export function dropUnused(db) {
-  db.exec("DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NULL");
+  deleteTexts(db, "refs<=0 AND staged_at IS NULL");
+}
+// deleteTexts deletes the texts whose refs rows match where, with those rows.
+function deleteTexts(db, where, params = []) {
+  write(
+    db,
+    `DELETE FROM flats_docs_texts WHERE hash IN (SELECT hash FROM flats_docs_text_refs WHERE ${where})`,
+    params,
+  );
+  write(db, `DELETE FROM flats_docs_text_refs WHERE ${where}`, params);
 }
 
 const currentShape = (content) => ({
@@ -255,7 +285,7 @@ function beforeShape(db) {
 // deletes every group.
 function recordPeople(db, shape) {
   if (textDirty(db)) record(db, { kind: "person", ...shape });
-  db.exec("DELETE FROM flats_docs_groups");
+  write(db, "DELETE FROM flats_docs_groups");
 }
 
 // --- flat activation ---
@@ -317,7 +347,7 @@ function initialize(db, content, generation) {
     force: true,
     authors: [],
   });
-  db.exec("DELETE FROM flats_docs_conflicts");
+  write(db, "DELETE FROM flats_docs_conflicts");
 }
 
 // releaseIntent drops the intent and the references it holds.
@@ -383,7 +413,7 @@ export function ensureFlat(db, content, generation) {
         paths: prior.paths.filter((p) => !Object.hasOwn(before, p)),
         overrides: before,
       });
-    db.exec("DELETE FROM flats_docs_groups");
+    write(db, "DELETE FROM flats_docs_groups");
     record(db, {
       kind: "agent",
       message: mine?.message || "",
@@ -401,13 +431,13 @@ export function ensureFlat(db, content, generation) {
 
 // finishActivation marks this version as the flat's active one.
 function finishActivation(db, content, generation) {
-  db.exec("DELETE FROM flats_docs_groups");
+  write(db, "DELETE FROM flats_docs_groups");
   // Documents this version no longer has stop holding their recorded text:
   // the entries above hold what they last contained.
   const paths = new Set(content.documents.map((d) => d.path));
   for (const row of db.query("SELECT doc,hash FROM flats_docs_recorded"))
     if (!paths.has(row.doc)) {
-      db.exec("DELETE FROM flats_docs_recorded WHERE doc=?", [row.doc]);
+      write(db, "DELETE FROM flats_docs_recorded WHERE doc=?", [row.doc]);
       release(db, row.hash);
     }
   setMeta(db, "active", {
@@ -427,7 +457,7 @@ function resetDocument(db, content, source, text, generation) {
     "flats_docs_activations",
     "flats_docs_documents",
   ])
-    db.exec(`DELETE FROM ${table} WHERE doc=?`, [source.path]);
+    write(db, `DELETE FROM ${table} WHERE doc=?`, [source.path]);
   activate(
     db,
     { path: source.path, hash: source.hash, text },
@@ -449,8 +479,7 @@ export function restoreText(db, content, source, text, op, generation) {
   } catch (e) {
     if (e?.code !== "capacity") throw e;
     resetDocument(db, content, source, text, generation);
-    noteWrite(3 * text.length);
-    db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
+    write(db, "UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
       text,
       source.path,
     ]);
@@ -475,8 +504,7 @@ export function restoreText(db, content, source, text, op, generation) {
   } finally {
     s.doc.destroy();
   }
-  noteWrite(3 * text.length);
-  db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
+  write(db, "UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
     text,
     source.path,
   ]);
@@ -497,14 +525,13 @@ export function sync(db, content, generation, now = Date.now()) {
   if (due.length && !stale(db, generation)) {
     if (textDirty(db)) record(db, { kind: "person", ...currentShape(content) });
     for (const g of due)
-      db.exec("DELETE FROM flats_docs_groups WHERE editor=?", [g.editor]);
+      write(db, "DELETE FROM flats_docs_groups WHERE editor=?", [g.editor]);
   }
   // Nothing unrecorded: no revision is coming, so nothing stays reserved.
   if (!textDirty(db)) clearReservations(db);
-  db.exec(
-    "DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NOT NULL AND staged_at<?",
-    [now - STAGED_TTL],
-  );
+  deleteTexts(db, "refs<=0 AND staged_at IS NOT NULL AND staged_at<?", [
+    now - STAGED_TTL,
+  ]);
   dropUnused(db);
   return {
     store: getMeta(db, "store"),
@@ -566,21 +593,23 @@ export function ack(db, store, through, budget) {
       db,
       documents.map((d) => d.hash),
     );
-    db.exec("DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
-    db.exec("DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
+    write(db, "DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
+    write(db, "DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
   }
   dropUnused(db);
 }
 
 export function stage(db, text, now = Date.now()) {
-  if (typeof text !== "string" || utf8Bytes(text) > LIMITS.text)
+  const size = typeof text === "string" ? utf8Bytes(text) : Infinity;
+  if (size > LIMITS.text)
     throw coded("invalid", "a staged text is at most 1 MiB");
   const hash = digest(text);
-  noteWrite(3 * text.length);
-  db.exec(
-    "INSERT INTO flats_docs_texts VALUES(?,?,0,?) ON CONFLICT(hash) DO UPDATE SET staged_at=excluded.staged_at",
-    [hash, text, now],
-  );
+  if (refsOf(db, hash))
+    write(db, "UPDATE flats_docs_text_refs SET staged_at=? WHERE hash=?", [
+      now,
+      hash,
+    ]);
+  else insertText(db, hash, text, 0, now, size);
   return hash;
 }
 
@@ -812,12 +841,13 @@ function metaLength(db, key) {
 }
 // recordingPages bounds the pages recording the pending documents will
 // allocate: every document's text as its own row (documents with the same
-// text now may differ by then), never counting pages it frees, and one
-// entry with its outbox row, meta.newest and meta.unimported.
-function recordingPages(db, pending) {
+// text now may differ by then), never counting pages it frees, one entry
+// with its outbox row, meta.newest and meta.unimported, and a page per
+// listed document whose reference count changes.
+function recordingPages(db, pending, listed) {
   const docs = Object.values(pending);
   if (!docs.length) return 0;
-  let pages = ENTRY_SLACK_PAGES;
+  let pages = ENTRY_SLACK_PAGES + listed;
   for (const p of docs) pages += valuePages(p.bytes) + DOC_SLACK_PAGES;
   const list = 3 * metaLength(db, "newest") + 300 * docs.length + 4096;
   return (
@@ -828,15 +858,17 @@ function recordingPages(db, pending) {
 }
 // walReserve is the room the check keeps for the write-ahead log beyond
 // what the host measured: its 32-byte header and, for WAL_AUTOCHECKPOINT
-// frames and the largest coming transaction (this one, the recording, or
-// another of at most WAL_TX_PAGES pages), frames of a page plus a 24-byte
-// header.
-function walReserve(recording) {
-  const own = valuePages(writtenBytes()) + DOC_SLACK_PAGES;
+// frames and the largest coming transaction, frames of a page plus a
+// 24-byte header. That transaction is this one (as counted by write), the
+// recording (its new pages, plus the reference and recorded rows it
+// rewrites for every listed document), or another of at most WAL_TX_PAGES
+// pages: a larger one is followed by a truncating checkpoint.
+function walReserve(recording, listed) {
+  const own = writtenPages() + DOC_SLACK_PAGES,
+    record = recording ? recording + 2 * listed + ENTRY_SLACK_PAGES : 0;
   return (
     32 +
-    (WAL_AUTOCHECKPOINT + Math.max(WAL_TX_PAGES, own, recording)) *
-      (pageSize + 24)
+    (WAL_AUTOCHECKPOINT + Math.max(WAL_TX_PAGES, own, record)) * (pageSize + 24)
   );
 }
 // quotaStats counts, for tests, exact sizes taken from the edited text in
@@ -866,13 +898,14 @@ export function checkDiskQuota(db, edited) {
   const pending = getMeta(db, "pending") || {};
   if (edited)
     pending[edited.path] = { bytes: edited.text.length * 3, exact: false };
+  const listed = getMeta(db, "newest")?.documents.length || 0;
   const total = () => {
-    const recording = recordingPages(db, pending);
+    const recording = recordingPages(db, pending, listed);
     let n =
       budget.other +
       (pageCount(db) + recording) * pageSize +
       unimportedBytes(db) +
-      walReserve(recording);
+      walReserve(recording, listed);
     for (const p of Object.values(pending)) n += p.bytes;
     return n;
   };
