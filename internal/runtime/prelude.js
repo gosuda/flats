@@ -1,7 +1,7 @@
 // Flats server prelude: evaluated once per QuickJS runtime before the flat's
-// module. Provides fetch, Response, Headers, Request, URL, URLSearchParams,
-// btoa/atob, console, the env object and the dispatch entry points the Go
-// side calls with JSON strings.
+// module, then initialized by __flats_init. Provides fetch, Response,
+// Headers, Request, URL, URLSearchParams, btoa/atob, console, the env object
+// and the dispatch entry points the Go side calls with JSON strings.
 (function () {
   "use strict";
   const host = globalThis.__flats_host;
@@ -284,7 +284,8 @@
 
   // Trusted, read-only deployment metadata for apps coordinating overlapping
   // workers. The host generation orders activations, including previews and rollbacks.
-  const runtimeGeneration = call("runtime.generation", []);
+  // Set by __flats_init (below), as is env.
+  let runtimeGeneration;
   const utf8Bytes = (value) => {
     const s = String(value), out = new Uint8Array(s.length * 3);
     let used = 0;
@@ -479,7 +480,17 @@
     delete(key) { return call("files.delete", [String(key)]); },
     list(prefix = "") { return call("files.list", [String(prefix)]); },
   });
-  const env = Object.freeze(Object.assign({}, call("env", []), { DB, FILES }));
+  let env;
+  // Per-runtime values come from the host in a separate one-shot call, so
+  // the state after the prelude and the built-in docs module holds no
+  // generation, environment or secret (a document image may be taken then).
+  // The host calls it before the flat's module loads (after it, for document
+  // images) and before any handler runs.
+  globalThis.__flats_init = () => {
+    delete globalThis.__flats_init;
+    runtimeGeneration = call("runtime.generation", []);
+    env = Object.freeze(Object.assign({}, call("env", []), { DB, FILES }));
+  };
 
   // --- dispatch ---
   let mod = null;

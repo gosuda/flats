@@ -56,6 +56,19 @@ type Option struct {
 	// FORK (flats): size of the relocated C stack (0 = DefaultStackSize =
 	// 1 MiB); see stack.go.
 	StackSize uint32
+	// FORK (flats): a prepared runtime from NewShell, consumed by this New
+	// (its runtime-wide settings must match; see Shell.Compatible).
+	Shell *Shell
+	// FORK (flats): restore this runtime from an Image instead of creating a
+	// new QuickJS runtime (see image.go). ImageFunctions are the Go
+	// functions registered, in registration order, in the captured runtime.
+	Image          *Image
+	ImageFunctions []Function
+	// FORK (flats): ImageBinding is the caller's part of the image key: it
+	// must identify everything the caller evaluated before capturing.
+	ImageBinding string
+	// FORK (flats): Census, when set, counts guest events (tests only).
+	Census *Census
 }
 
 // EvalOption configures JavaScript evaluation behavior in QuickJS context.
