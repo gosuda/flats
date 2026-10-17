@@ -98,7 +98,7 @@ in [docs/internal/docs-app.md](../../../docs/internal/docs-app.md).
 ## Operational limits
 
 Pending browser edits survive connection loss, not reload or browser crash;
-the page warns before closing with pending edits. Acknowledged edits survive
+the page warns before a reload or close loses local text the server does not have, also after sync stopped. Acknowledged edits survive
 worker death/restart and compaction; restoring an older database produces
 `diverged` for clients that remember the lost history. A document can reach
 its structure/history cap before its visible text cap (see the

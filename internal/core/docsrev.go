@@ -43,6 +43,9 @@ const (
 	maxRevisionDocuments = 128
 	// restoreWindow is how long after it is sent a restore may commit.
 	restoreWindow = 12 * time.Second
+	// docsBudgetTTL is how long a docs worker relies on a disk budget
+	// without a refresh: several ticks, so a skipped tick does not matter.
+	docsBudgetTTL = 2 * time.Minute
 )
 
 var errNotRunningDocs = fmt.Errorf("%w: the document is not running", ErrNotDeployed)
@@ -247,7 +250,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 	}
 	// Repair an acknowledgement a crash lost: the cursor is durable.
 	if st.ImportStore != "" && st.ImportSeq > 0 {
-		if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": st.ImportStore, "through": st.ImportSeq}, nil); err != nil && !errors.Is(err, ErrConflict) {
+		if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": st.ImportStore, "through": st.ImportSeq, "budget": s.docsBudget(slugName)}, nil); err != nil && !errors.Is(err, ErrConflict) {
 			return res, err
 		}
 	}
@@ -320,7 +323,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 			}
 			last := ready[len(ready)-1].Seq
 			st.ImportStore, st.ImportSeq, after = page.Store, last, last
-			if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": page.Store, "through": last}, nil); err != nil {
+			if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": page.Store, "through": last, "budget": s.docsBudget(slugName)}, nil); err != nil {
 				s.logf("acknowledge revisions of %s: %v", slugName, err)
 			}
 		}
@@ -455,15 +458,16 @@ func (s *Service) syncImportDocsLocked(ctx context.Context, slugName string) (do
 	return res, syncErr
 }
 
-// pushDocsBudgetLocked tells the running docs worker the per-flat disk
-// quota and how much of it the flat's directory uses apart from the
-// worker's database file. The worker checks people's edits and live agent
+// docsBudget is the disk budget of a running document, measured now: the
+// per-flat disk quota (0 = off), how much of it the flat's directory uses
+// apart from the worker's database file, and how long the worker may rely
+// on it without a refresh. The worker checks people's edits and live agent
 // edits against it in the transaction that would commit them, counting its
-// database as it is then and the revisions still to be stored
-// (docs/revision-store.md#disk-quota). A quota of 0 turns the check off.
-// The caller holds the flat lock.
-func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) error {
-	body := map[string]int64{"quota": 0, "other": 0}
+// database as it is then and the revisions still to be stored; it admits no
+// live edit while its budget is missing or expired
+// (docs/revision-store.md#disk-quota). The caller holds the flat lock.
+func (s *Service) docsBudget(slugName string) map[string]int64 {
+	body := map[string]int64{"quota": 0, "other": 0, "ttl_ms": docsBudgetTTL.Milliseconds()}
 	if quota := s.diskQuota(); quota > 0 {
 		var db int64
 		if fi, err := os.Stat(filepath.Join(s.dataDirOf(slugName), dbName)); err == nil {
@@ -471,21 +475,32 @@ func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) err
 		}
 		body["quota"], body["other"] = quota, max(0, dirSize(s.flatDir(slugName))-db)
 	}
-	return s.docsHost(ctx, slugName, http.MethodPost, "budget", body, nil)
+	return body
+}
+
+// pushDocsBudgetLocked installs a freshly measured budget in the running
+// docs worker. The caller holds the flat lock.
+func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) error {
+	return s.docsHost(ctx, slugName, http.MethodPost, "budget", s.docsBudget(slugName), nil)
 }
 
 // pushAllDocsBudgets applies a changed disk quota to every running
-// document, each under its flat lock, before the settings call returns.
+// document, each under its flat lock, before the settings call returns,
+// even when the caller has gone. A document it cannot reach keeps its
+// previous budget until that expires (docsBudgetTTL) and then admits no
+// live edit until a later refresh succeeds; each failure is a warn event of
+// that flat.
 func (s *Service) pushAllDocsBudgets(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
 	for _, slugName := range s.runningDocs() {
 		unlock, err := s.lockStorageCtx(ctx, slugName)
-		if err != nil {
-			continue
+		if err == nil {
+			err = s.pushDocsBudgetLocked(ctx, slugName)
+			unlock()
 		}
-		if err := s.pushDocsBudgetLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
-			s.logf("disk budget of %s: %v", slugName, err)
+		if err != nil && !errors.Is(err, errNotRunningDocs) {
+			s.Event(ctx, slugName, "warn", "quota", "the changed disk quota could not be applied to the running document yet: "+err.Error()+"; live edits are refused once its previous budget expires, until a refresh succeeds", nil)
 		}
-		unlock()
 	}
 }
 

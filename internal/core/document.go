@@ -469,8 +469,9 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	}
 	// The worker checks the edit against the disk quota; measure what the
 	// flat uses now, so a quota or usage change since the last import counts.
+	// Without that the edit cannot be checked, so it is not sent.
 	if err := s.pushDocsBudgetLocked(ctx, slugName); err != nil {
-		s.logf("disk budget of %s: %v", slugName, err)
+		return DocumentEdit{}, fmt.Errorf("%w: the disk quota could not be checked (%v); nothing changed, retry", ErrUnavailable, err)
 	}
 	// The audit record outlives the caller: a commit near the deadline or a
 	// cancelled request must still leave its event.

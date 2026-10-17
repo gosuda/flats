@@ -264,7 +264,8 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   Reconnect uses exponential backoff with jitter, state vectors, browser
   online/offline events and a 45-second heartbeat silence timeout.
   Divergence or an unrecoverable rejection stops sync, disables editing and
-  offers local Markdown download and reload; buffered edits are retained.
+  offers local Markdown download and reload; buffered edits are retained,
+  and the page warns before a reload or close would lose them.
 
 ### Agent live edits (MCP `update_document`)
 
@@ -539,11 +540,12 @@ for a shape (a source and a list of document paths):
    activation merge). They are stored like loaded texts but never touch
    `recorded`.
 3. When the entry is not forced and its source and documents equal
-   `meta.newest`, stop: no entry.
-4. Otherwise insert the entry, add a reference to each listed text, add
-   the size of every text `meta.newest` did not list to `meta.unimported`,
-   delete `meta.pending`, set `meta.newest`, clear `dirty` on every group,
-   and for a rollback record its operation id in `ops` with the entry's seq.
+   `meta.newest`, delete `meta.pending` and stop: no entry.
+4. Otherwise insert the entry, add a reference to each listed text, record
+   the size of the texts `meta.newest` did not list under the entry's seq in
+   `meta.unimported`, delete `meta.pending`, set `meta.newest`, clear `dirty`
+   on every group, and for a rollback record its operation id in `ops` with
+   the entry's seq.
 
 Authors are the given label (an agent's or a rollback's), else the labels of
 the groups that are `dirty` at that moment, in first-edit order; at most 32,
@@ -702,12 +704,12 @@ even while an activation keeps failing.
 | `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null |
 | `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, message, rollback_of?, op?, source, documents}], more}` |
 | `GET /_docs/host/revisions/text?hash=` | `{hash, text}` from `texts`; 404 when absent |
-| `POST /_docs/host/revisions/ack` | `{store, through}`: deletes entries up to `through` with their `ops` rows, releasing their texts, and deletes `meta.unimported` once the outbox is empty. Idempotent; another `store` is refused with 409 |
+| `POST /_docs/host/revisions/ack` | `{store, through, budget?}`: deletes entries up to `through` with their `ops` rows and `meta.unimported` sizes, releasing their texts, and installs `budget` (as `budget` below) in the same transaction. Idempotent; another `store` is refused with 409 |
 | `POST /_docs/host/revisions/stage` | `{text}` (at most 1 MiB UTF-8): stores it with `staged_at`; returns `{hash}` |
 | `POST /_docs/host/revisions/intent` | `{id, source, kind, label, message, rollback_of, documents}`: writes `meta.intent` (texts must be staged or present) |
 | `POST /_docs/host/revisions/restore` | `{id, label, rollback_of, documents: [{path, hash}], deadline_ms}`: a rollback within the running version; its documents must be exactly the running version's. Returns `{store, seq}` |
 | `GET /_docs/host/revisions/op?id=` | `{committed, seq?}`: whether a rollback with this id committed and its entry is still unacknowledged |
-| `POST /_docs/host/revisions/budget` | `{quota, other}` (non-negative integers): sets `meta.budget` for the [disk quota](#disk-quota) check; quota 0 deletes it and `meta.pending` |
+| `POST /_docs/host/revisions/budget` | `{quota, other, ttl_ms}` (non-negative integers, `ttl_ms` 1 ms to 24 hours): sets `meta.budget` for the [disk quota](#disk-quota) check; quota 0 turns the check off and deletes `meta.pending` |
 
 Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
 `conflict`, 422 `capacity` or 503 `unavailable`.
@@ -736,29 +738,40 @@ The worker checks people's edits and live agent edits against the per-flat
 disk quota; the host side, what it measures and when, is in the
 [revision store](../revision-store.md#disk-quota).
 
-* `meta.budget` is `{quota, other}` as the host last set it. Without it
-  nothing is checked or reserved.
-* `meta.pending` maps each document people edited since it was last recorded
-  to `{bytes, exact}`, its committed text's UTF-8 size. A person's update
-  sets its document's size to the O(1) bound of three bytes per UTF-16 unit;
-  when the check would fail with the bounds, every pending size is made
-  exact first (the edited text, and the other documents' committed texts).
-  `record` deletes the map. When a budget is set where none was, it starts
-  with the exact sizes of the documents whose committed position differs
-  from their `recorded` row.
-* `meta.unimported` is the size of the texts recorded entries added that the
-  host has not imported yet: `record` adds them and an `ack` that empties
-  the outbox deletes it.
+* `meta.budget` is `{quota, other, until}`: the host's last budget and when
+  it expires (the worker's clock plus the host's `ttl_ms`). The `budget`
+  host operation and an `ack` carrying `budget` install it.
+* Without a budget, or after `until`, the check fails as transient: the
+  transaction rolls back, a WebSocket room is dropped (its clients reconnect
+  with 1012 and resend), and the edit endpoint answers 503 `unavailable`.
+  With quota 0 nothing else is checked.
+* `meta.pending` maps each document people edited since it was last
+  recorded to an upper bound of its text's UTF-8 size: a person's update
+  sets three bytes per UTF-16 unit of its document. `record` deletes the map,
+  including when it records nothing because the text ended unchanged, and
+  `sync` deletes it when no document is dirty. When a quota starts where
+  none applied, the map starts with the exact sizes of the documents whose
+  committed position differs from their `recorded` row.
+* `meta.unimported` maps each entry's seq to the size of the texts it added
+  that the previous entry did not list; `ack` deletes the entries it
+  acknowledges.
 * The check runs last in the transaction, after every write: a WebSocket
-  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. It refuses
-  with `disk_quota` when `other` + `page_count` × `page_size` +
-  `unimported` + 2 × the sum of `pending` exceeds the quota; the transaction
-  rolls back, so a refused edit records and changes nothing. `restore`,
-  rollback intents and activations are not checked.
+  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. The total
+  is `other` + `page_count` × `page_size` + `unimported` + the bound of the
+  pending revision: per pending document its bound in bytes plus its
+  overflow pages rounded up and 10 pages, and per entry twice the pages of
+  `meta.newest` (+25 %) and 16 pages. When that exceeds the quota, a
+  savepoint records the pending documents as a `person` entry of the shape
+  of `meta.newest`, measures `page_count` and `unimported`, and rolls back;
+  that measured total decides. Over the quota it refuses with `disk_quota`
+  and the transaction rolls back, so a refused edit records and changes
+  nothing. `restore`, rollback intents and activations are not checked.
 * The browser treats `disk_quota` like the other deterministic rejections:
   it stops syncing, disables editing, keeps its pending updates and offers
   the local Markdown for download, saying that the document is out of disk
-  space.
+  space. While it holds text the server does not have (pending updates, or a
+  change too large to queue), it warns before the page is reloaded or
+  closed.
 
 ### Initialization and migration
 

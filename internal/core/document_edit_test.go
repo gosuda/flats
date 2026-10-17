@@ -354,4 +354,23 @@ func TestDocsDiskBudget(t *testing.T) {
 	if events, _ := s.Events(ctx, "notes", "document", 0, 10); len(events) != 0 {
 		t.Fatal("refused edit was logged as applied", events)
 	}
+	if b := rt.budgets[len(rt.budgets)-1]; b["ttl_ms"] != float64(docsBudgetTTL.Milliseconds()) {
+		t.Fatal("budget without its lifetime", b)
+	}
+	// A budget that cannot be installed stops update_document before the
+	// edit is sent, and a settings change says so in the flat's log.
+	rt.noBudget = true
+	_, err = s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "replace", Find: "ok", With: &with}}, nil, ViaMCP)
+	if ErrorCategory(err) != "unavailable" || !strings.Contains(err.Error(), "disk quota could not be checked") {
+		t.Fatal("edit without a budget", err)
+	}
+	if events, _ := s.Events(ctx, "notes", "document", 0, 10); len(events) != 0 {
+		t.Fatal("edit without a budget was applied", events)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "654321"}); err != nil {
+		t.Fatal(err)
+	}
+	if events, _ := s.Events(ctx, "notes", "quota", 0, 10); len(events) != 1 || events[0].Level != "warn" || !strings.Contains(events[0].Message, "could not be applied") {
+		t.Fatal("failed budget push not logged", events)
+	}
 }

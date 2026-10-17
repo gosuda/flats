@@ -88,6 +88,11 @@ func startAppWithEnvironment(t *testing.T, data, text, version string, environme
 	}
 	a := &app{srv: httptest.NewServer(inst), inst: inst, data: data, pid: int(workerPID.Load())}
 	t.Cleanup(a.stop)
+	// The host installs a disk budget before the worker admits live edits;
+	// these tests run without a quota.
+	if status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": 0, "other": 0, "ttl_ms": 24 * 60 * 60 * 1000}); status != 200 {
+		t.Fatal("budget", status, out)
+	}
 	return a
 }
 func (a *app) stop() {

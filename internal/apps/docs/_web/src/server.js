@@ -648,7 +648,9 @@ async function revisionOp(request, env, url) {
         return json(404, { code: "not_found", message: "no such text" });
       result = { hash: url.searchParams.get("hash"), text };
     } else if (op === "ack" && method === "POST") {
-      transaction(db, () => revisions.ack(db, body.store, body.through));
+      transaction(db, () =>
+        revisions.ack(db, body.store, body.through, body.budget),
+      );
       result = { ok: true };
     } else if (op === "stage" && method === "POST")
       result = { hash: transaction(db, () => revisions.stage(db, body.text)) };

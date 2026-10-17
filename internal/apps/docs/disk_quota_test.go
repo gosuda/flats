@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 )
@@ -44,17 +45,17 @@ func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 		t.Fatal("sync", status, sync)
 	}
 	entries := a.outbox(t)
-	if status, out := a.hostOp(t, "POST", "ack", map[string]any{"store": sync["store"], "through": entries[len(entries)-1].Seq}); status != 200 {
+	if status, out := a.hostOp(t, "POST", "ack", map[string]any{"store": sync["store"], "through": entries[len(entries)-1].Seq, "budget": map[string]any{"quota": 0, "other": 0, "ttl_ms": 60000}}); status != 200 {
 		t.Fatal("ack", status, out)
 	}
 	before := a.document(t)["markdown"].(string)
 	budget := func(quota, other int64) {
 		t.Helper()
-		if status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": quota, "other": other}); status != 200 {
+		if status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": quota, "other": other, "ttl_ms": 60000}); status != 200 {
 			t.Fatal("budget", status, out)
 		}
 	}
-	for _, bad := range []map[string]any{{"quota": -1, "other": 0}, {"quota": 1}, {"quota": 1.5, "other": 0}} {
+	for _, bad := range []map[string]any{{"quota": -1, "other": 0, "ttl_ms": 1}, {"quota": 1, "other": 0}, {"quota": 1.5, "other": 0, "ttl_ms": 1}} {
 		if status, _ := a.hostOp(t, "POST", "budget", bad); status != 400 {
 			t.Fatal("invalid budget accepted", bad, status)
 		}
@@ -89,6 +90,22 @@ func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 	}
 	if a.document(t)["markdown"] != edited || len(a.outbox(t)) != count {
 		t.Fatal("refused agent edit changed the document or its history")
+	}
+	// A budget the host did not refresh in time admits nothing: the edit is
+	// a transient failure, so the editor reconnects and resends it.
+	if status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": 0, "other": 0, "ttl_ms": 1}); status != 200 {
+		t.Fatal("budget", status, out)
+	}
+	time.Sleep(10 * time.Millisecond)
+	z := connect(t, a.srv.URL, "private")
+	z.hello(t, nil)
+	z.send(t, map[string]any{"t": "update", "id": "expired", "u": fixture(t).Updates[0].U})
+	z.closed(t, 1012, "resync")
+	if a.document(t)["markdown"] != edited {
+		t.Fatal("edit under an expired budget committed")
+	}
+	if status, _ := a.postEdit(t, hostEdit, ops(map[string]any{"op": "insert", "at": "end", "text": "Agent note."})); status != 503 {
+		t.Fatal("agent edit under an expired budget", status)
 	}
 	// Quota 0 turns the check off.
 	budget(0, 0)

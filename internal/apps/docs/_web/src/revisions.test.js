@@ -461,8 +461,9 @@ test("a text one document releases can be taken up by another in the same activa
   });
 });
 
-// A person's edit as the WebSocket path commits it, quota check included.
-function checkedEdit(db, c, path, text) {
+// A person's edit as the WebSocket path commits it, quota check included:
+// insert text at the end, or delete the last remove characters.
+function checkedEdit(db, c, path, text, remove = 0) {
   transaction(db, () => {
     const s = activate(
       db,
@@ -473,7 +474,8 @@ function checkedEdit(db, c, path, text) {
     );
     const sv = Y.encodeStateVector(s.doc),
       t = s.doc.getText("markdown");
-    t.insert(t.length, text);
+    if (remove) t.delete(t.length - remove, remove);
+    else t.insert(t.length, text);
     append(
       db,
       s,
@@ -505,75 +507,177 @@ const committed = (db, c, path) => {
 const dbBytes = (db) =>
   db.query("PRAGMA page_count")[0].page_count *
   db.query("PRAGMA page_size")[0].page_size;
-const budget = (db, quota, other = 0) =>
-  transaction(db, () => revisions.setBudget(db, { quota, other }));
+const DAY = 24 * 60 * 60 * 1000;
+const budget = (db, quota, other = 0, ttl = DAY) =>
+  transaction(db, () => revisions.setBudget(db, { quota, other, ttl_ms: ttl }));
+const unimported = (db) =>
+  Object.values(revisions.getMeta(db, "unimported") || {}).reduce(
+    (a, b) => a + b,
+    0,
+  );
+// closeGroups closes every edit group, as the host's sync does when due.
+const closeGroups = (db, c) =>
+  transaction(db, () =>
+    revisions.sync(db, c, generation, Date.now() + 600_000),
+  );
+const ackAll = (db, budget) => {
+  const e = entries(db);
+  transaction(db, () =>
+    revisions.ack(db, revisions.getMeta(db, "store"), e.at(-1).seq, budget),
+  );
+};
 
-test("without a disk quota nothing is reserved or refused", () => {
+test("live edits need a budget the host refreshed; quota 0 checks nothing", async () => {
   const db = database(),
     c = content("v1", doc("a.md", "x\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
+  // No budget yet, or one that ran out: the edit fails as transient.
+  const transient = (e) => e.transient === true && e.code === "unavailable";
+  assert.throws(() => checkedEdit(db, c, "a.md", "edit\n"), transient);
+  budget(db, 0, 0, 1);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.throws(() => checkedEdit(db, c, "a.md", "edit\n"), transient);
+  assert.equal(committed(db, c, "a.md"), "x\n");
+  budget(db, 0);
   checkedEdit(db, c, "a.md", "edit\n");
   assert.equal(revisions.getMeta(db, "pending"), null);
-  assert.equal(revisions.getMeta(db, "budget"), null);
+  for (const bad of [
+    { quota: -1, other: 0, ttl_ms: 1 },
+    { quota: 1, other: 0 },
+    { quota: 1, other: 0, ttl_ms: 0 },
+    { quota: 1.5, other: 0, ttl_ms: 1 },
+  ])
+    assert.throws(
+      () => transaction(db, () => revisions.setBudget(db, bad)),
+      (e) => e.code === "invalid",
+    );
 });
 
-test("a person's edit reserves its future revision and is refused when it would not fit", () => {
+test("an admitted person's edit always leaves room for the revision its group stores", () => {
   const db = database(),
     c = content("v1", doc("a.md", "x\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
-  // The created entry is not imported yet: its texts count once more.
-  assert.equal(revisions.getMeta(db, "unimported"), 2);
-  transaction(db, () => revisions.ack(db, revisions.getMeta(db, "store"), 1));
-  assert.equal(revisions.getMeta(db, "unimported"), null);
-  budget(db, dbBytes(db) + 1024 * 1024, 4096);
-  checkedEdit(db, c, "a.md", "small\n");
-  // The edited document will be stored twice when its group closes; far
-  // from the quota, its size is the bound of three bytes per character.
-  assert.deepEqual(revisions.getMeta(db, "pending"), {
-    "a.md": { bytes: 24, exact: false },
-  });
-  // An edit whose document would no longer fit twice is refused, and
-  // nothing of it commits.
-  budget(db, dbBytes(db) + 4096 + 2 * 8 + 100, 4096);
+  budget(db, 0);
+  ackAll(db);
+  const big = "y".repeat(10_000);
+  // The edit's own pages, measured in a transaction that is undone.
+  budget(db, 1 << 30);
+  let after = 0;
+  assert.throws(() =>
+    transaction(db, () => {
+      checkedEdit(db, c, "a.md", big);
+      after = dbBytes(db);
+      throw new Error("undo");
+    }),
+  );
+  // Reserving only twice the text is not enough: recording it takes pages
+  // and rows besides the text, so that quota refuses the edit.
+  const twice = after + 2 * (2 + big.length);
+  budget(db, twice);
   assert.throws(
-    () => checkedEdit(db, c, "a.md", "y".repeat(100)),
+    () => checkedEdit(db, c, "a.md", big),
     (e) =>
       e.code === "disk_quota" && /over its \d+-byte disk quota/.test(e.message),
   );
-  assert.equal(committed(db, c, "a.md"), "x\nsmall\n");
-  assert.deepEqual(revisions.getMeta(db, "pending"), {
-    "a.md": { bytes: 24, exact: false },
-  });
-  // Near the quota the exact size counts: this edit's bound would not fit,
-  // its exact size does (with room for the pages its update takes).
-  const big = "y".repeat(100_000),
-    exact = 2 * (8 + big.length);
-  budget(db, 4096 + dbBytes(db) + exact + 256 * 1024, 4096);
-  assert.ok(2 * 3 * (8 + big.length) > exact + 256 * 1024);
-  checkedEdit(db, c, "a.md", big);
-  assert.deepEqual(revisions.getMeta(db, "pending"), {
-    "a.md": { bytes: 8 + big.length, exact: true },
-  });
-  // Recording the group moves the reservation to the import.
-  transaction(db, () => revisions.sync(db, c, generation, Date.now() + 60_000));
+  assert.equal(committed(db, c, "a.md"), "x\n");
+  // At the smallest quota that admits it, closing its group still fits:
+  // this database with the recorded text, plus the host's blob of it.
+  let quota = twice;
+  for (;;) {
+    budget(db, (quota += 512));
+    try {
+      checkedEdit(db, c, "a.md", big);
+      break;
+    } catch (e) {
+      if (e.code !== "disk_quota") throw e;
+    }
+  }
+  closeGroups(db, c);
   assert.equal(revisions.getMeta(db, "pending"), null);
-  assert.equal(revisions.getMeta(db, "unimported"), 8 + 100_000);
-  // Turning the quota off drops the reservations it kept.
-  budget(db, 0);
-  assert.equal(revisions.getMeta(db, "budget"), null);
-  checkedEdit(db, c, "a.md", "y".repeat(100));
+  assert.equal(unimported(db), 2 + big.length);
+  assert.ok(
+    dbBytes(db) + unimported(db) <= quota,
+    `${dbBytes(db)} + ${unimported(db)} > ${quota}`,
+  );
 });
 
-test("a quota that starts reserves what people already edited", () => {
+test("far from the quota a cheap bound admits; near it recording is measured", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  checkedEdit(db, c, "b.md", "z".repeat(50_000));
+  assert.deepEqual(revisions.getMeta(db, "pending"), { "b.md": 3 * 50_002 });
+  // b's bound alone would exceed this quota; its measured revision fits.
+  budget(db, dbBytes(db) + 2 * 50_002 + 128 * 1024);
+  checkedEdit(db, c, "a.md", "!");
+  assert.deepEqual(Object.keys(revisions.getMeta(db, "pending")).sort(), [
+    "a.md",
+    "b.md",
+  ]);
+});
+
+test("an edit undone before its group closes reserves nothing afterwards", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  checkedEdit(db, c, "a.md", "abc");
+  checkedEdit(db, c, "a.md", "", 3);
+  assert.equal(committed(db, c, "a.md"), "x\n");
+  assert.ok(revisions.getMeta(db, "pending")["a.md"] > 0);
+  // The group closes with the text it started with: no entry, no reservation.
+  const count = entries(db).length;
+  closeGroups(db, c);
+  assert.equal(entries(db).length, count);
+  assert.equal(revisions.getMeta(db, "pending"), null);
+});
+
+test("an acknowledgement ends only its entries' reservations and installs the new budget", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  checkedEdit(db, c, "a.md", "first\n");
+  closeGroups(db, c);
+  checkedEdit(db, c, "a.md", "second\n");
+  closeGroups(db, c);
+  const e = entries(db);
+  assert.equal(e.length, 3);
+  assert.equal(unimported(db), 2 + 8 + 15);
+  // A partial import acknowledges the first two entries only, with the
+  // budget the host measured after storing their blobs.
+  transaction(db, () =>
+    revisions.ack(db, revisions.getMeta(db, "store"), e[1].seq, {
+      quota: 1 << 30,
+      other: 4242,
+      ttl_ms: DAY,
+    }),
+  );
+  assert.equal(unimported(db), 15);
+  assert.equal(revisions.getMeta(db, "budget").other, 4242);
+  ackAll(db);
+  assert.equal(revisions.getMeta(db, "unimported"), null);
+  // An invalid budget refuses the whole acknowledgement.
+  assert.throws(
+    () =>
+      transaction(db, () =>
+        revisions.ack(db, revisions.getMeta(db, "store"), 0, { quota: -1 }),
+      ),
+    (x) => x.code === "invalid",
+  );
+});
+
+test("a quota that starts reserves what people already edited; a rollback is never refused", () => {
   const db = database(),
     c = content("v1", doc("a.md", "x\n"), doc("b.md", "b\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 0);
   personEdit(db, c, "b.md", "edited\n");
   budget(db, 1 << 30);
-  assert.deepEqual(revisions.getMeta(db, "pending"), {
-    "b.md": { bytes: 9, exact: true },
-  });
-  // A rollback is never refused, even over the quota.
+  assert.deepEqual(revisions.getMeta(db, "pending"), { "b.md": 9 });
   budget(db, 1);
   transaction(db, () =>
     revisions.restore(db, c, generation, {
@@ -587,28 +691,4 @@ test("a quota that starts reserves what people already edited", () => {
     }),
   );
   assert.equal(committed(db, c, "b.md"), "b\n");
-  assert.throws(
-    () => budget(db, -1),
-    (e) => e.code === "invalid",
-  );
-});
-
-test("near the quota every pending document's size becomes exact", () => {
-  const db = database(),
-    c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
-  transaction(db, () => revisions.ensureFlat(db, c, next()));
-  transaction(db, () => revisions.ack(db, revisions.getMeta(db, "store"), 1));
-  budget(db, 1 << 30);
-  checkedEdit(db, c, "b.md", "z".repeat(50_000));
-  assert.deepEqual(revisions.getMeta(db, "pending")["b.md"], {
-    bytes: 3 * 50_002,
-    exact: false,
-  });
-  // Only exact sizes fit: b's bound alone would exceed the quota.
-  budget(db, dbBytes(db) + 2 * (50_002 + 3) + 128 * 1024);
-  checkedEdit(db, c, "a.md", "!");
-  assert.deepEqual(revisions.getMeta(db, "pending"), {
-    "a.md": { bytes: 3, exact: true },
-    "b.md": { bytes: 50_002, exact: true },
-  });
 });

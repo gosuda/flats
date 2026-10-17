@@ -26,6 +26,7 @@ type contentRuntime struct {
 	fail      bool
 	afterEdit func()           // runs after the fake app answers a live edit
 	budgets   []map[string]any // disk budgets the host told the fake app
+	noBudget  bool             // the fake app refuses budgets
 }
 type contentInstance struct{ http.Handler }
 
@@ -41,6 +42,10 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 			return
 		}
 		if r.URL.Path == "/_docs/host/revisions/budget" {
+			if rt.noBudget {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			var b map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&b)
 			rt.budgets = append(rt.budgets, b)

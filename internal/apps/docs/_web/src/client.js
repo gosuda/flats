@@ -327,8 +327,10 @@ fetch("/_docs/api/documents")
     }
   })
   .catch(() => {});
+// Warn before a reload or close loses local text, also after sync stopped
+// (for example over the disk quota), which keeps that text for download.
 window.addEventListener("beforeunload", (event) => {
-  if (provider.model.items.size) {
+  if (provider.model.unsynced()) {
     event.preventDefault();
     event.returnValue = "";
   }

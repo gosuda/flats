@@ -174,8 +174,11 @@ export function record(db, o) {
     newest &&
     newest.source === o.source &&
     sameDocuments(newest.documents, documents)
-  )
+  ) {
+    // Edits that ended unchanged need no revision, so nothing stays reserved.
+    setMeta(db, "pending", null);
     return 0;
+  }
   const authors = (o.authors ?? dirtyLabels(db))
     .filter((a) => typeof a === "string" && a)
     .map((a) => a.slice(0, 200))
@@ -202,9 +205,11 @@ export function record(db, o) {
   const listed = new Set((newest?.documents || []).map((d) => d.hash)),
     added = new Map();
   for (const d of documents) if (!listed.has(d.hash)) added.set(d.hash, d.size);
-  let unimported = getMeta(db, "unimported") || 0;
-  for (const size of added.values()) unimported += size;
-  if (added.size) setMeta(db, "unimported", unimported);
+  if (added.size) {
+    const unimported = getMeta(db, "unimported") || {};
+    unimported[seq] = [...added.values()].reduce((a, b) => a + b, 0);
+    setMeta(db, "unimported", unimported);
+  }
   setMeta(db, "pending", null);
   setMeta(db, "newest", { source: o.source, documents });
   db.exec("UPDATE flats_docs_groups SET dirty=0");
@@ -484,6 +489,8 @@ export function sync(db, content, generation, now = Date.now()) {
     for (const g of due)
       db.exec("DELETE FROM flats_docs_groups WHERE editor=?", [g.editor]);
   }
+  // Nothing unrecorded: no revision is coming, so nothing stays reserved.
+  if (!textDirty(db)) setMeta(db, "pending", null);
   db.exec(
     "DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NOT NULL AND staged_at<?",
     [now - STAGED_TTL],
@@ -528,10 +535,14 @@ export function outbox(db, after) {
   return { store: getMeta(db, "store"), entries, more };
 }
 
-export function ack(db, store, through) {
+// ack deletes the imported entries. budget, measured by the host after it
+// stored their blobs, replaces the budget in the same transaction as their
+// reservations end, so no edit in between misses both.
+export function ack(db, store, through, budget) {
   if (store !== getMeta(db, "store")) throw coded("conflict", "another outbox");
   if (!Number.isSafeInteger(through) || through < 0)
     throw coded("invalid", "invalid through");
+  if (budget !== undefined) setBudget(db, budget);
   for (;;) {
     const row = db.query(
       "SELECT seq,documents FROM flats_docs_outbox WHERE seq<=? ORDER BY seq LIMIT 1",
@@ -542,9 +553,18 @@ export function ack(db, store, through) {
     db.exec("DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
     db.exec("DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
   }
-  // Every imported text is now a host blob, which the host measures.
-  if (!db.query("SELECT 1 AS x FROM flats_docs_outbox LIMIT 1").length)
-    setMeta(db, "unimported", null);
+  // The acknowledged entries' texts are host blobs now, which the host
+  // measures.
+  const unimported = getMeta(db, "unimported");
+  if (unimported) {
+    for (const seq of Object.keys(unimported))
+      if (Number(seq) <= through) delete unimported[seq];
+    setMeta(
+      db,
+      "unimported",
+      Object.keys(unimported).length ? unimported : null,
+    );
+  }
   dropUnused(db);
 }
 
@@ -668,30 +688,28 @@ export { textOf };
 
 // --- disk quota (docs/revision-store.md#disk-quota) ---
 
-// The host sets the flat's disk quota and "other", the bytes the flat's
-// directory uses apart from this database file, measured after every
-// import. A quota of 0 turns the check off.
+const MAX_BUDGET_TTL = 24 * 60 * 60 * 1000;
+
+// setBudget installs the host's budget: the flat's disk quota (0 = off),
+// "other", the bytes the flat's directory uses apart from this database
+// file, and ttl_ms, how long it stays valid without a refresh.
 export function setBudget(db, body) {
-  const { quota, other } = body || {};
+  const { quota, other, ttl_ms: ttl } = body || {};
   if (
-    !Number.isSafeInteger(quota) ||
-    quota < 0 ||
-    !Number.isSafeInteger(other) ||
-    other < 0
+    ![quota, other, ttl].every((n) => Number.isSafeInteger(n) && n >= 0) ||
+    ttl < 1 ||
+    ttl > MAX_BUDGET_TTL
   )
     throw coded("invalid", "invalid budget");
-  if (quota === 0) {
-    setMeta(db, "budget", null);
-    setMeta(db, "pending", null);
-    return;
-  }
+  const old = getMeta(db, "budget");
   // Pending reservations are kept only while a quota applies: when one
   // starts, reserve what people already edited.
-  if (!getMeta(db, "budget")) setMeta(db, "pending", unrecordedBytes(db));
-  setMeta(db, "budget", { quota, other });
+  if (quota === 0) setMeta(db, "pending", null);
+  else if (!old?.quota) setMeta(db, "pending", unrecordedBytes(db));
+  setMeta(db, "budget", { quota, other, until: Date.now() + ttl });
 }
 // unrecordedBytes maps every document people edited since it was last
-// recorded to its committed text's exact size.
+// recorded to its committed text's size.
 function unrecordedBytes(db) {
   const out = {};
   for (const d of getMeta(db, "newest")?.documents || []) {
@@ -702,7 +720,7 @@ function unrecordedBytes(db) {
     if (!pos || (rec && rec.epoch === pos.epoch && rec.seq === pos.seq))
       continue;
     const text = committedText(db, d.path);
-    if (text !== null) out[d.path] = { bytes: utf8Bytes(text), exact: true };
+    if (text !== null) out[d.path] = utf8Bytes(text);
   }
   return out;
 }
@@ -711,43 +729,83 @@ function databaseBytes(db) {
   if (!pageSize) pageSize = db.query("PRAGMA page_size")[0].page_size;
   return db.query("PRAGMA page_count")[0].page_count * pageSize;
 }
+function unimportedBytes(db) {
+  let n = 0;
+  for (const v of Object.values(getMeta(db, "unimported") || {})) n += v;
+  return n;
+}
+// Slack pages for B-tree splits: per recorded text (its table and hash
+// index), and per entry (the outbox row, meta.newest, meta.unimported).
+const DOC_SLACK_PAGES = 10,
+  ENTRY_SLACK_PAGES = 16;
+// reserveBound is an upper bound of what recording the pending documents
+// will store: each text in this database (its overflow pages, rounded up,
+// plus slack) and once more as the host's blob, and one entry whose
+// document list is about as long as meta.newest's.
+function reserveBound(db, pending) {
+  const sizes = Object.values(pending);
+  if (!sizes.length) return 0;
+  const usable = pageSize - 4,
+    pages = (n) => Math.ceil(n / usable) + 1;
+  let n = 0;
+  for (const b of sizes) n += (pages(b) + DOC_SLACK_PAGES) * pageSize + b;
+  const listed =
+    db.query(
+      "SELECT length(value) AS n FROM flats_docs_meta WHERE key='newest'",
+    )[0]?.n || 0;
+  return (
+    n + (2 * pages(Math.ceil(listed * 1.25)) + ENTRY_SLACK_PAGES) * pageSize
+  );
+}
+// recordedTotal measures, in a savepoint it undoes, this database and the
+// unimported texts as they would be once people's edits are recorded now:
+// the exact cost of the revision their groups will store.
+function recordedTotal(db) {
+  const newest = getMeta(db, "newest");
+  if (!newest) return databaseBytes(db) + unimportedBytes(db);
+  db.exec("SAVEPOINT flats_docs_quota");
+  try {
+    record(db, {
+      kind: "person",
+      source: newest.source,
+      paths: newest.documents.map((d) => d.path),
+    });
+    dropUnused(db);
+    return databaseBytes(db) + unimportedBytes(db);
+  } finally {
+    db.exec("ROLLBACK TO flats_docs_quota");
+    db.exec("RELEASE flats_docs_quota");
+  }
+}
 // checkDiskQuota refuses, inside the caller's transaction and after its
 // writes, a change that would put the flat over its disk quota: this
-// database as it now is, plus what the revisions still to come will store.
-// Each document people edited since its last revision will be stored twice
-// when its edit group closes (as this database's revision text and as the
-// host's blob); texts already recorded but not imported yet will be stored
-// once more by the host. edited is a person's edit: the path and Y.Text of
-// the document it changed. Sizes start as the O(1) bound of three UTF-8
-// bytes per UTF-16 unit and are made exact only near the quota. A rollback
-// never calls this.
+// database as it now is, the texts recorded but not imported yet (the host
+// will store each as a blob) and the revision people's unrecorded edits
+// will need when their groups close. edited is a person's edit: the path
+// and Y.Text of the document it changed. Far from the quota a cheap upper
+// bound (three UTF-8 bytes per UTF-16 unit, overflow pages and B-tree
+// slack) admits the edit; otherwise recording is measured exactly. A
+// budget the host has not refreshed in time admits nothing: the edit fails
+// as transient, so editors resend it and update_document can retry. A
+// rollback never calls this.
 export function checkDiskQuota(db, edited) {
   const budget = getMeta(db, "budget");
-  if (!budget) return;
-  const pending = getMeta(db, "pending") || {},
-    unimported = getMeta(db, "unimported") || 0;
-  const used = (dbBytes) => {
-    let n = budget.other + dbBytes + unimported;
-    for (const p of Object.values(pending)) n += 2 * p.bytes;
-    return n;
-  };
+  if (!budget || !(Date.now() <= budget.until))
+    throw Object.assign(
+      new Error("the host has not refreshed this document's disk budget"),
+      { code: "unavailable", transient: true },
+    );
+  if (budget.quota === 0) return;
+  const pending = getMeta(db, "pending") || {};
   if (edited) {
-    pending[edited.path] = { bytes: edited.text.length * 3, exact: false };
-    if (used(databaseBytes(db)) > budget.quota)
-      for (const [path, p] of Object.entries(pending)) {
-        if (p.exact) continue;
-        const text =
-          path === edited.path
-            ? edited.text.toString()
-            : committedText(db, path);
-        pending[path] = {
-          bytes: text === null ? 0 : utf8Bytes(text),
-          exact: true,
-        };
-      }
+    pending[edited.path] = edited.text.length * 3;
     setMeta(db, "pending", pending);
   }
-  const total = used(databaseBytes(db));
+  const live = databaseBytes(db);
+  let total =
+    budget.other + live + unimportedBytes(db) + reserveBound(db, pending);
+  if (total > budget.quota && Object.keys(pending).length)
+    total = budget.other + recordedTotal(db);
   if (total > budget.quota)
     throw coded(
       "disk_quota",
