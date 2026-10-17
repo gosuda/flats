@@ -317,17 +317,19 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		p.ExpectedLive, p.FlatID = nil, f.ID
 		// A request stored before flat IDs is the same request while the
 		// live version it froze still runs; reuse it rather than adding a
-		// second pending approval for one change.
+		// second pending approval for one change. A rename moves approvals
+		// to the new slug but keeps their keys, so a key of this slug can
+		// belong to a renamed flat's approval: reuse only one of this slug.
 		if key, _, err := frozenKey(slugName, "set_visibility", legacy); err != nil {
 			return ActionResult{}, err
-		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil {
+		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil && existing.Flat == slugName {
 			res := ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: s.ApprovalURL(ctx, existing.ID),
 				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}
 			if vis.Public() {
 				res.Notice = PendingPublicAccessNotice
 			}
 			return res, nil
-		} else if !errors.Is(err, store.ErrNotFound) {
+		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return ActionResult{}, err
 		}
 	}

@@ -167,8 +167,8 @@ frozen value:
   approval never applies to another flat created later under a deleted slug.
   The request reads the flat and records the approval under the flat's lock.
   Requests stored before flat IDs froze a document's live version and keep
-  that rule; an identical new request reuses one while that version still
-  runs.
+  that rule; an identical new request on the same slug reuses one while that
+  version still runs, never one a rename moved to another slug.
 
 Pending requests deduplicate across caller surfaces by canonical
 action/params. Decisions serialize by approval ID and atomically claim pending

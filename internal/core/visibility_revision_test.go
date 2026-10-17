@@ -190,6 +190,64 @@ func TestLegacyDocsVisibilityApprovalKeepsLiveVersionRule(t *testing.T) {
 	}
 }
 
+// A rename moves a pending legacy approval to the new slug with its old key.
+// A request on a flat created later under the old slug must not reuse it:
+// approving that would change the renamed document.
+func TestLegacyDocsVisibilityApprovalNotReusedAcrossRename(t *testing.T) {
+	s, _ := docsVisibilityService(t)
+	ctx := t.Context()
+	saveDocs(t, s, "orig")
+	if err := s.SetProviderPermission(ctx, "orig", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	providers, err := s.providerKey(ctx, "orig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := liveVersionOf(t, s, "orig")
+	params := visibilityParams{Visibility: "public", From: "private", ExpectedLive: ptr(live), Providers: providers}
+	key, raw, err := frozenKey("orig", "set_visibility", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.st.InsertApproval(ctx, store.Approval{ID: "legacy-renamed", Flat: "orig", Action: "set_visibility", Params: raw, Status: "pending", Via: "mcp", RequestedAt: s.now(), IdempotencyKey: key}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameSlug(ctx, "orig", "moved", ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := s.GetApproval(ctx, "legacy-renamed"); err != nil || a.Flat != "moved" || a.IdempotencyKey != key {
+		t.Fatalf("rename did not move the approval with its key: %+v %v", a, err)
+	}
+	// After the redirect window the old slug can be used again.
+	later := time.Now().UTC().Add(s.redirectWindow() + time.Hour)
+	s.now = func() time.Time { return later }
+	s.syncRedirects(ctx)
+	saveDocs(t, s, "orig")
+	if err := s.SetProviderPermission(ctx, "orig", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := s.providerKey(ctx, "orig"); again != providers || liveVersionOf(t, s, "orig") != live {
+		t.Fatal("the recreated flat does not reproduce the legacy key; the test proves nothing")
+	}
+	req, err := s.SetVisibility(ctx, "orig", store.Public, ViaMCP, "")
+	if err != nil || req.Approval == nil || req.Approval.ID == "legacy-renamed" || req.Approval.Flat != "orig" {
+		t.Fatalf("request on the recreated slug reused the renamed flat's approval: %+v %v", req, err)
+	}
+	if a, err := s.Decide(ctx, req.Approval.ID, true); err != nil || a.Status != "approved" {
+		t.Fatalf("new approval %+v %v", a, err)
+	}
+	if f, _ := s.st.GetFlat(ctx, "orig"); f.Visibility != store.Public {
+		t.Fatal("recreated flat is not public")
+	}
+	if f, _ := s.st.GetFlat(ctx, "moved"); f.Visibility != store.Private {
+		t.Fatal("the renamed document changed visibility")
+	}
+	if a, _ := s.GetApproval(ctx, "legacy-renamed"); a.Status != "pending" || a.Flat != "moved" {
+		t.Fatalf("renamed flat's approval %+v", a)
+	}
+}
+
 // Websites and pages keep the Version model: their visibility approval
 // covers the live version, and a deploy while it is pending makes it stale.
 func TestVersionModelVisibilityApprovalStillFreezesLiveVersion(t *testing.T) {
