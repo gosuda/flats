@@ -13,6 +13,7 @@ import (
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
+	tsnetx "github.com/gosuda/flats/internal/expose/tsnet"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -558,7 +559,14 @@ func (h *Host) consoleReady(k cdKey) bool {
 		return false
 	}
 	hi, ok := b.state(k.name)
-	return ok && hi.State == "ready"
+	return ok && serving(hi.State)
+}
+
+// serving reports whether a node state means the node serves the console:
+// ready, or ready with a Tailscale node key in its last days (key-expiring),
+// as tsnet's WaitReady counts it.
+func serving(state string) bool {
+	return state == tsnetx.StateReady || state == tsnetx.StateKeyExpiring
 }
 
 // requestOnLoopback reports whether a request reached the management

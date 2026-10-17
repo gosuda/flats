@@ -300,7 +300,8 @@ served, such as one being deleted) names the preferred console,
   an address Flats serves itself. The Host header of a request never
   changes a link.
 - A preferred domain is used only once its node is ready (a tailnet node
-  has logged in and has its certificate; a NetBird peer is up). Unset, or
+  has logged in and has its certificate, including while its key is about
+  to expire; a NetBird peer is up). Unset, or
   while the named domain is not ready (still starting, its network off, or
   being retired), links use the first served tailnet name, then the first
   served NetBird name, then the loopback address, where served means, as

@@ -126,7 +126,7 @@ func TestPreferredConsoleLinks(t *testing.T) {
 	setPreferred(t, h, "tailscale:two")
 	setStarting := func(name string, on bool) {
 		tail.mu.Lock()
-		tail.starting[name] = on
+		tail.states[name] = map[bool]string{true: "starting"}[on]
 		tail.mu.Unlock()
 	}
 	setStarting("two", true)
@@ -166,6 +166,23 @@ func TestPreferredConsoleLinks(t *testing.T) {
 		t.Fatalf("preferred NetBird peer ready: %q", got)
 	}
 
+	// A node whose Tailscale key expires soon still serves with its
+	// certificate (key-expiring): the preference keeps the links, the console
+	// reports it served, not starting.
+	setPreferred(t, h, "tailscale:two")
+	tail.mu.Lock()
+	tail.states["two"] = "key-expiring"
+	tail.mu.Unlock()
+	if got := h.ConsoleURLFor(ctx); got != "https://two.tail1234.ts.net" {
+		t.Fatalf("preferred domain key-expiring: %q", got)
+	}
+	if view, _ := h.consoleDomains(ctx); view.PreferredState != "served" || view.LinkURL != "https://two.tail1234.ts.net" {
+		t.Fatalf("key-expiring view %q %q", view.PreferredState, view.LinkURL)
+	}
+	tail.mu.Lock()
+	tail.states["two"] = ""
+	tail.mu.Unlock()
+
 	// A preferred domain that is not served falls back in the fixed order,
 	// and the console says so.
 	setPreferred(t, h, "tailscale:two")
@@ -203,7 +220,7 @@ func TestPreferredConsoleLinks(t *testing.T) {
 
 // The deleted preferred domain unsets the preference in the same change.
 func TestPreferredConsoleDeleted(t *testing.T) {
-	h, _, client := tailnetHost(t)
+	h, tail, client := tailnetHost(t)
 	ctx := context.Background()
 	for _, n := range []string{"one", "two"} {
 		if _, err := h.AddConsoleDomain(ctx, "tailscale", n, ""); err != nil {
@@ -231,16 +248,32 @@ func TestPreferredConsoleDeleted(t *testing.T) {
 	if got := h.ConsoleURLFor(ctx); got != "https://one.tail1234.ts.net" {
 		t.Fatalf("link after the preference went: %q", got)
 	}
-	// Deleting the domain the console is open on, while the preferred
-	// domain is ready, moves the page there.
-	if _, err := h.AddConsoleDomain(ctx, "tailscale", "three", ""); err != nil {
-		t.Fatal(err)
+	// Deleting the domain the console is open on moves the page to a domain
+	// that serves, and a node on an expiring Tailscale key (key-expiring)
+	// serves: first without a preference, in the fixed order...
+	for _, n := range []string{"three", "four"} {
+		if _, err := h.AddConsoleDomain(ctx, "tailscale", n, ""); err != nil {
+			t.Fatal(err)
+		}
 	}
-	setPreferred(t, h, "tailscale:three")
-	// (The node of one stays up: the test does not run the retirement.)
-	_, redirect, _, err := h.DeleteConsoleDomain(viaDomain("one"), "tailscale", "one", "")
-	if err != nil || redirect != "https://three.tail1234.ts.net" {
-		t.Fatalf("self-delete redirect %q %v", redirect, err)
+	tail.mu.Lock()
+	tail.states["one"] = "key-expiring"
+	tail.states["three"] = "starting"
+	tail.states["four"] = "key-expiring"
+	tail.mu.Unlock()
+	_, redirect, _, err := h.DeleteConsoleDomain(viaDomain("three"), "tailscale", "three", "")
+	if err != nil || redirect != "https://one.tail1234.ts.net" {
+		t.Fatalf("self-delete redirect to a key-expiring domain %q %v", redirect, err)
+	}
+	// ...then to the preferred domain when it serves, ahead of the order.
+	// (The nodes stay up: the test does not run the retirements.)
+	setPreferred(t, h, "tailscale:four")
+	tail.mu.Lock()
+	tail.states["one"] = ""
+	tail.mu.Unlock()
+	_, redirect, _, err = h.DeleteConsoleDomain(viaDomain("one"), "tailscale", "one", "")
+	if err != nil || redirect != "https://four.tail1234.ts.net" {
+		t.Fatalf("self-delete redirect to the key-expiring preferred domain %q %v", redirect, err)
 	}
 }
 

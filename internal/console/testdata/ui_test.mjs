@@ -1340,6 +1340,17 @@ routes['GET /console/api/console-domains'] = DOMAINS;
 assert.equal(settingsPage.pendingWork(dview({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }), [{ id: 'zrok' }]), false);
 assert.equal(settingsPage.pendingWork(dview({}, { domains: [{ name: 'a', state: 'starting' }] }), []), true);
 assert.equal(settingsPage.pendingWork(dview({}), [{ id: 'zrok', waiting: true }]), true);
+// A node on an expiring Tailscale key serves: it is not pending work, and it
+// lets the domain in use be deleted, as the server counts it.
+assert.equal(settingsPage.pendingWork(dview({ domains: [{ name: 'a', state: 'key-expiring' }] }), []), false);
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'old', url: 'https://old.tail1234.ts.net', state: 'key-expiring' }] }, {},
+{ loopback: false, via: { provider: 'tailscale', name: 'flats' }, etag: 'etag-7' });
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+assert.equal(all(byId(domMain, 'console-domains'), (e) => e.className === 'disabled-reason').length, 0, 'a key-expiring domain counts as ready');
+routes['GET /console/api/console-domains'] = DOMAINS;
 
 // --- loopback links seen from another device ---
 // A loopback URL opens the viewer's own machine, so a console opened over

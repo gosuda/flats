@@ -129,7 +129,7 @@ export function mount(main, _params, ctx) {
 // pendingWork reports a console node or an enrollment still in progress.
 export function pendingWork(domains, keys) {
   const all = Object.keys(NETWORKS).flatMap((prov) => (domains ? networkOf(domains, prov).domains : []) || []);
-  const nodes = all.some((d) => !d.conflict && d.state !== 'ready');
+  const nodes = all.some((d) => !d.conflict && !serving(d.state));
   return nodes || (keys || []).some((k) => k.waiting);
 }
 
@@ -679,10 +679,14 @@ function networkOf(view, prov) {
   return (view.providers && view.providers[prov]) || { domains: [], retiring: [], on: false };
 }
 
+// serving reports a node state that serves the console: ready, or ready with
+// a Tailscale key in its last days (key-expiring), as the server counts it.
+const serving = (state) => state === 'ready' || state === 'key-expiring';
+
 // readyDomains lists every ready domain, on any network, as provider/name.
 function readyDomains(view) {
   return Object.keys(NETWORKS).flatMap((prov) => (networkOf(view, prov).domains || [])
-    .filter((d) => !d.conflict && d.state === 'ready').map((d) => prov + '/' + d.name));
+    .filter((d) => !d.conflict && serving(d.state)).map((d) => prov + '/' + d.name));
 }
 
 function networkDomains(view, prov, opts) {

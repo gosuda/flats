@@ -543,7 +543,8 @@ does not hold and unsets the preference whenever a list write (`Set` or
 name it names; every writer (console, offline `flats config`, legacy
 upgrade) goes through it. Links are resolved on each use: the request's
 served console domain, else the preferred console once its node reports
-`ready` (the readiness check the self-delete redirect uses; a node counts as
+`ready` or `key-expiring` (the readiness check the self-delete redirect uses;
+both mean the node serves with its certificate; a node counts as
 served as soon as it is started, while a tailnet node may still be logging
 in), else the first served domain in the fixed order, unchanged.
 
@@ -563,7 +564,8 @@ in), else the first served domain in the fixed order, unchanged.
    the management listener on a loopback address (judged from the connection's
    local address; a console domain never counts). When the request came through
    the name being deleted, refuse unless another listed domain is served and
-   ready (the preferred console first, then Tailscale, then NetBird) and use
+   ready, `ready` or `key-expiring` (the preferred console first, then
+   Tailscale, then NetBird) and use
    it as the redirect.
 2. Save the list without the name (ETag-guarded); the same write unsets
    `console.preferred_host` when it names the deleted domain. Nothing has
