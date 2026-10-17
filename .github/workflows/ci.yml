@@ -66,6 +66,10 @@ jobs:
         run: make docs-check
       - name: Tests
         run: scripts/ci-test.sh "${{ matrix.shard }}"
+      - name: DIAG 100 KiB timing distribution
+        if: always() && matrix.shard == 'docs-budget'
+        continue-on-error: true
+        run: go test -v -count=6 -run '^Test100KiBDocumentTimings$' ./internal/apps/docs
 
   # NetBird is a separate module (./netbird) because its client needs replace
   # directives; go test ./... above does not reach it.

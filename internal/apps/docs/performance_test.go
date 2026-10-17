@@ -3,6 +3,8 @@ package docs
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -26,13 +28,23 @@ func Test100KiBDocumentTimings(t *testing.T) {
 	open := time.Since(start)
 	updates := fixture(t).Compact
 	latency := make([]time.Duration, 35)
+	loadavg, _ := os.ReadFile("/proc/loadavg")
+	t.Logf("DIAG loadavg %s", strings.TrimSpace(string(loadavg)))
 	for i := range latency {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		gc0, pause0 := ms.NumGC, ms.PauseTotalNs
 		start = time.Now()
 		edit(t, clients[0], updates[i].ID, updates[i].U)
+		ack := time.Since(start)
+		var peers []time.Duration
 		for _, peer := range clients[1:] {
 			peer.next(t, "update")
+			peers = append(peers, time.Since(start))
 		}
 		latency[i] = time.Since(start)
+		runtime.ReadMemStats(&ms)
+		t.Logf("DIAG edit %2d id=%s ack=%v peers=%v total=%v gc=%d gcpause=%v", i, updates[i].ID, ack.Round(time.Microsecond), peers, latency[i].Round(time.Microsecond), ms.NumGC-gc0, time.Duration(ms.PauseTotalNs-pause0))
 		time.Sleep(60 * time.Millisecond)
 	}
 	sort.Slice(latency, func(i, j int) bool { return latency[i] < latency[j] })
