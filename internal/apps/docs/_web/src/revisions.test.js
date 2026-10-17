@@ -14,6 +14,7 @@ import {
   compact,
   digest,
   seedText,
+  WAL_REST_FRAMES,
 } from "./storage.js";
 import { base64 } from "./protocol.js";
 import * as revisions from "./revisions.js";
@@ -1061,6 +1062,30 @@ test("an older database moves its seed texts into their own table", () => {
   assert.equal(seedText(db, "a.md"), "base\n");
 });
 
+test("small commits stay in the log until a truncation copies them at once", () => {
+  const db = database({ file: true }),
+    c = content("v1", doc("a.md", "s".repeat(1000)));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  let kept = 0,
+    truncated = 0;
+  for (let i = 0; i < 40; i++) {
+    checkedEdit(db, c, "a.md", "y");
+    atRest(db);
+    const { log, checkpointed } = db.query("PRAGMA wal_checkpoint(NOOP)")[0];
+    assert.ok(log <= WAL_REST_FRAMES, `${log} frames at rest`);
+    // Either the commit's frames are still only in the log, or this commit
+    // truncated it; copying each small commit on its own costs syncs.
+    if (log === 0) truncated++;
+    else {
+      assert.equal(checkpointed, 0, `edit ${i} copied ${checkpointed} frames`);
+      kept++;
+    }
+  }
+  assert.ok(kept > 0 && truncated > 0, `kept ${kept}, truncated ${truncated}`);
+});
+
 test("a truncation a reader blocked is retried until it succeeds", () => {
   const db = database({ file: true }),
     c = content("v1", doc("a.md", "s".repeat(1000)));
@@ -1069,16 +1094,17 @@ test("a truncation a reader blocked is retried until it succeeds", () => {
   ackAll(db);
   atRest(db);
   // A reader takes the newest snapshot right after a large transaction
-  // commits: the passive checkpoint can still copy all of it, but the
-  // truncation after it is busy.
+  // commits, before the frame count is read: the truncation can still copy
+  // all of it, but it is busy.
   const reader = new DatabaseSync(db.path);
   db.onQuery = (sql) => {
-    if (sql !== "PRAGMA wal_checkpoint(PASSIVE)") return;
+    if (sql !== "PRAGMA wal_checkpoint(NOOP)") return;
     db.onQuery = null;
     reader.exec("BEGIN");
     reader.prepare("SELECT count(*) AS n FROM flats_docs_meta").get();
   };
   checkedEdit(db, c, "a.md", "y".repeat(200_000));
+  assert.equal(db.onQuery, null, "the reader was never started");
   assert.ok(walBytes(db) > restWal(db), "the large transaction left no log");
   reader.exec("COMMIT");
   // SQLite may restart a fully copied log for the next writer while its
@@ -1105,13 +1131,15 @@ test("a truncation's success keeps a failure another VM records meanwhile", () =
   // A's owed truncation succeeds; before A clears the marker, B commits a
   // large transaction whose own truncation a reader blocks.
   const reader = new DatabaseSync(a.path);
+  let started = false;
   a.onExec = (sql) => {
     if (!sql.startsWith("DELETE FROM flats_docs_meta WHERE key='wal_truncate'"))
       return;
     a.onExec = null;
     b.onQuery = (q) => {
-      if (q !== "PRAGMA wal_checkpoint(PASSIVE)") return;
+      if (q !== "PRAGMA wal_checkpoint(NOOP)") return;
       b.onQuery = null;
+      started = true;
       reader.exec("BEGIN");
       reader.prepare("SELECT count(*) AS n FROM flats_docs_meta").get();
     };
@@ -1119,6 +1147,9 @@ test("a truncation's success keeps a failure another VM records meanwhile", () =
     reader.exec("COMMIT");
   };
   transaction(a, () => {});
+  // commit() ignores errors thrown while it truncates, so check here that
+  // the blocked truncation really ran.
+  assert.ok(started, "the reader was never started");
   // B's failure is still owed.
   assert.notEqual(revisions.getMeta(a, "wal_truncate"), null);
   reader.exec("PRAGMA wal_checkpoint(RESTART)");
@@ -1177,6 +1208,7 @@ test("a truncation's success never clears a later failure's generation", () => {
   a.exec("INSERT INTO flats_docs_meta VALUES('wal_generation','1')");
   a.exec("INSERT INTO flats_docs_meta VALUES('wal_truncate','1')");
   const reader = new DatabaseSync(a.path);
+  let started = false;
   a.onExec = (sql) => {
     if (!sql.startsWith("DELETE FROM flats_docs_meta WHERE key='wal_truncate'"))
       return;
@@ -1184,8 +1216,9 @@ test("a truncation's success never clears a later failure's generation", () => {
     transaction(b, () => {});
     assert.equal(revisions.getMeta(b, "wal_truncate"), null);
     v.onQuery = (q) => {
-      if (q !== "PRAGMA wal_checkpoint(PASSIVE)") return;
+      if (q !== "PRAGMA wal_checkpoint(NOOP)") return;
       v.onQuery = null;
+      started = true;
       reader.exec("BEGIN");
       reader.prepare("SELECT count(*) AS n FROM flats_docs_meta").get();
     };
@@ -1193,6 +1226,9 @@ test("a truncation's success never clears a later failure's generation", () => {
     reader.exec("COMMIT");
   };
   transaction(a, () => {});
+  // commit() ignores errors thrown while it truncates, so check here that
+  // the blocked truncation really ran.
+  assert.ok(started, "the reader was never started");
   assert.equal(revisions.getMeta(a, "wal_truncate"), 2);
   reader.exec("PRAGMA wal_checkpoint(RESTART)");
   reader.close();

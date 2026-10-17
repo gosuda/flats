@@ -46,8 +46,11 @@ const (
 	// maxStoredReport bounds the blob hashes one budget reports stored.
 	maxStoredReport = 10_000
 	// walTruncateAt is the write-ahead log size above which a budget
-	// measurement first truncates it.
-	walTruncateAt = 256 << 10
+	// measurement first truncates it: the worker's bound at rest, 64 frames
+	// of 4 KiB pages (docs/revision-store.md#disk-quota). The worker lets
+	// small commits fill the log up to that bound, so a lower value would
+	// truncate a log that is within it at every measurement.
+	walTruncateAt = 32 + 64*(4096+24)
 )
 
 // docsImportBudget bounds the text one import fetches; the rest follows in

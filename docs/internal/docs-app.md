@@ -783,10 +783,12 @@ disk quota; the host side, what it measures and when, is in the
 * Over the quota it refuses with `disk_quota` and the transaction rolls
   back, so a refused edit records and changes nothing. `restore`, rollback
   intents and activations are not checked.
-* After every commit of a transaction, `PRAGMA wal_checkpoint(PASSIVE)`
-  reports the frames in the log and copies them into the database; with
-  more than 64, or while `meta.wal_truncate` is set, `PRAGMA
-  wal_checkpoint(TRUNCATE)` follows. Every busy or failed truncation raises
+* After every commit of a transaction, `PRAGMA wal_checkpoint(NOOP)`
+  reports the frames in the log without copying them; with more than 64,
+  or while `meta.wal_truncate` is set, `PRAGMA wal_checkpoint(TRUNCATE)`
+  follows and copies them all at once. A PASSIVE checkpoint after every
+  commit would copy and sync each small edit separately: measured, four
+  fsyncs per small edit against about 1.4. Every busy or failed truncation raises
   `meta.wal_generation`, a counter that is never reset, and sets
   `meta.wal_truncate` to it in one transaction; a successful truncation
   deletes `meta.wal_truncate` only if it still holds the generation that

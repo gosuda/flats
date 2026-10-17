@@ -420,9 +420,12 @@ function begin(db, sql) {
   migrate(db);
   db.exec(sql);
 }
-// commit commits, then reads how many frames the write-ahead log holds (a
-// passive checkpoint, which also copies them into the database) and
-// truncates the log when there are more than WAL_REST_FRAMES. A truncation
+// commit commits, then reads how many frames the write-ahead log holds and
+// truncates the log when there are more than WAL_REST_FRAMES. The count
+// comes from a NOOP checkpoint (SQLite 3.51+), which copies nothing: a
+// PASSIVE one would copy and sync every small commit (two fsyncs and a
+// database truncate on top of the commit's own), so small commits now
+// collect in the log until the truncation copies them at once. A truncation
 // a reader kept from finishing (busy) or that failed is remembered in
 // meta.wal_truncate, shared by every VM, and retried after every later
 // commit until one succeeds that saw the latest failure: a fully copied log can restart for a small
@@ -439,7 +442,7 @@ function commit(db) {
     owed = db.query(
       "SELECT value FROM flats_docs_meta WHERE key='wal_truncate'",
     )[0]?.value;
-    const row = db.query("PRAGMA wal_checkpoint(PASSIVE)")[0];
+    const row = db.query("PRAGMA wal_checkpoint(NOOP)")[0];
     if (owed === undefined && !(row && row.log > WAL_REST_FRAMES)) return;
     const done = db.query("PRAGMA wal_checkpoint(TRUNCATE)")[0];
     if (done && !done.busy) {

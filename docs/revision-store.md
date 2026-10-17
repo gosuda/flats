@@ -364,9 +364,10 @@ would commit them and after its writes:
 
 **Write-ahead log.** The log is transient and not predicted. After every
 commit the worker reads how many frames the log holds (`PRAGMA
-wal_checkpoint(PASSIVE)`, which also copies them into the database) and
-truncates it (`PRAGMA wal_checkpoint(TRUNCATE)`) when there are more than
-64. So at rest the log holds at most 64 frames: 32 + 64 × (page size + 24)
+wal_checkpoint(NOOP)`, which copies nothing) and truncates it (`PRAGMA
+wal_checkpoint(TRUNCATE)`, which first copies the frames into the
+database) when there are more than 64. Small commits therefore collect in
+the log and are copied and synced together, not one by one. So at rest the log holds at most 64 frames: 32 + 64 × (page size + 24)
 bytes, 263,712 bytes with 4 KiB pages, which the check reserves; the host
 leaves the actual log out of `other`. A single transaction exceeds that
 bound only until its own commit returns. A truncation that a reader keeps
@@ -376,8 +377,8 @@ raises and nothing resets) and retried after
 every later commit, by any VM, until one succeeds that saw the latest
 failure; the frame count alone would miss a log SQLite restarted
 for a small transaction inside a larger file. Until then the log stays
-larger; the host's next measurement also truncates a log above 256 KiB
-(`checkpoint` host operation). An idle document writes nothing to its log: an unchanged
+larger; the host's next measurement also truncates a log above that
+bound with 4 KiB pages, 263,712 bytes (`checkpoint` host operation). An idle document writes nothing to its log: an unchanged
 budget is rewritten only when it is half expired, and a sync with nothing
 to do changes no page. Large payloads sit in rows nothing rewrites often:
 text reference counts are kept apart from the texts, and each document's
