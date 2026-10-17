@@ -1127,22 +1127,6 @@ test("an older database reserves the blobs its unimported entries still need", (
   assert.equal(rows.bytes, 150 * (128 * 10 + (127 * 128) / 2));
 });
 
-test("an earlier build's reservations move into their own table", () => {
-  const db = database({ schema: false });
-  db.exec(
-    "CREATE TABLE flats_docs_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-  );
-  db.exec(
-    "CREATE TABLE flats_docs_text_refs(hash TEXT PRIMARY KEY, refs INTEGER NOT NULL, staged_at INTEGER)",
-  );
-  db.exec("INSERT INTO flats_docs_meta VALUES('unimported',?)", [
-    JSON.stringify({ ["c".repeat(64)]: 7 }),
-  ]);
-  schema(db);
-  assert.equal(unimported(db), 7);
-  assert.equal(revisions.getMeta(db, "unimported"), null);
-});
-
 test("a truncation's success never clears a later failure's generation", () => {
   // Three VMs on one database file.
   const a = database({ file: true }),

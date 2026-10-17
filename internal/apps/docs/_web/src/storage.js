@@ -350,20 +350,11 @@ export function migrate(db) {
         db.exec(
           "CREATE TABLE flats_docs_unimported(hash TEXT PRIMARY KEY, size INTEGER NOT NULL)",
         );
-        // An earlier build of this check kept them in one meta value.
-        if (hasTable(db, "flats_docs_meta")) {
-          const row = db.query(
-            "SELECT value FROM flats_docs_meta WHERE key='unimported'",
-          )[0];
-          for (const [hash, size] of Object.entries(
-            row ? JSON.parse(row.value) : {},
-          ))
-            db.exec("INSERT OR IGNORE INTO flats_docs_unimported VALUES(?,?)", [
-              hash,
-              size,
-            ]);
+        // Every text an unacknowledged entry lists may still need its
+        // host blob.
+        reserveOutbox(db);
+        if (hasTable(db, "flats_docs_meta"))
           db.exec("DELETE FROM flats_docs_meta WHERE key='unimported'");
-        }
       }
       if (!hasTable(db, "flats_docs_text_refs")) {
         db.exec(
@@ -373,7 +364,6 @@ export function migrate(db) {
           db.exec(
             "INSERT INTO flats_docs_text_refs SELECT hash,refs,staged_at FROM flats_docs_texts",
           );
-        reserveOutbox(db);
       }
       if (!hasTable(db, "flats_docs_seeds")) {
         db.exec(

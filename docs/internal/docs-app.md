@@ -808,10 +808,10 @@ A database without `text_refs`, `seeds` or `unimported` (from before they
 existed) gets them before its first transaction or schema pass, in one
 `BEGIN IMMEDIATE` transaction that creates the missing tables, copies every
 text's `refs` and `staged_at` and every document's `seed_text` into them,
-and empties `documents.seed_text`. Creating `text_refs` also reserves, in
-`unimported`, every text the unacknowledged outbox entries list, since the
-host may not have stored their blobs yet; it reads the outbox one entry at
-a time, so a large backlog stays within the query result limit. A table's existence marks its move as done;
+and empties `documents.seed_text`. Creating `unimported` also reserves in
+it every text the unacknowledged outbox entries list, since the host may
+not have stored their blobs yet; it reads the outbox one entry at a time,
+so a large backlog stays within the query result limit. A table's existence marks its move as done;
 references, staging and merge bases then behave exactly as before.
 
 A database without `meta.store` is initialized by the first transaction that
