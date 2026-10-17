@@ -67,7 +67,8 @@ fails when a skill sits on both sides or a plugin manifest points outside
 
 The [Flats issue triage skill](../.agents/skills/flats-issue-triage/SKILL.md)
 classifies repository issues with a small workflow-oriented label set, checks
-relevant specs and code, and proposes evidence-backed duplicate candidates.
+relevant specs and code, and proposes evidence-backed duplicate candidates. Its `triaged` label marks
+completed initial classification, not human approval or a fix.
 It can be used by an authorized issue worker; adding the skill does not
 register a webhook or start automatic execution.
 
