@@ -846,7 +846,9 @@ func (s *Service) publishRevision(ctx context.Context, f store.Flat, rev store.D
 			s.Event(ctx, f.Slug, "info", "snapshot", fmt.Sprintf("saved database snapshot %s before publishing version %d", snap, n), nil)
 		}
 	}
-	d, err := s.buildWithEnvironment(ctx, f.Slug, v, s.dataDirOf(f.Slug), env)
+	lf := s.state(f.Slug)
+	lf.bindUID(f.ID)
+	d, err := s.buildWithEnvironment(ctx, f.Slug, v, s.dataDirOf(f.Slug), env, lf.liveSink())
 	if err != nil {
 		os.RemoveAll(dir)
 		return DeployResult{}, &DeployError{Version: n, Previous: f.LiveVersion, Cause: err, Data: "Runtime startup used live data and may have changed it.", DataImpact: "runtime_start", HealthData: "isolated_copy", LiveData: "runtime_may_write"}
@@ -1232,7 +1234,7 @@ func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Versi
 			return HealthResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: fmt.Errorf("copy data for health check: %w", err), Data: dataUntouched}
 		}
 	}
-	d, err := s.buildWithEnvironment(ctx, f.Slug, v, scratch, env)
+	d, err := s.buildWithEnvironment(ctx, f.Slug, v, scratch, env, s.state(f.Slug).checkSink())
 	if err != nil {
 		return HealthResult{}, &DeployError{Version: v.Number, Previous: f.LiveVersion, Cause: err, Data: dataUntouched}
 	}
@@ -1404,7 +1406,7 @@ func (s *Service) openDraftPreviewLocked(ctx context.Context, slugName string) (
 			return PreviewView{}, fmt.Errorf("copy live data for preview: %w", err)
 		}
 	}
-	built, err := s.build(ctx, slugName, versionFromRevision(rev), dataDir)
+	built, err := s.build(ctx, slugName, versionFromRevision(rev), dataDir, s.state(slugName).previewSink())
 	if err != nil {
 		os.RemoveAll(dataDir)
 		return PreviewView{}, err
@@ -1846,7 +1848,7 @@ func (s *Service) restorePreviews(ctx context.Context) {
 			continue
 		}
 		data := filepath.Join(s.flatDir(p.Flat), "previews", p.Host)
-		built, err := s.build(ctx, p.Flat, v, data)
+		built, err := s.build(ctx, p.Flat, v, data, s.state(p.Flat).previewSink())
 		if err != nil {
 			s.Event(ctx, p.Flat, "error", "preview", err.Error(), nil)
 			continue

@@ -52,3 +52,15 @@ type runtimeInstance struct {
 }
 
 func (i *runtimeInstance) Stop() { i.once.Do(func() { i.Instance.Stop(); i.release() }) }
+
+// WorkerState forwards the runtime's diagnostic worker state ("" when the
+// runtime does not report one). managedDocsRuntime promotes it.
+func (i *runtimeInstance) WorkerState() WorkerState {
+	if r, ok := i.Instance.(StateReporter); ok {
+		return r.WorkerState()
+	}
+	return ""
+}
+
+var _ StateReporter = (*runtimeInstance)(nil)
+var _ StateReporter = (*managedDocsRuntime)(nil)

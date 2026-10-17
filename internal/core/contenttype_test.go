@@ -148,7 +148,7 @@ func TestDocsRuntimeLayoutReuseAndCleanup(t *testing.T) {
 	s.cfg.Runtime = rt
 	s.cfg.DocsApp = testDocsApp()
 	v := saveDocsDraft(t, s, "notes")
-	d, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "isolated"))
+	d, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "isolated"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestDocsRuntimeLayoutReuseAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := os.Stat(filepath.Join(expected, "content.js"))
-	d2, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "isolated2"))
+	d2, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "isolated2"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestDocsRuntimeLayoutReuseAndCleanup(t *testing.T) {
 		t.Fatal("last release retained unused directory")
 	}
 	rt.fail = true
-	if _, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "fail")); err == nil {
+	if _, err := s.build(context.Background(), "notes", v, filepath.Join(dir, "fail"), nil); err == nil {
 		t.Fatal("expected start failure")
 	}
 	if _, err := os.Stat(expected); !os.IsNotExist(err) {
@@ -448,7 +448,7 @@ func TestRuntimeStartsUseGenerationInsteadOfVersion(t *testing.T) {
 	for _, version := range []int{0, 1, 3, 1, 0} {
 		v.Number = version
 		// Draft content remains at its immutable revision; only the log number varies.
-		d, err := s.build(t.Context(), "generations", v, filepath.Join(dir, "data"))
+		d, err := s.build(t.Context(), "generations", v, filepath.Join(dir, "data"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -469,7 +469,7 @@ func TestDrainingWorkerCannotAcquireNewGeneration(t *testing.T) {
 	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
 	v := saveDocsDraft(t, s, "recovering")
 	data := filepath.Join(dir, "live-data")
-	old, err := s.build(t.Context(), "recovering", v, data)
+	old, err := s.build(t.Context(), "recovering", v, data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestDrainingWorkerCannotAcquireNewGeneration(t *testing.T) {
 	if _, err := previous.NextGeneration(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	newer, err := s.build(t.Context(), "recovering", v, data)
+	newer, err := s.build(t.Context(), "recovering", v, data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestDrainingWorkerCannotAcquireNewGeneration(t *testing.T) {
 		t.Fatal("current instance cannot recover", generation, err)
 	}
 	rt.fail = true
-	if _, err := s.build(t.Context(), "recovering", v, data); err == nil {
+	if _, err := s.build(t.Context(), "recovering", v, data, nil); err == nil {
 		t.Fatal("expected failure")
 	}
 	if _, err := current.NextGeneration(t.Context()); err != nil {
@@ -505,12 +505,12 @@ func TestStoppedCandidateRestoresLiveRecovery(t *testing.T) {
 	s.cfg.Runtime, s.cfg.DocsApp = rt, testDocsApp()
 	v := saveDocsDraft(t, s, "candidate")
 	data := filepath.Join(dir, "live-data")
-	live, err := s.build(t.Context(), "candidate", v, data)
+	live, err := s.build(t.Context(), "candidate", v, data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer live.inst.Stop()
-	candidate, err := s.build(t.Context(), "candidate", v, data)
+	candidate, err := s.build(t.Context(), "candidate", v, data, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +569,7 @@ func TestDocsEnvironmentSnapshotAndContentIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := filepath.Join(dir, "isolated")
-	d, err := s.buildWithEnvironment(ctx, "configured-doc", v, data, snapshot)
+	d, err := s.buildWithEnvironment(ctx, "configured-doc", v, data, snapshot, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestDocsEnvironmentSnapshotAndContentIsolation(t *testing.T) {
 		}
 	}
 	rt.fail = true
-	if _, err := s.buildWithEnvironment(ctx, "configured-doc", v, data, snapshot); err == nil {
+	if _, err := s.buildWithEnvironment(ctx, "configured-doc", v, data, snapshot, nil); err == nil {
 		t.Fatal("expected startup failure")
 	}
 	if err := s.restart(ctx, "configured-doc", d); err == nil {

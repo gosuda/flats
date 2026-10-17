@@ -95,6 +95,11 @@ type FlatCount struct {
 type FlatMetrics struct {
 	Slug string
 	Type string
+	// Traffic is false for a flat that has no live state at this moment (a
+	// rename in progress, a flat deleted since the last snapshot): only its
+	// disk figures are known, and no traffic or worker series should be
+	// emitted for it, so its counters never appear to reset.
+	Traffic bool
 	// Requests[route][class]: cumulative since the host started.
 	Requests      map[string]map[string]uint64
 	RateLimited   uint64
