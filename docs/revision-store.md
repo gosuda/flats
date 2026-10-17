@@ -343,8 +343,13 @@ would commit them and after its writes:
   visible by completing earlier ones; only when those bounds would not fit
   are the sizes made exact (the edited document from its text in memory,
   other documents once from their committed state). The check takes no
-  savepoint and loads no other document again during a burst of edits, so
-  an edit near the quota costs about what one far from it does. An edit
+  savepoint and loads no other document again during a burst of edits;
+  sizing the edited text still makes an update to a large document near the
+  quota about twice as slow (measured at about 136 ms instead of 68 ms for a
+  900 KB document). Because the bound is conservative, a person's edit needs
+  more headroom than the same agent edit (several hundred KB on a small
+  document): after the group closes, the flat usually sits that far below
+  the quota. An edit
   refused for disk quota rolls back completely; nothing is deleted to make
   room, and while the flat is over its quota every live edit is refused, a
   deletion included, since it still adds a revision.
