@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"sync"
@@ -418,11 +419,22 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 	return nil
 }
 
-// refreshDocsLocked syncs a running document, imports its outbox and
-// settles the holds of rollbacks that did not happen. Failures are
+// refreshDocsLocked syncs a running document, imports its outbox, settles
+// the holds of rollbacks that did not happen and then tells the worker its
+// disk budget, measured with the imported blobs in place. Failures are
 // returned after the import still ran, so a failing activation does not
 // stop the backlog from draining.
 func (s *Service) refreshDocsLocked(ctx context.Context, slugName string) (docsImport, error) {
+	res, err := s.syncImportDocsLocked(ctx, slugName)
+	if !errors.Is(err, errNotRunningDocs) {
+		if berr := s.pushDocsBudgetLocked(ctx, slugName); berr != nil && !errors.Is(berr, errNotRunningDocs) {
+			s.logf("disk budget of %s: %v", slugName, berr)
+		}
+	}
+	return res, err
+}
+
+func (s *Service) syncImportDocsLocked(ctx context.Context, slugName string) (docsImport, error) {
 	sync, syncErr := s.syncDocsLocked(ctx, slugName)
 	if errors.Is(syncErr, errNotRunningDocs) {
 		return docsImport{}, syncErr
@@ -441,6 +453,40 @@ func (s *Service) refreshDocsLocked(ctx context.Context, slugName string) (docsI
 		s.settleHoldsLocked(ctx, slugName, intentID(sync))
 	}
 	return res, syncErr
+}
+
+// pushDocsBudgetLocked tells the running docs worker the per-flat disk
+// quota and how much of it the flat's directory uses apart from the
+// worker's database file. The worker checks people's edits and live agent
+// edits against it in the transaction that would commit them, counting its
+// database as it is then and the revisions still to be stored
+// (docs/revision-store.md#disk-quota). A quota of 0 turns the check off.
+// The caller holds the flat lock.
+func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) error {
+	body := map[string]int64{"quota": 0, "other": 0}
+	if quota := s.diskQuota(); quota > 0 {
+		var db int64
+		if fi, err := os.Stat(filepath.Join(s.dataDirOf(slugName), dbName)); err == nil {
+			db = fi.Size()
+		}
+		body["quota"], body["other"] = quota, max(0, dirSize(s.flatDir(slugName))-db)
+	}
+	return s.docsHost(ctx, slugName, http.MethodPost, "budget", body, nil)
+}
+
+// pushAllDocsBudgets applies a changed disk quota to every running
+// document, each under its flat lock, before the settings call returns.
+func (s *Service) pushAllDocsBudgets(ctx context.Context) {
+	for _, slugName := range s.runningDocs() {
+		unlock, err := s.lockStorageCtx(ctx, slugName)
+		if err != nil {
+			continue
+		}
+		if err := s.pushDocsBudgetLocked(ctx, slugName); err != nil && !errors.Is(err, errNotRunningDocs) {
+			s.logf("disk budget of %s: %v", slugName, err)
+		}
+		unlock()
+	}
 }
 
 func intentID(r docsSyncResult) string {

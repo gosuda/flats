@@ -61,7 +61,7 @@ test("welcome resends exact pending ids; updates do not acknowledge; diverged st
 });
 
 test("permanent error codes stop retries and retain Markdown and pending bytes", () => {
-  for (const code of ["capacity", "invalid_update", "readonly"]) {
+  for (const code of ["capacity", "invalid_update", "readonly", "disk_quota"]) {
     const provider = Object.create(Provider.prototype),
       model = new Pending();
     model.add("pending", "AAA=");
@@ -87,6 +87,7 @@ test("permanent error codes stop retries and retain Markdown and pending bytes",
     assert.equal(model.items.size, 1);
     assert.equal(d.getText("markdown").toString(), "local text");
     assert.match(notice, /Download/);
+    if (code === "disk_quota") assert.match(notice, /disk quota/);
     provider.connect();
     assert.equal(closed, 1);
   }

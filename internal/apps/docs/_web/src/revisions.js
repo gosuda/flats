@@ -195,6 +195,17 @@ export function record(db, o) {
   );
   const seq = db.query("SELECT last_insert_rowid() AS seq")[0].seq;
   for (const d of documents) addRef(db, d.hash, texts[d.hash]);
+  // The host stores every text the previous entry did not list as a new
+  // blob when it imports this one; until then it counts toward the disk
+  // quota (see checkDiskQuota). The documents are recorded now, so their
+  // pending reservation ends.
+  const listed = new Set((newest?.documents || []).map((d) => d.hash)),
+    added = new Map();
+  for (const d of documents) if (!listed.has(d.hash)) added.set(d.hash, d.size);
+  let unimported = getMeta(db, "unimported") || 0;
+  for (const size of added.values()) unimported += size;
+  if (added.size) setMeta(db, "unimported", unimported);
+  setMeta(db, "pending", null);
   setMeta(db, "newest", { source: o.source, documents });
   db.exec("UPDATE flats_docs_groups SET dirty=0");
   if (o.op && o.kind === "rollback")
@@ -531,6 +542,9 @@ export function ack(db, store, through) {
     db.exec("DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
     db.exec("DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
   }
+  // Every imported text is now a host blob, which the host measures.
+  if (!db.query("SELECT 1 AS x FROM flats_docs_outbox LIMIT 1").length)
+    setMeta(db, "unimported", null);
   dropUnused(db);
 }
 
@@ -651,6 +665,95 @@ export function opStatus(db, id) {
 }
 
 export { textOf };
+
+// --- disk quota (docs/revision-store.md#disk-quota) ---
+
+// The host sets the flat's disk quota and "other", the bytes the flat's
+// directory uses apart from this database file, measured after every
+// import. A quota of 0 turns the check off.
+export function setBudget(db, body) {
+  const { quota, other } = body || {};
+  if (
+    !Number.isSafeInteger(quota) ||
+    quota < 0 ||
+    !Number.isSafeInteger(other) ||
+    other < 0
+  )
+    throw coded("invalid", "invalid budget");
+  if (quota === 0) {
+    setMeta(db, "budget", null);
+    setMeta(db, "pending", null);
+    return;
+  }
+  // Pending reservations are kept only while a quota applies: when one
+  // starts, reserve what people already edited.
+  if (!getMeta(db, "budget")) setMeta(db, "pending", unrecordedBytes(db));
+  setMeta(db, "budget", { quota, other });
+}
+// unrecordedBytes maps every document people edited since it was last
+// recorded to its committed text's exact size.
+function unrecordedBytes(db) {
+  const out = {};
+  for (const d of getMeta(db, "newest")?.documents || []) {
+    const pos = position(db, d.path),
+      rec = db.query("SELECT epoch,seq FROM flats_docs_recorded WHERE doc=?", [
+        d.path,
+      ])[0];
+    if (!pos || (rec && rec.epoch === pos.epoch && rec.seq === pos.seq))
+      continue;
+    const text = committedText(db, d.path);
+    if (text !== null) out[d.path] = { bytes: utf8Bytes(text), exact: true };
+  }
+  return out;
+}
+let pageSize = 0;
+function databaseBytes(db) {
+  if (!pageSize) pageSize = db.query("PRAGMA page_size")[0].page_size;
+  return db.query("PRAGMA page_count")[0].page_count * pageSize;
+}
+// checkDiskQuota refuses, inside the caller's transaction and after its
+// writes, a change that would put the flat over its disk quota: this
+// database as it now is, plus what the revisions still to come will store.
+// Each document people edited since its last revision will be stored twice
+// when its edit group closes (as this database's revision text and as the
+// host's blob); texts already recorded but not imported yet will be stored
+// once more by the host. edited is a person's edit: the path and Y.Text of
+// the document it changed. Sizes start as the O(1) bound of three UTF-8
+// bytes per UTF-16 unit and are made exact only near the quota. A rollback
+// never calls this.
+export function checkDiskQuota(db, edited) {
+  const budget = getMeta(db, "budget");
+  if (!budget) return;
+  const pending = getMeta(db, "pending") || {},
+    unimported = getMeta(db, "unimported") || 0;
+  const used = (dbBytes) => {
+    let n = budget.other + dbBytes + unimported;
+    for (const p of Object.values(pending)) n += 2 * p.bytes;
+    return n;
+  };
+  if (edited) {
+    pending[edited.path] = { bytes: edited.text.length * 3, exact: false };
+    if (used(databaseBytes(db)) > budget.quota)
+      for (const [path, p] of Object.entries(pending)) {
+        if (p.exact) continue;
+        const text =
+          path === edited.path
+            ? edited.text.toString()
+            : committedText(db, path);
+        pending[path] = {
+          bytes: text === null ? 0 : utf8Bytes(text),
+          exact: true,
+        };
+      }
+    setMeta(db, "pending", pending);
+  }
+  const total = used(databaseBytes(db));
+  if (total > budget.quota)
+    throw coded(
+      "disk_quota",
+      `the flat would use ${total} bytes, over its ${budget.quota}-byte disk quota`,
+    );
+}
 
 function coded(code, message) {
   return Object.assign(new Error(message), { code });

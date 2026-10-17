@@ -298,7 +298,37 @@ file and each agent write at most `system.upload_max_bytes`) checks the flat dir
 new unique blob bytes against the per-flat disk quota and is refused with a
 validation error. A document save checks the flat directory plus the whole
 bundle. A rollback of either type adds no bytes it is charged for and is never
-refused for disk quota. Live edits to a document (people's edits and
-`update_document`) and the revisions recording them are not checked against
-the disk quota; see the Current state of
-[content-models.md](spec/content-models.md#current-state).
+refused for disk quota.
+
+A document's live edits, people's and `update_document`'s, never pass
+through the host, so its docs worker checks them, in the transaction that
+would commit them and after its writes:
+
+- **Budget.** After every import (the ticker, every document write and
+  rollback, history reads) the host measures the flat directory and tells the
+  worker the quota and `other`, the bytes everything but the worker's database
+  file uses, through the `budget` host operation. A changed
+  `system.disk_quota_bytes` is pushed to every running document before the
+  settings call returns, and `update_document` measures again before its
+  edit. Quota 0 turns the check off. The worker keeps the budget in its
+  database, so a restarted worker keeps checking.
+- **What counts.** `other`, plus the worker's database as the transaction
+  leaves it (SQLite's page count times its page size), plus the revisions
+  still to be stored: each document people edited since its last revision
+  twice (its group's revision stores the text in the worker and, on import,
+  as the host's blob), and each text an entry recorded but the host has not
+  imported once (the host's blob). An edit refused for disk quota rolls back
+  completely; nothing is deleted to make room.
+- **A person's edit** is refused with the WebSocket error `disk_quota`, like
+  other deterministic rejections: the editor stops syncing, keeps the text
+  and offers it for download.
+- **`update_document`** is refused with `document_capacity`, naming the disk
+  quota, and changes nothing, including people's unrecorded edits it would
+  otherwise have recorded first.
+- **Not checked:** a rollback (`restore` or a rollback intent) and a new
+  version's activation, which a save already checked.
+
+The write-ahead log and the host's metadata in `flats.db` are not part of the
+estimate: the log is measured with `other` at each import and recycled at
+SQLite checkpoints, and `flats.db` is outside the flat directory, as for every
+other disk quota check.

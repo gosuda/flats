@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,8 @@ import (
 type contentRuntime struct {
 	specs     []RuntimeSpec
 	fail      bool
-	afterEdit func() // runs after the fake app answers a live edit
+	afterEdit func()           // runs after the fake app answers a live edit
+	budgets   []map[string]any // disk budgets the host told the fake app
 }
 type contentInstance struct{ http.Handler }
 
@@ -36,6 +38,13 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 	return contentInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/_docs/api/receipt" {
 			receiptResponse(w, r)
+			return
+		}
+		if r.URL.Path == "/_docs/host/revisions/budget" {
+			var b map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			rt.budgets = append(rt.budgets, b)
+			_, _ = io.WriteString(w, `{"ok":true}`)
 			return
 		}
 		if r.URL.Path == "/_docs/api/edit" {

@@ -161,8 +161,9 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   watermark, it reloads the checkpoint and broadcasts committed full state.
   No ACK or document broadcast is emitted before COMMIT. Transient database, catch-up, obsolete-worker and COMMIT failures roll back,
   drop the room and close its clients with 1012 for resync. Deterministic
-  client rejections send `error` (`capacity`, `invalid_update`, or `readonly`)
-  then close only that socket with 1008; healthy peers stay connected.
+  client rejections send `error` (`capacity`, `invalid_update`, `readonly`,
+  or `disk_quota`, see [disk quota](#disk-quota)) then close only that
+  socket with 1008; healthy peers stay connected.
   Bounded binary/type properties are checked before applying. A deterministic
   rejection after applying invalidates only the room's cached document; peers
   stay connected and the next operation reloads committed state. No rejected
@@ -323,7 +324,8 @@ update operations. The agent contract is guide `topic.docs`.
   by every `get_document`) refuses any intervening change. A missing,
   changed or ambiguous target returns 409 `edit_conflict` with the operation
   index; malformed input 400 `invalid`; limits 413/422 `capacity`, mapped to
-  `document_capacity`. All refusals change nothing. Content-addressed guards
+  `document_capacity`; the [disk quota](#disk-quota) 507 `disk_quota`, also
+  mapped to `document_capacity`. All refusals change nothing. Content-addressed guards
   replace Claude Docs' block ids and revisions, which this CRDT text has no
   stable equivalent of: an unchanged block keeps its hash even while people
   edit other blocks, so independent work does not invalidate the guard.
@@ -490,6 +492,7 @@ meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)
   -- 'newest': JSON {source, documents: [{path, hash, size}]} of the newest entry
   -- 'active': JSON {hash, generation, docs: [path]}: the version whose flat activation last ran
   -- 'intent': JSON, at most one (see Intents)
+  -- 'budget', 'pending', 'unimported': the disk quota check (see Disk quota)
 recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)
   -- each document's committed position when last recorded, and its text hash there
 groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)
@@ -537,9 +540,10 @@ for a shape (a source and a list of document paths):
    `recorded`.
 3. When the entry is not forced and its source and documents equal
    `meta.newest`, stop: no entry.
-4. Otherwise insert the entry, add a reference to each listed text, set
-   `meta.newest`, clear `dirty` on every group, and for a rollback record its
-   operation id in `ops` with the entry's seq.
+4. Otherwise insert the entry, add a reference to each listed text, add
+   the size of every text `meta.newest` did not list to `meta.unimported`,
+   delete `meta.pending`, set `meta.newest`, clear `dirty` on every group,
+   and for a rollback record its operation id in `ops` with the entry's seq.
 
 Authors are the given label (an agent's or a rollback's), else the labels of
 the groups that are `dirty` at that moment, in first-edit order; at most 32,
@@ -689,7 +693,7 @@ get 403. Core calls them in process on the running worker instance, not
 through the flat's routes, with a 30-second timeout per call. Bodies are
 JSON; a POST body above 8 MiB of text is refused with 413. `sync`, `intent`
 and `restore` pass the activation gate first. The transport operations
-(`outbox`, `text`, `ack`, `stage`, `op`) do not: they only need the schema,
+(`outbox`, `text`, `ack`, `stage`, `op`, `budget`) do not: they only need the schema,
 so the host can always drain and acknowledge the backlog, which frees space,
 even while an activation keeps failing.
 
@@ -698,11 +702,12 @@ even while an activation keeps failing.
 | `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null |
 | `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, message, rollback_of?, op?, source, documents}], more}` |
 | `GET /_docs/host/revisions/text?hash=` | `{hash, text}` from `texts`; 404 when absent |
-| `POST /_docs/host/revisions/ack` | `{store, through}`: deletes entries up to `through` with their `ops` rows, releasing their texts. Idempotent; another `store` is refused with 409 |
+| `POST /_docs/host/revisions/ack` | `{store, through}`: deletes entries up to `through` with their `ops` rows, releasing their texts, and deletes `meta.unimported` once the outbox is empty. Idempotent; another `store` is refused with 409 |
 | `POST /_docs/host/revisions/stage` | `{text}` (at most 1 MiB UTF-8): stores it with `staged_at`; returns `{hash}` |
 | `POST /_docs/host/revisions/intent` | `{id, source, kind, label, message, rollback_of, documents}`: writes `meta.intent` (texts must be staged or present) |
 | `POST /_docs/host/revisions/restore` | `{id, label, rollback_of, documents: [{path, hash}], deadline_ms}`: a rollback within the running version; its documents must be exactly the running version's. Returns `{store, seq}` |
 | `GET /_docs/host/revisions/op?id=` | `{committed, seq?}`: whether a rollback with this id committed and its entry is still unacknowledged |
+| `POST /_docs/host/revisions/budget` | `{quota, other}` (non-negative integers): sets `meta.budget` for the [disk quota](#disk-quota) check; quota 0 deletes it and `meta.pending` |
 
 Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
 `conflict`, 422 `capacity` or 503 `unavailable`.
@@ -724,6 +729,36 @@ Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
 * **Duration.** Flat activation merges every document in one transaction,
   as the health check already does on its isolated copy within the same
   request deadline. Recording loads only changed documents.
+
+### Disk quota
+
+The worker checks people's edits and live agent edits against the per-flat
+disk quota; the host side, what it measures and when, is in the
+[revision store](../revision-store.md#disk-quota).
+
+* `meta.budget` is `{quota, other}` as the host last set it. Without it
+  nothing is checked or reserved.
+* `meta.pending` maps each document people edited since it was last recorded
+  to `{bytes, exact}`, its committed text's UTF-8 size. A person's update
+  sets its document's size to the O(1) bound of three bytes per UTF-16 unit;
+  when the check would fail with the bounds, every pending size is made
+  exact first (the edited text, and the other documents' committed texts).
+  `record` deletes the map. When a budget is set where none was, it starts
+  with the exact sizes of the documents whose committed position differs
+  from their `recorded` row.
+* `meta.unimported` is the size of the texts recorded entries added that the
+  host has not imported yet: `record` adds them and an `ack` that empties
+  the outbox deletes it.
+* The check runs last in the transaction, after every write: a WebSocket
+  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. It refuses
+  with `disk_quota` when `other` + `page_count` × `page_size` +
+  `unimported` + 2 × the sum of `pending` exceeds the quota; the transaction
+  rolls back, so a refused edit records and changes nothing. `restore`,
+  rollback intents and activations are not checked.
+* The browser treats `disk_quota` like the other deterministic rejections:
+  it stops syncing, disables editing, keeps its pending updates and offers
+  the local Markdown for download, saying that the document is out of disk
+  space.
 
 ### Initialization and migration
 

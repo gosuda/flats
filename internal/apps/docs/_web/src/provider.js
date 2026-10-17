@@ -232,7 +232,9 @@ export class Provider {
       this.stop(
         m.code === "readonly"
           ? "Editing permission changed. Download your text and reload."
-          : "An edit was rejected. Download your text and reload to synchronize.",
+          : m.code === "disk_quota"
+            ? "This edit was not saved: the document is out of disk space. Download your text, ask the operator to free space or raise the disk quota, then reload."
+            : "An edit was rejected. Download your text and reload to synchronize.",
       );
       return;
     }

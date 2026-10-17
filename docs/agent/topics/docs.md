@@ -98,8 +98,9 @@ documents; use an explicit whole-bundle save for assets or replacement.
 
 Limits: a request of at most 512 KiB, one resulting update of at most
 256 KiB, Markdown up to 1 MiB per document, the document's stored history,
-and block operations only on documents of at most 50,000 blocks (use
-`replace` beyond that) (`document_capacity`); about 10 edits per second per flat (`unavailable`
+block operations only on documents of at most 50,000 blocks (use
+`replace` beyond that), and the per-flat disk quota, which must also hold the
+revision the edit creates (`document_capacity`); about 10 edits per second per flat (`unavailable`
 when exceeded: wait and retry). Any other `unavailable` says whether the edit
 applied (at which seq; do not repeat it) or did not apply (retry). Only if
 Flats could not check is the outcome unknown: then read `get_document`

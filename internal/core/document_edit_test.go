@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,6 +71,8 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 		status, code = 400, "invalid"
 	case "capacity":
 		status, code = 422, "capacity"
+	case "quota":
+		status, code = 507, "disk_quota"
 	case "boom":
 		status = 500
 	case "rolledback":
@@ -168,7 +172,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), nil, ViaMCP); err != nil || out.Changed {
 		t.Fatal(out, err)
 	}
-	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable", "late": "unavailable"} {
+	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "quota": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable", "late": "unavailable"} {
 		_, err := s.UpdateDocument(ctx, "notes", "", op(find), ptr(strings.Repeat("a", 64)), ViaMCP)
 		if ErrorCategory(err) != want {
 			t.Fatal(find, err)
@@ -304,5 +308,50 @@ func TestEmptyOutlineRoundTrip(t *testing.T) {
 	b, _ = json.Marshal(Document{Format: 1, Doc: "index.md"})
 	if strings.Contains(string(b), "blocks") {
 		t.Fatal(string(b))
+	}
+}
+
+func TestDocsDiskBudget(t *testing.T) {
+	s, _ := newTestService(t)
+	rt := &contentRuntime{}
+	s.cfg.Runtime = rt
+	s.cfg.DocsApp = testDocsApp()
+	ctx := context.Background()
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	saveDocs(t, s, "notes")
+	// The save's import tells the worker that no quota applies.
+	if n := len(rt.budgets); n == 0 || rt.budgets[n-1]["quota"] != float64(0) || rt.budgets[n-1]["other"] != float64(0) {
+		t.Fatal("budget after the save", rt.budgets)
+	}
+	// A changed quota reaches the running document before the call returns,
+	// with what the flat uses apart from the worker's database.
+	if err := os.MkdirAll(s.dataDirOf("notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dataDirOf("notes"), dbName), make([]byte, 5000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := float64(dirSize(s.flatDir("notes")) - 5000)
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "123456"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rt.budgets); rt.budgets[n-1]["quota"] != float64(123456) || rt.budgets[n-1]["other"] != want {
+		t.Fatal("budget after the quota change", rt.budgets[n-1], want)
+	}
+	// update_document measures again before the worker checks its edit;
+	// the worker's refusal is a document_capacity one that changed nothing.
+	pushes := len(rt.budgets)
+	with := "x"
+	_, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "replace", Find: "quota", With: &with}}, nil, ViaMCP)
+	if !errors.Is(err, ErrDiskQuota) || !errors.Is(err, ErrDocumentCapacity) || ErrorCategory(err) != "document_capacity" || !strings.Contains(err.Error(), "nothing changed") || !strings.Contains(err.Error(), "raise the per-flat disk quota") {
+		t.Fatal(err)
+	}
+	if len(rt.budgets) != pushes+1 {
+		t.Fatal("update_document did not measure the flat first", rt.budgets)
+	}
+	if events, _ := s.Events(ctx, "notes", "document", 0, 10); len(events) != 0 {
+		t.Fatal("refused edit was logged as applied", events)
 	}
 }

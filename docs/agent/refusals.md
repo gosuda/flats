@@ -48,9 +48,12 @@ document to win.
 `update_document` would exceed a document limit: the request is larger than
 512 KiB, the single update larger than 256 KiB, the Markdown above 1 MiB, a
 block operation on a document of more than 50,000 blocks (use `replace` with
-`find` there), or the document's stored history is full. Nothing changed. Split a large edit
-into several calls or make the document smaller. Full history needs the
-operator; tell the user.
+`find` there), the document's stored history is full, or the edit and the
+revision recording it would put the flat over its disk quota (the message
+says `disk quota`). Nothing changed. Split a large edit
+into several calls or make the document smaller. Full history and a full disk
+quota need the operator; tell the user. A `rollback_revision` is never refused
+for the disk quota.
 
 ## not_docs
 

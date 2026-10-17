@@ -22,7 +22,7 @@ list.
 
 | Spec | Status | Covers |
 | --- | --- | --- |
-| [Content data models](content-models.md) | partly implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
+| [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Operator keys and console domains](console-settings.md) | implemented | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |

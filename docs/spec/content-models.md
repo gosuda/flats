@@ -1,9 +1,8 @@
 # Content data models: Version and Revision
 
-Status: partly implemented. The Version model and the Revision model are in
-place for every type; one rule is not yet met for documents, listed under
-[Current state](#current-state). Agent guides (`docs/agent/`) describe
-implemented behavior only.
+Status: implemented. The Version model and the Revision model are in place
+for every type. Agent guides (`docs/agent/`) describe implemented behavior
+only.
 
 ## Summary
 
@@ -201,7 +200,7 @@ These rules apply to the version, revision and pin quotas alike.
 |---|---|---|
 | website (`flat`) | Version | implemented: separate creation/deployment approvals, quota and explicit deletion |
 | page (`page`) | Version | as for websites |
-| document (`docs`) | Revision | implemented, except the gap under [Current state](#current-state) |
+| document (`docs`) | Revision | implemented |
 | design | Revision | implemented |
 
 A flat keeps its first save's type, so its model never changes.
@@ -210,15 +209,6 @@ The core already uses the word *revision* for Draft saves (`draft-revs`,
 `expected_revision`, "Draft revision and hash" in approvals). That counter
 belongs to the Version model's Draft and is not a Revision in this document's
 sense: it has no pins, quotas or rollback.
-
-## Current state
-
-Differences between this page and the implementation:
-
-- **Disk quota for documents (Quotas rule 3).** Live edits of a document, by
-  people and through `update_document`, are not checked against the disk
-  quota, and the revisions recording them are stored without that check.
-  Saves are checked.
 
 ## Upgrading older hosts
 

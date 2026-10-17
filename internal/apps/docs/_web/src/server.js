@@ -347,6 +347,11 @@ function update(c, m, env, size) {
       const event = append(db, s, m.id, m.u);
       compact(db, s);
       revisions.touchGroup(db, c.editor, c.you.name);
+      // Checked last, with the revision this edit's group will need.
+      revisions.checkDiskQuota(db, {
+        path: room.path,
+        text: s.doc.getText("markdown"),
+      });
       return { s, event, ack: event };
     });
   } catch (e) {
@@ -428,7 +433,12 @@ function blockPage(markdown, raw) {
 }
 const json = (status, body) =>
   Response.json(body, { status, headers: { "cache-control": "no-store" } });
-const editStatus = { invalid: 400, edit_conflict: 409, capacity: 422 };
+const editStatus = {
+  invalid: 400,
+  edit_conflict: 409,
+  capacity: 422,
+  disk_quota: 507,
+};
 // A host management edit: guarded operations resolved against committed
 // text and appended as one Yjs update in the same transaction as human edits.
 async function edit(request, env, d) {
@@ -548,6 +558,7 @@ async function edit(request, env, d) {
           });
         }
         revisions.dropUnused(db);
+        if (plan.splices.length) revisions.checkDiskQuota(db);
         // Checked last, immediately before COMMIT.
         if (
           plan.splices.length &&
@@ -626,7 +637,10 @@ async function revisionOp(request, env, url) {
     let result;
     if (op === "sync" && method === "POST")
       result = transaction(db, () => revisions.sync(db, content, generation));
-    else if (op === "outbox" && method === "GET")
+    else if (op === "budget" && method === "POST") {
+      transaction(db, () => revisions.setBudget(db, body));
+      result = { ok: true };
+    } else if (op === "outbox" && method === "GET")
       result = revisions.outbox(db, Number(url.searchParams.get("after") || 0));
     else if (op === "text" && method === "GET") {
       const text = revisions.textOf(db, url.searchParams.get("hash") || "");
@@ -939,7 +953,9 @@ export default {
           error(
             c,
             code,
-            "Sync stopped; download your local Markdown and reload",
+            code === "disk_quota"
+              ? "This edit would put the flat over its disk quota and was not saved; download your local Markdown"
+              : "Sync stopped; download your local Markdown and reload",
           );
         console.warn("docs rejected:", String(e.message));
       }
