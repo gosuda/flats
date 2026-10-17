@@ -627,49 +627,8 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 	m.mu.Unlock()
 	endpoints := make([]ExposureEndpoint, len(observedEndpoints))
 	for i, observed := range observedEndpoints {
-		ep := observed.endpoint
-		if r, ok := routes[key(slug, ep.Audience, ep.Provider, ep.Host)]; ok {
-			var fresh ExposureEndpoint
-			switch ep.Provider {
-			case Local:
-				fresh = fromStatus(Local, m.local.Status(), r.host, m.local.URL(r.host))
-			case Tailscale:
-				fresh = fromStatus(Tailscale, m.tailnet().Status(), r.host, m.tailnet().URL(r.host))
-			case Funnel:
-				fresh = m.tailnet().FunnelState(r.host)
-			case Portal:
-				fresh = fromStatus(Portal, m.portalNet().Status(), r.host, m.portalNet().URL(r.host))
-			case Zrok:
-				// zrok can be detached (account replaced) after the snapshot.
-				if z := m.zrokNet(); z != nil {
-					fresh = fromStatus(Zrok, z.Status(), r.host, z.URL(r.host))
-				} else {
-					fresh = ExposureEndpoint{Provider: Zrok, State: stateUnavailable, Detail: "zrok is not configured"}
-				}
-			case CFQuick:
-				if q := m.quickNet(); q != nil {
-					fresh = fromStatus(CFQuick, q.Status(), r.host, q.URL(r.host))
-				} else {
-					fresh = ExposureEndpoint{Provider: CFQuick, State: stateUnavailable, Detail: "cloudflare quick tunnels are not configured"}
-				}
-			case Netbird:
-				// NetBird can be detached (peer disconnected) after the snapshot.
-				if n := m.netbirdNet(); n != nil {
-					fresh = fromStatus(Netbird, n.PrivateStatus(), r.host, n.PrivateURL(r.host))
-				} else {
-					fresh = ExposureEndpoint{Provider: Netbird, State: stateUnavailable, Detail: "netbird is not configured"}
-				}
-			case NetbirdExpose:
-				if n := m.netbirdNet(); n != nil {
-					fresh = fromStatus(NetbirdExpose, n.PublicStatus(), r.host, n.PublicURL(r.host))
-				} else {
-					fresh = ExposureEndpoint{Provider: NetbirdExpose, State: stateUnavailable, Detail: "netbird is not configured"}
-				}
-			}
-			ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
-		} else if observed.registered {
-			ep.URL, ep.State, ep.Detail = "", stateStopped, "route stopped"
-		}
+		r, ok := routes[key(slug, observed.endpoint.Audience, observed.endpoint.Provider, observed.endpoint.Host)]
+		ep := m.refreshed(observed, r, ok)
 		permitted := ep.Permitted
 		if m.permission != nil && ep.Provider != Local {
 			var err error
@@ -686,6 +645,112 @@ func (m *Manager) ExposureStatus(ctx context.Context, slug string) (ExposureResu
 		endpoints = []ExposureEndpoint{}
 	}
 	return ExposureResult{Endpoints: endpoints}, nil
+}
+
+// refreshed returns an observed endpoint with its current URL, state and
+// detail: from its backend's in-memory Status while its route r is registered
+// (routed), "stopped" once a registered route is gone, else as observed. It
+// does not consult the permission callback.
+func (m *Manager) refreshed(observed observedEndpoint, r route, routed bool) ExposureEndpoint {
+	ep := observed.endpoint
+	if routed {
+		var fresh ExposureEndpoint
+		switch ep.Provider {
+		case Local:
+			fresh = fromStatus(Local, m.local.Status(), r.host, m.local.URL(r.host))
+		case Tailscale:
+			fresh = fromStatus(Tailscale, m.tailnet().Status(), r.host, m.tailnet().URL(r.host))
+		case Funnel:
+			fresh = m.tailnet().FunnelState(r.host)
+		case Portal:
+			fresh = fromStatus(Portal, m.portalNet().Status(), r.host, m.portalNet().URL(r.host))
+		case Zrok:
+			// zrok can be detached (account replaced) after the snapshot.
+			if z := m.zrokNet(); z != nil {
+				fresh = fromStatus(Zrok, z.Status(), r.host, z.URL(r.host))
+			} else {
+				fresh = ExposureEndpoint{Provider: Zrok, State: stateUnavailable, Detail: "zrok is not configured"}
+			}
+		case CFQuick:
+			if q := m.quickNet(); q != nil {
+				fresh = fromStatus(CFQuick, q.Status(), r.host, q.URL(r.host))
+			} else {
+				fresh = ExposureEndpoint{Provider: CFQuick, State: stateUnavailable, Detail: "cloudflare quick tunnels are not configured"}
+			}
+		case Netbird:
+			// NetBird can be detached (peer disconnected) after the snapshot.
+			if n := m.netbirdNet(); n != nil {
+				fresh = fromStatus(Netbird, n.PrivateStatus(), r.host, n.PrivateURL(r.host))
+			} else {
+				fresh = ExposureEndpoint{Provider: Netbird, State: stateUnavailable, Detail: "netbird is not configured"}
+			}
+		case NetbirdExpose:
+			if n := m.netbirdNet(); n != nil {
+				fresh = fromStatus(NetbirdExpose, n.PublicStatus(), r.host, n.PublicURL(r.host))
+			} else {
+				fresh = ExposureEndpoint{Provider: NetbirdExpose, State: stateUnavailable, Detail: "netbird is not configured"}
+			}
+		}
+		ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
+	} else if observed.registered {
+		ep.URL, ep.State, ep.Detail = "", stateStopped, "route stopped"
+	}
+	return ep
+}
+
+// EndpointCount is the number of observed route endpoints of one provider in
+// one state.
+type EndpointCount struct {
+	Provider ID
+	State    string
+	N        int
+}
+
+// EndpointStates counts every observed route endpoint, of every flat, draft
+// and current, by provider and current state. The state is the one
+// ExposureStatus reports, computed from each backend's in-memory Status; the
+// per-flat permission callback is not consulted, so it never reads the store.
+// It opens and changes no route. The result is sorted by provider and state.
+func (m *Manager) EndpointStates() []EndpointCount {
+	type item struct {
+		observed observedEndpoint
+		r        route
+		routed   bool
+	}
+	m.mu.Lock()
+	var items []item
+	for k, observed := range m.states {
+		for _, o := range observed {
+			// k is the endpoint's stateKey, so k plus its provider is its route key.
+			r, ok := m.routes[k+"\x00"+string(o.endpoint.Provider)]
+			it := item{observed: o, routed: ok}
+			if ok {
+				it.r = *r
+			}
+			items = append(items, it)
+		}
+	}
+	m.mu.Unlock()
+	type pair struct {
+		provider ID
+		state    string
+	}
+	counts := map[pair]int{}
+	for _, it := range items {
+		ep := m.refreshed(it.observed, it.r, it.routed)
+		counts[pair{ep.Provider, ep.State}]++
+	}
+	out := make([]EndpointCount, 0, len(counts))
+	for p, n := range counts {
+		out = append(out, EndpointCount{Provider: p.provider, State: p.state, N: n})
+	}
+	slices.SortFunc(out, func(a, b EndpointCount) int {
+		if c := strings.Compare(string(a.Provider), string(b.Provider)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.State, b.State)
+	})
+	return out
 }
 
 // HostStatus separates backend configuration and host permission from a flat's
