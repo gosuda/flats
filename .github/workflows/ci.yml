@@ -70,6 +70,29 @@ jobs:
         if: always() && matrix.shard == 'docs-budget'
         continue-on-error: true
         run: go test -v -count=6 -run '^Test100KiBDocumentTimings$' ./internal/apps/docs
+      - name: DIAG fsync latency of the runner disk and tmpfs
+        if: always() && matrix.shard == 'docs-budget'
+        continue-on-error: true
+        run: |
+          python3 - <<'PY'
+          import os, time, tempfile
+          for d in (tempfile.gettempdir(), "/dev/shm"):
+              p = os.path.join(d, "fsync-probe")
+              f = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+              t = []
+              for i in range(200):
+                  os.write(f, b"x" * 4096)
+                  s = time.perf_counter(); os.fsync(f); t.append((time.perf_counter() - s) * 1000)
+              os.close(f); os.unlink(p)
+              t.sort()
+              print(f"DIAG fsync {d}: p50 {t[100]:.2f} ms p95 {t[190]:.2f} ms max {t[-1]:.2f} ms")
+          PY
+      - name: DIAG 100 KiB timing distribution on tmpfs
+        if: always() && matrix.shard == 'docs-budget'
+        continue-on-error: true
+        env:
+          TMPDIR: /dev/shm
+        run: go test -v -count=6 -run '^Test100KiBDocumentTimings$' ./internal/apps/docs
 
   # NetBird is a separate module (./netbird) because its client needs replace
   # directives; go test ./... above does not reach it.
