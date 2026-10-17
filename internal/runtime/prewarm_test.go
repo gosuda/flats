@@ -182,3 +182,41 @@ func TestPrewarmMismatchAndFailure(t *testing.T) {
 	// waitPrewarm without a prewarm returns at once.
 	waitPrewarm()
 }
+
+// Prewarm also opens and uses a throwaway database in the scratch
+// directory, through the code path of env.DB, and removes it. A failure only
+// means no warm-up: it is logged once and the worker still reports warm.
+func TestPrewarmDatabase(t *testing.T) {
+	msgs := capturePrewarmLog(t)
+	scratch := t.TempDir()
+	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), ScratchDir: scratch})
+	waitPrewarm()
+	if m := msgs(); len(m) != 1 || m[0].T != "warm" {
+		t.Fatalf("messages = %+v, want one warm", m)
+	}
+	if left, err := os.ReadDir(scratch); err != nil || len(left) != 0 {
+		t.Fatalf("scratch directory after the warm-up: %v %v", left, err)
+	}
+	// Without a usable scratch directory there is no warm-up.
+	missing := filepath.Join(t.TempDir(), "missing")
+	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), ScratchDir: missing})
+	waitPrewarm()
+	m := msgs()
+	if len(m) != 3 || m[1].T != "log" || m[1].Level != "warn" || !strings.Contains(m[1].Msg, "database warm-up") || m[2].T != "warm" {
+		t.Fatalf("messages = %+v", m)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("the warm-up created its scratch directory: %v", err)
+	}
+	// The worker's own database still works afterwards.
+	d := newDataStore(t.TempDir())
+	defer d.Close()
+	c, err := d.conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := dbExec(t.Context(), c, "CREATE TABLE t (x)", nil); err != nil {
+		t.Fatal(err)
+	}
+}

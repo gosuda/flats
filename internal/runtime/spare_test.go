@@ -477,11 +477,47 @@ func TestSpareStaleSocketsRemoved(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A database warm-up left behind by a pre-started worker that died.
+	left := filepath.Join(run, "prewarm", "db123")
+	if err := os.MkdirAll(left, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(left, "db.sqlite"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
-	for _, name := range []string{"sdeadbeef.sock", "wdeadbeef.sock"} {
+	for _, name := range []string{"sdeadbeef.sock", "wdeadbeef.sock", "prewarm/db123"} {
 		if _, err := os.Stat(filepath.Join(run, name)); !os.IsNotExist(err) {
 			t.Fatalf("stale %s remains: %v", name, err)
 		}
+	}
+}
+
+// Pre-started workers warm up SQLite in the Manager's private scratch
+// directory and leave nothing in it.
+func TestSpareDatabaseWarmUp(t *testing.T) {
+	t.Parallel()
+	m, mlog := spareManager(t)
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	deadline := time.Now().Add(15 * time.Second)
+	for !m.SpareReady() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !m.SpareReady() {
+		t.Fatal("no ready spare")
+	}
+	if m.scratchDir != filepath.Join(m.sockDir, "prewarm") {
+		t.Fatalf("scratch directory %q", m.scratchDir)
+	}
+	fi, err := os.Stat(m.scratchDir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("scratch directory: %v %v", fi, err)
+	}
+	if left, _ := os.ReadDir(m.scratchDir); len(left) != 0 {
+		t.Fatalf("warm-up left %v", left)
+	}
+	if s := mlog.String(); strings.Contains(s, "warm-up") {
+		t.Fatalf("warm-up failed:\n%s", s)
 	}
 }
 

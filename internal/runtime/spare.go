@@ -242,7 +242,7 @@ func (m *Manager) newSpare() (*spare, error) {
 	sp := &spare{p: p, sock: sock}
 	b, _ := json.Marshal(struct {
 		Prewarm prewarmSpec `json:"prewarm"`
-	}{prewarmSpec{CacheDir: m.cacheDir()}})
+	}{prewarmSpec{CacheDir: m.cacheDir(), ScratchDir: m.scratchDir}})
 	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
 		p.stopped.Store(true)
 		p.cmd.Process.Kill()

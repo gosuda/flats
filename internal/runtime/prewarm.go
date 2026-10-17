@@ -1,7 +1,10 @@
 package runtime
 
 import (
+	"context"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/gosuda/flats/internal/qjs"
 )
@@ -10,7 +13,9 @@ import (
 // JavaScript runtime needs that does not depend on a flat: a qjs shell
 // (wazero runtime, WASI, host module and the compiled qjs.wasm, loaded from
 // the compilation cache). The first runtime of the worker takes the shell
-// when its options match; any later runtime is created as before.
+// when its options match; any later runtime is created as before. It also
+// pays SQLite's once-per-process costs with a throwaway database, so the
+// flat's first env.DB use does not.
 
 var prewarm struct {
 	mu    sync.Mutex
@@ -46,8 +51,38 @@ func startPrewarm(p prewarmSpec) {
 			prewarm.mu.Unlock()
 			s.Close()
 		}
+		if err := warmDatabase(p.ScratchDir); err != nil {
+			prewarmLog.Log("warn", "prewarm: database warm-up: "+err.Error())
+		}
 		prewarmLog.send(childMsg{T: "warm"})
 	}()
+}
+
+// warmDatabase opens a throwaway database in a new directory under scratch
+// through the same code path as a flat's env.DB, runs one statement and
+// removes it again. The first file database a process opens pays for
+// SQLite's one-time setup (library, VFS, first statement); later opens, also
+// of other files, do not. A failure only means no warm-up.
+func warmDatabase(scratch string) error {
+	if scratch == "" {
+		return nil
+	}
+	dir, err := os.MkdirTemp(scratch, "db")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	d := newDataStore(dir)
+	defer d.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := d.conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_, err = c.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS warm (x)")
+	return err
 }
 
 // prewarmOptions are the runtime-wide options a worker's first runtime uses

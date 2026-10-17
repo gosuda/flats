@@ -39,10 +39,11 @@ type Manager struct {
 	// counts or to the timing of the exec path).
 	NoSpare bool
 
-	once    sync.Once
-	sockDir string
-	initErr error
-	spare   spareState
+	once       sync.Once
+	sockDir    string
+	scratchDir string // pre-started workers' database warm-up; "" = none
+	initErr    error
+	spare      spareState
 }
 
 var _ core.Runtime = (*Manager)(nil)
@@ -76,15 +77,24 @@ func (m *Manager) init() error {
 			return
 		}
 		m.sockDir = dir
+		scratch := filepath.Join(dir, "prewarm")
 		if m.DataDir != "" && dir == filepath.Join(m.DataDir, "run") {
 			// Private to this data dir: sockets left by an unclean exit are
-			// stale, both instances' (w) and pre-started workers' (s).
+			// stale, both instances' (w) and pre-started workers' (s), and
+			// so is anything a pre-started worker left in its scratch
+			// directory.
 			for _, pattern := range []string{"w*.sock", "s*.sock"} {
 				stale, _ := filepath.Glob(filepath.Join(dir, pattern))
 				for _, p := range stale {
 					os.Remove(p)
 				}
 			}
+			os.RemoveAll(scratch)
+		}
+		// Pre-started workers warm up SQLite with throwaway databases in
+		// their own subdirectories of it; without it they skip that.
+		if privateDir(scratch) == nil {
+			m.scratchDir = scratch
 		}
 	})
 	return m.initErr
