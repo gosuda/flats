@@ -271,6 +271,36 @@ func TestSaveDocumentRefusalsPreserveSource(t *testing.T) {
 	}
 }
 
+// The console sends the per-flat disk quota as an exact byte count: a
+// small quota is stored as given, and 0 turns the quota off.
+func TestDiskQuotaSettingExactAndZeroIsOff(t *testing.T) {
+	s, _ := newTestService(t)
+	s.cfg.Runtime, s.cfg.DocsApp = &contentRuntime{}, testDocsApp()
+	ctx := t.Context()
+	if _, err := s.SaveDocument(ctx, "quota-off", "index.md", "saved", "", SaveMeta{}, ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "107374"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := all[SetDiskQuotaBytes]; got != "107374" {
+		t.Fatalf("stored quota %q, want the exact byte count", got)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveDocument(ctx, "quota-off", "index.md", "over quota", "", SaveMeta{}, ViaMCP); err == nil || !strings.Contains(err.Error(), "disk quota") {
+		t.Fatalf("1-byte quota must refuse the save: %v", err)
+	}
+	if all, err = s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "0"}); err != nil || all[SetDiskQuotaBytes] != "0" {
+		t.Fatalf("quota off: %q %v", all[SetDiskQuotaBytes], err)
+	}
+	if _, err := s.SaveDocument(ctx, "quota-off", "index.md", strings.Repeat("no quota ", 1000), "", SaveMeta{}, ViaMCP); err != nil {
+		t.Fatalf("0 must mean no quota: %v", err)
+	}
+}
+
 func TestSaveDocumentDiskQuotaGuidance(t *testing.T) {
 	s, _ := newTestService(t)
 	s.cfg.Runtime, s.cfg.DocsApp = &contentRuntime{}, testDocsApp()
