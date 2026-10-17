@@ -183,23 +183,30 @@ func TestPrewarmMismatchAndFailure(t *testing.T) {
 	waitPrewarm()
 }
 
-// Prewarm also opens and uses a throwaway database in the scratch
-// directory, through the code path of env.DB, and removes it. A failure only
-// means no warm-up: it is logged once and the worker still reports warm.
+// Prewarm also creates its warm-up directory, opens and uses a throwaway
+// database in it through the code path of env.DB, and removes it. A failure
+// only means no warm-up: it is logged once and the worker still reports
+// warm.
 func TestPrewarmDatabase(t *testing.T) {
 	msgs := capturePrewarmLog(t)
 	scratch := t.TempDir()
-	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), ScratchDir: scratch})
+	var during []os.DirEntry
+	warmDatabaseHook = func(dir string) { during, _ = os.ReadDir(dir) }
+	t.Cleanup(func() { warmDatabaseHook = func(string) {} })
+	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), WarmDir: filepath.Join(scratch, "s1")})
 	waitPrewarm()
 	if m := msgs(); len(m) != 1 || m[0].T != "warm" {
 		t.Fatalf("messages = %+v, want one warm", m)
+	}
+	if len(during) == 0 {
+		t.Fatal("no database in the warm-up directory")
 	}
 	if left, err := os.ReadDir(scratch); err != nil || len(left) != 0 {
 		t.Fatalf("scratch directory after the warm-up: %v %v", left, err)
 	}
 	// Without a usable scratch directory there is no warm-up.
 	missing := filepath.Join(t.TempDir(), "missing")
-	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), ScratchDir: missing})
+	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), WarmDir: filepath.Join(missing, "s1")})
 	waitPrewarm()
 	m := msgs()
 	if len(m) != 3 || m[1].T != "log" || m[1].Level != "warn" || !strings.Contains(m[1].Msg, "database warm-up") || m[2].T != "warm" {
@@ -207,6 +214,23 @@ func TestPrewarmDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Fatalf("the warm-up created its scratch directory: %v", err)
+	}
+	// A warm-up directory that exists is not this worker's: it is neither
+	// used nor removed.
+	taken := filepath.Join(scratch, "s2")
+	if err := os.Mkdir(taken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taken, "keep"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	startPrewarm(prewarmSpec{CacheDir: t.TempDir(), WarmDir: taken})
+	waitPrewarm()
+	if m := msgs(); len(m) != 5 || m[3].Level != "warn" || m[4].T != "warm" {
+		t.Fatalf("messages = %+v", m)
+	}
+	if left, err := os.ReadDir(taken); err != nil || len(left) != 1 || left[0].Name() != "keep" {
+		t.Fatalf("existing directory after the warm-up: %v %v", left, err)
 	}
 	// The worker's own database still works afterwards.
 	d := newDataStore(t.TempDir())

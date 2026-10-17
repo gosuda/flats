@@ -41,7 +41,7 @@ type Manager struct {
 
 	once       sync.Once
 	sockDir    string
-	scratchDir string // pre-started workers' database warm-up; "" = none
+	scratchDir string // parent of pre-started workers' database warm-up directories; "" = none
 	initErr    error
 	spare      spareState
 }
@@ -92,7 +92,8 @@ func (m *Manager) init() error {
 			os.RemoveAll(scratch)
 		}
 		// Pre-started workers warm up SQLite with throwaway databases in
-		// their own subdirectories of it; without it they skip that.
+		// their own subdirectories of it (newSpare); without it they skip
+		// that.
 		if privateDir(scratch) == nil {
 			m.scratchDir = scratch
 		}
@@ -254,6 +255,7 @@ type proc struct {
 	tail    *tailBuf
 	rdone   chan struct{} // stderr fully read
 	stopped atomic.Bool   // exit was requested
+	warmDir string        // a pre-started worker's database warm-up directory, removed after exit; "" = none
 	// A pre-started worker reports "warm" when it finished preparing and
 	// "spec" once it received its flat (every worker sends the latter).
 	warmAt    atomic.Int64 // UnixNano of "warm"; 0 before
@@ -356,8 +358,9 @@ func listenFile(path string) (*os.File, error) {
 }
 
 // startProc starts a worker process on the listening socket lf. owner is
-// nil for a pre-started worker.
-func (m *Manager) startProc(lf *os.File, owner *instance, ready chan<- error) (*proc, error) {
+// nil for a pre-started worker, whose warm-up directory warmDir is removed
+// after the process exited, before done is closed.
+func (m *Manager) startProc(lf *os.File, owner *instance, ready chan<- error, warmDir string) (*proc, error) {
 	cmd := m.command()
 	cmd.ExtraFiles = []*os.File{lf} // fd 3
 	stdin, err := cmd.StdinPipe()
@@ -372,11 +375,16 @@ func (m *Manager) startProc(lf *os.File, owner *instance, ready chan<- error) (*
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start worker: %w", err)
 	}
-	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{}), owner: owner, ready: ready}
+	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{}), warmDir: warmDir, owner: owner, ready: ready}
 	go p.readStderr(m, stderr)
 	go func() {
 		<-p.rdone // Wait must not run before all reads from the pipe completed
 		p.err = cmd.Wait()
+		if p.warmDir != "" {
+			// The worker removes it itself unless it was killed or
+			// crashed during the warm-up.
+			os.RemoveAll(p.warmDir)
+		}
 		close(p.done)
 		if in, _ := p.assigned(); in != nil {
 			in.exited(p)
@@ -400,7 +408,7 @@ func (in *instance) spawnExec(ctx context.Context) (err error) {
 		}
 	}()
 	ready := make(chan error, 1)
-	p, err := in.m.startProc(lf, in, ready)
+	p, err := in.m.startProc(lf, in, ready, "")
 	if err != nil {
 		return err
 	}

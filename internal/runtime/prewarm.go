@@ -51,25 +51,29 @@ func startPrewarm(p prewarmSpec) {
 			prewarm.mu.Unlock()
 			s.Close()
 		}
-		if err := warmDatabase(p.ScratchDir); err != nil {
+		if err := warmDatabase(p.WarmDir); err != nil {
 			prewarmLog.Log("warn", "prewarm: database warm-up: "+err.Error())
 		}
 		prewarmLog.send(childMsg{T: "warm"})
 	}()
 }
 
-// warmDatabase opens a throwaway database in a new directory under scratch
-// through the same code path as a flat's env.DB, runs one statement and
-// removes it again. The first file database a process opens pays for
-// SQLite's one-time setup (library, VFS, first statement); later opens, also
-// of other files, do not. A failure only means no warm-up.
-func warmDatabase(scratch string) error {
-	if scratch == "" {
+// warmDatabaseHook runs in warmDatabase after the statement, before the
+// directory is removed; for tests.
+var warmDatabaseHook = func(dir string) {}
+
+// warmDatabase creates the directory dir, which must not exist yet, opens a
+// throwaway database in it through the same code path as a flat's env.DB,
+// runs one statement and removes it again. The first file database a
+// process opens pays for SQLite's one-time setup (library, VFS, first
+// statement); later opens, also of other files, do not. A failure only means
+// no warm-up.
+func warmDatabase(dir string) error {
+	if dir == "" {
 		return nil
 	}
-	dir, err := os.MkdirTemp(scratch, "db")
-	if err != nil {
-		return err
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return err // also when it exists: not this worker's
 	}
 	defer os.RemoveAll(dir)
 	d := newDataStore(dir)
@@ -81,8 +85,11 @@ func warmDatabase(scratch string) error {
 		return err
 	}
 	defer c.Close()
-	_, err = c.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS warm (x)")
-	return err
+	if _, err = c.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS warm (x)"); err != nil {
+		return err
+	}
+	warmDatabaseHook(dir)
+	return nil
 }
 
 // prewarmOptions are the runtime-wide options a worker's first runtime uses

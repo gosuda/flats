@@ -208,16 +208,22 @@ apart from the prelude init split and the shell.
 
 - The spare exists only while the Manager has at least one instance that is
   not stopped (server flats and logical documents, dormant included). The
-  first `Start` requests one; stopping the last instance stops it.
+  first `Start` requests one; stopping the last instance stops it without
+  waiting for it to exit (a spare still preparing exits when it is done).
 - A spare is a `worker` child (same exe, args, env, cwd `/`, fd 3 listener)
   whose socket is bound at a fresh `s<random>.sock` path (`m.init` removes
   stale `s*.sock` as it does `w*.sock`). Its first stdin line is
-  `{"prewarm":{"cache_dir":…,"scratch_dir":…}}`. The worker builds a shell
-  in the background, then opens a throwaway database in a new subdirectory
-  of `scratch_dir` (the Manager's private `run/prewarm`, cleared by `m.init`
-  like stale sockets) through the `env.DB` code path, runs one statement and
-  removes it, so the flat's first database open does not pay SQLite's
-  once-per-process setup; a failure only skips that. It then reports
+  `{"prewarm":{"cache_dir":…,"warm_dir":…}}`. The worker builds a shell
+  in the background, then creates `warm_dir`, a path the Manager chose for
+  this spare (`s<random>` in its `run/prewarm`, or in the temp directory
+  shared by Managers without a private `run`), opens a throwaway database in
+  it through the `env.DB` code path, runs one statement and removes it, so
+  the flat's first database open does not pay SQLite's once-per-process
+  setup; a failure (also an existing `warm_dir`) only skips that. The
+  Manager removes that exact directory after the process exited, whatever
+  the reason, so a spare killed or crashed during the warm-up leaves
+  nothing; it never removes other entries. `m.init` also clears a private
+  `run/prewarm` like stale sockets. It then reports
   `{"t":"warm"}` on stderr and blocks reading the spec line. A spec that arrives during prewarm waits for it to finish
   instead of compiling a second time. A stdin EOF before the spec exits
   quietly with status 0.
@@ -245,7 +251,8 @@ apart from the prelude init split and the shell.
   adoption is discarded and replaced with exponential backoff (1 s doubling
   to 10 min); never disabled permanently.
 - Spare logs before adoption go to the Manager log.
-- `Manager.Close()` stops the spare and prevents new ones. Callers: app
+- `Manager.Close()` stops the spare, waits until every spare it or a last
+  instance's stop stopped has exited, and prevents new ones. Callers: app
   serve shutdown, the lifecycle-check adapters, and test helpers. A spare
   also exits when its parent dies (stdin EOF).
 - `Manager.NoSpare` disables spares for tests sensitive to process counts or
@@ -370,7 +377,7 @@ refill) takes the exec path.
   `internal/app/serve.go`, lifecycle-check adapters, test helpers, the docs
   idle tests, their tests.
 - Frozen interface: `protocol.go` adds `prewarmSpec{CacheDir string
-  "cache_dir"; ScratchDir string "scratch_dir"}` and `workerSpec.ImagePath "image_path"`; `prewarm.go`
+  "cache_dir"; WarmDir string "warm_dir"}` and `workerSpec.ImagePath "image_path"`; `prewarm.go`
   provides `startPrewarm(prewarmSpec)` (non-blocking; sends `{"t":"warm"}`)
   and `waitPrewarm()`; `WorkerMain` reads an optional prewarm line, then the
   spec; `newJSEngine` uses the prewarmed shell when compatible.

@@ -28,11 +28,16 @@ import (
 const testWorkerEnv = "FLATS_TEST_WORKER"
 
 // Test worker switches: testUnassignedLogEnv makes the worker log a line
-// before it receives its spec; a pre-started worker given a flat named
+// before it receives its spec; testSlowWarmUpEnv makes a pre-started worker
+// log "test-warm-up: <dir>" in its database warm-up and then stay in it
+// until a file <dir>.release exists (at most testSlowWarmUp); a pre-started
+// worker given a flat named
 // testDieAdoptedFlat exits when its spec arrives, before it acknowledges
 // it; any worker given testDieAckedFlat exits right after acknowledging it.
 const (
 	testUnassignedLogEnv = "FLATS_TEST_UNASSIGNED_LOG"
+	testSlowWarmUpEnv    = "FLATS_TEST_SLOW_WARMUP"
+	testSlowWarmUp       = 30 * time.Second
 	testDieAdoptedFlat   = "die-when-adopted"
 	testDieAckedFlat     = "die-after-spec-ack"
 )
@@ -63,6 +68,16 @@ func TestMain(m *testing.M) {
 	if os.Getenv(testWorkerEnv) == "1" {
 		if os.Getenv(testUnassignedLogEnv) == "1" {
 			stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-worker-unassigned"})
+		}
+		if os.Getenv(testSlowWarmUpEnv) == "1" {
+			warmDatabaseHook = func(dir string) {
+				stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-warm-up: " + dir})
+				for end := time.Now().Add(testSlowWarmUp); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+					if _, err := os.Stat(dir + ".release"); err == nil {
+						break
+					}
+				}
+			}
 		}
 		keys := []string{}
 		for _, kv := range os.Environ() {

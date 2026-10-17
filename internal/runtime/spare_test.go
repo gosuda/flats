@@ -310,6 +310,112 @@ func TestSpareStopsWithLastInstance(t *testing.T) {
 	}
 }
 
+// Stopping the last instance does not wait for the spare, which exits on
+// stdin EOF only once it finished preparing; Close does.
+func TestSpareStopDoesNotWait(t *testing.T) {
+	t.Parallel()
+	m, mlog := spareManager(t)
+	m.Env = append(m.Env, testSlowWarmUpEnv+"=1")
+	f := mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	sp := waitSpare(t, m, 0)
+	mlog.waitFor(t, "test-warm-up: "+sp.p.warmDir)
+	begin := time.Now()
+	f.inst.Stop()
+	t.Logf("Stop took %s", time.Since(begin))
+	select {
+	case <-sp.p.done:
+		t.Fatal("Stop waited for the spare, which was preparing")
+	default:
+	}
+	// Let it finish preparing, so that it exits on its own.
+	release := sp.p.warmDir + ".release"
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(release)
+	m.Close()
+	select {
+	case <-sp.p.done:
+	default:
+		t.Fatal("Close returned before the spare exited")
+	}
+	if sp.p.err != nil {
+		t.Fatalf("spare exit: %v", sp.p.err)
+	}
+	for _, path := range []string{sp.sock, sp.p.warmDir} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s remains: %v", path, err)
+		}
+	}
+}
+
+// A spare killed during its database warm-up leaves no warm-up directory,
+// also in the temp directory that Managers without a private one share,
+// where other Managers' entries stay.
+func TestSpareKilledDuringWarmUp(t *testing.T) {
+	t.Parallel()
+	for _, shared := range []bool{false, true} {
+		t.Run(fmt.Sprintf("shared=%v", shared), func(t *testing.T) {
+			t.Parallel()
+			m, mlog := spareManager(t)
+			m.Env = append(m.Env, testSlowWarmUpEnv+"=1")
+			if shared {
+				// Too long for socket paths: the Manager falls back to the
+				// shared temp directory.
+				long := filepath.Join(m.DataDir, strings.Repeat("d", 80))
+				if err := os.Mkdir(long, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(long, "cache")); err != nil {
+					t.Fatal(err)
+				}
+				m.DataDir = long
+			}
+			if err := m.init(); err != nil {
+				t.Fatal(err)
+			}
+			if fallback := filepath.Join(os.TempDir(), fmt.Sprintf("flats-%d", os.Getuid())); (m.sockDir == fallback) != shared {
+				t.Fatalf("socket directory %q (shared %v)", m.sockDir, shared)
+			}
+			if m.scratchDir == "" {
+				t.Fatal("no scratch directory")
+			}
+			other, err := os.MkdirTemp(m.scratchDir, "sother")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(other) })
+			f := mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+			sp := waitSpare(t, m, 0)
+			mlog.waitFor(t, "test-warm-up: "+sp.p.warmDir)
+			if filepath.Dir(sp.p.warmDir) != m.scratchDir {
+				t.Fatalf("warm-up directory %q is not in %q", sp.p.warmDir, m.scratchDir)
+			}
+			if left, err := os.ReadDir(sp.p.warmDir); err != nil || len(left) == 0 {
+				t.Fatalf("warm-up directory during the warm-up: %v %v", left, err)
+			}
+			if err := syscall.Kill(sp.p.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+				t.Fatal(err)
+			}
+			<-sp.p.done
+			if _, err := os.Stat(sp.p.warmDir); !os.IsNotExist(err) {
+				t.Fatalf("warm-up directory remains: %v", err)
+			}
+			if _, err := os.Stat(other); err != nil {
+				t.Fatalf("another Manager's entry was removed: %v", err)
+			}
+			// Its replacement, if one started, is stopped (killed in its
+			// warm-up after the stop timeout) and leaves nothing either;
+			// only the private directory can be checked as a whole.
+			f.inst.Stop()
+			m.Close()
+			if left, _ := os.ReadDir(m.scratchDir); !shared && (len(left) != 1 || left[0].Name() != filepath.Base(other)) {
+				t.Fatalf("scratch directory after Close: %v", left)
+			}
+		})
+	}
+}
+
 // A sleeping document counts as an instance; an instance that stops before
 // the creation delay never gets a spare.
 func TestSpareLazyDocsAndShortInstances(t *testing.T) {

@@ -69,9 +69,11 @@ type workerSpec struct {
 // sent before it is assigned a flat: {"prewarm": {...}}.
 type prewarmSpec struct {
 	CacheDir string `json:"cache_dir"`
-	// ScratchDir is a private directory of the Manager where the worker
-	// may create a throwaway database to warm up SQLite; never a flat's.
-	ScratchDir string `json:"scratch_dir,omitempty"`
+	// WarmDir is a path in a private directory of the Manager, never a
+	// flat's, where the worker creates a new directory (it must not exist)
+	// for a throwaway database that warms up SQLite, and removes it again.
+	// The Manager removes it after the worker exited.
+	WarmDir string `json:"warm_dir,omitempty"`
 }
 
 func (s *workerSpec) timeout() time.Duration {

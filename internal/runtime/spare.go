@@ -55,7 +55,7 @@ type spareState struct {
 	due      time.Time      // when timer fires (tests)
 	seq      uint64         // identifies timer; a stopped timer's callback does nothing
 	starting bool           // a spare is being started outside mu
-	wg       sync.WaitGroup // spare starts in progress
+	wg       sync.WaitGroup // spare starts and stops in progress
 	failures int            // spares that exited before adoption, in a row
 }
 
@@ -79,23 +79,30 @@ func (m *Manager) instanceReady() {
 	s.mu.Unlock()
 }
 
-// untrack stops the spare when the last instance stopped.
+// untrack stops the spare when the last instance stopped. It does not wait
+// for the spare to exit, which may take until it finished preparing; Close
+// does.
 func (m *Manager) untrack() {
 	s := &m.spare
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.live--
-	var sp *spare
-	if s.live == 0 {
-		m.stopTimerLocked()
-		sp, s.cur = s.cur, nil
+	if s.live > 0 {
+		return
 	}
-	s.mu.Unlock()
-	if sp != nil {
-		sp.stop()
+	m.stopTimerLocked()
+	if sp := s.cur; sp != nil {
+		s.cur = nil
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			sp.stop()
+		}()
 	}
 }
 
-// Close stops the spare and prevents new ones. It does not stop instances.
+// Close stops the spare, waits until every spare it or untrack stopped has
+// exited, and prevents new ones. It does not stop instances.
 func (m *Manager) Close() {
 	s := &m.spare
 	s.mu.Lock()
@@ -107,7 +114,7 @@ func (m *Manager) Close() {
 	if sp != nil {
 		sp.stop()
 	}
-	s.wg.Wait() // a spare started meanwhile stops itself
+	s.wg.Wait() // a spare started meanwhile stops itself; stops by untrack finish
 }
 
 // SparePID is the process id of the spare waiting for adoption, or 0.
@@ -242,7 +249,15 @@ func (m *Manager) newSpare() (*spare, error) {
 		return nil, err
 	}
 	defer lf.Close()
-	p, err := m.startProc(lf, nil, nil)
+	// Its own warm-up directory, which only it creates; startProc removes
+	// it once it exited, also when it was killed or crashed in the warm-up.
+	// Other entries of the scratch directory (other Managers' in a shared
+	// temp directory) are never touched.
+	warmDir := ""
+	if m.scratchDir != "" {
+		warmDir = filepath.Join(m.scratchDir, "s"+hex.EncodeToString(rnd[:]))
+	}
+	p, err := m.startProc(lf, nil, nil, warmDir)
 	if err != nil {
 		os.Remove(sock)
 		return nil, err
@@ -250,7 +265,7 @@ func (m *Manager) newSpare() (*spare, error) {
 	sp := &spare{p: p, sock: sock}
 	b, _ := json.Marshal(struct {
 		Prewarm prewarmSpec `json:"prewarm"`
-	}{prewarmSpec{CacheDir: m.cacheDir(), ScratchDir: m.scratchDir}})
+	}{prewarmSpec{CacheDir: m.cacheDir(), WarmDir: warmDir}})
 	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
 		p.stopped.Store(true)
 		p.cmd.Process.Kill()
