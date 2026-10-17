@@ -78,7 +78,7 @@ func TestDocsRealRuntimeEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	rt := &runtime.Manager{DataDir: dir, Env: []string{"FLATS_CONTENT_TEST_WORKER=1"}, Logf: t.Logf}
+	rt := &runtime.Manager{DataDir: dir, Env: append([]string{"FLATS_CONTENT_TEST_WORKER=1"}, testImageEnv()...), Logf: t.Logf}
 	app := core.DocsApp{FS: fstest.MapFS{"server.js": &fstest.MapFile{Data: []byte(documentTestApp)}}, Hash: strings.Repeat("b", 64), Entry: "server.js", ContentModule: "content.js"}
 	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: net, Lifecycle: manager, Runtime: rt, DocsApp: app, Logf: t.Logf})
 	if err != nil {
@@ -188,4 +188,17 @@ func TestDocsRealRuntimeEndToEnd(t *testing.T) {
 	if as, _ := svc.ListApprovals(ctx, "pending"); len(as) != 0 {
 		t.Fatalf("document save requested approval: %+v", as)
 	}
+}
+
+// testImageEnv forwards the suite's document image switches
+// (FLATS_NO_IMAGES, FLATS_FORCE_IMAGES) to the test Manager's workers, whose
+// environment is otherwise only the dispatch variable.
+func testImageEnv() []string {
+	var env []string
+	for _, k := range []string{"FLATS_NO_IMAGES", "FLATS_FORCE_IMAGES"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }

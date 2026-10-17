@@ -224,9 +224,15 @@ apart from the prelude init split and the shell.
   instance's log and ready channel, sets `proc.started` to the adoption time,
   clears its stderr tail, and writes the spec line. Existing
   ready/fatal/timeout/exit handling then applies.
-- If an adopted spare exits before `ready` or `fatal`, or the rename or spec
-  write fails, spawn retries once with today's exec path, so a spare that
-  died or was killed while idle never causes a startup failure.
+- Every worker reports `{"t":"spec"}` on stderr right after it parsed its
+  spec, before it prepares the flat. If an adopted spare exits before that
+  acknowledgement, or the rename or spec write fails, spawn retries once
+  with today's exec path, so a spare that died or was killed while idle
+  never causes a startup failure. An exit after the acknowledgement is the
+  flat's startup failure, reported as for a new process; the flat's
+  top-level code never runs twice for one start.
+- After the worker's engine is prepared, a prewarmed shell it did not take
+  (a WASI flat) is closed.
 - After every adoption a new spare is requested. A spare that exits before
   adoption is discarded and replaced with exponential backoff (1 s doubling
   to 10 min); never disabled permanently.
@@ -235,7 +241,9 @@ apart from the prelude init split and the shell.
   serve shutdown, the lifecycle-check adapters, and test helpers. A spare
   also exits when its parent dies (stdin EOF).
 - `Manager.NoSpare` disables spares for tests sensitive to process counts or
-  timing of the exec path; `Manager.SparePID()` lets idle tests identify it.
+  timing of the exec path; `Manager.SparePID()` lets idle tests identify it,
+  and `Manager.SpareReady()` (a spare is waiting, alive and has reported
+  `warm`) lets budget tests wait for the fast path.
   The docs idle tests change deliberately: "dormant host retains no
   children" becomes "no child other than the spare, and the spare holds no
   flat" (it has not received a spec), and the socket check ignores
@@ -272,11 +280,13 @@ generation or data), so documents sharing a runtime directory may share it.
   statement and plan item 9) for the spare; list the new spec in
   `docs/spec/README.md`.
 - Scratch-trial-only hosts: a trial's Start creates a spare that its Stop
-  removes again; spare creation is delayed 250 ms after the first instance
-  appears so short-lived trials do not churn processes.
+  removes again; spare creation is delayed 250 ms after an instance became
+  ready (a server flat's successful Start, or a registered document, lazy
+  ones included), so short-lived trials, whose own start and health checks
+  outlast 250 ms from Start, do not churn processes.
 - Not counted elsewhere: each docs worker keeps its ~5 MB image in the Go
-  heap for later runtimes; the version fingerprint walk joins
-  `checkVersionDir`'s walk (one walk).
+  heap for later runtimes; the version fingerprint is taken by
+  `checkVersionDir`'s walk (one walk, at worker init).
 - Measure the core wake rows (`NextGeneration`, preparation commits) on Linux
   disk-backed storage before judging budgets; if they exceed it, narrow
   requirement 2 explicitly.
@@ -332,6 +342,12 @@ Requirements 1 and 2 hold when the spare is ready; the first wake within
   storage): sleeping-document first page and WebSocket hello p95 < 50 ms over
   20 wakes with a ready spare, per-phase timings logged; tiny server flat
   `Start` + first GET p95 < 50 ms with the real binary; spare PSS/footprint.
+  `FLATS_COLDSTART_BUDGET=1 go test ./internal/apps/docs -run
+  TestHostIdleWakeBudget -v -p 1` and, with `FLATS_WORKER_EXE` set to a
+  built `flats` binary, `FLATS_COLDSTART_BUDGET=1 go test ./internal/runtime
+  -run TestColdStartBudget -v`. Test Managers forward `FLATS_NO_IMAGES` and
+  `FLATS_FORCE_IMAGES` to their workers; a woken document worker that
+  restored the image logs `document runtime restored from image`.
 
 ## Implementation ownership
 

@@ -86,6 +86,20 @@ func afterSpec(fn func()) {
 		}
 	}()
 }
+
+// docsWorkerEnv is the environment of test document workers: the dispatch
+// variable and the suite's document image switches (FLATS_NO_IMAGES,
+// FLATS_FORCE_IMAGES), which the worker reads.
+func docsWorkerEnv() []string {
+	env := []string{"FLATS_DOCS_TEST_WORKER=1"}
+	for _, k := range []string{"FLATS_NO_IMAGES", "FLATS_FORCE_IMAGES"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
 func manager(t *testing.T) *flatsruntime.Manager {
 	t.Helper()
 	exe, err := os.Executable()
@@ -93,7 +107,7 @@ func manager(t *testing.T) *flatsruntime.Manager {
 		t.Fatal(err)
 	}
 	managerOnce.Do(func() {
-		sharedManager = &flatsruntime.Manager{DataDir: cacheRoot, Exe: exe, Env: []string{"FLATS_DOCS_TEST_WORKER=1"}, Logf: func(string, ...any) {}}
+		sharedManager = &flatsruntime.Manager{DataDir: cacheRoot, Exe: exe, Env: docsWorkerEnv(), Logf: func(string, ...any) {}}
 	})
 	return sharedManager
 }

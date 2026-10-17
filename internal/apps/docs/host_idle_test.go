@@ -32,6 +32,8 @@ type idleRuntime struct {
 	spawns       map[string]int
 	managed      map[string]core.ManagedDocsInstance
 	instanceWrap func(core.RuntimeSpec, core.Instance) core.Instance
+	generation   map[string]time.Duration // the last NextGeneration's duration
+	onLog        func(flat, level, msg string)
 }
 
 func (r *idleRuntime) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instance, error) {
@@ -44,10 +46,18 @@ func (r *idleRuntime) Start(ctx context.Context, spec core.RuntimeSpec) (core.In
 			}
 			r.spawns[spec.Flat]++
 			r.mu.Unlock()
-			if next != nil {
-				return next(ctx)
+			if next == nil {
+				return spec.Generation, nil
 			}
-			return spec.Generation, nil
+			start := time.Now()
+			g, err := next(ctx)
+			r.mu.Lock()
+			if r.generation == nil {
+				r.generation = map[string]time.Duration{}
+			}
+			r.generation[spec.Flat] = time.Since(start)
+			r.mu.Unlock()
+			return g, err
 		}
 	}
 	log := spec.Log
@@ -58,6 +68,9 @@ func (r *idleRuntime) Start(ctx context.Context, spec core.RuntimeSpec) (core.In
 				r.pids[spec.Flat] = append(r.pids[spec.Flat], pid)
 				r.mu.Unlock()
 			}
+		}
+		if r.onLog != nil {
+			r.onLog(spec.Flat, level, msg)
 		}
 		if log != nil {
 			log(level, msg)
@@ -128,7 +141,7 @@ func newIdleHost(t *testing.T) *idleHost {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(runtimeDir) })
-	h.rt = &idleRuntime{manager: &flatsruntime.Manager{DataDir: runtimeDir, Exe: exe, Env: []string{"FLATS_DOCS_TEST_WORKER=1"}}, pids: map[string][]int{}}
+	h.rt = &idleRuntime{manager: &flatsruntime.Manager{DataDir: runtimeDir, Exe: exe, Env: docsWorkerEnv()}, pids: map[string][]int{}}
 	t.Cleanup(h.rt.manager.Close) // after the host stopped its documents
 	t.Cleanup(func() { h.close(); h.st.Close() })
 	h.open(t)
