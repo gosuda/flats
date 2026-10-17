@@ -388,6 +388,11 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if cfg.Credentials.OperatorFile != "" || o.OperatorCredentialStdin || o.OperatorCredentialFile != "" {
 		logf("warning: the operator credential is no longer used; ignoring credentials.operator_file and --operator-credential-*. Console decisions rely on the console's same-origin checks")
 	}
+	// A file edit can leave the preferred console naming an unlisted domain:
+	// it is ignored, never a reason not to start.
+	if p := cfg.PreferredHostProblem(); p != "" {
+		logf("warning: %s", p)
+	}
 
 	forkwatch.Start(ctx, logf)
 	loop, err := local.Listen(cfg.Host.LocalAddr)

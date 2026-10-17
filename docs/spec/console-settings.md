@@ -145,13 +145,32 @@ every start may be added later.
       them before that node is retired.
     - The console warns when approvals are pending, because their links name
       a domain.
-16. **Links.** Approval links and the `console_url` and `mcp_url` in status
-    use the console domain the request came in on. A request on any other
-    address (loopback, or an unknown host) gets the first served Tailscale
-    console domain, else the first served NetBird console domain
-    ([netbird-peers.md](netbird-peers.md) adds that list), else the loopback
-    address. Status also lists every served console URL, Tailscale first.
-    There is no "main domain" setting.
+16. **Links follow the request.** Approval links, and the `console_url` and
+    `mcp_url` in status, use the console domain the request came in on, while
+    that domain is still served. Every other place that tells someone where
+    the console is uses the same rule.
+17. **Preferred console.** When a link cannot follow the request (it came in
+    on the loopback address, or on a console domain that is no longer
+    served), Flats uses the preferred console: one setting,
+    `console.preferred_host`, set in the console or with `flats config set`.
+    - Its value is `local` (the loopback address), `tailscale:NAME` or
+      `netbird:NAME`, where NAME is in that provider's console domain list.
+      It is never a free URL, so a link can only name an address Flats
+      itself serves.
+    - Unset, or naming a domain that is not served right now (still
+      starting, or being retired), Flats falls back to the first served
+      Tailscale console domain, then the first served NetBird console
+      domain, then the loopback address. The order is fixed, never random,
+      so the same request always gets the same link.
+    - Setting a NAME that is not in its list is refused. Deleting the
+      preferred domain from its list unsets the preference in the same
+      change. A preference left pointing at an unlisted domain by a file edit
+      is ignored with a warning.
+    - The console shows the preference with the console domains and warns
+      when the preferred domain is not served.
+    - Unset, links are exactly what they were before this setting existed.
+18. **Every console URL.** Status also lists every served console URL,
+    Tailscale first, whatever the preference.
 
 ## First install without the console
 

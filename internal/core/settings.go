@@ -430,6 +430,61 @@ func (s *SettingsSource) setConsoleHostsOf(provider string, names []string, ifMa
 	return s.etag(), nil
 }
 
+// consolePreferred returns console.preferred_host as stored ("" for none),
+// and the network and name it names when the preference is in effect:
+// "local", or a console domain listed for this run (ok false otherwise).
+func (s *SettingsSource) consolePreferred() (value, network, name string, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var overrides map[string]string
+	if s.file != nil {
+		overrides = s.file.Overrides
+	}
+	c, err := s.doc.Effective(overrides)
+	if err != nil {
+		return "", "", "", false
+	}
+	network, name, ok = c.Preferred()
+	return c.Console.PreferredHost, network, name, ok
+}
+
+// setConsolePreferred saves console.preferred_host ("" unsets it). A
+// console domain must be in its network's list, both in config.json and for
+// this run, so the console only offers names it shows and serves.
+func (s *SettingsSource) setConsolePreferred(value, ifMatch string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkMatch(ifMatch); err != nil {
+		return "", err
+	}
+	if network, name, ok := config.ParsePreferredHost(value); ok && network != "local" {
+		var overrides map[string]string
+		if s.file != nil {
+			overrides = s.file.Overrides
+		}
+		c, err := s.doc.Effective(overrides)
+		if err != nil {
+			return "", err
+		}
+		if !slices.Contains(c.ConsoleHostsOf(network), name) {
+			return "", invalidf("%s is not a %s console domain: add it first, or choose a listed one", name, network)
+		}
+	}
+	apply := func(d *config.Document) error {
+		if value == "" {
+			return d.Unset(config.PreferredHostKey)
+		}
+		if err := d.Set(config.PreferredHostKey, value); err != nil {
+			return err
+		}
+		return d.Validate()
+	}
+	if err := s.commit(ifMatch, apply); err != nil {
+		return "", err
+	}
+	return s.etag(), nil
+}
+
 // dropDeprecatedAuthKeyFile removes credentials.tailscale_authkey_file from
 // config.json once its key is stored in flats.db.
 func (s *SettingsSource) dropDeprecatedAuthKeyFile() error {
@@ -461,6 +516,21 @@ func (s *Service) ConsoleHostsOf(provider string) ([]string, string) {
 // settings ETag.
 func (s *Service) SetConsoleHostsOf(provider string, names []string, ifMatch string) (string, error) {
 	return s.settings.setConsoleHostsOf(provider, names, ifMatch)
+}
+
+// ConsolePreferred returns console.preferred_host as config.json holds it
+// ("" for none) and, when the preference is in effect, the network
+// ("local", "tailscale" or "netbird") and console domain name it names. A
+// preference whose name is not listed is not in effect (ok is false).
+func (s *Service) ConsolePreferred() (value, network, name string, ok bool) {
+	return s.settings.consolePreferred()
+}
+
+// SetConsolePreferred saves console.preferred_host against the settings
+// ETag: "local", "tailscale:NAME" or "netbird:NAME" with NAME listed, or ""
+// to unset it. It returns the new ETag.
+func (s *Service) SetConsolePreferred(value, ifMatch string) (string, error) {
+	return s.settings.setConsolePreferred(value, ifMatch)
 }
 
 // DropDeprecatedAuthKeyFile removes credentials.tailscale_authkey_file from

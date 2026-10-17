@@ -1227,7 +1227,7 @@ assert.equal(lastWrap.getAttribute('tabindex'), '0', 'keyboard users can reach t
 assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last domain'), 'the reason describes the button');
 // Each network has its own section.
 const headings = all(byId(domMain, 'console-domains'), (e) => e.tagName === 'H3').map((e) => e.textContent);
-assert.deepEqual(headings, ['Tailnet (Tailscale)', 'NetBird']);
+assert.deepEqual(headings, ['Tailnet (Tailscale)', 'NetBird', 'Preferred console']);
 // The domain in use cannot be deleted while no other one is ready.
 routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] }, {},
@@ -1256,6 +1256,75 @@ await tick();
 await tick();
 assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'POST /console/api/console-domains').pop().body), { provider: 'netbird', name: 'ops' });
 assert.equal(settingsPage.deleteBlocker({ name: 'a' }, { loopback: true }, 1, ['tailscale/a']), '', 'the loopback console may delete the last domain');
+routes['GET /console/api/console-domains'] = DOMAINS;
+
+// --- preferred console ---
+// The choice is none, the loopback address or a listed console domain; a
+// change is guarded by the settings ETag.
+const optionValues = (sel) => all(sel, (e) => e.tagName === 'OPTION').map((o) => o.getAttribute('value'));
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', state: 'starting' }] },
+{ on: true, domains: [{ name: 'ops', url: 'http://ops.netbird.cloud/', state: 'ready' }] },
+{ preferred: '', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p1' });
+routes['PUT /console/api/console-domains/preferred'] = { etag: 'etag-p2' };
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+let prefSel = byId(byId(domMain, 'console-domains'), 'console-preferred');
+assert.deepEqual(optionValues(prefSel), ['', 'local', 'tailscale:flats', 'tailscale:next', 'netbird:ops'], 'none, loopback and every listed domain');
+assert.equal(prefSel.value, '', 'no preference is chosen');
+assert.ok(byId(domMain, 'console-domains').textContent.includes('https://flats.tail1234.ts.net'), 'where links go now is shown');
+assert.equal(all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn').length, 0, 'no warning without a preference');
+prefSel.value = 'tailscale:next';
+prefSel.dispatch('change');
+await tick();
+await tick();
+const prefCall = calls.filter((c) => c.key === 'PUT /console/api/console-domains/preferred').pop();
+assert.deepEqual(JSON.parse(prefCall.body), { preferred: 'tailscale:next' });
+assert.equal(prefCall.headers['If-Match'], '"etag-p1"', 'choosing is guarded by the settings ETag');
+// Choosing none sends an empty preference.
+prefSel = byId(byId(domMain, 'console-domains'), 'console-preferred');
+prefSel.value = '';
+prefSel.dispatch('change');
+await tick();
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/console-domains/preferred').pop().body), { preferred: '' });
+// A preferred domain that is not served is warned about, with where links go instead.
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', state: 'starting' }] }, {},
+{ preferred: 'tailscale:next', preferred_state: 'not_served', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p3' });
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+prefSel = byId(byId(domMain, 'console-domains'), 'console-preferred');
+assert.equal(prefSel.value, 'tailscale:next', 'the preference is shown');
+let prefWarn = all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn');
+assert.equal(prefWarn.length, 1);
+assert.ok(prefWarn[0].textContent.includes('tailnet domain next') && prefWarn[0].textContent.includes('not served')
+  && prefWarn[0].textContent.includes('https://flats.tail1234.ts.net'), prefWarn[0].textContent);
+// A file edit that names an unlisted domain is shown as chosen, and ignored.
+routes['GET /console/api/console-domains'] = dview({ on: true, domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }] }, {},
+  { preferred: 'netbird:gone', preferred_state: 'unlisted', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p4' });
+domMain = new Element('main');
+settingsPage.mount(domMain, [], ctx);
+await tick();
+prefSel = byId(byId(domMain, 'console-domains'), 'console-preferred');
+assert.deepEqual(optionValues(prefSel), ['', 'local', 'tailscale:flats', 'netbird:gone']);
+assert.equal(prefSel.value, 'netbird:gone');
+prefWarn = all(byId(domMain, 'console-domains'), (e) => e.className === 'alert alert-warn');
+assert.ok(prefWarn.length === 1 && prefWarn[0].textContent.includes('not a console domain') && prefWarn[0].textContent.includes('ignored'), 'an unlisted preference is warned about');
+// A refused change restores the shown choice and explains.
+routes['PUT /console/api/console-domains/preferred'] = { __status: 400, error: 'gone is not a netbird console domain' };
+prefSel.value = 'local';
+prefSel.dispatch('change');
+await tick();
+await tick();
+const prefDialog = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+assert.ok(prefDialog.textContent.includes('Cannot change the preferred console') && prefDialog.textContent.includes('not a netbird console domain'));
+assert.equal(prefSel.value, 'netbird:gone', 'a refused change keeps the stored choice');
+prefDialog.close('ok');
+await tick();
+routes['PUT /console/api/console-domains/preferred'] = { etag: 'etag-p2' };
 routes['GET /console/api/console-domains'] = DOMAINS;
 // The cards refresh only while a node or an enrollment is still pending.
 assert.equal(settingsPage.pendingWork(dview({ domains: [{ name: 'a', state: 'ready' }, { name: 'b', conflict: 'x' }] }), [{ id: 'zrok' }]), false);

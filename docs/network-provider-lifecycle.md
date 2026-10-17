@@ -535,6 +535,16 @@ after the retirement succeeds. Each other listed name is served unless a flat,
 preview or redirect already holds it, in which case the console shows the
 conflict.
 
+**Preferred console.** `console.preferred_host` is saved through the same
+settings source, under the console-domain mutex, so it never names a domain
+a concurrent deletion removes. `config.Document.Set` refuses a NAME its list
+does not hold and unsets the preference whenever a list write (`Set` or
+`Unset` of `tailscale.console_hosts` or `netbird.console_hosts`) removes the
+name it names; every writer (console, offline `flats config`, legacy
+upgrade) goes through it. Links are resolved on each use: the request's
+served console domain, else the preferred console while it is served, else
+the fixed order.
+
 **Adding**, under the console-domain mutex:
 
 1. Refuse a pinned list, a stale settings ETag, an invalid label, a duplicate,
@@ -551,10 +561,13 @@ conflict.
    the management listener on a loopback address (judged from the connection's
    local address; a console domain never counts). When the request came through
    the name being deleted, refuse unless another listed domain is served and
-   ready (Tailscale first) and use it as the redirect.
-2. Save the list without the name (ETag-guarded); nothing has changed if this
-   fails. A name that was never served (a conflict) has no console node: it is
-   only removed from the list, and the owner of the name keeps its node.
+   ready (the preferred console first, then Tailscale, then NetBird) and use
+   it as the redirect.
+2. Save the list without the name (ETag-guarded); the same write unsets
+   `console.preferred_host` when it names the deleted domain. Nothing has
+   changed if this fails. A name that was never served (a conflict) has no
+   console node: it is only removed from the list, and the owner of the name
+   keeps its node.
 3. Mark the row retiring and retire the node. On success delete the row; on
    failure keep it with the error and return it; deleting the same name again,
    or the next start, retries.

@@ -89,6 +89,8 @@ export const api = {
   // Console domains; etag is config.etag (or the view's etag), as for saveSettings.
   consoleDomains: () => get('/console-domains'),
   addConsoleDomain: (provider, name, etag) => request('POST', '/console-domains', { provider, name }, etag ? { 'If-Match': `"${etag}"` } : undefined),
+  // preferred is '' (none), 'local', 'tailscale:NAME' or 'netbird:NAME'.
+  setPreferredConsole: (preferred, etag) => request('PUT', '/console-domains/preferred', { preferred }, etag ? { 'If-Match': `"${etag}"` } : undefined),
   deleteConsoleDomain: (provider, name, etag) => request('DELETE', `/console-domains/${enc(provider)}/${enc(name)}`, undefined, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settings: () => get('/settings'),
   // etag is config.etag from settings(); a change to config.json or another

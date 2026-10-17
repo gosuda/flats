@@ -336,9 +336,12 @@ func (c *configCmd) validate(args []string) error {
 	if err != nil {
 		return err
 	}
-	l, _, err := load(configPath)
+	l, cfg, err := load(configPath)
 	if err != nil {
 		return err
+	}
+	if p := cfg.PreferredHostProblem(); p != "" {
+		c.printf("warning: %s\n", p)
 	}
 	if l.Migrated {
 		c.printf("%s is valid (schema_version %d; Flats converts it to %d on the next start)\n", configPath, l.FileVersion, config.CurrentSchemaVersion)
@@ -408,11 +411,21 @@ func (c *configCmd) set(args []string, unset bool) error {
 			}
 		}
 	}
+	// Removing the preferred console domain from its list unsets
+	// console.preferred_host in the same change (Document.Set and Unset).
+	var droppedPreference string
 	_, err = config.NewWriter(configPath).Save(l.Hash, func(d *config.Document) error {
+		before, _ := d.Stored(config.PreferredHostKey)
+		var err error
 		if unset {
-			return d.Unset(key)
+			err = d.Unset(key)
+		} else {
+			err = d.Set(key, pos[1])
 		}
-		return d.Set(key, pos[1])
+		if _, still := d.Stored(config.PreferredHostKey); key != config.PreferredHostKey && before != nil && !still {
+			droppedPreference, _ = before.(string)
+		}
+		return err
 	})
 	if errors.Is(err, config.ErrConflict) {
 		return actionf("%s changed while it was being updated; retry", configPath)
@@ -428,6 +441,9 @@ func (c *configCmd) set(args []string, unset bool) error {
 		c.printf("unset %s in %s; it uses its default from the next start\n", key, configPath)
 	} else {
 		c.printf("set %s in %s; it applies from the next start\n", key, configPath)
+	}
+	if droppedPreference != "" {
+		c.printf("unset %s (it named %s, which the list no longer holds)\n", config.PreferredHostKey, droppedPreference)
 	}
 	return nil
 }

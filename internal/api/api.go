@@ -71,6 +71,9 @@ type ConsoleDomainAdmin interface {
 	// redirect is a remaining console address and after, run once the
 	// response is written, retires the node.
 	DeleteConsoleDomain(ctx context.Context, provider, name, ifMatch string) (etag, redirect string, after func(), err error)
+	// SetPreferredConsole saves console.preferred_host: "local",
+	// "tailscale:NAME" or "netbird:NAME" with NAME listed, or "" for none.
+	SetPreferredConsole(ctx context.Context, value, ifMatch string) (etag string, err error)
 }
 
 // Server serves /api and /console/api.
@@ -165,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 			h("GET /console-domains", s.consoleDomains)
 			h("POST /console-domains", s.addConsoleDomain)
 			h("DELETE /console-domains/{provider}/{name}", s.deleteConsoleDomain)
+			h("PUT /console-domains/preferred", s.setPreferredConsole)
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
@@ -1133,6 +1137,30 @@ func (s *Server) deleteConsoleDomain(w http.ResponseWriter, r *http.Request, _ c
 	if after != nil {
 		after()
 	}
+}
+
+// setPreferredConsole saves the preferred console, where links go when they
+// cannot follow the request. Console only: agents cannot change where
+// approval links point.
+func (s *Server) setPreferredConsole(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	d, ok := s.consoleDomainAdmin(w)
+	if !ok {
+		return
+	}
+	var in struct {
+		Preferred *string `json:"preferred"`
+	}
+	if err := decode(r, &in); err != nil || in.Preferred == nil {
+		writeErr(w, 400, errors.New(`body must be {"preferred": "local", "tailscale:<name>", "netbird:<name>" or "" for none}`))
+		return
+	}
+	etag, err := d.SetPreferredConsole(r.Context(), strings.TrimSpace(*in.Preferred), ifMatch(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	w.Header().Set("ETag", strconv.Quote(etag))
+	writeJSON(w, 200, map[string]any{"etag": etag})
 }
 
 // restartKeys are settings `flats serve` reads only at startup.

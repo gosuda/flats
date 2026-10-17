@@ -124,9 +124,10 @@ mounted under both prefixes; **console** routes exist only under
 | GET | `/keys` | console | Operator keys: state, source, time and identity, never values |
 | PUT, DELETE | `/keys/tailscale`, `/keys/netbird` | console | `{key}` stores, replaces or removes the Tailscale auth key or NetBird setup key |
 | DELETE | `/keys/netbird/legacy-peer` | console | Dismiss the notice about an earlier version's shared NetBird peer |
-| GET | `/console-domains` | console | Per provider: domains, retiring names, whether the network is on, pin; plus the domain the request came through, whether it came over loopback, pending approvals and the ETag |
+| GET | `/console-domains` | console | Per provider: domains, retiring names, whether the network is on, pin; plus the domain the request came through, whether it came over loopback, pending approvals, the preferred console (`preferred`, `preferred_state`, `link_url`) and the ETag |
 | POST | `/console-domains` | console | `{provider, name}` (provider defaults to `tailscale`) with `If-Match` |
 | DELETE | `/console-domains/{provider}/{name}` | console | With `If-Match`; answers `{etag, redirect}` |
+| PUT | `/console-domains/preferred` | console | `{preferred}`: `local`, `tailscale:NAME`, `netbird:NAME` or `""` for none, with `If-Match`; answers `{etag}` |
 | GET, PUT | `/settings` | console | Read or save `config.json` settings (below) |
 | POST | `/settings/impact` | console | What the next pruning would remove with the candidate settings; writes nothing |
 
@@ -311,10 +312,15 @@ Labels match the data the server returns:
 
 Approval links, their event messages and `console_url` / `mcp_url` in
 `flats status` follow the request: the console domain the request came
-through while it is still listed and served, else the first served Tailscale
-domain, then the first served NetBird domain, then the loopback address. MCP
+through while it is still listed and served. Otherwise (the loopback
+listener, or a domain being deleted) they use the preferred console,
+`console.preferred_host`, while it is served, else the first served Tailscale
+domain, then the first served NetBird domain, then the loopback address
+([Preferred console](configuration.md#preferred-console)). Unset, the
+preference changes nothing. The Host header never changes a link. MCP
 requests carry the same context, so an agent's approval links use the domain
-it connected to. `console_urls` lists every served domain, Tailscale first.
+it connected to. `console_urls` lists every served domain, Tailscale first,
+whatever the preference.
 
 Console domains are managed in Settings → Console domains
 ([Console domains](configuration.md#console-domains)). At the surface:
@@ -334,6 +340,12 @@ Console domains are managed in Settings → Console domains
   closes the connection.
 - Turning Tailscale or NetBird off is refused while that network still has
   console domains.
+- The preferred console is `local` or a listed domain, set with the settings
+  ETag; a NAME not in its list is refused (400 `invalid`), and deleting the
+  preferred domain unsets it in the same change. The view reports it as
+  `preferred`, with `preferred_state` (`served`, `not_served` or `unlisted`
+  for a file edit naming a domain that is not listed) and `link_url`, where
+  links go when they cannot follow the request.
 
 ### Data-model and client links
 

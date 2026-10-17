@@ -71,7 +71,7 @@ type spec struct {
 }
 
 // sections lists the top-level objects in file order.
-var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "credentials"}
+var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "console", "credentials"}
 
 // specs lists every key in file order. The defaults are frozen.
 var specs = []spec{
@@ -136,6 +136,13 @@ var specs = []spec{
 	// its own NetBird peer.
 	{key: "netbird.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts,
 		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off NetBird"},
+	// The console address links name when they cannot follow the request:
+	// "local" (the loopback address), "tailscale:NAME" or "netbird:NAME"
+	// with NAME in that console domain list, or "" for none. Set refuses a
+	// NAME not in its list; a file edit that leaves one there is ignored
+	// with a warning (PreferredHostProblem), not refused.
+	{key: "console.preferred_host", kind: kindString, def: "", check: checkPreferredHost,
+		hint: preferredHostHint},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
 	// Read once at start into flats.db, then removed from the file.
@@ -260,7 +267,14 @@ func (d *Document) Set(key, value string) error {
 	if err != nil {
 		return err
 	}
+	if key == PreferredHostKey {
+		if err := d.checkPreferredListed(v.(string)); err != nil {
+			return err
+		}
+	}
+	before := d.consoleList(key)
 	d.values[key] = v
+	d.dropRemovedPreference(key, before)
 	return nil
 }
 
@@ -290,7 +304,9 @@ func (d *Document) Unset(key string) error {
 	if sp.required {
 		return fieldErr(key, "set it to a new value instead", "is required and cannot be unset")
 	}
+	before := d.consoleList(key)
 	delete(d.values, key)
+	d.dropRemovedPreference(key, before)
 	return nil
 }
 
@@ -505,6 +521,89 @@ func checkConsoleHosts(v any) (any, error) {
 	return slices.Clone(list), nil
 }
 
+// PreferredHostKey is the console address links use when they cannot
+// follow the request.
+const PreferredHostKey = "console.preferred_host"
+
+const preferredHostHint = `use "local", "tailscale:NAME" or "netbird:NAME" with NAME in tailscale.console_hosts or netbird.console_hosts, or unset it for no preference`
+
+// consoleListKeys maps each console domain network to its list key.
+var consoleListKeys = map[string]string{"tailscale": "tailscale.console_hosts", "netbird": "netbird.console_hosts"}
+
+// ParsePreferredHost splits a console.preferred_host value. It returns
+// ("local", "") for the loopback address and (network, name) for a console
+// domain; ok is false for "" (no preference) and malformed values.
+func ParsePreferredHost(v string) (network, name string, ok bool) {
+	if v == "local" {
+		return "local", "", true
+	}
+	network, name, found := strings.Cut(v, ":")
+	if !found || consoleListKeys[network] == "" || !ConsoleHostRE.MatchString(name) {
+		return "", "", false
+	}
+	return network, name, true
+}
+
+// checkPreferredHost accepts the forms of console.preferred_host; whether
+// NAME is listed is checked by Set (checkPreferredListed).
+func checkPreferredHost(v any) (any, error) {
+	s := v.(string)
+	if s == "" {
+		return s, nil
+	}
+	if _, _, ok := ParsePreferredHost(s); !ok {
+		return nil, fmt.Errorf("%q is not a console address", s)
+	}
+	return s, nil
+}
+
+// consoleList returns the console domain list of a list key as the document
+// holds it (the default when unset), or nil for any other key.
+func (d *Document) consoleList(key string) []string {
+	for _, k := range consoleListKeys {
+		if k == key {
+			if v, ok := d.values[key].([]string); ok {
+				return v
+			}
+			return []string{}
+		}
+	}
+	return nil
+}
+
+// checkPreferredListed refuses a preference whose NAME is not in its
+// network's console domain list in this document.
+func (d *Document) checkPreferredListed(v string) error {
+	network, name, ok := ParsePreferredHost(v)
+	if !ok || network == "local" {
+		return nil
+	}
+	key := consoleListKeys[network]
+	if !slices.Contains(d.consoleList(key), name) {
+		return fieldErr(PreferredHostKey, fmt.Sprintf("add %s to %s first, or choose a listed name", name, key),
+			"%q is not in %s", name, key)
+	}
+	return nil
+}
+
+// dropRemovedPreference unsets console.preferred_host when a change of the
+// console domain list key removed the name it prefers, so deleting the
+// preferred domain unsets the preference in the same change. A preference
+// that names a name the list did not hold before (a file edit) is left alone.
+func (d *Document) dropRemovedPreference(key string, before []string) {
+	if before == nil {
+		return
+	}
+	pref, _ := d.values[PreferredHostKey].(string)
+	network, name, ok := ParsePreferredHost(pref)
+	if !ok || consoleListKeys[network] != key {
+		return
+	}
+	if slices.Contains(before, name) && !slices.Contains(d.consoleList(key), name) {
+		delete(d.values, PreferredHostKey)
+	}
+}
+
 // checkManagementURL accepts an https URL without credentials, query or
 // fragment. A NetBird setup key is never part of it.
 func checkManagementURL(v any) (any, error) {
@@ -564,6 +663,7 @@ type Config struct {
 	Portal        PortalConfig
 	Zrok          ZrokConfig
 	Netbird       NetbirdConfig
+	Console       ConsoleConfig
 	Credentials   CredentialsConfig
 
 	values  map[string]any
@@ -631,6 +731,59 @@ type PortalConfig struct {
 type NetbirdConfig struct {
 	ManagementURL string
 	ConsoleHosts  []string // the console's NetBird names, in order
+}
+
+// ConsoleConfig is the console section.
+type ConsoleConfig struct {
+	// PreferredHost is console.preferred_host: "", "local",
+	// "tailscale:NAME" or "netbird:NAME". Use Preferred for the value in
+	// effect, which ignores a NAME not in its list.
+	PreferredHost string
+}
+
+// Preferred returns the console address links prefer when they cannot
+// follow the request: network "local", or "tailscale" or "netbird" with a
+// NAME listed in that network's console domains. ok is false without a
+// preference, and for a preference whose NAME is not listed (see
+// PreferredHostProblem).
+func (c *Config) Preferred() (network, name string, ok bool) {
+	network, name, ok = ParsePreferredHost(c.Console.PreferredHost)
+	if !ok || network == "local" {
+		return network, name, ok
+	}
+	if !slices.Contains(c.ConsoleHostsOf(network), name) {
+		return "", "", false
+	}
+	return network, name, true
+}
+
+// ConsoleHostsOf returns the console domains of network ("tailscale" or
+// "netbird").
+func (c *Config) ConsoleHostsOf(network string) []string {
+	switch network {
+	case "tailscale":
+		return slices.Clone(c.Tailscale.ConsoleHosts)
+	case "netbird":
+		return slices.Clone(c.Netbird.ConsoleHosts)
+	}
+	return nil
+}
+
+// PreferredHostProblem explains why console.preferred_host is ignored: it
+// names a console domain its list does not hold (left by a file edit, or by
+// a --console-host flag that replaces the list for one run). It returns ""
+// when the preference is unset or in effect.
+func (c *Config) PreferredHostProblem() string {
+	pref := c.Console.PreferredHost
+	if _, _, ok := ParsePreferredHost(pref); !ok || pref == "local" {
+		return ""
+	}
+	if _, _, ok := c.Preferred(); ok {
+		return ""
+	}
+	network, name, _ := ParsePreferredHost(pref)
+	return fmt.Sprintf("%s %q names %s, which is not in %s; it is ignored, and links use the first served console domain (Tailscale, then NetBird), else the loopback address",
+		PreferredHostKey, pref, name, consoleListKeys[network])
 }
 
 type ZrokConfig struct {
@@ -723,6 +876,7 @@ func (c *Config) fill() error {
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
 	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
+	c.Console = ConsoleConfig{str(PreferredHostKey)}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error

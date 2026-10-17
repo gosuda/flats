@@ -614,7 +614,62 @@ export function consoleDomains(view, opts) {
     h('p', { class: 'muted' }, 'The addresses where this console opens, one list per network. To change an address, add the new one, move your agents to it (',
       h('code', { text: 'flats connect' }), '), then delete the old one. Several can be used together.'),
     ...Object.keys(NETWORKS).map((prov) => networkDomains(view, prov, opts)),
+    preferredConsole(view, opts),
   ];
+}
+
+// preferredLabel names a console.preferred_host value for the operator.
+function preferredLabel(value) {
+  if (value === 'local') return 'this machine’s loopback address';
+  const [prov, name] = value.split(':');
+  return NETWORKS[prov] ? `${NETWORKS[prov].noun} ${name}` : value;
+}
+
+// preferredConsole chooses where links go when they cannot name the console
+// domain they were requested through: requests on the loopback address, or
+// through a domain being deleted. The choice is the loopback address or a
+// listed console domain, never a free address.
+export function preferredConsole(view, opts) {
+  const id = 'console-preferred';
+  const current = view.preferred || '';
+  const options = [['', 'No preference: the first served tailnet domain, then NetBird, then loopback'],
+    ['local', 'This machine’s loopback address']];
+  for (const prov of Object.keys(NETWORKS)) {
+    for (const d of networkOf(view, prov).domains || []) options.push([prov + ':' + d.name, `${d.name} (${NETWORKS[prov].heading})`]);
+  }
+  // A file edit can leave a name that is no longer listed: show it as chosen
+  // so the warning below matches the control.
+  if (current && !options.some(([v]) => v === current)) options.push([current, `${current} (not a console domain)`]);
+  const select = h('select', { id, 'aria-describedby': id + '-help' },
+    options.map(([value, text]) => h('option', { value, text, selected: value === current })));
+  select.value = current;
+  select.addEventListener('change', async () => {
+    const next = select.value;
+    select.disabled = true;
+    try {
+      await api.setPreferredConsole(next, view.etag);
+      toast(next ? `Links now prefer ${preferredLabel(next)}.` : 'The preferred console is unset.', 'success');
+      await opts.reload();
+    } catch (err) {
+      select.value = current;
+      select.disabled = false;
+      await infoDialog('Cannot change the preferred console', errorPanel(err));
+    }
+  });
+  let warning = null;
+  if (view.preferred_state === 'not_served') {
+    warning = `The preferred console, ${preferredLabel(current)}, is not served right now, so links use ${view.link_url || 'the next served address'} until it is.`;
+  } else if (view.preferred_state === 'unlisted') {
+    warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or no preference.`;
+  }
+  return h('section', { class: 'domain-network', 'aria-labelledby': id + '-title' },
+    h('h3', { id: id + '-title', text: 'Preferred console' }),
+    h('p', { class: 'muted small', text: 'Approval links and the console address in status name the console domain they were requested through. When they cannot, because the request came over this machine’s loopback address or through a domain being deleted, they name the preferred console.' }),
+    warning ? h('p', { class: 'alert alert-warn', role: 'status', text: warning }) : null,
+    h('div', { class: 'field' },
+      h('label', { for: id, text: 'Console for links' }), select,
+      h('span', { class: 'muted small', id: id + '-help' },
+        'Links that cannot follow the request now go to ', view.link_url ? h('code', { text: view.link_url }) : 'the loopback address', '.')));
 }
 
 // networkOf returns one network's part of the view.

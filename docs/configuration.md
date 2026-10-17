@@ -170,6 +170,7 @@ written; `flats config unset KEY` removes it.
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
 | `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console domains); otherwise restart |
+| `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console domains); otherwise restart |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
 
@@ -271,16 +272,51 @@ old one.
   the console shows the conflict, and deleting it leaves that owner's node
   alone. A name listed again while its old node is still being retired is
   served once that retirement succeeds.
-- Approval links and `console_url` / `mcp_url` in `flats status` use the
-  console domain the request came through while it is served, else the first
-  served tailnet name, else the first served NetBird name, else the loopback
-  address. `console_urls` lists every served name, tailnet names first.
+- Approval links, `console_url` / `mcp_url` in `flats status` and every other
+  place that names the console use the console domain the request came
+  through while it is served (see [Preferred console](#preferred-console)
+  for the other requests). `console_urls` lists every served name, tailnet
+  names first, whatever the preference.
 - `--console-host NAME` on `flats serve` replaces `tailscale.console_hosts`
   with `[NAME]` for that run and pins it: the console cannot change the
   tailnet list until the service stops passing the flag.
 
 `flats config set tailscale.console_hosts flats` sets the list while the host
 is stopped, as on a new remote server.
+
+#### Preferred console
+
+A link that cannot name the console domain its request came through (the
+request came over the loopback address, or through a domain that is no longer
+served, such as one being deleted) names the preferred console,
+`console.preferred_host`:
+
+- `local` is the loopback management address; `tailscale:NAME` and
+  `netbird:NAME` name a console domain in `tailscale.console_hosts` or
+  `netbird.console_hosts`. It is never a free URL, so a link only ever names
+  an address Flats serves itself. The Host header of a request never
+  changes a link.
+- Unset, or while the named domain is not served (still starting, its
+  network off, or being retired), links use the first served tailnet name,
+  then the first served NetBird name, then the loopback address. The order
+  is fixed, and unset gives exactly the links of hosts without the setting.
+- The console's Settings → Console domains chooses it among the loopback
+  address and the listed names (`PUT /console/api/console-domains/preferred`)
+  and warns when the preferred domain is not served. `flats config set
+  console.preferred_host tailscale:flats` sets it while the host is stopped.
+  Both refuse a NAME that is not in its list in `config.json`. Agents cannot
+  change it.
+- Deleting the preferred name from its list, in the console or with
+  `flats config set` or `unset`, unsets the preference in the same change.
+  A text edit that leaves it naming an unlisted domain does not stop Flats:
+  the preference is ignored, with a warning in the log, in
+  `flats config validate` and in the console.
+- It is not pinned by `--console-host`, which replaces only the tailnet list:
+  a NAME must still be in the list `config.json` holds, and a preference
+  naming a domain the flag leaves out is ignored for that run.
+- When the console is deleted through the domain it is open on, the page
+  moves to the preferred domain if it is ready, else to the first ready one
+  in the same order.
 
 ### Operator keys
 

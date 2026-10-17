@@ -315,9 +315,14 @@ func (h *Host) consoleURLOf(k cdKey) string {
 	return b.url(k.name)
 }
 
-// ConsoleURL is the operator console address: the first served console
-// domain, Tailscale first, else the loopback address.
+// ConsoleURL is the operator console address for a link that cannot follow
+// the request: the preferred console (console.preferred_host) while it is
+// served, else the first served console domain, Tailscale first, else the
+// loopback address.
 func (h *Host) ConsoleURL() string {
+	if u := h.preferredURL(); u != "" {
+		return u
+	}
 	for _, prov := range consoleProviders {
 		for _, name := range h.consoleHostsOf(prov) {
 			if u := h.consoleURLOf(cdKey{prov, name}); u != "" {
@@ -326,6 +331,40 @@ func (h *Host) ConsoleURL() string {
 		}
 	}
 	return h.console
+}
+
+// preferredConsole returns console.preferred_host as stored, and the console
+// domain it names when that is listed: a zero cdKey with local true for the
+// loopback address. ok is false without a preference in effect.
+func (h *Host) preferredConsole() (value string, k cdKey, local, ok bool) {
+	var network, name string
+	switch {
+	case h.Svc != nil:
+		value, network, name, ok = h.Svc.ConsolePreferred()
+	case h.Config != nil:
+		value = h.Config.Console.PreferredHost
+		network, name, ok = h.Config.Preferred()
+	}
+	if !ok {
+		return value, cdKey{}, false, false
+	}
+	if network == "local" {
+		return value, cdKey{}, true, true
+	}
+	return value, cdKey{network, name}, false, true
+}
+
+// preferredURL is the URL of the preferred console while it is served, or
+// "" without a preference in effect or while its domain is not served.
+func (h *Host) preferredURL() string {
+	_, k, local, ok := h.preferredConsole()
+	switch {
+	case !ok:
+		return ""
+	case local:
+		return h.console
+	}
+	return h.consoleURLOf(k)
 }
 
 // ConsoleURLFor is the console address for a request: the console domain it
@@ -567,8 +606,26 @@ type ConsoleDomainsView struct {
 	Via              *ConsoleDomainRef               `json:"via,omitempty"` // the console domain of this request
 	Loopback         bool                            `json:"loopback"`      // the request came over the loopback address
 	PendingApprovals int                             `json:"pending_approvals"`
-	ETag             string                          `json:"etag"`
+	// Preferred is console.preferred_host: "", "local", "tailscale:NAME" or
+	// "netbird:NAME".
+	Preferred string `json:"preferred"`
+	// PreferredState is "" without a preference, "served" while links can
+	// use it, "not_served" while its domain is listed but not served (so
+	// links fall back), or "unlisted" when it names a domain its list does
+	// not hold (ignored).
+	PreferredState string `json:"preferred_state,omitempty"`
+	// LinkURL is where links go when they cannot follow the request, as for
+	// a request on the loopback address.
+	LinkURL string `json:"link_url"`
+	ETag    string `json:"etag"`
 }
+
+// Preferred states of ConsoleDomainsView.PreferredState.
+const (
+	preferredServed    = "served"
+	preferredNotServed = "not_served"
+	preferredUnlisted  = "unlisted"
+)
 
 // ConsoleDomains implements api.ConsoleDomainAdmin.
 func (h *Host) ConsoleDomains(ctx context.Context) (any, error) { return h.consoleDomains(ctx) }
@@ -622,7 +679,39 @@ func (h *Host) consoleDomains(ctx context.Context) (ConsoleDomainsView, error) {
 	if as, err := h.Svc.ListApprovals(ctx, "pending"); err == nil {
 		v.PendingApprovals = len(as)
 	}
+	value, k, local, ok := h.preferredConsole()
+	v.Preferred = value
+	switch {
+	case value == "":
+	case !ok:
+		v.PreferredState = preferredUnlisted
+	case local || h.consoleURLOf(k) != "":
+		v.PreferredState = preferredServed
+	default:
+		v.PreferredState = preferredNotServed
+	}
+	v.LinkURL = h.ConsoleURL()
 	return v, nil
+}
+
+// SetPreferredConsole implements api.ConsoleDomainAdmin: it saves
+// console.preferred_host ("" unsets it). A console domain must be listed;
+// it need not be served yet.
+func (h *Host) SetPreferredConsole(ctx context.Context, value, ifMatch string) (string, error) {
+	// Serialized with domain changes, so a name is never preferred while a
+	// concurrent deletion removes it.
+	h.cdMu.Lock()
+	defer h.cdMu.Unlock()
+	etag, err := h.Svc.SetConsolePreferred(value, ifMatch)
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		h.logf("preferred console unset from the console")
+	} else {
+		h.logf("preferred console set to %s from the console", value)
+	}
+	return etag, nil
 }
 
 func checkConsoleProvider(prov string) error {
@@ -759,26 +848,37 @@ func (h *Host) deleteConsoleDomain(ctx context.Context, k cdKey, ifMatch string)
 	}
 	redirect := ""
 	if viaOK && via == k {
-		// The page moves to a remaining domain that already answers.
-	find:
+		// The page moves to a remaining domain that already answers: the
+		// preferred one if it does, else the first in the fixed order.
+		candidates := []cdKey{}
+		if _, p, local, ok := h.preferredConsole(); ok && !local {
+			candidates = append(candidates, p)
+		}
 		for _, prov := range consoleProviders {
 			for _, n := range h.consoleHostsOf(prov) {
-				o := cdKey{prov, n}
-				if o != k && h.consoleReady(o) {
-					redirect = h.consoleURLOf(o)
-					break find
-				}
+				candidates = append(candidates, cdKey{prov, n})
+			}
+		}
+		for _, o := range candidates {
+			if o != k && h.consoleReady(o) {
+				redirect = h.consoleURLOf(o)
+				break
 			}
 		}
 		if redirect == "" {
 			return DeleteResult{}, fmt.Errorf("%w: no other console domain is ready yet; wait until one is, or delete %s from another console address", core.ErrConflict, k.name)
 		}
 	}
+	before, _, _, _ := h.preferredConsole()
+	// Saving the list also unsets console.preferred_host when it names k.
 	etag, err := h.Svc.SetConsoleHostsOf(k.prov, next, ifMatch)
 	if err != nil {
 		return DeleteResult{}, err
 	}
 	h.logf("console domain %s (%s) deleted from the console", k.name, providerLabel[k.prov])
+	if after, _, _, _ := h.preferredConsole(); before != after {
+		h.logf("preferred console %s unset: its domain was deleted", before)
+	}
 	res := DeleteResult{ETag: etag, Redirect: redirect}
 	if !h.isOwned(k) {
 		// Never served (its name was in use elsewhere): there is no node of
