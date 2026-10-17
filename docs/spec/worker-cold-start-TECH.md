@@ -212,9 +212,13 @@ apart from the prelude init split and the shell.
 - A spare is a `worker` child (same exe, args, env, cwd `/`, fd 3 listener)
   whose socket is bound at a fresh `s<random>.sock` path (`m.init` removes
   stale `s*.sock` as it does `w*.sock`). Its first stdin line is
-  `{"prewarm":{"cache_dir":…}}`. The worker builds a shell in the
-  background (reporting `{"t":"warm"}` on stderr) and then blocks reading
-  the spec line. A spec that arrives during prewarm waits for it to finish
+  `{"prewarm":{"cache_dir":…,"scratch_dir":…}}`. The worker builds a shell
+  in the background, then opens a throwaway database in a new subdirectory
+  of `scratch_dir` (the Manager's private `run/prewarm`, cleared by `m.init`
+  like stale sockets) through the `env.DB` code path, runs one statement and
+  removes it, so the flat's first database open does not pay SQLite's
+  once-per-process setup; a failure only skips that. It then reports
+  `{"t":"warm"}` on stderr and blocks reading the spec line. A spec that arrives during prewarm waits for it to finish
   instead of compiling a second time. A stdin EOF before the spec exits
   quietly with status 0.
 - `instance.spawn` first tries to adopt the spare: it checks the spare is
@@ -361,7 +365,7 @@ Requirements 1 and 2 hold when the spare is ready; the first wake within
   `internal/app/serve.go`, lifecycle-check adapters, test helpers, the docs
   idle tests, their tests.
 - Frozen interface: `protocol.go` adds `prewarmSpec{CacheDir string
-  "cache_dir"}` and `workerSpec.ImagePath "image_path"`; `prewarm.go`
+  "cache_dir"; ScratchDir string "scratch_dir"}` and `workerSpec.ImagePath "image_path"`; `prewarm.go`
   provides `startPrewarm(prewarmSpec)` (non-blocking; sends `{"t":"warm"}`)
   and `waitPrewarm()`; `WorkerMain` reads an optional prewarm line, then the
   spec; `newJSEngine` uses the prewarmed shell when compatible.
