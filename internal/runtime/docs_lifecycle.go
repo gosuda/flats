@@ -51,6 +51,7 @@ func (m *Manager) startDocs(ctx context.Context, spec core.RuntimeSpec) (core.In
 		}
 		d.child = child // deliberately unready until committed core preparation
 	}
+	m.instanceReady() // a lazy document is ready once registered
 	return d, nil
 }
 

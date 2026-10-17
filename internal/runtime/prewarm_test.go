@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/qjs"
 )
 
 // capturePrewarmLog points prewarm's messages at a buffer for one test.
@@ -113,6 +115,40 @@ func TestPrewarmShellUsedByDocumentImage(t *testing.T) {
 	})
 	if got := meta(t, w); got.Gen != 8 {
 		t.Fatal(got)
+	}
+}
+
+// A WASI flat does not use the prewarmed shell; the worker releases it
+// rather than holding a second engine for its whole life.
+func TestPrewarmShellReleasedByWASIWorker(t *testing.T) {
+	capturePrewarmLog(t)
+	cache := t.TempDir()
+	startPrewarm(prewarmSpec{CacheDir: cache})
+	waitPrewarm()
+	prewarm.mu.Lock()
+	shell := prewarm.shell
+	prewarm.mu.Unlock()
+	if shell == nil {
+		t.Fatal("no shell after prewarm")
+	}
+	dir := t.TempDir()
+	// The smallest valid module; the worker only compiles it at init.
+	writeFiles(t, dir, map[string]string{"guest.wasm": "\x00asm\x01\x00\x00\x00"})
+	w := mustImageWorker(t, workerSpec{Dir: dir, Entry: "guest.wasm", CacheDir: cache})
+	if w.js != nil {
+		t.Fatal("not a WASI worker")
+	}
+	prewarm.mu.Lock()
+	left := prewarm.shell
+	prewarm.mu.Unlock()
+	if left != nil {
+		t.Fatal("the WASI worker still holds the prewarmed shell")
+	}
+	opt := prewarmOptions(prewarmSpec{CacheDir: cache})
+	opt.Shell = shell
+	if rt, err := qjs.New(opt); err == nil {
+		rt.Close()
+		t.Fatal("the released shell is still usable")
 	}
 }
 

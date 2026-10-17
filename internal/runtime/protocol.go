@@ -95,7 +95,7 @@ func (s *workerSpec) poolSize() int {
 // childMsg is one line the child writes on stderr. Lines that are not JSON
 // (for example a Go runtime crash) are forwarded as error logs.
 type childMsg struct {
-	T     string `json:"t"` // "log", "ready", "fatal"
+	T     string `json:"t"` // "log", "ready", "fatal"; "warm" and "spec" (pre-started workers)
 	Level string `json:"level,omitempty"`
 	Msg   string `json:"msg,omitempty"`
 	MS    int64  `json:"ms,omitempty"`

@@ -19,9 +19,11 @@ import (
 // A spawn adopts it instead of starting a process; anything that goes wrong
 // with it makes that spawn start a new process the ordinary way.
 
-// spareDelay is how long after the first instance appears the spare starts,
-// so that short-lived instances (scratch trials) do not churn processes. An
-// instance stop before then cancels it. A variable for tests.
+// spareDelay is how long after an instance became ready the spare starts
+// (a server flat that started, or a registered document), so that
+// short-lived instances (scratch trials, whose own start and health checks
+// take longer than the delay) do not churn processes. Stopping the last
+// instance before then cancels it. A variable for tests.
 var spareDelay = 250 * time.Millisecond
 
 // A spare that exits before adoption is replaced after spareRetryMin,
@@ -43,6 +45,7 @@ type spareState struct {
 	closed   bool   // Close was called
 	cur      *spare // waiting for adoption
 	timer    *time.Timer
+	due      time.Time      // when timer fires (tests)
 	seq      uint64         // identifies timer; a stopped timer's callback does nothing
 	starting bool           // a spare is being started outside mu
 	wg       sync.WaitGroup // spare starts in progress
@@ -50,17 +53,23 @@ type spareState struct {
 }
 
 // track counts an instance until the returned function (idempotent) is
-// called when it stops.
+// called when it stops. The instance requests the spare with instanceReady.
 func (m *Manager) track() func() {
 	s := &m.spare
 	s.mu.Lock()
 	s.live++
-	if s.live == 1 {
-		m.scheduleSpareLocked(spareDelay)
-	}
 	s.mu.Unlock()
 	var once sync.Once
 	return func() { once.Do(m.untrack) }
+}
+
+// instanceReady requests a spare spareDelay after a tracked instance became
+// ready, unless one exists or is already requested.
+func (m *Manager) instanceReady() {
+	s := &m.spare
+	s.mu.Lock()
+	m.scheduleSpareLocked(spareDelay)
+	s.mu.Unlock()
 }
 
 // untrack stops the spare when the last instance stopped.
@@ -105,6 +114,24 @@ func (m *Manager) SparePID() int {
 	return s.cur.p.cmd.Process.Pid
 }
 
+// SpareReady reports whether a spare is waiting for adoption, alive and done
+// preparing, so that the next spawn takes the fast path.
+func (m *Manager) SpareReady() bool {
+	s := &m.spare
+	s.mu.Lock()
+	sp := s.cur
+	s.mu.Unlock()
+	if sp == nil || sp.p.warmAt.Load() == 0 {
+		return false
+	}
+	select {
+	case <-sp.p.done:
+		return false
+	default:
+		return true
+	}
+}
+
 // takeSpare detaches the spare for adoption; nil if there is none. The
 // caller checks that it is still alive.
 func (m *Manager) takeSpare() *spare {
@@ -137,6 +164,7 @@ func (m *Manager) scheduleSpareLocked(delay time.Duration) {
 	}
 	s.seq++
 	seq := s.seq
+	s.due = time.Now().Add(delay)
 	s.timer = time.AfterFunc(delay, func() { m.startSpare(seq) })
 }
 

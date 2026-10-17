@@ -136,6 +136,7 @@ func (m *Manager) Start(ctx context.Context, spec core.RuntimeSpec) (core.Instan
 		return nil, err
 	}
 	in.untrack = untrack
+	m.instanceReady()
 	return in, nil
 }
 
@@ -243,6 +244,10 @@ type proc struct {
 	tail    *tailBuf
 	rdone   chan struct{} // stderr fully read
 	stopped atomic.Bool   // exit was requested
+	// A pre-started worker reports "warm" when it finished preparing and
+	// "spec" once it received its flat (every worker sends the latter).
+	warmAt    atomic.Int64 // UnixNano of "warm"; 0 before
+	specAcked atomic.Bool
 
 	// The instance the process serves and its readiness report; nil for a
 	// pre-started worker until spawn adopts it.
@@ -401,9 +406,11 @@ func (in *instance) spawnExec(ctx context.Context) (err error) {
 
 // adopt gives the pre-started worker sp this instance's socket path and
 // spec. adopted is false when sp could not start the flat for reasons of its
-// own (it had exited, the socket could not be moved, or it exited before
-// reporting ready or a startup error); sp is then gone and the caller starts
-// a new process.
+// own (it had exited, the socket could not be moved, the spec could not be
+// written, or it exited before acknowledging the spec); sp is then gone and
+// the caller starts a new process. Once sp acknowledged the spec, the flat's
+// startup has begun in it, and its outcome is the flat's, as for a new
+// process.
 func (in *instance) adopt(ctx context.Context, sp *spare) (adopted bool, err error) {
 	p := sp.p
 	select {
@@ -436,8 +443,8 @@ func (in *instance) adopt(ctx context.Context, sp *spare) (adopted bool, err err
 }
 
 // await waits until p, which received its spec, reports ready. For an
-// adopted worker an exit without a startup error is not the flat's failure:
-// adopted is false and the caller starts a new process instead.
+// adopted worker an exit before it acknowledged the spec is not the flat's
+// failure: adopted is false and the caller starts a new process instead.
 func (in *instance) await(ctx context.Context, p *proc, ready <-chan error, isAdopted bool) (adopted bool, err error) {
 	timeout := in.m.StartTimeout
 	if timeout == 0 {
@@ -462,7 +469,9 @@ func (in *instance) await(ctx context.Context, p *proc, ready <-chan error, isAd
 				}
 			default:
 			}
-			return false, nil
+			if !p.specAcked.Load() { // readStderr finished before done closed
+				return false, nil
+			}
 		}
 		msg := strings.TrimSpace(p.tail.String())
 		if msg == "" {
@@ -517,6 +526,9 @@ func (p *proc) readStderr(m *Manager, r io.Reader) {
 		if strings.HasPrefix(line, "{") && json.Unmarshal([]byte(line), &msg) == nil && msg.T != "" {
 			switch msg.T {
 			case "warm": // a pre-started worker finished preparing
+				p.warmAt.Store(time.Now().UnixNano())
+			case "spec": // the worker received its spec
+				p.specAcked.Store(true)
 			case "ready":
 				if in != nil && !sentReady {
 					sentReady = true

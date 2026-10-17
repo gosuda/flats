@@ -66,6 +66,17 @@ func waitPrewarm() {
 	}
 }
 
+// releasePrewarmedShell closes a prewarmed shell that the worker's first
+// runtime did not take (a WASI flat, or a runtime created without it), so
+// the worker does not hold a second engine for its whole life.
+func releasePrewarmedShell() {
+	prewarm.mu.Lock()
+	s := prewarm.shell
+	prewarm.shell = nil
+	prewarm.mu.Unlock()
+	s.Close()
+}
+
 // takePrewarmedShell hands out the prewarmed shell once, if opt can use it.
 // A shell that does not fit is released: every runtime of a worker has the
 // same options.

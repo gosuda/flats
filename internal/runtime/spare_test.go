@@ -153,9 +153,9 @@ func TestSpareDeadBeforeAdoption(t *testing.T) {
 	}
 }
 
-// A spare that exits after receiving its spec, without a startup error,
-// leaves the start to a new process.
-func TestSpareDiesAfterSpec(t *testing.T) {
+// A spare that exits after its spec was written but before it acknowledged
+// it leaves the start to a new process.
+func TestSpareDiesBeforeSpecAck(t *testing.T) {
 	t.Parallel()
 	m, mlog := spareManager(t)
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
@@ -169,6 +169,30 @@ func TestSpareDiesAfterSpec(t *testing.T) {
 	if f.logs.find("exited unexpectedly") {
 		t.Fatalf("fallback reported as a crash:\n%s", f.logs)
 	}
+}
+
+// A spare that exits after acknowledging its spec has begun the flat's
+// startup: that is the flat's startup failure, reported as for a new
+// process, and the flat's code is not run a second time.
+func TestSpareDiesAfterSpecAck(t *testing.T) {
+	t.Parallel()
+	plain := newManager(t)
+	plain.NoSpare = true
+	_, execErr := startFlat(t, plain, testDieAckedFlat, spareTestFiles(), "index.js", nil)
+	if execErr == nil {
+		t.Fatal("a worker that exits during startup started")
+	}
+	m, mlog := spareManager(t)
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	sp := waitSpare(t, m, 0)
+	_, err := startFlat(t, m, testDieAckedFlat, spareTestFiles(), "index.js", nil)
+	if err == nil || err.Error() != execErr.Error() {
+		t.Fatalf("adopted startup error %q, want %q", err, execErr)
+	}
+	if mlog.find("pre-started worker unavailable") {
+		t.Fatalf("started a second process after the spec was acknowledged:\n%s", mlog)
+	}
+	waitGone(t, sp.p.cmd.Process.Pid)
 }
 
 // A failed socket move kills the spare and starts a new process.
@@ -328,6 +352,64 @@ func TestSpareLazyDocsAndShortInstances(t *testing.T) {
 	if child.pid() != pid {
 		t.Fatalf("document woke in %d, want the spare %d", child.pid(), pid)
 	}
+}
+
+// The spare is requested spareDelay after the first instance became ready,
+// not when its start began: a start slower than the delay gets no spare
+// beside it.
+func TestSpareDelayFromReady(t *testing.T) {
+	t.Parallel()
+	m, _ := spareManager(t)
+	busy := 2*spareDelay + 100*time.Millisecond
+	slow := fmt.Sprintf("const t0 = Date.now(); while (Date.now() - t0 < %d) {}\n%s", busy.Milliseconds(), spareTestScript)
+	begin := time.Now()
+	f := mustStart(t, m, "slow", map[string]string{"index.js": slow}, "index.js", nil)
+	m.spare.mu.Lock()
+	due := m.spare.due
+	m.spare.mu.Unlock()
+	if earliest := begin.Add(busy + spareDelay); due.Before(earliest) {
+		t.Fatalf("spare requested for %v after the start began, want at least %v", due.Sub(begin), busy+spareDelay)
+	}
+	if sp := waitSpare(t, m, 0); sp.p.started.Before(due) {
+		t.Fatalf("spare started %v before it was due", due.Sub(sp.p.started))
+	}
+	getOK(t, f)
+}
+
+// SpareReady reports a spare that is waiting, alive and prepared.
+func TestSpareReady(t *testing.T) {
+	t.Parallel()
+	m, _ := spareManager(t)
+	if m.SpareReady() {
+		t.Fatal("ready without an instance")
+	}
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	deadline := time.Now().Add(15 * time.Second)
+	for !m.SpareReady() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	sp := currentSpare(m)
+	if !m.SpareReady() || sp == nil || sp.p.warmAt.Load() == 0 {
+		t.Fatal("no ready spare")
+	}
+	// Detached so that its exit is not noticed: SpareReady checks it is alive.
+	m.spare.mu.Lock()
+	m.spare.cur = nil
+	m.spare.mu.Unlock()
+	if err := sp.p.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	<-sp.p.done
+	m.spare.mu.Lock()
+	m.spare.cur = sp
+	m.spare.mu.Unlock()
+	if m.SpareReady() {
+		t.Fatal("an exited spare is ready")
+	}
+	m.spare.mu.Lock()
+	m.spare.cur = nil
+	m.spare.mu.Unlock()
+	os.Remove(sp.sock)
 }
 
 func TestSpareClose(t *testing.T) {

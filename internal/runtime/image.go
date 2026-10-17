@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -89,6 +90,10 @@ func newDocumentVM(w *worker, ws wsSink) (*jsVM, error) {
 		if err == nil {
 			if fromFile {
 				d.keep(img, binding)
+				// Once per worker; tests observe forced and disabled modes by it.
+				if w.log != nil {
+					w.log.Log("info", "document runtime restored from image")
+				}
 			}
 			return vm, nil
 		}
@@ -308,9 +313,9 @@ func pathlessError(err error) string {
 // what newJSVM evaluates in which order, the running build, and the version
 // files.
 func imageBinding(w *worker) (string, error) {
-	fp, err := versionFingerprint(w.spec.Dir)
-	if err != nil {
-		return "", err
+	fp := w.versionFP
+	if fp == "" {
+		return "", errors.New("version files have no fingerprint")
 	}
 	prelude := sha256.Sum256([]byte(preludeJS))
 	bi := buildinfo.Get()
@@ -356,30 +361,19 @@ var executableIdentity = sync.OnceValue(func() string {
 	return fmt.Sprintf("%d %d %d", fi.Size(), fi.ModTime().UnixNano(), ino)
 })
 
-// versionFingerprint covers every regular file of the version directory by
-// relative path, size, modification time and mode, in sorted order.
-func versionFingerprint(dir string) (string, error) {
-	h := sha256.New()
-	err := filepath.WalkDir(dir, func(p string, e fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !e.Type().IsRegular() {
-			return nil
-		}
-		fi, err := e.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(h, "%d:%s %d %d %o\n", len(rel), rel, fi.Size(), fi.ModTime().UnixNano(), fi.Mode())
-		return nil
-	})
+// fingerprintFile adds the regular file p of the version directory dir to
+// the version fingerprint, which covers every regular file by relative path,
+// size, modification time and mode, in the sorted order of
+// checkVersionDir's walk.
+func fingerprintFile(h hash.Hash, dir, p string, e fs.DirEntry) error {
+	fi, err := e.Info()
 	if err != nil {
-		return "", err
+		return err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	rel, err := filepath.Rel(dir, p)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(h, "%d:%s %d %d %o\n", len(rel), rel, fi.Size(), fi.ModTime().UnixNano(), fi.Mode())
+	return nil
 }
