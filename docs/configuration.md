@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics, ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES |
 | Nobody may read it in plain text | separate files | `secret.key` |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
