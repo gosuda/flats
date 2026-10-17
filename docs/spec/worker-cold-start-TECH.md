@@ -1,6 +1,6 @@
 # Fast worker cold start — technical design
 
-Status: design approved (independent Claude review R2: APPROVE; its P3 notes are folded into "Implementation notes from review").
+Status: implemented. Design approved by independent Claude review (R2); code approved by independent Claude and Codex review (R2), with the R2 notes corrected; gated budget tests pass on macOS and Linux.
 Base: `59bae8f` (origin/main, 2026-10-18). Product contract: [worker-cold-start.md](worker-cold-start.md).
 
 ## Measured baseline (macOS arm64, load average ~10, warm compilation cache)

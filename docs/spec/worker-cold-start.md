@@ -1,6 +1,6 @@
 # Fast worker cold start
 
-Status: partly implemented
+Status: implemented
 
 ## Summary
 
@@ -51,8 +51,13 @@ add to it.
 
 ## Current state
 
-The design is in [worker-cold-start-TECH.md](worker-cold-start-TECH.md).
-Implementation is in progress; nothing has shipped yet.
+Implemented as designed in [worker-cold-start-TECH.md](worker-cold-start-TECH.md).
+Measured with a ready pre-started worker (p95 of 20 samples, gated budget
+tests): sleeping document first page 26–33 ms on macOS and 25–29 ms in a
+2-CPU Linux container, collaboration hello 24–30 ms, a tiny JavaScript flat's
+start plus first request 18–23 ms. The pre-started worker uses about 37 MB
+(macOS physical footprint) or 55 MB (Linux PSS). A start within about one
+second after a previous adoption finds no ready spare and takes the old path.
 
 ## Open questions
 
