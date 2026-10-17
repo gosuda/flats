@@ -298,7 +298,91 @@ file and each agent write at most `system.upload_max_bytes`) checks the flat dir
 new unique blob bytes against the per-flat disk quota and is refused with a
 validation error. A document save checks the flat directory plus the whole
 bundle. A rollback of either type adds no bytes it is charged for and is never
-refused for disk quota. Live edits to a document (people's edits and
-`update_document`) and the revisions recording them are not checked against
-the disk quota; see the Current state of
-[content-models.md](spec/content-models.md#current-state).
+refused for disk quota.
+
+A document's live edits, people's and `update_document`'s, never pass
+through the host, so its docs worker checks them, in the transaction that
+would commit them and after its writes:
+
+- **Budget.** The host measures the flat directory and installs the quota
+  and `other`, the bytes everything but the worker's database file and its
+  write-ahead log uses (both skipped in the same directory walk, so a log
+  truncated meanwhile cannot make `other` too small), with
+  a lifetime of 2 minutes:
+  - with every outbox acknowledgement, measured after the acknowledged
+    entries' blobs were stored, so their reservations end in the same worker
+    transaction as the measurement that includes the blobs arrives;
+  - through the `budget` host operation after every import (the ticker,
+    every document write and rollback, history reads), before each
+    `update_document`, and on every running document before a changed
+    `system.disk_quota_bytes` returns.
+  A budget after an import also lists the texts of the entries it read whose
+  blobs are stored (at most 10,000), acknowledged or not: an import that runs
+  out of its fetch budget or fails stores some blobs of an entry it cannot
+  finish, and the worker must not reserve what `other` already includes.
+  Quota 0 turns the check off. The worker keeps the budget in its database,
+  so a restarted worker keeps it until it expires.
+- **No current budget, no edits.** While the worker has no budget or its
+  budget expired, it admits no live edit, with or without a quota: a
+  person's edit fails as transient (the editor reconnects and resends it, and
+  nothing is lost) and `update_document` returns `unavailable`. When the host
+  cannot install the budget before an `update_document`, the call returns
+  `unavailable` without sending the edit. A document the host could not
+  reach on a quota change gets a warn event (kind `quota`); it keeps its
+  previous budget until that expires.
+- **What counts: persistent usage.** `other`, plus the worker's database as
+  the transaction leaves it (SQLite's page count times its page size), plus
+  the texts recorded but not imported yet (the host stores each as a blob),
+  plus the revision people's unrecorded edits will need when their groups
+  close, plus the write-ahead log's bound at rest (below). The revision is bounded per
+  edited document, as its own text even when documents share one now
+  (later edits can make them differ): its size in the worker with its
+  overflow pages rounded up and slack for B-tree splits, plus its host
+  blob, and the entry's rows. A document's size is first three bytes per
+  character of its visible text, which includes text an update makes
+  visible by completing earlier ones; only when those bounds would not fit
+  are the sizes made exact (the edited document from its text in memory,
+  other documents once from their committed state). The check takes no
+  savepoint and loads no other document again during a burst of edits;
+  sizing the edited text still makes an update to a large document near the
+  quota about twice as slow (measured at about 136 ms instead of 68 ms for a
+  900 KB document). Because the bound is conservative, a person's edit needs
+  more headroom than the same agent edit (several hundred KB on a small
+  document): after the group closes, the flat usually sits that far below
+  the quota. An edit
+  refused for disk quota rolls back completely; nothing is deleted to make
+  room, and while the flat is over its quota every live edit is refused, a
+  deletion included, since it still adds a revision.
+- **A person's edit** is refused with the WebSocket error `disk_quota`, like
+  other deterministic rejections: the editor stops syncing, keeps the text,
+  offers it for download and warns before the page is reloaded or closed.
+- **`update_document`** is refused with `document_capacity`, naming the disk
+  quota, and changes nothing, including people's unrecorded edits it would
+  otherwise have recorded first.
+- **Not checked:** a rollback (`restore` or a rollback intent) and a new
+  version's activation, which a save already checked.
+
+**Write-ahead log.** The log is transient and not predicted. After every
+commit the worker reads how many frames the log holds (`PRAGMA
+wal_checkpoint(PASSIVE)`, which also copies them into the database) and
+truncates it (`PRAGMA wal_checkpoint(TRUNCATE)`) when there are more than
+64. So at rest the log holds at most 64 frames: 32 + 64 × (page size + 24)
+bytes, 263,712 bytes with 4 KiB pages, which the check reserves; the host
+leaves the actual log out of `other`. A single transaction exceeds that
+bound only until its own commit returns. A truncation that a reader keeps
+from finishing (busy) or that fails is recorded in the worker's database
+(`meta.wal_truncate`, holding the generation of a counter every failure
+raises and nothing resets) and retried after
+every later commit, by any VM, until one succeeds that saw the latest
+failure; the frame count alone would miss a log SQLite restarted
+for a small transaction inside a larger file. Until then the log stays
+larger; the host's next measurement also truncates a log above 256 KiB
+(`checkpoint` host operation). An idle document writes nothing to its log: an unchanged
+budget is rewritten only when it is half expired, and a sync with nothing
+to do changes no page. Large payloads sit in rows nothing rewrites often:
+text reference counts are kept apart from the texts, and each document's
+merge base apart from the row whose sequence number every update advances,
+so recording a revision or an update rewrites no large text.
+
+The host's metadata in `flats.db` is outside the flat directory and not
+counted, as for every other disk quota check.

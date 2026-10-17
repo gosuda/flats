@@ -968,6 +968,129 @@ assert.equal(puts().length, putCount + 1);
 assert.equal(settingsPage.isDecrease('events_keep', '100', '5'), true);
 assert.equal(settingsPage.isDecrease('events_keep', '5', '100'), false);
 
+// Byte sizes show the stored count exactly, in the largest unit that
+// converts back to it, with a unit menu and the exact byte count.
+assert.deepEqual(settingsPage.byteValue('32212254720', 'GB'), { unit: 'GB', value: '30' });
+assert.deepEqual(settingsPage.byteValue('1610612736', 'GB'), { unit: 'GB', value: '1.5' });
+assert.deepEqual(settingsPage.byteValue('107374', 'GB'), { unit: 'bytes', value: '107374' });
+assert.deepEqual(settingsPage.byteValue('1073742', 'GB'), { unit: 'bytes', value: '1073742' });
+assert.deepEqual(settingsPage.byteValue('1395864371', 'GB'), { unit: 'bytes', value: '1395864371' });
+assert.deepEqual(settingsPage.byteValue('3221225472000', 'GB'), { unit: 'GB', value: '3000' });
+assert.deepEqual(settingsPage.byteValue('9007199254740991', 'GB'), { unit: 'bytes', value: '9007199254740991' });
+assert.deepEqual(settingsPage.byteValue('9007199254740992', 'GB'), { unit: 'GB', value: '' });
+assert.deepEqual(settingsPage.byteValue('1536', 'GB'), { unit: 'KB', value: '1.5' });
+assert.deepEqual(settingsPage.byteValue('1', 'GB'), { unit: 'bytes', value: '1' });
+assert.deepEqual(settingsPage.byteValue('0', 'GB'), { unit: 'GB', value: '0' });
+assert.deepEqual(settingsPage.byteValue('', 'MB'), { unit: 'MB', value: '' });
+assert.equal(settingsPage.toBase('104.857421875', 1024, false), 107374);
+assert.equal(settingsPage.toBase('0.0', 1 << 30, false), 0);
+assert.equal(settingsPage.toBase('1.5', 1, true), null);
+assert.equal(settingsPage.toBase('-1', 1, false), null);
+assert.equal(settingsPage.toBase('', 1, false), null);
+assert.equal(settingsPage.toBase('1e300', 1 << 30, false), null);
+assert.equal(settingsPage.toBase('1.0000000000000001', 1, true), null, 'a fraction of a byte is refused even below float precision');
+assert.equal(settingsPage.toBase('9007199254740991.1', 1, true), null);
+assert.equal(settingsPage.toBase('9007199254740991', 1, true), 9007199254740991);
+assert.equal(settingsPage.toBase('9007199254740992', 1, true), null);
+assert.equal(settingsPage.toBase('8388607.999999999', 1 << 30, false), 9007199254740991);
+assert.equal(settingsPage.toBase('8388608', 1 << 30, false), null);
+assert.equal(settingsPage.toBase('1.5e3', 1, true), 1500);
+assert.equal(settingsPage.toBase('15e-1', 1, true), null);
+assert.equal(settingsPage.toBase('1e-500', 1, false), null);
+assert.equal(settingsPage.toBase('.5', 1 << 20, false), 524288);
+assert.equal(settingsPage.toBase('0.0000001', 1 << 30, false), 107, 'rounds half up to whole bytes');
+assert.equal(settingsPage.toBase('1.', 1, true), 1);
+assert.equal(settingsPage.toBase('.', 1, true), null);
+assert.equal(settingsPage.toBase('-0', 1, true), null);
+assert.equal(settingsPage.toBase('abc', 1, true), null);
+assert.equal(settingsPage.toBase('1.5', 1, true), null);
+assert.equal(settingsPage.toBase('2.5', 3, false), 8);
+
+const withSettings = (extra, config = CONFIG) => ({ ...settingsRoute(config), settings: { ...SETTINGS, ...extra } });
+const submitLimits = async (p) => { all(byId(p, 'limits'), (e) => e.tagName === 'FORM')[0].dispatch('submit'); await tick(); };
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['disk_quota_bytes'], restart_required: [] };
+
+// A small quota is shown exactly instead of rounding to "0", and typing 0
+// turns the quota off.
+routes['GET /console/api/settings'] = withSettings({ disk_quota_bytes: '107374' });
+page = await mountSettings();
+let disk = byId(page, 'set-disk_quota_bytes');
+let diskUnit = byId(page, 'set-disk_quota_bytes-unit');
+assert.equal(disk.value, '107374');
+assert.equal(diskUnit.tagName, 'SELECT');
+assert.equal(diskUnit.value, 'bytes');
+assert.deepEqual(all(diskUnit, (e) => e.tagName === 'OPTION').map((o) => o.getAttribute('value')), ['GB', 'MB', 'KB', 'bytes']);
+assert.equal(byId(page, 'set-disk_quota_bytes-exact').textContent, 'Stores 107,374 bytes.');
+assert.ok(disk.getAttribute('aria-describedby').split(' ').includes('set-disk_quota_bytes-exact'));
+assert.ok(byId(page, 'set-disk_quota_bytes-help').textContent.includes('0 means no quota. Default: 30 GB.'));
+putCount = puts().length;
+disk.value = '0';
+disk.dispatch('input');
+assert.equal(byId(page, 'set-disk_quota_bytes-exact').textContent, 'Stores 0 bytes.');
+await submitLimits(page);
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: '0' });
+
+// An untouched small quota is not resent when another setting changes.
+page = await mountSettings();
+byId(page, 'set-redirect_days').value = '8';
+await submitLimits(page);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { redirect_days: '8' });
+
+// Any spelling of 0 over a quota that is already off changes nothing.
+routes['GET /console/api/settings'] = withSettings({ disk_quota_bytes: '0' });
+for (const typed of ['0', '0.0', '0.000']) {
+  page = await mountSettings();
+  assert.equal(byId(page, 'set-disk_quota_bytes').value, '0');
+  assert.equal(byId(page, 'set-disk_quota_bytes-unit').value, 'GB');
+  byId(page, 'set-disk_quota_bytes').value = typed;
+  putCount = puts().length;
+  await submitLimits(page);
+  assert.equal(puts().length, putCount, `${typed} must not save`);
+  assert.ok(byId(page, 'limits').textContent.includes('Nothing changed.'));
+}
+
+// The unit menu sets what the number means; bytes take whole numbers.
+page = await mountSettings();
+disk = byId(page, 'set-disk_quota_bytes');
+diskUnit = byId(page, 'set-disk_quota_bytes-unit');
+disk.value = '500';
+diskUnit.value = 'bytes';
+diskUnit.dispatch('change');
+assert.equal(byId(page, 'set-disk_quota_bytes-exact').textContent, 'Stores 500 bytes.');
+putCount = puts().length;
+await submitLimits(page);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: '500' });
+page = await mountSettings();
+disk = byId(page, 'set-disk_quota_bytes');
+diskUnit = byId(page, 'set-disk_quota_bytes-unit');
+diskUnit.value = 'bytes';
+disk.value = '1.5';
+await submitLimits(page);
+assert.equal(puts().length, putCount + 1, 'a fraction of a byte must not save');
+assert.equal(disk.getAttribute('aria-invalid'), 'true');
+assert.ok(byId(page, 'set-disk_quota_bytes-error').textContent.includes('a whole number of 0 or more'));
+diskUnit.value = 'MB';
+await submitLimits(page);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: String(1.5 * 1048576) });
+// Changing only the unit is an edit too.
+routes['GET /console/api/settings'] = withSettings({ disk_quota_bytes: '1024' });
+page = await mountSettings();
+assert.equal(byId(page, 'set-disk_quota_bytes').value, '1');
+assert.equal(byId(page, 'set-disk_quota_bytes-unit').value, 'KB');
+putCount = puts().length;
+byId(page, 'set-disk_quota_bytes-unit').value = 'MB';
+await submitLimits(page);
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { disk_quota_bytes: '1048576' });
+
+// A pinned byte size cannot change its unit either.
+routes['GET /console/api/settings'] = withSettings({}, { ...CONFIG, pinned: { ...CONFIG.pinned, disk_quota_bytes: 'a test flag' } });
+page = await mountSettings();
+assert.equal(byId(page, 'set-disk_quota_bytes-unit').disabled, true);
+assert.equal(byId(page, 'set-disk_quota_bytes').getAttribute('disabled'), '');
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+
 // The Portal settings save from their own form in the Portal provider panel.
 routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, pinned: {} });
 routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: [], restart_required: ['portal_max_relays'], etag: 'etag-3' };

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -21,10 +22,46 @@ import (
 )
 
 type contentRuntime struct {
-	specs     []RuntimeSpec
-	fail      bool
-	afterEdit func() // runs after the fake app answers a live edit
+	specs       []RuntimeSpec
+	fail        bool
+	afterEdit   func()           // runs after the fake app answers a live edit
+	budgets     []map[string]any // disk budgets the host told the fake app
+	noBudget    bool             // the fake app refuses budgets
+	checkpoints int              // write-ahead log truncations the host asked for
+	outbox      *fakeOutbox      // when set, the fake app serves revision capture
 }
+
+// fakeOutbox is a docs worker's unacknowledged revision entries.
+type fakeOutbox struct {
+	entries []docsEntry
+	texts   map[string]string
+	acks    []map[string]any
+}
+
+func (o *fakeOutbox) serve(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Path {
+	case "/_docs/host/revisions/sync":
+		_ = json.NewEncoder(w).Encode(map[string]any{"store": "fake-store", "ready": len(o.entries), "intent": nil})
+	case "/_docs/host/revisions/outbox":
+		_ = json.NewEncoder(w).Encode(map[string]any{"store": "fake-store", "entries": o.entries, "more": false})
+	case "/_docs/host/revisions/text":
+		text, ok := o.texts[r.URL.Query().Get("hash")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"hash": r.URL.Query().Get("hash"), "text": text})
+	case "/_docs/host/revisions/ack":
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		o.acks = append(o.acks, b)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	default:
+		return false
+	}
+	return true
+}
+
 type contentInstance struct{ http.Handler }
 
 func (contentInstance) Stop() {}
@@ -36,6 +73,25 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 	return contentInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/_docs/api/receipt" {
 			receiptResponse(w, r)
+			return
+		}
+		if rt.outbox != nil && rt.outbox.serve(w, r) {
+			return
+		}
+		if r.URL.Path == "/_docs/host/revisions/checkpoint" {
+			rt.checkpoints++
+			_, _ = io.WriteString(w, `{"busy":false}`)
+			return
+		}
+		if r.URL.Path == "/_docs/host/revisions/budget" {
+			if rt.noBudget {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			var b map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			rt.budgets = append(rt.budgets, b)
+			_, _ = io.WriteString(w, `{"ok":true}`)
 			return
 		}
 		if r.URL.Path == "/_docs/api/edit" {

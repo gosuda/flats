@@ -140,6 +140,9 @@ func editHint(err error, slug string) string {
 		hint = "fix the operation named in the error (topic.docs)"
 	case "document_capacity":
 		hint = "make the edit smaller or split it into several calls"
+		if errors.Is(err, core.ErrDiskQuota) {
+			hint = "the flat is at its disk quota, which also holds the edit's revision; tell the user: the operator must raise the per-flat disk quota"
+		}
 	case "unavailable":
 		hint = "wait a second and retry"
 		var outcome *core.EditOutcomeError

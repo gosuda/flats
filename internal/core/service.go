@@ -2303,10 +2303,13 @@ func (s *Service) Events(ctx context.Context, slugName, kind string, after int64
 
 // --- helpers ---
 
-func dirSize(dir string) int64 {
+func dirSize(dir string) int64 { return dirSizeExcept(dir) }
+
+// dirSizeExcept is dirSize without the files at the paths in skip.
+func dirSizeExcept(dir string, skip ...string) int64 {
 	var n int64
-	_ = filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
-		if err == nil && info.Mode().IsRegular() {
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info.Mode().IsRegular() && !slices.Contains(skip, p) {
 			n += info.Size()
 		}
 		return nil

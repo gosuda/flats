@@ -61,7 +61,7 @@ test("welcome resends exact pending ids; updates do not acknowledge; diverged st
 });
 
 test("permanent error codes stop retries and retain Markdown and pending bytes", () => {
-  for (const code of ["capacity", "invalid_update", "readonly"]) {
+  for (const code of ["capacity", "invalid_update", "readonly", "disk_quota"]) {
     const provider = Object.create(Provider.prototype),
       model = new Pending();
     model.add("pending", "AAA=");
@@ -87,7 +87,35 @@ test("permanent error codes stop retries and retain Markdown and pending bytes",
     assert.equal(model.items.size, 1);
     assert.equal(d.getText("markdown").toString(), "local text");
     assert.match(notice, /Download/);
+    if (code === "disk_quota") assert.match(notice, /disk quota/);
     provider.connect();
     assert.equal(closed, 1);
   }
+});
+
+test("local text that never reached the server stays unsynced after a stop", () => {
+  const model = new Pending();
+  assert.equal(model.unsynced(), false);
+  model.add("pending", "AAA=");
+  model.stopped = true;
+  assert.equal(model.unsynced(), true);
+  model.ack("pending");
+  assert.equal(model.unsynced(), false);
+  // An edit too large to queue stops sync and is still unsynced.
+  const provider = Object.create(Provider.prototype);
+  let notice = "";
+  Object.assign(provider, {
+    doc: new Y.Doc(),
+    model: new Pending(),
+    onState() {},
+    onStop(m) {
+      notice = m;
+    },
+    socket: { close() {} },
+  });
+  provider.queue(new Uint8Array(300 * 1024), null);
+  assert.equal(provider.model.stopped, true);
+  assert.equal(provider.model.items.size, 0);
+  assert.equal(provider.model.unsynced(), true);
+  assert.match(notice, /too large/);
 });

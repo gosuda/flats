@@ -15,6 +15,13 @@ export class Pending {
     this.connected = false;
     this.readonly = false;
     this.stopped = false;
+    // A local change that could not even be queued (see Provider.update).
+    this.unqueued = false;
+  }
+  // unsynced reports local text the server does not have: queued updates,
+  // which a stop keeps, or a change that could not be queued.
+  unsynced() {
+    return this.items.size > 0 || this.unqueued;
   }
   add(id, u) {
     if (this.items.has(id)) return;
@@ -84,21 +91,7 @@ export class Provider {
     this.awareness = new Awareness(doc);
     this.destroyed = false;
     this.generation = 0;
-    this.update = (u, origin) => {
-      if (origin === this || this.model.readonly || this.model.stopped) return;
-      try {
-        if (u.length > LIMITS.update)
-          throw new Error(
-            "This edit is too large to sync. Download your text before reloading.",
-          );
-        const id = randomUUID();
-        this.model.add(id, base64(u));
-        if (this.model.connected) this.send({ t: "update", id, u: base64(u) });
-        this.state();
-      } catch (e) {
-        this.stop(e.message);
-      }
-    };
+    this.update = (u, origin) => this.queue(u, origin);
     doc.on("update", this.update);
     this.awUpdate = (_, origin) => {
       if (origin === this) return;
@@ -124,6 +117,23 @@ export class Provider {
         else this.send({ t: "ping" });
       }
     }, 15000);
+  }
+  // queue keeps a local update until its ACK and sends it when connected.
+  queue(u, origin) {
+    if (origin === this || this.model.readonly || this.model.stopped) return;
+    try {
+      if (u.length > LIMITS.update)
+        throw new Error(
+          "This edit is too large to sync. Download your text before reloading.",
+        );
+      const id = randomUUID();
+      this.model.add(id, base64(u));
+      if (this.model.connected) this.send({ t: "update", id, u: base64(u) });
+      this.state();
+    } catch (e) {
+      this.model.unqueued = true;
+      this.stop(e.message);
+    }
   }
   state() {
     this.onState(this.model.label(), this.model);
@@ -232,7 +242,9 @@ export class Provider {
       this.stop(
         m.code === "readonly"
           ? "Editing permission changed. Download your text and reload."
-          : "An edit was rejected. Download your text and reload to synchronize.",
+          : m.code === "disk_quota"
+            ? "This edit was not saved: the document is out of disk space. Download your text, ask the operator to free space or raise the disk quota, then reload."
+            : "An edit was rejected. Download your text and reload to synchronize.",
       );
       return;
     }

@@ -170,7 +170,7 @@ input, select, textarea {
 textarea { width: 100%; resize: vertical; }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; border-color: transparent; }
 input:user-invalid { border-color: var(--danger); }
-input:disabled, textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+input:disabled, select:disabled, textarea:disabled { opacity: 0.6; cursor: not-allowed; }
 label { font-weight: 500; }
 
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -183,6 +183,7 @@ label { font-weight: 500; }
 .with-unit { display: flex; align-items: center; gap: 8px; }
 .with-unit input { flex: 1; min-width: 0; }
 .unit { color: var(--muted); font-size: 13.5px; white-space: nowrap; }
+select.unit { color: var(--text); flex: none; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 12px; }
 .form-grid .actions { flex-direction: row; align-items: center; justify-content: flex-end; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,6 +71,8 @@ func editResponse(w http.ResponseWriter, r *http.Request) {
 		status, code = 400, "invalid"
 	case "capacity":
 		status, code = 422, "capacity"
+	case "quota":
+		status, code = 507, "disk_quota"
 	case "boom":
 		status = 500
 	case "rolledback":
@@ -168,7 +172,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 	if out, err := s.UpdateDocument(ctx, "notes", "", op("same"), nil, ViaMCP); err != nil || out.Changed {
 		t.Fatal(out, err)
 	}
-	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable", "late": "unavailable"} {
+	for find, want := range map[string]string{"conflict": "edit_conflict", "invalid": "invalid", "capacity": "document_capacity", "quota": "document_capacity", "boom": "unavailable", "rolledback": "unavailable", "missing": "document_not_found", "lost": "unavailable", "garbled": "unavailable", "late": "unavailable"} {
 		_, err := s.UpdateDocument(ctx, "notes", "", op(find), ptr(strings.Repeat("a", 64)), ViaMCP)
 		if ErrorCategory(err) != want {
 			t.Fatal(find, err)
@@ -304,5 +308,136 @@ func TestEmptyOutlineRoundTrip(t *testing.T) {
 	b, _ = json.Marshal(Document{Format: 1, Doc: "index.md"})
 	if strings.Contains(string(b), "blocks") {
 		t.Fatal(string(b))
+	}
+}
+
+func TestDocsDiskBudget(t *testing.T) {
+	s, _ := newTestService(t)
+	rt := &contentRuntime{}
+	s.cfg.Runtime = rt
+	s.cfg.DocsApp = testDocsApp()
+	ctx := context.Background()
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	saveDocs(t, s, "notes")
+	// The save's import tells the worker that no quota applies.
+	if n := len(rt.budgets); n == 0 || rt.budgets[n-1]["quota"] != float64(0) || rt.budgets[n-1]["other"] != float64(0) {
+		t.Fatal("budget after the save", rt.budgets)
+	}
+	// A changed quota reaches the running document before the call returns,
+	// with what the flat uses apart from the worker's database.
+	if err := os.MkdirAll(s.dataDirOf("notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.dataDirOf("notes"), dbName), make([]byte, 5000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := float64(dirSize(s.flatDir("notes")) - 5000)
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "123456"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rt.budgets); rt.budgets[n-1]["quota"] != float64(123456) || rt.budgets[n-1]["other"] != want {
+		t.Fatal("budget after the quota change", rt.budgets[n-1], want)
+	}
+	// A large write-ahead log is truncated before the flat is measured.
+	if err := os.WriteFile(filepath.Join(s.dataDirOf("notes"), dbName+"-wal"), make([]byte, walTruncateAt+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "123457"}); err != nil {
+		t.Fatal(err)
+	}
+	if rt.checkpoints != 1 {
+		t.Fatal("write-ahead log not truncated before the measurement", rt.checkpoints)
+	}
+	// other leaves the database and its log out but keeps everything else,
+	// its shared-memory file included.
+	if err := os.WriteFile(filepath.Join(s.dataDirOf("notes"), dbName+"-shm"), make([]byte, 700), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want = float64(dirSize(s.flatDir("notes")) - 5000 - (walTruncateAt + 1))
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "123458"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rt.budgets); rt.budgets[n-1]["other"] != want {
+		t.Fatal("other with a log and shared memory", rt.budgets[n-1], want)
+	}
+	// update_document measures again before the worker checks its edit;
+	// the worker's refusal is a document_capacity one that changed nothing.
+	pushes := len(rt.budgets)
+	with := "x"
+	_, err := s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "replace", Find: "quota", With: &with}}, nil, ViaMCP)
+	if !errors.Is(err, ErrDiskQuota) || !errors.Is(err, ErrDocumentCapacity) || ErrorCategory(err) != "document_capacity" || !strings.Contains(err.Error(), "nothing changed") || !strings.Contains(err.Error(), "raise the per-flat disk quota") {
+		t.Fatal(err)
+	}
+	if len(rt.budgets) != pushes+1 {
+		t.Fatal("update_document did not measure the flat first", rt.budgets)
+	}
+	if events, _ := s.Events(ctx, "notes", "document", 0, 10); len(events) != 0 {
+		t.Fatal("refused edit was logged as applied", events)
+	}
+	if b := rt.budgets[len(rt.budgets)-1]; b["ttl_ms"] != float64(docsBudgetTTL.Milliseconds()) {
+		t.Fatal("budget without its lifetime", b)
+	}
+	// A budget that cannot be installed stops update_document before the
+	// edit is sent, and a settings change says so in the flat's log.
+	rt.noBudget = true
+	_, err = s.UpdateDocument(ctx, "notes", "", []DocumentEditOp{{Op: "replace", Find: "ok", With: &with}}, nil, ViaMCP)
+	if ErrorCategory(err) != "unavailable" || !strings.Contains(err.Error(), "disk quota could not be checked") {
+		t.Fatal("edit without a budget", err)
+	}
+	if events, _ := s.Events(ctx, "notes", "document", 0, 10); len(events) != 0 {
+		t.Fatal("edit without a budget was applied", events)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "654321"}); err != nil {
+		t.Fatal(err)
+	}
+	if events, _ := s.Events(ctx, "notes", "quota", 0, 10); len(events) != 1 || events[0].Level != "warn" || !strings.Contains(events[0].Message, "could not be applied") {
+		t.Fatal("failed budget push not logged", events)
+	}
+}
+
+// A partial import stores some blobs of an entry it cannot finish; the
+// budget measured with them in place reports them stored, so the worker
+// stops reserving them while the entry stays unacknowledged.
+func TestDocsBudgetReportsBlobsOfPartialImports(t *testing.T) {
+	importBudget := docsImportBudget
+	docsImportBudget = 150
+	t.Cleanup(func() { docsImportBudget = importBudget })
+	s, _ := newTestService(t)
+	rt := &contentRuntime{}
+	s.cfg.Runtime = rt
+	s.cfg.DocsApp = testDocsApp()
+	ctx := context.Background()
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "10485760"}); err != nil {
+		t.Fatal(err)
+	}
+	v := saveDocs(t, s, "notes")
+	texts := map[string]string{}
+	var docs []store.RevisionFile
+	for i, p := range []string{"a.md", "b.md", "c.md"} {
+		text := strings.Repeat(string(rune('a'+i)), 100)
+		h := hashBytes([]byte(text))
+		texts[h] = text
+		docs = append(docs, store.RevisionFile{Path: p, Hash: h, Size: 100})
+	}
+	rt.outbox = &fakeOutbox{texts: texts, entries: []docsEntry{{Seq: 1, Kind: "person", Source: v.Hash, Documents: docs}}}
+	s.TickDocs(ctx)
+	if len(rt.outbox.acks) != 0 {
+		t.Fatal("an unfinished entry was acknowledged", rt.outbox.acks)
+	}
+	root := s.docsStoreDir("notes")
+	for i, d := range docs {
+		if _, err := os.Stat(blobPath(root, d.Hash)); (err == nil) != (i < 2) {
+			t.Fatal("blob", d.Path, err)
+		}
+	}
+	b := rt.budgets[len(rt.budgets)-1]
+	stored, _ := json.Marshal(b["stored"])
+	if want, _ := json.Marshal([]string{min(docs[0].Hash, docs[1].Hash), max(docs[0].Hash, docs[1].Hash)}); string(stored) != string(want) {
+		t.Fatal("stored blobs not reported", string(stored), string(want))
+	}
+	if b["other"] != float64(dirSize(s.flatDir("notes"))) {
+		t.Fatal("budget not measured with the stored blobs", b["other"], dirSize(s.flatDir("notes")))
 	}
 }

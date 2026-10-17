@@ -161,15 +161,19 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   watermark, it reloads the checkpoint and broadcasts committed full state.
   No ACK or document broadcast is emitted before COMMIT. Transient database, catch-up, obsolete-worker and COMMIT failures roll back,
   drop the room and close its clients with 1012 for resync. Deterministic
-  client rejections send `error` (`capacity`, `invalid_update`, or `readonly`)
-  then close only that socket with 1008; healthy peers stay connected.
+  client rejections send `error` (`capacity`, `invalid_update`, `readonly`,
+  or `disk_quota`, see [disk quota](#disk-quota)) then close only that
+  socket with 1008; healthy peers stay connected.
   Bounded binary/type properties are checked before applying. A deterministic
   rejection after applying invalidates only the room's cached document; peers
   stay connected and the next operation reloads committed state. No rejected
   text is broadcast or retained in the usable cache.
 * Tables are created idempotently on first document use, all with the
   `flats_docs_` prefix:
-  * `documents(doc PRIMARY KEY, epoch, seq, chain, seed_hash, seed_text, updated_at)`
+  * `documents(doc PRIMARY KEY, epoch, seq, chain, seed_hash, seed_text, updated_at)`:
+    `seed_text` is unused (empty)
+  * `seeds(doc PRIMARY KEY, text)`: each document's merge base, apart from
+    its `documents` row, which every update rewrites
   * `updates(doc, seq, id, chain, data, size, created_at, PRIMARY KEY(doc,seq), UNIQUE(doc,id))`
   * `checkpoints(doc PRIMARY KEY, seq, chain, state, created_at)`
   * `receipts(doc, seq, id, chain, hash, PRIMARY KEY(doc,seq), UNIQUE(doc,id))`
@@ -263,7 +267,8 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   Reconnect uses exponential backoff with jitter, state vectors, browser
   online/offline events and a 45-second heartbeat silence timeout.
   Divergence or an unrecoverable rejection stops sync, disables editing and
-  offers local Markdown download and reload; buffered edits are retained.
+  offers local Markdown download and reload; buffered edits are retained,
+  and the page warns before a reload or close would lose them.
 
 ### Agent live edits (MCP `update_document`)
 
@@ -323,7 +328,8 @@ update operations. The agent contract is guide `topic.docs`.
   by every `get_document`) refuses any intervening change. A missing,
   changed or ambiguous target returns 409 `edit_conflict` with the operation
   index; malformed input 400 `invalid`; limits 413/422 `capacity`, mapped to
-  `document_capacity`. All refusals change nothing. Content-addressed guards
+  `document_capacity`; the [disk quota](#disk-quota) 507 `disk_quota`, also
+  mapped to `document_capacity`. All refusals change nothing. Content-addressed guards
   replace Claude Docs' block ids and revisions, which this CRDT text has no
   stable equivalent of: an unchanged block keeps its hash even while people
   edit other blocks, so independent work does not invalidate the guard.
@@ -490,6 +496,7 @@ meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)
   -- 'newest': JSON {source, documents: [{path, hash, size}]} of the newest entry
   -- 'active': JSON {hash, generation, docs: [path]}: the version whose flat activation last ran
   -- 'intent': JSON, at most one (see Intents)
+  -- 'budget', 'pending', 'wal_truncate', 'wal_generation': the disk quota check (see Disk quota)
 recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)
   -- each document's committed position when last recorded, and its text hash there
 groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)
@@ -500,6 +507,11 @@ outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
   -- source: content hash of the version whose non-document files the entry has
   -- documents: JSON [{path, hash, size}], at most 129 (128 plus a migration override)
 texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)
+  -- the payload only; refs and staged_at here are unused (0 and NULL)
+text_refs(hash TEXT PRIMARY KEY, refs INTEGER NOT NULL, staged_at INTEGER)
+  -- each text's references and staging time, one row per texts row
+unimported(hash TEXT PRIMARY KEY, size INTEGER NOT NULL)
+  -- texts whose host blobs may not exist yet (see Disk quota)
 ops(id TEXT PRIMARY KEY, seq INTEGER NOT NULL)
   -- rollbacks that committed, with their entry; deleted when that entry is acknowledged
 ```
@@ -511,15 +523,17 @@ version, not file by file: a bundle may hold 20,000 files, whose list must
 not travel through the outbox. The host keeps the file list of every source
 it started. Documents are listed in the entry itself.
 
-**Text references.** `refs` counts every place that needs a text: one per
+**Text references.** `text_refs.refs` counts every place that needs a text:
+they live apart from the text rows, so changing a count rewrites a small
+row and never a large text's overflow pages. It counts one per
 document of each unacknowledged entry (two paths with the same text count
 twice), one per `recorded` row and one per document of a pending rollback
 intent. A text therefore stays in `texts` while it is the recorded text of a
 document, even after every entry that listed it is acknowledged, and later
 entries reuse it without loading the document. Every operation that releases
-texts ends by deleting rows with `refs <= 0`, except staged rows (a non-null
-`staged_at`), which wait for the operation that staged them; `sync` deletes
-unreferenced staged rows after one hour.
+texts ends by deleting texts with `refs <= 0` (both rows), except staged
+ones (a non-null `staged_at`), which wait for the operation that staged
+them; `sync` deletes unreferenced staged texts after one hour.
 
 ### Recording
 
@@ -536,10 +550,11 @@ for a shape (a source and a list of document paths):
    activation merge). They are stored like loaded texts but never touch
    `recorded`.
 3. When the entry is not forced and its source and documents equal
-   `meta.newest`, stop: no entry.
-4. Otherwise insert the entry, add a reference to each listed text, set
-   `meta.newest`, clear `dirty` on every group, and for a rollback record its
-   operation id in `ops` with the entry's seq.
+   `meta.newest`, delete `meta.pending` and stop: no entry.
+4. Otherwise insert the entry, add a reference to each listed text, add
+   the texts `meta.newest` did not list to `unimported`, delete
+   `meta.pending`, set `meta.newest`, clear `dirty` on every group, and for a
+   rollback record its operation id in `ops` with the entry's seq.
 
 Authors are the given label (an agent's or a rollback's), else the labels of
 the groups that are `dirty` at that moment, in first-edit order; at most 32,
@@ -689,7 +704,7 @@ get 403. Core calls them in process on the running worker instance, not
 through the flat's routes, with a 30-second timeout per call. Bodies are
 JSON; a POST body above 8 MiB of text is refused with 413. `sync`, `intent`
 and `restore` pass the activation gate first. The transport operations
-(`outbox`, `text`, `ack`, `stage`, `op`) do not: they only need the schema,
+(`outbox`, `text`, `ack`, `stage`, `op`, `budget`, `checkpoint`) do not: they only need the schema,
 so the host can always drain and acknowledge the backlog, which frees space,
 even while an activation keeps failing.
 
@@ -698,11 +713,13 @@ even while an activation keeps failing.
 | `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null |
 | `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, message, rollback_of?, op?, source, documents}], more}` |
 | `GET /_docs/host/revisions/text?hash=` | `{hash, text}` from `texts`; 404 when absent |
-| `POST /_docs/host/revisions/ack` | `{store, through}`: deletes entries up to `through` with their `ops` rows, releasing their texts. Idempotent; another `store` is refused with 409 |
+| `POST /_docs/host/revisions/ack` | `{store, through, budget?}`: deletes entries up to `through` with their `ops` rows and their texts' `unimported` rows, releasing their texts, and installs `budget` (as `budget` below) in the same transaction. Idempotent; another `store` is refused with 409 |
 | `POST /_docs/host/revisions/stage` | `{text}` (at most 1 MiB UTF-8): stores it with `staged_at`; returns `{hash}` |
 | `POST /_docs/host/revisions/intent` | `{id, source, kind, label, message, rollback_of, documents}`: writes `meta.intent` (texts must be staged or present) |
 | `POST /_docs/host/revisions/restore` | `{id, label, rollback_of, documents: [{path, hash}], deadline_ms}`: a rollback within the running version; its documents must be exactly the running version's. Returns `{store, seq}` |
 | `GET /_docs/host/revisions/op?id=` | `{committed, seq?}`: whether a rollback with this id committed and its entry is still unacknowledged |
+| `POST /_docs/host/revisions/checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` outside a transaction; returns `{busy}` (true when a reader kept it from finishing) |
+| `POST /_docs/host/revisions/budget` | `{quota, other, ttl_ms, stored?}` (non-negative integers, `ttl_ms` 1 ms to 24 hours; `stored` at most 10,000 text hashes whose host blobs `other` includes): sets `meta.budget` for the [disk quota](#disk-quota) check and deletes the `stored` texts from `unimported`; quota 0 turns the check off and deletes `meta.pending` |
 
 Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
 `conflict`, 422 `capacity` or 503 `unavailable`.
@@ -725,7 +742,77 @@ Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
   as the health check already does on its isolated copy within the same
   request deadline. Recording loads only changed documents.
 
+### Disk quota
+
+The worker checks people's edits and live agent edits against the per-flat
+disk quota; the host side, what it measures and when, is in the
+[revision store](../revision-store.md#disk-quota).
+
+* `meta.budget` is `{quota, other, until}`: the host's last budget and when
+  it expires (the worker's clock plus the host's `ttl_ms`). The `budget`
+  host operation and an `ack` carrying `budget` install it.
+* Without a budget, or after `until`, the check fails as transient: the
+  transaction rolls back, a WebSocket room is dropped (its clients reconnect
+  with 1012 and resend), and the edit endpoint answers 503 `unavailable`.
+  With quota 0 nothing else is checked.
+* `meta.pending` maps each document people edited since it was last
+  recorded to `{bytes, exact}`, an upper bound of its text's UTF-8 size: a
+  person's update sets three bytes per UTF-16 unit of its document's
+  visible text. `record` deletes the map, including when it records nothing
+  because the text ended unchanged, and `sync` deletes it when no document
+  is dirty. When a quota starts where none applied, the map starts with the
+  exact sizes of the documents whose committed position differs from their
+  `recorded` row.
+* The `unimported` table holds the hash and size of each text an entry
+  added (one the previous entry did not list), one row per text, until the
+  host reports its blob stored: `ack` deletes the texts of the entries it acknowledges, and a
+  budget deletes the texts it lists as `stored`.
+* The check runs last in the transaction, after every write: a WebSocket
+  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. The
+  total is `other` + (`page_count` + R) × `page_size` + `unimported` + the
+  pending sizes + the log's bound at rest. R bounds the pages recording the pending
+  documents allocates, never counting pages it frees: per document its
+  overflow pages rounded up, one leaf and 16 pages of B-tree splits, and per
+  entry twice the pages of `meta.newest` (×3 + 300 bytes per document +
+  4 KiB), a page per listed document whose
+  reference count changes and 16 pages. The log's bound at rest is
+  32 + 64 × (`page_size` + 24) bytes.
+* When that total exceeds the quota, every size that is still a bound is
+  made exact first (the edited document from its in-memory text, others
+  from their committed state) and the total is taken again.
+* Over the quota it refuses with `disk_quota` and the transaction rolls
+  back, so a refused edit records and changes nothing. `restore`, rollback
+  intents and activations are not checked.
+* After every commit of a transaction, `PRAGMA wal_checkpoint(PASSIVE)`
+  reports the frames in the log and copies them into the database; with
+  more than 64, or while `meta.wal_truncate` is set, `PRAGMA
+  wal_checkpoint(TRUNCATE)` follows. Every busy or failed truncation raises
+  `meta.wal_generation`, a counter that is never reset, and sets
+  `meta.wal_truncate` to it in one transaction; a successful truncation
+  deletes `meta.wal_truncate` only if it still holds the generation that
+  truncation read, so a failure recorded in between, even after another
+  success cleared the marker, stays owed.
+* `setBudget` writes nothing when the budget is unchanged, its deadline is
+  no later than the new one, and more than half of the lifetime is left; a
+  shorter lifetime always replaces a longer one.
+* The browser treats `disk_quota` like the other deterministic rejections:
+  it stops syncing, disables editing, keeps its pending updates and offers
+  the local Markdown for download, saying that the document is out of disk
+  space. While it holds text the server does not have (pending updates, or a
+  change too large to queue), it warns before the page is reloaded or
+  closed.
+
 ### Initialization and migration
+
+A database without `text_refs`, `seeds` or `unimported` (from before they
+existed) gets them before its first transaction or schema pass, in one
+`BEGIN IMMEDIATE` transaction that creates the missing tables, copies every
+text's `refs` and `staged_at` and every document's `seed_text` into them,
+and empties `documents.seed_text`. Creating `unimported` also reserves in
+it every text the unacknowledged outbox entries list, since the host may
+not have stored their blobs yet; it reads the outbox one entry at a time,
+so a large backlog stays within the query result limit. A table's existence marks its move as done;
+references, staging and merge bases then behave exactly as before.
 
 A database without `meta.store` is initialized by the first transaction that
 passes the activation gate, before anything else in it:

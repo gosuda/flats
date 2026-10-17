@@ -198,6 +198,9 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOf
 
 const documentDiskQuotaFix = "raise the per-flat disk quota in system settings to provide room for this save"
 
+// liveEditDiskQuotaFix ends an update_document refusal over the disk quota.
+const liveEditDiskQuotaFix = "the edit and the revision recording it would not fit; ask the operator to raise the per-flat disk quota in system settings"
+
 // SaveDocument writes one Markdown file, preserving the saved source of every
 // sibling and the existing manifest. Keep source text (not live collaborative
 // text): activating the resulting bundle must retain each sibling's merge base.
@@ -464,6 +467,12 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	if !lf.editLimiter.allow() {
 		return DocumentEdit{}, fmt.Errorf("%w: too many live edits of this flat; wait a second and retry", ErrUnavailable)
 	}
+	// The worker checks the edit against the disk quota; measure what the
+	// flat uses now, so a quota or usage change since the last import counts.
+	// Without that the edit cannot be checked, so it is not sent.
+	if err := s.pushDocsBudgetLocked(ctx, slugName); err != nil {
+		return DocumentEdit{}, fmt.Errorf("%w: the disk quota could not be checked (%v); nothing changed, retry", ErrUnavailable, err)
+	}
 	// The audit record outlives the caller: a commit near the deadline or a
 	// cancelled request must still leave its event.
 	auditCtx := context.WithoutCancel(ctx)
@@ -500,6 +509,8 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 			return DocumentEdit{}, invalidf("%s", msg)
 		case refusal.Code == "capacity":
 			return DocumentEdit{}, fmt.Errorf("%w: %s", ErrDocumentCapacity, msg)
+		case refusal.Code == "disk_quota":
+			return DocumentEdit{}, fmt.Errorf("%w: %w: %s; nothing changed: %s", ErrDocumentCapacity, ErrDiskQuota, msg, liveEditDiskQuotaFix)
 		case rec.Code == http.StatusForbidden:
 			return DocumentEdit{}, fmt.Errorf("%w: the docs app refused the host edit", ErrForbidden)
 		case refusal.Code == "unavailable":

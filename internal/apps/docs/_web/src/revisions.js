@@ -12,6 +12,8 @@ import {
   compact,
   digest,
   validateIncremental,
+  setSeed,
+  WAL_REST_FRAMES,
 } from "./storage.js";
 
 export const GROUP_IDLE = 30 * 1000;
@@ -28,31 +30,44 @@ export function getMeta(db, key) {
 }
 function setMeta(db, key, value) {
   if (value === null) db.exec("DELETE FROM flats_docs_meta WHERE key=?", [key]);
-  else
-    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [
-      key,
-      JSON.stringify(value),
-    ]);
+  else {
+    const json = JSON.stringify(value);
+    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [key, json]);
+  }
 }
 
 // --- texts and their references ---
 
-function addRef(db, hash, text) {
-  const row = db.query("SELECT refs FROM flats_docs_texts WHERE hash=?", [
+// A text's reference count and staging time live in flats_docs_text_refs,
+// apart from its row in flats_docs_texts, so changing them never rewrites
+// a large text (storage.js migrate). Every text row has a refs row.
+function refsOf(db, hash) {
+  return db.query("SELECT refs FROM flats_docs_text_refs WHERE hash=?", [
     hash,
   ])[0];
-  if (row) {
-    db.exec("UPDATE flats_docs_texts SET refs=refs+1 WHERE hash=?", [hash]);
+}
+function insertText(db, hash, text, refs, stagedAt) {
+  db.exec("INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)", [hash, text]);
+  db.exec("INSERT INTO flats_docs_text_refs VALUES(?,?,?)", [
+    hash,
+    refs,
+    stagedAt,
+  ]);
+}
+// addRef adds a reference, storing the text when it is new.
+function addRef(db, hash, text) {
+  if (refsOf(db, hash)) {
+    db.exec("UPDATE flats_docs_text_refs SET refs=refs+1 WHERE hash=?", [hash]);
     return;
   }
   if (typeof text !== "string") throw new Error("revision text is missing");
-  db.exec("INSERT INTO flats_docs_texts VALUES(?,?,1,NULL)", [hash, text]);
+  insertText(db, hash, text, 1, null);
 }
 // release drops one reference. The text stays until dropUnused at the end
 // of the operation: a later document of the same operation may reference
 // it again.
 function release(db, hash) {
-  db.exec("UPDATE flats_docs_texts SET refs=refs-1 WHERE hash=?", [hash]);
+  db.exec("UPDATE flats_docs_text_refs SET refs=refs-1 WHERE hash=?", [hash]);
 }
 function textOf(db, hash) {
   return db.query("SELECT text FROM flats_docs_texts WHERE hash=?", [hash])[0]
@@ -174,8 +189,11 @@ export function record(db, o) {
     newest &&
     newest.source === o.source &&
     sameDocuments(newest.documents, documents)
-  )
+  ) {
+    // Edits that ended unchanged need no revision, so nothing stays reserved.
+    clearReservations(db);
     return 0;
+  }
   const authors = (o.authors ?? dirtyLabels(db))
     .filter((a) => typeof a === "string" && a)
     .map((a) => a.slice(0, 200))
@@ -195,6 +213,18 @@ export function record(db, o) {
   );
   const seq = db.query("SELECT last_insert_rowid() AS seq")[0].seq;
   for (const d of documents) addRef(db, d.hash, texts[d.hash]);
+  // The host stores every text the previous entry did not list as a new
+  // blob when it imports this one; until it reports that blob stored, the
+  // text counts toward the disk quota (see checkDiskQuota). The documents
+  // are recorded now, so their pending reservation ends.
+  const listed = new Set((newest?.documents || []).map((d) => d.hash));
+  for (const d of documents)
+    if (!listed.has(d.hash))
+      db.exec("INSERT OR IGNORE INTO flats_docs_unimported VALUES(?,?)", [
+        d.hash,
+        d.size,
+      ]);
+  clearReservations(db);
   setMeta(db, "newest", { source: o.source, documents });
   db.exec("UPDATE flats_docs_groups SET dirty=0");
   if (o.op && o.kind === "rollback")
@@ -206,16 +236,22 @@ export function record(db, o) {
 // so the caller need not hold it meanwhile.
 function store(db, text) {
   const hash = digest(text);
-  if (
-    !db.query("SELECT 1 AS x FROM flats_docs_texts WHERE hash=?", [hash]).length
-  )
-    db.exec("INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)", [hash, text]);
-  return { hash, size: utf8Bytes(text) };
+  const size = utf8Bytes(text);
+  if (!refsOf(db, hash)) insertText(db, hash, text, 0, null);
+  return { hash, size };
 }
 // dropUnused deletes the texts nothing references any more, except staged
 // ones. Every operation that releases or stores texts ends with it.
 export function dropUnused(db) {
-  db.exec("DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NULL");
+  deleteTexts(db, "refs<=0 AND staged_at IS NULL");
+}
+// deleteTexts deletes the texts whose refs rows match where, with those rows.
+function deleteTexts(db, where, params = []) {
+  db.exec(
+    `DELETE FROM flats_docs_texts WHERE hash IN (SELECT hash FROM flats_docs_text_refs WHERE ${where})`,
+    params,
+  );
+  db.exec(`DELETE FROM flats_docs_text_refs WHERE ${where}`, params);
 }
 
 const currentShape = (content) => ({
@@ -425,10 +461,7 @@ export function restoreText(db, content, source, text, op, generation) {
   } catch (e) {
     if (e?.code !== "capacity") throw e;
     resetDocument(db, content, source, text, generation);
-    db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
-      text,
-      source.path,
-    ]);
+    setSeed(db, source.path, text);
     return;
   }
   try {
@@ -450,10 +483,7 @@ export function restoreText(db, content, source, text, op, generation) {
   } finally {
     s.doc.destroy();
   }
-  db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
-    text,
-    source.path,
-  ]);
+  setSeed(db, source.path, text);
 }
 
 // --- host operations ---
@@ -473,10 +503,11 @@ export function sync(db, content, generation, now = Date.now()) {
     for (const g of due)
       db.exec("DELETE FROM flats_docs_groups WHERE editor=?", [g.editor]);
   }
-  db.exec(
-    "DELETE FROM flats_docs_texts WHERE refs<=0 AND staged_at IS NOT NULL AND staged_at<?",
-    [now - STAGED_TTL],
-  );
+  // Nothing unrecorded: no revision is coming, so nothing stays reserved.
+  if (!textDirty(db)) clearReservations(db);
+  deleteTexts(db, "refs<=0 AND staged_at IS NOT NULL AND staged_at<?", [
+    now - STAGED_TTL,
+  ]);
   dropUnused(db);
   return {
     store: getMeta(db, "store"),
@@ -517,17 +548,27 @@ export function outbox(db, after) {
   return { store: getMeta(db, "store"), entries, more };
 }
 
-export function ack(db, store, through) {
+// ack deletes the imported entries. budget, measured by the host after it
+// stored their blobs, replaces the budget in the same transaction as their
+// reservations end, so no edit in between misses both.
+export function ack(db, store, through, budget) {
   if (store !== getMeta(db, "store")) throw coded("conflict", "another outbox");
   if (!Number.isSafeInteger(through) || through < 0)
     throw coded("invalid", "invalid through");
+  if (budget !== undefined) setBudget(db, budget);
   for (;;) {
     const row = db.query(
       "SELECT seq,documents FROM flats_docs_outbox WHERE seq<=? ORDER BY seq LIMIT 1",
       [through],
     )[0];
     if (!row) break;
-    for (const d of JSON.parse(row.documents)) release(db, d.hash);
+    const documents = JSON.parse(row.documents);
+    for (const d of documents) release(db, d.hash);
+    // An imported entry's texts are host blobs now, which the host measures.
+    forgetUnimported(
+      db,
+      documents.map((d) => d.hash),
+    );
     db.exec("DELETE FROM flats_docs_ops WHERE seq=?", [row.seq]);
     db.exec("DELETE FROM flats_docs_outbox WHERE seq=?", [row.seq]);
   }
@@ -535,13 +576,16 @@ export function ack(db, store, through) {
 }
 
 export function stage(db, text, now = Date.now()) {
-  if (typeof text !== "string" || utf8Bytes(text) > LIMITS.text)
+  const size = typeof text === "string" ? utf8Bytes(text) : Infinity;
+  if (size > LIMITS.text)
     throw coded("invalid", "a staged text is at most 1 MiB");
   const hash = digest(text);
-  db.exec(
-    "INSERT INTO flats_docs_texts VALUES(?,?,0,?) ON CONFLICT(hash) DO UPDATE SET staged_at=excluded.staged_at",
-    [hash, text, now],
-  );
+  if (refsOf(db, hash))
+    db.exec("UPDATE flats_docs_text_refs SET staged_at=? WHERE hash=?", [
+      now,
+      hash,
+    ]);
+  else insertText(db, hash, text, 0, now);
   return hash;
 }
 
@@ -651,6 +695,202 @@ export function opStatus(db, id) {
 }
 
 export { textOf };
+
+// --- disk quota (docs/revision-store.md#disk-quota) ---
+
+const MAX_BUDGET_TTL = 24 * 60 * 60 * 1000,
+  MAX_STORED = 10000;
+// The write-ahead log is transient: after every commit the app truncates
+// it when it holds more than WAL_REST_FRAMES frames (storage.js commit), so
+// at rest it holds at most that many. The host's measurement leaves the log
+// out of "other", and the check reserves exactly that much for it.
+
+// clearReservations ends the reservations for people's unrecorded edits:
+// they were just recorded, or no revision is coming.
+function clearReservations(db) {
+  setMeta(db, "pending", null);
+}
+
+// setBudget installs the host's budget: the flat's disk quota (0 = off),
+// "other", the bytes the flat's directory uses apart from this database
+// file, ttl_ms, how long it stays valid without a refresh, and stored, the
+// texts whose host blobs that measurement includes (a partial import
+// stores some before their entry is acknowledged). An unchanged budget
+// whose deadline is no later than the new one and not yet half expired is
+// not written again, so an idle document does not grow its write-ahead
+// log; a shorter lifetime always replaces a longer one.
+export function setBudget(db, body) {
+  const { quota, other, ttl_ms: ttl, stored = [] } = body || {};
+  if (
+    ![quota, other, ttl].every((n) => Number.isSafeInteger(n) && n >= 0) ||
+    ttl < 1 ||
+    ttl > MAX_BUDGET_TTL ||
+    !Array.isArray(stored) ||
+    stored.length > MAX_STORED ||
+    !stored.every((h) => typeof h === "string" && /^[0-9a-f]{64}$/.test(h))
+  )
+    throw coded("invalid", "invalid budget");
+  // other was measured with these blobs in place.
+  forgetUnimported(db, stored);
+  const old = getMeta(db, "budget"),
+    now = Date.now(),
+    until = now + ttl;
+  if (
+    old &&
+    old.quota === quota &&
+    old.other === other &&
+    old.until <= until &&
+    old.until - now > ttl / 2
+  )
+    return;
+  // Pending reservations are kept only while a quota applies: when one
+  // starts, reserve what people already edited.
+  if (quota === 0) clearReservations(db);
+  else if (!old?.quota) {
+    const pending = unrecordedBytes(db);
+    setMeta(db, "pending", Object.keys(pending).length ? pending : null);
+  }
+  setMeta(db, "budget", { quota, other, until });
+}
+// unrecordedBytes maps every document people edited since it was last
+// recorded to its committed text's exact size.
+function unrecordedBytes(db) {
+  const out = {};
+  for (const d of getMeta(db, "newest")?.documents || []) {
+    const pos = position(db, d.path),
+      rec = db.query("SELECT epoch,seq FROM flats_docs_recorded WHERE doc=?", [
+        d.path,
+      ])[0];
+    if (!pos || (rec && rec.epoch === pos.epoch && rec.seq === pos.seq))
+      continue;
+    const text = committedText(db, d.path);
+    if (text !== null) out[d.path] = { bytes: utf8Bytes(text), exact: true };
+  }
+  return out;
+}
+// pageSizeOf reads a database's page size once; every bound below is in
+// that database's pages.
+const pageSizes = new WeakMap();
+function pageSizeOf(db) {
+  let n = pageSizes.get(db);
+  if (!n) {
+    n = db.query("PRAGMA page_size")[0].page_size;
+    pageSizes.set(db, n);
+  }
+  return n;
+}
+function pageCount(db) {
+  return db.query("PRAGMA page_count")[0].page_count;
+}
+// forgetUnimported ends the reservations of texts whose host blobs exist.
+// Reservations live in flats_docs_unimported, one row per text, so no
+// single value grows with a large backlog.
+function forgetUnimported(db, hashes) {
+  for (let i = 0; i < hashes.length; i += 500) {
+    const batch = hashes.slice(i, i + 500);
+    db.exec(
+      `DELETE FROM flats_docs_unimported WHERE hash IN (${batch.map(() => "?").join(",")})`,
+      batch,
+    );
+  }
+}
+function unimportedBytes(db) {
+  return db.query(
+    "SELECT coalesce(sum(size),0) AS n FROM flats_docs_unimported",
+  )[0].n;
+}
+// Slack pages for B-tree splits: an insert splits at most one page per
+// level (five levels or fewer here) in each tree it touches. Per recorded
+// text: the texts table, its hash index, the recorded and the unimported
+// tables. Per entry: the outbox and meta.newest rows.
+const DOC_SLACK_PAGES = 16,
+  ENTRY_SLACK_PAGES = 16;
+// valuePages bounds the pages a value of n bytes takes: its overflow pages,
+// rounded up, and the leaf holding its cell.
+const valuePages = (n, pageSize) => Math.ceil(n / (pageSize - 4)) + 1;
+function metaLength(db, key) {
+  return (
+    db.query("SELECT length(value) AS n FROM flats_docs_meta WHERE key=?", [
+      key,
+    ])[0]?.n || 0
+  );
+}
+// recordingPages bounds the pages recording the pending documents will
+// allocate: every document's text as its own row (documents with the same
+// text now may differ by then), never counting pages it frees, one entry
+// with its outbox row and meta.newest, and a page per listed document whose
+// reference count changes.
+function recordingPages(db, pending, listed) {
+  const docs = Object.values(pending);
+  if (!docs.length) return 0;
+  const pageSize = pageSizeOf(db);
+  let pages = ENTRY_SLACK_PAGES + listed;
+  for (const p of docs)
+    pages += valuePages(p.bytes, pageSize) + DOC_SLACK_PAGES;
+  const list = 3 * metaLength(db, "newest") + 300 * docs.length + 4096;
+  return pages + 2 * valuePages(list, pageSize);
+}
+// walReserve is the write-ahead log at rest: its 32-byte header and
+// WAL_REST_FRAMES frames of a page plus a 24-byte header each.
+const walReserve = (pageSize) => 32 + WAL_REST_FRAMES * (pageSize + 24);
+// quotaStats counts, for tests, exact sizes taken from the edited text in
+// memory (sized) and from other documents' committed state (loaded).
+export const quotaStats = { sized: 0, loaded: 0 };
+// checkDiskQuota refuses, inside the caller's transaction and after its
+// writes, a change that would put the flat over its disk quota: this
+// database as it now is, the texts recorded but not imported yet (the host
+// will store each as a blob), the revision people's unrecorded edits will
+// need when their groups close (every edited document's text as its own
+// row in this database, plus its host blob) and the write-ahead log at
+// rest. edited is a person's edit: the path and Y.Text of the document it
+// changed. A pending document's size is first the bound of three UTF-8
+// bytes per UTF-16 unit of its visible text (which includes text an update
+// made visible by completing earlier ones), and is made exact only when
+// the bounds would not fit. A budget the host has not refreshed in time
+// admits nothing: the edit fails as transient, so editors resend it and
+// update_document can retry. A rollback never calls this.
+export function checkDiskQuota(db, edited) {
+  const budget = getMeta(db, "budget");
+  if (!budget || !(Date.now() <= budget.until))
+    throw Object.assign(
+      new Error("the host has not refreshed this document's disk budget"),
+      { code: "unavailable", transient: true },
+    );
+  if (budget.quota === 0) return;
+  const pending = getMeta(db, "pending") || {};
+  if (edited)
+    pending[edited.path] = { bytes: edited.text.length * 3, exact: false };
+  const listed = getMeta(db, "newest")?.documents.length || 0;
+  const pageSize = pageSizeOf(db);
+  const total = () => {
+    const recording = recordingPages(db, pending, listed);
+    let n =
+      budget.other +
+      (pageCount(db) + recording) * pageSize +
+      unimportedBytes(db) +
+      walReserve(pageSize);
+    for (const p of Object.values(pending)) n += p.bytes;
+    return n;
+  };
+  if (total() > budget.quota)
+    for (const [path, p] of Object.entries(pending)) {
+      if (p.exact) continue;
+      const own = path === edited?.path;
+      quotaStats[own ? "sized" : "loaded"]++;
+      const text = own ? edited.text.toString() : committedText(db, path);
+      pending[path] = {
+        bytes: text === null ? 0 : utf8Bytes(text),
+        exact: true,
+      };
+    }
+  if (edited) setMeta(db, "pending", pending);
+  const used = total();
+  if (used > budget.quota)
+    throw coded(
+      "disk_quota",
+      `the flat would use ${used} bytes, over its ${budget.quota}-byte disk quota`,
+    );
+}
 
 function coded(code, message) {
   return Object.assign(new Error(message), { code });

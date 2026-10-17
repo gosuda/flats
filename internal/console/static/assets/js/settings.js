@@ -7,10 +7,12 @@ import { errorPanel, loading, toast, extLink, busy, fill, copyable, confirmDialo
 import { describeApproval, statusBadge, cleanupPending } from './approval.js';
 
 // Limits shown in human units; values are stored as integers in base units.
+// Byte sizes (bytes: true) have a unit menu; unit and factor name the unit
+// used for 0 and for a new value.
 const FIELDS = [
-  { key: 'upload_max_bytes', label: 'Upload size limit', unit: 'MB', factor: 1 << 20, min: 0.001, help: 'Total uncompressed size of one saved version.' },
+  { key: 'upload_max_bytes', label: 'Upload size limit', unit: 'MB', factor: 1 << 20, bytes: true, help: 'Total uncompressed size of one saved version.' },
   { key: 'version_quota', label: 'Version quota', unit: 'versions', factor: 1, step: 1, help: 'For websites and pages. Default version count per flat (20 on a new host). Each flat can override it. Versions are never deleted automatically; a full quota refuses new versions. Lowering it keeps existing versions. 0 is unlimited.' },
-  { key: 'disk_quota_bytes', label: 'Disk quota per flat', unit: 'GB', factor: 1 << 30, help: '0 means no quota.' },
+  { key: 'disk_quota_bytes', label: 'Disk quota per flat', unit: 'GB', factor: 1 << 30, bytes: true, help: '0 means no quota.' },
   { key: 'preview_ttl_seconds', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
   { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
   { key: 'redirect_days', label: 'Redirect after a slug rename', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect to the new ones.' },
@@ -907,6 +909,52 @@ function display(base, factor) {
   return Number.isFinite(n) ? String(Math.round(n * 1000) / 1000) : '';
 }
 
+// Byte units, largest first. GB is 2^30 bytes, as before the unit menu.
+const BYTE_UNITS = [['GB', 1 << 30], ['MB', 1 << 20], ['KB', 1 << 10], ['bytes', 1]];
+const BYTE_FACTOR = Object.fromEntries(BYTE_UNITS);
+
+// byteValue shows a byte count exactly, in the largest unit where it is a
+// number with at most three decimals: 1.5 GB, but 107374 bytes rather than
+// a rounded 0 GB. 0 and values it cannot read use the preferred unit.
+export function byteValue(base, preferred) {
+  const n = Number(base);
+  if (base === '' || base == null || !Number.isSafeInteger(n) || n < 0) return { unit: preferred, value: '' };
+  if (n === 0) return { unit: preferred, value: '0' };
+  for (const [unit, factor] of BYTE_UNITS) {
+    // n / factor is exact (factor is a power of two); a multiple of 1/8 has
+    // at most three decimals.
+    const v = n / factor;
+    if (Number.isInteger(v * 8)) return { unit, value: String(v) };
+  }
+  return { unit: 'bytes', value: String(n) };
+}
+
+// byteText formats a byte count for hints, such as "30 GB".
+function byteText(base, preferred) {
+  const { unit, value } = byteValue(base, preferred);
+  return value === '' ? '' : `${value} ${unit}`;
+}
+
+// toBase converts an entered decimal number in a unit (factor base units)
+// to an integer of base units, rounding half up, or returns null for text
+// that is not a number of 0 or more, is not whole when whole is set, or is
+// too large to store exactly. It computes on the decimal digits, so no
+// fraction is lost to floating point before the checks.
+export function toBase(text, factor, whole) {
+  const m = /^\s*\+?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?\s*$/.exec(String(text ?? ''));
+  if (!m || !(m[1] || m[2])) return null;
+  const frac = m[2] || '';
+  const scale = frac.length - Number(m[3] || 0); // value = digits / 10^scale
+  if (Math.abs(scale) > 400) return null;
+  let num = BigInt((m[1] || '') + frac || '0') * BigInt(factor);
+  let den = 1n;
+  if (scale > 0) den = 10n ** BigInt(scale);
+  else num *= 10n ** BigInt(-scale);
+  if (whole && num % den !== 0n) return null;
+  const base = (num * 2n + den) / (2n * den);
+  return base <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(base) : null;
+}
+
 // Only destructive retention settings use isDecrease. Version quotas keep all existing versions.
 export function isDecrease(key, current, next) {
   const cur = Number(current);
@@ -949,17 +997,43 @@ function limitsForm(data, opts) {
   const inputs = [];
   const numberField = (f) => {
     const id = 'set-' + f.key;
-    const initial = display(settings[f.key], f.factor);
+    const shown = f.bytes ? byteValue(settings[f.key], f.unit) : { unit: f.unit, value: display(settings[f.key], f.factor) };
+    const initial = shown.value;
     const input = h('input', {
       id, type: 'number', inputmode: 'decimal', min: String(f.min ?? 0), step: f.step ? String(f.step) : 'any',
       value: initial, required: true,
     });
-    inputs.push({ f, input, initial });
-    const def = defaults[f.key] !== undefined ? ` Default: ${display(defaults[f.key], f.factor)} ${f.unit}.` : '';
+    let unit = h('span', { class: 'unit', text: f.unit });
+    let exact = null;
+    if (f.bytes) {
+      // The unit menu changes what the number means; the hint below it
+      // always shows the exact byte count that saving stores.
+      unit = h('select', { id: id + '-unit', class: 'unit', 'aria-label': `${f.label} unit` },
+        BYTE_UNITS.map(([u]) => h('option', { value: u, text: u })));
+      unit.value = shown.unit;
+      exact = h('span', { class: 'hint', id: id + '-exact', 'aria-live': 'polite' });
+      const update = () => {
+        const base = toBase(input.value, BYTE_FACTOR[unit.value], unit.value === 'bytes');
+        exact.textContent = base == null ? '' : base === 0 ? 'Stores 0 bytes.' : `Stores ${base.toLocaleString('en-US')} ${base === 1 ? 'byte' : 'bytes'}.`;
+      };
+      input.addEventListener('input', update);
+      unit.addEventListener('change', update);
+      update();
+    }
+    inputs.push({ f, input, initial, initialUnit: shown.unit, unit: f.bytes ? unit : null });
+    const def = defaults[f.key] === undefined ? ''
+      : ` Default: ${f.bytes ? byteText(defaults[f.key], f.unit) : `${display(defaults[f.key], f.factor)} ${f.unit}`}.`;
+    const hints = control(f.key, input, f.help + def);
+    if (f.bytes) {
+      controls[f.key].unit = unit;
+      if (pinned[f.key]) unit.disabled = true;
+      controls[f.key].describedBy.push(exact.getAttribute('id'));
+      input.setAttribute('aria-describedby', controls[f.key].describedBy.join(' '));
+    }
     return h('div', { class: 'field' },
       h('label', { for: id, text: f.label }),
-      h('div', { class: 'with-unit' }, input, h('span', { class: 'unit', text: f.unit })),
-      control(f.key, input, f.help + def));
+      h('div', { class: 'with-unit' }, input, unit),
+      hints[0], exact, hints.slice(1));
   };
 
   const relaysId = 'set-portal_relays';
@@ -1031,15 +1105,18 @@ function limitsForm(data, opts) {
   // field.
   const changes = () => {
     const out = {};
-    for (const { f, input, initial } of inputs) {
-      if (pinned[f.key] || input.value === initial) continue;
-      const n = Number(input.value);
-      if (input.value.trim() === '' || !Number.isFinite(n) || n < 0 || (f.key === 'version_quota' && !Number.isSafeInteger(n))) {
-        setError(f.key, `${f.label} must be ${f.key === 'version_quota' ? 'a whole number' : 'a number'} of 0 or more.`);
+    for (const { f, input, initial, initialUnit, unit } of inputs) {
+      if (pinned[f.key] || (input.value === initial && (!unit || unit.value === initialUnit))) continue;
+      const inBytes = unit && unit.value === 'bytes';
+      const whole = f.key === 'version_quota' || inBytes;
+      const base = toBase(input.value, unit ? BYTE_FACTOR[unit.value] : f.factor, whole);
+      if (base == null) {
+        setError(f.key, `${f.label} must be ${whole ? 'a whole number' : 'a number'} of 0 or more.`);
         input.focus();
         return null;
       }
-      out[f.key] = String(Math.round(n * f.factor));
+      // Compare stored values, not text, so "0.0" over 0 changes nothing.
+      if (String(base) !== String(settings[f.key])) out[f.key] = String(base);
     }
     if (!portal) return out;
     const relayList = relays.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
