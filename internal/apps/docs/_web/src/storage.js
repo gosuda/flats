@@ -317,7 +317,16 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
   if (activation) compact(db, s, activationState);
   return { ...s, activation, before };
 }
+// The write-ahead log restarts after this many frames (when no reader holds
+// it), so it stays small; the disk quota check relies on it (revisions.js).
+// The setting is per connection, and each VM has its own.
+export const WAL_AUTOCHECKPOINT = 64;
+let walTuned = false;
 export function transaction(db, fn) {
+  if (!walTuned) {
+    db.exec(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT}`);
+    walTuned = true;
+  }
   db.exec("BEGIN IMMEDIATE");
   try {
     const result = fn();

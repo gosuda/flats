@@ -351,6 +351,7 @@ function update(c, m, env, size) {
       revisions.checkDiskQuota(db, {
         path: room.path,
         text: s.doc.getText("markdown"),
+        bytes: bytes.length,
       });
       return { s, event, ack: event };
     });
@@ -637,7 +638,12 @@ async function revisionOp(request, env, url) {
     let result;
     if (op === "sync" && method === "POST")
       result = transaction(db, () => revisions.sync(db, content, generation));
-    else if (op === "budget" && method === "POST") {
+    else if (op === "checkpoint" && method === "POST") {
+      // Outside any transaction: copy the log into the database and
+      // truncate it, so the host measures a small log.
+      const row = db.query("PRAGMA wal_checkpoint(TRUNCATE)")[0];
+      result = { busy: !!row?.busy };
+    } else if (op === "budget" && method === "POST") {
       transaction(db, () => revisions.setBudget(db, body));
       result = { ok: true };
     } else if (op === "outbox" && method === "GET")

@@ -22,12 +22,13 @@ import (
 )
 
 type contentRuntime struct {
-	specs     []RuntimeSpec
-	fail      bool
-	afterEdit func()           // runs after the fake app answers a live edit
-	budgets   []map[string]any // disk budgets the host told the fake app
-	noBudget  bool             // the fake app refuses budgets
-	outbox    *fakeOutbox      // when set, the fake app serves revision capture
+	specs       []RuntimeSpec
+	fail        bool
+	afterEdit   func()           // runs after the fake app answers a live edit
+	budgets     []map[string]any // disk budgets the host told the fake app
+	noBudget    bool             // the fake app refuses budgets
+	checkpoints int              // write-ahead log truncations the host asked for
+	outbox      *fakeOutbox      // when set, the fake app serves revision capture
 }
 
 // fakeOutbox is a docs worker's unacknowledged revision entries.
@@ -75,6 +76,11 @@ func (rt *contentRuntime) Start(_ context.Context, spec RuntimeSpec) (Instance, 
 			return
 		}
 		if rt.outbox != nil && rt.outbox.serve(w, r) {
+			return
+		}
+		if r.URL.Path == "/_docs/host/revisions/checkpoint" {
+			rt.checkpoints++
+			_, _ = io.WriteString(w, `{"busy":false}`)
 			return
 		}
 		if r.URL.Path == "/_docs/host/revisions/budget" {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,10 @@ func dbBytes(t *testing.T, data string) int64 {
 	}
 	return pages * size
 }
+
+// walReserve is the room the worker keeps for its write-ahead log to grow
+// (revisions.js walReserve), for the default 4 KiB pages.
+const walReserve = 32 + (64+256)*(4096+24)
 
 func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 	t.Parallel()
@@ -64,7 +69,7 @@ func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 	// revision its group will store (the whole document, kept by the worker
 	// and by the host) does not.
 	const other, slack = 1 << 20, 64 << 10
-	budget(dbBytes(t, data)+other+slack, other)
+	budget(walReserve+dbBytes(t, data)+other+slack, other)
 	x := connect(t, a.srv.URL, "private")
 	x.hello(t, nil)
 	x.send(t, map[string]any{"t": "update", "id": "quota", "u": fixture(t).Independent})
@@ -73,7 +78,7 @@ func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 		t.Fatal("refused edit changed the live text")
 	}
 	// With room for that revision the same edit commits.
-	budget(dbBytes(t, data)+other+slack+2*int64(len(before)+4096), other)
+	budget(walReserve+dbBytes(t, data)+other+slack+2*int64(len(before)+4096), other)
 	y := connect(t, a.srv.URL, "private")
 	y.hello(t, nil)
 	edit(t, y, "quota", fixture(t).Independent)
@@ -167,5 +172,45 @@ func TestHostDiskQuotaRefusesLiveEditsButNotRollback(t *testing.T) {
 	}
 	if out, err := s.UpdateDocument(ctx, "host-doc", "", ops, nil, core.ViaMCP); err != nil || !out.Changed {
 		t.Fatal("update_document without quota", out, err)
+	}
+}
+
+func TestIdleDocumentKeepsItsWriteAheadLog(t *testing.T) {
+	t.Parallel()
+	data := t.TempDir()
+	a := startApp(t, data, initialText, "v1")
+	wal := filepath.Join(data, "db.sqlite-wal")
+	budget := map[string]any{"quota": 1 << 30, "other": 1000, "ttl_ms": 60000}
+	tick := func() {
+		t.Helper()
+		if status, out := a.hostOp(t, "POST", "sync", map[string]any{}); status != 200 {
+			t.Fatal("sync", status, out)
+		}
+		if status, out := a.hostOp(t, "POST", "budget", budget); status != 200 {
+			t.Fatal("budget", status, out)
+		}
+	}
+	tick()
+	fi, err := os.Stat(wal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The host's ticks on an idle document write nothing: an unchanged
+	// budget is not rewritten while it is far from expiring.
+	for range 20 {
+		tick()
+	}
+	if again, err := os.Stat(wal); err != nil || again.Size() != fi.Size() {
+		t.Fatal("idle ticks grew the write-ahead log", fi.Size(), again, err)
+	}
+	// Edits grow it; a checkpoint truncates it.
+	x := connect(t, a.srv.URL, "private")
+	x.hello(t, nil)
+	edit(t, x, "wal", fixture(t).Independent)
+	if status, out := a.hostOp(t, "POST", "checkpoint", map[string]any{}); status != 200 || out["busy"] != false {
+		t.Fatal("checkpoint", status, out)
+	}
+	if fi, err := os.Stat(wal); err != nil || fi.Size() != 0 {
+		t.Fatal("write-ahead log not truncated", fi, err)
 	}
 }

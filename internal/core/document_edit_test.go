@@ -340,6 +340,16 @@ func TestDocsDiskBudget(t *testing.T) {
 	if n := len(rt.budgets); rt.budgets[n-1]["quota"] != float64(123456) || rt.budgets[n-1]["other"] != want {
 		t.Fatal("budget after the quota change", rt.budgets[n-1], want)
 	}
+	// A large write-ahead log is truncated before the flat is measured.
+	if err := os.WriteFile(filepath.Join(s.dataDirOf("notes"), dbName+"-wal"), make([]byte, walTruncateAt+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "123457"}); err != nil {
+		t.Fatal(err)
+	}
+	if rt.checkpoints != 1 {
+		t.Fatal("write-ahead log not truncated before the measurement", rt.checkpoints)
+	}
 	// update_document measures again before the worker checks its edit;
 	// the worker's refusal is a document_capacity one that changed nothing.
 	pushes := len(rt.budgets)

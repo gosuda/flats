@@ -45,6 +45,9 @@ const (
 	docsBudgetTTL = 2 * time.Minute
 	// maxStoredReport bounds the blob hashes one budget reports stored.
 	maxStoredReport = 10_000
+	// walTruncateAt is the write-ahead log size above which a budget
+	// measurement first truncates it.
+	walTruncateAt = 256 << 10
 )
 
 // docsImportBudget bounds the text one import fetches; the rest follows in
@@ -258,7 +261,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 	}
 	// Repair an acknowledgement a crash lost: the cursor is durable.
 	if st.ImportStore != "" && st.ImportSeq > 0 {
-		if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": st.ImportStore, "through": st.ImportSeq, "budget": s.docsBudget(slugName, nil)}, nil); err != nil && !errors.Is(err, ErrConflict) {
+		if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": st.ImportStore, "through": st.ImportSeq, "budget": s.docsBudget(ctx, slugName, nil)}, nil); err != nil && !errors.Is(err, ErrConflict) {
 			return res, err
 		}
 	}
@@ -333,7 +336,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 			}
 			last := ready[len(ready)-1].Seq
 			st.ImportStore, st.ImportSeq, after = page.Store, last, last
-			if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": page.Store, "through": last, "budget": s.docsBudget(slugName, res.stored)}, nil); err != nil {
+			if err := s.docsHost(ctx, slugName, http.MethodPost, "ack", map[string]any{"store": page.Store, "through": last, "budget": s.docsBudget(ctx, slugName, res.stored)}, nil); err != nil {
 				s.logf("acknowledge revisions of %s: %v", slugName, err)
 			}
 		}
@@ -478,11 +481,20 @@ func (s *Service) syncImportDocsLocked(ctx context.Context, slugName string) (do
 // (docs/revision-store.md#disk-quota). stored lists texts whose blobs the
 // measurement includes, so the worker stops reserving them. The caller
 // holds the flat lock.
-func (s *Service) docsBudget(slugName string, stored map[string]bool) map[string]any {
+func (s *Service) docsBudget(ctx context.Context, slugName string, stored map[string]bool) map[string]any {
 	quota, other := s.diskQuota(), int64(0)
 	if quota > 0 {
+		dbPath := filepath.Join(s.dataDirOf(slugName), dbName)
+		// A write-ahead log stays at its largest size after SQLite restarts
+		// it; truncate one above walTruncateAt so it does not hold the
+		// quota. A busy checkpoint leaves it for the next measurement.
+		if fi, err := os.Stat(dbPath + "-wal"); err == nil && fi.Size() > walTruncateAt {
+			if err := s.docsHost(ctx, slugName, http.MethodPost, "checkpoint", map[string]any{}, nil); err != nil {
+				s.logf("checkpoint the document database of %s: %v", slugName, err)
+			}
+		}
 		var db int64
-		if fi, err := os.Stat(filepath.Join(s.dataDirOf(slugName), dbName)); err == nil {
+		if fi, err := os.Stat(dbPath); err == nil {
 			db = fi.Size()
 		}
 		other = max(0, dirSize(s.flatDir(slugName))-db)
@@ -509,7 +521,7 @@ func (s *Service) pushDocsBudgetLocked(ctx context.Context, slugName string) err
 }
 
 func (s *Service) pushDocsBudgetStoredLocked(ctx context.Context, slugName string, stored map[string]bool) error {
-	return s.docsHost(ctx, slugName, http.MethodPost, "budget", s.docsBudget(slugName, stored), nil)
+	return s.docsHost(ctx, slugName, http.MethodPost, "budget", s.docsBudget(ctx, slugName, stored), nil)
 }
 
 // pushAllDocsBudgets applies a changed disk quota to every running

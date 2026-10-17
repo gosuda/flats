@@ -493,7 +493,7 @@ meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)
   -- 'newest': JSON {source, documents: [{path, hash, size}]} of the newest entry
   -- 'active': JSON {hash, generation, docs: [path]}: the version whose flat activation last ran
   -- 'intent': JSON, at most one (see Intents)
-  -- 'budget', 'pending', 'unimported': the disk quota check (see Disk quota)
+  -- 'budget', 'pending', 'unimported', 'baseline': the disk quota check (see Disk quota)
 recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)
   -- each document's committed position when last recorded, and its text hash there
 groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)
@@ -694,7 +694,7 @@ get 403. Core calls them in process on the running worker instance, not
 through the flat's routes, with a 30-second timeout per call. Bodies are
 JSON; a POST body above 8 MiB of text is refused with 413. `sync`, `intent`
 and `restore` pass the activation gate first. The transport operations
-(`outbox`, `text`, `ack`, `stage`, `op`, `budget`) do not: they only need the schema,
+(`outbox`, `text`, `ack`, `stage`, `op`, `budget`, `checkpoint`) do not: they only need the schema,
 so the host can always drain and acknowledge the backlog, which frees space,
 even while an activation keeps failing.
 
@@ -708,6 +708,7 @@ even while an activation keeps failing.
 | `POST /_docs/host/revisions/intent` | `{id, source, kind, label, message, rollback_of, documents}`: writes `meta.intent` (texts must be staged or present) |
 | `POST /_docs/host/revisions/restore` | `{id, label, rollback_of, documents: [{path, hash}], deadline_ms}`: a rollback within the running version; its documents must be exactly the running version's. Returns `{store, seq}` |
 | `GET /_docs/host/revisions/op?id=` | `{committed, seq?}`: whether a rollback with this id committed and its entry is still unacknowledged |
+| `POST /_docs/host/revisions/checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` outside a transaction; returns `{busy}` (true when a reader kept it from finishing) |
 | `POST /_docs/host/revisions/budget` | `{quota, other, ttl_ms, stored?}` (non-negative integers, `ttl_ms` 1 ms to 24 hours; `stored` at most 10,000 text hashes whose host blobs `other` includes): sets `meta.budget` for the [disk quota](#disk-quota) check and deletes the `stored` texts from `meta.unimported`; quota 0 turns the check off and deletes `meta.pending` |
 
 Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
@@ -756,16 +757,31 @@ disk quota; the host side, what it measures and when, is in the
   stored: `ack` deletes the texts of the entries it acknowledges, and a
   budget deletes the texts it lists as `stored`.
 * The check runs last in the transaction, after every write: a WebSocket
-  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. The total
-  is `other` + `page_count` × `page_size` + `unimported` + the bound of the
-  pending revision: per pending document its bound in bytes plus its
-  overflow pages rounded up and 10 pages, and per entry twice the pages of
-  `meta.newest` (+25 %) and 16 pages. When that exceeds the quota, a
-  savepoint records the pending documents as a `person` entry of the shape
-  of `meta.newest`, measures `page_count` and `unimported`, and rolls back;
-  that measured total decides. Over the quota it refuses with `disk_quota`
-  and the transaction rolls back, so a refused edit records and changes
-  nothing. `restore`, rollback intents and activations are not checked.
+  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. Every
+  total includes `other` and the log reserve, 32 + (64 + 256) × (`page_size`
+  + 24) bytes. The cheap total adds `page_count` × `page_size`,
+  `unimported` and the bound of the pending revision: per pending document
+  its bound in bytes plus its overflow pages rounded up and 10 pages, and
+  per entry twice the pages of `meta.newest` (+25 %) and 16 pages.
+* When the cheap total exceeds the quota, `meta.baseline` decides if it
+  exists: `{grow, free, host, docs, since}`. A measurement records the
+  pending documents as a `person` entry of the shape of `meta.newest` in a
+  savepoint, notes how many pages the file grew by (`grow`), the free pages
+  before it (`free`; the recording allocated at most `grow + free` pages)
+  and the blob bytes it added to `unimported` (`host`), and rolls back. Each
+  later person's update to a document in `docs` adds its decoded update size
+  to `since`. The projected total is the file after recording,
+  `page_count` + max(0, `grow` + `free` + the pages of `since` bytes + the
+  bound pages of pending documents not in `docs` − `freelist_count`) pages,
+  plus `unimported` + `host` + `since` + those documents' bounds. Without a
+  baseline, or when the projection exceeds the quota, the worker measures
+  again and uses the new baseline. `record` deletes it.
+* Over the quota it refuses with `disk_quota` and the transaction rolls
+  back, so a refused edit records and changes nothing. `restore`, rollback
+  intents and activations are not checked.
+* Each VM's connection sets `PRAGMA wal_autocheckpoint = 64` before its
+  first transaction. `setBudget` writes nothing when the budget is
+  unchanged and more than half of its lifetime is left.
 * The browser treats `disk_quota` like the other deterministic rejections:
   it stops syncing, disables editing, keeps its pending updates and offers
   the local Markdown for download, saying that the document is out of disk
