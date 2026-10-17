@@ -35,10 +35,13 @@ type Manager struct {
 	Env          []string             // the worker's entire environment; nil = empty (tests add a dispatch variable)
 	Timeout      time.Duration        // per request; 0 = DefaultTimeout
 	StartTimeout time.Duration        // worker start; 0 = 60s
+	// UsageInterval is how often workers report CPU and memory; 0 = 15s.
+	UsageInterval time.Duration
 
 	once    sync.Once
 	sockDir string
 	initErr error
+	procs   atomic.Uint64 // process ids for RuntimeSpec.Usage, unique per Manager
 }
 
 var _ core.Runtime = (*Manager)(nil)
@@ -139,7 +142,8 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 		spec: spec,
 		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
-			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds()},
+			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds(),
+			UsageIntervalMS: m.UsageInterval.Milliseconds()},
 	}
 	if in.ws.Env == nil {
 		in.ws.Env = map[string]string{}
@@ -219,6 +223,7 @@ type instance struct {
 }
 
 type proc struct {
+	id      uint64 // RuntimeSpec.Usage process id
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	done    chan struct{} // closed when the process exited and stderr drained
@@ -227,6 +232,10 @@ type proc struct {
 	tail    *tailBuf
 	rdone   chan struct{} // stderr fully read
 	stopped atomic.Bool   // exit was requested
+
+	// Written by readStderr only; read by the Wait goroutine after rdone.
+	lastCPU      int64 // latest valid CPU sample (ns)
+	badUsageSeen bool  // an invalid sample was logged
 }
 
 // tailBuf keeps the last lines of plain stderr output for error messages.
@@ -299,17 +308,31 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 		os.Remove(in.sock)
 		return fmt.Errorf("start worker: %w", err)
 	}
-	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{})}
+	p := &proc{id: in.m.procs.Add(1), cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{})}
+	if u := in.spec.Usage; u != nil {
+		u.Started(p.id)
+	}
 	ready := make(chan error, 1)
 	go in.readStderr(p, stderr, ready)
 	go func() {
 		<-p.rdone // Wait must not run before all reads from the pipe completed
 		p.err = cmd.Wait()
+		// Exit accounting runs before done closes: Stop returns on done, so
+		// once it returns the final CPU is in the sink. exited() is not the
+		// place, as it returns early for stopped or superseded processes.
+		if u := in.spec.Usage; u != nil {
+			cpu := p.lastCPU
+			if ps := cmd.ProcessState; ps != nil {
+				cpu = (ps.UserTime() + ps.SystemTime()).Nanoseconds()
+			}
+			u.Exited(p.id, cpu, !p.stopped.Load())
+		}
 		close(p.done)
 		in.exited(p)
 	}()
 	b, _ := json.Marshal(in.ws)
 	if _, err := stdin.Write(append(b, '\n')); err != nil {
+		p.stopped.Store(true)
 		cmd.Process.Kill()
 		<-p.done
 		return fmt.Errorf("start worker: %w", err)
@@ -383,6 +406,8 @@ func (in *instance) readStderr(p *proc, r io.Reader, ready chan<- error) {
 					ready <- fmt.Errorf("server flat failed to start: %s", msg.Msg)
 				}
 				in.spec.Log("error", msg.Msg)
+			case "usage":
+				in.usage(p, msg)
 			default:
 				level := msg.Level
 				if level == "" {
@@ -400,6 +425,48 @@ func (in *instance) readStderr(p *proc, r io.Reader, ready chan<- error) {
 	}
 	io.Copy(io.Discard, r)
 }
+
+// usage forwards one valid usage sample: a CPU time that is present,
+// non-negative and not below the process's previous sample, and a
+// non-negative memory figure when one is present. An invalid sample is
+// dropped and logged once per process.
+func (in *instance) usage(p *proc, msg childMsg) {
+	if msg.CPU == nil || *msg.CPU < 0 || *msg.CPU < p.lastCPU || (msg.Mem != nil && *msg.Mem < 0) {
+		if !p.badUsageSeen {
+			p.badUsageSeen = true
+			in.m.logf("flat %s v%d: worker %d sent an invalid usage sample; dropped", in.spec.Flat, in.spec.Version, p.id)
+		}
+		return
+	}
+	p.lastCPU = *msg.CPU
+	if u := in.spec.Usage; u != nil {
+		var mem int64
+		if msg.Mem != nil {
+			mem = *msg.Mem
+		}
+		u.Sample(p.id, *msg.CPU, mem, msg.Mem != nil)
+	}
+}
+
+// WorkerState implements core.StateReporter from the instance's own state,
+// without waking or messaging the worker.
+func (in *instance) WorkerState() core.WorkerState {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	switch {
+	case in.stopped:
+		return core.WorkerStopped
+	case in.p != nil:
+		return core.WorkerRunning
+	case in.starting != nil:
+		return core.WorkerStarting
+	}
+	// The worker exited or failed to restart; the next request restarts it,
+	// after its backoff.
+	return core.WorkerBackoff
+}
+
+var _ core.StateReporter = (*instance)(nil)
 
 // exited is called when a worker process ends.
 func (in *instance) exited(p *proc) {

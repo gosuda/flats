@@ -78,6 +78,7 @@ func WorkerMain(args []string) error {
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	log.send(childMsg{T: "ready", MS: time.Since(start).Milliseconds()})
+	go reportUsage(log, spec.usageEvery())
 
 	// Stdin EOF means "stop" (or the parent is gone).
 	stopped := make(chan struct{})
