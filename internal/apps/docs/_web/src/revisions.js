@@ -768,9 +768,18 @@ function unrecordedBytes(db) {
   }
   return out;
 }
-let pageSize = 0;
+// pageSizeOf reads a database's page size once; every bound below is in
+// that database's pages.
+const pageSizes = new WeakMap();
+function pageSizeOf(db) {
+  let n = pageSizes.get(db);
+  if (!n) {
+    n = db.query("PRAGMA page_size")[0].page_size;
+    pageSizes.set(db, n);
+  }
+  return n;
+}
 function pageCount(db) {
-  if (!pageSize) pageSize = db.query("PRAGMA page_size")[0].page_size;
   return db.query("PRAGMA page_count")[0].page_count;
 }
 // forgetUnimported ends the reservations of texts whose host blobs exist.
@@ -798,7 +807,7 @@ const DOC_SLACK_PAGES = 16,
   ENTRY_SLACK_PAGES = 16;
 // valuePages bounds the pages a value of n bytes takes: its overflow pages,
 // rounded up, and the leaf holding its cell.
-const valuePages = (n) => Math.ceil(n / (pageSize - 4)) + 1;
+const valuePages = (n, pageSize) => Math.ceil(n / (pageSize - 4)) + 1;
 function metaLength(db, key) {
   return (
     db.query("SELECT length(value) AS n FROM flats_docs_meta WHERE key=?", [
@@ -814,14 +823,16 @@ function metaLength(db, key) {
 function recordingPages(db, pending, listed) {
   const docs = Object.values(pending);
   if (!docs.length) return 0;
+  const pageSize = pageSizeOf(db);
   let pages = ENTRY_SLACK_PAGES + listed;
-  for (const p of docs) pages += valuePages(p.bytes) + DOC_SLACK_PAGES;
+  for (const p of docs)
+    pages += valuePages(p.bytes, pageSize) + DOC_SLACK_PAGES;
   const list = 3 * metaLength(db, "newest") + 300 * docs.length + 4096;
-  return pages + 2 * valuePages(list);
+  return pages + 2 * valuePages(list, pageSize);
 }
 // walReserve is the write-ahead log at rest: its 32-byte header and
 // WAL_REST_FRAMES frames of a page plus a 24-byte header each.
-const walReserve = () => 32 + WAL_REST_FRAMES * (pageSize + 24);
+const walReserve = (pageSize) => 32 + WAL_REST_FRAMES * (pageSize + 24);
 // quotaStats counts, for tests, exact sizes taken from the edited text in
 // memory (sized) and from other documents' committed state (loaded).
 export const quotaStats = { sized: 0, loaded: 0 };
@@ -850,13 +861,14 @@ export function checkDiskQuota(db, edited) {
   if (edited)
     pending[edited.path] = { bytes: edited.text.length * 3, exact: false };
   const listed = getMeta(db, "newest")?.documents.length || 0;
+  const pageSize = pageSizeOf(db);
   const total = () => {
     const recording = recordingPages(db, pending, listed);
     let n =
       budget.other +
       (pageCount(db) + recording) * pageSize +
       unimportedBytes(db) +
-      walReserve();
+      walReserve(pageSize);
     for (const p of Object.values(pending)) n += p.bytes;
     return n;
   };

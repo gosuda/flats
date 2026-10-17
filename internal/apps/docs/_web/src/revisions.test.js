@@ -788,6 +788,41 @@ test("near the quota only the edited text is sized; others once", () => {
   fits(db, quota);
 });
 
+test("the first check in a fresh worker uses the database's page size", async () => {
+  // A module instance that has never read a page size, as in a newly
+  // started worker VM.
+  const fresh = await import(`./revisions.js?fresh=${Date.now()}`);
+  const setup = () => {
+    const db = database(),
+      c = content("v1", doc("a.md", "a\n"));
+    transaction(db, () => revisions.ensureFlat(db, c, next()));
+    budget(db, 1 << 30);
+    ackAll(db);
+    checkedEdit(db, c, "a.md", "y".repeat(300_000));
+    return db;
+  };
+  // The smallest quota at which the pending edit fits only once it is
+  // sized exactly.
+  const first = setup();
+  let quota = dbBytes(first) + MIN_WAL;
+  const { loaded } = revisions.quotaStats;
+  for (;;) {
+    budget(first, (quota += 4096));
+    try {
+      transaction(first, () => revisions.checkDiskQuota(first));
+      break;
+    } catch (e) {
+      if (!refused(e)) throw e;
+    }
+  }
+  assert.ok(revisions.quotaStats.loaded > loaded);
+  // The same state, checked first by the fresh instance, is admitted too.
+  const second = setup();
+  budget(second, quota);
+  transaction(second, () => fresh.checkDiskQuota(second));
+  assert.equal(fresh.quotaStats.loaded, 1);
+});
+
 test("an edit undone before its group closes reserves nothing afterwards", () => {
   const db = database(),
     c = content("v1", doc("a.md", "x\n"));
