@@ -37,7 +37,10 @@ function database({ file = false, schema: create = true, pageSize } = {}) {
       if (!params) raw.exec(sql);
       else raw.prepare(sql).run(...params);
     },
+    // onQuery, when a test sets it, runs before a query.
+    onQuery: null,
     query(sql, params = []) {
+      db.onQuery?.(sql);
       return raw
         .prepare(sql)
         .all(...params)
@@ -1021,4 +1024,36 @@ test("an older database moves its seed texts into their own table", () => {
   );
   schema(db);
   assert.equal(seedText(db, "a.md"), "base\n");
+});
+
+test("a truncation a reader blocked is retried until it succeeds", () => {
+  const db = database({ file: true }),
+    c = content("v1", doc("a.md", "s".repeat(1000)));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  atRest(db);
+  // A reader takes the newest snapshot right after a large transaction
+  // commits: the passive checkpoint can still copy all of it, but the
+  // truncation after it is busy.
+  const reader = new DatabaseSync(db.path);
+  db.onQuery = (sql) => {
+    if (sql !== "PRAGMA wal_checkpoint(PASSIVE)") return;
+    db.onQuery = null;
+    reader.exec("BEGIN");
+    reader.prepare("SELECT count(*) AS n FROM flats_docs_meta").get();
+  };
+  checkedEdit(db, c, "a.md", "y".repeat(200_000));
+  assert.ok(walBytes(db) > restWal(db), "the large transaction left no log");
+  reader.exec("COMMIT");
+  // SQLite may restart a fully copied log for the next writer while its
+  // file keeps its size; a restarting checkpoint from another connection
+  // makes that happen here.
+  reader.exec("PRAGMA wal_checkpoint(RESTART)");
+  reader.close();
+  // The next transaction is small and writes from the log's start, so its
+  // frame count is small; the owed truncation still runs.
+  checkedEdit(db, c, "a.md", "!");
+  atRest(db);
+  assert.equal(revisions.getMeta(db, "wal_truncate"), null);
 });

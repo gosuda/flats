@@ -496,7 +496,7 @@ meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)
   -- 'newest': JSON {source, documents: [{path, hash, size}]} of the newest entry
   -- 'active': JSON {hash, generation, docs: [path]}: the version whose flat activation last ran
   -- 'intent': JSON, at most one (see Intents)
-  -- 'budget', 'pending', 'unimported': the disk quota check (see Disk quota)
+  -- 'budget', 'pending', 'unimported', 'wal_truncate': the disk quota check (see Disk quota)
 recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)
   -- each document's committed position when last recorded, and its text hash there
 groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)
@@ -783,8 +783,9 @@ disk quota; the host side, what it measures and when, is in the
   intents and activations are not checked.
 * After every commit of a transaction, `PRAGMA wal_checkpoint(PASSIVE)`
   reports the frames in the log and copies them into the database; with
-  more than 64, `PRAGMA wal_checkpoint(TRUNCATE)` follows. A busy result
-  (a reader holding the log) leaves it for the next commit or the host.
+  more than 64, or while `meta.wal_truncate` is set, `PRAGMA
+  wal_checkpoint(TRUNCATE)` follows. A busy or failed truncation sets
+  `meta.wal_truncate`; a successful one deletes it.
 * `setBudget` writes nothing when the budget is unchanged, its deadline is
   no later than the new one, and more than half of the lifetime is left; a
   shorter lifetime always replaces a longer one.

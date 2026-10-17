@@ -495,14 +495,10 @@ func (s *Service) docsBudget(ctx context.Context, slugName string, stored map[st
 			}
 		}
 		// The worker counts its database as it is and its write-ahead log
-		// as the log's bound at rest, so other leaves both out.
-		var db int64
-		for _, p := range []string{dbPath, dbPath + "-wal"} {
-			if fi, err := os.Stat(p); err == nil {
-				db += fi.Size()
-			}
-		}
-		other = max(0, dirSize(s.flatDir(slugName))-db)
+		// as the log's bound at rest, so other leaves both out. They are
+		// skipped in the same walk: a log the worker truncates between two
+		// separate measurements would otherwise understate other.
+		other = dirSizeExcept(s.flatDir(slugName), dbPath, dbPath+"-wal")
 	} else {
 		quota = 0
 	}

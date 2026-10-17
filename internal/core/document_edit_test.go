@@ -350,6 +350,18 @@ func TestDocsDiskBudget(t *testing.T) {
 	if rt.checkpoints != 1 {
 		t.Fatal("write-ahead log not truncated before the measurement", rt.checkpoints)
 	}
+	// other leaves the database and its log out but keeps everything else,
+	// its shared-memory file included.
+	if err := os.WriteFile(filepath.Join(s.dataDirOf("notes"), dbName+"-shm"), make([]byte, 700), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want = float64(dirSize(s.flatDir("notes")) - 5000 - (walTruncateAt + 1))
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "123458"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rt.budgets); rt.budgets[n-1]["other"] != want {
+		t.Fatal("other with a log and shared memory", rt.budgets[n-1], want)
+	}
 	// update_document measures again before the worker checks its edit;
 	// the worker's refusal is a document_capacity one that changed nothing.
 	pushes := len(rt.budgets)

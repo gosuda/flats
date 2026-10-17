@@ -306,7 +306,8 @@ would commit them and after its writes:
 
 - **Budget.** The host measures the flat directory and installs the quota
   and `other`, the bytes everything but the worker's database file and its
-  write-ahead log uses, with
+  write-ahead log uses (both skipped in the same directory walk, so a log
+  truncated meanwhile cannot make `other` too small), with
   a lifetime of 2 minutes:
   - with every outbox acknowledgement, measured after the acknowledged
     entries' blobs were stored, so their reservations end in the same worker
@@ -363,11 +364,13 @@ truncates it (`PRAGMA wal_checkpoint(TRUNCATE)`) when there are more than
 64. So at rest the log holds at most 64 frames: 32 + 64 × (page size + 24)
 bytes, 263,712 bytes with 4 KiB pages, which the check reserves; the host
 leaves the actual log out of `other`. A single transaction exceeds that
-bound only until its own commit returns. A reader that keeps the
-truncation from finishing (busy) leaves the log larger until the next
-commit retries, or until the host's next measurement, which truncates a log
-above 256 KiB (`checkpoint` host operation) and otherwise leaves it to the
-next commit. An idle document writes nothing to its log: an unchanged
+bound only until its own commit returns. A truncation that a reader keeps
+from finishing (busy) or that fails is recorded in the worker's database
+(`meta.wal_truncate`) and retried after every later commit, by any VM,
+until one succeeds; the frame count alone would miss a log SQLite restarted
+for a small transaction inside a larger file. Until then the log stays
+larger; the host's next measurement also truncates a log above 256 KiB
+(`checkpoint` host operation). An idle document writes nothing to its log: an unchanged
 budget is rewritten only when it is half expired, and a sync with nothing
 to do changes no page. Large payloads sit in rows nothing rewrites often:
 text reference counts are kept apart from the texts, and each document's

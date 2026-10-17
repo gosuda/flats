@@ -389,16 +389,33 @@ function begin(db, sql) {
 }
 // commit commits, then reads how many frames the write-ahead log holds (a
 // passive checkpoint, which also copies them into the database) and
-// truncates the log when there are more than WAL_REST_FRAMES. A reader that
-// keeps the truncation from finishing (busy) leaves the log for the next
-// commit, the host's measurement or its tick.
+// truncates the log when there are more than WAL_REST_FRAMES. A truncation
+// a reader kept from finishing (busy) or that failed is remembered in
+// meta.wal_truncate, shared by every VM, and retried after every later
+// commit until one succeeds: a fully copied log can restart for a small
+// transaction while its file keeps its earlier size, which the frame count
+// alone would no longer show.
 function commit(db) {
   db.exec("COMMIT");
+  let owed = false;
   try {
+    owed =
+      db.query("SELECT 1 AS x FROM flats_docs_meta WHERE key='wal_truncate'")
+        .length > 0;
     const row = db.query("PRAGMA wal_checkpoint(PASSIVE)")[0];
-    if (row && row.log > WAL_REST_FRAMES)
-      db.query("PRAGMA wal_checkpoint(TRUNCATE)");
+    if (!owed && !(row && row.log > WAL_REST_FRAMES)) return;
+    const done = db.query("PRAGMA wal_checkpoint(TRUNCATE)")[0];
+    if (done && !done.busy) {
+      if (owed) db.exec("DELETE FROM flats_docs_meta WHERE key='wal_truncate'");
+      return;
+    }
   } catch {}
+  if (!owed)
+    try {
+      db.exec(
+        "INSERT OR REPLACE INTO flats_docs_meta VALUES('wal_truncate','true')",
+      );
+    } catch {}
 }
 export function transaction(db, fn) {
   begin(db, "BEGIN IMMEDIATE");
