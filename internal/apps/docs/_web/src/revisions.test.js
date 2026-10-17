@@ -554,10 +554,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const budget = (db, quota, other = 0, ttl = DAY) =>
   transaction(db, () => revisions.setBudget(db, { quota, other, ttl_ms: ttl }));
 const unimported = (db) =>
-  Object.values(revisions.getMeta(db, "unimported") || {}).reduce(
-    (a, b) => a + b,
-    0,
-  );
+  db.query("SELECT coalesce(sum(size),0) AS n FROM flats_docs_unimported")[0].n;
 // closeGroups closes every edit group, as the host's sync does when due.
 const closeGroups = (db, c) =>
   transaction(db, () =>
@@ -832,7 +829,7 @@ test("an acknowledgement ends only its entries' reservations and installs the ne
   assert.equal(unimported(db), 15);
   assert.equal(revisions.getMeta(db, "budget").other, 4242);
   ackAll(db);
-  assert.equal(revisions.getMeta(db, "unimported"), null);
+  assert.equal(unimported(db), 0);
   // An invalid budget refuses the whole acknowledgement.
   assert.throws(
     () =>
@@ -870,7 +867,7 @@ test("a budget ends the reservations of texts whose blobs the host already store
   assert.equal(entries(db).length, 1);
   assert.equal(unimported(db), b.size);
   ackAll(db, { quota: 1 << 30, other: 200, ttl_ms: DAY, stored: [b.hash] });
-  assert.equal(revisions.getMeta(db, "unimported"), null);
+  assert.equal(unimported(db), 0);
   for (const stored of [["x"], "nope", Array(10_001).fill("f".repeat(64))])
     assert.throws(
       () =>
@@ -1104,18 +1101,84 @@ test("an older database reserves the blobs its unimported entries still need", (
   db.exec(
     "CREATE TABLE flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL)",
   );
-  db.exec(
-    "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,source,documents) VALUES(1,'person','[]','','v1',?)",
-    [
-      JSON.stringify([
-        { path: "a.md", hash: "a".repeat(64), size: 1000 },
-        { path: "b.md", hash: "b".repeat(64), size: 20 },
-      ]),
-    ],
-  );
+  // A backlog of many entries of 128 documents, read one entry at a time.
+  const hash = (e, d) =>
+    (e.toString(16).padStart(8, "0") + d.toString(16).padStart(8, "0")).repeat(
+      4,
+    );
+  for (let e = 0; e < 300; e++)
+    db.exec(
+      "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,source,documents) VALUES(1,'person','[]','','v1',?)",
+      [
+        JSON.stringify(
+          Array.from({ length: 128 }, (_, d) => ({
+            path: `d${d}.md`,
+            hash: hash(e % 150, d),
+            size: 10 + d,
+          })),
+        ),
+      ],
+    );
   schema(db);
-  assert.deepEqual(revisions.getMeta(db, "unimported"), {
-    ["a".repeat(64)]: 1000,
-    ["b".repeat(64)]: 20,
-  });
+  const rows = db.query(
+    "SELECT count(*) AS n, sum(size) AS bytes FROM flats_docs_unimported",
+  )[0];
+  assert.equal(rows.n, 150 * 128);
+  assert.equal(rows.bytes, 150 * (128 * 10 + (127 * 128) / 2));
+});
+
+test("an earlier build's reservations move into their own table", () => {
+  const db = database({ schema: false });
+  db.exec(
+    "CREATE TABLE flats_docs_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE flats_docs_text_refs(hash TEXT PRIMARY KEY, refs INTEGER NOT NULL, staged_at INTEGER)",
+  );
+  db.exec("INSERT INTO flats_docs_meta VALUES('unimported',?)", [
+    JSON.stringify({ ["c".repeat(64)]: 7 }),
+  ]);
+  schema(db);
+  assert.equal(unimported(db), 7);
+  assert.equal(revisions.getMeta(db, "unimported"), null);
+});
+
+test("a truncation's success never clears a later failure's generation", () => {
+  // Three VMs on one database file.
+  const a = database({ file: true }),
+    c = content("v1", doc("a.md", "s".repeat(1000)));
+  transaction(a, () => revisions.ensureFlat(a, c, next()));
+  budget(a, 1 << 30);
+  ackAll(a);
+  const b = database({ file: true, at: a.path }),
+    v = database({ file: true, at: a.path });
+  // A failure is owed. A reads it and truncates; before A clears it, B
+  // truncates and clears it, then C's own truncation is blocked and owes a
+  // new failure. A's delayed clearing must leave C's.
+  a.exec("INSERT INTO flats_docs_meta VALUES('wal_generation','1')");
+  a.exec("INSERT INTO flats_docs_meta VALUES('wal_truncate','1')");
+  const reader = new DatabaseSync(a.path);
+  a.onExec = (sql) => {
+    if (!sql.startsWith("DELETE FROM flats_docs_meta WHERE key='wal_truncate'"))
+      return;
+    a.onExec = null;
+    transaction(b, () => {});
+    assert.equal(revisions.getMeta(b, "wal_truncate"), null);
+    v.onQuery = (q) => {
+      if (q !== "PRAGMA wal_checkpoint(PASSIVE)") return;
+      v.onQuery = null;
+      reader.exec("BEGIN");
+      reader.prepare("SELECT count(*) AS n FROM flats_docs_meta").get();
+    };
+    checkedEdit(v, c, "a.md", "y".repeat(200_000));
+    reader.exec("COMMIT");
+  };
+  transaction(a, () => {});
+  assert.equal(revisions.getMeta(a, "wal_truncate"), 2);
+  reader.exec("PRAGMA wal_checkpoint(RESTART)");
+  reader.close();
+  checkedEdit(a, c, "a.md", "!");
+  atRest(a);
+  assert.equal(revisions.getMeta(a, "wal_truncate"), null);
+  assert.equal(revisions.getMeta(a, "wal_generation"), 2);
 });

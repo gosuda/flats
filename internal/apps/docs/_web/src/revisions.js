@@ -217,15 +217,13 @@ export function record(db, o) {
   // blob when it imports this one; until it reports that blob stored, the
   // text counts toward the disk quota (see checkDiskQuota). The documents
   // are recorded now, so their pending reservation ends.
-  const listed = new Set((newest?.documents || []).map((d) => d.hash)),
-    unimported = getMeta(db, "unimported") || {};
-  let added = false;
+  const listed = new Set((newest?.documents || []).map((d) => d.hash));
   for (const d of documents)
-    if (!listed.has(d.hash) && !Object.hasOwn(unimported, d.hash)) {
-      unimported[d.hash] = d.size;
-      added = true;
-    }
-  if (added) setMeta(db, "unimported", unimported);
+    if (!listed.has(d.hash))
+      db.exec("INSERT OR IGNORE INTO flats_docs_unimported VALUES(?,?)", [
+        d.hash,
+        d.size,
+      ]);
   clearReservations(db);
   setMeta(db, "newest", { source: o.source, documents });
   db.exec("UPDATE flats_docs_groups SET dirty=0");
@@ -776,31 +774,26 @@ function pageCount(db) {
   return db.query("PRAGMA page_count")[0].page_count;
 }
 // forgetUnimported ends the reservations of texts whose host blobs exist.
+// Reservations live in flats_docs_unimported, one row per text, so no
+// single value grows with a large backlog.
 function forgetUnimported(db, hashes) {
-  const unimported = getMeta(db, "unimported");
-  if (!unimported) return;
-  let changed = false;
-  for (const h of hashes)
-    if (Object.hasOwn(unimported, h)) {
-      delete unimported[h];
-      changed = true;
-    }
-  if (changed)
-    setMeta(
-      db,
-      "unimported",
-      Object.keys(unimported).length ? unimported : null,
+  for (let i = 0; i < hashes.length; i += 500) {
+    const batch = hashes.slice(i, i + 500);
+    db.exec(
+      `DELETE FROM flats_docs_unimported WHERE hash IN (${batch.map(() => "?").join(",")})`,
+      batch,
     );
+  }
 }
 function unimportedBytes(db) {
-  let n = 0;
-  for (const v of Object.values(getMeta(db, "unimported") || {})) n += v;
-  return n;
+  return db.query(
+    "SELECT coalesce(sum(size),0) AS n FROM flats_docs_unimported",
+  )[0].n;
 }
 // Slack pages for B-tree splits: an insert splits at most one page per
 // level (five levels or fewer here) in each tree it touches. Per recorded
-// text: the texts table, its hash index and the recorded table. Per entry:
-// the outbox, meta.newest and meta.unimported rows.
+// text: the texts table, its hash index, the recorded and the unimported
+// tables. Per entry: the outbox and meta.newest rows.
 const DOC_SLACK_PAGES = 16,
   ENTRY_SLACK_PAGES = 16;
 // valuePages bounds the pages a value of n bytes takes: its overflow pages,
@@ -816,19 +809,15 @@ function metaLength(db, key) {
 // recordingPages bounds the pages recording the pending documents will
 // allocate: every document's text as its own row (documents with the same
 // text now may differ by then), never counting pages it frees, one entry
-// with its outbox row, meta.newest and meta.unimported, and a page per
-// listed document whose reference count changes.
+// with its outbox row and meta.newest, and a page per listed document whose
+// reference count changes.
 function recordingPages(db, pending, listed) {
   const docs = Object.values(pending);
   if (!docs.length) return 0;
   let pages = ENTRY_SLACK_PAGES + listed;
   for (const p of docs) pages += valuePages(p.bytes) + DOC_SLACK_PAGES;
   const list = 3 * metaLength(db, "newest") + 300 * docs.length + 4096;
-  return (
-    pages +
-    2 * valuePages(list) +
-    valuePages(3 * metaLength(db, "unimported") + 300 * docs.length)
-  );
+  return pages + 2 * valuePages(list);
 }
 // walReserve is the write-ahead log at rest: its 32-byte header and
 // WAL_REST_FRAMES frames of a page plus a 24-byte header each.

@@ -366,7 +366,8 @@ bytes, 263,712 bytes with 4 KiB pages, which the check reserves; the host
 leaves the actual log out of `other`. A single transaction exceeds that
 bound only until its own commit returns. A truncation that a reader keeps
 from finishing (busy) or that fails is recorded in the worker's database
-(`meta.wal_truncate`, a generation every failure raises) and retried after
+(`meta.wal_truncate`, holding the generation of a counter every failure
+raises and nothing resets) and retried after
 every later commit, by any VM, until one succeeds that saw the latest
 failure; the frame count alone would miss a log SQLite restarted
 for a small transaction inside a larger file. Until then the log stays

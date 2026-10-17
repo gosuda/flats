@@ -341,10 +341,30 @@ export function migrate(db) {
   if (migrated.has(db)) return;
   if (
     !hasTable(db, "flats_docs_text_refs") ||
-    !hasTable(db, "flats_docs_seeds")
+    !hasTable(db, "flats_docs_seeds") ||
+    !hasTable(db, "flats_docs_unimported")
   ) {
     db.exec("BEGIN IMMEDIATE");
     try {
+      if (!hasTable(db, "flats_docs_unimported")) {
+        db.exec(
+          "CREATE TABLE flats_docs_unimported(hash TEXT PRIMARY KEY, size INTEGER NOT NULL)",
+        );
+        // An earlier build of this check kept them in one meta value.
+        if (hasTable(db, "flats_docs_meta")) {
+          const row = db.query(
+            "SELECT value FROM flats_docs_meta WHERE key='unimported'",
+          )[0];
+          for (const [hash, size] of Object.entries(
+            row ? JSON.parse(row.value) : {},
+          ))
+            db.exec("INSERT OR IGNORE INTO flats_docs_unimported VALUES(?,?)", [
+              hash,
+              size,
+            ]);
+          db.exec("DELETE FROM flats_docs_meta WHERE key='unimported'");
+        }
+      }
       if (!hasTable(db, "flats_docs_text_refs")) {
         db.exec(
           "CREATE TABLE flats_docs_text_refs(hash TEXT PRIMARY KEY, refs INTEGER NOT NULL, staged_at INTEGER)",
@@ -378,22 +398,25 @@ export function migrate(db) {
 }
 // reserveOutbox reserves, for a database from before the disk quota check,
 // the host blobs of every text its unacknowledged entries list: the host
-// may not have stored them yet (meta.unimported, see revisions.js).
+// may not have stored them yet (flats_docs_unimported, see revisions.js).
+// It reads the outbox one entry at a time, as the outbox host operation
+// does, so a large backlog never exceeds the query result limit.
 function reserveOutbox(db) {
-  if (!hasTable(db, "flats_docs_outbox") || !hasTable(db, "flats_docs_meta"))
-    return;
-  const row = db.query(
-      "SELECT value FROM flats_docs_meta WHERE key='unimported'",
-    )[0],
-    unimported = row ? JSON.parse(row.value) : {};
-  for (const entry of db.query("SELECT documents FROM flats_docs_outbox"))
+  if (!hasTable(db, "flats_docs_outbox")) return;
+  for (let seq = 0; ; ) {
+    const entry = db.query(
+      "SELECT seq,documents FROM flats_docs_outbox WHERE seq>? ORDER BY seq LIMIT 1",
+      [seq],
+    )[0];
+    if (!entry) return;
+    seq = entry.seq;
     for (const d of JSON.parse(entry.documents))
       if (typeof d?.hash === "string" && Number.isSafeInteger(d.size))
-        unimported[d.hash] = d.size;
-  if (Object.keys(unimported).length)
-    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES('unimported',?)", [
-      JSON.stringify(unimported),
-    ]);
+        db.exec("INSERT OR IGNORE INTO flats_docs_unimported VALUES(?,?)", [
+          d.hash,
+          d.size,
+        ]);
+  }
 }
 // seedText is a document's merge base; setSeed replaces it.
 export function seedText(db, doc) {
@@ -417,9 +440,10 @@ function begin(db, sql) {
 // alone would no longer show.
 function commit(db) {
   db.exec("COMMIT");
-  // The marker's value is a generation, raised by every failed truncation:
-  // a success clears only the generation it saw, so a failure another VM
-  // records meanwhile stays.
+  // The marker holds the generation of the failure it records, taken from
+  // meta.wal_generation, a counter that is never reset: a success clears
+  // only the generation it read, so a failure recorded meanwhile (even
+  // after another success deleted the marker) stays.
   let owed;
   try {
     owed = db.query(
@@ -438,9 +462,20 @@ function commit(db) {
     }
   } catch {}
   try {
-    db.exec(
-      "INSERT INTO flats_docs_meta VALUES('wal_truncate','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)",
-    );
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(
+        // Above any marker too, in case one predates the counter.
+        "INSERT INTO flats_docs_meta SELECT 'wal_generation',CAST(max(coalesce((SELECT CAST(value AS INTEGER) FROM flats_docs_meta WHERE key='wal_generation'),0),coalesce((SELECT CAST(value AS INTEGER) FROM flats_docs_meta WHERE key='wal_truncate'),0))+1 AS TEXT) WHERE 1 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      );
+      db.exec(
+        "INSERT OR REPLACE INTO flats_docs_meta SELECT 'wal_truncate',value FROM flats_docs_meta WHERE key='wal_generation'",
+      );
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
   } catch {}
 }
 export function transaction(db, fn) {
