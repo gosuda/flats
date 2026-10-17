@@ -195,8 +195,10 @@ type UsageSink interface {
   stopped processes. `Stop` returns on `<-p.done`, so once `Stop` returns the
   final CPU is in the sink; shutdown relies on that. The final CPU is
   `ProcessState.UserTime() + SystemTime()`, or the last sample when
-  `ProcessState` is nil. `unexpected` is true when the process was not asked
-  to stop.
+  `ProcessState` is nil. `unexpected` is true when the process was not
+  asked to stop, and also when the host killed it because its startup failed
+  (an error reported before ready, the start timeout, or a failed spec
+  write); a start cancelled by its caller is not unexpected.
 - The sink replaces the process's latest sample with its final CPU in one
   critical section: the exiting process leaves the running set and its final
   CPU joins `exitedCPU` under the same lock the readers take. A flat's CPU
@@ -250,7 +252,10 @@ running flat and from the snapshot otherwise. Disk series for flats without a
 `liveFlat` come from the snapshot alone. The collector emits per-flat series only for
 flats in the last snapshot or with a `liveFlat` that has a bound uid and a
 current version: `s.state()` can create an empty `liveFlat` for any slug, and
-those never become series. During a rename the flat is briefly out of
+those never become series. A flat whose state exists but is not bound to its
+uid yet (for example after a request before its first activation) shows no
+disk series until the next sweep binds it, rather than the snapshot's uid,
+which may belong to a deleted flat of the same slug. During a rename the flat is briefly out of
 `s.live`; `Service.Metrics` then reports it with `Traffic: false` and the
 collector exposes only its disk series, so no counter appears to reset. Its
 traffic series return under the new slug with the same counters.

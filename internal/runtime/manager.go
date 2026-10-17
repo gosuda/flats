@@ -326,7 +326,9 @@ func (in *instance) spawn(ctx context.Context) (err error) {
 			if ps := cmd.ProcessState; ps != nil {
 				cpu = (ps.UserTime() + ps.SystemTime()).Nanoseconds()
 			}
-			u.Exited(p.id, cpu, p.failed.Load() || !p.stopped.Load())
+			// stopped is read first: startup paths store failed before
+			// stopped, so seeing stopped also guarantees seeing failed.
+			u.Exited(p.id, cpu, !p.stopped.Load() || p.failed.Load())
 		}
 		close(p.done)
 		in.exited(p)
