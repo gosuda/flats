@@ -195,14 +195,21 @@ func Run(ctx context.Context, args []string, env Env) int {
 	top := flag.NewFlagSet("flats", flag.ContinueOnError)
 	top.SetOutput(io.Discard)
 	a.globalFlags(top)
-	if err := top.Parse(args); err != nil {
+	err := top.Parse(args)
+	rest := top.Args()
+	// A worker has no use for the server URL, so it does not read the saved
+	// connection: its environment is minimal (no $HOME), which every worker
+	// would otherwise report.
+	if err != nil || len(rest) == 0 || rest[0] != "worker" {
+		a.resolveURL()
+	}
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			a.printUsage(a.out)
 			return ExitOK
 		}
 		return a.finish(usageError{err.Error()})
 	}
-	rest := top.Args()
 	if len(rest) == 0 {
 		a.printUsage(a.errw)
 		return ExitUsage
@@ -228,7 +235,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 		a.printUsage(a.errw)
 		return a.finish(usagef("unknown command %q", name))
 	}
-	err := c.run(a, rest)
+	err = c.run(a, rest)
 	var ue usageError
 	if errors.As(err, &ue) {
 		fmt.Fprintf(a.errw, "flats %s: %s\nusage: flats %s\n", c.name, ue.msg, c.commandUsage())
@@ -321,10 +328,9 @@ func printProblems(w io.Writer, ps []problem) {
 	}
 }
 
+// globalFlags registers --url and --json. Run resolves the default URL once
+// it knows the command (resolveURL).
 func (a *app) globalFlags(fs *flag.FlagSet) {
-	if a.url == "" {
-		a.url, a.urlSource = a.defaultURL()
-	}
 	fs.Var(urlFlag{a}, "url", "Flats server URL (env FLATS_URL, else the address saved by `flats connect`)")
 	fs.BoolVar(&a.jsonOut, "json", a.jsonOut, "machine-readable JSON output")
 }

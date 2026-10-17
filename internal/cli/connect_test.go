@@ -123,3 +123,35 @@ func TestBrokenSavedConnectionFallsBackWithWarning(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// A worker has no use for the server URL and does not read the saved
+// connection, so an unreadable one (as in a worker's minimal environment
+// without $HOME) is not reported by every worker. Other commands, serve
+// included, still report it once, with or without --url.
+func TestWorkerIgnoresSavedConnection(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "flats-client", "connection.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`{"url": "not a url"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var ran []string
+	Worker = func(args []string) error { ran = append(ran, strings.Join(args, " ")); return nil }
+	Serve = func([]string) error { return nil }
+	t.Cleanup(func() { Serve, Worker = nil, nil })
+	for _, args := range [][]string{{"worker"}, {"worker", "x"}, {"--json", "worker"}, {"--url", "http://127.0.0.1:1", "worker"}} {
+		if r := runConn(t, dir, "", args...); r.code != 0 || r.stderr != "" {
+			t.Fatalf("%v: %+v", args, r)
+		}
+	}
+	if strings.Join(ran, ",") != ",x,," {
+		t.Fatalf("worker ran with %q", ran)
+	}
+	for _, args := range [][]string{{"serve"}, {"--url", "http://127.0.0.1:1", "serve"}, {"version"}, {"--bogus"}, {}} {
+		if r := runConn(t, dir, "", args...); strings.Count(r.stderr, "ignoring the saved connection") != 1 {
+			t.Fatalf("%v: %+v", args, r)
+		}
+	}
+}
