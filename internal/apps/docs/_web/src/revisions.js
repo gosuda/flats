@@ -12,6 +12,8 @@ import {
   compact,
   digest,
   validateIncremental,
+  noteWrite,
+  writtenBytes,
   WAL_AUTOCHECKPOINT,
 } from "./storage.js";
 
@@ -29,11 +31,11 @@ export function getMeta(db, key) {
 }
 function setMeta(db, key, value) {
   if (value === null) db.exec("DELETE FROM flats_docs_meta WHERE key=?", [key]);
-  else
-    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [
-      key,
-      JSON.stringify(value),
-    ]);
+  else {
+    const json = JSON.stringify(value);
+    noteWrite(3 * json.length);
+    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES(?,?)", [key, json]);
+  }
 }
 
 // --- texts and their references ---
@@ -47,6 +49,7 @@ function addRef(db, hash, text) {
     return;
   }
   if (typeof text !== "string") throw new Error("revision text is missing");
+  noteWrite(3 * text.length);
   db.exec("INSERT INTO flats_docs_texts VALUES(?,?,1,NULL)", [hash, text]);
 }
 // release drops one reference. The text stays until dropUnused at the end
@@ -184,6 +187,7 @@ export function record(db, o) {
     .filter((a) => typeof a === "string" && a)
     .map((a) => a.slice(0, 200))
     .slice(0, MAX_AUTHORS);
+  noteWrite(3 * JSON.stringify(documents).length + 4096);
   db.exec(
     "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,rollback_of,op,source,documents) VALUES(?,?,?,?,?,?,?,?)",
     [
@@ -226,8 +230,10 @@ function store(db, text) {
   const hash = digest(text);
   if (
     !db.query("SELECT 1 AS x FROM flats_docs_texts WHERE hash=?", [hash]).length
-  )
+  ) {
+    noteWrite(3 * text.length);
     db.exec("INSERT INTO flats_docs_texts VALUES(?,?,0,NULL)", [hash, text]);
+  }
   return { hash, size: utf8Bytes(text) };
 }
 // dropUnused deletes the texts nothing references any more, except staged
@@ -443,6 +449,7 @@ export function restoreText(db, content, source, text, op, generation) {
   } catch (e) {
     if (e?.code !== "capacity") throw e;
     resetDocument(db, content, source, text, generation);
+    noteWrite(3 * text.length);
     db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
       text,
       source.path,
@@ -468,6 +475,7 @@ export function restoreText(db, content, source, text, op, generation) {
   } finally {
     s.doc.destroy();
   }
+  noteWrite(3 * text.length);
   db.exec("UPDATE flats_docs_documents SET seed_text=? WHERE doc=?", [
     text,
     source.path,
@@ -568,6 +576,7 @@ export function stage(db, text, now = Date.now()) {
   if (typeof text !== "string" || utf8Bytes(text) > LIMITS.text)
     throw coded("invalid", "a staged text is at most 1 MiB");
   const hash = digest(text);
+  noteWrite(3 * text.length);
   db.exec(
     "INSERT INTO flats_docs_texts VALUES(?,?,0,?) ON CONFLICT(hash) DO UPDATE SET staged_at=excluded.staged_at",
     [hash, text, now],
@@ -687,23 +696,18 @@ export { textOf };
 const MAX_BUDGET_TTL = 24 * 60 * 60 * 1000,
   MAX_STORED = 10000;
 // The write-ahead log restarts once it holds WAL_AUTOCHECKPOINT frames (set
-// on every connection, see storage.js) and no reader holds it; until then
-// it can grow by one more transaction. The check reserves room for that
-// beyond the size the host last measured, for a transaction of up to
-// WAL_TX_PAGES pages.
-const WAL_TX_PAGES = 256;
-// walReserve is the room the check keeps for the write-ahead log to grow:
-// its 32-byte header and frames of a page plus a 24-byte header each.
-export const walReserve = () =>
-  32 + (WAL_AUTOCHECKPOINT + WAL_TX_PAGES) * (pageSize + 24);
-// quotaStats counts exact measurements, for tests.
-export const quotaStats = { measured: 0 };
+// on every connection, see storage.js) and no reader holds it, and a
+// transaction that wrote more than WAL_TRUNCATE_BYTES is followed by a
+// truncating checkpoint. So beyond the size the host measured, the log
+// holds WAL_AUTOCHECKPOINT frames plus the largest transaction since: one
+// of at most WAL_TX_PAGES pages, the one being checked, or the recording to
+// come, which the check counts itself.
+const WAL_TX_PAGES = 128;
 
 // clearReservations ends the reservations for people's unrecorded edits:
 // they were just recorded, or no revision is coming.
 function clearReservations(db) {
   setMeta(db, "pending", null);
-  setMeta(db, "baseline", null);
 }
 
 // setBudget installs the host's budget: the flat's disk quota (0 = off),
@@ -711,8 +715,9 @@ function clearReservations(db) {
 // file, ttl_ms, how long it stays valid without a refresh, and stored, the
 // texts whose host blobs that measurement includes (a partial import
 // stores some before their entry is acknowledged). An unchanged budget
-// that is not yet half expired is not written again, so an idle document
-// does not grow its write-ahead log.
+// whose deadline is no later than the new one and not yet half expired is
+// not written again, so an idle document does not grow its write-ahead
+// log; a shorter lifetime always replaces a longer one.
 export function setBudget(db, body) {
   const { quota, other, ttl_ms: ttl, stored = [] } = body || {};
   if (
@@ -727,11 +732,13 @@ export function setBudget(db, body) {
   // other was measured with these blobs in place.
   forgetUnimported(db, stored);
   const old = getMeta(db, "budget"),
-    now = Date.now();
+    now = Date.now(),
+    until = now + ttl;
   if (
     old &&
     old.quota === quota &&
     old.other === other &&
+    old.until <= until &&
     old.until - now > ttl / 2
   )
     return;
@@ -741,12 +748,11 @@ export function setBudget(db, body) {
   else if (!old?.quota) {
     const pending = unrecordedBytes(db);
     setMeta(db, "pending", Object.keys(pending).length ? pending : null);
-    setMeta(db, "baseline", null);
   }
-  setMeta(db, "budget", { quota, other, until: now + ttl });
+  setMeta(db, "budget", { quota, other, until });
 }
 // unrecordedBytes maps every document people edited since it was last
-// recorded to its committed text's size.
+// recorded to its committed text's exact size.
 function unrecordedBytes(db) {
   const out = {};
   for (const d of getMeta(db, "newest")?.documents || []) {
@@ -757,7 +763,7 @@ function unrecordedBytes(db) {
     if (!pos || (rec && rec.epoch === pos.epoch && rec.seq === pos.seq))
       continue;
     const text = committedText(db, d.path);
-    if (text !== null) out[d.path] = utf8Bytes(text);
+    if (text !== null) out[d.path] = { bytes: utf8Bytes(text), exact: true };
   }
   return out;
 }
@@ -765,11 +771,6 @@ let pageSize = 0;
 function pageCount(db) {
   if (!pageSize) pageSize = db.query("PRAGMA page_size")[0].page_size;
   return db.query("PRAGMA page_count")[0].page_count;
-}
-// freePages is the database's free pages, which SQLite reuses before the
-// file grows.
-function freePages(db) {
-  return db.query("PRAGMA freelist_count")[0].freelist_count;
 }
 // forgetUnimported ends the reservations of texts whose host blobs exist.
 function forgetUnimported(db, hashes) {
@@ -793,96 +794,67 @@ function unimportedBytes(db) {
   for (const v of Object.values(getMeta(db, "unimported") || {})) n += v;
   return n;
 }
-// Slack pages for B-tree splits: per recorded text (its table and hash
-// index), and per entry (the outbox row, meta.newest, meta.unimported).
-const DOC_SLACK_PAGES = 10,
+// Slack pages for B-tree splits: an insert splits at most one page per
+// level (five levels or fewer here) in each tree it touches. Per recorded
+// text: the texts table, its hash index and the recorded table. Per entry:
+// the outbox, meta.newest and meta.unimported rows.
+const DOC_SLACK_PAGES = 16,
   ENTRY_SLACK_PAGES = 16;
-// textPages bounds the pages a text of n bytes takes: its overflow pages,
+// valuePages bounds the pages a value of n bytes takes: its overflow pages,
 // rounded up, and the leaf holding its cell.
-const textPages = (n) => Math.ceil(n / (pageSize - 4)) + 1;
-// reserveBound is an upper bound of what recording the pending documents
-// will store: each text in this database (its pages plus slack) and once
-// more as the host's blob, and one entry whose document list is about as
-// long as meta.newest's.
-function reserveBound(db, pending) {
-  const sizes = Object.values(pending);
-  if (!sizes.length) return 0;
-  let n = 0;
-  for (const b of sizes) n += (textPages(b) + DOC_SLACK_PAGES) * pageSize + b;
-  const listed =
-    db.query(
-      "SELECT length(value) AS n FROM flats_docs_meta WHERE key='newest'",
-    )[0]?.n || 0;
+const valuePages = (n) => Math.ceil(n / (pageSize - 4)) + 1;
+function metaLength(db, key) {
   return (
-    n + (2 * textPages(Math.ceil(listed * 1.25)) + ENTRY_SLACK_PAGES) * pageSize
+    db.query("SELECT length(value) AS n FROM flats_docs_meta WHERE key=?", [
+      key,
+    ])[0]?.n || 0
   );
 }
-// measure records people's edits as a person entry of the shape of
-// meta.newest in a savepoint it undoes, and returns the baseline for later
-// checks: how many pages the file grew by (grow) with how many free pages
-// there were (free), the host blob bytes the recording adds (host), and
-// which documents it covered. The recording allocates its pages before it
-// frees replaced texts, so it allocates at most grow + free pages.
-function measure(db, pending) {
-  quotaStats.measured++;
-  const newest = getMeta(db, "newest"),
-    pages = pageCount(db),
-    free = freePages(db),
-    unimported = unimportedBytes(db);
-  db.exec("SAVEPOINT flats_docs_quota");
-  try {
-    if (newest)
-      record(db, {
-        kind: "person",
-        source: newest.source,
-        paths: newest.documents.map((d) => d.path),
-      });
-    dropUnused(db);
-    return {
-      grow: pageCount(db) - pages,
-      free,
-      host: Math.max(0, unimportedBytes(db) - unimported),
-      docs: Object.keys(pending),
-      since: 0,
-    };
-  } finally {
-    db.exec("ROLLBACK TO flats_docs_quota");
-    db.exec("RELEASE flats_docs_quota");
-  }
+// recordingPages bounds the pages recording the pending documents will
+// allocate: every document's text as its own row (documents with the same
+// text now may differ by then), never counting pages it frees, and one
+// entry with its outbox row, meta.newest and meta.unimported.
+function recordingPages(db, pending) {
+  const docs = Object.values(pending);
+  if (!docs.length) return 0;
+  let pages = ENTRY_SLACK_PAGES;
+  for (const p of docs) pages += valuePages(p.bytes) + DOC_SLACK_PAGES;
+  const list = 3 * metaLength(db, "newest") + 300 * docs.length + 4096;
+  return (
+    pages +
+    2 * valuePages(list) +
+    valuePages(3 * metaLength(db, "unimported") + 300 * docs.length)
+  );
 }
-// projected is the database and the host's unimported blobs once people's
-// edits are recorded, from a baseline measurement: the recording allocates
-// at most the pages it allocated then, plus room for the bytes the
-// baseline's documents grew by since (an update cannot insert more UTF-8
-// bytes than it has), plus the bound of documents people started editing
-// since; the file grows by what the free pages now do not hold.
-function projected(db, base, pending) {
-  let pages = base.grow + base.free + (base.since ? textPages(base.since) : 0),
-    host = base.host + base.since;
-  for (const [path, b] of Object.entries(pending))
-    if (!base.docs.includes(path)) {
-      pages += textPages(b) + DOC_SLACK_PAGES;
-      host += b;
-    }
-  const file = pageCount(db) + Math.max(0, pages - freePages(db));
-  return file * pageSize + unimportedBytes(db) + host;
+// walReserve is the room the check keeps for the write-ahead log beyond
+// what the host measured: its 32-byte header and, for WAL_AUTOCHECKPOINT
+// frames and the largest coming transaction (this one, the recording, or
+// another of at most WAL_TX_PAGES pages), frames of a page plus a 24-byte
+// header.
+function walReserve(recording) {
+  const own = valuePages(writtenBytes()) + DOC_SLACK_PAGES;
+  return (
+    32 +
+    (WAL_AUTOCHECKPOINT + Math.max(WAL_TX_PAGES, own, recording)) *
+      (pageSize + 24)
+  );
 }
+// quotaStats counts, for tests, exact sizes taken from the edited text in
+// memory (sized) and from other documents' committed state (loaded).
+export const quotaStats = { sized: 0, loaded: 0 };
 // checkDiskQuota refuses, inside the caller's transaction and after its
 // writes, a change that would put the flat over its disk quota: this
-// database as it now is, room for its write-ahead log to grow, the texts
-// recorded but not imported yet (the host will store each as a blob) and
-// the revision people's unrecorded edits will need when their groups
-// close. edited is a person's edit: the path and Y.Text of the document it
-// changed and the size of its update.
-//
-// Far from the quota a cheap upper bound (three UTF-8 bytes per UTF-16
-// unit, overflow pages and B-tree slack) admits the edit. Near it, the
-// recording is measured once in a savepoint; later edits are admitted
-// against that baseline plus a safe bound of their growth until the
-// headroom is used up, and only then measured again. A budget the host has
-// not refreshed in time admits nothing: the edit fails as transient, so
-// editors resend it and update_document can retry. A rollback never calls
-// this.
+// database as it now is, the texts recorded but not imported yet (the host
+// will store each as a blob), the revision people's unrecorded edits will
+// need when their groups close (every edited document's text as its own
+// row in this database, plus its host blob) and room for the write-ahead
+// log. edited is a person's edit: the path and Y.Text of the document it
+// changed. A pending document's size is first the bound of three UTF-8
+// bytes per UTF-16 unit of its visible text (which includes text an update
+// made visible by completing earlier ones), and is made exact only when
+// the bounds would not fit. A budget the host has not refreshed in time
+// admits nothing: the edit fails as transient, so editors resend it and
+// update_document can retry. A rollback never calls this.
 export function checkDiskQuota(db, edited) {
   const budget = getMeta(db, "budget");
   if (!budget || !(Date.now() <= budget.until))
@@ -892,31 +864,35 @@ export function checkDiskQuota(db, edited) {
     );
   if (budget.quota === 0) return;
   const pending = getMeta(db, "pending") || {};
-  let base = getMeta(db, "baseline");
-  if (edited) {
-    pending[edited.path] = edited.text.length * 3;
-    setMeta(db, "pending", pending);
-    if (base && base.docs.includes(edited.path)) {
-      base.since += edited.bytes;
-      setMeta(db, "baseline", base);
+  if (edited)
+    pending[edited.path] = { bytes: edited.text.length * 3, exact: false };
+  const total = () => {
+    const recording = recordingPages(db, pending);
+    let n =
+      budget.other +
+      (pageCount(db) + recording) * pageSize +
+      unimportedBytes(db) +
+      walReserve(recording);
+    for (const p of Object.values(pending)) n += p.bytes;
+    return n;
+  };
+  if (total() > budget.quota)
+    for (const [path, p] of Object.entries(pending)) {
+      if (p.exact) continue;
+      const own = path === edited?.path;
+      quotaStats[own ? "sized" : "loaded"]++;
+      const text = own ? edited.text.toString() : committedText(db, path);
+      pending[path] = {
+        bytes: text === null ? 0 : utf8Bytes(text),
+        exact: true,
+      };
     }
-  }
-  const live = pageCount(db) * pageSize,
-    wal = walReserve();
-  let total =
-    budget.other + wal + live + unimportedBytes(db) + reserveBound(db, pending);
-  if (total > budget.quota && Object.keys(pending).length) {
-    if (base) total = budget.other + wal + projected(db, base, pending);
-    if (!base || total > budget.quota) {
-      base = measure(db, pending);
-      setMeta(db, "baseline", base);
-      total = budget.other + wal + projected(db, base, pending);
-    }
-  }
-  if (total > budget.quota)
+  if (edited) setMeta(db, "pending", pending);
+  const used = total();
+  if (used > budget.quota)
     throw coded(
       "disk_quota",
-      `the flat would use ${total} bytes, over its ${budget.quota}-byte disk quota`,
+      `the flat would use ${used} bytes, over its ${budget.quota}-byte disk quota`,
     );
 }
 

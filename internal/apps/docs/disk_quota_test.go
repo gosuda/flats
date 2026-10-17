@@ -32,9 +32,10 @@ func dbBytes(t *testing.T, data string) int64 {
 	return pages * size
 }
 
-// walReserve is the room the worker keeps for its write-ahead log to grow
-// (revisions.js walReserve), for the default 4 KiB pages.
-const walReserve = 32 + (64+256)*(4096+24)
+// walReserve is the smallest room the worker keeps for its write-ahead log
+// to grow (revisions.js walReserve), for the default 4 KiB pages: 64 frames
+// and a 128-page transaction.
+const walReserve = 32 + (64+128)*(4096+24)
 
 func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 	t.Parallel()
@@ -78,7 +79,7 @@ func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 		t.Fatal("refused edit changed the live text")
 	}
 	// With room for that revision the same edit commits.
-	budget(walReserve+dbBytes(t, data)+other+slack+2*int64(len(before)+4096), other)
+	budget(walReserve+dbBytes(t, data)+other+slack+512<<10, other)
 	y := connect(t, a.srv.URL, "private")
 	y.hello(t, nil)
 	edit(t, y, "quota", fixture(t).Independent)
@@ -212,5 +213,36 @@ func TestIdleDocumentKeepsItsWriteAheadLog(t *testing.T) {
 	}
 	if fi, err := os.Stat(wal); err != nil || fi.Size() != 0 {
 		t.Fatal("write-ahead log not truncated", fi, err)
+	}
+}
+
+func TestLargeTransactionsDoNotKeepTheirWriteAheadLog(t *testing.T) {
+	t.Parallel()
+	data := t.TempDir()
+	a := startApp(t, data, strings.Repeat("Seed paragraph text.\n\n", 20_000), "v1")
+	if status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": 1 << 30, "other": 0, "ttl_ms": 60000}); status != 200 {
+		t.Fatal("budget", status, out)
+	}
+	wal := filepath.Join(data, "db.sqlite-wal")
+	walSize := func() int64 {
+		fi, err := os.Stat(wal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	if a.document(t)["markdown"] == "" || walSize() > walReserve {
+		t.Fatal("seeding a large document kept its log", walSize())
+	}
+	// Large agent edits write their update, their revision text and, once
+	// the log rows pass 512 KiB, a compacted checkpoint of the whole state.
+	for i := range 3 {
+		body, _ := json.Marshal(map[string]any{"ops": []any{map[string]any{"op": "insert", "at": "end", "text": strings.Repeat("Added text. ", 15_000)}}})
+		if status, res := a.postEdit(t, hostEdit, string(body)); status != 200 {
+			t.Fatal("edit", i, status, res)
+		}
+		if size := walSize(); size > walReserve {
+			t.Fatal("edit", i, "left a write-ahead log of", size)
+		}
 	}
 }

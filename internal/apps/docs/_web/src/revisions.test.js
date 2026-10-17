@@ -461,33 +461,48 @@ test("a text one document releases can be taken up by another in the same activa
   });
 });
 
-// A person's edit as the WebSocket path commits it, quota check included:
-// insert text at the end, or delete the last remove characters.
-function editBody(db, c, path, text, remove = 0) {
-  {
-    const s = activate(
-      db,
-      c.documents.find((d) => d.path === path),
-      c.hash,
-      undefined,
-      generation,
-    );
+// A person's update as the WebSocket path commits it, quota check included.
+function applyBody(db, c, path, update) {
+  const s = activate(
+    db,
+    c.documents.find((d) => d.path === path),
+    c.hash,
+    undefined,
+    generation,
+  );
+  try {
+    Y.applyUpdate(s.doc, update);
+    append(db, s, "q:" + Math.random().toString(36).slice(2), base64(update));
+    revisions.touchGroup(db, "browser:a", "Ada");
+    revisions.checkDiskQuota(db, { path, text: s.doc.getText("markdown") });
+  } finally {
+    s.doc.destroy();
+  }
+}
+// editUpdate is the update that appends text to a document, or deletes its
+// last remove characters.
+function editUpdate(db, c, path, text, remove = 0) {
+  const s = current(
+    db,
+    c.documents.find((d) => d.path === path),
+    c.hash,
+    undefined,
+    generation,
+  );
+  try {
     const sv = Y.encodeStateVector(s.doc),
       t = s.doc.getText("markdown");
     if (remove) t.delete(t.length - remove, remove);
     else t.insert(t.length, text);
-    const update = Y.encodeStateAsUpdate(s.doc, sv);
-    append(db, s, "q:" + Math.random().toString(36).slice(2), base64(update));
-    revisions.touchGroup(db, "browser:a", "Ada");
-    try {
-      revisions.checkDiskQuota(db, { path, text: t, bytes: update.length });
-    } finally {
-      s.doc.destroy();
-    }
+    return Y.encodeStateAsUpdate(s.doc, sv);
+  } finally {
+    s.doc.destroy();
   }
 }
-const checkedEdit = (db, c, path, text, remove = 0) =>
-  transaction(db, () => editBody(db, c, path, text, remove));
+const checkedEdit = (db, c, path, text, remove = 0) => {
+  const update = editUpdate(db, c, path, text, remove);
+  transaction(db, () => applyBody(db, c, path, update));
+};
 const committed = (db, c, path) => {
   const s = current(
     db,
@@ -505,6 +520,9 @@ const committed = (db, c, path) => {
 const dbBytes = (db) =>
   db.query("PRAGMA page_count")[0].page_count *
   db.query("PRAGMA page_size")[0].page_size;
+// The smallest room the check keeps for the write-ahead log, with 4 KiB
+// pages: 64 frames plus a 128-page transaction.
+const MIN_WAL = 32 + (64 + 128) * (4096 + 24);
 const DAY = 24 * 60 * 60 * 1000;
 const budget = (db, quota, other = 0, ttl = DAY) =>
   transaction(db, () => revisions.setBudget(db, { quota, other, ttl_ms: ttl }));
@@ -524,6 +542,14 @@ const ackAll = (db, budget) => {
     revisions.ack(db, revisions.getMeta(db, "store"), e.at(-1).seq, budget),
   );
 };
+const refused = (e) => e.code === "disk_quota";
+// fits checks that the recorded revisions, this database plus the blobs the
+// host will store, leave the write-ahead log its smallest room.
+const fits = (db, quota) =>
+  assert.ok(
+    dbBytes(db) + unimported(db) <= quota - MIN_WAL,
+    `${dbBytes(db)} + ${unimported(db)} > ${quota} - ${MIN_WAL}`,
+  );
 
 test("live edits need a budget the host refreshed; quota 0 checks nothing", async () => {
   const db = database(),
@@ -539,6 +565,10 @@ test("live edits need a budget the host refreshed; quota 0 checks nothing", asyn
   budget(db, 0);
   checkedEdit(db, c, "a.md", "edit\n");
   assert.equal(revisions.getMeta(db, "pending"), null);
+  // A shorter lifetime replaces a longer one, even for the same budget.
+  budget(db, 0, 0, 1);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.throws(() => checkedEdit(db, c, "a.md", "edit\n"), transient);
   for (const bad of [
     { quota: -1, other: 0, ttl_ms: 1 },
     { quota: 1, other: 0 },
@@ -560,12 +590,13 @@ test("an admitted person's edit always leaves room for the revision its group st
   const big = "y".repeat(10_000);
   // The edit's own pages, measured in a transaction that is undone.
   budget(db, 1 << 30);
+  const update = editUpdate(db, c, "a.md", big),
+    undo = new Error("undo");
   let after = 0;
-  const undo = new Error("undo");
   assert.throws(
     () =>
       transaction(db, () => {
-        editBody(db, c, "a.md", big);
+        applyBody(db, c, "a.md", update);
         after = dbBytes(db);
         throw undo;
       }),
@@ -575,51 +606,151 @@ test("an admitted person's edit always leaves room for the revision its group st
   assert.equal(committed(db, c, "a.md"), "x\n");
   // Reserving only twice the text is not enough: recording it takes pages
   // and rows besides the text, so that quota refuses the edit.
-  const wal = revisions.walReserve(),
-    twice = wal + after + 2 * (2 + big.length);
+  const twice = MIN_WAL + after + 2 * (2 + big.length);
   budget(db, twice);
-  assert.throws(
-    () => checkedEdit(db, c, "a.md", big),
-    (e) =>
-      e.code === "disk_quota" && /over its \d+-byte disk quota/.test(e.message),
-  );
+  assert.throws(() => checkedEdit(db, c, "a.md", big), refused);
   assert.equal(committed(db, c, "a.md"), "x\n");
-  // At the smallest quota that admits it, closing its group still fits:
-  // this database with the recorded text, plus the host's blob of it.
+  // At the smallest quota that admits it, closing its group still fits.
   let quota = twice;
   for (;;) {
-    budget(db, (quota += 512));
+    budget(db, (quota += 4096));
     try {
       checkedEdit(db, c, "a.md", big);
       break;
     } catch (e) {
-      if (e.code !== "disk_quota") throw e;
+      if (!refused(e)) throw e;
     }
   }
   closeGroups(db, c);
   assert.equal(revisions.getMeta(db, "pending"), null);
   assert.equal(unimported(db), 2 + big.length);
-  assert.ok(
-    dbBytes(db) + unimported(db) <= quota - wal,
-    `${dbBytes(db)} + ${unimported(db)} > ${quota} - ${wal}`,
-  );
+  fits(db, quota);
 });
 
-test("far from the quota a cheap bound admits; near it recording is measured", () => {
+test("documents with one text count as separate copies", () => {
+  // Four identical documents, edited alike (one shared text and blob),
+  // then each differently: at the smallest quota admitting all four edits,
+  // recording them still fits.
+  const big = "y".repeat(400_000);
+  const setup = () => {
+    const db = database(),
+      c = content(
+        "v1",
+        ...["a", "b", "c", "d"].map((n) => doc(n + ".md", big)),
+      );
+    transaction(db, () => revisions.ensureFlat(db, c, next()));
+    budget(db, 1 << 30);
+    for (const d of c.documents) checkedEdit(db, c, d.path, "+");
+    closeGroups(db, c);
+    ackAll(db);
+    return { db, c };
+  };
+  let { db, c } = setup();
+  let quota = dbBytes(db) + MIN_WAL;
+  for (;;) {
+    budget(db, quota);
+    try {
+      for (const [i, d] of c.documents.entries())
+        checkedEdit(db, c, d.path, "abcd"[i]);
+      break;
+    } catch (e) {
+      if (!refused(e)) throw e;
+      ({ db, c } = setup());
+      quota += 256 * 1024;
+    }
+  }
+  closeGroups(db, c);
+  assert.equal(
+    new Set(
+      entries(db)
+        .at(-1)
+        .documents.map((d) => d.hash),
+    ).size,
+    4,
+  );
+  fits(db, quota);
+});
+
+test("text an update makes visible by completing an earlier one counts", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  // A remote replica inserts a character, then 200 KB after it; the
+  // second update arrives first and stays pending (invisible).
+  const remote = new Y.Doc();
+  const s = current(db, c.documents[0], c.hash, undefined, generation);
+  Y.applyUpdate(remote, Y.encodeStateAsUpdate(s.doc));
+  s.doc.destroy();
+  const t = remote.getText("markdown");
+  let sv = Y.encodeStateVector(remote);
+  t.insert(t.length, "p");
+  const first = Y.encodeStateAsUpdate(remote, sv);
+  sv = Y.encodeStateVector(remote);
+  t.insert(t.length, "z".repeat(200_000));
+  const second = Y.encodeStateAsUpdate(remote, sv);
+  // An unrelated small edit, made before the pending update arrives (a
+  // later local edit would carry the pending structs along).
+  const control = editUpdate(db, c, "a.md", "q");
+  transaction(db, () => applyBody(db, c, "a.md", second));
+  assert.equal(committed(db, c, "a.md"), "x\n");
+  // Room for the visible text and another small edit, but not for the
+  // 200 KB the small first update makes visible.
+  budget(db, MIN_WAL + dbBytes(db) + 400 * 1024);
+  const undo = new Error("undo");
+  assert.throws(
+    () =>
+      transaction(db, () => {
+        applyBody(db, c, "a.md", control);
+        throw undo;
+      }),
+    (e) => e === undo,
+  );
+  assert.throws(
+    () => transaction(db, () => applyBody(db, c, "a.md", first)),
+    refused,
+  );
+  assert.equal(committed(db, c, "a.md"), "x\n");
+});
+
+test("near the quota only the edited text is sized; others once", () => {
   const db = database(),
     c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
   budget(db, 1 << 30);
   ackAll(db);
   checkedEdit(db, c, "b.md", "z".repeat(50_000));
-  assert.deepEqual(revisions.getMeta(db, "pending"), { "b.md": 3 * 50_002 });
-  // b's bound alone would exceed this quota; its measured revision fits.
-  budget(db, revisions.walReserve() + dbBytes(db) + 2 * 50_002 + 128 * 1024);
-  checkedEdit(db, c, "a.md", "!");
-  assert.deepEqual(Object.keys(revisions.getMeta(db, "pending")).sort(), [
-    "a.md",
-    "b.md",
-  ]);
+  checkedEdit(db, c, "a.md", "y".repeat(300_000));
+  assert.deepEqual(revisions.getMeta(db, "pending")["b.md"], {
+    bytes: 3 * 50_002,
+    exact: false,
+  });
+  // The smallest quota admitting one more character in a.md: there the
+  // three-bytes-per-character bounds do not fit, the exact sizes do.
+  let quota = dbBytes(db) + MIN_WAL;
+  for (;;) {
+    budget(db, (quota += 4096));
+    try {
+      checkedEdit(db, c, "a.md", "!");
+      break;
+    } catch (e) {
+      if (!refused(e)) throw e;
+    }
+  }
+  assert.deepEqual(revisions.getMeta(db, "pending")["b.md"], {
+    bytes: 50_002,
+    exact: true,
+  });
+  // A burst of small edits near the quota sizes the edited text in memory
+  // each time and never loads the other document again.
+  budget(db, (quota += 64 * 1024));
+  const { sized, loaded } = revisions.quotaStats;
+  for (let i = 0; i < 40; i++) checkedEdit(db, c, "a.md", "!");
+  assert.equal(revisions.quotaStats.loaded, loaded);
+  assert.ok(revisions.quotaStats.sized - sized <= 40);
+  closeGroups(db, c);
+  fits(db, quota);
 });
 
 test("an edit undone before its group closes reserves nothing afterwards", () => {
@@ -631,7 +762,7 @@ test("an edit undone before its group closes reserves nothing afterwards", () =>
   checkedEdit(db, c, "a.md", "abc");
   checkedEdit(db, c, "a.md", "", 3);
   assert.equal(committed(db, c, "a.md"), "x\n");
-  assert.ok(revisions.getMeta(db, "pending")["a.md"] > 0);
+  assert.ok(revisions.getMeta(db, "pending")["a.md"].bytes > 0);
   // The group closes with the text it started with: no entry, no reservation.
   const count = entries(db).length;
   closeGroups(db, c);
@@ -719,7 +850,9 @@ test("a quota that starts reserves what people already edited; a rollback is nev
   budget(db, 0);
   personEdit(db, c, "b.md", "edited\n");
   budget(db, 1 << 30);
-  assert.deepEqual(revisions.getMeta(db, "pending"), { "b.md": 9 });
+  assert.deepEqual(revisions.getMeta(db, "pending"), {
+    "b.md": { bytes: 9, exact: true },
+  });
   budget(db, 1);
   transaction(db, () =>
     revisions.restore(db, c, generation, {
@@ -733,38 +866,4 @@ test("a quota that starts reserves what people already edited; a rollback is nev
     }),
   );
   assert.equal(committed(db, c, "b.md"), "b\n");
-});
-
-test("a burst of small edits near the quota is measured exactly only rarely", () => {
-  const db = database(),
-    c = content("v1", doc("a.md", "a\n"));
-  transaction(db, () => revisions.ensureFlat(db, c, next()));
-  budget(db, 1 << 30);
-  ackAll(db);
-  // A large document, recorded and imported.
-  checkedEdit(db, c, "a.md", "y".repeat(400_000));
-  closeGroups(db, c);
-  ackAll(db);
-  // The smallest quota admitting one more character, plus 64 KiB.
-  let quota = revisions.walReserve() + dbBytes(db);
-  for (;;) {
-    budget(db, (quota += 4096));
-    try {
-      checkedEdit(db, c, "a.md", "z");
-      break;
-    } catch (e) {
-      if (e.code !== "disk_quota") throw e;
-    }
-  }
-  budget(db, (quota += 64 * 1024));
-  const before = revisions.quotaStats.measured;
-  for (let i = 0; i < 40; i++) checkedEdit(db, c, "a.md", "z");
-  assert.ok(
-    revisions.quotaStats.measured - before <= 2,
-    `${revisions.quotaStats.measured - before} exact measurements`,
-  );
-  // The revision still fits once the group closes.
-  closeGroups(db, c);
-  assert.equal(committed(db, c, "a.md").length, 2 + 400_000 + 41);
-  assert.ok(dbBytes(db) + unimported(db) <= quota - revisions.walReserve());
 });

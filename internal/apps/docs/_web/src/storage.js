@@ -166,6 +166,7 @@ export function append(db, s, id, data) {
   const seq = s.row.seq + 1,
     chain = digest(s.row.chain + "\n" + id),
     now = Date.now();
+  noteWrite(data.length);
   db.exec("INSERT INTO flats_docs_updates VALUES(?,?,?,?,?,?,?)", [
     s.row.doc,
     seq,
@@ -195,11 +196,13 @@ export function compact(db, s, state) {
     [s.row.doc],
   )[0];
   if (stats.n >= 64 || stats.bytes >= 512 * 1024) {
+    const encoded = base64(state || validateState(s.doc));
+    noteWrite(encoded.length);
     db.exec("INSERT OR REPLACE INTO flats_docs_checkpoints VALUES(?,?,?,?,?)", [
       s.row.doc,
       s.row.seq,
       s.row.chain,
-      base64(state || validateState(s.doc)),
+      encoded,
       Date.now(),
     ]);
     db.exec("DELETE FROM flats_docs_updates WHERE doc=? AND seq<=?", [
@@ -244,6 +247,8 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
       seed_text: source.text,
       updated_at: Date.now(),
     };
+    const encoded = base64(state);
+    noteWrite(3 * source.text.length + encoded.length);
     db.exec(
       "INSERT INTO flats_docs_documents VALUES(?,?,?,?,?,?,?)",
       Object.values(row),
@@ -252,7 +257,7 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
       row.doc,
       0,
       row.chain,
-      base64(state),
+      encoded,
       row.updated_at,
     ]);
     db.exec("INSERT INTO flats_docs_receipts VALUES(?,?,?,?,?)", [
@@ -302,6 +307,7 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
         "activation:" + runtimeGeneration + ":" + versionHash,
         base64(Y.encodeStateAsUpdate(s.doc, sv)),
       );
+      noteWrite(3 * source.text.length);
       db.exec(
         "UPDATE flats_docs_documents SET seed_hash=?,seed_text=? WHERE doc=?",
         [source.hash, source.text, source.path],
@@ -321,18 +327,46 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
 // it), so it stays small; the disk quota check relies on it (revisions.js).
 // The setting is per connection, and each VM has its own.
 export const WAL_AUTOCHECKPOINT = 64;
-let walTuned = false;
-export function transaction(db, fn) {
+// A transaction that wrote more than this is followed by a truncating
+// checkpoint, so the log does not keep its size.
+export const WAL_TRUNCATE_BYTES = 128 * 1024;
+let walTuned = false,
+  written = 0;
+// noteWrite counts an upper bound of the bytes the current transaction
+// writes (string lengths times three for text, base64 lengths for data).
+export function noteWrite(n) {
+  written += n;
+}
+// writtenBytes is what the current transaction has written so far.
+export const writtenBytes = () => written;
+function begin(db, sql) {
   if (!walTuned) {
     db.exec(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT}`);
     walTuned = true;
   }
-  db.exec("BEGIN IMMEDIATE");
+  written = 0;
+  db.exec(sql);
+}
+// commit commits and, after a large transaction, copies the log into the
+// database and truncates it. A reader that keeps the checkpoint from
+// finishing leaves the log to the next one or to the host's measurement.
+function commit(db) {
+  db.exec("COMMIT");
+  const large = written > WAL_TRUNCATE_BYTES;
+  written = 0;
+  if (large)
+    try {
+      db.query("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {}
+}
+export function transaction(db, fn) {
+  begin(db, "BEGIN IMMEDIATE");
   try {
     const result = fn();
-    db.exec("COMMIT");
+    commit(db);
     return result;
   } catch (e) {
+    written = 0;
     try {
       db.exec("ROLLBACK");
     } catch {}

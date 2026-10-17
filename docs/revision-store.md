@@ -332,21 +332,20 @@ would commit them and after its writes:
   leaves it (SQLite's page count times its page size), plus the texts
   recorded but not imported yet (the host stores each as a blob), plus the
   revision people's unrecorded edits will need when their groups close,
-  plus room for the write-ahead log (below).
-  Far from the quota an upper bound for that revision admits the edit: three
-  bytes per character of each edited document, both in the worker (its
-  overflow pages rounded up, plus slack for B-tree splits and the entry's
-  rows) and as the host's blob. Near it, the worker records the revision in
-  a savepoint, measures, and undoes it, and keeps that measurement as a
-  baseline: later edits are admitted against the baseline plus a safe bound
-  of their growth (their update bytes, which bound the text they insert,
-  once in the worker with page rounding and once as the blob; the full bound
-  of any document not in the baseline; the free pages they used up), and the
-  worker measures again only when that bound no longer fits. A burst of
-  small edits near the quota is therefore measured about once, not once per
-  keystroke. Any recorded entry ends the baseline. An edit refused for disk quota rolls back completely; nothing is
-  deleted to make room, and while the flat is over its quota every live
-  edit is refused, a deletion included, since it still adds a revision.
+  plus room for the write-ahead log (below). The revision is bounded per
+  edited document, as its own text even when documents share one now
+  (later edits can make them differ): its size in the worker with its
+  overflow pages rounded up and slack for B-tree splits, plus its host
+  blob, and the entry's rows. A document's size is first three bytes per
+  character of its visible text, which includes text an update makes
+  visible by completing earlier ones; only when those bounds would not fit
+  are the sizes made exact (the edited document from its text in memory,
+  other documents once from their committed state). The check takes no
+  savepoint and loads no other document again during a burst of edits, so
+  an edit near the quota costs about what one far from it does. An edit
+  refused for disk quota rolls back completely; nothing is deleted to make
+  room, and while the flat is over its quota every live edit is refused, a
+  deletion included, since it still adds a revision.
 - **A person's edit** is refused with the WebSocket error `disk_quota`, like
   other deterministic rejections: the editor stops syncing, keeps the text,
   offers it for download and warns before the page is reloaded or closed.
@@ -357,21 +356,22 @@ would commit them and after its writes:
   version's activation, which a save already checked.
 
 **Write-ahead log.** The worker's connections restart the log after 64
-frames (`PRAGMA wal_autocheckpoint = 64`); SQLite keeps the file at its
-largest size after a restart and shrinks it only past `journal_size_limit`
-(16 MiB). Before each budget measurement the host truncates a log above
-256 KiB (`checkpoint` host operation, `PRAGMA wal_checkpoint(TRUNCATE)`),
-so `other` holds at most about that much log. The check reserves room for
-the log beyond it: 64 frames plus a transaction of 256 pages, about
-1.3 MiB with 4 KiB pages. A quota must leave that much room above the
-flat's usage for live edits to be admitted. An idle document writes nothing
-to its log: an unchanged budget is rewritten only when it is half expired,
-and a sync with nothing to do changes no page. The remaining slack is a
-log grown past the reserve between two measurements, which needs one
-transaction of more than 256 pages (a group closing over more than about
-1 MiB of edited text, an activation or a rollback of large documents) or a
-reader keeping SQLite from restarting the log for long; the next
-measurement includes it and truncates it.
+frames (`PRAGMA wal_autocheckpoint = 64`), and the worker truncates it
+(`PRAGMA wal_checkpoint(TRUNCATE)`) right after every transaction that
+wrote more than 128 KiB, such as a compaction, a recorded revision or a
+large edit. Before each budget measurement the host also truncates a log
+above 256 KiB (`checkpoint` host operation), so `other` holds at most about
+that much log. The check reserves room for the log beyond it: 64 frames
+plus the largest of a 128-page transaction, the checked transaction's own
+writes and the coming revision's pages, with 4 KiB pages at least about
+790 KiB. A quota must leave that much room above the flat's usage for live
+edits to be admitted. An idle document writes nothing to its log: an
+unchanged budget is rewritten only when it is half expired, and a sync
+with nothing to do changes no page. The remaining slack: during a
+transaction that writes more than 128 KiB the log holds it until the
+truncation right after its commit, and a reader that keeps SQLite from
+restarting or truncating the log for long leaves it larger until the next
+measurement, which includes it and truncates it again.
 
 The host's metadata in `flats.db` is outside the flat directory and not
 counted, as for every other disk quota check.

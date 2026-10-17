@@ -351,7 +351,6 @@ function update(c, m, env, size) {
       revisions.checkDiskQuota(db, {
         path: room.path,
         text: s.doc.getText("markdown"),
-        bytes: bytes.length,
       });
       return { s, event, ack: event };
     });

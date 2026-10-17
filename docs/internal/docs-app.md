@@ -493,7 +493,7 @@ meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)
   -- 'newest': JSON {source, documents: [{path, hash, size}]} of the newest entry
   -- 'active': JSON {hash, generation, docs: [path]}: the version whose flat activation last ran
   -- 'intent': JSON, at most one (see Intents)
-  -- 'budget', 'pending', 'unimported', 'baseline': the disk quota check (see Disk quota)
+  -- 'budget', 'pending', 'unimported': the disk quota check (see Disk quota)
 recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)
   -- each document's committed position when last recorded, and its text hash there
 groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)
@@ -746,42 +746,40 @@ disk quota; the host side, what it measures and when, is in the
   with 1012 and resend), and the edit endpoint answers 503 `unavailable`.
   With quota 0 nothing else is checked.
 * `meta.pending` maps each document people edited since it was last
-  recorded to an upper bound of its text's UTF-8 size: a person's update
-  sets three bytes per UTF-16 unit of its document. `record` deletes the map,
-  including when it records nothing because the text ended unchanged, and
-  `sync` deletes it when no document is dirty. When a quota starts where
-  none applied, the map starts with the exact sizes of the documents whose
-  committed position differs from their `recorded` row.
+  recorded to `{bytes, exact}`, an upper bound of its text's UTF-8 size: a
+  person's update sets three bytes per UTF-16 unit of its document's
+  visible text. `record` deletes the map, including when it records nothing
+  because the text ended unchanged, and `sync` deletes it when no document
+  is dirty. When a quota starts where none applied, the map starts with the
+  exact sizes of the documents whose committed position differs from their
+  `recorded` row.
 * `meta.unimported` maps the hash of each text an entry added (one the
   previous entry did not list) to its size, until the host reports its blob
   stored: `ack` deletes the texts of the entries it acknowledges, and a
   budget deletes the texts it lists as `stored`.
 * The check runs last in the transaction, after every write: a WebSocket
-  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. Every
-  total includes `other` and the log reserve, 32 + (64 + 256) × (`page_size`
-  + 24) bytes. The cheap total adds `page_count` × `page_size`,
-  `unimported` and the bound of the pending revision: per pending document
-  its bound in bytes plus its overflow pages rounded up and 10 pages, and
-  per entry twice the pages of `meta.newest` (+25 %) and 16 pages.
-* When the cheap total exceeds the quota, `meta.baseline` decides if it
-  exists: `{grow, free, host, docs, since}`. A measurement records the
-  pending documents as a `person` entry of the shape of `meta.newest` in a
-  savepoint, notes how many pages the file grew by (`grow`), the free pages
-  before it (`free`; the recording allocated at most `grow + free` pages)
-  and the blob bytes it added to `unimported` (`host`), and rolls back. Each
-  later person's update to a document in `docs` adds its decoded update size
-  to `since`. The projected total is the file after recording,
-  `page_count` + max(0, `grow` + `free` + the pages of `since` bytes + the
-  bound pages of pending documents not in `docs` − `freelist_count`) pages,
-  plus `unimported` + `host` + `since` + those documents' bounds. Without a
-  baseline, or when the projection exceeds the quota, the worker measures
-  again and uses the new baseline. `record` deletes it.
+  `update` (not a duplicate) and a changed `POST /_docs/api/edit`. The
+  total is `other` + (`page_count` + R) × `page_size` + `unimported` + the
+  pending sizes + the log reserve. R bounds the pages recording the pending
+  documents allocates, never counting pages it frees: per document its
+  overflow pages rounded up, one leaf and 16 pages of B-tree splits, and per
+  entry twice the pages of `meta.newest` (×3 + 300 bytes per document +
+  4 KiB), the pages of `meta.unimported` and 16 pages. The log reserve is
+  32 + (64 + max(128, the pages of this transaction's writes + 16, R)) ×
+  (`page_size` + 24) bytes.
+* When that total exceeds the quota, every size that is still a bound is
+  made exact first (the edited document from its in-memory text, others
+  from their committed state) and the total is taken again.
 * Over the quota it refuses with `disk_quota` and the transaction rolls
   back, so a refused edit records and changes nothing. `restore`, rollback
   intents and activations are not checked.
 * Each VM's connection sets `PRAGMA wal_autocheckpoint = 64` before its
-  first transaction. `setBudget` writes nothing when the budget is
-  unchanged and more than half of its lifetime is left.
+  first transaction. Every transaction counts what it writes (string
+  lengths × 3 for text, base64 lengths for data); after one that wrote more
+  than 128 KiB, `PRAGMA wal_checkpoint(TRUNCATE)` follows the commit.
+* `setBudget` writes nothing when the budget is unchanged, its deadline is
+  no later than the new one, and more than half of the lifetime is left; a
+  shorter lifetime always replaces a longer one.
 * The browser treats `disk_quota` like the other deterministic rejections:
   it stops syncing, disables editing, keeps its pending updates and offers
   the local Markdown for download, saying that the document is out of disk
