@@ -47,7 +47,7 @@ export function schema(db) {
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_ops(id TEXT PRIMARY KEY, seq INTEGER NOT NULL)",
   );
-  ensureTextRefs(db);
+  migrate(db);
 }
 export function history(db, row, known) {
   if (!known) return true;
@@ -167,22 +167,23 @@ export function append(db, s, id, data) {
   const seq = s.row.seq + 1,
     chain = digest(s.row.chain + "\n" + id),
     now = Date.now();
-  // data is base64: one byte per character.
-  write(
-    db,
-    "INSERT INTO flats_docs_updates VALUES(?,?,?,?,?,?,?)",
-    [s.row.doc, seq, id, chain, data, data.length, now],
-    data.length + 1024,
-  );
-  write(db, "INSERT INTO flats_docs_receipts VALUES(?,?,?,?,?)", [
+  db.exec("INSERT INTO flats_docs_updates VALUES(?,?,?,?,?,?,?)", [
+    s.row.doc,
+    seq,
+    id,
+    chain,
+    data,
+    data.length,
+    now,
+  ]);
+  db.exec("INSERT INTO flats_docs_receipts VALUES(?,?,?,?,?)", [
     s.row.doc,
     seq,
     id,
     chain,
     digest(data),
   ]);
-  write(
-    db,
+  db.exec(
     "UPDATE flats_docs_documents SET seq=?,chain=?,updated_at=? WHERE doc=?",
     [seq, chain, now, s.row.doc],
   );
@@ -196,13 +197,14 @@ export function compact(db, s, state) {
   )[0];
   if (stats.n >= 64 || stats.bytes >= 512 * 1024) {
     const encoded = base64(state || validateState(s.doc));
-    write(
-      db,
-      "INSERT OR REPLACE INTO flats_docs_checkpoints VALUES(?,?,?,?,?)",
-      [s.row.doc, s.row.seq, s.row.chain, encoded, Date.now()],
-      encoded.length + 1024,
-    );
-    write(db, "DELETE FROM flats_docs_updates WHERE doc=? AND seq<=?", [
+    db.exec("INSERT OR REPLACE INTO flats_docs_checkpoints VALUES(?,?,?,?,?)", [
+      s.row.doc,
+      s.row.seq,
+      s.row.chain,
+      encoded,
+      Date.now(),
+    ]);
+    db.exec("DELETE FROM flats_docs_updates WHERE doc=? AND seq<=?", [
       s.row.doc,
       s.row.seq,
     ]);
@@ -245,18 +247,20 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
       updated_at: Date.now(),
     };
     const encoded = base64(state);
-    write(
-      db,
+    // The seed text lives in flats_docs_seeds (see migrate).
+    db.exec(
       "INSERT INTO flats_docs_documents VALUES(?,?,?,?,?,?,?)",
-      Object.values(row),
+      Object.values({ ...row, seed_text: "" }),
     );
-    write(
-      db,
-      "INSERT INTO flats_docs_checkpoints VALUES(?,?,?,?,?)",
-      [row.doc, 0, row.chain, encoded, row.updated_at],
-      encoded.length + 1024,
-    );
-    write(db, "INSERT INTO flats_docs_receipts VALUES(?,?,?,?,?)", [
+    setSeed(db, row.doc, source.text);
+    db.exec("INSERT INTO flats_docs_checkpoints VALUES(?,?,?,?,?)", [
+      row.doc,
+      0,
+      row.chain,
+      encoded,
+      row.updated_at,
+    ]);
+    db.exec("INSERT INTO flats_docs_receipts VALUES(?,?,?,?,?)", [
       row.doc,
       0,
       "seed:" + epoch,
@@ -287,13 +291,7 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
       });
     if (s.row.seed_hash !== source.hash) {
       before = s.doc.getText("markdown").toString();
-      const merged = mergeText(
-          db.query("SELECT seed_text FROM flats_docs_documents WHERE doc=?", [
-            source.path,
-          ])[0].seed_text,
-          before,
-          source.text,
-        ),
+      const merged = mergeText(seedText(db, source.path), before, source.text),
         sv = Y.encodeStateVector(s.doc);
       applyText(s.doc.getText("markdown"), merged);
       activationState = validateState(s.doc);
@@ -303,16 +301,15 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
         "activation:" + runtimeGeneration + ":" + versionHash,
         base64(Y.encodeStateAsUpdate(s.doc, sv)),
       );
-      write(
-        db,
-        "UPDATE flats_docs_documents SET seed_hash=?,seed_text=? WHERE doc=?",
-        [source.hash, source.text, source.path],
-      );
+      db.exec("UPDATE flats_docs_documents SET seed_hash=? WHERE doc=?", [
+        source.hash,
+        source.path,
+      ]);
+      setSeed(db, source.path, source.text);
       s.row.seed_hash = source.hash;
       s.row.seed_text = source.text;
     }
-    write(
-      db,
+    db.exec(
       "INSERT INTO flats_docs_activations VALUES(?,?,?) ON CONFLICT(doc,hash) DO UPDATE SET version=excluded.version",
       [source.path, versionHash, runtimeGeneration],
     );
@@ -320,54 +317,32 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
   if (activation) compact(db, s, activationState);
   return { ...s, activation, before };
 }
-// The write-ahead log restarts after this many frames (when no reader holds
-// it), so it stays small; the disk quota check relies on it (revisions.js).
-// The setting is per connection; it is applied to each database object
-// before its first transaction.
-export const WAL_AUTOCHECKPOINT = 64;
-// A transaction that may have written more than this many log frames is
-// followed by a truncating checkpoint, so the log does not keep its size.
-export const WAL_TRUNCATE_PAGES = 32;
-const tuned = new WeakSet();
-let pages = 0;
-// write runs one INSERT, UPDATE or DELETE and counts an upper bound of the
-// log frames it writes: the pages its values span and two pages (a table
-// and an index leaf) per row it changed. bytes, when the caller knows it,
-// is the values' size; otherwise short strings count as UTF-8 and long ones
-// as three bytes per UTF-16 unit. Every write of the app goes through it,
-// so a transaction knows its own size.
-export function write(db, sql, params, bytes) {
-  if (params) db.exec(sql, params);
-  else db.exec(sql);
-  if (bytes === undefined) {
-    bytes = 0;
-    for (const p of params || [])
-      bytes +=
-        typeof p !== "string"
-          ? 9
-          : p.length > 4096
-            ? 3 * p.length
-            : utf8Bytes(p);
-  }
-  const rows = db.query("SELECT changes() AS n")[0].n;
-  pages += Math.ceil(bytes / (4096 - 4)) + 2 * Math.max(1, rows);
-}
-// writtenPages is the bound of the log frames the current transaction has
-// written so far, for 4 KiB pages.
-export const writtenPages = () => pages;
+// WAL_REST_FRAMES bounds the write-ahead log at rest: after every commit
+// the app reads how many frames the log holds and truncates it when there
+// are more (see commit). One transaction can exceed it only until its own
+// commit returns, or while a reader keeps the truncation from finishing.
+export const WAL_REST_FRAMES = 64;
 const hasTable = (db, name) =>
   db.query("SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name=?", [
     name,
   ]).length > 0;
-// ensureTextRefs keeps revision text references and staging times in
-// flats_docs_text_refs, apart from the text rows, so a reference change
-// never rewrites a large text. A database from before that table moves
-// them there once, atomically; the text rows' own refs and staged_at
-// columns are not used after that.
-const refsReady = new WeakSet();
-export function ensureTextRefs(db) {
-  if (refsReady.has(db)) return;
-  if (!hasTable(db, "flats_docs_text_refs")) {
+// migrate keeps large payloads in rows nothing rewrites often:
+// * flats_docs_text_refs holds revision text references and staging times,
+//   apart from the text rows, so a reference change never rewrites a large
+//   text;
+// * flats_docs_seeds holds each document's merge base (seed text), apart
+//   from its flats_docs_documents row, whose seq and chain change with
+//   every update.
+// A database from before a table gets it once, in one transaction that
+// moves the existing values there; the old columns stay, unused (0, NULL
+// or empty).
+const migrated = new WeakSet();
+export function migrate(db) {
+  if (migrated.has(db)) return;
+  if (
+    !hasTable(db, "flats_docs_text_refs") ||
+    !hasTable(db, "flats_docs_seeds")
+  ) {
     db.exec("BEGIN IMMEDIATE");
     try {
       if (!hasTable(db, "flats_docs_text_refs")) {
@@ -379,6 +354,17 @@ export function ensureTextRefs(db) {
             "INSERT INTO flats_docs_text_refs SELECT hash,refs,staged_at FROM flats_docs_texts",
           );
       }
+      if (!hasTable(db, "flats_docs_seeds")) {
+        db.exec(
+          "CREATE TABLE flats_docs_seeds(doc TEXT PRIMARY KEY, text TEXT NOT NULL)",
+        );
+        if (hasTable(db, "flats_docs_documents")) {
+          db.exec(
+            "INSERT INTO flats_docs_seeds SELECT doc,seed_text FROM flats_docs_documents",
+          );
+          db.exec("UPDATE flats_docs_documents SET seed_text=''");
+        }
+      }
       db.exec("COMMIT");
     } catch (e) {
       try {
@@ -387,31 +373,32 @@ export function ensureTextRefs(db) {
       throw e;
     }
   }
-  refsReady.add(db);
+  migrated.add(db);
+}
+// seedText is a document's merge base; setSeed replaces it.
+export function seedText(db, doc) {
+  return db.query("SELECT text FROM flats_docs_seeds WHERE doc=?", [doc])[0]
+    ?.text;
+}
+export function setSeed(db, doc, text) {
+  db.exec("INSERT OR REPLACE INTO flats_docs_seeds VALUES(?,?)", [doc, text]);
 }
 function begin(db, sql) {
-  if (!tuned.has(db)) {
-    db.exec(`PRAGMA wal_autocheckpoint = ${WAL_AUTOCHECKPOINT}`);
-    tuned.add(db);
-  }
-  ensureTextRefs(db);
-  pages = 0;
+  migrate(db);
   db.exec(sql);
 }
-// commit commits and, after a large transaction, copies the log into the
-// database and truncates it. A reader that keeps the checkpoint from
-// finishing leaves the log to the next one or to the host's measurement.
-// walOptions lets tests keep the log after a large transaction, to
-// measure what it wrote.
-export const walOptions = { truncate: true };
+// commit commits, then reads how many frames the write-ahead log holds (a
+// passive checkpoint, which also copies them into the database) and
+// truncates the log when there are more than WAL_REST_FRAMES. A reader that
+// keeps the truncation from finishing (busy) leaves the log for the next
+// commit, the host's measurement or its tick.
 function commit(db) {
   db.exec("COMMIT");
-  const large = walOptions.truncate && pages > WAL_TRUNCATE_PAGES;
-  pages = 0;
-  if (large)
-    try {
+  try {
+    const row = db.query("PRAGMA wal_checkpoint(PASSIVE)")[0];
+    if (row && row.log > WAL_REST_FRAMES)
       db.query("PRAGMA wal_checkpoint(TRUNCATE)");
-    } catch {}
+  } catch {}
 }
 export function transaction(db, fn) {
   begin(db, "BEGIN IMMEDIATE");
@@ -420,7 +407,6 @@ export function transaction(db, fn) {
     commit(db);
     return result;
   } catch (e) {
-    pages = 0;
     try {
       db.exec("ROLLBACK");
     } catch {}

@@ -32,10 +32,10 @@ func dbBytes(t *testing.T, data string) int64 {
 	return pages * size
 }
 
-// walReserve is the smallest room the worker keeps for its write-ahead log
-// to grow (revisions.js walReserve), for the default 4 KiB pages: 64 frames
-// and a 128-page transaction.
-const walReserve = 32 + (64+128)*(4096+24)
+// walReserve is the write-ahead log's bound at rest, which the worker
+// reserves (revisions.js walReserve), for the default 4 KiB pages: 64
+// frames.
+const walReserve = 32 + 64*(4096+24)
 
 func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 	t.Parallel()

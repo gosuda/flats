@@ -11,8 +11,9 @@ import {
   transaction,
   activate,
   append,
+  compact,
   digest,
-  walOptions,
+  seedText,
 } from "./storage.js";
 import { base64 } from "./protocol.js";
 import * as revisions from "./revisions.js";
@@ -20,7 +21,7 @@ import * as revisions from "./revisions.js";
 // The worker's env.DB shape over an in-memory SQLite database, or with
 // file: true over a database file in write-ahead log mode, as the worker
 // uses, whose log tests can measure (walBytes).
-function database({ file = false, schema: create = true } = {}) {
+function database({ file = false, schema: create = true, pageSize } = {}) {
   let path = ":memory:";
   if (file) {
     const dir = mkdtempSync(join(tmpdir(), "flats-docs-"));
@@ -28,6 +29,7 @@ function database({ file = false, schema: create = true } = {}) {
     path = join(dir, "db.sqlite");
   }
   const raw = new DatabaseSync(path);
+  if (pageSize) raw.exec(`PRAGMA page_size=${pageSize}`);
   if (file) raw.exec("PRAGMA journal_mode=WAL");
   const db = {
     path: file ? path : null,
@@ -269,11 +271,7 @@ test("a restore is exact, resets the merge base and is recorded once", () => {
   const s = current(db, c.documents[0], c.hash, undefined, generation);
   assert.equal(s.doc.getText("markdown").toString(), "one\n");
   s.doc.destroy();
-  assert.equal(
-    db.query("SELECT seed_text FROM flats_docs_documents WHERE doc='a.md'")[0]
-      .seed_text,
-    "one\n",
-  );
+  assert.equal(seedText(db, "a.md"), "one\n");
   // Acknowledging the rollback forgets its receipt.
   transaction(db, () =>
     revisions.ack(db, revisions.getMeta(db, "store"), e.at(-1).seq),
@@ -303,10 +301,10 @@ test("a restore that would exceed the history limit resets the document", () => 
     }),
   );
   const row = db.query(
-    "SELECT epoch,seq,seed_text FROM flats_docs_documents WHERE doc='a.md'",
+    "SELECT epoch,seq FROM flats_docs_documents WHERE doc='a.md'",
   )[0];
   assert.notEqual(row.epoch, epoch);
-  assert.equal(row.seed_text, "one\n");
+  assert.equal(seedText(db, "a.md"), "one\n");
   assert.equal(entries(db).at(-1).kind, "rollback");
 });
 
@@ -402,9 +400,9 @@ test("a rollback whose version merge reaches the history limit resets instead", 
   );
   assert.equal(entries(db).at(-1).kind, "rollback");
   const row = db.query(
-    "SELECT seq,seed_text FROM flats_docs_documents WHERE doc='a.md'",
+    "SELECT seq FROM flats_docs_documents WHERE doc='a.md'",
   )[0];
-  assert.equal(row.seed_text, "old\n");
+  assert.equal(seedText(db, "a.md"), "old\n");
   assert.ok(row.seq < 100000);
 });
 
@@ -494,6 +492,7 @@ function applyBody(db, c, path, update) {
   try {
     Y.applyUpdate(s.doc, update);
     append(db, s, "q:" + Math.random().toString(36).slice(2), base64(update));
+    compact(db, s);
     revisions.touchGroup(db, "browser:a", "Ada");
     revisions.checkDiskQuota(db, { path, text: s.doc.getText("markdown") });
   } finally {
@@ -541,9 +540,10 @@ const committed = (db, c, path) => {
 const dbBytes = (db) =>
   db.query("PRAGMA page_count")[0].page_count *
   db.query("PRAGMA page_size")[0].page_size;
-// The smallest room the check keeps for the write-ahead log, with 4 KiB
-// pages: 64 frames plus a 128-page transaction.
-const MIN_WAL = 32 + (64 + 128) * (4096 + 24);
+// The write-ahead log's bound at rest, which the check reserves: 64 frames.
+const restWal = (db) =>
+  32 + 64 * (db.query("PRAGMA page_size")[0].page_size + 24);
+const MIN_WAL = 32 + 64 * (4096 + 24);
 const DAY = 24 * 60 * 60 * 1000;
 const budget = (db, quota, other = 0, ttl = DAY) =>
   transaction(db, () => revisions.setBudget(db, { quota, other, ttl_ms: ttl }));
@@ -564,17 +564,23 @@ const ackAll = (db, budget) => {
   );
 };
 const refused = (e) => e.code === "disk_quota";
+// atRest checks that a database file's write-ahead log is within its bound
+// after a commit.
+const atRest = (db) =>
+  assert.ok(
+    walBytes(db) <= restWal(db),
+    `log of ${walBytes(db)} bytes, over ${restWal(db)} at rest`,
+  );
 // fits checks that the recorded revisions, this database plus the blobs the
-// host will store, leave the write-ahead log its smallest room.
-// For a database file the log it actually holds counts too, within the
-// quota rather than its smallest reserve.
+// host will store, and the write-ahead log (as it is, for a database file)
+// fit the quota.
 const fits = (db, quota) => {
   const wal = db.path ? walBytes(db) : MIN_WAL;
   assert.ok(
     dbBytes(db) + unimported(db) + wal <= quota,
     `${dbBytes(db)} + ${unimported(db)} + ${wal} > ${quota}`,
   );
-  if (db.path) assert.ok(wal <= MIN_WAL * 2, `log of ${wal} bytes`);
+  if (db.path) atRest(db);
 };
 
 test("live edits need a budget the host refreshed; quota 0 checks nothing", async () => {
@@ -894,6 +900,16 @@ test("a quota that starts reserves what people already edited; a rollback is nev
   assert.equal(committed(db, c, "b.md"), "b\n");
 });
 
+// committedLog commits fn in a transaction of its own (without the
+// truncation after a commit) and returns the bytes of log it wrote.
+function committedLog(db, fn) {
+  const before = walBytes(db);
+  db.exec("BEGIN IMMEDIATE");
+  fn();
+  db.exec("COMMIT");
+  return walBytes(db) - before;
+}
+
 test("recording rewrites no large text to count its references", () => {
   // A tiny document next to ten large ones, all recorded and imported.
   const db = database({ file: true }),
@@ -907,25 +923,59 @@ test("recording rewrites no large text to count its references", () => {
   transaction(db, () => revisions.ensureFlat(db, c, next()));
   budget(db, 1 << 30);
   ackAll(db);
-  transaction(db, () => {}); // a small commit after the checkpoint
-  const quota = dbBytes(db) + walBytes(db) + 1_200_000;
+  atRest(db);
+  const quota = dbBytes(db) + 1_200_000;
   budget(db, quota);
   checkedEdit(db, c, "tiny.md", "!");
+  atRest(db);
   // Closing the group references every document's text once more; that
-  // changes small reference rows only. Kept without the truncation that
-  // follows a large transaction, its log shows what it wrote.
-  const before = walBytes(db);
-  walOptions.truncate = false;
-  try {
-    closeGroups(db, c);
-  } finally {
-    walOptions.truncate = true;
-  }
-  assert.ok(
-    walBytes(db) - before < 64 * 4120,
-    `closing the group wrote ${walBytes(db) - before} bytes of log`,
+  // changes small reference rows only.
+  const wrote = committedLog(db, () =>
+    revisions.sync(db, c, generation, Date.now() + 600_000),
   );
+  assert.ok(wrote < 32 * 4120, `closing the group wrote ${wrote} bytes`);
+  transaction(db, () => {});
   fits(db, quota);
+});
+
+test("an update rewrites no large seed text", () => {
+  // A 1 MB document: each update advances its seq and chain, which live
+  // apart from its seed text.
+  const db = database({ file: true }),
+    c = content("v1", doc("a.md", "s".repeat(1_000_000)));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  atRest(db);
+  for (let i = 0; i < 3; i++) {
+    const update = editUpdate(db, c, "a.md", "!");
+    const wrote = committedLog(db, () => applyBody(db, c, "a.md", update));
+    assert.ok(wrote < 16 * 4120, `update ${i} wrote ${wrote} bytes of log`);
+  }
+  transaction(db, () => {});
+  atRest(db);
+});
+
+test("the write-ahead log stays within its bound at rest, also with small pages", () => {
+  for (const pageSize of [512, 4096]) {
+    const db = database({ file: true, pageSize }),
+      c = content("v1", doc("a.md", "s".repeat(300_000)));
+    assert.equal(db.query("PRAGMA page_size")[0].page_size, pageSize);
+    transaction(db, () => revisions.ensureFlat(db, c, next()));
+    atRest(db);
+    budget(db, 1 << 30);
+    for (let i = 0; i < 70; i++) {
+      // Compactions, recorded revisions and acknowledgements among them.
+      checkedEdit(db, c, "a.md", "y".repeat(i % 10 ? 10 : 50_000));
+      atRest(db);
+      if (i % 20 === 19) {
+        closeGroups(db, c);
+        atRest(db);
+        ackAll(db);
+        atRest(db);
+      }
+    }
+  }
 });
 
 test("an older database moves its text references into their own table", () => {
@@ -953,4 +1003,22 @@ test("an older database moves its text references into their own table", () => {
     db.query("SELECT count(*) AS n FROM flats_docs_text_refs")[0].n,
     2,
   );
+});
+
+test("an older database moves its seed texts into their own table", () => {
+  const db = database({ schema: false });
+  db.exec(
+    "CREATE TABLE flats_docs_documents(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, chain TEXT NOT NULL, seed_hash TEXT NOT NULL, seed_text TEXT NOT NULL, updated_at INTEGER NOT NULL)",
+  );
+  db.exec(
+    "INSERT INTO flats_docs_documents VALUES('a.md','e',3,'c','h','base\n',1)",
+  );
+  schema(db);
+  assert.equal(seedText(db, "a.md"), "base\n");
+  assert.equal(
+    db.query("SELECT seed_text FROM flats_docs_documents")[0].seed_text,
+    "",
+  );
+  schema(db);
+  assert.equal(seedText(db, "a.md"), "base\n");
 });

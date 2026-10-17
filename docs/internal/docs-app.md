@@ -170,7 +170,10 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   text is broadcast or retained in the usable cache.
 * Tables are created idempotently on first document use, all with the
   `flats_docs_` prefix:
-  * `documents(doc PRIMARY KEY, epoch, seq, chain, seed_hash, seed_text, updated_at)`
+  * `documents(doc PRIMARY KEY, epoch, seq, chain, seed_hash, seed_text, updated_at)`:
+    `seed_text` is unused (empty)
+  * `seeds(doc PRIMARY KEY, text)`: each document's merge base, apart from
+    its `documents` row, which every update rewrites
   * `updates(doc, seq, id, chain, data, size, created_at, PRIMARY KEY(doc,seq), UNIQUE(doc,id))`
   * `checkpoints(doc PRIMARY KEY, seq, chain, state, created_at)`
   * `receipts(doc, seq, id, chain, hash, PRIMARY KEY(doc,seq), UNIQUE(doc,id))`
@@ -765,30 +768,23 @@ disk quota; the host side, what it measures and when, is in the
 * The check runs last in the transaction, after every write: a WebSocket
   `update` (not a duplicate) and a changed `POST /_docs/api/edit`. The
   total is `other` + (`page_count` + R) × `page_size` + `unimported` + the
-  pending sizes + the log reserve. R bounds the pages recording the pending
+  pending sizes + the log's bound at rest. R bounds the pages recording the pending
   documents allocates, never counting pages it frees: per document its
   overflow pages rounded up, one leaf and 16 pages of B-tree splits, and per
   entry twice the pages of `meta.newest` (×3 + 300 bytes per document +
-  4 KiB), the pages of `meta.unimported` and 16 pages. The log reserve is
-  32 + (64 + max(128, the pages of this transaction's writes + 16, R)) ×
-  (`page_size` + 24) bytes.
+  4 KiB), the pages of `meta.unimported`, a page per listed document whose
+  reference count changes and 16 pages. The log's bound at rest is
+  32 + 64 × (`page_size` + 24) bytes.
 * When that total exceeds the quota, every size that is still a bound is
   made exact first (the edited document from its in-memory text, others
   from their committed state) and the total is taken again.
 * Over the quota it refuses with `disk_quota` and the transaction rolls
   back, so a refused edit records and changes nothing. `restore`, rollback
   intents and activations are not checked.
-* Each VM's connection sets `PRAGMA wal_autocheckpoint = 64` before its
-  first transaction. Every INSERT, UPDATE and DELETE of the app goes
-  through `write`, which counts an upper bound of the log frames it writes:
-  the pages its values span and two pages per row it changed (`changes()`).
-  Values count at the size the caller passes (base64 data, texts whose
-  UTF-8 size is known), else as UTF-8 up to 4,096 characters and three
-  bytes per character above. After a transaction counted above 32 pages, `PRAGMA
-  wal_checkpoint(TRUNCATE)` follows the commit. The log reserve's
-  transaction terms are this transaction's count + 16 pages, and the
-  recording's pages + 2 per listed document (the reference and recorded
-  rows it rewrites) + 16.
+* After every commit of a transaction, `PRAGMA wal_checkpoint(PASSIVE)`
+  reports the frames in the log and copies them into the database; with
+  more than 64, `PRAGMA wal_checkpoint(TRUNCATE)` follows. A busy result
+  (a reader holding the log) leaves it for the next commit or the host.
 * `setBudget` writes nothing when the budget is unchanged, its deadline is
   no later than the new one, and more than half of the lifetime is left; a
   shorter lifetime always replaces a longer one.
@@ -801,11 +797,12 @@ disk quota; the host side, what it measures and when, is in the
 
 ### Initialization and migration
 
-A database without `text_refs` (from before it existed) gets it before its
-first transaction or schema pass, in one `BEGIN IMMEDIATE` transaction that
-creates the table and copies every text's `refs` and `staged_at` into it.
-The table's existence marks the move as done; references and staging then
-behave exactly as before.
+A database without `text_refs` or `seeds` (from before they existed) gets
+them before its first transaction or schema pass, in one `BEGIN IMMEDIATE`
+transaction that creates the missing tables, copies every text's `refs` and
+`staged_at` and every document's `seed_text` into them, and empties
+`documents.seed_text`. A table's existence marks its move as done;
+references, staging and merge bases then behave exactly as before.
 
 A database without `meta.store` is initialized by the first transaction that
 passes the activation gate, before anything else in it:

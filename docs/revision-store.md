@@ -305,7 +305,8 @@ through the host, so its docs worker checks them, in the transaction that
 would commit them and after its writes:
 
 - **Budget.** The host measures the flat directory and installs the quota
-  and `other`, the bytes everything but the worker's database file uses, with
+  and `other`, the bytes everything but the worker's database file and its
+  write-ahead log uses, with
   a lifetime of 2 minutes:
   - with every outbox acknowledgement, measured after the acknowledged
     entries' blobs were stored, so their reservations end in the same worker
@@ -328,11 +329,11 @@ would commit them and after its writes:
   `unavailable` without sending the edit. A document the host could not
   reach on a quota change gets a warn event (kind `quota`); it keeps its
   previous budget until that expires.
-- **What counts.** `other`, plus the worker's database as the transaction
-  leaves it (SQLite's page count times its page size), plus the texts
-  recorded but not imported yet (the host stores each as a blob), plus the
-  revision people's unrecorded edits will need when their groups close,
-  plus room for the write-ahead log (below). The revision is bounded per
+- **What counts: persistent usage.** `other`, plus the worker's database as
+  the transaction leaves it (SQLite's page count times its page size), plus
+  the texts recorded but not imported yet (the host stores each as a blob),
+  plus the revision people's unrecorded edits will need when their groups
+  close, plus the write-ahead log's bound at rest (below). The revision is bounded per
   edited document, as its own text even when documents share one now
   (later edits can make them differ): its size in the worker with its
   overflow pages rounded up and slack for B-tree splits, plus its host
@@ -355,25 +356,23 @@ would commit them and after its writes:
 - **Not checked:** a rollback (`restore` or a rollback intent) and a new
   version's activation, which a save already checked.
 
-**Write-ahead log.** The worker's connections restart the log after 64
-frames (`PRAGMA wal_autocheckpoint = 64`), and the worker truncates it
-(`PRAGMA wal_checkpoint(TRUNCATE)`) right after every transaction that may
-have written more than 32 pages (each write counts the pages its values
-span and two per changed row), such as a compaction, a recorded revision or
-a large edit. Text reference counts are kept apart from the texts, so
-recording a revision rewrites no unchanged document's text. Before each budget measurement the host also truncates a log
-above 256 KiB (`checkpoint` host operation), so `other` holds at most about
-that much log. The check reserves room for the log beyond it: 64 frames
-plus the largest of a 128-page transaction, the checked transaction's own
-writes and the coming revision's pages, with 4 KiB pages at least about
-790 KiB. A quota must leave that much room above the flat's usage for live
-edits to be admitted. An idle document writes nothing to its log: an
-unchanged budget is rewritten only when it is half expired, and a sync
-with nothing to do changes no page. The remaining slack: during a
-transaction above that size the log holds it until the
-truncation right after its commit, and a reader that keeps SQLite from
-restarting or truncating the log for long leaves it larger until the next
-measurement, which includes it and truncates it again.
+**Write-ahead log.** The log is transient and not predicted. After every
+commit the worker reads how many frames the log holds (`PRAGMA
+wal_checkpoint(PASSIVE)`, which also copies them into the database) and
+truncates it (`PRAGMA wal_checkpoint(TRUNCATE)`) when there are more than
+64. So at rest the log holds at most 64 frames: 32 + 64 × (page size + 24)
+bytes, 263,712 bytes with 4 KiB pages, which the check reserves; the host
+leaves the actual log out of `other`. A single transaction exceeds that
+bound only until its own commit returns. A reader that keeps the
+truncation from finishing (busy) leaves the log larger until the next
+commit retries, or until the host's next measurement, which truncates a log
+above 256 KiB (`checkpoint` host operation) and otherwise leaves it to the
+next commit. An idle document writes nothing to its log: an unchanged
+budget is rewritten only when it is half expired, and a sync with nothing
+to do changes no page. Large payloads sit in rows nothing rewrites often:
+text reference counts are kept apart from the texts, and each document's
+merge base apart from the row whose sequence number every update advances,
+so recording a revision or an update rewrites no large text.
 
 The host's metadata in `flats.db` is outside the flat directory and not
 counted, as for every other disk quota check.

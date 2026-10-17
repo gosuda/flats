@@ -485,17 +485,22 @@ func (s *Service) docsBudget(ctx context.Context, slugName string, stored map[st
 	quota, other := s.diskQuota(), int64(0)
 	if quota > 0 {
 		dbPath := filepath.Join(s.dataDirOf(slugName), dbName)
-		// A write-ahead log stays at its largest size after SQLite restarts
-		// it; truncate one above walTruncateAt so it does not hold the
-		// quota. A busy checkpoint leaves it for the next measurement.
+		// The worker truncates its write-ahead log after every commit that
+		// leaves it above 64 frames; a reader can keep that truncation from
+		// finishing, so truncate a log above walTruncateAt here too. A busy
+		// checkpoint leaves it for the next measurement.
 		if fi, err := os.Stat(dbPath + "-wal"); err == nil && fi.Size() > walTruncateAt {
 			if err := s.docsHost(ctx, slugName, http.MethodPost, "checkpoint", map[string]any{}, nil); err != nil {
 				s.logf("checkpoint the document database of %s: %v", slugName, err)
 			}
 		}
+		// The worker counts its database as it is and its write-ahead log
+		// as the log's bound at rest, so other leaves both out.
 		var db int64
-		if fi, err := os.Stat(dbPath); err == nil {
-			db = fi.Size()
+		for _, p := range []string{dbPath, dbPath + "-wal"} {
+			if fi, err := os.Stat(p); err == nil {
+				db += fi.Size()
+			}
 		}
 		other = max(0, dirSize(s.flatDir(slugName))-db)
 	} else {
