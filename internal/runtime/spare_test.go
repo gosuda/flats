@@ -300,8 +300,16 @@ func TestSpareStopsWithLastInstance(t *testing.T) {
 		t.Fatal("spare remains after the last instance stopped")
 	}
 	waitGone(t, pid)
-	if socks := spareSockets(t, m); len(socks) != 0 {
-		t.Fatalf("spare sockets remain: %v", socks)
+	// The spare is stopped in the background: its socket goes once the
+	// stop finished, shortly after the process is reaped.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		socks := spareSockets(t, m)
+		if len(socks) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("spare sockets remain: %v", socks)
+		}
 	}
 	// A new instance gets a new spare.
 	mustStart(t, m, "c", spareTestFiles(), "index.js", nil)
