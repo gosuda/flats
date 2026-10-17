@@ -155,19 +155,24 @@ func docsInlineMIME(p string) string {
 	}
 }
 
-func (s *Service) docsRuntime(v store.Version, versionDir string) (string, []string, func(), error) {
+// docsRuntime materializes the docs app with a version's content and takes a
+// reference to it. It also returns the path of the document image, in a
+// state directory next to the runtime directory that only core creates and
+// removes: a worker never creates directories, so it cannot write an image
+// after the last reference released them.
+func (s *Service) docsRuntime(v store.Version, versionDir string) (string, string, []string, func(), error) {
 	app := s.cfg.DocsApp
 	if app.FS == nil || len(app.Hash) < 12 || app.Entry == "" || app.ContentModule == "" || len(v.Hash) < 16 {
-		return "", nil, nil, fmt.Errorf("%w: docs app is not configured", ErrRuntimeUnavailable)
+		return "", "", nil, nil, fmt.Errorf("%w: docs app is not configured", ErrRuntimeUnavailable)
 	}
 	var m bundle.Manifest
 	if err := json.Unmarshal(v.Manifest, &m); err != nil {
-		return "", nil, nil, err
+		return "", "", nil, nil, err
 	}
 	c := docsContent{Format: 1, Hash: v.Hash, Entry: m.Entry, Title: m.Name, Documents: []docsDocument{}, Assets: []string{}}
 	root, err := os.OpenRoot(versionDir)
 	if err != nil {
-		return "", nil, nil, err
+		return "", "", nil, nil, err
 	}
 	defer root.Close()
 	err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
@@ -192,13 +197,13 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, []str
 		return nil
 	})
 	if err != nil {
-		return "", nil, nil, err
+		return "", "", nil, nil, err
 	}
 	sort.Slice(c.Documents, func(i, j int) bool { return c.Documents[i].Path < c.Documents[j].Path })
 	sort.Strings(c.Assets)
 	b, err := json.Marshal(c)
 	if err != nil {
-		return "", nil, nil, err
+		return "", "", nil, nil, err
 	}
 	dir := filepath.Join(s.cfg.DataDir, "runtime", "docs", app.Hash[:12]+"-"+v.Hash[:16])
 	// Materialization and reference acquisition are serialized against final release.
@@ -206,16 +211,16 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, []str
 	defer s.docsMu.Unlock()
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
-			return "", nil, nil, err
+			return "", "", nil, nil, err
 		}
 		tmp, err := os.MkdirTemp(filepath.Dir(dir), ".docs-")
 		if err != nil {
-			return "", nil, nil, err
+			return "", "", nil, nil, err
 		}
 		defer os.RemoveAll(tmp)
 		staged, err := os.OpenRoot(tmp)
 		if err != nil {
-			return "", nil, nil, err
+			return "", "", nil, nil, err
 		}
 		defer staged.Close()
 		err = fs.WalkDir(app.FS, ".", func(p string, d fs.DirEntry, err error) error {
@@ -238,16 +243,25 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, []str
 			return staged.WriteFile(p, b, 0o444)
 		})
 		if err != nil {
-			return "", nil, nil, err
+			return "", "", nil, nil, err
 		}
 		if err := staged.WriteFile(app.ContentModule, append(append([]byte("export default "), b...), ';', '\n'), 0o444); err != nil {
-			return "", nil, nil, err
+			return "", "", nil, nil, err
 		}
 		if err := os.Rename(tmp, dir); err != nil {
-			return "", nil, nil, err
+			return "", "", nil, nil, err
 		}
 	} else if err != nil {
-		return "", nil, nil, err
+		return "", "", nil, nil, err
+	}
+	state := dir + docsStateSuffix
+	image := filepath.Join(state, docsImageName)
+	// With no reference no worker of this directory runs, so leftovers of an
+	// interrupted image write are stale. Without a state directory the
+	// document simply starts without an image.
+	if err := prepareDocsState(state, s.docsRefs[dir] == 0); err != nil {
+		s.logf("docs runtime %s: image directory: %v", filepath.Base(dir), err)
+		image = ""
 	}
 	s.docsRefs[dir]++
 	release := func() {
@@ -256,10 +270,41 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, []str
 		s.docsRefs[dir]--
 		if s.docsRefs[dir] == 0 {
 			delete(s.docsRefs, dir)
+			_ = os.RemoveAll(state)
 			_ = os.RemoveAll(dir)
 		}
 	}
-	return dir, c.Assets, release, nil
+	return dir, image, c.Assets, release, nil
+}
+
+// The document image of a runtime directory dir is dir+docsStateSuffix/docsImageName.
+const (
+	docsStateSuffix = ".state"
+	docsImageName   = "image"
+)
+
+// prepareDocsState creates the state directory (0700). With clear it also
+// removes everything in it but the image.
+func prepareDocsState(state string, clear bool) error {
+	err := os.Mkdir(state, 0o700)
+	if err == nil || !os.IsExist(err) || !clear {
+		if os.IsExist(err) {
+			err = nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() != docsImageName {
+			if err := os.RemoveAll(filepath.Join(state, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // cleanupDocs removes crash leftovers while holding the same lock as acquisition.
@@ -270,7 +315,8 @@ func (s *Service) cleanupDocs() {
 	entries, _ := os.ReadDir(parent)
 	for _, e := range entries {
 		dir := filepath.Join(parent, e.Name())
-		if s.docsRefs[dir] == 0 {
+		// A state directory belongs to its runtime directory.
+		if s.docsRefs[strings.TrimSuffix(dir, docsStateSuffix)] == 0 {
 			_ = os.RemoveAll(dir)
 		}
 	}
