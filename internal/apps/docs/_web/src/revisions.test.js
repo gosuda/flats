@@ -21,9 +21,9 @@ import * as revisions from "./revisions.js";
 // The worker's env.DB shape over an in-memory SQLite database, or with
 // file: true over a database file in write-ahead log mode, as the worker
 // uses, whose log tests can measure (walBytes).
-function database({ file = false, schema: create = true, pageSize } = {}) {
-  let path = ":memory:";
-  if (file) {
+function database({ file = false, schema: create = true, pageSize, at } = {}) {
+  let path = at || ":memory:";
+  if (file && !at) {
     const dir = mkdtempSync(join(tmpdir(), "flats-docs-"));
     process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
     path = join(dir, "db.sqlite");
@@ -33,7 +33,10 @@ function database({ file = false, schema: create = true, pageSize } = {}) {
   if (file) raw.exec("PRAGMA journal_mode=WAL");
   const db = {
     path: file ? path : null,
+    // onExec, when a test sets it, runs before a statement.
+    onExec: null,
     exec(sql, params) {
+      db.onExec?.(sql);
       if (!params) raw.exec(sql);
       else raw.prepare(sql).run(...params);
     },
@@ -1056,4 +1059,63 @@ test("a truncation a reader blocked is retried until it succeeds", () => {
   checkedEdit(db, c, "a.md", "!");
   atRest(db);
   assert.equal(revisions.getMeta(db, "wal_truncate"), null);
+});
+
+test("a truncation's success keeps a failure another VM records meanwhile", () => {
+  // Two VMs on one database file.
+  const a = database({ file: true }),
+    c = content("v1", doc("a.md", "s".repeat(1000)));
+  transaction(a, () => revisions.ensureFlat(a, c, next()));
+  budget(a, 1 << 30);
+  ackAll(a);
+  const b = database({ file: true, at: a.path });
+  a.exec("INSERT INTO flats_docs_meta VALUES('wal_truncate','1')");
+  // A's owed truncation succeeds; before A clears the marker, B commits a
+  // large transaction whose own truncation a reader blocks.
+  const reader = new DatabaseSync(a.path);
+  a.onExec = (sql) => {
+    if (!sql.startsWith("DELETE FROM flats_docs_meta WHERE key='wal_truncate'"))
+      return;
+    a.onExec = null;
+    b.onQuery = (q) => {
+      if (q !== "PRAGMA wal_checkpoint(PASSIVE)") return;
+      b.onQuery = null;
+      reader.exec("BEGIN");
+      reader.prepare("SELECT count(*) AS n FROM flats_docs_meta").get();
+    };
+    checkedEdit(b, c, "a.md", "y".repeat(200_000));
+    reader.exec("COMMIT");
+  };
+  transaction(a, () => {});
+  // B's failure is still owed.
+  assert.notEqual(revisions.getMeta(a, "wal_truncate"), null);
+  reader.exec("PRAGMA wal_checkpoint(RESTART)");
+  reader.close();
+  checkedEdit(a, c, "a.md", "!");
+  atRest(a);
+  assert.equal(revisions.getMeta(a, "wal_truncate"), null);
+});
+
+test("an older database reserves the blobs its unimported entries still need", () => {
+  const db = database({ schema: false });
+  db.exec(
+    "CREATE TABLE flats_docs_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL)",
+  );
+  db.exec(
+    "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,source,documents) VALUES(1,'person','[]','','v1',?)",
+    [
+      JSON.stringify([
+        { path: "a.md", hash: "a".repeat(64), size: 1000 },
+        { path: "b.md", hash: "b".repeat(64), size: 20 },
+      ]),
+    ],
+  );
+  schema(db);
+  assert.deepEqual(revisions.getMeta(db, "unimported"), {
+    ["a".repeat(64)]: 1000,
+    ["b".repeat(64)]: 20,
+  });
 });

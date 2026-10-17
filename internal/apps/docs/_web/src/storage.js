@@ -353,6 +353,7 @@ export function migrate(db) {
           db.exec(
             "INSERT INTO flats_docs_text_refs SELECT hash,refs,staged_at FROM flats_docs_texts",
           );
+        reserveOutbox(db);
       }
       if (!hasTable(db, "flats_docs_seeds")) {
         db.exec(
@@ -375,6 +376,25 @@ export function migrate(db) {
   }
   migrated.add(db);
 }
+// reserveOutbox reserves, for a database from before the disk quota check,
+// the host blobs of every text its unacknowledged entries list: the host
+// may not have stored them yet (meta.unimported, see revisions.js).
+function reserveOutbox(db) {
+  if (!hasTable(db, "flats_docs_outbox") || !hasTable(db, "flats_docs_meta"))
+    return;
+  const row = db.query(
+      "SELECT value FROM flats_docs_meta WHERE key='unimported'",
+    )[0],
+    unimported = row ? JSON.parse(row.value) : {};
+  for (const entry of db.query("SELECT documents FROM flats_docs_outbox"))
+    for (const d of JSON.parse(entry.documents))
+      if (typeof d?.hash === "string" && Number.isSafeInteger(d.size))
+        unimported[d.hash] = d.size;
+  if (Object.keys(unimported).length)
+    db.exec("INSERT OR REPLACE INTO flats_docs_meta VALUES('unimported',?)", [
+      JSON.stringify(unimported),
+    ]);
+}
 // seedText is a document's merge base; setSeed replaces it.
 export function seedText(db, doc) {
   return db.query("SELECT text FROM flats_docs_seeds WHERE doc=?", [doc])[0]
@@ -392,30 +412,36 @@ function begin(db, sql) {
 // truncates the log when there are more than WAL_REST_FRAMES. A truncation
 // a reader kept from finishing (busy) or that failed is remembered in
 // meta.wal_truncate, shared by every VM, and retried after every later
-// commit until one succeeds: a fully copied log can restart for a small
+// commit until one succeeds that saw the latest failure: a fully copied log can restart for a small
 // transaction while its file keeps its earlier size, which the frame count
 // alone would no longer show.
 function commit(db) {
   db.exec("COMMIT");
-  let owed = false;
+  // The marker's value is a generation, raised by every failed truncation:
+  // a success clears only the generation it saw, so a failure another VM
+  // records meanwhile stays.
+  let owed;
   try {
-    owed =
-      db.query("SELECT 1 AS x FROM flats_docs_meta WHERE key='wal_truncate'")
-        .length > 0;
+    owed = db.query(
+      "SELECT value FROM flats_docs_meta WHERE key='wal_truncate'",
+    )[0]?.value;
     const row = db.query("PRAGMA wal_checkpoint(PASSIVE)")[0];
-    if (!owed && !(row && row.log > WAL_REST_FRAMES)) return;
+    if (owed === undefined && !(row && row.log > WAL_REST_FRAMES)) return;
     const done = db.query("PRAGMA wal_checkpoint(TRUNCATE)")[0];
     if (done && !done.busy) {
-      if (owed) db.exec("DELETE FROM flats_docs_meta WHERE key='wal_truncate'");
+      if (owed !== undefined)
+        db.exec(
+          "DELETE FROM flats_docs_meta WHERE key='wal_truncate' AND value=?",
+          [owed],
+        );
       return;
     }
   } catch {}
-  if (!owed)
-    try {
-      db.exec(
-        "INSERT OR REPLACE INTO flats_docs_meta VALUES('wal_truncate','true')",
-      );
-    } catch {}
+  try {
+    db.exec(
+      "INSERT INTO flats_docs_meta VALUES('wal_truncate','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)",
+    );
+  } catch {}
 }
 export function transaction(db, fn) {
   begin(db, "BEGIN IMMEDIATE");

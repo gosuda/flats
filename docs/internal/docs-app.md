@@ -784,8 +784,10 @@ disk quota; the host side, what it measures and when, is in the
 * After every commit of a transaction, `PRAGMA wal_checkpoint(PASSIVE)`
   reports the frames in the log and copies them into the database; with
   more than 64, or while `meta.wal_truncate` is set, `PRAGMA
-  wal_checkpoint(TRUNCATE)` follows. A busy or failed truncation sets
-  `meta.wal_truncate`; a successful one deletes it.
+  wal_checkpoint(TRUNCATE)` follows. `meta.wal_truncate` is a generation:
+  every busy or failed truncation raises it, and a successful one deletes
+  it only if it still holds the generation that truncation read, so a
+  failure another VM records in between stays owed.
 * `setBudget` writes nothing when the budget is unchanged, its deadline is
   no later than the new one, and more than half of the lifetime is left; a
   shorter lifetime always replaces a longer one.
@@ -802,7 +804,9 @@ A database without `text_refs` or `seeds` (from before they existed) gets
 them before its first transaction or schema pass, in one `BEGIN IMMEDIATE`
 transaction that creates the missing tables, copies every text's `refs` and
 `staged_at` and every document's `seed_text` into them, and empties
-`documents.seed_text`. A table's existence marks its move as done;
+`documents.seed_text`. Creating `text_refs` also reserves, in
+`meta.unimported`, every text the unacknowledged outbox entries list, since
+the host may not have stored their blobs yet. A table's existence marks its move as done;
 references, staging and merge bases then behave exactly as before.
 
 A database without `meta.store` is initialized by the first transaction that
