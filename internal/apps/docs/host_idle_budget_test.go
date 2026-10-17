@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,9 +74,17 @@ func TestHostIdleImageModes(t *testing.T) {
 }
 
 // wakePhases are the times of one Wake of a managed document: its call,
-// the start and end of core's preparation, and its return.
+// the start and end of core's preparation, and its return, and the host
+// calls core's preparation made into the worker.
 type wakePhases struct {
 	wake, prepare, prepared, woken time.Time
+	calls                          []hostCall
+}
+
+// hostCall is one request core's wake preparation sent to the worker.
+type hostCall struct {
+	name string // method and operation, such as "POST budget/revoke"
+	took time.Duration
 }
 
 // wakeTimer records the phases of the first Wake after arm.
@@ -95,6 +104,15 @@ func (w *wakeTimer) phases() wakePhases {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.p
+}
+
+// call records a host call of the armed wake's preparation.
+func (w *wakeTimer) call(c hostCall) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.armed {
+		w.p.calls = append(w.p.calls, c)
+	}
 }
 
 // mark records now as *at unless it was recorded since arm.
@@ -117,12 +135,24 @@ func (i *timedDocsInstance) Wake(ctx context.Context, prepare func(context.Conte
 	w.mark(&w.p.wake)
 	lease, err := i.ManagedDocsInstance.Wake(ctx, func(ctx context.Context, h http.Handler) error {
 		w.mark(&w.p.prepare)
-		err := prepare(ctx, h)
+		err := prepare(ctx, timedHandler{h, w})
 		w.mark(&w.p.prepared)
 		return err
 	})
 	w.mark(&w.p.woken)
 	return lease, err
+}
+
+// timedHandler times the host calls of a wake's preparation.
+type timedHandler struct {
+	http.Handler
+	timer *wakeTimer
+}
+
+func (h timedHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	h.Handler.ServeHTTP(rw, r)
+	h.timer.call(hostCall{r.Method + " " + strings.TrimPrefix(r.URL.Path, "/_docs/host/revisions/"), time.Since(start)})
 }
 
 // loadAverage is the host's load average (for timing reports).
@@ -190,6 +220,8 @@ func TestHostIdleWakeBudget(t *testing.T) {
 	defer srv.Close()
 	idleGET(t, srv.URL+"/") // the first worker also saves the document image
 	var pages, hellos []time.Duration
+	calls := map[string][]time.Duration{} // per host call: every wake's time
+	var callOrder []string
 	for i := 0; i < 20; i++ {
 		h.expire(t, slug)
 		waitSpareReady(t, h.rt.manager)
@@ -216,6 +248,22 @@ func TestHostIdleWakeBudget(t *testing.T) {
 		generation := h.rt.generation[slug]
 		h.rt.mu.Unlock()
 		pages, hellos = append(pages, page), append(hellos, hello)
+		var perCall []string
+		for j, c := range w.calls {
+			// The n-th call of a name in this wake, so a repeated call
+			// (a second revoke) is reported apart from the first.
+			name := c.name
+			for _, prev := range w.calls[:j] {
+				if prev.name == c.name {
+					name += "'"
+				}
+			}
+			if calls[name] == nil {
+				callOrder = append(callOrder, name)
+			}
+			calls[name] = append(calls[name], c.took)
+			perCall = append(perCall, fmt.Sprintf("%s=%.2f", strings.ReplaceAll(name, " ", "_"), ms(c.took)))
+		}
 		// core_before_wake: request arrival to Wake (routing, storage lock);
 		// spawn: Wake to preparation minus NextGeneration (adoption, worker
 		// init, ready report); core_prepare: core's preparation requests;
@@ -223,6 +271,11 @@ func TestHostIdleWakeBudget(t *testing.T) {
 		t.Logf("COLDSTART_WAKE sample=%d image_restored=%v page_ms=%.2f hello_ms=%.2f core_before_wake_ms=%.2f next_generation_ms=%.2f spawn_ms=%.2f core_prepare_ms=%.2f serve_ms=%.2f",
 			i+1, restored.Load() > before, ms(page), ms(hello), ms(w.wake.Sub(pageStart)), ms(generation),
 			ms(w.prepare.Sub(w.wake)-generation), ms(w.prepared.Sub(w.prepare)), ms(pageEnd.Sub(w.woken)))
+		t.Logf("COLDSTART_CALLS sample=%d %s", i+1, strings.Join(perCall, " "))
+	}
+	for _, name := range callOrder {
+		c50, c95, cmax := percentiles(calls[name])
+		t.Logf("COLDSTART_CALL %q n=%d p50_ms=%.2f p95_ms=%.2f max_ms=%.2f", name, len(calls[name]), ms(c50), ms(c95), ms(cmax))
 	}
 	p50, p95, maximum := percentiles(pages)
 	t.Logf("COLDSTART_PAGE p50_ms=%.2f p95_ms=%.2f max_ms=%.2f", ms(p50), ms(p95), ms(maximum))
