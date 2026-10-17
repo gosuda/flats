@@ -740,7 +740,11 @@ export default {
         return new Response("ok");
       schema(env.DB);
       transaction(env.DB, () => {
-        revisions.ensureFlat(env.DB, content, request.runtimeGeneration);
+        // A flat activation that ran has activated every document of this
+        // version in this transaction; loading each again would only repeat
+        // the work.
+        if (revisions.ensureFlat(env.DB, content, request.runtimeGeneration))
+          return;
         for (const d of content.documents) {
           const s = activate(
             env.DB,
