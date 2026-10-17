@@ -36,6 +36,7 @@ import (
 	"github.com/gosuda/flats/internal/expose/zrok"
 	"github.com/gosuda/flats/internal/forkwatch"
 	"github.com/gosuda/flats/internal/mcpx"
+	"github.com/gosuda/flats/internal/metrics"
 	"github.com/gosuda/flats/internal/runtime"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -218,6 +219,11 @@ type Host struct {
 	localNet   *local.Net
 	pmu        sync.Mutex // guards tsNet, portalNet, zrokNet and quickNet, which the console can attach
 	tsNet      *tsnetx.Net
+
+	// metrics serves /metrics and counts management requests; nil in hosts
+	// built without Start.
+	metrics *metrics.Metrics
+
 	// testTailnet replaces tsNet for console nodes in tests.
 	testTailnet core.PrivateNet
 	// testNetbirdConsole replaces netbirdNet for console peers in tests.
@@ -542,6 +548,15 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 	}
 
+	// The scrape reads core's in-memory snapshot and the endpoint states the
+	// metrics refresh loop keeps; it never calls a provider backend.
+	var src metrics.Source
+	if s, ok := any(svc).(metrics.Source); ok {
+		src = s
+	}
+	h.metrics = metrics.New(metrics.Options{Source: src, Endpoints: mgr})
+	h.metrics.Start()
+
 	apiSrv := &api.Server{Svc: svc, System: h}
 	mux := http.NewServeMux()
 	apiH := apiSrv.Handler()
@@ -552,13 +567,17 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, p := range mcpx.LLMsPaths {
 		mux.Handle(p, llms)
 	}
+	// Without a method in the pattern, so other methods get 405 here
+	// instead of reaching the console page.
+	mux.Handle("/metrics", h.metrics.Handler())
 	mux.Handle("/", console.Handler())
 	h.Mux = mux
 
 	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
 		logf("warning: the management API listens on %s, which is not a loopback address", h.ln.Addr())
 	}
-	h.srv = &http.Server{Handler: loopbackGuard(h.ln.Addr(), mux), ReadHeaderTimeout: 15 * time.Second}
+	// Requests are counted outside the guard, so refused ones count too.
+	h.srv = &http.Server{Handler: h.metrics.Management(loopbackGuard(h.ln.Addr(), mux)), ReadHeaderTimeout: 15 * time.Second}
 	go func() {
 		if err := h.srv.Serve(h.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logf("management server: %v", err)
@@ -754,6 +773,9 @@ func (h *Host) Close() error {
 			if err != nil {
 				collect("management close", h.srv.Close())
 			}
+		}
+		if h.metrics != nil {
+			h.metrics.Close()
 		}
 		if h.Svc != nil {
 			collect("core shutdown", h.Svc.Close())

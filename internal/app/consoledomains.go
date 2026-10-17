@@ -280,8 +280,9 @@ func (h *Host) isServed(k cdKey) bool {
 
 // consoleHandler is the handler of a console domain's node: only that
 // node's names are accepted as Host, and the request records the domain.
+// Requests are counted for /metrics outside the guard, so refused ones count.
 func (h *Host) consoleHandler(k cdKey) http.Handler {
-	return &api.HostGuard{
+	return h.metrics.Management(&api.HostGuard{
 		Hosts: func() []string {
 			if b := h.consoleBackendOf(k.prov); b != nil {
 				return b.hosts(k.name)
@@ -297,7 +298,7 @@ func (h *Host) consoleHandler(k cdKey) http.Handler {
 			}
 			b.handler(k.name, h.Mux).ServeHTTP(w, r)
 		})),
-	}
+	})
 }
 
 func (h *Host) consolePorts(prov string) []string {
