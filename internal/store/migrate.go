@@ -52,6 +52,7 @@ var migrations = []migration{
 	{13, "host keys and console nodes", addHostKeys},
 	{14, "console nodes per network", consoleNodeProviders},
 	{15, "version quota and number history", addVersionQuota},
+	{16, "flat identity", addFlatID},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
@@ -507,5 +508,15 @@ func addVersionQuota(ctx context.Context, x executor) error {
 	_, err = x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS version_numbers (flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE, number INTEGER NOT NULL, PRIMARY KEY(flat,number));
 INSERT OR IGNORE INTO version_numbers SELECT flat,number FROM versions WHERE published=1;
 CREATE TRIGGER IF NOT EXISTS version_number_history AFTER INSERT ON versions WHEN new.published=1 BEGIN INSERT OR IGNORE INTO version_numbers(flat,number) VALUES(new.flat,new.number); END;`)
+	return err
+}
+
+// addFlatID gives every flat a random ID that renames keep and a deleted and
+// recreated slug does not (store.Flat.ID).
+func addFlatID(ctx context.Context, x executor) error {
+	if err := addColumn(ctx, x, "flats", "uid", "TEXT"); err != nil {
+		return err
+	}
+	_, err := x.ExecContext(ctx, `UPDATE flats SET uid=lower(hex(randomblob(16))) WHERE uid IS NULL OR uid=''`)
 	return err
 }

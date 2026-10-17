@@ -73,14 +73,18 @@ type rollbackParams struct {
 // visibilityParams is the frozen state of a set_visibility request. A
 // Version-model flat (website, page) also freezes its live version: the
 // approval covers that version. A Revision-model flat (document, design)
-// omits it: the approval covers the flat, so content changes while it is
-// pending do not make it stale, and approving it exposes the content as it
-// is when the change applies.
+// freezes the flat's ID instead: the approval covers that flat, not one
+// revision, so content changes while it is pending do not make it stale,
+// approving it exposes the content as it is when the change applies, and it
+// never applies to another flat created later under the same slug.
+// Requests stored before flat IDs froze the live version of every flat and
+// keep that rule.
 type visibilityParams struct {
 	Visibility   string `json:"visibility"`
 	From         string `json:"from"`
 	ExpectedLive *int   `json:"expected_live,omitempty"`
 	Providers    string `json:"providers"`
+	FlatID       string `json:"flat_id,omitempty"`
 }
 
 func (s *Service) contentDir(slugName string, v store.Version) string {
@@ -130,13 +134,22 @@ func (s *Service) permittedIDs(ctx context.Context, slugName string) ([]Provider
 	return out, nil
 }
 
-func (s *Service) requestFrozen(ctx context.Context, slugName, action string, params any, via Via, reason string) (ActionResult, error) {
+// frozenKey is the idempotency key of a request: identical pending requests
+// share it.
+func frozenKey(slugName, action string, params any) (string, []byte, error) {
 	raw, err := json.Marshal(params)
+	if err != nil {
+		return "", nil, err
+	}
+	sum := sha256.Sum256([]byte(slugName + "\n" + action + "\n" + string(raw)))
+	return hex.EncodeToString(sum[:]), raw, nil
+}
+
+func (s *Service) requestFrozen(ctx context.Context, slugName, action string, params any, via Via, reason string) (ActionResult, error) {
+	key, raw, err := frozenKey(slugName, action, params)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	sum := sha256.Sum256([]byte(slugName + "\n" + action + "\n" + string(raw)))
-	key := hex.EncodeToString(sum[:])
 	if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil {
 		url := s.ApprovalURL(ctx, existing.ID)
 		return ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: url,
@@ -269,6 +282,13 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		return ActionResult{}, invalidf("unknown visibility %q (use private or public)", vis)
 	}
 	vis = vis.Canonical()
+	// The state read here and the recorded request belong to one flat: a
+	// delete, rename or save cannot finish in between.
+	unlock, err := s.lockCtx(ctx, slugName)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	defer unlock()
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return ActionResult{}, err
@@ -290,10 +310,26 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	p := visibilityParams{Visibility: string(vis), From: string(f.Visibility.Canonical()), Providers: providers}
-	if !contenttype.RevisionModel(t) {
-		live := f.LiveVersion
-		p.ExpectedLive = &live
+	live := f.LiveVersion
+	legacy := visibilityParams{Visibility: string(vis), From: string(f.Visibility.Canonical()), ExpectedLive: &live, Providers: providers}
+	p := legacy
+	if contenttype.RevisionModel(t) && f.ID != "" {
+		p.ExpectedLive, p.FlatID = nil, f.ID
+		// A request stored before flat IDs is the same request while the
+		// live version it froze still runs; reuse it rather than adding a
+		// second pending approval for one change.
+		if key, _, err := frozenKey(slugName, "set_visibility", legacy); err != nil {
+			return ActionResult{}, err
+		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil {
+			res := ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: s.ApprovalURL(ctx, existing.ID),
+				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}
+			if vis.Public() {
+				res.Notice = PendingPublicAccessNotice
+			}
+			return res, nil
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return ActionResult{}, err
+		}
 	}
 	res, err := s.requestFrozen(ctx, slugName, "set_visibility", p, via, reason)
 	if err != nil {
@@ -975,22 +1011,16 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	// The approval covers the flat it was requested for, not a later flat
-	// created under the same slug after a deletion. A rename keeps the
-	// creation time and moves the approval with the flat.
-	if f.CreatedAt.After(a.RequestedAt) {
+	// A frozen flat ID (documents and designs) covers that flat and not
+	// one revision: a rename keeps the ID, a flat created again under a
+	// deleted slug has another. Without it the live version is frozen.
+	if p.FlatID != "" && p.FlatID != f.ID {
 		return ActionResult{}, fmt.Errorf("%w: %w: flat %s was deleted and created again after the request; request a new visibility change", ErrConflict, ErrStaleApproval, a.Flat)
 	}
 	if string(f.Visibility.Canonical()) != p.From {
 		return ActionResult{}, mismatch(p.From, string(f.Visibility.Canonical()), "visibility")
 	}
-	// A Revision-model flat ignores the live version, also one frozen by
-	// an approval requested before this rule: its content changes in place.
-	t, err := s.flatType(ctx, f)
-	if err != nil {
-		return ActionResult{}, err
-	}
-	if !contenttype.RevisionModel(t) {
+	if p.FlatID == "" {
 		expected := 0
 		if p.ExpectedLive != nil {
 			expected = *p.ExpectedLive

@@ -156,15 +156,19 @@ frozen value:
 - `delete_version` freezes the version hash.
 - `set_visibility` freezes the source visibility and provider permissions,
   and for a website or page also the live version. A document or design
-  freezes no live version: the approval covers the flat, not one revision
-  ([content models](spec/content-models.md), Revision model rule 2). A
-  changed save of a document moves its internal live version, and so does a
-  revision rollback whose target has other non-document files or another set
-  of documents ([revision store](revision-store.md)); neither makes a pending
-  visibility approval stale, and approving it exposes the content running
-  when it applies. Requests stored before this rule froze a document's live
-  version; that field is ignored for documents and designs. An approval whose
-  flat was deleted and created again after the request is stale.
+  freezes the flat's ID instead of the live version: the approval covers the
+  flat, not one revision ([content models](spec/content-models.md), Revision
+  model rule 2). A changed save of a document moves its internal live
+  version, and so does a revision rollback whose target has other
+  non-document files or another set of documents
+  ([revision store](revision-store.md)); neither makes a pending visibility
+  approval stale, and approving it exposes the content running when it
+  applies. The flat ID is random, set at creation and kept by renames, so an
+  approval never applies to another flat created later under a deleted slug.
+  The request reads the flat and records the approval under the flat's lock.
+  Requests stored before flat IDs froze a document's live version and keep
+  that rule; an identical new request reuses one while that version still
+  runs.
 
 Pending requests deduplicate across caller surfaces by canonical
 action/params. Decisions serialize by approval ID and atomically claim pending
@@ -237,6 +241,7 @@ with its `user_version`, so a failed step leaves no trace:
 | 13 | host keys and console nodes |
 | 14 | console nodes per network |
 | 15 | version quota and version number history |
+| 16 | flat identity: a random ID per flat |
 
 A database newer than the binary is refused untouched.
 

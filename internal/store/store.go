@@ -3,7 +3,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,6 +71,11 @@ type Flat struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 	OldSlug      string     `json:"old_slug,omitempty"`
 	OldSlugTill  *time.Time `json:"old_slug_until,omitempty"`
+	// ID identifies this flat for its whole life: it is random, set when
+	// the flat is created and kept by renames, so a flat deleted and created
+	// again under the same slug has another ID. Requests that must not apply
+	// to such a replacement freeze it. It is not shown to clients.
+	ID string `json:"-"`
 }
 
 // Version is an immutable uploaded build.
@@ -151,7 +158,8 @@ CREATE TABLE IF NOT EXISTS flats (
   updated_at INTEGER NOT NULL,
   old_slug TEXT,
   old_slug_until INTEGER,
-  version_quota INTEGER CHECK(version_quota IS NULL OR version_quota >= 0)
+  version_quota INTEGER CHECK(version_quota IS NULL OR version_quota >= 0),
+  uid TEXT
 );
 CREATE TABLE IF NOT EXISTS versions (
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -358,8 +366,11 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
-		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt))
+	if f.ID == "" {
+		f.ID = newFlatID()
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at,uid) VALUES(?,?,?,?,?,?,?)`,
+		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt), f.ID)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return fmt.Errorf("flat %q %w", f.Slug, ErrExists)
 	}
@@ -388,17 +399,25 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	return tx.Commit()
 }
 
-const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota`
+const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid`
+
+// newFlatID returns a random flat ID.
+func newFlatID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b) // crypto/rand.Read does not fail
+	return hex.EncodeToString(b)
+}
 
 func scanFlat(sc interface{ Scan(...any) error }) (Flat, error) {
 	var f Flat
 	var vis string
 	var created, updated int64
-	var old sql.NullString
+	var old, id sql.NullString
 	var till, quota sql.NullInt64
-	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota); err != nil {
+	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id); err != nil {
 		return f, err
 	}
+	f.ID = id.String
 	f.Visibility = Visibility(vis)
 	f.CreatedAt, f.UpdatedAt = fromUnix(created), fromUnix(updated)
 	f.OldSlug = old.String

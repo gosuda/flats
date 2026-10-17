@@ -55,8 +55,8 @@ func TestDocsVisibilityApprovalSurvivesContentChanges(t *testing.T) {
 	if err != nil || req.Approval == nil {
 		t.Fatalf("request %+v %v", req, err)
 	}
-	if _, ok := frozenParams(t, req.Approval)["expected_live"]; ok {
-		t.Fatalf("document approval froze the live version: %s", req.Approval.Params)
+	if fp := frozenParams(t, req.Approval); fp["expected_live"] != nil || fp["flat_id"] == nil {
+		t.Fatalf("document approval must freeze the flat, not the live version: %s", req.Approval.Params)
 	}
 	first := liveVersionOf(t, s, "handbook")
 
@@ -126,9 +126,11 @@ func TestDocsVisibilityApprovalSurvivesContentChanges(t *testing.T) {
 	}
 }
 
-// Approvals stored before this rule froze the document's live version. They
-// apply by the new rule, and still check the other frozen state.
-func TestLegacyDocsVisibilityApprovalIgnoresLiveVersion(t *testing.T) {
+// Approvals stored before flat IDs froze a document's live version and do
+// not name the flat. They keep that rule, which also keeps them from
+// applying to another flat of the slug, and a new identical request reuses
+// one while it still holds.
+func TestLegacyDocsVisibilityApprovalKeepsLiveVersionRule(t *testing.T) {
 	s, _ := docsVisibilityService(t)
 	ctx := t.Context()
 	saveDocs(t, s, "legacy-doc")
@@ -139,30 +141,52 @@ func TestLegacyDocsVisibilityApprovalIgnoresLiveVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	insert := func(id string, live int) {
+	// What the previous release stored, key included.
+	insert := func(id string) store.Approval {
 		t.Helper()
-		raw, _ := json.Marshal(map[string]any{"visibility": "public", "from": "private", "expected_live": live, "providers": providers})
-		if err := s.st.InsertApproval(ctx, store.Approval{ID: id, Flat: "legacy-doc", Action: "set_visibility", Params: raw, Status: "pending", Via: "mcp", RequestedAt: s.now()}); err != nil {
+		params := visibilityParams{Visibility: "public", From: "private", ExpectedLive: ptr(liveVersionOf(t, s, "legacy-doc")), Providers: providers}
+		key, raw, err := frozenKey("legacy-doc", "set_visibility", params)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if !strings.Contains(string(raw), `"expected_live"`) || strings.Contains(string(raw), "flat_id") {
+			t.Fatalf("legacy params %s", raw)
+		}
+		a := store.Approval{ID: id, Flat: "legacy-doc", Action: "set_visibility", Params: raw, Status: "pending", Via: "mcp", RequestedAt: s.now(), IdempotencyKey: key}
+		if err := s.st.InsertApproval(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		return a
 	}
-	insert("legacy-policy", liveVersionOf(t, s, "legacy-doc"))
-	insert("legacy-doc-vis", liveVersionOf(t, s, "legacy-doc"))
+	insert("legacy-holds")
+	same, err := s.SetVisibility(ctx, "legacy-doc", store.Public, ViaMCP, "")
+	if err != nil || same.Approval == nil || same.Approval.ID != "legacy-holds" || same.Notice == "" {
+		t.Fatalf("identical request did not reuse the legacy approval: %+v %v", same, err)
+	}
+	if a, err := s.Decide(ctx, "legacy-holds", true); err != nil || a.Status != "approved" {
+		t.Fatalf("legacy approval with its live version %+v %v", a, err)
+	}
+	back, err := s.SetVisibility(ctx, "legacy-doc", store.Private, ViaMCP, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Decide(ctx, back.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	insert("legacy-stale")
 	if _, err := s.SaveDocument(ctx, "legacy-doc", "index.md", "# changed\n", "", SaveMeta{}, ViaMCP); err != nil {
 		t.Fatal(err)
 	}
-	// Provider permissions stay frozen.
-	if err := s.SetProviderPermission(ctx, "legacy-doc", store.ProviderFunnel, true, ViaConsole); err != nil {
-		t.Fatal(err)
+	fresh, err := s.SetVisibility(ctx, "legacy-doc", store.Public, ViaMCP, "")
+	if err != nil || fresh.Approval == nil || fresh.Approval.ID == "legacy-stale" {
+		t.Fatalf("request after a save reused a stale legacy approval: %+v %v", fresh, err)
 	}
-	if a, err := s.Decide(ctx, "legacy-policy", true); !errors.Is(err, ErrStaleApproval) || !strings.Contains(a.Result, "provider permissions") {
-		t.Fatalf("provider change %+v %v", a, err)
+	if a, err := s.Decide(ctx, "legacy-stale", true); !errors.Is(err, ErrStaleApproval) || !strings.Contains(a.Result, "the live version") {
+		t.Fatalf("legacy approval after a save %+v %v", a, err)
 	}
-	if err := s.SetProviderPermission(ctx, "legacy-doc", store.ProviderFunnel, false, ViaConsole); err != nil {
-		t.Fatal(err)
-	}
-	if a, err := s.Decide(ctx, "legacy-doc-vis", true); err != nil || a.Status != "approved" {
-		t.Fatalf("legacy approval %+v %v", a, err)
+	if a, err := s.Decide(ctx, fresh.Approval.ID, true); err != nil || a.Status != "approved" {
+		t.Fatalf("new approval %+v %v", a, err)
 	}
 }
 
@@ -193,7 +217,7 @@ func TestVersionModelVisibilityApprovalStillFreezesLiveVersion(t *testing.T) {
 			if err != nil || req.Approval == nil {
 				t.Fatalf("request %+v %v", req, err)
 			}
-			if live, ok := frozenParams(t, req.Approval)["expected_live"]; !ok || string(live) != "1" {
+			if fp := frozenParams(t, req.Approval); string(fp["expected_live"]) != "1" || fp["flat_id"] != nil {
 				t.Fatalf("frozen params %s", req.Approval.Params)
 			}
 			save("two")
@@ -226,8 +250,8 @@ func TestDesignVisibilityApprovalSurvivesWrites(t *testing.T) {
 	if err != nil || req.Approval == nil {
 		t.Fatalf("request %+v %v", req, err)
 	}
-	if _, ok := frozenParams(t, req.Approval)["expected_live"]; ok {
-		t.Fatalf("design approval froze the live version: %s", req.Approval.Params)
+	if fp := frozenParams(t, req.Approval); fp["expected_live"] != nil || fp["flat_id"] == nil {
+		t.Fatalf("design approval must freeze the flat, not the live version: %s", req.Approval.Params)
 	}
 	if _, err := s.WriteDesign(ctx, "studio", DesignWrite{Files: []DesignFile{{Path: "a.html", Data: []byte("<p>changed</p>")}}}, ViaMCP); err != nil {
 		t.Fatal(err)
@@ -244,10 +268,13 @@ func TestDesignVisibilityApprovalSurvivesWrites(t *testing.T) {
 }
 
 // A document that has never run cannot become Public, and an approval
-// requested for a deleted flat never applies to a new flat of that slug.
+// requested for a deleted flat never applies to a new flat of that slug,
+// even one created in the same millisecond, while a rename keeps it valid.
 func TestDocsVisibilityApprovalKeepsOtherGuarantees(t *testing.T) {
 	s, _ := docsVisibilityService(t)
 	ctx := t.Context()
+	fixed := time.Now().UTC().Truncate(time.Millisecond)
+	s.now = func() time.Time { return fixed }
 	saveDocsDraft(t, s, "never-ran")
 	if r, err := s.SetVisibility(ctx, "never-ran", store.Public, ViaMCP, ""); !errors.Is(err, ErrConflict) || r.Approval != nil {
 		t.Fatalf("unpublished document made public: %+v %v", r, err)
@@ -272,17 +299,19 @@ func TestDocsVisibilityApprovalKeepsOtherGuarantees(t *testing.T) {
 		t.Fatalf("deletion left the visibility approval %s", a.Status)
 	}
 	// Deletion fails pending approvals best effort, after the flat row is
-	// gone. One it missed must still not apply to a later flat of the slug.
+	// gone, and leaves a claimed one alone. Such an approval must still not
+	// apply to a later flat of the slug.
 	missed := *req.Approval
 	missed.ID, missed.Status, missed.IdempotencyKey = "apr-missed", "pending", ""
 	if err := s.st.InsertApproval(ctx, missed); err != nil {
 		t.Fatal(err)
 	}
-	later := time.Now().UTC().Add(time.Second)
-	s.now = func() time.Time { return later }
 	saveDocs(t, s, "again")
 	if err := s.SetProviderPermission(ctx, "again", store.ProviderPortal, true, ViaConsole); err != nil {
 		t.Fatal(err)
+	}
+	if f, _ := s.st.GetFlat(ctx, "again"); !f.CreatedAt.Equal(req.Approval.RequestedAt) {
+		t.Fatal("the recreated flat is not in the request's millisecond; the test proves less")
 	}
 	a, err := s.Decide(ctx, missed.ID, true)
 	if !errors.Is(err, ErrStaleApproval) || !strings.Contains(a.Result, "deleted and created again") {
@@ -290,5 +319,20 @@ func TestDocsVisibilityApprovalKeepsOtherGuarantees(t *testing.T) {
 	}
 	if f, _ := s.st.GetFlat(ctx, "again"); f.Visibility != store.Private {
 		t.Fatal("recreated flat became public")
+	}
+
+	// A rename moves the approval with the flat and keeps it valid.
+	req, err = s.SetVisibility(ctx, "again", store.Public, ViaMCP, "")
+	if err != nil || req.Approval == nil {
+		t.Fatalf("request %+v %v", req, err)
+	}
+	if _, err := s.RenameSlug(ctx, "again", "renamed", ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := s.Decide(ctx, req.Approval.ID, true); err != nil || a.Status != "approved" {
+		t.Fatalf("approval after a rename %+v %v", a, err)
+	}
+	if f, _ := s.st.GetFlat(ctx, "renamed"); f.Visibility != store.Public {
+		t.Fatal("renamed flat is not public")
 	}
 }

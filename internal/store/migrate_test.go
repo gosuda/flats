@@ -173,7 +173,7 @@ func TestMigrationRegistryIsOrdered(t *testing.T) {
 			t.Fatalf("step %d after %d", m.version, migrations[i-1].version)
 		}
 	}
-	if latestVersion() != 15 {
+	if latestVersion() != 16 {
 		t.Fatalf("latest %d", latestVersion())
 	}
 }
@@ -256,6 +256,18 @@ func commonChecks(t *testing.T, s *Store) {
 	}
 	if evs, _ := s.ListEvents(ctx, "blog", "", 0, 10); len(evs) == 0 {
 		t.Fatal("events lost")
+	}
+	// Every existing flat gets its own ID.
+	flats, err := s.ListFlats(ctx)
+	if err != nil || len(flats) == 0 {
+		t.Fatal(flats, err)
+	}
+	ids := map[string]bool{}
+	for _, f := range flats {
+		if len(f.ID) != 32 || ids[f.ID] {
+			t.Fatalf("flat %s ID %q", f.Slug, f.ID)
+		}
+		ids[f.ID] = true
 	}
 }
 

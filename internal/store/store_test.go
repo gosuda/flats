@@ -253,3 +253,43 @@ func open2(t *testing.T, path string) *Store {
 	t.Cleanup(func() { s.Close() })
 	return s
 }
+
+// A flat's ID survives a rename; a flat created again under a deleted
+// slug gets another one.
+func TestFlatIDFollowsTheFlat(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	create := func() Flat {
+		t.Helper()
+		if err := s.CreateFlat(ctx, Flat{Slug: "same", Name: "same", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		f, err := s.GetFlat(ctx, "same")
+		if err != nil || len(f.ID) != 32 {
+			t.Fatal(f, err)
+		}
+		return f
+	}
+	first := create()
+	if err := s.RenameFlat(ctx, "same", "moved", time.Time{}, now); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := s.GetFlat(ctx, "moved"); err != nil || f.ID != first.ID {
+		t.Fatalf("rename changed the ID: %+v %v", f, err)
+	}
+	if err := s.RenameFlat(ctx, "moved", "same", time.Time{}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteFlat(ctx, "same"); err != nil {
+		t.Fatal(err)
+	}
+	// Same slug, same millisecond: still another flat.
+	if again := create(); again.ID == first.ID {
+		t.Fatal("a recreated flat kept the deleted flat's ID")
+	}
+}
