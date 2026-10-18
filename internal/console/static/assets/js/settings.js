@@ -105,16 +105,17 @@ export function mount(main, [section, sub], ctx) {
   const load = (saved, background) => {
     page.token = { id: ++seq, background: !!background };
     // An immediate action (Add, Delete, Turn on, a key) reloads the page:
-    // keep what the operator staged but has not saved. A save reloads with
-    // its result and starts clean.
-    const staged = saved ? {} : Object.assign({}, ...page.forms.map((f) => f.snapshot()));
+    // keep what the operator staged but has not saved. The old forms are
+    // read when the new page has drawn, so edits and Discard made while the
+    // reload ran count. A save reloads with its result and starts clean.
     const token = page.token;
     const drawn = [];
     page.collect = drawn;
     const done = () => {
-      if (page.token !== token || !drawn.length) return;
+      if (page.token !== token || !token.drawn) return;
+      const staged = saved ? {} : Object.assign({}, ...page.forms.map((f) => f.snapshot()));
       page.forms = drawn;
-      if (Object.keys(staged).length) for (const f of drawn) f.restore(staged);
+      for (const f of drawn) f.restore(staged);
     };
     let run;
     if (active === 'networks' && sub) run = providerPage(page, sub, saved, load);
@@ -277,6 +278,7 @@ async function loadAll(page, want) {
     page.refresh(true);
     return null;
   }
+  if (token) token.drawn = true;
   const out = {};
   names.forEach((n, i) => { out[n] = res[i].status === 'fulfilled' ? res[i].value : null; out[n + 'Error'] = res[i].reason; });
   if (!out.settings) {
@@ -1222,11 +1224,12 @@ function stagedForm(spec) {
       // raw and setRaw carry a staged value across a page reload.
       raw: () => (kind === 'toggle' ? { checked: !!input.checked } : { value: input.value, unit: kind === 'bytes' ? unit.value : undefined }),
       setRaw: (v) => {
-        if (kind === 'toggle') { input.checked = v.checked; return true; }
+        if (kind === 'toggle') { input.checked = v.checked; return; }
+        // A choice that no longer exists (a deleted address) is dropped and
+        // the freshly loaded value stays.
+        if (kind === 'select' && !hasOption(input, v.value)) return;
         input.value = v.value;
         if (kind === 'bytes' && v.unit) { unit.value = v.unit; update(); }
-        // A choice that no longer exists (a deleted address) is dropped.
-        return input.value === v.value;
       } };
     return r;
   };
@@ -1422,16 +1425,21 @@ function stagedForm(spec) {
     spec.page.collect.push({
       snapshot: () => Object.fromEntries(Object.entries(controls).filter(([key, c]) => !pinned[key] && c.read()).map(([key, c]) => [key, c.raw()])),
       restore: (staged) => {
-        let any = false;
         for (const [key, v] of Object.entries(staged)) {
           const c = controls[key];
-          if (c && !pinned[key] && !c.input.disabled) any = c.setRaw(v) || any;
+          if (c && !pinned[key] && !c.input.disabled) c.setRaw(v);
         }
-        if (any) refreshBar(false);
+        refreshBar(false);
       },
     });
   }
   return form;
+}
+
+// hasOption reports whether a select offers value.
+function hasOption(select, value) {
+  const options = select.options ? [...select.options] : (select.childNodes || []);
+  return options.some((o) => o.value === value);
 }
 
 // describeValue shows a stored value in a field's unit for the save bar.
@@ -1505,6 +1513,7 @@ export function impactPanel(impact, onConfirm, onCancel) {
 // --- agents ---
 
 function agentsPage(page) {
+  if (page.token) page.token.drawn = true;
   page.ctx.setTitle('Agents · Settings');
   const url = location.origin + '/mcp';
   const snippets = [

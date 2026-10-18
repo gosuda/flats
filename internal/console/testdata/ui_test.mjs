@@ -1076,6 +1076,19 @@ byId(page, 'limits-form').dispatch('submit');
 await tick();
 panel = all(page, (e) => e.className === 'impact')[0];
 assert.ok(panel.textContent.includes('Log events: 5000 → 2 events.') && panel.textContent.includes('Revisions: 100 → 10 revisions.'));
+putCount = puts().length;
+byText(panel, 'Save and remove')[0].dispatch('click');
+await tick();
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { events_keep: '2', revision_quota: '10' }, 'the one confirmation saves both');
+// Raising it saves at once.
+page = await mountSettings(['limits']);
+byId(page, 'set-revision_quota').value = '200';
+putCount = puts().length;
+byId(page, 'limits-form').dispatch('submit');
+await tick();
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { revision_quota: '200' });
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 
 // Byte sizes show the stored count exactly, in the largest unit that
@@ -1584,6 +1597,48 @@ byId(domMain, 'links-form').dispatch('submit');
 await tick();
 await tick();
 assert.equal(byId(domMain, 'console-preferred').value, '', 'the reload shows the stored value');
+assert.equal(savebarOf(domMain).getAttribute('hidden'), '');
+// What the operator does while the reload runs wins over the earlier
+// staged value: a new choice, or Discard.
+const VIEW_P5 = routes['GET /console/api/console-domains'];
+let releaseDomains;
+const slowDomains = (view) => () => new Promise((resolve) => { releaseDomains = () => resolve(view); });
+for (const [during, want] of [['change', ''], ['discard', '']]) {
+  routes['GET /console/api/console-domains'] = VIEW_P5;
+  domMain = await mountSettings(['console']);
+  byId(domMain, 'console-preferred').value = 'tailscale:next';
+  byId(domMain, 'links-form').dispatch('change');
+  routes['GET /console/api/console-domains'] = slowDomains(VIEW_P5);
+  byId(domMain, 'console-domain-name').value = 'fourth';
+  all(byId(domMain, 'console-domains'), (e) => e.tagName === 'FORM')[0].dispatch('submit');
+  await tick();
+  assert.equal(typeof releaseDomains, 'function', 'the reload must be waiting');
+  if (during === 'change') {
+    byId(domMain, 'console-preferred').value = '';
+    byId(domMain, 'links-form').dispatch('change');
+  } else {
+    byText(savebarOf(domMain), 'Discard')[0].dispatch('click');
+  }
+  releaseDomains();
+  await tick();
+  await tick();
+  assert.equal(byId(domMain, 'console-preferred').value, want, `${during} during the reload is kept`);
+  assert.equal(savebarOf(domMain).getAttribute('hidden'), '', `${during}: nothing is left staged`);
+  releaseDomains = undefined;
+}
+// A staged choice that no longer exists after the reload is dropped: the
+// stored value stays and nothing is staged.
+routes['GET /console/api/console-domains'] = VIEW_P5;
+domMain = await mountSettings(['console']);
+byId(domMain, 'console-preferred').value = 'tailscale:next';
+byId(domMain, 'links-form').dispatch('change');
+routes['GET /console/api/console-domains'] = dview({ on: true, domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }] }, {},
+  { preferred: '', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p7' });
+byId(domMain, 'console-domain-name').value = 'fifth';
+all(byId(domMain, 'console-domains'), (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+await tick();
+assert.equal(byId(domMain, 'console-preferred').value, '', 'a vanished choice is not restored');
 assert.equal(savebarOf(domMain).getAttribute('hidden'), '');
 // A preferred domain that is not served is warned about, with where links go instead.
 routes['GET /console/api/console-domains'] = dview({ on: true,
