@@ -340,8 +340,14 @@ func TestRunRefusals(t *testing.T) {
 		t.Fatalf("live run: %+v, %v", rec, err)
 	}
 
-	if records, _ := LoadRecords(o.RunsDir); len(records) != 1 {
-		t.Errorf("refused starts left invocation records: %v", records)
+	records, _ := LoadRecords(o.RunsDir)
+	if len(records) != 1 {
+		t.Fatalf("refused starts left invocation records: %v", records)
+	}
+	// The persisted record keeps the executor's statement exactly.
+	want := Surface{Kind: SurfaceLive, Path: f.root, WritesPrevented: "single executor, no other writers"}
+	if records[0].Surface != want || records[0].Surface != rec.Surface {
+		t.Errorf("persisted surface %+v, want %+v", records[0].Surface, want)
 	}
 }
 
