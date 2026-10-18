@@ -302,9 +302,15 @@ The loopback listener's handler (`loopbackGuard(mux)` in
 in `internal/app/consoledomains.go`) are wrapped outside their guards, so
 refused requests are counted too. The middleware labels each request by
 surface: `api` (`/api/`), `console` (`/console/api/`), `mcp` (`/mcp`),
-`metrics` (`/metrics`), `other`, and counts requests by status class with the
-same `usageWriter` (the MCP SDK uses `ResponseController` for its streams).
-There is no management duration histogram.
+`metrics` (`/metrics`), `other`, and counts requests by status class with a
+`statusWriter` that records the sent status like `usageWriter` and keeps
+`Unwrap`, `Flush`, `Hijack` (the MCP SDK uses `ResponseController` for its
+streams) and `ReadFrom`, so files the management server serves keep sendfile.
+A panic counts as `5xx` when no status was sent and is re-raised unchanged; a
+panic with `http.ErrAbortHandler` (an aborted response, such as a departed
+client) keeps the status already sent and is not counted when none was, since
+management requests have no `closed` class. There is no management duration
+histogram.
 
 ## `/metrics`
 

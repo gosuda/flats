@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"bufio"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -65,8 +66,12 @@ func (m *Metrics) ManagementCount(surface, class string) uint64 {
 }
 
 // Management counts every request next answers by surface and status class.
-// Wrap it outside the host guards so refused requests are counted. A nil
-// Metrics returns next unchanged.
+// Wrap it outside the host guards so refused requests are counted. A panic is
+// re-raised unchanged: it counts as 5xx when no status was sent, except
+// http.ErrAbortHandler (an aborted response, such as a departed client),
+// which keeps the status already sent and is not counted when none was, since
+// management requests have no closed class. A nil Metrics returns next
+// unchanged.
 func (m *Metrics) Management(next http.Handler) http.Handler {
 	if m == nil {
 		return next
@@ -77,13 +82,29 @@ func (m *Metrics) Management(next http.Handler) http.Handler {
 		panicked := true
 		defer func() {
 			code := sw.status()
-			if panicked && code == 0 {
+			if !panicked {
+				if code == 0 {
+					code = http.StatusOK // net/http sends 200 for a handler that wrote nothing
+				}
+				m.mgmt[surface][classIndex(code)].Add(1)
+				return
+			}
+			value := recover()
+			switch {
+			case value == nil: // runtime.Goexit: nothing to re-raise
+				if code == 0 {
+					code = http.StatusOK
+				}
+			case value == http.ErrAbortHandler && code == 0:
+			case code == 0:
 				code = http.StatusInternalServerError
 			}
-			if code == 0 {
-				code = http.StatusOK // net/http sends 200 for a handler that wrote nothing
+			if code != 0 {
+				m.mgmt[surface][classIndex(code)].Add(1)
 			}
-			m.mgmt[surface][classIndex(code)].Add(1)
+			if value != nil {
+				panic(value)
+			}
 		}()
 		next.ServeHTTP(sw, r)
 		panicked = false
@@ -115,6 +136,20 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	w.sent(http.StatusOK)
 	return w.ResponseWriter.Write(b)
 }
+
+// ReadFrom keeps the underlying writer's optimized copy (sendfile for files
+// the console serves).
+func (w *statusWriter) ReadFrom(r io.Reader) (int64, error) {
+	w.sent(http.StatusOK)
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(writerOnly{w.ResponseWriter}, r)
+}
+
+// writerOnly hides every method but Write, so io.Copy cannot call back into
+// ReadFrom.
+type writerOnly struct{ io.Writer }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 

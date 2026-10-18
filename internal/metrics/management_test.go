@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,18 +82,95 @@ func TestManagementCountsBySurfaceAndClass(t *testing.T) {
 	}
 }
 
+// A panic is re-raised unchanged. Before any status it counts as 5xx, except
+// http.ErrAbortHandler (a departed client), which is not counted at all; after
+// a status both keep that status.
 func TestManagementPanicIsReraised(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		value  any
+		class  string // "": not counted
+	}{
+		{"panic before a status is 5xx", 0, "boom", "5xx"},
+		{"panic after a status keeps it", http.StatusCreated, "boom", "2xx"},
+		{"abort before a status is not counted", 0, http.ErrAbortHandler, ""},
+		{"abort after a status keeps it", http.StatusOK, http.ErrAbortHandler, "2xx"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Options{})
+			h := m.Management(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				panic(tc.value)
+			}))
+			func() {
+				defer func() {
+					if r := recover(); r != tc.value {
+						t.Fatalf("recovered %v, want %v", r, tc.value)
+					}
+				}()
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/x", nil))
+			}()
+			for _, class := range managementClasses {
+				want := uint64(0)
+				if class == tc.class {
+					want = 1
+				}
+				if got := m.ManagementCount("api", class); got != want {
+					t.Errorf("api %s = %d, want %d", class, got, want)
+				}
+			}
+		})
+	}
+}
+
+// readFromRecorder is a ResponseWriter whose ReadFrom stands for net/http's
+// sendfile path.
+type readFromRecorder struct {
+	*httptest.ResponseRecorder
+	readFrom int
+}
+
+func (r *readFromRecorder) ReadFrom(src io.Reader) (int64, error) {
+	r.readFrom++
+	return io.Copy(r.ResponseRecorder, src)
+}
+
+// A file copied into the response reaches the inner writer's ReadFrom, so
+// management responses keep sendfile; without one it is copied through Write.
+func TestManagementKeepsReadFrom(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "asset.js")
+	if err := os.WriteFile(path, []byte("console.log(1)"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m := New(Options{})
-	h := m.Management(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }))
-	defer func() {
-		if r := recover(); r != http.ErrAbortHandler {
-			t.Fatalf("recovered %v", r)
+	h := m.Management(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Error(err)
+			return
 		}
-		if m.ManagementCount("api", "5xx") != 1 {
-			t.Fatal("a panic before any status is not counted as 5xx")
+		defer f.Close()
+		if _, ok := w.(io.ReaderFrom); !ok {
+			t.Error("the wrapper hides io.ReaderFrom")
 		}
-	}()
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/x", nil))
+		io.Copy(w, f)
+	}))
+	inner := &readFromRecorder{ResponseRecorder: httptest.NewRecorder()}
+	h.ServeHTTP(inner, httptest.NewRequest("GET", "/console/app.js", nil))
+	if inner.readFrom != 1 || inner.Body.String() != "console.log(1)" || inner.Code != http.StatusOK {
+		t.Fatalf("ReadFrom calls %d, body %q, code %d", inner.readFrom, inner.Body.String(), inner.Code)
+	}
+	plain := httptest.NewRecorder()
+	h.ServeHTTP(plain, httptest.NewRequest("GET", "/console/app.js", nil))
+	if plain.Body.String() != "console.log(1)" {
+		t.Fatalf("copied body %q", plain.Body.String())
+	}
+	if got := m.ManagementCount("other", "2xx"); got != 2 {
+		t.Fatalf("other 2xx = %d", got)
+	}
 }
 
 // An event stream flushes through the wrapper, both through the
