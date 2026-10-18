@@ -196,7 +196,7 @@ func Serve(args []string) error {
 	if len(consoles) == 0 {
 		consoles = []string{h.ConsoleURL()}
 	}
-	log.Printf("flats %s serving; console %s (loopback http://%s)", buildinfo.Get().Version, strings.Join(consoles, ", "), h.Addr())
+	log.Printf("flats %s serving; console %s (loopback %s)", buildinfo.Get().Version, strings.Join(consoles, ", "), h.console)
 	<-ctx.Done()
 	log.Printf("shutting down")
 	return h.Close()
@@ -280,7 +280,7 @@ func (h *Host) background(fn func(context.Context)) {
 	}()
 }
 
-// Addr is the loopback management address actually bound.
+// Addr is the management address actually bound.
 func (h *Host) Addr() string { return h.ln.Addr().String() }
 
 // configModeFlags are the serve flags config mode accepts. The host flags
@@ -725,7 +725,7 @@ func (h *Host) Status(ctx context.Context) any {
 		urls = []string{}
 	}
 	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: console, ConsoleURLs: urls, MCPURL: strings.TrimSuffix(console, "/") + "/mcp",
-		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
+		LocalURL: h.console, Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
 		s.Providers = h.Providers.HostStatus()
 		for _, id := range h.Providers.File().Permitted {

@@ -78,6 +78,7 @@ def main():
             # host ports must work before claiming the deployment works.
             status = json.loads(get(url + "/api/status"))["system"]
             assert status["console_url"] == url, "console URL is not the published loopback address"
+            assert status["local_url"] == url, "local URL is not the published loopback address"
             assert status["mcp_url"] == url + "/mcp", "MCP URL is not the published loopback address"
             assert get(status["console_url"]), "advertised console URL is unreachable"
             assert get(url + "/"), "console is empty"
