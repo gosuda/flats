@@ -47,9 +47,11 @@ darwin/amd64 by the `darwin-cross-build` job on Linux, and linux/amd64 and
 linux/arm64 by the `container` job.
 
 Slow `internal/core` lifecycle and recovery tests run in parallel in every run,
-including the selected race job and the `other` shard. Their fixtures own separate SQLite databases, storage directories
-and fake runtimes; checkpoint-recovery subtests also own independent fixtures.
-Tests that change package globals or assert wall-clock budgets stay serial.
+including the selected race job and the `other` shard. Their fixtures own
+separate SQLite databases, storage directories and fake runtimes;
+checkpoint-recovery subtests also own independent fixtures. Tests that change
+package globals or assert wall-clock budgets stay serial, and restore the
+globals with `t.Cleanup` so a failure cannot leak them into parallel tests.
 
 The `netbird` job covers the nested `netbird` module, which `go test ./...`
 does not reach: no go.mod/go.sum diff after `go mod tidy`, `go vet ./...`,

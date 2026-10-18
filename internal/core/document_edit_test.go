@@ -185,6 +185,15 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 			t.Fatal("outcome of a failed edit misstated", find, err)
 		}
 	}
+	// The fake app's receipt switches and the lookup timeout are package
+	// globals: restore them even if an assertion below fails, so later
+	// tests, including parallel ones, see the defaults.
+	lookupTimeout := receiptLookupTimeout
+	t.Cleanup(func() {
+		receiptsDown.Store(false)
+		receiptsStall.Store(false)
+		receiptLookupTimeout = lookupTimeout
+	})
 	// A lost response whose receipt cannot be checked is reported as unknown.
 	receiptsDown.Store(true)
 	if _, err := s.UpdateDocument(ctx, "notes", "", op("dark"), nil, ViaMCP); !strings.Contains(fmt.Sprint(err), "may or may not have applied") {
@@ -198,7 +207,7 @@ func TestUpdateDocumentRoutingAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	receiptsStall.Store(false)
-	receiptLookupTimeout = 5 * time.Second
+	receiptLookupTimeout = lookupTimeout
 	// Uncertain outcomes are always logged, with what the receipt showed.
 	events, err := s.Events(ctx, "notes", "document", 0, 20)
 	if err != nil {
