@@ -117,6 +117,9 @@ credential. The metrics include CPU, memory, response times and the slugs of
 Private and unpublished flats, so allow only scrapers you trust like someone
 with console access.
 
+An example Grafana dashboard for these metrics, with import steps, is in
+[examples/grafana](../examples/grafana/README.md).
+
 ## Removing a permission
 
 Removing a flat's Tailscale permission stops its Private Tailscale current,
