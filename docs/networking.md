@@ -101,7 +101,10 @@ preserving the public `Host`, for example `flats.example.org`. Declare
 Flats then accepts that authority and generates HTTPS approval, status and
 agent-discovery links even when the upstream connection is HTTP. Preserve
 browser `Origin` headers; do not rewrite them to bypass CSRF checks.
-Forwarded scheme/host headers do not affect URL selection.
+Forwarded scheme/host headers do not affect URL selection. Configure the proxy
+to preserve the external Host explicitly (for example, nginx defaults to the
+upstream host). Rewriting it to loopback hides the external-origin boundary
+and can make forwarded callers look like local clients; do not use that setup.
 
 The origin setting does not provide TLS, DNS, tunneling or authentication.
 Configure those at the proxy, require authentication (or restrict access to

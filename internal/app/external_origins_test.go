@@ -30,7 +30,7 @@ func TestExternalOriginsReverseProxy(t *testing.T) {
 		r.Out.Header.Set("X-Forwarded-Host", "untrusted.example.org")
 	}})
 	defer proxy.Close()
-	for _, path := range []string{"/api/status", "/llms.txt", "/llms-full.txt", "/docs/agent-guide.md"} {
+	for _, path := range []string{"/api/client", "/api/status", "/llms.txt", "/llms-full.txt", "/docs/agent-guide.md"} {
 		resp, err := client.Get(proxy.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -90,6 +90,27 @@ func TestExternalOriginsReverseProxy(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &approval); err != nil || !strings.HasPrefix(approval.URL, origin+"/approvals/") {
 		t.Fatalf("MCP approval URL: %s %v", raw, err)
+	}
+	id := strings.TrimPrefix(approval.URL, origin+"/approvals/")
+	decision, _ := http.NewRequest("POST", proxy.URL+"/console/api/approvals/"+id+"/reject", nil)
+	decision.Header.Set("Origin", origin)
+	decision.Header.Set("Sec-Fetch-Site", "same-origin")
+	decision.Header.Set("X-Flats-Console", "1")
+	decided, err := client.Do(decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decided.Body.Close()
+	if decided.StatusCode != 200 {
+		t.Fatalf("reject via external console: %d", decided.StatusCode)
+	}
+	events, err := h.Svc.Events(context.Background(), "external-site", "approval", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, _ := json.Marshal(events)
+	if !strings.Contains(string(audit), "the console via external origin "+origin) || strings.Contains(string(audit), "the console on the loopback listener") {
+		t.Fatalf("incorrect decision provenance: %s", audit)
 	}
 	r, _ := http.NewRequest("GET", proxy.URL+"/api/status", nil)
 	r.Header.Set("Origin", "https://evil.example.org")

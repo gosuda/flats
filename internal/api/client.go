@@ -15,6 +15,9 @@ func (s *Server) clientManifest(w http.ResponseWriter, r *http.Request, _ core.V
 		scheme = "https"
 	}
 	out.ServerURL = scheme + "://" + r.Host
+	if origin := ExternalOrigin(r.Context()); origin != "" {
+		out.ServerURL = origin
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, out)
 }

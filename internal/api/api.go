@@ -887,6 +887,9 @@ func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Reques
 			src := "tailnet user " + who
 			if who == "" {
 				src = "the console on the loopback listener (no tailnet identity)"
+				if origin := ExternalOrigin(r.Context()); origin != "" {
+					src = "the console via external origin " + origin + " (no authenticated identity)"
+				}
 			}
 			s.Svc.Event(r.Context(), a.Flat, "info", "approval",
 				fmt.Sprintf("approval %s (%s) %s by %s", a.ID, a.Action, a.Status, src),
