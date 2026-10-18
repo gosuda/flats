@@ -3,6 +3,7 @@
 package devreview
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -39,5 +40,33 @@ func TestSnapshotRefusesSpecialFiles(t *testing.T) {
 	}
 	if _, err := Snapshot(root, "", Options{Exclude: []string{"pipe"}}); err != nil {
 		t.Errorf("excluded FIFO: %v", err)
+	}
+}
+
+// Ignored and excluded directories are not entered: an unreadable cache
+// does not break a snapshot, while an unreadable candidate directory does.
+func TestSpecialFileScanSkipsIgnoredTrees(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable directories")
+	}
+	root := repo(t, map[string]string{"a.txt": "a\n", ".gitignore": "cache/\n"})
+	write(t, root, map[string]string{"cache/x": "x\n", "excluded/y": "y\n", "a.txt": "b\n"})
+	for _, d := range []string{"cache", "excluded"} {
+		p := filepath.Join(root, d)
+		if err := os.Chmod(p, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(p, 0o755) })
+	}
+	m, err := Snapshot(root, "", Options{Exclude: []string{"excluded/"}})
+	if err != nil {
+		t.Fatalf("snapshot with unreadable ignored and excluded directories: %v", err)
+	}
+	if d, err := Verify(root, m); err != nil || !d.None() {
+		t.Errorf("verify: %v, %v", d, err)
+	}
+	if _, err := Snapshot(root, "", Options{}); err == nil {
+		t.Error("an unreadable directory that is neither ignored nor excluded was accepted")
 	}
 }

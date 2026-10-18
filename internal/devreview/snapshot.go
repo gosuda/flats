@@ -294,15 +294,34 @@ func collect(root, mergeBase string, opts Options) (string, []Entry, []Excluded,
 
 // refuseSpecialFiles finds objects Git never lists, such as FIFOs and
 // sockets, and refuses those that are neither ignored nor excluded, so they
-// are not silently left out of the snapshot.
+// are not silently left out of the snapshot. Directories Git ignores as a
+// whole and excluded directory prefixes are not entered, so their size or
+// readability does not matter.
 func refuseSpecialFiles(root string, opts Options) error {
+	ignoredDirs := map[string]bool{}
+	others, err := gitZ(root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z")
+	if err != nil {
+		return err
+	}
+	for _, p := range others {
+		if strings.HasSuffix(p, "/") {
+			ignoredDirs[p] = true
+		}
+	}
 	var special []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if p != root && isGitName(d.Name()) {
+			if p == root {
+				return nil
+			}
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				return err
+			}
+			if dir := filepath.ToSlash(rel) + "/"; isGitName(d.Name()) || ignoredDirs[dir] || matchExclude(opts.Exclude, dir) != "" {
 				return filepath.SkipDir
 			}
 			return nil
