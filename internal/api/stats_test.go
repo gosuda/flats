@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"github.com/gosuda/flats/internal/bundle"
@@ -54,5 +56,39 @@ func TestStatsIncludesUsage(t *testing.T) {
 	}
 	if code, _ := req(t, "GET", srv.URL+"/api/flats/missing/stats", nil, nil); code != 404 {
 		t.Fatalf("missing flat %d", code)
+	}
+}
+
+// When usage cannot be read, stats still returns page views and top pages and
+// omits usage, which the console then hides.
+func TestStatsWithoutUsage(t *testing.T) {
+	dir := t.TempDir()
+	srv, svc := setupWith(t, dir, func(*core.Config) {})
+	ctx := context.Background()
+	if _, err := svc.SaveVersion(ctx, "site", []bundle.File{{Path: "index.html", Data: []byte("<p>hi")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "f.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `DROP TABLE usagedays`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Usage(ctx, "site", 7); err == nil {
+		t.Fatal("usage read without its table")
+	}
+	code, out := req(t, "GET", srv.URL+"/api/flats/site/stats?days=7", nil, nil)
+	if code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	for _, key := range []string{"page_views", "top_pages", "note"} {
+		if _, ok := out[key]; !ok {
+			t.Fatalf("missing %s in %v", key, out)
+		}
+	}
+	if _, ok := out["usage"]; ok {
+		t.Fatalf("usage present although it failed: %v", out["usage"])
 	}
 }
