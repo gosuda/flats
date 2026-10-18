@@ -36,6 +36,54 @@ Verify a release image before you run it:
 gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats
 ```
 
+## Docker Compose
+
+From a checkout, with Docker Compose v2 or newer:
+
+```sh
+docker compose up -d --wait
+docker compose exec flats flats status
+```
+
+The root [`compose.yaml`](../compose.yaml) uses the published release image,
+a project-scoped `flats-data` volume at `/data`, and a dedicated Compose bridge
+network. It publishes **only** `127.0.0.1:7878:7878` (console/API/MCP) and
+`127.0.0.1:7879:7879` (local flats). Open `http://127.0.0.1:7878` for the
+console and `http://<flat>.localhost:7879` for a deployed flat. These host ports
+must be free; stop any native Flats service first.
+
+The container runs with a read-only root filesystem, a writable `/tmp`, no
+capabilities and no new privileges. It inherits the image's nonroot user and
+`flats status` healthcheck. The all-interface management-listener warning is
+expected inside the container. Do not remove the loopback address from the
+port mappings or attach untrusted containers to this project's network.
+As with the published-ports example below, MCP `save_draft_from_dir` is
+unavailable; use `save_draft` or the host CLI to upload files.
+
+Pin a release or full commit image by setting `FLATS_IMAGE` in your shell or
+in a `.env` file next to `compose.yaml`, for example
+`FLATS_IMAGE=ghcr.io/gosuda/flats:1.2.3` (replace with an actual release).
+Use the same image setting for subsequent commands:
+
+```sh
+docker compose logs -f flats
+docker compose stop flats
+docker compose run --rm --no-deps flats config set system.version_quota 20
+docker compose up -d --wait
+```
+
+To upgrade, back up the data first, then run `docker compose pull` and
+`docker compose up -d --wait`. `docker compose down` removes containers and
+the network but preserves the data volume. **`docker compose down -v` deletes
+all host data**, including operator keys and secrets. Keep the same Compose
+project name and checkout location to reuse the volume; to migrate from an
+existing `docker run` volume, explicitly select it with a Compose volume
+override rather than starting an empty host.
+
+Validate the resolved configuration without starting containers with
+`python3 scripts/compose-config-test.py` (requires Docker Compose and Python 3,
+but no running Docker daemon).
+
 ## Choose a network mode
 
 The management listener (`host.management_addr`, `127.0.0.1:7878`) is a
