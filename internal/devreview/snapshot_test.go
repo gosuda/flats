@@ -280,6 +280,15 @@ func TestSnapshotRefusesUnidentifiableObjects(t *testing.T) {
 			t.Fatalf("err = %v, want a merge base error", err)
 		}
 	})
+	t.Run("include with a linked worktree", func(t *testing.T) {
+		root := repo(t, map[string]string{"a.txt": "a\n", ".gitignore": "nested/\n"})
+		run(t, root, "git", "worktree", "add", "-q", "--detach", filepath.Join(root, "nested"))
+		for _, inc := range []string{"nested", "nested/.git"} {
+			if _, err := Snapshot(root, "", Options{Include: []string{inc}}); err == nil {
+				t.Errorf("include %q with a .git file was accepted", inc)
+			}
+		}
+	})
 	t.Run("bad include", func(t *testing.T) {
 		root := repo(t, map[string]string{"a.txt": "a\n"})
 		for _, inc := range []string{"../x", "/etc", "./a.txt", "."} {

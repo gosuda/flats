@@ -451,7 +451,7 @@ func TestRunRefusesWhileAnyLockIsHeld(t *testing.T) {
 			}
 			_, err = Run(context.Background(), f.opts())
 			refused(t, err, "still holds its running lock")
-			if _, err := Abandon(filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", "checked"); err == nil {
+			if _, err := Abandon(f.root, filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", "checked"); err == nil {
 				t.Error("abandoned an invocation whose lock is held")
 			}
 			unlock()
@@ -460,10 +460,10 @@ func TestRunRefusesWhileAnyLockIsHeld(t *testing.T) {
 				// the executor settles it.
 				_, err = Run(context.Background(), f.opts())
 				refused(t, err, "recorded no process ID")
-				if _, err := Abandon(filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", ""); err == nil {
+				if _, err := Abandon(f.root, filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", ""); err == nil {
 					t.Error("abandoned without a reason")
 				}
-				r, err := Abandon(filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", "no reviewer process found")
+				r, err := Abandon(f.root, filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", "no reviewer process found")
 				if err != nil || r.Status != StatusInterrupted || r.Abandoned == nil {
 					t.Fatalf("abandon: %+v, %v", r, err)
 				}
@@ -502,4 +502,21 @@ while [ ! -s `+pidFile+` ]; do sleep 0.05; done
 	}
 	_, err = Run(context.Background(), f.opts())
 	refused(t, err, "still holds its running lock")
+}
+
+func TestAbandonStaysOutsideTheRepository(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	inside := filepath.Join(f.root, "runs")
+	os.MkdirAll(filepath.Join(inside, "x"), 0o700)
+	link := filepath.Join(f.evidence, "linked-runs")
+	os.Symlink(inside, link)
+	for _, runs := range []string{inside, link} {
+		if _, err := Abandon(f.root, runs, "x", "checked"); !errors.Is(err, ErrInsideRepo) {
+			t.Errorf("Abandon(%s) err = %v, want ErrInsideRepo", runs, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(inside, ".start.lock")); !os.IsNotExist(err) {
+		t.Error("abandon created a file inside the repository")
+	}
 }

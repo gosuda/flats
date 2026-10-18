@@ -465,26 +465,31 @@ type Abandoned struct {
 	At     string `json:"at"`
 }
 
-// Abandon settles invocation id in runs with the executor's reason, after
-// the executor has checked that its command no longer runs. It refuses
-// while the invocation's lock is held, which proves a process remains.
-// The invocation still counts against the budget.
-func Abandon(runs, id, reason string) (*Record, error) {
+// Abandon settles invocation id in the evidence directory runs, outside
+// the repository at root, with the executor's reason, after the executor
+// has checked that its command no longer runs. It refuses while the
+// invocation's lock is held, which proves a process remains. The
+// invocation still counts against the budget.
+func Abandon(root, runs, id, reason string) (*Record, error) {
+	runs, err := OutsideRepo(root, runs)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(reason) == "" {
 		return nil, refuse("abandoning an invocation needs a reason")
 	}
 	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
 		return nil, fmt.Errorf("invalid invocation ID %q", id)
 	}
+	dir := filepath.Join(runs, id)
+	if _, err := os.Stat(dir); err != nil {
+		return nil, err
+	}
 	unlock, err := lockPath(filepath.Join(runs, ".start.lock"))
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	dir := filepath.Join(runs, id)
-	if _, err := os.Stat(dir); err != nil {
-		return nil, err
-	}
 	held, err := lockHeld(filepath.Join(dir, "running.lock"))
 	if err != nil {
 		return nil, err

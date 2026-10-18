@@ -252,7 +252,7 @@ func runReviewer(args []string, stdout, stderr io.Writer) int {
 }
 
 func abandon(args []string, stdout, stderr io.Writer) int {
-	fs, _ := newFlags("abandon", stderr)
+	fs, dir := newFlags("abandon", stderr)
 	runs := fs.String("runs", "", "the task's evidence directory (required)")
 	id := fs.String("id", "", "invocation ID (required)")
 	reason := fs.String("reason", "", "how you established that its command no longer runs (required)")
@@ -260,7 +260,11 @@ func abandon(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return exitUsage
 	}
-	rec, err := devreview.Abandon(*runs, *id, *reason)
+	r, ok := root(*dir, stderr)
+	if !ok {
+		return exitUsage
+	}
+	rec, err := devreview.Abandon(r, *runs, *id, *reason)
 	if err != nil {
 		return fail(stderr, err)
 	}

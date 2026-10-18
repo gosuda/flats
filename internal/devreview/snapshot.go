@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -330,6 +331,9 @@ func diffRaw(root string, args ...string) (map[string]string, error) {
 }
 
 func expandInclude(root, inc string) ([]string, error) {
+	if slices.Contains(strings.Split(inc, "/"), ".git") {
+		return nil, fmt.Errorf("include %q names Git administration data", inc)
+	}
 	if err := noLinkAncestors(root, inc); err != nil {
 		return nil, fmt.Errorf("include: %w", err)
 	}
@@ -346,10 +350,11 @@ func expandInclude(root, inc string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if d.Name() == ".git" {
+			// A directory or a linked worktree's .git file.
+			return fmt.Errorf("include %q contains a nested repository at %s", inc, p)
+		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
-				return fmt.Errorf("include %q contains a nested repository at %s", inc, p)
-			}
 			return nil
 		}
 		rel, err := filepath.Rel(root, p)
