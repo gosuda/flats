@@ -22,6 +22,7 @@ const RecordFormat = "flats-review-run/1"
 
 // Invocation statuses.
 const (
+	StatusStarting      = "starting"
 	StatusRunning       = "running"
 	StatusExited        = "exited"
 	StatusSignaled      = "signaled"
@@ -260,6 +261,12 @@ func Run(ctx context.Context, o RunOptions) (*Record, error) {
 		"FLATS_REVIEW_INVOCATION="+id,
 	)
 	setProcessGroup(cmd)
+	// Publish the record before the command exists, so a crash at any later
+	// point leaves a record whose lock a later start checks.
+	rec.Status = StatusStarting
+	if err := writeRecord(dir, rec); err != nil {
+		return nil, err
+	}
 	rec.Started = now()
 	if err := cmd.Start(); err != nil {
 		rec.Status, rec.Outcome, rec.Ended = StatusFailedToStart, OutcomeFailed, now()
@@ -293,6 +300,11 @@ func Run(ctx context.Context, o RunOptions) (*Record, error) {
 		killGroup(rec.PID)
 		rec.Notes = append(rec.Notes, "processes left in the reviewer's process group were killed after it ended")
 	}
+	lock.Close()
+	survivor, lockErr := lockHeld(filepath.Join(dir, "running.lock"))
+	if lockErr != nil || survivor {
+		rec.Notes = append(rec.Notes, "a process outside the reviewer's process group still holds the running lock; later starts are refused until it exits")
+	}
 	rec.Ended = now()
 	switch {
 	case errors.Is(context.Cause(runCtx), errTimeout):
@@ -324,6 +336,9 @@ func Run(ctx context.Context, o RunOptions) (*Record, error) {
 		rec.Notes = append(rec.Notes, fmt.Sprintf("effective model %s differs from requested %s", m, rev.RequestedModel))
 	}
 	rec.Outcome = outcome(rec)
+	if (survivor || lockErr != nil) && rec.Outcome == OutcomeComplete {
+		rec.Outcome = OutcomeIncomplete
+	}
 	return rec, writeRecord(dir, rec)
 }
 
@@ -398,16 +413,14 @@ func outcome(r *Record) string {
 }
 
 // reconcile loads every record in runs and settles those still marked
-// running whose process tree is gone. It refuses when one may still run.
+// starting or running whose process tree is gone. It refuses while any
+// invocation's lock is held, whatever its recorded status.
 func reconcile(runs string) ([]*Record, error) {
 	records, err := LoadRecords(runs)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range records {
-		if r.Status != StatusRunning {
-			continue
-		}
 		dir := filepath.Join(runs, r.ID)
 		held, err := lockHeld(filepath.Join(dir, "running.lock"))
 		if err != nil {
@@ -416,11 +429,17 @@ func reconcile(runs string) ([]*Record, error) {
 		if held {
 			return nil, refuse("invocation %s still holds its running lock", r.ID)
 		}
+		if r.Status != StatusRunning && r.Status != StatusStarting {
+			continue
+		}
 		if r.PID > 0 && groupAlive(r.PID) {
 			return nil, refuse("invocation %s released its lock but its process group %d still exists; its termination is uncertain", r.ID, r.PID)
 		}
 		r.Status, r.Outcome = StatusInterrupted, OutcomeFailed
 		r.Notes = append(r.Notes, "reconciled "+now()+": running lock released and process group gone without a final record")
+		if r.PID == 0 {
+			r.Notes = append(r.Notes, "no process ID was recorded; the lock is the only evidence that no reviewer process remains")
+		}
 		if err := writeRecord(dir, r); err != nil {
 			return nil, err
 		}
@@ -444,8 +463,9 @@ func LoadRecords(runs string) ([]*Record, error) {
 		}
 		b, err := os.ReadFile(filepath.Join(runs, d.Name(), "run.json"))
 		if errors.Is(err, os.ErrNotExist) {
-			// A directory without a record is an invocation that never
-			// started a command; it still counts against the budget.
+			// The record is written before the command starts, so a
+			// directory without one never started a command; it still
+			// counts against the budget.
 			out = append(out, &Record{ID: d.Name(), Status: StatusFailedToStart, Outcome: OutcomeFailed})
 			continue
 		}

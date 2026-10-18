@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 func runSupported() error { return nil }
@@ -56,8 +57,20 @@ func lockPath(file string) (func(), error) {
 	return func() { f.Close() }, nil
 }
 
-// lockHeld reports whether another open file description holds file's lock.
+// lockHeld reports whether another open file description holds file's
+// lock. A process that forks briefly holds every descriptor of its parent
+// until it executes, so a held lock is retried before it counts.
 func lockHeld(file string) (bool, error) {
+	for i := 0; ; i++ {
+		held, err := tryLock(file)
+		if err != nil || !held || i == 20 {
+			return held, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func tryLock(file string) (bool, error) {
 	f, err := os.Open(file)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil

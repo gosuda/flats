@@ -39,7 +39,10 @@ func git(root string, args ...string) (string, error) {
 }
 
 func gitBytes(root string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	// Settings that make Git skip content or mode changes are overridden
+	// so a candidate change cannot be hidden from the snapshot.
+	base := []string{"-C", root, "-c", "core.fileMode=true", "-c", "core.ignoreStat=false"}
+	cmd := exec.Command("git", append(base, args...)...)
 	// Never let a read refresh and rewrite the index behind the snapshot.
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	var stderr bytes.Buffer
@@ -115,6 +118,74 @@ func resolve(p string) (string, error) {
 		rest = append([]string{filepath.Base(cur)}, rest...)
 		cur = parent
 	}
+}
+
+// resolvePath resolves an absolute path component by component, following
+// every symbolic link including intermediate ones the way the kernel does,
+// and keeps components that do not exist as written.
+func resolvePath(p string) (string, error) {
+	vol := filepath.VolumeName(p)
+	sep := string(filepath.Separator)
+	cur := vol + sep
+	todo := strings.Split(strings.TrimPrefix(p, vol), sep)
+	for hops := 0; len(todo) > 0; {
+		c := todo[0]
+		todo = todo[1:]
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, c)
+		fi, err := os.Lstat(next)
+		if errors.Is(err, fs.ErrNotExist) {
+			return filepath.Join(append([]string{next}, todo...)...), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		if hops++; hops > 255 {
+			return "", fmt.Errorf("%s: too many levels of symbolic links", p)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			v := filepath.VolumeName(target)
+			cur, target = v+sep, strings.TrimPrefix(target, v)
+		}
+		todo = append(strings.Split(target, sep), todo...)
+	}
+	return cur, nil
+}
+
+// noLinkAncestors refuses a relative path whose parent directories under
+// base include a symbolic link, so writes and removals never pass through
+// one.
+func noLinkAncestors(base, rel string) error {
+	dir := base
+	parts := strings.Split(filepath.FromSlash(rel), string(filepath.Separator))
+	for _, c := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, c)
+		fi, err := os.Lstat(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s lies beneath the symbolic link %s", rel, dir)
+		}
+	}
+	return nil
 }
 
 // within reports whether p is dir or beneath it, comparing case-insensitively

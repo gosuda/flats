@@ -27,7 +27,7 @@ import (
 // Exit codes.
 const (
 	exitOK         = 0
-	exitFailed     = 1 // drift, or the reviewer command failed, timed out or was cancelled
+	exitFailed     = 1 // drift; the reviewer command failed, timed out or was cancelled; or its record could not be saved
 	exitUsage      = 2 // usage error, refusal or other error before a command ran
 	exitIncomplete = 3 // the command exited 0 but the evidence is incomplete
 )
@@ -223,7 +223,8 @@ func runReviewer(args []string, stdout, stderr io.Writer) int {
 		if rec == nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintln(stderr, "devreview: recording the invocation:", err)
+		fmt.Fprintf(stderr, "devreview: invocation %s ran, but saving its record failed: %v\n", rec.ID, err)
+		return exitFailed
 	}
 	fmt.Fprintf(stdout, "invocation %s: %s, outcome %s\n", rec.ID, rec.Status, rec.Outcome)
 	if rec.Identity != nil {

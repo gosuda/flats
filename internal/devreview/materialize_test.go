@@ -125,3 +125,44 @@ func TestMaterializeRefusesDriftAndInsidePaths(t *testing.T) {
 		t.Errorf("err = %v, want drift", err)
 	}
 }
+
+// Links that leave the copy only through an intermediate link, and links in
+// HEAD that point outside, are refused before anything outside is touched.
+func TestMaterializeResolvesIntermediateLinks(t *testing.T) {
+	t.Parallel()
+	root := repo(t, map[string]string{"a.txt": "a\n", "sub/keep.txt": "k\n"})
+	os.Symlink(".", filepath.Join(root, "self"))
+	os.Symlink("../self/../outside.txt", filepath.Join(root, "sub", "link"))
+	if res, _ := resolvePath(filepath.Join(root, "sub", "link")); within(root, res) {
+		t.Fatalf("resolvePath = %s, want a path outside %s", res, root)
+	}
+	m := snap(t, root, "", Options{})
+	dest := filepath.Join(outside(t), "copy")
+	cleanupCopy(t, root, dest)
+	if _, err := Materialize(root, m, dest); err == nil || !strings.Contains(err.Error(), "sub/link") {
+		t.Fatalf("err = %v, want sub/link refused", err)
+	}
+}
+
+func TestMaterializeNeverWritesThroughLinks(t *testing.T) {
+	t.Parallel()
+	ext := outside(t)
+	write(t, ext, map[string]string{"file": "precious\n"})
+	root := repo(t, map[string]string{"a.txt": "a\n"})
+	os.Symlink(ext, filepath.Join(root, "link"))
+	run(t, root, "git", "add", "link")
+	commit(t, root, "link to an outside directory")
+	write(t, root, map[string]string{"a.txt": "b\n"})
+	m := snap(t, root, "", Options{})
+	// A manifest naming a path beneath the link, as an edited include would.
+	m.Files = append(m.Files, Entry{Path: "link/file", Base: Untracked, Head: Untracked})
+	m.Digest = m.computeDigest()
+	dest := filepath.Join(outside(t), "copy")
+	cleanupCopy(t, root, dest)
+	if _, err := Materialize(root, m, dest); err == nil {
+		t.Fatal("materialized a candidate with a link out of the copy")
+	}
+	if b, err := os.ReadFile(filepath.Join(ext, "file")); err != nil || string(b) != "precious\n" {
+		t.Errorf("outside file after refusal: %q, %v", b, err)
+	}
+}

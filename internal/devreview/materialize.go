@@ -39,6 +39,9 @@ func Materialize(root string, m *Manifest, dir string) (string, error) {
 		_, _ = git(root, "worktree", "remove", "--force", dest)
 		return "", err
 	}
+	if err := checkLinks(dest); err != nil {
+		return fail(err)
+	}
 	for _, e := range m.Files {
 		if err := applyEntry(root, dest, e); err != nil {
 			return fail(err)
@@ -58,6 +61,9 @@ func Materialize(root string, m *Manifest, dir string) (string, error) {
 func applyEntry(root, dest string, e Entry) error {
 	src := filepath.Join(root, filepath.FromSlash(e.Path))
 	dst := filepath.Join(dest, filepath.FromSlash(e.Path))
+	if err := noLinkAncestors(dest, e.Path); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
@@ -195,10 +201,15 @@ func filesUnder(dir, prefix string, entries map[string]bool) error {
 	})
 }
 
-// checkLinks refuses symbolic links whose target leaves dir.
+// checkLinks refuses symbolic links that resolve outside dir, following
+// intermediate links as the file system does.
 func checkLinks(dir string) error {
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
 	var bad []string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -212,7 +223,8 @@ func checkLinks(dir string) error {
 		if err != nil {
 			return err
 		}
-		if filepath.IsAbs(target) || !within(dir, filepath.Join(filepath.Dir(p), target)) {
+		res, err := resolvePath(p)
+		if err != nil || filepath.IsAbs(target) || !within(dir, res) {
 			rel, _ := filepath.Rel(dir, p)
 			bad = append(bad, filepath.ToSlash(rel)+" -> "+target)
 		}

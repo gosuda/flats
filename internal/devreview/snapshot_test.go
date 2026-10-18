@@ -345,3 +345,43 @@ func TestOutsideRepo(t *testing.T) {
 		t.Errorf("a sibling directory sharing the name prefix was refused: %v", err)
 	}
 }
+
+// Index flags and settings that make Git ignore a change must not let a
+// changed file slip out of the snapshot.
+func TestSnapshotCannotHideChanges(t *testing.T) {
+	t.Parallel()
+	for _, flag := range []string{"--skip-worktree", "--assume-unchanged"} {
+		t.Run(flag, func(t *testing.T) {
+			root := repo(t, map[string]string{"a.txt": "a\n", "b.txt": "b\n"})
+			run(t, root, "git", "update-index", flag, "b.txt")
+			write(t, root, map[string]string{"b.txt": "hidden change\n"})
+			if _, err := Snapshot(root, "", Options{}); err == nil || !strings.Contains(err.Error(), "b.txt") {
+				t.Fatalf("err = %v, want a refusal naming b.txt", err)
+			}
+		})
+	}
+	t.Run("core.fileMode=false", func(t *testing.T) {
+		root := repo(t, map[string]string{"a.txt": "a\n"})
+		run(t, root, "git", "config", "core.fileMode", "false")
+		m := snap(t, root, "", Options{})
+		if len(m.Files) != 0 {
+			t.Fatalf("clean tree has entries %v", paths(m))
+		}
+		os.Chmod(filepath.Join(root, "a.txt"), 0o755)
+		if e := entry(t, snap(t, root, "", Options{}), "a.txt"); e.Mode != "100755" {
+			t.Errorf("a.txt = %+v", e)
+		}
+		if d, err := Verify(root, m); err != nil || !slices.Equal(d.Added, []string{"a.txt"}) {
+			t.Errorf("drift = %v, %v", d, err)
+		}
+	})
+	t.Run("include beneath a link", func(t *testing.T) {
+		root := repo(t, map[string]string{"a.txt": "a\n"})
+		ext := outside(t)
+		write(t, ext, map[string]string{"file": "outside\n"})
+		os.Symlink(ext, filepath.Join(root, "link"))
+		if _, err := Snapshot(root, "", Options{Include: []string{"link/file"}}); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}

@@ -420,3 +420,60 @@ func TestRunLockSurvivesWrapper(t *testing.T) {
 	_, err := Run(context.Background(), f.opts())
 	refused(t, err, fmt.Sprintf("invocation %s still holds its running lock", records[0].ID))
 }
+
+// An invocation directory whose record says it ended still blocks a start
+// while anything holds its lock, and so does one left starting.
+func TestRunRefusesWhileAnyLockIsHeld(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{StatusExited, StatusStarting, ""} {
+		t.Run("status "+status, func(t *testing.T) {
+			f := newRunFixture(t)
+			f.reviewer(t, identifies, nil)
+			dir := filepath.Join(f.evidence, "runs", "20000101T000000Z-x")
+			os.MkdirAll(dir, 0o700)
+			os.WriteFile(filepath.Join(dir, "running.lock"), nil, 0o600)
+			if status != "" {
+				writeRecord(dir, &Record{Format: RecordFormat, ID: "20000101T000000Z-x", Status: status})
+			}
+			unlock, err := lockPath(filepath.Join(dir, "running.lock"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Run(context.Background(), f.opts())
+			refused(t, err, "still holds its running lock")
+			unlock()
+			if _, err := Run(context.Background(), f.opts()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// A descendant that leaves the process group but keeps the inherited lock
+// makes the evidence incomplete and blocks the next start.
+func TestRunDetectsEscapedDescendant(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("needs perl to call setsid")
+	}
+	f := newRunFixture(t)
+	pidFile := filepath.Join(f.evidence, "escaped")
+	f.reviewer(t, `cat >/dev/null
+perl -e 'use POSIX; exit if fork; POSIX::setsid(); open(F, ">", $ARGV[0]); print F $$; close F; sleep 30' `+pidFile+` &
+while [ ! -s `+pidFile+` ]; do sleep 0.05; done
+`+identifies, nil)
+	rec, err := Run(context.Background(), f.opts())
+	if b, _ := os.ReadFile(pidFile); len(b) > 0 {
+		var pid int
+		fmt.Sscan(string(b), &pid)
+		defer killGroup(pid)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Outcome != OutcomeIncomplete || !strings.Contains(strings.Join(rec.Notes, " "), "still holds the running lock") {
+		t.Errorf("outcome %s notes %v", rec.Outcome, rec.Notes)
+	}
+	_, err = Run(context.Background(), f.opts())
+	refused(t, err, "still holds its running lock")
+}

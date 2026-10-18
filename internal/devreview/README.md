@@ -45,8 +45,13 @@ Each entry records its status against the merge base and `HEAD`, whether the
 index differs, and the mode, size and SHA-256 of its working-tree content. A
 symbolic link is identified by its target string. The manifest digest covers
 the base, `HEAD`, a digest of the index, the options and every entry. Editing
-the manifest breaks it. Submodules, nested repositories, conflicts and special
-files are refused.
+the manifest breaks it. Submodules, nested repositories, conflicts, special
+files, includes beneath a symbolic link, and index entries marked
+skip-worktree or assume-unchanged (including sparse checkouts) are refused.
+The helper overrides `core.fileMode` and `core.ignoreStat` for its own Git
+calls so they cannot hide changes. For tracked files outside the candidate it
+still relies on Git's change detection, which trusts unchanged file
+timestamps and sizes; reviewing a materialized copy does not depend on it.
 
 `verify` recomputes the manifest. A moved `HEAD`, a staging change, or any
 added, removed or changed path is drift.
@@ -122,10 +127,13 @@ Each invocation gets a directory `<runs>/<id>/` with `run.json`,
 `prompt.txt`, `stdout.txt`, `stderr.txt` and the identity file. The record
 holds the surface, the checks before and after, times, status and exit code,
 identity, eligibility against the authors, and any earlier invocation that
-used the same session. A held lock inherited by the reviewer's processes
-marks a running invocation. A later start reconciles a record left
-`running`: it becomes `interrupted` only when the lock is free and the
-process group is gone. Otherwise the start is refused. `run` works on Unix
+used the same session. The record is written before the command starts.
+A lock inherited by the reviewer's processes marks a live invocation: while
+any invocation's lock is held, whatever its recorded status, a new start is
+refused. A record left `starting` or `running` becomes `interrupted` only
+when its lock is free and its process group is gone. If a process outside
+the group still holds the lock when the command ends, the record notes it
+and the evidence is incomplete. `run` works on Unix
 systems only.
 
 | Exit | Meaning |

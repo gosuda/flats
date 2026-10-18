@@ -192,6 +192,16 @@ func collect(root, mergeBase string, opts Options) (string, []Entry, []Excluded,
 			}
 		}
 	}
+	tags, err := gitZ(root, "ls-files", "-v", "-z")
+	if err != nil {
+		return "", nil, nil, err
+	}
+	for _, rec := range tags {
+		tag, p, _ := strings.Cut(rec, " ")
+		if tag == "S" || tag == "s" || (tag != "" && tag != strings.ToUpper(tag)) {
+			return "", nil, nil, fmt.Errorf("%s is marked skip-worktree or assume-unchanged, which hides its changes from Git; clear the flag (sparse checkouts are not supported)", p)
+		}
+	}
 	sum := sha256.Sum256(index)
 	indexDigest := "sha256:" + hex.EncodeToString(sum[:])
 
@@ -307,6 +317,9 @@ func diffRaw(root string, args ...string) (map[string]string, error) {
 }
 
 func expandInclude(root, inc string) ([]string, error) {
+	if err := noLinkAncestors(root, inc); err != nil {
+		return nil, fmt.Errorf("include: %w", err)
+	}
 	full := filepath.Join(root, filepath.FromSlash(inc))
 	fi, err := os.Lstat(full)
 	if err != nil {
