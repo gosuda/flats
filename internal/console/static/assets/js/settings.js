@@ -861,7 +861,7 @@ async function consolePage(page, saved, reload) {
 // listener, configure a proxy or authenticate visitors.
 function externalOriginsForm(data, saved, reload, page) {
   return stagedForm({
-    id: 'external-origins', data, saved, reload, page, notice: page.notice,
+    id: 'external-origins', data, saved, reload, page, notice: page.notice, scopeSaved: true,
     groups: [['reverse-proxy', 'Reverse proxy', 'Use your own domain for the console and agent connections.', [
       { key: 'external_origins', kind: 'origins', label: 'External origins',
         help: 'One address per line, including http:// or https:// and an optional port. Use lowercase domain names without a trailing slash or path. Leave empty to accept only existing console addresses.' },
@@ -1045,7 +1045,7 @@ function preferredForm(view, data, saved, reload, page) {
     warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or Automatic.`;
   }
   return stagedForm({
-    id: 'links', data, saved, reload, page,
+    id: 'links', data, saved, reload, page, scopeSaved: true,
     save: async (out) => {
       await api.setPreferredConsole(out.preferred, view.etag);
       return { applied: ['preferred'], restart_required: [] };
@@ -1168,7 +1168,13 @@ function stagedForm(spec) {
   const custom = !!spec.save;
   const controls = {}; // key -> { f, input, unit, error, describedBy, row, read(), reset() }
 
-  const result = h('div', { class: 's-result', role: 'status' }, savedSummary(spec.saved));
+  // A Console save reloads both forms; only the form owning a saved field
+  // should announce it, leaving the other form's staged changes separate.
+  const ownedKeys = new Set(spec.groups.flatMap(([, , , fields]) => fields.map((f) => f.key)));
+  const applied = (spec.saved?.applied || []).filter((key) => ownedKeys.has(key));
+  const later = (spec.saved?.restart_required || []).filter((key) => ownedKeys.has(key));
+  const saved = applied.length || later.length ? { applied, restart_required: later } : null;
+  const result = h('div', { class: 's-result', role: 'status' }, savedSummary(spec.scopeSaved ? saved : spec.saved));
   const errorSlot = h('div');
 
   // wire adds the hint, source, pin reason and error to a field.

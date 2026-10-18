@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	runtimeref "github.com/gosuda/flats/docs"
+	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
 )
 
@@ -28,18 +29,27 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 		version = "dev"
 	}
 	servers := &serverCache{svc: svc, version: version}
-	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return servers.get() },
-		&mcp.StreamableHTTPOptions{
-			Stateless:    true,
-			JSONResponse: true,
-			// The body limit is applied per request below, because the upload
-			// limit is a runtime setting.
-			MaxRequestBodyBytes: -1,
-		})
+	newHandler := func(external bool) http.Handler {
+		return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return servers.get() },
+			&mcp.StreamableHTTPOptions{
+				Stateless:    true,
+				JSONResponse: true,
+				// Only the external handler skips the SDK's localhost-name
+				// check. HostGuard has already validated its declared origin.
+				DisableLocalhostProtection: external,
+				// The body limit below follows the runtime upload setting.
+				MaxRequestBodyBytes: -1,
+			})
+	}
+	local, external := newHandler(false), newHandler(true)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody(svc.UploadLimit()))
 		ctx := context.WithValue(r.Context(), loopbackKey{}, fromLoopback(r))
 		ctx = context.WithValue(ctx, clientOriginKey{}, origin(r))
+		h := local
+		if api.ExternalOrigin(ctx) != "" {
+			h = external
+		}
 		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -95,6 +105,9 @@ func isLoopback(ctx context.Context) bool {
 // fromLoopback is true only for a direct connection from this machine: both
 // ends are loopback and no proxy forwarded the request on someone's behalf.
 func fromLoopback(r *http.Request) bool {
+	if api.ExternalOrigin(r.Context()) != "" {
+		return false
+	}
 	if !loopbackAddr(r.RemoteAddr) {
 		return false
 	}

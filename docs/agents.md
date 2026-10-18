@@ -200,7 +200,6 @@ the declared origin; requests on loopback keep the existing preferred-console
 and fallback behavior. This declaration does not authenticate agents or
 operators; the proxy or private network must protect access.
 
-
 Agents and tools that read [llms.txt](https://llmstxt.org) can start from
 `http://127.0.0.1:7878/llms.txt`. The host serves it on the management server
 with the MCP endpoint and client setup, and links:

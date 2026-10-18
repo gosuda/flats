@@ -1174,6 +1174,12 @@ assert.equal(JSON.parse(puts().at(-1).body).external_origins, 'https://flats.exa
 assert.equal(puts().at(-1).headers['If-Match'], '"etag-1"');
 assert.equal(byId(page, 'set-external_origins').value, 'https://flats.example.org\nhttps://other.example.org:8443', 'reload renders saved origins on separate lines');
 assert.equal(byId(page, 'console-preferred').value, 'local', 'saving origins retains unsaved preferred-link edits');
+assert.ok(byId(page, 'external-origins-form').textContent.includes('External origins: saved, applied now.'));
+assert.ok(!byId(page, 'links-form').textContent.includes('saved, applied now.'), 'the links form does not duplicate the origins success notice');
+byId(page, 'links-form').dispatch('submit');
+await tick();
+assert.ok(byId(page, 'links-form').textContent.includes('Address for links: saved, applied now.'));
+assert.ok(!byId(page, 'external-origins-form').textContent.includes('saved, applied now.'), 'the origins form does not duplicate the links success notice');
 // Clearing the field removes the configured entries; an empty list is valid.
 page = await mountSettings(['console']);
 originsForm = byId(page, 'external-origins-form');

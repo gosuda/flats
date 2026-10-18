@@ -328,7 +328,8 @@ listener, or a domain being deleted) they use the preferred console,
 `console.preferred_host`, once its node is ready, else the first served Tailscale
 domain, then the first served NetBird domain, then the loopback address
 ([Preferred console](configuration.md#preferred-console)). Unset, the
-preference changes nothing. The Host header never changes a link. MCP
+preference changes nothing. A Host matching an operator-declared external origin
+uses that origin and scheme; any other Host never selects an external link. MCP
 requests carry the same context, so an agent's approval links use the domain
 it connected to. `console_urls` lists every served domain, Tailscale first,
 whatever the preference. The agent discovery documents (`/llms.txt`,

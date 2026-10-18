@@ -301,7 +301,8 @@ The JSON value is an array, for example
 `"external_origins": ["https://flats.example.org"]` inside `console`.
 Values must use `http` or `https`, lowercase DNS names and optional ports
 (1–65535, without leading zeros). Paths (including a trailing slash), queries,
-fragments, user info and IP literals are refused. Each authority can select
+fragments, user info, IP literals, localhost names and numeric final DNS labels
+are refused. Each authority can select
 only one scheme; duplicate default-port aliases are refused too.
 
 This setting accepts the declared Host on the management listener. A present

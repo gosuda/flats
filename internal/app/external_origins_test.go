@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestExternalOriginsReverseProxy(t *testing.T) {
@@ -38,6 +40,39 @@ func TestExternalOriginsReverseProxy(t *testing.T) {
 		if resp.StatusCode != 200 || !strings.Contains(string(b), origin) || strings.Contains(string(b), "http://flats.example.org") || strings.Contains(string(b), "untrusted.example.org") {
 			t.Fatalf("%s: %d %.400s", path, resp.StatusCode, b)
 		}
+	}
+	// MCP stays remote even if a proxy sends no forwarding identity headers.
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "external-test", Version: "1"}, nil).
+		Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: proxy.URL + "/mcp"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "save_draft_from_dir", Arguments: map[string]any{"slug": "remote-dir", "dir": "/nonexistent"}})
+	if err != nil || !result.IsError {
+		t.Fatalf("host directory tool not refused: %+v %v", result, err)
+	}
+	raw, _ := json.Marshal(result)
+	if !strings.Contains(string(raw), "only accepts callers on the Flats host itself") {
+		t.Fatalf("wrong directory refusal: %s", raw)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "update_settings", Arguments: map[string]any{"external_origins": "https://evil.example.org"}})
+	if err == nil && !result.IsError {
+		t.Fatal("MCP exposed settings mutation")
+	}
+	if _, err := h.Svc.CreateFlat(context.Background(), "external-site", "", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "delete_flat", Arguments: map[string]any{"slug": "external-site"}})
+	if err != nil || result.IsError {
+		t.Fatalf("MCP approval: %+v %v", result, err)
+	}
+	raw, _ = json.Marshal(result.StructuredContent)
+	var approval struct {
+		URL string `json:"approval_url"`
+	}
+	if err := json.Unmarshal(raw, &approval); err != nil || !strings.HasPrefix(approval.URL, origin+"/approvals/") {
+		t.Fatalf("MCP approval URL: %s %v", raw, err)
 	}
 	r, _ := http.NewRequest("GET", proxy.URL+"/api/status", nil)
 	r.Header.Set("Origin", "https://evil.example.org")
