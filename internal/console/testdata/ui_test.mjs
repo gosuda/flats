@@ -785,7 +785,7 @@ const mountSettings = async (params = []) => {
   return main;
 };
 const puts = () => calls.filter((c) => c.key === 'PUT /console/api/settings');
-const savebarOf = (root) => all(root, (e) => (e.getAttribute('class') || '') === 'savebar')[0];
+const savebarOf = (root) => all(root, (e) => ['savebar', 's-inline-actions'].includes(e.getAttribute('class') || ''))[0];
 
 // The left nav names the four sections; Approvals is not a settings section.
 let page = await mountSettings();
@@ -1145,7 +1145,9 @@ let originsForm = byId(page, 'external-origins-form');
 let originsInput = byId(page, 'set-external_origins');
 assert.equal(originsInput.value, 'https://flats.example.org');
 assert.ok(page.textContent.includes('Flats has no built-in login yet'));
-assert.ok(savebarOf(originsForm).hidden);
+assert.ok(!savebarOf(originsForm).hidden);
+assert.equal(byId(page, 'external-origins-save').disabled, true);
+assert.equal(byText(originsForm, 'Discard')[0].disabled, true);
 for (const invalid of ['https://flats.example.org/', 'https://UPPER.example.org', 'https://127.0.0.1', 'https://127.1', 'https://0x7f000001', 'https://localhost', 'https://app.localhost', 'https://[::1]', 'https://user@example.org', 'https://example.org?a=1', 'https://example.org#x', 'https://example.org:65536', 'https://example.org:080', 'https://flats.example.org\nhttp://flats.example.org', 'https://flats.example.org\nhttps://flats.example.org:443']) {
   originsInput.value = invalid;
   originsForm.dispatch('input');
@@ -1163,9 +1165,13 @@ originsForm.dispatch('input');
 assert.equal(originsInput.getAttribute('aria-invalid'), null);
 assert.equal(byId(page, 'external-origins-save').disabled, false);
 assert.equal(puts().length, beforeOrigins, 'typing only stages the changes');
+assert.equal(all(page, (e) => e.className === 's-inline-actions' && !e.hidden).length, 2, 'both dirty console forms have visible inline actions');
+assert.equal(byId(page, 'links-save').disabled, false);
 byText(originsForm, 'Discard')[0].dispatch('click');
 assert.equal(originsInput.value, 'https://flats.example.org');
-assert.ok(savebarOf(originsForm).hidden);
+assert.ok(!savebarOf(originsForm).hidden);
+assert.equal(byId(page, 'external-origins-save').disabled, true);
+assert.equal(byText(originsForm, 'Discard')[0].disabled, true);
 originsInput.value = 'https://flats.example.org\nhttps://other.example.org:8443';
 originsForm.dispatch('input');
 originsForm.dispatch('submit');
@@ -1190,6 +1196,52 @@ originsForm.dispatch('submit');
 await tick();
 assert.equal(JSON.parse(puts().at(-1).body).external_origins, '');
 assert.equal(byId(page, 'set-external_origins').value, '');
+// Removing the origin serving this page requires confirmation, including
+// default-port aliases. Cancel and edits during confirmation never submit.
+const originTestLocation = globalThis.location;
+globalThis.location = { origin: 'https://flats.example.org' };
+routes['GET /console/api/settings'] = withSettings({ external_origins: 'https://flats.example.org:443,https://other.example.org' });
+page = await mountSettings(['console']);
+originsForm = byId(page, 'external-origins-form');
+originsInput = byId(page, 'set-external_origins');
+originsInput.value = 'https://other.example.org';
+originsForm.dispatch('input');
+const beforeRemoval = puts().length;
+originsForm.dispatch('submit');
+await tick();
+let removalDialog = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(removalDialog.textContent.includes('will stop working'));
+assert.ok(removalDialog.textContent.includes('has not verified'));
+removalDialog.close('cancel');
+await tick();
+assert.equal(puts().length, beforeRemoval);
+assert.equal(originsInput.value, 'https://other.example.org');
+originsForm.dispatch('submit');
+await tick();
+removalDialog = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+originsInput.value = '';
+originsForm.dispatch('input');
+removalDialog.close('ok');
+await tick();
+assert.equal(puts().length, beforeRemoval, 'stale confirmation cannot save');
+assert.ok(originsForm.textContent.includes('save again'));
+originsForm.dispatch('submit');
+await tick();
+removalDialog = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+assert.ok(removalDialog.textContent.includes('local console'));
+removalDialog.close('ok');
+await tick();
+assert.equal(puts().length, beforeRemoval + 1);
+assert.equal(JSON.parse(puts().at(-1).body).external_origins, '');
+// Comma-separated paste is accepted and shown one per line after saving.
+originsForm = byId(page, 'external-origins-form');
+originsInput = byId(page, 'set-external_origins');
+originsInput.value = 'https://first.example.org, https://second.example.org';
+originsForm.dispatch('input');
+originsForm.dispatch('submit');
+await tick();
+assert.equal(byId(page, 'set-external_origins').value, 'https://first.example.org\nhttps://second.example.org');
+globalThis.location = originTestLocation;
 routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['disk_quota_bytes'], restart_required: [] };
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 
@@ -1657,7 +1709,7 @@ byId(domMain, 'links-form').dispatch('submit');
 await tick();
 await tick();
 assert.equal(byId(domMain, 'console-preferred').value, '', 'the reload shows the stored value');
-assert.equal(savebarOf(domMain).getAttribute('hidden'), '');
+assert.equal(byId(domMain, 'links-save').disabled, true);
 // What the operator does while the reload runs wins over the earlier
 // staged value: a new choice, or Discard.
 const VIEW_P5 = routes['GET /console/api/console-domains'];
@@ -1683,7 +1735,7 @@ for (const [during, want] of [['change', ''], ['discard', '']]) {
   await tick();
   await tick();
   assert.equal(byId(domMain, 'console-preferred').value, want, `${during} during the reload is kept`);
-  assert.equal(savebarOf(domMain).getAttribute('hidden'), '', `${during}: nothing is left staged`);
+  assert.equal(byId(domMain, 'links-save').disabled, true, `${during}: nothing is left staged`);
   releaseDomains = undefined;
 }
 // A staged choice that no longer exists after the reload is dropped: the
@@ -1699,7 +1751,7 @@ all(byId(domMain, 'console-domains'), (e) => e.tagName === 'FORM')[0].dispatch('
 await tick();
 await tick();
 assert.equal(byId(domMain, 'console-preferred').value, '', 'a vanished choice is not restored');
-assert.equal(savebarOf(domMain).getAttribute('hidden'), '');
+assert.equal(byId(domMain, 'links-save').disabled, true);
 // A preferred domain that is not served is warned about, with where links go instead.
 routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', state: 'starting' }] }, {},

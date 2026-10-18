@@ -311,7 +311,9 @@ other origins, including other configured origins, are refused. Links and
 agent discovery documents use the declared scheme even when the proxy
 forwards HTTP. `Forwarded` and `X-Forwarded-*` never select these URLs.
 Changes in Settings apply without a restart; removing an origin immediately
-blocks subsequent requests through it. Save removals from a remaining address
+blocks subsequent requests through it. The console asks for confirmation before
+removing the origin currently in use; cancelling keeps the staged edits. Save
+removals from a remaining address
 or use offline configuration if you remove the address you are using.
 
 This exposes the whole console, approval, API and MCP surface. **It does not

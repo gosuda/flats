@@ -861,10 +861,21 @@ async function consolePage(page, saved, reload) {
 // listener, configure a proxy or authenticate visitors.
 function externalOriginsForm(data, saved, reload, page) {
   return stagedForm({
-    id: 'external-origins', data, saved, reload, page, notice: page.notice, scopeSaved: true,
+    id: 'external-origins', data, saved, reload, page, notice: page.notice, scopeSaved: true, inlineActions: true,
+    confirmSave: async (out) => {
+      const here = globalThis.location?.origin;
+      const includesHere = (value) => (value || '').split(',').filter(Boolean).some((origin) => new URL(origin).origin === here);
+      if (!here || !includesHere(data.settings?.external_origins) || includesHere(out.external_origins)) return true;
+      const remaining = (out.external_origins || '').split(',').filter(Boolean);
+      return confirmDialog({ title: 'Remove the address you’re using?', confirmLabel: 'Save and remove address', danger: true,
+        body: [h('p', null, 'This console address, ', h('code', { text: here }), ', will stop working after saving.'),
+          h('p', { text: remaining.length ? 'Other declared addresses remain, but Flats has not verified that they are reachable. Make sure you can open another console address before continuing.' : 'No external origins will remain. Make sure you can reach the local console before continuing.' }),
+          h('p', null, 'You can also restore access with ', h('code', { text: 'flats config set console.external_origins' }), ' on the host while Flats is stopped.')],
+      });
+    },
     groups: [['reverse-proxy', 'Reverse proxy', 'Use your own domain for the console and agent connections.', [
       { key: 'external_origins', kind: 'origins', label: 'External origins',
-        help: 'One address per line, including http:// or https:// and an optional port. Use lowercase domain names without a trailing slash or path. Leave empty to accept only existing console addresses.' },
+        help: 'One address per line or separated by commas, including http:// or https:// and an optional port. Use lowercase domain names without a trailing slash or path. Leave empty to accept only existing console addresses.' },
     ]]],
     after: h('p', { class: 's-row-desc' }, 'Configure your proxy to preserve the Host header. Flats uses these addresses for links when accessed through the proxy. ',
       'Flats has no built-in login yet; protect remote access with proxy authentication or a private network.'),
@@ -874,7 +885,7 @@ function externalOriginsForm(data, saved, reload, page) {
 // Validate before saving, while retaining the exact declared scheme and port.
 // The server remains authoritative for config validation.
 function parseOrigins(text) {
-  const values = text.split('\n').map((s) => s.trim()).filter(Boolean);
+  const values = text.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
   const authorities = new Set();
   for (let i = 0; i < values.length; i++) {
     const origin = values[i];
@@ -1045,7 +1056,7 @@ function preferredForm(view, data, saved, reload, page) {
     warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or Automatic.`;
   }
   return stagedForm({
-    id: 'links', data, saved, reload, page, scopeSaved: true,
+    id: 'links', data, saved, reload, page, scopeSaved: true, inlineActions: true,
     save: async (out) => {
       await api.setPreferredConsole(out.preferred, view.etag);
       return { applied: ['preferred'], restart_required: [] };
@@ -1309,8 +1320,8 @@ function stagedForm(spec) {
   const impactSlot = h('div');
   const discard = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Discard' });
   const save = h('button', { type: 'submit', id: spec.id + '-save', class: 'btn btn-primary btn-small', text: 'Save changes' });
-  const barRow = h('div', { class: 'savebar-row' }, h('div', { class: 'savebar-msg' }, count, summary), h('div', { class: 'savebar-acts' }, discard, save));
-  const bar = h('div', { class: 'savebar', role: 'region', 'aria-label': 'Unsaved changes', hidden: true }, impactSlot, barRow);
+  const barRow = h('div', { class: 'savebar-row' }, h('div', { class: 'savebar-msg', role: spec.inlineActions ? 'status' : null }, count, summary), h('div', { class: 'savebar-acts' }, discard, save));
+  const bar = h('div', { class: spec.inlineActions ? 's-inline-actions' : 'savebar', role: 'region', 'aria-label': spec.inlineActions ? spec.id === 'links' ? 'Links changes' : 'External origins changes' : 'Unsaved changes', hidden: !spec.inlineActions }, impactSlot, barRow);
 
   const form = h('form', { class: 'settings-form s-form', id: spec.id + '-form', novalidate: true }, result, groups, spec.after || null, errorSlot, bar);
 
@@ -1367,7 +1378,7 @@ function stagedForm(spec) {
       else if (!keep) clearError(c);
     }
     const n = Object.keys(out).length + invalid.length;
-    count.textContent = n ? plural(n, 'unsaved change') : '';
+    count.textContent = n ? plural(n, 'unsaved change') : spec.inlineActions ? 'No unsaved changes' : '';
     if (invalid.length) {
       summary.className = 's-summary s-summary-err';
       summary.textContent = `Fix ${invalid.map(([k]) => LABELS[k] || k).join(', ')} before saving.`;
@@ -1375,13 +1386,14 @@ function stagedForm(spec) {
       summary.className = 's-summary';
       summary.textContent = notes.length <= 2 ? notes.join(' · ') : `${notes.slice(0, 2).join(' · ')} and ${notes.length - 2} more`;
     }
-    save.disabled = invalid.length > 0;
+    save.disabled = invalid.length > 0 || (!!spec.inlineActions && n === 0);
+    discard.disabled = !!spec.inlineActions && n === 0;
     // While a save waits for its confirmation, the confirmation is the
     // only way to save.
     const confirming = !!impactSlot.firstChild;
     barRow.hidden = confirming;
     if (confirming) barRow.setAttribute('hidden', ''); else barRow.removeAttribute('hidden');
-    const show = n > 0 || confirming;
+    const show = spec.inlineActions || n > 0 || confirming;
     bar.hidden = !show;
     if (show) bar.removeAttribute('hidden'); else bar.setAttribute('hidden', '');
     return { out, invalid };
@@ -1449,6 +1461,16 @@ function stagedForm(spec) {
     if (!out) { refreshBar(true); return; }
     if (!Object.keys(out).length) { fill(result, h('p', { class: 'muted', text: 'Nothing changed.' })); refreshBar(false); return; }
     busy(save, async () => {
+      if (spec.confirmSave) {
+        const confirmed = await spec.confirmSave(out);
+        if (!confirmed) return;
+        const now = changes();
+        if (gen !== generation || !now || !sameChanges(now, out)) {
+          fill(errorSlot, h('p', { class: 'alert alert-warn', role: 'status', text: 'The form changed while confirming. Review your changes and save again.' }));
+          refreshBar(false);
+          return;
+        }
+      }
       const lower = RETENTION.filter((k) => k in out && isDecrease(k, settings[k], out[k]));
       if ('revision_quota' in out && revisionsDrop(settings.revision_quota, out.revision_quota)) lower.push('revision_quota');
       if (!lower.length) return store(out);
@@ -1484,7 +1506,7 @@ function stagedForm(spec) {
         controls[lower[0]].input.focus();
       }));
       refreshBar(false);
-    });
+    }).finally(() => { if (spec.inlineActions) refreshBar(true); });
   });
   refreshBar(false);
   if (spec.page) {

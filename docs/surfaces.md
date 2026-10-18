@@ -286,10 +286,16 @@ once saved.
   Turn on / Turn off, its key (Tailscale auth key, NetBird setup key, zrok
   account token: state and source, never the value), its hosts, its own
   settings and the flats that allow it. Console: the console's addresses on
-  every network, the address for links and the read-only host values. Limits:
+  every network, the address for links, external reverse-proxy origins and the
+  read-only host values. Limits:
   storage, history and traffic. Agents: MCP setup and what the agent tools
-  cannot do (the console itself is not authenticated yet). Fields stage changes for one save bar per page, which counts them, blocks
-  saving while one is invalid and asks again before a save that removes data;
+  cannot do (the console itself is not authenticated yet). Fields stage changes.
+  Console has separate inline Save/Discard controls for Links and Reverse proxy,
+  always visible and disabled until that section changes; saving one preserves
+  edits in the other. Other settings pages use one floating save bar. Each
+  form counts its changes, blocks invalid values and asks again before a save
+  that removes data. Removing the external origin currently in use also asks
+  for confirmation because that address stops accepting new requests;
   buttons act at once. A disabled action shows its reason next to it or on
   hover and keyboard focus.
 - **Approvals.** A top-bar item with the number of pending requests opens the

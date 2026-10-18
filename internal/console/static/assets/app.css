@@ -865,3 +865,9 @@ input.switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2p
   .build { display: none; }
 }
 .savebar-row[hidden] { display: none; }
+
+/* Independent Console sections keep their actions beside their own fields. */
+.s-inline-actions { margin-top: 16px; padding-block: 12px; border-top: 1px solid var(--border); font-size: 14px; }
+.s-inline-actions .savebar-row { flex-wrap: wrap; }
+.s-inline-actions .savebar-msg { flex: 1 1 180px; }
+.s-inline-actions .savebar-acts { margin-left: auto; }
