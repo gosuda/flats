@@ -196,7 +196,7 @@ func Serve(args []string) error {
 	if len(consoles) == 0 {
 		consoles = []string{h.ConsoleURL()}
 	}
-	log.Printf("flats %s serving; console %s (loopback http://%s)", buildinfo.Get().Version, strings.Join(consoles, ", "), h.Addr())
+	log.Printf("flats %s serving; console %s (loopback %s)", buildinfo.Get().Version, strings.Join(consoles, ", "), h.console)
 	<-ctx.Done()
 	log.Printf("shutting down")
 	return h.Close()
@@ -280,7 +280,7 @@ func (h *Host) background(fn func(context.Context)) {
 	}()
 }
 
-// Addr is the loopback management address actually bound.
+// Addr is the management address actually bound.
 func (h *Host) Addr() string { return h.ln.Addr().String() }
 
 // configModeFlags are the serve flags config mode accepts. The host flags
@@ -525,7 +525,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
 	}
-	h.console = "http://" + h.ln.Addr().String()
+	h.console = managementConsoleURL(h.ln.Addr())
 	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: h.ConsoleURL, ConsoleURLFor: h.ConsoleURLFor, PrivateBackend: cfg.Network.PrivateBackend,
 		// "flats" is the console's usual tailnet name: kept free for it, as before.
@@ -669,6 +669,19 @@ func providerConfiguration(cfg portal.Config, zrokConfig, netbirdConfig string) 
 	return string(raw)
 }
 
+// managementConsoleURL turns a bind address into a usable operator link.
+// Wildcard addresses are not destinations and are rejected by loopbackGuard.
+// Use IPv4 loopback for Docker's published IPv4 ports; preserve explicit IPs.
+func managementConsoleURL(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			return "http://" + net.JoinHostPort("127.0.0.1", port)
+		}
+	}
+	return "http://" + addr.String()
+}
+
 // loopbackGuard accepts only the loopback names of the bound address as
 // Host (and Origin): 127.0.0.1, localhost and ::1 with its port, plus the
 // listen IP itself when it is a specific address.
@@ -716,7 +729,7 @@ func (h *Host) Status(ctx context.Context) any {
 		urls = []string{}
 	}
 	s := SystemStatus{Version: buildinfo.Get().Version, Build: buildinfo.Get(), DataDir: h.Config.Host.DataDir, ConsoleURL: console, ConsoleURLs: urls, MCPURL: strings.TrimSuffix(console, "/") + "/mcp",
-		LocalURL: "http://" + h.Addr(), Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
+		LocalURL: h.console, Private: h.Private.Status(), Runtime: h.Config.Host.ServerRuntime, Redirects: h.Svc.Redirects()}
 	if h.Providers != nil {
 		s.Providers = h.Providers.HostStatus()
 		for _, id := range h.Providers.File().Permitted {

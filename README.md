@@ -124,6 +124,17 @@ docker run -d --name flats --restart unless-stopped --network host \
   -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
+From a checkout, you can instead use Docker Compose (including Docker Desktop,
+on a host with trusted local containers):
+
+```sh
+docker compose up -d --wait
+```
+
+This keeps the console and local flats on host loopback and persists data in a
+named volume. See the [Compose setup](docs/container.md#docker-compose) for
+image pinning, configuration and upgrades.
+
 Never publish the console port to your network: anything that reaches it can
 approve deploys. See [Running Flats in a container](docs/container.md) for
 other Docker hosts and network modes.

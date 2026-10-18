@@ -192,6 +192,10 @@ jobs:
         run: docker buildx build --platform linux/amd64,linux/arm64 .
       - name: Build the image for this runner
         run: docker buildx build --load -t flats:ci .
+      - name: Validate Docker Compose configuration
+        run: python3 scripts/compose-config-test.py
+      - name: Exercise Docker Compose deployment
+        run: python3 scripts/compose-smoke.py flats:ci
       - name: Bootstrap, deploy, restart and stop a container
         run: |
           tar -xzf dist/flats_linux_amd64.tar.gz -C "$RUNNER_TEMP" flats

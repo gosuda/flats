@@ -1,0 +1,25 @@
+# Docker Compose v2+: docker compose up -d
+# The management API can approve deployments; keep both ports on loopback.
+services:
+  flats:
+    image: ${FLATS_IMAGE:-ghcr.io/gosuda/flats:latest}
+    restart: unless-stopped
+    command: ["serve", "--listen", "0.0.0.0:7878", "--local-addr", "0.0.0.0:7879"]
+    ports:
+      - "127.0.0.1:7878:7878"
+      - "127.0.0.1:7879:7879"
+    volumes:
+      - flats-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Inherit the image's nonroot user and flats status healthcheck.
+    # Compose creates a project-local bridge; do not attach untrusted services.
+    # Host-access aliases can cross bridges on Desktop; local containers must be trusted.
+
+volumes:
+  flats-data:

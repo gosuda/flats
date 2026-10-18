@@ -36,6 +36,88 @@ Verify a release image before you run it:
 gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats
 ```
 
+## Docker Compose
+
+From a checkout, with Docker Compose v2 or newer and Docker Engine 28.0.0
+or newer. Older engines can expose localhost-published ports to other hosts
+on the same L2 network; see [Docker port publishing](https://docs.docker.com/engine/network/port-publishing/#publishing-ports).
+Keep Docker's default bridge isolation; do not enable direct routing to this
+network.
+
+```sh
+docker compose up -d --wait
+docker compose exec flats flats status
+```
+
+The root [`compose.yaml`](../compose.yaml) uses the published release image,
+a project-scoped `flats-data` volume at `/data`, and a dedicated Compose bridge
+network. It publishes **only** `127.0.0.1:7878:7878` (console/API/MCP) and
+`127.0.0.1:7879:7879` (local flats). Open `http://127.0.0.1:7878` for the
+console and `http://<flat>.localhost:7879` for a deployed flat. These host ports
+must be free; stop any native Flats service first.
+
+The container runs with a read-only root filesystem, a writable `/tmp`, no
+capabilities and no new privileges. It inherits the image's nonroot user and
+`flats status` healthcheck. The all-interface management-listener warning is
+expected inside the container. Do not remove the loopback address from the
+port mappings or attach untrusted containers to this project's network.
+A dedicated bridge is not a sandbox against host access: on Docker Desktop
+and Rancher Desktop, host-access aliases may let containers on other networks
+reach host-published ports. Treat such containers as trusted host processes;
+do not run untrusted containers alongside this management API.
+As with the published-ports example below, MCP `save_draft_from_dir` is
+unavailable; use `save_draft` or the host CLI to upload files.
+
+Pin a release or full commit image by setting `FLATS_IMAGE` in your shell or
+in a `.env` file next to `compose.yaml`, for example
+`FLATS_IMAGE=ghcr.io/gosuda/flats:1.2.3` (replace with an actual release).
+Use the same image setting for subsequent commands:
+
+```sh
+docker compose logs -f flats
+docker compose stop flats
+docker compose run --rm --no-deps flats config set system.version_quota 20
+docker compose up -d --wait
+```
+
+To upgrade, back up the data first, then run `docker compose pull` and
+`docker compose up -d --wait`. `docker compose down` removes containers and
+the network but preserves the data volume. **`docker compose down -v` deletes
+all host data**, including operator keys and secrets. The volume is named
+`<project>_flats-data`. Keep the same Compose project name to reuse it; by
+default the project name is the checkout directory's basename, or set
+`COMPOSE_PROJECT_NAME` consistently. Two checkouts with the same project
+name share the same data. To avoid that, choose distinct project names.
+To migrate from an existing `docker run` volume, explicitly select it with a Compose volume
+override rather than starting an empty host.
+
+Back up the Compose volume while stopped, using the actual service's mount
+(the `docker run` example later in this guide uses a different volume):
+
+```sh
+docker compose stop flats
+container=$(docker compose ps -a -q flats)
+test -n "$container" || { echo "Compose container not found" >&2; exit 1; }
+mkdir -p backups
+(umask 077; set -C; docker run --rm --volumes-from "$container":ro alpine:3.22 \
+  tar -czf - -C /data . > backups/flats-data.tar.gz)
+docker compose up -d --wait
+```
+
+The backup contains operator keys and secrets; keep it private. The command
+refuses to overwrite an existing archive; move the previous backup or choose
+a new filename before running it again. Take the backup before `docker compose down`, which removes the container needed by
+`--volumes-from`.
+
+Validate the resolved configuration without starting containers with
+`python3 scripts/compose-config-test.py` (requires Docker Compose and Python 3,
+but no running Docker daemon). The container CI job also runs
+`python3 scripts/compose-smoke.py flats:ci` against its freshly built image.
+This starts an isolated Compose project on ports 17878/17879, checks the
+published console/API and approval links, a private document and the backup
+recipe, recreates the service to check persistence, and removes its synthetic data afterward. Override
+`FLATS_SMOKE_PORT` and `FLATS_SMOKE_LOCAL_PORT` if those ports are occupied.
+
 ## Choose a network mode
 
 The management listener (`host.management_addr`, `127.0.0.1:7878`) is a
@@ -54,10 +136,11 @@ docker run -d --name flats --restart unless-stopped --network host \
   -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-**Published loopback ports, on any Docker host** (including Docker Desktop or
+**Published loopback ports, with Docker Engine 28.0.0 or newer** (including Docker Desktop or
 Rancher Desktop on macOS). Listen on all container interfaces, publish the
 same port numbers on the host's `127.0.0.1` only, and use a dedicated network
-so other containers cannot reach the listener:
+to isolate direct container traffic. Host processes and Desktop host-access
+aliases remain in the trust boundary described above:
 
 ```sh
 docker network create flats
