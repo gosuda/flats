@@ -63,6 +63,23 @@ func TestExternalOriginsReverseProxy(t *testing.T) {
 	if _, err := h.Svc.CreateFlat(context.Background(), "external-site", "", core.ViaAPI); err != nil {
 		t.Fatal(err)
 	}
+	for _, action := range []struct{ method, path, body string }{
+		{"PUT", "/api/flats/external-site/network", `{}`},
+		{"PUT", "/api/flats/external-site/secrets/EXAMPLE", `{"value":"synthetic"}`},
+		{"DELETE", "/api/flats/external-site/secrets/EXAMPLE", ""},
+	} {
+		r, _ := http.NewRequest(action.method, proxy.URL+action.path, strings.NewReader(action.body))
+		r.Header.Set("X-Flats-Client", "cli")
+		r.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 403 {
+			t.Errorf("external local-CLI route %s: %d", action.path, resp.StatusCode)
+		}
+	}
 	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "delete_flat", Arguments: map[string]any{"slug": "external-site"}})
 	if err != nil || result.IsError {
 		t.Fatalf("MCP approval: %+v %v", result, err)

@@ -297,6 +297,9 @@ func intParam(r *http.Request, name string) (int, error) {
 }
 
 func isLoopback(r *http.Request) bool {
+	if ExternalOrigin(r.Context()) != "" {
+		return false
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return false
