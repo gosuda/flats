@@ -139,7 +139,7 @@ function editing(root) {
   if (active && typeof root.contains === 'function' && root.contains(active) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return true;
   if (typeof root.querySelectorAll !== 'function') return false;
   if ([...root.querySelectorAll('input[type="password"], input[type="text"]')].some((i) => i.value)) return true;
-  return [...root.querySelectorAll('.savebar')].some((b) => !b.hidden);
+  return root.querySelectorAll('[data-dirty="true"]').length > 0 || [...root.querySelectorAll('.savebar')].some((b) => !b.hidden);
 }
 
 // pageHead is a page's title, optional crumb, status and action, and intro.
@@ -1378,6 +1378,7 @@ function stagedForm(spec) {
       else if (!keep) clearError(c);
     }
     const n = Object.keys(out).length + invalid.length;
+    form.setAttribute('data-dirty', String(n > 0));
     count.textContent = n ? plural(n, 'unsaved change') : spec.inlineActions ? 'No unsaved changes' : '';
     if (invalid.length) {
       summary.className = 's-summary s-summary-err';

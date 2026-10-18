@@ -63,7 +63,11 @@ class Element extends Node {
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
   contains(n) { for (let x = n; x; x = x.parentNode) if (x === this) return true; return false; }
   querySelector() { return null; }
-  querySelectorAll() { return []; }
+  querySelectorAll(selector) {
+    if (selector === '[data-dirty="true"]') return all(this, (e) => e.getAttribute('data-dirty') === 'true');
+    if (selector === '.savebar') return all(this, (e) => e.className === 'savebar');
+    return [];
+  }
   get childElementCount() { return this.childNodes.filter((c) => c instanceof Element).length; }
   get lastElementChild() { return [...this.childNodes].reverse().find((c) => c instanceof Element) || null; }
   focus() { document.activeElement = this; this.focusedWhileDisabled = !!this.disabled; this.focusCount = (this.focusCount || 0) + 1; }
@@ -1244,6 +1248,68 @@ assert.equal(byId(page, 'set-external_origins').value, 'https://first.example.or
 globalThis.location = originTestLocation;
 routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['disk_quota_bytes'], restart_required: [] };
 routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+
+// Pending network refreshes must preserve dirty inline forms even when
+// focus is outside a field; clean inline actions must allow refreshes.
+const originalSetTimeout = globalThis.setTimeout;
+const originalClearTimeout = globalThis.clearTimeout;
+let scheduledRefresh;
+globalThis.setTimeout = (fn, delay, ...args) => {
+  if (delay !== 5000) return originalSetTimeout(fn, delay, ...args);
+  const timer = { fn, unref() {} };
+  scheduledRefresh = timer;
+  return timer;
+};
+globalThis.clearTimeout = (timer) => {
+  if (timer?.fn) { if (scheduledRefresh === timer) scheduledRefresh = null; }
+  else originalClearTimeout(timer);
+};
+let stopRefresh;
+try {
+  routes['GET /console/api/console-domains'] = dview({ on: true, domains: [{ name: 'pending', state: 'starting' }] });
+  const refreshPage = new Element('main');
+  stopRefresh = settingsPage.mount(refreshPage, ['console'], ctx);
+  await tick();
+  document.activeElement = document.body;
+  const fireRefresh = async () => { const timer = scheduledRefresh; assert.ok(timer); scheduledRefresh = null; timer.fn(); await tick(); };
+  const reads = () => calls.filter((c) => c.key === 'GET /console/api/settings').length;
+  let beforeReads = reads();
+  await fireRefresh();
+  assert.equal(reads(), beforeReads + 1, 'clean inline forms still refresh');
+  const dirtyInput = byId(refreshPage, 'set-external_origins');
+  dirtyInput.value = 'https://staged.example.org';
+  byId(refreshPage, 'external-origins-form').dispatch('input');
+  routes['GET /console/api/settings'] = { __status: 503, error: 'temporary failure' };
+  beforeReads = reads();
+  await fireRefresh();
+  assert.equal(reads(), beforeReads, 'dirty origins suppress the refresh request');
+  assert.equal(byId(refreshPage, 'set-external_origins'), dirtyInput, 'dirty form is not redrawn');
+  byText(byId(refreshPage, 'external-origins-form'), 'Discard')[0].dispatch('click');
+  byId(refreshPage, 'console-preferred').value = 'local';
+  byId(refreshPage, 'links-form').dispatch('change');
+  await fireRefresh();
+  assert.equal(reads(), beforeReads, 'dirty preferred links also suppress refresh');
+  byText(byId(refreshPage, 'links-form'), 'Discard')[0].dispatch('click');
+  // If editing starts after the request, even a failed response must not
+  // replace the form or erase its validation warning.
+  let finishSettings;
+  routes['GET /console/api/settings'] = () => new Promise((resolve) => { finishSettings = resolve; });
+  await fireRefresh();
+  assert.equal(reads(), beforeReads + 1);
+  dirtyInput.value = 'bad-origin';
+  byId(refreshPage, 'external-origins-form').dispatch('input');
+  finishSettings({ __status: 503, error: 'temporary failure' });
+  await tick();
+  assert.equal(byId(refreshPage, 'set-external_origins'), dirtyInput);
+  assert.equal(dirtyInput.getAttribute('aria-invalid'), 'true');
+  assert.ok(byId(refreshPage, 'external-origins-form').textContent.includes('Address 1:'));
+} finally {
+  stopRefresh?.();
+  globalThis.setTimeout = originalSetTimeout;
+  globalThis.clearTimeout = originalClearTimeout;
+  routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+  routes['GET /console/api/console-domains'] = DOMAINS;
+}
 
 // A small quota is shown exactly instead of rounding to "0", and typing 0
 // turns the quota off.
