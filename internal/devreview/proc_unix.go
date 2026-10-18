@@ -59,7 +59,9 @@ func lockFile(f *os.File, nonblock bool) error {
 // lockPath takes an exclusive lock on file, creating it, and returns the
 // function that releases it.
 func lockPath(file string) (func(), error) {
-	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE, 0o600)
+	// O_NOFOLLOW: a symbolic link planted as the lock file must not make
+	// the helper create or lock its target.
+	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +86,7 @@ func lockHeld(file string) (bool, error) {
 }
 
 func tryLock(file string) (bool, error) {
-	f, err := os.Open(file)
+	f, err := os.OpenFile(file, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}

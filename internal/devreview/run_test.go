@@ -520,3 +520,29 @@ func TestAbandonStaysOutsideTheRepository(t *testing.T) {
 		t.Error("abandon created a file inside the repository")
 	}
 }
+
+// A lock file planted as a symbolic link into the repository is refused
+// before anything is created there.
+func TestLockSymlinkIntoRepository(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	f.reviewer(t, identifies, nil)
+	runs := filepath.Join(f.evidence, "runs")
+	os.MkdirAll(filepath.Join(runs, "x"), 0o700)
+	target := filepath.Join(f.root, "created-by-lock")
+	os.Symlink(target, filepath.Join(runs, ".start.lock"))
+	if _, err := Run(context.Background(), f.opts()); err == nil {
+		t.Error("run accepted a symlinked start lock")
+	}
+	if _, err := Abandon(f.root, runs, "x", "checked"); err == nil {
+		t.Error("abandon accepted a symlinked start lock")
+	}
+	os.Remove(filepath.Join(runs, ".start.lock"))
+	os.Symlink(target, filepath.Join(runs, "x", "running.lock"))
+	if _, err := Run(context.Background(), f.opts()); err == nil {
+		t.Error("run accepted a symlinked running lock")
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Error("a lock symlink created a file inside the repository")
+	}
+}

@@ -331,7 +331,7 @@ func diffRaw(root string, args ...string) (map[string]string, error) {
 }
 
 func expandInclude(root, inc string) ([]string, error) {
-	if slices.Contains(strings.Split(inc, "/"), ".git") {
+	if slices.ContainsFunc(strings.Split(inc, "/"), isGitName) {
 		return nil, fmt.Errorf("include %q names Git administration data", inc)
 	}
 	if err := noLinkAncestors(root, inc); err != nil {
@@ -350,7 +350,7 @@ func expandInclude(root, inc string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if d.Name() == ".git" {
+		if isGitName(d.Name()) {
 			// A directory or a linked worktree's .git file.
 			return fmt.Errorf("include %q contains a nested repository at %s", inc, p)
 		}
@@ -366,6 +366,11 @@ func expandInclude(root, inc string) ([]string, error) {
 	})
 	return out, err
 }
+
+// isGitName reports whether a path component names Git administration
+// data, in any case, since a case-insensitive file system treats ".GIT" as
+// ".git".
+func isGitName(name string) bool { return strings.EqualFold(name, ".git") }
 
 func matchExclude(patterns []string, p string) string {
 	for _, pat := range patterns {
