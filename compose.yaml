@@ -19,6 +19,7 @@ services:
       - no-new-privileges:true
     # Inherit the image's nonroot user and flats status healthcheck.
     # Compose creates a project-local bridge; do not attach untrusted services.
+    # Host-access aliases can cross bridges on Desktop; local containers must be trusted.
 
 volumes:
   flats-data:

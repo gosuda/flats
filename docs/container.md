@@ -61,6 +61,10 @@ capabilities and no new privileges. It inherits the image's nonroot user and
 `flats status` healthcheck. The all-interface management-listener warning is
 expected inside the container. Do not remove the loopback address from the
 port mappings or attach untrusted containers to this project's network.
+A dedicated bridge is not a sandbox against host access: on Docker Desktop
+and Rancher Desktop, host-access aliases may let containers on other networks
+reach host-published ports. Treat such containers as trusted host processes;
+do not run untrusted containers alongside this management API.
 As with the published-ports example below, MCP `save_draft_from_dir` is
 unavailable; use `save_draft` or the host CLI to upload files.
 
@@ -134,7 +138,8 @@ docker run -d --name flats --restart unless-stopped --network host \
 **Published loopback ports, with Docker Engine 28.0.0 or newer** (including Docker Desktop or
 Rancher Desktop on macOS). Listen on all container interfaces, publish the
 same port numbers on the host's `127.0.0.1` only, and use a dedicated network
-so other containers cannot reach the listener:
+to isolate direct container traffic. Host processes and Desktop host-access
+aliases remain in the trust boundary described above:
 
 ```sh
 docker network create flats

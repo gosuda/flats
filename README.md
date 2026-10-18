@@ -124,7 +124,8 @@ docker run -d --name flats --restart unless-stopped --network host \
   -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-From a checkout, you can instead use Docker Compose (including Docker Desktop):
+From a checkout, you can instead use Docker Compose (including Docker Desktop,
+on a host with trusted local containers):
 
 ```sh
 docker compose up -d --wait
