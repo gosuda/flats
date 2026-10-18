@@ -34,6 +34,7 @@ complete implementation/test snapshot and actual check results. Ask them to find
 spec violations, regressions, failure-handling errors, resource/concurrency issues,
 compatibility problems and weak or incorrect tests. Review all material candidate
 changes, not only author-selected files.
+Record the review's evidence with [flats-review-evidence](../flats-review-evidence/SKILL.md).
 
 Apply the common correction/re-review cycle. Return the accepted candidate,
 review record, development-test results and remaining integrated verification

@@ -32,6 +32,7 @@ them actual test sources, results and access to relevant product code; permit
 bounded independent checks within existing authorization. Apply the common
 correction/re-review cycle to tests and the verification report. Independence is
 from test-result authors; disclose any reviewer product-code authorship.
+Record the review's evidence with [flats-review-evidence](../flats-review-evidence/SKILL.md).
 
 Product defects return needs-implementation; missing or contradictory requirements
 return needs-design. Carry reviewed or reproducible evidence, and have the receiving

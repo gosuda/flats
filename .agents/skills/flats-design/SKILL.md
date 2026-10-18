@@ -32,6 +32,7 @@ Submit the identified design snapshot to an eligible different-model reviewer.
 Ask them to challenge requirement coverage, contradictions, counterexamples,
 feasibility and whether completion criteria are actually verifiable. Provide the
 original request and relevant contracts, not just an author's explanation.
+Record the review's evidence with [flats-review-evidence](../flats-review-evidence/SKILL.md).
 
 Apply the common disposition/correction/re-review cycle. Unresolved behavior
 choices or required evidence prevent acceptance. Return the reviewed design,
