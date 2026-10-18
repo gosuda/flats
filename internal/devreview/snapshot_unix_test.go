@@ -70,3 +70,20 @@ func TestSpecialFileScanSkipsIgnoredTrees(t *testing.T) {
 		t.Error("an unreadable directory that is neither ignored nor excluded was accepted")
 	}
 }
+
+// A pattern without a trailing slash matches paths, not directories, so it
+// does not hide a FIFO beneath a directory of the same name.
+func TestSpecialFileScanKeepsPathPatterns(t *testing.T) {
+	t.Parallel()
+	root := repo(t, map[string]string{"a.txt": "a\n"})
+	write(t, root, map[string]string{"cache/keep.txt": "k\n"})
+	if err := syscall.Mkfifo(filepath.Join(root, "cache", "pipe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Snapshot(root, "", Options{Exclude: []string{"cache"}}); err == nil || !strings.Contains(err.Error(), "cache/pipe") {
+		t.Errorf("err = %v, want cache/pipe refused", err)
+	}
+	if _, err := Snapshot(root, "", Options{Exclude: []string{"cache/"}}); err != nil {
+		t.Errorf("a directory prefix exclusion: %v", err)
+	}
+}

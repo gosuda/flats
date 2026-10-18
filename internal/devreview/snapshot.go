@@ -321,7 +321,7 @@ func refuseSpecialFiles(root string, opts Options) error {
 			if err != nil {
 				return err
 			}
-			if dir := filepath.ToSlash(rel) + "/"; isGitName(d.Name()) || ignoredDirs[dir] || matchExclude(opts.Exclude, dir) != "" {
+			if dir := filepath.ToSlash(rel) + "/"; isGitName(d.Name()) || ignoredDirs[dir] || excludedDir(opts.Exclude, dir) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -447,6 +447,15 @@ func expandInclude(root, inc string) ([]string, error) {
 		return nil
 	})
 	return out, err
+}
+
+// excludedDir reports whether a directory prefix pattern (ending in "/")
+// excludes everything beneath dir, itself ending in "/". Other patterns
+// match individual paths only, so they never exclude a whole directory.
+func excludedDir(patterns []string, dir string) bool {
+	return slices.ContainsFunc(patterns, func(p string) bool {
+		return strings.HasSuffix(p, "/") && strings.HasPrefix(dir, p)
+	})
 }
 
 // isGitName reports whether a path component names Git administration
