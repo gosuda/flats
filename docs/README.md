@@ -49,6 +49,13 @@ the full list.
 | [Docs app internals](internal/docs-app.md) | Host integration of the collaborative Markdown editor |
 | [WebSocket handshake](internal/websocket-handshake.md) | Why the RFC 6455 accept hash uses SHA-1 |
 
+## Repository development
+
+| Page | Covers |
+| --- | --- |
+| [Development protocol](development-protocol.md) | Independent design, implementation and testing skills; model review, correction and completion |
+| [Development workflow specification](spec/dev-workflow.md) | Requirements for the repository development process |
+
 ## Verification
 
 | Page | Covers |

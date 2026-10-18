@@ -65,6 +65,15 @@ under `plugins/flats/skills/` and release the plugin. `TestPluginSkillBoundary`
 fails when a skill sits on both sides or a plugin manifest points outside
 `plugins/`.
 
+Repository changes follow the [development protocol](development-protocol.md).
+Use [flats-dev-workflow](../.agents/skills/flats-dev-workflow/SKILL.md) for change
+requests, or, when explicitly limited to one stage, invoke [design](../.agents/skills/flats-design/SKILL.md),
+[implementation](../.agents/skills/flats-implement/SKILL.md) or
+[testing](../.agents/skills/flats-test/SKILL.md) independently. Each stage includes
+review by a different model and correction; the shared protocol defines evidence
+and completion. [Repository instructions](../AGENTS.md) provide the default route
+for agents without automatic skill discovery.
+
 The [Flats issue triage skill](../.agents/skills/flats-issue-triage/SKILL.md)
 classifies repository issues with a small workflow-oriented label set, checks
 relevant specs and code, and proposes evidence-backed duplicate candidates. Its `triaged` label marks

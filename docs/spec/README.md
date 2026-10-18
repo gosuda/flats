@@ -22,6 +22,7 @@ list.
 
 | Spec | Status | Covers |
 | --- | --- | --- |
+| [Development workflow](dev-workflow.md) | implemented | Instruction-based design, implementation and testing stages with cross-model adversarial review |
 | [Idle document workers](docs-worker-idle.md) | implemented | Automatic idle sleep and demand-driven recovery of built-in document workers |
 | [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
