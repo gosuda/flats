@@ -99,8 +99,11 @@ window.addEventListener('popstate', render);
 
 // The Approvals item in the top bar shows how many requests wait; it is
 // read again on every page change.
+let countSeq = 0;
 function updateApprovalCount() {
+  const seq = ++countSeq;
   api.approvals('pending').then((r) => {
+    if (seq !== countSeq) return; // a newer request answers
     const n = (r.approvals || []).filter((a) => a.status === 'pending').length;
     const slot = document.getElementById('approval-count');
     if (!slot) return;
@@ -110,6 +113,7 @@ function updateApprovalCount() {
     if (link) link.setAttribute('aria-label', n ? `Approvals, ${n} waiting` : 'Approvals');
   }).catch(() => {});
 }
+window.addEventListener('flats:approvals', updateApprovalCount);
 
 render();
 

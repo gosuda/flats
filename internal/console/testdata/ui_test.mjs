@@ -808,6 +808,19 @@ assert.deepEqual(agentTabs.map((t) => t.textContent), ['Claude Code', 'Codex', '
 agentTabs[3].dispatch('click');
 assert.ok(byId(page, 'agent-snippet').textContent.includes('flats save-draft'));
 assert.equal(agentTabs[3].getAttribute('aria-selected'), 'true');
+// Arrow keys, Home and End move between clients and take focus.
+const tablist = all(page, (e) => e.getAttribute('role') === 'tablist')[0];
+const key = (k) => tablist.listeners.keydown[0]({ key: k, preventDefault() {} });
+key('ArrowRight');
+assert.equal(agentTabs[0].getAttribute('aria-selected'), 'true', 'ArrowRight wraps to the first tab');
+assert.equal(document.activeElement, agentTabs[0]);
+key('ArrowLeft');
+assert.equal(agentTabs[3].getAttribute('aria-selected'), 'true');
+key('Home');
+assert.ok(byId(page, 'agent-snippet').textContent.includes('claude mcp add'));
+key('End');
+assert.equal(agentTabs[3].getAttribute('tabindex'), '0');
+assert.equal(agentTabs[0].getAttribute('tabindex'), '-1');
 
 // Host values are read only, with their sources, on the Console page.
 page = await mountSettings(['console']);
@@ -1324,6 +1337,9 @@ const tsMain = await mountSettings(['networks', 'tailscale']);
 const tsKey = byId(tsMain, 'key');
 assert.ok(tsKey.textContent.includes('Not set'));
 const tsInput = byId(tsKey, 'tailscale-key');
+// The first key gets the same guidance as a replacement (spec rule 11).
+assert.ok(byId(tsKey, 'tailscale-key-help').textContent.includes('reusable') && byId(tsKey, 'tailscale-key-help').textContent.includes('that is up to you'));
+assert.ok(tsInput.getAttribute('aria-describedby').split(' ').includes('tailscale-key-help'));
 assert.equal(tsInput.getAttribute('type'), 'password', 'the auth key is typed into a password field');
 tsInput.value = '  tskey-auth-abc  ';
 all(tsKey, (e) => e.tagName === 'FORM')[0].dispatch('submit');
@@ -1347,6 +1363,26 @@ removeDialog.close('ok');
 await tick();
 assert.ok(calls.some((c) => c.key === 'DELETE /console/api/keys/tailscale'), 'the key is removed after confirmation');
 assert.equal(JSON.stringify(calls.filter((c) => c.key.startsWith('GET /console/api/keys'))).includes('tskey'), false);
+routes['GET /console/api/keys'] = { keys: KEYS };
+
+// --- console addresses ---
+// Keys that fail to load are an error, not "not set": no key action is offered.
+routes['GET /console/api/keys'] = { __status: 500, error: 'boom' };
+routes['GET /console/api/providers'] = { providers: [...PROVIDERS.providers, { ...provider('netbird', 'private', false), management_url: 'https://nb.example' }] };
+for (const id of ['tailscale', 'netbird', 'zrok']) {
+  const failed = await mountSettings(['networks', id]);
+  assert.ok(failed.textContent.includes('Cannot load the keys'), `${id} explains the failure`);
+  assert.equal(all(failed, (e) => e.tagName === 'INPUT' && e.getAttribute('type') === 'password').length, 0, `${id} offers no key form`);
+  assert.equal(byText(failed, 'Save key').length + byText(failed, 'Remove').length + byText(failed, 'Disconnect').length, 0);
+}
+// A failed zrok enrollment keeps its error and where the token came from.
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
+  { ...provider('zrok', 'public', false), namespace: 'public', managed: true, connected: false }] };
+routes['GET /console/api/keys'] = { keys: [KEYS[0], KEYS[1], { id: 'zrok', set: false, waiting: true, managed: true, source: 'env', updated_at: '2026-10-01T00:00:00Z', last_error: 'token refused' }] };
+const zrokWait = await mountSettings(['networks', 'zrok']);
+assert.ok(zrokWait.textContent.includes('Waiting for the next start') && zrokWait.textContent.includes('from an environment variable'));
+assert.ok(zrokWait.textContent.includes('The last attempt to use this token failed: token refused'));
+routes['GET /console/api/providers'] = PROVIDERS;
 routes['GET /console/api/keys'] = { keys: KEYS };
 
 // --- console addresses ---

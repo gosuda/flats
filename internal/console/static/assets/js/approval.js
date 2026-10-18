@@ -137,6 +137,8 @@ export function mount(main, [id], ctx) {
     } catch (err) {
       if (ctx.alive()) errSlot.appendChild(errorPanel(err, yes ? 'Approval failed' : 'Rejection failed'));
     }
+    // The top bar's pending count follows the decision.
+    if (typeof globalThis.dispatchEvent === 'function') globalThis.dispatchEvent(new Event('flats:approvals'));
     if (ctx.alive()) load();
   }
 

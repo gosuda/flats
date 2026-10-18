@@ -76,19 +76,23 @@ export function mount(main, [section, sub], ctx) {
   // pending, the page reloads every few seconds, except while the operator
   // is typing or has staged a change.
   let refreshTimer = null;
-  const page = { ctx, content, notice, refresh };
+  // page.token identifies the latest load: an older one, or a background
+  // refresh that finds the operator editing, draws nothing.
+  const page = { ctx, content, notice, refresh, token: null };
+  let seq = 0;
   function refresh(pending) {
     clearTimeout(refreshTimer);
     if (!pending) return;
     refreshTimer = setTimeout(() => {
       if (!ctx.alive()) return;
       if (editing(content)) { refresh(pending); return; }
-      load();
+      load(undefined, true);
     }, 5000);
     // Never keep a test process alive (Node timers have unref; browsers ignore it).
     if (refreshTimer && typeof refreshTimer.unref === 'function') refreshTimer.unref();
   }
-  const load = (saved) => {
+  const load = (saved, background) => {
+    page.token = { id: ++seq, background: !!background };
     if (active === 'networks' && sub) return providerPage(page, sub, saved, load);
     if (active === 'networks') return networksPage(page, saved, load);
     if (active === 'console') return consolePage(page, saved, load);
@@ -238,10 +242,16 @@ export function effectiveDefault(scope, data) {
 // loadAll fetches what a page needs; settings failing is fatal, the others
 // are shown as errors where they are used.
 async function loadAll(page, want) {
+  const token = page.token;
   const calls = { settings: api.settings, providers: api.providers, keys: api.keys, domains: api.consoleDomains };
   const names = ['settings', ...want];
   const res = await Promise.allSettled(names.map((n) => calls[n]()));
-  if (!page.ctx.alive()) return null;
+  if (!page.ctx.alive() || page.token !== token) return null;
+  // The operator may have started typing while a background refresh ran.
+  if (token && token.background && editing(page.content)) {
+    page.refresh(true);
+    return null;
+  }
   const out = {};
   names.forEach((n, i) => { out[n] = res[i].status === 'fulfilled' ? res[i].value : null; out[n + 'Error'] = res[i].reason; });
   if (!out.settings) {
@@ -332,12 +342,16 @@ async function providerPage(page, id, saved, reload) {
   }
   const keys = d.keys ? (d.keys.keys || []) : [];
   const keyOf = (kid) => keys.find((k) => k.id === kid);
+  // Without the key state the page offers no key action: an unknown key
+  // must not look unset.
+  const keysFailed = !d.keys && ['tailscale', 'netbird', 'zrok'].includes(p.id) && !p.unsupported;
+  const keyError = () => errorPanel(d.keysError, 'Cannot load the keys');
   const data = d.settings;
   const etag = data.config ? data.config.etag : '';
   const after = () => reload();
   const isDefault = effectiveDefault(p.scope, data) === p.id;
   // NetBird without a setup key shows numbered steps; the switch is step 2.
-  const setup = p.id === 'netbird' && !p.unsupported && !p.enabled && !p.key_set && !(keyOf('netbird') || {}).set;
+  const setup = p.id === 'netbird' && !keysFailed && !p.unsupported && !p.enabled && !p.key_set && !(keyOf('netbird') || {}).set;
   const action = setup ? null : providerToggle(p, info, etag, after);
   const head = pageHead({
     title: info.label, crumb: ['Networks', '/settings/networks'],
@@ -348,17 +362,17 @@ async function providerPage(page, id, saved, reload) {
   });
   const parts = [head];
   const keyParts = [];
-  if (p.id === 'tailscale') keyParts.push(group('key', 'Auth key', 'Stored encrypted in flats.db. Never shown again.', keySection(keyOf('tailscale'), TAILSCALE_KEY, after)));
+  if (p.id === 'tailscale') keyParts.push(group('key', 'Auth key', 'Stored encrypted in flats.db. Never shown again.', keysFailed ? keyError() : keySection(keyOf('tailscale'), TAILSCALE_KEY, after)));
   if (p.id === 'netbird') {
     if (p.unsupported) parts.push(callout('warn', p.unsupported));
     else if (setup) parts.push(netbirdSteps(p, keyOf('netbird'), etag, after));
-    else keyParts.push(group('key', 'Setup key', 'Stored encrypted in flats.db. Never shown again.', keySection(keyOf('netbird'), NETBIRD_KEY, after)));
+    else keyParts.push(group('key', 'Setup key', 'Stored encrypted in flats.db. Never shown again.', keysFailed ? keyError() : keySection(keyOf('netbird'), NETBIRD_KEY, after)));
   }
   if (p.id === 'netbird-expose') {
     parts.push(callout('info', 'A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Its peer registers with the setup key under ',
       h('a', { href: '/settings/networks/netbird', 'data-nav': true, text: 'NetBird' }), '.'));
   }
-  if (p.id === 'zrok') keyParts.push(group('key', 'Account', p.managed ? 'The token is kept in Flats’ zrok environment. Never shown again.' : '', zrokSection(p, keyOf('zrok'), after)));
+  if (p.id === 'zrok') keyParts.push(group('key', 'Account', p.managed ? 'The token is kept in Flats’ zrok environment. Never shown again.' : '', keysFailed ? keyError() : zrokSection(p, keyOf('zrok'), after)));
   parts.push(...keyParts);
   if (p.id === 'portal') parts.push(portalForm(data, saved, reload, page.notice));
   if (p.id === 'local') parts.push(group('address', 'Address', '', list(row({ title: 'Local address', desc: 'Every flat is reachable here from this device.', ctl: p.address ? h('code', { text: p.address }) : null }))));
@@ -420,14 +434,14 @@ async function setHostProvider(p, info, enabled, etag) {
 // netbirdSteps replaces the switch while NetBird has no setup key: add a
 // key, then turn it on.
 function netbirdSteps(p, key, etag, after) {
-  const form = keyForm(NETBIRD_KEY, false, after);
+  const form = keyForm(NETBIRD_KEY, false, after, 'netbird-key-steps-help');
   const toggle = providerToggle(p, infoOf('netbird'), etag, after);
   return group('setup', 'Set up', 'Two steps. Nothing is reachable until you allow NetBird on a flat.',
     h('div', { class: 's-list s-steps' },
       h('div', { class: 's-row s-step', id: 'step-key' }, h('span', { class: 's-num', 'aria-hidden': 'true', text: '1' }),
         h('div', { class: 's-row-main' },
           h('span', { class: 's-row-title', text: 'Add a setup key' }),
-          h('p', { class: 's-row-desc' }, NETBIRD_KEY.help),
+          h('p', { class: 's-row-desc', id: 'netbird-key-steps-help' }, NETBIRD_KEY.help),
           form)),
       h('div', { class: 's-row s-step' }, h('span', { class: 's-num', 'aria-hidden': 'true', text: '2' }),
         h('div', { class: 's-row-main' },
@@ -487,7 +501,7 @@ const KEY_SOURCES = { console: 'from the console', cli: 'with flats key set', fl
 const TAILSCALE_KEY = {
   id: 'tailscale-key', name: 'Tailscale auth key', placeholder: 'tskey-auth-…',
   what: 'Logs in each new node: flats, previews and console addresses. Nodes already on the tailnet keep their identity.',
-  help: 'In the Tailscale admin console, open Settings › Keys and generate a reusable auth key. Leave it untagged so console decisions record who made them. New nodes use it from now on; nodes already on the tailnet are not affected.',
+  help: 'In the Tailscale admin console, open Settings › Keys and generate a reusable auth key (tskey-auth-…). Leave it untagged so console decisions record who made them. Flats cannot tell from the key whether it is reusable and untagged; that is up to you. New nodes use it from now on; nodes already on the tailnet are not affected.',
   removeBody: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.',
   set: (key) => api.setTailscaleKey(key), remove: () => api.deleteTailscaleKey(),
 };
@@ -556,12 +570,14 @@ function keySection(k, cfg, after) {
 }
 
 // keyForm sends a key once; the value is cleared and never shown again.
-function keyForm(cfg, replacing, after) {
+// helpId names guidance shown elsewhere (the NetBird setup steps);
+// otherwise the form shows cfg.help itself.
+function keyForm(cfg, replacing, after, helpId) {
   const input = h('input', { type: 'password', id: cfg.id, name: 'key', autocomplete: 'off', spellcheck: 'false', required: true,
-    placeholder: cfg.placeholder, 'aria-label': replacing ? `New ${cfg.name}` : cfg.name });
+    placeholder: cfg.placeholder, 'aria-label': replacing ? `New ${cfg.name}` : cfg.name, 'aria-describedby': helpId || cfg.id + '-help' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: replacing ? 'Replace key' : 'Save key' });
   const form = h('form', { class: 's-inline-form', novalidate: true }, input, submit);
-  if (replacing) form.appendChild(h('p', { class: 's-row-desc s-form-note', text: cfg.help }));
+  if (!helpId) form.appendChild(h('p', { class: 's-row-desc s-form-note', id: cfg.id + '-help', text: cfg.help }));
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const key = input.value.trim();
@@ -609,19 +625,23 @@ function zrokSection(p, k, after) {
   if (p.api_endpoint) facts.push(h('span', null, 'Service ', h('code', { text: p.api_endpoint })));
   facts.push(h('span', null, 'Namespace ', h('code', { text: p.namespace || 'public' })));
   const k2 = k || { set: false };
+  const notices = [
+    k2.external_differs ? callout('warn', 'The token given to this run by a flag or environment variable differs from the connected account. Flats keeps the connected account; replace it here to change it.') : null,
+    k2.last_error ? callout('warn', `The last attempt to use this token failed: ${k2.last_error}`) : null,
+  ];
   const state = p.connected ? pill('Connected', 'on') : (k2.waiting ? pill('Waiting for the next start', 'busy') : pill('Not connected', 'off'));
   if (!p.managed) {
-    return list(row({ id: 'key-zrok', title: ['zrok account', state], meta: facts,
-      desc: 'Uses the zrok environment set as zrok.environment in config.json; manage its account with the zrok CLI. Each public flat reserves its slug as a name in this namespace.' }));
+    return [list(row({ id: 'key-zrok', title: ['zrok account', state], meta: [...keyFacts(k2), ...facts],
+      desc: 'Uses the zrok environment set as zrok.environment in config.json; manage its account with the zrok CLI. Each public flat reserves its slug as a name in this namespace.' })), notices];
   }
   if (!p.connected && !k2.set) {
-    return list(
-      row({ id: 'key-zrok', title: ['zrok account token', state], meta: facts, desc: 'Registers this machine as an environment of your zrok account. Turn zrok on once the account is connected.' }),
+    return [list(
+      row({ id: 'key-zrok', title: ['zrok account token', state], meta: [...keyFacts(k2), ...facts], desc: 'Registers this machine as an environment of your zrok account. Turn zrok on once the account is connected.' }),
       h('div', { class: 's-row stack' }, zrokTokenForm(after, {
         submit: 'Connect',
         help: 'Sign in at myzrok.io, open the zrok API console and copy the account token from its getting-started wizard.',
         done: 'zrok account connected. Turn zrok on to use it.',
-      })));
+      }))), notices];
   }
   const formRow = h('div', { class: 's-row stack', hidden: true }, zrokTokenForm(after, {
     submit: 'Replace account',
@@ -636,11 +656,11 @@ function zrokSection(p, k, after) {
     if (open) formRow.removeAttribute('hidden'); else formRow.setAttribute('hidden', '');
     replace.setAttribute('aria-expanded', String(open));
   });
-  return list(
+  return [list(
     row({ id: 'key-zrok', title: ['zrok account', state], meta: [...keyFacts(k2), ...facts],
       desc: 'Each public flat reserves its slug as a name in this namespace, so its URL stays the same.',
       ctl: [replace, zrokDisconnect(p, k2, after)] }),
-    formRow);
+    formRow), notices];
 }
 
 // zrokTokenForm sends an account token to connect or replace the account.
@@ -1453,13 +1473,23 @@ function agentsPage(page) {
       : 'Agents can create flats, save Drafts, request numbered versions and deploy them, open previews and read logs.';
   }
   select(0);
+  const tablist = h('div', { class: 's-tabs', role: 'tablist', 'aria-label': 'Client' }, tabs);
+  tablist.addEventListener('keydown', (e) => {
+    const at = tabs.findIndex((t) => t.getAttribute('aria-selected') === 'true');
+    const next = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    const i = (next + tabs.length) % tabs.length;
+    select(i);
+    tabs[i].focus();
+  });
   // The snippets for every client stay in the page for search and copy.
   const all = h('div', { class: 'sr-only' }, snippets.map(([label, text]) => h('pre', null, `${label}: ${text}`)));
   fill(page.content,
     pageHead({ title: 'Agents', intro: ['Agents can create flats, save Drafts, open previews and read logs. Saving versions, deploying, visibility changes and deleting wait for your approval under ', h('a', { href: '/approvals', 'data-nav': true, text: 'Approvals' }), '.'] }),
     group('connect', 'Connect an agent', 'MCP over Streamable HTTP', list(
       row({ title: 'MCP address', meta: ['Uses the address you’re on now'], ctl: [h('code', { text: url }), copyButton(() => url, 'MCP address')] }),
-      h('div', { class: 's-row stack' }, h('div', { class: 's-tabs', role: 'tablist', 'aria-label': 'Client' }, tabs), panel, note))),
+      h('div', { class: 's-row stack' }, tablist, panel, note))),
     group('agent-limits', 'What agents can’t do', '', list(
       row({ title: 'Read or set keys', desc: ['Network keys are set only here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],
         ctl: h('a', { class: 'btn btn-small', href: '/settings/networks', 'data-nav': true, text: 'Networks' }) }),
