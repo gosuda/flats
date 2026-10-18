@@ -755,3 +755,135 @@ func TestSpareQuietExit(t *testing.T) {
 		t.Fatalf("spare logged an error:\n%s", s)
 	}
 }
+
+// startWithSink is startFlat with a usage sink.
+func startWithSink(t *testing.T, m *Manager, name string, files map[string]string, entry string, sink core.UsageSink) (*flat, error) {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "versions", "1")
+	writeFiles(t, dir, files)
+	f := &flat{logs: &logs{}, dataDir: filepath.Join(root, "data"), root: root}
+	f.spec = core.RuntimeSpec{Flat: name, Version: 1, Dir: dir, Entry: entry, DataDir: f.dataDir, Log: f.logs.add, Usage: sink}
+	inst, err := m.Start(context.Background(), f.spec)
+	if err != nil {
+		return nil, err
+	}
+	f.inst = inst
+	f.srv = httptest.NewServer(inst)
+	t.Cleanup(func() { f.srv.Close(); f.inst.Stop() })
+	return f, nil
+}
+
+// An adopted pre-started worker charges the flat only for the CPU it used
+// after it received its spec, never for its warm-up.
+func TestSpareUsageExcludesWarmUp(t *testing.T) {
+	t.Parallel()
+	m, _ := spareManager(t)
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	sp := waitSpare(t, m, 0)
+	sink := &recSink{}
+	f, err := startWithSink(t, m, "second", spareTestFiles(), "index.js", sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid := f.inst.(*instance).pid(); pid != sp.p.cmd.Process.Pid {
+		t.Fatalf("instance pid %d, want the pre-started worker %d", pid, sp.p.cmd.Process.Pid)
+	}
+	if n := sink.count("started", sp.p.id); n != 1 {
+		t.Fatalf("Started called %d times for the adopted worker", n)
+	}
+	getOK(t, f)
+	f.inst.Stop()
+	ev, ok := sink.last("exited")
+	if !ok || ev.id != sp.p.id || ev.unexpected {
+		t.Fatalf("exit %+v (found %v)", ev, ok)
+	}
+	// Stop returned after done closed, so the reader's fields are settled.
+	ps := sp.p.cmd.ProcessState
+	total := (ps.UserTime() + ps.SystemTime()).Nanoseconds()
+	if sp.p.baseCPU <= 0 {
+		t.Fatal("no warm-up CPU recorded with the spec acknowledgement")
+	}
+	if want := max(sp.p.lastCPU, total-sp.p.baseCPU); ev.cpu != want || ev.cpu >= total {
+		t.Fatalf("exit CPU %d, want %d (process total %d, warm-up %d)", ev.cpu, want, total, sp.p.baseCPU)
+	}
+}
+
+// A pre-started worker that exits before acknowledging its spec ran nothing
+// of the flat: its exit is neither CPU nor an unexpected exit of the flat,
+// and the new process that starts the flat is accounted as usual.
+func TestSpareDiesBeforeSpecAckUsage(t *testing.T) {
+	t.Parallel()
+	m, _ := spareManager(t)
+	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
+	sp := waitSpare(t, m, 0)
+	sink := &recSink{}
+	f, err := startWithSink(t, m, testDieAdoptedFlat, spareTestFiles(), "index.js", sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getOK(t, f)
+	var spareExit *usageEvent
+	started := 0
+	for _, e := range sink.all() {
+		if e.kind == "exited" && e.id == sp.p.id {
+			spareExit = &e
+		}
+		if e.kind == "started" {
+			started++
+		}
+	}
+	if spareExit == nil || spareExit.cpu != 0 || spareExit.unexpected {
+		t.Fatalf("spare exit %+v", spareExit)
+	}
+	if started != 2 {
+		t.Fatalf("Started %d times, want the spare and the new process", started)
+	}
+}
+
+// A pre-started worker that was already waited for cannot be adopted, so no
+// Started is reported without its Exited.
+func TestReapedSpareIsNotAssigned(t *testing.T) {
+	sink := &recSink{}
+	in := &instance{spec: core.RuntimeSpec{Usage: sink}}
+	p := &proc{id: 7, tail: &tailBuf{}}
+	if owner := p.reap(); owner != nil {
+		t.Fatalf("owner %v", owner)
+	}
+	if p.assign(in, make(chan error, 1)) {
+		t.Fatal("assigned a process that was already waited for")
+	}
+	if n := sink.count("started", 7); n != 0 {
+		t.Fatalf("Started reported %d times", n)
+	}
+	q := &proc{id: 8, tail: &tailBuf{}}
+	if !q.assign(in, make(chan error, 1)) || q.reap() != in || sink.count("started", 8) != 1 {
+		t.Fatal("a live pre-started worker was not assigned")
+	}
+}
+
+// Exit classification of pre-started and exec'd workers.
+func TestUnexpectedExitRules(t *testing.T) {
+	for _, c := range []struct {
+		name                         string
+		exec, acked, stopped, failed bool
+		want                         bool
+	}{
+		{"spare exits on its own before the ack", false, false, false, false, false},
+		{"adoption gave up before the ack (stdin)", false, false, true, false, false},
+		{"start timeout before the ack", false, false, true, true, true},
+		{"adopted worker crashes after the ack", false, true, false, false, true},
+		{"adopted worker stopped", false, true, true, false, false},
+		{"exec'd worker crashes during startup", true, false, false, false, true},
+		{"exec'd worker stopped", true, true, true, false, false},
+		{"exec'd startup error", true, true, true, true, true},
+	} {
+		p := &proc{exec: c.exec}
+		p.specAcked.Store(c.acked)
+		p.failed.Store(c.failed)
+		p.stopped.Store(c.stopped)
+		if got := p.unexpectedExit(); got != c.want {
+			t.Errorf("%s: unexpected = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

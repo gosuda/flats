@@ -108,7 +108,7 @@ func TestDocsImagePathLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	isolated, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated"))
+	isolated, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestDocsImagePathLifecycle(t *testing.T) {
 	refs := s.docsRefs[live.Dir]
 	s.docsRefs[live.Dir] = 0
 	s.docsMu.Unlock()
-	again, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated2"))
+	again, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated2"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestDocsImagePathLifecycle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "image.456.tmp"), []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	third, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated3"))
+	third, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated3"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -607,6 +607,22 @@ td > .badge:first-child { margin-left: 0; }
 .top-pages th:last-child, .top-pages td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
 .top-pages tbody th { font-weight: 400; overflow-wrap: anywhere; white-space: normal; }
 .top-pages tbody tr:last-child > * { border-bottom: 0; }
+.usage-metrics { flex-wrap: wrap; gap: 12px 32px; margin: 12px 0; }
+.usage-metrics dd.usage-note { color: var(--muted); font-size: 13px; max-width: 24ch; }
+.usage-panel > p.usage-note { margin: 0 0 12px; }
+.usage-now { margin: 0 0 12px; overflow-wrap: anywhere; }
+.usage-now > .muted { margin-right: 6px; }
+.usage-chart-title { font-size: 13px; font-weight: 500; margin: 16px 0 8px; color: var(--muted); }
+.usage-panel .chart-legend { flex-wrap: wrap; gap: 6px 14px; margin-bottom: 12px; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot.status-2xx, .usage-bar.status-2xx { background: var(--ok); fill: var(--ok); }
+.legend-dot.status-3xx, .usage-bar.status-3xx { background: var(--link); fill: var(--link); }
+.legend-dot.status-4xx, .usage-bar.status-4xx { background: var(--warn); fill: var(--warn); }
+.legend-dot.status-5xx, .usage-bar.status-5xx { background: var(--danger); fill: var(--danger); }
+.legend-dot.status-closed, .usage-bar.status-closed { background: var(--muted); fill: var(--muted); }
+.legend-dot.status-1xx, .usage-bar.status-1xx { background: var(--type-design); fill: var(--type-design); }
+.usage-bar { stroke: var(--bg); stroke-width: 1; }
+.usage-day:hover .usage-bar { opacity: 0.75; }
 .share-dialog { background: var(--surface-2); border: 0; max-height: calc(100dvh - 32px); overflow: auto; }
 .share-content { padding: 20px; }
 .share-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }

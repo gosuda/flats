@@ -88,7 +88,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 			return
 		}
 		// Not an activation: keep the captured settings snapshot.
-		rebuilt, err := s.buildWithEnvironment(context.WithValue(context.WithoutCancel(ctx), lazyDocsKey{}, true), from, current.version, s.dataDirOf(from), current.environment)
+		rebuilt, err := s.buildWithEnvironment(context.WithValue(context.WithoutCancel(ctx), lazyDocsKey{}, true), from, current.version, s.dataDirOf(from), current.environment, lf.liveSink())
 		if err != nil {
 			s.Event(context.WithoutCancel(ctx), from, "error", "rename", "could not restart the live version after failed rename: "+err.Error(), nil)
 			return
@@ -195,7 +195,9 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 			// The rename is committed, so a caller that went away must not
 			// leave the flat without its worker.
 			bg := context.WithoutCancel(ctx)
-			if rebuilt, err := s.buildWithEnvironment(context.WithValue(bg, lazyDocsKey{}, true), to, current.version, s.dataDirOf(to), current.environment); err == nil {
+			// The held lf's sink: delete(s.live, from) above means a lookup by
+			// slug would create a stray state.
+			if rebuilt, err := s.buildWithEnvironment(context.WithValue(bg, lazyDocsKey{}, true), to, current.version, s.dataDirOf(to), current.environment, lf.liveSink()); err == nil {
 				lf.cur.Store(rebuilt)
 			} else {
 				s.Event(bg, to, "error", "rename", "could not restart the live version after rename: "+err.Error(), nil)

@@ -834,11 +834,18 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, _ core.Via) {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{
+	out := map[string]any{
 		"page_views": pv,
 		"top_pages":  pages,
 		"note":       "Page views count GET page requests, including extensionless API routes. Unique visitors are not tracked. Per-page counts start with this update; query strings are excluded.",
-	})
+	}
+	// Requests, response times and worker CPU and memory over the same days.
+	// Usage that cannot be read is omitted rather than failing the page views
+	// (the console then hides its Usage section).
+	if usage, err := s.Svc.Usage(r.Context(), r.PathValue("slug"), days); err == nil {
+		out["usage"] = usage
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) snapshots(w http.ResponseWriter, r *http.Request, _ core.Via) {

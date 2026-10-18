@@ -109,10 +109,39 @@ and can make forwarded callers look like local clients; do not use that setup.
 The origin setting does not provide TLS, DNS, tunneling or authentication.
 Configure those at the proxy, require authentication (or restrict access to
 a trusted network), and prevent direct untrusted access to the upstream.
-All management routes are exposed, including approval and settings routes;
+All management routes are exposed, including approval, settings and `/metrics` routes;
 there is no agent-only mode. See [external-origin configuration](configuration.md#external-origins-behind-a-reverse-proxy)
 for validation and live-update behavior. The default empty list preserves
 existing loopback and provider-domain behavior.
+
+## Scraping metrics
+
+The host serves [`/metrics`](design.md#metrics) in the Prometheus text format
+on the loopback listener, every console domain and declared external origins.
+Protect external scrapes with the same proxy authentication or private network
+as the console. A scraper on the host
+itself uses `http://127.0.0.1:7878/metrics` (`host.management_addr`); one on
+another machine uses a console domain, such as
+`https://NAME.<tailnet>.ts.net/metrics` or `http://NAME.<NetBird domain>/metrics`:
+
+```yaml
+scrape_configs:
+  - job_name: flats
+    scheme: https
+    static_configs:
+      - targets: ["flats.example-tailnet.ts.net"]
+```
+
+The request's `Host` must be that console domain (scrapers send the target's
+name by default); a flat's address, a preview or a public route does not serve
+`/metrics`. Access is the same as access to the console there: tailnet ACLs or
+NetBird access policies decide which devices reach it, and Flats asks for no
+credential. The metrics include CPU, memory, response times and the slugs of
+Private and unpublished flats, so allow only scrapers you trust like someone
+with console access.
+
+An example Grafana dashboard for these metrics, with import steps, is in
+[examples/grafana](../examples/grafana/README.md).
 
 ## Removing a permission
 

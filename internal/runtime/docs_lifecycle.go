@@ -392,6 +392,36 @@ func (d *docsInstance) Quiescing() bool {
 	return d.quiescing && d.transition != nil
 }
 
+// WorkerState implements core.StateReporter under the controller's lock. It
+// never wakes the document. Sleeping is a logical document without a child;
+// a wake is starting, an idle drain quiescing, and a failed child waiting for
+// its retry backoff.
+func (d *docsInstance) WorkerState() core.WorkerState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case d.stopped || d.retired:
+		return core.WorkerStopped
+	case d.quiescence != nil:
+		return core.WorkerQuiescing
+	case d.transition != nil && d.quiescing:
+		return core.WorkerBackoff // a failed child is being terminated
+	case d.transition != nil:
+		return core.WorkerStarting
+	case d.ready && childAlive(d.child):
+		return core.WorkerRunning
+	case d.ready:
+		return core.WorkerBackoff // the published child exited
+	case childAlive(d.child):
+		return core.WorkerStarting // started, waiting for core's preparation
+	case time.Now().Before(d.retryAt):
+		return core.WorkerBackoff
+	}
+	return core.WorkerSleeping
+}
+
+var _ core.StateReporter = (*docsInstance)(nil)
+
 func (d *docsInstance) CleanDormant() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -63,6 +63,20 @@ type workerSpec struct {
 	PoolSize       int               `json:"pool_size,omitempty"`
 	NetworkOrigins []string          `json:"network_origins,omitempty"`
 	ImagePath      string            `json:"image_path,omitempty"` // document image file; live managed documents only
+	// UsageIntervalMS is how often the worker reports its CPU and memory;
+	// 0 = usageInterval.
+	UsageIntervalMS int64 `json:"usage_interval_ms,omitempty"`
+}
+
+// usageInterval is how often a worker reports its usage (after a first
+// report right after "ready").
+const usageInterval = 15 * time.Second
+
+func (s *workerSpec) usageEvery() time.Duration {
+	if s.UsageIntervalMS <= 0 {
+		return usageInterval
+	}
+	return time.Duration(s.UsageIntervalMS) * time.Millisecond
 }
 
 // prewarmSpec is the optional first stdin line of a pre-started worker,
@@ -99,11 +113,18 @@ func (s *workerSpec) poolSize() int {
 
 // childMsg is one line the child writes on stderr. Lines that are not JSON
 // (for example a Go runtime crash) are forwarded as error logs.
+//
+// A "usage" line carries the worker's CPU time (user+system, ns since it
+// started) and, on Linux, its resident private anonymous memory (RssAnon).
+// Flat code cannot write such a line: its console and stderr output reaches
+// the parent only inside the msg of a "log" line.
 type childMsg struct {
-	T     string `json:"t"` // "log", "ready", "fatal"; "warm" and "spec" (pre-started workers)
+	T     string `json:"t"` // "log", "ready", "fatal", "usage"; "warm" and "spec" (pre-started workers)
 	Level string `json:"level,omitempty"`
 	Msg   string `json:"msg,omitempty"`
 	MS    int64  `json:"ms,omitempty"`
+	CPU   *int64 `json:"cpu_ns,omitempty"`
+	Mem   *int64 `json:"mem,omitempty"`
 }
 
 // childLog writes rate-limited JSON lines to the parent.

@@ -38,12 +38,15 @@ type Manager struct {
 	// NoSpare disables the pre-started worker (tests sensitive to process
 	// counts or to the timing of the exec path).
 	NoSpare bool
+	// UsageInterval is how often workers report CPU and memory; 0 = 15s.
+	UsageInterval time.Duration
 
 	once       sync.Once
 	sockDir    string
 	scratchDir string // parent of pre-started workers' database warm-up directories; "" = none
 	initErr    error
 	spare      spareState
+	procs      atomic.Uint64 // process ids for RuntimeSpec.Usage, unique per Manager
 }
 
 var _ core.Runtime = (*Manager)(nil)
@@ -166,7 +169,7 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
 			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds(),
-			ImagePath: spec.ImagePath},
+			ImagePath: spec.ImagePath, UsageIntervalMS: m.UsageInterval.Milliseconds()},
 	}
 	if in.ws.Env == nil {
 		in.ws.Env = map[string]string{}
@@ -247,6 +250,7 @@ type instance struct {
 }
 
 type proc struct {
+	id      uint64 // RuntimeSpec.Usage process id
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	done    chan struct{} // closed when the process exited and stderr drained
@@ -255,7 +259,11 @@ type proc struct {
 	tail    *tailBuf
 	rdone   chan struct{} // stderr fully read
 	stopped atomic.Bool   // exit was requested
-	warmDir string        // a pre-started worker's database warm-up directory, removed after exit; "" = none
+	failed  atomic.Bool   // killed because startup failed: still an unexpected exit
+	// exec is true for a process started for its instance, false for a
+	// pre-started worker (adopted or not).
+	exec    bool
+	warmDir string // a pre-started worker's database warm-up directory, removed after exit; "" = none
 	// A pre-started worker reports "warm" when it finished preparing and
 	// "spec" once it received its flat (every worker sends the latter).
 	warmAt    atomic.Int64 // UnixNano of "warm"; 0 before
@@ -266,16 +274,44 @@ type proc struct {
 	mu    sync.Mutex
 	owner *instance
 	ready chan<- error
+	// reaped is set once the process was waited for; an owner can no longer
+	// be assigned, so the exit is accounted for exactly the owner it had.
+	reaped bool
+
+	// Written by readStderr only; read by the Wait goroutine after rdone.
+	// baseCPU is the CPU the process used before it received its spec (a
+	// pre-started worker's warm-up): it is never the flat's.
+	baseCPU      int64
+	lastCPU      int64 // latest valid CPU sample since the spec (ns)
+	badUsageSeen bool  // an invalid sample was logged
 }
 
 // assign gives a pre-started worker to in. Lines read from its stderr from
-// now on are in's; earlier ones went to the Manager log.
-func (p *proc) assign(in *instance, ready chan<- error) {
-	p.tail.reset()
+// now on are in's; earlier ones went to the Manager log. It returns false
+// when the process was already waited for: it is gone and was not given in.
+func (p *proc) assign(in *instance, ready chan<- error) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.reaped {
+		return false
+	}
+	p.tail.reset()
 	p.started = time.Now()
 	p.owner, p.ready = in, ready
-	p.mu.Unlock()
+	// Under p.mu, as reap is: Started always precedes the owner's Exited.
+	if u := in.spec.Usage; u != nil {
+		u.Started(p.id)
+	}
+	return true
+}
+
+// reap marks the process waited for and returns its final owner (nil for a
+// pre-started worker nobody adopted).
+func (p *proc) reap() *instance {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reaped = true
+	return p.owner
 }
 
 func (p *proc) assigned() (*instance, chan<- error) {
@@ -375,19 +411,29 @@ func (m *Manager) startProc(lf *os.File, owner *instance, ready chan<- error, wa
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start worker: %w", err)
 	}
-	p := &proc{cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{}), warmDir: warmDir, owner: owner, ready: ready}
+	p := &proc{id: m.procs.Add(1), cmd: cmd, stdin: stdin, done: make(chan struct{}), started: time.Now(), tail: &tailBuf{}, rdone: make(chan struct{}), warmDir: warmDir, owner: owner, ready: ready, exec: owner != nil}
+	if owner != nil && owner.spec.Usage != nil {
+		owner.spec.Usage.Started(p.id)
+	}
 	go p.readStderr(m, stderr)
 	go func() {
 		<-p.rdone // Wait must not run before all reads from the pipe completed
 		p.err = cmd.Wait()
+		// Exit accounting runs before done closes: Stop returns on done, so
+		// once it returns the final CPU is in the sink. exited() is not the
+		// place, as it returns early for stopped or superseded processes.
+		owner := p.reap()
+		if owner != nil && owner.spec.Usage != nil {
+			owner.spec.Usage.Exited(p.id, p.finalCPU(), p.unexpectedExit())
+		}
 		if p.warmDir != "" {
 			// The worker removes it itself unless it was killed or
 			// crashed during the warm-up.
 			os.RemoveAll(p.warmDir)
 		}
 		close(p.done)
-		if in, _ := p.assigned(); in != nil {
-			in.exited(p)
+		if owner != nil {
+			owner.exited(p)
 		} else {
 			m.spareExited(p)
 		}
@@ -414,6 +460,8 @@ func (in *instance) spawnExec(ctx context.Context) (err error) {
 	}
 	b, _ := json.Marshal(in.ws)
 	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
+		p.failed.Store(true)
+		p.stopped.Store(true)
 		p.cmd.Process.Kill()
 		<-p.done
 		return fmt.Errorf("start worker: %w", err)
@@ -444,7 +492,10 @@ func (in *instance) adopt(ctx context.Context, sp *spare) (adopted bool, err err
 		return false, nil
 	}
 	ready := make(chan error, 1)
-	p.assign(in, ready)
+	if !p.assign(in, ready) { // it exited while being moved
+		os.Remove(in.sock)
+		return false, nil
+	}
 	b, _ := json.Marshal(in.ws)
 	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
 		p.stopped.Store(true)
@@ -473,6 +524,7 @@ func (in *instance) await(ctx context.Context, p *proc, ready <-chan error, isAd
 	select {
 	case err := <-ready:
 		if err != nil {
+			p.failed.Store(true)
 			p.stopped.Store(true)
 			p.cmd.Process.Kill()
 			<-p.done
@@ -497,6 +549,7 @@ func (in *instance) await(ctx context.Context, p *proc, ready <-chan error, isAd
 		}
 		return true, fmt.Errorf("server flat worker exited during startup: %s", msg)
 	case <-timer.C:
+		p.failed.Store(true)
 		p.stopped.Store(true)
 		p.cmd.Process.Kill()
 		<-p.done
@@ -546,7 +599,14 @@ func (p *proc) readStderr(m *Manager, r io.Reader) {
 			case "warm": // a pre-started worker finished preparing
 				p.warmAt.Store(time.Now().UnixNano())
 			case "spec": // the worker received its spec
+				if msg.CPU != nil && *msg.CPU >= 0 {
+					p.baseCPU = *msg.CPU
+				}
 				p.specAcked.Store(true)
+			case "usage":
+				if in != nil {
+					in.usage(p, msg)
+				}
 			case "ready":
 				if in != nil && !sentReady {
 					sentReady = true
@@ -575,6 +635,82 @@ func (p *proc) readStderr(m *Manager, r io.Reader) {
 	}
 	io.Copy(io.Discard, r)
 }
+
+// finalCPU is the flat's share of the process's CPU once it exited: its
+// whole CPU since the spec. A pre-started worker that never acknowledged a
+// spec ran nothing of the flat. Called by the Wait goroutine after rdone.
+func (p *proc) finalCPU() int64 {
+	if !p.exec && !p.specAcked.Load() {
+		return 0
+	}
+	cpu := p.lastCPU
+	if ps := p.cmd.ProcessState; ps != nil {
+		cpu = max(cpu, (ps.UserTime()+ps.SystemTime()).Nanoseconds()-p.baseCPU)
+	}
+	return cpu
+}
+
+// unexpectedExit reports whether the exit was neither asked for nor part of
+// a pre-started worker's life before it took a flat's spec. A startup the
+// host killed because it failed is unexpected.
+func (p *proc) unexpectedExit() bool {
+	// stopped is read first: startup paths store failed before stopped, so
+	// seeing stopped also guarantees seeing failed.
+	stopped := p.stopped.Load()
+	if p.failed.Load() {
+		return true // the flat's startup failed, also in an adopted worker
+	}
+	if !p.exec && !p.specAcked.Load() {
+		return false // the spare's own exit; spawn starts a new process
+	}
+	return !stopped
+}
+
+// usage forwards one valid usage sample, as CPU since the spec: a CPU time
+// that is present, non-negative and not below the process's previous
+// sample, and a non-negative memory figure when one is present. An invalid
+// sample is dropped and logged once per process.
+func (in *instance) usage(p *proc, msg childMsg) {
+	var cpu int64 = -1
+	if msg.CPU != nil {
+		cpu = *msg.CPU - p.baseCPU
+	}
+	if cpu < 0 || cpu < p.lastCPU || (msg.Mem != nil && *msg.Mem < 0) {
+		if !p.badUsageSeen {
+			p.badUsageSeen = true
+			in.m.logf("flat %s v%d: worker %d sent an invalid usage sample; dropped", in.spec.Flat, in.spec.Version, p.id)
+		}
+		return
+	}
+	p.lastCPU = cpu
+	if u := in.spec.Usage; u != nil {
+		var mem int64
+		if msg.Mem != nil {
+			mem = *msg.Mem
+		}
+		u.Sample(p.id, cpu, mem, msg.Mem != nil)
+	}
+}
+
+// WorkerState implements core.StateReporter from the instance's own state,
+// without waking or messaging the worker.
+func (in *instance) WorkerState() core.WorkerState {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	switch {
+	case in.stopped:
+		return core.WorkerStopped
+	case in.p != nil:
+		return core.WorkerRunning
+	case in.starting != nil:
+		return core.WorkerStarting
+	}
+	// The worker exited or failed to restart; the next request restarts it,
+	// after its backoff.
+	return core.WorkerBackoff
+}
+
+var _ core.StateReporter = (*instance)(nil)
 
 // exited is called when a worker process ends.
 func (in *instance) exited(p *proc) {

@@ -18,8 +18,8 @@ flats serve                     (one long-running process; launchd on macOS, sys
 ├── provider manager            network providers (internal/expose/provider): local,
 │                               tailscale, tailscale-funnel, portal, zrok, cloudflare-quick,
 │                               netbird, netbird-expose
-├── management server           HTTP API + MCP (/mcp) + web console on 127.0.0.1:7878, and on
-│                               each configured console domain
+├── management server           HTTP API + MCP (/mcp) + web console + /metrics on 127.0.0.1:7878,
+│                               and on each configured console domain
 ├── design instances            in-process canvas handlers, one per live design (internal/design)
 └── server-flat workers         `flats worker` child processes, one per running server flat
                                 version or document (re-exec of the same binary; internal/runtime)
@@ -597,6 +597,107 @@ day/path keys (further paths and paths over 1024 bytes count as `(other)`),
 and flushed in transactional batches alongside the daily counters. Counters
 follow slug renames and are deleted with the flat. The stats API returns up to
 365 UTC calendar days (default 30); the console shows 7 or 30.
+
+Analytics also reports each flat's **usage** per UTC day
+([Metrics](spec/metrics.md#flat-usage)): every request that reaches the live
+route, private or public, by status class, including the answers Flats gives
+itself (rate limited, not deployed); response times; and, for server flats and
+documents, the CPU time and peak memory of the workers serving the live route.
+Previews are not usage. A request counts on the day its status is sent. A
+`5xx` is an error; a request whose visitor left before the response was sent
+counts as `closed`, not as an error. WebSocket connections and event streams
+count with their status but are left out of response times. Websites, pages
+and designs run inside the host process, so their CPU and memory are reported
+as not measured separately, never as zero.
+
+Counting happens in memory on the request path; the 30-second host sweep
+writes every flat's day counts to `usagedays` in `flats.db` in one
+transaction and merges them back if the write fails, so a slow database never
+holds up a request. An idle worker with level memory and under 1 ms of new
+CPU adds nothing to write. Reading stats never writes: it adds the counts still in memory to the
+stored days. Usage rows are
+keyed by the flat's uid, so they follow renames and are deleted with the flat;
+a slug deleted and created again starts empty. Shutdown writes usage after the
+workers have stopped, so their last CPU is kept. The stats API and the
+console's Usage section read the same days as page views
+([Response details](surfaces.md#response-details)).
+
+### Metrics
+
+`GET /metrics` answers in the Prometheus text exposition format (OpenMetrics
+when the scraper asks for it) on the loopback listener and every console
+domain, never on a flat's route, a preview or a public provider. It is always
+on: there is no setting to turn it off, move it or change its path. It follows
+the management server's `Host` and `Origin` checks and refuses cross-site
+browser requests like `/api` ([Request guards](surfaces.md#request-guards)),
+and needs no credential. It is not access control: whoever can reach the
+console can read the metrics, including CPU, memory, response times and the
+slugs of Private and unpublished flats, so a scraper must be trusted like
+someone with console access. Scraping through a console domain is described
+in [Private and public access](networking.md#scraping-metrics).
+
+A scrape reads only values the host keeps in memory: it never wakes a sleeping
+document, starts a worker, reads SQLite, walks files or calls a network
+provider. Traffic counters are current. Workers report their CPU and memory
+every 15 seconds. Host-wide counts, pending approvals and the size of
+`flats.db` are refreshed by each host sweep (normally every 30 seconds), whose
+time is `flats_snapshot_timestamp_seconds`; disk usage is measured for every
+flat about every 5 minutes. Route endpoint states are recomputed every 30
+seconds, and once at start, from the providers' in-memory status by the
+metrics endpoint itself. Counters start at zero when
+the host starts; a renamed flat's series continue under the new slug and a
+deleted flat's disappear.
+
+Flats uses a private registry: only its own metrics and the Go runtime
+(`go_*`) and process (`process_*`) figures of the host process are exposed,
+never metrics that bundled libraries register. Labels carry only slugs, flat
+types, provider IDs and fixed enums (plus the build strings of
+`flats_build_info`), never paths, query strings, client addresses, user
+agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
+carry `flat` (the slug) and `type`.
+
+| Metric | Type | Extra labels |
+| --- | --- | --- |
+| `flats_build_info` | gauge (1) | `version`, `commit` |
+| `flats_db_bytes` | gauge | |
+| `flats_flats` | gauge | `type`, `visibility`, `running` |
+| `flats_requests_total` | counter | `route` (`private`, `public`), `code` (`1xx` … `5xx`, `closed`) |
+| `flats_rate_limited_total` | counter | |
+| `flats_response_bytes_total` | counter | |
+| `flats_open_streams` | gauge | |
+| `flats_request_duration_seconds` | histogram | |
+| `flats_worker_cpu_seconds_total` | counter | `role` (`live`, `preview`, `check`) |
+| `flats_worker_memory_bytes` | gauge | (Linux) |
+| `flats_worker_memory_sampled_timestamp_seconds` | gauge | (Linux) |
+| `flats_worker_state` | gauge (1) | `state` |
+| `flats_worker_unexpected_exits_total` | counter | |
+| `flats_disk_bytes` | gauge | |
+| `flats_disk_measured_timestamp_seconds` | gauge | |
+| `flats_route_endpoints` | gauge (host) | `provider`, `state` |
+| `flats_pending_approvals` | gauge (host) | |
+| `flats_snapshot_timestamp_seconds` | gauge (host) | |
+| `flats_management_requests_total` | counter (host) | `surface` (`api`, `console`, `mcp`, `metrics`, `other`), `code` |
+
+`running` in `flats_flats` keeps its console meaning: a live document is
+running even while its worker sleeps. `flats_worker_state` is the diagnostic
+state of the worker serving the current version (`running`, `starting`,
+`quiescing`, `sleeping`, `backoff`, `stopped`); `preview` and `check` CPU
+belong to the flat's preview and activation-check workers, not to its usage.
+The histogram buckets are 5 ms to 30 s, with an 11 s bound just above the
+10 s runtime deadline; `closed` requests are not in it. An
+endpoint state other than the known ones is reported as `other`, and so is a
+flat type or visibility that is not a known word. Management requests are
+counted by `1xx` … `5xx` only.
+
+Worker CPU is user plus system time from the worker itself and, after it
+exits, from its process state, so it includes workers that later stopped,
+restarted or went to sleep. Worker memory is the private resident memory
+(`RssAnon`) and is measured only on Linux; elsewhere the memory series are
+absent and the stats API reports memory as `unsupported`. A sample is taken
+every 15 seconds, so a short spike between samples can be missed. The host
+process's own resident memory has a gap too: release builds are CGO-free, and
+in that mode the process collector reports no resident memory on macOS; the Go
+runtime series still show the host's Go memory.
 
 ## Surfaces
 

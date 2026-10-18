@@ -84,7 +84,7 @@ func TestRuntimeEnvironmentSnapshotAndRedaction(t *testing.T) {
 		})}, nil
 	})
 	v := store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}
-	old, err := s.build(ctx, "app", v, "unused")
+	old, err := s.build(ctx, "app", v, "unused", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestRuntimeEnvironmentSnapshotAndRedaction(t *testing.T) {
 	if specs[0].Env["MODE"] != "readable" {
 		t.Fatal("configuration mutated running instance")
 	}
-	next, err := s.build(ctx, "app", v, "unused")
+	next, err := s.build(ctx, "app", v, "unused", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,10 +127,10 @@ func TestRuntimeEnvironmentSnapshotAndRedaction(t *testing.T) {
 		t.Fatal("ordinary value incorrectly redacted")
 	}
 	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) { return nil, fmt.Errorf("startup token s3c") })
-	if _, err := s.build(ctx, "app", v, "unused"); err == nil || strings.Contains(err.Error(), "s3c") {
+	if _, err := s.build(ctx, "app", v, "unused", nil); err == nil || strings.Contains(err.Error(), "s3c") {
 		t.Fatalf("startup error: %v", err)
 	}
-	static, err := s.build(ctx, "app", store.Version{Kind: "static", Manifest: []byte(`{}`)}, "unused")
+	static, err := s.build(ctx, "app", store.Version{Kind: "static", Manifest: []byte(`{}`)}, "unused", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestLegacySecretsRemainReadableByRuntime(t *testing.T) {
 		}
 		return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })}, nil
 	})
-	d, err := s.build(ctx, "legacy", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused")
+	d, err := s.build(ctx, "legacy", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestRuntimeLogTruncatesAfterRedaction(t *testing.T) {
 		spec.Log("info", strings.Repeat("c", runtimeLogLine-1)+"é")
 		return lifecycleInstance{http.NotFoundHandler()}, nil
 	})
-	d, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused")
+	d, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

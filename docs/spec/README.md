@@ -30,6 +30,7 @@ list.
 | [NetBird peers](netbird-peers.md) | implemented | One NetBird peer per flat and console domain, the stored setup key, NetBird console domains over HTTP |
 | [Agent self-update](agent-self-update.md) | implemented | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
 | [Fast worker cold start](worker-cold-start.md) | implemented | Pre-started worker process and saved document images so workers and sleeping documents answer within 50 ms |
+| [Metrics](metrics.md) | implemented | Prometheus host metrics at `/metrics` and per-flat usage (requests, errors, response time, worker CPU and memory, disk) |
 
 ## Where the technical designs live
 
@@ -43,5 +44,6 @@ docs:
 | Design and page types: type handling, bundles, serving, editing model | [design.md](../design.md) |
 | Routes, MCP tools, CLI commands and console screens of every type | [surfaces.md](../surfaces.md) |
 | Operator keys, console domains, configuration schema and migrations | [configuration.md](../configuration.md) |
+| Host metrics and flat usage: request and worker accounting, attribution, storage, `/metrics` | [internal/metrics.md](../internal/metrics.md) |
 | NetBird peers and the other network providers | [networking.md](../networking.md), [network-provider-lifecycle.md](../network-provider-lifecycle.md) |
 | Client checks, CLI updates and skill sync | [release.md](../release.md#updating-a-client), [agents.md](../agents.md#keeping-clients-current) |

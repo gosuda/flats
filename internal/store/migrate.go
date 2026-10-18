@@ -53,6 +53,7 @@ var migrations = []migration{
 	{14, "console nodes per network", consoleNodeProviders},
 	{15, "version quota and number history", addVersionQuota},
 	{16, "flat identity", addFlatID},
+	{17, "flat usage", addUsageDays},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
@@ -520,5 +521,29 @@ func addFlatID(ctx context.Context, x executor) error {
 		return err
 	}
 	_, err := x.ExecContext(ctx, `UPDATE flats SET uid=lower(hex(randomblob(16))) WHERE uid IS NULL OR uid=''`)
+	return err
+}
+
+// addUsageDays creates the per-day request and worker usage of each flat,
+// keyed by its ID (see usage.go).
+func addUsageDays(ctx context.Context, x executor) error {
+	_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS usagedays (
+  flat_uid TEXT NOT NULL,
+  day TEXT NOT NULL,
+  requests INTEGER NOT NULL DEFAULT 0,
+  c1xx INTEGER NOT NULL DEFAULT 0,
+  c2xx INTEGER NOT NULL DEFAULT 0,
+  c3xx INTEGER NOT NULL DEFAULT 0,
+  c4xx INTEGER NOT NULL DEFAULT 0,
+  c5xx INTEGER NOT NULL DEFAULT 0,
+  closed INTEGER NOT NULL DEFAULT 0,
+  rate_limited INTEGER NOT NULL DEFAULT 0,
+  timed INTEGER NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  latency TEXT NOT NULL DEFAULT '',
+  cpu_ms INTEGER NOT NULL DEFAULT 0,
+  memory_peak INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (flat_uid, day)
+)`)
 	return err
 }

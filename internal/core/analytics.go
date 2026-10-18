@@ -29,18 +29,34 @@ func (lf *liveFlat) recordPath(day, path string) {
 	lf.traffic[key]++
 }
 
+// flushPaths swaps the buffer out before writing it, so a slow database
+// write never holds up recordPath on the request path; a failed write is
+// merged back.
 func (s *Service) flushPaths(ctx context.Context, slug string, lf *liveFlat) {
 	lf.trafficMu.Lock()
-	defer lf.trafficMu.Unlock()
-	if len(lf.traffic) == 0 {
+	traffic := lf.traffic
+	lf.traffic = nil
+	lf.trafficMu.Unlock()
+	if len(traffic) == 0 {
 		return
 	}
-	rows := make([]store.PathCount, 0, len(lf.traffic))
-	for key, count := range lf.traffic {
+	rows := make([]store.PathCount, 0, len(traffic))
+	for key, count := range traffic {
 		rows = append(rows, store.PathCount{Day: key.day, Path: key.path, Count: count})
 	}
 	if err := s.st.AddPathCounts(ctx, slug, rows); err == nil {
+		return
+	}
+	lf.trafficMu.Lock()
+	defer lf.trafficMu.Unlock()
+	if lf.traffic == nil {
 		lf.traffic = map[trafficKey]int64{}
+	}
+	for key, count := range traffic {
+		if _, exists := lf.traffic[key]; !exists && len(lf.traffic) >= 1000 {
+			key.path = "(other)"
+		}
+		lf.traffic[key] += count
 	}
 }
 

@@ -97,7 +97,9 @@ func WorkerMain(args []string) error {
 	// From here on the flat's startup has begun: an adopted pre-started
 	// worker that exits now is the flat's startup failure, not a reason to
 	// start the flat again in a new process.
-	log.send(childMsg{T: "spec"})
+	// The CPU so far (a pre-started worker's warm-up) is not the flat's:
+	// the parent subtracts it from every usage sample and from the exit.
+	log.send(specAck())
 	specAcknowledged(spec)
 	f := os.NewFile(listenerFD, "listener")
 	ln, err := net.FileListener(f)
@@ -121,6 +123,7 @@ func WorkerMain(args []string) error {
 	if w.js != nil {
 		w.js.afterReady()
 	}
+	go reportUsage(log, spec.usageEvery())
 
 	// Stdin EOF means "stop" (or the parent is gone).
 	stopped := make(chan struct{})
