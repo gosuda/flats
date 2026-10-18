@@ -20,7 +20,8 @@ Page views stay as they are. Usage adds to them; it does not replace them.
 ## Host metrics
 
 1. `GET /metrics` answers in the Prometheus text exposition format on the
-   management server: the loopback listener and every console domain. It is
+   management server: the loopback listener, every console domain and declared
+   external console origins. It is
    never served on a flat's route, a preview or a public provider.
 2. It is read-only and needs no new credential. It follows the existing
    request guards of the management server (the `Host` and `Origin` checks,

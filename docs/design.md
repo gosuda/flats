@@ -625,8 +625,9 @@ console's Usage section read the same days as page views
 ### Metrics
 
 `GET /metrics` answers in the Prometheus text exposition format (OpenMetrics
-when the scraper asks for it) on the loopback listener and every console
-domain, never on a flat's route, a preview or a public provider. It is always
+when the scraper asks for it) on the loopback listener, every console domain
+and declared external console origins, never on a flat's route, a preview or
+a public provider. It is always
 on: there is no setting to turn it off, move it or change its path. It follows
 the management server's `Host` and `Origin` checks and refuses cross-site
 browser requests like `/api` ([Request guards](surfaces.md#request-guards)),

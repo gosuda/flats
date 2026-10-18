@@ -332,8 +332,8 @@ counts; a scrape reads the cache. Unknown states are reported as `other`.
 
 ## Management server accounting
 
-The loopback listener's handler (`loopbackGuard(mux)` in
-`internal/app/serve.go`) and each console domain's handler (`consoleHandler`
+The management listener's handler (`loopbackGuard(addr, mux, externalOrigins)`
+in `internal/app/serve.go`, including declared external origins) and each console domain's handler (`consoleHandler`
 in `internal/app/consoledomains.go`) are wrapped outside their guards, so
 refused requests are counted too. The middleware labels each request by
 surface: `api` (`/api/`), `console` (`/console/api/`), `mcp` (`/mcp`),
