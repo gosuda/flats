@@ -169,3 +169,42 @@ func TestExternalOriginsOnlyConsoleSettings(t *testing.T) {
 		t.Fatal("agent changed external origins")
 	}
 }
+
+// Metrics wrapping must retain external-origin admission and count refusals.
+func TestExternalOriginMetrics(t *testing.T) {
+	h, client := consoleHost(t)
+	if _, err := h.Svc.UpdateSettings(context.Background(), map[string]string{core.SetExternalOrigins: "https://metrics.example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		host, origin, fetch string
+		want                int
+	}{
+		{"metrics.example.org", "", "", 200},
+		{"metrics.example.org", "https://metrics.example.org", "same-origin", 200},
+		{"metrics.example.org", "http://metrics.example.org", "", 403},
+		{"metrics.example.org", "https://other.example.org", "", 403},
+		{"metrics.example.org", "", "cross-site", 403},
+		{"undeclared.example.org", "", "", 403},
+	} {
+		r, _ := http.NewRequest("GET", "http://"+h.Addr()+"/metrics", nil)
+		r.Host = tc.host
+		r.Header.Set("Origin", tc.origin)
+		r.Header.Set("Sec-Fetch-Site", tc.fetch)
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("metrics %s %s %s: %d", tc.host, tc.origin, tc.fetch, resp.StatusCode)
+		}
+		if tc.want == 200 && !strings.Contains(string(body), "flats_build_info") {
+			t.Fatal("metrics not served")
+		}
+	}
+	if got := h.metrics.ManagementCount("metrics", "4xx"); got != 4 {
+		t.Fatalf("guard refusals counted %d want4", got)
+	}
+}
