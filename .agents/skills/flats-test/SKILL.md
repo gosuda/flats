@@ -18,7 +18,8 @@ approval. Standalone verification can inspect unreviewed work, but must report
 missing upstream approval and cannot establish whole-workflow completion.
 
 Execute checks appropriate to the actual change; add or correct tests/fixtures
-within verification scope. Keep product code and requirements unchanged. Map
+within verification scope; include the verification steps of the matching
+[playbooks](../flats-dev-workflow/SKILL.md#playbooks). Keep product code and requirements unchanged. Map
 completion criteria to evidence and record environment, commands, actual outcomes,
 failures and unavailable coverage. Test-source inspection, execution and deployment
 validation are separate claims. Never report skipped or timed-out checks as passes.

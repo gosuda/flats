@@ -1,6 +1,6 @@
 # Development workflow and independent adversarial review
 
-Status: implemented — repository instructions, shared protocol and four development skills. This is an instruction-based process, not automated enforcement.
+Status: implemented — repository instructions, shared protocol, four development skills, task playbooks and two cleanup skills. This is an instruction-based process, not automated enforcement.
 
 ## Summary
 
@@ -67,11 +67,19 @@ This specification defines agent-visible behavior, not skill implementation or a
 36. User cancellation stops new work and review dispatches, preserves completed artifacts and records incomplete states. Resume verifies current identities and prior invocation status before reusing evidence or restarting work. Lost or unverifiable review evidence is reported as missing rather than reconstructed as an approval.
 37. Full-workflow completion reports the final design, implementation and testing states, each stage’s approved identity, final artifact identity, any intervening delta and accepted impact assessment, independent review results and any nonblocking follow-up. It does not imply production deployment. PR publication follows the user's authorized scope; merging always requires explicit user authorization for that specific PR. Authorization must identify the existing PR and must still cover its current scope; later material changes require renewed authorization. No skill may enable auto-merge, delegate a merge or push directly to a default/protected branch to bypass that requirement. The protocol grants no direct integration authority.
 
+### Playbooks and cleanup skills
+
+38. Task playbooks add task-specific steps and known pitfalls inside the design, implementation and testing stages. The coordinating workflow selects the playbooks matching the change type and copies their checklists into the task plan. A playbook never replaces or weakens a stage gate, review or the merge authorization rule, and it does not hold product requirements, which belong in `docs/spec/`. Playbook content applies to anyone developing Flats: it names no person, specific host or network, or agent program, and states procedures rather than dated measurements.
+39. Two cleanup skills support the stages. Code cleanup removes generated-code patterns from the implementation diff before review without changing behavior; a finding that would change behavior goes through the normal implementation review. Prose cleanup removes generated-writing patterns from specs, design records, PR descriptions and commit messages. Neither cleanup is a review, and neither satisfies rule 21. Adapted third-party material keeps its source and license.
+
 ## Implementation
 
 The [development protocol](../development-protocol.md) defines the shared operating
 rules. [Repository instructions](../../AGENTS.md) route development requests to the
 four skills, discoverable through the [agent documentation](../agents.md#skills-for-flats-and-skills-for-this-repository).
+The playbooks live in [`flats-dev-workflow/playbooks/`](../../.agents/skills/flats-dev-workflow/SKILL.md#playbooks);
+the cleanup skills are [flats-deslop](../../.agents/skills/flats-deslop/SKILL.md) and
+[flats-unslop](../../.agents/skills/flats-unslop/SKILL.md).
 The protocol is instruction-based; installing skills does not automatically run
 reviews or establish that any particular task passed its gates. Per-task review
 and verification evidence remains separate from this specification.

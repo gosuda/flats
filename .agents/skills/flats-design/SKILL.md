@@ -23,6 +23,8 @@ lifecycle, create or update the relevant `docs/spec/` document. For a small fix 
 refactor that preserves contracts, a concise durable record in the task report, linked from the PR body when published, is
 sufficient. Even trivial changes need a purpose and verification criterion.
 Preserve the distinction between target requirements and implemented behavior.
+Add the design steps of the matching [playbooks](../flats-dev-workflow/SKILL.md#playbooks),
+and edit the written design with [flats-unslop](../flats-unslop/SKILL.md) before review.
 
 ## Review and handoff
 

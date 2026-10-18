@@ -20,6 +20,9 @@ silently perform design; independent invocation is not prerequisite-free.
 
 Implement within the design and any applicable worktree/ownership rules. Add or update
 relevant tests while developing; do not postpone them until final verification.
+Follow the matching [playbooks](../flats-dev-workflow/SKILL.md#playbooks).
+Before requesting review, run [flats-deslop](../flats-deslop/SKILL.md) on the
+diff and rerun the affected tests; edit prose with [flats-unslop](../flats-unslop/SKILL.md).
 Explain material deviations. A needed contract change returns needs-design in
 standalone mode without editing the contract; unresolved consequential choices
 return needs-input. In the full workflow the coordinator handles the return.

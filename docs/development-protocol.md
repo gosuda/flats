@@ -22,6 +22,12 @@ changes to behavior or contracts require a spec under `docs/spec/`. Smaller
 records reduce paperwork, not review. Development-time testing belongs in
 implementation; the final testing stage assesses the integrated candidate.
 
+The workflow's [playbooks](../.agents/skills/flats-dev-workflow/SKILL.md#playbooks)
+add task-specific steps for each change type inside these stages; this protocol
+still governs. Implementation runs [flats-deslop](../.agents/skills/flats-deslop/SKILL.md)
+on its diff before review, and prose passes through
+[flats-unslop](../.agents/skills/flats-unslop/SKILL.md). Neither cleanup is a review.
+
 ## Independent review and correction
 
 Every stage follows **author → review → disposition → correction → re-review**.
