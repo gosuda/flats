@@ -1382,6 +1382,7 @@ routes['GET /console/api/keys'] = { keys: [KEYS[0], KEYS[1], { id: 'zrok', set: 
 const zrokWait = await mountSettings(['networks', 'zrok']);
 assert.ok(zrokWait.textContent.includes('Waiting for the next start') && zrokWait.textContent.includes('from an environment variable'));
 assert.ok(zrokWait.textContent.includes('The last attempt to use this token failed: token refused'));
+assert.equal(all(byId(zrokWait, 'key-zrok'), (e) => e.tagName === 'TIME' && e.getAttribute('datetime') === '2026-10-01T00:00:00Z').length, 1, 'when the token was set is shown');
 routes['GET /console/api/providers'] = PROVIDERS;
 routes['GET /console/api/keys'] = { keys: KEYS };
 
