@@ -106,22 +106,38 @@ Per live flat, `flatUsage` holds:
   class (`1xx`…`5xx`, `closed`), rate-limited requests, response bytes, open
   streams;
 - a cumulative duration histogram with fixed buckets in seconds: 0.005, 0.01,
-  0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, `+Inf`;
+  0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 11, 30, `+Inf`. The 11 s bound
+  sits just above the 10 s runtime deadline, so requests ending at that
+  deadline fall in (10, 11] instead of (10, 30], where they would inflate
+  p95;
 - a day buffer: a map from UTC day to the same counts, the bucket counts,
   the duration sum in milliseconds, the CPU increase and the peak memory.
   Requests are added under the day their status was sent; a CPU increase and
   a memory sample go to the day of the sweep that saw them. (The page-view
-  flush stamps the day at flush time; usage does not copy that.)
+  flush stamps the day at flush time; usage does not copy that.) CPU moves
+  into the buffer in whole milliseconds, and a memory peak only when it
+  exceeds the highest peak this `flatUsage` already recorded for that UTC
+  day, so a worker with steady memory and less than 1 ms of new CPU adds
+  nothing and its flat writes no row. After a host restart the day's peak may
+  be written once more.
 
 `flatUsage` hangs off `liveFlat`, which renames keep, so counters continue
 under the new slug (spec rule 7). `liveFlat` also records the flat's `uid`
 (`store.Flat.ID`) the first time it is bound to a stored flat; usage is
 flushed under that uid, never under a uid looked up from the slug at flush
 time. The day buffer has its own mutex, held only to add or to swap the
-buffer out. `Sweep` swaps it out, writes it, and merges it back on failure, as
-`flushViews` does for page views; the request path never waits for SQLite
-(spec rule 15). Reading a flat's stats flushes that flat first, as `TopPages`
-does.
+buffer out. `Sweep` swaps out the buffers of every live flat and writes them
+in one transaction (`store.AddUsageBatch`), so a sweep makes one usage write
+however many flats run; if it fails, every buffer is merged back, so nothing
+is lost or counted twice. `Service.Close` flushes the same way. The request
+path never waits for SQLite (spec rule 15).
+
+Reading a flat's stats never writes: `Service.Usage` reads the stored rows
+and adds a read-only copy of the flat's day buffer plus the CPU and memory
+peak not captured yet, without moving them. A Service-level mutex
+(`usageMu`) makes that copy and the read one step for the flush, so a
+concurrent sweep is seen either entirely in SQLite or entirely in memory.
+Only the flush and stats reads take it; the request path does not.
 
 ## Worker CPU and memory
 
@@ -385,11 +401,17 @@ CREATE TABLE IF NOT EXISTS usagedays (
   old usage to a new flat with the same slug. `DeleteFlat` deletes the usage
   rows by uid in the same transaction, before the `flats` row.
 - `timed` is the number of requests in the histogram. `latency` is
-  `{"v":1,"b":[13 counts]}`; the version names the bucket bounds, so the
-  bounds can change later and percentiles sum only rows of one version.
-- The flush reads the day's row, adds counts, takes `MAX` of
-  `memory_peak`, adds bucket counts in Go and writes it back, in one
-  transaction per flat.
+  `{"v":2,"b":[14 counts]}`; the version names the bucket bounds (version 1
+  had 13 counts, without the 11 s bound), and percentiles sum only rows of the
+  current version. When a day's stored row and a flush differ in version, the
+  newer one wins: its buckets, `timed` and `duration_ms` replace the older
+  ones for that day, and a newer write is never dropped because the stored
+  row is older. A mid-day upgrade therefore keeps the rest of that day's
+  response times and drops the earlier part of the day's.
+- The flush reads each day's row, adds counts, takes `MAX` of
+  `memory_peak`, merges bucket counts in Go and writes it back. One
+  transaction holds every flat of a sweep; the existence check runs per uid
+  inside it, and rows of a uid with no flat are discarded.
 - One row per flat per day with traffic or CPU; rows are kept until the flat
   is deleted, like page views. `docs/configuration.md` lists the table among
   the `flats.db` contents.
@@ -424,9 +446,15 @@ fields are unchanged:
   `unsupported` (memory on non-Linux hosts).
 - Percentiles are interpolated within a bucket from the summed bucket
   counts, as `histogram_quantile` does, and are `null` when no request was
-  timed. `error_rate` is `null` with zero requests and counts `5xx` only.
+  timed. They use only rows of the current latency version, so days recorded
+  before an upgrade of the buckets count their requests but give no
+  percentiles. `error_rate` is `null` with zero requests and counts `5xx`
+  only.
 - `days` covers the same `?days=` window as `page_views`; days without
-  usage are omitted.
+  usage are omitted. The figures include usage not yet flushed, read from
+  memory.
+- If usage cannot be read, `stats` still returns `page_views` and
+  `top_pages` and omits `usage`; the console then hides its Usage section.
 
 ## Console
 

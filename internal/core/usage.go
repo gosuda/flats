@@ -17,8 +17,11 @@ import (
 
 const usageDayLayout = "2006-01-02"
 
-// usageLatencyVersion names UsageBuckets in the stored latency encoding.
-const usageLatencyVersion = 1
+// usageLatencyVersion names UsageBuckets in the stored latency encoding. Rows
+// of another version keep their own buckets: percentiles use only rows of
+// this version, and a day stored with an older one takes this one's buckets
+// on the next flush with timed requests (store.UsageDay.Add).
+const usageLatencyVersion = 2
 
 // usageBucketCount is the number of histogram buckets, +Inf included.
 var usageBucketCount = len(UsageBuckets) + 1
@@ -130,6 +133,12 @@ type flatUsage struct {
 	days map[string]*usageTally
 	// cpuSeenNS is the part of worker CPU already moved into the day buffer.
 	cpuSeenNS int64
+	// peakMax is the highest memory peak moved into the day buffer for the
+	// UTC day peakDay. A sample no higher changes nothing, so a worker with
+	// steady memory and no CPU growth writes no row (a host restart starts
+	// over and may write the day's peak once more).
+	peakDay string
+	peakMax int64
 }
 
 func newFlatUsage(now func() time.Time) *flatUsage {
@@ -181,8 +190,9 @@ func (u *flatUsage) observe(d time.Duration, day string) {
 }
 
 // capture moves worker CPU used since the last capture, in whole
-// milliseconds, and the highest memory sampled since then into today's
-// buffer. A CPU increase below zero is clamped to zero.
+// milliseconds, and the highest memory sampled since then, when it exceeds
+// the peak already recorded for today, into today's buffer. A CPU increase
+// below zero is clamped to zero.
 func (u *flatUsage) capture() {
 	total := u.worker.cpuNS()
 	peak, peaked := u.worker.takePeak()
@@ -190,22 +200,65 @@ func (u *flatUsage) capture() {
 	defer u.mu.Unlock()
 	// total never decreases, but two concurrent captures can read it in one
 	// order and lock in the other: an older, smaller read adds nothing
-	// rather than rewinding cpuSeenNS, which would count the gap twice.
-	var ms int64
-	if total > u.cpuSeenNS {
-		ms = (total - u.cpuSeenNS) / int64(time.Millisecond)
+	// rather than rewinding cpuSeenNS, which would count the gap twice
+	// (newCPUMS).
+	ms := u.newCPUMS(total)
+	day := u.today()
+	if peaked && day == u.peakDay && peak <= u.peakMax {
+		peaked = false
 	}
 	if ms <= 0 && !peaked {
 		return
 	}
-	t := u.day(u.today())
+	t := u.day(day)
 	if ms > 0 {
 		t.cpuNS += ms * int64(time.Millisecond)
 		u.cpuSeenNS += ms * int64(time.Millisecond)
 	}
 	if peaked {
 		t.memPeak = max(t.memPeak, peak)
+		u.peakDay, u.peakMax = day, peak
 	}
+}
+
+// newCPUMS is the worker CPU of total not yet moved into the day buffer, in
+// whole milliseconds. The caller holds mu.
+func (u *flatUsage) newCPUMS(total int64) int64 {
+	if total <= u.cpuSeenNS {
+		return 0
+	}
+	return (total - u.cpuSeenNS) / int64(time.Millisecond)
+}
+
+// pending returns a copy of the day buffer plus what a capture would add now:
+// the CPU not captured yet and the memory peak not taken yet. It moves
+// nothing, so reading it never changes what the next flush writes.
+func (u *flatUsage) pending() map[string]*usageTally {
+	total := u.worker.cpuNS()
+	peak, peaked := u.worker.peekPeak()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make(map[string]*usageTally, len(u.days)+1)
+	for k, t := range u.days {
+		c := *t
+		c.buckets = append([]int64(nil), t.buckets...)
+		out[k] = &c
+	}
+	ms := u.newCPUMS(total)
+	if ms <= 0 && !peaked {
+		return out
+	}
+	day := u.today()
+	t := out[day]
+	if t == nil {
+		t = &usageTally{}
+		out[day] = t
+	}
+	t.cpuNS += ms * int64(time.Millisecond)
+	if peaked {
+		t.memPeak = max(t.memPeak, peak)
+	}
+	return out
 }
 
 // swap takes the day buffer out.
@@ -375,6 +428,13 @@ func (w *workerUsage) takePeak() (int64, bool) {
 	return p, ok
 }
 
+// peekPeak is takePeak without taking it.
+func (w *workerUsage) peekPeak() (int64, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.peak, w.peaked
+}
+
 // memoryStaleAfter: a running worker's memory sample older than this is
 // reported with its time and flagged stale.
 const memoryStaleAfter = 60 * time.Second
@@ -430,28 +490,48 @@ func (lf *liveFlat) uidOf() string {
 	return ""
 }
 
-// flushUsage persists lf's buffered usage under its bound flat ID. The buffer
-// is swapped out before SQLite is written and merged back if the write fails;
-// usage of a flat that no longer exists is discarded.
-func (s *Service) flushUsage(ctx context.Context, lf *liveFlat) {
-	if lf == nil || lf.usage == nil {
+// flushUsage persists the buffered usage of lfs under their bound flat IDs,
+// in one transaction. Each buffer is swapped out before SQLite is written and
+// every one is merged back if the write fails, so nothing is lost or counted
+// twice; usage of a flat that no longer exists is discarded. usageMu
+// serializes the flush with the reads of Usage; the request path never takes
+// it.
+func (s *Service) flushUsage(ctx context.Context, lfs ...*liveFlat) {
+	s.usageMu.Lock()
+	defer s.usageMu.Unlock()
+	type swapped struct {
+		u    *flatUsage
+		days map[string]*usageTally
+	}
+	var batches []store.UsageBatch
+	var taken []swapped
+	for _, lf := range lfs {
+		if lf == nil || lf.usage == nil {
+			continue
+		}
+		uid := lf.uidOf()
+		if uid == "" {
+			continue
+		}
+		lf.usage.capture()
+		days := lf.usage.swap()
+		if len(days) == 0 {
+			continue
+		}
+		rows := make([]store.UsageDay, 0, len(days))
+		for day, t := range days {
+			rows = append(rows, t.row(day))
+		}
+		batches = append(batches, store.UsageBatch{UID: uid, Days: rows})
+		taken = append(taken, swapped{lf.usage, days})
+	}
+	if len(batches) == 0 {
 		return
 	}
-	uid := lf.uidOf()
-	if uid == "" {
-		return
-	}
-	lf.usage.capture()
-	days := lf.usage.swap()
-	if len(days) == 0 {
-		return
-	}
-	rows := make([]store.UsageDay, 0, len(days))
-	for day, t := range days {
-		rows = append(rows, t.row(day))
-	}
-	if _, err := s.st.AddUsage(ctx, uid, rows); err != nil {
-		lf.usage.merge(days)
-		s.logf("flush usage of flat %s: %v", uid, err)
+	if _, err := s.st.AddUsageBatch(ctx, batches); err != nil {
+		for _, t := range taken {
+			t.u.merge(t.days)
+		}
+		s.logf("flush usage of %d flats: %v", len(batches), err)
 	}
 }

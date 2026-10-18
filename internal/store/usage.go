@@ -57,11 +57,13 @@ func decodeLatency(s string) (int, []int64) {
 	return l.V, l.B
 }
 
-// add merges d into u: counts are added, the memory peak is the larger one,
-// and bucket counts are added only within one latency version and length.
-// Timed requests whose buckets cannot be merged are dropped with them, so
-// Timed always counts the requests in Latency.
-func (u *UsageDay) add(d UsageDay) {
+// Add merges d into u: counts are added and the memory peak is the larger
+// one. Latency of one version and length is added; between versions the newer
+// one wins, replacing the older buckets, Timed and DurationMS of that day, so
+// the rest of a day after an upgrade is never dropped because the stored row
+// is older. Timed requests whose buckets cannot be merged are dropped with
+// them, so Timed always counts the requests in Latency.
+func (u *UsageDay) Add(d UsageDay) {
 	u.C1xx += d.C1xx
 	u.C2xx += d.C2xx
 	u.C3xx += d.C3xx
@@ -73,7 +75,7 @@ func (u *UsageDay) add(d UsageDay) {
 	u.MemoryPeak = max(u.MemoryPeak, d.MemoryPeak)
 	switch {
 	case d.LatencyVersion == 0 || d.Timed == 0:
-	case u.LatencyVersion == 0 || u.Timed == 0:
+	case u.LatencyVersion == 0 || u.Timed == 0 || d.LatencyVersion > u.LatencyVersion:
 		u.LatencyVersion, u.Latency = d.LatencyVersion, append([]int64(nil), d.Latency...)
 		u.Timed, u.DurationMS = d.Timed, d.DurationMS
 	case u.LatencyVersion == d.LatencyVersion && len(u.Latency) == len(d.Latency):
@@ -108,11 +110,46 @@ func (s *Store) AddUsage(ctx context.Context, uid string, days []UsageDay) (bool
 	if uid == "" {
 		return false, nil
 	}
+	gone, err := s.AddUsageBatch(ctx, []UsageBatch{{UID: uid, Days: days}})
+	return err == nil && len(gone) == 0, err
+}
+
+// UsageBatch is the usage of one flat for AddUsageBatch.
+type UsageBatch struct {
+	UID  string
+	Days []UsageDay
+}
+
+// AddUsageBatch adds the usage of several flats in one transaction, as
+// AddUsage does for each: the days of an ID that no flat has any more are
+// discarded, and those IDs are returned. On an error nothing is written.
+func (s *Store) AddUsageBatch(ctx context.Context, batches []UsageBatch) (gone []string, err error) {
+	if len(batches) == 0 {
+		return nil, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer tx.Rollback()
+	for _, b := range batches {
+		ok, err := addUsageTx(ctx, tx, b.UID, b.Days)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			gone = append(gone, b.UID)
+		}
+	}
+	return gone, tx.Commit()
+}
+
+// addUsageTx adds days to the flat with ID uid inside tx, or reports false
+// when no flat has that ID.
+func addUsageTx(ctx context.Context, tx *sql.Tx, uid string, days []UsageDay) (bool, error) {
+	if uid == "" {
+		return false, nil
+	}
 	var exists bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM flats WHERE uid=?)`, uid).Scan(&exists); err != nil {
 		return false, err
@@ -127,7 +164,7 @@ func (s *Store) AddUsage(ctx context.Context, uid string, days []UsageDay) (bool
 		} else if err != nil {
 			return false, err
 		}
-		cur.add(d)
+		cur.Add(d)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO usagedays(flat_uid,requests,`+usageCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(flat_uid,day) DO UPDATE SET requests=excluded.requests,c1xx=excluded.c1xx,c2xx=excluded.c2xx,c3xx=excluded.c3xx,
 			c4xx=excluded.c4xx,c5xx=excluded.c5xx,closed=excluded.closed,rate_limited=excluded.rate_limited,timed=excluded.timed,
@@ -137,7 +174,7 @@ func (s *Store) AddUsage(ctx context.Context, uid string, days []UsageDay) (bool
 			return false, err
 		}
 	}
-	return true, tx.Commit()
+	return true, nil
 }
 
 // UsageSince returns the usage of the flat with ID uid from the UTC day since

@@ -11,7 +11,7 @@ import (
 )
 
 func lat(b ...int64) []int64 {
-	out := make([]int64, 13)
+	out := make([]int64, 14)
 	copy(out, b)
 	return out
 }
@@ -75,9 +75,71 @@ func TestAddUsageKeepsLatencyVersionsApart(t *testing.T) {
 	if len(got) != 1 || got[0].C2xx != 3 || got[0].LatencyVersion != 2 || !slices.Equal(got[0].Latency, []int64{1, 1}) || got[0].Timed != 2 || got[0].DurationMS != 30 {
 		t.Fatalf("%+v", got)
 	}
+	// A newer version replaces an older day's buckets, Timed and DurationMS
+	// instead of dropping the newer timings (a mid-day upgrade): the rest of
+	// the day keeps its response times.
+	if _, err := s.db.Exec(`INSERT INTO usagedays(flat_uid,day,requests,c2xx,timed,duration_ms,latency) VALUES(?,?,4,4,4,40,'{"v":1,"b":[4,0]}')`, f.ID, "2026-10-17"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddUsage(ctx, f.ID, []UsageDay{{Day: "2026-10-17", C2xx: 1, Timed: 1, DurationMS: 7, LatencyVersion: 2, Latency: lat(0, 1)}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddUsage(ctx, f.ID, []UsageDay{{Day: "2026-10-17", C2xx: 1, Timed: 1, DurationMS: 3, LatencyVersion: 2, Latency: lat(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.UsageSince(ctx, f.ID, "2026-10-17")
+	if d := got[0]; d.Day != "2026-10-17" || d.C2xx != 6 || d.LatencyVersion != 2 || !slices.Equal(d.Latency, lat(1, 1)) || d.Timed != 2 || d.DurationMS != 10 {
+		t.Fatalf("upgraded day %+v", d)
+	}
 	// Unreadable latency counts as no buckets.
 	if v, b := decodeLatency("{bad"); v != 0 || b != nil {
 		t.Fatal(v, b)
+	}
+}
+
+// One batch writes several flats in one transaction and skips the IDs that
+// no flat has.
+func TestAddUsageBatch(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	now := time.Now().UTC()
+	for _, slug := range []string{"blog", "shop"} {
+		if err := s.CreateFlat(ctx, Flat{Slug: slug, Name: slug, Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blog, _ := s.GetFlat(ctx, "blog")
+	shop, _ := s.GetFlat(ctx, "shop")
+	gone, err := s.AddUsageBatch(ctx, []UsageBatch{
+		{UID: blog.ID, Days: []UsageDay{{Day: "2026-10-18", C2xx: 2}}},
+		{UID: "deleted", Days: []UsageDay{{Day: "2026-10-18", C2xx: 9}}},
+		{UID: shop.ID, Days: []UsageDay{{Day: "2026-10-17", C4xx: 1}, {Day: "2026-10-18", CPUMS: 5}}},
+	})
+	if err != nil || !slices.Equal(gone, []string{"deleted"}) {
+		t.Fatalf("gone %v %v", gone, err)
+	}
+	if got, _ := s.UsageSince(ctx, blog.ID, ""); len(got) != 1 || got[0].C2xx != 2 {
+		t.Fatalf("blog %+v", got)
+	}
+	if got, _ := s.UsageSince(ctx, shop.ID, ""); len(got) != 2 || got[0].C4xx != 1 || got[1].CPUMS != 5 {
+		t.Fatalf("shop %+v", got)
+	}
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM usagedays WHERE flat_uid='deleted'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d rows for an unknown ID", n)
+	}
+	if gone, err := s.AddUsageBatch(ctx, nil); err != nil || gone != nil {
+		t.Fatal(gone, err)
+	}
+	// A failed transaction writes nothing.
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := s.AddUsageBatch(cctx, []UsageBatch{{UID: blog.ID, Days: []UsageDay{{Day: "2026-10-18", C2xx: 1}}}}); err == nil {
+		t.Fatal("cancelled batch succeeded")
+	}
+	if got, _ := s.UsageSince(ctx, blog.ID, ""); len(got) != 1 || got[0].C2xx != 2 {
+		t.Fatalf("after a failed batch %+v", got)
 	}
 }
 

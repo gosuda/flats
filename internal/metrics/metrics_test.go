@@ -55,7 +55,7 @@ var (
 	snapAt    = time.Unix(1_800_000_000, 0)
 	memAt     = time.Unix(1_800_000_010, 500_000_000)
 	diskAt    = time.Unix(1_800_000_020, 0)
-	durations = []uint64{1, 2, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 3} // 12 bounds + Inf
+	durations = []uint64{1, 2, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 1, 3} // 13 bounds + Inf
 )
 
 func testSnapshot() core.MetricsSnapshot {
@@ -225,7 +225,7 @@ func TestExpositionValues(t *testing.T) {
 	want("flats_open_streams", shop, 2)
 
 	// Histogram: per-bucket counts become cumulative buckets.
-	cum := []float64{1, 3, 3, 3, 7, 7, 7, 7, 7, 7, 7, 8}
+	cum := []float64{1, 3, 3, 3, 7, 7, 7, 7, 7, 7, 7, 7, 8}
 	for i, bound := range core.UsageBuckets {
 		want("flats_request_duration_seconds_bucket", with(shop, "le", strconv.FormatFloat(bound, 'g', -1, 64)), cum[i])
 	}

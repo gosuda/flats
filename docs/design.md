@@ -611,8 +611,11 @@ and designs run inside the host process, so their CPU and memory are reported
 as not measured separately, never as zero.
 
 Counting happens in memory on the request path; the 30-second host sweep
-writes the day's counts to `usagedays` in `flats.db` and merges them back if
-the write fails, so a slow database never holds up a request. Usage rows are
+writes every flat's day counts to `usagedays` in `flats.db` in one
+transaction and merges them back if the write fails, so a slow database never
+holds up a request. An idle worker with level memory and under 1 ms of new
+CPU adds nothing to write. Reading stats never writes: it adds the counts still in memory to the
+stored days. Usage rows are
 keyed by the flat's uid, so they follow renames and are deleted with the flat;
 a slug deleted and created again starts empty. Shutdown writes usage after the
 workers have stopped, so their last CPU is kept. The stats API and the
@@ -680,7 +683,8 @@ running even while its worker sleeps. `flats_worker_state` is the diagnostic
 state of the worker serving the current version (`running`, `starting`,
 `quiescing`, `sleeping`, `backoff`, `stopped`); `preview` and `check` CPU
 belong to the flat's preview and activation-check workers, not to its usage.
-The histogram buckets are 5 ms to 30 s; `closed` requests are not in it. An
+The histogram buckets are 5 ms to 30 s, with an 11 s bound just above the
+10 s runtime deadline; `closed` requests are not in it. An
 endpoint state other than the known ones is reported as `other`, and so is a
 flat type or visibility that is not a known word. Management requests are
 counted by `1xx` … `5xx` only.

@@ -36,5 +36,5 @@ needs changing, since panels use the **Data source** variable.
 The **Flat** variable narrows the per-flat panels. Worker memory is measured
 on Linux only, and a `closed` request (the visitor left before the answer) is
 not an error. A request that ends at the 10-second runtime deadline falls in
-the 10–30 s histogram bucket, so p95 can read above 10 s for flats with many
-timeouts.
+the 10–11 s histogram bucket, so p95 reads at most about 11 s for flats with
+many timeouts.

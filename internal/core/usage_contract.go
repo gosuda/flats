@@ -65,8 +65,11 @@ const (
 )
 
 // UsageBuckets are the upper bounds in seconds of the response-time
-// histogram (+Inf implied). Version 1 of the stored latency encoding.
-var UsageBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
+// histogram (+Inf implied). The 11 s bound keeps requests that end at the
+// 10 s runtime deadline (10 s plus a little overhead) out of (10, 30], where
+// they would inflate the upper percentiles. Version 2 of the stored latency
+// encoding (version 1 had no 11 s bound).
+var UsageBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 11, 30}
 
 // MetricsSnapshot is everything /metrics exposes from core. Service.Metrics
 // builds it from memory only: it never reads SQLite, walks files, or touches

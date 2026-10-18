@@ -157,6 +157,10 @@ type Service struct {
 	snapshot atomic.Pointer[hostSnapshot]
 	diskMu   sync.Mutex
 	disk     map[string]diskSample // flat ID -> its last disk measurement
+	// usageMu serializes usage flushes with the stats reads of Usage, so a
+	// read sees each usage exactly once: stored or still in memory. The
+	// request path never takes it.
+	usageMu sync.Mutex
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -289,9 +293,7 @@ func (s *Service) Close() error {
 	}
 	// Every worker has stopped and its exit accounting has run (Stop returns
 	// after it), so the last CPU reaches flats.db.
-	for _, lf := range live {
-		s.flushUsage(context.Background(), lf)
-	}
+	s.flushUsage(context.Background(), slices.Collect(maps.Values(live))...)
 	return nil
 }
 
@@ -2317,8 +2319,10 @@ func (s *Service) Sweep(ctx context.Context) {
 	types := s.flatTypes(ctx, live)
 	for slugName, lf := range live {
 		s.flushViews(ctx, slugName, lf)
-		s.flushUsage(ctx, lf)
 	}
+	// Usage of every flat in one transaction: one write per sweep, not one
+	// per running flat.
+	s.flushUsage(ctx, slices.Collect(maps.Values(live))...)
 	s.logLimits.Range(func(k, v any) bool {
 		s.reportDroppedLogs(k.(string), v.(*logLimit))
 		return true

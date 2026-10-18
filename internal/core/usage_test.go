@@ -669,7 +669,7 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 	s, st, rt := open()
 	sinkIs := func(what string, spec RuntimeSpec, want UsageSink) {
 		t.Helper()
-		if spec.Usage != want {
+		if want == nil || spec.Usage != want {
 			t.Fatalf("%s (%s) reported to the wrong sink", what, spec.DataDir)
 		}
 	}
@@ -698,6 +698,33 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 	sinkIs("draft preview", rt.since(n)[0], lf.previewSink())
 	if err := s.dropPreviews(ctx, "app"); err != nil {
 		t.Fatal(err)
+	}
+
+	// A data restore: the trial on a scratch copy reports to the check sink and
+	// the live worker restarted on the restored data to the live sink.
+	if err := os.MkdirAll(s.dataDirOf("app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.snapshotAs("app", "manual", "")
+	if err != nil || snap == "" {
+		t.Fatalf("snapshot %q %v", snap, err)
+	}
+	app, _ := s.st.GetFlat(ctx, "app")
+	n = rt.count()
+	unlock := s.lock("app")
+	_, err = s.restoreLocked(ctx, app, snap, app.LiveVersion, "restore", ViaConsole, "")
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.since(n); len(got) != 2 {
+		t.Fatalf("data restore started %d workers", len(got))
+	} else {
+		sinkIs("restore check", got[0], lf.checkSink())
+		sinkIs("data restore", got[1], lf.liveSink())
+	}
+	if s.state("app") != lf {
+		t.Fatal("the restore replaced the flat's state")
 	}
 
 	// A document save publishes through publishRevision.
@@ -742,6 +769,33 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	sinkIs("restore trial", rt.since(n)[0], lf.checkSink())
+
+	// A rename that fails after the worker stopped restarts it under the old
+	// slug, on the held state.
+	if os.Geteuid() != 0 { // permission-based failure injection does not apply to root
+		journals := s.storageJournalDir()
+		if err := os.Chmod(journals, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		n = rt.count()
+		_, err := s.RenameSlug(ctx, "renamed", "other", ViaAPI)
+		if err := os.Chmod(journals, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err == nil {
+			t.Fatal("rename succeeded despite the unwritable journal")
+		}
+		if got := rt.since(n); len(got) != 1 || got[0].Flat != "renamed" {
+			t.Fatalf("failed rename rebuild %+v", got)
+		} else {
+			sinkIs("failed rename rebuild", got[0], lf.liveSink())
+		}
+		s.mu.Lock()
+		if s.live["renamed"] != lf || s.live["other"] != nil {
+			t.Fatal("the failed rename moved another state")
+		}
+		s.mu.Unlock()
+	}
 
 	// Host restore after a restart of Flats.
 	if _, err := s.OpenPreview(ctx, "renamed", 1); err != nil {
@@ -990,7 +1044,7 @@ func TestUsageReport(t *testing.T) {
 	buckets := make([]int64, usageBucketCount)
 	buckets[3], buckets[6] = 90, 10
 	if _, err := s.st.AddUsage(ctx, f.ID, []store.UsageDay{
-		{Day: today, C2xx: 98, C5xx: 1, Closed: 1, RateLimited: 2, Timed: 100, DurationMS: 5000, LatencyVersion: 1, Latency: buckets, CPUMS: 1500, MemoryPeak: 1 << 20},
+		{Day: today, C2xx: 98, C5xx: 1, Closed: 1, RateLimited: 2, Timed: 100, DurationMS: 5000, LatencyVersion: usageLatencyVersion, Latency: buckets, CPUMS: 1500, MemoryPeak: 1 << 20},
 		{Day: old, C2xx: 1000},
 	}); err != nil {
 		t.Fatal(err)
@@ -1011,7 +1065,7 @@ func TestUsageReport(t *testing.T) {
 	if *tot.P50MS != 38.9 || *tot.P95MS != 375 {
 		t.Fatalf("p50 %v p95 %v", *tot.P50MS, *tot.P95MS)
 	}
-	// The activation's sampled second was flushed with the read.
+	// The activation's sampled second is still in memory and included.
 	if *tot.CPUSeconds != 2.5 {
 		t.Fatalf("cpu %v", *tot.CPUSeconds)
 	}
@@ -1050,10 +1104,13 @@ func TestUsageQuantile(t *testing.T) {
 		want   float64
 		ok     bool
 	}{
-		{0.5, make([]int64, 13), 0, false},
-		{0.5, []int64{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 2.5, true},
-		{0.95, []int64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4}, 30000, true}, // +Inf: the highest finite bound
-		{1, []int64{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10, true},
+		{0.5, make([]int64, 14), 0, false},
+		{0.5, []int64{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 2.5, true},
+		{0.95, []int64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4}, 30000, true}, // +Inf: the highest finite bound
+		{1, []int64{1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10, true},
+		// Requests ending at the 10 s runtime deadline stay below 11 s: p95 of
+		// 90 fast ones and 10 timeouts is 10.5 s, not 20 s in (10, 30].
+		{0.95, []int64{90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0}, 10500, true},
 	} {
 		got, ok := usageQuantile(tc.q, tc.counts)
 		if got != tc.want || ok != tc.ok {
@@ -1122,5 +1179,157 @@ func TestUsageCaptureNeverRewindsCPU(t *testing.T) {
 	u.capture()
 	if got := time.Duration(u.days[u.today()].cpuNS); got != 50*time.Millisecond {
 		t.Fatalf("day CPU = %v, want 50ms", got)
+	}
+}
+
+// A worker with steady memory and less than 1 ms of new CPU adds nothing to
+// the day buffer, so an idle flat writes no row; a higher peak, a CPU
+// increase or a new day does.
+func TestUsageCaptureSkipsSteadyMemory(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	u := newFlatUsage(func() time.Time { return now })
+	u.worker.Started(1)
+	u.worker.Sample(1, 0, 100, true)
+	u.capture()
+	if d := u.swap(); d["2026-10-18"] == nil || d["2026-10-18"].memPeak != 100 {
+		t.Fatalf("first peak %+v", d)
+	}
+	u.worker.Sample(1, int64(500*time.Microsecond), 100, true)
+	u.capture()
+	u.worker.Sample(1, int64(900*time.Microsecond), 90, true)
+	u.capture()
+	if d := u.swap(); d != nil {
+		t.Fatalf("an idle worker with steady memory buffered %+v", d["2026-10-18"])
+	}
+	u.worker.Sample(1, int64(1100*time.Microsecond), 120, true)
+	u.capture()
+	if d := u.swap()["2026-10-18"]; d == nil || d.memPeak != 120 || d.cpuNS != int64(time.Millisecond) {
+		t.Fatalf("higher peak and 1 ms %+v", d)
+	}
+	now = now.Add(24 * time.Hour)
+	u.worker.Sample(1, int64(1100*time.Microsecond), 50, true)
+	u.capture()
+	if d := u.swap()["2026-10-19"]; d == nil || d.memPeak != 50 {
+		t.Fatalf("a new day's first peak %+v", d)
+	}
+}
+
+// One flush writes several flats; a failed write puts every buffer back, and
+// the retry stores each request exactly once.
+func TestUsageFlushOfSeveralFlatsMergesBack(t *testing.T) {
+	ctx := context.Background()
+	s, dir := newTestService(t)
+	var states []*liveFlat
+	for _, slug := range []string{"one", "two"} {
+		if _, err := s.SaveVersion(ctx, slug, []bundle.File{{Path: "index.html", Data: []byte("<p>")}}, SaveMeta{}, ViaAPI); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := approvedInternalDeploy(t, s, ctx, slug, 0); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			s.siteHandler(slug, false).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+		}
+		states = append(states, s.state(slug))
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "flats.db")+"?_pragma=busy_timeout(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	fctx, cancel := context.WithTimeout(ctx, time.Second)
+	s.flushUsage(fctx, states...)
+	cancel()
+	for _, slug := range []string{"one", "two"} {
+		s.siteHandler(slug, false).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	}
+	conn.ExecContext(ctx, "ROLLBACK")
+	s.flushUsage(ctx, states...)
+	s.flushUsage(ctx, states...)
+	for _, slug := range []string{"one", "two"} {
+		f, _ := s.st.GetFlat(ctx, slug)
+		rows, err := s.st.UsageSince(ctx, f.ID, "")
+		if err != nil || len(rows) != 1 || rows[0].C2xx != 3 || rows[0].Timed != 3 {
+			t.Fatalf("%s after retry %+v %v", slug, rows, err)
+		}
+	}
+}
+
+// A stats read reports the usage still in memory without writing it: two
+// reads leave flats.db unchanged, and after the flush the figures are the
+// same, never counted twice. Days stored with older response-time buckets
+// have no percentiles.
+func TestUsageReadDoesNotWrite(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	s.cfg.Runtime = &usageRuntime{}
+	deployServer(t, s, "app")
+	s.siteHandler("app", false).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	f, _ := s.st.GetFlat(ctx, "app")
+	lf := s.state("app")
+	check := func(what string) {
+		t.Helper()
+		rep, err := s.Usage(ctx, "app", 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tot := rep.Totals
+		if len(rep.Days) != 1 || tot.Requests != 1 || tot.P50MS == nil || tot.CPUSeconds == nil || *tot.CPUSeconds != 1 {
+			t.Fatalf("%s: %+v %+v", what, rep.Days, tot)
+		}
+		if memoryMeasured && (tot.MemoryPeakBytes == nil || *tot.MemoryPeakBytes != 1<<20) {
+			t.Fatalf("%s: memory peak %v", what, tot.MemoryPeakBytes)
+		}
+	}
+	check("first read")
+	check("second read")
+	if rows, _ := s.st.UsageSince(ctx, f.ID, ""); len(rows) != 0 {
+		t.Fatalf("a stats read wrote %+v", rows)
+	}
+	if lf.usage.cpuSeenNS != 0 {
+		t.Fatal("a stats read moved the captured CPU")
+	}
+	if _, ok := lf.usage.worker.peekPeak(); !ok {
+		t.Fatal("a stats read took the memory peak")
+	}
+	s.flushUsage(ctx, lf)
+	if rows, _ := s.st.UsageSince(ctx, f.ID, ""); len(rows) != 1 || rows[0].C2xx != 1 || rows[0].CPUMS != 1000 {
+		t.Fatalf("flush %+v", rows)
+	}
+	check("after the flush")
+
+	// A day timed with the previous bucket bounds counts its requests but
+	// gives no percentiles.
+	if _, err := s.SaveVersion(ctx, "site", []bundle.File{{Path: "index.html", Data: []byte("<p>")}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	site, _ := s.st.GetFlat(ctx, "site")
+	old := make([]int64, 13)
+	old[12] = 5
+	if _, err := s.st.AddUsage(ctx, site.ID, []store.UsageDay{{Day: s.now().UTC().Format(usageDayLayout), C2xx: 5, Timed: 5, DurationMS: 100000, LatencyVersion: 1, Latency: old}}); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := s.Usage(ctx, "site", 7)
+	if err != nil || rep.Totals.Requests != 5 || rep.Totals.P50MS != nil || rep.Totals.P95MS != nil {
+		t.Fatalf("version 1 day %+v %v", rep.Totals, err)
+	}
+}
+
+// The response-time buckets keep a request that ends at the 10 s runtime
+// deadline below 11 s.
+func TestUsageBucketOfTheRuntimeDeadline(t *testing.T) {
+	if i := usageBucket(10*time.Second + 20*time.Millisecond); UsageBuckets[i] != 11 {
+		t.Fatalf("a deadline request lands below %v s", UsageBuckets[i])
+	}
+	if usageBucketCount != 14 {
+		t.Fatalf("%d buckets", usageBucketCount)
 	}
 }

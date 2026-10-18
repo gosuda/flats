@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Host metrics (docs/spec/metrics.md): Sweep refreshes the host-wide figures
@@ -368,9 +369,10 @@ type UsageNow struct {
 	MemoryStale     *bool       `json:"memory_stale,omitempty"`
 }
 
-// Usage returns a flat's usage for the last days UTC days, today included.
-// It flushes the flat's buffered usage first. It never wakes or starts a
-// worker.
+// Usage returns a flat's usage for the last days UTC days, today included:
+// the stored days plus the usage still in memory, which it reads without
+// moving it, so a stats read never writes to SQLite. It never wakes or starts
+// a worker.
 func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageReport, error) {
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
@@ -381,9 +383,7 @@ func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageRe
 	s.mu.Unlock()
 	if lf != nil {
 		lf.bindUID(f.ID)
-		if lf.uidOf() == f.ID {
-			s.flushUsage(ctx, lf)
-		} else {
+		if lf.uidOf() != f.ID || lf.usage == nil {
 			lf = nil
 		}
 	}
@@ -405,10 +405,19 @@ func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageRe
 		}
 	}
 	since := s.now().UTC().AddDate(0, 0, 1-days).Format(usageDayLayout)
+	// The copy and the read are one step for a concurrent flush: it either
+	// stored the usage before both or moves it out of memory after both.
+	s.usageMu.Lock()
+	var pending map[string]*usageTally
+	if lf != nil {
+		pending = lf.usage.pending()
+	}
 	rows, err := s.st.UsageSince(ctx, f.ID, since)
+	s.usageMu.Unlock()
 	if err != nil {
 		return UsageReport{}, err
 	}
+	rows = withPending(rows, pending, since)
 	worker := hasWorker(typ, kind)
 	rep := UsageReport{Days: make([]UsageDayView, 0, len(rows))}
 	buckets := make([]int64, usageBucketCount)
@@ -473,6 +482,24 @@ func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageRe
 		}
 	}
 	return rep, nil
+}
+
+// withPending adds the usage still in memory to the stored rows (oldest
+// first, as UsageSince returns them) as the next flush would store it, for
+// the days from since on.
+func withPending(rows []store.UsageDay, pending map[string]*usageTally, since string) []store.UsageDay {
+	for day, t := range pending {
+		if day < since {
+			continue
+		}
+		i, found := slices.BinarySearchFunc(rows, day, func(r store.UsageDay, day string) int { return strings.Compare(r.Day, day) })
+		if found {
+			rows[i].Add(t.row(day))
+		} else {
+			rows = slices.Insert(rows, i, t.row(day))
+		}
+	}
+	return rows
 }
 
 // usageQuantile interpolates quantile q in milliseconds within the buckets

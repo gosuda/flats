@@ -181,7 +181,8 @@ permissions and the Portal listing take effect immediately.
   - `totals` for the period: `requests`, `errors` (`5xx` only),
     `error_rate` (`null` with no requests), `p50_ms` and `p95_ms`
     (interpolated from the response-time histogram, `null` when no request
-    was timed), `cpu_seconds` and `memory_peak_bytes`. In `days` and
+    was timed; days recorded before the histogram's buckets changed give no
+    percentiles), `cpu_seconds` and `memory_peak_bytes`. In `days` and
     `totals`, `cpu_seconds` and `memory_peak_bytes` are omitted where that
     figure is not measured, never reported as zero.
   - `now`: `cpu` and `memory` are `measured`, `not_separate` (websites,
@@ -196,7 +197,9 @@ permissions and the Portal listing take effect immediately.
   A `closed` request is one whose visitor left before the response was sent;
   it is not an error. WebSocket connections and event streams count with
   their status but are left out of response times. Reading `stats` never
-  wakes a sleeping document.
+  wakes a sleeping document and never writes usage; it includes usage not yet
+  persisted. When usage cannot be read, `stats` omits `usage` and still
+  returns page views.
 - **Settings.** `GET settings` returns the settings, defaults,
   `apply_on_restart` and `config` (mode, ETag, `changed_on_disk`, read-only
   host, network and credential values without paths, per-key sources and flag
