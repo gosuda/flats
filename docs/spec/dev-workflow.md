@@ -1,6 +1,6 @@
 # Development workflow and independent adversarial review
 
-Status: partly implemented — repository instructions, shared protocol, four development skills, task playbooks and two cleanup skills are in place; the review evidence helper (rules 40-50) is not. The stages and reviews are instruction-based; the helper is to check snapshot identity, invocation records and report structure mechanically, not review quality.
+Status: implemented — repository instructions, shared protocol, four development skills, task playbooks, two cleanup skills and a review evidence helper. The stages and reviews are instruction-based; the helper checks snapshot identity, invocation records and report structure mechanically, not review quality.
 
 ## Summary
 
@@ -86,10 +86,6 @@ This specification defines agent-visible behavior, not skill implementation or a
 49. `run` exits 0 only when the command exited 0, effective model and session identity are known, the reviewer is eligible and its review surface still matched the snapshot afterwards. Command failure, timeout or cancellation, incomplete evidence and refusal to start have distinct nonzero exit codes. An exit of 0 means the evidence is complete, not that the review accepted the candidate.
 50. `report` writes a task report skeleton with the sections of the protocol's "Snapshot and evidence": scope, stage, requirements and base versions, snapshot identity, material authors, reviewer requested and effective identity and session, verdict and findings excerpts with receipt locations, dispositions, verification evidence, budget limits and usage, invocation identifiers and status, execution state and candidate verdict, limitations and next action. It fills the snapshot identity, the budget and the invocation table from recorded evidence and points to each captured output as the receipt location. It never writes a verdict or summary on the reviewer's behalf and does not overwrite an existing report.
 
-## Current state
-
-Rules 40-50 are designed and not yet implemented.
-
 ## Implementation
 
 The [development protocol](../development-protocol.md) defines the shared operating
@@ -98,6 +94,7 @@ four skills, discoverable through the [agent documentation](../agents.md#skills-
 The playbooks live in [`flats-dev-workflow/playbooks/`](../../.agents/skills/flats-dev-workflow/SKILL.md#playbooks);
 the cleanup skills are [flats-deslop](../../.agents/skills/flats-deslop/SKILL.md) and
 [flats-unslop](../../.agents/skills/flats-unslop/SKILL.md).
-The protocol is instruction-based; installing skills does not automatically run
+The [review evidence helper](../../internal/devreview/README.md) implements rules 40-50.
+The protocol is otherwise instruction-based; installing skills does not automatically run
 reviews or establish that any particular task passed its gates. Per-task review
 and verification evidence remains separate from this specification.

@@ -1,0 +1,93 @@
+# Task report{{if .Title}}: {{.Title}}{{end}}
+
+Local task evidence written by `devreview report`. Keep it outside committed
+source; link it from the handoff and the PR body, labeled local-only when a
+remote reader cannot open it. Replace every _(fill in)_; never replace a
+reviewer's verdict with a summary.
+
+## Scope
+
+- Request: _(fill in: the original request or its location)_
+- Scope and exclusions: _(fill in)_
+- Stage: {{if .Stage}}{{.Stage}}{{else}}_(fill in: design, implementation or testing)_{{end}}
+- Execution state: _(fill in: in progress, awaiting review, correcting, completed, needs-input, needs-design, needs-implementation, needs-prior-stage, blocked, cancelled or user-directed continuation)_
+- Candidate verdict: _(fill in: accepted, rejected or not assessed)_
+
+## Requirements and base versions
+
+- Base: `{{.M.Base.Ref}}` at `{{.M.Base.Commit}}`, merge base `{{.M.Base.MergeBase}}`
+- Requirements: _(fill in: specs and contracts, with the version reviewed)_
+
+## Candidate snapshot
+
+- Manifest: `{{.ManifestPath}}`
+- Digest: `{{.M.Digest}}`
+- HEAD: `{{.M.Head.Commit}}` (tree `{{.M.Head.Tree}}`{{if .M.Head.Detached}}, detached{{end}})
+- Index digest: `{{.M.IndexDigest}}`
+- Options: include {{if .M.Options.Include}}{{range .M.Options.Include}}`{{.}}` {{end}}{{else}}none{{end}}; exclude {{if .M.Options.Exclude}}{{range .M.Options.Exclude}}`{{.}}` {{end}}{{else}}none{{end}}
+- Snapshot taken: {{.M.Created}}
+
+<details><summary>{{len .M.Files}} candidate path(s), {{len .M.Excluded}} excluded</summary>
+
+| Path | Against base | Against HEAD | Index differs | Mode | SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+{{range .M.Files}}| `{{.Path}}` | {{.Base}} | {{.Head}} | {{if .IndexDiffers}}yes{{else}}no{{end}} | {{if .Mode}}{{.Mode}}{{else}}absent{{end}} | {{if .SHA256}}`{{.SHA256}}`{{end}} |
+{{end}}{{range .M.Excluded}}| `{{.Path}}` | excluded by `{{.Pattern}}` | | | | |
+{{end}}
+</details>
+
+## Material authors
+
+| Model ID | Contribution |
+| --- | --- |
+{{if .Authors}}{{range .Authors}}| `{{.}}` | _(fill in)_ |
+{{end}}{{else}}| _(fill in)_ | _(fill in)_ |
+{{end}}
+## Review invocations
+
+{{if .Records}}| Invocation | Stage | Reviewer | Requested model | Effective model | Session | Surface | Status | Before | After | Outcome |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+{{range .Records}}| `{{.ID}}` | {{.Stage}} | {{.Reviewer}} | `{{.RequestedModel}}` | {{with .Identity}}{{if .EffectiveModel}}`{{.EffectiveModel}}` ({{.ModelFrom}}){{else}}unknown{{end}}{{else}}unknown{{end}} | {{with .Identity}}{{if .Session}}`{{.Session}}`{{else}}unknown{{end}}{{else}}unknown{{end}} | {{.Surface.Kind}} | {{.Status}}{{if .ExitCode}} {{deref .ExitCode}}{{end}} | {{if .Before.OK}}ok{{else}}drift{{end}} | {{with .After}}{{if .OK}}ok{{else}}drift{{end}}{{else}}not checked{{end}} | {{.Outcome}} |
+{{end}}
+Snapshot of each invocation: {{range .Records}}`{{.ID}}` {{if eq .Snapshot $.M.Digest}}this snapshot{{else}}`{{.Snapshot}}`{{end}}; {{end}}
+{{else}}No invocation was recorded in the evidence directory. Record each review: _(fill in: reviewer requested and effective model, evidence source, session identity and receipt location)_
+{{end}}
+## Verdicts and findings
+
+{{range .Records}}### `{{.ID}}`
+
+- Receipt: `{{$.RunsDir}}/{{.ID}}/{{.Stdout}}` (standard error `{{.Stderr}}`)
+- Identity evidence: {{with .Identity}}{{if .Source}}{{.Source}}{{else}}none recorded{{end}}{{end}}
+- Verdict and findings, quoted exactly from the receipt:
+
+> _(fill in)_
+
+{{else}}_(fill in: the exact verdict and findings excerpt and its receipt location)_
+
+{{end}}## Dispositions
+
+| Finding | Severity | Disposition | Correction and verification evidence |
+| --- | --- | --- | --- |
+| _(fill in)_ | | _(accepted, rebutted with evidence, or needs a decision)_ | |
+
+## Verification evidence
+
+| Check | Command | Result | Output location |
+| --- | --- | --- | --- |
+| _(fill in)_ | | | |
+
+## Budget
+
+{{with .Budget}}- Invocation budget: {{.MaxInvocations}}, {{$.Used}} used.{{range .History}} Set to {{.MaxInvocations}} at {{.At}}{{if .Reason}} ({{.Reason}}){{end}}.{{end}}
+{{else}}- Invocation budget: none recorded.
+{{end}}- Correction budget: _(fill in: limit and rounds used)_
+- Retry budget: _(fill in: limit and retries used)_
+
+## Limitations
+
+{{range .Limitations}}- {{.}}
+{{end}}- _(fill in)_
+
+## Next action
+
+_(fill in)_

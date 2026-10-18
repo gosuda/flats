@@ -94,6 +94,12 @@ membership and content hashes before and after review. Drift makes review
 incomplete; establish a new stable snapshot and obtain review before claiming a
 current approval. No commit or publication is needed just to review a snapshot.
 
+The [review evidence helper](../internal/devreview/README.md) implements these
+rules: `snapshot` and `verify` record and check the manifest, `materialize`
+writes a read-only copy, `run` records a reviewer invocation from a user-level
+reviewer configuration, and `report` writes the task report skeleton. It
+checks identities and records evidence; it does not approve a stage.
+
 The executing agent maintains a concise task report outside committed source,
 links it in the user-visible handoff, and links or provides an accessible copy in
 a PR body when published. A local-only link is explicitly labeled as such; it is

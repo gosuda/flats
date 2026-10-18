@@ -1,0 +1,422 @@
+//go:build unix
+
+package devreview
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+type runFixture struct {
+	root, evidence, manifest, copy, prompt, config string
+}
+
+// newRunFixture builds a repository with a candidate change, its manifest,
+// a materialized copy and a prompt, all evidence outside the repository.
+func newRunFixture(t *testing.T) *runFixture {
+	t.Helper()
+	f := &runFixture{root: repo(t, map[string]string{"a.txt": "a\n"}), evidence: outside(t)}
+	write(t, f.root, map[string]string{"a.txt": "b\n"})
+	m := snap(t, f.root, "", Options{})
+	f.manifest = filepath.Join(f.evidence, "snap.json")
+	if err := WriteJSON(f.root, f.manifest, m); err != nil {
+		t.Fatal(err)
+	}
+	f.copy = filepath.Join(f.evidence, "copy")
+	cleanupCopy(t, f.root, f.copy)
+	if _, err := Materialize(f.root, m, f.copy); err != nil {
+		t.Fatal(err)
+	}
+	f.prompt = filepath.Join(f.evidence, "prompt.txt")
+	os.WriteFile(f.prompt, []byte("review this\n"), 0o600)
+	return f
+}
+
+// reviewer writes a shell script and a configuration naming it.
+func (f *runFixture) reviewer(t *testing.T, script string, extra map[string]any) {
+	t.Helper()
+	sh := filepath.Join(f.evidence, "reviewer.sh")
+	if err := os.WriteFile(sh, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := map[string]any{"command": []string{sh}, "requested_model": "model-r", "timeout": "20s"}
+	for k, v := range extra {
+		r[k] = v
+	}
+	b, _ := json.Marshal(map[string]any{"reviewers": map[string]any{"r": r}})
+	f.config = filepath.Join(f.evidence, "reviewers.json")
+	os.Remove(f.config)
+	if err := os.WriteFile(f.config, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *runFixture) opts() RunOptions {
+	return RunOptions{
+		Root: f.root, ManifestPath: f.manifest, ConfigPath: f.config, Reviewer: "r", PromptPath: f.prompt,
+		RunsDir: filepath.Join(f.evidence, "runs"), Authors: []string{"model-a"}, Copy: f.copy, Budget: 10, Stage: "implementation",
+	}
+}
+
+const identifies = `cat >/dev/null
+printf '{"effective_model":"model-r","session":"s-1","source":"test metadata"}' > "$FLATS_REVIEW_IDENTITY_FILE"
+echo "VERDICT: ACCEPT"`
+
+func TestRunComplete(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	f.reviewer(t, `test "$FLATS_REVIEW_ROOT" = "$PWD" || exit 9
+test -f "$FLATS_REVIEW_MANIFEST" || exit 8
+grep -q "review this" || exit 7
+`+identifies, nil)
+	rec, err := Run(context.Background(), f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Outcome != OutcomeComplete || rec.Status != StatusExited || *rec.ExitCode != 0 {
+		t.Fatalf("record = %+v", rec)
+	}
+	if rec.Surface.Kind != SurfaceCopy || rec.Surface.Path != f.copy || !rec.Before.OK || !rec.After.OK {
+		t.Errorf("surface %+v before %+v after %+v", rec.Surface, rec.Before, rec.After)
+	}
+	if rec.Identity.Status != "known" || rec.Identity.EffectiveModel != "model-r" || rec.Identity.Session != "s-1" || rec.Eligibility != "eligible" {
+		t.Errorf("identity %+v eligibility %s", rec.Identity, rec.Eligibility)
+	}
+	out, _ := os.ReadFile(filepath.Join(f.opts().RunsDir, rec.ID, rec.Stdout))
+	if !strings.Contains(string(out), "VERDICT: ACCEPT") {
+		t.Errorf("stdout receipt = %q", out)
+	}
+	var onDisk Record
+	b, _ := os.ReadFile(filepath.Join(f.opts().RunsDir, rec.ID, "run.json"))
+	if err := json.Unmarshal(b, &onDisk); err != nil || onDisk.Outcome != OutcomeComplete {
+		t.Errorf("run.json = %s, %v", b, err)
+	}
+
+	// A second invocation in the same session is noted.
+	rec2, err := Run(context.Background(), f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec2.SessionReused) != 1 || rec2.SessionReused[0] != rec.ID {
+		t.Errorf("session reuse = %v", rec2.SessionReused)
+	}
+}
+
+func TestRunIncompleteEvidence(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, script string
+		extra        map[string]any
+		authors      []string
+		identity     string
+		eligibility  string
+	}{
+		{"no metadata", "cat >/dev/null", nil, nil, "unknown", "unknown"},
+		{"fixed binding without session", "cat >/dev/null", map[string]any{"fixed_binding": "provider docs"}, nil, "unknown", "eligible"},
+		{"author model", identifies, nil, []string{"model-r"}, "known", "ineligible"},
+		{"bad metadata", `cat >/dev/null; echo '{"model":1}' > "$FLATS_REVIEW_IDENTITY_FILE"`, nil, nil, "invalid", "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRunFixture(t)
+			f.reviewer(t, c.script, c.extra)
+			o := f.opts()
+			if c.authors != nil {
+				o.Authors = c.authors
+			}
+			rec, err := Run(context.Background(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec.Outcome != OutcomeIncomplete || rec.Identity.Status != c.identity || rec.Eligibility != c.eligibility {
+				t.Errorf("outcome %s identity %+v eligibility %s", rec.Outcome, rec.Identity, rec.Eligibility)
+			}
+		})
+	}
+	t.Run("fixed binding with session", func(t *testing.T) {
+		f := newRunFixture(t)
+		f.reviewer(t, `cat >/dev/null; printf '{"session":"s-9","source":"header"}' > "$FLATS_REVIEW_IDENTITY_FILE"`,
+			map[string]any{"fixed_binding": "provider docs"})
+		rec, err := Run(context.Background(), f.opts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Outcome != OutcomeComplete || rec.Identity.ModelFrom != "fixed-binding" || rec.Identity.EffectiveModel != "model-r" {
+			t.Errorf("outcome %s identity %+v", rec.Outcome, rec.Identity)
+		}
+	})
+	t.Run("surface changed during review", func(t *testing.T) {
+		f := newRunFixture(t)
+		f.reviewer(t, `cat >/dev/null; echo x > "$PWD/extra.txt"; `+identifies, nil)
+		rec, err := Run(context.Background(), f.opts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Outcome != OutcomeIncomplete || rec.After.OK {
+			t.Errorf("outcome %s after %+v", rec.Outcome, rec.After)
+		}
+	})
+}
+
+func TestRunFailures(t *testing.T) {
+	t.Parallel()
+	t.Run("nonzero exit", func(t *testing.T) {
+		f := newRunFixture(t)
+		f.reviewer(t, "cat >/dev/null; exit 4", nil)
+		rec, err := Run(context.Background(), f.opts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Outcome != OutcomeFailed || *rec.ExitCode != 4 {
+			t.Errorf("record %+v", rec)
+		}
+	})
+	t.Run("timeout kills the process group", func(t *testing.T) {
+		f := newRunFixture(t)
+		marker := filepath.Join(f.evidence, "child-pid")
+		f.reviewer(t, `cat >/dev/null; sleep 30 & echo $! > `+marker+`; wait`, map[string]any{"timeout": "1s"})
+		rec, err := Run(context.Background(), f.opts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Status != StatusTimeout || rec.Outcome != OutcomeFailed {
+			t.Errorf("record %+v", rec)
+		}
+		if groupAlive(rec.PID) {
+			t.Error("the reviewer's process group survived the timeout")
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		f := newRunFixture(t)
+		f.reviewer(t, "cat >/dev/null; sleep 30", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		rec, err := Run(ctx, f.opts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Status != StatusCancelled {
+			t.Errorf("status %s", rec.Status)
+		}
+	})
+	t.Run("missing program", func(t *testing.T) {
+		f := newRunFixture(t)
+		f.reviewer(t, "", nil)
+		cfg := map[string]any{"reviewers": map[string]any{"r": map[string]any{"command": []string{filepath.Join(f.evidence, "absent")}, "requested_model": "m"}}}
+		b, _ := json.Marshal(cfg)
+		os.WriteFile(f.config, b, 0o600)
+		rec, err := Run(context.Background(), f.opts())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Status != StatusFailedToStart {
+			t.Errorf("status %s", rec.Status)
+		}
+	})
+}
+
+func refused(t *testing.T, err error, want string) {
+	t.Helper()
+	var r *RefusedError
+	if !errors.As(err, &r) || !strings.Contains(r.Reason, want) {
+		t.Errorf("err = %v, want a refusal mentioning %q", err, want)
+	}
+}
+
+func TestRunRefusals(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	f.reviewer(t, identifies, nil)
+
+	o := f.opts()
+	o.Authors = nil
+	_, err := Run(context.Background(), o)
+	refused(t, err, "author")
+
+	o = f.opts()
+	o.Copy = ""
+	_, err = Run(context.Background(), o)
+	refused(t, err, "concurrent writes")
+
+	o = f.opts()
+	o.Budget = 0
+	_, err = Run(context.Background(), o)
+	refused(t, err, "no invocation budget")
+
+	// Drift of the reviewed surface blocks the start.
+	extra := filepath.Join(f.copy, "extra.txt")
+	os.WriteFile(extra, []byte("x\n"), 0o644)
+	_, err = Run(context.Background(), f.opts())
+	refused(t, err, "does not match")
+	os.Remove(extra)
+
+	// A live-tree review with a statement runs against the working tree.
+	o = f.opts()
+	o.Copy, o.WritesPrevented = "", "single executor, no other writers"
+	rec, err := Run(context.Background(), o)
+	if err != nil || rec.Surface.Kind != SurfaceLive || rec.Surface.Path != f.root || rec.Outcome != OutcomeComplete {
+		t.Fatalf("live run: %+v, %v", rec, err)
+	}
+
+	if records, _ := LoadRecords(o.RunsDir); len(records) != 1 {
+		t.Errorf("refused starts left invocation records: %v", records)
+	}
+}
+
+func TestRunConfigBoundary(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	f.reviewer(t, identifies, nil)
+	os.Chmod(f.config, 0o666)
+	_, err := Run(context.Background(), f.opts())
+	if err == nil || !strings.Contains(err.Error(), "writable by other users") {
+		t.Errorf("err = %v", err)
+	}
+	os.Chmod(f.config, 0o600)
+
+	inRepo := filepath.Join(f.root, "reviewers.json")
+	b, _ := os.ReadFile(f.config)
+	os.WriteFile(inRepo, b, 0o600)
+	o := f.opts()
+	o.ConfigPath = inRepo
+	if _, err := Run(context.Background(), o); !errors.Is(err, ErrInsideRepo) {
+		t.Errorf("config inside the repository: err = %v", err)
+	}
+	link := filepath.Join(f.evidence, "linked.json")
+	os.Symlink(inRepo, link)
+	o.ConfigPath = link
+	if _, err := Run(context.Background(), o); !errors.Is(err, ErrInsideRepo) {
+		t.Errorf("config linked into the repository: err = %v", err)
+	}
+	o = f.opts()
+	o.RunsDir = filepath.Join(f.root, "runs")
+	if _, err := Run(context.Background(), o); !errors.Is(err, ErrInsideRepo) {
+		t.Errorf("evidence directory inside the repository: err = %v", err)
+	}
+}
+
+func TestRunBudget(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	f.reviewer(t, identifies, nil)
+	o := f.opts()
+	o.Budget = 1
+	if _, err := Run(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	o.Budget = 0 // the recorded budget applies
+	_, err := Run(context.Background(), o)
+	refused(t, err, "exhausted")
+
+	// A new snapshot or reviewer name does not reset the budget.
+	write(t, f.root, map[string]string{"a.txt": "c\n"})
+	m := snap(t, f.root, "", Options{})
+	o.ManifestPath = filepath.Join(f.evidence, "snap2.json")
+	WriteJSON(f.root, o.ManifestPath, m)
+	o.Copy, o.WritesPrevented = "", "single executor"
+	_, err = Run(context.Background(), o)
+	refused(t, err, "exhausted")
+
+	o.Budget = 2
+	_, err = Run(context.Background(), o)
+	refused(t, err, "needs a reason")
+	o.BudgetReason = "one more review round agreed"
+	if _, err := Run(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := ReadBudget(o.RunsDir)
+	if b.MaxInvocations != 2 || len(b.History) != 2 || b.History[1].Reason != o.BudgetReason {
+		t.Errorf("budget = %+v", b)
+	}
+}
+
+func TestRunReconcile(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	f.reviewer(t, identifies, nil)
+	runs := filepath.Join(f.evidence, "runs")
+	stale := func(id string, pid int) string {
+		dir := filepath.Join(runs, id)
+		os.MkdirAll(dir, 0o700)
+		os.WriteFile(filepath.Join(dir, "running.lock"), nil, 0o600)
+		writeRecord(dir, &Record{Format: RecordFormat, ID: id, Status: StatusRunning, PID: pid})
+		return dir
+	}
+
+	// A held lock means the invocation may still run, whatever its PID.
+	dir := stale("20000101T000000Z-held", 0)
+	unlock, err := lockPath(filepath.Join(dir, "running.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Run(context.Background(), f.opts())
+	refused(t, err, "running lock")
+	unlock()
+
+	// A released lock with a live process group is uncertain.
+	sleeper := exec.Command("sleep", "30")
+	setProcessGroup(sleeper)
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { killGroup(sleeper.Process.Pid); sleeper.Wait() }()
+	os.RemoveAll(dir)
+	stale("20000101T000001Z-group", sleeper.Process.Pid)
+	_, err = Run(context.Background(), f.opts())
+	refused(t, err, "uncertain")
+	killGroup(sleeper.Process.Pid)
+	sleeper.Wait()
+
+	rec, err := Run(context.Background(), f.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, _ := LoadRecords(runs)
+	if records[0].Status != StatusInterrupted || records[0].Outcome != OutcomeFailed || rec.Outcome != OutcomeComplete {
+		t.Errorf("records: %+v; new %+v", records[0], rec)
+	}
+}
+
+// A reviewer that outlives its wrapper keeps the inherited lock, so a new
+// start is refused until that process is gone.
+func TestRunLockSurvivesWrapper(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("DEVREVIEW_HELPER") == "1" {
+		o := RunOptions{}
+		json.Unmarshal([]byte(os.Getenv("DEVREVIEW_OPTS")), &o)
+		Run(context.Background(), o)
+		os.Exit(0)
+	}
+	f := newRunFixture(t)
+	marker := filepath.Join(f.evidence, "started")
+	f.reviewer(t, `cat >/dev/null; touch `+marker+`; sleep 30`, nil)
+	b, _ := json.Marshal(f.opts())
+	wrapper := exec.Command(os.Args[0], "-test.run=^TestRunLockSurvivesWrapper$")
+	wrapper.Env = append(os.Environ(), "DEVREVIEW_HELPER=1", "DEVREVIEW_OPTS="+string(b))
+	if err := wrapper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 200; i++ {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	wrapper.Process.Kill()
+	wrapper.Wait()
+	records, _ := LoadRecords(f.opts().RunsDir)
+	if len(records) != 1 {
+		t.Fatalf("records: %v", records)
+	}
+	defer killGroup(records[0].PID)
+	_, err := Run(context.Background(), f.opts())
+	refused(t, err, fmt.Sprintf("invocation %s still holds its running lock", records[0].ID))
+}
