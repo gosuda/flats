@@ -30,7 +30,11 @@ type snapshotFlat struct {
 
 type diskSample struct {
 	bytes int64
-	at    time.Time
+	at    time.Time // when bytes was measured; zero when never
+	// tried is the last walk, including one that failed and left bytes and
+	// at as they were. walkDisks schedules by it, so a flat it cannot read
+	// waits its turn instead of taking every sweep's walks.
+	tried time.Time
 }
 
 // diskEvery is how old a flat's disk figure may get; Sweep spreads the walks
@@ -116,7 +120,24 @@ func (s *Service) recordDisk(uid string, bytes int64) {
 	if s.disk == nil {
 		s.disk = map[string]diskSample{}
 	}
-	s.disk[uid] = diskSample{bytes: bytes, at: s.now()}
+	now := s.now()
+	s.disk[uid] = diskSample{bytes: bytes, at: now, tried: now}
+}
+
+// diskFailed notes a walk of the flat that could not read all of it. Its
+// last figure and time stay (spec rule 15).
+func (s *Service) diskFailed(uid string) {
+	if uid == "" {
+		return
+	}
+	s.diskMu.Lock()
+	defer s.diskMu.Unlock()
+	if s.disk == nil {
+		s.disk = map[string]diskSample{}
+	}
+	d := s.disk[uid]
+	d.tried = s.now()
+	s.disk[uid] = d
 }
 
 func (s *Service) diskOf(uid string) diskSample {
@@ -128,7 +149,7 @@ func (s *Service) diskOf(uid string) diskSample {
 // walkDisks measures the flats whose disk figure is missing or close to
 // diskEvery old, oldest first, at most a ninth of all flats per sweep, so
 // every flat is walked at most once per period and the walks are spread over
-// its sweeps.
+// its sweeps. A walk that cannot read the whole flat records nothing.
 func (s *Service) walkDisks(flats []snapshotFlat) {
 	if len(flats) == 0 {
 		return
@@ -145,15 +166,19 @@ func (s *Service) walkDisks(flats []snapshotFlat) {
 			continue
 		}
 		d, ok := s.disk[f.uid]
-		if !ok || now.Sub(d.at) >= diskEvery-diskEvery/10 {
-			todo = append(todo, due{f, d.at})
+		if !ok || now.Sub(d.tried) >= diskEvery-diskEvery/10 {
+			todo = append(todo, due{f, d.tried})
 		}
 	}
 	s.diskMu.Unlock()
 	slices.SortFunc(todo, func(a, b due) int { return a.at.Compare(b.at) })
 	budget := max(1, (len(flats)+8)/9)
 	for _, d := range todo[:min(len(todo), budget)] {
-		s.recordDisk(d.f.uid, dirSize(s.flatDir(d.f.slug)))
+		if n, err := dirSizeErr(s.flatDir(d.f.slug)); err == nil {
+			s.recordDisk(d.f.uid, n)
+		} else {
+			s.diskFailed(d.f.uid)
+		}
 	}
 }
 
@@ -381,11 +406,13 @@ func (s *Service) Usage(ctx context.Context, slugName string, days int) (UsageRe
 	s.mu.Lock()
 	lf := s.live[slugName]
 	s.mu.Unlock()
-	if lf != nil {
-		lf.bindUID(f.ID)
-		if lf.uidOf() != f.ID || lf.usage == nil {
-			lf = nil
-		}
+	// A read never binds a state: the slug may have been deleted and created
+	// again since GetFlat, and binding the new flat's state to the old ID
+	// would discard its usage for good. Only a state already bound to this
+	// flat adds its memory; an unbound one is bound by its activation or the
+	// next sweep and is read from the stored rows until then.
+	if lf != nil && (lf.uidOf() != f.ID || lf.usage == nil) {
+		lf = nil
 	}
 	var cur *deployed
 	if lf != nil {

@@ -1333,3 +1333,214 @@ func TestUsageBucketOfTheRuntimeDeadline(t *testing.T) {
 		t.Fatalf("%d buckets", usageBucketCount)
 	}
 }
+
+// A stats read never binds a state: the slug may have been deleted and
+// created again between its lookup of the flat and of s.live, and a state
+// bound to the old ID would have its usage discarded for good. Memory of a
+// state bound to another ID is not merged.
+func TestUsageReadNeverBindsAState(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	if _, err := s.SaveVersion(ctx, "site", []bundle.File{{Path: "index.html", Data: []byte("<p>")}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	lf := s.state("site") // a request before the first activation
+	lf.usage.countRequest(routePrivate, class2xx, lf.usage.today())
+	rep, err := s.Usage(ctx, "site", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lf.uidOf() != "" {
+		t.Fatal("a stats read bound the state")
+	}
+	if rep.Totals.Requests != 0 {
+		t.Fatalf("an unbound state's memory was read: %+v", rep.Totals)
+	}
+	lf.bindUID("a-deleted-flat")
+	if rep, err := s.Usage(ctx, "site", 7); err != nil || rep.Totals.Requests != 0 {
+		t.Fatalf("another flat's memory was merged: %+v %v", rep.Totals, err)
+	}
+	// Bound to this flat, the state's memory is part of the report.
+	s.mu.Lock()
+	delete(s.live, "site")
+	s.mu.Unlock()
+	f, _ := s.st.GetFlat(ctx, "site")
+	lf = s.state("site")
+	lf.bindUID(f.ID)
+	lf.usage.countRequest(routePrivate, class2xx, lf.usage.today())
+	if rep, err := s.Usage(ctx, "site", 7); err != nil || rep.Totals.Requests != 1 {
+		t.Fatalf("bound state: %+v %v", rep.Totals, err)
+	}
+}
+
+// A 502 or 503 sent while the visitor was still connected stays an error
+// when the visitor leaves while its body is sent; one sent after the visitor
+// left is closed.
+func TestUsageErrorSentBeforeTheVisitorLeftStaysAnError(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		code       int
+		leaveFirst bool
+		class      int
+	}{
+		{"502 then leave", http.StatusBadGateway, false, class5xx},
+		{"503 then leave", http.StatusServiceUnavailable, false, class5xx},
+		{"leave then 502", http.StatusBadGateway, true, classClosed},
+		{"leave then 503", http.StatusServiceUnavailable, true, classClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newFlatUsage(time.Now)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+			serveCounted(u, routePrivate, httptest.NewRecorder(), r, func(w http.ResponseWriter, r *http.Request) {
+				if tc.leaveFirst {
+					cancel()
+				}
+				w.WriteHeader(tc.code)
+				cancel()
+				io.WriteString(w, "body")
+			})
+			if c := classCounts(u, routePrivate); c != only(tc.class) {
+				t.Fatalf("counts %v, want %v", c, only(tc.class))
+			}
+			if timed := u.durCount.Load() == 1; timed != (tc.class == class5xx) {
+				t.Fatalf("timed %t", timed)
+			}
+		})
+	}
+}
+
+// A sample without memory updates the CPU only: the last memory figure keeps
+// its value and its time, so it turns stale instead of reading as fresh.
+func TestWorkerMemoryKeepsTheLastSample(t *testing.T) {
+	var clock atomic.Pointer[time.Time]
+	start := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	clock.Store(&start)
+	now := func() time.Time { return *clock.Load() }
+	advance := func(d time.Duration) {
+		next := clock.Load().Add(d)
+		clock.Store(&next)
+	}
+
+	w := newWorkerUsage(now)
+	w.Started(1)
+	w.Sample(1, 1e9, 100, true)
+	advance(61 * time.Second)
+	w.Sample(1, 2e9, 0, false)
+	if m := w.memory(); m.bytes != 100 || !m.at.Equal(start) || now().Sub(m.at) <= memoryStaleAfter {
+		t.Fatalf("%+v", m)
+	}
+	if w.cpuNS() != 2e9 {
+		t.Fatalf("cpu %d", w.cpuNS())
+	}
+	if p, ok := w.takePeak(); !ok || p != 100 {
+		t.Fatal(p, ok)
+	}
+	// A process that never sent memory counts its start as its sample time.
+	w.Started(2)
+	w.Sample(2, 1e9, 0, false)
+	if m := w.memory(); m.bytes != 100 || !m.at.Equal(start) {
+		t.Fatalf("%+v", m)
+	}
+
+	// Through the stats API: stale after 60 s with the last value and time.
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	clock.Store(&start)
+	s.now = now
+	s.cfg.Runtime = &usageRuntime{}
+	deployServer(t, s, "app")
+	lw := s.state("app").usage.worker
+	lw.mu.Lock()
+	var ids []uint64
+	for id := range lw.running {
+		ids = append(ids, id)
+	}
+	lw.mu.Unlock()
+	advance(61 * time.Second)
+	for _, id := range ids {
+		lw.Sample(id, 3e9, 0, false)
+	}
+	rep, err := s.Usage(ctx, "app", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if memoryMeasured {
+		if rep.Now.MemoryStale == nil || !*rep.Now.MemoryStale || *rep.Now.MemoryBytes != 1<<20 || !rep.Now.MemorySampledAt.Equal(start) {
+			t.Fatalf("now %+v", rep.Now)
+		}
+	}
+}
+
+// A disk walk that cannot read the whole flat records nothing: the last
+// figure keeps its value and time, from the background walk and from the
+// quota check alike.
+func TestDiskFigureKeepsTheLastCompleteWalk(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable directories")
+	}
+	ctx := context.Background()
+	s, _ := newTestService(t)
+	var clock atomic.Pointer[time.Time]
+	start := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	clock.Store(&start)
+	s.now = func() time.Time { return *clock.Load() }
+	advance := func(d time.Duration) {
+		next := clock.Load().Add(d)
+		clock.Store(&next)
+	}
+	if _, err := s.SaveVersion(ctx, "site", []bundle.File{{Path: "index.html", Data: []byte("<p>")}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	s.state("site") // live, so the quota check walks it too
+	s.Sweep(ctx)
+	f, _ := s.st.GetFlat(ctx, "site")
+	first := s.diskOf(f.ID)
+	if !first.at.Equal(start) {
+		t.Fatalf("first walk %+v", first)
+	}
+	locked := filepath.Join(s.flatDir("site"), "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "data"), make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if _, err := dirSizeErr(s.flatDir("site")); err == nil {
+		t.Fatal("an unreadable directory is no error")
+	}
+
+	keep := func(what string) {
+		t.Helper()
+		if d := s.diskOf(f.ID); d.bytes != first.bytes || !d.at.Equal(first.at) {
+			t.Fatalf("%s: %+v, want %+v", what, d, first)
+		}
+	}
+	advance(diskEvery) // quota off: the background walk
+	s.Sweep(ctx)
+	keep("background walk")
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetDiskQuotaBytes: "1000000000"}); err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Minute) // quota on: the quota check walks every sweep
+	s.Sweep(ctx)
+	keep("quota check")
+
+	if err := os.Chmod(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	advance(time.Minute)
+	s.Sweep(ctx)
+	if d := s.diskOf(f.ID); d.bytes != first.bytes+4096 || !d.at.Equal(*clock.Load()) {
+		t.Fatalf("readable again: %+v", d)
+	}
+	// A flat directory never created holds nothing; it is no error.
+	if n, err := dirSizeErr(filepath.Join(t.TempDir(), "missing")); n != 0 || err != nil {
+		t.Fatal(n, err)
+	}
+}

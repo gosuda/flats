@@ -28,6 +28,9 @@ type usageWriter struct {
 	day       string // UTC day the status was sent
 	counted   bool
 	streaming bool
+	// goneAtSend: the visitor had already left (orig cancelled) when the
+	// 502 or 503 status was sent.
+	goneAtSend bool
 }
 
 func newUsageWriter(w http.ResponseWriter, r *http.Request, u *flatUsage, route int) *usageWriter {
@@ -109,8 +112,9 @@ func isEventStream(h http.Header) bool {
 
 // sent records the first status. Its class and day are taken now, so a
 // WebSocket open for days counts on the day it opened. A 502 or 503 is
-// counted when the handler returns: it may still turn out to be the answer
-// to a visitor who had already left (closed).
+// counted when the handler returns: it is closed if the visitor had already
+// left when it was sent, which is recorded now, since a visitor who leaves
+// later, while it is being sent, does not make it closed.
 func (uw *usageWriter) sent(code int, hijacked bool) {
 	uw.status = code
 	uw.day = uw.u.today()
@@ -121,7 +125,9 @@ func (uw *usageWriter) sent(code int, hijacked bool) {
 	if code != http.StatusBadGateway && code != http.StatusServiceUnavailable {
 		uw.u.countRequest(uw.route, statusClass(code), uw.day)
 		uw.counted = true
+		return
 	}
+	uw.goneAtSend = errors.Is(uw.orig.Err(), context.Canceled)
 }
 
 // finish counts the request when its handler returned, or panicked with
@@ -142,9 +148,13 @@ func (uw *usageWriter) finish(panicked bool, value any) {
 	if day == "" {
 		day = uw.u.today()
 	}
-	// A visitor who left before the response was complete, answered with
-	// nothing or with the 502/503 Flats gives a departed visitor, is closed.
-	if (!panicked || abort) && errors.Is(uw.orig.Err(), context.Canceled) {
+	// A visitor who left before any answer, or before the 502/503 Flats gives
+	// a departed visitor was sent, is closed.
+	gone := uw.goneAtSend
+	if status == 0 {
+		gone = errors.Is(uw.orig.Err(), context.Canceled)
+	}
+	if (!panicked || abort) && gone {
 		uw.u.countRequest(uw.route, classClosed, day)
 		return
 	}

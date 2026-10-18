@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"log"
 	"maps"
 	"net/http"
@@ -2360,8 +2361,15 @@ func (s *Service) checkQuotas(ctx context.Context, live map[string]*liveFlat, no
 		return
 	}
 	for slugName, lf := range live {
-		used := dirSize(s.flatDir(slugName))
-		s.recordDisk(lf.uidOf(), used)
+		// A partial total still counts against the quota, as before, but is
+		// not recorded as the flat's disk figure: the last one stays, with
+		// its time.
+		used, err := dirSizeErr(s.flatDir(slugName))
+		if err == nil {
+			s.recordDisk(lf.uidOf(), used)
+		} else {
+			s.diskFailed(lf.uidOf())
+		}
 		if used <= quota {
 			continue
 		}
@@ -2424,18 +2432,38 @@ func (s *Service) Events(ctx context.Context, slugName, kind string, after int64
 
 // --- helpers ---
 
+// dirSize is the size of the regular files under dir. Parts it cannot read
+// are left out of the total.
 func dirSize(dir string) int64 { return dirSizeExcept(dir) }
 
 // dirSizeExcept is dirSize without the files at the paths in skip.
 func dirSizeExcept(dir string, skip ...string) int64 {
+	n, _ := walkSize(dir, skip)
+	return n
+}
+
+// dirSizeErr is dirSize that also reports the first part it could not read,
+// for a measurement that must not publish a partial total as a fresh figure.
+// A missing dir, and files removed during the walk, are not errors: they
+// hold nothing.
+func dirSizeErr(dir string) (int64, error) { return walkSize(dir, nil) }
+
+func walkSize(dir string, skip []string) (int64, error) {
 	var n int64
+	var first error
 	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
-		if err == nil && info.Mode().IsRegular() && !slices.Contains(skip, p) {
+		if err != nil {
+			if first == nil && !errors.Is(err, fs.ErrNotExist) {
+				first = err
+			}
+			return nil
+		}
+		if info.Mode().IsRegular() && !slices.Contains(skip, p) {
 			n += info.Size()
 		}
 		return nil
 	})
-	return n
+	return n, first
 }
 
 func isWithin(dir, p string) bool {

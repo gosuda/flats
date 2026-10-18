@@ -308,7 +308,10 @@ type procUsage struct {
 	cpu   int64
 	mem   int64
 	memOK bool
-	at    time.Time // latest sample, or the start before the first one
+	// memAt is when mem was sampled, or the start before the first sample
+	// with memory. A sample without memory leaves mem and memAt as they
+	// were, so a failed read ages the last value instead of replacing it.
+	memAt time.Time
 }
 
 var _ UsageSink = (*workerUsage)(nil)
@@ -321,7 +324,7 @@ func (w *workerUsage) Started(id uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if _, ok := w.running[id]; !ok {
-		w.running[id] = &procUsage{at: w.now()}
+		w.running[id] = &procUsage{memAt: w.now()}
 		w.started++
 	}
 }
@@ -330,12 +333,12 @@ func (w *workerUsage) Sample(id uint64, cpuNS, mem int64, memOK bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	p := w.running[id]
-	if p == nil || cpuNS < 0 || mem < 0 {
+	if p == nil || cpuNS < 0 || (memOK && mem < 0) {
 		return
 	}
 	p.cpu = max(p.cpu, cpuNS)
-	p.mem, p.memOK, p.at = mem, memOK, w.now()
 	if memOK {
+		p.mem, p.memOK, p.memAt = mem, true, w.now()
 		var sum int64
 		for _, q := range w.running {
 			if q.memOK {
@@ -399,8 +402,9 @@ func (w *workerUsage) unexpectedExits() uint64 {
 type workerMemory struct {
 	bytes   int64
 	workers int
-	// at is the oldest latest sample of a running process; with none running
-	// it is when the last one exited (zero when none ever ran).
+	// at is the oldest latest memory sample of a running process (its start
+	// if it sent none yet); with none running it is when the last one exited
+	// (zero when none ever ran).
 	at time.Time
 }
 
@@ -413,8 +417,8 @@ func (w *workerUsage) memory() workerMemory {
 		if p.memOK {
 			m.bytes += p.mem
 		}
-		if first || p.at.Before(m.at) {
-			m.at, first = p.at, false
+		if first || p.memAt.Before(m.at) {
+			m.at, first = p.memAt, false
 		}
 	}
 	return m

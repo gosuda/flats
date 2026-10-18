@@ -89,10 +89,13 @@ Since only the handler's return tells whether a `502` or `503` becomes
 status is counted when it is sent. The wrapper keeps the request's original
 context when it is entered, before the public route replaces it with an
 epoch-derived one (`siteHandler`), so a route revocation is never mistaken for
-a departed visitor. When the handler returns, a request whose original context
-ended with `context.Canceled` before its response was complete, and that sent
-no status or a `502` or `503`, is counted as `closed` instead of its status
-class; a 502 or 503 that was fully sent stays an error. That covers the runtime
+a departed visitor. A request that sent no status is counted as `closed`
+instead of its status class when its original context ended with
+`context.Canceled` by the time the handler returns. A `502` or `503` is
+`closed` when the original context had already been cancelled when that
+status was sent, which the wrapper records at that moment; a visitor who
+leaves later, while the body is being sent, leaves it an error (spec rule 10).
+That covers the runtime
 proxy's `ErrorHandler` 502, the 503 of a cancelled `ensure` in
 `instance.ServeHTTP` and the 503 that `docsDemand` writes when a visitor stops
 waiting for a wake. A panic with `http.ErrAbortHandler` (the reverse proxy
@@ -134,7 +137,12 @@ path never waits for SQLite (spec rule 15).
 
 Reading a flat's stats never writes: `Service.Usage` reads the stored rows
 and adds a read-only copy of the flat's day buffer plus the CPU and memory
-peak not captured yet, without moving them. A Service-level mutex
+peak not captured yet, without moving them. It never binds a `liveFlat`
+either: the slug may have been deleted and created again between its lookup
+of the flat and of `s.live`, and the uid is bound only once. Only a state
+already bound to the flat's uid adds its memory; an unbound state (bound by
+its activation or the next sweep) and a state bound to another uid add
+nothing, and the report comes from the stored rows alone. A Service-level mutex
 (`usageMu`) makes that copy and the read one step for the flush, so a
 concurrent sweep is seen either entirely in SQLite or entirely in memory.
 Only the flush and stats reads take it; the request path does not.
@@ -239,8 +247,13 @@ type UsageSink interface {
   reader sees each process exactly once and the total never decreases.
   A daily CPU increase below zero is clamped to zero.
 - Memory is the sum of the latest `mem` of running processes; with none
-  running it is 0. A latest sample older than 60 seconds is reported with its
-  time and flagged stale (spec rule 15).
+  running it is 0. Each process keeps the time of its latest sample with
+  `mem` separately from its CPU: a sample without `mem` (for example a failed
+  read of `/proc/self/status`) updates the CPU only and leaves the previous
+  `mem` and its time, and a process that has sent no `mem` yet contributes
+  nothing and counts its start as its sample time. The oldest of those times
+  is the flat's memory sample time; one older than 60 seconds is reported
+  with its time and flagged stale (spec rule 15).
 
 ### Worker state
 
@@ -294,10 +307,16 @@ collector exposes only its disk series, so no counter appears to reset. Its
 traffic series return under the new slug with the same counters.
 
 Disk usage: `checkQuotas` already walks each live flat every sweep when the
-quota is on, and records the result and its time. Independently,
+quota is on, and records the result and its time. A walk that could not read
+part of the flat (an unreadable subdirectory) records nothing, so the last
+figure keeps its value and time instead of a partial total appearing fresh
+(spec rule 15); the quota check itself still uses the partial total, as
+before. A missing flat directory, and files removed during the walk, hold
+nothing and are not errors. Independently,
 every flat in the store, live or not, whose figure is missing or at least 4.5
 minutes old is walked, oldest first, up to about a ninth of all flats per
-sweep, so disk figures exist for every flat and are about 5 minutes old at
+sweep (a failed walk counts as an attempt for this schedule, so an unreadable
+flat waits its turn instead of taking every sweep's walks), so disk figures exist for every flat and are about 5 minutes old at
 most (spec rule 4). This adds about one walk per flat per 5 minutes on hosts
 with the quota off. The flat view's `disk_bytes` keeps measuring on
 read; the console keeps showing that figure.
