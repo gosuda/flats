@@ -525,7 +525,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
 	}
-	h.console = "http://" + h.ln.Addr().String()
+	h.console = managementConsoleURL(h.ln.Addr())
 	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: h.ConsoleURL, ConsoleURLFor: h.ConsoleURLFor, PrivateBackend: cfg.Network.PrivateBackend,
 		// "flats" is the console's usual tailnet name: kept free for it, as before.
@@ -667,6 +667,19 @@ func providerConfiguration(cfg portal.Config, zrokConfig, netbirdConfig string) 
 		Netbird         string `json:",omitempty"`
 	}{origins, cfg.Discovery, cfg.MaxActiveRelays, zrokConfig, netbirdConfig})
 	return string(raw)
+}
+
+// managementConsoleURL turns a bind address into a usable operator link.
+// Wildcard addresses are not destinations and are rejected by loopbackGuard.
+// Use IPv4 loopback for Docker's published IPv4 ports; preserve explicit IPs.
+func managementConsoleURL(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err == nil {
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			return "http://" + net.JoinHostPort("127.0.0.1", port)
+		}
+	}
+	return "http://" + addr.String()
 }
 
 // loopbackGuard accepts only the loopback names of the bound address as

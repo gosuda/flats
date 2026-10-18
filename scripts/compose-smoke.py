@@ -3,7 +3,7 @@
 
 Usage: python3 scripts/compose-smoke.py IMAGE
 Requires Docker Compose, a running Docker engine, and Python 3. Uses only a
-synthetic private document (no deployment approvals or external providers).
+synthetic private document (no approval decisions or external providers).
 FLATS_SMOKE_PORT/FLATS_SMOKE_LOCAL_PORT default to 17878/17879.
 """
 
@@ -76,7 +76,10 @@ def main():
             compose("up", "-d", "--wait", "--wait-timeout", "90")
             # Healthy inside the container is insufficient: both published
             # host ports must work before claiming the deployment works.
-            json.loads(get(url + "/api/status"))
+            status = json.loads(get(url + "/api/status"))["system"]
+            assert status["console_url"] == url, "console URL is not the published loopback address"
+            assert status["mcp_url"] == url + "/mcp", "MCP URL is not the published loopback address"
+            assert get(status["console_url"]), "advertised console URL is unreachable"
             assert get(url + "/"), "console is empty"
             before = read_config()
             archive = io.BytesIO()
@@ -98,9 +101,28 @@ def main():
             assert saved["flat"]["type"] == "docs" and saved["flat"]["running"], "document did not start"
             assert saved["flat"]["visibility"] == "private", "test document is not private"
             assert "Compose persistence check" in document(), "document is not served"
+            # Request, but never approve, deletion to verify the exact URL an
+            # agent gives the operator. The document must remain available.
+            request = urllib.request.Request(
+                url + "/api/flats/compose-check", method="DELETE",
+                headers={"Content-Type": "application/json"},
+            )
+            with http.open(request, timeout=5) as response:
+                approval = json.load(response)
+            assert approval["status"] == "pending_approval", "delete bypassed approval"
+            assert approval["approval_url"] == url + "/approvals/" + approval["approval"]["id"]
+            assert get(approval["approval_url"]), "generated approval URL is unreachable"
             container = compose("ps", "-q", "flats")
             compose("stop")
             assert run("docker", "inspect", "-f", "{{.State.ExitCode}}", container) == "0", "unclean SIGTERM exit"
+            backup = path / "backups"
+            backup.mkdir()
+            run("docker", "run", "--rm", "--volumes-from", container + ":ro",
+                "-v", str(backup) + ":/backup", "alpine:3.22", "sh", "-c",
+                "umask 077; tar -czf /backup/flats-data.tar.gz -C /data .")
+            with tarfile.open(backup / "flats-data.tar.gz", "r:gz") as bundle:
+                assert json.load(bundle.extractfile("./config.json")) == before, "backup has wrong host config"
+                assert bundle.getmember("./flats.db").size > 0, "backup database is empty"
             compose("run", "--rm", "--no-deps", "flats", "config", "set", "system.version_quota", "23")
             compose("down")
             compose("up", "-d", "--wait", "--wait-timeout", "90")
@@ -109,7 +131,7 @@ def main():
             expected.setdefault("system", {})["version_quota"] = 23
             assert after == expected, "configuration/identity did not survive recreation"
             assert "Compose persistence check" in document(), "document did not survive recreation"
-            print("compose-smoke: PASS (console/API, document, offline config, recreation, SIGTERM)")
+            print("compose-smoke: PASS (console/API/approval URLs, document, backup, offline config, recreation, SIGTERM)")
         except Exception:
             print(compose("logs", "--no-color"), file=sys.stderr)
             raise

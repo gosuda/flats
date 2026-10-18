@@ -16,9 +16,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class ComposeConfigTest(unittest.TestCase):
     def config(self, **overrides):
-        env = {**os.environ, "FLATS_IMAGE": "ghcr.io/gosuda/flats:latest", **overrides}
+        env = {key: value for key, value in os.environ.items() if key != "FLATS_IMAGE"}
+        env.update(overrides)
         result = subprocess.run(
-            ["docker", "compose", "-f", str(ROOT / "compose.yaml"), "config", "--format", "json"],
+            ["docker", "compose", "--env-file", os.devnull, "-f", str(ROOT / "compose.yaml"), "config", "--format", "json"],
             env=env, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

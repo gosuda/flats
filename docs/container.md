@@ -38,7 +38,11 @@ gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats
 
 ## Docker Compose
 
-From a checkout, with Docker Compose v2 or newer:
+From a checkout, with Docker Compose v2 or newer and Docker Engine 28.0.0
+or newer. Older engines can expose localhost-published ports to other hosts
+on the same L2 network; see [Docker port publishing](https://docs.docker.com/engine/network/port-publishing/#publishing-ports).
+Keep Docker's default bridge isolation; do not enable direct routing to this
+network.
 
 ```sh
 docker compose up -d --wait
@@ -75,18 +79,38 @@ docker compose up -d --wait
 To upgrade, back up the data first, then run `docker compose pull` and
 `docker compose up -d --wait`. `docker compose down` removes containers and
 the network but preserves the data volume. **`docker compose down -v` deletes
-all host data**, including operator keys and secrets. Keep the same Compose
-project name and checkout location to reuse the volume; to migrate from an
-existing `docker run` volume, explicitly select it with a Compose volume
+all host data**, including operator keys and secrets. The volume is named
+`<project>_flats-data`. Keep the same Compose project name to reuse it; by
+default the project name is the checkout directory's basename, or set
+`COMPOSE_PROJECT_NAME` consistently. Two checkouts with the same project
+name share the same data. To avoid that, choose distinct project names.
+To migrate from an existing `docker run` volume, explicitly select it with a Compose volume
 override rather than starting an empty host.
+
+Back up the Compose volume while stopped, using the actual service's mount
+(the `docker run` example later in this guide uses a different volume):
+
+```sh
+docker compose stop flats
+container=$(docker compose ps -a -q flats)
+test -n "$container" || { echo "Compose container not found" >&2; exit 1; }
+mkdir -p backups
+docker run --rm --volumes-from "$container":ro -v "$PWD/backups:/backup" alpine:3.22 \
+  sh -c 'umask 077; tar -czf /backup/flats-data.tar.gz -C /data .'
+docker compose up -d --wait
+```
+
+The backup contains operator keys and secrets; keep it private. Take the
+backup before `docker compose down`, which removes the container needed by
+`--volumes-from`.
 
 Validate the resolved configuration without starting containers with
 `python3 scripts/compose-config-test.py` (requires Docker Compose and Python 3,
 but no running Docker daemon). The container CI job also runs
 `python3 scripts/compose-smoke.py flats:ci` against its freshly built image.
 This starts an isolated Compose project on ports 17878/17879, checks the
-published console/API and a private document, recreates the service to check
-persistence, and removes its synthetic data afterward. Override
+published console/API and approval links, a private document and the backup
+recipe, recreates the service to check persistence, and removes its synthetic data afterward. Override
 `FLATS_SMOKE_PORT` and `FLATS_SMOKE_LOCAL_PORT` if those ports are occupied.
 
 ## Choose a network mode
@@ -107,7 +131,7 @@ docker run -d --name flats --restart unless-stopped --network host \
   -v flats-data:/data ghcr.io/gosuda/flats:latest
 ```
 
-**Published loopback ports, on any Docker host** (including Docker Desktop or
+**Published loopback ports, with Docker Engine 28.0.0 or newer** (including Docker Desktop or
 Rancher Desktop on macOS). Listen on all container interfaces, publish the
 same port numbers on the host's `127.0.0.1` only, and use a dedicated network
 so other containers cannot reach the listener:
