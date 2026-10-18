@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,7 +32,11 @@ var sharedManager *flatsruntime.Manager
 // slack.
 func TestMain(m *testing.M) {
 	if os.Getenv("FLATS_DOCS_TEST_WORKER") == "1" {
-		fmt.Fprintf(os.Stderr, "{\"t\":\"log\",\"level\":\"info\",\"msg\":\"docs test worker pid:%d\"}\n", os.Getpid())
+		// Reported once the worker has its flat, so that a pre-started worker
+		// reports it to its instance rather than to the Manager log.
+		afterSpec(func() {
+			fmt.Fprintf(os.Stderr, "{\"t\":\"log\",\"level\":\"info\",\"msg\":\"docs test worker pid:%d\"}\n", os.Getpid())
+		})
 		if err := flatsruntime.WorkerMain(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -43,9 +49,57 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	code := m.Run()
+	if sharedManager != nil {
+		sharedManager.Close()
+	}
 	os.RemoveAll(cacheRoot)
 	os.Exit(code)
 }
+
+// afterSpec runs fn in a test worker just before WorkerMain reads the spec
+// line from stdin, which follows the prewarm line of a pre-started worker.
+func afterSpec(fn func()) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	in := os.Stdin
+	os.Stdin = r
+	go func() {
+		defer w.Close()
+		br := bufio.NewReader(in)
+		done := false
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 {
+				if !done && !strings.HasPrefix(string(line), `{"prewarm":`) {
+					done = true
+					fn()
+				}
+				if _, werr := w.Write(line); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// docsWorkerEnv is the environment of test document workers: the dispatch
+// variable and the suite's document image switches (FLATS_NO_IMAGES,
+// FLATS_FORCE_IMAGES), which the worker reads.
+func docsWorkerEnv() []string {
+	env := []string{"FLATS_DOCS_TEST_WORKER=1"}
+	for _, k := range []string{"FLATS_NO_IMAGES", "FLATS_FORCE_IMAGES"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
 func manager(t *testing.T) *flatsruntime.Manager {
 	t.Helper()
 	exe, err := os.Executable()
@@ -53,7 +107,7 @@ func manager(t *testing.T) *flatsruntime.Manager {
 		t.Fatal(err)
 	}
 	managerOnce.Do(func() {
-		sharedManager = &flatsruntime.Manager{DataDir: cacheRoot, Exe: exe, Env: []string{"FLATS_DOCS_TEST_WORKER=1"}, Logf: func(string, ...any) {}}
+		sharedManager = &flatsruntime.Manager{DataDir: cacheRoot, Exe: exe, Env: docsWorkerEnv(), Logf: func(string, ...any) {}}
 	})
 	return sharedManager
 }

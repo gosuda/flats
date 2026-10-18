@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
-	wsp1 "github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	"github.com/tetratelabs/wazero/sys"
 )
 
 //go:embed qjs.wasm
@@ -92,103 +93,116 @@ type Runtime struct {
 	registry *ProxyRegistry
 	stackLow uint32 // FORK (flats): relocated C stack, see stack.go
 	stackTop uint32
+
+	// FORK (flats): images, see image.go.
+	clock      *guestClock
+	wasm       []byte        // patched module bytes
+	output     *atomic.Int64 // guest stdout/stderr bytes
+	taint      atomic.Pointer[string]
+	randomAddr uint32 // JSContext random_state; 0 if not found
+	randomInit uint64
+	randomErr  error
+	restored   bool
+	imageExtra map[string]uint64
 }
 
 // New creates a QuickJS runtime with optional configuration.
-func New(options ...Option) (runtime *Runtime, err error) {
+func New(options ...Option) (_ *Runtime, err error) {
 	defer func() {
 		rerr := AnyToError(recover())
 		if rerr != nil {
-			runtime = nil
 			err = fmt.Errorf("failed to create QJS runtime: %w", rerr)
 		}
 	}()
 
-	proxyRegistry := NewProxyRegistry()
+	var given Option
+	if len(options) > 0 {
+		given = options[0]
+	}
 
-	option, err := getRuntimeOption(proxyRegistry, options...)
+	// FORK (flats): a Shell carries the wazero runtime, WASI, the host module
+	// and the compiled module, prepared before the options of this runtime
+	// were known; without one, build them now.
+	shell := given.Shell
+	if shell != nil {
+		if err := shell.take(given); err != nil {
+			return nil, err
+		}
+	}
+	registry := NewProxyRegistry()
+	if shell != nil {
+		registry = shell.registry
+	}
+	option, err := getRuntimeOption(registry, given)
 	if err != nil {
+		if shell != nil {
+			_ = shell.wrt.Close(context.Background())
+		}
 		return nil, fmt.Errorf("failed to get runtime options: %w", err)
 	}
+	if shell == nil {
+		if shell, err = newShell(option, registry); err != nil {
+			return nil, err
+		}
+	}
 
-	cache, err := compilationCache(option.CacheDir)
-	if err != nil {
-		return nil, err
-	}
-	if option.DisableBuildCache {
-		cache = wazero.NewCompilationCache()
-	}
-	pages := option.MemoryLimitPages
-	if pages == 0 {
-		pages = DefaultMemoryLimitPages
-	}
-	rcfg := wazero.NewRuntimeConfig().
-		WithCompilationCache(cache).
-		WithCloseOnContextDone(option.CloseOnContextDone).
-		WithMemoryLimitPages(pages)
-
-	runtime = &Runtime{
+	runtime := &Runtime{
 		option:   option,
 		context:  &Context{Context: option.Context},
-		registry: proxyRegistry,
+		registry: registry,
+		wrt:      shell.wrt,
+		wasm:     shell.wasm,
+		clock:    &guestClock{census: option.Census},
+		output:   &atomic.Int64{},
 	}
-
-	runtime.wrt = wazero.NewRuntimeWithConfig(option.Context, rcfg)
 	ok := false
 	defer func() {
 		if !ok {
 			_ = runtime.wrt.Close(context.Background())
 		}
 	}()
-
-	if _, err := wsp1.Instantiate(option.Context, runtime.wrt); err != nil {
-		return nil, fmt.Errorf("failed to instantiate WASI: %w", err)
+	if option.Image != nil && imageKey(option, shell.wasm) != option.Image.key {
+		return nil, ErrImageKey
 	}
 
-	if _, err := runtime.wrt.NewHostModuleBuilder("env").
-		NewFunctionBuilder().
-		WithFunc(option.ProxyFunction).
-		Export("jsFunctionProxy").
-		Instantiate(option.Context); err != nil {
-		return nil, fmt.Errorf("failed to setup host module: %w", err)
-	}
-
-	qjsBytes := wasmBytes
-	if len(option.QuickJSWasmBytes) > 0 {
-		qjsBytes = option.QuickJSWasmBytes
-	}
-	if qjsBytes, err = exportStackPointer(qjsBytes); err != nil {
-		return nil, fmt.Errorf("failed to prepare qjs module: %w", err)
-	}
-	compiled, err := runtime.wrt.CompileModule(option.Context, qjsBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compile qjs module: %w", err)
-	}
-
+	clk := runtime.clock
 	modCfg := wazero.NewModuleConfig().
 		WithStartFunctions(option.StartFunctionName).
-		WithSysWalltime().
-		WithSysNanotime().
+		// FORK (flats): per-runtime guest clocks, see clock.go.
+		WithWalltime(clk.walltime, sys.ClockResolution(time.Microsecond.Nanoseconds())).
+		WithNanotime(clk.nanotime, sys.ClockResolution(1)).
 		WithNanosleep(contextNanosleep(option.Context)).
 		// FORK (flats): wazero's default random source is a fixed-seed
 		// PRNG (identical bytes in every runtime); use the OS CSPRNG.
 		WithRandSource(crand.Reader).
-		WithStdout(option.Stdout).
-		WithStderr(option.Stderr)
+		WithStdout(&outputCounter{w: option.Stdout, n: runtime.output, census: option.Census}).
+		WithStderr(&outputCounter{w: option.Stderr, n: runtime.output, census: option.Census})
 	// FORK (flats): no host directory unless explicitly requested, and then
 	// read-only. Upstream mounted Option.CWD (default os.Getwd()) read-write.
 	if option.ReadOnlyDir != "" {
-		modCfg = modCfg.WithFSConfig(wazero.NewFSConfig().WithReadOnlyDirMount(option.ReadOnlyDir, "/"))
+		modCfg = modCfg.WithFSConfig(readOnlyMount(option.ReadOnlyDir, option.Census))
 	}
-	if runtime.module, err = runtime.wrt.InstantiateModule(option.Context, compiled, modCfg); err != nil {
+	if runtime.module, err = runtime.wrt.InstantiateModule(option.Context, shell.compiled, modCfg); err != nil {
 		return nil, fmt.Errorf("failed to instantiate module: %w", err)
+	}
+	runtime.recordBaseMemory()
+
+	if option.Image != nil {
+		if err := runtime.restore(option.Image, option.ImageFunctions); err != nil {
+			return nil, fmt.Errorf("failed to restore image: %w", err)
+		}
+		ok = true
+		return runtime, nil
 	}
 
 	stackSize := option.StackSize
 	if stackSize == 0 {
 		stackSize = DefaultStackSize
 	}
+	clk.recording.Store(true)
 	runtime.initializeRuntime()
+	walls, monos := clk.stopRecording()
+	runtime.findRandomState(walls, monos)
 	if err := runtime.relocateStack(stackSize); err != nil {
 		return nil, fmt.Errorf("failed to relocate the JS stack: %w", err)
 	}

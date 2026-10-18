@@ -62,6 +62,7 @@ type workerSpec struct {
 	MemoryPages    uint32            `json:"memory_pages,omitempty"`
 	PoolSize       int               `json:"pool_size,omitempty"`
 	NetworkOrigins []string          `json:"network_origins,omitempty"`
+	ImagePath      string            `json:"image_path,omitempty"` // document image file; live managed documents only
 	// UsageIntervalMS is how often the worker reports its CPU and memory;
 	// 0 = usageInterval.
 	UsageIntervalMS int64 `json:"usage_interval_ms,omitempty"`
@@ -76,6 +77,17 @@ func (s *workerSpec) usageEvery() time.Duration {
 		return usageInterval
 	}
 	return time.Duration(s.UsageIntervalMS) * time.Millisecond
+}
+
+// prewarmSpec is the optional first stdin line of a pre-started worker,
+// sent before it is assigned a flat: {"prewarm": {...}}.
+type prewarmSpec struct {
+	CacheDir string `json:"cache_dir"`
+	// WarmDir is a path in a private directory of the Manager, never a
+	// flat's, where the worker creates a new directory (it must not exist)
+	// for a throwaway database that warms up SQLite, and removes it again.
+	// The Manager removes it after the worker exited.
+	WarmDir string `json:"warm_dir,omitempty"`
 }
 
 func (s *workerSpec) timeout() time.Duration {
@@ -107,7 +119,7 @@ func (s *workerSpec) poolSize() int {
 // Flat code cannot write such a line: its console and stderr output reaches
 // the parent only inside the msg of a "log" line.
 type childMsg struct {
-	T     string `json:"t"` // "log", "ready", "fatal", "usage"
+	T     string `json:"t"` // "log", "ready", "fatal", "usage"; "warm" and "spec" (pre-started workers)
 	Level string `json:"level,omitempty"`
 	Msg   string `json:"msg,omitempty"`
 	MS    int64  `json:"ms,omitempty"`

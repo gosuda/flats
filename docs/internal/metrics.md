@@ -152,6 +152,15 @@ The worker sends a sample right after `ready` and then every 15 seconds. The
 parent validates each one (non-negative, `cpu_ns` not decreasing within one
 process); an invalid sample is dropped and logged once per process.
 
+A flat is charged only for CPU its worker used after receiving its spec. The
+worker's `"spec"` acknowledgement carries the CPU used so far as `cpu_ns`: for
+a pre-started worker ([Fast worker cold start](../spec/worker-cold-start.md))
+that is its warm-up, and for an exec'd worker its process start. The parent
+subtracts it from every sample and from the final CPU at exit. A worker
+adopted before its warm-up finished completes it after the acknowledgement,
+and that remainder is the flat's, as the same engine setup is in an exec'd
+worker's startup.
+
 ### Attribution
 
 `runtime.Manager` holds no per-flat state: instances are owned by core.
@@ -187,8 +196,16 @@ type UsageSink interface {
   role sink (spec rule 12). Role sinks only keep a CPU total per flat and
   role, for host metrics. `TestUsageSinkOfEveryBuild` asserts the sink of
   each call site.
-- Each process gets a manager-wide `id` at spawn. `Started` is called after
-  `cmd.Start` succeeds.
+- Each process gets a manager-wide `id` when it starts. `Started` is called
+  once an instance owns the process: after `cmd.Start` for a process started
+  for the instance, or when a spawn adopts a pre-started worker (under the
+  process's owner lock, which also records that the process was waited for:
+  a worker that exits while being adopted is not given the instance, so
+  every `Started` is followed by exactly one `Exited`). A pre-started worker
+  that exits on its own before acknowledging an adopted spec contributes no
+  CPU and is not an unexpected exit; the spawn then starts a new process. A
+  start the host gives up on (an error, the start timeout) is unexpected in
+  either kind of worker.
 - Exit accounting runs in the `cmd.Wait` goroutine that every spawned process
   already has (`manager.go`), after `cmd.Wait` returns and **before**
   `close(p.done)`, not in `exited()`, which returns early for superseded or

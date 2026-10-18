@@ -81,8 +81,10 @@ func TestDevServer(t *testing.T) {
 	// The runtime and docs app serve server flats and documents, as in
 	// flats serve.
 	docs := core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}
+	workers := &runtime.Manager{DataDir: dir, Env: append([]string{devWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf}
+	t.Cleanup(workers.Close)
 	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: priv, Public: pub,
-		Runtime: &runtime.Manager{DataDir: dir, Env: []string{devWorkerEnv + "=1"}, Logf: t.Logf}, DocsApp: docs,
+		Runtime: workers, DocsApp: docs,
 		ConsoleURL: func() string { return "http://" + addr }, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
@@ -235,4 +237,17 @@ func TestDevServer(t *testing.T) {
 	mux.Handle("/", Handler())
 	t.Logf("console at http://%s/", addr)
 	t.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// testImageEnv forwards the suite's document image switches
+// (FLATS_NO_IMAGES, FLATS_FORCE_IMAGES) to the test Manager's workers, whose
+// environment is otherwise only the dispatch variable.
+func testImageEnv() []string {
+	var env []string
+	for _, k := range []string{"FLATS_NO_IMAGES", "FLATS_FORCE_IMAGES"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,33 @@ import (
 
 const testWorkerEnv = "FLATS_TEST_WORKER"
 
+// Test worker switches: testUnassignedLogEnv makes the worker log a line
+// before it receives its spec; testSlowWarmUpEnv makes a pre-started worker
+// log "test-warm-up: <dir>" in its database warm-up and then stay in it
+// until a file <dir>.release exists (at most testSlowWarmUp); a pre-started
+// worker given a flat named
+// testDieAdoptedFlat exits when its spec arrives, before it acknowledges
+// it; any worker given testDieAckedFlat exits right after acknowledging it.
+const (
+	testUnassignedLogEnv = "FLATS_TEST_UNASSIGNED_LOG"
+	testSlowWarmUpEnv    = "FLATS_TEST_SLOW_WARMUP"
+	testSlowWarmUp       = 30 * time.Second
+	testDieAdoptedFlat   = "die-when-adopted"
+	testDieAckedFlat     = "die-after-spec-ack"
+)
+
+// testImageEnv forwards the suite's image mode switches (image.go) to the
+// workers of test Managers; the production environment stays minimal.
+func testImageEnv() []string {
+	var env []string
+	for _, k := range []string{"FLATS_NO_IMAGES", "FLATS_FORCE_IMAGES"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
 // Tests call t.Parallel unless their result depends on elapsed time or the
 // process environment: t.Setenv, wall-clock latency or activation budgets,
 // rate limits that refill over time, and requests that take a large share of
@@ -38,6 +66,19 @@ const testWorkerEnv = "FLATS_TEST_WORKER"
 // binary with FLATS_TEST_WORKER=1 (the only variable in its environment).
 func TestMain(m *testing.M) {
 	if os.Getenv(testWorkerEnv) == "1" {
+		if os.Getenv(testUnassignedLogEnv) == "1" {
+			stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-worker-unassigned"})
+		}
+		if os.Getenv(testSlowWarmUpEnv) == "1" {
+			warmDatabaseHook = func(dir string) {
+				stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-warm-up: " + dir})
+				for end := time.Now().Add(testSlowWarmUp); time.Now().Before(end); time.Sleep(5 * time.Millisecond) {
+					if _, err := os.Stat(dir + ".release"); err == nil {
+						break
+					}
+				}
+			}
+		}
 		keys := []string{}
 		for _, kv := range os.Environ() {
 			k, _, _ := strings.Cut(kv, "=")
@@ -45,7 +86,20 @@ func TestMain(m *testing.M) {
 		}
 		sort.Strings(keys)
 		// Variable NAMES only, so the sandbox test can check the environment.
-		stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-env-keys: " + strings.Join(keys, ",")})
+		// Logged once the worker has its flat, so that a pre-started worker
+		// reports them to its instance rather than to the Manager log.
+		afterSpec(func(spec []byte, prewarmed bool) {
+			var ws workerSpec
+			if prewarmed && json.Unmarshal(spec, &ws) == nil && ws.Flat == testDieAdoptedFlat {
+				os.Exit(3)
+			}
+			stderrLog.send(childMsg{T: "log", Level: "info", Msg: "test-env-keys: " + strings.Join(keys, ",")})
+		})
+		specAcknowledged = func(ws workerSpec) {
+			if ws.Flat == testDieAckedFlat {
+				os.Exit(3)
+			}
+		}
 		if err := WorkerMain(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "worker:", err)
 			os.Exit(1)
@@ -97,7 +151,42 @@ func newManager(t *testing.T) *Manager {
 	if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
 		t.Fatal(err)
 	}
-	return &Manager{DataDir: dir, Exe: exe, Env: []string{testWorkerEnv + "=1"}, Logf: t.Logf}
+	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf}
+	t.Cleanup(m.Close)
+	return m
+}
+
+// afterSpec runs fn in a test worker just before WorkerMain reads the spec
+// line from stdin, which follows the prewarm line of a pre-started worker.
+func afterSpec(fn func(spec []byte, prewarmed bool)) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	in := os.Stdin
+	os.Stdin = r
+	go func() {
+		defer w.Close()
+		br := bufio.NewReader(in)
+		prewarmed, done := false, false
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > 0 {
+				if !done && strings.HasPrefix(string(line), `{"prewarm":`) {
+					prewarmed = true
+				} else if !done {
+					done = true
+					fn(line, prewarmed)
+				}
+				if _, werr := w.Write(line); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 }
 
 type logs struct {
@@ -805,17 +894,22 @@ export default {
 	if _, err := os.Stat(filepath.Join(f.root, "stolen.db")); err == nil {
 		t.Errorf("VACUUM INTO wrote a host file")
 	}
-	// The worker process itself has a minimal environment.
-	f.logs.waitFor(t, "test-env-keys: ")
-	if !f.logs.find("test-env-keys: "+testWorkerEnv+"\n") && !strings.Contains(f.logs.String(), "test-env-keys: "+testWorkerEnv) {
-		t.Errorf("worker environment: %s", f.logs)
+	// The worker process itself has a minimal environment: the dispatch
+	// variable and the suite's forwarded image switches.
+	wantEnv := append([]string{testWorkerEnv + "=1"}, testImageEnv()...)
+	var wantKeys []string
+	for _, kv := range wantEnv {
+		k, _, _ := strings.Cut(kv, "=")
+		wantKeys = append(wantKeys, k)
 	}
+	sort.Strings(wantKeys)
+	f.logs.waitFor(t, "test-env-keys: ")
 	for _, l := range strings.Split(f.logs.String(), "\n") {
-		if strings.Contains(l, "test-env-keys: ") && !strings.HasSuffix(l, "test-env-keys: "+testWorkerEnv) {
-			t.Errorf("worker environment has more than %s: %s", testWorkerEnv, l)
+		if strings.Contains(l, "test-env-keys: ") && !strings.HasSuffix(l, "test-env-keys: "+strings.Join(wantKeys, ",")) {
+			t.Errorf("worker environment is not exactly %v: %s", wantKeys, l)
 		}
 	}
-	if cmd := m.command(); len(cmd.Env) != 1 || cmd.Env[0] != testWorkerEnv+"=1" || slices.Contains(cmd.Args, "sk") {
+	if cmd := m.command(); !slices.Equal(cmd.Env, wantEnv) || slices.Contains(cmd.Args, "sk") {
 		t.Errorf("worker command env = %v args = %v", cmd.Env, cmd.Args)
 	}
 	if strings.Contains(f.logs.String(), "alpha-secret-value") || strings.Contains(f.logs.String(), "parent-secret-value") {

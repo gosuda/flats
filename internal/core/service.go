@@ -75,6 +75,7 @@ type RuntimeSpec struct {
 	DataDir        string // per-flat data (SQLite, files); a copy for previews
 	Env            map[string]string
 	NetworkOrigins []string // operator-approved exact origins; JS only, default deny
+	ImagePath      string   // saved document image; live managed documents only, in a core-owned directory
 	Log            func(level, msg string)
 	Usage          UsageSink // CPU and memory of the instance's processes; nil: not accounted
 }
@@ -484,6 +485,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		runtimeDir, entry := dir, m.Entry
 		release := func() {}
 		var assets []string
+		imagePath := ""
 		if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
 			// Revisions of the live document name this version's other
 			// files by its hash: record them before its worker can.
@@ -492,7 +494,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 					return nil, fmt.Errorf("record the document's files for revisions: %w", err)
 				}
 			}
-			runtimeDir, assets, release, err = s.docsRuntime(v, dir)
+			runtimeDir, imagePath, assets, release, err = s.docsRuntime(v, dir)
 			if err != nil {
 				return nil, err
 			}
@@ -500,6 +502,9 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			networkOrigins = nil // The embedded docs app has no outbound capability.
 		}
 		managedDocs := assets != nil && dataDir == s.dataDirOf(slugName)
+		if !managedDocs {
+			imagePath = "" // previews and scratch trials never save an image
+		}
 		if managedDocs {
 			// The flat whose live sink this build reports to; a rename holds
 			// it out of s.live while it rebuilds, so it is not looked up.
@@ -521,7 +526,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			ManagedDocs: managedDocs, Lazy: managedDocs && lazy, Now: s.now,
 			Flat: slugName, Version: v.Number,
 			Generation: generation, NextGeneration: nextGeneration,
-			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins,
+			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins, ImagePath: imagePath,
 			Usage: usage,
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))

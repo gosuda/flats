@@ -33,3 +33,14 @@ func usageSample() (childMsg, bool) {
 	}
 	return m, true
 }
+
+// specAck is the worker's acknowledgement of its spec, with the CPU it used
+// so far: a pre-started worker's warm-up, which the parent never counts as
+// the flat's.
+func specAck() childMsg {
+	m := childMsg{T: "spec"}
+	if s, ok := usageSample(); ok {
+		m.CPU = s.CPU
+	}
+	return m
+}
