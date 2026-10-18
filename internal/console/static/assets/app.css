@@ -63,7 +63,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+/* Reserve the scrollbar's width on every page, so centered layouts do not
+   shift sideways when a page becomes long enough to scroll. */
+html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
 
 body {
   margin: 0;
