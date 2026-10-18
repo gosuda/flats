@@ -82,7 +82,12 @@ override rather than starting an empty host.
 
 Validate the resolved configuration without starting containers with
 `python3 scripts/compose-config-test.py` (requires Docker Compose and Python 3,
-but no running Docker daemon).
+but no running Docker daemon). The container CI job also runs
+`python3 scripts/compose-smoke.py flats:ci` against its freshly built image.
+This starts an isolated Compose project on ports 17878/17879, checks the
+published console/API and a private document, recreates the service to check
+persistence, and removes its synthetic data afterward. Override
+`FLATS_SMOKE_PORT` and `FLATS_SMOKE_LOCAL_PORT` if those ports are occupied.
 
 ## Choose a network mode
 
