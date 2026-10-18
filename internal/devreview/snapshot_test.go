@@ -272,6 +272,25 @@ func TestSnapshotRefusesUnidentifiableObjects(t *testing.T) {
 			t.Fatalf("err = %v, want a nested repository refusal", err)
 		}
 	})
+	t.Run("unresolved conflict", func(t *testing.T) {
+		root := repo(t, map[string]string{"a.txt": "base\n"})
+		run(t, root, "git", "switch", "-q", "-c", "other")
+		write(t, root, map[string]string{"a.txt": "other\n"})
+		run(t, root, "git", "add", "-A")
+		commit(t, root, "other")
+		run(t, root, "git", "switch", "-q", "main")
+		write(t, root, map[string]string{"a.txt": "main\n"})
+		run(t, root, "git", "add", "-A")
+		commit(t, root, "main")
+		merge := exec.Command("git", "-c", "user.name=test", "-c", "user.email=test@example.com", "merge", "-q", "other")
+		merge.Dir = root
+		if merge.Run() == nil {
+			t.Fatal("the merge did not conflict")
+		}
+		if _, err := Snapshot(root, "", Options{}); err == nil || !strings.Contains(err.Error(), "conflict") {
+			t.Fatalf("err = %v, want a conflict refusal", err)
+		}
+	})
 	t.Run("no merge base", func(t *testing.T) {
 		root := repo(t, map[string]string{"a.txt": "a\n"})
 		run(t, root, "git", "switch", "-q", "--orphan", "other")

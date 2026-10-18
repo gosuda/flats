@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -75,7 +77,9 @@ func TestRunComplete(t *testing.T) {
 	f := newRunFixture(t)
 	f.reviewer(t, `test "$FLATS_REVIEW_ROOT" = "$PWD" || exit 9
 test -f "$FLATS_REVIEW_MANIFEST" || exit 8
+grep -Eq '"status": "(starting|running)"' "$(dirname "$FLATS_REVIEW_IDENTITY_FILE")/run.json" || exit 6
 grep -q "review this" || exit 7
+echo "stderr sentinel" >&2
 `+identifies, nil)
 	rec, err := Run(context.Background(), f.opts())
 	if err != nil {
@@ -94,10 +98,23 @@ grep -q "review this" || exit 7
 	if !strings.Contains(string(out), "VERDICT: ACCEPT") {
 		t.Errorf("stdout receipt = %q", out)
 	}
+	errOut, _ := os.ReadFile(filepath.Join(f.opts().RunsDir, rec.ID, rec.Stderr))
+	if string(errOut) != "stderr sentinel\n" || strings.Contains(string(out), "sentinel") {
+		t.Errorf("stderr receipt = %q, stdout %q", errOut, out)
+	}
 	var onDisk Record
 	b, _ := os.ReadFile(filepath.Join(f.opts().RunsDir, rec.ID, "run.json"))
-	if err := json.Unmarshal(b, &onDisk); err != nil || onDisk.Outcome != OutcomeComplete {
-		t.Errorf("run.json = %s, %v", b, err)
+	if err := json.Unmarshal(b, &onDisk); err != nil {
+		t.Fatalf("run.json = %s, %v", b, err)
+	}
+	started, err1 := time.Parse(time.RFC3339, onDisk.Started)
+	ended, err2 := time.Parse(time.RFC3339, onDisk.Ended)
+	if onDisk.Outcome != OutcomeComplete || onDisk.RequestedModel != "model-r" || !slices.Equal(onDisk.Authors, []string{"model-a"}) ||
+		onDisk.Stage != "implementation" || onDisk.Snapshot == "" || onDisk.PromptSHA256 == "" || onDisk.PID == 0 ||
+		onDisk.Identity == nil || onDisk.Identity.EffectiveModel != "model-r" || onDisk.Eligibility != "eligible" ||
+		onDisk.Surface != rec.Surface || !onDisk.Before.OK || onDisk.After == nil || !onDisk.After.OK ||
+		err1 != nil || err2 != nil || ended.Before(started) || onDisk.ExitCode == nil || *onDisk.ExitCode != 0 {
+		t.Errorf("persisted record = %s", b)
 	}
 
 	// A second invocation in the same session is noted.
@@ -123,6 +140,12 @@ func TestRunIncompleteEvidence(t *testing.T) {
 		{"fixed binding without session", "cat >/dev/null", map[string]any{"fixed_binding": "provider docs"}, nil, "unknown", "eligible"},
 		{"author model", identifies, nil, []string{"model-r"}, "known", "ineligible"},
 		{"bad metadata", `cat >/dev/null; echo '{"model":1}' > "$FLATS_REVIEW_IDENTITY_FILE"`, nil, nil, "invalid", "unknown"},
+		// Identity claimed on standard output, as a model's answer about
+		// itself would be, is not metadata.
+		{"self report only", `cat >/dev/null; echo '{"effective_model":"model-r","session":"s-1"}'; echo "I am model-r"`, nil, nil, "unknown", "unknown"},
+		// The requested model differs from the authors, but the effective
+		// model reported by execution metadata is an author's.
+		{"effective model is an author", `cat >/dev/null; printf '{"effective_model":"model-a","session":"s-2","source":"m"}' > "$FLATS_REVIEW_IDENTITY_FILE"`, nil, nil, "known", "ineligible"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -141,6 +164,20 @@ func TestRunIncompleteEvidence(t *testing.T) {
 			}
 		})
 	}
+	t.Run("effective model decides, not the requested one", func(t *testing.T) {
+		f := newRunFixture(t)
+		f.reviewer(t, `cat >/dev/null; printf '{"effective_model":"model-x","session":"s-3","source":"m"}' > "$FLATS_REVIEW_IDENTITY_FILE"`, nil)
+		o := f.opts()
+		o.Authors = []string{"model-r"} // the requested model is an author's
+		rec, err := Run(context.Background(), o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Eligibility != "eligible" || rec.Identity.EffectiveModel != "model-x" || rec.RequestedModel != "model-r" ||
+			!strings.Contains(strings.Join(rec.Notes, " "), "differs from requested") {
+			t.Errorf("eligibility %s identity %+v notes %v", rec.Eligibility, rec.Identity, rec.Notes)
+		}
+	})
 	t.Run("fixed binding with session", func(t *testing.T) {
 		f := newRunFixture(t)
 		f.reviewer(t, `cat >/dev/null; printf '{"session":"s-9","source":"header"}' > "$FLATS_REVIEW_IDENTITY_FILE"`,
@@ -182,7 +219,7 @@ func TestRunFailures(t *testing.T) {
 	t.Run("timeout kills the process group", func(t *testing.T) {
 		f := newRunFixture(t)
 		marker := filepath.Join(f.evidence, "child-pid")
-		f.reviewer(t, `cat >/dev/null; sleep 30 & echo $! > `+marker+`; wait`, map[string]any{"timeout": "1s"})
+		f.reviewer(t, `cat >/dev/null; sleep 30 & echo $! > `+marker+`; wait`, map[string]any{"timeout": "4s"})
 		rec, err := Run(context.Background(), f.opts())
 		if err != nil {
 			t.Fatal(err)
@@ -193,19 +230,34 @@ func TestRunFailures(t *testing.T) {
 		if groupAlive(rec.PID) {
 			t.Error("the reviewer's process group survived the timeout")
 		}
+		assertGone(t, marker)
 	})
 	t.Run("cancelled", func(t *testing.T) {
 		f := newRunFixture(t)
-		f.reviewer(t, "cat >/dev/null; sleep 30", nil)
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		marker := filepath.Join(f.evidence, "child-pid")
+		f.reviewer(t, `cat >/dev/null; sleep 30 & echo $! > `+marker+`; wait`, nil)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		go func() { // cancel once the reviewer's child exists
+			for i := 0; i < 400; i++ {
+				if b, _ := os.ReadFile(marker); len(b) > 0 {
+					break
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			cancel()
+		}()
 		rec, err := Run(ctx, f.opts())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rec.Status != StatusCancelled {
-			t.Errorf("status %s", rec.Status)
+		if rec.Status != StatusCancelled || rec.Outcome != OutcomeFailed {
+			t.Errorf("status %s outcome %s", rec.Status, rec.Outcome)
 		}
+		if groupAlive(rec.PID) {
+			t.Error("the reviewer's process group survived cancellation")
+		}
+		assertGone(t, marker)
 	})
 	t.Run("missing program", func(t *testing.T) {
 		f := newRunFixture(t)
@@ -221,6 +273,28 @@ func TestRunFailures(t *testing.T) {
 			t.Errorf("status %s", rec.Status)
 		}
 	})
+}
+
+// assertGone reads the PID a reviewer wrote to marker and requires that
+// process to be gone (allowing a moment for it to be reaped).
+func assertGone(t *testing.T, marker string) {
+	t.Helper()
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("child PID marker: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(b), &pid); err != nil || pid <= 0 {
+		t.Fatalf("child PID marker = %q", b)
+	}
+	for i := 0; i < 40; i++ {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
+	t.Errorf("child process %d is still running", pid)
 }
 
 func refused(t *testing.T, err error, want string) {
@@ -316,7 +390,17 @@ func TestRunBudget(t *testing.T) {
 	_, err := Run(context.Background(), o)
 	refused(t, err, "exhausted")
 
-	// A new snapshot or reviewer name does not reset the budget.
+	// Another reviewer name does not reset the budget.
+	cfg := map[string]any{"reviewers": map[string]any{"r2": map[string]any{"command": []string{"/bin/true"}, "requested_model": "model-y"}}}
+	cb, _ := json.Marshal(cfg)
+	other := filepath.Join(f.evidence, "reviewers2.json")
+	os.WriteFile(other, cb, 0o600)
+	o2 := o
+	o2.Reviewer, o2.ConfigPath = "r2", other
+	_, err = Run(context.Background(), o2)
+	refused(t, err, "exhausted")
+
+	// Nor does a new snapshot.
 	write(t, f.root, map[string]string{"a.txt": "c\n"})
 	m := snap(t, f.root, "", Options{})
 	o.ManifestPath = filepath.Join(f.evidence, "snap2.json")
@@ -544,5 +628,47 @@ func TestLockSymlinkIntoRepository(t *testing.T) {
 	}
 	if _, err := os.Lstat(target); !os.IsNotExist(err) {
 		t.Error("a lock symlink created a file inside the repository")
+	}
+}
+
+// Two starts in the same evidence directory at once launch one command;
+// the other is refused and nothing else is recorded.
+func TestRunSerializesStarts(t *testing.T) {
+	t.Parallel()
+	f := newRunFixture(t)
+	launches := filepath.Join(f.evidence, "launches")
+	f.reviewer(t, `cat >/dev/null; echo x >> `+launches+`; sleep 3
+`+identifies, nil)
+	type result struct {
+		rec *Record
+		err error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			rec, err := Run(context.Background(), f.opts())
+			results <- result{rec, err}
+		}()
+	}
+	close(start)
+	var ran, refusals int
+	for i := 0; i < 2; i++ {
+		r := <-results
+		var ref *RefusedError
+		switch {
+		case r.err == nil && r.rec.Outcome == OutcomeComplete:
+			ran++
+		case errors.As(r.err, &ref) && strings.Contains(ref.Reason, "still holds its running lock"):
+			refusals++
+		default:
+			t.Errorf("unexpected result %+v, %v", r.rec, r.err)
+		}
+	}
+	b, _ := os.ReadFile(launches)
+	records, _ := LoadRecords(f.opts().RunsDir)
+	if ran != 1 || refusals != 1 || string(b) != "x\n" || len(records) != 1 {
+		t.Errorf("ran %d refused %d launches %q records %d", ran, refusals, b, len(records))
 	}
 }
