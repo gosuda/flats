@@ -115,12 +115,17 @@ def main():
             container = compose("ps", "-q", "flats")
             compose("stop")
             assert run("docker", "inspect", "-f", "{{.State.ExitCode}}", container) == "0", "unclean SIGTERM exit"
-            backup = path / "backups"
-            backup.mkdir()
-            run("docker", "run", "--rm", "--volumes-from", container + ":ro",
-                "-v", str(backup) + ":/backup", "alpine:3.22", "sh", "-c",
-                "umask 077; tar -czf /backup/flats-data.tar.gz -C /data .")
-            with tarfile.open(backup / "flats-data.tar.gz", "r:gz") as bundle:
+            backup = path / "flats-data.tar.gz"
+            # Stream into a caller-owned private file. A root helper writing
+            # 0600 into a bind mount would be unreadable to Linux CI users.
+            with backup.open("xb") as output:
+                backup.chmod(0o600)
+                subprocess.run(
+                    ["docker", "run", "--rm", "--volumes-from", container + ":ro",
+                     "alpine:3.22", "tar", "-czf", "-", "-C", "/data", "."],
+                    stdout=output, stderr=subprocess.PIPE, check=True,
+                )
+            with tarfile.open(backup, "r:gz") as bundle:
                 assert json.load(bundle.extractfile("./config.json")) == before, "backup has wrong host config"
                 assert bundle.getmember("./flats.db").size > 0, "backup database is empty"
             compose("run", "--rm", "--no-deps", "flats", "config", "set", "system.version_quota", "23")

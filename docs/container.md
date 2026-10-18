@@ -95,8 +95,8 @@ docker compose stop flats
 container=$(docker compose ps -a -q flats)
 test -n "$container" || { echo "Compose container not found" >&2; exit 1; }
 mkdir -p backups
-docker run --rm --volumes-from "$container":ro -v "$PWD/backups:/backup" alpine:3.22 \
-  sh -c 'umask 077; tar -czf /backup/flats-data.tar.gz -C /data .'
+(umask 077; docker run --rm --volumes-from "$container":ro alpine:3.22 \
+  tar -czf - -C /data . > backups/flats-data.tar.gz)
 docker compose up -d --wait
 ```
 
