@@ -114,7 +114,13 @@ func snapshot(args []string, stdout, stderr io.Writer) int {
 	if err := devreview.WriteJSON(r, *out, m); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "snapshot %s\nHEAD %s, merge base %s\n%d candidate path(s), %d excluded\n", m.Digest, m.Head.Commit, m.Base.MergeBase, len(m.Files), len(m.Excluded))
+	changed := 0
+	for _, e := range m.Files {
+		if e.Changed() {
+			changed++
+		}
+	}
+	fmt.Fprintf(stdout, "snapshot %s\nHEAD %s, merge base %s\n%d changed path(s) of %d bound, %d excluded\n", m.Digest, m.Head.Commit, m.Base.MergeBase, changed, len(m.Files), len(m.Excluded))
 	return exitOK
 }
 
