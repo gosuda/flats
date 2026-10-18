@@ -28,6 +28,19 @@ func groupAlive(pgid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
+// waitGroupGone polls until no process remains in the group or the wait
+// ends, and reports whether the group is gone.
+func waitGroupGone(pgid int, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for groupAlive(pgid) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
+}
+
 // lockFile takes an exclusive flock on f. The lock belongs to the open file
 // description, so a child that inherits the descriptor keeps it held.
 func lockFile(f *os.File, nonblock bool) error {

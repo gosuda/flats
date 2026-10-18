@@ -27,13 +27,15 @@ reviewer's verdict with a summary.
 - Options: include {{if .M.Options.Include}}{{range .M.Options.Include}}`{{.}}` {{end}}{{else}}none{{end}}; exclude {{if .M.Options.Exclude}}{{range .M.Options.Exclude}}`{{.}}` {{end}}{{else}}none{{end}}
 - Snapshot taken: {{.M.Created}}
 
-<details><summary>{{len .M.Files}} candidate path(s), {{len .M.Excluded}} excluded</summary>
+<details><summary>{{.Changed}} changed path(s) of {{len .M.Files}} bound, {{len .M.Excluded}} excluded</summary>
 
 | Path | Against base | Against HEAD | Index differs | Mode | SHA-256 |
 | --- | --- | --- | --- | --- | --- |
-{{range .M.Files}}| `{{.Path}}` | {{.Base}} | {{.Head}} | {{if .IndexDiffers}}yes{{else}}no{{end}} | {{if .Mode}}{{.Mode}}{{else}}absent{{end}} | {{if .SHA256}}`{{.SHA256}}`{{end}} |
-{{end}}{{range .M.Excluded}}| `{{.Path}}` | excluded by `{{.Pattern}}` | | | | |
+{{range .M.Files}}{{if .Changed}}| `{{.Path}}` | {{.Base}} | {{.Head}} | {{if .IndexDiffers}}yes{{else}}no{{end}} | {{if .Mode}}{{.Mode}}{{else}}absent{{end}} | {{if .SHA256}}`{{.SHA256}}`{{end}} |
+{{end}}{{end}}{{range .M.Excluded}}| `{{.Path}}` | excluded by `{{.Pattern}}` | | | | |
 {{end}}
+Unchanged files are bound by their hashes in the manifest.
+
 </details>
 
 ## Material authors

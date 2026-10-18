@@ -189,9 +189,14 @@ func noLinkAncestors(base, rel string) error {
 }
 
 // within reports whether p is dir or beneath it, comparing case-insensitively
-// so a case-insensitive file system cannot slip a path past the check.
-func within(dir, p string) bool {
-	rel, err := filepath.Rel(strings.ToLower(dir), strings.ToLower(p))
+// so a case-insensitive file system cannot slip a path past a check that
+// refuses paths inside dir. Checks that accept paths inside dir use
+// withinExact instead.
+func within(dir, p string) bool { return withinExact(strings.ToLower(dir), strings.ToLower(p)) }
+
+// withinExact reports whether p is dir or beneath it, comparing exactly.
+func withinExact(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
 	if err != nil {
 		return false
 	}

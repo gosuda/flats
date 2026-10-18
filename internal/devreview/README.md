@@ -26,6 +26,7 @@ refuses paths that land inside the tree. Keep one evidence directory per task.
 | `verify -manifest FILE [-copy DIR]` | Reports drift of the working tree, or of a copy | 0 no drift, 1 drift, 2 error |
 | `materialize -manifest FILE -o DIR` | Writes a read-only copy of the candidate | 0, or 2 on error |
 | `run -manifest FILE -reviewer NAME -prompt FILE -runs DIR -author MODEL ...` | Runs a configured reviewer and records the invocation | see [run](#run) |
+| `abandon -runs DIR -id ID -reason TEXT` | Settles an invocation whose termination the helper could not establish | 0, or 2 on refusal |
 | `report -manifest FILE -runs DIR -o FILE` | Writes a task report skeleton | 0, or 2 on error |
 
 `-C DIR` selects the repository when the current directory is outside it.
@@ -33,35 +34,37 @@ refuses paths that land inside the tree. Keep one evidence directory per task.
 ## snapshot and verify
 
 The candidate is the working tree. `snapshot` compares it with the merge base
-of `-base` (default `HEAD`) and `HEAD`, and lists every path that differs from
-the merge base, `HEAD` or the index. The list includes untracked files that Git
-does not ignore. Ignored inputs that matter go in with `-include PATH`; a
+of `-base` (default `HEAD`) and `HEAD`. The manifest holds an entry for every
+tracked path, every untracked file Git does not ignore, every path deleted
+since the merge base, and the ignored inputs you name with `-include PATH`; a
 directory includes every file beneath it. `-exclude PATTERN` keeps reports,
 logs and probe output out; exclusion wins over everything else. A pattern
 ending in `/` is a directory prefix. Any other pattern uses Go's `path.Match`
 against the whole path, and a pattern without `/` also against the base name.
 
-Each entry records its status against the merge base and `HEAD`, whether the
-index differs, and the mode, size and SHA-256 of its working-tree content. A
-symbolic link is identified by its target string. The manifest digest covers
-the base, `HEAD`, a digest of the index, the options and every entry. Editing
-the manifest breaks it. Submodules, nested repositories, conflicts, special
+Each entry records its status against the merge base and `HEAD` and whether
+the index differs, as Git reports them; an entry with any difference is a
+change. It also records the mode, size and SHA-256 of the working-tree bytes,
+for every file, so a change Git does not report (line-ending normalization,
+an edit that keeps size and timestamps) still drifts. A symbolic link is
+identified by its target string. The manifest digest covers the base,
+`HEAD`, a digest of the index, the options and every entry. Editing the
+manifest breaks it. Submodules, nested repositories, conflicts, special
 files, includes beneath a symbolic link, and index entries marked
 skip-worktree or assume-unchanged (including sparse checkouts) are refused.
-The helper overrides `core.fileMode` and `core.ignoreStat` for its own Git
-calls so they cannot hide changes. For tracked files outside the candidate it
-still relies on Git's change detection, which trusts unchanged file
-timestamps and sizes; reviewing a materialized copy does not depend on it.
+The helper's Git calls override `core.fileMode` and `core.ignoreStat`.
 
 `verify` recomputes the manifest. A moved `HEAD`, a staging change, or any
 added, removed or changed path is drift.
 
 ## materialize
 
-`materialize` creates a detached worktree of `HEAD` at `-o`. It applies the
-manifest's entries and makes every file read-only. It refuses symbolic links
-whose target leaves the copy. `verify -copy DIR` checks the copy later: every
-entry must still match, and nothing else may differ from `HEAD`. Remove a copy
+`materialize` creates a detached worktree at `-o` whose index is `HEAD`, writes
+exactly the manifest's files into it from the working tree, and makes every
+file read-only. Nothing is written through a symbolic link. It refuses a copy
+with a symbolic link that resolves outside it, following intermediate links.
+`verify -copy DIR` checks the copy later by reading its files: it must hold
+exactly the manifest's files with their recorded identity. Remove a copy
 with:
 
 ```sh
@@ -128,18 +131,22 @@ Each invocation gets a directory `<runs>/<id>/` with `run.json`,
 holds the surface, the checks before and after, times, status and exit code,
 identity, eligibility against the authors, and any earlier invocation that
 used the same session. The record is written before the command starts.
-A lock inherited by the reviewer's processes marks a live invocation: while
-any invocation's lock is held, whatever its recorded status, a new start is
-refused. A record left `starting` or `running` becomes `interrupted` only
-when its lock is free and its process group is gone. If a process outside
-the group still holds the lock when the command ends, the record notes it
-and the evidence is incomplete. `run` works on Unix
+A lock inherited by the reviewer's processes marks a live invocation. A new
+start is refused while any invocation's lock is held or its recorded process
+group exists, whatever its recorded status, and while an invocation that was
+starting recorded no process ID. A record left `starting` or `running` becomes
+`interrupted` only when its lock is free and its process group is gone. When
+the helper cannot establish termination, check the processes yourself and
+settle the invocation with `abandon -reason`; the reason is kept and the
+invocation still counts against the budget. If a process outside the group
+still holds the lock when the command ends, or the group survives being
+killed, the record notes it and the evidence is incomplete. `run` works on Unix
 systems only.
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | Complete evidence: exit 0, known model and session, eligible reviewer, surface unchanged |
-| 1 | The command failed, timed out, was cancelled or could not start |
+| 1 | The command failed, timed out, was cancelled or could not start, or its record could not be saved |
 | 2 | Refused or a usage error; no command ran |
 | 3 | The command exited 0 but the evidence is incomplete |
 

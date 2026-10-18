@@ -372,16 +372,26 @@ func TestRunReconcile(t *testing.T) {
 	stale("20000101T000001Z-group", sleeper.Process.Pid)
 	_, err = Run(context.Background(), f.opts())
 	refused(t, err, "uncertain")
+	// So is a record that says it ended while its group still exists.
+	ended := stale("20000101T000002Z-ended", sleeper.Process.Pid)
+	r, _ := LoadRecords(runs)
+	r[len(r)-1].Status = StatusExited
+	writeRecord(ended, r[len(r)-1])
+	os.RemoveAll(filepath.Join(runs, "20000101T000001Z-group"))
+	_, err = Run(context.Background(), f.opts())
+	refused(t, err, "uncertain")
 	killGroup(sleeper.Process.Pid)
 	sleeper.Wait()
 
+	// Once the group is gone, a record left running is settled.
+	stale("20000101T000003Z-dead", sleeper.Process.Pid)
 	rec, err := Run(context.Background(), f.opts())
 	if err != nil {
 		t.Fatal(err)
 	}
 	records, _ := LoadRecords(runs)
-	if records[0].Status != StatusInterrupted || records[0].Outcome != OutcomeFailed || rec.Outcome != OutcomeComplete {
-		t.Errorf("records: %+v; new %+v", records[0], rec)
+	if records[0].Status != StatusExited || records[1].Status != StatusInterrupted || records[1].Outcome != OutcomeFailed || rec.Outcome != OutcomeComplete {
+		t.Errorf("records: %+v %+v; new %+v", records[0], records[1], rec)
 	}
 }
 
@@ -441,7 +451,23 @@ func TestRunRefusesWhileAnyLockIsHeld(t *testing.T) {
 			}
 			_, err = Run(context.Background(), f.opts())
 			refused(t, err, "still holds its running lock")
+			if _, err := Abandon(filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", "checked"); err == nil {
+				t.Error("abandoned an invocation whose lock is held")
+			}
 			unlock()
+			if status == StatusStarting {
+				// No process ID was recorded: termination is unknown until
+				// the executor settles it.
+				_, err = Run(context.Background(), f.opts())
+				refused(t, err, "recorded no process ID")
+				if _, err := Abandon(filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", ""); err == nil {
+					t.Error("abandoned without a reason")
+				}
+				r, err := Abandon(filepath.Join(f.evidence, "runs"), "20000101T000000Z-x", "no reviewer process found")
+				if err != nil || r.Status != StatusInterrupted || r.Abandoned == nil {
+					t.Fatalf("abandon: %+v, %v", r, err)
+				}
+			}
 			if _, err := Run(context.Background(), f.opts()); err != nil {
 				t.Fatal(err)
 			}

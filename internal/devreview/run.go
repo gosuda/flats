@@ -95,6 +95,7 @@ type Record struct {
 	Identity       *IdentityResult `json:"identity,omitempty"`
 	Eligibility    string          `json:"eligibility,omitempty"`
 	SessionReused  []string        `json:"session_reused_from,omitempty"`
+	Abandoned      *Abandoned      `json:"abandoned,omitempty"`
 	Outcome        string          `json:"outcome,omitempty"`
 	Stdout         string          `json:"stdout"`
 	Stderr         string          `json:"stderr"`
@@ -296,9 +297,14 @@ func Run(ctx context.Context, o RunOptions) (*Record, error) {
 			waitErr = <-done
 		}
 	}
+	groupGone := true
 	if groupAlive(rec.PID) {
 		killGroup(rec.PID)
 		rec.Notes = append(rec.Notes, "processes left in the reviewer's process group were killed after it ended")
+		groupGone = waitGroupGone(rec.PID, 5*time.Second)
+		if !groupGone {
+			rec.Notes = append(rec.Notes, "the reviewer's process group still exists after it was killed; later starts are refused until it is gone")
+		}
 	}
 	lock.Close()
 	survivor, lockErr := lockHeld(filepath.Join(dir, "running.lock"))
@@ -336,7 +342,7 @@ func Run(ctx context.Context, o RunOptions) (*Record, error) {
 		rec.Notes = append(rec.Notes, fmt.Sprintf("effective model %s differs from requested %s", m, rev.RequestedModel))
 	}
 	rec.Outcome = outcome(rec)
-	if (survivor || lockErr != nil) && rec.Outcome == OutcomeComplete {
+	if (survivor || lockErr != nil || !groupGone) && rec.Outcome == OutcomeComplete {
 		rec.Outcome = OutcomeIncomplete
 	}
 	return rec, writeRecord(dir, rec)
@@ -413,8 +419,10 @@ func outcome(r *Record) string {
 }
 
 // reconcile loads every record in runs and settles those still marked
-// starting or running whose process tree is gone. It refuses while any
-// invocation's lock is held, whatever its recorded status.
+// starting or running whose process tree is provably gone. It refuses while
+// any invocation's lock is held or its process group exists, whatever its
+// recorded status, and when a started invocation never recorded a process
+// ID; Abandon settles those once the executor has checked them.
 func reconcile(runs string) ([]*Record, error) {
 	records, err := LoadRecords(runs)
 	if err != nil {
@@ -429,22 +437,78 @@ func reconcile(runs string) ([]*Record, error) {
 		if held {
 			return nil, refuse("invocation %s still holds its running lock", r.ID)
 		}
-		if r.Status != StatusRunning && r.Status != StatusStarting {
+		if r.Abandoned != nil {
 			continue
 		}
 		if r.PID > 0 && groupAlive(r.PID) {
-			return nil, refuse("invocation %s released its lock but its process group %d still exists; its termination is uncertain", r.ID, r.PID)
+			return nil, refuse("the process group %d of invocation %s still exists; its termination is uncertain (once you have checked it, settle it with abandon)", r.PID, r.ID)
+		}
+		if r.Status != StatusRunning && r.Status != StatusStarting {
+			continue
+		}
+		if r.PID == 0 {
+			return nil, refuse("invocation %s was starting and recorded no process ID, so whether its command runs is unknown (once you have checked, settle it with abandon)", r.ID)
 		}
 		r.Status, r.Outcome = StatusInterrupted, OutcomeFailed
 		r.Notes = append(r.Notes, "reconciled "+now()+": running lock released and process group gone without a final record")
-		if r.PID == 0 {
-			r.Notes = append(r.Notes, "no process ID was recorded; the lock is the only evidence that no reviewer process remains")
-		}
 		if err := writeRecord(dir, r); err != nil {
 			return nil, err
 		}
 	}
 	return records, nil
+}
+
+// Abandoned records an executor's decision to settle an invocation whose
+// termination the helper could not establish.
+type Abandoned struct {
+	Reason string `json:"reason"`
+	At     string `json:"at"`
+}
+
+// Abandon settles invocation id in runs with the executor's reason, after
+// the executor has checked that its command no longer runs. It refuses
+// while the invocation's lock is held, which proves a process remains.
+// The invocation still counts against the budget.
+func Abandon(runs, id, reason string) (*Record, error) {
+	if strings.TrimSpace(reason) == "" {
+		return nil, refuse("abandoning an invocation needs a reason")
+	}
+	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
+		return nil, fmt.Errorf("invalid invocation ID %q", id)
+	}
+	unlock, err := lockPath(filepath.Join(runs, ".start.lock"))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	dir := filepath.Join(runs, id)
+	if _, err := os.Stat(dir); err != nil {
+		return nil, err
+	}
+	held, err := lockHeld(filepath.Join(dir, "running.lock"))
+	if err != nil {
+		return nil, err
+	}
+	if held {
+		return nil, refuse("invocation %s still holds its running lock, so a process remains", id)
+	}
+	records, err := LoadRecords(runs)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(records, func(r *Record) bool { return r.ID == id })
+	if i < 0 {
+		return nil, fmt.Errorf("no invocation %s in %s", id, runs)
+	}
+	r := records[i]
+	if r.Format == "" {
+		r.Format = RecordFormat
+	}
+	if r.Status == StatusRunning || r.Status == StatusStarting {
+		r.Status, r.Outcome = StatusInterrupted, OutcomeFailed
+	}
+	r.Abandoned = &Abandoned{Reason: reason, At: now()}
+	return r, writeRecord(dir, r)
 }
 
 // LoadRecords reads every invocation record under runs, oldest first.

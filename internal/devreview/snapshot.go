@@ -75,9 +75,13 @@ type Head struct {
 	Detached bool   `json:"detached"`
 }
 
-// Entry is one candidate path. Mode, Size and SHA256 describe the working
-// tree: a regular file's bytes and executable bit, or a symbolic link's
-// target string. A path absent from the working tree has none of them.
+// Entry is one path of the candidate: every tracked path, untracked file Git
+// does not ignore, included input, and path deleted since the merge base.
+// Mode, Size and SHA256 describe the working tree: a regular file's bytes
+// and executable bit, or a symbolic link's target string. A path absent
+// from the working tree has none of them. Base, Head and IndexDiffers come
+// from Git and say which entries are changes; the hashes bind every byte
+// whether or not Git reports a change.
 type Entry struct {
 	Path         string `json:"path"`
 	Base         string `json:"base"`
@@ -87,6 +91,12 @@ type Entry struct {
 	Mode         string `json:"mode,omitempty"`
 	Size         int64  `json:"size"`
 	SHA256       string `json:"sha256,omitempty"`
+}
+
+// Changed reports whether Git sees the entry as a change against the merge
+// base, HEAD or the index.
+func (e Entry) Changed() bool {
+	return e.Base != Unchanged || e.Head != Unchanged || e.IndexDiffers
 }
 
 // Excluded is a candidate path left out by a pattern.
@@ -227,6 +237,9 @@ func collect(root, mergeBase string, opts Options) (string, []Entry, []Excluded,
 	}
 
 	paths := map[string]bool{}
+	for p := range inIndex {
+		paths[p] = true
+	}
 	for _, m := range []map[string]string{vsBase, vsHead, staged, unstaged} {
 		for p := range m {
 			paths[p] = true

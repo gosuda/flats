@@ -144,25 +144,75 @@ func TestMaterializeResolvesIntermediateLinks(t *testing.T) {
 	}
 }
 
-func TestMaterializeNeverWritesThroughLinks(t *testing.T) {
+func TestWriteEntryNeverWritesThroughLinks(t *testing.T) {
 	t.Parallel()
 	ext := outside(t)
 	write(t, ext, map[string]string{"file": "precious\n"})
-	root := repo(t, map[string]string{"a.txt": "a\n"})
-	os.Symlink(ext, filepath.Join(root, "link"))
-	run(t, root, "git", "add", "link")
-	commit(t, root, "link to an outside directory")
-	write(t, root, map[string]string{"a.txt": "b\n"})
-	m := snap(t, root, "", Options{})
-	// A manifest naming a path beneath the link, as an edited include would.
-	m.Files = append(m.Files, Entry{Path: "link/file", Base: Untracked, Head: Untracked})
-	m.Digest = m.computeDigest()
-	dest := filepath.Join(outside(t), "copy")
-	cleanupCopy(t, root, dest)
-	if _, err := Materialize(root, m, dest); err == nil {
-		t.Fatal("materialized a candidate with a link out of the copy")
+	root := repo(t, map[string]string{"link/file": "candidate\n"})
+	m := snap(t, root, "", Options{Include: []string{"link/file"}})
+	dest := outside(t)
+	os.Symlink(ext, filepath.Join(dest, "link"))
+	if err := writeEntry(root, dest, entry(t, m, "link/file")); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("err = %v, want a refusal", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(ext, "file")); err != nil || string(b) != "precious\n" {
-		t.Errorf("outside file after refusal: %q, %v", b, err)
+		t.Errorf("outside file: %q, %v", b, err)
+	}
+}
+
+// A candidate that deletes or replaces an escaping link in HEAD can be
+// materialized: the copy holds only the candidate's files.
+func TestMaterializeCandidateRemovingEscapingLink(t *testing.T) {
+	t.Parallel()
+	root := repo(t, map[string]string{"a.txt": "a\n"})
+	os.Symlink("/etc/hosts", filepath.Join(root, "abs"))
+	os.Symlink("../outside", filepath.Join(root, "up"))
+	run(t, root, "git", "add", "-A")
+	commit(t, root, "escaping links")
+	os.Remove(filepath.Join(root, "abs"))
+	os.Remove(filepath.Join(root, "up"))
+	write(t, root, map[string]string{"up": "now a file\n"})
+	m := snap(t, root, "", Options{})
+	dest := filepath.Join(outside(t), "copy")
+	cleanupCopy(t, root, dest)
+	if _, err := Materialize(root, m, dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "abs")); !os.IsNotExist(err) {
+		t.Error("the deleted link exists in the copy")
+	}
+}
+
+// The copy is checked by its bytes, so Git flags or normalization that hide
+// a change from Git do not hide it from CheckCopy.
+func TestCheckCopyReadsBytes(t *testing.T) {
+	t.Parallel()
+	root := repo(t, map[string]string{"a.txt": "a\n", "b.txt": "b\n"})
+	write(t, root, map[string]string{"a.txt": "changed\n"})
+	m := snap(t, root, "", Options{})
+	dest := filepath.Join(outside(t), "copy")
+	cleanupCopy(t, root, dest)
+	if _, err := Materialize(root, m, dest); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dest, "git", "update-index", "--assume-unchanged", "b.txt")
+	p := filepath.Join(dest, "b.txt")
+	os.Chmod(p, 0o644)
+	os.WriteFile(p, []byte("x\n"), 0o644)
+	if err := CheckCopy(dest, m); err == nil || !strings.Contains(err.Error(), "b.txt") {
+		t.Errorf("a hidden change in the copy passed: %v", err)
+	}
+}
+
+func TestWithinExact(t *testing.T) {
+	t.Parallel()
+	if withinExact("/e/copy", "/e/COPY/secret") {
+		t.Error("a differently cased sibling counted as inside")
+	}
+	if !withinExact("/e/copy", "/e/copy/a") || withinExact("/e/copy", "/e/copy-2/a") {
+		t.Error("withinExact containment is wrong")
+	}
+	if !within("/e/copy", "/e/COPY/a") {
+		t.Error("the refusing check must fold case")
 	}
 }

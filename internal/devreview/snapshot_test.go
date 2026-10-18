@@ -75,6 +75,16 @@ func paths(m *Manifest) []string {
 	return out
 }
 
+func changed(m *Manifest) []string {
+	var out []string
+	for _, e := range m.Files {
+		if e.Changed() {
+			out = append(out, e.Path)
+		}
+	}
+	return out
+}
+
 func snap(t *testing.T, root, base string, o Options) *Manifest {
 	t.Helper()
 	m, err := Snapshot(root, base, o)
@@ -102,8 +112,14 @@ func TestSnapshotCandidateSet(t *testing.T) {
 
 	m := snap(t, root, "main", Options{Include: []string{"build"}})
 	want := []string{"added.txt", "build/out.bin", "edit.txt", "gone.txt", "keep.txt", "moved.txt", "renamed.txt", "untracked.txt"}
-	if got := paths(m); !slices.Equal(got, want) {
-		t.Fatalf("candidate paths = %v, want %v (ignored noise.log must stay out)", got, want)
+	if got := changed(m); !slices.Equal(got, want) {
+		t.Fatalf("changed paths = %v, want %v", got, want)
+	}
+	if got := paths(m); !slices.Equal(got, append([]string{".gitignore"}, want...)) {
+		t.Fatalf("entries = %v: every tracked file and no ignored noise.log", got)
+	}
+	if e := entry(t, m, ".gitignore"); e.Changed() || e.SHA256 == "" {
+		t.Errorf("unchanged tracked file = %+v, want unchanged with its hash bound", e)
 	}
 	checks := []struct {
 		path, base, head string
@@ -364,14 +380,14 @@ func TestSnapshotCannotHideChanges(t *testing.T) {
 		root := repo(t, map[string]string{"a.txt": "a\n"})
 		run(t, root, "git", "config", "core.fileMode", "false")
 		m := snap(t, root, "", Options{})
-		if len(m.Files) != 0 {
-			t.Fatalf("clean tree has entries %v", paths(m))
+		if c := changed(m); len(c) != 0 {
+			t.Fatalf("clean tree has changes %v", c)
 		}
 		os.Chmod(filepath.Join(root, "a.txt"), 0o755)
 		if e := entry(t, snap(t, root, "", Options{}), "a.txt"); e.Mode != "100755" {
 			t.Errorf("a.txt = %+v", e)
 		}
-		if d, err := Verify(root, m); err != nil || !slices.Equal(d.Added, []string{"a.txt"}) {
+		if d, err := Verify(root, m); err != nil || !slices.Equal(d.Changed, []string{"a.txt"}) {
 			t.Errorf("drift = %v, %v", d, err)
 		}
 	})
@@ -382,6 +398,35 @@ func TestSnapshotCannotHideChanges(t *testing.T) {
 		os.Symlink(ext, filepath.Join(root, "link"))
 		if _, err := Snapshot(root, "", Options{Include: []string{"link/file"}}); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+// Every file's bytes are bound, so a change Git does not report still
+// drifts: line-ending normalization, or an edit that keeps size and
+// timestamps.
+func TestVerifyBindsBytesGitIgnores(t *testing.T) {
+	t.Parallel()
+	t.Run("normalized line endings", func(t *testing.T) {
+		root := repo(t, map[string]string{"a.txt": "one\ntwo\n", ".gitattributes": "*.txt text\n"})
+		run(t, root, "git", "config", "core.autocrlf", "true")
+		m := snap(t, root, "", Options{})
+		write(t, root, map[string]string{"a.txt": "one\r\ntwo\r\n"})
+		d, err := Verify(root, m)
+		if err != nil || !slices.Contains(d.Changed, "a.txt") {
+			t.Errorf("drift = %v, %v", d, err)
+		}
+	})
+	t.Run("same size and timestamps", func(t *testing.T) {
+		root := repo(t, map[string]string{"a.txt": "aaaa\n"})
+		m := snap(t, root, "", Options{})
+		p := filepath.Join(root, "a.txt")
+		fi, _ := os.Stat(p)
+		os.WriteFile(p, []byte("bbbb\n"), 0o644)
+		os.Chtimes(p, fi.ModTime(), fi.ModTime())
+		d, err := Verify(root, m)
+		if err != nil || !slices.Equal(d.Changed, []string{"a.txt"}) {
+			t.Errorf("drift = %v, %v", d, err)
 		}
 	})
 }

@@ -5,6 +5,7 @@
 //	go run ./internal/devreview/cmd/devreview verify -manifest /evidence/snap.json
 //	go run ./internal/devreview/cmd/devreview materialize -manifest /evidence/snap.json -o /evidence/copy
 //	go run ./internal/devreview/cmd/devreview run -manifest ... -reviewer NAME -prompt FILE -runs DIR -author MODEL -copy DIR
+//	go run ./internal/devreview/cmd/devreview abandon -runs DIR -id ID -reason "how you checked"
 //	go run ./internal/devreview/cmd/devreview report -manifest ... -runs DIR -o /evidence/report.md
 //
 // Evidence paths must be outside the repository. See the package README.
@@ -47,7 +48,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	cmds := map[string]func([]string, io.Writer, io.Writer) int{
-		"snapshot": snapshot, "verify": verify, "materialize": materialize, "run": runReviewer, "report": report,
+		"snapshot": snapshot, "verify": verify, "materialize": materialize, "run": runReviewer, "abandon": abandon, "report": report,
 	}
 	f, ok := cmds[args[0]]
 	if !ok {
@@ -64,6 +65,7 @@ func usage(w io.Writer) {
   verify       report drift between the working tree (or a copy) and a manifest
   materialize  write a read-only copy of the candidate
   run          run a configured reviewer command and record the invocation
+  abandon      settle an invocation whose termination could not be established
   report       write a task report skeleton from the recorded evidence
 
 Run "devreview <command> -h" for its flags.`)
@@ -241,6 +243,23 @@ func runReviewer(args []string, stdout, stderr io.Writer) int {
 	default:
 		return exitFailed
 	}
+}
+
+func abandon(args []string, stdout, stderr io.Writer) int {
+	fs, _ := newFlags("abandon", stderr)
+	runs := fs.String("runs", "", "the task's evidence directory (required)")
+	id := fs.String("id", "", "invocation ID (required)")
+	reason := fs.String("reason", "", "how you established that its command no longer runs (required)")
+	if fs.Parse(args) != nil || *runs == "" || *id == "" || fs.NArg() > 0 {
+		fs.Usage()
+		return exitUsage
+	}
+	rec, err := devreview.Abandon(*runs, *id, *reason)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "invocation %s settled as %s, outcome %s\n", rec.ID, rec.Status, rec.Outcome)
+	return exitOK
 }
 
 func report(args []string, stdout, stderr io.Writer) int {

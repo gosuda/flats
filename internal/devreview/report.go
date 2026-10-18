@@ -29,6 +29,7 @@ type reportData struct {
 	Records     []*Record
 	Budget      *Budget
 	Used        int
+	Changed     int
 	Limitations []string
 }
 
@@ -61,6 +62,11 @@ func WriteReport(o ReportOptions) (string, error) {
 		}
 	}
 	d.Used = len(d.Records)
+	for _, e := range m.Files {
+		if e.Changed() {
+			d.Changed++
+		}
+	}
 	d.Authors = cleanList(o.Authors)
 	if len(d.Authors) == 0 {
 		for _, r := range d.Records {
@@ -96,6 +102,9 @@ func limitations(records []*Record, m *Manifest) []string {
 		}
 		if r.Outcome != OutcomeComplete {
 			out = append(out, fmt.Sprintf("Invocation `%s` evidence is %s (status %s%s).", r.ID, orUnknown(r.Outcome), r.Status, missing(r)))
+		}
+		if r.Abandoned != nil {
+			out = append(out, fmt.Sprintf("Invocation `%s` was settled by the executor, not by the helper: %q.", r.ID, r.Abandoned.Reason))
 		}
 		if len(r.SessionReused) > 0 {
 			out = append(out, fmt.Sprintf("Invocation `%s` continued the session of %v; only a re-review may reuse a session.", r.ID, r.SessionReused))

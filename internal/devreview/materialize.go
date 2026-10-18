@@ -12,10 +12,11 @@ import (
 
 // Materialize writes a read-only copy of the candidate described by m to
 // dir, which must be outside the repository and not exist yet. The copy is
-// a detached Git worktree at the manifest's HEAD with every entry applied,
-// so a reviewer can run Git there; its registration lives in the
-// repository's Git directory and is removed with `git worktree remove
-// --force <dir>`. It returns the resolved copy path.
+// a detached Git worktree whose index is the manifest's HEAD, so a reviewer
+// can run Git there, but its files are written from the manifest only: it
+// holds exactly the manifest's files and their bytes. Its registration
+// lives in the repository's Git directory and is removed with `git worktree
+// remove --force <dir>`. It returns the resolved copy path.
 func Materialize(root string, m *Manifest, dir string) (string, error) {
 	d, err := Verify(root, m)
 	if err != nil {
@@ -31,7 +32,7 @@ func Materialize(root string, m *Manifest, dir string) (string, error) {
 	if _, err := os.Lstat(dest); !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("%s already exists", dest)
 	}
-	if _, err := git(root, "worktree", "add", "--detach", "--quiet", dest, m.Head.Commit); err != nil {
+	if _, err := git(root, "worktree", "add", "--detach", "--no-checkout", "--quiet", dest, m.Head.Commit); err != nil {
 		return "", err
 	}
 	fail := func(err error) (string, error) {
@@ -39,11 +40,11 @@ func Materialize(root string, m *Manifest, dir string) (string, error) {
 		_, _ = git(root, "worktree", "remove", "--force", dest)
 		return "", err
 	}
-	if err := checkLinks(dest); err != nil {
+	if _, err := git(dest, "read-tree", "HEAD"); err != nil {
 		return fail(err)
 	}
 	for _, e := range m.Files {
-		if err := applyEntry(root, dest, e); err != nil {
+		if err := writeEntry(root, dest, e); err != nil {
 			return fail(err)
 		}
 	}
@@ -56,20 +57,18 @@ func Materialize(root string, m *Manifest, dir string) (string, error) {
 	return dest, nil
 }
 
-// applyEntry makes the copy's path match the working tree's entry, then
-// checks the copy against the manifest so a change during copying fails.
-func applyEntry(root, dest string, e Entry) error {
-	src := filepath.Join(root, filepath.FromSlash(e.Path))
-	dst := filepath.Join(dest, filepath.FromSlash(e.Path))
-	if err := noLinkAncestors(dest, e.Path); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(dst); err != nil {
-		return err
-	}
+// writeEntry writes one manifest entry from the working tree into the copy
+// and checks it, so a change during copying fails. It never writes through
+// a symbolic link inside the copy.
+func writeEntry(root, dest string, e Entry) error {
 	if e.Mode == "" {
 		return nil
 	}
+	if err := noLinkAncestors(dest, e.Path); err != nil {
+		return err
+	}
+	src := filepath.Join(root, filepath.FromSlash(e.Path))
+	dst := filepath.Join(dest, filepath.FromSlash(e.Path))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -141,10 +140,15 @@ func matchEntry(dir string, e Entry) error {
 }
 
 // CheckCopy reports whether a materialized copy still matches m: HEAD is
-// the manifest's, every entry matches, nothing else differs from HEAD, and
-// no symbolic link leaves the copy.
+// the manifest's, the copy holds exactly the manifest's files with their
+// recorded identity, and no symbolic link resolves outside it. It reads the
+// files themselves and does not rely on Git's change detection.
 func CheckCopy(dir string, m *Manifest) error {
 	if err := m.check(); err != nil {
+		return err
+	}
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
 		return err
 	}
 	head, err := git(dir, "rev-parse", "--verify", "HEAD^{commit}")
@@ -154,77 +158,49 @@ func CheckCopy(dir string, m *Manifest) error {
 	if head != m.Head.Commit {
 		return fmt.Errorf("copy HEAD is %s, snapshot HEAD is %s", head, m.Head.Commit)
 	}
-	entries := map[string]bool{}
+	present := map[string]bool{}
 	for _, e := range m.Files {
-		entries[e.Path] = true
 		if err := matchEntry(dir, e); err != nil {
 			return err
 		}
+		present[e.Path] = e.Mode != ""
 	}
-	recs, err := gitZ(dir, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none")
-	if err != nil {
-		return err
-	}
-	for _, rec := range recs {
-		if len(rec) < 4 {
-			return fmt.Errorf("unexpected git status record %q", rec)
-		}
-		p := rec[3:]
-		if strings.HasSuffix(p, "/") {
-			if err := filesUnder(dir, p, entries); err != nil {
-				return err
-			}
-			continue
-		}
-		if !entries[p] {
-			return fmt.Errorf("%s in the copy differs from HEAD but is not in the snapshot", p)
-		}
-	}
-	return checkLinks(dir)
-}
-
-// filesUnder requires every file beneath a directory Git reports as a
-// whole to be a manifest entry.
-func filesUnder(dir, prefix string, entries map[string]bool) error {
-	return filepath.WalkDir(filepath.Join(dir, filepath.FromSlash(prefix)), func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	gitFile := filepath.Join(dir, ".git")
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == gitFile || d.IsDir() {
 			return err
 		}
 		rel, err := filepath.Rel(dir, p)
 		if err != nil {
 			return err
 		}
-		if rel = filepath.ToSlash(rel); !entries[rel] {
+		if rel = filepath.ToSlash(rel); !present[rel] {
 			return fmt.Errorf("%s in the copy is not in the snapshot", rel)
 		}
 		return nil
 	})
-}
-
-// checkLinks refuses symbolic links that resolve outside dir, following
-// intermediate links as the file system does.
-func checkLinks(dir string) error {
-	dir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return err
 	}
+	return checkLinks(dir)
+}
+
+// checkLinks refuses symbolic links that resolve outside dir, following
+// intermediate links as the file system does. Containment is compared
+// exactly, so a differently cased sibling never counts as inside.
+func checkLinks(dir string) error {
 	var bad []string
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
+	gitFile := filepath.Join(dir, ".git")
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || p == gitFile || d.Type()&fs.ModeSymlink == 0 {
 			return err
-		}
-		if d.IsDir() && d.Name() == ".git" && p != dir {
-			return filepath.SkipDir
-		}
-		if d.Type()&fs.ModeSymlink == 0 {
-			return nil
 		}
 		target, err := os.Readlink(p)
 		if err != nil {
 			return err
 		}
 		res, err := resolvePath(p)
-		if err != nil || filepath.IsAbs(target) || !within(dir, res) {
+		if err != nil || filepath.IsAbs(target) || !withinExact(dir, res) {
 			rel, _ := filepath.Rel(dir, p)
 			bad = append(bad, filepath.ToSlash(rel)+" -> "+target)
 		}
