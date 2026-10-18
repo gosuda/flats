@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -236,6 +237,9 @@ func collect(root, mergeBase string, opts Options) (string, []Entry, []Excluded,
 	if err != nil {
 		return "", nil, nil, err
 	}
+	if err := refuseSpecialFiles(root, opts); err != nil {
+		return "", nil, nil, err
+	}
 
 	paths := map[string]bool{}
 	for p := range inIndex {
@@ -286,6 +290,65 @@ func collect(root, mergeBase string, opts Options) (string, []Entry, []Excluded,
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Path < excluded[j].Path })
 	return indexDigest, entries, excluded, nil
+}
+
+// refuseSpecialFiles finds objects Git never lists, such as FIFOs and
+// sockets, and refuses those that are neither ignored nor excluded, so they
+// are not silently left out of the snapshot.
+func refuseSpecialFiles(root string, opts Options) error {
+	var special []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != root && isGitName(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type().IsRegular() || d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		if rel = filepath.ToSlash(rel); matchExclude(opts.Exclude, rel) == "" {
+			special = append(special, rel)
+		}
+		return nil
+	})
+	if err != nil || len(special) == 0 {
+		return err
+	}
+	ignored, err := checkIgnore(root, special)
+	if err != nil {
+		return err
+	}
+	for _, p := range special {
+		if !ignored[p] {
+			return fmt.Errorf("%s is a special file (such as a FIFO or socket) that Git does not ignore; the helper cannot identify it", p)
+		}
+	}
+	return nil
+}
+
+// checkIgnore returns which of paths Git ignores.
+func checkIgnore(root string, paths []string) (map[string]bool, error) {
+	cmd := exec.Command("git", "-C", root, "check-ignore", "-z", "--stdin")
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) { // 1: nothing ignored
+		return nil, fmt.Errorf("git check-ignore: %w", err)
+	}
+	ignored := map[string]bool{}
+	for _, p := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		ignored[p] = true
+	}
+	return ignored, nil
 }
 
 // status returns a path's status from a diffRaw map.
