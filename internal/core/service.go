@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log"
 	"maps"
 	"net/http"
@@ -602,7 +603,7 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 	if d == nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprintf(w, "<!doctype html><title>%s</title><p>This flat has not been deployed yet.</p>", slugName)
+		fmt.Fprintf(w, "<!doctype html><title>%s</title><p>This flat has not been deployed yet.</p>", html.EscapeString(slugName))
 		return
 	}
 	if isPageView(r) {
