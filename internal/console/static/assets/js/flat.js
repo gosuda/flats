@@ -229,7 +229,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   function drawNetworks() {
     fill(netSlot, section('Networks', 'networks',
       h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose. A new flat starts allowed on the host’s default providers; allow more here to offer several addresses, listed under the flat’s open button. A network must first be turned on in ',
-        h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'),
+        h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings' }), '.'),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Private' }),
         h('ul', { class: 'networks' },
           h('li', null, h('input', { type: 'checkbox', id: 'net-local', checked: true, disabled: true }),
@@ -274,7 +274,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       h('label', { for: id, text: 'Portal relay listing' }), select,
       h('span', { class: 'muted small', id: id + '-help' },
         `${state} Hiding keeps the public URL out of the relay’s list of sites; anyone with the URL can still open it. The host setting is in `,
-        h('a', { href: '/settings#providers', 'data-nav': true, text: 'Settings' }), '.'));
+        h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings' }), '.'));
   }
 
   function networkRow(p) {

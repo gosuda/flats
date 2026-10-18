@@ -276,13 +276,19 @@ once saved.
   is refused in the console until it has a live version and allows a public
   network. The public URL is `public_url`, or the URL of a current Funnel,
   Portal, zrok, Cloudflare quick tunnel or NetBird Expose endpoint.
-- **Settings.** Cards for Network providers (Private and Public groups, each
-  with a default for new flats; Turn on / Turn off per provider, the flats that
-  allow it, its hosts and its own settings), Console domains (one section per
-  network: Tailscale and NetBird), Keys (Tailscale auth key, NetBird setup key,
-  zrok account token: state and source, never the value), Host configuration,
-  Limits, Approvals and Connect an agent. A disabled action shows its reason on
+- **Settings.** Four pages behind a left nav. Networks: the defaults for new
+  flats, then Private and Public providers, each opening its own page with
+  Turn on / Turn off, its key (Tailscale auth key, NetBird setup key, zrok
+  account token: state and source, never the value), its hosts, its own
+  settings and the flats that allow it. Console: the console's addresses on
+  every network, the address for links and the read-only host values. Limits:
+  storage, history and traffic. Agents: MCP setup and what agents cannot do.
+  Fields stage changes for one save bar per page, which counts them, blocks
+  saving while one is invalid and asks again before a save that removes data;
+  buttons act at once. A disabled action shows its reason next to it or on
   hover and keyboard focus.
+- **Approvals.** A top-bar item with the number of pending requests opens the
+  queue.
 - **Approval page.** Names version creation (including legacy `publish`
   requests), version deletion, activation, rollback, data restore, visibility
   changes and deletion, so requests made by agents can be reviewed and decided
@@ -325,7 +331,7 @@ whatever the preference. The agent discovery documents (`/llms.txt`,
 the MCP endpoint at the address the agent fetched them from (a Host the
 listener accepts), which is the address that agent can reach.
 
-Console domains are managed in Settings → Console domains
+Console domains are managed in Settings → Console
 ([Console domains](configuration.md#console-domains)). At the surface:
 
 - Adding needs the settings ETag, a lowercase DNS label not already used by a

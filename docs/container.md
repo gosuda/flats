@@ -100,7 +100,7 @@ docker run --rm -i -v flats-data:/data ghcr.io/gosuda/flats:latest key set tails
 or mount it read-only and name it with `FLATS_TAILSCALE_AUTHKEY_FILE`, for
 example `-v "$PWD/tailscale-authkey:/run/secrets/tailscale-authkey:ro" -e
 FLATS_TAILSCALE_AUTHKEY_FILE=/run/secrets/tailscale-authkey` (uid `65532` must
-be able to read it), or register it later in Settings → Keys. A mounted key
+be able to read it), or register it later in Settings → Networks → Tailscale. A mounted key
 only seeds a missing one; zrok and NetBird keys work the same way. See
 [Operator keys](configuration.md#operator-keys).
 

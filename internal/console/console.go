@@ -74,7 +74,7 @@ func load() (index *asset, assets map[string]*asset) {
 }
 
 // Handler serves the console. Mount it at "/" next to /console/api and /mcp:
-// it answers the app routes (/, /flats/{slug}, /approvals/{id}, /settings)
+// it answers the app routes (/, /flats/{slug}, /approvals[/{id}], /settings[/...])
 // with index.html and /assets/... with embedded files, and 404s anything else.
 func Handler() http.Handler {
 	index, assets := load()
@@ -85,8 +85,13 @@ func Handler() http.Handler {
 	mux.HandleFunc("GET /flats/{slug}/settings", page)
 	mux.HandleFunc("GET /flats/{slug}/analytics", page)
 	mux.HandleFunc("GET /flats/{slug}/database", page)
+	mux.HandleFunc("GET /approvals", page)
 	mux.HandleFunc("GET /approvals/{id}", page)
 	mux.HandleFunc("GET /settings", page)
+	for _, section := range []string{"networks", "console", "limits", "agents"} {
+		mux.HandleFunc("GET /settings/"+section, page)
+	}
+	mux.HandleFunc("GET /settings/networks/{provider}", page)
 	mux.HandleFunc("GET /assets/{path...}", func(w http.ResponseWriter, r *http.Request) {
 		a, ok := assets["assets/"+r.PathValue("path")]
 		if !ok {

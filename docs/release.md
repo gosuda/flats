@@ -283,7 +283,7 @@ Service registration is the default because a host is meant to stay up.
 under another supervisor or in the foreground. The installer never enables a
 non-local provider (Tailscale, Funnel, NetBird, NetBird Expose, Portal, zrok or
 Cloudflare quick tunnels) on its own. Turn providers on in the console
-(Settings → Network providers) or with `flats config set` while the host is
+(Settings → Networks) or with `flats config set` while the host is
 stopped; see [Private and public access](networking.md).
 
 | Option (after `sh -s --`) | Effect |

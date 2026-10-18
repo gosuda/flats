@@ -38,7 +38,8 @@ func readStatic(t *testing.T, name string) string {
 func TestAppRoutesServeIndex(t *testing.T) {
 	h := Handler()
 	index := readStatic(t, "index.html")
-	for _, p := range []string{"/", "/flats/my-blog", "/flats/my-blog/settings", "/flats/my-blog/analytics", "/flats/my-blog/database", "/approvals/apr-abc123", "/settings", "/settings?x=1"} {
+	for _, p := range []string{"/", "/flats/my-blog", "/flats/my-blog/settings", "/flats/my-blog/analytics", "/flats/my-blog/database", "/approvals", "/approvals/apr-abc123", "/settings", "/settings?x=1",
+		"/settings/networks", "/settings/networks/portal", "/settings/console", "/settings/limits", "/settings/agents"} {
 		rec := get(t, h, http.MethodGet, p, nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s: status %d", p, rec.Code)

@@ -47,26 +47,27 @@ for (const type of ['flat', 'page', 'docs', 'design', undefined, 'future']) {
   }
 }
 const main = document.createElement('main');
-settings(main, [], ctx);
+settings(main, ['limits'], ctx);
 await tick();
-assert.ok(element(main, 'LABEL', 'Revisions to keep'));
-assert.ok(element(main, 'LABEL', 'Pinned revisions allowed'));
+assert.ok(element(main, 'LABEL', 'Revisions'));
+assert.ok(element(main, 'LABEL', 'Pinned revisions'));
 assert.ok(main.textContent.includes('each document or design keeps'));
-assert.ok(main.textContent.includes('Maximum pinned revisions per document or design'));
+assert.ok(main.textContent.includes('Pinned revisions are never deleted automatically'));
 assert.ok(main.textContent.includes('For websites and pages.'));
-assert.ok(element(main, 'LABEL', 'Version quota'));
+assert.ok(element(main, 'LABEL', 'Versions'));
 assert.equal(element(main, 'LABEL', 'Versions to keep'), undefined);
-assert.ok(main.textContent.includes('Versions are never deleted automatically'));
+assert.ok(main.textContent.includes('Never deleted automatically'));
 assert.ok(main.textContent.includes('0 is unlimited.'));
 const input = (id) => all(main, (n) => n.getAttribute?.('id') === id)[0];
-const form = all(main, (n) => n.tagName === 'FORM' && n.className === 'settings-form')[0];
+const form = input('limits-form');
 input('set-pin_quota').value = '-1';
 form.dispatch('submit');
-assert.ok(main.textContent.includes('Pinned revisions allowed must be a number of 0 or more.'));
+assert.ok(main.textContent.includes('Pinned revisions must be a whole number of 0 or more.'));
 input('set-pin_quota').value = '6';
 input('set-revision_quota').value = '21';
 form.dispatch('submit');
 await tick();
-assert.ok(main.textContent.includes('Revisions to keep: saved, applied now.'));
-assert.ok(main.textContent.includes('Pinned revisions allowed: saved, applied now.'));
+await tick();
+assert.ok(main.textContent.includes('Revisions: saved, applied now.'));
+assert.ok(main.textContent.includes('Pinned revisions: saved, applied now.'));
 console.log('content labels ok');

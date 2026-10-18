@@ -169,8 +169,8 @@ written; `flats config unset KEY` removes it.
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
-| `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console domains); otherwise restart |
-| `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console domains); otherwise restart |
+| `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console); otherwise restart |
+| `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console); otherwise restart |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
 
@@ -196,7 +196,7 @@ permission only and opens nothing until the operator approves making the flat
 public. Turning a provider off in the console clears a default that names it. Removing a provider from
 `permitted` in the file takes its routes down at the next start but keeps each
 flat's provider permission and visibility in `flats.db`; it never publishes a
-flat or changes visibility. The console's Settings → Network providers turns a
+flat or changes visibility. The console's Settings → Networks turns a
 provider on or off while the host runs: turning one on saves the file and
 starts its backend at once (a backend contacts nothing until a flat allows the
 provider), and turning one off is refused while a flat still allows it.
@@ -244,7 +244,7 @@ Over HTTP the console accepts a change only from its own page: a same-origin
 `http` `Origin` with the console's own header (see
 [Serving through NetBird](networking.md#serving-through-netbird)).
 
-The console's Settings → Console domains adds and deletes names on both
+The console's Settings → Console adds and deletes names on both
 networks while the host runs; there is no single name to edit. To change the
 name, add the new one, point agents at it (`flats connect`), then delete the
 old one.
@@ -308,7 +308,7 @@ served, such as one being deleted) names the preferred console,
   before the setting existed, that the domain's node has been started. The
   order is fixed, and unset gives exactly the links of hosts without the
   setting.
-- The console's Settings → Console domains chooses it among the loopback
+- The console's Settings → Console chooses it among the loopback
   address and the listed names (`PUT /console/api/console-domains/preferred`)
   and warns when the preferred domain is still starting or not served. `flats config set
   console.preferred_host tailscale:flats` sets it while the host is stopped.
@@ -351,8 +351,8 @@ lists the options it needs.
 
 A key reaches Flats in one of these ways:
 
-- **Console**: Settings → Keys sets, replaces and removes keys while the host
-  runs. A new Tailscale key or NetBird setup key is used by nodes and peers
+- **Console**: each network's page under Settings → Networks sets, replaces
+  and removes its key while the host runs. A new Tailscale key or NetBird setup key is used by nodes and peers
   started afterwards; those already registered keep their identity.
 - **`flats key`** while the host is stopped. It takes the host lock like
   `flats config set`, refuses while a host runs, and checks that `flats.db`
@@ -407,9 +407,9 @@ approvals.
 ### Editing
 
 - **Console**: the system and Portal keys, `network.permitted`,
-  `network.default_private` and `network.default_public` through Network
-  providers, and `tailscale.console_hosts` and `netbird.console_hosts`
-  through Console domains. A save
+  `network.default_private` and `network.default_public` through Networks,
+  and `tailscale.console_hosts` and `netbird.console_hosts` through Console.
+  A save
   rereads the file under a lock and fails if it changed on disk since the
   host read it; restart to pick up an outside edit. Host and
   `network.private_backend` keys are read-only there. A service that still

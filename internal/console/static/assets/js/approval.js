@@ -142,3 +142,30 @@ export function mount(main, [id], ctx) {
 
   load();
 }
+
+// mountList is the approvals queue: every request, newest first, each
+// linking to its page.
+export function mountList(main, _params, ctx) {
+  ctx.setTitle('Approvals');
+  const body = h('div', null, loading());
+  main.appendChild(h('section', { class: 'page' },
+    h('div', { class: 'page-head' }, h('h1', { text: 'Approvals' })),
+    h('p', { class: 'muted', text: 'Agents ask for approval before saving versions, deploying, changing visibility and deleting. Nothing changes until you decide.' }),
+    body));
+  api.approvals().then((r) => {
+    if (!ctx.alive()) return;
+    clear(body).appendChild(approvalsTable(r.approvals || []));
+  }).catch((err) => ctx.alive() && clear(body).appendChild(errorPanel(err, 'Cannot load approvals')));
+}
+
+export function approvalsTable(list) {
+  if (!list.length) return h('p', { class: 'muted', text: 'No approval requests yet.' });
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table', id: 'approvals' },
+    h('thead', null, h('tr', null, ['Request', 'Via', 'Requested', 'Status'].map((t) => h('th', { scope: 'col', text: t })))),
+    h('tbody', null, list.map((a) => h('tr', null,
+      h('th', { scope: 'row' }, h('a', { href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: describeApproval(a) }),
+        a.reason ? h('div', { class: 'muted small', text: a.reason }) : null),
+      h('td', { text: a.via }),
+      h('td', null, timeEl(a.requested_at)),
+      h('td', null, statusBadge(a.status), cleanupPending(a) ? h('span', { class: 'badge badge-warn', text: 'Storage cleanup pending' }) : null))))));
+}

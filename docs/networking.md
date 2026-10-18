@@ -21,8 +21,8 @@ provider state machine is in [Network provider lifecycle](network-provider-lifec
 The default network is Local; every other provider is off. A provider serves a
 flat only when both of these are on:
 
-1. **Host permission.** Turn the provider on in **Settings → Network
-   providers**. This saves `network.permitted` in `config.json` and starts the
+1. **Host permission.** Turn the provider on in **Settings → Networks**.
+   This saves `network.permitted` in `config.json` and starts the
    provider's backend without a restart. Turning a provider off is refused
    while a flat still allows it.
 2. **Flat permission.** Allow the provider under **Networks** on the flat's
@@ -39,7 +39,7 @@ If startup fails, the permission stays allowed; allowing it again retries.
 On a Private flat or one without live content running, allowing a public provider
 only records the permission. It never makes the flat Public.
 
-Each mode has a **default for new flats** in Settings → Network providers. A
+Each mode has a **default for new flats** in Settings → Networks. A
 new flat starts allowed on Local plus the private and public defaults only,
 even when more providers are on for the host, and it is always created
 Private. Allow more providers on a flat to serve it on several networks. The console
@@ -50,8 +50,8 @@ several.
 ## Running the console on Tailscale
 
 The console runs on your tailnet under one or more console domains. Turn
-Tailscale on (Settings → Network providers) and add a name under Settings →
-Console domains; it is served at `https://NAME.<tailnet>.ts.net`. On a new
+Tailscale on (Settings → Networks) and add a name under Settings →
+Console; it is served at `https://NAME.<tailnet>.ts.net`. On a new
 remote server, whose console is not reachable yet, set it up while the host
 is stopped:
 
@@ -114,7 +114,7 @@ device rather than the Flats host.
 
 zrok serves public flats as zrok public shares on your zrok account.
 
-**Connecting the account.** Under **Settings → Network providers → zrok**,
+**Connecting the account.** Under **Settings → Networks → zrok**,
 paste your zrok account token and choose **Connect**. The token is on
 myzrok.io: open the zrok API console and copy it from the getting-started
 wizard. Flats registers this machine as an environment of the account, as
@@ -170,7 +170,7 @@ with a **Visit Share** button, once per visitor; programs can skip it with a
 ## Publishing through a Cloudflare quick tunnel
 
 A Cloudflare quick tunnel needs no Cloudflare account, no domain and no token.
-Under **Settings → Network providers → Cloudflare Quick Tunnel**, choose
+Under **Settings → Networks → Cloudflare Quick Tunnel**, choose
 **Turn on**, then allow it on a flat. While the flat is public, Flats opens an
 anonymous tunnel for it through Cloudflare's own quick-tunnel service
 (`api.trycloudflare.com`) and serves the flat at a random
@@ -208,14 +208,14 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o flats ./cmd/flats
 
 Including NetBird makes the binary noticeably larger, and NetBird's `replace`
 directives apply to that binary too. A build without NetBird (`go install`, or
-`go build ./cmd/flats` at the repository root) shows NetBird under Settings → Network providers with a
+`go build ./cmd/flats` at the repository root) shows NetBird under Settings → Networks with a
 note that this build does not include it, and it cannot connect a peer or turn
 NetBird on.
 
 NetBird gives Flats two providers: **NetBird** (Private) and **NetBird
 Expose** (Public). Like Tailscale, every flat runs on its own NetBird peer,
 named after its slug, and the console can have NetBird domains of its own
-(Settings → Console domains → NetBird). The embedded client runs in userspace,
+(Settings → Console). The embedded client runs in userspace,
 so Flats needs no root rights or tunnel interface.
 
 **Setup key.** A setup key is a UUID. In the NetBird dashboard, open Setup
@@ -231,7 +231,7 @@ extra DNS label, and NetBird refuses the registration otherwise. Make it also
 - without an expiry or usage limit, because Flats registers a peer again with
   it when NetBird has removed it.
 
-Register the key under **Settings → Keys**; the other ways are under
+Register the key under **Settings → Networks → NetBird**; the other ways are under
 [Operator keys](configuration.md#operator-keys). Flats keeps it in `flats.db`,
 encrypted, like the Tailscale auth key, and never shows it again. Peers talk
 to the management server in `netbird.management_url` (default NetBird Cloud).

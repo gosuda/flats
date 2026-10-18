@@ -17,8 +17,9 @@ const routes = [
   { re: /^\/flats\/([^/]+)\/settings$/, page: { mount: flatPage.mountSettings }, section: 'flats' },
   { re: /^\/flats\/([^/]+)\/analytics$/, page: analyticsPage, section: 'flats' },
   { re: /^\/flats\/([^/]+)\/database$/, page: databasePage, section: 'flats' },
-  { re: /^\/approvals\/([^/]+)$/, page: approvalPage, section: 'flats' },
-  { re: /^\/settings$/, page: settingsPage, section: 'settings' },
+  { re: /^\/approvals$/, page: { mount: approvalPage.mountList }, section: 'approvals' },
+  { re: /^\/approvals\/([^/]+)$/, page: approvalPage, section: 'approvals' },
+  { re: /^\/settings(?:\/([a-z]+)(?:\/([^/]+))?)?$/, page: settingsPage, section: 'settings' },
 ];
 
 let cleanup = null;
@@ -30,7 +31,7 @@ function match(pathname) {
     const m = pathname.match(r.re);
     if (!m) continue;
     try {
-      return { route: r, params: m.slice(1).map(decodeURIComponent) };
+      return { route: r, params: m.slice(1).map((p) => (p === undefined ? undefined : decodeURIComponent(p))) };
     } catch {
       return null; // malformed escape: show "not found" instead of a blank page
     }
@@ -67,6 +68,7 @@ function render() {
     setTitle: (t) => { document.title = t ? `${t} · Flats` : 'Flats'; },
   };
   cleanup = found.route.page.mount(main, found.params, ctx) || null;
+  updateApprovalCount();
   // Move focus to the new page for keyboard and screen-reader users, except on
   // the first load where the browser keeps its own position.
   if (rendered) main.focus({ preventScroll: true });
@@ -94,6 +96,20 @@ document.addEventListener('click', (e) => {
 });
 
 window.addEventListener('popstate', render);
+
+// The Approvals item in the top bar shows how many requests wait; it is
+// read again on every page change.
+function updateApprovalCount() {
+  api.approvals('pending').then((r) => {
+    const n = (r.approvals || []).filter((a) => a.status === 'pending').length;
+    const slot = document.getElementById('approval-count');
+    if (!slot) return;
+    slot.textContent = n ? String(n) : '';
+    slot.hidden = !n;
+    const link = slot.closest('a');
+    if (link) link.setAttribute('aria-label', n ? `Approvals, ${n} waiting` : 'Approvals');
+  }).catch(() => {});
+}
 
 render();
 

@@ -298,7 +298,7 @@ function emptyState() {
       h('strong', { text: 'Page: ' }), '“Make a single HTML event page.”', h('br'),
       h('strong', { text: 'Design: ' }), '“Create a design canvas with two screens.”'),
     h('p', { text: 'Agents wait for your approval to save or publish a website or page version. Document and design changes take effect as soon as they are saved; who can open them is set separately in Share.' }),
-    h('p', null, h('a', { class: 'btn btn-primary', href: '/settings#connect', 'data-nav': true, text: 'Connect an agent' })));
+    h('p', null, h('a', { class: 'btn btn-primary', href: '/settings/agents', 'data-nav': true, text: 'Connect an agent' })));
 }
 
 // Content types as the console names them. Website flats are just "Flat".

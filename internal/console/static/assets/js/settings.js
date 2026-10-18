@@ -1,321 +1,178 @@
-// Settings: network providers, console domains, operator keys, config.json,
-// limits, the approvals queue and agent setup.
+// Settings: four sections behind a left nav (Networks, Console, Limits,
+// Agents). Networks lists the providers, each with a detail page that also
+// holds its key. Every setting, provider, key, address and fact is the same
+// row; fields stage changes for one save bar per page, while buttons such as
+// Turn on, Add, Replace and Delete act at once.
 
-import { h, timeEl, dateTime, relTime, plural } from './dom.js';
+import { h, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
-import { errorPanel, loading, toast, extLink, busy, fill, copyable, confirmDialog, infoDialog } from './ui.js';
-import { describeApproval, statusBadge, cleanupPending } from './approval.js';
+import { errorPanel, loading, toast, extLink, busy, fill, confirmDialog, infoDialog } from './ui.js';
+
+export const SECTIONS = [['networks', 'Networks'], ['console', 'Console'], ['limits', 'Limits'], ['agents', 'Agents']];
 
 // Limits shown in human units; values are stored as integers in base units.
 // Byte sizes (bytes: true) have a unit menu; unit and factor name the unit
-// used for 0 and for a new value.
+// used for 0 and for a new value. group places a field on its page.
 const FIELDS = [
-  { key: 'upload_max_bytes', label: 'Upload size limit', unit: 'MB', factor: 1 << 20, bytes: true, help: 'Total uncompressed size of one saved version.' },
-  { key: 'version_quota', label: 'Version quota', unit: 'versions', factor: 1, step: 1, help: 'For websites and pages. Default version count per flat (20 on a new host). Each flat can override it. Versions are never deleted automatically; a full quota refuses new versions. Lowering it keeps existing versions. 0 is unlimited.' },
-  { key: 'disk_quota_bytes', label: 'Disk quota per flat', unit: 'GB', factor: 1 << 30, bytes: true, help: '0 means no quota.' },
-  { key: 'preview_ttl_seconds', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
-  { key: 'rate_limit_rps', label: 'Rate limit per flat', unit: 'requests/s', factor: 1, step: 1, min: 1, help: 'Bursts up to twice this rate are allowed.' },
-  { key: 'redirect_days', label: 'Redirect after a slug rename', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect to the new ones.' },
-  { key: 'events_keep', label: 'Log events kept per flat', unit: 'events', factor: 1, step: 1, min: 1, help: 'Older events are deleted.' },
-  { key: 'revision_quota', label: 'Revisions to keep', unit: 'revisions', factor: 1, step: 1, help: 'Unpinned revisions each document or design keeps; older ones are deleted at once when lowered. Each document or design can override it. 0 keeps all.' },
-  { key: 'pin_quota', label: 'Pinned revisions allowed', unit: 'pins', factor: 1, step: 1, help: 'Maximum pinned revisions per document or design. Pinned revisions are never deleted automatically. Each document or design can override it. 0 is unlimited.' },
-  { key: 'portal_max_relays', label: 'Active Portal relays', unit: 'relays', factor: 1, step: 1, min: 1, portal: true, help: 'How many discovered relays a public flat uses at once. Used when Portal starts.' },
+  { key: 'upload_max_bytes', group: 'storage', label: 'Upload size', unit: 'MB', factor: 1 << 20, bytes: true, help: 'Total uncompressed size of one saved version.' },
+  { key: 'disk_quota_bytes', group: 'storage', label: 'Disk per flat', perFlat: true, unit: 'GB', factor: 1 << 30, bytes: true, help: 'A change that would exceed it is refused; nothing is deleted. 0 means no quota.' },
+  { key: 'version_quota', group: 'history', label: 'Versions', perFlat: true, unit: 'versions', factor: 1, step: 1, whole: true, help: 'For websites and pages. Never deleted automatically; a full quota refuses new versions. Lowering it keeps existing versions. 0 is unlimited.' },
+  { key: 'revision_quota', group: 'history', label: 'Revisions', perFlat: true, unit: 'revisions', factor: 1, step: 1, whole: true, help: 'Unpinned revisions each document or design keeps. Older ones are deleted at once when lowered. 0 keeps all.' },
+  { key: 'pin_quota', group: 'history', label: 'Pinned revisions', perFlat: true, unit: 'pins', factor: 1, step: 1, whole: true, help: 'Pinned revisions are never deleted automatically. A full quota refuses new pins. 0 is unlimited.' },
+  { key: 'events_keep', group: 'history', label: 'Log events', unit: 'events', factor: 1, step: 1, min: 1, whole: true, help: 'Kept per flat. Older events are deleted.' },
+  { key: 'rate_limit_rps', group: 'traffic', label: 'Rate limit', unit: 'req/s', factor: 1, step: 1, min: 1, help: 'Requests per second per flat. Bursts up to twice this are allowed.' },
+  { key: 'preview_ttl_seconds', group: 'traffic', label: 'Preview idle timeout', unit: 'hours', factor: 3600, min: 0.01, help: 'A preview closes after this long without visits.' },
+  { key: 'redirect_days', group: 'traffic', label: 'Rename redirect', unit: 'days', factor: 1, step: 1, help: 'How long old addresses redirect after a flat is renamed.' },
+  { key: 'portal_max_relays', group: 'portal', label: 'Active relays', unit: 'relays', factor: 1, step: 1, min: 1, restart: true, help: 'How many discovered relays a public flat uses at once.' },
+];
+
+const LIMIT_GROUPS = [
+  ['storage', 'Storage', ''],
+  ['history', 'History', 'Versions for websites and pages; revisions for documents and designs.'],
+  ['traffic', 'Traffic and addresses', ''],
 ];
 
 // LABELS names every setting in messages.
 const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
-  ['portal_relays', 'Portal relays'], ['portal_discovery', 'Discover Portal relays'], ['portal_hide', 'Hide public flats from relay listings']]);
+  ['portal_relays', 'Relay list'], ['portal_discovery', 'Discover more relays'], ['portal_hide', 'Hide public flats from relay listings'],
+  ['default_private_provider', 'Private network for new flats'], ['default_public_provider', 'Public network for new flats'],
+  ['preferred', 'Address for links']]);
 
 // Lower values of these settings remove data at the next pruning.
 const RETENTION = ['events_keep', 'preview_ttl_seconds'];
 
-const SOURCES = { default: 'default', file: 'config.json', flag: 'flag for this run' };
+const SOURCES = { default: 'default', file: 'config.json', flag: 'a flag for this run' };
+// SOURCE_TAGS label a read-only value's source.
+const SOURCE_TAGS = { default: 'default', file: 'config.json', flag: 'flag for this run' };
 
-// Read-only config.json values: [key, label, value(config)].
-const CONFIG_GROUPS = [
-  ['Host', [
-    ['host.management_addr', 'Management address', (c) => c.host.management_addr],
-    ['host.local_addr', 'Local network address', (c) => c.host.local_addr],
-    ['host.server_runtime', 'Server flats', (c) => (c.host.server_runtime ? 'on' : 'off')],
-  ]],
-  ['Network', [
-    ['network.private_backend', 'Private routes', (c) => c.network.private_backend],
-  ]],
+// Read-only config.json values: [key, label, value(config), description].
+const CONFIG_ROWS = [
+  ['host.management_addr', 'Management address', (c) => c.host.management_addr, ''],
+  ['host.local_addr', 'Local network address', (c) => c.host.local_addr, ''],
+  ['host.server_runtime', 'Server flats', (c) => (c.host.server_runtime ? 'on' : 'off'), 'Run JavaScript server apps.'],
+  ['network.private_backend', 'Private routes', (c) => c.network.private_backend, 'The network new flats use when no private default is chosen.'],
 ];
 
-export function mount(main, _params, ctx) {
-  ctx.setTitle('Settings');
-  const providersSlot = h('div', null, loading());
-  const domainsSlot = h('div', null, loading());
-  const keysSlot = h('div', null, loading());
-  const noticeSlot = h('div');
-  const configSlot = h('div', null, loading());
-  const limitsSlot = h('div', null, loading());
-  const approvalsSlot = h('div', null, loading());
+// --- page shell ---
 
-  const card = (title, id, ...children) => h('section', { class: 'card', id, 'aria-labelledby': id + '-title' },
-    h('h2', { id: id + '-title', text: title }), ...children);
-
-  main.appendChild(h('section', { class: 'page' },
-    h('div', { class: 'page-head' }, h('h1', { text: 'Settings' })),
-    noticeSlot,
-    card('Network providers', 'providers', providersSlot),
-    card('Console domains', 'console-domains', domainsSlot),
-    card('Keys', 'keys', keysSlot),
-    card('Host configuration', 'configuration', configSlot),
-    card('Limits', 'limits', limitsSlot),
-    card('Approvals', 'approvals', approvalsSlot),
-    card('Connect an agent', 'connect', connectAgent())));
-
-  loadSettings();
-  api.approvals().then((r) => ctx.alive() && fill(approvalsSlot, approvals(r.approvals || [])))
-    .catch((err) => ctx.alive() && fill(approvalsSlot, errorPanel(err, 'Cannot load approvals')));
-
-  // loadSettings renders the providers, config.json and the limits form;
-  // saved is the result of the save that triggered the reload, if any.
-  async function loadSettings(saved) {
-    let data;
-    try {
-      data = await api.settings();
-    } catch (err) {
-      if (!ctx.alive()) return;
-      fill(configSlot, errorPanel(err, 'Cannot load settings'));
-      fill(limitsSlot);
-      fill(providersSlot);
-      fill(domainsSlot);
-      fill(keysSlot);
-      return;
-    }
-    if (!ctx.alive()) return;
-    const showNotice = (cfg) => fill(noticeSlot, changedNotice(cfg));
-    const opts = { reload: loadSettings, saved, showNotice };
-    showNotice(data.config);
-    fill(configSlot, configView(data.config));
-    fill(limitsSlot, limitsForm(data, { ...opts, group: 'system' }));
-    const [prov, domains, keys] = await Promise.allSettled([api.providers(), api.consoleDomains(), api.keys()]);
-    if (!ctx.alive()) return;
-    const providers = prov.status === 'fulfilled' ? (prov.value.providers || []) : [];
-    lastProviders = providers;
-    fill(providersSlot, prov.status === 'fulfilled' ? providerGroups(providers, data, opts) : errorPanel(prov.reason, 'Cannot load network providers'));
-    fill(domainsSlot, domains.status === 'fulfilled' ? consoleDomains(domains.value, opts) : errorPanel(domains.reason, 'Cannot load the console domains'));
-    fill(keysSlot, keys.status === 'fulfilled' ? keysCard(keys.value.keys || [], providers, opts) : errorPanel(keys.reason, 'Cannot load the keys'));
-    scheduleRefresh(domains.value, keys.value && keys.value.keys, opts);
+export function mount(main, [section, sub], ctx) {
+  const active = section || 'networks';
+  const known = SECTIONS.some(([id]) => id === active) && (!sub || active === 'networks');
+  const notice = h('div');
+  const content = h('div', { class: 's-content' }, loading());
+  main.appendChild(h('div', { class: 's-shell' },
+    h('aside', { class: 's-side' },
+      h('h1', { text: 'Settings' }),
+      h('nav', { 'aria-label': 'Settings' }, SECTIONS.map(([id, label]) =>
+        h('a', { href: '/settings/' + id, 'data-nav': true, 'aria-current': id === active ? 'page' : null, text: label })))),
+    h('div', { class: 's-main' }, notice, content)));
+  if (!known) {
+    ctx.setTitle('Not found');
+    fill(content, h('p', null, 'No such settings page. ', h('a', { href: '/settings', 'data-nav': true, text: 'Back to Settings' })));
+    return null;
   }
 
   // Tailnet nodes and enrollments finish in the background: while one is
-  // pending, the domain and key cards refresh every few seconds, except
-  // while the operator is typing in them.
-  let lastProviders = [];
+  // pending, the page reloads every few seconds, except while the operator
+  // is typing or has staged a change.
   let refreshTimer = null;
-  function scheduleRefresh(domains, keys, opts) {
+  const page = { ctx, content, notice, refresh };
+  function refresh(pending) {
     clearTimeout(refreshTimer);
-    if (!pendingWork(domains, keys)) return;
-    refreshTimer = setTimeout(async () => {
+    if (!pending) return;
+    refreshTimer = setTimeout(() => {
       if (!ctx.alive()) return;
-      if ([domainsSlot, keysSlot].some(editing)) {
-        scheduleRefresh(domains, keys, opts);
-        return;
-      }
-      const [d, k] = await Promise.allSettled([api.consoleDomains(), api.keys()]);
-      if (!ctx.alive()) return;
-      // The operator may have started typing while the requests ran.
-      if (d.status === 'fulfilled' && !editing(domainsSlot)) fill(domainsSlot, consoleDomains(d.value, opts));
-      if (k.status === 'fulfilled' && !editing(keysSlot)) fill(keysSlot, keysCard(k.value.keys || [], lastProviders, opts));
-      scheduleRefresh(d.value, k.value && k.value.keys, opts);
+      if (editing(content)) { refresh(pending); return; }
+      load();
     }, 5000);
     // Never keep a test process alive (Node timers have unref; browsers ignore it).
     if (refreshTimer && typeof refreshTimer.unref === 'function') refreshTimer.unref();
   }
+  const load = (saved) => {
+    if (active === 'networks' && sub) return providerPage(page, sub, saved, load);
+    if (active === 'networks') return networksPage(page, saved, load);
+    if (active === 'console') return consolePage(page, saved, load);
+    if (active === 'limits') return limitsPage(page, saved, load);
+    return agentsPage(page);
+  };
+  load();
+  return () => clearTimeout(refreshTimer);
 }
 
-// pendingWork reports a console node or an enrollment still in progress.
-export function pendingWork(domains, keys) {
-  const all = Object.keys(NETWORKS).flatMap((prov) => (domains ? networkOf(domains, prov).domains : []) || []);
-  const nodes = all.some((d) => !d.conflict && !serving(d.state));
-  return nodes || (keys || []).some((k) => k.waiting);
-}
-
-// editing reports whether the operator is typing in a card.
-function editing(slot) {
+// editing reports whether the operator is typing in the page or has staged
+// a change there.
+function editing(root) {
   const active = globalThis.document && document.activeElement;
-  if (active && typeof slot.contains === 'function' && slot.contains(active)) return true;
-  return typeof slot.querySelectorAll === 'function' && [...slot.querySelectorAll('input')].some((i) => i.value);
+  if (active && typeof root.contains === 'function' && root.contains(active) && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) return true;
+  if (typeof root.querySelectorAll !== 'function') return false;
+  if ([...root.querySelectorAll('input[type="password"], input[type="text"]')].some((i) => i.value)) return true;
+  return [...root.querySelectorAll('.savebar')].some((b) => !b.hidden);
 }
 
-// --- network providers ---
-
-// PROVIDER_INFO describes each provider for the operator. Local is always on;
-// the others are off until turned on here, and a flat uses one only after it
-// is also allowed on that flat.
-export const PROVIDER_INFO = {
-  local: { label: 'Local', what: 'This device, through localhost.' },
-  tailscale: { label: 'Tailscale', what: 'Devices your tailnet ACL allows. Flats and previews get their own tailnet nodes.' },
-  'tailscale-funnel': { label: 'Tailscale Funnel', what: 'Anyone on the internet, through Tailscale Funnel on the flat’s tailnet node. Visitors do not need Tailscale.' },
-  portal: { label: 'Portal', what: 'Anyone on the internet, through Portal relays.' },
-  zrok: { label: 'zrok', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
-  'cloudflare-quick': { label: 'Cloudflare Quick Tunnel', what: 'Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random trycloudflare.com address. No Cloudflare account or domain needed.' },
-  netbird: { label: 'NetBird', what: 'Peers your NetBird access policies allow. Each flat runs on its own NetBird peer, at http://SLUG.<NetBird domain>/.' },
-  'netbird-expose': { label: 'NetBird Expose', what: 'Anyone on the internet, through NetBird’s reverse proxy, from the flat’s own NetBird peer.' },
-};
-
-// providerGroups lists the providers as Private and Public groups. data is
-// the settings response: its ETag guards a change, and the Portal panel
-// holds the Portal settings.
-export function providerGroups(list, data, opts) {
-  const group = (scope, title, hint) => h('section', { class: 'provider-group', 'aria-labelledby': 'providers-' + scope },
-    h('h3', { id: 'providers-' + scope, text: title }),
-    h('p', { class: 'muted small', text: hint }),
-    defaultField(scope, list, data, opts),
-    list.filter((p) => p.scope === scope).map((p) => providerPanel(p, data, opts)));
-  return [
-    h('p', { class: 'muted', text: 'Local is always on. Turn on another provider to make it available, then allow it on each flat that should use it. Each mode has a default: a new flat starts allowed on the defaults only, and is always created Private. Turning a provider on does not publish a flat or make it public.' }),
-    group('private', 'Private', 'Reachable from this device or your tailnet.'),
-    group('public', 'Public', 'Reachable from the internet. A flat goes public only after you approve it.'),
-  ];
+// pageHead is a page's title, optional crumb, status and action, and intro.
+function pageHead({ title, crumb, status, action, intro, after }) {
+  return h('div', { class: 's-head' },
+    crumb ? h('p', { class: 's-crumb' }, h('a', { href: crumb[1], 'data-nav': true, text: crumb[0] }), h('span', { 'aria-hidden': 'true', text: '/' }), h('span', { text: title })) : null,
+    h('div', { class: 's-title-row' }, h('div', { class: 's-title' }, h('h2', { text: title }), status), action),
+    intro ? h('p', { class: 's-intro' }, intro) : null,
+    after);
 }
 
-// DEFAULT_KEYS are the settings naming the provider new flats inherit.
-const DEFAULT_KEYS = { private: 'default_private_provider', public: 'default_public_provider' };
-
-// effectiveDefault is the provider new flats inherit in scope ('' = none).
-export function effectiveDefault(scope, data) {
-  const v = (data.settings || {})[DEFAULT_KEYS[scope]] || '';
-  if (scope === 'private' && !v) return (data.config && data.config.network.private_backend) || 'local';
-  return v;
+// group is a heading over a bordered list of rows (or other content).
+function group(id, title, hint, ...body) {
+  return h('section', { class: 's-group', id, 'aria-labelledby': id + '-title' },
+    h('div', { class: 's-group-head' }, h('h3', { id: id + '-title', text: title }), hint ? h('p', null, hint) : null),
+    ...body);
 }
 
-// defaultField picks the provider every new flat is allowed on for scope.
-// Only providers turned on for the host can be the default.
-function defaultField(scope, list, data, opts) {
-  const key = DEFAULT_KEYS[scope];
-  const id = 'default-' + scope;
-  const current = effectiveDefault(scope, data);
-  const choices = list.filter((p) => p.scope === scope && (p.id === 'local' || p.enabled));
-  const options = scope === 'public' ? [['', 'None (new flats get no public provider)']] : [];
-  for (const p of choices) options.push([p.id, (PROVIDER_INFO[p.id] || { label: p.id }).label]);
-  const select = h('select', { id, 'aria-describedby': id + '-help' },
-    options.map(([value, text]) => h('option', { value, text, selected: value === current })));
-  select.value = current;
-  select.addEventListener('change', async () => {
-    const next = select.value;
-    select.disabled = true;
-    try {
-      await api.saveSettings({ [key]: next }, data.config ? data.config.etag : '');
-      const label = next ? (PROVIDER_INFO[next] || { label: next }).label : 'none';
-      toast(`New flats now start with ${label} as the ${scope} provider.`, 'success');
-      await opts.reload();
-    } catch (err) {
-      select.value = current;
-      select.disabled = false;
-      await infoDialog('Cannot change the default provider', errorPanel(err));
-    }
-  });
-  const help = scope === 'public'
-    ? 'New flats are allowed on this provider only, and stay Private until you approve making them public. Turn more public providers on to choose among them.'
-    : 'New flats are allowed on this provider. Local is always allowed as well.';
-  return h('div', { class: 'field provider-default' },
-    h('label', { for: id, text: 'Default for new flats' }), select,
-    h('span', { class: 'muted small', id: id + '-help', text: help }));
+const list = (...rows) => h('div', { class: 's-list' }, ...rows);
+
+// row is the one row anatomy: title, description and meta on the left; a
+// status and at most two controls on the right. With href it opens a page.
+function row({ id, title, labelFor, desc, meta, ctl, cls, href, stack }) {
+  const titleEl = labelFor ? h('label', { class: 's-row-title', for: labelFor }, title) : h('span', { class: 's-row-title' }, title);
+  const metaEl = meta && [].concat(meta).filter(Boolean).length
+    ? h('span', { class: 's-row-meta' }, [].concat(meta).filter(Boolean).map((m, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true', text: '·' }) : null, typeof m === 'string' ? h('span', { text: m }) : m]))
+    : null;
+  const main = h('div', { class: 's-row-main' }, titleEl, desc ? h('p', { class: 's-row-desc' }, desc) : null, metaEl);
+  const ctlEl = ctl ? h('div', { class: 's-row-ctl' }, ctl, href ? chevron() : null) : (href ? h('div', { class: 's-row-ctl' }, chevron()) : null);
+  const classes = ['s-row', href ? 'is-link' : '', stack ? 'stack' : '', cls || ''].filter(Boolean).join(' ');
+  if (href) return h('a', { class: classes, id, href, 'data-nav': true }, main, ctlEl);
+  return h('div', { class: classes, id }, main, ctlEl);
 }
 
-function providerPanel(p, data, opts) {
-  const info = PROVIDER_INFO[p.id] || { label: p.id, what: '' };
-  const local = p.id === 'local';
-  const state = local ? h('span', { class: 'badge badge-ready', text: 'Always on' })
-    : h('span', { class: 'badge' + (p.enabled ? ' badge-ready' : ''), text: p.enabled ? 'On' : 'Off' });
-  const isDefault = effectiveDefault(p.scope, data) === p.id;
-  const defBadge = isDefault ? h('span', { class: 'badge badge-default', text: 'Default' }) : null;
-  let toggle = null;
-  if (!local) {
-    // zrok can be turned on only once an account is connected.
-    // A build without NetBird cannot turn it on.
-    const needsAccount = (p.id === 'zrok' && !p.enabled && !p.connected) || (!!p.unsupported && !p.enabled);
-    toggle = needsAccount ? null : h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? '' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
-      'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
-    if (toggle) {
-      toggle.addEventListener('click', () => busy(toggle, async () => {
-        if (await setHostProvider(p, info, !p.enabled, data.config ? data.config.etag : '')) await opts.reload();
-      }));
-      toggle = withReason(toggle, p.locked || '');
-    }
-  }
-  const used = p.flats.length
-    ? h('p', { class: 'small' }, 'Allowed on ', p.flats.map((slug, i) => [i ? ', ' : '', h('a', { href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: slug })]))
-    : (local ? null : h('p', { class: 'muted small', text: 'Not allowed on any flat yet.' }));
-  return h('article', { class: 'provider' + (p.enabled ? ' is-on' : ''), id: 'provider-' + p.id },
-    h('div', { class: 'provider-head' },
-      h('div', null, h('h4', null, info.label, state, defBadge), h('p', { class: 'muted small', text: info.what })),
-      toggle),
-    p.locked ? h('p', { class: 'muted small', text: p.locked }) : null,
-    used,
-    providerDetails(p, data, opts));
+function chevron() {
+  return h('span', { class: 's-chev', 'aria-hidden': 'true', text: '›' });
 }
 
-function providerDetails(p, data, opts) {
-  if (p.id === 'zrok') return zrokDetails(p);
-  if (p.id === 'netbird' || p.id === 'netbird-expose') return netbirdDetails(p);
-  if (p.id === 'local') return p.address ? h('dl', { class: 'facts' }, h('dt', { text: 'Address' }), h('dd', null, h('code', { text: p.address }))) : null;
-  if (p.id === 'portal') return [limitsForm(data, { ...opts, group: 'portal' }), p.enabled && p.status ? hostsTable(p.status) : null];
-  if (!p.enabled) return null;
-  if (p.id === 'tailscale') {
-    return [
-      h('dl', { class: 'facts' }, h('dt', { text: 'Auth key' }),
-        h('dd', null, p.auth_key ? 'Stored. ' : 'None: each new node shows a login link below. ', keysLink('Manage it under Keys.'))),
-      p.status ? hostsTable(p.status) : null,
-    ];
-  }
-  if (p.id === 'tailscale-funnel') {
-    return h('p', { class: 'muted small', text: 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.' });
-  }
-  if (p.id === 'cloudflare-quick') {
-    return [
-      h('p', { class: 'muted small', text: 'Cloudflare offers quick tunnels for testing and development: no uptime guarantee, up to 200 concurrent requests per flat and no server-sent events. Each flat gets a random address. Flats keeps it across restarts while Cloudflare keeps the tunnel; if Cloudflare removes the tunnel, the flat gets a new address.' }),
-      p.status ? hostsTable(p.status) : null,
-    ];
-  }
-  return null;
+// pill reports live state; tag describes a setting's role. They never swap.
+export function pill(text, kind) {
+  return h('span', { class: 'pill pill-' + (kind || 'off'), text });
+}
+function tag(text, kind) {
+  return h('span', { class: 'tag' + (kind ? ' tag-' + kind : ''), text });
 }
 
-// zrokDetails shows the zrok account the provider uses. The account token is
-// managed under Keys; with zrok.environment set in config.json the account
-// is managed outside Flats, with the zrok CLI.
-function zrokDetails(p) {
-  const facts = h('dl', { class: 'facts' },
-    p.connected ? [
-      h('dt', { text: 'Account' }), h('dd', { text: 'Connected' }),
-      h('dt', { text: 'Environment ID' }), h('dd', null, h('code', { text: p.environment_id || '' })),
-      h('dt', { text: 'zrok service' }), h('dd', null, h('code', { text: p.api_endpoint || '' })),
-    ] : [h('dt', { text: 'Account' }), h('dd', { text: 'Not connected' })],
-    h('dt', { text: 'Namespace' }), h('dd', null, h('code', { text: p.namespace || 'public' })));
-  const hosts = p.enabled && p.status ? hostsTable(p.status) : null;
-  if (!p.managed) {
-    return [facts,
-      h('p', { class: 'muted small', text: 'Uses the zrok environment set as zrok.environment in config.json; manage its account with the zrok CLI. Each public flat reserves its slug as a name in this namespace.' }),
-      hosts];
-  }
-  return [facts,
-    h('p', { class: 'muted small' }, p.connected
-      ? 'Each public flat reserves its slug as a name in this namespace, so its URL stays the same. '
-      : 'Connect a zrok account first, then turn zrok on. ', keysLink('Manage the account token under Keys.')),
-    hosts];
+// stateKind maps a node or relay state to a pill kind.
+export function stateKind(state) {
+  if (state === 'ready') return 'on';
+  if (state === 'starting' || state === 'key-expiring' || state === 'connecting') return 'busy';
+  if (state === 'needs-login' || state === 'error' || state === 'failed') return 'err';
+  return 'off';
+}
+const STATE_TEXT = { ready: 'Ready', starting: 'Starting', 'key-expiring': 'Key expiring', 'needs-login': 'Needs login', error: 'Error', failed: 'Failed' };
+const statePill = (state) => pill(STATE_TEXT[state] || state || 'Starting', stateKind(state || 'starting'));
+
+function callout(kind, ...body) {
+  return h('div', { class: 'callout callout-' + kind, role: kind === 'warn' || kind === 'err' ? 'status' : null }, h('div', null, ...body));
 }
 
-// netbirdDetails shows what both NetBird providers share: the setup key every
-// flat's peer registers with, managed under Keys, and the running peers.
-function netbirdDetails(p) {
-  // A binary built without NetBird cannot run a peer or turn it on.
-  if (p.unsupported) return h('p', { class: 'alert alert-warn', text: p.unsupported });
-  const facts = h('dl', { class: 'facts' },
-    h('dt', { text: 'Setup key' }), h('dd', null, p.key_set ? 'Stored' : 'Not stored. ', p.key_set ? null : keysLink('Register one under Keys.')),
-    h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: p.management_url || '' })),
-    p.id === 'netbird' ? [h('dt', { text: 'Peers running' }), h('dd', { text: String(p.peers || 0) })] : null);
-  const hosts = p.enabled && p.status ? hostsTable(p.status) : null;
-  if (p.id === 'netbird-expose') {
-    return [facts, h('p', { class: 'muted small', text: 'A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Anyone can open the URL.' }), hosts];
-  }
-  return [facts,
-    h('p', { class: 'muted small', text: 'NetBird routes are plain HTTP: traffic between peers is encrypted by WireGuard, but browsers treat the page as not secure, so features such as clipboard writes, crypto.subtle, service workers and Secure cookies do not work there.' }),
-    hosts];
+// changedNotice tells the operator that config.json changed on disk.
+function changedNotice(cfg) {
+  if (!cfg || !cfg.changed_on_disk) return null;
+  return h('div', { class: 'alert alert-warn', role: 'status' },
+    h('strong', { text: 'config.json changed on disk' }),
+    h('p', { text: 'Restart Flats to load it. Until then Flats keeps the settings it loaded, and saving here is refused.' }));
 }
 
 // withReason disables button when reason is set and shows why. A disabled
@@ -334,40 +191,208 @@ export function withReason(button, reason) {
   button, h('span', { id, class: 'sr-only', text: reason }));
 }
 
-// keysLink points to the Keys card.
-function keysLink(text) {
-  return h('a', { href: '#keys', text });
+// locked explains a blocked action in place.
+function locked(text) {
+  return h('p', { class: 's-locked' }, h('span', { 'aria-hidden': 'true', class: 's-lock' }), h('span', null, text));
 }
 
+// linkify turns http(s) URLs in text into links (for login URLs in details).
+function linkify(text) {
+  const parts = [];
+  let last = 0;
+  for (const m of String(text).matchAll(/https?:\/\/[^\s"'<>]+/g)) {
+    parts.push(text.slice(last, m.index), extLink(m[0]));
+    last = m.index + m[0].length;
+  }
+  parts.push(text.slice(last));
+  return h('span', null, parts);
+}
 
-// zrokTokenForm sends an account token to connect or replace the zrok account.
-function zrokTokenForm(opts, o) {
-  const id = 'zrok-token';
-  const input = h('input', { type: 'password', id, name: 'token', autocomplete: 'off', spellcheck: 'false', required: true,
-    placeholder: 'zrok account token' });
-  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: o.submit });
-  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: id, text: o.label }), input,
-    h('p', { class: 'muted small', text: o.help }),
-    h('div', { class: 'form-actions' }, submit));
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const token = input.value.trim();
-    if (!token) { input.focus(); return; }
-    busy(submit, async () => {
-      if (o.confirm && !(await confirmDialog({ title: o.confirm.title, body: [h('p', { text: o.confirm.body })], confirmLabel: o.submit }))) return;
-      try {
-        await api.connectZrok(token);
-      } catch (err) {
-        await infoDialog('Cannot connect the zrok account', errorPanel(err));
-        return;
-      }
-      input.value = '';
-      toast(o.done, 'success');
-      await opts.reload();
-    });
+// --- network providers ---
+
+// PROVIDER_INFO describes each provider for the operator. Local is always on;
+// the others are off until turned on here, and a flat uses one only after it
+// is also allowed on that flat.
+export const PROVIDER_INFO = {
+  local: { label: 'Local', short: 'This device', what: 'This device, through localhost.' },
+  tailscale: { label: 'Tailscale', short: 'Devices your tailnet ACL allows', noun: 'node', what: 'Each flat and preview gets its own tailnet node, open to the devices your tailnet ACL allows.' },
+  netbird: { label: 'NetBird', short: 'Peers your NetBird policies allow', noun: 'peer', what: 'Each flat runs on its own NetBird peer at http://SLUG.<NetBird domain>/, open to the peers your NetBird access policies allow.' },
+  portal: { label: 'Portal', short: 'Through Portal relays', what: 'Public flats are served through Portal relays. Anyone on the internet can open them.' },
+  'cloudflare-quick': { label: 'Cloudflare Quick Tunnel', short: 'Random trycloudflare.com address', what: 'Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random trycloudflare.com address. No Cloudflare account or domain needed.' },
+  'tailscale-funnel': { label: 'Tailscale Funnel', short: 'Through the flat’s tailnet node', what: 'Anyone on the internet, through Tailscale Funnel on the flat’s tailnet node. Visitors do not need Tailscale.' },
+  zrok: { label: 'zrok', short: 'Public shares on your zrok account', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
+  'netbird-expose': { label: 'NetBird Expose', short: 'NetBird’s reverse proxy', what: 'Anyone on the internet, through NetBird’s reverse proxy, from the flat’s own NetBird peer.' },
+};
+const infoOf = (id) => PROVIDER_INFO[id] || { label: id, short: '', what: '' };
+
+// DEFAULT_KEYS are the settings naming the provider new flats inherit.
+const DEFAULT_KEYS = { private: 'default_private_provider', public: 'default_public_provider' };
+
+// effectiveDefault is the provider new flats inherit in scope ('' = none).
+export function effectiveDefault(scope, data) {
+  const v = (data.settings || {})[DEFAULT_KEYS[scope]] || '';
+  if (scope === 'private' && !v) return (data.config && data.config.network.private_backend) || 'local';
+  return v;
+}
+
+// loadAll fetches what a page needs; settings failing is fatal, the others
+// are shown as errors where they are used.
+async function loadAll(page, want) {
+  const calls = { settings: api.settings, providers: api.providers, keys: api.keys, domains: api.consoleDomains };
+  const names = ['settings', ...want];
+  const res = await Promise.allSettled(names.map((n) => calls[n]()));
+  if (!page.ctx.alive()) return null;
+  const out = {};
+  names.forEach((n, i) => { out[n] = res[i].status === 'fulfilled' ? res[i].value : null; out[n + 'Error'] = res[i].reason; });
+  if (!out.settings) {
+    fill(page.content, errorPanel(out.settingsError, 'Cannot load settings'));
+    return null;
+  }
+  fill(page.notice, changedNotice(out.settings.config));
+  return out;
+}
+
+// providerState is the pill for a provider's host state.
+function providerState(p) {
+  if (p.id === 'local') return pill('Always on', 'on');
+  return p.enabled ? pill('On', 'on') : pill('Off', 'off');
+}
+
+// providerMeta is the one-line summary under a provider in the list.
+function providerMeta(p, keys) {
+  const info = infoOf(p.id);
+  const meta = [info.short];
+  if (p.id === 'local') {
+    if (p.address) meta.push(h('code', { text: p.address }));
+    return meta;
+  }
+  const key = (keys || []).find((k) => k.id === (p.id === 'netbird-expose' ? 'netbird' : p.id));
+  if (p.unsupported) meta.push('Not in this build');
+  else if (p.id === 'zrok' && !p.connected) meta.push('Needs an account token');
+  else if ((p.id === 'netbird' || p.id === 'netbird-expose') && !(p.key_set || (key && key.set))) meta.push('Needs a setup key');
+  const hosts = p.enabled && p.status ? (p.status.hosts || []).length : 0;
+  if (hosts && info.noun) meta.push(plural(hosts, info.noun));
+  meta.push(p.flats.length ? `Allowed on ${plural(p.flats.length, 'flat')}` : 'Not allowed on any flat');
+  return meta;
+}
+
+// networksPage: defaults for new flats, then every provider as a row that
+// opens its detail page.
+async function networksPage(page, saved, reload) {
+  page.ctx.setTitle('Networks · Settings');
+  const d = await loadAll(page, ['providers', 'keys']);
+  if (!d) return;
+  const providers = d.providers ? (d.providers.providers || []) : [];
+  const keys = d.keys ? (d.keys.keys || []) : [];
+  const byScope = (scope) => providers.filter((p) => p.scope === scope);
+  const providerRows = (scope) => byScope(scope).map((p) => {
+    const isDefault = effectiveDefault(scope, d.settings) === p.id;
+    return row({ id: 'provider-' + p.id, href: '/settings/networks/' + encodeURIComponent(p.id),
+      title: [infoOf(p.id).label, isDefault ? tag('Default') : null], meta: providerMeta(p, keys), ctl: providerState(p) });
   });
-  return form;
+  fill(page.content,
+    pageHead({ title: 'Networks', intro: 'Where flats can be reached. Turn a network on here, then allow it on each flat that should use it. Turning a network on never makes a flat public.' }),
+    d.providers ? defaultsForm(d.settings, providers, saved, reload, page.notice) : errorPanel(d.providersError, 'Cannot load network providers'),
+    d.providers ? group('providers-private', 'Private', 'Reachable from this device or your own network.', list(...providerRows('private'))) : null,
+    d.providers ? group('providers-public', 'Public', 'Reachable from the internet, only after you approve it per flat.', list(...providerRows('public'))) : null);
+}
+
+// defaultsForm picks the provider every new flat is allowed on for each
+// scope. Only providers turned on for the host can be a default.
+function defaultsForm(data, providers, saved, reload, notice) {
+  const choices = (scope) => {
+    const out = scope === 'public' ? [['', 'None']] : [];
+    for (const p of providers) if (p.scope === scope && (p.id === 'local' || p.enabled)) out.push([p.id, p.id === 'local' ? 'Local only' : infoOf(p.id).label]);
+    return out;
+  };
+  return stagedForm({
+    id: 'defaults', data, saved, reload, notice,
+    groups: [['defaults', 'New flats', 'Applies to flats created from now on.', [
+      { key: DEFAULT_KEYS.private, kind: 'select', label: 'Private network', options: choices('private'), initial: effectiveDefault('private', data),
+        help: 'New flats are reachable here. Local is always included.' },
+      { key: DEFAULT_KEYS.public, kind: 'select', label: 'Public network', options: choices('public'), initial: effectiveDefault('public', data),
+        help: 'Used once you approve making a flat public. New flats always start Private.' },
+    ]]],
+  });
+}
+
+// providerPage shows one provider: header with state and the immediate
+// action, then its key, then status, then where it is allowed.
+async function providerPage(page, id, saved, reload) {
+  const d = await loadAll(page, ['providers', 'keys']);
+  if (!d) return;
+  if (!d.providers) { fill(page.content, errorPanel(d.providersError, 'Cannot load network providers')); return; }
+  const providers = d.providers.providers || [];
+  const p = providers.find((x) => x.id === id);
+  const info = infoOf(id);
+  page.ctx.setTitle(`${info.label} · Settings`);
+  if (!p) {
+    fill(page.content, pageHead({ title: info.label, crumb: ['Networks', '/settings/networks'] }), h('p', { class: 'muted', text: 'No such network on this host.' }));
+    return;
+  }
+  const keys = d.keys ? (d.keys.keys || []) : [];
+  const keyOf = (kid) => keys.find((k) => k.id === kid);
+  const data = d.settings;
+  const etag = data.config ? data.config.etag : '';
+  const after = () => reload();
+  const isDefault = effectiveDefault(p.scope, data) === p.id;
+  // NetBird without a setup key shows numbered steps; the switch is step 2.
+  const setup = p.id === 'netbird' && !p.unsupported && !p.enabled && !p.key_set && !(keyOf('netbird') || {}).set;
+  const action = setup ? null : providerToggle(p, info, etag, after);
+  const head = pageHead({
+    title: info.label, crumb: ['Networks', '/settings/networks'],
+    status: [providerState(p), isDefault ? tag(p.scope === 'public' ? 'Default public' : 'Default private') : null],
+    action: action && action.button,
+    intro: info.what,
+    after: action && action.reason ? locked(action.reason) : null,
+  });
+  const parts = [head];
+  const keyParts = [];
+  if (p.id === 'tailscale') keyParts.push(group('key', 'Auth key', 'Stored encrypted in flats.db. Never shown again.', keySection(keyOf('tailscale'), TAILSCALE_KEY, after)));
+  if (p.id === 'netbird') {
+    if (p.unsupported) parts.push(callout('warn', p.unsupported));
+    else if (setup) parts.push(netbirdSteps(p, keyOf('netbird'), etag, after));
+    else keyParts.push(group('key', 'Setup key', 'Stored encrypted in flats.db. Never shown again.', keySection(keyOf('netbird'), NETBIRD_KEY, after)));
+  }
+  if (p.id === 'netbird-expose') {
+    parts.push(callout('info', 'A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Its peer registers with the setup key under ',
+      h('a', { href: '/settings/networks/netbird', 'data-nav': true, text: 'NetBird' }), '.'));
+  }
+  if (p.id === 'zrok') keyParts.push(group('key', 'Account', p.managed ? 'The token is kept in Flats’ zrok environment. Never shown again.' : '', zrokSection(p, keyOf('zrok'), after)));
+  parts.push(...keyParts);
+  if (p.id === 'portal') parts.push(portalForm(data, saved, reload, page.notice));
+  if (p.id === 'local') parts.push(group('address', 'Address', '', list(row({ title: 'Local address', desc: 'Every flat is reachable here from this device.', ctl: p.address ? h('code', { text: p.address }) : null }))));
+  if (p.id === 'tailscale-funnel') parts.push(callout('info', 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.'));
+  if (p.id === 'cloudflare-quick') parts.push(callout('info', 'Cloudflare offers quick tunnels for testing and development: no uptime guarantee, up to 200 concurrent requests per flat and no server-sent events. Each flat gets a random address. Flats keeps it across restarts while Cloudflare keeps the tunnel; if Cloudflare removes the tunnel, the flat gets a new address.'));
+  if (p.enabled && p.status) parts.push(statusGroup(p));
+  if (p.id !== 'local') parts.push(allowedGroup(p));
+  if (p.id === 'tailscale') parts.push(callout('info', 'Console addresses on Tailscale are managed under ', h('a', { href: '/settings/console', 'data-nav': true, text: 'Console' }), ', next to the other places the console opens.'));
+  if (p.id === 'netbird' && !p.unsupported) parts.push(callout('warn', h('strong', { text: 'Plain HTTP. ' }), 'Traffic between peers is encrypted by WireGuard, but browsers treat the page as not secure: clipboard writes, crypto.subtle, service workers and Secure cookies don’t work there.'));
+  fill(page.content, parts);
+  const pendingKeys = keys.some((k) => k.waiting);
+  const pendingHosts = p.enabled && p.status && (p.status.hosts || []).some((x) => x.state === 'starting');
+  page.refresh(pendingKeys || pendingHosts);
+}
+
+// providerToggle is the Turn on / Turn off button and, when blocked, why.
+function providerToggle(p, info, etag, after) {
+  if (p.id === 'local') return null;
+  // zrok can be turned on only once an account is connected. A build
+  // without NetBird cannot turn it on.
+  if (!p.enabled && p.unsupported) return null;
+  const button = h('button', { type: 'button', class: 'btn btn-small' + (p.enabled ? ' btn-danger-text' : ' btn-primary'), text: p.enabled ? 'Turn off' : 'Turn on',
+    'aria-label': `${p.enabled ? 'Turn off' : 'Turn on'} ${info.label}` });
+  let reason = p.locked || '';
+  if (!p.enabled && p.id === 'zrok' && !p.connected) reason = 'Connect a zrok account below first.';
+  if (reason) {
+    button.disabled = true;
+    button.setAttribute('disabled', '');
+    return { button, reason };
+  }
+  button.addEventListener('click', () => busy(button, async () => {
+    if (await setHostProvider(p, info, !p.enabled, etag)) await after();
+  }));
+  return { button, reason: '' };
 }
 
 async function setHostProvider(p, info, enabled, etag) {
@@ -379,6 +404,7 @@ async function setHostProvider(p, info, enabled, etag) {
       h('p', { class: 'muted', text: 'Saved to config.json and applied now. Nothing is served until you allow it on a flat.' }),
     ] : [h('p', { text: `${info.label} stops being available. Flats that allow it must stop allowing it first. If it is the default for new flats, the default is cleared.` })],
     confirmLabel: enabled ? 'Turn on' : 'Turn off',
+    danger: !enabled,
   });
   if (!ok) return false;
   try {
@@ -391,124 +417,122 @@ async function setHostProvider(p, info, enabled, etag) {
   }
 }
 
+// netbirdSteps replaces the switch while NetBird has no setup key: add a
+// key, then turn it on.
+function netbirdSteps(p, key, etag, after) {
+  const form = keyForm(NETBIRD_KEY, false, after);
+  const toggle = providerToggle(p, infoOf('netbird'), etag, after);
+  return group('setup', 'Set up', 'Two steps. Nothing is reachable until you allow NetBird on a flat.',
+    h('div', { class: 's-list s-steps' },
+      h('div', { class: 's-row s-step', id: 'step-key' }, h('span', { class: 's-num', 'aria-hidden': 'true', text: '1' }),
+        h('div', { class: 's-row-main' },
+          h('span', { class: 's-row-title', text: 'Add a setup key' }),
+          h('p', { class: 's-row-desc' }, NETBIRD_KEY.help),
+          form)),
+      h('div', { class: 's-row s-step' }, h('span', { class: 's-num', 'aria-hidden': 'true', text: '2' }),
+        h('div', { class: 's-row-main' },
+          h('span', { class: 's-row-title', text: 'Turn on NetBird' }),
+          h('p', { class: 's-row-desc', text: 'Makes NetBird available to flats. Then allow it on each flat that should use it. A new peer cannot register until a setup key is saved.' })),
+        toggle ? h('div', { class: 's-row-ctl' }, withReason(toggle.button, toggle.reason)) : null)),
+    key && key.legacy_peer ? legacyPeerNotice(key.legacy_peer, after) : null);
+}
+
+// statusGroup lists the hosts a provider serves (core.NetStatus).
+function statusGroup(p) {
+  const n = p.status;
+  const hosts = n.hosts || [];
+  const noun = infoOf(p.id).noun;
+  const title = p.id === 'tailscale' ? 'Nodes' : p.id === 'netbird' ? 'Peers' : 'Status';
+  const attention = hosts.filter((x) => x.state !== 'ready').length;
+  const hint = hosts.length ? [noun ? plural(hosts.length, noun) : plural(hosts.length, 'route'), attention ? `${attention} need${attention === 1 ? 's' : ''} attention` : ''].filter(Boolean).join(' · ') : '';
+  const expiry = hosts.some((x) => x.key_expiry);
+  const rows = hosts.map((x) => {
+    // tsnet reports the login URL as the detail of a needs-login host.
+    const login = x.login_url || (x.state === 'needs-login' && (x.detail || '').match(/https?:\/\/\S+/)?.[0]);
+    return h('tr', null,
+      h('th', { scope: 'row' }, h('code', { text: x.host }), x.ephemeral ? tag('Preview', 'solid') : null),
+      h('td', null, statePill(x.state)),
+      expiry ? h('td', { class: 'r' }, x.key_expiry ? h('span', { class: x.state === 'key-expiring' ? 'warn-text' : '' },
+        h('time', { datetime: x.key_expiry, title: dateTime(x.key_expiry), text: relTime(x.key_expiry) })) : h('span', { class: 'muted', text: '—' })) : null,
+      h('td', null,
+        login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
+        x.url ? extLink(x.url) : null,
+        x.detail && !login ? h('div', { class: 'muted small' }, linkify(x.detail)) : null));
+  });
+  return group('status', title, hint,
+    n.detail ? h('p', { class: 'muted small' }, linkify(n.detail)) : null,
+    hosts.length
+      ? h('div', { class: 's-list s-table-wrap' }, h('table', { class: 's-table' },
+        h('thead', null, h('tr', null, ['Name', 'Status', expiry ? 'Key expires' : null, 'Address'].filter(Boolean).map((t) => h('th', { scope: 'col', class: t === 'Key expires' ? 'r' : null, text: t })))),
+        h('tbody', null, rows)))
+      : list(row({ title: 'Nothing served yet', desc: 'Routes appear here once a flat that allows this network is running.' })));
+}
+
+// allowedGroup lists the flats that allow a provider.
+function allowedGroup(p) {
+  return group('allowed', 'Allowed on', 'Change this on each flat under Settings → Networks.',
+    list(p.flats.length
+      ? h('div', { class: 's-row stack' }, h('div', { class: 's-chips' },
+        p.flats.map((slug) => h('a', { class: 's-chip', href: `/flats/${encodeURIComponent(slug)}`, 'data-nav': true, text: slug }))))
+      : row({ title: 'Not allowed on any flat yet', desc: 'Turning a network on does not serve anything until a flat allows it.' })));
+}
+
 // --- keys ---
 
-const KEY_INFO = {
-  tailscale: { label: 'Tailscale auth key', what: 'Logs in each new tailnet node: flats, previews and console domains. Nodes already on the tailnet keep their identity.' },
-  netbird: { label: 'NetBird setup key', what: 'Registers each flat and NetBird console domain as its own NetBird peer. Peers already registered keep their identity.' },
-  zrok: { label: 'zrok account token', what: 'Registers this machine as an environment of your zrok account.' },
-};
-
-const KEY_SOURCES = { console: 'the console', cli: 'flats key set', flag: 'a flats serve flag', env: 'an environment variable',
-  config: 'config.json (moved to flats.db)', unknown: 'unknown (connected before Flats recorded it)' };
-
-// keysCard lists every operator key the same way: its state, where it came
-// from and when, and the actions to set, replace or remove it. Values are
-// never shown.
-export function keysCard(keys, providers, opts) {
-  const byId = Object.fromEntries(providers.map((p) => [p.id, p]));
-  return [
-    h('p', { class: 'muted' }, 'Keys are stored in flats.db, encrypted with secret.key, and never shown again. They can also be given before the first start with ',
-      h('code', { text: 'flats key set' }), ' or a ', h('code', { text: 'flats serve' }),
-      ' flag or environment variable; those only fill in a key that is not stored yet.'),
-    ...keys.map((k) => keyRow(k, byId, opts)),
-  ];
-}
-
-function keyRow(k, providers, opts) {
-  const info = KEY_INFO[k.id] || { label: k.id, what: '' };
-  let state = k.set ? (k.id === 'zrok' ? 'Connected' : 'Stored') : (k.waiting ? 'Waiting for the next start' : 'Not set');
-  if (k.unsupported) state = 'Not available';
-  const facts = [];
-  if (k.source) facts.push(h('dt', { text: 'Source' }), h('dd', { text: KEY_SOURCES[k.source] || k.source }));
-  if (k.updated_at) facts.push(h('dt', { text: 'Set' }), h('dd', null, h('time', { datetime: k.updated_at, title: dateTime(k.updated_at), text: relTime(k.updated_at) })));
-  if (k.environment_id) facts.push(h('dt', { text: 'Environment ID' }), h('dd', null, h('code', { text: k.environment_id })));
-  if (k.api_endpoint) facts.push(h('dt', { text: 'zrok service' }), h('dd', null, h('code', { text: k.api_endpoint })));
-  if (k.id === 'netbird' && k.management_url) facts.push(h('dt', { text: 'Management server' }), h('dd', null, h('code', { text: k.management_url })));
-  if (k.id === 'netbird' && k.peers) facts.push(h('dt', { text: 'Peers running' }), h('dd', { text: String(k.peers) }));
-  return h('article', { class: 'provider key' + (k.set ? ' is-on' : ''), id: 'key-' + k.id },
-    h('div', { class: 'provider-head' },
-      h('div', null, h('h4', null, info.label, h('span', { class: 'badge' + (k.set ? ' badge-ready' : ''), text: state })),
-        h('p', { class: 'muted small', text: info.what }))),
-    facts.length ? h('dl', { class: 'facts' }, facts) : null,
-    k.external_differs ? h('p', { class: 'alert alert-warn', text: 'The key given to this run by a flag or environment variable differs from the stored key. Flats uses the stored key; register a new one here to replace it.' }) : null,
-    k.last_error ? h('p', { class: 'alert alert-warn', text: `The last attempt to use this key failed: ${k.last_error}` }) : null,
-    k.legacy_peer ? legacyPeerNotice(k.legacy_peer, opts) : null,
-    keyActions(k, providers, opts));
-}
-
-function keyActions(k, providers, opts) {
-  if (k.id === 'tailscale') return storedKeyActions(k, opts, TAILSCALE_KEY);
-  if (k.id === 'netbird') {
-    if (k.unsupported) return h('p', { class: 'alert alert-warn', text: k.unsupported });
-    return storedKeyActions(k, opts, NETBIRD_KEY);
-  }
-  if (k.id === 'zrok') {
-    if (!k.managed) return h('p', { class: 'muted small', text: 'zrok.environment in config.json names an environment managed with the zrok CLI; manage its account there.' });
-    const enabled = !!(providers.zrok && providers.zrok.enabled);
-    if (!k.set) {
-      return zrokTokenForm(opts, {
-        label: 'Account token', submit: 'Connect',
-        help: 'Sign in at myzrok.io, open the zrok API console and copy the account token from its getting-started wizard. Flats registers this machine as an environment of that account and keeps the token in its data directory; it is never shown again. Turn zrok on once the account is connected.',
-        done: 'zrok account connected. Turn zrok on to use it.',
-      });
-    }
-    return [
-      zrokTokenForm(opts, {
-        label: 'Replace with a new account token', submit: 'Replace account',
-        help: 'Connects the account of the new token in place of this one, for example after regenerating the token. The current account stays connected if the new token is refused. Refused while a flat is public through zrok.',
-        done: 'zrok account replaced.',
-        confirm: { title: 'Replace the zrok account?', body: 'Flats registers this machine with the account of the new token, then unregisters the current environment and deletes its token.' },
-      }),
-      zrokDisconnect(k, enabled, opts),
-    ];
-  }
-  return null;
-}
+const KEY_SOURCES = { console: 'from the console', cli: 'with flats key set', flag: 'from a flats serve flag', env: 'from an environment variable',
+  config: 'from config.json (moved to flats.db)', unknown: 'source unknown (connected before Flats recorded it)' };
 
 // TAILSCALE_KEY and NETBIRD_KEY describe the keys Flats stores and uses for
 // every new node or peer.
 const TAILSCALE_KEY = {
-  id: 'tailscale-key', name: 'Tailscale auth key', placeholder: 'tskey-auth-…', label: 'Auth key', replace: 'Replace with a new auth key',
+  id: 'tailscale-key', name: 'Tailscale auth key', placeholder: 'tskey-auth-…',
+  what: 'Logs in each new node: flats, previews and console addresses. Nodes already on the tailnet keep their identity.',
   help: 'In the Tailscale admin console, open Settings › Keys and generate a reusable auth key. Leave it untagged so console decisions record who made them. New nodes use it from now on; nodes already on the tailnet are not affected.',
   removeBody: 'New tailnet nodes then wait for an interactive login and show its link. Nodes already on the tailnet keep working.',
   set: (key) => api.setTailscaleKey(key), remove: () => api.deleteTailscaleKey(),
 };
 const NETBIRD_KEY = {
-  id: 'netbird-key', name: 'NetBird setup key', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', label: 'Setup key', replace: 'Replace with a new setup key',
-  help: 'In the NetBird dashboard, open Setup Keys and create a key with “Allow extra DNS labels” on (required: each flat is reached by its own name). Make it reusable and ephemeral, with an auto-assigned group your access policies use, and without an expiry or usage limit: Flats registers a peer with it for every flat and console domain, and again when NetBird has removed an offline ephemeral peer. Peers already registered keep working when the key changes.',
-  removeBody: 'Running peers keep working, but a new flat, a new NetBird console domain or a peer NetBird removed cannot register until you register a key again.',
+  id: 'netbird-key', name: 'NetBird setup key', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+  what: 'Registers each flat and NetBird console address as its own NetBird peer. Peers already registered keep their identity.',
+  help: 'In the NetBird dashboard, open Setup Keys and create a key with “Allow extra DNS labels” on (required: each flat is reached by its own name). Make it reusable and ephemeral, with an auto-assigned group your access policies use, and without an expiry or usage limit.',
+  removeBody: 'Running peers keep working, but a new flat, a new NetBird console address or a peer NetBird removed cannot register until you register a key again.',
   set: (key) => api.setNetbirdKey(key), remove: () => api.deleteNetbirdKey(),
 };
 
-// storedKeyActions stores a key Flats keeps (Tailscale, NetBird); a stored
-// one can be replaced or removed.
-function storedKeyActions(k, opts, cfg) {
-  const input = h('input', { type: 'password', id: cfg.id, name: 'key', autocomplete: 'off', spellcheck: 'false', required: true,
-    placeholder: cfg.placeholder });
-  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: k.set ? 'Replace key' : 'Save key' });
-  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: cfg.id, text: k.set ? cfg.replace : cfg.label }), input,
-    h('p', { class: 'muted small', text: cfg.help }),
-    h('div', { class: 'form-actions' }, submit));
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const key = input.value.trim();
-    if (!key) { input.focus(); return; }
-    busy(submit, async () => {
-      try {
-        await cfg.set(key);
-      } catch (err) {
-        await infoDialog(`Cannot save the ${cfg.name}`, errorPanel(err));
-        return;
-      }
-      input.value = '';
-      toast(`${cfg.name} saved.`, 'success');
-      await opts.reload();
-    });
+// keyFacts is where a key came from and when, plus its non-secret identity.
+function keyFacts(k) {
+  const meta = [];
+  if (k.updated_at) meta.push(h('span', null, 'Set ', h('time', { datetime: k.updated_at, title: dateTime(k.updated_at), text: relTime(k.updated_at) })));
+  if (k.source) meta.push(KEY_SOURCES[k.source] || k.source);
+  if (k.management_url) meta.push(h('span', null, 'Server ', h('code', { text: k.management_url })));
+  if (k.peers) meta.push(plural(k.peers, 'peer') + ' running');
+  return meta;
+}
+
+// keySection is a stored key's row (Replace, Remove) or the form to store one.
+function keySection(k, cfg, after) {
+  k = k || { set: false };
+  if (k.unsupported) return callout('warn', k.unsupported);
+  const notices = [
+    k.external_differs ? callout('warn', 'The key given to this run by a flag or environment variable differs from the stored key. Flats uses the stored key; register a new one here to replace it.') : null,
+    k.last_error ? callout('warn', `The last attempt to use this key failed: ${k.last_error}`) : null,
+    k.legacy_peer ? legacyPeerNotice(k.legacy_peer, after) : null,
+  ];
+  if (!k.set) {
+    return [list(
+      row({ id: 'key-' + cfg.id, title: [cfg.name, k.waiting ? pill('Waiting for the next start', 'busy') : pill('Not set', 'off')], desc: cfg.what }),
+      h('div', { class: 's-row stack' }, keyForm(cfg, false, after))), notices];
+  }
+  const formRow = h('div', { class: 's-row stack', hidden: true }, keyForm(cfg, true, after));
+  const replace = h('button', { type: 'button', class: 'btn btn-small', text: 'Replace', 'aria-label': `Replace the ${cfg.name}`, 'aria-expanded': 'false' });
+  replace.addEventListener('click', () => {
+    const open = formRow.hidden;
+    formRow.hidden = !open;
+    if (open) formRow.removeAttribute('hidden'); else formRow.setAttribute('hidden', '');
+    replace.setAttribute('aria-expanded', String(open));
+    if (open) formRow.querySelector?.('input')?.focus();
   });
-  if (!k.set) return form;
-  const remove = h('button', { type: 'button', class: 'btn btn-small', text: 'Remove key' });
+  const remove = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Remove', 'aria-label': `Remove the ${cfg.name}` });
   remove.addEventListener('click', () => busy(remove, async () => {
     const ok = await confirmDialog({
       title: `Remove the ${cfg.name}?`,
@@ -524,14 +548,42 @@ function storedKeyActions(k, opts, cfg) {
       return;
     }
     toast(`${cfg.name} removed.`, 'success');
-    await opts.reload();
+    await after();
   }));
-  return [form, h('div', { class: 'form-actions' }, remove)];
+  return [list(
+    row({ id: 'key-' + cfg.id, title: [cfg.name, pill('Stored', 'on')], meta: keyFacts(k), desc: cfg.what, ctl: [replace, remove] }),
+    formRow), notices];
+}
+
+// keyForm sends a key once; the value is cleared and never shown again.
+function keyForm(cfg, replacing, after) {
+  const input = h('input', { type: 'password', id: cfg.id, name: 'key', autocomplete: 'off', spellcheck: 'false', required: true,
+    placeholder: cfg.placeholder, 'aria-label': replacing ? `New ${cfg.name}` : cfg.name });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: replacing ? 'Replace key' : 'Save key' });
+  const form = h('form', { class: 's-inline-form', novalidate: true }, input, submit);
+  if (replacing) form.appendChild(h('p', { class: 's-row-desc s-form-note', text: cfg.help }));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const key = input.value.trim();
+    if (!key) { input.focus(); return; }
+    busy(submit, async () => {
+      try {
+        await cfg.set(key);
+      } catch (err) {
+        await infoDialog(`Cannot save the ${cfg.name}`, errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast(`${cfg.name} saved.`, 'success');
+      await after();
+    });
+  });
+  return form;
 }
 
 // legacyPeerNotice asks the operator to delete the shared NetBird peer an
 // earlier version registered for the whole host.
-function legacyPeerNotice(p, opts) {
+function legacyPeerNotice(p, after) {
   const done = h('button', { type: 'button', class: 'btn btn-small', text: 'Done' });
   done.addEventListener('click', () => busy(done, async () => {
     try {
@@ -540,7 +592,7 @@ function legacyPeerNotice(p, opts) {
       await infoDialog('Cannot dismiss the notice', errorPanel(err));
       return;
     }
-    await opts.reload();
+    await after();
   }));
   return h('div', { class: 'alert alert-warn', role: 'status' },
     h('p', null, 'Flats no longer uses the single NetBird peer ', h('code', { text: p.device_name || '(unnamed)' }),
@@ -548,8 +600,77 @@ function legacyPeerNotice(p, opts) {
     h('div', { class: 'form-actions' }, done));
 }
 
-function zrokDisconnect(k, enabled, opts) {
-  const disconnect = h('button', { type: 'button', class: 'btn btn-small', text: 'Disconnect account' });
+// zrokSection shows the zrok account the provider uses. With
+// zrok.environment set in config.json the account is managed outside Flats,
+// with the zrok CLI.
+function zrokSection(p, k, after) {
+  const facts = [];
+  if (p.environment_id) facts.push(h('span', null, 'Environment ', h('code', { text: p.environment_id })));
+  if (p.api_endpoint) facts.push(h('span', null, 'Service ', h('code', { text: p.api_endpoint })));
+  facts.push(h('span', null, 'Namespace ', h('code', { text: p.namespace || 'public' })));
+  const k2 = k || { set: false };
+  const state = p.connected ? pill('Connected', 'on') : (k2.waiting ? pill('Waiting for the next start', 'busy') : pill('Not connected', 'off'));
+  if (!p.managed) {
+    return list(row({ id: 'key-zrok', title: ['zrok account', state], meta: facts,
+      desc: 'Uses the zrok environment set as zrok.environment in config.json; manage its account with the zrok CLI. Each public flat reserves its slug as a name in this namespace.' }));
+  }
+  if (!p.connected && !k2.set) {
+    return list(
+      row({ id: 'key-zrok', title: ['zrok account token', state], meta: facts, desc: 'Registers this machine as an environment of your zrok account. Turn zrok on once the account is connected.' }),
+      h('div', { class: 's-row stack' }, zrokTokenForm(after, {
+        submit: 'Connect',
+        help: 'Sign in at myzrok.io, open the zrok API console and copy the account token from its getting-started wizard.',
+        done: 'zrok account connected. Turn zrok on to use it.',
+      })));
+  }
+  const formRow = h('div', { class: 's-row stack', hidden: true }, zrokTokenForm(after, {
+    submit: 'Replace account',
+    help: 'Connects the account of the new token in place of this one, for example after regenerating the token. The current account stays connected if the new token is refused. Refused while a flat is public through zrok.',
+    done: 'zrok account replaced.',
+    confirm: { title: 'Replace the zrok account?', body: 'Flats registers this machine with the account of the new token, then unregisters the current environment and deletes its token.' },
+  }));
+  const replace = h('button', { type: 'button', class: 'btn btn-small', text: 'Replace', 'aria-expanded': 'false' });
+  replace.addEventListener('click', () => {
+    const open = formRow.hidden;
+    formRow.hidden = !open;
+    if (open) formRow.removeAttribute('hidden'); else formRow.setAttribute('hidden', '');
+    replace.setAttribute('aria-expanded', String(open));
+  });
+  return list(
+    row({ id: 'key-zrok', title: ['zrok account', state], meta: [...keyFacts(k2), ...facts],
+      desc: 'Each public flat reserves its slug as a name in this namespace, so its URL stays the same.',
+      ctl: [replace, zrokDisconnect(p, k2, after)] }),
+    formRow);
+}
+
+// zrokTokenForm sends an account token to connect or replace the account.
+function zrokTokenForm(after, o) {
+  const input = h('input', { type: 'password', id: 'zrok-token', name: 'token', autocomplete: 'off', spellcheck: 'false', required: true,
+    placeholder: 'zrok account token', 'aria-label': 'zrok account token' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: o.submit });
+  const form = h('form', { class: 's-inline-form', novalidate: true }, input, submit, h('p', { class: 's-row-desc s-form-note', text: o.help }));
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const token = input.value.trim();
+    if (!token) { input.focus(); return; }
+    busy(submit, async () => {
+      if (o.confirm && !(await confirmDialog({ title: o.confirm.title, body: [h('p', { text: o.confirm.body })], confirmLabel: o.submit }))) return;
+      try {
+        await api.connectZrok(token);
+      } catch (err) {
+        await infoDialog('Cannot connect the zrok account', errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast(o.done, 'success');
+      await after();
+    });
+  });
+  return form;
+}
+
+function zrokDisconnect(p, k, after) {
+  const disconnect = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Disconnect' });
   disconnect.addEventListener('click', () => busy(disconnect, async () => {
     const ok = await confirmDialog({
       title: 'Disconnect the zrok account?',
@@ -565,7 +686,7 @@ function zrokDisconnect(k, enabled, opts) {
       // forget the account here, leaving its removal to the zrok console.
       const force = await confirmDialog({
         title: 'zrok did not unregister this environment',
-        body: [errorPanel(err), h('p', { text: `Forget the account on this machine anyway? Environment ${k.environment_id || ''} may stay registered in your zrok account; remove it in the zrok console.` })],
+        body: [errorPanel(err), h('p', { text: `Forget the account on this machine anyway? Environment ${k.environment_id || p.environment_id || ''} may stay registered in your zrok account; remove it in the zrok console.` })],
         confirmLabel: 'Forget it here',
         danger: true,
       });
@@ -578,103 +699,46 @@ function zrokDisconnect(k, enabled, opts) {
       }
     }
     toast('zrok account disconnected.', 'success');
-    await opts.reload();
+    await after();
   }));
-  return h('div', { class: 'form-actions' }, withReason(disconnect, enabled ? 'zrok is on. Turn it off under Network providers before disconnecting its account.' : ''));
+  return withReason(disconnect, p.enabled ? 'zrok is on. Turn it off above before disconnecting its account.' : '');
 }
 
-// --- console domains ---
+// portalForm edits the Portal settings; they save with the page's save bar.
+function portalForm(data, saved, reload, notice) {
+  return stagedForm({
+    id: 'portal', data, saved, reload, notice,
+    groups: [['relays', 'Relays', 'Saved together with the save bar.', [
+      { key: 'portal_relays', kind: 'relays', label: 'Relay list', restart: true, help: 'One per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays).' },
+      { key: 'portal_discovery', kind: 'toggle', label: 'Discover more relays', restart: true, initial: String((data.settings || {}).portal_discovery ?? 'true') !== 'false',
+        help: 'Find further relays automatically, beyond the list above.' },
+      FIELDS.find((f) => f.key === 'portal_max_relays'),
+      { key: 'portal_hide', kind: 'toggle', label: 'Hide public flats from relay listings', initial: String((data.settings || {}).portal_hide ?? 'false') === 'true',
+        help: 'Keeps addresses out of the relays’ public lists. It is not access control: anyone with a URL can still open a flat.',
+        meta: ['Applies within about 90 seconds', 'Each flat can override it'] },
+    ]]],
+  });
+}
 
-// NETWORKS describes the networks console domains run on, in the order the
-// card lists them.
+// --- console ---
+
+// NETWORKS describes the networks console addresses run on.
 const NETWORKS = {
   tailscale: {
-    heading: 'Tailnet (Tailscale)', noun: 'tailnet domain', node: 'tailnet node',
-    what: 'Each name is its own tailnet node at https://NAME.<tailnet>.ts.net, open to the devices your tailnet ACL allows.',
-    off: 'Turn Tailscale on under Network providers to add a tailnet domain.',
-    add: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name. The new tailnet node logs in with the Tailscale auth key under Keys, or shows a login link here.',
+    heading: 'Tailscale', noun: 'tailnet domain', node: 'tailnet node', suffix: '.<tailnet>.ts.net',
+    what: 'Devices your tailnet ACL allows',
     added: 'Its node joins the tailnet in a minute or two.',
-    removed: 'These names were deleted, but their tailnet nodes are not logged out yet. They stay reserved until that succeeds; Flats retries at the next start.',
+    removed: 'Deleted, but its tailnet node is not logged out yet. It stays reserved until that succeeds; Flats retries at the next start.',
     assigned: (d) => `The tailnet named this node ${d.assigned}: another machine already uses ${d.name}. Rename or remove that machine in the Tailscale admin console, or use this address.`,
   },
   netbird: {
-    heading: 'NetBird', noun: 'NetBird domain', node: 'NetBird peer',
-    what: 'Each name is its own NetBird peer at http://NAME.<NetBird domain>/, open to the peers your NetBird access policies allow. NetBird gives peers no certificates, so the console is plain HTTP there; traffic between peers is still encrypted by WireGuard.',
-    off: 'Turn NetBird on under Network providers to add a NetBird domain.',
-    add: 'A lowercase name: letters, digits and hyphens. It cannot be a flat’s name, but may match a tailnet domain. The new peer registers with the NetBird setup key under Keys.',
+    heading: 'NetBird', noun: 'NetBird domain', node: 'NetBird peer', suffix: '.<NetBird domain>',
+    what: 'Peers your NetBird access policies allow · plain HTTP',
     added: 'Its peer joins NetBird in a minute.',
-    removed: 'These names were deleted, but their NetBird peers are not stopped yet. They stay reserved until that succeeds; Flats retries at the next start.',
+    removed: 'Deleted, but its NetBird peer is not stopped yet. It stays reserved until that succeeds; Flats retries at the next start.',
     assigned: (d) => `NetBird answers this peer as ${d.assigned} as well.`,
   },
 };
-
-// consoleDomains lists the console's names on each network. Each is its own
-// node; names are only added and deleted, so a change of name is an addition
-// followed by a deletion.
-export function consoleDomains(view, opts) {
-  return [
-    h('p', { class: 'muted' }, 'The addresses where this console opens, one list per network. To change an address, add the new one, move your agents to it (',
-      h('code', { text: 'flats connect' }), '), then delete the old one. Several can be used together.'),
-    ...Object.keys(NETWORKS).map((prov) => networkDomains(view, prov, opts)),
-    preferredConsole(view, opts),
-  ];
-}
-
-// preferredLabel names a console.preferred_host value for the operator.
-function preferredLabel(value) {
-  if (value === 'local') return 'this machine’s loopback address';
-  const [prov, name] = value.split(':');
-  return NETWORKS[prov] ? `${NETWORKS[prov].noun} ${name}` : value;
-}
-
-// preferredConsole chooses where links go when they cannot name the console
-// domain they were requested through: requests on the loopback address, or
-// through a domain being deleted. The choice is the loopback address or a
-// listed console domain, never a free address.
-export function preferredConsole(view, opts) {
-  const id = 'console-preferred';
-  const current = view.preferred || '';
-  const options = [['', 'No preference: the first served tailnet domain, then NetBird, then loopback'],
-    ['local', 'This machine’s loopback address']];
-  for (const prov of Object.keys(NETWORKS)) {
-    for (const d of networkOf(view, prov).domains || []) options.push([prov + ':' + d.name, `${d.name} (${NETWORKS[prov].heading})`]);
-  }
-  // A file edit can leave a name that is no longer listed: show it as chosen
-  // so the warning below matches the control.
-  if (current && !options.some(([v]) => v === current)) options.push([current, `${current} (not a console domain)`]);
-  const select = h('select', { id, 'aria-describedby': id + '-help' },
-    options.map(([value, text]) => h('option', { value, text, selected: value === current })));
-  select.value = current;
-  select.addEventListener('change', async () => {
-    const next = select.value;
-    select.disabled = true;
-    try {
-      await api.setPreferredConsole(next, view.etag);
-      toast(next ? `Links now prefer ${preferredLabel(next)}.` : 'The preferred console is unset.', 'success');
-      await opts.reload();
-    } catch (err) {
-      select.value = current;
-      select.disabled = false;
-      await infoDialog('Cannot change the preferred console', errorPanel(err));
-    }
-  });
-  let warning = null;
-  if (view.preferred_state === 'starting') {
-    warning = `The preferred console, ${preferredLabel(current)}, is still starting, so links use ${view.link_url || 'the next served address'} until it is ready.`;
-  } else if (view.preferred_state === 'not_served') {
-    warning = `The preferred console, ${preferredLabel(current)}, is not served right now, so links use ${view.link_url || 'the next served address'} until it is.`;
-  } else if (view.preferred_state === 'unlisted') {
-    warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or no preference.`;
-  }
-  return h('section', { class: 'domain-network', 'aria-labelledby': id + '-title' },
-    h('h3', { id: id + '-title', text: 'Preferred console' }),
-    h('p', { class: 'muted small', text: 'Approval links and the console address in status name the console domain they were requested through. When they cannot, because the request came over this machine’s loopback address or through a domain being deleted, they name the preferred console.' }),
-    warning ? h('p', { class: 'alert alert-warn', role: 'status', text: warning }) : null,
-    h('div', { class: 'field' },
-      h('label', { for: id, text: 'Console for links' }), select,
-      h('span', { class: 'muted small', id: id + '-help' },
-        'Links that cannot follow the request now go to ', view.link_url ? h('code', { text: view.link_url }) : 'the loopback address', '.')));
-}
 
 // networkOf returns one network's part of the view.
 function networkOf(view, prov) {
@@ -685,34 +749,17 @@ function networkOf(view, prov) {
 // a Tailscale key in its last days (key-expiring), as the server counts it.
 const serving = (state) => state === 'ready' || state === 'key-expiring';
 
+// pendingWork reports a console node or an enrollment still in progress.
+export function pendingWork(domains, keys) {
+  const all = Object.keys(NETWORKS).flatMap((prov) => (domains ? networkOf(domains, prov).domains : []) || []);
+  const nodes = all.some((d) => !d.conflict && !serving(d.state));
+  return nodes || (keys || []).some((k) => k.waiting);
+}
+
 // readyDomains lists every ready domain, on any network, as provider/name.
 function readyDomains(view) {
   return Object.keys(NETWORKS).flatMap((prov) => (networkOf(view, prov).domains || [])
     .filter((d) => !d.conflict && serving(d.state)).map((d) => prov + '/' + d.name));
-}
-
-function networkDomains(view, prov, opts) {
-  const net = NETWORKS[prov];
-  const pv = networkOf(view, prov);
-  const domains = pv.domains || [];
-  const id = 'console-domains-' + prov;
-  const rows = domains.map((d) => domainRow(d, prov, view, opts));
-  const retiring = (pv.retiring || []).map((d) => retiringRow(d, prov, view, opts));
-  const parts = [h('h3', { id, text: net.heading }), h('p', { class: 'muted small', text: net.what })];
-  if (pv.pinned) parts.push(h('p', { class: 'muted small', text: `Set by ${pv.pinned}. Reinstall the service with flats install to manage the ${net.noun}s here.` }));
-  if (!domains.length) {
-    parts.push(h('p', { class: 'muted small', text: `No ${net.noun}.` }));
-  } else {
-    parts.push(h('div', { class: 'table-wrap' }, h('table', { class: 'table', 'aria-labelledby': id },
-      h('thead', null, h('tr', null, ['Name', 'State', 'Address', ''].map((t) => h('th', { scope: 'col', text: t })))),
-      h('tbody', null, rows))));
-  }
-  if (retiring.length) {
-    parts.push(h('h4', { text: 'Being removed' }), h('p', { class: 'muted small', text: net.removed }),
-      h('ul', { class: 'plain-list' }, retiring));
-  }
-  if (!pv.pinned) parts.push(pv.on ? domainAddForm(prov, view, opts) : h('p', { class: 'muted small', text: net.off }));
-  return h('section', { class: 'domain-network', 'aria-labelledby': id }, parts);
 }
 
 // totalDomains counts the console domains of every network.
@@ -734,43 +781,129 @@ export function deleteBlocker(d, view, count, ready, prov = 'tailscale') {
   return '';
 }
 
-function domainRow(d, prov, view, opts) {
+// preferredLabel names a console.preferred_host value for the operator.
+function preferredLabel(value) {
+  if (value === 'local') return 'this machine’s loopback address';
+  const [prov, name] = value.split(':');
+  return NETWORKS[prov] ? `${NETWORKS[prov].noun} ${name}` : value;
+}
+
+async function consolePage(page, saved, reload) {
+  page.ctx.setTitle('Console · Settings');
+  const d = await loadAll(page, ['domains', 'keys']);
+  if (!d) return;
+  const cfg = d.settings.config;
+  const view = d.domains;
+  const here = view && view.via ? h('span', null, 'You’re on ', h('code', { text: view.via.name }), ` (${(NETWORKS[view.via.provider] || { heading: view.via.provider }).heading}).`)
+    : (view && view.loopback ? 'You’re on this machine’s loopback address.' : '');
+  fill(page.content,
+    pageHead({ title: 'Console', intro: ['Where this console opens and which address goes into the links Flats hands out. To move to a new address, add it, run ', h('code', { text: 'flats connect' }), ' on your agents, then delete the old one.'] }),
+    view ? group('console-domains', 'Addresses', here, addressList(view, cfg, reload), retiringList(view, reload)) : group('console-domains', 'Addresses', '', errorPanel(d.domainsError, 'Cannot load the console addresses')),
+    view && networkOf(view, 'netbird').domains.length ? callout('warn', h('strong', { text: 'NetBird addresses are plain HTTP. ' }), 'NetBird gives peers no certificates; traffic between peers is still encrypted by WireGuard.') : null,
+    view ? preferredForm(view, d.settings, saved, reload) : null,
+    group('configuration', 'Host', ['Set in config.json · change with ', h('code', { text: 'flats config set' }), ' while Flats is stopped; values apply after Flats restarts'], configView(cfg)));
+  page.refresh(view && pendingWork(view, d.keys && d.keys.keys));
+}
+
+// addressList is every place the console opens: the loopback address, then
+// each network's domains, then a row to add one.
+function addressList(view, cfg, reload) {
+  const rows = [];
+  if (cfg && cfg.host) {
+    rows.push(row({ title: [h('code', { text: cfg.host.management_addr }), tag('Local', 'solid'), view.preferred === 'local' ? tag('Preferred') : null],
+      meta: ['This device only', 'always available', view.loopback ? 'you are here' : null], ctl: pill('Ready', 'on') }));
+  }
+  for (const prov of Object.keys(NETWORKS)) {
+    for (const dom of networkOf(view, prov).domains || []) rows.push(domainRow(dom, prov, view, reload));
+  }
+  rows.push(addRow(view, reload));
+  return list(...rows);
+}
+
+function domainRow(d, prov, view, reload) {
   const net = NETWORKS[prov];
-  const login = d.state === 'needs-login' && (d.detail || '').match(/https?:\/\/\S+/)?.[0];
-  const state = d.conflict ? h('span', { class: 'badge badge-error', text: 'not served' })
-    : h('span', { class: 'badge badge-' + (d.state || 'starting'), text: d.state || 'starting' });
-  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', 'aria-label': `Delete ${net.noun} ${d.name}` });
-  del.addEventListener('click', () => busy(del, () => deleteDomain(d, prov, view, opts)));
   const pinned = networkOf(view, prov).pinned;
-  return h('tr', null,
-    h('th', { scope: 'row' }, h('code', { text: d.name }), d.current ? h('span', { class: 'badge', text: 'this page' }) : null),
-    h('td', null, state),
-    h('td', null,
-      login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
-      d.url ? extLink(d.url) : null,
-      d.conflict ? h('div', { class: 'muted small', text: `Not served: ${d.conflict}. Delete this domain or rename that flat.` }) : null,
-      d.assigned && prov === 'tailscale' ? h('div', { class: 'warn-text small', text: net.assigned(d) }) : null,
-      d.detail && !login && !d.conflict ? h('div', { class: 'muted small' }, linkify(d.detail)) : null),
-    h('td', null, pinned ? null : withReason(del, deleteBlocker(d, view, totalDomains(view), readyDomains(view), prov))));
+  const login = d.state === 'needs-login' && (d.detail || '').match(/https?:\/\/\S+/)?.[0];
+  const host = d.url ? d.url.replace(/^https?:\/\//, '').replace(/\/$/, '') : d.name;
+  const state = d.conflict ? pill('Not served', 'err') : statePill(d.state);
+  const del = h('button', { type: 'button', class: 'btn btn-small', text: 'Delete', 'aria-label': `Delete ${net.noun} ${d.name}` });
+  del.addEventListener('click', () => busy(del, () => deleteDomain(d, prov, view, reload)));
+  const notes = [
+    d.conflict ? h('span', { class: 'warn-text', text: `Not served: ${d.conflict}. Delete this address or rename that flat.` }) : null,
+    d.assigned && prov === 'tailscale' ? h('span', { class: 'warn-text', text: net.assigned(d) }) : null,
+    d.detail && !login && !d.conflict ? h('span', null, linkify(d.detail)) : null,
+    pinned ? `Set by ${pinned}. Reinstall the service with flats install to manage it here.` : null,
+  ].filter(Boolean);
+  return row({
+    id: `domain-${prov}-${d.name}`,
+    title: [d.url ? extLink(d.url, h('code', { text: host })) : h('code', { text: host }), tag(net.heading, 'solid'),
+      view.preferred === `${prov}:${d.name}` ? tag('Preferred') : null],
+    meta: [net.what, d.current ? 'you are here' : null, d.state === 'starting' ? 'joining, usually a minute or two' : null],
+    desc: notes.length ? notes.map((n, i) => [i ? ' ' : '', n]) : null,
+    ctl: [state, login ? extLink(login, 'Log in', 'btn btn-small btn-primary') : null,
+      pinned ? null : withReason(del, deleteBlocker(d, view, totalDomains(view), readyDomains(view), prov))],
+  });
 }
 
-function retiringRow(d, prov, view, opts) {
-  const retry = h('button', { type: 'button', class: 'btn btn-small', text: 'Retry', 'aria-label': `Retry removing ${d.name}` });
-  retry.addEventListener('click', () => busy(retry, async () => {
-    try {
-      await api.deleteConsoleDomain(prov, d.name, view.etag);
-    } catch (err) {
-      await infoDialog(`Cannot remove ${d.name}`, errorPanel(err));
-      return;
-    }
-    toast(`${d.name} removed.`, 'success');
-    await opts.reload();
+// addRow adds a console address on a network that is on.
+function addRow(view, reload) {
+  const open = Object.keys(NETWORKS).filter((prov) => networkOf(view, prov).on && !networkOf(view, prov).pinned);
+  if (!open.length) {
+    return row({ title: 'Add an address', desc: ['Turn Tailscale or NetBird on under ', h('a', { href: '/settings/networks', 'data-nav': true, text: 'Networks' }), ' to add a console address there.'] });
+  }
+  const select = h('select', { id: 'console-domain-network', 'aria-label': 'Network' },
+    Object.keys(NETWORKS).map((prov) => h('option', { value: prov, text: NETWORKS[prov].heading + (open.includes(prov) ? '' : ' (off)'), disabled: !open.includes(prov) })));
+  select.value = open[0];
+  const suffix = h('span', { class: 'unit', text: NETWORKS[open[0]].suffix });
+  select.addEventListener('change', () => { suffix.textContent = NETWORKS[select.value].suffix; });
+  const input = h('input', { type: 'text', id: 'console-domain-name', name: 'name', autocomplete: 'off', spellcheck: 'false', required: true,
+    pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?', placeholder: 'name' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-small', text: 'Add' });
+  const form = h('form', { class: 's-add-form', novalidate: true },
+    h('label', { for: 'console-domain-name', class: 's-row-title', text: 'Add an address' }),
+    select, h('span', { class: 's-with-unit s-grow' }, input, suffix), submit);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    const prov = select.value;
+    if (!name) { input.focus(); return; }
+    busy(submit, async () => {
+      try {
+        await api.addConsoleDomain(prov, name, view.etag);
+      } catch (err) {
+        await infoDialog(`Cannot add ${name}`, errorPanel(err));
+        return;
+      }
+      input.value = '';
+      toast(`${name} added. ${NETWORKS[prov].added}`, 'success');
+      await reload();
+    });
+  });
+  return h('div', { class: 's-row stack' }, form,
+    h('p', { class: 's-row-desc', text: 'Lowercase letters, digits and hyphens. It can’t be a flat’s name. A new tailnet node logs in with the Tailscale auth key, or shows a login link here; a NetBird peer registers with the setup key.' }));
+}
+
+// retiringList shows deleted addresses whose node is not retired yet.
+function retiringList(view, reload) {
+  const rows = Object.keys(NETWORKS).flatMap((prov) => (networkOf(view, prov).retiring || []).map((d) => {
+    const retry = h('button', { type: 'button', class: 'btn btn-small', text: 'Retry', 'aria-label': `Retry removing ${d.name}` });
+    retry.addEventListener('click', () => busy(retry, async () => {
+      try {
+        await api.deleteConsoleDomain(prov, d.name, view.etag);
+      } catch (err) {
+        await infoDialog(`Cannot remove ${d.name}`, errorPanel(err));
+        return;
+      }
+      toast(`${d.name} removed.`, 'success');
+      await reload();
+    }));
+    return row({ title: [h('code', { text: d.name }), tag(NETWORKS[prov].heading, 'solid')], desc: NETWORKS[prov].removed, meta: d.error ? [d.error] : null, ctl: [pill('Being removed', 'busy'), retry] });
   }));
-  return h('li', { class: 'plain-row' },
-    h('div', null, h('code', { text: d.name }), d.error ? h('div', { class: 'muted small', text: d.error }) : null), retry);
+  if (!rows.length) return null;
+  return h('div', { class: 's-sub' }, h('h4', { text: 'Being removed' }), list(...rows));
 }
 
-async function deleteDomain(d, prov, view, opts) {
+async function deleteDomain(d, prov, view, reload) {
   const net = NETWORKS[prov];
   const others = Object.keys(NETWORKS).flatMap((p) => (networkOf(view, p).domains || [])
     .filter((x) => !(p === prov && x.name === d.name)).map((x) => x.name));
@@ -785,124 +918,83 @@ async function deleteDomain(d, prov, view, opts) {
     res = await api.deleteConsoleDomain(prov, d.name, view.etag);
   } catch (err) {
     await infoDialog(`Cannot delete ${d.name}`, errorPanel(err));
-    await opts.reload();
+    await reload();
     return;
   }
   toast(`${d.name} deleted.`, 'success');
   if (d.current && res && res.redirect) {
-    window.location.href = res.redirect.replace(/\/$/, '') + '/settings#console-domains';
+    window.location.href = res.redirect.replace(/\/$/, '') + '/settings/console';
     return;
   }
-  await opts.reload();
+  await reload();
 }
 
-function domainAddForm(prov, view, opts) {
-  const net = NETWORKS[prov];
-  const id = 'console-domain-name-' + prov;
-  const input = h('input', { type: 'text', id, name: 'name', autocomplete: 'off', spellcheck: 'false', required: true,
-    pattern: '[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?', placeholder: 'flats' });
-  const submit = h('button', { type: 'submit', class: 'btn btn-primary btn-small', text: 'Add' });
-  const form = h('form', { class: 'settings-form provider-form', novalidate: true },
-    h('label', { for: id, text: `Add a ${net.noun}` }), input,
-    h('p', { class: 'muted small', text: net.add }),
-    h('div', { class: 'form-actions' }, submit));
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const name = input.value.trim();
-    if (!name) { input.focus(); return; }
-    busy(submit, async () => {
-      try {
-        await api.addConsoleDomain(prov, name, view.etag);
-      } catch (err) {
-        await infoDialog(`Cannot add ${name}`, errorPanel(err));
-        return;
-      }
-      input.value = '';
-      toast(`${name} added. ${net.added}`, 'success');
-      await opts.reload();
-    });
-  });
-  return form;
-}
-
-function humanKey(k) {
-  const s = k.replace(/_/g, ' ');
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-// linkify turns http(s) URLs in text into links (for login URLs in details).
-function linkify(text) {
-  const parts = [];
-  let last = 0;
-  for (const m of text.matchAll(/https?:\/\/[^\s"'<>]+/g)) {
-    parts.push(text.slice(last, m.index), extLink(m[0]));
-    last = m.index + m[0].length;
+// preferredForm chooses where links go when they cannot name the console
+// domain they were requested through: requests on the loopback address, or
+// through a domain being deleted. The choice is the loopback address or a
+// listed console domain, never a free address.
+function preferredForm(view, data, saved, reload) {
+  const current = view.preferred || '';
+  const options = [['', 'Automatic'], ['local', 'Local']];
+  for (const prov of Object.keys(NETWORKS)) {
+    for (const d of networkOf(view, prov).domains || []) options.push([prov + ':' + d.name, `${d.name} (${NETWORKS[prov].heading})`]);
   }
-  parts.push(text.slice(last));
-  return h('span', null, parts);
-}
-
-// hostsTable lists the hosts a provider backend serves (core.NetStatus).
-function hostsTable(n) {
-  const hosts = n.hosts || [];
-  const rows = hosts.map((x) => {
-    // tsnet reports the login URL as the detail of a needs-login host.
-    const login = x.login_url || (x.state === 'needs-login' && (x.detail || '').match(/https?:\/\/\S+/)?.[0]);
-    const expiry = x.key_expiry ? h('span', { class: x.state === 'key-expiring' ? 'warn-text' : '' },
-      h('time', { datetime: x.key_expiry, title: dateTime(x.key_expiry), text: relTime(x.key_expiry) })) : h('span', { class: 'muted', text: '—' });
-    return h('tr', null,
-      h('th', { scope: 'row' }, h('code', { text: x.host }), x.ephemeral ? h('span', { class: 'badge', text: 'preview' }) : null),
-      h('td', null, h('span', { class: 'badge badge-' + x.state, text: x.state })),
-      h('td', null, expiry),
-      h('td', null,
-        login ? h('div', null, extLink(login, 'Log in', 'btn btn-small btn-primary')) : null,
-        x.url ? extLink(x.url) : null,
-        x.detail ? h('div', { class: 'muted small' }, linkify(x.detail)) : null));
+  // A file edit can leave a name that is no longer listed: show it as chosen
+  // so the warning below matches the control.
+  if (current && !options.some(([v]) => v === current)) options.push([current, `${current} (not a console domain)`]);
+  let warning = null;
+  if (view.preferred_state === 'starting') {
+    warning = `The preferred console, ${preferredLabel(current)}, is still starting, so links use ${view.link_url || 'the next served address'} until it is ready.`;
+  } else if (view.preferred_state === 'not_served') {
+    warning = `The preferred console, ${preferredLabel(current)}, is not served right now, so links use ${view.link_url || 'the next served address'} until it is.`;
+  } else if (view.preferred_state === 'unlisted') {
+    warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or Automatic.`;
+  }
+  return stagedForm({
+    id: 'links', data, saved, reload,
+    save: async (out) => {
+      await api.setPreferredConsole(out.preferred, view.etag);
+      return { applied: ['preferred'], restart_required: [] };
+    },
+    errorTitle: 'Cannot change the preferred console',
+    groups: [['console-links', 'Links', '', [
+      { key: 'preferred', kind: 'select', label: 'Address for links', options, initial: current, inputId: 'console-preferred',
+        help: 'Approval links and agent setup use the address a request came in on. When they can’t (a request over the loopback address, or through an address being deleted), they use this one. Automatic is the first served tailnet address, then NetBird, then loopback.',
+        meta: [h('span', null, 'Links that can’t follow the request now go to ', view.link_url ? h('code', { text: view.link_url }) : 'the loopback address', '.')] },
+    ]]],
+    after: warning ? h('p', { class: 'alert alert-warn', role: 'status', text: warning }) : null,
   });
-  return h('div', { class: 'net' },
-    n.detail ? h('p', { class: 'muted small' }, linkify(n.detail)) : null,
-    hosts.length
-      ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-        h('thead', null, h('tr', null, ['Host', 'State', 'Key expiry', 'Address'].map((t) => h('th', { scope: 'col', text: t })))),
-        h('tbody', null, rows)))
-      : h('p', { class: 'muted small', text: 'Nothing is served on this provider yet.' }));
 }
 
-// --- config.json ---
-
-function changedNotice(cfg) {
-  if (!cfg || !cfg.changed_on_disk) return null;
-  return h('div', { class: 'alert alert-warn', role: 'status' },
-    h('strong', { text: 'config.json changed on disk' }),
-    h('p', { text: 'Restart Flats to load it. Until then Flats keeps the settings it loaded, and saving here is refused.' }));
-}
-
-function sourceBadge(src) {
-  if (!src) return null;
-  return h('span', { class: 'badge' }, h('span', { class: 'sr-only', text: 'source: ' }), SOURCES[src] || src);
-}
-
-// configView shows the host, network and credentials keys of config.json,
-// which the console only reads.
+// configView shows the host keys of config.json, which the console only reads.
 export function configView(cfg) {
-  if (!cfg) return h('p', { class: 'muted', text: 'This host keeps its settings in memory, not in config.json.' });
+  if (!cfg) return list(row({ title: 'In memory', desc: 'This host keeps its settings in memory, not in config.json.' }));
   const sources = cfg.sources || {};
   return [
     cfg.mode === 'legacy' ? h('p', { class: 'notice-text' },
       'This service starts without ', h('code', { text: '--config' }), '. Run ', h('code', { text: 'flats install' }),
       ' to switch it to config.json.') : null,
-    h('p', { class: 'muted' }, 'Read only. Change these values in config.json, or with ', h('code', { text: 'flats config set' }),
-      ' while Flats is stopped. They apply after Flats restarts. Turn network providers on or off above.'),
-    ...CONFIG_GROUPS.flatMap(([title, rows]) => [
-      h('h3', { text: title }),
-      h('dl', { class: 'facts' }, rows.map(([key, label, value]) => [
-        h('dt', { text: label }),
-        h('dd', null, h('span', { class: 'mono', text: String(value(cfg)) }), ' ', sourceBadge(sources[key]))])),
-    ]),
+    list(...CONFIG_ROWS.map(([key, label, value, desc]) => {
+      const v = String(value(cfg));
+      const shown = v === 'on' || v === 'off' ? pill(v === 'on' ? 'On' : 'Off', v === 'on' ? 'on' : 'off') : h('code', { text: v });
+      return row({ title: label, desc, ctl: [shown, sources[key] ? h('span', { class: 'tag tag-solid' }, h('span', { class: 'sr-only', text: 'source: ' }), SOURCE_TAGS[sources[key]] || sources[key]) : null] });
+    })),
   ];
 }
 
 // --- limits ---
+
+async function limitsPage(page, saved, reload) {
+  page.ctx.setTitle('Limits · Settings');
+  const d = await loadAll(page, []);
+  if (!d) return;
+  fill(page.content,
+    pageHead({ title: 'Limits', intro: 'Defaults for every flat. A flat can override the ones marked “per flat” in its own settings. 0 means no limit.' }),
+    stagedForm({
+      id: 'limits', data: d.settings, saved, reload, notice: page.notice,
+      groups: LIMIT_GROUPS.map(([gid, title, hint]) => ['limits-' + gid, title, hint, FIELDS.filter((f) => f.group === gid)]),
+    }));
+}
 
 function display(base, factor) {
   const n = Number(base) / factor;
@@ -962,27 +1054,37 @@ export function isDecrease(key, current, next) {
   return n < cur;
 }
 
-// limitsForm edits the system settings (opts.group 'system') or the Portal
-// settings ('portal'). opts: reload(saved), saved (the last save response),
-// showNotice(config).
-function limitsForm(data, opts) {
-  const portal = opts.group === 'portal';
+// --- staged forms and the save bar ---
+
+// stagedForm builds a page form whose fields stage changes; one save bar
+// shows the count and a summary, blocks saving while a field is invalid and
+// asks again before a save that removes data. spec: id, data (the settings
+// response), groups [[id, title, hint, fields]], saved (the last save
+// response), reload(saved), and optionally save(out) for a custom endpoint,
+// errorTitle and after (a node under the groups).
+function stagedForm(spec) {
+  const data = spec.data || {};
   const settings = data.settings || {};
   const defaults = data.defaults || {};
   const cfg = data.config || null;
   const etag = cfg ? cfg.etag : '';
   const sources = (cfg && cfg.sources) || {};
-  const keys = (cfg && cfg.keys) || {};
+  const cfgKeys = (cfg && cfg.keys) || {};
   const pinned = (cfg && cfg.pinned) || {};
-  const controls = {}; // setting key -> { input, error, describedBy }
+  const custom = !!spec.save;
+  const controls = {}; // key -> { f, input, unit, error, describedBy, row, read(), reset(), changed() }
 
-  // control wires a field's hint, source, pin reason and error message.
-  const control = (key, input, help) => {
-    const id = input.getAttribute('id');
-    const src = sources[keys[key]];
-    const hint = [help, src ? `Source: ${SOURCES[src] || src}.` : ''].filter(Boolean).join(' ');
+  const result = h('div', { class: 's-result', role: 'status' }, savedSummary(spec.saved));
+  const errorSlot = h('div');
+
+  // wire adds the hint, source, pin reason and error to a field.
+  const wire = (f, input, id) => {
+    const src = custom ? '' : sources[cfgKeys[f.key]];
+    const def = custom || defaults[f.key] === undefined || f.kind ? ''
+      : ` Default: ${f.bytes ? byteText(defaults[f.key], f.unit) : `${display(defaults[f.key], f.factor)} ${f.unit}`}.`;
+    const hint = [f.help + def, src && src !== 'default' ? `Set in ${SOURCES[src] || src}.` : ''].filter(Boolean).join(' ');
     const describedBy = [id + '-help'];
-    const pin = pinned[key] ? h('span', { class: 'hint', id: id + '-pin', text: `Set by ${pinned[key]}. Reinstall the service with \`flats install\` to change it here.` }) : null;
+    const pin = pinned[f.key] ? h('span', { class: 's-pin', id: id + '-pin', text: `Set by ${pinned[f.key]}. Reinstall the service with \`flats install\` to change it here.` }) : null;
     if (pin) {
       input.setAttribute('disabled', '');
       input.disabled = true;
@@ -990,86 +1092,103 @@ function limitsForm(data, opts) {
     }
     const error = h('span', { class: 'field-error', id: id + '-error', hidden: true });
     input.setAttribute('aria-describedby', describedBy.join(' '));
-    controls[key] = { input, error, describedBy };
-    return [h('span', { class: 'hint', id: id + '-help', text: hint }), pin, error];
+    return { hint: h('p', { class: 's-row-desc', id: id + '-help', text: hint }), pin, error, describedBy };
   };
 
-  const inputs = [];
-  const numberField = (f) => {
-    const id = 'set-' + f.key;
-    const shown = f.bytes ? byteValue(settings[f.key], f.unit) : { unit: f.unit, value: display(settings[f.key], f.factor) };
-    const initial = shown.value;
-    const input = h('input', {
-      id, type: 'number', inputmode: 'decimal', min: String(f.min ?? 0), step: f.step ? String(f.step) : 'any',
-      value: initial, required: true,
-    });
-    let unit = h('span', { class: 'unit', text: f.unit });
+  const field = (f) => {
+    const kind = f.kind || (f.bytes ? 'bytes' : 'number');
+    const id = f.inputId || 'set-' + f.key;
+    let input;
+    let unit = null;
     let exact = null;
-    if (f.bytes) {
-      // The unit menu changes what the number means; the hint below it
-      // always shows the exact byte count that saving stores.
-      unit = h('select', { id: id + '-unit', class: 'unit', 'aria-label': `${f.label} unit` },
-        BYTE_UNITS.map(([u]) => h('option', { value: u, text: u })));
-      unit.value = shown.unit;
-      exact = h('span', { class: 'hint', id: id + '-exact', 'aria-live': 'polite' });
-      const update = () => {
-        const base = toBase(input.value, BYTE_FACTOR[unit.value], unit.value === 'bytes');
-        exact.textContent = base == null ? '' : base === 0 ? 'Stores 0 bytes.' : `Stores ${base.toLocaleString('en-US')} ${base === 1 ? 'byte' : 'bytes'}.`;
+    let update = null;
+    let ctl;
+    let read; // returns { value } for a changed value, { error } or null when unchanged
+    let reset;
+    if (kind === 'number' || kind === 'bytes') {
+      const shown = kind === 'bytes' ? byteValue(settings[f.key], f.unit) : { unit: f.unit, value: display(settings[f.key], f.factor) };
+      input = h('input', { id, type: 'number', inputmode: 'decimal', min: String(f.min ?? 0), step: f.step ? String(f.step) : 'any', value: shown.value, required: true });
+      if (kind === 'bytes') {
+        // The unit menu changes what the number means; the hint below it
+        // always shows the exact byte count that saving stores.
+        unit = h('select', { id: id + '-unit', class: 'unit', 'aria-label': `${f.label} unit` }, BYTE_UNITS.map(([u]) => h('option', { value: u, text: u })));
+        unit.value = shown.unit;
+        exact = h('span', { class: 's-row-meta', id: id + '-exact', 'aria-live': 'polite' });
+        update = () => {
+          const base = toBase(input.value, BYTE_FACTOR[unit.value], unit.value === 'bytes');
+          exact.textContent = base == null ? '' : base === 0 ? 'Stores 0 bytes.' : `Stores ${base.toLocaleString('en-US')} ${base === 1 ? 'byte' : 'bytes'}.`;
+        };
+        input.addEventListener('input', update);
+        unit.addEventListener('change', update);
+        update();
+        if (pinned[f.key]) unit.disabled = true;
+      } else {
+        unit = h('span', { class: 'unit', text: f.unit });
+      }
+      ctl = h('span', { class: 's-with-unit' }, input, unit);
+      read = () => {
+        if (input.value === shown.value && (kind !== 'bytes' || unit.value === shown.unit)) return null;
+        const inBytes = kind === 'bytes' && unit.value === 'bytes';
+        const whole = f.whole || inBytes;
+        const base = toBase(input.value, kind === 'bytes' ? BYTE_FACTOR[unit.value] : f.factor, whole);
+        if (base == null) return { error: `${f.label} must be ${whole ? 'a whole number' : 'a number'} of 0 or more.` };
+        // Compare stored values, not text, so "0.0" over 0 changes nothing.
+        if (String(base) === String(settings[f.key])) return null;
+        return { value: String(base), from: describeValue(f, settings[f.key]), to: describeValue(f, base) };
       };
-      input.addEventListener('input', update);
-      unit.addEventListener('change', update);
-      update();
+      reset = () => { input.value = shown.value; if (kind === 'bytes') { unit.value = shown.unit; update(); } };
+    } else if (kind === 'relays') {
+      const initial = (settings.portal_relays || '').split(',').map((s) => s.trim()).filter(Boolean).join('\n');
+      input = h('textarea', { id, rows: '3', spellcheck: 'false', class: 'mono', placeholder: 'https://relay.example.com' });
+      input.value = initial;
+      ctl = null;
+      read = () => {
+        const v = input.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+        if (v.join('\n') === initial) return null;
+        return { value: v.join(','), from: initial ? plural(initial.split('\n').length, 'relay') : 'defaults', to: v.length ? plural(v.length, 'relay') : 'defaults' };
+      };
+      reset = () => { input.value = initial; };
+    } else if (kind === 'toggle') {
+      input = h('input', { id, type: 'checkbox', role: 'switch', class: 'switch', checked: !!f.initial });
+      input.checked = !!f.initial;
+      ctl = input;
+      read = () => (!!input.checked === !!f.initial ? null : { value: String(!!input.checked), from: f.initial ? 'On' : 'Off', to: input.checked ? 'On' : 'Off' });
+      reset = () => { input.checked = !!f.initial; };
+    } else {
+      input = h('select', { id }, f.options.map(([value, text]) => h('option', { value, text, selected: value === f.initial })));
+      input.value = f.initial;
+      ctl = input;
+      const textOf = (v) => (f.options.find(([o]) => o === v) || [v, v])[1];
+      read = () => (input.value === f.initial ? null : { value: input.value, from: textOf(f.initial), to: textOf(input.value) });
+      reset = () => { input.value = f.initial; };
     }
-    inputs.push({ f, input, initial, initialUnit: shown.unit, unit: f.bytes ? unit : null });
-    const def = defaults[f.key] === undefined ? ''
-      : ` Default: ${f.bytes ? byteText(defaults[f.key], f.unit) : `${display(defaults[f.key], f.factor)} ${f.unit}`}.`;
-    const hints = control(f.key, input, f.help + def);
-    if (f.bytes) {
-      controls[f.key].unit = unit;
-      if (pinned[f.key]) unit.disabled = true;
-      controls[f.key].describedBy.push(exact.getAttribute('id'));
-      input.setAttribute('aria-describedby', controls[f.key].describedBy.join(' '));
-    }
-    return h('div', { class: 'field' },
-      h('label', { for: id, text: f.label }),
-      h('div', { class: 'with-unit' }, input, unit),
-      hints[0], exact, hints.slice(1));
+    const w = wire(f, input, id);
+    if (exact) w.describedBy.push(exact.getAttribute('id'));
+    input.setAttribute('aria-describedby', w.describedBy.join(' '));
+    const tags = [f.perFlat ? tag('per flat') : null, f.restart ? tag('Applies after restart', 'restart') : null];
+    const r = h('div', { class: 's-row' + (kind === 'relays' ? ' stack' : ''), id: 'row-' + f.key },
+      h('div', { class: 's-row-main' },
+        h('div', { class: 's-row-title' }, h('label', { for: id, text: f.label }), tags),
+        w.hint, exact, f.meta ? h('span', { class: 's-row-meta' }, f.meta.map((m, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true', text: '·' }) : null, typeof m === 'string' ? h('span', { text: m }) : m])) : null,
+        w.pin, w.error),
+      kind === 'relays' ? input : h('div', { class: 's-row-ctl' }, ctl));
+    controls[f.key] = { f, input, unit, error: w.error, describedBy: w.describedBy, row: r, read, reset };
+    return r;
   };
 
-  const relaysId = 'set-portal_relays';
-  const relaysInitial = (settings.portal_relays || '').split(',').map((s) => s.trim()).filter(Boolean).join('\n');
-  const relays = h('textarea', { id: relaysId, rows: '3', spellcheck: 'false', class: 'mono', placeholder: 'https://relay.example.com' });
-  relays.value = relaysInitial;
-  const discoverId = 'set-portal_discovery';
-  const discoverInitial = String(settings.portal_discovery ?? 'true') !== 'false';
-  const discover = h('input', { id: discoverId, type: 'checkbox', checked: discoverInitial });
-  const hideId = 'set-portal_hide';
-  const hideInitial = String(settings.portal_hide ?? 'false') === 'true';
-  const hide = h('input', { id: hideId, type: 'checkbox', checked: hideInitial });
+  const groups = spec.groups.map(([gid, title, hint, fields]) => group(gid, title, hint, list(...fields.map(field))));
 
-  const save = h('button', { type: 'submit', id: portal ? 'portal-save' : 'settings-save', class: 'btn btn-primary' + (portal ? ' btn-small' : ''),
-    text: portal ? 'Save Portal settings' : 'Save settings' });
-  const result = h('div', { class: 'muted small', role: 'status' }, savedSummary(opts.saved));
-  const errorSlot = h('div');
+  // The save bar: count, summary, Discard and Save; the impact preview of a
+  // save that removes data replaces the summary.
+  const count = h('strong');
+  const summary = h('span', { class: 's-summary' });
   const impactSlot = h('div');
-  const form = h('form', { class: 'settings-form' + (portal ? ' provider-form' : ''), novalidate: true },
-    portal ? null : h('fieldset', { class: 'field-group' }, h('legend', { text: 'System' }),
-      h('div', { class: 'form-grid' }, FIELDS.filter((f) => !f.portal).map(numberField))),
-    !portal ? null : h('fieldset', { class: 'field-group' }, h('legend', { text: 'Portal settings' }),
-      h('div', { class: 'form-grid' },
-        h('div', { class: 'field field-wide' },
-          h('label', { for: relaysId, text: 'Portal relays' }), relays,
-          control('portal_relays', relays, 'One relay per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays). Used when Portal starts; restart Flats to apply a change while Portal runs.')),
-        h('div', { class: 'field field-wide field-check' },
-          discover, h('label', { for: discoverId, text: 'Discover Portal relays' }),
-          control('portal_discovery', discover, 'Find further relays automatically (Portal’s default). Used when Portal starts.')),
-        h('div', { class: 'field field-wide field-check' },
-          hide, h('label', { for: hideId, text: 'Hide public flats from relay listings' }),
-          control('portal_hide', hide, 'Keeps public URLs out of the relays’ lists of sites. It is not access control: anyone with a URL can still open the flat. Saving updates public flats at once; relays apply it at their next lease renewal (up to about 90 seconds). A flat can override it under its Settings → Networks.')),
-        FIELDS.filter((f) => f.portal).map(numberField))),
-    impactSlot,
-    errorSlot,
-    h('div', { class: 'actions' }, result, save));
+  const discard = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Discard' });
+  const save = h('button', { type: 'submit', id: spec.id + '-save', class: 'btn btn-primary btn-small', text: 'Save changes' });
+  const barRow = h('div', { class: 'savebar-row' }, h('div', { class: 'savebar-msg' }, count, summary), h('div', { class: 'savebar-acts' }, discard, save));
+  const bar = h('div', { class: 'savebar', role: 'region', 'aria-label': 'Unsaved changes', hidden: true }, impactSlot, barRow);
+
+  const form = h('form', { class: 'settings-form s-form', id: spec.id + '-form', novalidate: true }, result, groups, spec.after || null, errorSlot, bar);
 
   const setError = (key, message) => {
     const c = controls[key];
@@ -1079,24 +1198,78 @@ function limitsForm(data, opts) {
     c.error.removeAttribute('hidden');
     c.input.setAttribute('aria-invalid', 'true');
     c.input.setAttribute('aria-describedby', [...c.describedBy, c.error.getAttribute('id')].join(' '));
+    c.row.classList?.add('invalid');
+  };
+  const clearError = (c) => {
+    c.error.textContent = '';
+    c.error.hidden = true;
+    c.error.setAttribute('hidden', '');
+    c.input.removeAttribute('aria-invalid');
+    c.input.setAttribute('aria-describedby', c.describedBy.join(' '));
+    c.row.classList?.remove('invalid');
   };
   const clearErrors = () => {
     fill(errorSlot);
-    for (const c of Object.values(controls)) {
-      c.error.textContent = '';
-      c.error.hidden = true;
-      c.error.setAttribute('hidden', '');
-      c.input.removeAttribute('aria-invalid');
-      c.input.setAttribute('aria-describedby', c.describedBy.join(' '));
-    }
+    for (const c of Object.values(controls)) clearError(c);
   };
+
+  // collect reads every staged field: out maps keys to new values, invalid
+  // lists the fields that cannot be saved, notes describe each change.
+  const collect = () => {
+    const out = {};
+    const invalid = [];
+    const notes = [];
+    for (const [key, c] of Object.entries(controls)) {
+      if (pinned[key]) continue;
+      const r = c.read();
+      if (!r) continue;
+      if (r.error) { invalid.push([key, r.error]); continue; }
+      out[key] = r.value;
+      notes.push(`${LABELS[key] || key}: ${r.from} → ${r.to}`);
+    }
+    return { out, invalid, notes };
+  };
+
+  // refreshBar marks staged and invalid rows and updates the save bar.
+  // keep leaves errors the server reported in place.
+  const refreshBar = (keep) => {
+    const { out, invalid, notes } = collect();
+    for (const [key, c] of Object.entries(controls)) {
+      const r = pinned[key] ? null : c.read();
+      if (r) c.row.classList?.add('changed'); else c.row.classList?.remove('changed');
+      // A field the operator fixed loses its error; one still invalid shows
+      // it while typing.
+      if (r && r.error) setError(key, r.error);
+      else if (!keep) clearError(c);
+    }
+    const n = Object.keys(out).length + invalid.length;
+    count.textContent = n ? plural(n, 'unsaved change') : '';
+    if (invalid.length) {
+      summary.className = 's-summary s-summary-err';
+      summary.textContent = `Fix ${invalid.map(([k]) => LABELS[k] || k).join(', ')} before saving.`;
+    } else {
+      summary.className = 's-summary';
+      summary.textContent = notes.length <= 2 ? notes.join(' · ') : `${notes.slice(0, 2).join(' · ')} and ${notes.length - 2} more`;
+    }
+    save.disabled = invalid.length > 0;
+    // While a save waits for its confirmation, the confirmation is the
+    // only way to save.
+    const confirming = !!impactSlot.firstChild;
+    barRow.hidden = confirming;
+    if (confirming) barRow.setAttribute('hidden', ''); else barRow.removeAttribute('hidden');
+    const show = n > 0 || confirming;
+    bar.hidden = !show;
+    if (show) bar.removeAttribute('hidden'); else bar.setAttribute('hidden', '');
+    return { out, invalid };
+  };
+
   const showError = (err) => {
     // Mark the field the server names, by setting or config.json key.
     const msg = err.message || String(err);
-    const key = Object.keys(controls).find((k) => msg.includes(k) || (keys[k] && msg.includes(keys[k])));
+    const key = Object.keys(controls).find((k) => msg.includes(k) || (cfgKeys[k] && msg.includes(cfgKeys[k])));
     if (key) setError(key, msg);
     fill(errorSlot, h('div', { class: 'alert alert-error', role: 'alert' },
-      h('strong', { text: 'Settings not saved' }), h('p', { text: msg }),
+      h('strong', { text: spec.errorTitle || 'Settings not saved' }), h('p', { text: msg }),
       h('p', { class: 'small', text: 'Your changes are still in the form.' })));
     if (key) controls[key].input.focus();
   };
@@ -1104,40 +1277,28 @@ function limitsForm(data, opts) {
   // changes returns the edited settings, or null after marking an invalid
   // field.
   const changes = () => {
-    const out = {};
-    for (const { f, input, initial, initialUnit, unit } of inputs) {
-      if (pinned[f.key] || (input.value === initial && (!unit || unit.value === initialUnit))) continue;
-      const inBytes = unit && unit.value === 'bytes';
-      const whole = f.key === 'version_quota' || inBytes;
-      const base = toBase(input.value, unit ? BYTE_FACTOR[unit.value] : f.factor, whole);
-      if (base == null) {
-        setError(f.key, `${f.label} must be ${whole ? 'a whole number' : 'a number'} of 0 or more.`);
-        input.focus();
-        return null;
-      }
-      // Compare stored values, not text, so "0.0" over 0 changes nothing.
-      if (String(base) !== String(settings[f.key])) out[f.key] = String(base);
+    const { out, invalid } = collect();
+    if (invalid.length) {
+      for (const [key, msg] of invalid) setError(key, msg);
+      controls[invalid[0][0]].input.focus();
+      return null;
     }
-    if (!portal) return out;
-    const relayList = relays.value.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
-    if (!pinned.portal_relays && relayList.join('\n') !== relaysInitial) out.portal_relays = relayList.join(',');
-    if (!pinned.portal_discovery && discover.checked !== discoverInitial) out.portal_discovery = String(discover.checked);
-    if (!pinned.portal_hide && !!hide.checked !== hideInitial) out.portal_hide = String(!!hide.checked);
     return out;
   };
 
   const store = async (out) => {
     try {
-      const res = await api.saveSettings(out, etag);
+      const res = custom ? await spec.save(out) : await api.saveSettings(out, etag);
       toast('Settings saved.', 'success');
-      await opts.reload(res);
+      await spec.reload(res);
     } catch (err) {
       fill(result);
       showError(err);
       // The file may have changed on disk; show that without discarding input.
-      if (err.status === 412 || err.status === 409) {
-        api.settings().then((d) => opts.showNotice(d.config)).catch(() => {});
+      if (!custom && spec.notice && (err.status === 412 || err.status === 409)) {
+        api.settings().then((d) => fill(spec.notice, changedNotice(d.config))).catch(() => {});
       }
+      refreshBar(true);
     }
   };
 
@@ -1145,17 +1306,24 @@ function limitsForm(data, opts) {
   // generation counts edits and submits, so a late impact response for
   // older values is dropped.
   let generation = 0;
-  const edited = () => { generation++; fill(impactSlot); };
+  const edited = () => { generation++; fill(impactSlot); refreshBar(false); };
   form.addEventListener('input', edited);
   form.addEventListener('change', edited);
+  discard.addEventListener('click', () => {
+    for (const c of Object.values(controls)) c.reset();
+    generation++;
+    fill(impactSlot);
+    clearErrors();
+    refreshBar(false);
+  });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const gen = ++generation;
     clearErrors();
     fill(impactSlot);
     const out = changes();
-    if (!out) return;
-    if (!Object.keys(out).length) { fill(result, h('p', { text: 'Nothing changed.' })); return; }
+    if (!out) { refreshBar(true); return; }
+    if (!Object.keys(out).length) { fill(result, h('p', { class: 'muted', text: 'Nothing changed.' })); refreshBar(false); return; }
     busy(save, async () => {
       const lower = RETENTION.filter((k) => k in out && isDecrease(k, settings[k], out[k]));
       if (!lower.length) return store(out);
@@ -1175,17 +1343,27 @@ function limitsForm(data, opts) {
           fill(impactSlot);
           if (now) fill(errorSlot, h('div', { class: 'alert alert-warn', role: 'alert' },
             h('p', { text: 'The form changed after the preview. Save again to check the new values.' })));
+          refreshBar(false);
           return undefined;
         }
         return store(out);
       };
       fill(impactSlot, impactPanel(impact, confirm, () => {
         fill(impactSlot);
+        refreshBar(false);
         controls[lower[0]].input.focus();
       }));
+      refreshBar(false);
     });
   });
+  refreshBar(false);
   return form;
+}
+
+// describeValue shows a stored value in a field's unit for the save bar.
+function describeValue(f, base) {
+  if (f.bytes) return byteText(base, f.unit) || String(base);
+  return `${display(base, f.factor)} ${f.unit}`;
 }
 
 function sameChanges(a, b) {
@@ -1199,10 +1377,10 @@ function savedSummary(res) {
   if (!res) return null;
   const applied = res.applied || [];
   const later = res.restart_required || [];
-  if (!applied.length && !later.length) return h('p', { text: 'Saved. No value changed.' });
-  return h('ul', { class: 'compact saved-list' },
+  if (!applied.length && !later.length) return h('p', { class: 'muted', text: 'Saved. No value changed.' });
+  return callout('ok', h('ul', { class: 'compact saved-list' },
     applied.map((k) => h('li', { text: `${LABELS[k] || k}: saved, applied now.` })),
-    later.map((k) => h('li', { text: `${LABELS[k] || k}: saved, applies after Flats restarts.` })));
+    later.map((k) => h('li', { text: `${LABELS[k] || k}: saved, applies after Flats restarts.` }))));
 }
 
 const IMPACT_TEXT = {
@@ -1224,8 +1402,8 @@ export function impactPanel(impact, onConfirm, onCancel) {
   const field = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
   const removes = Object.values(impact).some((r) => r.total > 0);
   const heading = h('h3', { id: titleId, tabindex: '-1', text: removes ? 'Saving removes data' : 'Check the lower retention values' });
-  const confirm = h('button', { type: 'button', class: removes ? 'btn btn-danger' : 'btn btn-primary', text: removes ? 'Save and remove' : 'Save' });
-  const cancel = h('button', { type: 'button', class: 'btn', text: 'Keep editing' });
+  const confirm = h('button', { type: 'button', class: removes ? 'btn btn-small btn-danger' : 'btn btn-small btn-primary', text: removes ? 'Save and remove' : 'Save' });
+  const cancel = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Keep editing' });
   confirm.addEventListener('click', () => busy(confirm, onConfirm));
   cancel.addEventListener('click', onCancel);
   const panel = h('section', { class: 'impact', role: 'group', 'aria-labelledby': titleId },
@@ -1247,34 +1425,61 @@ export function impactPanel(impact, onConfirm, onCancel) {
   return panel;
 }
 
-// --- approvals ---
+// --- agents ---
 
-function approvals(list) {
-  if (!list.length) return h('p', { class: 'muted', text: 'No approval requests. Agents ask for approval when they try to make a flat public or delete one.' });
-  return h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-    h('thead', null, h('tr', null, ['Request', 'Via', 'Requested', 'Status'].map((t) => h('th', { scope: 'col', text: t })))),
-    h('tbody', null, list.map((a) => h('tr', null,
-      h('th', { scope: 'row' }, h('a', { href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: describeApproval(a) }),
-        a.reason ? h('div', { class: 'muted small', text: a.reason }) : null),
-      h('td', { text: a.via }),
-      h('td', null, timeEl(a.requested_at)),
-      h('td', null, statusBadge(a.status), cleanupPending(a) ? h('span', { class: 'badge badge-warn', text: 'Storage cleanup pending' }) : null))))));
-}
-
-// --- connect an agent ---
-
-function connectAgent() {
+function agentsPage(page) {
+  page.ctx.setTitle('Agents · Settings');
   const url = location.origin + '/mcp';
-  return [
-    h('p', null, 'Flats speaks MCP over Streamable HTTP at ', h('code', { text: url }),
-      '. Agents can create flats, save Drafts, request numbered versions and deploy them, open previews and read logs. Version creation, deployment and deletion, visibility changes and deleting a flat need your approval here.'),
-    copyable(`claude mcp add --transport http flats ${url}`, 'Claude Code'),
-    copyable(`# ~/.codex/config.toml\n[mcp_servers.flats]\nurl = "${url}"`, 'Codex'),
-    copyable(JSON.stringify({ mcpServers: { flats: { url } } }, null, 2), 'Cursor (~/.cursor/mcp.json or .cursor/mcp.json)'),
-    h('h3', { text: 'Command line' }),
-    h('p', { class: 'muted', text: 'Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval:' }),
-    copyable('flats save-draft <slug> ./dist\nflats create-version <slug> --revision <revision> --hash <hash>\nflats deploy --flat <slug> --version <version>', 'CLI'),
-    h('p', { class: 'muted small', text: 'Secret values can only be set in this console or with “flats secret set” on the Flats host.' }),
+  const snippets = [
+    ['Claude Code', `claude mcp add --transport http flats ${url}`],
+    ['Codex', `# ~/.codex/config.toml\n[mcp_servers.flats]\nurl = "${url}"`],
+    ['Cursor', `// ~/.cursor/mcp.json or .cursor/mcp.json\n${JSON.stringify({ mcpServers: { flats: { url } } }, null, 2)}`],
+    ['CLI', 'flats save-draft <slug> ./dist\nflats create-version <slug> --revision <revision> --hash <hash>\nflats deploy --flat <slug> --version <version>'],
   ];
+  const code = h('pre', { class: 's-code', tabindex: '0' }, h('code'));
+  const panel = h('div', { class: 's-tabpanel', role: 'tabpanel', id: 'agent-snippet' }, code, copyButton(() => code.textContent, 'snippet'));
+  const tabs = snippets.map(([label, text], i) => {
+    const t = h('button', { type: 'button', role: 'tab', class: 's-tab', id: 'agent-tab-' + i, 'aria-controls': 'agent-snippet', 'aria-selected': 'false', text: label });
+    t.addEventListener('click', () => select(i));
+    return t;
+  });
+  const note = h('p', { class: 's-row-desc' });
+  function select(i) {
+    tabs.forEach((t, j) => { t.setAttribute('aria-selected', String(i === j)); t.setAttribute('tabindex', i === j ? '0' : '-1'); });
+    code.firstChild.textContent = snippets[i][1];
+    panel.setAttribute('aria-labelledby', 'agent-tab-' + i);
+    note.textContent = snippets[i][0] === 'CLI'
+      ? 'Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval.'
+      : 'Agents can create flats, save Drafts, request numbered versions and deploy them, open previews and read logs.';
+  }
+  select(0);
+  // The snippets for every client stay in the page for search and copy.
+  const all = h('div', { class: 'sr-only' }, snippets.map(([label, text]) => h('pre', null, `${label}: ${text}`)));
+  fill(page.content,
+    pageHead({ title: 'Agents', intro: ['Agents can create flats, save Drafts, open previews and read logs. Saving versions, deploying, visibility changes and deleting wait for your approval under ', h('a', { href: '/approvals', 'data-nav': true, text: 'Approvals' }), '.'] }),
+    group('connect', 'Connect an agent', 'MCP over Streamable HTTP', list(
+      row({ title: 'MCP address', meta: ['Uses the address you’re on now'], ctl: [h('code', { text: url }), copyButton(() => url, 'MCP address')] }),
+      h('div', { class: 's-row stack' }, h('div', { class: 's-tabs', role: 'tablist', 'aria-label': 'Client' }, tabs), panel, note))),
+    group('agent-limits', 'What agents can’t do', '', list(
+      row({ title: 'Read or set keys', desc: ['Network keys are set only here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],
+        ctl: h('a', { class: 'btn btn-small', href: '/settings/networks', 'data-nav': true, text: 'Networks' }) }),
+      row({ title: 'Set secret values', desc: ['Only in a flat’s settings, or with ', h('code', { text: 'flats secret set' }), ' on the Flats host.'] }),
+      row({ title: 'Approve their own requests', desc: 'Every approval link opens in this console.',
+        ctl: h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' }) }))),
+    all);
 }
 
+// copyButton copies text() and says so.
+function copyButton(text, label) {
+  const btn = h('button', { type: 'button', class: 'btn btn-small', 'aria-label': 'Copy ' + label, text: 'Copy' });
+  btn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text());
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    } catch {
+      toast('Copy is unavailable here; select the text and press Ctrl/Cmd+C.');
+    }
+  });
+  return btn;
+}
