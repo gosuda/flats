@@ -6,10 +6,15 @@ before changing a provider.
 
 ## Tailscale (tsnet)
 
-- [ ] Every tsnet node gets its own Let's Encrypt certificate. Let's Encrypt
-  rate-limits new accounts per IP address and certificates per name, so keep
-  the shared account key and the gate's cached key, and avoid needless reruns.
-  A host is usable only when Flats reports `ready`, not `starting`. See
+- [ ] In a tailnet with MagicDNS and HTTPS certificates enabled, every tsnet
+  node gets its own Let's Encrypt certificate. Let's Encrypt rate-limits new
+  accounts per IP address and certificates per name, so keep the shared
+  account key and the gate's cached key, and avoid needless reruns. There a
+  host is usable only when Flats reports `ready`, not `starting`.
+- [ ] Without HTTPS certificates, a node serves plain HTTP inside the tailnet
+  and reports `ready` with the detail `HTTPSUnavailable`
+  (`internal/expose/tsnet/tsnet.go`, `TestPlainHTTPFallbackAndKeyExpiry`).
+  That is the supported fallback, not broken provisioning. See
   [Real tailnet](../../../../docs/gates.md#real-tailnet-scriptstailnet-gatesh-keyfile).
 - [ ] A logged-out node stays listed as expired in the tailnet and keeps its
   name, so a new node with that name gets a suffix (for example `flats-1`).

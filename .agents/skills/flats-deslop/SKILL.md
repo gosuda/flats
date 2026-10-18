@@ -37,13 +37,12 @@ JavaScript (console, docs editor, design app):
 
 ## Guardrails
 
-- Keep behavior unchanged unless you are fixing a clear bug, and say so when
-  you do.
+- Keep behavior unchanged. Anything that would change behavior, including an
+  apparent bug fix, is not a deslop edit: report it, and it goes through
+  normal implementation and review.
 - Prefer minimal, focused edits over broad rewrites. Touch only lines the
   branch changed, unless an adjacent line must change with them.
-- Do not remove a check you cannot prove redundant. A finding that would
-  change behavior goes through the normal workflow: report it for
-  implementation review instead of editing it here.
+- Do not remove a check you cannot prove redundant.
 - Run the affected tests after editing (`go vet` and `go test` for the touched
   packages, and the relevant JavaScript tests).
 - Finish with a summary of one to three sentences.
@@ -54,4 +53,6 @@ Adapted from the `deslop` skill in
 [cursor/plugins](https://github.com/cursor/plugins/blob/0b8e952052d482ee6de06deebf14d590d77b1b34/cursor-team-kit/skills/deslop/SKILL.md)
 (MIT License, Copyright (c) 2026 Cursor). The full upstream license is in
 [references/UPSTREAM-LICENSE.txt](references/UPSTREAM-LICENSE.txt). The Flats
-version adds Go and JavaScript examples and the workflow guardrails.
+version adds Go and JavaScript examples and the workflow guardrails, and it
+never changes behavior: where upstream allows fixing a clear bug, the Flats
+version reports the bug instead.
