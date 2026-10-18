@@ -802,7 +802,9 @@ assert.ok(page.textContent.includes('flats create-version <slug> --revision <rev
 assert.ok(page.textContent.includes('flats deploy --flat <slug> --version <version>'));
 assert.equal(page.textContent.includes('flats deploy ./dist'), false);
 assert.ok(page.textContent.includes('claude mcp add --transport http flats http://127.0.0.1:7878/mcp'));
-assert.ok(page.textContent.includes('Read or set keys') && page.textContent.includes('Approve their own requests'));
+assert.ok(page.textContent.includes('Read or set keys') && page.textContent.includes('Approve requests'));
+// The limits are those of the agent tools: the console has no login yet (spec rule 10).
+assert.ok(page.textContent.includes('What the agent tools can’t do') && page.textContent.includes('The console itself has no login yet'));
 const agentTabs = all(page, (e) => e.getAttribute('role') === 'tab');
 assert.deepEqual(agentTabs.map((t) => t.textContent), ['Claude Code', 'Codex', 'Cursor', 'CLI']);
 agentTabs[3].dispatch('click');
@@ -1033,6 +1035,48 @@ byId(page, 'limits-form').dispatch('submit');
 await tick();
 assert.equal(puts().length, putCount);
 assert.ok(byId(page, 'set-revision_quota-error').textContent.includes('Revisions must be a whole number of 0 or more.'));
+const withRevisions = (n) => ({ ...settingsRoute(CONFIG), settings: { ...SETTINGS, revision_quota: n } });
+// Lowering the revision quota deletes revisions at once, so it asks first,
+// in words: the server cannot count them in advance.
+assert.equal(settingsPage.revisionsDrop('0', '40'), true, '0 keeps all revisions');
+assert.equal(settingsPage.revisionsDrop(undefined, '40'), true);
+assert.equal(settingsPage.revisionsDrop('100', '40'), true);
+assert.equal(settingsPage.revisionsDrop('40', '100'), false);
+assert.equal(settingsPage.revisionsDrop('40', '0'), false, 'keeping all deletes nothing');
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['revision_quota'], restart_required: [] };
+page = await mountSettings(['limits']);
+byId(page, 'set-revision_quota').value = '40';
+putCount = puts().length;
+let impactCalls = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+byId(page, 'limits-form').dispatch('submit');
+await tick();
+assert.equal(puts().length, putCount, 'a revision quota drop must not save before the confirmation');
+assert.equal(calls.filter((c) => c.key === 'POST /console/api/settings/impact').length, impactCalls, 'the server has no revision count to ask for');
+panel = all(page, (e) => e.className === 'impact')[0];
+assert.ok(panel.textContent.includes('Saving removes data') && panel.textContent.includes('Revisions: all → 40 revisions.'));
+assert.ok(panel.textContent.includes('Pinned revisions and flats with their own limit are kept'));
+byText(panel, 'Save and remove')[0].dispatch('click');
+await tick();
+assert.deepEqual(JSON.parse(puts().at(-1).body), { revision_quota: '40' });
+// Raising it, or going back to keeping all, saves at once.
+routes['GET /console/api/settings'] = withRevisions('100');
+page = await mountSettings(['limits']);
+byId(page, 'set-revision_quota').value = '0';
+putCount = puts().length;
+byId(page, 'limits-form').dispatch('submit');
+await tick();
+assert.equal(puts().length, putCount + 1);
+assert.equal(all(page, (e) => e.className === 'impact').length, 0);
+// With log events too, one confirmation covers both.
+routes['POST /console/api/settings/impact'] = { impact: { events_keep: { current: '5000', candidate: '2', total: 3, flats: [{ slug: 'blog', count: 3 }] } } };
+page = await mountSettings(['limits']);
+byId(page, 'set-revision_quota').value = '10';
+byId(page, 'set-events_keep').value = '2';
+byId(page, 'limits-form').dispatch('submit');
+await tick();
+panel = all(page, (e) => e.className === 'impact')[0];
+assert.ok(panel.textContent.includes('Log events: 5000 → 2 events.') && panel.textContent.includes('Revisions: 100 → 10 revisions.'));
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
 
 // Byte sizes show the stored count exactly, in the largest unit that
 // converts back to it, with a unit menu and the exact byte count.
@@ -1304,6 +1348,12 @@ assert.ok(nbOff.textContent.includes('does not include NetBird'));
 assert.equal(byText(nbOff, 'Turn on').length, 0, 'no switch without NetBird');
 assert.equal(all(nbOff, (e) => e.tagName === 'FORM').length, 0, 'no key form without NetBird');
 assert.ok((await mountSettings()).textContent.includes('Not in this build'), 'the list says so too');
+routes['GET /console/api/providers'] = { providers: [provider('local', 'private', true),
+  { ...provider('netbird-expose', 'public', false), unsupported: 'This Flats build does not include NetBird; build ./netbird/cmd/flats from the source tree' }] };
+const nbExposeOff = await mountSettings(['networks', 'netbird-expose']);
+assert.ok(nbExposeOff.textContent.includes('does not include NetBird'), 'NetBird Expose says why too');
+assert.equal(byText(nbExposeOff, 'Turn on').length, 0);
+assert.equal(nbExposeOff.textContent.includes('reverse proxy, which needs'), false, 'no setup guidance for a build without it');
 
 // A stored key can be replaced or removed; the old shared peer is named until
 // the operator dismisses the notice.
@@ -1514,6 +1564,27 @@ byId(domMain, 'links-form').dispatch('submit');
 await tick();
 await tick();
 assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/console-domains/preferred').pop().body), { preferred: '' });
+// A staged choice survives an immediate action that reloads the page.
+routes['GET /console/api/console-domains'] = dview({ on: true,
+  domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', url: 'https://next.tail1234.ts.net', state: 'ready' }] }, {},
+{ preferred: '', link_url: 'https://flats.tail1234.ts.net', etag: 'etag-p5' });
+routes['POST /console/api/console-domains'] = { etag: 'etag-p6' };
+domMain = await mountSettings(['console']);
+byId(domMain, 'console-preferred').value = 'tailscale:next';
+byId(domMain, 'links-form').dispatch('change');
+byId(domMain, 'console-domain-name').value = 'third';
+all(byId(domMain, 'console-domains'), (e) => e.tagName === 'FORM')[0].dispatch('submit');
+await tick();
+await tick();
+assert.equal(byId(domMain, 'console-preferred').value, 'tailscale:next', 'the staged choice is kept');
+assert.equal(savebarOf(domMain).getAttribute('hidden'), null, 'and still waits for Save');
+assert.ok(savebarOf(domMain).textContent.includes('Address for links: Automatic → next (Tailscale)'));
+// After a save the page starts clean.
+byId(domMain, 'links-form').dispatch('submit');
+await tick();
+await tick();
+assert.equal(byId(domMain, 'console-preferred').value, '', 'the reload shows the stored value');
+assert.equal(savebarOf(domMain).getAttribute('hidden'), '');
 // A preferred domain that is not served is warned about, with where links go instead.
 routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready' }, { name: 'next', state: 'starting' }] }, {},

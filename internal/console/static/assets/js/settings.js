@@ -41,6 +41,15 @@ const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
 // Lower values of these settings remove data at the next pruning.
 const RETENTION = ['events_keep', 'preview_ttl_seconds'];
 
+// revisionsDrop reports a revision quota change that deletes revisions at
+// once: a lower limit, or any limit where 0 kept all of them. The server
+// cannot count them in advance, so the confirmation says so in words.
+export function revisionsDrop(current, next) {
+  const cur = Number(current || 0);
+  const n = Number(next);
+  return n !== 0 && (cur === 0 || n < cur);
+}
+
 const SOURCES = { default: 'default', file: 'config.json', flag: 'a flag for this run' };
 // SOURCE_TAGS label a read-only value's source.
 const SOURCE_TAGS = { default: 'default', file: 'config.json', flag: 'flag for this run' };
@@ -78,7 +87,9 @@ export function mount(main, [section, sub], ctx) {
   let refreshTimer = null;
   // page.token identifies the latest load: an older one, or a background
   // refresh that finds the operator editing, draws nothing.
-  const page = { ctx, content, notice, refresh, token: null };
+  // page.forms are the staged forms on screen; page.collect gathers those a
+  // load draws, and replaces page.forms only if that load draws.
+  const page = { ctx, content, notice, refresh, token: null, forms: [], collect: [] };
   let seq = 0;
   function refresh(pending) {
     clearTimeout(refreshTimer);
@@ -93,11 +104,25 @@ export function mount(main, [section, sub], ctx) {
   }
   const load = (saved, background) => {
     page.token = { id: ++seq, background: !!background };
-    if (active === 'networks' && sub) return providerPage(page, sub, saved, load);
-    if (active === 'networks') return networksPage(page, saved, load);
-    if (active === 'console') return consolePage(page, saved, load);
-    if (active === 'limits') return limitsPage(page, saved, load);
-    return agentsPage(page);
+    // An immediate action (Add, Delete, Turn on, a key) reloads the page:
+    // keep what the operator staged but has not saved. A save reloads with
+    // its result and starts clean.
+    const staged = saved ? {} : Object.assign({}, ...page.forms.map((f) => f.snapshot()));
+    const token = page.token;
+    const drawn = [];
+    page.collect = drawn;
+    const done = () => {
+      if (page.token !== token || !drawn.length) return;
+      page.forms = drawn;
+      if (Object.keys(staged).length) for (const f of drawn) f.restore(staged);
+    };
+    let run;
+    if (active === 'networks' && sub) run = providerPage(page, sub, saved, load);
+    else if (active === 'networks') run = networksPage(page, saved, load);
+    else if (active === 'console') run = consolePage(page, saved, load);
+    else if (active === 'limits') run = limitsPage(page, saved, load);
+    else run = agentsPage(page);
+    return Promise.resolve(run).then(done);
   };
   load();
   return () => clearTimeout(refreshTimer);
@@ -302,21 +327,21 @@ async function networksPage(page, saved, reload) {
   });
   fill(page.content,
     pageHead({ title: 'Networks', intro: 'Where flats can be reached. Turn a network on here, then allow it on each flat that should use it. Turning a network on never makes a flat public.' }),
-    d.providers ? defaultsForm(d.settings, providers, saved, reload, page.notice) : errorPanel(d.providersError, 'Cannot load network providers'),
+    d.providers ? defaultsForm(d.settings, providers, saved, reload, page.notice, page) : errorPanel(d.providersError, 'Cannot load network providers'),
     d.providers ? group('providers-private', 'Private', 'Reachable from this device or your own network.', list(...providerRows('private'))) : null,
     d.providers ? group('providers-public', 'Public', 'Reachable from the internet, only after you approve it per flat.', list(...providerRows('public'))) : null);
 }
 
 // defaultsForm picks the provider every new flat is allowed on for each
 // scope. Only providers turned on for the host can be a default.
-function defaultsForm(data, providers, saved, reload, notice) {
+function defaultsForm(data, providers, saved, reload, notice, page) {
   const choices = (scope) => {
     const out = scope === 'public' ? [['', 'None']] : [];
     for (const p of providers) if (p.scope === scope && (p.id === 'local' || p.enabled)) out.push([p.id, p.id === 'local' ? 'Local only' : infoOf(p.id).label]);
     return out;
   };
   return stagedForm({
-    id: 'defaults', data, saved, reload, notice,
+    id: 'defaults', data, saved, reload, notice, page,
     groups: [['defaults', 'New flats', 'Applies to flats created from now on.', [
       { key: DEFAULT_KEYS.private, kind: 'select', label: 'Private network', options: choices('private'), initial: effectiveDefault('private', data),
         help: 'New flats are reachable here. Local is always included.' },
@@ -363,18 +388,19 @@ async function providerPage(page, id, saved, reload) {
   const parts = [head];
   const keyParts = [];
   if (p.id === 'tailscale') keyParts.push(group('key', 'Auth key', 'Stored encrypted in flats.db. Never shown again.', keysFailed ? keyError() : keySection(keyOf('tailscale'), TAILSCALE_KEY, after)));
-  if (p.id === 'netbird') {
-    if (p.unsupported) parts.push(callout('warn', p.unsupported));
-    else if (setup) parts.push(netbirdSteps(p, keyOf('netbird'), etag, after));
+  // A build without a provider (NetBird) says why on both of its pages.
+  if (p.unsupported) parts.push(callout('warn', p.unsupported));
+  if (p.id === 'netbird' && !p.unsupported) {
+    if (setup) parts.push(netbirdSteps(p, keyOf('netbird'), etag, after));
     else keyParts.push(group('key', 'Setup key', 'Stored encrypted in flats.db. Never shown again.', keysFailed ? keyError() : keySection(keyOf('netbird'), NETBIRD_KEY, after)));
   }
-  if (p.id === 'netbird-expose') {
+  if (p.id === 'netbird-expose' && !p.unsupported) {
     parts.push(callout('info', 'A public flat is exposed through NetBird’s reverse proxy, which needs the proxy feature on your NetBird account or server. Its peer registers with the setup key under ',
       h('a', { href: '/settings/networks/netbird', 'data-nav': true, text: 'NetBird' }), '.'));
   }
   if (p.id === 'zrok') keyParts.push(group('key', 'Account', p.managed ? 'The token is kept in Flats’ zrok environment. Never shown again.' : '', keysFailed ? keyError() : zrokSection(p, keyOf('zrok'), after)));
   parts.push(...keyParts);
-  if (p.id === 'portal') parts.push(portalForm(data, saved, reload, page.notice));
+  if (p.id === 'portal') parts.push(portalForm(data, saved, reload, page.notice, page));
   if (p.id === 'local') parts.push(group('address', 'Address', '', list(row({ title: 'Local address', desc: 'Every flat is reachable here from this device.', ctl: p.address ? h('code', { text: p.address }) : null }))));
   if (p.id === 'tailscale-funnel') parts.push(callout('info', 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.'));
   if (p.id === 'cloudflare-quick') parts.push(callout('info', 'Cloudflare offers quick tunnels for testing and development: no uptime guarantee, up to 200 concurrent requests per flat and no server-sent events. Each flat gets a random address. Flats keeps it across restarts while Cloudflare keeps the tunnel; if Cloudflare removes the tunnel, the flat gets a new address.'));
@@ -725,9 +751,9 @@ function zrokDisconnect(p, k, after) {
 }
 
 // portalForm edits the Portal settings; they save with the page's save bar.
-function portalForm(data, saved, reload, notice) {
+function portalForm(data, saved, reload, notice, page) {
   return stagedForm({
-    id: 'portal', data, saved, reload, notice,
+    id: 'portal', data, saved, reload, notice, page,
     groups: [['relays', 'Relays', 'Saved together with the save bar.', [
       { key: 'portal_relays', kind: 'relays', label: 'Relay list', restart: true, help: 'One per line. Leave empty to use Portal’s defaults (relay discovery, up to 3 active relays).' },
       { key: 'portal_discovery', kind: 'toggle', label: 'Discover more relays', restart: true, initial: String((data.settings || {}).portal_discovery ?? 'true') !== 'false',
@@ -820,7 +846,7 @@ async function consolePage(page, saved, reload) {
     pageHead({ title: 'Console', intro: ['Where this console opens and which address goes into the links Flats hands out. To move to a new address, add it, run ', h('code', { text: 'flats connect' }), ' on your agents, then delete the old one.'] }),
     view ? group('console-domains', 'Addresses', here, addressList(view, cfg, reload), retiringList(view, reload)) : group('console-domains', 'Addresses', '', errorPanel(d.domainsError, 'Cannot load the console addresses')),
     view && networkOf(view, 'netbird').domains.length ? callout('warn', h('strong', { text: 'NetBird addresses are plain HTTP. ' }), 'NetBird gives peers no certificates; traffic between peers is still encrypted by WireGuard.') : null,
-    view ? preferredForm(view, d.settings, saved, reload) : null,
+    view ? preferredForm(view, d.settings, saved, reload, page) : null,
     group('configuration', 'Host', ['Set in config.json · change with ', h('code', { text: 'flats config set' }), ' while Flats is stopped; values apply after Flats restarts'], configView(cfg)));
   page.refresh(view && pendingWork(view, d.keys && d.keys.keys));
 }
@@ -953,7 +979,7 @@ async function deleteDomain(d, prov, view, reload) {
 // domain they were requested through: requests on the loopback address, or
 // through a domain being deleted. The choice is the loopback address or a
 // listed console domain, never a free address.
-function preferredForm(view, data, saved, reload) {
+function preferredForm(view, data, saved, reload, page) {
   const current = view.preferred || '';
   const options = [['', 'Automatic'], ['local', 'Local']];
   for (const prov of Object.keys(NETWORKS)) {
@@ -971,7 +997,7 @@ function preferredForm(view, data, saved, reload) {
     warning = `config.json prefers ${current}, which is not a console domain, so the preference is ignored. Choose a listed domain or Automatic.`;
   }
   return stagedForm({
-    id: 'links', data, saved, reload,
+    id: 'links', data, saved, reload, page,
     save: async (out) => {
       await api.setPreferredConsole(out.preferred, view.etag);
       return { applied: ['preferred'], restart_required: [] };
@@ -1011,7 +1037,7 @@ async function limitsPage(page, saved, reload) {
   fill(page.content,
     pageHead({ title: 'Limits', intro: 'Defaults for every flat. A flat can override the ones marked “per flat” in its own settings. 0 means no limit.' }),
     stagedForm({
-      id: 'limits', data: d.settings, saved, reload, notice: page.notice,
+      id: 'limits', data: d.settings, saved, reload, notice: page.notice, page,
       groups: LIMIT_GROUPS.map(([gid, title, hint]) => ['limits-' + gid, title, hint, FIELDS.filter((f) => f.group === gid)]),
     }));
 }
@@ -1092,7 +1118,7 @@ function stagedForm(spec) {
   const cfgKeys = (cfg && cfg.keys) || {};
   const pinned = (cfg && cfg.pinned) || {};
   const custom = !!spec.save;
-  const controls = {}; // key -> { f, input, unit, error, describedBy, row, read(), reset(), changed() }
+  const controls = {}; // key -> { f, input, unit, error, describedBy, row, read(), reset() }
 
   const result = h('div', { class: 's-result', role: 'status' }, savedSummary(spec.saved));
   const errorSlot = h('div');
@@ -1192,7 +1218,16 @@ function stagedForm(spec) {
         w.hint, exact, f.meta ? h('span', { class: 's-row-meta' }, f.meta.map((m, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true', text: '·' }) : null, typeof m === 'string' ? h('span', { text: m }) : m])) : null,
         w.pin, w.error),
       kind === 'relays' ? input : h('div', { class: 's-row-ctl' }, ctl));
-    controls[f.key] = { f, input, unit, error: w.error, describedBy: w.describedBy, row: r, read, reset };
+    controls[f.key] = { f, input, unit, error: w.error, describedBy: w.describedBy, row: r, read, reset,
+      // raw and setRaw carry a staged value across a page reload.
+      raw: () => (kind === 'toggle' ? { checked: !!input.checked } : { value: input.value, unit: kind === 'bytes' ? unit.value : undefined }),
+      setRaw: (v) => {
+        if (kind === 'toggle') { input.checked = v.checked; return true; }
+        input.value = v.value;
+        if (kind === 'bytes' && v.unit) { unit.value = v.unit; update(); }
+        // A choice that no longer exists (a deleted address) is dropped.
+        return input.value === v.value;
+      } };
     return r;
   };
 
@@ -1346,15 +1381,21 @@ function stagedForm(spec) {
     if (!Object.keys(out).length) { fill(result, h('p', { class: 'muted', text: 'Nothing changed.' })); refreshBar(false); return; }
     busy(save, async () => {
       const lower = RETENTION.filter((k) => k in out && isDecrease(k, settings[k], out[k]));
+      if ('revision_quota' in out && revisionsDrop(settings.revision_quota, out.revision_quota)) lower.push('revision_quota');
       if (!lower.length) return store(out);
-      let impact;
-      try {
-        impact = (await api.settingsImpact(out)).impact || {};
-      } catch (err) {
-        if (gen === generation) showError(err);
-        return;
+      let impact = {};
+      if (lower.some((k) => RETENTION.includes(k))) {
+        try {
+          impact = (await api.settingsImpact(out)).impact || {};
+        } catch (err) {
+          if (gen === generation) showError(err);
+          return;
+        }
+        if (gen !== generation) return;
       }
-      if (gen !== generation) return;
+      if (lower.includes('revision_quota')) {
+        impact = { ...impact, revision_quota: { current: String(settings.revision_quota ?? '0'), candidate: out.revision_quota, revisions: true } };
+      }
       if (!Object.keys(impact).length) return store(out);
       // The confirmation saves only the values it described.
       const confirm = () => {
@@ -1377,6 +1418,19 @@ function stagedForm(spec) {
     });
   });
   refreshBar(false);
+  if (spec.page) {
+    spec.page.collect.push({
+      snapshot: () => Object.fromEntries(Object.entries(controls).filter(([key, c]) => !pinned[key] && c.read()).map(([key, c]) => [key, c.raw()])),
+      restore: (staged) => {
+        let any = false;
+        for (const [key, v] of Object.entries(staged)) {
+          const c = controls[key];
+          if (c && !pinned[key] && !c.input.disabled) any = c.setRaw(v) || any;
+        }
+        if (any) refreshBar(false);
+      },
+    });
+  }
   return form;
 }
 
@@ -1420,7 +1474,7 @@ function impactItem(key, f) {
 export function impactPanel(impact, onConfirm, onCancel) {
   const titleId = 'impact-title';
   const field = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
-  const removes = Object.values(impact).some((r) => r.total > 0);
+  const removes = Object.values(impact).some((r) => r.total > 0 || r.revisions);
   const heading = h('h3', { id: titleId, tabindex: '-1', text: removes ? 'Saving removes data' : 'Check the lower retention values' });
   const confirm = h('button', { type: 'button', class: removes ? 'btn btn-small btn-danger' : 'btn btn-small btn-primary', text: removes ? 'Save and remove' : 'Save' });
   const cancel = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Keep editing' });
@@ -1440,6 +1494,9 @@ export function impactPanel(impact, onConfirm, onCancel) {
           r.flats.map((x) => h('li', { text: impactItem(k, x) })),
           r.more ? h('li', { class: 'muted', text: `and ${plural(r.more, 'more flat')}` }) : null) : null);
     }),
+    impact.revision_quota ? h('div', null, h('p', null,
+      h('strong', { text: `Revisions: ${impact.revision_quota.current === '0' ? 'all' : impact.revision_quota.current} → ${impact.revision_quota.candidate} revisions.` }), ' ',
+      'Every document and design that uses this default deletes its older unpinned revisions beyond the new limit at once. Pinned revisions and flats with their own limit are kept. The number deleted cannot be shown in advance.')) : null,
     h('div', { class: 'actions' }, cancel, confirm));
   queueMicrotask(() => heading.focus());
   return panel;
@@ -1490,12 +1547,13 @@ function agentsPage(page) {
     group('connect', 'Connect an agent', 'MCP over Streamable HTTP', list(
       row({ title: 'MCP address', meta: ['Uses the address you’re on now'], ctl: [h('code', { text: url }), copyButton(() => url, 'MCP address')] }),
       h('div', { class: 's-row stack' }, tablist, panel, note))),
-    group('agent-limits', 'What agents can’t do', '', list(
-      row({ title: 'Read or set keys', desc: ['Network keys are set only here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],
+    group('agent-limits', 'What the agent tools can’t do', 'MCP tools and the agent API', list(
+      row({ title: 'Read or set keys', desc: ['No agent tool reads or sets a network key. Keys are set here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],
         ctl: h('a', { class: 'btn btn-small', href: '/settings/networks', 'data-nav': true, text: 'Networks' }) }),
-      row({ title: 'Set secret values', desc: ['Only in a flat’s settings, or with ', h('code', { text: 'flats secret set' }), ' on the Flats host.'] }),
-      row({ title: 'Approve their own requests', desc: 'Every approval link opens in this console.',
-        ctl: h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' }) }))),
+      row({ title: 'Set secret values', desc: ['No agent tool sets a secret. Set them in a flat’s settings, or with ', h('code', { text: 'flats secret set' }), ' on the Flats host.'] }),
+      row({ title: 'Approve requests', desc: 'No agent tool decides an approval; every approval link opens in this console.',
+        ctl: h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' }) })),
+      callout('info', 'These limits apply to the agent tools. The console itself has no login yet: it only refuses requests from other websites, so a program on a machine that can reach its management address can call it as this page does. Keep that address private.')),
     all);
 }
 

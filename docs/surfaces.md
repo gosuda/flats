@@ -282,8 +282,8 @@ once saved.
   account token: state and source, never the value), its hosts, its own
   settings and the flats that allow it. Console: the console's addresses on
   every network, the address for links and the read-only host values. Limits:
-  storage, history and traffic. Agents: MCP setup and what agents cannot do.
-  Fields stage changes for one save bar per page, which counts them, blocks
+  storage, history and traffic. Agents: MCP setup and what the agent tools
+  cannot do (the console itself is not authenticated yet). Fields stage changes for one save bar per page, which counts them, blocks
   saving while one is invalid and asks again before a save that removes data;
   buttons act at once. A disabled action shows its reason next to it or on
   hover and keyboard focus.
