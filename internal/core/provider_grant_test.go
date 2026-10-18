@@ -183,6 +183,7 @@ func publicLifecycleFlat(t *testing.T, s *Service, slugName string, providers ..
 // Explicitly allowing a public provider on an already Public flat opens that
 // route immediately and keeps the previously serving public and private paths.
 func TestProviderGrantAddsPublicRoute(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []ProviderID{ProviderPortal, ProviderFunnel, ProviderZrok, ProviderCloudflareQuick, ProviderNetbirdExpose} {
 		t.Run(string(provider), func(t *testing.T) {
 			s, _ := newTestService(t)
@@ -346,6 +347,7 @@ func TestProviderGrantLegacyBackendRecordsOnly(t *testing.T) {
 // provider manager keeps one status per host, so a private-only request
 // would hide them.
 func TestProviderGrantKeepsPublicStatus(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"ready", "needs-login", "error", "unavailable"} {
 		t.Run(state, func(t *testing.T) {
 			s, _ := newTestService(t)

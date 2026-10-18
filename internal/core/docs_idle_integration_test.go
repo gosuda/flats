@@ -137,6 +137,7 @@ func TestDocsIdleStaleRequestUsesCurrentWrappedHandler(t *testing.T) {
 }
 
 func TestDocsIdlePreparationRevokesBeforeRecoveryAndBudget(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"fresh budget", "budget unavailable", "import backlog", "revoke fails", "capacity sync", "failed sync"} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := newTestService(t)
@@ -214,6 +215,7 @@ func TestDocsIdlePreparationRevokesBeforeRecoveryAndBudget(t *testing.T) {
 // Lose the restore response after committing an outbox entry, then force a
 // fresh child whose preparation imports/ACKs that entry before receipt lookup.
 func TestDocsIdleUncertainRollbackReacquiresAndKeepsImportedReceipt(t *testing.T) {
+	t.Parallel()
 	s, _ := newTestService(t)
 	s.cfg.Runtime = &contentRuntime{}
 	s.cfg.DocsApp = testDocsApp()
@@ -363,6 +365,7 @@ func (q *idleTestQuiescence) Resume() error {
 }
 
 func TestDocsIdleDrainRefusesUnresolvedState(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"clean", "sync error", "import error", "import more", "not quiescent", "ready entries", "holds", "reopen fails", "resume fails"} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := newTestService(t)

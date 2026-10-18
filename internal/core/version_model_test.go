@@ -318,8 +318,10 @@ func holdVersionCheckpoint(t *testing.T, s *Service) func() {
 }
 
 func TestVersionModelCheckpointFailureKeepsRecoverableFiles(t *testing.T) {
+	t.Parallel()
 	for _, approved := range []bool{false, true} {
 		t.Run(strconv.FormatBool(approved), func(t *testing.T) {
+			t.Parallel()
 			ctx := t.Context()
 			dir := t.TempDir()
 			st, err := store.Open(filepath.Join(dir, "flats.db"))
@@ -429,12 +431,14 @@ func TestVersionModelCheckpointFailureKeepsRecoverableFiles(t *testing.T) {
 // receipt still names the reused slug. Rename is a noninterference control,
 // since renaming also updates approvals.flat and already passed the old code.
 func TestVersionModelPendingReceiptReusedIdentityAndRenameControl(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"rename", "delete"} {
 		name := "delete_reuse_regression"
 		if change == "rename" {
 			name = "rename_noninterference_control"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			ctx := t.Context()
 			dir := t.TempDir()
 			st, err := store.Open(filepath.Join(dir, "flats.db"))

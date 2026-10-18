@@ -186,6 +186,7 @@ func TestDocsImagePathLifecycle(t *testing.T) {
 // Deleting or replacing a document while its worker writes the image leaves
 // no state directory, and the worker cannot write one afterwards.
 func TestDocsImageStateRemovedOnDeleteAndReplace(t *testing.T) {
+	t.Parallel()
 	s, dir := newTestService(t)
 	rt := &imageRuntime{contentRuntime: &contentRuntime{}}
 	s.cfg.Runtime = rt

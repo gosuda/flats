@@ -149,6 +149,9 @@ func (n *memNet) Status() NetStatus {
 	return st
 }
 
+// newTestService isolates the database, storage, routes and cleanup per test.
+// Slow tests using this fixture may run in parallel unless they mutate package
+// globals (document-edit receipts/deadlines) or assert wall-clock budgets.
 func newTestService(t *testing.T) (*Service, string) {
 	t.Helper()
 	dir := t.TempDir()

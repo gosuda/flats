@@ -70,6 +70,7 @@ func TestLifecycleRejectionPersistsActor(t *testing.T) {
 }
 
 func TestLifecycleVisibilityDefersProviderChecksToAuthorizedApply(t *testing.T) {
+	t.Parallel()
 	for _, via := range []Via{ViaAPI, ViaCLI, ViaMCP, ViaConsole, ViaSystem} {
 		for _, permitted := range []bool{false, true} {
 			name := string(via) + "/unpermitted"
