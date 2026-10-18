@@ -93,6 +93,24 @@ data stay on your machine.
 Local loopback also binds in Tailscale mode: concurrent hosts need distinct
 `host.management_addr`, `host.local_addr` and data directories.
 
+## Serving the console behind a reverse proxy
+
+An existing reverse proxy can forward to the management listener while
+preserving the public `Host`, for example `flats.example.org`. Declare
+`https://flats.example.org` in Settings → Console → External origins first.
+Flats then accepts that authority and generates HTTPS approval, status and
+agent-discovery links even when the upstream connection is HTTP. Preserve
+browser `Origin` headers; do not rewrite them to bypass CSRF checks.
+Forwarded scheme/host headers do not affect URL selection.
+
+The origin setting does not provide TLS, DNS, tunneling or authentication.
+Configure those at the proxy, require authentication (or restrict access to
+a trusted network), and prevent direct untrusted access to the upstream.
+All management routes are exposed, including approval and settings routes;
+there is no agent-only mode. See [external-origin configuration](configuration.md#external-origins-behind-a-reverse-proxy)
+for validation and live-update behavior. The default empty list preserves
+existing loopback and provider-domain behavior.
+
 ## Removing a permission
 
 Removing a flat's Tailscale permission stops its Private Tailscale current,

@@ -22,20 +22,21 @@ import (
 // Setting keys (all configurable in system settings). Each is stored in
 // config.json under the key in settingKeys.
 const (
-	SetUploadMaxBytes = "upload_max_bytes"
-	SetVersionQuota   = "version_quota"
-	SetKeepVersions   = SetVersionQuota // internal source compatibility; no retention behavior
-	SetDiskQuotaBytes = "disk_quota_bytes"
-	SetPreviewTTL     = "preview_ttl_seconds"
-	SetRateLimit      = "rate_limit_rps"
-	SetPortalRelays   = "portal_relays" // comma-separated; empty = Portal defaults
-	SetRedirectDays   = "redirect_days"
-	SetPortalDiscover = "portal_discovery"  // "true" (Portal CLI default) or "false"
-	SetPortalMaxRelay = "portal_max_relays" // active relays chosen by discovery (default 3)
-	SetEventsKeep     = "events_keep"       // log events kept per flat
-	SetRevisionQuota  = "revision_quota"    // unpinned revisions kept per design; 0 = all
-	SetPinQuota       = "pin_quota"         // pinned revisions per design; 0 = unlimited
-	SetPortalHide     = "portal_hide"       // "true" keeps public flats out of relay listings by default
+	SetExternalOrigins = "external_origins"
+	SetUploadMaxBytes  = "upload_max_bytes"
+	SetVersionQuota    = "version_quota"
+	SetKeepVersions    = SetVersionQuota // internal source compatibility; no retention behavior
+	SetDiskQuotaBytes  = "disk_quota_bytes"
+	SetPreviewTTL      = "preview_ttl_seconds"
+	SetRateLimit       = "rate_limit_rps"
+	SetPortalRelays    = "portal_relays" // comma-separated; empty = Portal defaults
+	SetRedirectDays    = "redirect_days"
+	SetPortalDiscover  = "portal_discovery"  // "true" (Portal CLI default) or "false"
+	SetPortalMaxRelay  = "portal_max_relays" // active relays chosen by discovery (default 3)
+	SetEventsKeep      = "events_keep"       // log events kept per flat
+	SetRevisionQuota   = "revision_quota"    // unpinned revisions kept per design; 0 = all
+	SetPinQuota        = "pin_quota"         // pinned revisions per design; 0 = unlimited
+	SetPortalHide      = "portal_hide"       // "true" keeps public flats out of relay listings by default
 	// The providers new flats inherit, one per mode. "" for private follows
 	// network.private_backend; "" for public grants none.
 	SetDefaultPrivate = "default_private_provider"
@@ -44,21 +45,22 @@ const (
 
 // settingKeys maps each setting to its config.json key.
 var settingKeys = map[string]string{
-	SetUploadMaxBytes: "system.upload_max_bytes",
-	SetVersionQuota:   "system.version_quota",
-	SetDiskQuotaBytes: "system.disk_quota_bytes",
-	SetPreviewTTL:     "system.preview_ttl_seconds",
-	SetRateLimit:      "system.rate_limit_rps",
-	SetRedirectDays:   "system.redirect_days",
-	SetEventsKeep:     "system.events_keep",
-	SetRevisionQuota:  "system.revision_quota",
-	SetPinQuota:       "system.pin_quota",
-	SetPortalRelays:   "portal.relays",
-	SetPortalDiscover: "portal.discovery",
-	SetPortalMaxRelay: "portal.max_active_relays",
-	SetPortalHide:     "portal.hide",
-	SetDefaultPrivate: "network.default_private",
-	SetDefaultPublic:  "network.default_public",
+	SetExternalOrigins: config.ExternalOriginsKey,
+	SetUploadMaxBytes:  "system.upload_max_bytes",
+	SetVersionQuota:    "system.version_quota",
+	SetDiskQuotaBytes:  "system.disk_quota_bytes",
+	SetPreviewTTL:      "system.preview_ttl_seconds",
+	SetRateLimit:       "system.rate_limit_rps",
+	SetRedirectDays:    "system.redirect_days",
+	SetEventsKeep:      "system.events_keep",
+	SetRevisionQuota:   "system.revision_quota",
+	SetPinQuota:        "system.pin_quota",
+	SetPortalRelays:    "portal.relays",
+	SetPortalDiscover:  "portal.discovery",
+	SetPortalMaxRelay:  "portal.max_active_relays",
+	SetPortalHide:      "portal.hide",
+	SetDefaultPrivate:  "network.default_private",
+	SetDefaultPublic:   "network.default_public",
 }
 
 // SettingConfigKey returns the config.json key of a setting.
@@ -763,6 +765,16 @@ func cleanSettings(in map[string]string) (map[string]string, error) {
 // normalizeSetting validates one setting value and returns the form to store.
 func normalizeSetting(k, v string) (string, error) {
 	switch k {
+	case SetExternalOrigins:
+		d, err := config.New(config.NewInstanceID(), string(filepath.Separator))
+		if err != nil {
+			return "", err
+		}
+		if err := d.Set(config.ExternalOriginsKey, v); err != nil {
+			return "", err
+		}
+		value, _ := d.Stored(config.ExternalOriginsKey)
+		return settingString(value), nil
 	case SetPortalRelays:
 		var relays []string
 		for part := range strings.SplitSeq(v, ",") {
@@ -847,4 +859,14 @@ func (l *limiter) allow() bool {
 	}
 	l.tokens--
 	return true
+}
+
+// ExternalConsoleOrigins returns the operator-declared reverse proxy origins.
+// The returned list is independent of the current settings.
+func (s *Service) ExternalConsoleOrigins() []string {
+	value := s.setting(SetExternalOrigins)
+	if value == "" {
+		return []string{}
+	}
+	return strings.Split(value, ",")
 }

@@ -18,6 +18,11 @@ decide approvals, and why, is in [Approvals](design.md#approvals).
 
 Every request to the management server must name it in `Host`, and any
 `Origin` must be one of those names (see [Approvals](design.md#approvals)).
+The management listener also accepts operator-declared
+[`console.external_origins`](configuration.md#external-origins-behind-a-reverse-proxy).
+For these requests, any Origin must match the declared scheme and the request
+hostname/effective port exactly; even another declared origin is refused.
+Forwarded headers do not influence admission or link generation.
 On top of that:
 
 - **`/api`** refuses browser requests with `Sec-Fetch-Site: cross-site` or
@@ -31,8 +36,8 @@ On top of that:
   `X-Flats-Client` header (the CLI and the MCP relay send one), and needs a
   same-origin `Origin` when one is present. Mutations also need
   `Sec-Fetch-Site: same-origin` and an `Origin` header.
-- **NetBird console domains** are plain HTTP, where browsers send no Fetch
-  Metadata. Only their handler marks requests as plain-HTTP console requests;
+- **NetBird console domains and declared HTTP external origins** are plain HTTP, where browsers send no Fetch
+  Metadata. Only their handlers mark requests as plain-HTTP console requests;
   on those, a mutation without `Sec-Fetch-Site` is accepted when `Origin` is
   present, uses `http`, and matches the requested host and port (a missing port
   is 80). A present `Sec-Fetch-Site` must still be `same-origin`. The custom

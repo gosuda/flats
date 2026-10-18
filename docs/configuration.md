@@ -170,6 +170,7 @@ written; `flats config unset KEY` removes it.
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
 | `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console); otherwise restart |
+| `console.external_origins` | `[]`; explicit HTTP/HTTPS origins with lowercase DNS names and optional ports | immediately from Settings → Console; otherwise restart |
 | `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console); otherwise restart |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
@@ -286,6 +287,40 @@ old one.
 
 `flats config set tailscale.console_hosts flats` sets the list while the host
 is stopped, as on a new remote server.
+
+#### External origins behind a reverse proxy
+
+Declare the origins used by an existing reverse proxy in Settings → Console,
+or while Flats is stopped:
+
+```sh
+flats config set console.external_origins 'https://flats.example.org'
+```
+
+The JSON value is an array, for example
+`"external_origins": ["https://flats.example.org"]` inside `console`.
+Values must use `http` or `https`, lowercase DNS names and optional ports
+(1–65535, without leading zeros). Paths (including a trailing slash), queries,
+fragments, user info and IP literals are refused. Each authority can select
+only one scheme; duplicate default-port aliases are refused too.
+
+This setting accepts the declared Host on the management listener. A present
+browser Origin must match that request's declared scheme and authority;
+other origins, including other configured origins, are refused. Links and
+agent discovery documents use the declared scheme even when the proxy
+forwards HTTP. `Forwarded` and `X-Forwarded-*` never select these URLs.
+Changes in Settings apply without a restart; removing an origin immediately
+blocks subsequent requests through it. Save removals from a remaining address
+or use offline configuration if you remove the address you are using.
+
+This exposes the whole console, approval, API and MCP surface. **It does not
+add authentication.** Protect the proxy with authentication or restrict it to
+a trusted private network, and keep the upstream listener inaccessible to
+untrusted clients. Flats does not create the proxy or publish a DNS record.
+Agent-only origins and external preferred-console addresses are deferred;
+the existing fallback order below is unchanged. Agents cannot edit this
+setting through MCP or API. Built-in authentication is tracked separately
+in [issue #139](https://github.com/gosuda/flats/issues/139).
 
 #### Preferred console
 

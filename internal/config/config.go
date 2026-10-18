@@ -136,6 +136,9 @@ var specs = []spec{
 	// its own NetBird peer.
 	{key: "netbird.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts,
 		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off NetBird"},
+	// Origins declared by the operator for reverse proxy access.
+	{key: ExternalOriginsKey, kind: kindList, def: []string{}, check: checkExternalOrigins,
+		hint: "list exact http:// or https:// DNS origins, without a path, once each"},
 	// The console address links name when they cannot follow the request:
 	// "local" (the loopback address), "tailscale:NAME" or "netbird:NAME"
 	// with NAME in that console domain list, or "" for none. Set refuses a
@@ -735,6 +738,8 @@ type NetbirdConfig struct {
 
 // ConsoleConfig is the console section.
 type ConsoleConfig struct {
+	ExternalOrigins []string
+
 	// PreferredHost is console.preferred_host: "", "local",
 	// "tailscale:NAME" or "netbird:NAME". Use Preferred for the value in
 	// effect, which ignores a NAME not in its list.
@@ -876,7 +881,7 @@ func (c *Config) fill() error {
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
 	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
-	c.Console = ConsoleConfig{str(PreferredHostKey)}
+	c.Console = ConsoleConfig{PreferredHost: str(PreferredHostKey), ExternalOrigins: list(ExternalOriginsKey)}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error

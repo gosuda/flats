@@ -36,7 +36,7 @@ const LIMIT_GROUPS = [
 const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
   ['portal_relays', 'Relay list'], ['portal_discovery', 'Discover more relays'], ['portal_hide', 'Hide public flats from relay listings'],
   ['default_private_provider', 'Private network for new flats'], ['default_public_provider', 'Public network for new flats'],
-  ['preferred', 'Address for links']]);
+  ['external_origins', 'External origins'], ['preferred', 'Address for links']]);
 
 // Lower values of these settings remove data at the next pruning.
 const RETENTION = ['events_keep', 'preview_ttl_seconds'];
@@ -113,7 +113,10 @@ export function mount(main, [section, sub], ctx) {
     page.collect = drawn;
     const done = () => {
       if (page.token !== token || !token.drawn) return;
-      const staged = saved ? {} : Object.assign({}, ...page.forms.map((f) => f.snapshot()));
+      const staged = Object.assign({}, ...page.forms.map((f) => f.snapshot()));
+      // Console has independently saved link and proxy settings. A save
+      // clears its own fields while retaining edits in the other form.
+      if (saved) for (const key of [...(saved.applied || []), ...(saved.restart_required || [])]) delete staged[key];
       page.forms = drawn;
       for (const f of drawn) f.restore(staged);
     };
@@ -849,8 +852,51 @@ async function consolePage(page, saved, reload) {
     view ? group('console-domains', 'Addresses', here, addressList(view, cfg, reload), retiringList(view, reload)) : group('console-domains', 'Addresses', '', errorPanel(d.domainsError, 'Cannot load the console addresses')),
     view && networkOf(view, 'netbird').domains.length ? callout('warn', h('strong', { text: 'NetBird addresses are plain HTTP. ' }), 'NetBird gives peers no certificates; traffic between peers is still encrypted by WireGuard.') : null,
     view ? preferredForm(view, d.settings, saved, reload, page) : null,
+    externalOriginsForm(d.settings, saved, reload, page),
     group('configuration', 'Host', ['Set in config.json · change with ', h('code', { text: 'flats config set' }), ' while Flats is stopped; values apply after Flats restarts'], configView(cfg)));
   page.refresh(view && pendingWork(view, d.keys && d.keys.keys));
+}
+
+// External origins declare reverse-proxy addresses; they do not create a
+// listener, configure a proxy or authenticate visitors.
+function externalOriginsForm(data, saved, reload, page) {
+  return stagedForm({
+    id: 'external-origins', data, saved, reload, page, notice: page.notice,
+    groups: [['reverse-proxy', 'Reverse proxy', 'Use your own domain for the console and agent connections.', [
+      { key: 'external_origins', kind: 'origins', label: 'External origins',
+        help: 'One address per line, including http:// or https:// and an optional port. Use lowercase domain names without a trailing slash or path. Leave empty to accept only existing console addresses.' },
+    ]]],
+    after: h('p', { class: 's-row-desc' }, 'Configure your proxy to preserve the Host header. Flats uses these addresses for links when accessed through the proxy. ',
+      'Flats has no built-in login yet; protect remote access with proxy authentication or a private network.'),
+  });
+}
+
+// Validate before saving, while retaining the exact declared scheme and port.
+// The server remains authoritative for config validation.
+function parseOrigins(text) {
+  const values = text.split('\n').map((s) => s.trim()).filter(Boolean);
+  const authorities = new Set();
+  for (let i = 0; i < values.length; i++) {
+    const origin = values[i];
+    const match = origin.match(/^https?:\/\/([a-z0-9.-]+)(?::([1-9][0-9]*))?$/);
+    if (!match) return { error: `Address ${i + 1}: use an http:// or https:// origin with a lowercase domain and no path, query or fragment.` };
+    const [, host, port] = match;
+    const labels = host.split('.');
+    if (host.length > 253 || labels.some((label) => label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) {
+      return { error: `Address ${i + 1}: enter a valid lowercase domain name, not an IP address.` };
+    }
+    const last = labels.at(-1);
+    if (host === 'localhost' || host.endsWith('.localhost') || /^(?:[0-9]+|0x[0-9a-f]+)$/.test(last) || !/[a-z]/.test(last)) {
+      return { error: `Address ${i + 1}: use a non-local domain with a letter in its final label.` };
+    }
+    if (port && Number(port) > 65535) return { error: `Address ${i + 1}: use a port from 1 to 65535 without leading zeros.` };
+    const authority = host + (port ? ':' + port : '');
+    const defaultPort = origin.startsWith('https:') ? '443' : '80';
+    const keys = !port || port === defaultPort ? [host, host + ':' + defaultPort] : [authority];
+    if (keys.some((key) => authorities.has(key))) return { error: `Address ${i + 1}: this host and port are already listed. Use one scheme per address.` };
+    keys.forEach((key) => authorities.add(key));
+  }
+  return { values };
 }
 
 // addressList is every place the console opens: the loopback address, then
@@ -1185,6 +1231,20 @@ function stagedForm(spec) {
         return { value: String(base), from: describeValue(f, settings[f.key]), to: describeValue(f, base) };
       };
       reset = () => { input.value = shown.value; if (kind === 'bytes') { unit.value = shown.unit; update(); } };
+    } else if (kind === 'origins') {
+      const initial = (settings[f.key] || '').split(',').filter(Boolean).join('\n');
+      input = h('textarea', { id, rows: '3', spellcheck: 'false', autocapitalize: 'none', autocomplete: 'off', placeholder: 'https://flats.example.org' });
+      input.value = initial;
+      ctl = null;
+      read = () => {
+        if (input.value === initial) return null;
+        const parsed = parseOrigins(input.value);
+        if (parsed.error) return parsed;
+        const v = parsed.values;
+        if (v.join('\n') === initial) return null;
+        return { value: v.join(','), from: initial ? plural(initial.split('\n').length, 'origin') : 'none', to: v.length ? plural(v.length, 'origin') : 'none' };
+      };
+      reset = () => { input.value = initial; };
     } else if (kind === 'relays') {
       const initial = (settings.portal_relays || '').split(',').map((s) => s.trim()).filter(Boolean).join('\n');
       input = h('textarea', { id, rows: '3', spellcheck: 'false', class: 'mono', placeholder: 'https://relay.example.com' });
@@ -1214,12 +1274,12 @@ function stagedForm(spec) {
     if (exact) w.describedBy.push(exact.getAttribute('id'));
     input.setAttribute('aria-describedby', w.describedBy.join(' '));
     const tags = [f.perFlat ? tag('per flat') : null, f.restart ? tag('Applies after restart', 'restart') : null];
-    const r = h('div', { class: 's-row' + (kind === 'relays' ? ' stack' : ''), id: 'row-' + f.key },
+    const r = h('div', { class: 's-row' + (['relays', 'origins'].includes(kind) ? ' stack' : ''), id: 'row-' + f.key },
       h('div', { class: 's-row-main' },
         h('div', { class: 's-row-title' }, h('label', { for: id, text: f.label }), tags),
         w.hint, exact, f.meta ? h('span', { class: 's-row-meta' }, f.meta.map((m, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true', text: '·' }) : null, typeof m === 'string' ? h('span', { text: m }) : m])) : null,
         w.pin, w.error),
-      kind === 'relays' ? input : h('div', { class: 's-row-ctl' }, ctl));
+      ['relays', 'origins'].includes(kind) ? input : h('div', { class: 's-row-ctl' }, ctl));
     controls[f.key] = { f, input, unit, error: w.error, describedBy: w.describedBy, row: r, read, reset,
       // raw and setRaw carry a staged value across a page reload.
       raw: () => (kind === 'toggle' ? { checked: !!input.checked } : { value: input.value, unit: kind === 'bytes' ? unit.value : undefined }),

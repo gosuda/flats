@@ -378,6 +378,9 @@ func (h *Host) preferredURL() string {
 // ConsoleURLFor is the console address for a request: the console domain it
 // came through while that is still served, else ConsoleURL.
 func (h *Host) ConsoleURLFor(ctx context.Context) string {
+	if origin := api.ExternalOrigin(ctx); origin != "" && slices.Contains(h.Svc.ExternalConsoleOrigins(), origin) {
+		return origin
+	}
 	if k, ok := consoleDomainOf(ctx); ok && slices.Contains(h.consoleHostsOf(k.prov), k.name) {
 		if u := h.consoleURLOf(k); u != "" {
 			return u
@@ -574,6 +577,9 @@ func serving(state string) bool {
 // management address on another interface. Calls without a request (tests,
 // the host itself) count as loopback.
 func requestOnLoopback(ctx context.Context) bool {
+	if api.ExternalOrigin(ctx) != "" {
+		return false
+	}
 	if _, ok := consoleDomainOf(ctx); ok {
 		return false
 	}

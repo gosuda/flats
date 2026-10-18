@@ -25,19 +25,72 @@ type HostGuard struct {
 	Hosts func() []string
 	// Ports lists the accepted ports; "" accepts a Host without a port.
 	Ports []string
-	Next  http.Handler
+	// ExternalOrigins returns validated operator-declared origins. Only the
+	// management listener sets this; provider listeners retain their own names.
+	ExternalOrigins func() []string
+	Next            http.Handler
 }
 
 func (g *HostGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !g.allowed(r.Host) {
+	external := g.externalOrigin(r.Host)
+	if external == "" && !g.allowed(r.Host) {
 		writeErr(w, http.StatusForbidden, fmt.Errorf("Host %q is not an address of this Flats server (DNS rebinding protection); use the console URL or the loopback address", r.Host))
 		return
 	}
-	if o := r.Header.Get("Origin"); o != "" && !g.allowedOrigin(o) {
+	if o := r.Header.Get("Origin"); o != "" && ((external != "" && (len(r.Header.Values("Origin")) != 1 || !matchingOrigin(o, external))) || (external == "" && !g.allowedOrigin(o))) {
 		writeErr(w, http.StatusForbidden, fmt.Errorf("cross-origin request from %q refused: only the Flats console itself may call this server from a browser", o))
 		return
 	}
+	if external != "" {
+		r = r.WithContext(context.WithValue(r.Context(), externalOriginKey{}, external))
+		if strings.HasPrefix(external, "http://") {
+			PlainHTTPConsole(g.Next).ServeHTTP(w, r)
+			return
+		}
+	}
 	g.Next.ServeHTTP(w, r)
+}
+
+type externalOriginKey struct{}
+
+// ExternalOrigin returns the operator-declared origin accepted by HostGuard.
+// It never reads forwarded headers or an unvalidated request Host.
+func ExternalOrigin(ctx context.Context) string {
+	o, _ := ctx.Value(externalOriginKey{}).(string)
+	return o
+}
+
+func (g *HostGuard) externalOrigin(host string) string {
+	if g.ExternalOrigins != nil {
+		for _, origin := range g.ExternalOrigins() {
+			u, err := url.Parse(origin)
+			if err == nil && matchingOrigin(u.Scheme+"://"+host, origin) {
+				return origin
+			}
+		}
+	}
+	return ""
+}
+
+func matchingOrigin(got, expected string) bool {
+	u, err := url.Parse(got)
+	if err != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(got, "#") {
+		return false
+	}
+	v, err := url.Parse(expected)
+	if err != nil || u.Scheme != v.Scheme || !strings.EqualFold(u.Hostname(), v.Hostname()) {
+		return false
+	}
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		if u.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	return port(u) == port(v)
 }
 
 // splitHost splits a Host header or URL host into a lowercase name and port.

@@ -178,6 +178,12 @@ every start may be added later.
 18. **Every console URL.** Status also lists every served console URL,
     Tailscale first, whatever the preference.
 
+19. **External console origins.** The operator can declare `console.external_origins` in Settings or offline `flats config`. Each value is an HTTP or HTTPS origin with a lowercase DNS name and optional port, without a path, query, fragment, credentials or IP literal. The default is empty. Changes take effect immediately. Agents cannot change this setting.
+    - The management listener accepts only declared external authorities in addition to its existing local addresses. A browser Origin must match the declared scheme and the request authority; declaring two origins does not allow cross-origin requests between them.
+    - Links and discovery documents follow the matching declared origin, including its scheme. Forwarded headers are never trusted to select an origin. Removing an origin revokes it for subsequent requests. The preferred-console options and fixed fallback order remain unchanged.
+    - An external origin exposes the full management surface. It does not create a tunnel, configure a proxy, or add authentication. Until built-in authentication is available, the operator must protect access with an authenticating reverse proxy or private network.
+    - Agent-only origins and an external preferred-console option are deferred.
+
 ## First install without the console
 
 On a remote server the console is reachable only after the host is on the

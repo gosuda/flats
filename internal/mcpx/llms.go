@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	runtimeref "github.com/gosuda/flats/docs"
+	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
 )
 
@@ -71,6 +72,9 @@ func LLMsHandler(svc *core.Service, opts Options) http.Handler {
 }
 
 func origin(r *http.Request) string {
+	if external := api.ExternalOrigin(r.Context()); external != "" {
+		return external
+	}
 	if r.TLS != nil {
 		return "https://" + r.Host
 	}

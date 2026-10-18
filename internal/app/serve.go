@@ -560,7 +560,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
 		logf("warning: the management API listens on %s, which is not a loopback address", h.ln.Addr())
 	}
-	h.srv = &http.Server{Handler: loopbackGuard(h.ln.Addr(), mux), ReadHeaderTimeout: 15 * time.Second}
+	h.srv = &http.Server{Handler: loopbackGuard(h.ln.Addr(), mux, h.Svc.ExternalConsoleOrigins), ReadHeaderTimeout: 15 * time.Second}
 	go func() {
 		if err := h.srv.Serve(h.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logf("management server: %v", err)
@@ -672,7 +672,7 @@ func providerConfiguration(cfg portal.Config, zrokConfig, netbirdConfig string) 
 // loopbackGuard accepts only the loopback names of the bound address as
 // Host (and Origin): 127.0.0.1, localhost and ::1 with its port, plus the
 // listen IP itself when it is a specific address.
-func loopbackGuard(addr net.Addr, next http.Handler) http.Handler {
+func loopbackGuard(addr net.Addr, next http.Handler, external ...func() []string) http.Handler {
 	host, port, _ := net.SplitHostPort(addr.String())
 	hosts := []string{"127.0.0.1", "localhost", "::1"}
 	if ip := net.ParseIP(host); ip != nil && !ip.IsUnspecified() && !slices.Contains(hosts, ip.String()) {
@@ -682,7 +682,11 @@ func loopbackGuard(addr net.Addr, next http.Handler) http.Handler {
 	if port == "80" {
 		ports = append(ports, "")
 	}
-	return &api.HostGuard{Hosts: func() []string { return hosts }, Ports: ports, Next: next}
+	g := &api.HostGuard{Hosts: func() []string { return hosts }, Ports: ports, Next: next}
+	if len(external) > 0 {
+		g.ExternalOrigins = external[0]
+	}
+	return g
 }
 
 // SystemStatus is returned by /api/status and the console settings page.

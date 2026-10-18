@@ -1133,6 +1133,60 @@ const withSettings = (extra, config = CONFIG) => ({ ...settingsRoute(config), se
 const submitLimits = async (p) => { byId(p, 'limits-form').dispatch('submit'); await tick(); };
 routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['disk_quota_bytes'], restart_required: [] };
 
+// External origins are staged, validated and saved with the config ETag.
+routes['PUT /console/api/settings'] = () => {
+  const settings = { external_origins: JSON.parse(puts().at(-1).body).external_origins };
+  routes['GET /console/api/settings'] = withSettings(settings);
+  return { applied: ['external_origins'], restart_required: [] };
+};
+routes['GET /console/api/settings'] = withSettings({ external_origins: 'https://flats.example.org' });
+page = await mountSettings(['console']);
+let originsForm = byId(page, 'external-origins-form');
+let originsInput = byId(page, 'set-external_origins');
+assert.equal(originsInput.value, 'https://flats.example.org');
+assert.ok(page.textContent.includes('Flats has no built-in login yet'));
+assert.ok(savebarOf(originsForm).hidden);
+for (const invalid of ['https://flats.example.org/', 'https://UPPER.example.org', 'https://127.0.0.1', 'https://127.1', 'https://0x7f000001', 'https://localhost', 'https://app.localhost', 'https://[::1]', 'https://user@example.org', 'https://example.org?a=1', 'https://example.org#x', 'https://example.org:65536', 'https://example.org:080', 'https://flats.example.org\nhttp://flats.example.org', 'https://flats.example.org\nhttps://flats.example.org:443']) {
+  originsInput.value = invalid;
+  originsForm.dispatch('input');
+  assert.equal(originsInput.getAttribute('aria-invalid'), 'true', invalid);
+  assert.equal(byId(page, 'external-origins-save').disabled, true, invalid);
+}
+byId(page, 'console-preferred').value = 'local';
+byId(page, 'links-form').dispatch('change');
+const beforeOrigins = puts().length;
+originsForm.dispatch('submit');
+await tick();
+assert.equal(puts().length, beforeOrigins, 'invalid origins never reach the API');
+originsInput.value = 'https://flats.example.org\nhttps://other.example.org:8443';
+originsForm.dispatch('input');
+assert.equal(originsInput.getAttribute('aria-invalid'), null);
+assert.equal(byId(page, 'external-origins-save').disabled, false);
+assert.equal(puts().length, beforeOrigins, 'typing only stages the changes');
+byText(originsForm, 'Discard')[0].dispatch('click');
+assert.equal(originsInput.value, 'https://flats.example.org');
+assert.ok(savebarOf(originsForm).hidden);
+originsInput.value = 'https://flats.example.org\nhttps://other.example.org:8443';
+originsForm.dispatch('input');
+originsForm.dispatch('submit');
+await tick();
+assert.equal(JSON.parse(puts().at(-1).body).external_origins, 'https://flats.example.org,https://other.example.org:8443');
+assert.equal(puts().at(-1).headers['If-Match'], '"etag-1"');
+assert.equal(byId(page, 'set-external_origins').value, 'https://flats.example.org\nhttps://other.example.org:8443', 'reload renders saved origins on separate lines');
+assert.equal(byId(page, 'console-preferred').value, 'local', 'saving origins retains unsaved preferred-link edits');
+// Clearing the field removes the configured entries; an empty list is valid.
+page = await mountSettings(['console']);
+originsForm = byId(page, 'external-origins-form');
+originsInput = byId(page, 'set-external_origins');
+originsInput.value = '';
+originsForm.dispatch('input');
+originsForm.dispatch('submit');
+await tick();
+assert.equal(JSON.parse(puts().at(-1).body).external_origins, '');
+assert.equal(byId(page, 'set-external_origins').value, '');
+routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['disk_quota_bytes'], restart_required: [] };
+routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+
 // A small quota is shown exactly instead of rounding to "0", and typing 0
 // turns the quota off.
 routes['GET /console/api/settings'] = withSettings({ disk_quota_bytes: '107374' });
@@ -1508,7 +1562,7 @@ const lastWrap = all(byId(domMain, 'console-domains'), (e) => e.className === 'd
 assert.ok(lastWrap && lastWrap.getAttribute('data-reason').includes('last domain') && lastWrap.getAttribute('data-reason').includes('loopback'), 'the reason shows on hover');
 assert.equal(lastWrap.getAttribute('tabindex'), '0', 'keyboard users can reach the reason');
 assert.ok(byId(domMain, lastDel.getAttribute('aria-describedby')).textContent.includes('last domain'), 'the reason describes the button');
-assert.deepEqual(all(domMain, (e) => e.tagName === 'H3').map((e) => e.textContent), ['Addresses', 'Links', 'Host']);
+assert.deepEqual(all(domMain, (e) => e.tagName === 'H3').map((e) => e.textContent), ['Addresses', 'Links', 'Reverse proxy', 'Host']);
 // The domain in use cannot be deleted while no other one is ready.
 routes['GET /console/api/console-domains'] = dview({ on: true,
   domains: [{ name: 'flats', url: 'https://flats.tail1234.ts.net', state: 'ready', current: true }, { name: 'next', state: 'starting' }] }, {},
