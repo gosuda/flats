@@ -99,13 +99,14 @@ docker compose stop flats
 container=$(docker compose ps -a -q flats)
 test -n "$container" || { echo "Compose container not found" >&2; exit 1; }
 mkdir -p backups
-(umask 077; docker run --rm --volumes-from "$container":ro alpine:3.22 \
+(umask 077; set -C; docker run --rm --volumes-from "$container":ro alpine:3.22 \
   tar -czf - -C /data . > backups/flats-data.tar.gz)
 docker compose up -d --wait
 ```
 
-The backup contains operator keys and secrets; keep it private. Take the
-backup before `docker compose down`, which removes the container needed by
+The backup contains operator keys and secrets; keep it private. The command
+refuses to overwrite an existing archive; move the previous backup or choose
+a new filename before running it again. Take the backup before `docker compose down`, which removes the container needed by
 `--volumes-from`.
 
 Validate the resolved configuration without starting containers with

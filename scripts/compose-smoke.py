@@ -124,7 +124,7 @@ def main():
                 subprocess.run(
                     ["docker", "run", "--rm", "--volumes-from", container + ":ro",
                      "alpine:3.22", "tar", "-czf", "-", "-C", "/data", "."],
-                    stdout=output, stderr=subprocess.PIPE, check=True,
+                    stdout=output, stderr=subprocess.PIPE, text=True, check=True,
                 )
             with tarfile.open(backup, "r:gz") as bundle:
                 assert json.load(bundle.extractfile("./config.json")) == before, "backup has wrong host config"
@@ -150,5 +150,8 @@ if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as error:
-        print(error.output, file=sys.stderr)
+        if error.output:
+            print(error.output, file=sys.stderr)
+        if error.stderr:
+            print(error.stderr, file=sys.stderr)
         raise
