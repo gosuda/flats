@@ -272,6 +272,47 @@ func TestImportCrashBeforeAcknowledge(t *testing.T) {
 	}
 }
 
+// A Private connection starts the disk measurement, so the first batch
+// finds a fresh value instead of a transient refusal and its resend (5.4).
+func TestPrivateConnectionMeasuresBeforeTheFirstBatch(t *testing.T) {
+	b := newTB(t)
+	b.core.setQuota(1 << 30)
+	if _, ok := b.in.meas.get(); ok {
+		t.Fatal("measured before any connection")
+	}
+	a := connect(t, b.priv, map[string]any{"editor": "alice"}, nil)
+	a.snapshot()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, ok := b.in.meas.get(); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("opening the connection did not measure")
+		}
+	}
+	if m := a.batch(1, sticky(eid(), "first", 0)); m["t"] != "ack" {
+		t.Fatalf("first batch %v", m)
+	}
+	b.core.data.Lock()
+	measured := b.core.measured
+	b.core.data.Unlock()
+	if measured != 1 {
+		t.Fatalf("measured %d times", measured)
+	}
+	// A second connection while the value is fresh does not measure again.
+	c := connect(t, b.priv, map[string]any{"editor": "bob"}, nil)
+	c.snapshot()
+	if m := c.batch(1, sticky(eid(), "second", 0)); m["t"] != "ack" {
+		t.Fatalf("second editor's batch %v", m)
+	}
+	b.core.data.Lock()
+	measured = b.core.measured
+	b.core.data.Unlock()
+	if measured != 1 {
+		t.Fatalf("measured %d times after a second connection", measured)
+	}
+}
+
 func TestIdleBoardEditAfterTwoMinutes(t *testing.T) {
 	b := newTB(t)
 	b.core.setQuota(1 << 30)

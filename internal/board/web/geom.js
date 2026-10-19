@@ -1,6 +1,6 @@
 // Geometry shared by the renderer, hit testing and operation builders.
-// endpointWorld must match the Go implementation (TECH 4.4); both read the
-// vectors in internal/board/model/testdata/geometry.json.
+// endpointWorld and defaultAt must match the Go implementation (TECH 4.4);
+// both read the vectors in internal/board/model/testdata/geometry.json.
 
 import { style } from './schema.js';
 
@@ -30,6 +30,62 @@ export function endWorld(end, get) {
   if (end.pt) return end.pt;
   const t = get(end.el);
   return t ? endpointWorld(t, end.at) : null;
+}
+
+// sinCos is exact at multiples of 90 degrees, as in Go.
+function sinCos(deg) {
+  switch (deg % 360) {
+    case 0: return [0, 1];
+    case 90: return [1, 0];
+    case 180: return [0, -1];
+    case 270: return [-1, 0];
+  }
+  return [Math.sin(deg * RAD), Math.cos(deg * RAD)];
+}
+
+// defaultAt is the attachment point of an end attached to el without a
+// position: the middle of the side, in el's rotated frame, through which the
+// ray from el's center toward the canvas point toward leaves the box. A tie
+// picks the left or right side.
+export function defaultAt(el, toward) {
+  const dx = toward[0] - (el.x + el.w / 2), dy = toward[1] - (el.y + el.h / 2);
+  const [sin, cos] = sinCos(el.rot || 0);
+  const lx = dx * cos + dy * sin, ly = dy * cos - dx * sin;
+  if (Math.abs(lx) * el.h >= Math.abs(ly) * el.w) return lx >= 0 ? [1, 0.5] : [0, 0.5];
+  return ly >= 0 ? [0.5, 1] : [0.5, 0];
+}
+
+// outlineNorm measures a point of el's box, in coordinates normalized to
+// [-0.5, 0.5] around its center, against el's outline: 1 on the outline,
+// less inside.
+function outlineNorm(el, ux, uy) {
+  const shape = el.type === 'shape' ? style(el, 'shape') : 'rect';
+  if (shape === 'ellipse') return 2 * Math.hypot(ux, uy);
+  if (shape === 'diamond') return 2 * (Math.abs(ux) + Math.abs(uy));
+  return 2 * Math.max(Math.abs(ux), Math.abs(uy));
+}
+
+function normalized(el, wx, wy) {
+  const [lx, ly] = toLocal(el, wx, wy);
+  return [(lx - el.x) / el.w - 0.5, (ly - el.y) / el.h - 0.5];
+}
+
+const inside = (el, at) => outlineNorm(el, at[0] - 0.5, at[1] - 0.5) < 0.99;
+
+// clipToOutline moves an end inside its target out to where the segment
+// toward to crosses the target's outline. An end whose segment stays inside
+// is kept.
+function clipToOutline(el, from, to) {
+  const [tx, ty] = normalized(el, to[0], to[1]);
+  if (outlineNorm(el, tx, ty) <= 1) return from;
+  let lo = 0, hi = 1;
+  const at = (t) => [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t];
+  for (let i = 0; i < 30; i++) {
+    const mid = (lo + hi) / 2;
+    const [x, y] = at(mid);
+    if (outlineNorm(el, ...normalized(el, x, y)) < 1) lo = mid; else hi = mid;
+  }
+  return at(hi);
 }
 
 // ---- rectangles: {x, y, w, h} ----
@@ -76,14 +132,27 @@ function sideDir(end, get) {
 
 // connectorPoints is the path of a connector: a straight segment, or an
 // orthogonal elbow path chosen from the directions of both ends (no
-// obstacle avoidance, TECH 11.1).
+// obstacle avoidance, TECH 11.1). Attached ends start on the target's
+// outline: an end attached inside its target (such as an older center
+// attachment) is cut where a straight line leaves the target, and leaves an
+// elbow path from the side that faces the other end.
 export function connectorPoints(conn, get) {
-  const a = endWorld(conn.ends[0], get), b = endWorld(conn.ends[1], get);
-  if (!a || !b) return null;
-  if (style(conn, 'route') !== 'elbow') return [a, b];
+  let ends = conn.ends;
+  const a0 = endWorld(ends[0], get), b0 = endWorld(ends[1], get);
+  if (!a0 || !b0) return null;
+  const within = ends.map((e) => {
+    const t = e.el && get(e.el);
+    return t && inside(t, e.at) ? t : null;
+  });
+  if (style(conn, 'route') !== 'elbow') {
+    return [within[0] ? clipToOutline(within[0], a0, b0) : a0, within[1] ? clipToOutline(within[1], b0, a0) : b0];
+  }
+  const toward = [b0, a0];
+  ends = ends.map((e, k) => (within[k] ? { el: e.el, at: defaultAt(within[k], toward[k]) } : e));
+  const a = endWorld(ends[0], get), b = endWorld(ends[1], get);
   const free = Math.abs(b[0] - a[0]) >= Math.abs(b[1] - a[1]) ? ['h', 0] : ['v', 0];
-  const [da, sa] = sideDir(conn.ends[0], get) || free;
-  const [db, sb] = sideDir(conn.ends[1], get) || [da, 0];
+  const [da, sa] = sideDir(ends[0], get) || free;
+  const [db, sb] = sideDir(ends[1], get) || [da, 0];
   const GAP = 24;
   let pts;
   if (da === db) {
@@ -238,16 +307,30 @@ export function hit(el, wx, wy, zoom, get) {
   return insideBox(el, wx, wy);
 }
 
-// attachAt is the normalized attachment point for a connector end dropped at
-// a canvas point on el. Points near a side's middle snap to it.
-export function attachAt(el, wx, wy) {
-  const [lx, ly] = toLocal(el, wx, wy);
-  const ax = Math.max(0, Math.min(1, (lx - el.x) / el.w));
-  const ay = Math.max(0, Math.min(1, (ly - el.y) / el.h));
+// outlineAt is the normalized attachment point for a connector end dropped
+// at a canvas point within tol of el's outline: the point on the outline,
+// snapped to a side's middle nearby. It is null for a point farther inside.
+export function outlineAt(el, wx, wy, tol) {
+  const [ux, uy] = normalized(el, wx, wy);
+  const r = outlineNorm(el, ux, uy);
+  if (r === 0 || (Math.abs(r - 1) * Math.min(el.w, el.h)) / 2 > tol) return null;
+  let ax = 0.5 + ux / r, ay = 0.5 + uy / r;
+  if (el.type !== 'shape' || ['rect', 'round'].includes(style(el, 'shape'))) {
+    // A box side: the nearest point on it, not the one toward the center.
+    ax = 0.5 + ux; ay = 0.5 + uy;
+    if ((0.5 - Math.abs(ux)) * el.w < (0.5 - Math.abs(uy)) * el.h) ax = ux < 0 ? 0 : 1;
+    else ay = uy < 0 ? 0 : 1;
+  }
+  ax = Math.max(0, Math.min(1, ax)); ay = Math.max(0, Math.min(1, ay));
   const mids = [[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]];
   for (const m of mids) if (Math.abs(m[0] - ax) < 0.2 && Math.abs(m[1] - ay) < 0.2) return m.slice();
   return [Math.round(ax * 1000) / 1000, Math.round(ay * 1000) / 1000];
 }
+
+// attachAt is the attachment point for an end dropped on el: on the outline
+// under the cursor, or else the middle of the side facing toward, so lines
+// never start inside el.
+export const attachAt = (el, wx, wy, tol, toward) => outlineAt(el, wx, wy, tol) || defaultAt(el, toward);
 
 // sideAnchor is the attachment point in the middle of the side facing (dx, dy).
 export function sideAnchor(dx, dy) {

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { endpointWorld, connectorPoints, rdp, penFromPoints, penWorldPoints, elementBounds, attachAt } from '../geom.js';
+import { endpointWorld, defaultAt, connectorPoints, rdp, penFromPoints, penWorldPoints, elementBounds, attachAt, outlineAt } from '../geom.js';
 
 // The server keeps numbers to one decimal place (Appendix A, Num).
 const near = (got, want, tol = 0.051) =>
@@ -28,6 +28,12 @@ test('endpointWorld matches the Go vectors', { skip: !existsSync(shared) && 'geo
   for (const v of endpoints) near(endpointWorld(v.el, v.at), v.want);
 });
 
+test('defaultAt matches the Go vectors', { skip: !existsSync(shared) && 'geometry.json not written yet' }, () => {
+  const { default_at: sides } = JSON.parse(readFileSync(shared, 'utf8'));
+  assert.ok(sides.length > 0);
+  for (const v of sides) assert.deepEqual(defaultAt(v.el, v.toward), v.want, JSON.stringify(v));
+});
+
 test('connectors: straight and elbow routes', () => {
   const els = new Map([
     ['e_a', { id: 'e_a', type: 'shape', x: 0, y: 0, w: 100, h: 100, rot: 0 }],
@@ -44,6 +50,35 @@ test('connectors: straight and elbow routes', () => {
   assert.equal(connectorPoints(dangling, get), null);
   const b = elementBounds(straight, get);
   assert.ok(b.x <= 100 && b.x + b.w >= 300);
+});
+
+test('ends attached inside their target are drawn on its outline', () => {
+  const els = new Map([
+    ['e_a', { id: 'e_a', type: 'sticky', x: 0, y: 0, w: 100, h: 100, rot: 0 }],
+    ['e_b', { id: 'e_b', type: 'shape', style: { shape: 'ellipse' }, x: 300, y: 0, w: 100, h: 100, rot: 0 }],
+  ]);
+  const get = (id) => els.get(id);
+  const centers = { type: 'connector', ends: [{ el: 'e_a', at: [0.5, 0.5] }, { el: 'e_b', at: [0.5, 0.5] }] };
+  const [a, b] = connectorPoints(centers, get);
+  near(a, [100, 50], 0.01);
+  near(b, [300, 50], 0.01);
+  const diagonal = { type: 'connector', ends: [{ el: 'e_b', at: [0.5, 0.5] }, { pt: [350 + 300, 50 + 300] }] };
+  const [e] = connectorPoints(diagonal, get);
+  near(e, [350 + 50 * Math.SQRT1_2, 50 + 50 * Math.SQRT1_2], 0.01);
+  const elbow = { ...centers, style: { route: 'elbow' } };
+  assert.deepEqual(connectorPoints(elbow, get), [[100, 50], [200, 50], [300, 50]]);
+});
+
+test('attachAt uses the outline under the cursor, else the side facing the other end', () => {
+  const el = { x: 0, y: 0, w: 100, h: 100, rot: 0 };
+  assert.deepEqual(attachAt(el, 99, 52, 4, [500, 500]), [1, 0.5]);
+  assert.deepEqual(attachAt(el, 98, 10, 4, [500, 500]), [1, 0.1]);
+  assert.deepEqual(attachAt(el, 50, 50, 4, [500, 60]), [1, 0.5]);
+  assert.deepEqual(attachAt(el, 10, 50, 4, [50, -300]), [0.5, 0], 'not the nearest side to the cursor');
+  assert.equal(outlineAt(el, 50, 50, 4), null);
+  const ellipse = { type: 'shape', style: { shape: 'ellipse' }, x: 0, y: 0, w: 100, h: 100, rot: 0 };
+  const at = outlineAt(ellipse, 50 + 50 * Math.SQRT1_2, 50 + 50 * Math.SQRT1_2, 4);
+  near(at, [0.854, 0.854], 0.001);
 });
 
 test('RDP removes points within the tolerance and keeps corners', () => {
@@ -64,9 +99,3 @@ test('pen points are normalized integers inside the element box, at most 2,000',
   assert.equal(dot.pts.length, 4, 'a dot is stored as two points');
 });
 
-test('attachAt snaps to side midpoints and clamps', () => {
-  const el = { x: 0, y: 0, w: 100, h: 100, rot: 0 };
-  assert.deepEqual(attachAt(el, 99, 52), [1, 0.5]);
-  assert.deepEqual(attachAt(el, 10, 10), [0.1, 0.1]);
-  assert.deepEqual(attachAt(el, -50, 10), [0, 0.1]);
-});

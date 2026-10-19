@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -343,6 +344,65 @@ func TestAgentCalls(t *testing.T) {
 		again, err := h.agent(AgentCall{Layout: []Layout{{Kind: "grid", IDs: []string{s, eid("old")}, In: f, Columns: 4}}})
 		if err != nil || again.Seq != 0 || again.Layout[s] != out.Layout[s] {
 			t.Fatalf("repeated layout %+v %v", again, err)
+		}
+	})
+
+	t.Run("ends without at attach to the sides that face each other", func(t *testing.T) {
+		h := newHarness(t)
+		conn := func(ends ...any) AgentOp {
+			return AgentOp{Op: "add", Ref: "$c", El: elOf(map[string]any{"type": "connector", "ends": ends})}
+		}
+		sides := func(out AgentOutcome) [2][2]float64 {
+			e := h.row(out.IDs["$c"]).El.Ends
+			return [2][2]float64{e[0].At, e[1].At}
+		}
+		left, right, top, bottom := [2]float64{0, 0.5}, [2]float64{1, 0.5}, [2]float64{0.5, 0}, [2]float64{0.5, 1}
+		add := []AgentOp{
+			{Op: "add", Ref: "$a", El: elOf(map[string]any{"type": "sticky", "text": "A"})},
+			{Op: "add", Ref: "$b", El: elOf(map[string]any{"type": "sticky", "text": "B"})},
+		}
+		// New elements go in a row, so the ends face left and right.
+		out, err := h.agent(AgentCall{Ops: append(slices.Clone(add), conn(map[string]any{"el": "$a"}, map[string]any{"el": "$b"}))})
+		if err != nil || sides(out) != [2][2]float64{right, left} {
+			t.Fatalf("row: %v %v", sides(out), err)
+		}
+		// Layout runs before the ends are placed: a column faces top and bottom.
+		out, err = h.agent(AgentCall{
+			Ops:    append(slices.Clone(add), conn(map[string]any{"el": "$a"}, map[string]any{"el": "$b"})),
+			Layout: []Layout{{Kind: "column", IDs: []string{"$a", "$b"}}},
+		})
+		if err != nil || sides(out) != [2][2]float64{bottom, top} {
+			t.Fatalf("column: %v %v", sides(out), err)
+		}
+		// An explicit at stays; the other end faces the explicit point, and a
+		// free end faces its coordinate.
+		a, b := out.IDs["$a"], out.IDs["$b"]
+		out, err = h.agent(AgentCall{Ops: []AgentOp{conn(map[string]any{"el": a, "at": []float64{0, 0}}, map[string]any{"el": b})}})
+		if err != nil || sides(out) != [2][2]float64{{0, 0}, top} {
+			t.Fatalf("explicit: %v %v", sides(out), err)
+		}
+		g := h.geom(a)
+		out, err = h.agent(AgentCall{Ops: []AgentOp{conn(map[string]any{"pt": []float64{g.X - 500, g.Y + 100}}, map[string]any{"el": a})}})
+		if err != nil || sides(out)[1] != left {
+			t.Fatalf("free: %v %v", sides(out), err)
+		}
+		// set ends places an end it attaches without at; the other end,
+		// attached earlier, stays.
+		c := out.IDs["$c"]
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "set", ID: c, Fields: raw(map[string]any{"ends": []any{map[string]any{"el": b}, nil}})}}}); err != nil {
+			t.Fatal(err)
+		}
+		if e := h.row(c).El.Ends; e[0].El != b || e[0].At != top || e[1].At != left {
+			t.Fatalf("set ends: %+v", e)
+		}
+		// A replacement places its connectors from the replacing elements.
+		out, err = h.agent(AgentCall{Replace: true, Ops: []AgentOp{
+			{Op: "add", Ref: "$a", El: elOf(map[string]any{"type": "sticky", "x": 0, "y": 0})},
+			{Op: "add", Ref: "$b", El: elOf(map[string]any{"type": "sticky", "x": 600, "y": 0})},
+			conn(map[string]any{"el": "$b"}, map[string]any{"el": "$a"}),
+		}})
+		if err != nil || sides(out) != [2][2]float64{left, right} {
+			t.Fatalf("replace: %v %v", sides(out), err)
 		}
 	})
 

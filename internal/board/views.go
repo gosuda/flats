@@ -210,6 +210,21 @@ func (m *measurer) wait(ctx context.Context) (int64, error) {
 	return 0, errorf(CategoryUnavailable, "the board's disk usage cannot be measured right now; try again")
 }
 
+// warm starts a measurement for a Private connection that opens without a
+// value younger than the refresh interval, so its first batch normally finds
+// a fresh one.
+func (m *measurer) warm() {
+	if m.in.b.Limits().DiskQuota <= 0 {
+		return
+	}
+	m.mu.Lock()
+	fresh := m.valid && m.in.now().Sub(m.at) < measureRefresh
+	m.mu.Unlock()
+	if !fresh {
+		m.start()
+	}
+}
+
 // refresher keeps the measurement fresh while Private connections exist,
 // so an editor's batch rarely misses the cache.
 func (m *measurer) refresher() {

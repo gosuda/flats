@@ -235,8 +235,13 @@ func TestBoardCreateServeAndEdit(t *testing.T) {
 	s, _ := newTestService(t)
 	newBoard(t, s, "plan")
 	f, err := s.GetFlat(ctx, "plan")
-	if err != nil || f.Type != "board" || f.LiveVersion == 0 || !f.Running || f.Publication != "published" {
+	// The shell version that serves the canvas stays internal, as for a
+	// design: a board has no versions (rule 54).
+	if err != nil || f.Type != "board" || !f.Running || f.LiveVersion != 0 || f.Versions != 0 || f.VersionCount != 0 || f.Live != nil || f.Publication != "" || f.Draft != nil {
 		t.Fatalf("flat = %+v %v", f, err)
+	}
+	if fs, err := s.ListFlats(ctx); err != nil || len(fs) != 1 || fs[0].LiveVersion != 0 || fs[0].Versions != 0 || fs[0].VersionCount != 0 || !fs[0].Running {
+		t.Fatalf("list = %+v %v", fs, err)
 	}
 	page, err := s.ListRevisions(ctx, "plan", 0, 10)
 	if err != nil || len(page.Revisions) != 1 || page.Revisions[0].Kind != "created" {

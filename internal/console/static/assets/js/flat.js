@@ -116,7 +116,10 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const urls = h('dl', { class: 'facts' });
     const add = (k, v) => urls.append(h('dt', { text: k }), h('dd', null, v));
     const pending = flat.private_state && !['ready', 'key-expiring'].includes(flat.private_state);
-    add('Private URL', flat.live_version
+    // A document, design or board serves once it runs; a website once a
+    // version is live.
+    const serving = isDocs() ? flat.running : flat.live_version;
+    add('Private URL', serving
       ? h('div', null, extLink(flat.private_url),
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
@@ -125,7 +128,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
-        flat.live_version ? extLink(pub) : h('code', { text: pub }),
+        serving ? extLink(pub) : h('code', { text: pub }),
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
     if (isDocs()) add(typeOf(flat).label, flat.running ? 'Running' : 'Not running');

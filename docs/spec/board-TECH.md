@@ -301,6 +301,23 @@ at the moment of applying**. Explicit targets carry expected incarnations.
   target later, and then only the connector was revived).
 - When an end attaches (`add`, `set end`, revive), the server records the
   target's current incarnation in `end_inc`.
+- **Default attachment point.** An agent end attached without `at` (8.1)
+  gets the middle of one side of its target (`[1, 0.5]`, `[0, 0.5]`,
+  `[0.5, 1]` or `[0.5, 0]`), so the line starts on the outline instead of
+  crossing the target's text. The server takes the direction from the
+  target's center to the other end, turns it into the target's rotated
+  frame and picks the side through which that ray leaves the box
+  (`|dx|·h ≥ |dy|·w` picks left or right, a tie included). The other end
+  counts at its `endpointWorld`, at its coordinate when free, and at its
+  target's center when it has no `at` either, so the choice does not depend
+  on the order of the ends. The server chooses after the call's layout help
+  (8.1) has placed every element, and stores the result as an ordinary
+  `at`. The function is `defaultAt` in both Go and JS, with shared test
+  vectors next to `endpointWorld`'s.
+- **Attaching in the canvas.** The connector tool and an end drag attach at
+  the point under the cursor when it lies on the target's outline (within
+  8 screen px, snapping to a side's middle nearby), and otherwise at the
+  `defaultAt` side facing the other end, never at the center.
 
 ### 4.5 Batches, limits and refusals
 
@@ -809,7 +826,10 @@ files_bytes = size of the current file list JSON (≤ 257 buckets + ≤ 512 asse
   sweep and a quota change start a new measurement and keep the old value
   until it arrives (a sweep only shrinks the directory, so the old value
   errs on the safe side). While the instance has Private connections, the
-  helper refreshes the value every 45 seconds, so a cache miss is rare.
+  helper refreshes the value every 45 seconds, and a Private connection
+  that opens without a value younger than that starts a measurement at
+  once, so the first batch after opening a board normally finds a fresh
+  value and a cache miss is rare.
   An agent write, which holds the flat lock, measures before it enters the
   apply loop and passes the value in. On a miss the apply
   loop starts a measurement and refuses the batch as a transient failure
@@ -1081,7 +1101,8 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   request returns `conflict`.
 - New elements without coordinates: without `layout`, they go in a row to the
   right of the current bounding box. Default sizes: sticky 200×200, shape
-  160×100, text fitted to its content.
+  160×100, text fitted to its content. Connector ends without `at` attach at
+  the side facing the other end once layout is done (4.4).
 - A slug that does not exist: the server creates a board (like design's adopt
   rule, it also adopts an empty untyped flat) and applies the call.
 
@@ -1223,7 +1244,14 @@ it in the banner. It is the same zip format with `recovery.json` added.
 - Pen: simplified with RDP at a 0.5px radius, capped at 2,000 points, drawn
   with quadratic curves.
 - Elbow connectors: a simple rule that computes an orthogonal path from the
-  directions of the two ends (no obstacle avoidance).
+  directions of the two ends (no obstacle avoidance). An attached end leaves
+  perpendicular to the side it sits on.
+- Attached ends are drawn on the target's outline (the box, ellipse or
+  diamond). An end stored inside its target, such as a center attachment
+  from before 4.4's default, is drawn where a straight line leaves the
+  target, and an elbow path leaves from the `defaultAt` side facing the
+  other end. Only the drawing changes; the stored `at` and `endpointWorld`
+  stay as they are.
 
 ### 11.2 Interaction rules
 
@@ -1246,6 +1274,7 @@ it in the banner. It is the same zip format with `recovery.json` added.
 |---|---|---|
 | Saved | No `pending`, connected | "Saved" |
 | Saving | `pending` present, connected | "Saving…" |
+| Connecting | Before the first `welcome`, and during an intentional reconnect (a name change, a gap) until its `welcome` | "Connecting…" |
 | Disconnected | Socket closed, reconnecting | "Disconnected · Reconnecting" (pending count) |
 | Editing stopped | `fatal` | A red banner and "Download unsent edits" |
 | Over quota | The latest batch got `reject disk_quota` | A yellow banner; the next edits may be refused too |
@@ -1319,6 +1348,7 @@ step. Modules: `state.js` (server copy, pending, delta application), `net.js`
 | `core` type checks | `flatType`, the type change message, refusing Version tools (`ErrBoardUnversioned`), the allow-list of revision tools |
 | `core.storeDir` | board → `flats/<slug>/revisions` (the same blob root as docs) |
 | `core.CreateBoard` | The design creation steps (row, `content_state` init, activating the shell `flats.json` `{"type":"board"}`, ready) plus board.db initialization and the `created` entry |
+| Flat views | The shell version stays internal: the HTTP API, console and MCP report a board, like a design, with `running` and without a live version, versions, Draft or publication. The CLI shows it as running like a document |
 | `core.CloseDueGroups` | Boards are excluded, because the instance's 5-second ticker handles them inside board.db. The host ticker only imports the outbox |
 | `core.RollbackRevision` | A board branch: hold, the instance apply loop, synchronous import (4.11). Extend the hold settlement (`settleHoldsLocked`) to boards |
 | `retainTx` paths | On a `system.revision_quota` change or a per-flat change, boards also import before retention |

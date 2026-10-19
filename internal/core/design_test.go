@@ -56,7 +56,7 @@ func TestDesignCreateWriteAndServe(t *testing.T) {
 	s, _ := newTestService(t)
 	newDesign(t, s, "studio")
 	f, err := s.GetFlat(ctx, "studio")
-	if err != nil || f.Type != "design" || f.LiveVersion == 0 || f.Publication != "published" {
+	if err != nil || f.Type != "design" || !f.Running || f.LiveVersion != 0 || f.Versions != 0 || f.VersionCount != 0 || f.Live != nil || f.Publication != "" {
 		t.Fatalf("flat = %+v %v", f, err)
 	}
 	res, err := s.WriteDesign(ctx, "studio", DesignWrite{Files: []DesignFile{{Path: "b.html", Data: []byte("<p>B</p>")}, {Path: "canvas.json", Data: canvasJSON("a.html", "b.html")}}, Message: "add b"}, ViaMCP)

@@ -911,6 +911,13 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	} else if v.Draft != nil {
 		v.Type = contenttype.FromManifest(v.Draft.Manifest)
 	}
+	if v.Type == contenttype.Design || v.Type == contenttype.Board {
+		// A design or board runs from an internal shell version published
+		// at creation; it has no versions, Draft or publishing to report.
+		v.LiveVersion, v.Live, v.Versions, v.VersionCount = 0, nil, 0, 0
+		v.NextVersion, v.LatestVersion, v.LatestDeployed = 0, 0, false
+		v.Draft, v.Publication, v.EffectiveVersionQuota = nil, "", 0
+	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))
 	return v
 }

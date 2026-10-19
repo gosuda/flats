@@ -120,7 +120,7 @@ func (s *State) ApplyAgent(call AgentCall) (AgentOutcome, error) {
 		by = "agent:" + call.Label
 	}
 	a, m := s.newApplier("", by, call.Now)
-	c := &agentCall{a: a, call: call, refs: map[string]string{}, out: AgentOutcome{IDs: map[string]string{}, Layout: map[string][2]float64{}}}
+	c := &agentCall{a: a, call: call, refs: map[string]string{}, auto: map[string][2]bool{}, out: AgentOutcome{IDs: map[string]string{}, Layout: map[string][2]float64{}}}
 	err := c.run()
 	if err == nil {
 		err = a.finish()
@@ -157,6 +157,8 @@ type agentCall struct {
 	call AgentCall
 	refs map[string]string
 	out  AgentOutcome
+	// connector ends this call attached without "at", by connector id
+	auto map[string][2]bool
 	// next free position for new elements without coordinates
 	placed       bool
 	nextX, nextY float64
@@ -173,7 +175,11 @@ func (c *agentCall) run() error {
 		}
 		c.out.Results = append(c.out.Results, r)
 	}
-	return c.layout()
+	if err := c.layout(); err != nil {
+		return err
+	}
+	c.placeEnds()
+	return nil
 }
 
 // id resolves an id or "$ref".
@@ -324,6 +330,9 @@ func (c *agentCall) add(op AgentOp) (any, error) {
 		return nil, conflict("element %s references an element or group that does not exist", el.ID)
 	}
 	c.a.insert(el)
+	if el.Type == model.TypeConnector {
+		c.auto[el.ID] = omittedAt(op.El)
+	}
 	if op.Ref != "" {
 		c.refs[op.Ref] = el.ID
 		c.out.IDs[op.Ref] = el.ID
@@ -470,7 +479,7 @@ func (c *agentCall) bundlesOf(r *Row, fields map[string]json.RawMessage) (map[st
 				vals[model.StylePrefix+sk] = v
 			}
 		case k == "ends":
-			if err := c.endsOf(typ, raw, vals); err != nil {
+			if err := c.endsOf(r.El.ID, typ, raw, vals); err != nil {
 				return nil, err
 			}
 		case k == model.BundleText || k == model.BundleAlt || k == model.BundleLocked || k == model.BundleZ:
@@ -506,7 +515,7 @@ func (c *agentCall) bundlesOf(r *Row, fields map[string]json.RawMessage) (map[st
 	return vals, nil
 }
 
-func (c *agentCall) endsOf(typ string, raw json.RawMessage, vals map[string]any) error {
+func (c *agentCall) endsOf(id, typ string, raw json.RawMessage, vals map[string]any) error {
 	if typ != model.TypeConnector {
 		return invalid("a %s has no ends", typ)
 	}
@@ -514,6 +523,7 @@ func (c *agentCall) endsOf(typ string, raw json.RawMessage, vals map[string]any)
 	if err := json.Unmarshal(raw, &ends); err != nil || len(ends) != 2 {
 		return invalid("ends is [end or null, end or null]")
 	}
+	auto := c.auto[id]
 	for k, er := range ends {
 		if string(er) == "null" {
 			continue
@@ -522,17 +532,17 @@ func (c *agentCall) endsOf(typ string, raw json.RawMessage, vals map[string]any)
 		if err := json.Unmarshal(er, &end); err != nil {
 			return err
 		}
-		id, err := c.id(end.El)
+		target, err := c.id(end.El)
 		if err != nil {
 			return err
 		}
-		end.El = id
+		end.El = target
 		v, err := model.DecodeBundle(typ, model.EndBundle(k), model.BundleJSON(model.BundleEnd0, end))
 		if err != nil {
 			return err
 		}
-		if id != "" {
-			t, err := c.alive(id)
+		if target != "" {
+			t, err := c.alive(target)
 			if err != nil {
 				return err
 			}
@@ -541,8 +551,80 @@ func (c *agentCall) endsOf(typ string, raw json.RawMessage, vals map[string]any)
 			}
 		}
 		vals[model.EndBundle(k)] = v
+		auto[k] = omittedAt(er)[0]
 	}
+	c.auto[id] = auto
 	return nil
+}
+
+// omittedAt reports which ends of a raw element, or the one raw end, are
+// attached without "at" (4.4).
+func omittedAt(raw json.RawMessage) [2]bool {
+	var el struct {
+		Ends []json.RawMessage `json:"ends"`
+	}
+	ends := []json.RawMessage{raw}
+	if json.Unmarshal(raw, &el) == nil && el.Ends != nil {
+		ends = el.Ends
+	}
+	var out [2]bool
+	for k, er := range ends[:min(len(ends), 2)] {
+		var f map[string]json.RawMessage
+		if json.Unmarshal(er, &f) == nil {
+			_, attached := f["el"]
+			_, at := f["at"]
+			out[k] = attached && !at
+		}
+	}
+	return out
+}
+
+// placeEnds gives the ends this call attached without "at" their default
+// positions, once layout has placed every element.
+func (c *agentCall) placeEnds() {
+	geom := func(id string) (model.Geom, bool) {
+		r := c.a.s.rows[id]
+		if !r.alive() {
+			return model.Geom{}, false
+		}
+		return r.El.Geom, true
+	}
+	for _, id := range slices.Sorted(maps.Keys(c.auto)) {
+		r := c.a.s.rows[id]
+		if !r.alive() {
+			continue
+		}
+		ends := placeAuto(r.El.Ends, c.auto[id], geom)
+		for k, end := range ends {
+			if end != r.El.Ends[k] {
+				c.a.write(c.a.s.rows[id], model.EndBundle(k), end, "", 0)
+			}
+		}
+	}
+}
+
+// placeAuto attaches each end marked in auto at the middle of its target's
+// side that faces the other end (model.DefaultAt). The other end counts at
+// its target's center when it is marked too, so the choice does not depend
+// on the order of the ends.
+func placeAuto(ends [2]model.End, auto [2]bool, geom func(id string) (model.Geom, bool)) [2]model.End {
+	out := ends
+	for k, end := range ends {
+		g, ok := geom(end.El)
+		if !auto[k] || end.El == "" || !ok {
+			continue
+		}
+		other := ends[1-k]
+		toward := other.Pt
+		if og, ok := geom(other.El); other.El != "" && ok {
+			toward = model.EndpointWorld(og, other.At)
+			if auto[1-k] {
+				toward = [2]float64{og.X + og.W/2, og.Y + og.H/2}
+			}
+		}
+		out[k].At = model.DefaultAt(g, toward)
+	}
+	return out
 }
 
 // carry decides container following for an agent set (8.1): a frame whose
@@ -836,6 +918,7 @@ func (c *agentCall) replace() error {
 	}
 	var els []model.Element
 	byRef := map[string]string{}
+	auto := map[string][2]bool{}
 	for i, op := range c.call.Ops {
 		if op.Op != OpAdd {
 			return invalid("%v (operation %d is %s)", errEmptyReplace, i, op.Op)
@@ -846,6 +929,9 @@ func (c *agentCall) replace() error {
 		}
 		if el.ID == "" {
 			el.ID = c.call.NewID("e_")
+		}
+		if el.Type == model.TypeConnector {
+			auto[el.ID] = omittedAt(op.El)
 		}
 		if op.Ref != "" {
 			byRef[op.Ref] = el.ID
@@ -891,6 +977,18 @@ func (c *agentCall) replace() error {
 	}
 	for i, k := range spread(top, "", len(unkeyed)) {
 		els[unkeyed[i]].Z = k
+	}
+	geoms := map[string]model.Geom{}
+	for _, el := range els {
+		if el.Type != model.TypeConnector {
+			geoms[el.ID] = el.Geom
+		}
+	}
+	geom := func(id string) (model.Geom, bool) { g, ok := geoms[id]; return g, ok }
+	for i := range els {
+		if el := &els[i]; el.Type == model.TypeConnector {
+			el.Ends = placeAuto(el.Ends, auto[el.ID], geom)
+		}
 	}
 	for _, el := range els {
 		if el.Type == model.TypeImage && !c.a.assetKnown(el.Asset) {

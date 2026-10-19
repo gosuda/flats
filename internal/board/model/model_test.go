@@ -230,6 +230,37 @@ var vectorInputs = []struct {
 	{Geom{0, 0, 200, 200, 135}, [2]float64{0.5, 1}},
 }
 
+type sideVector struct {
+	El     Geom       `json:"el"`
+	Toward [2]float64 `json:"toward"`
+	Want   [2]float64 `json:"want"`
+}
+
+// sideInputs are the shared DefaultAt cases: each side, rotations that
+// turn the sides, a box much wider than tall and the zero direction.
+var sideInputs = []struct {
+	el     Geom
+	toward [2]float64
+}{
+	{Geom{0, 0, 200, 200, 0}, [2]float64{500, 120}},
+	{Geom{0, 0, 200, 200, 0}, [2]float64{-300, 40}},
+	{Geom{0, 0, 200, 200, 0}, [2]float64{90, 700}},
+	{Geom{0, 0, 200, 200, 0}, [2]float64{130, -400}},
+	{Geom{0, 0, 200, 200, 0}, [2]float64{100, 100}},
+	{Geom{0, 0, 400, 50, 0}, [2]float64{150, 300}},
+	{Geom{0, 0, 400, 50, 0}, [2]float64{700, 300}},
+	{Geom{10, 20, 100, 50, 90}, [2]float64{300, 60}},
+	{Geom{10, 20, 100, 50, 90}, [2]float64{60, 400}},
+	{Geom{10, 20, 100, 50, 180}, [2]float64{300, 40}},
+	{Geom{10, 20, 100, 50, 270}, [2]float64{60, -300}},
+	{Geom{500, 400, 200, 200, 45}, [2]float64{1000, 520}},
+	{Geom{500, 400, 200, 200, 45}, [2]float64{450, 1000}},
+	{Geom{-300, -120.5, 240, 160, 33.5}, [2]float64{-500, 300}},
+	{Geom{-300, -120.5, 240, 160, 33.5}, [2]float64{200, -900}},
+	{Geom{1234.5, -987.6, 321.7, 88.8, 12.3}, [2]float64{1300, -2000}},
+	{Geom{40, 60, 160, 100, 300}, [2]float64{-400, 100}},
+}
+
 func TestGeometryVectors(t *testing.T) {
 	path := filepath.Join("testdata", "geometry.json")
 	if *update {
@@ -238,7 +269,12 @@ func TestGeometryVectors(t *testing.T) {
 			raw, _ := json.Marshal(geomVector{in.el, in.at, EndpointWorld(in.el, in.at)})
 			lines[i] = "  " + string(raw)
 		}
-		out := "{\"endpoints\":[\n" + strings.Join(lines, ",\n") + "\n]}\n"
+		sides := make([]string, len(sideInputs))
+		for i, in := range sideInputs {
+			raw, _ := json.Marshal(sideVector{in.el, in.toward, DefaultAt(in.el, in.toward)})
+			sides[i] = "  " + string(raw)
+		}
+		out := "{\"endpoints\":[\n" + strings.Join(lines, ",\n") + "\n],\n\"default_at\":[\n" + strings.Join(sides, ",\n") + "\n]}\n"
 		if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -249,6 +285,7 @@ func TestGeometryVectors(t *testing.T) {
 	}
 	var file struct {
 		Endpoints []geomVector `json:"endpoints"`
+		DefaultAt []sideVector `json:"default_at"`
 	}
 	if err := json.Unmarshal(raw, &file); err != nil {
 		t.Fatal(err)
@@ -273,6 +310,25 @@ func TestGeometryVectors(t *testing.T) {
 	}
 	if got := EndpointWorld(Geom{0, 0, 100, 50, 0}, [2]float64{1, 0.5}); got != [2]float64{100, 25} {
 		t.Fatalf("basic vector = %v", got)
+	}
+	if len(file.DefaultAt) < len(sideInputs) {
+		t.Fatalf("only %d default_at vectors", len(file.DefaultAt))
+	}
+	for i, v := range file.DefaultAt {
+		if got := DefaultAt(v.El, v.Toward); got != v.Want {
+			t.Errorf("default_at vector %d: DefaultAt(%v, %v) = %v, want %v", i, v.El, v.Toward, got, v.Want)
+		}
+		// A direction on a box diagonal would let float differences between
+		// Go and JS pick different sides.
+		dx, dy := v.Toward[0]-(v.El.X+v.El.W/2), v.Toward[1]-(v.El.Y+v.El.H/2)
+		sin, cos := sinCos(v.El.Rot)
+		lx, ly := dx*cos+dy*sin, dy*cos-dx*sin
+		if d := math.Abs(lx)*v.El.H - math.Abs(ly)*v.El.W; math.Abs(d) < 1e-6*(v.El.W*v.El.H) && (lx != 0 || ly != 0) {
+			t.Errorf("default_at vector %d lies on a diagonal", i)
+		}
+	}
+	if got := DefaultAt(Geom{0, 0, 200, 100, 0}, [2]float64{1000, 60}); got != [2]float64{1, 0.5} {
+		t.Fatalf("right side = %v", got)
 	}
 }
 

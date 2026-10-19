@@ -292,8 +292,8 @@ func (a *app) list(args []string) error {
 			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
 		}
 		live, versions := liveLabel(f.LiveVersion), strconv.Itoa(f.Versions)
-		if f.Type == "docs" {
-			// A document has no versions: it runs once saved.
+		if revisionModel(f.Type) {
+			// A document, design or board has no versions: it runs once saved.
 			live, versions = documentState(f.Running), "-"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", f.Slug, displayType(f.Type), f.Visibility, live, versions, u)
@@ -326,11 +326,15 @@ func (a *app) info(args []string) error {
 		return nil
 	}
 	w := a.out
-	docs := f.Type == "docs"
+	docs := revisionModel(f.Type)
 	fmt.Fprintf(w, "%s (%s)\n", f.Slug, f.Name)
 	fmt.Fprintf(w, "  type:       %s\n", displayType(f.Type))
 	if docs {
-		fmt.Fprintf(w, "  document:   %s (no Draft, versions or publish step)\n", documentState(f.Running))
+		noun := f.Type
+		if noun == "docs" {
+			noun = "document"
+		}
+		fmt.Fprintf(w, "  %-12s%s (no Draft, versions or publish step)\n", noun+":", documentState(f.Running))
 	} else {
 		fmt.Fprintf(w, "  publication: %s\n", f.Publication)
 	}
@@ -361,7 +365,12 @@ func (a *app) info(args []string) error {
 	return nil
 }
 
-// documentState is "running" or "not running" for a document.
+// revisionModel reports a document, design or board, which runs without
+// versions.
+func revisionModel(t string) bool { return t == "docs" || t == "design" || t == "board" }
+
+// documentState is "running" or "not running" for a document, design or
+// board.
 func documentState(running bool) string {
 	if running {
 		return "running"

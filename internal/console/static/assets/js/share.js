@@ -136,9 +136,8 @@ export function shareRoute(flat) {
   const state = route ? route.state : (isPublic ? flat.connection_state : flat.private_state);
   const ready = route ? route.ready === true : !state || state === 'ready' || state === 'key-expiring';
   const out = { url, provider: route?.provider || '', usable: false, message: '' };
-  if (!flat.live_version) {
-    out.message = isLive(flat) ? 'This flat is not running.' : 'This flat has not been published yet.';
-  } else if (flat.running === false) out.message = 'This flat is not running.';
+  if (!isLive(flat) && !flat.live_version) out.message = 'This flat has not been published yet.';
+  else if (flat.running === false) out.message = 'This flat is not running.';
   else if (url && ready) {
     out.usable = true;
     out.message = serverOnly(url) ? SERVER_ONLY : state ? 'Link is ready.' : 'Link available.';

@@ -135,8 +135,12 @@ default; an unknown key is refused.
 Ink colors are `ink`, `gray`, `red`, `orange`, `green`, `blue` and `purple`.
 Colors are names; the canvas picks values that read in light and dark
 themes. A connector end is `{"el": id, "at": [ax, ay]}` (attached, `at` from
-0 to 1 inside the target's box, optional) or `{"pt": [x, y]}` (free). Text is
-plain, at most 4,000 characters (200 for frame names and connector labels).
+0 to 1 inside the target's box) or `{"pt": [x, y]}` (free). Without `at`, the
+host attaches the end to the middle of the target's side that faces the other
+end, after `layout` has placed the elements, so the line starts on the
+outline; an attached other end without `at` counts at its target's center.
+Text is plain, at most 4,000 characters (200 for frame names and connector
+labels).
 
 Limits per board: 10,000 elements, 512 images (24 megapixels each), 2,000
 points per pen stroke, 2,000 operations and 1,000 layout targets per call.

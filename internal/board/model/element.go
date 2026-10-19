@@ -127,7 +127,8 @@ func (e End) content() map[string]any {
 // MarshalJSON writes {"el", "at"} or {"pt"}.
 func (e End) MarshalJSON() ([]byte, error) { return Canonical(e.content()), nil }
 
-// UnmarshalJSON reads an end. A missing "at" means the center of the target.
+// UnmarshalJSON reads an end. A missing "at" reads as the center of the
+// target; agent calls replace it with DefaultAt (4.4).
 func (e *End) UnmarshalJSON(raw []byte) error {
 	var f struct {
 		El *string     `json:"el"`

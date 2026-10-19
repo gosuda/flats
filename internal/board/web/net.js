@@ -82,6 +82,8 @@ export class Net {
     this.h = h;
     this.ws = null;
     this.open = false;      // welcome received on the current socket
+    this.welcomed = false;  // welcome received on any socket
+    this.restarting = false; // an intentional reconnect awaits its welcome
     this.stopped = false;   // fatal: editing stopped for good
     this.gen = 0;
     this.snap = null;       // {gen, seq, parts: Parts, reset, meta}
@@ -100,6 +102,10 @@ export class Net {
 
   get connected() { return this.open; }
 
+  // connecting reports a socket that is not open yet but has not failed
+  // either: the first connection, or an intentional reconnect (TECH 11.3).
+  get connecting() { return !this.open && !this.stopped && (!this.welcomed || this.restarting); }
+
   start() {
     if (this.stopped) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -114,7 +120,9 @@ export class Net {
   // restart reconnects at once, for example after a gap or a name change.
   restart() {
     if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.close(); this.#reset(); }
+    this.restarting = true;
     this.start();
+    this.h.status();
   }
 
   stop() {
@@ -138,6 +146,7 @@ export class Net {
   #closed(ws) {
     if (ws !== this.ws) return;
     this.ws = null;
+    this.restarting = false;
     this.#reset();
     this.failures++;
     this.h.status();
@@ -224,6 +233,8 @@ export class Net {
     }
     st.public = m.access !== 'private';
     this.open = true;
+    this.welcomed = true;
+    this.restarting = false;
     this.failures = 0;
     this.reconnectDelay = RETRY_MIN;
     this.h.welcome(m);

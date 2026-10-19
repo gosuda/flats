@@ -826,12 +826,12 @@ class App {
     if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = 'Editing stopped'; }
     else if (!this.net || !this.net.connected) {
       cls = 'offline'; el.appendChild(icon('wifi-off'));
-      text = this.welcomed ? `Disconnected · Reconnecting${pend ? ` (${plural(pend, 'unsent edit')})` : ''}` : 'Connecting…';
+      text = !this.net || this.net.connecting ? 'Connecting…' : `Disconnected · Reconnecting${pend ? ` (${plural(pend, 'unsent edit')})` : ''}`;
     } else if (pend) { cls = 'saving'; el.appendChild(h('span', { class: 'dot' })); text = 'Saving…'; }
     else { cls = 'saved'; el.appendChild(h('span', { class: 'dot' })); text = 'Saved'; }
     el.className = 'save ' + cls;
     el.appendChild(h('span', { text }));
-    if (this.welcomed && !this.net.connected && pend && !this.stopped && !this.bannerKind) this.banner('offline');
+    if (this.welcomed && !this.net.connected && !this.net.connecting && pend && !this.stopped && !this.bannerKind) this.banner('offline');
     if (this.bannerKind === 'offline' && (this.net.connected || !pend)) this.banner(null);
     if (this.welcomed && this.isPublic && !this.net.connected && this.net.failures >= 2) this.checkPublic();
   }

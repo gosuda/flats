@@ -67,10 +67,11 @@ function harness(t) {
   globalThis.location = { protocol: 'http:', host: 'board.test' };
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const state = new BoardState();
-  const seen = { acks: [], rejects: [], deltas: [], fatal: null, snapshots: 0 };
+  const seen = { acks: [], rejects: [], deltas: [], fatal: null, snapshots: 0, statuses: [] };
   const net = new Net(state, {
     hello: () => ({ t: 'hello', v: 1, session: state.session || undefined, watermark: state.session ? state.watermark : undefined, pending: { count: state.pending.length, first_n: state.pending[0]?.n }, editor: 'ed' }),
-    welcome() {}, status() {}, pres() {}, shared() {}, tooLarge() {},
+    welcome() {}, status() { seen.statuses.push(net.connecting ? 'connecting' : net.connected ? 'open' : 'offline'); },
+    pres() {}, shared() {}, tooLarge() {},
     snapshot() { seen.snapshots++; },
     delta(r) { seen.deltas.push(r); },
     ack(m) { seen.acks.push(m.n); },
@@ -142,4 +143,25 @@ test('fatal stops the connection and does not reconnect', (t) => {
   const before = FakeSocket.last;
   t.mock.timers.tick(60000);
   assert.equal(FakeSocket.last, before);
+});
+
+test('an intentional reconnect shows connecting, not disconnected', (t) => {
+  const { net, ws, seen } = harness(t);
+  assert.equal(net.connecting, true, 'the first connection');
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  assert.equal(net.connecting, false);
+  net.restart(); // for example after the person entered a name
+  assert.equal(seen.statuses.at(-1), 'connecting');
+  const again = FakeSocket.last;
+  assert.notEqual(again, ws);
+  again.onopen();
+  again.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  assert.equal(seen.statuses.at(-1), 'open');
+  assert.ok(!seen.statuses.includes('offline'), `statuses ${seen.statuses}`);
+  // A socket that drops is disconnected, and so is a restart that fails.
+  again.onclose();
+  assert.equal(seen.statuses.at(-1), 'offline');
+  net.restart();
+  FakeSocket.last.onclose();
+  assert.equal(seen.statuses.at(-1), 'offline');
 });

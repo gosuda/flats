@@ -173,7 +173,8 @@ export class SelectTool {
       app.setPreview(new Map([[d.el.id, { ...d.el, rot: d.rot }]]));
     } else if (d.mode === 'end') {
       const target = e.altKey ? null : app.hitAt(p[0], p[1], { filter: (el) => el.type !== 'connector' && el.type !== 'pen' });
-      d.val = target ? { el: target.id, at: attachAt(target, p[0], p[1]) } : { pt: [round1(p[0]), round1(p[1])] };
+      const toward = endWorld(d.conn.ends[1 - d.i], (id) => app.doc.get(id)) || p;
+      d.val = target ? { el: target.id, at: attachAt(target, p[0], p[1], 8 / app.cam.z, toward) } : { pt: [round1(p[0]), round1(p[1])] };
       d.target = target;
       const ends = d.conn.ends.slice();
       ends[d.i] = d.val;

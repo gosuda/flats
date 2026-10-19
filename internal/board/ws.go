@@ -608,6 +608,9 @@ func (in *Instance) serveWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many connections to this board", http.StatusServiceUnavailable)
 		return
 	}
+	if !public {
+		in.meas.warm()
+	}
 	opts := wsconn.Options{QueuedBytes: wsQueuedBytes}
 	if public {
 		opts.Shared = publicBudget
