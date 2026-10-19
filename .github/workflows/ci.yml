@@ -116,7 +116,8 @@ jobs:
       - name: WebSocket codec races
         run: go test -race ./internal/wsconn
       - name: Board races
-        run: go test -race ./internal/board/...
+        # benchdata only generates fixed reference data; it is slow under -race.
+        run: go test -race $(go list ./internal/board/... | grep -v /benchdata)
       - name: WebSocket resource limit races
         run: go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
 
