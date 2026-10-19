@@ -154,7 +154,7 @@ func TestOutboxImportAndBoundaries(t *testing.T) {
 
 	// An agent write closes the dirty group first, then is one revision.
 	a.batch(3, map[string]any{"op": "set", "id": id, "inc": 0, "g": "text", "val": "three"})
-	res, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "agent-op-1", Label: "Claude", Message: "add",
+	res, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "agent-op-1", Label: "Agent", Message: "add",
 		Ops: []engine.AgentOp{{Op: "add", Ref: "$s", El: json.RawMessage(`{"type":"sticky","text":"agent"}`)}}}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -180,12 +180,12 @@ func TestOutboxImportAndBoundaries(t *testing.T) {
 		t.Fatalf("groups after the agent write %v", b.in.sd.groups)
 	}
 	// The same op id replays; another request with it is a conflict.
-	again, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "agent-op-1", Label: "Claude", Message: "add",
+	again, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "agent-op-1", Label: "Agent", Message: "add",
 		Ops: []engine.AgentOp{{Op: "add", Ref: "$s", El: json.RawMessage(`{"type":"sticky","text":"agent"}`)}}}, 0)
 	if err != nil || !again.Replayed || again.IDs["$s"] != res.IDs["$s"] {
 		t.Fatalf("replay %+v %v", again, err)
 	}
-	_, err = b.in.UpdateBoard(ctx, UpdateRequest{OpID: "agent-op-1", Label: "Claude", Ops: []engine.AgentOp{{Op: "delete", IDs: []string{id}}}}, 0)
+	_, err = b.in.UpdateBoard(ctx, UpdateRequest{OpID: "agent-op-1", Label: "Agent", Ops: []engine.AgentOp{{Op: "delete", IDs: []string{id}}}}, 0)
 	var be *Error
 	if !errors.As(err, &be) || be.Category != CategoryConflict {
 		t.Fatalf("reused op id: %v", err)
@@ -452,7 +452,7 @@ func TestReplacementOverQuotaChangesNothing(t *testing.T) {
 	outbox := len(b.in.sd.outbox)
 	err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
 		_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "replace-op-1", Mode: "replace", Archive: strings.NewReader(string(zipData)),
-			Size: int64(len(zipData)), Label: "Claude"}, other)
+			Size: int64(len(zipData)), Label: "Agent"}, other)
 		return err
 	})
 	var be *Error
@@ -469,7 +469,7 @@ func TestReplacementOverQuotaChangesNothing(t *testing.T) {
 	b.core.setQuota(0)
 	err = b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
 		_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "replace-op-2", Mode: "replace", Archive: strings.NewReader(string(zipData)),
-			Size: int64(len(zipData)), Label: "Claude"}, other)
+			Size: int64(len(zipData)), Label: "Agent"}, other)
 		return err
 	})
 	if err != nil {
@@ -576,7 +576,7 @@ func TestCrashPointsOfReplacement(t *testing.T) {
 	}
 	err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
 		_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "replace-crash", Mode: "replace", Archive: strings.NewReader(string(data)),
-			Size: int64(len(data)), Label: "Claude"}, other)
+			Size: int64(len(data)), Label: "Agent"}, other)
 		return err
 	})
 	if err != nil {

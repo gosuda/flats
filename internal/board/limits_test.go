@@ -154,7 +154,7 @@ func fillBoard(t *testing.T, b *tb, n, size int) {
 			el, _ := json.Marshal(map[string]any{"type": "sticky", "text": noise(size, i), "x": i * 10, "y": 0})
 			ops = append(ops, engine.AgentOp{Op: "add", El: el})
 		}
-		if _, err := b.in.UpdateBoard(context.Background(), UpdateRequest{OpID: "fill-" + randomToken(), Label: "Claude", Ops: ops}, 0); err != nil {
+		if _, err := b.in.UpdateBoard(context.Background(), UpdateRequest{OpID: "fill-" + randomToken(), Label: "Agent", Ops: ops}, 0); err != nil {
 			t.Fatal(err)
 		}
 		done += len(ops)
@@ -286,7 +286,7 @@ func TestRefusedImportsAndAgentCallsStoreNoBlobs(t *testing.T) {
 		data := imageArchive(t, noisyPNG(t, 64, 64, 100+i)) // about 12 KiB each
 		err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
 			_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "refused-import-" + randomToken(), Mode: "add",
-				Archive: bytes.NewReader(data), Size: int64(len(data)), Label: "Claude"}, other)
+				Archive: bytes.NewReader(data), Size: int64(len(data)), Label: "Agent"}, other)
 			return err
 		})
 		var be *Error
@@ -301,7 +301,7 @@ func TestRefusedImportsAndAgentCallsStoreNoBlobs(t *testing.T) {
 	for _, quota := range []int64{0, 1 << 30} {
 		b.core.setQuota(quota)
 		err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
-			_, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "invalid-" + randomToken(), Label: "Claude",
+			_, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "invalid-" + randomToken(), Label: "Agent",
 				Ops: []engine.AgentOp{{Op: "no-such-op"}}, Assets: [][]byte{noisyPNG(t, 16, 16, int(quota%7)+200)}}, other)
 			return err
 		})
@@ -315,7 +315,7 @@ func TestRefusedImportsAndAgentCallsStoreNoBlobs(t *testing.T) {
 	// An admitted one stores its image.
 	img := noisyPNG(t, 16, 16, 300)
 	err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
-		_, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "valid-" + randomToken(), Label: "Claude",
+		_, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "valid-" + randomToken(), Label: "Agent",
 			Ops: []engine.AgentOp{{Op: "add", El: json.RawMessage(`{"type":"sticky","text":"ok"}`)}}, Assets: [][]byte{img}}, other)
 		return err
 	})
@@ -379,7 +379,7 @@ func TestFreshMeasurementCountsStoredBytesOnce(t *testing.T) {
 	data := imageArchive(t, img)
 	err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
 		_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "import-image-1", Mode: "add", Archive: bytes.NewReader(data),
-			Size: int64(len(data)), Label: "Claude"}, other)
+			Size: int64(len(data)), Label: "Agent"}, other)
 		return err
 	})
 	if err != nil {
@@ -388,7 +388,7 @@ func TestFreshMeasurementCountsStoredBytesOnce(t *testing.T) {
 	b.core.setQuota(measureUsage(t, b) + int64(len(img))/2)
 	for i := 0; i < 3; i++ {
 		err = b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
-			_, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "near-quota-" + randomToken(), Label: "Claude",
+			_, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "near-quota-" + randomToken(), Label: "Agent",
 				Ops: []engine.AgentOp{{Op: "add", El: json.RawMessage(`{"type":"sticky","text":"fits"}`)}}}, other)
 			return err
 		})

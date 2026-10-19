@@ -135,10 +135,10 @@ func TestPagedReadsAreConsistent(t *testing.T) {
 		el, _ := json.Marshal(map[string]any{"type": "sticky", "text": "n", "x": i * 10, "y": 0})
 		ops = append(ops, engine.AgentOp{Op: "add", El: el})
 	}
-	if _, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "fill-board", Label: "Claude", Ops: ops[:1000]}, 0); err != nil {
+	if _, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "fill-board", Label: "Agent", Ops: ops[:1000]}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "fill-board-2", Label: "Claude", Ops: ops[1000:]}, 0); err != nil {
+	if _, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "fill-board-2", Label: "Agent", Ops: ops[1000:]}, 0); err != nil {
 		t.Fatal(err)
 	}
 	p1, err := b.in.GetBoard(ctx, Query{})
@@ -146,7 +146,7 @@ func TestPagedReadsAreConsistent(t *testing.T) {
 		t.Fatalf("first page %d %q %v", len(p1.Elements), p1.Next, err)
 	}
 	// An edit between pages does not show up in the paged read.
-	if _, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "between-pages", Label: "Claude", Ops: ops[:1]}, 0); err != nil {
+	if _, err := b.in.UpdateBoard(ctx, UpdateRequest{OpID: "between-pages", Label: "Agent", Ops: ops[:1]}, 0); err != nil {
 		t.Fatal(err)
 	}
 	total := len(p1.Elements)
@@ -305,7 +305,7 @@ func TestReplacementWithPendingBatches(t *testing.T) {
 	keptEl := model.Element{ID: kept, Type: model.TypeSticky, Geom: model.Geom{X: 300, W: 200, H: 200}, Z: "V", Text: "kept", Style: model.DefaultStyle(model.TypeSticky)}
 	data := buildArchive(t, boardFile{Format: 1, Title: "New", Grid: false}, []model.Element{keptEl}, nil, nil)
 	err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
-		_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "replace-pending", Mode: "replace", Archive: bytes.NewReader(data), Size: int64(len(data)), Label: "Claude"}, other)
+		_, err := b.in.ImportBoard(ctx, ImportRequest{OpID: "replace-pending", Mode: "replace", Archive: bytes.NewReader(data), Size: int64(len(data)), Label: "Agent"}, other)
 		return err
 	})
 	if err != nil {
