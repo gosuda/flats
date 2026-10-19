@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 func TestRuntimeGenerationHostInternalsAndRecovery(t *testing.T) {
@@ -53,17 +54,17 @@ export default {fetch(request) { return Response.json(metadata(request)); },
 	check(f.get(t, "/").body, 40)
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	dial := func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }
-	ws, err := dialWS(t.Context(), dial, addr, "/")
+	ws, err := wsconn.Dial(t.Context(), dial, addr, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws.c.SetDeadline(time.Now().Add(5 * time.Second))
-	raw, err := ws.readMessage()
+	ws.NetConn().SetDeadline(time.Now().Add(5 * time.Second))
+	raw, err := ws.ReadMessage(MaxWSMessage)
 	if err != nil {
 		t.Fatal(err)
 	}
 	check(raw, 40)
-	ws.c.Close()
+	ws.NetConn().Close()
 	in := inst.(*instance)
 	if err := syscall.Kill(in.pid(), syscall.SIGKILL); err != nil {
 		t.Fatal(err)

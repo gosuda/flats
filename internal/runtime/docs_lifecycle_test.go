@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 type docsTestClock struct{ nanos atomic.Int64 }
@@ -497,13 +498,13 @@ func TestManagedDocsStopWithOpenWebSocket(t *testing.T) {
 	srv := httptest.NewServer(d)
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	ws, err := dialWS(t.Context(), func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }, addr, "/")
+	ws, err := wsconn.Dial(t.Context(), func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }, addr, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ws.c.Close()
-	ws.c.SetDeadline(time.Now().Add(10 * time.Second))
-	if message, err := ws.readMessage(); err != nil || message != "ready" {
+	defer ws.NetConn().Close()
+	ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+	if message, err := ws.ReadMessage(MaxWSMessage); err != nil || message != "ready" {
 		t.Fatalf("WS not established: %q %v", message, err)
 	}
 	d.mu.Lock()
@@ -519,7 +520,7 @@ func TestManagedDocsStopWithOpenWebSocket(t *testing.T) {
 	stopped := make(chan struct{})
 	go func() { d.Stop(); close(stopped) }()
 	waitDocsSignal(t, stopped)
-	if _, err := ws.readMessage(); err == nil {
+	if _, err := ws.ReadMessage(MaxWSMessage); err == nil {
 		t.Fatal("worker stopped but WebSocket remained usable")
 	} else if errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("WebSocket timed out instead of closing after Stop: %v", err)

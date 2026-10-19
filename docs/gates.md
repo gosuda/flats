@@ -25,7 +25,8 @@ make docs-check                     # Markdown links and anchors, uncached
 go test ./...                       # as seven shards: scripts/ci-test.sh <shard>
 go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
 go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
-go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|IdleReadDeadline|ControlFramesKeepReadAlive|ServerPingsKeepIdleClientAlive|DefaultByteLimits)$'
+go test -race ./internal/wsconn
+go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
 ```
 
 `scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into

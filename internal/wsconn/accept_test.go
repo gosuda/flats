@@ -1,4 +1,4 @@
-package runtime
+package wsconn
 
 import "testing"
 
@@ -8,7 +8,7 @@ func TestWSAcceptRFC6455(t *testing.T) {
 	t.Parallel()
 	const key = "dGhlIHNhbXBsZSBub25jZQ=="
 	const want = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
-	if got := wsAccept(key); got != want {
+	if got := AcceptKey(key); got != want {
 		t.Fatalf("Sec-WebSocket-Accept = %q, want %q", got, want)
 	}
 }

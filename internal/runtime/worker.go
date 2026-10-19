@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/egress"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 // engine handles one request: request JSON in, response JSON out.
@@ -397,7 +398,7 @@ func (w *worker) readBody(rw http.ResponseWriter, r *http.Request) (body []byte,
 }
 
 func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	if w.js != nil && w.js.hasWS && isWebSocketUpgrade(r) {
+	if w.js != nil && w.js.hasWS && wsconn.IsUpgrade(r) {
 		w.js.wsHub.serve(rw, r, requestURL(r), requestHeaders(r))
 		return
 	}

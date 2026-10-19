@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Board</title>
+<link rel="stylesheet" href="/_board/app/app.css">
+<script type="module" src="/_board/app/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="title">
+    <button id="frames-btn" type="button" class="btn icon" aria-label="Frame list" title="Frame list" aria-expanded="false" aria-controls="frame-list"><span data-icon="board"></span></button>
+    <h1 id="board-title">Board</h1>
+    <span class="chip" id="access-chip" hidden></span>
+  </div>
+  <div class="save" role="status"></div>
+  <button id="name-btn" type="button" class="btn ghost" hidden>Choose a name to edit</button>
+  <div class="spacer"></div>
+  <button class="people" type="button" aria-haspopup="dialog" aria-expanded="false" hidden></button>
+  <button id="find-btn" type="button" class="btn"><span data-icon="search"></span><span class="lbl">Find</span><span class="kbd">⌘F</span></button>
+  <button id="history-btn" type="button" class="btn priv-only" aria-expanded="false" aria-controls="history"><span data-icon="history"></span><span class="lbl">History</span></button>
+  <button id="export-btn" type="button" class="btn"><span data-icon="download"></span><span class="lbl">Export</span></button>
+  <button id="share-btn" type="button" class="btn ghost priv-only" disabled><span data-icon="send"></span><span class="lbl">Send to agent</span></button>
+</header>
+<div class="banners"></div>
+<nav class="tools priv-only" aria-label="Tools"></nav>
+<aside id="frame-list" class="panel left" aria-label="Frame list" hidden></aside>
+<main class="board" aria-label="Board canvas">
+  <canvas class="layer-static" aria-hidden="true"></canvas>
+  <canvas class="layer-dynamic" tabindex="-1" aria-hidden="true"></canvas>
+  <div class="board-ui"></div>
+</main>
+<aside id="a11y" class="a11y-panel" aria-labelledby="a11y-title">
+  <h2 id="a11y-title">Element list</h2>
+  <p class="ph">↑↓ move · ← → collapse or expand frames · Enter edits text (Esc returns here) · Shift+arrow moves 10px · Delete deletes · Esc clears the selection</p>
+  <ul id="element-tree" role="tree" aria-label="Board elements"></ul>
+</aside>
+<div class="zoom">
+  <button type="button" class="b" data-act="out" aria-label="Zoom out (⌘-)" title="Zoom out (⌘-)"><span data-icon="minus"></span></button>
+  <button type="button" class="z" data-act="menu" aria-haspopup="menu" aria-expanded="false">100%</button>
+  <button type="button" class="b" data-act="in" aria-label="Zoom in (⌘+)" title="Zoom in (⌘+)"><span data-icon="plus"></span></button>
+  <button type="button" class="b" data-act="fit" aria-label="Fit all (⇧1)" title="Fit all (⇧1)"><span data-icon="fit"></span></button>
+</div>
+<div class="undo priv-only">
+  <button type="button" class="b" data-act="undo" aria-label="Undo (⌘Z)" title="Undo (⌘Z)"><span data-icon="undo"></span></button>
+  <button type="button" class="b" data-act="redo" aria-label="Redo (⇧⌘Z)" title="Redo (⇧⌘Z)"><span data-icon="redo"></span></button>
+</div>
+<nav class="mobile-nav" aria-label="View">
+  <button type="button" class="btn" data-act="frames"><span data-icon="list"></span><span>Frames</span></button>
+  <button type="button" class="btn" data-act="find"><span data-icon="search"></span><span>Find</span></button>
+  <button type="button" class="btn" data-act="fit"><span data-icon="fit"></span><span>Fit</span></button>
+</nav>
+<aside id="history" class="panel right" aria-label="History" hidden></aside>
+<div class="toasts"></div>
+<div id="announce" class="sr" aria-live="polite"></div>
+<noscript><p class="noscript">The board needs JavaScript.</p></noscript>
+</body>
+</html>

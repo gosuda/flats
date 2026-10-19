@@ -18,6 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 type usageEvent struct {
@@ -475,19 +476,19 @@ func TestServerFlatUsageEndToEnd(t *testing.T) {
 		r.Body.Close()
 	}
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	ws, err := dialWS(ctx, func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }, addr, "/ws")
+	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }, addr, "/ws")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws.c.SetDeadline(time.Now().Add(10 * time.Second))
-	if msg, err := ws.readMessage(); err != nil || msg != "ready" {
+	ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+	if msg, err := ws.ReadMessage(MaxWSMessage); err != nil || msg != "ready" {
 		t.Fatalf("%q %v", msg, err)
 	}
 	during := metrics()
 	if during.OpenStreams != 1 || during.Requests[core.RoutePrivate][core.Class1xx] != 1 || during.Requests[core.RoutePrivate][core.Class2xx] != 1 || during.DurationCount != 1 {
 		t.Fatalf("during the WebSocket %+v", during)
 	}
-	ws.c.Close()
+	ws.NetConn().Close()
 	deadline := time.Now().Add(10 * time.Second)
 	for metrics().OpenStreams != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)

@@ -1,9 +1,9 @@
 # WebSocket handshake hash and CodeQL
 
-Maintainer note for the server-flat runtime; not part of the agent-facing runtime API.
+Maintainer note for the WebSocket codec that the server-flat runtime uses; not part of the agent-facing runtime API.
 
 
-`internal/runtime/ws.go:wsAccept` implements the exact Sec-WebSocket-Accept
+`internal/wsconn/wsconn.go:AcceptKey` implements the exact Sec-WebSocket-Accept
 calculation required by [RFC 6455 section 4.2.2](https://datatracker.ietf.org/doc/html/rfc6455#section-4.2.2):
 Base64 of SHA-1 over the public Sec-WebSocket-Key nonce followed by the fixed
 WebSocket GUID. The server reads only that header; the client generates a fresh
@@ -16,10 +16,14 @@ second-preimage resistance. Substituting SHA-256 breaks compliant peers.
 
 [CodeQL alert #35](https://github.com/gosuda/flats/security/code-scanning/35)
 (`go/weak-sensitive-data-hashing`, reported on PR #25 at `26c4f798`) classifies
-this operation as sensitive hashing. Its reported sources are document/route
+this operation as sensitive hashing. The alert was reported when the function
+was `wsAccept` in `internal/runtime/ws.go`; it moved unchanged to
+`internal/wsconn`. Its reported sources are document/route
 secret handling elsewhere in core, but the handshake hash input is the nonce
 header (or locally generated nonce), not those credentials. The scoped treatment
 is to dismiss this single alert as a false positive with this rationale in its
 GitHub audit record. The repository uses CodeQL default setup; retain its queries,
 languages and scanning schedule, and do not suppress the rule or exclude runtime
-files. Reassess the exception if the function's inputs or purpose change.
+or codec files. CodeQL can report the moved function as a new alert; the same
+rationale applies, and dismissing it is a maintainer decision. Reassess the
+exception if the function's inputs or purpose change.

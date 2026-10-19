@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/wsconn"
 	"github.com/tetratelabs/wazero"
 )
 
@@ -941,44 +942,44 @@ export default {
 	dial := func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	a, err := dialWS(ctx, dial, addr, "/chat")
+	a, err := wsconn.Dial(ctx, dial, addr, "/chat")
 	if err != nil {
 		t.Fatalf("dial: %v; logs:\n%s", err, f.logs)
 	}
-	defer a.c.Close()
-	a.c.SetDeadline(time.Now().Add(10 * time.Second))
-	expect := func(c *wsConn, want string) {
+	defer a.NetConn().Close()
+	a.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+	expect := func(c *wsconn.Conn, want string) {
 		t.Helper()
-		got, err := c.readMessage()
+		got, err := c.ReadMessage(MaxWSMessage)
 		if err != nil || got != want {
 			t.Fatalf("read = %q, %v; want %q; logs:\n%s", got, err, want, f.logs)
 		}
 	}
 	expect(a, "welcome /chat peers=1")
-	a.writeFrame(opText, []byte("hello"))
+	a.WriteFrame(wsconn.OpText, []byte("hello"))
 	expect(a, "echo:hello")
 	big := strings.Repeat("é", 40000)
-	a.writeFrame(opText, []byte(big))
+	a.WriteFrame(wsconn.OpText, []byte(big))
 	expect(a, "echo:"+big)
-	b, err := dialWS(ctx, dial, addr, "/chat")
+	b, err := wsconn.Dial(ctx, dial, addr, "/chat")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.c.Close()
-	b.c.SetDeadline(time.Now().Add(10 * time.Second))
+	defer b.NetConn().Close()
+	b.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
 	expect(b, "welcome /chat peers=2")
-	b.writeFrame(opText, []byte("broadcast"))
+	b.WriteFrame(wsconn.OpText, []byte("broadcast"))
 	expect(a, "all:2")
 	expect(b, "all:2")
-	a.writeFrame(opText, []byte("close"))
-	_, err = a.readMessage()
-	if ce, ok := err.(*wsCloseError); !ok || ce.Code != 4000 || ce.Reason != "bye" {
+	a.WriteFrame(wsconn.OpText, []byte("close"))
+	_, err = a.ReadMessage(MaxWSMessage)
+	if ce, ok := err.(*wsconn.CloseError); !ok || ce.Code != 4000 || ce.Reason != "bye" {
 		t.Fatalf("close = %v", err)
 	}
 	f.logs.waitFor(t, "closed 4000")
 	// Client-initiated close.
-	b.writeFrame(opClose, []byte{0x03, 0xE8})
-	if _, err := b.readMessage(); err == nil {
+	b.WriteFrame(wsconn.OpClose, []byte{0x03, 0xE8})
+	if _, err := b.ReadMessage(MaxWSMessage); err == nil {
 		t.Fatal("expected close")
 	}
 	f.logs.waitFor(t, "closed 1000")
@@ -1384,28 +1385,28 @@ export default {
 	dial := func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	slow, err := dialWS(ctx, dial, addr, "/")
+	slow, err := wsconn.Dial(ctx, dial, addr, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer slow.c.Close()
-	if m, err := slow.readMessage(); err != nil || m != "welcome" {
+	defer slow.NetConn().Close()
+	if m, err := slow.ReadMessage(MaxWSMessage); err != nil || m != "welcome" {
 		t.Fatalf("welcome = %q %v", m, err)
 	}
-	slow.writeFrame(opText, []byte("flood")) // and never read again
+	slow.WriteFrame(wsconn.OpText, []byte("flood")) // and never read again
 	time.Sleep(500 * time.Millisecond)
 	start := time.Now()
-	other, err := dialWS(ctx, dial, addr, "/")
+	other, err := wsconn.Dial(ctx, dial, addr, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.c.Close()
-	other.c.SetDeadline(time.Now().Add(20 * time.Second))
-	if m, err := other.readMessage(); err != nil || m != "welcome" {
+	defer other.NetConn().Close()
+	other.NetConn().SetDeadline(time.Now().Add(20 * time.Second))
+	if m, err := other.ReadMessage(MaxWSMessage); err != nil || m != "welcome" {
 		t.Fatalf("other welcome = %q %v", m, err)
 	}
-	other.writeFrame(opText, []byte("hi"))
-	if m, err := other.readMessage(); err != nil || m != "echo:hi" {
+	other.WriteFrame(wsconn.OpText, []byte("hi"))
+	if m, err := other.ReadMessage(MaxWSMessage); err != nil || m != "echo:hi" {
 		t.Fatalf("other echo = %q %v", m, err)
 	}
 	took := time.Since(start)

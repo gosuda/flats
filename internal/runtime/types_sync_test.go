@@ -13,6 +13,7 @@ import (
 
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/egress"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 // declarations is what flats-runtime-v1.d.ts declares, parsed just enough to
@@ -324,15 +325,15 @@ func TestTypesMatchRuntime(t *testing.T) {
 	addr := strings.TrimPrefix(f.srv.URL, "http://")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws, err := dialWS(ctx, func(ctx context.Context) (net.Conn, error) {
+	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}, addr, "/ws")
 	if err != nil {
 		t.Fatalf("dial: %v; logs:\n%s", err, f.logs)
 	}
-	defer ws.c.Close()
-	ws.c.SetDeadline(time.Now().Add(10 * time.Second))
-	msg, err := ws.readMessage()
+	defer ws.NetConn().Close()
+	ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+	msg, err := ws.ReadMessage(MaxWSMessage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,12 +351,12 @@ func TestTypesMatchRuntime(t *testing.T) {
 	if open.ReadyState != 1 || open.ID != "number" {
 		t.Errorf("WebSocket at open: %+v", open)
 	}
-	ws.writeFrame(opBinary, []byte{0x68, 0x69})
-	if msg, err := ws.readMessage(); err != nil || msg != "string" {
+	ws.WriteFrame(wsconn.OpBinary, []byte{0x68, 0x69})
+	if msg, err := ws.ReadMessage(MaxWSMessage); err != nil || msg != "string" {
 		t.Errorf("binary message type = %q, %v", msg, err)
 	}
-	ws.writeFrame(opClose, []byte{0x03, 0xE8}) // 1000, empty reason
-	ws.readMessage()
+	ws.WriteFrame(wsconn.OpClose, []byte{0x03, 0xE8}) // 1000, empty reason
+	ws.ReadMessage(MaxWSMessage)
 	f.logs.waitFor(t, `close-probe ["number",1000,"undefined",3]`)
 }
 

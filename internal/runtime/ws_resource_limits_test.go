@@ -1,9 +1,7 @@
 package runtime
 
 import (
-	"bufio"
 	"context"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 func TestWebSocketAdmissionCeiling(t *testing.T) {
@@ -73,7 +73,7 @@ func TestWebSocketRejectedUpgrade(t *testing.T) {
 
 func TestWebSocketPostFailureReleasesSlot(t *testing.T) {
 	h := &wsHub{
-		conns:  make(map[int64]*wsConn),
+		conns:  make(map[int64]*wsconn.Conn),
 		events: make(chan wsEvent), // no receiver: the open event must block
 		stop:   make(chan struct{}),
 	}
@@ -84,17 +84,17 @@ func TestWebSocketPostFailureReleasesSlot(t *testing.T) {
 	address := strings.TrimPrefix(server.URL, "http://")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	client, err := dialWS(ctx, func(ctx context.Context) (net.Conn, error) {
+	client, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	}, address, "/ws")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.c.Close()
+	defer client.NetConn().Close()
 
 	close(h.stop)
-	client.c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if _, err := client.readMessage(); err == nil {
+	client.NetConn().SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := client.ReadMessage(MaxWSMessage); err == nil {
 		t.Fatal("connection remained open after its open event was rejected")
 	}
 	deadline := time.Now().Add(3 * time.Second)
@@ -112,62 +112,35 @@ func TestWebSocketPostFailureReleasesSlot(t *testing.T) {
 	}
 }
 
-func TestWebSocketIdleReadDeadline(t *testing.T) {
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	ws := newWSConn(a, bufio.NewReader(a), false)
-	ws.readIdleTimeout = 20 * time.Millisecond
-	_, err := ws.readMessage()
-	var ne net.Error
-	if !errors.As(err, &ne) || !ne.Timeout() {
-		t.Fatalf("idle read error = %v, want timeout", err)
-	}
-}
-
-func TestWebSocketControlFramesKeepReadAlive(t *testing.T) {
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	server := newWSConn(a, bufio.NewReader(a), false)
-	peer := newWSConn(b, bufio.NewReader(b), true)
-	server.readIdleTimeout = 500 * time.Millisecond
-	result := make(chan error, 1)
-	go func() {
-		msg, err := server.readMessage()
-		if err == nil && msg != "ok" {
-			err = errors.New("unexpected message")
+func TestWebSocketDefaultByteLimits(t *testing.T) {
+	h := &wsHub{conns: map[int64]*wsconn.Conn{}}
+	h.budget.Lower(MaxWSQueuedBytesPerFlat)
+	upgraded := make(chan *wsconn.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := h.upgrade(w, r)
+		if err != nil {
+			t.Error(err)
+			close(upgraded)
+			return
 		}
-		result <- err
-	}()
-	for i := 0; i < 4; i++ {
-		time.Sleep(200 * time.Millisecond)
-		if err := peer.writeFrame(opPong, nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := peer.writeFrame(opText, []byte("ok")); err != nil {
+		upgraded <- c
+	}))
+	defer server.Close()
+	address := strings.TrimPrefix(server.URL, "http://")
+	client, err := wsconn.Dial(t.Context(), func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	}, address, "/ws")
+	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("read stayed blocked")
+	defer client.Close(1006, "")
+	c := <-upgraded
+	if c == nil {
+		t.FailNow()
 	}
-}
-
-func TestWebSocketDefaultByteLimits(t *testing.T) {
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	c := newWSConn(a, bufio.NewReader(a), false)
-	h := &wsHub{conns: map[int64]*wsConn{1: c}}
-	h.budget.limit.Store(MaxWSQueuedBytesPerFlat)
-	c.sharedBudget = &h.budget
-	if got := c.budget.limit.Load(); got != MaxWSQueuedBytesPerConn {
+	defer c.Close(1006, "")
+	h.conns[1] = c
+	if got := c.Budget().Limit(); got != MaxWSQueuedBytesPerConn {
 		t.Fatalf("connection budget = %d", got)
 	}
 	if err := h.setSendLimits(1, MaxWSQueuedBytesPerConn, MaxWSQueuedBytesPerFlat); err != nil {
@@ -182,47 +155,52 @@ func TestWebSocketDefaultByteLimits(t *testing.T) {
 	if err := h.setSendLimits(1, 1024, 2048); err != nil {
 		t.Fatal(err)
 	}
-	if c.budget.limit.Load() != 1024 || h.budget.limit.Load() != 2048 {
+	if c.Budget().Limit() != 1024 || h.budget.Limit() != 2048 {
 		t.Fatal("lowering budgets failed")
 	}
 }
 
-// A browser that only listens sends nothing but pongs. Server pings must keep
-// such an idle, live client connected past the read deadline.
-func TestWebSocketServerPingsKeepIdleClientAlive(t *testing.T) {
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	server := newWSConn(a, bufio.NewReader(a), false)
-	server.readIdleTimeout = 300 * time.Millisecond
-	server.pingInterval = 50 * time.Millisecond
-	go server.writer()
-	defer server.end(1006, "")
-	peer := newWSConn(b, bufio.NewReader(b), true)
-	go peer.readMessage() // answers pings with pongs, like a browser
-
-	result := make(chan error, 1)
-	go func() {
-		msg, err := server.readMessage()
-		if err == nil && msg != "ok" {
-			err = errors.New("unexpected message")
-		}
-		result <- err
-	}()
-	select {
-	case err := <-result:
-		t.Fatalf("idle client with pongs was dropped: %v", err)
-	case <-time.After(time.Second):
+// The worker reads messages of up to MaxWSMessage bytes and closes the
+// connection with 1009 on one byte more.
+func TestWebSocketMessageLimit(t *testing.T) {
+	h := &wsHub{
+		conns:  make(map[int64]*wsconn.Conn),
+		events: make(chan wsEvent, 8),
+		stop:   make(chan struct{}),
 	}
-	if err := peer.writeFrame(opText, []byte("ok")); err != nil {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.serve(w, r, r.URL.String(), nil)
+	}))
+	defer server.Close()
+	address := strings.TrimPrefix(server.URL, "http://")
+	client, err := wsconn.Dial(t.Context(), func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	}, address, "/ws")
+	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-result:
-		if err != nil {
-			t.Fatal(err)
+	defer client.NetConn().Close()
+	next := func() wsEvent {
+		t.Helper()
+		select {
+		case ev := <-h.events:
+			return ev
+		case <-time.After(10 * time.Second):
+			t.Fatal("no event")
+			return wsEvent{}
 		}
-	case <-time.After(time.Second):
-		t.Fatal("read stayed blocked")
+	}
+	if ev := next(); ev.Type != "open" {
+		t.Fatalf("event %+v", ev)
+	}
+	if err := client.WriteFrame(wsconn.OpText, make([]byte, MaxWSMessage)); err != nil {
+		t.Fatal(err)
+	}
+	if ev := next(); ev.Type != "message" || ev.Data == nil || len(*ev.Data) != MaxWSMessage {
+		t.Fatalf("event %s", ev.Type)
+	}
+	go client.WriteFrame(wsconn.OpText, make([]byte, MaxWSMessage+1)) // the server stops reading at the header
+	if ev := next(); ev.Type != "close" || ev.Code != 1009 || ev.Reason != "message too big" {
+		t.Fatalf("event %+v", ev)
 	}
 }

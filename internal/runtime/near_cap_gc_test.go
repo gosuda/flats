@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 func nearCapCount(full int) int {
@@ -66,18 +68,18 @@ func TestNearCapWebSocketCycleCollection(t *testing.T) {
 	dial := func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws, err := dialWS(ctx, dial, addr, "/")
+	ws, err := wsconn.Dial(ctx, dial, addr, "/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ws.c.Close()
+	defer ws.NetConn().Close()
 	count := nearCapCount(600)
 	for i := 1; i <= count; i++ {
-		ws.c.SetDeadline(time.Now().Add(10 * time.Second))
-		if err := ws.writeFrame(opText, []byte("next")); err != nil {
+		ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+		if err := ws.WriteFrame(wsconn.OpText, []byte("next")); err != nil {
 			t.Fatal(err)
 		}
-		got, err := ws.readMessage()
+		got, err := ws.ReadMessage(MaxWSMessage)
 		if err != nil || got != fmt.Sprint(i) {
 			t.Fatalf("message %d: %q %v; %s", i, got, err, f.logs)
 		}

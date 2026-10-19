@@ -1,0 +1,149 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { BoardState } from '../state.js';
+import { textOp, moveOps } from '../ops.js';
+
+const sticky = (id, inc, extra = {}) => ({
+  id, type: 'sticky', x: 0, y: 0, w: 200, h: 200, rot: 0, z: 'V', locked: false, text: '', inc, v: { geom: inc, text: inc }, ...extra,
+});
+
+function seeded() {
+  const s = new BoardState();
+  s.session = 'S';
+  s.loadSnapshot({ seq: 10, elements: [sticky('e_aaaaaaaaaa', 3), sticky('e_bbbbbbbbbb', 4)] });
+  return s;
+}
+
+test('deltas apply in seq order; gaps and old seqs are not applied', () => {
+  const s = seeded();
+  assert.equal(s.applyDelta({ seq: 11, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['a', 11] } }] }).status, 'applied');
+  assert.equal(s.server.get('e_aaaaaaaaaa').text, 'a');
+  assert.equal(s.server.get('e_aaaaaaaaaa').v.text, 11);
+  assert.equal(s.applyDelta({ seq: 13, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['c', 13] } }] }).status, 'gap');
+  assert.equal(s.server.get('e_aaaaaaaaaa').text, 'a');
+  assert.equal(s.applyDelta({ seq: 11, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['x', 11] } }] }).status, 'old');
+  assert.equal(s.watermark, 11);
+});
+
+test('an ack removes the pending batch and never changes the server copy', () => {
+  const s = seeded();
+  const op = { op: 'set', id: 'e_aaaaaaaaaa', inc: 3, g: 'geom', val: { x: 50, y: 0, w: 200, h: 200, rot: 0 } };
+  const { batch } = s.push([op]);
+  assert.equal(s.get('e_aaaaaaaaaa').x, 50, 'optimistic display');
+  assert.equal(s.server.get('e_aaaaaaaaaa').x, 0);
+  s.ack(batch.n);
+  assert.equal(s.pending.length, 0);
+  assert.equal(s.server.get('e_aaaaaaaaaa').x, 0, 'ack leaves the server copy alone');
+  assert.equal(s.get('e_aaaaaaaaaa').x, 0, 'screen equals the server copy once pending is empty');
+});
+
+test('a lost ack and a later overwrite do not drift from the delta order', () => {
+  const s = seeded();
+  const { batch } = s.push([{ op: 'set', id: 'e_aaaaaaaaaa', inc: 3, g: 'text', val: 'mine' }]);
+  s.applyDelta({ seq: 11, from: `S:${batch.n}`, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['mine', 11] } }] });
+  assert.equal(s.pending.length, 0, 'own delta removes the batch');
+  s.applyDelta({ seq: 12, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['theirs', 12] } }] });
+  assert.equal(s.get('e_aaaaaaaaaa').text, 'theirs');
+});
+
+test('incarnation 0 for elements this session created, real incarnation after the delta', () => {
+  const s = seeded();
+  const el = sticky('e_cccccccccc', undefined);
+  delete el.inc; delete el.v;
+  const { batch } = s.push([{ op: 'add', el }]);
+  assert.equal(s.incOf('e_cccccccccc'), 0);
+  assert.equal(textOp(s, s.get('e_cccccccccc'), 'hi').inc, 0);
+  s.applyDelta({ seq: 11, from: `S:${batch.n}`, changes: [{ id: 'e_cccccccccc', inc: 11, add: { ...el, inc: 11, v: { geom: 11 } } }] });
+  assert.equal(s.incOf('e_cccccccccc'), 11);
+  assert.equal(textOp(s, s.get('e_cccccccccc'), 'hi').inc, 11);
+  assert.equal(s.incOf('e_dddddddddd'), null);
+});
+
+test('a permanent reject drops the batch; a transient one keeps it', () => {
+  const s = seeded();
+  const a = s.push([{ op: 'set', id: 'e_aaaaaaaaaa', inc: 3, g: 'text', val: 'x' }]).batch;
+  s.reject(a.n, true);
+  assert.equal(s.pending.length, 1);
+  assert.equal(s.get('e_aaaaaaaaaa').text, 'x');
+  s.reject(a.n, false);
+  assert.equal(s.pending.length, 0);
+  assert.equal(s.get('e_aaaaaaaaaa').text, '', 'optimistic display undone');
+});
+
+test('a reset snapshot replaces the server copy and keeps pending batches', () => {
+  const s = seeded();
+  s.push([{ op: 'set', id: 'e_bbbbbbbbbb', inc: 4, g: 'text', val: 'pending' }]);
+  s.myText.set('e_bbbbbbbbbb', { v: 9, text: 'old' });
+  s.loadSnapshot({ seq: 40, reset: true, elements: [sticky('e_bbbbbbbbbb', 4, { text: 'rolled back' })] });
+  assert.equal(s.server.has('e_aaaaaaaaaa'), false);
+  assert.equal(s.watermark, 40);
+  assert.equal(s.pending.length, 1);
+  assert.equal(s.get('e_bbbbbbbbbb').text, 'pending');
+  assert.equal(s.myText.size, 0);
+});
+
+test('a reset delta clears remembered text writes', () => {
+  const s = seeded();
+  s.myText.set('e_aaaaaaaaaa', { v: 9, text: 'x' });
+  const r = s.applyDelta({ seq: 11, reset: { kind: 'rollback', of: 3 }, changes: [{ id: 'e_bbbbbbbbbb', del: 11 }] });
+  assert.deepEqual(r.reset, { kind: 'rollback', of: 3 });
+  assert.equal(s.myText.size, 0);
+  assert.equal(s.get('e_bbbbbbbbbb'), null);
+});
+
+test('overwritten text: concurrent overwrite reports, sequential edit does not', () => {
+  const s = seeded();
+  const { batch } = s.push([{ op: 'set', id: 'e_aaaaaaaaaa', inc: 3, g: 'text', val: 'my words', base_v: 3 }]);
+  s.applyDelta({ seq: 11, from: `S:${batch.n}`, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['my words', 11] } }] });
+  const concurrent = s.applyDelta({ seq: 12, from: 'T:4', changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['their words', 12] }, overwrote: 11 }] });
+  assert.deepEqual(concurrent.overwritten, [{ id: 'e_aaaaaaaaaa', text: 'my words' }]);
+  const sequential = s.applyDelta({ seq: 13, from: 'T:5', changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['later', 13] } }] });
+  assert.deepEqual(sequential.overwritten, []);
+});
+
+test('public deltas carry values without versions', () => {
+  const s = new BoardState();
+  s.public = true;
+  s.loadSnapshot({ seq: 5, elements: [{ id: 'e_aaaaaaaaaa', type: 'text', x: 0, y: 0, w: 10, h: 10, rot: 0, z: 'V', text: 'a' }] });
+  s.applyDelta({ seq: 6, changes: [{ id: 'e_aaaaaaaaaa', set: { text: 'b' } }, { id: '_board', set: { title: 'T' } }] });
+  assert.equal(s.get('e_aaaaaaaaaa').text, 'b');
+  assert.equal(s.meta.title, 'T');
+  s.applyDelta({ seq: 7, changes: [] });
+  assert.equal(s.watermark, 7, 'empty public deltas still advance the watermark');
+});
+
+test('optimistic frame move carries members, locked ones too', () => {
+  const s = new BoardState();
+  s.session = 'S';
+  s.loadSnapshot({ seq: 1, elements: [
+    { id: 'e_frame00001', type: 'frame', x: 0, y: 0, w: 500, h: 500, rot: 0, z: '1', text: 'F', inc: 1, v: {} },
+    sticky('e_member0001', 1, { frame: 'e_frame00001', x: 10, y: 10 }),
+    sticky('e_member0002', 1, { frame: 'e_frame00001', x: 20, y: 20, locked: true }),
+  ] });
+  s.push(moveOps(s, ['e_frame00001'], 100, 0));
+  assert.equal(s.get('e_frame00001').x, 100);
+  assert.equal(s.get('e_member0001').x, 110);
+  assert.equal(s.get('e_member0002').x, 120);
+});
+
+test('optimistic delete detaches connector ends at their last position', () => {
+  const s = new BoardState();
+  s.loadSnapshot({ seq: 1, elements: [
+    sticky('e_aaaaaaaaaa', 1, { x: 100, y: 100, w: 100, h: 100 }),
+    { id: 'e_conn000001', type: 'connector', z: 'W', ends: [{ el: 'e_aaaaaaaaaa', at: [1, 0.5] }, { pt: [500, 500] }], inc: 1, v: {} },
+  ] });
+  s.push([{ op: 'delete', ids: ['e_aaaaaaaaaa'], inc_of: { e_aaaaaaaaaa: 1 } }]);
+  assert.equal(s.get('e_aaaaaaaaaa'), null);
+  assert.deepEqual(s.get('e_conn000001').ends[0], { pt: [200, 150] });
+});
+
+test('an ack that follows its own delta still returns the batch for notices', () => {
+  const s = seeded();
+  const { batch } = s.push([{ op: 'undo' }]);
+  batch.undo = 'undo';
+  s.applyDelta({ seq: 11, from: `S:${batch.n}`, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['x', 11] } }] });
+  assert.equal(s.pending.length, 0);
+  const r = s.ack(batch.n);
+  assert.equal(r.batch, batch);
+  assert.equal(s.ack(batch.n).batch, null);
+});
