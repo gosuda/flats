@@ -1,7 +1,7 @@
 # Board content type
 
-Status: partly implemented. The board type runs end to end on an unreleased
-branch, but the success criteria are not measured yet; see
+Status: partly implemented. The board type runs end to end, but not every
+success criterion is met or measured yet; see
 [Current state](#current-state). The technical design is in
 [board-TECH.md](board-TECH.md).
 
@@ -569,13 +569,24 @@ These are the release criteria for B1, with fixed measurement conditions.
 The `board` type, its canvas app, the board tools (`get_board`,
 `update_board`, `get_board_share`, `import_board`), the HTTP routes and CLI
 commands, revisions, the disk quota and `topic.board` are implemented but not
-released. Not done yet:
+released. Measured in desktop Chrome on an Apple laptop one generation older
+than the reference, over loopback or an emulated 50 ms network:
 
-- No measurement against the [success criteria](#success-criteria): pan and
-  zoom frame times, first screen, remote display latency, and the agent task.
-  The limits of [Open question 2](#open-questions) are the planned values.
+- Pan and zoom: mixed 10k meets 33 ms. Mixed 5k runs at 60 frames per second
+  with at most one missed frame per minute, but its frame-interval p95 is
+  about 18.4 ms against 16.7 ms, which looks like timestamp jitter. Whether
+  that reading is accepted is open.
+- First screen (mixed 5k), remote display (an upper bound from send to
+  display), concurrent editing, reconnection, recovery, refusal and the agent
+  task meet their targets.
+
+Not done yet:
+
 - The canvas has not run on Safari or an iPad: touch and pen, Korean IME
-  composition during remote changes and VoiceOver are unchecked.
+  composition during remote changes, VoiceOver, and the tablet and Safari
+  measurements are unchecked. Remote display over a real tailnet is not
+  measured.
+- The limits of [Open question 2](#open-questions) are the planned values.
 
 ## Open questions
 

@@ -1558,10 +1558,10 @@ step. Modules: `state.js` (server copy, pending, delta application), `net.js`
 | Quota | Refusing a person batch just below the quota (no delta), several batches in one group commit, groups unchanged when an agent write is refused, rollback succeeding |
 | Security | Public refused for `ops`/`pres`/`share`, no presence or `by` received, no past deltas on reconnect, 404 on revision routes, 404 for past-only assets, Origin mismatch, sockets closing on public withdrawal |
 | Images and zip | Forged signatures, truncated files, pixel and frame bombs, zip bombs (forged declared sizes), duplicate paths, hash mismatches, SVG |
-| Browser automation | Headless Chrome (CDP): tools, keyboard interaction, element tree, PNG export |
+| Browser automation | Headless Chrome (CDP): tools, keyboard interaction, element tree, PNG export ([scripts/board-e2e](../../scripts/board-e2e/README.md)) |
 | Real devices | Safari (macOS) and iPad Safari for touch and pen, remote changes during Korean IME composition, VoiceOver reading. Automation cannot replace these, so they are recorded as a manual checklist before release |
-| Performance | Measured with the exact browser and OS versions recorded in the report. A baseline data generator `internal/board/benchdata` (fixed seed, the mixed 5k/10k data of the [success criteria](board.md#success-criteria)). Frame times of a 60-second pan and zoom script, 10 minutes of remote latency with 5 load bots, first screen (with and without cache) |
-| Agents | A task to organize 30 stickies with a real MCP client. Overlap, text size and connections are judged automatically |
+| Performance | Measured with the exact browser and OS versions recorded in the report. A baseline data generator `internal/board/benchdata` (fixed seed, the mixed 5k/10k data of the [success criteria](board.md#success-criteria)). Frame times of a 60-second pan and zoom script, 10 minutes of remote latency with 5 load bots, first screen (with and without cache) ([scripts/board-perf](../../scripts/board-perf/README.md)) |
+| Agents | A task to organize 30 stickies with a real MCP client. Overlap, text size and connections are judged automatically ([scripts/board-agent-eval](../../scripts/board-agent-eval/README.md), task in [task.md](../../scripts/board-agent-eval/task.md)) |
 
 ## 15. Implementation order
 
