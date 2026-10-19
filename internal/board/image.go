@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/gif"
 	"image/jpeg"
@@ -65,7 +66,9 @@ func CheckImage(data []byte, uploadMax int64) (AssetInfo, error) {
 	if err := decodeImage(data, h); err != nil {
 		return AssetInfo{}, err
 	}
-	return AssetInfo{Hash: sha256Hex(data), Mime: h.mime, W: h.w, H: h.h, Bytes: int64(len(data))}, nil
+	info := AssetInfo{Hash: sha256Hex(data), Mime: h.mime, W: h.w, H: h.h, Bytes: int64(len(data))}
+	rememberDims(info.Hash, info.W, info.H)
+	return info, nil
 }
 
 func walkImage(data []byte) (*imageHeader, error) {
@@ -201,8 +204,16 @@ func walkGIF(data []byte) (*imageHeader, error) {
 	}
 }
 
+// walkWebP reads the dimensions the decoder will use. The pinned decoder
+// takes the first VP8X header (a second one is an error), allocates an ALPH
+// chunk from it, and stops at the first VP8 or VP8L chunk; the walk follows
+// the same order, refuses a duplicate VP8X and a VP8/VP8L size that differs
+// from the VP8X canvas, so no decoder allocation exceeds the size checked
+// here.
 func walkWebP(data []byte) (*imageHeader, error) {
 	h := &imageHeader{mime: "image/webp"}
+	damaged := badImage("the WebP header is damaged")
+	seenVP8X := false
 	i := 12
 	for i+8 <= len(data) {
 		tag := string(data[i : i+4])
@@ -212,40 +223,48 @@ func walkWebP(data []byte) (*imageHeader, error) {
 			return nil, badImage("the WebP is truncated")
 		}
 		c := data[body : body+n]
+		var w, ht int
 		switch tag {
 		case "ANIM", "ANMF":
 			return nil, badImage("animated WebP images are not accepted")
 		case "VP8X":
-			if n < 10 {
-				return nil, badImage("the WebP header is damaged")
+			if seenVP8X {
+				return nil, badImage("the WebP has more than one VP8X header")
+			}
+			seenVP8X = true
+			if n != 10 {
+				return nil, damaged
 			}
 			if c[0]&0x02 != 0 {
 				return nil, badImage("animated WebP images are not accepted")
 			}
 			h.w = int(uint32(c[4])|uint32(c[5])<<8|uint32(c[6])<<16) + 1
 			h.h = int(uint32(c[7])|uint32(c[8])<<8|uint32(c[9])<<16) + 1
+			i = body + n + n%2
+			continue
 		case "VP8 ":
 			if n < 10 || c[3] != 0x9d || c[4] != 0x01 || c[5] != 0x2a {
-				return nil, badImage("the WebP header is damaged")
+				return nil, damaged
 			}
-			if h.w == 0 {
-				h.w, h.h = int(binary.LittleEndian.Uint16(c[6:])&0x3fff), int(binary.LittleEndian.Uint16(c[8:])&0x3fff)
-			}
+			w, ht = int(binary.LittleEndian.Uint16(c[6:])&0x3fff), int(binary.LittleEndian.Uint16(c[8:])&0x3fff)
 		case "VP8L":
 			if n < 5 || c[0] != 0x2f {
-				return nil, badImage("the WebP header is damaged")
+				return nil, damaged
 			}
-			if h.w == 0 {
-				bits := binary.LittleEndian.Uint32(c[1:])
-				h.w, h.h = int(bits&0x3fff)+1, int((bits>>14)&0x3fff)+1
-			}
+			bits := binary.LittleEndian.Uint32(c[1:])
+			w, ht = int(bits&0x3fff)+1, int((bits>>14)&0x3fff)+1
+		default:
+			i = body + n + n%2
+			continue
 		}
-		i = body + n + n%2
+		// The decoder stops at the first image chunk.
+		if seenVP8X && (w != h.w || ht != h.h) {
+			return nil, badImage("the WebP image size does not match its VP8X header")
+		}
+		h.w, h.h = w, ht
+		return h, nil
 	}
-	if h.w == 0 {
-		return nil, badImage("the WebP has no image")
-	}
-	return h, nil
+	return nil, badImage("the WebP has no image")
 }
 
 func decodeImage(data []byte, h *imageHeader) error {
@@ -286,24 +305,147 @@ func decodeImage(data []byte, h *imageHeader) error {
 	return nil
 }
 
-// storeImages checks images and stores them as blobs, counting new bytes
-// toward the quota's "stored since the measurement".
-func (in *Instance) storeImages(ctx context.Context, images [][]byte) ([]AssetInfo, error) {
-	limit := in.b.Limits().UploadMax
+// checkImages checks the images an agent call adds, without storing them.
+func checkImages(images [][]byte, uploadMax int64) ([]AssetInfo, error) {
 	out := make([]AssetInfo, 0, len(images))
 	for _, data := range images {
-		a, err := CheckImage(data, limit)
+		a, err := CheckImage(data, uploadMax)
 		if err != nil {
 			return nil, err
-		}
-		stored, err := in.b.PutBlob(ctx, a.Hash, data)
-		if err != nil {
-			return nil, err
-		}
-		if stored {
-			in.meas.add(a.Bytes)
 		}
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// newBlob is a checked image that may still need storing.
+type newBlob struct {
+	info AssetInfo
+	data []byte
+}
+
+// errReplay ends an admission's dry run: the request is a repeated op id,
+// which stores nothing and is answered from ops.
+var errReplay = errors.New("replayed op")
+
+// admitBlobs admits storing blobs before any is written (5.4), so that a
+// refused request leaves no new blob bytes behind and concurrent writers
+// cannot spend the same headroom:
+//
+//   - The blobs the board certainly holds already (an asset row or a
+//     retained revision) are skipped; the others count as new.
+//   - dry, when set, runs the request in a transaction that is always
+//     rolled back, with the new bytes added to the quota formula, and must
+//     return the request's refusal. Without dry, the formula plus the new
+//     bytes is checked against the quota.
+//   - An admitted request reserves the new bytes in the measurement, so
+//     every other quota check counts them until release.
+//
+// store reports whether the caller should store the blobs (false for a
+// replay). The caller stores them with putBlobs, which counts each newly
+// stored blob, and then calls release (more than once is fine) before the
+// request's own quota check.
+func (in *Instance) admitBlobs(ctx context.Context, blobs []newBlob, dry func(t *txn) error) (store bool, release func(), err error) {
+	release = func() {}
+	var need int64
+	seen := map[string]bool{}
+	for _, b := range blobs {
+		h := b.info.Hash
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		if _, ok := in.assets.get(h); ok {
+			continue
+		}
+		if _, ok, err := in.b.RevisionAsset(ctx, h); err == nil && ok {
+			continue
+		}
+		need += b.info.Bytes
+	}
+	quota := in.b.Limits().DiskQuota
+	if need == 0 || (dry == nil && quota <= 0) {
+		return true, release, nil
+	}
+	if quota > 0 {
+		if _, err := in.meas.wait(ctx); err != nil {
+			return false, release, err
+		}
+	}
+	err = in.do(ctx, func() error {
+		t, err := in.begin()
+		if err != nil {
+			return err
+		}
+		defer t.rollback()
+		t.pending = need
+		if dry != nil {
+			if err := dry(t); err != nil {
+				return err
+			}
+		} else if over, ok, err := t.overQuota(quota); err != nil {
+			return err
+		} else if !ok {
+			return errorf(CategoryUnavailable, "the board's disk usage cannot be measured right now; try again")
+		} else if over {
+			return errorf(CategoryCapacity, "the board is out of disk space for this image")
+		}
+		in.meas.reserve(need)
+		return nil
+	})
+	if errors.Is(err, errReplay) {
+		return false, release, nil
+	}
+	if err != nil {
+		return false, release, err
+	}
+	var once sync.Once
+	return true, func() { once.Do(func() { in.meas.reserve(-need) }) }, nil
+}
+
+// putBlobs stores admitted blobs and counts the new bytes; locked tells
+// that the caller holds the flat lock (5.4, measurer.install).
+func (in *Instance) putBlobs(ctx context.Context, blobs []newBlob, locked bool) error {
+	for _, b := range blobs {
+		stored, err := in.b.PutBlob(ctx, b.info.Hash, b.data)
+		if err != nil {
+			return err
+		}
+		if stored {
+			in.meas.add(b.info.Bytes, locked)
+		}
+	}
+	return nil
+}
+
+// dimCache remembers the pixel size of image blobs by hash. A blob's bytes
+// never change, so an entry never goes stale; ContentFromFiles then needs
+// no blob read for an asset whose size it knows.
+var dimCache = struct {
+	sync.Mutex
+	m map[string][2]int
+}{m: map[string][2]int{}}
+
+const dimCacheMax = 1 << 16
+
+func rememberDims(hash string, w, h int) {
+	if w < 1 || h < 1 {
+		return
+	}
+	dimCache.Lock()
+	defer dimCache.Unlock()
+	if _, ok := dimCache.m[hash]; !ok && len(dimCache.m) >= dimCacheMax {
+		for k := range dimCache.m {
+			delete(dimCache.m, k)
+			break
+		}
+	}
+	dimCache.m[hash] = [2]int{w, h}
+}
+
+func knownDims(hash string) ([2]int, bool) {
+	dimCache.Lock()
+	defer dimCache.Unlock()
+	d, ok := dimCache.m[hash]
+	return d, ok
 }

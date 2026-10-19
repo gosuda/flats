@@ -347,7 +347,11 @@ func EncodeResults(results []any) json.RawMessage {
 	budget := model.MaxResultsBytes - len(raw)
 	for i, v := range voids {
 		for _, id := range slices.Sorted(maps.Keys(v)) {
-			cost := len(id) + len(v[id]) + 6
+			// Measured encoded: json escapes <, > and & as six bytes and
+			// control characters too, so raw lengths undercount.
+			k, _ := json.Marshal(id)
+			r, _ := json.Marshal(v[id])
+			cost := len(k) + len(r) + 2 // colon and comma
 			if sums[i].Samples == nil {
 				cost += len(`,"samples":{}`)
 			}

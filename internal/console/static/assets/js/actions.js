@@ -5,6 +5,7 @@
 import { h, dateTime, VISIBILITY, visibilityOf, becomingNoticeFor, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, infoDialog, errorPanel, toast, extLink } from './ui.js';
+import { isLive } from './list.js';
 
 const label = (f) => f.name || f.slug;
 
@@ -205,7 +206,10 @@ export async function setVisibility(flat, vis) {
   const from = VISIBILITY[visibilityOf(flat.visibility)];
   const to = VISIBILITY[vis];
   const widening = to.rank > from.rank;
-  if (widening && !flat.live_version) {
+  // Documents, designs and boards run without published versions
+  // (live_version is 0 for designs and boards), so only versioned types
+  // need a live version first.
+  if (widening && !isLive(flat) && !flat.live_version) {
     await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);
     return null;
   }

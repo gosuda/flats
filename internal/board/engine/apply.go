@@ -506,18 +506,24 @@ func (a *applier) checkLimits() error {
 		if !cur.alive() || id == model.BoardID {
 			continue
 		}
-		limit := l.TextLimit(cur.El.Type)
-		before := 0
-		if old.alive() {
-			before = excess(model.TextLen(old.El.Text), limit)
+		// grew compares an item with the same id before the change, alive
+		// or not; a replacement may reuse a live id with new content or a
+		// new type, so even a stroke's immutable points are compared.
+		grew := func(n func(*Row) int, limit int) bool {
+			before := 0
+			if old.alive() {
+				before = excess(n(old), limit)
+			}
+			return excess(n(cur), limit) > before
 		}
-		if excess(model.TextLen(cur.El.Text), limit) > before {
+		if limit := l.TextLimit(cur.El.Type); grew(func(r *Row) int { return model.TextLen(r.El.Text) }, limit) {
 			return fmt.Errorf("%w: text of %s is over %d characters", ErrLimit, id, limit)
 		}
-		if old == nil || old.Deleted {
-			if excess(cur.El.PenPoints(), l.PenPoints) > 0 {
-				return fmt.Errorf("%w: a pen stroke holds at most %d points", ErrLimit, l.PenPoints)
-			}
+		if grew(func(r *Row) int { return model.TextLen(r.El.Alt) }, l.Alt) {
+			return fmt.Errorf("%w: alternative text of %s is over %d characters", ErrLimit, id, l.Alt)
+		}
+		if grew(func(r *Row) int { return r.El.PenPoints() }, l.PenPoints) {
+			return fmt.Errorf("%w: a pen stroke holds at most %d points", ErrLimit, l.PenPoints)
 		}
 	}
 	return nil

@@ -79,6 +79,7 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
 body.frames-open .board { left: 260px; }
 body:has(.a11y-panel:focus-within) .board { left: 380px; }
 body.history-open .board { right: 380px; }
+.board:focus { outline: none; }
 .board canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .layer-dynamic { cursor: default; outline: none; }
 .layer-dynamic[data-tool=hand], .layer-dynamic.space { cursor: grab; }

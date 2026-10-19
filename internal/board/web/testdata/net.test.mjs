@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { batchFrames, utf8Length, FRAME_MAX, PART_DATA_MAX, TooLargeError, Net } from '../net.js';
+import { batchFrames, batchFits, utf8Length, FRAME_MAX, PART_DATA_MAX, TooLargeError, Net } from '../net.js';
 import { BoardState } from '../state.js';
 
 const sticky = (i, text) => ({ op: 'add', el: { id: 'e_' + String(i).padStart(10, '0'), type: 'sticky', x: i, y: 0, w: 200, h: 200, rot: 0, z: 'V', text } });
@@ -47,9 +47,13 @@ test('multi-byte text is never cut inside a character', () => {
   checkParts(frames, ops);
 });
 
+const huge = () => Array.from({ length: 500 }, (_, i) => sticky(i, 'y'.repeat(18000)));
+
 test('a batch over 8 MiB is refused locally', () => {
-  const ops = Array.from({ length: 500 }, (_, i) => sticky(i, 'y'.repeat(18000)));
+  const ops = huge();
   assert.throws(() => batchFrames(1, ops), TooLargeError);
+  assert.equal(batchFits(1, ops), false);
+  assert.equal(batchFits(1, [sticky(1, 'hi')]), true);
 });
 
 // ---- connection flow with a fake socket ----
@@ -67,11 +71,11 @@ function harness(t) {
   globalThis.location = { protocol: 'http:', host: 'board.test' };
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const state = new BoardState();
-  const seen = { acks: [], rejects: [], deltas: [], fatal: null, snapshots: 0, statuses: [] };
+  const seen = { acks: [], rejects: [], deltas: [], fatal: null, snapshots: 0, statuses: [], tooLarge: [] };
   const net = new Net(state, {
     hello: () => ({ t: 'hello', v: 1, session: state.session || undefined, watermark: state.session ? state.watermark : undefined, pending: { count: state.pending.length, first_n: state.pending[0]?.n }, editor: 'ed' }),
     welcome() {}, status() { seen.statuses.push(net.connecting ? 'connecting' : net.connected ? 'open' : 'offline'); },
-    pres() {}, shared() {}, tooLarge() {},
+    pres() {}, shared() {}, tooLarge(b) { seen.tooLarge.push(b); },
     snapshot() { seen.snapshots++; },
     delta(r) { seen.deltas.push(r); },
     ack(m) { seen.acks.push(m.n); },
@@ -164,4 +168,57 @@ test('an intentional reconnect shows connecting, not disconnected', (t) => {
   net.restart();
   FakeSocket.last.onclose();
   assert.equal(seen.statuses.at(-1), 'offline');
+});
+
+const ops1 = (v) => [{ op: 'meta', g: 'grid', val: v }];
+
+test('a too-large batch never consumes a number: the next sent n is the last acked n + 1', (t) => {
+  const { state, net, ws, seen } = harness(t);
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  state.push(ops1(false));
+  net.flush();
+  ws.recv({ t: 'ack', n: 1, seq: 1, results: [] });
+  const big = state.push(huge()).batch;
+  const next = state.push(ops1(true)).batch;
+  assert.equal(big.n, 2);
+  net.flush();
+  assert.deepEqual(seen.tooLarge, [big], 'the person is told');
+  assert.ok(!state.pending.includes(big), 'the unsendable batch is dropped');
+  const sent = ws.sent.filter((m) => m.t === 'ops' || m.t === 'ops_part');
+  assert.deepEqual(sent.map((m) => m.n), [1, 2], 'no gap after the acked batch 1');
+  assert.equal(next.n, 2, 'the later batch took the unused number');
+  assert.equal(state.push(ops1(false)).batch.n, 3, 'numbering continues without a gap');
+  assert.equal(state.get('e_' + '0'.repeat(10)), null, 'its optimistic elements are gone');
+});
+
+test('a gap in delta seqs reconnects with the session and watermark', (t) => {
+  const { state, ws } = harness(t);
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  ws.recv({ t: 'snapshot', gen: 0, seq: 5, part: 1, parts: 1, elements: [] });
+  ws.recv({ t: 'delta', gen: 0, seq: 7, changes: [] });
+  assert.equal(state.watermark, 5, 'the gapped delta is not applied');
+  const again = FakeSocket.last;
+  assert.notEqual(again, ws, 'a new socket');
+  again.onopen();
+  assert.equal(again.sent[0].session, 'S1');
+  assert.equal(again.sent[0].watermark, 5);
+});
+
+test('a reconnect drops the old transient retry delay', (t) => {
+  const { state, net, ws } = harness(t);
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  state.push(ops1(false));
+  net.flush();
+  ws.recv({ t: 'reject', n: 1, code: 'busy', retry: true });
+  t.mock.timers.tick(1000);
+  ws.recv({ t: 'reject', n: 1, code: 'busy', retry: true });
+  assert.ok(net.retryTimer, 'a 2 s retry is scheduled');
+  ws.onclose();
+  assert.equal(net.retryTimer, null);
+  t.mock.timers.tick(1200); // reconnect backoff, at most 1.2 s
+  const again = FakeSocket.last;
+  assert.notEqual(again, ws);
+  again.onopen();
+  again.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  assert.deepEqual(again.sent.filter((m) => m.t === 'ops').map((m) => m.n), [1], 'resent on welcome, not after the old delay');
 });

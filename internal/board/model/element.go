@@ -130,10 +130,12 @@ func (e End) MarshalJSON() ([]byte, error) { return Canonical(e.content()), nil 
 // UnmarshalJSON reads an end. A missing "at" reads as the center of the
 // target; agent calls replace it with DefaultAt (4.4).
 func (e *End) UnmarshalJSON(raw []byte) error {
+	// Slices, not arrays: encoding/json pads a short array and drops the
+	// extra items of a long one.
 	var f struct {
-		El *string     `json:"el"`
-		At *[2]float64 `json:"at"`
-		Pt *[2]float64 `json:"pt"`
+		El *string    `json:"el"`
+		At *[]float64 `json:"at"`
+		Pt *[]float64 `json:"pt"`
 	}
 	if err := strictDecode(raw, &f); err != nil {
 		return formatErr("connector end: %v", err)
@@ -142,14 +144,29 @@ func (e *End) UnmarshalJSON(raw []byte) error {
 	case f.El != nil && f.Pt == nil:
 		*e = End{El: *f.El, At: [2]float64{0.5, 0.5}}
 		if f.At != nil {
-			e.At = *f.At
+			at, err := pair("at", *f.At)
+			if err != nil {
+				return err
+			}
+			e.At = at
 		}
 	case f.El == nil && f.Pt != nil && f.At == nil:
-		*e = End{Pt: *f.Pt}
+		pt, err := pair("pt", *f.Pt)
+		if err != nil {
+			return err
+		}
+		*e = End{Pt: pt}
 	default:
 		return formatErr("a connector end is {el, at} or {pt}")
 	}
 	return nil
+}
+
+func pair(name string, v []float64) ([2]float64, error) {
+	if len(v) != 2 {
+		return [2]float64{}, formatErr("connector end %s is [x, y]", name)
+	}
+	return [2]float64{v[0], v[1]}, nil
 }
 
 // Round rounds the end's numbers.

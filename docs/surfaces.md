@@ -103,8 +103,8 @@ mounted under both prefixes; **console** routes exist only under
 | POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}`; never a version or approval. Documents are refused here |
 | POST | `/flats/{slug}/document` | both | Complete docs archive; replaces the whole live bundle without approval. 201 `{flat}` |
 | GET | `/flats/{slug}/board` | api | `get_board` read of a board: `?revision=&frame=&rect=x,y,w,h&ids=a,b&format=full\|outline&cursor=&limit=`; answers `{seq, revision, pending, meta, elements, next?}` |
-| POST | `/flats/{slug}/board` | api | An `update_board` body `{op_id, ops, layout?, assets?, if_seq?, message?, replace?}` (assets' `content` in base64; the body at most `upload_max_bytes × 4/3` plus 16 MiB); applies at once without approval and creates a missing board. Answers `{revision, seq, ids, layout, results, assets?, created?, warning?}` |
-| POST | `/flats/{slug}/board/import` | api | A board data file as the raw body (`.zip`, up to `upload_max_bytes × 4`, streamed to a temporary file); query `mode` (`add`, the default, or `replace`) and `op_id` (random when absent); applies at once without approval and creates a missing board |
+| POST | `/flats/{slug}/board` | api | An `update_board` body `{op_id, ops, layout?, assets?, if_seq?, message?, replace?}` (assets' `content` in base64; the body at most `upload_max_bytes × 4/3` plus 16 MiB, so one call carries images of about one upload limit in total; send more over several calls or in a data file through the import route); applies at once without approval and creates a missing board. Answers `{revision, seq, ids, layout, results, assets?, created?, warning?}` |
+| POST | `/flats/{slug}/board/import` | api | A board data file as the raw body (`.zip`, up to `upload_max_bytes × 4`, streamed to a temporary file); query `mode` (`add`, the default, or `replace`) and `op_id` (random when absent; resending with the same `op_id` imports once); applies at once without approval and creates a missing board |
 | POST | `/flats/{slug}/versions` | both | `{revision, hash?}` (revision 0 selects current): 202 `create_version` request. Creates the version without deploying it |
 | GET | `/flats/{slug}/versions` | both | Retained versions, `[]` when none |
 | GET | `/flats/{slug}/versions/{n}` | both | One version |
@@ -232,7 +232,7 @@ for server flats); `flats config` and
 | `save-document <slug> <dir\|archive> [--message m]` | Replace a whole live docs bundle |
 | `board get <slug> [--outline] [--revision n]` | Read every page of a board's elements, or of an earlier revision |
 | `board apply <slug> <ops.json> [--message m]` | Send an `update_board` body to a board, creating it when missing; a body without `op_id` gets a random one |
-| `board import <slug> <file.zip> [--replace]` | Import a board data file; adds with new ids unless `--replace` |
+| `board import <slug> <file.zip> [--replace] [--op-id id]` | Import a board data file; adds with new ids unless `--replace`. Prints the operation id it used (random unless `--op-id`); resending with the same `--op-id` imports once |
 | `create-version <slug> [--revision n] [--hash h]` | Request a new version from the Draft |
 | `deploy --flat <slug> --version <n>` | Request activation of a saved version; a directory argument is refused with guidance to save and create a version first |
 | `rollback <slug> [--to n] [--restore-data]` | Request activation of an earlier version |
@@ -281,6 +281,10 @@ notices use the future tense. Removed tools (`save_version`,
 
 Revision management of documents, designs and boards also happens inside the
 flat's own Private route; see [Revision store](revision-store.md).
+`rollback_revision` on a board answers `{status, revision}`, or `{status,
+warning}` without a revision when the restore applied but its revision is not
+recorded yet (import pending, or already deleted by retention); it must not be
+resent.
 
 ### Board tools
 
@@ -288,7 +292,7 @@ flat's own Private route; see [Revision store](revision-store.md).
 | --- | --- | --- |
 | `create_flat {type: "board"}` | `slug`, `name` | An empty Private board (revision 1, `created`) |
 | `get_board` | `slug`, `revision?`, `frame?`, `rect?`, `ids?`, `format?` (`full` or `outline`), `cursor?`, `limit?` | `{seq, revision, pending, elements, next?}`; each element carries `ver` for guards |
-| `update_board` | `slug`, `op_id`, `ops`, `assets?` (`[{ref, content}]`, `content` in base64; image elements give the ref as `asset`), `layout?`, `if_seq?`, `message?`, `replace?` | `{revision, seq, ids, layout, results, assets}`; all operations apply or none, as one revision. `revision` is null with a `warning` while its import is pending |
+| `update_board` | `slug`, `op_id`, `ops`, `assets?` (`[{ref, content}]`, `content` in base64; image elements give the ref as `asset`; images of about one `upload_max_bytes` in total per call, as the request is at most `upload_max_bytes × 1.5` plus 1 MiB), `layout?`, `if_seq?`, `message?`, `replace?` | `{revision, seq, ids, layout, results, assets}`; all operations apply or none, as one revision. `revision` is null with a `warning` while its import is pending |
 | `get_board_share` | `slug`, `n?` | One selection a person sent to the agent, or the recent list; deleted elements are `missing` |
 | `import_board` | `slug`, `op_id`, `archive` (base64, at most `upload_max_bytes`), `mode` (`add` or `replace`) | `{revision, seq, ids}`; creates a missing board |
 
@@ -296,7 +300,9 @@ Board writes and imports apply at once without approval. Board tools refuse
 other types (`not_board`); version tools refuse a board (`invalid`). A guard
 mismatch, a missing or locked target, an expired read cursor or a reused
 `op_id` with a different request is `conflict`; the per-flat disk quota is
-`board_capacity`. `get_revision` on a board returns its file list; read an
+`board_capacity`. A write or import that brings new images is checked
+against the quota before its images are stored, so a refused call stores
+none. `get_revision` on a board returns its file list; read an
 earlier board's elements with `get_board {revision}`. The agent guide is
 `topic.board`.
 
@@ -324,7 +330,8 @@ POST also needs `X-Flats-Board: 1`.
 A Public route receives only the current board: no cursors, names,
 selections, shares, history or past-only assets. Open Public connections
 close when the board becomes Private, its route stops, or it is renamed or
-deleted.
+deleted. Every frame a board socket sends counts toward its send queue cap;
+a socket over it is closed with 1008 and the canvas reconnects.
 
 ## Console
 

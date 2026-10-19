@@ -4,8 +4,9 @@
 package model
 
 // Limits of section 12 of the board technical design. The element, text,
-// pen point and asset limits are judged per item by the "excess grew" rule
-// (Limits), so a lowered limit never blocks a board that is already over it.
+// alternative text, pen point and asset limits are judged per item by the
+// "excess grew" rule (Limits), so a lowered limit never blocks a board that
+// is already over it.
 const (
 	MaxElements      = 10000
 	MaxText          = 4000 // characters per element
@@ -36,6 +37,7 @@ type Limits struct {
 	Elements  int
 	Text      int
 	Label     int
+	Alt       int // image alternative text, in characters
 	PenPoints int
 	Assets    int
 }
@@ -45,6 +47,7 @@ var DefaultLimits = Limits{
 	Elements:  MaxElements,
 	Text:      MaxText,
 	Label:     MaxLabel,
+	Alt:       MaxAlt,
 	PenPoints: MaxPenPoints,
 	Assets:    MaxAssets,
 }

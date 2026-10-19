@@ -1130,9 +1130,11 @@ func (s *Service) retainRevisions(ctx context.Context, slugName, typ string) {
 	unlock := s.lock(slugName)
 	in := s.liveBoard(slugName)
 	if typ == contenttype.Board && in != nil && s.checkStorageJournal(slugName) == nil {
-		if _, err := s.importBoardLocked(ctx, slugName, in); err != nil {
+		ictx, cancel := context.WithTimeout(ctx, boardTickTimeout)
+		if _, err := s.importBoardLocked(ictx, slugName, in); err != nil {
 			s.logf("board revisions of %s: %v", slugName, err)
 		}
+		cancel()
 	}
 	deleted, err := s.retainLocked(ctx, slugName)
 	unlock()
@@ -1312,7 +1314,30 @@ func (s *Service) closeDue(ctx context.Context, slugName string, now time.Time) 
 
 // --- history operations ---
 
-// RollbackRevision restores revision n as a new revision.
+// RevisionRollback reports a restored revision. Revision is 0 when a board's
+// rollback applied but its new revision is not recorded: its import is
+// pending (list_revisions shows it shortly) or retention already deleted it.
+// Warning then says which. Retrying would restore again.
+type RevisionRollback struct {
+	Revision int
+	Warning  string
+}
+
+// RollbackRevisionResult restores revision n as a new revision and reports
+// a board's pending import as a warning rather than a failure.
+func (s *Service) RollbackRevisionResult(ctx context.Context, slugName string, n int, label string, via Via) (RevisionRollback, error) {
+	if f, err := s.st.GetFlat(ctx, slugName); err == nil {
+		if t, err := s.flatType(ctx, f); err == nil && t == contenttype.Board {
+			return s.rollbackBoard(ctx, slugName, n, label, via)
+		}
+	}
+	rev, err := s.RollbackRevision(ctx, slugName, n, label, via)
+	return RevisionRollback{Revision: rev}, err
+}
+
+// RollbackRevision restores revision n as a new revision. For a board it
+// returns 0 without an error when the rollback applied but its revision is
+// not recorded yet (RollbackRevisionResult says why).
 func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, label string, via Via) (int, error) {
 	// A document holds its target before it imports anything (rollbackDocs);
 	// a board takes its hold under the flat lock (rollbackBoard).
@@ -1326,7 +1351,8 @@ func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, 
 	case t == contenttype.Docs:
 		return s.rollbackDocs(ctx, slugName, n, label, via)
 	case t == contenttype.Board:
-		return s.rollbackBoard(ctx, slugName, n, label, via)
+		r, err := s.rollbackBoard(ctx, slugName, n, label, via)
+		return r.Revision, err
 	}
 	if _, _, err := s.revisionFlat(ctx, slugName); err != nil {
 		return 0, err
@@ -1786,6 +1812,12 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 			return nil
 		}
 		_ = os.Chmod(p, 0o644)
+		// A board upload that reuses this blob refreshes its modification
+		// time without the flat lock (boardBackend.PutBlob): look again
+		// just before removing it.
+		if info, err := os.Stat(p); err != nil || info.ModTime().After(cutoff) {
+			return nil
+		}
 		_ = os.Remove(p)
 		return nil
 	})

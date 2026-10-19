@@ -3,6 +3,7 @@ package board
 import (
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -445,7 +446,8 @@ func (in *Instance) ImportBoard(ctx context.Context, req ImportRequest, other in
 	return in.applyImport(ctx, prep, other)
 }
 
-// preparedImport is a checked data file whose images are stored as blobs.
+// preparedImport is a checked data file. Its images are stored only when
+// applying admits it.
 type preparedImport struct {
 	req    ImportRequest
 	a      *archive
@@ -453,8 +455,7 @@ type preparedImport struct {
 	hash   string
 }
 
-// prepareImport runs every check of 9.2 and stores the images, so that
-// applying needs the flat lock only briefly.
+// prepareImport runs every check of 9.2 before the flat lock is taken.
 func (in *Instance) prepareImport(ctx context.Context, req ImportRequest) (*preparedImport, error) {
 	if err := checkOpID(req.OpID); err != nil {
 		return nil, err
@@ -476,24 +477,41 @@ func (in *Instance) prepareImport(ctx context.Context, req ImportRequest) (*prep
 	}
 	p := &preparedImport{req: req, a: a}
 	for _, h := range sortedKeys(a.assets) {
-		info := a.assets[h]
-		isNew, err := in.b.PutBlob(ctx, h, a.data[h])
-		if err != nil {
-			return nil, err
-		}
-		if isNew {
-			in.meas.add(info.Bytes)
-		}
-		p.assets = append(p.assets, info)
+		p.assets = append(p.assets, a.assets[h])
 	}
 	p.hash = sha256Hex(model.Canonical(map[string]any{"mode": req.Mode, "archive": archiveHash(req.Archive, req.Size)}))
 	return p, nil
 }
 
+// applyImport stores the images and applies the import under the flat
+// lock. A dry run admits it first, so a refused import stores no blob
+// (5.4).
 func (in *Instance) applyImport(ctx context.Context, p *preparedImport, other int64) (ImportResult, error) {
-	in.meas.install(other)
+	mark := in.meas.mark()
+	in.meas.install(ctx, other, mark)
+	blobs := make([]newBlob, len(p.assets))
+	for i, info := range p.assets {
+		blobs[i] = newBlob{info, p.a.data[info.Hash]}
+	}
+	store, release, err := in.admitBlobs(ctx, blobs, func(t *txn) error {
+		var res ImportResult
+		if done, err := in.replay(p.req.OpID, p.hash, &res); done || err != nil {
+			return cmp.Or(err, errReplay)
+		}
+		return asError(in.importItem(t, p.req, p.hash, p.a, p.assets, &res))
+	})
+	defer release()
+	if err != nil {
+		return ImportResult{}, err
+	}
+	if store {
+		if err := in.putBlobs(ctx, blobs, true); err != nil {
+			return ImportResult{}, err
+		}
+	}
+	release() // the stored blobs count from here on
 	var res ImportResult
-	err := in.do(ctx, func() error {
+	err = in.do(ctx, func() error {
 		if done, err := in.replay(p.req.OpID, p.hash, &res); done || err != nil {
 			return err
 		}
@@ -590,7 +608,8 @@ func (in *Instance) importItem(t *txn, req ImportRequest, reqHash string, a *arc
 // ContentFromFiles reads a revision's content from its file list (5.2):
 // board.json, the element buckets and the asset metadata, read from the
 // blobs' headers, that a rollback needs for asset rows the board no longer
-// has (4.11 step 2.4).
+// has (4.11 step 2.4). An asset blob is read only when the host has not
+// learned its pixel size yet (dimCache); the byte size is the file list's.
 func ContentFromFiles(files []File, read func(hash string) ([]byte, error)) (engine.Content, error) {
 	c := engine.Content{Grid: true, Assets: map[string]engine.Asset{}}
 	for _, f := range files {
@@ -626,6 +645,12 @@ func ContentFromFiles(files []File, read func(hash string) ([]byte, error)) (eng
 			if m == nil {
 				continue
 			}
+			// A blob never changes: its stored size and a pixel size learned
+			// earlier (a check, an asset row, an earlier read) need no read.
+			if d, ok := knownDims(m[1]); ok && f.Size > 0 {
+				c.Assets[m[1]] = engine.Asset{Hash: m[1], Mime: extMime(m[2]), W: d[0], H: d[1], Bytes: f.Size}
+				continue
+			}
 			data, err := read(f.Hash)
 			if err != nil {
 				return c, err
@@ -634,6 +659,7 @@ func ContentFromFiles(files []File, read func(hash string) ([]byte, error)) (eng
 			if err != nil {
 				return c, fmt.Errorf("%s: %w", f.Path, err)
 			}
+			rememberDims(m[1], cfg.Width, cfg.Height)
 			c.Assets[m[1]] = engine.Asset{Hash: m[1], Mime: extMime(m[2]), W: cfg.Width, H: cfg.Height, Bytes: int64(len(data))}
 		}
 	}

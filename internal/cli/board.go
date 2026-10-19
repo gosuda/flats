@@ -45,11 +45,12 @@ func (a *app) board(args []string) error {
 		return a.boardApply(pos[0], pos[1], *message)
 	case "import":
 		replace := fs.Bool("replace", false, "replace the whole board instead of adding the file's elements")
+		opID := fs.String("op-id", "", "operation id (8 to 120 characters); resending the same file with the same id after a timeout imports it once. Default: a random id, printed with the result")
 		pos, err := a.parse(fs, args, 2, 2)
 		if err != nil {
 			return err
 		}
-		return a.boardImport(pos[0], pos[1], *replace)
+		return a.boardImport(pos[0], pos[1], *replace, *opID)
 	}
 	return usagef("unknown subcommand %q (get, apply or import)", sub)
 }
@@ -143,14 +144,20 @@ func (a *app) boardApply(slug, path, message string) error {
 	return nil
 }
 
-// boardImport sends a board data file.
-func (a *app) boardImport(slug, path string, replace bool) error {
+// boardImport sends a board data file under opID, or a random operation id
+// when opID is empty. Resending with the same opID does not import twice.
+func (a *app) boardImport(slug, path string, replace bool, opID string) error {
+	if opID == "" {
+		opID = "cli-" + rand.Text()
+	} else if len(opID) < 8 || len(opID) > 120 {
+		return usagef("--op-id must be 8 to 120 characters")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	q := url.Values{"mode": {"add"}, "op_id": {"cli-" + rand.Text()}}
+	q := url.Values{"mode": {"add"}, "op_id": {opID}}
 	if replace {
 		q.Set("mode", "replace")
 	}
@@ -174,6 +181,7 @@ func (a *app) boardImport(slug, path string, replace bool) error {
 		return fmt.Errorf("unexpected reply: %w", err)
 	}
 	a.printBoardWrite(slug, "Imported "+path+" into", out)
+	fmt.Fprintf(a.out, "  op_id: %s (resend with --op-id %s to import this file at most once)\n", opID, opID)
 	return nil
 }
 

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -432,6 +433,344 @@ func TestCounterexamples(t *testing.T) {
 		h.ok(a, move(h, "f", 0, 500, CarryMembers), move(h, "o", 1000, 500, ""))
 		if m := h.geom(eid("m")); m.Y != 600 {
 			t.Fatalf("member moved to %v", m)
+		}
+	})
+}
+
+// orderNames is the stacking order, bottom first, as short names.
+func orderNames(h *harness) string {
+	var names []string
+	for _, id := range h.s.order() {
+		names = append(names, strings.TrimRight(strings.TrimPrefix(id, "e_"), "0"))
+	}
+	return strings.Join(names, " ")
+}
+
+func zorderOp(h *harness, to any, names ...string) Op {
+	ids, m := incOf(h, names...)
+	return Op{Op: OpZorder, IDs: ids, IncOf: m, To: raw(to)}
+}
+
+// TestReviewCounterexamples holds the counterexamples of the engine code
+// review: each failed before its fix.
+func TestReviewCounterexamples(t *testing.T) {
+	t.Run("redo keeps the relative order of a multi-element stacking change", func(t *testing.T) {
+		for _, c := range []struct {
+			name, want string
+			to         func(h *harness) any
+		}{
+			{"front", "c d a b", func(*harness) any { return "front" }},
+			{"after", "c a b d", func(h *harness) any { return map[string]any{"after": eid("c"), "inc": h.inc(eid("c"))} }},
+			{"back", "c d a b", func(*harness) any { return "back" }},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				h := newHarness(t)
+				a := h.session("a")
+				h.ok(a, addSticky("a", 0, 0), addSticky("b", 0, 0), addSticky("c", 0, 0), addSticky("d", 0, 0))
+				if c.name == "back" {
+					h.ok(a, zorderOp(h, "front", "a", "b"))
+				}
+				before := orderNames(h)
+				h.ok(a, zorderOp(h, c.to(h), "a", "b"))
+				after := orderNames(h)
+				if c.name != "back" && after != c.want {
+					t.Fatalf("after the change %q, want %q", after, c.want)
+				}
+				for range 3 {
+					h.ok(a, undoOp)
+					if got := orderNames(h); got != before {
+						t.Fatalf("after undo %q, want %q", got, before)
+					}
+					h.ok(a, redoOp)
+					if got := orderNames(h); got != after {
+						t.Fatalf("after redo %q, want %q", got, after)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("redo of a stacking undo that skipped a stale element", func(t *testing.T) {
+		h := newHarness(t)
+		a, b := h.session("a"), h.session("b")
+		h.ok(a, addSticky("a", 0, 0), addSticky("b", 0, 0), addSticky("c", 0, 0), addSticky("d", 0, 0))
+		h.ok(a, zorderOp(h, "front", "a", "b", "c"))
+		h.ok(b, zorderOp(h, "back", "b"))
+		if got := orderNames(h); got != "b d a c" {
+			t.Fatalf("order %q", got)
+		}
+		if u := undoResult(t, h.ok(a, undoOp)); u.Undone != 2 || u.Skipped[VoidStale] != 1 {
+			t.Fatalf("undo %+v", u)
+		}
+		h.ok(a, redoOp)
+		if got := orderNames(h); got != "b d a c" {
+			t.Fatalf("after redo %q, want the order before the undo", got)
+		}
+	})
+
+	// Found by TestRandomUndoRedo: one editor alone undoes and redoes back
+	// to exactly the boards it had.
+	t.Run("undo and redo of one editor's own deletions and relations", func(t *testing.T) {
+		undoAll := func(t *testing.T, h *harness, a string, n int) {
+			t.Helper()
+			for range n {
+				if u := undoResult(t, h.ok(a, undoOp)); u.Undone == 0 || u.Skipped[VoidStale]+u.Skipped[VoidGone] > 0 {
+					t.Fatalf("undo %+v", u)
+				}
+			}
+		}
+		t.Run("a connector deleted before its target", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addSticky("x", 0, 0))
+			h.ok(a, addConnector("c", attach("x", 1, 0.5), free(500, 0), map[string]int64{eid("x"): h.inc(eid("x"))}))
+			h.ok(a, deleteOp(h, "c"))
+			h.ok(a, deleteOp(h, "x"))
+			undoAll(t, h, a, 2)
+			if end := h.row(eid("c")).El.Ends[0]; end.El != eid("x") {
+				t.Fatalf("connector end %+v", end)
+			}
+		})
+		t.Run("a member a frame deletion released and its revive restored", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addFrame("f", 0, 0, 500, 500), addSticky("x", 900, 0))
+			h.ok(a, reparentOp(h, "f", "x"))
+			h.ok(a, deleteOp(h, "f"))
+			undoAll(t, h, a, 2)
+			if h.row(eid("x")).El.Frame != "" {
+				t.Fatal("undoing the reparent kept x in the frame")
+			}
+		})
+		t.Run("redo of an edit and a deletion of one element", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addSticky("x", 0, 0))
+			h.ok(a, setText("x", 0, "edited", 0), deleteOp(h, "x"))
+			undoAll(t, h, a, 1)
+			h.ok(a, redoOp)
+			if h.alive(eid("x")) {
+				t.Fatal("redo kept x")
+			}
+		})
+		t.Run("a reparent out of a frame the same batch deleted", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addFrame("f", 0, 0, 500, 500), addFrame("g", 900, 0, 500, 500))
+			h.ok(a, addIn("x", "f", h.inc(eid("f")), 10, 10))
+			h.ok(a, reparentOp(h, "g", "x"), deleteOp(h, "f"))
+			undoAll(t, h, a, 1)
+			h.ok(a, redoOp)
+			if h.row(eid("x")).El.Frame != eid("g") || h.alive(eid("f")) {
+				t.Fatalf("after redo x is in %q", h.row(eid("x")).El.Frame)
+			}
+		})
+		t.Run("a membership a batch changed and changed back", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addSticky("x", 0, 0), addFrame("f", 0, 0, 500, 500))
+			h.ok(a, reparentOp(h, "f", "x"), deleteOp(h, "f"))
+			undoAll(t, h, a, 2)
+			if h.alive(eid("x")) {
+				t.Fatal("undoing the creation kept x")
+			}
+		})
+	})
+
+	t.Run("a group id is never reused", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("a", 0, 0), addSticky("b", 0, 0), addSticky("c", 0, 0), addSticky("d", 0, 0), addSticky("e", 0, 0), addSticky("f", 0, 0))
+		h.ok(a, groupOp(h, "g", "a", "b"))
+		stale := Op{Op: OpUngroup, Group: "g_g000000000"}
+		h.ok(a, stale)
+		if rs := results(t, h.ok(a, groupOp(h, "g", "c", "d"))); rs[0].(map[string]any)["ok"] != nil {
+			t.Fatalf("regrouping with an ungrouped id = %v", rs)
+		}
+		// after the deleted members' rows are purged
+		h.ok(a, groupOp(h, "h", "c", "d"))
+		h.ok(a, deleteOp(h, "c", "d"))
+		h.s.PurgeDeleted([]string{eid("c"), eid("d")})
+		if rs := results(t, h.ok(a, groupOp(h, "h", "e", "f"))); rs[0].(map[string]any)["ok"] != nil {
+			t.Fatalf("regrouping with a purged group's id = %v", rs)
+		}
+		// after a reload
+		s, err := Load(h.s.Export())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.s = s
+		if rs := results(t, h.ok(a, groupOp(h, "g", "e", "f"))); rs[0].(map[string]any)["ok"] != nil {
+			t.Fatalf("regrouping after a reload = %v", rs)
+		}
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "group", IDs: []string{eid("e"), eid("f")}, Group: "g_h000000000"}}}); err == nil {
+			t.Fatal("an agent reused a group id")
+		}
+		// a stale ungroup never reaches a new group
+		h.ok(a, groupOp(h, "n", "e", "f"))
+		h.ok(a, stale)
+		if h.row(eid("e")).El.Group != "g_n000000000" {
+			t.Fatal("a stale ungroup changed another group")
+		}
+	})
+
+	t.Run("delete_frame_contents checks if_ver and refuses the whole call", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addFrame("f", 0, 0, 500, 500), addSticky("x", 900, 0))
+		h.ok(a, addIn("m", "f", h.inc(eid("f")), 10, 10))
+		ver, _ := h.s.Ver(eid("f"))
+		h.ok(a, move(h, "f", 50, 0, CarryMembers))
+		_, err := h.agent(AgentCall{Ops: []AgentOp{
+			{Op: "set", ID: eid("x"), Fields: raw(map[string]any{"text": "earlier op"})},
+			{Op: "delete_frame_contents", Frame: raw(eid("f")), IfVer: raw(ver)},
+		}})
+		var ae *AgentError
+		if !errors.As(err, &ae) || ae.Category != CategoryConflict {
+			t.Fatalf("stale guard = %v", err)
+		}
+		if !h.alive(eid("f")) || !h.alive(eid("m")) || h.row(eid("x")).El.Text != "" {
+			t.Fatal("a refused call changed the board")
+		}
+		ver, _ = h.s.Ver(eid("f"))
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "delete_frame_contents", Frame: raw(eid("f")), IfVer: raw(ver)}}}); err != nil || h.alive(eid("m")) {
+			t.Fatalf("current guard = %v", err)
+		}
+		// ungroup names its guarded members
+		h.ok(a, addSticky("p", 0, 0), addSticky("q", 0, 0))
+		h.ok(a, groupOp(h, "g", "p", "q"))
+		pv, _ := h.s.Ver(eid("p"))
+		h.ok(a, move(h, "p", 5, 5, ""))
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "ungroup", Group: "g_g000000000", IfVer: raw(map[string]int64{eid("p"): pv})}}}); !errors.As(err, &ae) || h.row(eid("p")).El.Group == "" {
+			t.Fatalf("stale ungroup guard = %v", err)
+		}
+	})
+
+	t.Run("layout places a frame and its member once and reports the result", func(t *testing.T) {
+		for _, c := range []struct {
+			name          string
+			ids           []string
+			frame, member [2]float64
+		}{
+			{"member first", []string{"m", "f"}, [2]float64{224, 0}, [2]float64{0, 0}},
+			{"frame first", []string{"f", "m"}, [2]float64{0, 0}, [2]float64{824, 0}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				h := newHarness(t)
+				a := h.session("a")
+				h.ok(a, addFrame("f", 0, 0, 800, 600))
+				h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("m"), "type": "sticky", "x": 100, "y": 100, "w": 200, "h": 200, "frame": eid("f")}),
+					Refs: map[string]int64{eid("f"): h.inc(eid("f"))}}, addIn("o", "f", h.inc(eid("f")), 300, 300))
+				var ids []string
+				for _, n := range c.ids {
+					ids = append(ids, eid(n))
+				}
+				out, err := h.agent(AgentCall{Layout: []Layout{{Kind: "row", IDs: ids}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for id, want := range map[string][2]float64{eid("f"): c.frame, eid("m"): c.member} {
+					g := h.geom(id)
+					if got := [2]float64{g.X, g.Y}; got != want || out.Layout[id] != got {
+						t.Fatalf("%s at %v, reported %v, want %v", id, got, out.Layout[id], want)
+					}
+				}
+				// a member the layout does not place still follows its frame
+				if g := h.geom(eid("o")); g.X != 300+c.frame[0] || g.Y != 300 {
+					t.Fatalf("unplaced member at %v", g)
+				}
+			})
+		}
+	})
+
+	t.Run("replacement checks pen points of reused ids", func(t *testing.T) {
+		long := make([]int, 2*(model.MaxPenPoints+1))
+		pen := func(name string, pts []int) model.Element {
+			return model.Element{ID: eid(name), Type: model.TypePen, Z: "V", Geom: model.Geom{W: 10, H: 10}, Pts: pts, Style: model.Style{"stroke": "ink", "width": "pen"}}
+		}
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("p"), "type": "pen", "x": 0, "y": 0, "w": 10, "h": 10, "pts": []int{0, 0, 1, 1}})}, addSticky("s", 0, 0))
+		for name, next := range map[string]model.Element{"pen over pen": pen("p", long), "pen over sticky": pen("s", long)} {
+			c := content(h.s)
+			for i, el := range c.Elements {
+				if el.ID == next.ID {
+					c.Elements[i] = next
+				}
+			}
+			if _, err := h.s.Replace(c, "agent:import", h.now); !errors.Is(err, ErrLimit) {
+				t.Errorf("%s: replace = %v", name, err)
+			}
+			if _, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{
+				{Op: "add", El: raw(next)},
+			}}); err == nil {
+				t.Errorf("%s: replacing agent call applied", name)
+			}
+		}
+		if p := h.row(eid("p")); p.El.PenPoints() != 2 || h.row(eid("s")).El.Type != model.TypeSticky {
+			t.Fatal("a refused replacement changed the board")
+		}
+		// a stroke already over a lowered limit may stay as it is
+		h.s.SetLimits(model.Limits{Elements: 10, Text: 10, Label: 10, Alt: 10, PenPoints: 1, Assets: 1})
+		c := content(h.s)
+		c.Title = "renamed"
+		if _, err := h.s.Replace(c, "agent:import", h.now); err != nil {
+			t.Fatalf("replace keeping an over-limit stroke = %v", err)
+		}
+	})
+
+	t.Run("image alternative text has a limit", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		hash := strings.Repeat("ab", 32)
+		h.s.HoldAsset(Asset{Hash: hash, Mime: "image/png", W: 4, H: 3, Bytes: 99}, h.now+3600)
+		img := func(name, alt string) Op {
+			return Op{Op: OpAdd, El: elOf(map[string]any{"id": eid(name), "type": "image", "x": 0, "y": 0, "w": 4, "h": 3, "asset": hash, "natural": []int{4, 3}, "alt": alt})}
+		}
+		long := strings.Repeat("é", model.MaxAlt+1)
+		if out := h.do(a, img("i", long)); out.Reject == nil || out.Reject.Code != CodeLimit {
+			t.Fatalf("add with long alt = %+v", out)
+		}
+		h.ok(a, img("i", "fine"))
+		if out := h.do(a, Op{Op: OpSet, ID: eid("i"), Inc: h.inc(eid("i")), G: model.BundleAlt, Val: raw(long)}); out.Reject == nil || out.Reject.Code != CodeLimit {
+			t.Fatalf("set long alt = %+v", out)
+		}
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "set", ID: eid("i"), Fields: raw(map[string]any{"alt": long})}}}); err == nil {
+			t.Fatal("an agent set a long alt")
+		}
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "add", El: raw(map[string]any{"type": "image", "asset": hash, "natural": []int{4, 3}, "alt": long})}}}); err == nil {
+			t.Fatal("an agent added a long alt")
+		}
+		c := content(h.s)
+		c.Elements[0].Alt = long
+		if _, err := h.s.Replace(c, "agent:import", h.now); !errors.Is(err, ErrLimit) {
+			t.Fatalf("replace with a long alt = %v", err)
+		}
+		if h.row(eid("i")).El.Alt != "fine" {
+			t.Fatal("a refused change kept its alt")
+		}
+	})
+
+	t.Run("summarized results stay within the cap with escaped ids", func(t *testing.T) {
+		for name, ids := range map[string][]string{
+			"one long id": {strings.Repeat("<", 60000)},
+			"many ids": func() []string {
+				var ids []string
+				for i := range 6000 {
+					ids = append(ids, fmt.Sprintf("<&>%06d<&>", i))
+				}
+				return ids
+			}(),
+		} {
+			h := newHarness(t)
+			a := h.session("a")
+			out := h.do(a, Op{Op: OpDelete, IDs: ids, IncOf: map[string]int64{}})
+			if len(out.Results) > model.MaxResultsBytes {
+				t.Errorf("%s: results are %d bytes", name, len(out.Results))
+			}
+			if !json.Valid(out.Results) {
+				t.Errorf("%s: results are not JSON", name)
+			}
 		}
 	})
 }

@@ -276,10 +276,19 @@ export function ungroupOps(view, ids) {
   return [...groups].map((group) => ({ op: 'ungroup', group }));
 }
 
-export function textOp(view, el, text) {
+// textVersion is the server's v.text of an element, or null when the server
+// copy has none yet (an element this session created).
+export function textVersion(view, id) {
+  const base = view.server.get(id);
+  return base && base.v && base.v.text != null ? base.v.text : null;
+}
+
+// textOp sets the text. baseV is the v.text the person saw when editing
+// started (TECH 4.9), so a concurrent change in between is reported as
+// overwritten; it is not read again here.
+export function textOp(view, el, text, baseV) {
   const op = { op: 'set', id: el.id, inc: view.incOf(el.id), g: 'text', val: text };
-  const base = view.server.get(el.id);
-  if (base && base.v && base.v.text != null) op.base_v = base.v.text;
+  if (baseV != null) op.base_v = baseV;
   return op;
 }
 

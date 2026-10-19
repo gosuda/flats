@@ -64,6 +64,18 @@ export function batchFrames(n, ops) {
   return slices.map((s, i) => JSON.stringify({ t: 'ops_part', n, part: i + 1, parts: slices.length, data: s }));
 }
 
+// batchFits reports whether ops can be sent as batch n. The app checks it
+// before a batch takes a number, so an oversized action never consumes one.
+export function batchFits(n, ops) {
+  try {
+    batchFrames(n, ops);
+    return true;
+  } catch (err) {
+    if (err instanceof TooLargeError) return false;
+    throw err;
+  }
+}
+
 // Parts collects numbered parts (part/parts) of one message.
 export class Parts {
   constructor(parts) { this.parts = parts; this.got = new Map(); }
@@ -76,7 +88,7 @@ const RETRY_MIN = 1000, RETRY_MAX = 30000;
 export class Net {
   // h: {hello(), welcome(msg), snapshot(changed, snap), delta(result, d),
   //     ack(msg, batch, changed), reject(msg, batch, changed), fatal(code),
-  //     pres(msg), shared(msg), status(), tooLarge(batch)}
+  //     pres(msg), shared(msg), status(), tooLarge(batch, changed)}
   constructor(state, h) {
     this.state = state;
     this.h = h;
@@ -141,6 +153,10 @@ export class Net {
     this.held = [];
     this.deltaParts = null;
     this.inflight = null;
+    // A transient retry delay belongs to the old socket; the new welcome
+    // resends the oldest batch at once.
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   #closed(ws) {
@@ -172,7 +188,11 @@ export class Net {
       frames = batchFrames(b.n, b.ops);
     } catch (err) {
       if (!(err instanceof TooLargeError)) throw err;
-      this.h.tooLarge(b);
+      // Never sent, so its number is not consumed: drop it and renumber the
+      // later batches instead of leaving a gap the server would refuse.
+      const { changed } = this.state.discard(b.n);
+      this.h.tooLarge(b, changed);
+      this.flush();
       return;
     }
     this.inflight = b.n;

@@ -122,7 +122,7 @@ func init() {
 		{"rename", "change a flat's slug", "rename <slug> <new-slug>", (*app).rename},
 		{"delete", "request deletion of a flat", "delete <slug> [--reason r]", (*app).delete},
 		{"logs", "show a flat's events", "logs <slug> [--follow] [--kind k] [--limit n]", (*app).logs},
-		{"board", "read, write or import a board", "board get <slug> [--outline] [--revision n]\n       flats board apply <slug> <ops.json> [--message m]\n       flats board import <slug> <file.zip> [--replace]", (*app).board},
+		{"board", "read, write or import a board", "board get <slug> [--outline] [--revision n]\n       flats board apply <slug> <ops.json> [--message m]\n       flats board import <slug> <file.zip> [--replace] [--op-id id]", (*app).board},
 		{"env", "manage ordinary server environment variables", "env set <slug> <NAME> <VALUE>\n       flats env rm <slug> <NAME>\n       flats env ls <slug>", (*app).envVars},
 		{"network", "manage server HTTP(S) origin permissions", "network ls <slug>\n       flats network set <slug> <origin>...\n       flats network clear <slug>", (*app).network},
 		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},

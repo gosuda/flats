@@ -258,6 +258,7 @@ type PinRevisionIn struct {
 type ActionDone struct {
 	Status   string `json:"status"`
 	Revision int    `json:"revision,omitempty"`
+	Warning  string `json:"warning,omitempty"`
 }
 
 func (t *tools) pinRevision(ctx context.Context, _ *mcp.CallToolRequest, in PinRevisionIn) (*mcp.CallToolResult, ActionDone, error) {
@@ -279,10 +280,16 @@ type RollbackRevisionIn struct {
 }
 
 func (t *tools) rollbackRevision(ctx context.Context, _ *mcp.CallToolRequest, in RollbackRevisionIn) (*mcp.CallToolResult, ActionDone, error) {
-	n, err := t.svc.RollbackRevision(ctx, in.Slug, in.Revision, "Agent", core.ViaMCP)
+	r, err := t.svc.RollbackRevisionResult(ctx, in.Slug, in.Revision, "Agent", core.ViaMCP)
 	if err != nil {
 		return nil, ActionDone{}, toolErr(err, "call list_revisions for existing revision numbers")
 	}
-	out := ActionDone{Status: "done", Revision: n}
-	return result(fmt.Sprintf("Restored revision %d of %s as new revision %d. It is live now.", in.Revision, in.Slug, n), out), out, nil
+	if r.Revision == 0 {
+		// A board's rollback applied; its revision is not recorded yet.
+		// Retrying would restore again.
+		out := ActionDone{Status: "done", Warning: r.Warning}
+		return result(fmt.Sprintf("Restored revision %d of %s. It is live now. Warning: %s. Do not retry.", in.Revision, in.Slug, r.Warning), out), out, nil
+	}
+	out := ActionDone{Status: "done", Revision: r.Revision}
+	return result(fmt.Sprintf("Restored revision %d of %s as new revision %d. It is live now.", in.Revision, in.Slug, r.Revision), out), out, nil
 }

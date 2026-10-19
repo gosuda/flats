@@ -201,45 +201,22 @@ func (in *Instance) upload(ctx context.Context, body io.Reader) (AssetInfo, erro
 	if err != nil {
 		return AssetInfo{}, err
 	}
-	lim := in.b.Limits()
-	info, err := CheckImage(data, lim.UploadMax)
+	info, err := CheckImage(data, in.b.Limits().UploadMax)
 	if err != nil {
 		return AssetInfo{}, err
 	}
-	if lim.DiskQuota > 0 {
-		if _, err := in.meas.wait(ctx); err != nil {
-			return AssetInfo{}, err
-		}
-		err := in.do(ctx, func() error {
-			t, err := in.begin()
-			if err != nil {
-				return err
-			}
-			defer t.rollback()
-			other, ok := in.meas.get()
-			if !ok {
-				return errorf(CategoryUnavailable, "the board's disk usage cannot be measured right now; try again")
-			}
-			u, err := t.usage(other)
-			if err != nil {
-				return err
-			}
-			if u+info.Bytes > lim.DiskQuota {
-				return errorf(CategoryCapacity, "the board is out of disk space for this image")
-			}
-			return nil
-		})
-		if err != nil {
-			return AssetInfo{}, err
-		}
-	}
-	stored, err := in.b.PutBlob(ctx, info.Hash, data)
+	// The admission reserves the bytes before the write, so concurrent
+	// uploads cannot both spend the same headroom (5.4).
+	blobs := []newBlob{{info, data}}
+	_, release, err := in.admitBlobs(ctx, blobs, nil)
+	defer release()
 	if err != nil {
 		return AssetInfo{}, err
 	}
-	if stored {
-		in.meas.add(info.Bytes)
+	if err := in.putBlobs(ctx, blobs, false); err != nil {
+		return AssetInfo{}, err
 	}
+	release()
 	err = in.do(ctx, func() error {
 		t, err := in.begin()
 		if err != nil {

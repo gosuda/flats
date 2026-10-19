@@ -147,6 +147,54 @@ func TestUndoRedo(t *testing.T) {
 	})
 }
 
+// TestUndoRevivedMemberKeepsGroup: one batch moves group {p, q} from f1
+// to f2 and deletes p. Undoing it revives p into f1 (its batch-start
+// frame) while q's frame goes back to f1 only in the relation step, so the
+// group invariant is checked after that step and p keeps its group (4.10).
+func TestUndoRevivedMemberKeepsGroup(t *testing.T) {
+	for _, order := range []string{"move then delete", "delete then move"} {
+		t.Run(order, func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addFrame("f1", 0, 0, 1000, 1000), addFrame("f2", 2000, 0, 1000, 1000))
+			h.ok(a, addIn("p", "f1", h.inc(eid("f1")), 10, 10), addIn("q", "f1", h.inc(eid("f1")), 200, 10))
+			h.ok(a, groupOp(h, "g", "p", "q"))
+			group := h.row(eid("p")).El.Group
+			ops := []Op{reparentOp(h, "f2", "p", "q"), deleteOp(h, "p")}
+			if order == "delete then move" {
+				ops = []Op{deleteOp(h, "p"), reparentOp(h, "f2", "q")}
+			}
+			h.ok(a, ops...)
+			if h.alive(eid("p")) || h.row(eid("q")).El.Frame != eid("f2") {
+				t.Fatal("the batch did not move q and delete p")
+			}
+			check := func(step string) {
+				t.Helper()
+				p, q := h.row(eid("p")), h.row(eid("q"))
+				if !p.alive() || p.El.Frame != eid("f1") || q.El.Frame != eid("f1") || p.El.Group != group || q.El.Group != group {
+					t.Fatalf("after %s: p in %q group %q, q in %q group %q", step, p.El.Frame, p.El.Group, q.El.Frame, q.El.Group)
+				}
+				if err := checkInvariants(h.s); err != nil {
+					t.Fatalf("after %s: %v", step, err)
+				}
+			}
+			u := undoResult(t, h.ok(a, undoOp))
+			for reason, n := range u.Skipped {
+				if n != 0 {
+					t.Fatalf("undo skipped %d (%s): %+v", n, reason, u)
+				}
+			}
+			check("undo")
+			h.ok(a, redoOp)
+			if h.alive(eid("p")) || h.row(eid("q")).El.Frame != eid("f2") {
+				t.Fatal("redo did not move q and delete p again")
+			}
+			h.ok(a, undoOp)
+			check("undo after redo")
+		})
+	}
+}
+
 func TestSemanticOps(t *testing.T) {
 	h := newHarness(t)
 	a, b := h.session("a"), h.session("b")

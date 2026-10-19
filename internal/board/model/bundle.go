@@ -172,6 +172,11 @@ func DecodeBundle(typ, g string, raw json.RawMessage) (any, error) {
 	if !HasBundle(typ, g) {
 		return nil, formatErr("a %s has no %q", typ, g)
 	}
+	// Decoding null into a string or bool leaves its zero value, so null
+	// would clear text or unlock; only membership means "none" by null.
+	if !IsRelation(g) && string(bytes.TrimSpace(raw)) == "null" {
+		return nil, formatErr("%s cannot be null", g)
+	}
 	switch g {
 	case BundleGeom:
 		var f struct{ X, Y, W, H, Rot *float64 }

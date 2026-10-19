@@ -7,6 +7,11 @@ import { withBundle } from './schema.js';
 import { endpointWorld } from './geom.js';
 import { keyBetween } from './ids.js';
 
+// META_KEYS are the bundles of the _board pseudo-element (TECH 3.3). Other
+// keys in a delta or op are ignored, so they can never reach object
+// internals such as __proto__.
+const META_KEYS = new Set(['title', 'grid']);
+
 export class BoardState {
   constructor() {
     this.server = new Map();    // id -> PrivateElement (content + inc + v)
@@ -89,7 +94,7 @@ export class BoardState {
   }
 
   #setMeta(m) {
-    for (const k of ['title', 'grid']) {
+    for (const k of META_KEYS) {
       if (m[k] === undefined) continue;
       this.meta[k] = m[k];
     }
@@ -108,6 +113,7 @@ export class BoardState {
       changed.add(c.id);
       if (c.id === '_board') {
         for (const [g, e] of Object.entries(c.set || {})) {
+          if (!META_KEYS.has(g)) continue;
           const [val, v] = this.public ? [e, null] : e;
           this.meta[g] = val;
           if (v != null) this.metaV[g] = v;
@@ -178,6 +184,21 @@ export class BoardState {
     return { batch, changed: this.#rebuild() };
   }
 
+  // discard drops a batch that was never sent because it cannot be sent at
+  // all (over 8 MiB or 32 parts). The server never saw its number, so the
+  // later pending batches, also unsent, move down by one: the next batch the
+  // server receives is still max_n + 1 (TECH 4.8).
+  discard(n) {
+    const i = this.pending.findIndex((b) => b.n === n);
+    if (i < 0) return { batch: null, changed: new Set() };
+    const batch = this.pending[i];
+    this.pending.splice(i, 1);
+    for (const o of batch.ops) if (o.op === 'add') this.created.delete(o.el.id);
+    for (const b of this.pending) if (b.n > n) b.n--;
+    this.nextN--;
+    return { batch, changed: this.#rebuild() };
+  }
+
   #rebuild() {
     const old = this.overlay;
     this.overlay = new Map();
@@ -187,7 +208,7 @@ export class BoardState {
       put: (el) => this.overlay.set(el.id, el),
       del: (id) => this.overlay.set(id, null),
       all: () => this.#baseAll(),
-      meta: (g, val) => { this.overlayMeta[g] = val; },
+      meta: (g, val) => { if (META_KEYS.has(g)) this.overlayMeta[g] = val; },
     };
     for (const b of this.pending) for (const op of b.ops) applyOp(op, ctx);
     const changed = new Set(old.keys());

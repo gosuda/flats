@@ -402,7 +402,7 @@ func (c *simClient) screen() map[string]model.PrivateElement {
 // prepare builds a batch from the editor's screen.
 func (m *sim) prepare(c *simClient) []Op {
 	rng := m.rng
-	if rng.IntN(12) == 0 {
+	if rng.IntN(8) == 0 {
 		return []Op{{Op: []string{OpUndo, OpRedo}[rng.IntN(2)]}}
 	}
 	sc := c.screen()
@@ -493,12 +493,7 @@ func (m *sim) prepare(c *simClient) []Op {
 				ops = append(ops, Op{Op: OpDeleteFrameContents, Frame: raw(f), Inc: inc(f)})
 			}
 		case k < 15:
-			a := pick(anyEl)
-			to := []any{"front", "back"}[rng.IntN(2)]
-			if b := pick(anyEl); b != a && rng.IntN(2) == 0 {
-				to = map[string]any{"after": b, "inc": inc(b)}
-			}
-			ops = append(ops, Op{Op: OpZorder, IDs: []string{a}, IncOf: map[string]int64{a: inc(a)}, To: raw(to)})
+			ops = append(ops, zorderOf(rng, pick(anyEl), func() string { return pick(anyEl) }, inc))
 		default:
 			if gone := slices.Sorted(maps.Keys(c.deleted)); len(gone) > 0 {
 				id := gone[rng.IntN(len(gone))]
@@ -509,6 +504,26 @@ func (m *sim) prepare(c *simClient) []Op {
 		}
 	}
 	return ops
+}
+
+// zorderOf is a stacking change of one to three elements, to the front,
+// the back, or after or before another element.
+func zorderOf(rng *rand.Rand, first string, pick func() string, inc func(string) int64) Op {
+	ids := []string{first}
+	for range rng.IntN(3) {
+		if id := pick(); !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	incOf := map[string]int64{}
+	for _, id := range ids {
+		incOf[id] = inc(id)
+	}
+	to := []any{"front", "back"}[rng.IntN(2)]
+	if b := pick(); !slices.Contains(ids, b) && rng.IntN(2) == 0 {
+		to = map[string]any{[]string{"after", "before"}[rng.IntN(2)]: b, "inc": inc(b)}
+	}
+	return Op{Op: OpZorder, IDs: ids, IncOf: incOf, To: raw(to)}
 }
 
 func (m *sim) newElement(c *simClient, sc map[string]model.PrivateElement, frame, target string) Op {
@@ -714,4 +729,245 @@ func sameRows[K comparable, R any](m map[K]R, rows []R, key func(R) K) bool {
 		}
 	}
 	return true
+}
+
+// TestRandomUndoRedo runs one editor alone, so nothing else changes the
+// board between an edit and its undo: undo must then return the board to
+// exactly how it was before the edit, stacking order included, and redo to
+// exactly how it was after (4.10). Edits mix additions, moves with carry,
+// text, multi-element stacking changes, deletions, revives, membership,
+// groups and metadata; undo and redo come in runs. BOARD_SEEDS sets the number of
+// seeds (default 500).
+func TestRandomUndoRedo(t *testing.T) {
+	forSeeds(t, 500, runUndoRedo)
+}
+
+// boardView is the board as undo must restore it: the metadata and every
+// alive element's content without its stacking key and author fields, by
+// id, and separately the stacking order. Incarnations and versions may
+// differ.
+type boardView struct{ content, order string }
+
+func viewOf(s *State) boardView {
+	var b strings.Builder
+	b.Write(s.Board().CanonicalJSON())
+	for _, p := range s.Alive() {
+		c := p.Content()
+		delete(c, "z")
+		delete(c, "by")
+		delete(c, "at")
+		b.WriteString("\n")
+		b.Write(model.Canonical(c))
+	}
+	return boardView{b.String(), strings.Join(s.order(), " ")}
+}
+
+func runUndoRedo(seed uint64) error {
+	rng := rand.New(rand.NewPCG(seed, 0x0d0))
+	s := New("Board")
+	se := s.Hello(Hello{NewID: "s-a", Key: "browser:a", Label: "a", Now: 1}).Session
+	var n int64
+	apply := func(ops ...Op) error {
+		n++
+		out := s.ApplyBatch(Batch{Session: se, N: n, Ops: ops, Now: 1})
+		if out.Reject != nil || out.Fatal != "" {
+			return fmt.Errorf("batch %s refused: %+v %s", raw(ops), out.Reject, out.Fatal)
+		}
+		return checkInvariants(s)
+	}
+	top := func(name string) *UndoEntry {
+		if st := s.undo[se]; st != nil && len(st.stack(name)) > 0 {
+			return st.stack(name)[len(st.stack(name))-1]
+		}
+		return &UndoEntry{}
+	}
+	// A revive keeps the stacking key an element had when deleted, so its
+	// position among elements moved meanwhile is not restored (4.10 does
+	// not promise it). An undo or redo records its opposite entry from the
+	// order it found, so once an edit was undone or redone from another
+	// order than the one it was made in, or gave another order through a
+	// revive, the orders it gives are no longer compared.
+	type edit struct {
+		before, after boardView
+		ops           []Op
+		idx           int64 // its entry on the stack it is on
+		exact         bool
+	}
+	var undos, redos []*edit
+	same := func(what string, e *edit, pre, from, got, want boardView, revives bool) error {
+		if got.content != want.content {
+			return fmt.Errorf("%s of %s gave\n%s\nwant\n%s", what, raw(e.ops), got.content, want.content)
+		}
+		if e.exact = e.exact && pre.order == from.order; e.exact && got.order != want.order {
+			if !revives {
+				return fmt.Errorf("%s of %s gave order\n%s\nwant\n%s", what, raw(e.ops), got.order, want.order)
+			}
+			e.exact = false
+		}
+		return nil
+	}
+	next := 0
+	for step := range 80 {
+		switch k := rng.IntN(10); {
+		case k < 2 && len(undos) > 0:
+			for range 1 + rng.IntN(len(undos)) {
+				e := undos[len(undos)-1]
+				if top(StackUndo).Idx != e.idx {
+					return fmt.Errorf("step %d: undo stack top %d, want %d", step, top(StackUndo).Idx, e.idx)
+				}
+				revives, was, pre := top(StackUndo).Deletes != nil, top(StackRedo).Idx, viewOf(s)
+				if err := apply(undoOp); err != nil {
+					return fmt.Errorf("step %d: %w", step, err)
+				}
+				// An entry whose batch left no visible change pushes nothing.
+				if undos = undos[:len(undos)-1]; top(StackRedo).Idx != was {
+					e.idx, redos = top(StackRedo).Idx, append(redos, e)
+				}
+				if err := same("undo", e, pre, e.after, viewOf(s), e.before, revives); err != nil {
+					return fmt.Errorf("step %d: %w", step, err)
+				}
+			}
+		case k < 4 && len(redos) > 0:
+			for range 1 + rng.IntN(len(redos)) {
+				e := redos[len(redos)-1]
+				if top(StackRedo).Idx != e.idx {
+					return fmt.Errorf("step %d: redo stack top %d, want %d", step, top(StackRedo).Idx, e.idx)
+				}
+				revives, was, pre := top(StackRedo).Deletes != nil, top(StackUndo).Idx, viewOf(s)
+				if err := apply(redoOp); err != nil {
+					return fmt.Errorf("step %d: %w", step, err)
+				}
+				if redos = redos[:len(redos)-1]; top(StackUndo).Idx != was {
+					e.idx, undos = top(StackUndo).Idx, append(undos, e)
+				}
+				if err := same("redo", e, pre, e.before, viewOf(s), e.after, revives); err != nil {
+					return fmt.Errorf("step %d: %w", step, err)
+				}
+			}
+		default:
+			ops := soloOps(rng, s, &next)
+			if len(ops) == 0 {
+				continue
+			}
+			before, was := viewOf(s), top(StackUndo).Idx
+			if err := apply(ops...); err != nil {
+				return fmt.Errorf("step %d: %w", step, err)
+			}
+			if top(StackUndo).Idx != was {
+				undos, redos = append(undos, &edit{before, viewOf(s), ops, top(StackUndo).Idx, true}), nil
+			}
+		}
+	}
+	return nil
+}
+
+// soloOps is a batch of one to three operations on the current board,
+// groups and ungroups included: undo checks the group invariant of revived
+// elements only after it restores relations (4.10 step 4), so a revived
+// group member whose mate's frame step 4 restores keeps its group.
+func soloOps(rng *rand.Rand, s *State, next *int) []Op {
+	alive := s.Alive()
+	ids := make([]string, len(alive))
+	for i, e := range alive {
+		ids[i] = e.ID
+	}
+	pick := func(filter func(model.PrivateElement) bool) string {
+		var ok []string
+		for _, e := range alive {
+			if filter(e) {
+				ok = append(ok, e.ID)
+			}
+		}
+		if len(ok) == 0 {
+			return ""
+		}
+		return ok[rng.IntN(len(ok))]
+	}
+	inc := func(id string) int64 { r := s.rows[id]; return r.Inc }
+	anyEl := func(model.PrivateElement) bool { return true }
+	isFrame := func(e model.PrivateElement) bool { return e.Type == model.TypeFrame }
+	target := func(e model.PrivateElement) bool { return e.Type != model.TypeConnector }
+	var ops []Op
+	for range 1 + rng.IntN(3) {
+		k := rng.IntN(13)
+		if len(ids) < 3 {
+			k = 0
+		}
+		switch {
+		case k < 3:
+			*next++
+			id := fmt.Sprintf("e_u%09d", *next)
+			el := map[string]any{"id": id, "type": "sticky", "x": rng.IntN(1000), "y": rng.IntN(1000), "w": 100, "h": 100}
+			refs := map[string]int64{}
+			switch rng.IntN(4) {
+			case 0:
+				el["type"], el["w"], el["h"] = "frame", 600, 600
+			case 1:
+				if t := pick(target); t != "" {
+					el = map[string]any{"id": id, "type": "connector", "ends": []any{map[string]any{"el": t, "at": []float64{1, 0.5}}, map[string]any{"pt": []int{9, 9}}}}
+					refs[t] = inc(t)
+				}
+			default:
+				if f := pick(isFrame); f != "" && rng.IntN(2) == 0 {
+					el["frame"], refs[f] = f, inc(f)
+				}
+			}
+			ops = append(ops, Op{Op: OpAdd, El: raw(el), Refs: refs})
+		case k < 5:
+			id := pick(target)
+			if id == "" {
+				continue
+			}
+			g := s.rows[id].El.Geom
+			g.X, g.Y = model.Round1(g.X+float64(rng.IntN(200)-100)), model.Round1(g.Y+float64(rng.IntN(200)-100))
+			carry := ""
+			if s.rows[id].El.Type == model.TypeFrame && rng.IntN(2) == 0 {
+				carry = CarryMembers
+			} else if s.rows[id].El.Group != "" && rng.IntN(2) == 0 {
+				carry = CarryGroup
+			}
+			ops = append(ops, Op{Op: OpSet, ID: id, Inc: inc(id), G: model.BundleGeom, Val: raw(g), Carry: carry})
+		case k < 6:
+			if id := pick(func(e model.PrivateElement) bool { return model.HasText(e.Type) }); id != "" {
+				ops = append(ops, Op{Op: OpSet, ID: id, Inc: inc(id), G: model.BundleText, Val: raw(fmt.Sprint("t", rng.IntN(9)))})
+			}
+		case k < 8:
+			ops = append(ops, zorderOf(rng, pick(anyEl), func() string { return pick(anyEl) }, inc))
+		case k < 9:
+			a, b := pick(anyEl), pick(anyEl)
+			ops = append(ops, Op{Op: OpDelete, IDs: []string{a, b}, IncOf: map[string]int64{a: inc(a), b: inc(b)}})
+		case k < 10:
+			a, b := pick(anyEl), pick(anyEl)
+			op := Op{Op: OpReparent, IDs: []string{a, b}, IncOf: map[string]int64{a: inc(a), b: inc(b)}, Frame: raw(nil)}
+			if f := pick(isFrame); f != "" && rng.IntN(3) > 0 {
+				op.Frame, op.FrameInc = raw(f), inc(f)
+			}
+			ops = append(ops, op)
+		case k < 11:
+			if f := pick(isFrame); f != "" && rng.IntN(2) == 0 {
+				ops = append(ops, Op{Op: OpDeleteFrameContents, Frame: raw(f), Inc: inc(f)})
+			} else {
+				ops = append(ops, Op{Op: OpMeta, G: model.BundleTitle, Val: raw(fmt.Sprint("title ", rng.IntN(5)))})
+			}
+		case k < 12:
+			// Mostly a valid group: a second element in the same frame.
+			a := pick(func(e model.PrivateElement) bool { return e.Type != model.TypeFrame })
+			if a == "" {
+				continue
+			}
+			b := pick(func(e model.PrivateElement) bool {
+				return e.ID != a && e.Type != model.TypeFrame && (e.Frame == s.rows[a].El.Frame || rng.IntN(4) == 0)
+			})
+			if b == "" {
+				continue
+			}
+			*next++
+			ops = append(ops, Op{Op: OpGroup, IDs: []string{a, b}, IncOf: map[string]int64{a: inc(a), b: inc(b)}, Group: fmt.Sprintf("g_u%09d", *next)})
+		default:
+			if id := pick(func(e model.PrivateElement) bool { return e.Group != "" }); id != "" {
+				ops = append(ops, Op{Op: OpUngroup, Group: s.rows[id].El.Group})
+			}
+		}
+	}
+	return ops
 }

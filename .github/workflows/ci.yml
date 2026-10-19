@@ -115,6 +115,8 @@ jobs:
         run: go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
       - name: WebSocket codec races
         run: go test -race ./internal/wsconn
+      - name: Board races
+        run: go test -race ./internal/board/...
       - name: WebSocket resource limit races
         run: go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
 

@@ -98,14 +98,29 @@ func (a *applier) group(op Op) any {
 	for _, id := range ids {
 		a.setRel(id, model.BundleGroup, op.Group)
 	}
+	a.useGroup(op.Group)
 	res.OK = ids
 	return res
 }
 
-// groupUsed reports whether any row, alive or deleted, names group g, so a
-// group id is never reused.
+// usedGroups is the created-rows session under which the board records
+// every group id it has used, with the seq that first used it. No session
+// has an empty id, so the rows never expire. Ungroup carries no
+// incarnation, so a group id must stay unavailable after ungroup, after
+// its deleted members' rows are purged and after a reload (4.3).
+const usedGroups = ""
+
+// useGroup records group g as used.
+func (a *applier) useGroup(g string) {
+	if _, ok := a.s.created[createdKey{usedGroups, g}]; g != "" && !ok {
+		a.s.setCreated(createdKey{usedGroups, g}, a.seq)
+	}
+}
+
+// groupUsed reports whether group g was ever used: recorded, or named by
+// any row, alive or deleted.
 func (a *applier) groupUsed(g string) bool {
-	if len(a.s.groups[g]) > 0 {
+	if _, ok := a.s.created[createdKey{usedGroups, g}]; ok || len(a.s.groups[g]) > 0 {
 		return true
 	}
 	for _, r := range a.s.rows {
@@ -282,8 +297,33 @@ func (a *applier) preRel(id string) *PreRel {
 
 // reviveSet revives deleted elements in two phases (4.1): every element of
 // the set first gets its new incarnation, then relations come back from
-// pre_rel.
+// pre_rel, and last the group invariant is checked.
 func (a *applier) reviveSet(ids []string, ifDel int64) *MultiResult {
+	res, fix := a.revivePhases(ids, ifDel)
+	fix.apply(a)
+	return res
+}
+
+// groupFix is the last step of a revive, the group invariant check. An
+// undo runs it after its relation step (4.10), so a revived member whose
+// mate's frame that step restores keeps its group.
+type groupFix struct {
+	revived  []string
+	restored []restoredMember
+}
+
+// restoredMember is an outside frame member a revive put back into the
+// revived frame, with its row from before.
+type restoredMember struct {
+	old   *Row
+	frame string
+}
+
+func (f groupFix) apply(a *applier) { a.fixGroups(f.revived, f.restored) }
+
+// revivePhases runs both revive phases but leaves the group invariant
+// check to the caller.
+func (a *applier) revivePhases(ids []string, ifDel int64) (*MultiResult, groupFix) {
 	res := &MultiResult{}
 	inS := map[string]bool{}
 	var set []string
@@ -316,13 +356,12 @@ func (a *applier) reviveSet(ids []string, ifDel int64) *MultiResult {
 	for _, id := range set {
 		a.restoreOwnRelations(id, atDel[id], inS)
 	}
-	var restored []*Row
+	var restored []restoredMember
 	for _, id := range set {
 		restored = append(restored, a.restoreOutside(id, atDel[id].PreRel, inS, ifDel)...)
 	}
-	a.fixGroups(set, restored)
 	res.OK = set
-	return res
+	return res, groupFix{set, restored}
 }
 
 // restoreOwnRelations sets a revived element's frame, group and ends from
@@ -372,9 +411,9 @@ func (a *applier) restoreOwnRelations(id string, old *Row, inS map[string]bool) 
 // restoreOutside changes elements outside the revived set back: connector
 // ends the deletion detached and frame members it released, each only when
 // that element is alive, unlocked, the same incarnation and its bundle
-// version is still the deletion seq. It returns the restored members' rows
-// from before the restore.
-func (a *applier) restoreOutside(id string, pr *PreRel, inS map[string]bool, delSeq int64) []*Row {
+// version is still the deletion seq. It returns the restored members with
+// their rows from before the restore.
+func (a *applier) restoreOutside(id string, pr *PreRel, inS map[string]bool, delSeq int64) []restoredMember {
 	if pr == nil {
 		return nil
 	}
@@ -388,30 +427,32 @@ func (a *applier) restoreOutside(id string, pr *PreRel, inS map[string]bool, del
 		a.setBundle(r, g, model.End{El: id, At: at.At})
 		a.put(r)
 	}
-	var restored []*Row
+	var restored []restoredMember
 	for _, m := range pr.Members {
 		r := a.s.rows[m.ID]
 		if inS[m.ID] || !r.alive() || r.El.Locked || r.Inc != m.Inc || r.V[model.BundleFrame] != delSeq || r.El.Frame != "" {
 			continue
 		}
 		a.setRel(m.ID, model.BundleFrame, id)
-		restored = append(restored, r)
+		restored = append(restored, restoredMember{r, id})
 	}
 	return restored
 }
 
 // fixGroups restores the group invariant after a revive: in a group whose
 // members ended up in different frames, outside members put back into a
-// frame are reverted first, then revived elements leave the group.
-func (a *applier) fixGroups(revived []string, restored []*Row) {
+// frame are reverted first, then revived elements leave the group. Groups
+// are judged by their current members, so an undo that ran its relation
+// step in between is judged with those relations.
+func (a *applier) fixGroups(revived []string, restored []restoredMember) {
 	groups := map[string]bool{}
 	for _, id := range revived {
-		if g := a.s.rows[id].El.Group; g != "" {
-			groups[g] = true
+		if r := a.s.rows[id]; r.alive() && r.El.Group != "" {
+			groups[r.El.Group] = true
 		}
 	}
-	for _, r := range restored {
-		if r.El.Group != "" {
+	for _, m := range restored {
+		if r := a.s.rows[m.old.El.ID]; r.alive() && r.El.Group != "" {
 			groups[r.El.Group] = true
 		}
 	}
@@ -419,16 +460,21 @@ func (a *applier) fixGroups(revived []string, restored []*Row) {
 		if a.groupConsistent(g) {
 			continue
 		}
-		for _, r := range restored {
-			if r.El.Group == g {
-				a.put(r)
+		for _, m := range restored {
+			// Only the membership the revive put back is reverted; a
+			// later change of the same row (an undo's relation step) stays.
+			r := a.s.rows[m.old.El.ID]
+			if r.alive() && r.Inc == m.old.Inc && r.El.Group == g && r.El.Frame == m.frame && r.V[model.BundleFrame] == a.seq {
+				c := r.clone()
+				c.El.Frame, c.V[model.BundleFrame] = m.old.El.Frame, m.old.V[model.BundleFrame]
+				a.put(c)
 			}
 		}
 		if a.groupConsistent(g) {
 			continue
 		}
 		for _, id := range revived {
-			if a.s.rows[id].El.Group == g {
+			if r := a.s.rows[id]; r.alive() && r.El.Group == g {
 				a.setRel(id, model.BundleGroup, "")
 			}
 		}

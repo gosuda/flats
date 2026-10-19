@@ -154,10 +154,13 @@ type Service struct {
 	// boardPending holds the boards whose outbox recorded entries the
 	// ticker has not imported yet.
 	boardPending sync.Map
-	boardStats   boardStats
-	settings     *SettingsSource
-	eventCount   sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits    sync.Map // slug -> *logLimit
+	// boardRetry holds when the ticker next tries a board whose import
+	// failed, and the delay it waited (boardBackoff).
+	boardRetry sync.Map
+	boardStats boardStats
+	settings   *SettingsSource
+	eventCount sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits  sync.Map // slug -> *logLimit
 	// snapshot holds the host-wide figures of the last Sweep for Metrics.
 	snapshot atomic.Pointer[hostSnapshot]
 	diskMu   sync.Mutex

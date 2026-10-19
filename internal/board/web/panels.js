@@ -164,7 +164,7 @@ export class FindBar {
     this.matches = [];
     this.i = -1;
     this.app.renderer.dynamic();
-    this.app.renderer.dyn.focus({ preventScroll: true });
+    this.app.focusBoard();
   }
 
   refresh() { if (this.box) this.search(false); }

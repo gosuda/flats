@@ -99,6 +99,7 @@ type txn struct {
 	dropOps     []string
 	assets      map[string]*engine.Asset // nil value: row deleted
 	outboxAdded bool
+	pending     int64 // blob bytes admitBlobs is about to store (5.4)
 
 	after  []func()
 	onFail []func()
@@ -155,6 +156,7 @@ func (t *txn) commit() error {
 		in.hook("committed")
 	}
 	in.st.Release(t.mark)
+	in.snapCur = nil
 	sd := in.sd
 	sd.walPersisted = sd.walPending
 	sd.groups, sd.dirty, sd.bucketBytes = t.groups, t.dirty, t.bucketBytes
@@ -348,7 +350,7 @@ func (t *txn) usage(other int64) (int64, error) {
 			wal = max(wal, fi.Size())
 		}
 	}
-	return other + (used+r)*ps + t.snapBytes + dirtyBytes + wal, nil
+	return other + (used+r)*ps + t.snapBytes + dirtyBytes + wal + t.pending, nil
 }
 
 // overQuota reports whether t leaves the board over its disk quota, with
@@ -730,6 +732,7 @@ func (in *Instance) load() error {
 		return fmt.Errorf("board.db has no store id")
 	}
 	in.st, in.sd = st, sd
+	in.snapCur = nil
 	in.assets.reset(rows.Assets, st)
 	in.walCheck()
 	return nil

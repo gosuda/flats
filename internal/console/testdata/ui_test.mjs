@@ -752,6 +752,24 @@ assert.ok(!publicConfirm.textContent.includes(PUBLIC), 'the confirm must not cla
 publicConfirm.close('cancel');
 await tick();
 quietShare.close();
+// Designs and boards run without published versions (live_version 0), so
+// widening them reaches the confirm; a versioned flat still publishes first.
+for (const type of ['design', 'board']) {
+  const live = { ...quiet, type, slug: 'live-' + type, name: 'Live ' + type, running: true, live_version: 0, versions: 0, draft: null, providers: ['portal'] };
+  const widened = versionActions.setVisibility(live, 'public');
+  await tick();
+  const confirm = all(document.body, (e) => e.tagName === 'DIALOG' && e.textContent.includes(`Make Live ${type} public?`))[0];
+  assert.ok(confirm, type + ' widening reaches the confirm dialog');
+  assert.ok(!all(document.body, (e) => e.tagName === 'DIALOG' && e.open !== false && e.textContent.includes('Publish first')).length, type + ' is not asked to publish');
+  confirm.close('cancel');
+  assert.equal(await widened, null);
+}
+const unpublished = versionActions.setVisibility({ ...quiet, slug: 'unpub', name: 'Unpub', live_version: 0, providers: ['portal'] }, 'public');
+await tick();
+const publishFirst = all(document.body, (e) => e.tagName === 'DIALOG' && e.textContent.includes('Unpub has no live version yet'))[0];
+assert.ok(publishFirst, 'a versioned flat without a live version must publish first');
+publishFirst.close('ok');
+assert.equal(await unpublished, null);
 for (const label of ['Share', 'Deployments', 'Analytics', 'Settings']) assert.equal(byText(rows[0], label).length, 1);
 
 // The build label next to the brand: a release links to its release page,

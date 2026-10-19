@@ -283,13 +283,11 @@ func trimStack(s []*UndoEntry) []*UndoEntry {
 
 // undoRun applies one popped entry.
 type undoRun struct {
-	a       *applier
-	st      *stacks
-	src     *[]*UndoEntry // the stack the entry came from
-	relink  map[string][2]int64
-	res     *UndoResult
-	inv     *UndoEntry
-	revived []string
+	a      *applier
+	st     *stacks
+	src    *[]*UndoEntry // the stack the entry came from
+	relink map[string][2]int64
+	res    *UndoResult
 }
 
 // undo applies {op:"undo"} or {op:"redo"} (4.10).
@@ -309,12 +307,16 @@ func (a *applier) undo(redo bool) any {
 	}
 	e := (*src)[len(*src)-1]
 	*src = (*src)[:len(*src)-1]
-	u := &undoRun{a: a, st: st, src: src, relink: map[string][2]int64{}, res: res, inv: &UndoEntry{}}
+	u := &undoRun{a: a, st: st, src: src, relink: map[string][2]int64{}, res: res}
 	u.run(e)
-	if !u.inv.empty() {
-		u.inv.Idx = st.next
+	// The opposite entry is what this run actually changed, recorded like
+	// an ordinary batch, so side effects (connector ends a deletion
+	// detached or a revive reattached, members a frame deletion released)
+	// are records too and keep their lineage.
+	if inv := a.record(); !inv.empty() {
+		inv.Idx = st.next
 		st.next++
-		*dst = trimStack(append(*dst, u.inv))
+		*dst = trimStack(append(*dst, inv))
 	}
 	return res
 }
@@ -336,19 +338,20 @@ func (u *undoRun) run(e *UndoEntry) {
 		}
 	}
 	u.creates(e.Creates)
+	var fix groupFix
 	if e.Deletes != nil {
-		u.deletes(*e.Deletes)
+		fix = u.deletes(*e.Deletes)
 	}
 	for _, rec := range deferred {
 		u.bundle(rec)
 	}
 	u.relations(e.Relations)
+	// The revive's group invariant check runs after the relations are
+	// restored (4.10 step 4): a revived member whose mate's frame step 4
+	// restores keeps its group.
+	fix.apply(u.a)
 	for _, rec := range e.Orders {
 		u.order(rec)
-	}
-	for _, id := range u.revived {
-		r := u.a.s.rows[id]
-		u.inv.Creates = append(u.inv.Creates, CreateRec{ID: id, Inc: r.Inc, MyV: maps.Clone(r.V)})
 	}
 }
 
@@ -365,14 +368,32 @@ func (u *undoRun) ready(rec BundleRec) bool {
 	return json.Unmarshal(rec.Prev, &end) == nil && (end.El == "" || u.a.s.rows[end.El].alive())
 }
 
+// startV is the version bundle g of r had when this undo started. A side
+// effect of the same undo (a creation undo releasing a frame's members, a
+// revive restoring relations) gives a bundle this seq, and the guards
+// judge what others did before, not that.
+func (u *undoRun) startV(r *Row, g string) int64 {
+	if r.V[g] == u.a.seq {
+		if b := u.a.batchRow(r.El.ID); b.alive() && b.Inc == r.Inc {
+			return b.V[g]
+		}
+	}
+	return r.V[g]
+}
+
 // guard checks the version of bundle g of r against my_v. A bundle this
-// same undo already set back to prev counts as undone.
-func (u *undoRun) guard(r *Row, g string, myV int64, prev any) bool {
+// same undo already set back to prev (a revive restoring a relation the
+// deletion released) counts as undone, and its lineage carries on as if
+// this record had set it.
+func (u *undoRun) guard(r *Row, g string, myV int64, prev any, prevV int64) bool {
 	if r.V[g] == myV {
 		return true
 	}
 	if r.V[g] == u.a.seq && model.BundleEqual(g, r.El.Bundle(g), prev) {
 		u.res.Undone++
+		u.lineage(r.El.ID, r.Inc, g, prevV)
+	} else if u.startV(r, g) == myV {
+		return true
 	} else {
 		u.res.skip(VoidStale)
 	}
@@ -391,7 +412,7 @@ func (u *undoRun) bundle(rec BundleRec) {
 		u.res.skip(VoidGone)
 		return
 	}
-	if !u.guard(r, rec.G, rec.MyV, prev) {
+	if !u.guard(r, rec.G, rec.MyV, prev, rec.PrevV) {
 		return
 	}
 	if r.El.Locked && rec.G != model.BundleLocked {
@@ -405,23 +426,27 @@ func (u *undoRun) bundle(rec BundleRec) {
 			return
 		}
 	}
-	cur := r.El.Bundle(rec.G)
-	inv := BundleRec{ID: rec.ID, Inc: r.Inc, G: rec.G, Prev: model.BundleJSON(rec.G, cur), PrevV: r.V[rec.G], MyV: a.seq}
-	if k := model.EndIndex(rec.G); k >= 0 && r.El.Ends[k].El != "" {
-		inv.TInc = r.EndInc[k]
-	}
 	nr := r.clone()
 	a.setBundle(nr, rec.G, prev)
 	a.put(nr)
-	u.inv.Bundles = append(u.inv.Bundles, inv)
 	u.lineage(rec.ID, r.Inc, rec.G, rec.PrevV)
 	u.res.Undone++
 }
 
 // creates undoes creations: an element is deleted only when nobody changed
-// any of its bundles since.
+// any of its bundles since. Changes of this same run do not count: an
+// inverse entry may hold both a creation and bundle records of one
+// element, and those apply first.
 func (u *undoRun) creates(recs []CreateRec) {
 	var del []string
+	unchanged := func(r *Row, want map[string]int64) bool {
+		for g, v := range want {
+			if r.V[g] != v && u.startV(r, g) != v {
+				return false
+			}
+		}
+		return true
+	}
 	for _, rec := range recs {
 		r := u.a.s.rows[rec.ID]
 		switch {
@@ -429,7 +454,7 @@ func (u *undoRun) creates(recs []CreateRec) {
 			u.res.skip(VoidGone)
 		case r.El.Locked:
 			u.res.skip(VoidLocked)
-		case !versionsMatch(r, rec.MyV):
+		case !unchanged(r, rec.MyV):
 			u.res.skip(VoidStale)
 		default:
 			del = append(del, rec.ID)
@@ -440,14 +465,14 @@ func (u *undoRun) creates(recs []CreateRec) {
 	}
 	u.a.deleteSet(del)
 	u.res.Undone += len(del)
-	u.inv.Deletes = &DeleteRec{IDs: slices.Sorted(slices.Values(del)), DelSeq: u.a.seq}
 }
 
 // deletes undoes a deletion with the two-phase revive, then links the new
-// incarnations into this session's stacks.
-func (u *undoRun) deletes(rec DeleteRec) {
+// incarnations into this session's stacks. It returns the revive's group
+// invariant check, which the caller runs after the relation step.
+func (u *undoRun) deletes(rec DeleteRec) groupFix {
 	a := u.a
-	res := a.reviveSet(rec.IDs, rec.DelSeq)
+	res, fix := a.revivePhases(rec.IDs, rec.DelSeq)
 	for _, reason := range res.Void {
 		u.res.skip(reason)
 	}
@@ -455,12 +480,16 @@ func (u *undoRun) deletes(rec DeleteRec) {
 		old, cur := a.batchRow(id).Inc, a.s.rows[id].Inc
 		u.link(id, old, cur)
 		a.s.setCreated(createdKey{a.session, id}, cur)
-		u.revived = append(u.revived, id)
 	}
 	u.res.Undone += len(res.OK)
+	return fix
 }
 
 // link moves this session's records of id from incarnation old to new.
+// A deletion record keeps its relations in the deleted rows' pre_rel, so
+// the pre_rel of every row a deletion record of these stacks names is a
+// record too: otherwise a connector deleted before its target comes back
+// with a free end after both deletions are undone.
 func (u *undoRun) link(id string, old, new int64) {
 	u.relink[id] = [2]int64{old, new}
 	for _, stack := range []*[]*UndoEntry{&u.st.undo, &u.st.redo} {
@@ -469,7 +498,44 @@ func (u *undoRun) link(id string, old, new int64) {
 			if c.relink(id, old, new) {
 				(*stack)[i] = c
 			}
+			if e.Deletes != nil {
+				for _, del := range e.Deletes.IDs {
+					u.relinkPreRel(del, e.Deletes.DelSeq, id, old, new)
+				}
+			}
 		}
+	}
+}
+
+// relinkPreRel moves the pre_rel references of deleted row del to id from
+// incarnation old to new.
+func (u *undoRun) relinkPreRel(del string, delSeq int64, id string, old, new int64) {
+	r := u.a.s.rows[del]
+	if r == nil || !r.Deleted || r.DelSeq != delSeq || r.PreRel == nil {
+		return
+	}
+	p := *r.PreRel
+	p.Ends, p.Attached, p.Members = slices.Clone(p.Ends), slices.Clone(p.Attached), slices.Clone(p.Members)
+	changed := false
+	fix := func(eid string, inc *int64) {
+		if eid == id && *inc == old {
+			*inc, changed = new, true
+		}
+	}
+	fix(p.Frame, &p.FrameInc)
+	for i := range p.Ends {
+		fix(p.Ends[i].End.El, &p.Ends[i].Inc)
+	}
+	for i := range p.Attached {
+		fix(p.Attached[i].Conn, &p.Attached[i].ConnInc)
+	}
+	for i := range p.Members {
+		fix(p.Members[i].ID, &p.Members[i].Inc)
+	}
+	if changed {
+		c := r.clone()
+		c.PreRel = &p
+		u.a.put(c)
 	}
 }
 
@@ -482,9 +548,11 @@ func (u *undoRun) lineage(id string, inc int64, g string, prevV int64) {
 		if !ok {
 			continue
 		}
-		if v == prevV {
+		// The bundle's version now, not this seq: restoring a membership
+		// that already holds the previous value writes nothing.
+		if cur := u.a.s.rows[id].V[g]; v == prevV && v != cur {
 			c := stack[i].clone()
-			c.setMyV(id, inc, g, u.a.seq)
+			c.setMyV(id, inc, g, cur)
 			stack[i] = c
 		}
 		return
@@ -508,7 +576,7 @@ func (u *undoRun) relations(recs []RelRec) {
 		switch {
 		case !r.alive() || r.Inc != inc:
 			u.res.skip(VoidGone)
-		case !u.guard(r, rec.G, rec.MyV, rec.Prev):
+		case !u.guard(r, rec.G, rec.MyV, rec.Prev, rec.PrevV):
 		case r.El.Locked:
 			u.res.skip(VoidLocked)
 		default:
@@ -532,13 +600,7 @@ func (u *undoRun) relations(recs []RelRec) {
 	}
 	for _, c := range cands {
 		r := a.s.rows[c.rec.ID]
-		cur := r.El.Bundle(c.rec.G).(string)
-		inv := RelRec{ID: c.rec.ID, Inc: r.Inc, G: c.rec.G, Prev: cur, PrevV: r.V[c.rec.G], MyV: a.seq}
-		if f := a.s.rows[cur]; c.rec.G == model.BundleFrame && cur != "" && f != nil {
-			inv.PrevInc = f.Inc
-		}
 		a.setRel(c.rec.ID, c.rec.G, c.rec.Prev)
-		u.inv.Relations = append(u.inv.Relations, inv)
 		u.lineage(c.rec.ID, r.Inc, c.rec.G, c.rec.PrevV)
 		u.res.Undone++
 	}
@@ -603,7 +665,7 @@ func (u *undoRun) badCandidates(cands []relCand) map[int]string {
 }
 
 // order undoes a stacking change by placing the element back just above
-// its previous neighbor.
+// its previous neighbor. Records apply bottom first.
 func (u *undoRun) order(rec OrderRec) {
 	a := u.a
 	r := a.s.rows[rec.ID]
@@ -614,6 +676,7 @@ func (u *undoRun) order(rec OrderRec) {
 	if r.V[model.BundleZ] != rec.MyV {
 		if r.V[model.BundleZ] == a.seq {
 			u.res.Undone++
+			u.lineage(rec.ID, r.Inc, model.BundleZ, rec.PrevV)
 		} else {
 			u.res.skip(VoidStale)
 		}
@@ -632,13 +695,7 @@ func (u *undoRun) order(rec OrderRec) {
 		}
 		to = zTarget{where: "after", id: rec.After}
 	}
-	ord := a.s.order()
-	inv := OrderRec{ID: rec.ID, Inc: r.Inc, PrevV: r.V[model.BundleZ], MyV: a.seq}
-	if i := slices.Index(ord, rec.ID); i > 0 {
-		inv.After, inv.AfterInc = ord[i-1], a.s.rows[ord[i-1]].Inc
-	}
 	a.placeAt([]string{rec.ID}, to)
-	u.inv.Orders = append(u.inv.Orders, inv)
 	u.lineage(rec.ID, r.Inc, model.BundleZ, rec.PrevV)
 	u.res.Undone++
 }

@@ -270,7 +270,7 @@ func (in *Instance) Acknowledge(ctx context.Context, upTo, stored int64) error {
 			t.rollback()
 			return err
 		}
-		in.meas.add(stored)
+		in.meas.add(stored, true) // core imports under the flat lock
 		return t.commit()
 	})
 }

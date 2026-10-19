@@ -63,13 +63,17 @@ replace?}` applies all operations or none, and is one revision.
   in a row to the right of the board. Default sizes: sticky 200×200, shape
   160×100, text fitted to its content.
 - `set {id, fields}` changes named fields. Elements and fields you do not
-  name stay as they are, and `style` changes only the keys you give.
+  name stay as they are, and `style` changes only the keys you give. A
+  field cannot be `null`: it never clears text or unlocks. Change `frame`
+  and `group` with `reparent`, `group` and `ungroup`.
 - `reparent {ids, frame}` moves elements into a frame, or out with `null`.
   Grouped elements move together. Frames do not nest.
 - `delete {ids}` deletes elements. Deleting a frame keeps its members;
   connectors attached to a deleted element keep a free end.
 - `group`, `ungroup`, `zorder` and `delete_frame_contents` group elements,
-  change stacking order and delete a frame with its members.
+  change stacking order and delete a frame with its members. `group` makes
+  a new group id unless you pass one; group ids are never reused, so an id
+  the board used before is refused.
 - Moving a frame by `x` or `y` alone moves its members (`carry: "members"`
   is the default). A `set` that also changes `w` or `h` leaves members in
   place unless you pass `carry: "members"`. `carry: false` never moves them,
@@ -88,7 +92,11 @@ replace?}` applies all operations or none, and is one revision.
   the host replaces it with the image's hash and fills `natural` (its pixel
   size) when you leave it out. The result's `assets` maps each ref to its
   hash, which later calls can use as `asset`. PNG, JPEG, GIF and still WebP
-  only, each at most the upload limit; no SVG.
+  only, each at most the upload limit; no SVG. One call carries images of
+  about one upload limit in total, since they travel as base64. Add more over
+  several calls (name earlier images by their hash), or put them in a board
+  data file and import it with the CLI or HTTP API. A call or import whose
+  images do not fit the disk quota is refused before any image is stored.
 - `replace: true` replaces the whole board with the call's `add` operations.
   Use it only when the user asked for a fresh board.
 - On a new slug the board exists only if the call applies: a refused call
@@ -108,7 +116,8 @@ the call itself applied, so do not resend it with a new `op_id`.
   (`.zip` as base64, at most the host upload limit). `mode: "add"` copies it
   into the board with new ids, keeps connections inside the file and places
   it to the right. `mode: "replace"` replaces the whole board. The CLI
-  (`flats board import`) accepts files up to four times that limit.
+  (`flats board import`) accepts files up to four times that limit; pass
+  `--op-id` so that resending the same file after a timeout imports it once.
 - People can select elements and press **Send to agent**. The screen then
   says "Tell the agent `#7`". `get_board_share {slug, n: 7}` returns that
   selection; without `n` it lists recent ones. Elements deleted since are
@@ -135,12 +144,13 @@ default; an unknown key is refused.
 Ink colors are `ink`, `gray`, `red`, `orange`, `green`, `blue` and `purple`.
 Colors are names; the canvas picks values that read in light and dark
 themes. A connector end is `{"el": id, "at": [ax, ay]}` (attached, `at` from
-0 to 1 inside the target's box) or `{"pt": [x, y]}` (free). Without `at`, the
+0 to 1 inside the target's box) or `{"pt": [x, y]}` (free); `at` and `pt`
+have exactly two numbers. Without `at`, the
 host attaches the end to the middle of the target's side that faces the other
 end, after `layout` has placed the elements, so the line starts on the
 outline; an attached other end without `at` counts at its target's center.
 Text is plain, at most 4,000 characters (200 for frame names and connector
-labels).
+labels, 1,000 for an image's `alt`).
 
 Limits per board: 10,000 elements, 512 images (24 megapixels each), 2,000
 points per pen stroke, 2,000 operations and 1,000 layout targets per call.
@@ -156,9 +166,11 @@ An edit that would exceed the per-flat disk quota is refused with
 - If an element you target was deleted, the whole call is refused with
   `conflict`. Read again and rebuild the call.
 - `if_seq` refuses the call if anything on the board changed since your read.
-  `if_ver` on an operation refuses it if that element changed. Both include
-  people's edits that are not yet a revision. Use `if_ver` on elements you
-  rewrite from what you read, such as text you edit.
+  `if_ver` on an operation refuses the whole call if that element changed:
+  a version for one element or `{id: ver}`. `delete_frame_contents` takes
+  the frame's version, and `ungroup` takes `{id: ver}` of its members. Both
+  guards include people's edits that are not yet a revision. Use `if_ver`
+  on elements you rewrite from what you read, such as text you edit.
 - After a guard refusal, read again, apply your change to what people wrote
   and send it with a new `op_id`. Never resend without the guard, or use
   `replace`, to overwrite them.
@@ -171,7 +183,9 @@ An edit that would exceed the per-flat disk quota is refused with
 - Use the shared revision tools, without approval: `list_revisions`,
   `get_revision` (the revision's file list; read its elements with
   `get_board {slug, revision}`), `rollback_revision` (a new revision equal to
-  that one, applied to open canvases at once) and `pin_revision`.
+  that one, applied to open canvases at once) and `pin_revision`. When
+  `rollback_revision` answers with a `warning` and no revision, the restore
+  applied but its revision is not recorded yet: do not call it again.
 - Old unpinned revisions are deleted beyond the host's quota (default 100,
   20 pins). People see the same history in the canvas's History panel.
 

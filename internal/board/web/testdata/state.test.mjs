@@ -101,6 +101,18 @@ test('overwritten text: concurrent overwrite reports, sequential edit does not',
   assert.deepEqual(sequential.overwritten, []);
 });
 
+test('board metadata ignores unknown keys such as __proto__', () => {
+  const s = seeded();
+  const d = JSON.parse('{"seq":11,"changes":[{"id":"_board","set":{"__proto__":[{"polluted":true},11],"title":["T",11]}}]}');
+  s.applyDelta(d);
+  assert.equal(s.meta.title, 'T');
+  assert.equal(Object.getPrototypeOf(s.meta), Object.prototype);
+  assert.equal(s.meta.polluted, undefined);
+  assert.ok(!Object.prototype.hasOwnProperty.call(s.metaV, '__proto__'));
+  s.push([JSON.parse('{"op":"meta","g":"__proto__","val":{"polluted":true}}')]);
+  assert.equal(s.viewMeta().polluted, undefined);
+});
+
 test('public deltas carry values without versions', () => {
   const s = new BoardState();
   s.public = true;

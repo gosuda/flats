@@ -145,6 +145,7 @@ func (a *applier) resetContent(c Content) error {
 func (a *applier) resetElement(el model.Element) {
 	cur := a.s.rows[el.ID]
 	el.Normalize()
+	a.useGroup(el.Group)
 	if cur.alive() && sameIdentity(cur.El, el) {
 		r := cur.clone()
 		for _, g := range model.Bundles(el.Type) {

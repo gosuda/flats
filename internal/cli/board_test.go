@@ -68,6 +68,18 @@ func TestBoardCommands(t *testing.T) {
 	if r.code != 0 || !strings.Contains(r.stdout, "Imported "+file+" into board plan: revision 3") {
 		t.Fatalf("import: %+v", r)
 	}
+	// A retry with the same --op-id after a timeout imports the file once.
+	r = run(t, srv.URL, "", "board", "import", "plan", file, "--op-id", "retry-import-1")
+	if r.code != 0 || !strings.Contains(r.stdout, "board plan: revision 4") || !strings.Contains(r.stdout, "op_id: retry-import-1") {
+		t.Fatalf("import with --op-id: %+v", r)
+	}
+	r = run(t, srv.URL, "", "board", "import", "plan", file, "--op-id", "retry-import-1")
+	if r.code != 0 || !strings.Contains(r.stdout, "board plan: revision 4") || !strings.Contains(r.stdout, "already applied") {
+		t.Fatalf("resent import: %+v", r)
+	}
+	if r = run(t, srv.URL, "", "board", "import", "plan", file, "--op-id", "short"); r.code != ExitUsage {
+		t.Fatalf("short --op-id: %+v", r)
+	}
 	r = run(t, srv.URL, "", "board", "get", "site")
 	if r.code != 1 || !strings.Contains(r.stderr, "error:") {
 		t.Fatalf("get of a missing flat: %+v", r)

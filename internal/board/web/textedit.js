@@ -19,6 +19,8 @@ export class TextEditor {
     this.created = created;
     this.last = el;
     this.start = el.text || '';
+    // baseV is the text version the person sees as they start (TECH 4.9).
+    this.baseV = ops.textVersion(app.state, el.id);
     this.composing = false;
     this.vanished = false;
     this.done = false;
@@ -31,8 +33,9 @@ export class TextEditor {
     this.ta.addEventListener('compositionstart', () => { this.composing = true; });
     this.ta.addEventListener('compositionend', () => {
       this.composing = false;
-      if (this.vanished) this.vanish();
-      else this.remote();
+      // remote() checks the element again: one restored by a rollback or
+      // revive during composition is no longer vanished.
+      this.remote();
     });
     this.ta.addEventListener('input', () => this.place());
     this.ta.addEventListener('keydown', (e) => {
@@ -122,10 +125,20 @@ export class TextEditor {
       else this.vanish();
       return;
     }
+    this.vanished = false;
     if (this.composing) return;
-    if (this.ta.value === this.start && (el.text || '') !== this.start) {
-      this.start = el.text || '';
-      this.ta.value = this.start;
+    if (this.ta.value === this.start) {
+      // Untouched: follow the remote text, which the person now sees.
+      if ((el.text || '') !== this.start) {
+        this.start = el.text || '';
+        this.ta.value = this.start;
+      }
+      this.baseV = ops.textVersion(this.app.state, this.id);
+    } else if (this.baseV == null) {
+      // An element this tab created gets its first version from its own
+      // add; the person started from that text if the server still has it.
+      const base = this.app.state.server.get(this.id);
+      if (base && (base.text || '') === this.start) this.baseV = ops.textVersion(this.app.state, this.id);
     }
     this.place();
   }
@@ -154,7 +167,7 @@ export class TextEditor {
       return;
     }
     const list = [];
-    if (text !== this.start) list.push(ops.textOp(app.state, el, text));
+    if (text !== this.start) list.push(ops.textOp(app.state, el, text, this.baseV));
     if (height != null && Math.abs(height - el.h) >= 1) {
       list.push({ op: 'set', id: el.id, inc: app.state.incOf(el.id), g: 'geom', val: clampGeom({ ...geomOf(el), h: height }) });
     }
@@ -183,7 +196,7 @@ export class TextEditor {
     app.renderer.setHidden(null);
     app.presence.send({ edit: null });
     app.styleBar.update();
-    const back = this.opener && this.opener.isConnected && this.opener.closest('#a11y') ? this.opener : app.renderer.dyn;
-    back.focus({ preventScroll: true });
+    if (this.opener && this.opener.isConnected && this.opener.closest('#a11y')) this.opener.focus({ preventScroll: true });
+    else app.focusBoard();
   }
 }

@@ -28,7 +28,6 @@ const (
 	partDataMax     = 192 << 10
 	partsMax        = 32
 	assemblyMax     = 8 << 20
-	assemblyTimeout = 30 * time.Second
 	hostAssemblyMax = 64 << 20
 	privateQueueMax = 4 << 20
 	publicQueueMax  = 1 << 20
@@ -40,8 +39,12 @@ const (
 
 var (
 	hostAssembly atomic.Int64
-	publicQueued atomic.Int64 // bytes waiting in Public connections' queues, host-wide
-	publicBudget = func() *wsconn.Budget {
+	publicQueued atomic.Int64 // bytes waiting in Public connections' queues and snapshot parts, host-wide
+	publicSnaps  atomic.Int64 // retained snapshot states Public connections send from, host-wide
+	// Limits tests lower.
+	assemblyTimeout = 30 * time.Second
+	hostPublicCap   = int64(hostPublicMax)
+	publicBudget    = func() *wsconn.Budget {
 		b := &wsconn.Budget{}
 		b.Lower(hostPublicMax)
 		return b
@@ -178,9 +181,10 @@ type conn struct {
 	closing  bool
 	wake     chan struct{}
 	lastPres []byte
+	// overflowed: the queue went over its cap and the socket is closing.
+	overflowed bool
 
 	asm       *assembly
-	asmTimer  *time.Timer
 	discarded int64 // the batch whose assembly was dropped as transient
 	batches   rate
 	pres      rate
@@ -194,8 +198,111 @@ type outMsg struct {
 type snapJob struct {
 	gen, seq int64
 	reset    bool
-	meta     any
-	elements []any
+	public   bool
+	data     *snapData
+	done     sync.Once
+}
+
+// release gives up the job's hold on its snapshot state.
+func (j *snapJob) release() {
+	j.done.Do(func() {
+		if j.public {
+			j.data.releasePublic()
+		}
+	})
+}
+
+// snapData is the board at one seq for snapshot transfers: the alive
+// elements and the metadata, taken once in the apply loop and shared by
+// every job of that seq (6 "Snapshot transfer"). Its elements share their
+// immutable text and points with the state; parts are encoded one at a
+// time while sending, so a job holds one part, never the whole board.
+type snapData struct {
+	seq  int64
+	meta model.PrivateElement
+	els  []model.PrivateElement
+	cost int64 // estimated bytes this copy retains
+
+	mu      sync.Mutex
+	pubRefs int // Public jobs holding it; they charge cost once host-wide
+	ends    [2]struct {
+		once sync.Once
+		v    []int // end index of each part; 0 private, 1 public
+	}
+}
+
+// snapElementCost estimates the bytes one copied element retains (the
+// struct, its style and version maps) beyond the text and points it shares.
+const snapElementCost = 1 << 10
+
+// currentSnap returns the snapshot state of the current seq, taking it when
+// the state changed since. Only the apply loop calls it.
+func (in *Instance) currentSnap() *snapData {
+	if d := in.snapCur; d != nil && d.seq == in.st.Seq() {
+		return d
+	}
+	d := &snapData{seq: in.st.Seq(), meta: in.st.Board(), els: in.st.Alive()}
+	d.cost = int64(len(d.els)+1) * snapElementCost
+	in.snapCur = d
+	return d
+}
+
+// acquirePublic charges the state to the host's Public budget when no
+// Public job held it yet; false means it does not fit.
+func (d *snapData) acquirePublic() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.pubRefs == 0 {
+		if publicQueued.Load()+publicSnaps.Load()+publicBudget.Used()+d.cost > hostPublicCap {
+			return false
+		}
+		publicSnaps.Add(d.cost)
+	}
+	d.pubRefs++
+	return true
+}
+
+func (d *snapData) releasePublic() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pubRefs--
+	if d.pubRefs == 0 {
+		publicSnaps.Add(-d.cost)
+	}
+}
+
+func (d *snapData) element(i int, public bool) []byte {
+	var b []byte
+	if public {
+		b, _ = json.Marshal(model.PublicElement(d.els[i].Element))
+	} else {
+		b, _ = json.Marshal(d.els[i])
+	}
+	return b
+}
+
+// partEnds cuts the elements into parts of at most 512 KiB, once per
+// audience; each element is encoded only to measure it.
+func (d *snapData) partEnds(public bool) []int {
+	k := 0
+	if public {
+		k = 1
+	}
+	e := &d.ends[k]
+	e.once.Do(func() {
+		const budget = maxServerFrame - 4096
+		size := 0
+		for i := range d.els {
+			n := len(d.element(i, public)) + 1
+			if size+n > budget && size > 0 {
+				e.v = append(e.v, i)
+				size = 0
+			}
+			size += n
+		}
+		e.v = append(e.v, len(d.els))
+	})
+	return e.v
 }
 
 // rate is a token bucket owned by one reader goroutine.
@@ -219,18 +326,48 @@ func (r *rate) allow() bool {
 	return true
 }
 
-// enqueue queues a frame; deltas use deliver, which enforces the caps.
-func (c *conn) enqueue(frames ...[]byte) {
+// enqueue queues frames within the send queue caps (6): a socket whose
+// queue would exceed its cap (Private 4 MiB with what is in flight, Public
+// 1 MiB), or Public queues beyond the host cap, is closed instead and the
+// frames are dropped. Every outgoing frame goes through it, so replies to a
+// client that sends faster than it reads cannot grow the queue. deliver
+// switches a Private socket to a snapshot before reaching the cap.
+func (c *conn) enqueue(frames ...[]byte) bool {
+	size := int64(0)
+	for _, f := range frames {
+		size += int64(len(f))
+	}
 	c.mu.Lock()
+	if c.overflowed {
+		c.mu.Unlock()
+		return false
+	}
+	if c.overCap(size) {
+		c.overflowed = true
+		c.mu.Unlock()
+		c.close(1008, "too far behind; reconnect")
+		return false
+	}
 	for _, f := range frames {
 		c.q = append(c.q, outMsg{frame: f})
-		c.qBytes += int64(len(f))
-		if c.public {
-			publicQueued.Add(int64(len(f)))
-		}
+	}
+	c.qBytes += size
+	if c.public {
+		publicQueued.Add(size)
 	}
 	c.mu.Unlock()
 	c.poke()
+	return true
+}
+
+// overCap reports whether size more bytes exceed the queue caps. c.mu is
+// held.
+func (c *conn) overCap(size int64) bool {
+	if c.public {
+		return c.qBytes+size > publicQueueMax ||
+			publicQueued.Load()+publicSnaps.Load()+publicBudget.Used()+size > hostPublicCap
+	}
+	return c.qBytes+size+c.ws.Budget().Used() > c.in.privateQueue
 }
 
 func (c *conn) poke() {
@@ -254,22 +391,21 @@ func (c *conn) currentGen() int64 {
 }
 
 // queueSnapshot queues a snapshot of the state the apply loop holds now.
-// Only the apply loop calls it.
+// A Public socket whose snapshot state does not fit the host's Public
+// budget is closed, and its client retries. Only the apply loop calls it.
 func (c *conn) queueSnapshot(reset bool) {
-	in := c.in
-	job := &snapJob{seq: in.st.Seq(), reset: reset}
-	if c.public {
-		job.meta = model.PublicElement(in.st.Board().Element)
-		for _, e := range in.st.Alive() {
-			job.elements = append(job.elements, model.PublicElement(e.Element))
-		}
-	} else {
-		job.meta = in.st.Board()
-		for _, e := range in.st.Alive() {
-			job.elements = append(job.elements, e)
-		}
+	d := c.in.currentSnap()
+	job := &snapJob{seq: d.seq, reset: reset, public: c.public, data: d}
+	if c.public && !d.acquirePublic() {
+		c.close(1013, "busy; try again")
+		return
 	}
 	c.mu.Lock()
+	if c.overflowed {
+		c.mu.Unlock()
+		job.release()
+		return
+	}
 	job.gen = c.gen
 	c.q = append(c.q, outMsg{snap: job})
 	c.snaps++
@@ -300,7 +436,6 @@ func (c *conn) close(code int, reason string) { c.ws.Close(code, reason) }
 func (c *conn) deliver(rec deltaRec, publicBody []byte) {
 	c.mu.Lock()
 	gen := c.gen
-	queued := c.qBytes
 	pendingSnap := c.snaps > 0
 	c.mu.Unlock()
 	var frames [][]byte
@@ -317,16 +452,11 @@ func (c *conn) deliver(rec deltaRec, publicBody []byte) {
 	for _, f := range frames {
 		size += int64(len(f))
 	}
-	if c.public {
-		if queued+size > publicQueueMax || publicQueued.Load()+publicBudget.Used()+size > hostPublicMax {
-			c.close(1008, "too far behind; reconnect")
-			return
-		}
-		c.enqueue(frames...)
-		return
-	}
-	if queued+size+c.ws.Budget().Used() <= c.in.privateQueue {
-		c.enqueue(frames...)
+	c.mu.Lock()
+	over := c.overCap(size)
+	c.mu.Unlock()
+	if !over || c.public {
+		c.enqueue(frames...) // closes a Public socket over a cap
 		return
 	}
 	if pendingSnap {
@@ -341,11 +471,13 @@ func (c *conn) deliver(rec deltaRec, publicBody []byte) {
 func (c *conn) resync() {
 	c.mu.Lock()
 	c.gen++
+	dropped := c.q
 	c.q = nil
 	c.qBytes = 0
 	c.snaps = 0
 	gen := c.gen
 	c.mu.Unlock()
+	releaseJobs(dropped)
 	b, _ := json.Marshal(map[string]any{"t": "resync", "gen": gen, "seq": c.in.st.Seq()})
 	c.enqueue(b)
 	c.queueSnapshot(false)
@@ -386,7 +518,9 @@ func (c *conn) pump() {
 			}
 		}
 		if m.snap != nil {
-			if !c.sendSnapshot(m.snap) {
+			ok := c.sendSnapshot(m.snap)
+			m.snap.release()
+			if !ok {
 				c.dropQueue()
 				return
 			}
@@ -404,8 +538,18 @@ func (c *conn) dropQueue() {
 	if c.public {
 		publicQueued.Add(-c.qBytes)
 	}
+	dropped := c.q
 	c.q, c.qBytes, c.snaps = nil, 0, 0
 	c.mu.Unlock()
+	releaseJobs(dropped)
+}
+
+func releaseJobs(q []outMsg) {
+	for _, m := range q {
+		if m.snap != nil {
+			m.snap.release()
+		}
+	}
 }
 
 // feed sends one frame once less than feedBelow bytes are in flight.
@@ -420,49 +564,50 @@ func (c *conn) feed(f []byte) bool {
 	return c.ws.Send(string(f)) == nil
 }
 
-// sendSnapshot sends a snapshot in parts of at most 512 KiB. A newer
-// generation (a resync) abandons it.
+// sendSnapshot sends a snapshot in parts of at most 512 KiB, encoding each
+// part only when it is its turn. A newer generation (a resync) abandons
+// it. A Public part waiting for room counts toward the host's Public queue
+// bytes.
 func (c *conn) sendSnapshot(j *snapJob) bool {
-	var parts [][]json.RawMessage
-	var cur []json.RawMessage
-	size := 0
-	const budget = maxServerFrame - 4096
-	for _, e := range j.elements {
-		b, err := json.Marshal(e)
-		if err != nil {
-			continue
-		}
-		if size+len(b)+1 > budget && len(cur) > 0 {
-			parts = append(parts, cur)
-			cur, size = nil, 0
-		}
-		cur = append(cur, b)
-		size += len(b) + 1
+	d := j.data
+	ends := d.partEnds(j.public)
+	var meta any = d.meta
+	if j.public {
+		meta = model.PublicElement(d.meta.Element)
 	}
-	parts = append(parts, cur)
-	metaJSON, _ := json.Marshal(j.meta)
-	for i, els := range parts {
+	start := 0
+	for i, end := range ends {
 		if c.currentGen() != j.gen {
 			return true
 		}
 		var b bytes.Buffer
-		fmt.Fprintf(&b, `{"t":"snapshot","gen":%d,"seq":%d,"part":%d,"parts":%d`, j.gen, j.seq, i+1, len(parts))
+		fmt.Fprintf(&b, `{"t":"snapshot","gen":%d,"seq":%d,"part":%d,"parts":%d`, j.gen, j.seq, i+1, len(ends))
 		if j.reset {
 			b.WriteString(`,"reset":true`)
 		}
 		if i == 0 {
+			metaJSON, _ := json.Marshal(meta)
 			b.WriteString(`,"meta":`)
 			b.Write(metaJSON)
 		}
 		b.WriteString(`,"elements":[`)
-		for k, e := range els {
-			if k > 0 {
+		for k := start; k < end; k++ {
+			if k > start {
 				b.WriteByte(',')
 			}
-			b.Write(e)
+			b.Write(d.element(k, j.public))
 		}
 		b.WriteString("]}")
-		if !c.feed(b.Bytes()) {
+		start = end
+		n := int64(b.Len())
+		if c.public {
+			publicQueued.Add(n)
+		}
+		ok := c.feed(b.Bytes())
+		if c.public {
+			publicQueued.Add(-n)
+		}
+		if !ok {
 			return false
 		}
 	}
@@ -764,21 +909,34 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 		c.send(map[string]any{"t": "welcome", "session": res.Session, "expires": now + engine.SessionTTL, "access": "private",
 			"me": map[string]any{"key": c.key, "name": c.name, "verified": c.verified, "color": c.color}})
 		seq := st.Seq()
-		switch {
-		case res.New || h.Watermark == nil || *h.Watermark > seq:
-			c.queueSnapshot(false)
-		case *h.Watermark == seq:
-		case in.logCovers(*h.Watermark + 1):
+		// Catching up through the delta log is limited to half the queue
+		// cap; a longer gap gets a snapshot instead of a closed socket.
+		var catchUp [][]byte
+		if h.Watermark != nil && *h.Watermark < seq && !res.New && in.logCovers(*h.Watermark+1) {
 			gen := c.currentGen()
+			size := int64(0)
 			for _, d := range in.sd.deltas {
-				if d.seq > *h.Watermark {
+				if d.seq > *h.Watermark && size <= in.privateQueue/2 {
 					from := ""
 					if d.session == c.session {
 						from = d.session + ":" + strconv.FormatInt(d.n, 10)
 					}
-					c.enqueue(deltaFrames(gen, d.seq, d.body, from)...)
+					for _, f := range deltaFrames(gen, d.seq, d.body, from) {
+						catchUp = append(catchUp, f)
+						size += int64(len(f))
+					}
 				}
 			}
+			if size > in.privateQueue/2 {
+				catchUp = nil
+			}
+		}
+		switch {
+		case res.New || h.Watermark == nil || *h.Watermark > seq:
+			c.queueSnapshot(false)
+		case *h.Watermark == seq:
+		case catchUp != nil:
+			c.enqueue(catchUp...)
 		default:
 			// A dropped reset after the watermark is reported too.
 			reset := *h.Watermark < st.ResetFloor()
@@ -851,30 +1009,50 @@ func (in *Instance) onOps(ctx context.Context, c *conn, raw string) bool {
 	return in.submit(ctx, &batchReq{c: c, n: m.N, raw: m.Ops})
 }
 
-// assembly collects the ops_part frames of one batch (4.5).
+// assembly collects the ops_part frames of one batch (4.5). The reader
+// and the timeout timer change it only under c.mu, and whichever detaches
+// it from c.asm first decides its outcome and returns its bytes to the
+// host budget.
 type assembly struct {
 	n       int64
 	parts   int
 	next    int
 	buf     []byte
 	started time.Time
+	timer   *time.Timer
+}
+
+// reserveAssembly charges n bytes to the host's assembly memory unless
+// that would exceed 64 MiB.
+func reserveAssembly(n int64) bool {
+	for {
+		old := hostAssembly.Load()
+		if old+n > hostAssemblyMax {
+			return false
+		}
+		if hostAssembly.CompareAndSwap(old, old+n) {
+			return true
+		}
+	}
+}
+
+// detachAssembly removes a, when it is still the socket's assembly, and
+// releases its bytes; it reports whether it did. c.mu is held.
+func (c *conn) detachAssembly(a *assembly) bool {
+	if a == nil || c.asm != a {
+		return false
+	}
+	c.asm = nil
+	c.discarded = a.n
+	a.timer.Stop()
+	hostAssembly.Add(-int64(len(a.buf)))
+	return true
 }
 
 func (c *conn) dropAssembly() {
 	c.mu.Lock()
-	a := c.asm
-	c.asm = nil
-	if a != nil {
-		c.discarded = a.n
-	}
-	if c.asmTimer != nil {
-		c.asmTimer.Stop()
-		c.asmTimer = nil
-	}
+	c.detachAssembly(c.asm)
 	c.mu.Unlock()
-	if a != nil {
-		hostAssembly.Add(-int64(len(a.buf)))
-	}
 }
 
 func (in *Instance) onPart(ctx context.Context, c *conn, raw string) bool {
@@ -887,50 +1065,57 @@ func (in *Instance) onPart(ctx context.Context, c *conn, raw string) bool {
 	if json.Unmarshal([]byte(raw), &m) != nil || m.N <= 0 || m.Parts < 2 || m.Parts > partsMax || len(m.Data) > partDataMax {
 		return false
 	}
+	n := int64(len(m.Data))
 	c.mu.Lock()
-	a, discarded := c.asm, c.discarded
-	c.mu.Unlock()
+	a := c.asm
 	if a == nil {
 		if m.Part != 1 {
-			// The rest of a batch dropped as transient may still arrive;
-			// any other skipped part is a protocol error.
-			return m.N == discarded
-		}
-		if hostAssembly.Load()+int64(len(m.Data)) > hostAssemblyMax {
-			(&batchReq{c: c, n: m.N}).transient("busy")
-			return true
+			// The rest of a batch dropped as transient (too large, timed
+			// out, busy) may still arrive; any other skipped part is a
+			// protocol error.
+			ok := m.N == c.discarded
+			c.mu.Unlock()
+			return ok
 		}
 		a = &assembly{n: m.N, parts: m.Parts, next: 1, started: time.Now()}
-		c.mu.Lock()
 		c.asm = a
-		c.asmTimer = time.AfterFunc(assemblyTimeout, func() {
+		a.timer = time.AfterFunc(assemblyTimeout, func() {
 			c.mu.Lock()
-			current := c.asm == a
+			current := c.detachAssembly(a)
 			c.mu.Unlock()
 			if current {
-				c.dropAssembly()
 				(&batchReq{c: c, n: a.n}).transient("timeout")
 			}
 		})
-		c.mu.Unlock()
 	}
 	if m.N != a.n || m.Parts != a.parts || m.Part != a.next {
+		c.mu.Unlock()
 		return false
 	}
-	if len(a.buf)+len(m.Data) > assemblyMax || hostAssembly.Load()+int64(len(m.Data)) > hostAssemblyMax ||
-		time.Since(a.started) > assemblyTimeout {
-		c.dropAssembly()
-		(&batchReq{c: c, n: a.n}).transient("too_large")
+	var refuse string
+	switch {
+	case time.Since(a.started) > assemblyTimeout:
+		refuse = "timeout"
+	case int64(len(a.buf))+n > assemblyMax:
+		refuse = "too_large"
+	case !reserveAssembly(n):
+		refuse = "busy"
+	}
+	if refuse != "" {
+		c.detachAssembly(a)
+		c.mu.Unlock()
+		(&batchReq{c: c, n: a.n}).transient(refuse)
 		return true
 	}
 	a.buf = append(a.buf, m.Data...)
-	hostAssembly.Add(int64(len(m.Data)))
 	a.next++
 	if a.next <= a.parts {
+		c.mu.Unlock()
 		return true
 	}
 	data := a.buf
-	c.dropAssembly()
+	c.detachAssembly(a)
+	c.mu.Unlock()
 	return in.submit(ctx, &batchReq{c: c, n: a.n, raw: data})
 }
 

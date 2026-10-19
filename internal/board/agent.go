@@ -1,6 +1,7 @@
 package board
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"math"
@@ -72,7 +73,7 @@ func (in *Instance) GetBoard(ctx context.Context, q Query) (Page, error) {
 			vers[e.ID] = v
 		}
 		var err error
-		all, err = selectElements(els, q, vers)
+		all, err = selectElements(els, elementsByID(els), q, vers)
 		return err
 	})
 	if err != nil {
@@ -99,6 +100,9 @@ func (in *Instance) GetBoard(ctx context.Context, q Query) (Page, error) {
 func ReadContent(c engine.Content, q Query) (Page, error) {
 	els := slices.Clone(c.Elements)
 	slices.SortFunc(els, func(a, b model.Element) int { return strings.Compare(a.ID, b.ID) })
+	// Connector bounds resolve against the whole revision, not only the
+	// elements after the cursor.
+	byID := elementsByID(els)
 	after := strings.TrimPrefix(q.Cursor, "after:")
 	if q.Cursor != "" {
 		i, _ := slices.BinarySearchFunc(els, after, func(e model.Element, id string) int { return strings.Compare(e.ID, id) })
@@ -107,7 +111,7 @@ func ReadContent(c engine.Content, q Query) (Page, error) {
 		}
 		els = els[i:]
 	}
-	all, err := selectElements(els, q, nil)
+	all, err := selectElements(els, byID, q, nil)
 	if err != nil {
 		return Page{}, err
 	}
@@ -124,13 +128,18 @@ func ReadContent(c engine.Content, q Query) (Page, error) {
 	return p, nil
 }
 
-// selectElements filters elements (sorted by id) and encodes them, full or
-// as an outline. vers adds each element's guard version (ver) when set.
-func selectElements(els []model.Element, q Query, vers map[string]int64) ([]json.RawMessage, error) {
+func elementsByID(els []model.Element) map[string]model.Element {
 	byID := make(map[string]model.Element, len(els))
 	for _, e := range els {
 		byID[e.ID] = e
 	}
+	return byID
+}
+
+// selectElements filters elements (sorted by id) and encodes them, full or
+// as an outline; byID resolves connector ends for area filters and holds
+// at least els. vers adds each element's guard version (ver) when set.
+func selectElements(els []model.Element, byID map[string]model.Element, q Query, vers map[string]int64) ([]json.RawMessage, error) {
 	var ids map[string]bool
 	if len(q.IDs) > 0 {
 		ids = map[string]bool{}
@@ -273,17 +282,39 @@ func (in *Instance) UpdateBoard(ctx context.Context, req UpdateRequest, other in
 	if err := checkOpID(req.OpID); err != nil {
 		return UpdateResult{}, err
 	}
-	assets, err := in.storeImages(ctx, req.Assets)
+	mark := in.meas.mark()
+	assets, err := checkImages(req.Assets, in.b.Limits().UploadMax)
 	if err != nil {
 		return UpdateResult{}, err
 	}
 	hashes := make([]string, len(assets))
+	blobs := make([]newBlob, len(assets))
 	for i, a := range assets {
 		hashes[i] = a.Hash
+		blobs[i] = newBlob{a, req.Assets[i]}
 	}
 	reqHash := sha256Hex(model.Canonical(map[string]any{"ops": req.Ops, "layout": req.Layout, "if_seq": req.IfSeq,
 		"message": req.Message, "replace": req.Replace, "assets": hashes}))
-	in.meas.install(other)
+	in.meas.install(ctx, other, mark)
+	// The images are stored only once a dry run admits the call, so a
+	// refused call leaves no blob behind (5.4).
+	store, release, err := in.admitBlobs(ctx, blobs, func(t *txn) error {
+		var res UpdateResult
+		if done, err := in.replay(req.OpID, reqHash, &res); done || err != nil {
+			return cmp.Or(err, errReplay)
+		}
+		return asError(in.agentWrite(t, req, reqHash, assets, &res))
+	})
+	defer release()
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	if store {
+		if err := in.putBlobs(ctx, blobs, true); err != nil {
+			return UpdateResult{}, err
+		}
+	}
+	release() // the stored blobs count from here on
 	var res UpdateResult
 	err = in.do(ctx, func() error {
 		if done, err := in.replay(req.OpID, reqHash, &res); done || err != nil {

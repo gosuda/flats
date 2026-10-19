@@ -29,6 +29,7 @@ func (v *assetView) reset(rows []engine.Asset, st *engine.State) {
 	for _, r := range rows {
 		if a, ok := st.AssetRow(r.Hash); ok {
 			v.m[a.Hash] = a
+			rememberDims(a.Hash, a.W, a.H)
 			if a.Refs > 0 {
 				v.liveN++
 			}
@@ -51,6 +52,7 @@ func (v *assetView) apply(ch map[string]*engine.Asset) {
 			continue
 		}
 		v.m[h] = *a
+		rememberDims(h, a.W, a.H)
 		if a.Refs > 0 {
 			v.liveN++
 		}
@@ -104,17 +106,30 @@ func (v *assetView) live(overlay map[string]*engine.Asset) []engine.Asset {
 }
 
 // measurer caches the measurement of the flat directory without board.db
-// (5.4 "Measuring other"). extra counts bytes stored as blobs since the
-// running or last measurement started (uploads and imports).
+// (5.4 "Measuring other"). extra lists the blobs stored since the running
+// or last measurement started (uploads, agent images, imports); reserved
+// counts blob bytes admitted but not yet stored (admitBlobs).
 type measurer struct {
-	in      *Instance
-	mu      sync.Mutex
-	other   int64
-	at      time.Time
-	valid   bool
-	running bool
-	extra   int64
-	waiters []chan struct{}
+	in       *Instance
+	mu       sync.Mutex
+	other    int64
+	at       time.Time
+	valid    bool
+	running  bool
+	seq      int64 // numbers extra entries in order
+	extra    []stored
+	reserved int64
+	installs int64 // measurements installed by install
+	waiters  []chan struct{}
+}
+
+// stored is a blob counted on top of the measurement. locked marks a blob
+// stored while the flat lock was held: no measurement taken under the flat
+// lock can overlap it, so its order against such a measurement is known.
+type stored struct {
+	seq    int64
+	n      int64
+	locked bool
 }
 
 const (
@@ -124,37 +139,131 @@ const (
 
 func newMeasurer(in *Instance) *measurer { return &measurer{in: in} }
 
-// get returns other plus the bytes stored since, when a measurement at
-// most 60 seconds old exists.
+// get returns other plus the bytes stored and reserved since, when a
+// measurement at most 60 seconds old exists.
 func (m *measurer) get() (int64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.valid || m.in.now().Sub(m.at) > measureTTL {
 		return 0, false
 	}
-	return m.other + m.extra, true
+	v := m.other + m.reserved
+	for _, e := range m.extra {
+		v += e.n
+	}
+	return v, true
 }
 
-// add counts bytes stored as blobs after the measurement.
-func (m *measurer) add(n int64) {
+// add counts a blob stored after the measurement started; locked tells
+// that the caller holds the flat lock.
+func (m *measurer) add(n int64, locked bool) {
 	if n <= 0 {
 		return
 	}
 	m.mu.Lock()
-	m.extra += n
+	m.seq++
+	m.extra = append(m.extra, stored{seq: m.seq, n: n, locked: locked})
+	if len(m.extra) > maxStored {
+		m.compact()
+	}
 	m.mu.Unlock()
 }
 
-// install adopts a measurement core took under the flat lock. Bytes stored
-// meanwhile stay counted (on the safe side).
-func (m *measurer) install(other int64) {
+// maxStored bounds the counted blobs kept one by one between measurements.
+const maxStored = 256
+
+// compact merges the counted blobs into one per kind with the newest
+// position, so a measurement drops a merged blob only when it includes all
+// of them: it may count bytes twice until the next one, never not at all.
+func (m *measurer) compact() {
+	var merged [2]stored
+	for _, e := range m.extra {
+		k := 0
+		if e.locked {
+			k = 1
+		}
+		merged[k].n += e.n
+		merged[k].seq = max(merged[k].seq, e.seq)
+		merged[k].locked = e.locked
+	}
+	m.extra = m.extra[:0]
+	for _, e := range merged {
+		if e.n > 0 {
+			m.extra = append(m.extra, e)
+		}
+	}
+}
+
+// reserve adds n (negative: releases) to the admitted, not yet stored
+// bytes.
+func (m *measurer) reserve(n int64) {
 	m.mu.Lock()
-	m.other, m.at, m.valid = other, m.in.now(), true
+	m.reserved += n
 	m.mu.Unlock()
+}
+
+// mark returns the position after the blobs counted so far.
+func (m *measurer) mark() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.seq
+}
+
+// forget drops the counted blobs a measurement includes: those up to mark,
+// or only the locked ones when lockedOnly.
+func (m *measurer) forget(mark int64, lockedOnly bool) {
+	keep := m.extra[:0]
+	for _, e := range m.extra {
+		if e.seq > mark || (lockedOnly && !e.locked) {
+			keep = append(keep, e)
+		}
+	}
+	clear(m.extra[len(keep):])
+	m.extra = keep
+}
+
+// install adopts the measurement core took under the flat lock before the
+// caller's work began, where mark was taken when that work began. Blobs
+// counted before mark under the flat lock were stored in an earlier hold of
+// the lock, before the measurement, so it includes them and they are
+// dropped; later ones stay counted. A blob stored without the lock (an
+// upload) before mark may or may not be in it; when there is one, install
+// measures again itself, from a mark taken before the walk, instead of
+// counting it twice or not at all.
+func (m *measurer) install(ctx context.Context, other, mark int64) {
+	m.mu.Lock()
+	ambiguous := false
+	for _, e := range m.extra {
+		if e.seq <= mark && !e.locked {
+			ambiguous = true
+		}
+	}
+	if !ambiguous {
+		m.other, m.at, m.valid = other, m.in.now(), true
+		m.forget(mark, true)
+		m.installs++
+		m.mu.Unlock()
+		return
+	}
+	mark2 := m.seq
+	m.mu.Unlock()
+	fresh, err := m.in.b.MeasureOther(ctx)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.at, m.valid = m.in.now(), true
+	m.installs++
+	if err != nil {
+		// Keep the unlocked blobs counted, on the safe side.
+		m.other = other
+		m.forget(mark, true)
+		return
+	}
+	m.other = fresh
+	m.forget(mark2, false)
 }
 
 // start begins a measurement in a helper goroutine unless one runs. The old
-// value stays usable until the new one arrives.
+// value stays usable until the new one arrives; an install meanwhile wins.
 func (m *measurer) start() {
 	m.mu.Lock()
 	if m.running {
@@ -162,7 +271,7 @@ func (m *measurer) start() {
 		return
 	}
 	m.running = true
-	base := m.extra
+	mark, installs := m.seq, m.installs
 	m.mu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(m.in.ctx, 2*time.Minute)
@@ -170,12 +279,15 @@ func (m *measurer) start() {
 		other, err := m.in.b.MeasureOther(ctx)
 		m.mu.Lock()
 		m.running = false
-		if err != nil {
+		switch {
+		case m.installs != installs:
+			// A newer measurement was installed while this one ran.
+		case err != nil:
 			m.valid = false
 			m.in.log.Warn("board measurement failed", "err", err)
-		} else {
+		default:
 			m.other, m.at, m.valid = other, m.in.now(), true
-			m.extra -= base
+			m.forget(mark, false)
 		}
 		ws := m.waiters
 		m.waiters = nil

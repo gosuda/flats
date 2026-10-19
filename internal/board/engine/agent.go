@@ -162,6 +162,8 @@ type agentCall struct {
 	// next free position for new elements without coordinates
 	placed       bool
 	nextX, nextY float64
+	// elements the call's layout places explicitly
+	laid map[string]bool
 }
 
 func (c *agentCall) run() error {
@@ -224,6 +226,10 @@ func (c *agentCall) op(op AgentOp) (any, error) {
 	case OpReparent, OpGroup, OpDelete, OpZorder:
 		return ResultOK, c.multi(op)
 	case OpUngroup:
+		// A group is no element, so its guard names members: {id: ver}.
+		if err := c.ifVer(op.IfVer); err != nil {
+			return nil, err
+		}
 		if len(c.a.s.groups[op.Group]) == 0 {
 			return nil, conflict("group %s has no members", op.Group)
 		}
@@ -760,6 +766,9 @@ func (c *agentCall) deleteFrameContents(op AgentOp) error {
 	if frame == "" {
 		return invalid("delete_frame_contents needs a frame")
 	}
+	if err := c.ifVer(op.IfVer, frame); err != nil {
+		return err
+	}
 	if _, err := c.unlocked(frame); err != nil {
 		return err
 	}
@@ -772,12 +781,27 @@ func (c *agentCall) deleteFrameContents(op AgentOp) error {
 	return nil
 }
 
-// layout applies layout help after every operation of the call (8.1).
+// layout applies layout help after every operation of the call (8.1). A
+// frame it moves carries only the members no layout of the call places, so
+// an explicitly placed member moves once, to its own place. The reported
+// positions are read after every layout has applied.
 func (c *agentCall) layout() error {
+	c.laid = map[string]bool{}
+	for _, l := range c.call.Layout {
+		for _, ref := range l.IDs {
+			if id, err := c.id(ref); err == nil {
+				c.laid[id] = true
+			}
+		}
+	}
 	for i, l := range c.call.Layout {
 		if err := c.layoutOne(l); err != nil {
 			return fmt.Errorf("layout %d: %w", i, err)
 		}
+	}
+	for id := range c.out.Layout {
+		g := c.a.s.rows[id].El.Geom
+		c.out.Layout[id] = [2]float64{g.X, g.Y}
 	}
 	return nil
 }
@@ -870,12 +894,16 @@ func (c *agentCall) layoutOne(l Layout) error {
 		if math.Abs(g.X) > model.MaxCoord || math.Abs(g.Y) > model.MaxCoord {
 			return invalid("layout places %s outside the canvas", r.El.ID)
 		}
-		carry := ""
-		if r.El.Type == model.TypeFrame {
-			carry = CarryMembers
-		}
 		if cur := a.s.rows[r.El.ID]; cur.El.Geom != g {
-			a.write(cur, model.BundleGeom, g, carry, 0)
+			a.write(cur, model.BundleGeom, g, "", 0)
+			if r.El.Type == model.TypeFrame {
+				dx, dy := g.X-cur.El.Geom.X, g.Y-cur.El.Geom.Y
+				for _, m := range slices.Sorted(maps.Keys(a.s.members[r.El.ID])) {
+					if !c.laid[m] && (dx != 0 || dy != 0) {
+						a.moveBy(m, dx, dy)
+					}
+				}
+			}
 		}
 		c.out.Layout[r.El.ID] = [2]float64{g.X, g.Y}
 		right, bottom = math.Max(right, g.X+g.W), math.Max(bottom, g.Y+g.H)

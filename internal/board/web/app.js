@@ -3,7 +3,7 @@
 // WebSocket protocol of board-TECH.md.
 
 import { BoardState } from './state.js';
-import { Net } from './net.js';
+import { Net, batchFits } from './net.js';
 import { SpatialIndex } from './index.js';
 import { Renderer } from './render.js';
 import { elementBounds, hit, union, center, connectorPoints } from './geom.js';
@@ -31,6 +31,7 @@ import { EraserTool } from './tools/eraser.js';
 import { ImageTool, uploadImages } from './tools/image.js';
 
 const MIN_Z = 0.1, MAX_Z = 4;
+const TOO_LARGE = 'This change is too large to send at once. Try a smaller selection.';
 
 const TOOLBAR = [
   ['select', 'Select', 'V', 'select'], ['hand', 'Hand', 'H', 'hand'], '-',
@@ -171,10 +172,9 @@ class App {
       pres: (m) => this.presence.receive(m),
       shared: (m) => this.share.shared(m),
       status: () => this.status(),
-      tooLarge: (b) => {
-        this.changed(this.state.reject(b.n, false).changed);
-        toast('This change is too large to send at once. Try a smaller selection.', { error: true });
-        this.net.flush();
+      tooLarge: (b, changed) => {
+        this.changed(changed);
+        toast(TOO_LARGE, { error: true });
       },
     };
   }
@@ -226,7 +226,10 @@ class App {
       const group = countVoid(m.results, 'invalid_group');
       if (group) toast('Grouping did not apply: an element changed frame or group meanwhile. Group them again.');
     }
-    if (this.quota) { this.quota = false; this.banner(null); }
+    if (this.quota) {
+      this.quota = false;
+      if (this.bannerKind === 'quota') this.banner(null);
+    }
   }
 
   onReject(m, batch) {
@@ -328,6 +331,12 @@ class App {
       toast(`One action can change at most ${LIMITS.batchOps} elements. Try a smaller selection.`, { error: true });
       return null;
     }
+    // Checked before the batch takes a number: an unsendable batch must not
+    // consume one (TECH 4.8, n == max_n + 1).
+    if (!batchFits(this.state.nextN, list)) {
+      toast(TOO_LARGE, { error: true });
+      return null;
+    }
     const { batch, changed } = this.state.push(list);
     this.changed(changed);
     this.net.flush();
@@ -339,6 +348,10 @@ class App {
     const changed = this.state.setPreview(map);
     this.changed(changed);
   }
+
+  // focusBoard moves keyboard focus back to the board. The canvases are
+  // aria-hidden, so focus goes to the labelled board region around them.
+  focusBoard() { $('.board').focus({ preventScroll: true }); }
 
   // ---- selection ----
 

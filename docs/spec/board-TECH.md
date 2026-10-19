@@ -208,8 +208,10 @@ new incarnation (the same rule as "Linking incarnations" in 4.10).
          the same incarnation, and the `v` of the bundle concerned is still
          that deletion seq. Otherwise the outside element stays as it is.
      - Last, the server checks the group invariant (all current members of a
-       group are in the same frame) and clears the `group` of every element
-       of S that breaks it.
+       group are in the same frame). In a group that breaks it, outside
+       elements this revive put back into a frame leave it again first; then
+       every element of S that still breaks it loses its `group`. An undo
+       runs this check after its relation step (4.10).
 
 ### 4.2 Moves that follow a container
 
@@ -262,7 +264,7 @@ at the moment of applying**. Explicit targets carry expected incarnations.
 |---|---|---|
 | `reparent` | `{op:"reparent", ids, inc_of, frame, frame_inc?}` (`frame` is an id or `null`; `frame_inc` is required with an id) | Moves all group members of a target together (group invariant). A frame cannot go inside a frame. Ignored when the target frame does not exist or its incarnation differs. A locked direct target is ignored (`locked`); locked members of its group change membership along with it |
 | `group` | `{op:"group", ids, inc_of, group: new id}` | All targets must be alive, not locked, in the same frame (or all outside frames) and in no other group. Otherwise the whole operation is ignored (`invalid_group`), as [rule 34](board.md#concurrency-rules) states |
-| `ungroup` | `{op:"ungroup", group}` | Clears `group` on every current member of that group (including locked members, because ungrouping acts on the group itself). Every `group` operation creates a new group id and ids are never reused, so no incarnation is needed |
+| `ungroup` | `{op:"ungroup", group}` | Clears `group` on every current member of that group (including locked members, because ungrouping acts on the group itself). Every `group` operation creates a new group id and ids are never reused, so no incarnation is needed: the board records every group id it has used (board.db `created`, under no session, never expiring), and a `group` naming one is ignored (`invalid_group`) even after an ungroup, after its members' rows are purged and after a restart |
 | `delete` | `{op:"delete", ids, inc_of, if_v?}` | Each element must be alive, have the same incarnation and not be locked (otherwise only that element is ignored). With `if_v` (per element `{g: v}`), every bundle must match (`stale`). The server first captures `pre_rel` for the whole set to delete, **before changing anything**. Then, for a frame, it clears the `frame` of members outside the set, and replaces the attached ends of connectors outside the set with free coordinates computed from the shape just before deletion |
 | `delete_frame_contents` | `{op:"delete_frame_contents", frame, inc}` | Deletes the frame and its current members under the rules above. **Locked members are not deleted**; only their membership is cleared. The result reports how many locked elements remain |
 | `zorder` | `{op:"zorder", ids, inc_of, to, if_v?}` (`if_v` is used by undo) | `to`: `"front"`, `"back"`, `{"after": id, "inc"}`, `{"before": id, "inc"}`. Locked targets are ignored. The server creates a new `z` from the current order |
@@ -388,9 +390,10 @@ sequenceDiagram
   current seq at that time.
 - **Large deltas.** When a serialized delta frame would exceed 512 KiB, the
   server sends it as `delta_part {gen, seq, part, parts, data}`. The client applies it at once
-  after receiving every part. When a connection's send queue exceeds 4 MiB,
-  the server drops that connection's queue and switches to the snapshot of
-  that seq with `resync {seq}` (4.8). The client's `pending` and the server's
+  after receiving every part. When a delta would take a Private connection's
+  send queue over its 4 MiB cap, the server drops that connection's queue
+  and switches to the snapshot of that seq with `resync {seq}` (4.8); when a
+  snapshot is already pending there, it closes the connection instead (6). The client's `pending` and the server's
   receipts stay as they are. Each switch increments a per-connection
   generation number (`gen`); the client discards any `delta_part` it was
   assembling and ignores parts of earlier generations.
@@ -436,8 +439,10 @@ does not drift.
   - Anything else: a protocol error that closes the connection.
 - **Reconnect.** `hello {v, session?, watermark?, pending: {count, first_n?}, editor, name?}`. `first_n` is present when `count > 0`.
   - Private, with a live session: when the delta log holds every entry
-    from `watermark + 1` on without a gap, the server sends those deltas;
-    otherwise (a trim removed any of them) it sends a snapshot. A snapshot carries `seq`, and whether a rollback or replacement
+    from `watermark + 1` on without a gap and those deltas take at most half
+    the send queue cap (2 MiB), the server sends those deltas; otherwise (a
+    trim removed any of them, or the catch-up is larger) it sends a
+    snapshot. A snapshot carries `seq`, and whether a rollback or replacement
     happened between `watermark` and that seq (`reset: true`, decided from
     the seqs recorded in `meta.resets`). The client then resends `pending` with
     the same numbers.
@@ -504,9 +509,12 @@ does not affect the request size.
 session (one action of a person), it pushes what that batch actually changed
 as one undo entry and clears the redo stack. `undo` and `redo` batches do not
 follow this rule. An undo pops the top entry of the undo stack and pushes
-only the part it actually reverted as a redo entry. A redo pops the top entry
-of the redo stack and pushes only the part it actually reapplied as an undo
-entry. When nothing applied, nothing goes onto the opposite stack. Fixed
+what it actually changed as a redo entry; a redo pops the top entry of the
+redo stack and pushes what it actually changed as an undo entry. The
+opposite entry is recorded like an ordinary batch, so it covers side effects
+too (connector ends a deletion detached or a revive reattached, members a
+frame deletion released) and leaves out what was skipped. When nothing
+changed, nothing goes onto the opposite stack. Fixed
 tests: edit, undo, redo; consecutive undos; a new edit after undo clearing
 redo.
 
@@ -523,21 +531,38 @@ batch):
 
 1. **Content bundles.** For each `(id, g)`, revert to the previous value when
    the element is alive, has the same incarnation, `v[g] == my_v` and is not
-   locked (`g == "locked"` regardless of lock). The side effects of relation
-   restore (4) and deletion undo (3) do not change locked elements either.
+   locked (`g == "locked"` regardless of lock). A record whose element, or
+   whose previous connector end target, is still deleted waits until after
+   step 3. The side effects of relation restore (4) and deletion undo (3) do
+   not change locked elements either.
    Undo does no container following. So when B moved member X after A's
    frame move, only X stays at B's position.
 2. **Creation undo.** Deletes the element only when every bundle equals its
    recorded `my_v` (nobody but me changed it).
-3. **Deletion undo.** The same two phases as `revive {ids, if_del}` (4.1).
+3. **Deletion undo.** The same two phases as `revive {ids, if_del}` (4.1),
+   without the final group invariant check, which waits for step 4.
 4. **Relations.** **First compute the final relations** of the candidates that
    passed the guards (`v.frame` and `v.group` equal `my_v`), then check the
    invariant (all members in the same frame, the frame alive) for each set
-   connected by groups. Skip only the sets that break it and apply the rest.
-   Do not widen the targets to new members that someone else added to the
-   group later. Example: after group AB moved from F1 to F2 and nobody touched
-   it, A and B return to F1 together as one set.
+   connected by groups, counting elements revived in step 3 with the
+   relations they came back with. Skip only the sets that break it and apply
+   the rest. Do not widen the targets to new members that someone else added
+   to the group later. Example: after group AB moved from F1 to F2 and nobody
+   touched it, A and B return to F1 together as one set. **Then** the revive's
+   group invariant check (4.1) runs on the elements step 3 revived and the
+   outside members it put back into a frame. So when
+   one batch moved group AB from F1 to F2 and deleted A, the undo revives A
+   into F1 (its batch-start frame), step 4 returns B to F1, and A keeps its
+   group.
 5. **Order.** Revert by neighbor, guarded by `v.z`.
+
+**Guards judge the start of the undo.** A step can change a bundle as a side
+effect (a creation undo releasing a frame's members, a revive restoring a
+relation). Every guard compares `my_v` with the version the bundle had when
+the undo started, not with that side effect, so what others did before is
+judged and the undo's own steps do not skip each other. When such a side
+effect already set the bundle to the record's previous value, the record
+counts as undone and its lineage carries on.
 
 **Lineage.** When an undo succeeds on `(id, g)` and creates a new version `s'`,
 the server looks at the nearest entry below it in the same session stack
@@ -553,7 +578,11 @@ Redo records only what the undo actually changed, in the same way.
 undo or redo gives an element a new incarnation, the server changes the
 incarnation from the old value to the new one in that element's entries of
 **the same session's** undo and redo stacks (and in the relation records that
-reference the element). "Edit text → delete → undo delete → undo text edit"
+reference the element). A deletion record keeps its relations in the deleted
+rows' `pre_rel`, so the server also relinks the references to the element in
+the `pre_rel` of every row that a deletion record of these stacks names:
+otherwise a connector deleted before its target comes back with a free end
+once both deletions are undone. "Edit text → delete → undo delete → undo text edit"
 therefore works. New incarnations created by other sessions or by rollback
 are not linked (those are someone else's re-creation).
 
@@ -673,7 +702,7 @@ disk quota measurement includes it as it is. Only the instance's apply loop open
 | `buckets` | `bucket PK, dirty_seq, bytes`: the serialized size of a bucket and whether it changed since the last outbox entry. `board.json` is one row too |
 | `deltas` | `seq PK, from_session, n, by, changes (JSON), at` |
 | `sessions` | `id PK, key (editor key), label, verified, max_n, last_at` |
-| `created` | `session, id, inc`, PK `(session, id)`: the incarnation each `add` or `revive` of a session produced, to resolve an expected incarnation of `0` (4.1) |
+| `created` | `session, id, inc`, PK `(session, id)`: the incarnation each `add` or `revive` of a session produced, to resolve an expected incarnation of `0` (4.1). Rows with an empty session record every group id the board has used, with the seq that first used it (4.3); they never expire |
 | `receipts` | `session, n, seq, results (JSON)`, PK `(session, n)` |
 | `groups` | `editor PK, label, started_at, last_at, dirty` (the same meaning as in the docs worker) |
 | `undo` | `session, stack (undo\|redo), idx, data (JSON), bytes`, PK `(session, stack, idx)`: server-side undo entries (4.10) |
@@ -819,10 +848,14 @@ files_bytes = size of the current file list JSON (≤ 257 buckets + ≤ 512 asse
   takes the flat lock). The walk runs in a helper goroutine, never inside the
   apply loop. The apply loop uses the cached value, which lives at most 60
   seconds. Events that change the directory outside board.db never empty
-  the cache: an upload is already covered by the "protected uploads stored
-  after the measurement" term, and an import's step 4 (5.3) adds the bytes it
-  stored to an in-memory "stored since the measurement" counter that the
-  formula adds to `other` until the next measurement replaces both. A blob
+  the cache: an upload, the images of an agent write or a data file import,
+  and an outbox import's step 4 (5.3) add the bytes they stored to an
+  in-memory "stored since the measurement" list (the "protected uploads
+  stored after the measurement" term) that the formula adds to `other`
+  until a measurement that includes them replaces it. A blob stored under
+  the flat lock is ordered against measurements taken under it; when an
+  upload, which takes no flat lock, stored a blob that a measurement may or
+  may not include, the server measures again so that it counts once. A blob
   sweep and a quota change start a new measurement and keep the old value
   until it arrives (a sweep only shrinks the directory, so the old value
   errs on the safe side). While the instance has Private connections, the
@@ -841,6 +874,21 @@ files_bytes = size of the current file list JSON (≤ 257 buckets + ≤ 512 asse
   and agent calls return `unavailable`. Tests leave a board idle for more
   than 2 minutes and then edit, and make an editor's batch miss the cache
   while a rollback holds the flat lock.
+- **Requests that bring new images.** An upload (7.2), an agent write with
+  `assets` (8.1) and a data file import (9.2) store image blobs outside
+  board.db. Blobs the board already holds (an asset row or a retained
+  revision file) are not new. Before it stores any new blob, the server
+  admits the request: an agent write or import runs the whole request once
+  in a board.db transaction that is always rolled back, with the new blob
+  bytes added to the formula, and an upload checks the formula plus its
+  bytes. A request refused there stores nothing. An admitted request
+  reserves its new bytes in the measurement before writing them, so every
+  other quota check (people's batches, concurrent uploads and writes)
+  counts them until they are stored and counted as stored since the
+  measurement. The request then applies for real and is measured again. A
+  request refused after passing its dry run (the board changed in between)
+  can leave its blobs in the flat directory until the blob sweep (5.5); they
+  were counted against the quota.
 - WAL: after a commit, `wal_checkpoint(NOOP)` reads the frame count, and above
   64 the server runs `TRUNCATE`. A busy result or failure is recorded in
   `meta.wal_truncate` and retried on every following commit.
@@ -859,7 +907,8 @@ files_bytes = size of the current file list JSON (≤ 257 buckets + ≤ 512 asse
 
 ### 5.5 Asset protection and the blob sweep
 
-- Upload: the server checks the bytes (section 10), stores the blob, and adds
+- Upload: the server checks the bytes (section 10), reserves them against
+  the disk quota (5.4), stores the blob, and adds
   the hash to board.db `assets` with `held_until = now + 1 hour`. When an `add` that references the asset
   commits, `refs` goes up and the protection is no longer needed.
 - Deleting an image element moves its `refs` to `deleted_refs`. Rows in the
@@ -901,11 +950,22 @@ existing read lease, and then release the lock and the stop (revision-store
 | C→S / S→C | `share` / `shared` | `{ids}` / `{n}` (private) |
 | S→C | `fatal` | `{code}` |
 
-- **Snapshot transfer.** Each part is at most 512 KiB, and the server queues
-  the next part only while the connection's send queue is below 1 MiB. Deltas
-  committed while a snapshot is being sent pile up in that connection's
-  queue, and only those after the snapshot's `seq` follow. When the queue
-  exceeds 4 MiB, the server closes the connection and the client reconnects.
+- **Snapshot transfer.** The apply loop takes the board's state for
+  snapshots once per seq and shares it among every connection that gets a
+  snapshot of that seq. Parts are encoded one at a time when it is their
+  turn to be sent, each at most 512 KiB, so a connection holds one encoded
+  part, never the whole board. The server sends the next part only while
+  less than 1 MiB of the connection's frames are in flight. Deltas committed while a
+  snapshot is being sent pile up in that connection's queue, and only those
+  after the snapshot's `seq` follow.
+- **Send queue caps.** Every outgoing frame (deltas, acks, rejects,
+  presence, `resync`, snapshot parts) counts toward the connection's queue
+  cap, so a client that sends faster than it reads cannot grow its queue.
+  A connection whose queue would exceed its cap is closed with 1008 and its
+  client reconnects. A Private connection that falls behind on deltas gets
+  a `resync` to a snapshot first (4.6), and is closed only when a snapshot
+  is already pending there. A reconnect whose catch-up from the delta log
+  would take more than half the cap gets a snapshot (4.8).
 - Limits: client-to-server frames 256 KiB, server-to-client frames 512 KiB
   (snapshot parts and `delta_part`s are cut to fit; `internal/wsconn` takes
   the maximum message size per use), 500
@@ -919,9 +979,14 @@ existing read lease, and then release the lock and the stop (revision-store
   and no per-address cap. Public snapshot starts are limited to 8 per second per
   board; a Public connection waits for its turn up to 10 seconds and then
   closes, and its client retries with backoff. A Public connection's send
-  queue is capped at 1 MiB (Private: 4 MiB), and Public send queues of the
-  whole host at 256 MiB; a Public connection over either cap is closed and
-  its client reconnects with a fresh snapshot. A full Public pool never
+  queue is capped at 1 MiB (Private: 4 MiB, counting the bytes in flight),
+  and Public traffic of the whole host at 256 MiB: the Public send queues,
+  Public snapshot parts waiting to be sent, and the snapshot states Public
+  connections send from. A shared snapshot state is charged once, with an
+  estimate per element, while any Public connection sends from it; when it
+  does not fit, the connection is closed (1013) and its client retries. A
+  Public connection over either queue cap is closed with 1008 and its client
+  reconnects with a fresh snapshot. A full Public pool never
   refuses an editor. A test fills the Public pool through a proxying provider with more than 8 viewers and then admits an editor.
 
 ### 6.1 Presence
@@ -1078,7 +1143,13 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   current values.
 - Guards: `if_seq` (the whole board has not changed since the read) and
   `if_ver` (that element's `ver` = max(`inc`, `v[*]`) matches). Both use the
-  current board.db, including uncommitted person edits. A revive changes the
+  current board.db, including uncommitted person edits. `if_ver` judges each
+  element as it was when the call started, so the call's own earlier
+  operations do not count. It is a number for an operation on one element
+  or `{id: ver}`. `set`, `reparent`, `group`, `delete`, `zorder`, `meta`
+  (the board), `delete_frame_contents` (the frame) and `ungroup` (a group is
+  no element, so its guard names members as `{id: ver}`) take it; a
+  mismatch refuses the whole call with `conflict`. A revive changes the
   seq and `inc` (and so `ver`), so the guards also catch "deleted and revived
   under the same id".
 - When a target element does not exist now, the whole call returns `conflict`
@@ -1121,7 +1192,14 @@ that is too small grows. The result's `layout` is `{id: [x, y]}`.
   (80 MiB by default), streamed to a temporary file. The export dialog says
   when a board's data file is larger than that and cannot be imported back.
 - CLI: `flats board get <slug> [--outline]`, `flats board apply <slug> <ops.json>`,
-  `flats board import <slug> <file.zip> [--replace]`.
+  `flats board import <slug> <file.zip> [--replace] [--op-id id]`. The HTTP
+  import takes `op_id` as a query parameter and uses a random one when it is
+  absent; the CLI sends `--op-id` or a random id and prints the id it used,
+  so a resend after a timeout with the same id imports the file once.
+- `rollback_revision` on a board succeeds once the board committed the
+  rollback. When its revision is not recorded yet (the import is pending, or
+  retention already deleted it), the result has no revision and a `warning`;
+  resending would restore again.
 - Add a board row to the [surfaces.md](../surfaces.md) table.
 
 ### 8.3 Refusal categories
@@ -1160,7 +1238,8 @@ These checks implement [rule 70](board.md#export-import-and-safety).
   refused, referenced target types (a connector end is an element that is not
   a connector, `frame` is a frame), and the group and frame invariants.
 - The server applies the file in one transaction only after every check
-  passes.
+  passes. Its images are stored under the flat lock, and only once the dry
+  run of 5.4 admits the import, so a refused import stores no blob.
 - `mode=add`: the server assigns new ids and relinks internal references
   (4.4). It checks the per-item limits (4.5) as for an ordinary edit.
   References outside the range become free ends and no membership. Imported
@@ -1326,6 +1405,7 @@ step. Modules: `state.js` (server copy, pending, delta application), `net.js`
 | Text | 4,000 characters per element | |
 | Pen points | 2,000 per stroke | Simplified on save |
 | Assets | 512, each `upload_max_bytes`, 24 MP | GIF animation: 200 MP over all frames |
+| Images in one `update_board` call | About one `upload_max_bytes` in total | The request carries them as base64: an HTTP body is at most `upload_max_bytes × 4/3` plus 16 MiB and an MCP request at most `upload_max_bytes × 1.5` plus 1 MiB. Larger sets go over several calls (a later call names an image by the hash the result returned) or in a data file through the HTTP or CLI import (9) |
 | Operations per batch | 500 for people, 2,000 per agent call | A semantic operation counts as one |
 | Layout help targets | 1,000 per call | |
 | `get_board` page | 500 by default, 2,000 at most, 1 MiB | Whichever comes first |
@@ -1366,7 +1446,7 @@ step. Modules: `state.js` (server copy, pending, delta application), `net.js`
 | Category | Contents |
 |---|---|
 | Reference model | An **independent reference model** (in Go, small and slow) that transcribes the product [concurrency rules](board.md#concurrency-rules) (rules 27 to 34) directly. Tests compare the server implementation with it on the same input. It judges not only convergence but whether the result is "correct by the rules". It does not cover TECH-only mechanisms (frame following, undo lineage, incarnations, revive); deterministic tests and invariant checks (below) cover those |
-| Deterministic counterexamples | The counterexamples found in review become fixed tests: edits to elements that stayed alive after a rollback, a lost ack plus another person's overwrite, session expiry with pending batches, number retention after a transient failure, a member's membership changing while a group moves into a frame, two people moving a frame at once, a late operation on an element revived after deletion, connector detach coordinates when the target is deleted, consecutive undos with interleaved edits, undo after a frame move where someone else moved a member, undo of a group's frame move, creation undo after undoing my own edit of the created element, deletion undo of an element someone else deleted again, deletion undo after deleting a connector and its target at once (in both deletion orders), undo of a frame move with 10,000 pens, splitting the delta of a large frame move, no author fields in public deltas, create-then-edit before the ack, create-then-connect in one batch, both resent after a reconnect, resizing a frame from its top-left corner, an idle board edited after more than 2 minutes, a delta log filled and trimmed, a full Public pool admitting an editor, concurrent and sequential text edits, rollback to a revision whose image asset row was cleaned up, whole-board replacement with pending batches, a replacement just over the quota refused with nothing changed, rollback into an over-quota state |
+| Deterministic counterexamples | The counterexamples found in review become fixed tests: edits to elements that stayed alive after a rollback, a lost ack plus another person's overwrite, session expiry with pending batches, number retention after a transient failure, a member's membership changing while a group moves into a frame, two people moving a frame at once, a late operation on an element revived after deletion, connector detach coordinates when the target is deleted, consecutive undos with interleaved edits, undo after a frame move where someone else moved a member, undo of a group's frame move, creation undo after undoing my own edit of the created element, deletion undo of an element someone else deleted again, deletion undo after deleting a connector and its target at once (in both deletion orders), deletion undo of a group member deleted in the same batch that moved its group to another frame (the revived member keeps its group), undo of a frame move with 10,000 pens, splitting the delta of a large frame move, no author fields in public deltas, create-then-edit before the ack, create-then-connect in one batch, both resent after a reconnect, resizing a frame from its top-left corner, an idle board edited after more than 2 minutes, a delta log filled and trimmed, a full Public pool admitting an editor, concurrent and sequential text edits, rollback to a revision whose image asset row was cleaned up, whole-board replacement with pending batches, a replacement just over the quota refused with nothing changed, rollback into an over-quota state |
 | Randomized tests | 3 to 5 clients, random operations, delivery order, disconnects and rollbacks. Every screen = the server = the reference model, and invariants hold after every step (group members share a frame, no attached end points at a dead element, every alive element's assets have rows). 2,000 seeds in CI; 100,000 locally before a release |
 | Crashes | Kill at each boundary: before and after a batch commit; during an outbox import after storing blobs, after the flats.db commit and before deleting the outbox; during a rollback; with a concurrent sweep; WAL busy. After restart, the revision count and content and board.db match expectations, there is no empty revision, and every edit shown as saved exists |
 | Quota | Refusing a person batch just below the quota (no delta), several batches in one group commit, groups unchanged when an agent write is refused, rollback succeeding |
@@ -1421,7 +1501,7 @@ the tests of the JS client and the Go server read the same file.
 | `Inc`, `Seq`, `V` | A positive integer (at most 53 bits) |
 | `Num` | A finite number, stored rounded to 1 decimal place |
 | `IfV` | `{Id: {bundle key: V}}` |
-| `End` | `{"el": Id, "at": [Num, Num]}` or `{"pt": [Num, Num]}` |
+| `End` | `{"el": Id, "at": [Num, Num]}` or `{"pt": [Num, Num]}`; `at` and `pt` have exactly 2 items |
 
 **Elements**
 
@@ -1436,8 +1516,11 @@ and `style` keys (any other key is refused; a missing key takes its default):
 | `shape` | `text` | `shape`: `rect` (default), `round`, `ellipse`, `diamond`. `fill`: `none`, `white` (default) or a sticky color. `stroke`: an ink color, default `ink`. `strokeWidth`: 1, 2 (default) or 4. `dash`: `solid` (default), `dashed`, `dotted`. `fontSize`: 10 to 72, default 14 |
 | `connector` | `ends: [End, End]`, `text` (label) | `stroke`, `strokeWidth`, `dash` as for shapes. `route`: `straight` (default), `elbow`. `head0`: `none` (default) or `arrow`. `head1`: `arrow` (default) or `none`. `fontSize`: 10 to 32, default 12 |
 | `pen` | `pts` | `stroke`: an ink color or `highlight`, default `ink`. `width`: `pen` (default), `marker` |
-| `image` | `asset`, `alt`, `natural` | none |
+| `image` | `asset`, `alt` (at most 1,000 characters by default), `natural` | none |
 | `frame` | `text` (name) | `fill`: `white` (default), `none`, `gray` |
+
+The alternative text limit is a host limit like the text limit (12) and is
+judged by the same "excess grew" rule (4.5).
 
 Ink colors: `ink`, `gray`, `red`, `orange`, `green`, `blue`, `purple`. Each
 color name maps to light and dark theme values in the client (11.4).
@@ -1458,6 +1541,10 @@ meta     {op, g: "title"|"grid", val, if_v?: V}
 undo     {op}
 redo     {op}
 ```
+
+A bundle value (`set` `val`, `meta` `val`) is never `null`: a `null` value is
+a format error, so it cannot clear text or unlock an element. Only the
+membership bundles `frame` and `group` read `null` as "none".
 
 **Results.** The ack's `results` stay at most 64 KiB for the whole batch. When
 they exceed it, the server first replaces every operation's result with a

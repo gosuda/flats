@@ -57,17 +57,14 @@ type store struct {
 }
 
 // openStore opens board.db with WAL, synchronous=FULL and incremental
-// auto-vacuum. A new file gets the schema; created reports that.
-func openStore(path string) (*store, bool, error) {
-	_, statErr := os.Stat(path)
-	created := errors.Is(statErr, os.ErrNotExist)
-	if statErr != nil && !created {
-		return nil, false, statErr
-	}
-	if created {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, false, err
-		}
+// auto-vacuum, creating the file and the schema as needed. fresh reports
+// that the board was never initialized: the file is new, or an earlier
+// creation stopped after the schema but before initialize committed (its
+// one transaction writes the store id, so a missing store id means nothing
+// of it is durable).
+func openStore(path string) (s *store, fresh bool, err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, false, err
 	}
 	u := url.URL{Scheme: "file", Path: path}
 	dsn := u.String() + "?_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate"
@@ -80,38 +77,48 @@ func openStore(path string) (*store, bool, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
-	s := &store{db: db, path: path}
+	s = &store{db: db, path: path}
 	ctx := context.Background()
-	if created {
+	fail := func(err error) (*store, bool, error) {
+		db.Close()
+		return nil, false, err
+	}
+	var tables int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master`).Scan(&tables); err != nil {
+		return fail(fmt.Errorf("board.db: %w", err))
+	}
+	if tables == 0 {
 		// auto_vacuum must be chosen before the first table exists.
 		if _, err := db.ExecContext(ctx, `PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
-			db.Close()
-			return nil, false, err
+			return fail(err)
 		}
 	}
 	var mode string
 	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil || mode != "wal" {
-		db.Close()
-		return nil, false, fmt.Errorf("board.db: journal mode %q: %v", mode, err)
+		return fail(fmt.Errorf("board.db: journal mode %q: %v", mode, err))
 	}
-	if !created {
+	if tables > 0 {
 		var res string
 		if err := db.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&res); err != nil || res != "ok" {
-			db.Close()
-			return nil, false, fmt.Errorf("board.db integrity check: %q %v", res, err)
+			return fail(fmt.Errorf("board.db integrity check: %q %v", res, err))
 		}
 	}
 	for _, q := range schema {
 		if _, err := db.ExecContext(ctx, q); err != nil {
-			db.Close()
-			return nil, false, fmt.Errorf("board.db schema: %w", err)
+			return fail(fmt.Errorf("board.db schema: %w", err))
 		}
 	}
 	if err := db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&s.pageSize); err != nil {
-		db.Close()
-		return nil, false, err
+		return fail(err)
 	}
-	return s, created, nil
+	var store string
+	switch err := db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = 'store'`).Scan(&store); {
+	case errors.Is(err, sql.ErrNoRows):
+		fresh = true
+	case err != nil:
+		return fail(err)
+	}
+	return s, fresh, nil
 }
 
 func (s *store) close() { s.db.Close() }

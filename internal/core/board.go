@@ -43,12 +43,26 @@ var ErrNotBoard = fmt.Errorf("%w: flat is not a board", ErrInvalid)
 // over its disk quota. Nothing changed.
 var ErrBoardCapacity = errors.New("board capacity")
 
-// errBoardImportPending reports a committed board change whose revision is
-// not imported yet.
-var errBoardImportPending = fmt.Errorf("%w: the change is recorded but its revision is not imported yet; list_revisions shows it shortly", ErrUnavailable)
-
 // boardImportBatch is how many outbox entries one import step reads.
 const boardImportBatch = 100
+
+// boardTickTimeout bounds one background import, so a wedged board cannot
+// hold the loop that also closes edit groups and sweeps every other flat.
+const boardTickTimeout = 30 * time.Second
+
+// After a failed background import the ticker waits boardRetryMin before it
+// tries that board again, doubling up to boardRetryMax while it keeps
+// failing. Writes, reads and rollbacks still import at once.
+const (
+	boardRetryMin = 5 * time.Second
+	boardRetryMax = 5 * time.Minute
+)
+
+// boardBackoff is when the ticker next tries a failing board import.
+type boardBackoff struct {
+	next  time.Time
+	delay time.Duration
+}
 
 func (s *Service) boardDir(slugName string) string {
 	return filepath.Join(s.flatDir(slugName), "board")
@@ -176,17 +190,17 @@ func (s *Service) createBoardLocked(ctx context.Context, slugName, name string, 
 	if _, err := s.createFlatLocked(ctx, slugName, title, via); err != nil {
 		return nil, err
 	}
-	return s.initBoardLocked(ctx, slugName, title, via, true)
+	return s.initBoardLocked(ctx, slugName, title, via, func() { _ = s.st.DeleteFlat(ctx, slugName) })
 }
 
-// initBoardLocked marks an existing flat row as a board and starts it. A
-// fresh flat is removed again when it cannot be marked.
-func (s *Service) initBoardLocked(ctx context.Context, slugName, title string, via Via, fresh bool) (*board.Instance, error) {
+// initBoardLocked marks an existing flat row as a board and starts it. When
+// the flat cannot be marked, undo removes what the caller created for it, so
+// the slug stays usable; a failure after marking leaves phase init, which
+// startPendingBoard and the next write finish.
+func (s *Service) initBoardLocked(ctx context.Context, slugName, title string, via Via, undo func()) (*board.Instance, error) {
 	err := s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error { return tx.InitState(ctx, contenttype.Board) })
 	if err != nil {
-		if fresh {
-			_ = s.st.DeleteFlat(ctx, slugName)
-		}
+		undo()
 		return nil, err
 	}
 	return s.finishBoardLocked(ctx, slugName, title, via)
@@ -319,7 +333,10 @@ func (s *Service) writeBoardLocked(ctx context.Context, slugName string, via Via
 		undo()
 		return nil, false, err
 	}
-	in, err = s.initBoardLocked(ctx, slugName, f.Name, via, fresh)
+	// A flat that cannot be marked as a board is undone like a refused
+	// write: its board.db, the blobs the write stored and a flat row this
+	// call created would otherwise block the slug (requireUnusedStorage).
+	in, err = s.initBoardLocked(ctx, slugName, f.Name, via, undo)
 	return in, err == nil, err
 }
 
@@ -522,7 +539,12 @@ func (s *Service) boardRevisionLocked(ctx context.Context, slugName string, in *
 		return
 	}
 	n, ok := imp.bySeq[outboxSeq]
-	if !ok {
+	if ok {
+		// Retention in the same import may already have deleted it.
+		if _, err := s.st.Revision(ctx, slugName, n); errors.Is(err, store.ErrNotFound) {
+			ok = false
+		}
+	} else {
 		n, ok, _ = s.st.BoardImportRevision(ctx, slugName, in.StoreID(), outboxSeq)
 	}
 	if ok {
@@ -993,14 +1015,24 @@ func (s *Service) catchUpRevisions(ctx context.Context, slugName string) error {
 }
 
 // TickBoards imports the outbox of every board that recorded entries,
-// skipping boards whose lock is taken until the next tick.
+// skipping boards whose lock is taken until the next tick. A board whose
+// import keeps failing is tried less often (boardBackoff), and each import
+// has a deadline (boardTickTimeout).
 func (s *Service) TickBoards(ctx context.Context) {
+	now := time.Now()
 	s.boardPending.Range(func(k, _ any) bool {
 		slugName := k.(string)
 		in := s.liveBoard(slugName)
 		if in == nil {
 			s.boardPending.Delete(slugName)
+			s.boardRetry.Delete(slugName)
 			return true
+		}
+		var backoff boardBackoff
+		if v, ok := s.boardRetry.Load(slugName); ok {
+			if backoff = v.(boardBackoff); now.Before(backoff.next) {
+				return true
+			}
 		}
 		m, _ := s.locks.LoadOrStore(slugName, &sync.Mutex{})
 		mu := m.(*sync.Mutex)
@@ -1016,10 +1048,18 @@ func (s *Service) TickBoards(ctx context.Context) {
 		}
 		// A board that records an entry during the import marks itself again.
 		s.boardPending.Delete(slugName)
-		if _, err := s.importBoardLocked(ctx, slugName, in); err != nil {
+		ictx, cancel := context.WithTimeout(ctx, boardTickTimeout)
+		_, err := s.importBoardLocked(ictx, slugName, in)
+		cancel()
+		if err != nil {
 			s.boardPending.Store(slugName, true)
-			s.logf("board revisions of %s: %v", slugName, err)
+			backoff.delay = min(max(2*backoff.delay, boardRetryMin), boardRetryMax)
+			backoff.next = time.Now().Add(backoff.delay)
+			s.boardRetry.Store(slugName, backoff)
+			s.logf("board revisions of %s (next try in %s): %v", slugName, backoff.delay, err)
+			return true
 		}
+		s.boardRetry.Delete(slugName)
 		return true
 	})
 }
@@ -1047,16 +1087,19 @@ func (s *Service) remeasureBoards() {
 // rollbackBoard restores revision n of a board as a new revision
 // (board-TECH 4.11): it holds n, sets the board to n's content in the
 // instance's apply loop and imports the rollback entry, which releases the
-// hold. A rollback is never refused for disk quota.
-func (s *Service) rollbackBoard(ctx context.Context, slugName string, n int, label string, via Via) (int, error) {
+// hold. A rollback is never refused for disk quota. Once the board committed
+// the rollback it succeeds: when its revision is not recorded yet, the result
+// has no revision and a warning, as update_board reports a pending import,
+// so a caller does not retry and restore twice.
+func (s *Service) rollbackBoard(ctx context.Context, slugName string, n int, label string, via Via) (RevisionRollback, error) {
 	unlock, err := s.lockStorageCtx(ctx, slugName)
 	if err != nil {
-		return 0, err
+		return RevisionRollback{}, err
 	}
 	defer unlock()
 	in, err := s.runningBoard(ctx, slugName)
 	if err != nil {
-		return 0, err
+		return RevisionRollback{}, err
 	}
 	// n may be a revision the board recorded but core has not imported.
 	if _, err := s.importBoardLocked(ctx, slugName, in); err != nil {
@@ -1070,32 +1113,33 @@ func (s *Service) rollbackBoard(ctx context.Context, slugName string, n int, lab
 		return tx.AddHold(ctx, op, n)
 	})
 	if err != nil {
-		return 0, err
+		return RevisionRollback{}, err
 	}
 	settle := func() { s.settleBoardHoldsLocked(context.WithoutCancel(ctx), slugName, in) }
 	files, err := s.st.RevisionFiles(ctx, slugName, n)
 	if err != nil {
 		settle()
-		return 0, err
+		return RevisionRollback{}, err
 	}
 	root := s.docsStoreDir(slugName)
 	c, err := board.ContentFromFiles(boardFiles(files), func(h string) ([]byte, error) { return readBlob(root, h) })
 	if err != nil {
 		settle()
-		return 0, err
+		return RevisionRollback{}, err
 	}
 	res, err := in.Rollback(ctx, op, n, c, label)
 	if err != nil {
 		settle()
-		return 0, boardErr(err)
+		return RevisionRollback{}, boardErr(err)
 	}
 	out := BoardWriteResult{}
 	s.boardRevisionLocked(context.WithoutCancel(ctx), slugName, in, res.OutboxSeq, &out)
 	if out.Revision == nil {
-		return 0, errBoardImportPending
+		s.Event(ctx, slugName, "info", "revision", fmt.Sprintf("restored revision %d via %s; %s", n, via, out.Warning), map[string]int{"rollback_of": n})
+		return RevisionRollback{Warning: out.Warning}, nil
 	}
 	s.Event(ctx, slugName, "info", "revision", fmt.Sprintf("restored revision %d as revision %d via %s", n, *out.Revision, via), map[string]int{"revision": *out.Revision, "rollback_of": n})
-	return *out.Revision, nil
+	return RevisionRollback{Revision: *out.Revision}, nil
 }
 
 func boardFiles(files []store.RevisionFile) []board.File {
@@ -1256,10 +1300,9 @@ func (b boardBackend) Pin(ctx context.Context, n int, pinned bool) error {
 }
 
 func (b boardBackend) Rollback(ctx context.Context, n int, label string) (int, error) {
+	// 0 without an error: the rollback applied, its revision is not
+	// recorded yet.
 	rev, err := b.s.RollbackRevision(ctx, b.slug, n, label, ViaConsole)
-	if errors.Is(err, errBoardImportPending) {
-		return 0, nil
-	}
 	return rev, toBoardError(err)
 }
 

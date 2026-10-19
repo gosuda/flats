@@ -345,3 +345,41 @@ func TestRound1(t *testing.T) {
 		}
 	}
 }
+
+// TestSchemaInvalidValues checks that malformed values are refused rather
+// than turned into valid edits: short or long coordinate pairs, and null
+// where a value is required.
+func TestSchemaInvalidValues(t *testing.T) {
+	for name, c := range map[string]struct{ typ, g, raw string }{
+		"short pt":    {TypeConnector, BundleEnd0, `{"pt":[10]}`},
+		"long pt":     {TypeConnector, BundleEnd1, `{"pt":[10,20,30]}`},
+		"short at":    {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[0.5]}`},
+		"long at":     {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[0.5,0.5,0.5]}`},
+		"null end":    {TypeConnector, BundleEnd0, `null`},
+		"null text":   {TypeSticky, BundleText, `null`},
+		"null alt":    {TypeImage, BundleAlt, `null`},
+		"null locked": {TypeSticky, BundleLocked, `null`},
+		"null z":      {TypeSticky, BundleZ, `null`},
+		"null geom":   {TypeSticky, BundleGeom, `null`},
+		"null style":  {TypeSticky, "style.color", `null`},
+		"null title":  {TypeBoard, BundleTitle, `null`},
+		"null grid":   {TypeBoard, BundleGrid, `null`},
+		"null pt":     {TypeConnector, BundleEnd0, `{"pt":null}`},
+	} {
+		if v, err := DecodeBundle(c.typ, c.g, json.RawMessage(c.raw)); !errors.Is(err, ErrFormat) {
+			t.Errorf("%s: %v, err = %v", name, v, err)
+		}
+	}
+	for name, raw := range map[string]string{
+		"short pt": `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"pt":[10]},{"pt":[0,0]}]}`,
+		"long at":  `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"el":"e_bbbbbbbbbb","at":[0,0,1]},{"pt":[0,0]}]}`,
+	} {
+		if _, _, err := DecodeElement([]byte(raw)); !errors.Is(err, ErrFormat) {
+			t.Errorf("element %s: err = %v", name, err)
+		}
+	}
+	// membership bundles keep null as "none"
+	if v, err := DecodeBundle(TypeSticky, BundleFrame, json.RawMessage(`null`)); err != nil || v != "" {
+		t.Fatalf("null frame = %v, %v", v, err)
+	}
+}

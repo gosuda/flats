@@ -109,9 +109,13 @@ export function toast(content, { error = false, actions = [], timeout } = {}) {
     h('span', { class: 'toast-text' }, content),
     actions.map(([label, fn]) => h('button', { type: 'button', class: 'btn', onclick: () => { close(); fn(); } }, label)),
     h('button', { type: 'button', class: 'btn icon', 'aria-label': 'Dismiss', onclick: close }, icon('close')));
-  host.appendChild(t);
-  while (host.children.length > 4) host.firstChild.remove();
   const ms = timeout ?? (actions.length ? 10000 : error ? 7000 : 4000);
+  // A toast with an action ("Keep my text") or without a timeout may be the
+  // only way to recover something, so only plain toasts are evicted.
+  if (actions.length || !ms) t.dataset.keep = '';
+  host.appendChild(t);
+  const plain = [...host.children].filter((c) => !('keep' in c.dataset));
+  while (plain.length > 4) plain.shift().remove();
   if (ms) setTimeout(close, ms);
   return t;
 }
@@ -186,11 +190,14 @@ export function popover(el, x, y, { opener, menu = false } = {}) {
     const n = e.key === 'ArrowDown' ? (i + 1) % list.length : (i - 1 + list.length) % list.length;
     if (list[n]) list[n].focus();
   };
-  setTimeout(() => document.addEventListener('pointerdown', onDown, true));
+  // The outside-press listener starts after the press that opened the
+  // popover; closing first cancels it, so it never outlives this popover.
+  const arm = setTimeout(() => document.addEventListener('pointerdown', onDown, true));
   el.addEventListener('keydown', onKey);
   openPop = {
     el,
     close() {
+      clearTimeout(arm);
       document.removeEventListener('pointerdown', onDown, true);
       el.remove();
       if (opener) opener.setAttribute('aria-expanded', 'false');

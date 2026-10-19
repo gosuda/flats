@@ -62,6 +62,7 @@ type fakeCore struct {
 	measured int
 	failMeas bool
 	ready    chan struct{}
+	putHook  func(hash string) // runs before PutBlob stores, outside the locks
 }
 
 func newFakeCore(dir string) *fakeCore {
@@ -108,6 +109,12 @@ func (f *fakeCore) MeasureOther(ctx context.Context) (int64, error) {
 }
 
 func (f *fakeCore) PutBlob(ctx context.Context, hash string, data []byte) (bool, error) {
+	f.data.Lock()
+	hook := f.putHook
+	f.data.Unlock()
+	if hook != nil {
+		hook(hash)
+	}
 	f.data.Lock()
 	defer f.data.Unlock()
 	if _, ok := f.blobs[hash]; ok {

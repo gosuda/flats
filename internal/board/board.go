@@ -176,7 +176,10 @@ type Instance struct {
 	db    *store
 	st    *engine.State // owned by the apply loop
 	sd    *side         // owned by the apply loop
-	meas  *measurer
+	// snapCur is the snapshot state of the current seq (owned by the apply
+	// loop; every commit and load clears it).
+	snapCur *snapData
+	meas    *measurer
 
 	hub     *hub
 	assets  *assetView
@@ -200,8 +203,9 @@ type Instance struct {
 }
 
 // Open opens the board in dir (flats/<slug>/board), creating board.db with
-// a forced created outbox entry when it does not exist. created reports
-// that it did.
+// a forced created outbox entry when it does not exist or an earlier
+// creation was interrupted before it committed. created reports that it
+// did.
 func Open(dir string, b Backend, opts Options) (in *Instance, created bool, err error) {
 	now := opts.Now
 	if now == nil {
