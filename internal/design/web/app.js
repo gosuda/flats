@@ -2,6 +2,8 @@
 // It shows a design's artboards on a pan/zoom canvas and, on a Private
 // route, edits layout, notes, text and tweaks through /_design/api/ops.
 
+import { wheelPan } from './wheel.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 
 function h(tag, attrs = {}, ...children) {
@@ -238,7 +240,7 @@ function setupViewport() {
     e.preventDefault();
     const r = vp.getBoundingClientRect();
     if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
-    else { S.view.x -= e.deltaX; S.view.y -= e.deltaY; applyView(); }
+    else { const p = wheelPan(e); S.view.x -= p.x; S.view.y -= p.y; applyView(); }
   }, { passive: false });
   vp.addEventListener('pointerdown', (e) => {
     const onBackground = e.target === vp || e.target.classList.contains('world');
