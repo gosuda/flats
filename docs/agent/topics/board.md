@@ -63,6 +63,10 @@ replace?}` applies all operations or none, and is one revision.
   to the new id. Without coordinates and without a layout, new elements go
   in a row to the right of the board. Default sizes: sticky 200×200, shape
   160×100, text fitted to its content.
+- A frame you add without `z` goes behind every element, so the elements you
+  move into it stay visible; several new frames in one call keep their
+  order. Any other new element goes in front. A frame's fill hides what is
+  behind it, so never give a frame a `z` above its members.
 - `set {id, fields}` changes named fields. Elements and fields you do not
   name stay as they are, and `style` changes only the keys you give. A
   field cannot be `null`: it never clears text or unlocks. Change `frame`
@@ -87,6 +91,13 @@ replace?}` applies all operations or none, and is one revision.
   frame, and the frame grows to fit. The same input gives the same
   coordinates; the result's `layout` returns them as `{id: [x, y]}`. Layout
   runs after the operations, so it sees their result.
+- Connector ends keep the side they were attached to when their elements
+  move. When you move or lay out elements that connectors join, set those
+  connectors' ends again without `at` in the same call, for example
+  `{"op": "set", "id": "e_conn000001", "fields": {"ends": [{"el": "e_7Hk2pQ9xLm"}, {"el": "$s1"}]}}`.
+  The host then picks the facing sides from the final places, after
+  `layout`. Otherwise a line can leave a note on its far side and run
+  through its text.
 - `assets` adds images for image elements in the same call:
   `[{"ref": "$logo", "content": "<base64>"}]`. An image element gives the
   ref as its `asset`, for example
@@ -136,7 +147,7 @@ default; an unknown key is refused.
 
 | Type | Fields | `style` keys |
 |---|---|---|
-| `sticky` | `text` | `color`: `yellow`, `orange`, `pink`, `blue`, `green`, `gray`; `fontSize`: `"auto"` or 10 to 72 |
+| `sticky` | `text` | `color`: `yellow`, `orange`, `pink`, `blue`, `green`, `gray`; `fontSize`: `"auto"` (16, shrinking to fit) or 10 to 72 |
 | `text` | `text` | `color` (ink); `fontSize` 12 to 144 (20); `align`: `left`, `center`, `right` |
 | `shape` | `text` | `shape`: `rect`, `round`, `ellipse`, `diamond`; `fill`: `none`, `white` or a sticky color; `stroke` (ink); `strokeWidth`: 1, 2, 4; `dash`: `solid`, `dashed`, `dotted`; `fontSize` 10 to 72 (14) |
 | `connector` | `ends`, `text` (label) | `stroke`, `strokeWidth`, `dash`; `route`: `straight`, `elbow`; `head0`, `head1`: `none` or `arrow`; `fontSize` 10 to 32 |
@@ -152,6 +163,11 @@ have exactly two numbers. Without `at`, the
 host attaches the end to the middle of the target's side that faces the other
 end, after `layout` has placed the elements, so the line starts on the
 outline; an attached other end without `at` counts at its target's center.
+The host stores that side as the end's `at`, so it stays when the elements
+move later; attach the end again without `at` to recompute it (Write).
+A frame is drawn behind its members only if its `z` is lower: the canvas
+draws elements in order of `z` compared as plain strings (ties by `id`),
+later ones on top.
 Text is plain, at most 4,000 characters (200 for frame names and connector
 labels, 1,000 for an image's `alt`).
 
@@ -197,7 +213,12 @@ An edit that would exceed the per-flat disk quota is refused with
 1. Read `results` and `layout`, then `get_board {slug, format: "outline"}`:
    every element is there, in the right frame, and every connector joins the
    intended elements.
-2. Give the user `private_url`. If you have a browser tool, open the canvas
+2. The outline does not show stacking. For each frame you created or
+   filled, read `get_board {slug, frame: <id>}` (the full format lists the
+   frame and its members with their `z`) and check that every member's `z`
+   is greater than the frame's. If not, send the frame back with
+   `{"op": "zorder", "ids": [<frame id>], "to": "back"}`.
+3. Give the user `private_url`. If you have a browser tool, open the canvas
    and look at the changed area.
 
 ### Readability
@@ -208,5 +229,14 @@ An edit that would exceed the per-flat disk quota is refused with
   what each color means in a text element. Also state that meaning in frame
   names or text, so the board reads without color.
 - Keep text readable at 100% zoom: at least 12 px, and short stickies.
+  Sticky `fontSize: "auto"` starts at 16 px and shrinks to fit, down to
+  10 px, inside the sticky minus 12 px on each side (more at the bottom
+  when people show author names). A line takes 1.38 × the font size. A
+  default 200×200 sticky holds 7 lines at 16 px; a small one, such as
+  120×90, drops below 12 px with a short sentence. Keep stickies with text
+  at the default size or larger, or set `fontSize` to 12 or more and make
+  the sticky big enough: a fixed size never shrinks, and text that does not
+  fit is cut off with "…". Shape text also shrinks from its `fontSize` down
+  to 10 px, so size shapes for their text. Never set a `fontSize` below 12.
 - Attach both ends of a connector to elements; point arrows in the reading
   direction, left to right or top to bottom.

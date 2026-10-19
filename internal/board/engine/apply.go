@@ -65,6 +65,13 @@ type applier struct {
 	topZKnown bool
 	startOrd  map[string]int // batch-start stacking positions, built on demand
 	startList []string
+
+	// backZ is the lowest stacking key of the alive elements other than
+	// the frames backKey placed; backLast is the highest key backKey gave
+	// below it. Valid while backKnown.
+	backZ, backLast string
+	backKnown       bool
+	backFrames      map[string]bool
 }
 
 func (s *State) newApplier(session, by string, now int64) (*applier, Mark) {
@@ -233,6 +240,7 @@ func (a *applier) setBundle(r *Row, g string, val any) {
 	}
 	if g == model.BundleZ {
 		a.noteZ(val.(string))
+		a.backKnown = false
 	}
 }
 
@@ -254,6 +262,35 @@ func (a *applier) topKey() string {
 	}
 	k, _ := model.KeyBetween(a.topZ, "")
 	a.topZ = k
+	return k
+}
+
+// backKey returns a stacking key for a new frame of an agent call (8.1):
+// below every alive element except the frames this call already placed
+// this way, and above those, so the call's frames keep their order among
+// themselves behind everything else.
+func (a *applier) backKey(id string) string {
+	if !a.backKnown {
+		a.backZ, a.backLast = "", ""
+		first := true
+		for rid, r := range a.s.rows {
+			if r.alive() && rid != model.BoardID && !a.backFrames[rid] && (first || r.El.Z < a.backZ) {
+				a.backZ, first = r.El.Z, false
+			}
+		}
+		for rid := range a.backFrames {
+			if r := a.s.rows[rid]; r.alive() && (first || r.El.Z < a.backZ) && r.El.Z > a.backLast {
+				a.backLast = r.El.Z
+			}
+		}
+		a.backKnown = true
+	}
+	k, _ := model.KeyBetween(a.backLast, a.backZ)
+	a.backLast = k
+	if a.backFrames == nil {
+		a.backFrames = map[string]bool{}
+	}
+	a.backFrames[id] = true
 	return k
 }
 
@@ -371,6 +408,9 @@ func (a *applier) insert(el model.Element) {
 		}
 	}
 	a.noteZ(el.Z)
+	if a.backKnown && !a.backFrames[el.ID] && el.Z < a.backZ {
+		a.backKnown = false
+	}
 	a.put(r)
 	if a.session != "" {
 		a.s.setCreated(createdKey{a.session, el.ID}, a.seq)
@@ -567,6 +607,7 @@ func (a *applier) rekey() {
 		}
 	}
 	a.topZKnown = false
+	a.backKnown = false
 }
 
 // delta builds the canonical delta of this change from the rows it touched,

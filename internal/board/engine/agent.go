@@ -340,6 +340,11 @@ func (c *agentCall) add(op AgentOp) (any, error) {
 		}
 		return nil, conflict("element %s references an element or group that does not exist", el.ID)
 	}
+	if el.Type == model.TypeFrame && el.Z == "" {
+		// A new frame goes behind everything, so the elements the call
+		// then moves into it stay visible (8.1).
+		el.Z = c.a.backKey(el.ID)
+	}
 	c.a.insert(el)
 	if el.Type == model.TypeConnector {
 		c.auto[el.ID] = omittedAt(op.El)
@@ -1065,8 +1070,8 @@ func (c *agentCall) replace() error {
 		}
 		return "", invalid("%s names no element of this call", id)
 	}
-	top := ""
-	var unkeyed []int
+	top, bottom := "", ""
+	var unkeyed, unkeyedFrames []int
 	for i := range els {
 		el := &els[i]
 		var err error
@@ -1078,15 +1083,33 @@ func (c *agentCall) replace() error {
 				return err
 			}
 		}
-		if el.Z == "" {
+		switch {
+		case el.Z == "" && el.Type == model.TypeFrame:
+			unkeyedFrames = append(unkeyedFrames, i)
+		case el.Z == "":
 			unkeyed = append(unkeyed, i)
-		} else {
-			top = max(top, el.Z)
+		case bottom == "":
+			top, bottom = el.Z, el.Z
+		default:
+			top, bottom = max(top, el.Z), min(bottom, el.Z)
 		}
 		c.out.Results = append(c.out.Results, el.ID)
 	}
-	for i, k := range spread(top, "", len(unkeyed)) {
-		els[unkeyed[i]].Z = k
+	// Frames without z go behind the call's other elements in call order,
+	// the rest in front of them, as in an ordinary call (8.1).
+	if bottom == "" {
+		keys := spread("", "", len(unkeyedFrames)+len(unkeyed))
+		unkeyed = append(unkeyedFrames, unkeyed...)
+		for i, k := range keys {
+			els[unkeyed[i]].Z = k
+		}
+	} else {
+		for i, k := range spread("", bottom, len(unkeyedFrames)) {
+			els[unkeyedFrames[i]].Z = k
+		}
+		for i, k := range spread(top, "", len(unkeyed)) {
+			els[unkeyed[i]].Z = k
+		}
 	}
 	geoms := map[string]model.Geom{}
 	for _, el := range els {

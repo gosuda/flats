@@ -82,7 +82,7 @@ fields** (which exist only in board.db).
 | `id` | Unique within the board. `e_` plus 10 base62 characters. The client creates it. If the id already exists (including in a deleted state) or has the wrong form, the server ignores that `add` |
 | `type` | `sticky`, `text`, `shape`, `connector`, `pen`, `image`, `frame` |
 | `x, y, w, h, rot` | Canvas coordinates (CSS px at 100%). Finite numbers, coordinates ±10,000,000, size 1 to 100,000, rotation 0 to 360 |
-| `z` | Stacking order. A fractional index string (base62). The full order is `(z, id)` in lexicographic order, so every client draws ties in the same order |
+| `z` | Stacking order. A fractional index string (base62). The full order is `(z, id)` in lexicographic order, so every client draws ties in the same order. A newly created frame goes **behind** every element, so the elements then moved into it stay above its fill (opaque unless it is `none`); any other new element goes in front. The browser client sends that `z` when it creates or pastes elements (pasted frames behind in their order, the rest in front), an agent call computes it for an `add` without `z` (8.1), and the recovery import puts its "Recovered edits" frame behind the file's elements (9.3). Element recovery from a revision (7) and `import_board` add keep the copied elements' relative order, above every element. A person `add` without `z` gets a key above every alive element |
 | `frame`, `group` | Explicit membership ([rule 3](board.md#content)) |
 | `locked` | Lock |
 | `text` | Plain text of a sticky, text box, shape, frame (its name) or connector (its label). At most 4,000 characters (200 for a frame name or connector label), stored exactly as received without NFC normalization |
@@ -1242,6 +1242,16 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   (4.2); a change that also sets `w` or `h` does not, unless the call gives
   `carry: "members"`. `carry: false` keeps members in place, and
   `carry: "group"` moves the group members along.
+- Stacking of new elements: an `add` that gives `z` keeps it. Without `z`,
+  a frame goes below every alive element except the frames this call
+  already added that way, and above those, so the call's frames keep their
+  call order among themselves behind everything; an element the call later
+  sends to the back, or adds with a lower explicit `z`, is below the frames
+  added before it. Any other element without `z` goes above every alive
+  element. With `replace: true` the call's own elements are the board: its
+  frames without `z` go below all its other elements in call order, and its
+  other elements without `z` above those with `z`. A frame added in front
+  would hide the members the same call moves into it (3.1).
 - `replace: true` replaces the whole board with the call's `add` operations
   (4.12). The call's `layout` then places those elements as in an ordinary
   call, and ends attached without `at` take their sides from the placed
@@ -1360,11 +1370,12 @@ it in the banner. It is the same zip format with `recovery.json` added.
 - Deleted elements stay only as a "Deleted elements: id, text" list in
   `recovery.json` (a recovery file does not delete them again).
 - The import uses `mode=add`. It creates a new frame named "Recovered edits
-  (time)" and puts into it only the elements that **are not frames and do not
-  belong to a frame in the file**. Frames in the file stay at the top level
-  (no nesting), and their members stay with them. A group stays only when all
-  its members are in the same place; otherwise it is ungrouped. After the
-  conversion, the server checks the membership invariants again.
+  (time)", behind every element of the file, and puts into it only the
+  elements that **are not frames and do not belong to a frame in the file**.
+  Frames in the file stay at the top level (no nesting), and their members
+  stay with them. A group stays only when all its members are in the same
+  place; otherwise it is ungrouped. After the conversion, the server checks
+  the membership invariants again.
 
 ## 10. Image checks
 
