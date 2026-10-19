@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -1290,41 +1291,43 @@ func TestReviewRound4Counterexamples(t *testing.T) {
 	})
 }
 
+// checkWhole applies a delta to a copy of the board before it, as a
+// connected Private editor does, compares it with a fresh read and
+// checks that id's row and bucket count as changed.
+func checkWhole(t *testing.T, h *harness, before []model.PrivateElement, board model.PrivateElement, d *model.Delta, changed Changed, id string) {
+	t.Helper()
+	c := &simClient{name: "editor", copy: map[string]model.PrivateElement{}, deleted: map[string]int64{}, board: board}
+	for _, e := range before {
+		c.copy[e.ID] = e
+	}
+	if err := c.applyDelta(d); err != nil {
+		t.Fatal(err)
+	}
+	c.watermark = d.Seq
+	if err := c.matches(h.s); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(changed.Buckets, model.BucketOf(id)) || !slices.Contains(changed.Elements, id) {
+		t.Fatalf("changed %+v misses %s", changed, id)
+	}
+	if err := CheckContent(content(h.s).Elements); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pendingMove applies a move of id prepared against incarnation inc
+// before a reset; it must apply on top of the reset.
+func pendingMove(t *testing.T, h *harness, session, name string, inc int64, x float64) {
+	t.Helper()
+	g := h.geom(eid(name))
+	g.X = x
+	out := h.ok(session, setGeom(name, inc, g, ""))
+	if rs := results(t, out); rs[0] != ResultOK || h.geom(eid(name)).X != x {
+		t.Fatalf("pending move gave %v, x %v", rs, h.geom(eid(name)).X)
+	}
+}
+
 func TestReviewRound5Counterexamples(t *testing.T) {
-	// checkWhole applies a delta to a copy of the board before it, as a
-	// connected Private editor does, compares it with a fresh read and
-	// checks that id's row and bucket count as changed.
-	checkWhole := func(t *testing.T, h *harness, before []model.PrivateElement, board model.PrivateElement, d *model.Delta, changed Changed, id string) {
-		t.Helper()
-		c := &simClient{name: "editor", copy: map[string]model.PrivateElement{}, deleted: map[string]int64{}, board: board}
-		for _, e := range before {
-			c.copy[e.ID] = e
-		}
-		if err := c.applyDelta(d); err != nil {
-			t.Fatal(err)
-		}
-		c.watermark = d.Seq
-		if err := c.matches(h.s); err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Contains(changed.Buckets, model.BucketOf(id)) || !slices.Contains(changed.Elements, id) {
-			t.Fatalf("changed %+v misses %s", changed, id)
-		}
-		if err := CheckContent(content(h.s).Elements); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// pendingMove applies a move of id prepared against incarnation inc
-	// before a reset; it must apply on top of the reset.
-	pendingMove := func(t *testing.T, h *harness, session, name string, inc int64, x float64) {
-		t.Helper()
-		g := h.geom(eid(name))
-		g.X = x
-		out := h.ok(session, setGeom(name, inc, g, ""))
-		if rs := results(t, out); rs[0] != ResultOK || h.geom(eid(name)).X != x {
-			t.Fatalf("pending move gave %v, x %v", rs, h.geom(eid(name)).X)
-		}
-	}
 	penOf := func(name string, pts []int) model.Element {
 		el, _, err := model.DecodeElement(elOf(map[string]any{"id": eid(name), "type": "pen", "x": 0, "y": 0, "w": 100, "h": 100, "z": "V", "pts": pts}))
 		if err != nil {
@@ -1519,4 +1522,254 @@ func TestReviewRound5Counterexamples(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestReviewRound6Counterexamples(t *testing.T) {
+	decode := func(t *testing.T, fields map[string]any) model.Element {
+		t.Helper()
+		el, _, err := model.DecodeElement(elOf(fields))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return el
+	}
+	ver := func(t *testing.T, h *harness, id string) int64 {
+		t.Helper()
+		v, ok := h.s.Ver(id)
+		if !ok {
+			t.Fatalf("%s is not alive", id)
+		}
+		return v
+	}
+	// stale checks that a guard read before a reset refuses a deletion
+	// after it and that a guard with the current ver still applies.
+	stale := func(t *testing.T, h *harness, id string, read int64) {
+		t.Helper()
+		now := ver(t, h, id)
+		if now <= read {
+			t.Fatalf("ver of %s is %d after the reset, read %d", id, now, read)
+		}
+		_, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "delete", IDs: []string{id}, IfVer: raw(read)}}})
+		if ae := (*AgentError)(nil); !errors.As(err, &ae) || ae.Category != CategoryConflict || !h.alive(id) {
+			t.Fatalf("stale guard %d (now %d) gave %v, alive %v", read, now, err, h.alive(id))
+		}
+		g := h.geom(id)
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "set", ID: id, Fields: raw(map[string]any{"x": g.X + 1}), IfVer: raw(now)}}}); err != nil {
+			t.Fatalf("current guard %d: %v", now, err)
+		}
+	}
+	// stamped checks that the reset out stamped v.fixed of id with its seq
+	// and left the incarnation and every bundle version as they were.
+	stamped := func(t *testing.T, h *harness, id string, inc int64, v map[string]int64, out Outcome) {
+		t.Helper()
+		r := h.row(id)
+		want := maps.Clone(v)
+		want[model.VFixed] = out.Seq
+		if r.Inc != inc || !maps.Equal(r.V, want) {
+			t.Fatalf("reset left inc %d (was %d), v %v, want %v", r.Inc, inc, r.V, want)
+		}
+	}
+	pen := func(name string, pts []int) map[string]any {
+		return map[string]any{"id": eid(name), "type": "pen", "x": 0, "y": 0, "w": 100, "h": 100, "z": "V", "pts": pts}
+	}
+
+	t.Run("a replacement of pen points refuses a guard read before it", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, Op{Op: OpAdd, El: elOf(pen("p", []int{0, 0, 10000, 10000}))})
+		inc, read, v := h.inc(eid("p")), ver(t, h, eid("p")), maps.Clone(h.row(eid("p")).V)
+
+		// an unchanged replacement changes no ver
+		h.now += 100
+		if _, err := h.s.Replace(content(h.s), "import", h.now); err != nil {
+			t.Fatal(err)
+		}
+		if got := ver(t, h, eid("p")); got != read || h.row(eid("p")).V[model.VFixed] != 0 {
+			t.Fatalf("unchanged replacement gave ver %d (read %d), v %v", got, read, h.row(eid("p")).V)
+		}
+
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		c := content(h.s)
+		c.Elements[0].Pts = []int{5000, 0, 0, 10000}
+		out, err := h.s.Replace(c, "import", h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stamped(t, h, eid("p"), inc, v, out)
+		checkWhole(t, h, before, board, out.Delta, out.Changed, eid("p"))
+		pendingMove(t, h, a, "p", inc, 40)
+		stale(t, h, eid("p"), read)
+	})
+
+	t.Run("a replacement of an image asset refuses a guard read before it", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h1, h2 := strings.Repeat("1", 64), strings.Repeat("2", 64)
+		h.s.HoldAsset(Asset{Hash: h1, Mime: "image/png", W: 4, H: 3, Bytes: 99}, h.now+3600)
+		h.s.HoldAsset(Asset{Hash: h2, Mime: "image/png", W: 8, H: 6, Bytes: 199}, h.now+3600)
+		h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("i"), "type": "image", "x": 0, "y": 0, "w": 40, "h": 30, "z": "V", "asset": h1, "natural": []int{4, 3}})})
+		inc, read, v := h.inc(eid("i")), ver(t, h, eid("i")), maps.Clone(h.row(eid("i")).V)
+
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		c := content(h.s)
+		c.Elements[0].Asset, c.Elements[0].Natural = h2, [2]int{8, 6}
+		c.Assets[h2] = *h.s.assets[h2]
+		out, err := h.s.Replace(c, "import", h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stamped(t, h, eid("i"), inc, v, out)
+		checkWhole(t, h, before, board, out.Delta, out.Changed, eid("i"))
+		pendingMove(t, h, a, "i", inc, 40)
+		stale(t, h, eid("i"), read)
+	})
+
+	t.Run("a replacement of the author fields refuses a guard read before it", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("x", 0, 0))
+		inc, read, v := h.inc(eid("x")), ver(t, h, eid("x")), maps.Clone(h.row(eid("x")).V)
+		h.now += 100
+		c := content(h.s)
+		c.Elements[0].By, c.Elements[0].At = "import:other", 7
+		out, err := h.s.Replace(c, "import", h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stamped(t, h, eid("x"), inc, v, out)
+		pendingMove(t, h, a, "x", inc, 40)
+		stale(t, h, eid("x"), read)
+	})
+
+	t.Run("an agent replacement of pen points refuses a guard read before it", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, Op{Op: OpAdd, El: elOf(pen("p", []int{0, 0, 10000, 10000}))})
+		inc, read := h.inc(eid("p")), ver(t, h, eid("p"))
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		out, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{{Op: "add", El: elOf(pen("p", []int{5000, 0, 0, 10000}))}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("p")); r.Inc != inc || r.V[model.VFixed] != out.Seq {
+			t.Fatalf("agent replacement left inc %d (was %d), v %v", r.Inc, inc, r.V)
+		}
+		checkWhole(t, h, before, board, out.Delta, out.Changed, eid("p"))
+		pendingMove(t, h, a, "p", inc, 40)
+		stale(t, h, eid("p"), read)
+	})
+
+	t.Run("a rollback of pen points refuses a guard read before it", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, Op{Op: OpAdd, El: elOf(pen("p", []int{0, 0, 10000, 10000}))})
+		rev := content(h.s)
+		inc := h.inc(eid("p"))
+		h.now += 100
+		c := content(h.s)
+		c.Elements[0].Pts = []int{5000, 0, 0, 10000}
+		if _, err := h.s.Replace(c, "import", h.now); err != nil {
+			t.Fatal(err)
+		}
+		read, v := ver(t, h, eid("p")), maps.Clone(h.row(eid("p")).V)
+
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		ro, err := h.s.Rollback(1, rev, h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stamped(t, h, eid("p"), inc, v, ro)
+		checkWhole(t, h, before, board, ro.Delta, ro.Changed, eid("p"))
+		pendingMove(t, h, a, "p", inc, 40)
+		stale(t, h, eid("p"), read)
+	})
+
+	// A connector C attached to shape S at [1, 0.5] (world (200, 150)) is
+	// deleted by a reset whose content reuses S's id for another type. C's
+	// end_last comes from S as it was, and reviving C alone frees the end
+	// there.
+	connector := func(t *testing.T, name string) map[string]any {
+		return map[string]any{"id": eid(name), "type": "connector", "z": "W", "ends": []any{free(0, 0), free(10, 10)}}
+	}
+	sticky := func(t *testing.T, name string) map[string]any {
+		return map[string]any{"id": eid(name), "type": "sticky", "x": 500, "y": 500, "w": 100, "h": 100, "z": "W"}
+	}
+	resets := []struct {
+		name  string
+		reuse func(t *testing.T, name string) map[string]any
+		run   func(t *testing.T, h *harness, el map[string]any) int64
+	}{
+		{"replacement as a connector", connector, func(t *testing.T, h *harness, el map[string]any) int64 {
+			out, err := h.s.Replace(Content{Title: "Board", Grid: true, Elements: []model.Element{decode(t, el)}}, "import", h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out.Seq
+		}},
+		{"replacement as a sticky", sticky, func(t *testing.T, h *harness, el map[string]any) int64 {
+			out, err := h.s.Replace(Content{Title: "Board", Grid: true, Elements: []model.Element{decode(t, el)}}, "import", h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out.Seq
+		}},
+		{"agent replacement as a connector", connector, func(t *testing.T, h *harness, el map[string]any) int64 {
+			delete(el, "z")
+			out, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{{Op: "add", El: elOf(el)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out.Seq
+		}},
+		{"rollback as a connector", connector, func(t *testing.T, h *harness, el map[string]any) int64 {
+			out, err := h.s.Rollback(1, Content{Title: "Board", Grid: true, Elements: []model.Element{decode(t, el)}}, h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out.Seq
+		}},
+		{"rollback as a sticky", sticky, func(t *testing.T, h *harness, el map[string]any) int64 {
+			out, err := h.s.Rollback(1, Content{Title: "Board", Grid: true, Elements: []model.Element{decode(t, el)}}, h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out.Seq
+		}},
+	}
+	for _, tc := range resets {
+		t.Run("a reset reusing a target id for "+tc.name+" keeps the deleted connector's end", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addShape("s", 100, 100, 100, 100, 0))
+			sInc := h.inc(eid("s"))
+			h.ok(a, addConnector("c", attach("s", 1, 0.5), free(400, 400), map[string]int64{eid("s"): sInc}))
+			h.now += 100
+			seq := tc.run(t, h, tc.reuse(t, "s"))
+			if err := checkInvariants(h.s); err != nil {
+				t.Fatal(err)
+			}
+			if s := h.row(eid("s")); s.Inc == sInc || s.El.Type == model.TypeShape {
+				t.Fatalf("target kept inc %d and type %s", s.Inc, s.El.Type)
+			}
+			c := h.row(eid("c"))
+			if want := [2][2]float64{{200, 150}, {400, 400}}; !c.Deleted || c.DelSeq != seq || c.EndLast != want {
+				t.Fatalf("connector deleted %v at %d (reset %d), end_last %v, want %v", c.Deleted, c.DelSeq, seq, c.EndLast, want)
+			}
+			out := h.ok(a, Op{Op: OpRevive, IDs: []string{eid("c")}, IfDel: seq})
+			if !h.alive(eid("c")) {
+				t.Fatalf("revive gave %v", results(t, out))
+			}
+			c = h.row(eid("c"))
+			if c.El.Ends[0] != (model.End{Pt: [2]float64{200, 150}}) || c.El.Ends[1] != (model.End{Pt: [2]float64{400, 400}}) || c.EndInc != [2]int64{} {
+				t.Fatalf("revived ends %+v, end_inc %v", c.El.Ends, c.EndInc)
+			}
+			if err := CheckContent(content(h.s).Elements); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }

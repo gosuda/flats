@@ -70,6 +70,32 @@ type sim struct {
 	assets    []string
 	agentIDs  int
 	imports   int64 // replacements, for distinct author times
+	// read is the agent's last read of the board, which its if_ver guards
+	// come from.
+	read map[string]agentRead
+}
+
+// agentRead is an element as the agent's last read saw it: its incarnation,
+// its ver and its content without the stacking key, which a rekey rewrites
+// without a version.
+type agentRead struct {
+	inc, ver int64
+	content  string
+}
+
+func readOf(e model.PrivateElement, ver int64) agentRead {
+	el := e.Element.Clone()
+	el.Z = ""
+	return agentRead{e.Inc, ver, string(el.CanonicalJSON())}
+}
+
+// readBoard is a get_board of the whole board by the agent.
+func (m *sim) readBoard() {
+	m.read = map[string]agentRead{}
+	for _, e := range m.s.Alive() {
+		v, _ := m.s.Ver(e.ID)
+		m.read[e.ID] = readOf(e, v)
+	}
 }
 
 func runSim(seed uint64) error {
@@ -608,21 +634,49 @@ func topZ(sc map[string]model.PrivateElement) string {
 }
 
 func (m *sim) agentCall() error {
+	if m.read == nil {
+		m.readBoard()
+	}
+	defer func() {
+		if m.rng.IntN(2) == 0 {
+			m.readBoard()
+		}
+	}()
 	alive := m.s.Alive()
 	var ops []AgentOp
+	// guarded holds the elements the call guards with the ver of the
+	// agent's last read, and what they are now, before the call.
+	guarded := map[string]agentRead{}
+	guard := func(op *AgentOp, e model.PrivateElement) {
+		r, ok := m.read[e.ID]
+		if !ok || m.rng.IntN(2) == 0 {
+			return
+		}
+		if _, dup := guarded[e.ID]; dup {
+			return
+		}
+		v, _ := m.s.Ver(e.ID)
+		guarded[e.ID] = readOf(e, v)
+		op.IfVer = raw(r.ver)
+	}
 	for range 1 + m.rng.IntN(3) {
 		switch k := m.rng.IntN(4); {
 		case k == 0 || len(alive) == 0:
 			ops = append(ops, AgentOp{Op: "add", El: raw(map[string]any{"type": "sticky", "text": "agent"})})
 		case k == 1:
-			ops = append(ops, AgentOp{Op: "delete", IDs: []string{alive[m.rng.IntN(len(alive))].ID}})
+			e := alive[m.rng.IntN(len(alive))]
+			op := AgentOp{Op: "delete", IDs: []string{e.ID}}
+			guard(&op, e)
+			ops = append(ops, op)
 		default:
 			e := alive[m.rng.IntN(len(alive))]
 			f := map[string]any{"locked": false}
 			if e.Type != model.TypeConnector {
 				f = map[string]any{"x": e.Geom.X + 10}
 			}
-			ops = append(ops, AgentOp{Op: "set", ID: e.ID, Fields: raw(f)})
+			op := AgentOp{Op: "set", ID: e.ID, Fields: raw(f)}
+			guard(&op, e)
+			ops = append(ops, op)
 		}
 	}
 	out, err := m.s.ApplyAgent(AgentCall{Ops: ops, Label: "agent", Now: m.now, NewID: func(p string) string {
@@ -633,6 +687,14 @@ func (m *sim) agentCall() error {
 		return nil
 	} else if err != nil {
 		return err
+	}
+	// A guard that let the call through protected an element that has not
+	// changed since the read (rule 33).
+	for id, now := range guarded {
+		if r := m.read[id]; now != r {
+			return fmt.Errorf("if_ver %d let a call change %s, which changed since the read:\nread %d %s\nnow  %d %s",
+				r.ver, id, r.inc, r.content, now.inc, now.content)
+		}
 	}
 	m.mirror.apply(m.s, out.Changed)
 	if out.Delta != nil {

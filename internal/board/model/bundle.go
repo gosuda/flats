@@ -24,6 +24,13 @@ const (
 	StylePrefix  = "style."
 )
 
+// VFixed is the key of v that versions the fields outside every bundle: the
+// author fields and a pen's points or an image's asset and natural size. It
+// is no bundle; only a whole-board rollback or replacement that changes one
+// of those fields under a kept incarnation sets it (4.11, 4.12), so an
+// element's ver = max(inc, v[*]) grows with that change too (8.1).
+const VFixed = "fixed"
+
 // EndBundle is the bundle key of connector end i.
 func EndBundle(i int) string {
 	if i == 0 {

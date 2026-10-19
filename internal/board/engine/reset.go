@@ -97,16 +97,27 @@ func (a *applier) resetContent(c Content) error {
 			as.Mime, as.W, as.H, as.Bytes = meta.Mime, meta.W, meta.H, meta.Bytes
 		}
 	}
+	// The elements the content omits, and the last coordinate of each end
+	// of the connectors among them, are taken from the board before any new
+	// row is installed: a target id the content reuses for another type
+	// would otherwise give the ends of a connector deleted here the new
+	// element's geometry (4.4, 4.12).
+	var gone []string
+	last := map[string][2][2]float64{}
+	for _, id := range slices.Sorted(maps.Keys(s.rows)) {
+		r := s.rows[id]
+		if _, keep := next[id]; keep || !r.alive() || id == model.BoardID {
+			continue
+		}
+		gone = append(gone, id)
+		if r.El.Type == model.TypeConnector {
+			last[id] = [2][2]float64{a.endWorld(r.El.Ends[0]), a.endWorld(r.El.Ends[1])}
+		}
+	}
 	for _, id := range slices.Sorted(maps.Keys(next)) {
 		a.resetElement(next[id])
 	}
-	var gone []string
-	for _, id := range slices.Sorted(maps.Keys(s.rows)) {
-		if _, keep := next[id]; !keep && s.rows[id].alive() && id != model.BoardID {
-			gone = append(gone, id)
-		}
-	}
-	a.deleteSet(gone)
+	a.deleteSetAt(gone, last)
 	for _, id := range slices.Sorted(maps.Keys(next)) {
 		r := s.rows[id]
 		if r.El.Type != model.TypeConnector {
@@ -142,8 +153,10 @@ func (a *applier) resetContent(c Content) error {
 // resetElement makes element el.ID equal to el. An alive element of the same
 // type keeps its incarnation (4.11, 4.12); only a different type starts a new
 // one. The fields outside every bundle (the author fields and the immutable
-// pen points, image asset and natural size) follow the content too, and the
-// element then goes out whole with its incarnation (diffRow).
+// pen points, image asset and natural size) follow the content too; when one
+// of them changes, v.fixed becomes this seq, so the element's ver grows and
+// a guard read before the reset no longer matches (8.1), and the element
+// goes out whole with its incarnation (diffRow).
 func (a *applier) resetElement(el model.Element) {
 	cur := a.s.rows[el.ID]
 	el.Normalize()
@@ -159,7 +172,10 @@ func (a *applier) resetElement(el model.Element) {
 		// stored content), so the unversioned fields follow it as well.
 		r.El.By, r.El.At = el.By, el.At
 		r.El.Pts, r.El.Asset, r.El.Natural = el.Pts, el.Asset, el.Natural
-		if !maps.Equal(r.V, cur.V) || !sameUnversioned(r.El, cur.El) {
+		if !sameUnversioned(r.El, cur.El) {
+			r.V[model.VFixed] = a.seq
+		}
+		if !maps.Equal(r.V, cur.V) {
 			a.put(r)
 		}
 		return

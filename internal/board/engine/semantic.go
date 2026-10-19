@@ -208,7 +208,12 @@ func (a *applier) deleteFrameContents(op Op) any {
 // deleteSet deletes alive elements (4.3 delete): it captures every pre_rel
 // first, then marks the rows deleted, ends the membership of members left
 // outside the set and frees connector ends attached to deleted targets.
-func (a *applier) deleteSet(ids []string) {
+func (a *applier) deleteSet(ids []string) { a.deleteSetAt(ids, nil) }
+
+// deleteSetAt is deleteSet with the end_last of some connectors in ids
+// already taken: a reset takes them from the board before it installs the
+// new content (4.12).
+func (a *applier) deleteSetAt(ids []string, last map[string][2][2]float64) {
 	if len(ids) == 0 {
 		return
 	}
@@ -219,7 +224,9 @@ func (a *applier) deleteSet(ids []string) {
 	}
 	for _, id := range ids {
 		r := a.s.rows[id].clone()
-		if r.El.Type == model.TypeConnector {
+		if l, ok := last[id]; ok {
+			r.EndLast = l
+		} else if r.El.Type == model.TypeConnector {
 			for k, end := range r.El.Ends {
 				r.EndLast[k] = a.endWorld(end)
 			}

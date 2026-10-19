@@ -674,8 +674,9 @@ types (`refusal.not_board`).
      from the same state, even while people edit. A cursor lasts 60 seconds;
      an expired one is refused with `conflict`, so read again from the start.
    - `seq` identifies the current state. Each element carries `ver`, which
-     grows with every change to it. `pending` says people have edits that are
-     not a revision yet.
+     grows with every change to it, including a rollback or replacement that
+     only gives a pen other points or an image another picture. `pending`
+     says people have edits that are not a revision yet.
    - `revision: N` reads an earlier revision (no cursor expiry).
 
 ### Write

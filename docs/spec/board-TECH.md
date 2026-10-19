@@ -105,7 +105,7 @@ Runtime fields (a row of the board.db `elements` table):
 | Runtime field | Meaning |
 |---|---|
 | `inc` | Incarnation. An element receives the seq of the batch when it first appears, and again when a deleted id reappears (`revive`, rollback). Seqs are never reused, so incarnations are never reused either |
-| `v` | The seq of the last change per bundle. Guards and undo use it |
+| `v` | The seq of the last change per bundle. Guards and undo use it. One more key, `fixed`, is no bundle: it is the seq of the last rollback or replacement that changed a field outside every bundle (`by`, `at`, a pen's `pts`, an image's `asset` or `natural`) of an element that kept its incarnation (4.11, 4.12). Nothing else sets it, so such a change still raises the element's `ver` (8.1) |
 | `deleted`, `del_seq` | The deleted state and the seq of the batch that deleted the element |
 | `pre_rel` | The relations from **before the batch that deleted this element started** (4.1): this element's `frame` and `frame_inc`, `group`, (for a connector) each end's target and incarnation, (for a target) the connector ends attached to it `[{conn, conn_inc, end, at}]`, (for a frame) its members `[{id, inc}]` |
 | `end_inc`, `end_last` | Connectors only: for each attached end, the target's incarnation, and the end's world coordinate computed when the connector was deleted (4.4) |
@@ -297,7 +297,11 @@ at the moment of applying**. Explicit targets carry expected incarnations.
   same batch. The delta carries the detached coordinates and end versions.
 - When a connector itself is deleted, it keeps the world coordinate of each
   attached end at that moment in `end_last`, clamped to the coordinate range
-  like a detached end. When the connector is revived,
+  like a detached end. A rollback or replacement (4.11, 4.12) takes these
+  coordinates from the board as it was before the reset installed any new
+  content, so a target id that the new content reuses for another type does
+  not lend the new element's geometry to the deleted connector's ends. When
+  the connector is revived,
   each attached end stays attached if its target is alive with an
   incarnation equal to `end_inc`, and otherwise becomes a free end at the
   `end_last` coordinate (the case where the connector was deleted first, the
@@ -390,8 +394,8 @@ sequenceDiagram
   `reset` is `{kind: "rollback", of: R}` or `{kind: "replace"}` (4.11, 4.12).
   `by` and `at`, a pen's `pts` and an image's `asset` and `natural` belong
   to no bundle, so an element whose such field a reset changed goes out
-  whole as `revive`, keeping its incarnation, and its bucket counts as
-  changed.
+  whole as `revive`, keeping its incarnation, with `v.fixed` set to the
+  reset's seq (3.1), and its bucket counts as changed.
 - Every committed batch goes out as a delta, **including to its sender**. Only
   batches that changed something get a seq. A batch whose operations were all
   ignored leaves only a receipt and no delta, and its ack's `seq` is the
@@ -635,13 +639,17 @@ around 1 MB or less.
         Only the bundles whose content differs change, and their `v` becomes
         the rollback seq. Its `by` and `at` become R's, and so do a pen's
         `pts` and an image's `asset` and `natural` when R holds other values
-        under the same id and type; the element then goes out whole (4.6).
+        under the same id and type; the element then goes out whole (4.6)
+        and its `v.fixed` becomes the rollback seq (3.1), so its `ver` grows
+        and an agent guard read before the rollback no longer matches (8.1).
         Only an id that R holds with a different element type is deleted
         and created again with a new incarnation, as in 4.12.
       - An element absent now and present in R: revived with a new
         incarnation (the rollback seq).
       - An element alive now and absent in R: deleted (`del_seq` is the
-        rollback seq).
+        rollback seq). Its `pre_rel` and, for a connector, its `end_last`
+        describe the board before the rollback, even when R reuses a
+        target's id for another type (4.4).
    3. Set the `_board` metadata bundles from R's `board.json` under the same
       rule (change only differing bundles and update their `v`).
    4. Rebuild the asset rows from the result: every asset that an element
@@ -695,9 +703,11 @@ or call as the source instead of R:
    2. Set the elements table to the new content. Ids that are alive now and
       present in the new content keep their incarnation and change only the
       differing bundles, the author fields and a pen's `pts` or an image's
-      `asset` and `natural` (4.6); ids absent now get a new incarnation; ids alive now
-      and absent from the new content become deleted, with `pre_rel`
-      captured as for a deletion. An id that the new content reuses for a
+      `asset` and `natural` (4.6), setting `v.fixed` to the replacement seq
+      when one of those fields changes (3.1, 8.1); ids absent now get a new
+      incarnation; ids alive now and absent from the new content become
+      deleted, with `pre_rel` captured as for a deletion and a connector's
+      `end_last` taken from the board before the replacement (4.4). An id that the new content reuses for a
       different element type is treated as deleted and created again.
    3. Set `_board`, rebuild asset rows (4.11 step 2.4), set dirty buckets.
    4. Clear every session's undo and redo stacks.
@@ -1158,7 +1168,12 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   `conflict` ("cursor expired; read again"). Revision reads are immutable and need no snapshot: each page is encoded on its own after the cursor, so a revision of any size is read page by page and the 32 MiB limit does not apply.
 - With the content fields, each element gets `ver` = max(`inc`, every value
   of `v`) (for element guards). A revive raises `inc` to the seq of that
-  batch, so `ver` always grows.
+  batch, so `ver` always grows. The values of `v` include `v.fixed` (3.1):
+  a rollback or replacement that keeps an element's incarnation and changes
+  only fields outside every bundle (its author fields, a pen's `pts`, an
+  image's `asset` or `natural`) sets it to the reset's seq, so `ver` grows
+  then too and every change to an element raises its `ver`. Edits prepared
+  against the kept incarnation still apply (4.11).
 
 **update_board**
 
@@ -1186,7 +1201,8 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   When only part of a bundle is given, the server fills the rest with the
   current values.
 - Guards: `if_seq` (the whole board has not changed since the read) and
-  `if_ver` (that element's `ver` = max(`inc`, `v[*]`) matches). Both use the
+  `if_ver` (that element's `ver` = max(`inc`, `v[*]`), `v.fixed` included,
+  matches). Both use the
   current board.db, including uncommitted person edits. `if_ver` judges each
   element as it was when the call started, so the call's own earlier
   operations do not count. It is a number for an operation on one element
