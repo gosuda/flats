@@ -217,3 +217,101 @@ func TestUpgradeRefusesBadHandshake(t *testing.T) {
 		t.Fatalf("status %d, err %v", w.Code, err)
 	}
 }
+
+// dialPair returns a Dial client and the server Conn it reached.
+func dialPair(t *testing.T) (client, server *Conn) {
+	t.Helper()
+	conns := make(chan *Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := Upgrade(w, r, Options{})
+		if err != nil {
+			t.Error(err)
+			close(conns)
+			return
+		}
+		conns <- c
+	}))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	client, err := Dial(t.Context(), func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}, addr, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close(1006, "") })
+	server = <-conns
+	if server == nil {
+		t.FailNow()
+	}
+	t.Cleanup(func() { server.Close(1006, "") })
+	return client, server
+}
+
+// waitEnded fails unless the client's writer goroutine has exited and its
+// connection is closed.
+func waitEnded(t *testing.T, ws *Conn) {
+	t.Helper()
+	for name, ch := range map[string]<-chan struct{}{"writer": ws.writerDone, "connection": ws.Done()} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("client %s still running after its socket failed", name)
+		}
+	}
+}
+
+// A Dial client whose read fails ends its whole lifecycle, so a caller that
+// only closes the raw socket (or a peer that goes away) leaks no writer.
+func TestDialClientEndsWhenReadFails(t *testing.T) {
+	cases := []struct {
+		name string
+		end  func(client, server *Conn)
+	}{
+		{"raw socket closed locally", func(client, _ *Conn) { client.NetConn().Close() }},
+		{"peer closed without a close frame", func(_, server *Conn) { server.Close(1006, "") }},
+		{"peer sent a close frame", func(_, server *Conn) { server.Close(4000, "bye") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := dialPair(t)
+			tc.end(client, server)
+			if _, err := client.ReadMessage(1 << 20); err == nil {
+				t.Fatal("read succeeded on an ended connection")
+			}
+			waitEnded(t, client)
+			if code, _ := client.CloseStatus(); code != 1006 {
+				t.Fatalf("client close code %d, want 1006", code)
+			}
+			if err := client.Send("late"); err == nil {
+				t.Fatal("Send accepted a message on an ended connection")
+			}
+		})
+	}
+}
+
+// A read timeout is the caller's deadline, not a dead socket: the client stays
+// usable.
+func TestDialClientSurvivesReadTimeout(t *testing.T) {
+	client, server := dialPair(t)
+	client.NetConn().SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	_, err := client.ReadMessage(1 << 20)
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() {
+		t.Fatalf("read error = %v, want timeout", err)
+	}
+	select {
+	case <-client.writerDone:
+		t.Fatal("a read timeout ended the client")
+	default:
+	}
+	client.NetConn().SetReadDeadline(time.Time{})
+	if err := server.Send("still here"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := client.ReadMessage(1 << 20); err != nil || got != "still here" {
+		t.Fatalf("client read %q, %v", got, err)
+	}
+	client.Close(1006, "")
+	waitEnded(t, client)
+}

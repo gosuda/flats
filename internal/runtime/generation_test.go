@@ -64,7 +64,8 @@ export default {fetch(request) { return Response.json(metadata(request)); },
 		t.Fatal(err)
 	}
 	check(raw, 40)
-	ws.NetConn().Close()
+	ws.Close(1006, "")
+	<-ws.Done()
 	in := inst.(*instance)
 	if err := syscall.Kill(in.pid(), syscall.SIGKILL); err != nil {
 		t.Fatal(err)

@@ -946,7 +946,7 @@ export default {
 	if err != nil {
 		t.Fatalf("dial: %v; logs:\n%s", err, f.logs)
 	}
-	defer a.NetConn().Close()
+	defer a.Close(1006, "")
 	a.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
 	expect := func(c *wsconn.Conn, want string) {
 		t.Helper()
@@ -965,7 +965,7 @@ export default {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.NetConn().Close()
+	defer b.Close(1006, "")
 	b.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
 	expect(b, "welcome /chat peers=2")
 	b.WriteFrame(wsconn.OpText, []byte("broadcast"))
@@ -1389,7 +1389,7 @@ export default {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer slow.NetConn().Close()
+	defer slow.Close(1006, "")
 	if m, err := slow.ReadMessage(MaxWSMessage); err != nil || m != "welcome" {
 		t.Fatalf("welcome = %q %v", m, err)
 	}
@@ -1400,7 +1400,7 @@ export default {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.NetConn().Close()
+	defer other.Close(1006, "")
 	other.NetConn().SetDeadline(time.Now().Add(20 * time.Second))
 	if m, err := other.ReadMessage(MaxWSMessage); err != nil || m != "welcome" {
 		t.Fatalf("other welcome = %q %v", m, err)

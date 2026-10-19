@@ -331,7 +331,7 @@ func TestTypesMatchRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v; logs:\n%s", err, f.logs)
 	}
-	defer ws.NetConn().Close()
+	defer ws.Close(1006, "")
 	ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
 	msg, err := ws.ReadMessage(MaxWSMessage)
 	if err != nil {

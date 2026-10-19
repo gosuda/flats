@@ -488,7 +488,8 @@ func TestServerFlatUsageEndToEnd(t *testing.T) {
 	if during.OpenStreams != 1 || during.Requests[core.RoutePrivate][core.Class1xx] != 1 || during.Requests[core.RoutePrivate][core.Class2xx] != 1 || during.DurationCount != 1 {
 		t.Fatalf("during the WebSocket %+v", during)
 	}
-	ws.NetConn().Close()
+	ws.Close(1006, "")
+	<-ws.Done()
 	deadline := time.Now().Add(10 * time.Second)
 	for metrics().OpenStreams != 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)

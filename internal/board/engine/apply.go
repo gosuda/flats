@@ -598,7 +598,9 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 			return model.Change{ID: id, Del: cur.DelSeq}, true
 		}
 		return model.Change{}, false
-	case old.Inc != cur.Inc || old.El.Type != cur.El.Type:
+	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameAuthor(old.El, cur.El):
+		// The author fields belong to no bundle, so an element whose by or
+		// at a reset rewrote goes out whole, like a new incarnation (4.6).
 		p := private(cur)
 		return model.Change{ID: id, Inc: cur.Inc, Revive: &p}, true
 	}
@@ -615,3 +617,7 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 	}
 	return model.Change{ID: id, Inc: cur.Inc, Set: set}, true
 }
+
+// sameAuthor reports whether two states of an element have the same author
+// fields, which change only with a reset (4.11, 4.12).
+func sameAuthor(x, y model.Element) bool { return x.By == y.By && x.At == y.At }

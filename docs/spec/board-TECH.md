@@ -387,6 +387,9 @@ sequenceDiagram
   incarnations, new `z` values, membership cleanup).
   `{seq, from?, by?, reset?, changes: [{id, inc, set: {g: [val, v]}, overwrote?: v} | {id, inc, add: el} | {id, del: del_seq} | {id, inc, revive: el}]}`.
   `reset` is `{kind: "rollback", of: R}` or `{kind: "replace"}` (4.11, 4.12).
+  `by` and `at` belong to no bundle, so an element whose author fields a
+  reset changed goes out whole as `revive`, keeping its incarnation, and
+  its bucket counts as changed.
 - Every committed batch goes out as a delta, **including to its sender**. Only
   batches that changed something get a seq. A batch whose operations were all
   ignored leaves only a receipt and no delta, and its ack's `seq` is the
@@ -499,8 +502,8 @@ does not drift.
   text) carries a matching `base_v`, has no `overwrote`, and shows nothing.
   "Keep my text" `add`s a new `text` element with that text, 24px to the right
   of the original element. Tests cover the concurrent and the sequential case.
-  At most 8 notices that carry an action stay on screen; a ninth removes the
-  oldest, so with more than 8 unanswered "Keep my text" notices the oldest
+  At most 8 notices that carry an action or stay until closed remain on
+  screen; a ninth removes the oldest, so with more than 8 unanswered "Keep my text" notices the oldest
   text is no longer offered.
 
 ### 4.10 Personal undo (server-side stack)
@@ -628,7 +631,7 @@ around 1 MB or less.
    2. Read R's buckets (blobs) and set the elements table to R's content.
       - An element alive now and present in R: **keeps its incarnation**.
         Only the bundles whose content differs change, and their `v` becomes
-        the rollback seq.
+        the rollback seq. Its `by` and `at` become R's (4.6).
       - An element absent now and present in R: revived with a new
         incarnation (the rollback seq).
       - An element alive now and absent in R: deleted (`del_seq` is the
@@ -685,7 +688,7 @@ or call as the source instead of R:
    1. When an open person group is dirty, record a `person` entry.
    2. Set the elements table to the new content. Ids that are alive now and
       present in the new content keep their incarnation and change only the
-      differing bundles; ids absent now get a new incarnation; ids alive now
+      differing bundles and the author fields (4.6); ids absent now get a new incarnation; ids alive now
       and absent from the new content become deleted, with `pre_rel`
       captured as for a deletion. An id that the new content reuses for a
       different element type is treated as deleted and created again.
@@ -1209,7 +1212,10 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
 - New elements without coordinates: without `layout`, they go in a row to the
   right of the current bounding box. For `replace: true` that is the box of
   the call's own elements that give `x` and `y`, not the board being
-  replaced; with none, the row starts at (0, 0) as on an empty board. Default sizes: sticky 200×200, shape
+  replaced; with none, the row starts at (0, 0) as on an empty board. An
+  element the call's `layout` names takes no place in that row: until the
+  layout places it, its coordinates stay on the canvas, and only its final
+  place is checked (off the canvas refuses the whole call). Default sizes: sticky 200×200, shape
   160×100, text fitted to its content. A connector always needs `ends`
   (`invalid` without them); an attached end without `at` (or with `at: null`)
   attaches at the side facing the other end once layout is done (4.4).

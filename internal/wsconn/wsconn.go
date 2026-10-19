@@ -157,7 +157,9 @@ func Upgrade(w http.ResponseWriter, r *http.Request, opts Options) (*Conn, error
 	return ws, nil
 }
 
-// NetConn returns the underlying connection.
+// NetConn returns the underlying connection, for deadlines. Closing it does
+// not end the Conn by itself: call Close, or for a client let ReadMessage
+// observe the failure, so the writer goroutine exits.
 func (ws *Conn) NetConn() net.Conn { return ws.c }
 
 // Budget returns this connection's own byte budget, for lowering it.
@@ -274,7 +276,24 @@ func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, err error
 // ReadMessage returns the next data message of at most max bytes (max must
 // be positive), answering pings. A close frame, or a message or frame over
 // max (code 1009), is returned as *CloseError. Only one goroutine may read.
+//
+// A server's owner closes the connection with a code chosen from the error.
+// A client (Dial) has no such owner, so any read error other than a timeout
+// ends its connection here (Close with 1006): the socket failed, the peer
+// closed or sent a close frame, or the frames were invalid. A timeout leaves
+// the connection open for the caller to retry or Close.
 func (ws *Conn) ReadMessage(max int) (string, error) {
+	msg, err := ws.readMessage(max)
+	if err != nil && ws.client {
+		var ne net.Error
+		if !errors.As(err, &ne) || !ne.Timeout() {
+			ws.Close(1006, "")
+		}
+	}
+	return msg, err
+}
+
+func (ws *Conn) readMessage(max int) (string, error) {
 	var msg []byte
 	inMsg := false
 	for {
@@ -496,7 +515,8 @@ func (ws *Conn) CloseStatus() (code int, reason string) {
 func (ws *Conn) Done() <-chan struct{} { return ws.gone }
 
 // Dial is a minimal client for tests and probes. dial opens the transport;
-// the client has no read deadline and sends no pings.
+// the client has no read deadline and sends no pings. Its writer goroutine
+// runs until Close, or until ReadMessage returns a non-timeout error.
 func Dial(ctx context.Context, dial func(ctx context.Context) (net.Conn, error), host, path string) (*Conn, error) {
 	c, err := dial(ctx)
 	if err != nil {

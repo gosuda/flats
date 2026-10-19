@@ -72,7 +72,7 @@ func TestNearCapWebSocketCycleCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ws.NetConn().Close()
+	defer ws.Close(1006, "")
 	count := nearCapCount(600)
 	for i := 1; i <= count; i++ {
 		ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))

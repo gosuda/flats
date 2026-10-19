@@ -17,7 +17,7 @@ import (
 // operations from its screen (the server copy with pending batches applied
 // again on top), and loses its connection now and then: in-flight batches
 // may be lost, deltas missed, and pending batches are resent with the same
-// numbers after a reconnect. Rollbacks and agent calls interleave. After every
+// numbers after a reconnect. Rollbacks, replacements and agent calls interleave. After every
 // step the board invariants hold and a mirror built only from the reported
 // changed rows equals the state; at the end every editor's copy equals the
 // server. BOARD_SEEDS sets the number of seeds (default 2000).
@@ -69,6 +69,7 @@ type sim struct {
 	now       int64
 	assets    []string
 	agentIDs  int
+	imports   int64 // replacements, for distinct author times
 }
 
 func runSim(seed uint64) error {
@@ -124,7 +125,22 @@ func (m *sim) step() error {
 	case k < 95:
 		m.revisions = append(m.revisions, content(m.s))
 	case k < 97 && len(m.revisions) > 0:
-		out, err := m.s.Rollback(1, m.revisions[m.rng.IntN(len(m.revisions))], m.now)
+		var out Outcome
+		var err error
+		if m.rng.IntN(2) == 0 {
+			out, err = m.s.Rollback(1, m.revisions[m.rng.IntN(len(m.revisions))], m.now)
+		} else {
+			// A replacement that keeps every element and rewrites only some
+			// author fields: those reach editors and buckets too.
+			c := content(m.s)
+			m.imports++
+			for i := range c.Elements {
+				if m.rng.IntN(2) == 0 {
+					c.Elements[i].By, c.Elements[i].At = "import:sim", m.imports
+				}
+			}
+			out, err = m.s.Replace(c, "import", m.now)
+		}
 		if err != nil {
 			return err
 		}
@@ -743,9 +759,9 @@ func TestRandomUndoRedo(t *testing.T) {
 }
 
 // boardView is the board as undo must restore it: the metadata and every
-// alive element's content without its stacking key and author fields, by
-// id, and separately the stacking order. Incarnations and versions may
-// differ.
+// alive element's content, author fields included, without its stacking
+// key, by id, and separately the stacking order. Incarnations and versions
+// may differ.
 type boardView struct{ content, order string }
 
 func viewOf(s *State) boardView {
@@ -754,8 +770,6 @@ func viewOf(s *State) boardView {
 	for _, p := range s.Alive() {
 		c := p.Content()
 		delete(c, "z")
-		delete(c, "by")
-		delete(c, "at")
 		b.WriteString("\n")
 		b.Write(model.Canonical(c))
 	}

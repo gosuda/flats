@@ -90,7 +90,7 @@ func TestWebSocketPostFailureReleasesSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.NetConn().Close()
+	defer client.Close(1006, "")
 
 	close(h.stop)
 	client.NetConn().SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -179,7 +179,7 @@ func TestWebSocketMessageLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.NetConn().Close()
+	defer client.Close(1006, "")
 	next := func() wsEvent {
 		t.Helper()
 		select {

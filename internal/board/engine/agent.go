@@ -165,9 +165,18 @@ type agentCall struct {
 	nextX, nextY float64
 	// elements the call's layout places explicitly
 	laid map[string]bool
+	// the ids and refs the call's layout names, known before any operation
+	// runs, so an add can tell that layout will place its element
+	layoutNames map[string]bool
 }
 
 func (c *agentCall) run() error {
+	c.layoutNames = map[string]bool{}
+	for _, l := range c.call.Layout {
+		for _, ref := range l.IDs {
+			c.layoutNames[ref] = true
+		}
+	}
 	if c.call.Replace {
 		return c.replace()
 	}
@@ -314,7 +323,7 @@ func (c *agentCall) add(op AgentOp) (any, error) {
 			return nil, err
 		}
 	}
-	if err := c.fillGeom(&el, present); err != nil {
+	if err := c.fillGeom(&el, present, c.layoutPlaces(el.ID, op.Ref)); err != nil {
 		return nil, err
 	}
 	el.Normalize()
@@ -356,11 +365,23 @@ func (c *agentCall) checkRef(ref string) error {
 	return nil
 }
 
+// layoutPlaces reports whether the call's layout names the element added
+// with id and ref.
+func (c *agentCall) layoutPlaces(id, ref string) bool {
+	return c.layoutNames[id] || (ref != "" && c.layoutNames[ref])
+}
+
 // fillGeom gives a new element default sizes and, without coordinates, a
 // place in a row to the right of the board's bounding box. A connector has
 // no geometry but needs its two ends: only an attached end's "at" has a
 // default (8.1).
-func (c *agentCall) fillGeom(el *model.Element, present model.Present) error {
+//
+// An element the call's layout places (laid) only waits for that layout:
+// it takes no place in the row, and its temporary coordinates stay on the
+// canvas, so a valid layout is not refused for where the row would have
+// put it. Layout then checks the final place, and refuses the whole call
+// when that is off the canvas.
+func (c *agentCall) fillGeom(el *model.Element, present model.Present, laid bool) error {
 	if el.Type == model.TypeConnector {
 		if !present["ends"] {
 			return invalid("a connector needs ends")
@@ -389,11 +410,22 @@ func (c *agentCall) fillGeom(el *model.Element, present model.Present) error {
 		}
 		c.placed = true
 	}
+	// Only the coordinates the row fills are kept on the canvas; given ones
+	// are checked as given.
+	onCanvas := func(v float64) float64 {
+		if laid {
+			return math.Max(-model.MaxCoord, math.Min(model.MaxCoord, v))
+		}
+		return v
+	}
 	if !present["x"] {
-		el.Geom.X = c.nextX
+		el.Geom.X = onCanvas(c.nextX)
 	}
 	if !present["y"] {
-		el.Geom.Y = c.nextY
+		el.Geom.Y = onCanvas(c.nextY)
+	}
+	if laid {
+		return nil
 	}
 	c.nextX = el.Geom.X + el.Geom.W + layoutGap
 	return nil
@@ -1019,8 +1051,8 @@ func (c *agentCall) replace() error {
 	if box, ok := placedBounds(els, presents); ok {
 		c.nextX, c.nextY = box.X+box.W+placeGap, box.Y
 	}
-	for i := range els {
-		if err := c.fillGeom(&els[i], presents[i]); err != nil {
+	for i, op := range c.call.Ops {
+		if err := c.fillGeom(&els[i], presents[i], c.layoutPlaces(els[i].ID, op.Ref)); err != nil {
 			return err
 		}
 		els[i].By, els[i].At = c.a.by, c.a.now

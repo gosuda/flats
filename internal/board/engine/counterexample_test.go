@@ -1134,3 +1134,158 @@ func TestReviewRound3Counterexamples(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewRound4Counterexamples holds the counterexamples of the fourth
+// engine code review: each failed before its fix.
+func TestReviewRound4Counterexamples(t *testing.T) {
+	t.Run("layout places new elements the row would put off the canvas", func(t *testing.T) {
+		far := float64(model.MaxCoord - 100)
+		at := func(h *harness, id string) [2]float64 { g := h.geom(id); return [2]float64{g.X, g.Y} }
+		var ae *AgentError
+		// The row to the right of P starts past MaxCoord; layout puts S in F.
+		t.Run("ordinary", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addFrame("f", 0, 0, 1000, 1000), addSticky("p", far, 0))
+			out, err := h.agent(AgentCall{
+				Ops:    []AgentOp{{Op: "add", Ref: "$s", El: elOf(map[string]any{"type": "sticky"})}},
+				Layout: []Layout{{Kind: "row", IDs: []string{"$s"}, In: eid("f")}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := out.IDs["$s"]
+			if got := at(h, s); got != [2]float64{32, 32} || out.Layout[s] != got || h.row(s).El.Frame != eid("f") {
+				t.Fatalf("S at %v (reported %v) in %q", got, out.Layout[s], h.row(s).El.Frame)
+			}
+			if g := h.geom(eid("f")); g.W != 1000 || g.H != 1000 {
+				t.Fatalf("frame changed size: %+v", g)
+			}
+			// an element without coordinates that no layout places still
+			// goes in the row and is refused off the canvas, with the call
+			before := sortedIDs(h.s)
+			_, err = h.agent(AgentCall{
+				Ops: []AgentOp{
+					{Op: "add", Ref: "$s", El: elOf(map[string]any{"type": "sticky"})},
+					{Op: "add", Ref: "$t", El: elOf(map[string]any{"type": "sticky"})},
+				},
+				Layout: []Layout{{Kind: "row", IDs: []string{"$s"}, In: eid("f")}},
+			})
+			if !errors.As(err, &ae) || ae.Category != CategoryInvalid || !slices.Equal(sortedIDs(h.s), before) {
+				t.Fatalf("unplaced element off the canvas: %v, board %v", err, sortedIDs(h.s))
+			}
+			// a final place off the canvas refuses the whole call
+			_, err = h.agent(AgentCall{
+				Ops: []AgentOp{
+					{Op: "add", Ref: "$s", El: elOf(map[string]any{"type": "sticky"})},
+					{Op: "add", Ref: "$u", El: elOf(map[string]any{"type": "sticky"})},
+				},
+				Layout: []Layout{{Kind: "row", IDs: []string{"$s", "$u"}}},
+			})
+			if !errors.As(err, &ae) || ae.Category != CategoryInvalid || !slices.Equal(sortedIDs(h.s), before) {
+				t.Fatalf("layout off the canvas: %v, board %v", err, sortedIDs(h.s))
+			}
+		})
+		t.Run("replace", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addSticky("old", 0, 0))
+			ops := []AgentOp{
+				{Op: "add", Ref: "$f", El: elOf(map[string]any{"type": "frame", "text": "F", "x": 0, "y": 0, "w": 1000, "h": 1000})},
+				{Op: "add", Ref: "$p", El: elOf(map[string]any{"type": "sticky", "x": far, "y": 0, "w": 100, "h": 100})},
+				{Op: "add", Ref: "$s", El: elOf(map[string]any{"type": "sticky"})},
+			}
+			before := sortedIDs(h.s)
+			off := append(slices.Clone(ops), AgentOp{Op: "add", Ref: "$u", El: elOf(map[string]any{"type": "sticky"})})
+			for name, call := range map[string]AgentCall{
+				"unplaced":   {Replace: true, Ops: off, Layout: []Layout{{Kind: "row", IDs: []string{"$s"}, In: "$f"}}},
+				"off canvas": {Replace: true, Ops: off, Layout: []Layout{{Kind: "row", IDs: []string{"$s", "$u"}}}},
+			} {
+				if _, err := h.agent(call); !errors.As(err, &ae) || ae.Category != CategoryInvalid || !slices.Equal(sortedIDs(h.s), before) {
+					t.Fatalf("%s: %v, board %v", name, err, sortedIDs(h.s))
+				}
+			}
+			out, err := h.agent(AgentCall{Replace: true, Ops: ops, Layout: []Layout{{Kind: "row", IDs: []string{"$s"}, In: "$f"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, f := out.IDs["$s"], out.IDs["$f"]
+			if got := at(h, s); got != [2]float64{32, 32} || out.Layout[s] != got || h.row(s).El.Frame != f || h.alive(eid("old")) {
+				t.Fatalf("S at %v (reported %v) in %q", got, out.Layout[s], h.row(s).El.Frame)
+			}
+		})
+		// An element layout places takes no place in the row.
+		t.Run("row", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addFrame("f", 0, 0, 1000, 1000))
+			out, err := h.agent(AgentCall{
+				Ops: []AgentOp{
+					{Op: "add", Ref: "$s", El: elOf(map[string]any{"type": "sticky"})},
+					{Op: "add", Ref: "$t", El: elOf(map[string]any{"type": "sticky"})},
+				},
+				Layout: []Layout{{Kind: "row", IDs: []string{"$s"}, In: eid("f")}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := at(h, out.IDs["$t"]); got != [2]float64{1000 + placeGap, 0} {
+				t.Fatalf("T at %v", got)
+			}
+		})
+	})
+
+	t.Run("a reset that changes only author fields reaches deltas and buckets", func(t *testing.T) {
+		// check applies the delta to a copy of the board before it, as a
+		// connected Private editor does, and compares it with a fresh read.
+		check := func(t *testing.T, h *harness, before []model.PrivateElement, board model.PrivateElement, d *model.Delta, changed Changed, id string) {
+			t.Helper()
+			c := &simClient{name: "editor", copy: map[string]model.PrivateElement{}, deleted: map[string]int64{}, board: board}
+			for _, e := range before {
+				c.copy[e.ID] = e
+			}
+			if err := c.applyDelta(d); err != nil {
+				t.Fatal(err)
+			}
+			c.watermark = d.Seq
+			if err := c.matches(h.s); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(changed.Buckets, model.BucketOf(id)) || !slices.Contains(changed.Elements, id) {
+				t.Fatalf("changed %+v misses %s", changed, id)
+			}
+		}
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("x", 0, 0))
+		x := h.row(eid("x")).El
+		rev := content(h.s)
+		inc := h.inc(eid("x"))
+
+		// same-id replacement by an agent later: same bundles, new by and at
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		same := elOf(map[string]any{"id": eid("x"), "type": "sticky", "x": 0, "y": 0, "w": 100, "h": 100, "z": "V"})
+		out, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{{Op: "add", El: same}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := h.row(eid("x"))
+		if r.Inc != inc || r.El.By == x.By || r.El.At == x.At {
+			t.Fatalf("replacement kept inc %d (was %d), author %s %d", r.Inc, inc, r.El.By, r.El.At)
+		}
+		check(t, h, before, board, out.Delta, out.Changed, eid("x"))
+
+		// rollback brings back the revision's author fields only
+		h.now += 100
+		before, board = h.s.Alive(), h.s.Board()
+		ro, err := h.s.Rollback(1, rev, h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("x")); r.Inc != inc || r.El.By != x.By || r.El.At != x.At {
+			t.Fatalf("rollback left inc %d, author %s %d", r.Inc, r.El.By, r.El.At)
+		}
+		check(t, h, before, board, ro.Delta, ro.Changed, eid("x"))
+	})
+}

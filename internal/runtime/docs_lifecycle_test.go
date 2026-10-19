@@ -502,7 +502,7 @@ func TestManagedDocsStopWithOpenWebSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ws.NetConn().Close()
+	defer ws.Close(1006, "")
 	ws.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
 	if message, err := ws.ReadMessage(MaxWSMessage); err != nil || message != "ready" {
 		t.Fatalf("WS not established: %q %v", message, err)
