@@ -2,7 +2,8 @@
 // success criteria, "Remote display" and "Concurrent editing").
 //
 //   node remote-latency.mjs --url http://<slug>.localhost:<port> --expected 5000 [--minutes 10] [--bots 5]
-//        [--rate 2] [--zoom 0.8] [--owned 5] [--headless] [--inject-divergence] [--out result.json]
+//        [--rate 2] [--zoom 0.8] [--owned 5] [--cross 2] [--cross-rate 1] [--pres-rate 10]
+//        [--headless] [--inject-divergence] [--out result.json]
 //
 // An observer: Chrome opens the board at --zoom (default 80%) over the first
 // frame's sticky grid.
@@ -11,9 +12,29 @@
 // same state machine, batching, ack and reconnect rules as the canvas) and
 // edits --rate times per second. Each edit is one batch: it sets the text of
 // a sticky to a unique token and moves it a few pixels. Every bot owns
-// --owned (default 5) stickies in the observer's view; one edit in three instead goes to a pool
-// of four stickies that every bot edits (text and color), so the server
-// orders conflicting writes.
+// --owned (default 5) stickies in the observer's view; one edit in three
+// instead goes to a pool of four stickies that every bot edits (text and
+// color in one batch), so the server orders conflicting writes of the same
+// bundles from different bots.
+//
+// Cross-bundle conflicts: --cross-rate times per second (default 1) every
+// bot, in the same event-loop turn, edits the same sticky of a pool of
+// --cross (default 2) stickies, each on the bundle of its role (bot index
+// mod 3): 0 moves it (geom), 1 recolors it (style.color), 2 sets its text.
+// With five bots one element receives two moves, two recolors and one text
+// edit at once: concurrent writes of different bundles of one element, and
+// concurrent writes of the same bundle. Each bot writes from its own copy,
+// which may not yet hold the others' writes. A bot sends one batch at a
+// time, so a cross batch waits behind that bot's batch in flight; the
+// result reports the spread of the send times per round and the rounds in
+// which every batch was sent before any of them was acknowledged.
+//
+// Presence: every bot also sends presence (cursor moving around its
+// stickies, its view rectangle, its selection, and alternately an editing
+// mark and a drag preview) --pres-rate times per second (default 10; the
+// client and the server allow 20), so the observer draws remote cursors
+// during the load. The result counts presence messages sent by the bots and
+// received by the observer and the bots.
 //
 // Latency of one edit = the observer's display time minus the bot's send
 // time, both as wall-clock milliseconds on this machine (performance.timeOrigin
@@ -30,13 +51,16 @@
 // After the load the bots stop, everything settles, and the check compares
 // every element on every screen (each bot's client state, the observer's
 // page state) with a fresh snapshot from the server, and checks that the
-// last acknowledged write of each bundle is the one that stayed.
+// last acknowledged write of each bundle is the one that stayed. "Last" is
+// the order of the server's ack sequence numbers, so this detects lost or
+// misapplied writes (including one bundle's write clobbering another's on
+// the same element), not a wrong server order.
 
 import { writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { args, watchdog, launchChrome, waitReady, nameScript, stats, environment, uptime, sleep } from './lib.mjs';
 
-const opt = args({ url: '', expected: 5000, minutes: 10, bots: 5, rate: 2, zoom: 0.8, owned: 5, width: 1440, height: 900, scale: 0, chrome: '', out: '' });
+const opt = args({ url: '', expected: 5000, minutes: 10, bots: 5, rate: 2, zoom: 0.8, owned: 5, cross: 2, 'cross-rate': 1, 'pres-rate': 10, width: 1440, height: 900, scale: 0, chrome: '', out: '' });
 if (!opt.url) { console.error('usage: node remote-latency.mjs --url <board url> --expected <elements>'); process.exit(2); }
 watchdog((opt.minutes * 60 + 600) * 1000);
 
@@ -56,6 +80,7 @@ class BotSocket extends NativeWS {
     if (this.bot && typeof data === 'string') {
       const m = /^\{"t":"ops(?:_part)?","n":(\d+)/.exec(data);
       if (m && !this.bot.sentAt.has(Number(m[1]))) this.bot.sentAt.set(Number(m[1]), nowMs());
+      else if (data.startsWith('{"t":"pres"')) this.bot.presSent++;
     }
     super.send(data);
   }
@@ -70,8 +95,13 @@ const RUNTIME = ['inc', 'v', 'end_inc', 'deleted', 'del_seq'];
 const contentOf = (el) => Object.fromEntries(Object.entries(el).filter(([k]) => !RUNTIME.includes(k)));
 
 class Bot {
-  constructor(i, owned, shared) {
+  constructor(i, owned, shared, cross) {
     this.i = i;
+    this.role = ['geom', 'style.color', 'text'][i % 3];
+    this.cross = cross;
+    this.presSent = 0;
+    this.presReceived = 0;
+    this.last = owned[0];
     this.name = `load bot ${i + 1}`;
     this.editor = 'perfbot' + i + randomBytes(6).toString('hex');
     this.owned = owned;
@@ -99,7 +129,7 @@ class Bot {
       ack: (m) => { self.acks.push({ n: m.n, seq: m.seq, results: m.results, at: nowMs() }); },
       reject: (m) => { self.rejects.push({ n: m.n, code: m.code, retry: m.retry }); },
       fatal: (code) => { self.fatal = code; },
-      pres: () => {}, shared: () => {}, status: () => {}, tooLarge: () => { self.rejects.push({ code: 'too_large' }); },
+      pres: () => { self.presReceived++; }, shared: () => {}, status: () => {}, tooLarge: () => { self.rejects.push({ code: 'too_large' }); },
     });
   }
 
@@ -130,7 +160,45 @@ class Bot {
     const r = queueBatch(st, ops);
     if (!r) return;
     this.batches.set(r.batch.n, { token, ops });
+    this.last = id;
     this.net.flush();
+  }
+
+  // crossEdit writes this bot's role bundle of a cross sticky and returns
+  // the batch number (null when nothing was queued).
+  crossEdit(id, round) {
+    const st = this.state;
+    const el = st.get(id);
+    if (!el) return null;
+    const k = this.k++;
+    let token = null, op;
+    if (this.role === 'text') {
+      token = `b${this.i}#c${k}`;
+      op = { op: 'set', id, inc: st.incOf(id), g: 'text', val: `${token} cross edit from ${this.name}` };
+    } else if (this.role === 'style.color') {
+      op = { op: 'set', id, inc: st.incOf(id), g: 'style.color', val: ['yellow', 'pink', 'blue', 'green', 'orange'][(this.i + round) % 5] };
+    } else {
+      const dx = (round + this.i) % 2 ? 4 : -4;
+      op = { op: 'set', id, inc: st.incOf(id), g: 'geom', val: { x: Math.round(el.x) + dx, y: Math.round(el.y), w: el.w, h: el.h, rot: el.rot || 0 } };
+    }
+    const r = queueBatch(st, [op]);
+    if (!r) return null;
+    this.batches.set(r.batch.n, { token, ops: [op], cross: round });
+    this.last = id;
+    this.net.flush();
+    return r.batch.n;
+  }
+
+  // presence sends cursor, view, selection and an editing mark or drag
+  // preview for the element this bot edited last.
+  presence(view, tick) {
+    const el = this.state.get(this.last);
+    if (!el) return;
+    const a = (tick / 10) + this.i;
+    const m = { c: [el.x + el.w / 2 + 60 * Math.cos(a), el.y + el.h / 2 + 60 * Math.sin(a)], vp: view, sel: [el.id], edit: null, drag: null };
+    if (tick % 4 === 1) m.edit = el.id;
+    if (tick % 4 === 3) m.drag = { [el.id]: [el.x + 8, el.y + 8, el.w, el.h, el.rot || 0] };
+    this.net.presence(m);
   }
 }
 
@@ -158,6 +226,9 @@ function rawSnapshot() {
 const observerHook = `(() => {
   const b = window.board;
   const seen = window.__seen = [];
+  window.__pres = 0;
+  const recv = b.presence.receive.bind(b.presence);
+  b.presence.receive = (m) => { window.__pres++; recv(m); };
   const orig = b.onDelta;
   b.onDelta = function (r, d) {
     orig.call(this, r, d);
@@ -166,7 +237,7 @@ const observerHook = `(() => {
     for (const c of d.changes || []) {
       const t = c.set && c.set.text;
       if (!t) continue;
-      const m = /^(b\\d+#\\d+) /.exec(Array.isArray(t) ? t[0] : t);
+      const m = /^(b\\d+#c?\\d+) /.exec(Array.isArray(t) ? t[0] : t);
       if (m) tokens.push(m[1]);
     }
     if (!tokens.length) return;
@@ -184,7 +255,9 @@ const observerHook = `(() => {
 const before = uptime();
 const chrome = await launchChrome({ headless: !!opt.headless, width: opt.width, height: opt.height, scale: opt.scale || 0, chrome: opt.chrome || undefined });
 let result;
+let obsView = null;
 const bots = [];
+const crossRounds = []; // [{round, id, n: [[bot, batch n]]}]
 try {
   const page = await chrome.cdp.firstPage();
   const exceptions = [];
@@ -207,13 +280,14 @@ try {
     const inside = stickies.filter((e) => e.x >= v.x && e.y >= v.y && e.x + e.w <= v.x + v.w && e.y + e.h <= v.y + v.h);
     const cx = v.x + v.w / 2, cy = v.y + v.h / 2;
     inside.sort((a, c) => Math.hypot(a.x - cx, a.y - cy) - Math.hypot(c.x - cx, c.y - cy));
-    return inside.map((e) => e.id);
-  })()`);
-  const need = opt.bots * opt.owned + 4;
-  if (ids.length < need) throw new Error(`only ${ids.length} stickies in view, need ${need}`);
+    return { ids: inside.map((e) => e.id), view: [v.x, v.y, v.w, v.h, b.cam.z] };
+  })()`).then((r) => { obsView = r.view; return r.ids; });
+  const need = opt.bots * opt.owned + 4 + opt.cross;
+  if (ids.length < need) throw new Error(`only ${ids.length} stickies in view, need ${need} (lower --owned or --cross, or --zoom)`);
   await page.eval(observerHook);
   const shared = ids.slice(0, 4);
-  for (let i = 0; i < opt.bots; i++) bots.push(new Bot(i, ids.slice(4 + i * opt.owned, 4 + (i + 1) * opt.owned), shared));
+  const cross = ids.slice(4 + opt.bots * opt.owned, 4 + opt.bots * opt.owned + opt.cross);
+  for (let i = 0; i < opt.bots; i++) bots.push(new Bot(i, ids.slice(4 + i * opt.owned, 4 + (i + 1) * opt.owned), shared, cross));
   for (const b of bots) b.start();
   for (let i = 0; i < 600 && !bots.every((b) => b.ready); i++) await sleep(100);
   if (!bots.every((b) => b.ready)) throw new Error('bots did not connect');
@@ -229,6 +303,29 @@ try {
     b.edit();
     b.timer = setTimeout(tick, period);
   }, (i * period) / opt.bots));
+  // Cross rounds: all bots in one turn, on one cross sticky.
+  if (opt['cross-rate'] > 0 && cross.length) {
+    let round = 0;
+    timers.push(setTimeout(function crossTick() {
+      if (Date.now() >= end) return;
+      const id = cross[round % cross.length];
+      const n = [];
+      for (const b of bots) { const bn = b.crossEdit(id, round); if (bn != null) n.push([b.i, bn]); }
+      crossRounds.push({ round, id, n });
+      round++;
+      timers.push(setTimeout(crossTick, 1000 / opt['cross-rate']));
+    }, 1000 / opt['cross-rate'] / 2));
+  }
+  // Presence load.
+  if (opt['pres-rate'] > 0) {
+    let pt = 0;
+    const presTimer = setInterval(() => {
+      if (Date.now() >= end) { clearInterval(presTimer); return; }
+      pt++;
+      for (const b of bots) b.presence(obsView, pt);
+    }, 1000 / opt['pres-rate']);
+    timers.push(presTimer);
+  }
   const loads = [];
   while (Date.now() < end) {
     await sleep(Math.min(30000, end - Date.now()));
@@ -237,7 +334,7 @@ try {
     const acked = bots.reduce((a, b) => a + b.acks.length, 0);
     console.error(`${Math.round((Date.now() - t0) / 1000)} s: sent ${sent}, acked ${acked}, pending ${bots.map((b) => b.state.pending.length).join('/')}; ${loads.at(-1)}`);
   }
-  for (const t of timers) clearTimeout(t);
+  for (const t of timers) { clearTimeout(t); clearInterval(t); }
   for (const b of bots) clearTimeout(b.timer);
 
   // Settle: every batch acknowledged, every screen at the server's seq.
@@ -259,7 +356,7 @@ try {
   const firstSeen = new Map();
   for (const [tok, applied, drawn, display, seq, pending] of seen) if (!firstSeen.has(tok)) firstSeen.set(tok, { applied, drawn, display, seq, pending });
   const lat = [], latDrawn = [], latApplied = [], ackLat = [];
-  let missing = 0, total = 0, notDrawnYet = 0;
+  let missing = 0, total = 0, notDrawnYet = 0, untracked = 0;
   for (const b of bots) {
     const ackAt = new Map(b.acks.map((a) => [a.n, a.at]));
     for (const [n, { token }] of b.batches) {
@@ -267,6 +364,8 @@ try {
       if (sent == null) continue;
       total++;
       if (ackAt.has(n)) ackLat.push(ackAt.get(n) - sent);
+      // Cross moves and recolors carry no text token: no display time.
+      if (!token) { untracked++; continue; }
       const s = firstSeen.get(token);
       if (!s) { missing++; continue; }
       if (s.pending) notDrawnYet++;
@@ -275,6 +374,25 @@ try {
       latApplied.push(s.applied - sent);
     }
   }
+
+  // Cross rounds: send spread and whether each round's batches were all
+  // sent before any of them was acknowledged.
+  const spread = [];
+  let concurrentRounds = 0;
+  for (const r of crossRounds) {
+    const sends = [], acks = [];
+    for (const [bi, n] of r.n) {
+      const b = bots[bi];
+      const s = b.sentAt.get(n);
+      const a = b.acks.find((x) => x.n === n);
+      if (s != null) sends.push(s);
+      if (a) acks.push(a.at);
+    }
+    if (sends.length < 2) continue;
+    spread.push(Math.max(...sends) - Math.min(...sends));
+    if (acks.length && Math.max(...sends) < Math.min(...acks)) concurrentRounds++;
+  }
+  const presSeen = await page.eval('window.__pres');
 
   // --inject-divergence is the checker's negative control: it changes one
   // element in the first bot's copy, which the check below must report.
@@ -321,6 +439,9 @@ try {
     }
   }
   const lost = [];
+  const crossSet = new Set(cross);
+  const crossBundles = new Set();
+  for (const key of lastWrite.keys()) if (crossSet.has(key.split('|')[0])) crossBundles.add(key);
   for (const [key, w] of lastWrite) {
     const [id, g] = key.split('|');
     const el = server.get(id);
@@ -335,7 +456,13 @@ try {
   result = {
     kind: 'remote-latency', injectedDivergence: !!opt['inject-divergence'], url: opt.url, observerZoom: opt.zoom, ownedPerBot: opt.owned, sharedPool: 4, expected: opt.expected, minutes: opt.minutes, bots: opt.bots, ratePerBot: opt.rate,
     headless: !!opt.headless, env, viewport, uptimeBefore: before, uptimeDuring: loads, uptimeAfter: uptime(),
-    edits: { sent: total, displayed: lat.length, neverDisplayed: missing, drawnFrameStillPending: notDrawnYet },
+    edits: { sent: total, displayed: lat.length, neverDisplayed: missing, withoutTextToken: untracked, drawnFrameStillPending: notDrawnYet },
+    crossBundle: {
+      pool: cross.length, ratePerSecond: opt['cross-rate'], roles: bots.map((b) => b.role), rounds: crossRounds.length,
+      batches: crossRounds.reduce((a, r) => a + r.n.length, 0), sendSpreadMs: stats(spread), roundsAllSentBeforeFirstAck: concurrentRounds,
+      bundlesChecked: crossBundles.size, lost: lost.filter((l) => crossSet.has(l.id)).length,
+    },
+    presence: { ratePerBot: opt['pres-rate'], sentByBots: bots.reduce((a, b) => a + b.presSent, 0), receivedByObserver: presSeen, receivedByBots: bots.reduce((a, b) => a + b.presReceived, 0) },
     sendToDisplayMs: stats(lat), sendToDrawMs: stats(latDrawn), sendToApplyMs: stats(latApplied), sendToAckMs: stats(ackLat),
     rejects: bots.flatMap((b) => b.rejects), fatal: bots.map((b) => b.fatal).filter(Boolean), reconnects: bots.map((b) => b.welcomes - 1),
     settled, serverSeq: snap.seq,
