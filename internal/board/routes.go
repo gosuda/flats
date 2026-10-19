@@ -345,9 +345,17 @@ func (in *Instance) serveRecover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (in *Instance) recover(ctx context.Context, rev int, ids []string, key, label string) ([]string, error) {
-	_, c, err := in.b.RevisionContent(ctx, rev)
+	// The revision's files stay leased from their selection under the flat
+	// lock until the copy commits, when the assets' board.db rows (held
+	// for an hour, then referenced) protect them (5.5): retention and a
+	// sweep in between cannot remove an image the copy names.
+	c, release, err := in.b.HeldRevisionContent(ctx, rev)
 	if err != nil {
 		return nil, err
+	}
+	defer release()
+	if in.hook != nil {
+		in.hook("recover-selected")
 	}
 	byID := map[string]model.Element{}
 	for _, e := range c.Elements {
@@ -426,10 +434,15 @@ func (in *Instance) serveExport(w http.ResponseWriter, r *http.Request) {
 	if !readOnlyMethod(w, r) {
 		return
 	}
-	boardJSON, els, assets, err := in.exportData(r.Context(), !private(r))
+	// The selected assets stay leased until the archive is written (5.5).
+	boardJSON, els, assets, release, err := in.exportData(r.Context(), !private(r))
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	defer release()
+	if in.hook != nil {
+		in.hook("export-selected")
 	}
 	h := w.Header()
 	h.Set("Content-Type", "application/zip")
@@ -440,16 +453,30 @@ func (in *Instance) serveExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rc := http.NewResponseController(w)
-	_ = writeArchive(r.Context(), &deadlineWriter{w: w, rc: rc, ctx: r.Context()}, boardJSON, els, assets,
+	dw := &deadlineWriter{w: w, rc: rc, ctx: r.Context()}
+	err = writeArchive(r.Context(), dw, boardJSON, els, assets,
 		func(hash string) ([]byte, error) { return in.b.ReadBlob(r.Context(), hash) })
+	if err == nil {
+		return
+	}
+	if !dw.wrote {
+		h.Del("Content-Disposition")
+		writeErr(w, err)
+		return
+	}
+	// The response already started: abort it, so the client sees a failed
+	// transfer instead of a complete-looking, truncated file.
+	in.log.Warn("board export failed", "err", err)
+	panic(http.ErrAbortHandler)
 }
 
 // deadlineWriter bounds each write, so a slow client cannot hold a handler
-// past Stop.
+// past Stop. wrote tells whether the response started.
 type deadlineWriter struct {
-	w   io.Writer
-	rc  *http.ResponseController
-	ctx context.Context
+	w     io.Writer
+	rc    *http.ResponseController
+	ctx   context.Context
+	wrote bool
 }
 
 func (d *deadlineWriter) Write(p []byte) (int, error) {
@@ -457,6 +484,7 @@ func (d *deadlineWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	_ = d.rc.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	d.wrote = true
 	return d.w.Write(p)
 }
 

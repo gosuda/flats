@@ -101,6 +101,8 @@ export const btn = (cls, label, onclick, ...children) =>
 
 // ---- toasts and live announcements ----
 
+export const TOAST_PLAIN_MAX = 4, TOAST_KEEP_MAX = 8;
+
 export function toast(content, { error = false, actions = [], timeout } = {}) {
   const host = $('.toasts');
   const close = () => t.remove();
@@ -111,11 +113,22 @@ export function toast(content, { error = false, actions = [], timeout } = {}) {
     h('button', { type: 'button', class: 'btn icon', 'aria-label': 'Dismiss', onclick: close }, icon('close')));
   const ms = timeout ?? (actions.length ? 10000 : error ? 7000 : 4000);
   // A toast with an action ("Keep my text") or without a timeout may be the
-  // only way to recover something, so only plain toasts are evicted.
+  // only way to recover something, so it outlives plain toasts. Kept toasts
+  // are still capped so repeated notices cannot pile up without bound; the
+  // newest one always stays.
   if (actions.length || !ms) t.dataset.keep = '';
+  // An identical notice without actions replaces its older copy. Toasts with
+  // actions are never merged: each may hold different text to recover.
+  if (typeof content === 'string' && !actions.length) {
+    t.dataset.key = (error ? 'e:' : 'i:') + content;
+    for (const c of [...host.children]) if (c.dataset.key === t.dataset.key) c.remove();
+  }
   host.appendChild(t);
-  const plain = [...host.children].filter((c) => !('keep' in c.dataset));
-  while (plain.length > 4) plain.shift().remove();
+  const kids = [...host.children];
+  const plain = kids.filter((c) => !('keep' in c.dataset));
+  while (plain.length > TOAST_PLAIN_MAX) plain.shift().remove();
+  const kept = kids.filter((c) => 'keep' in c.dataset);
+  while (kept.length > TOAST_KEEP_MAX) kept.shift().remove();
   if (ms) setTimeout(close, ms);
   return t;
 }

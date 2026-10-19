@@ -127,31 +127,36 @@ func (e End) content() map[string]any {
 // MarshalJSON writes {"el", "at"} or {"pt"}.
 func (e End) MarshalJSON() ([]byte, error) { return Canonical(e.content()), nil }
 
-// UnmarshalJSON reads an end. A missing "at" reads as the center of the
-// target; agent calls replace it with DefaultAt (4.4).
+// UnmarshalJSON reads an end. A missing (or null) "at" reads as the center
+// of the target; agent calls replace it with DefaultAt (4.4). A null field
+// reads as missing, and a null coordinate is refused: encoding/json would
+// read it as 0.
 func (e *End) UnmarshalJSON(raw []byte) error {
-	// Slices, not arrays: encoding/json pads a short array and drops the
-	// extra items of a long one.
 	var f struct {
-		El *string    `json:"el"`
-		At *[]float64 `json:"at"`
-		Pt *[]float64 `json:"pt"`
+		El *string         `json:"el"`
+		At json.RawMessage `json:"at"`
+		Pt json.RawMessage `json:"pt"`
 	}
 	if err := strictDecode(raw, &f); err != nil {
 		return formatErr("connector end: %v", err)
+	}
+	for _, m := range []*json.RawMessage{&f.At, &f.Pt} {
+		if string(bytes.TrimSpace(*m)) == "null" {
+			*m = nil
+		}
 	}
 	switch {
 	case f.El != nil && f.Pt == nil:
 		*e = End{El: *f.El, At: [2]float64{0.5, 0.5}}
 		if f.At != nil {
-			at, err := pair("at", *f.At)
+			at, err := pair("at", f.At)
 			if err != nil {
 				return err
 			}
 			e.At = at
 		}
 	case f.El == nil && f.Pt != nil && f.At == nil:
-		pt, err := pair("pt", *f.Pt)
+		pt, err := pair("pt", f.Pt)
 		if err != nil {
 			return err
 		}
@@ -162,11 +167,15 @@ func (e *End) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-func pair(name string, v []float64) ([2]float64, error) {
-	if len(v) != 2 {
-		return [2]float64{}, formatErr("connector end %s is [x, y]", name)
+// pair reads [x, y]. Slices of pointers, not arrays of numbers:
+// encoding/json pads a short array, drops the extra items of a long one and
+// reads null as 0.
+func pair(name string, raw json.RawMessage) ([2]float64, error) {
+	var v []*float64
+	if err := json.Unmarshal(raw, &v); err != nil || len(v) != 2 || v[0] == nil || v[1] == nil {
+		return [2]float64{}, formatErr("connector end %s is [x, y] numbers", name)
 	}
-	return [2]float64{v[0], v[1]}, nil
+	return [2]float64{*v[0], *v[1]}, nil
 }
 
 // Round rounds the end's numbers.
@@ -345,7 +354,8 @@ func DecodeElement(raw []byte) (Element, Present, error) {
 			present[k] = true
 		}
 	}
-	var natural []int
+	// Pointers: encoding/json reads a null number as 0.
+	var natural, pts []*int
 	var ends []End
 	for _, f := range []struct {
 		key string
@@ -354,17 +364,26 @@ func DecodeElement(raw []byte) (Element, Present, error) {
 		{"id", &e.ID}, {"z", &e.Z}, {"frame", &e.Frame}, {"group", &e.Group},
 		{"locked", &e.Locked}, {"text", &e.Text}, {"by", &e.By}, {"at", &e.At},
 		{"x", &e.Geom.X}, {"y", &e.Geom.Y}, {"w", &e.Geom.W}, {"h", &e.Geom.H}, {"rot", &e.Geom.Rot},
-		{"pts", &e.Pts}, {"asset", &e.Asset}, {"alt", &e.Alt}, {"natural", &natural}, {"ends", &ends},
+		{"pts", &pts}, {"asset", &e.Asset}, {"alt", &e.Alt}, {"natural", &natural}, {"ends", &ends},
 	} {
 		if err := decodeField(all, f.key, f.dst); err != nil {
 			return e, nil, err
 		}
 	}
 	if present["natural"] {
-		if len(natural) != 2 {
+		if len(natural) != 2 || natural[0] == nil || natural[1] == nil {
 			return e, nil, formatErr("natural is [w, h]")
 		}
-		e.Natural = [2]int{natural[0], natural[1]}
+		e.Natural = [2]int{*natural[0], *natural[1]}
+	}
+	if present["pts"] {
+		e.Pts = make([]int, len(pts))
+		for i, p := range pts {
+			if p == nil {
+				return e, nil, formatErr("pts holds numbers")
+			}
+			e.Pts[i] = *p
+		}
 	}
 	if present["ends"] {
 		if len(ends) != 2 {

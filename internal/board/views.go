@@ -449,8 +449,11 @@ type pageSnap struct {
 const (
 	pageSnapsPerBoard = 4
 	pageSnapTTL       = 60 * time.Second
-	pageSnapMax       = 32 << 20
 )
+
+// pageSnapMax bounds one paging snapshot of the current state (a variable
+// so tests can lower it). Revision reads never take a snapshot.
+var pageSnapMax int64 = 32 << 20
 
 var pageHostBytes atomic.Int64
 
@@ -486,23 +489,35 @@ func (c *pageCache) put(s *pageSnap, now time.Time) (string, error) {
 	return tok, nil
 }
 
-// next takes the next page of cursor tok.
-func (c *pageCache) next(tok string, now time.Time) (*pageSnap, []byte, bool) {
+// pageTake is one page taken from a paging snapshot, with what the caller
+// needs of the snapshot, all read under the cache lock.
+type pageTake struct {
+	seq     int64
+	pending bool
+	page    []byte
+	more    bool // more pages follow under the same cursor
+}
+
+// next takes the next page of cursor tok. The consumed slot is cleared, so
+// a page whose bytes are no longer charged is not kept reachable through
+// the slice's backing array.
+func (c *pageCache) next(tok string, now time.Time) (pageTake, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.expireLocked(now)
 	s := c.m[tok]
 	if s == nil || len(s.pages) == 0 {
-		return nil, nil, false
+		return pageTake{}, false
 	}
 	page := s.pages[0]
+	s.pages[0] = nil
 	s.pages = s.pages[1:]
 	pageHostBytes.Add(-int64(len(page)))
 	s.bytes -= int64(len(page))
 	if len(s.pages) == 0 {
 		c.dropLocked(tok)
 	}
-	return s, page, true
+	return pageTake{seq: s.seq, pending: s.pending, page: page, more: len(s.pages) > 0}, true
 }
 
 func (c *pageCache) dropLocked(tok string) {

@@ -3,7 +3,7 @@
 // WebSocket protocol of board-TECH.md.
 
 import { BoardState } from './state.js';
-import { Net, batchFits } from './net.js';
+import { Net, queueBatch } from './net.js';
 import { SpatialIndex } from './index.js';
 import { Renderer } from './render.js';
 import { elementBounds, hit, union, center, connectorPoints } from './geom.js';
@@ -331,13 +331,14 @@ class App {
       toast(`One action can change at most ${LIMITS.batchOps} elements. Try a smaller selection.`, { error: true });
       return null;
     }
-    // Checked before the batch takes a number: an unsendable batch must not
-    // consume one (TECH 4.8, n == max_n + 1).
-    if (!batchFits(this.state.nextN, list)) {
+    // queueBatch refuses an unsendable batch before it takes a number
+    // (TECH 4.8, n == max_n + 1) and serializes the batch only once.
+    const queued = queueBatch(this.state, list);
+    if (!queued) {
       toast(TOO_LARGE, { error: true });
       return null;
     }
-    const { batch, changed } = this.state.push(list);
+    const { batch, changed } = queued;
     this.changed(changed);
     this.net.flush();
     this.status();

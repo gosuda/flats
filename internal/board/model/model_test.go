@@ -365,18 +365,30 @@ func TestSchemaInvalidValues(t *testing.T) {
 		"null title":  {TypeBoard, BundleTitle, `null`},
 		"null grid":   {TypeBoard, BundleGrid, `null`},
 		"null pt":     {TypeConnector, BundleEnd0, `{"pt":null}`},
+		"null in pt":  {TypeConnector, BundleEnd0, `{"pt":[10,null]}`},
+		"nulls in pt": {TypeConnector, BundleEnd1, `{"pt":[null,null]}`},
+		"null in at":  {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[null,0.5]}`},
+		"text in at":  {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":["0.5",0.5]}`},
 	} {
 		if v, err := DecodeBundle(c.typ, c.g, json.RawMessage(c.raw)); !errors.Is(err, ErrFormat) {
 			t.Errorf("%s: %v, err = %v", name, v, err)
 		}
 	}
 	for name, raw := range map[string]string{
-		"short pt": `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"pt":[10]},{"pt":[0,0]}]}`,
-		"long at":  `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"el":"e_bbbbbbbbbb","at":[0,0,1]},{"pt":[0,0]}]}`,
+		"short pt":        `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"pt":[10]},{"pt":[0,0]}]}`,
+		"long at":         `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"el":"e_bbbbbbbbbb","at":[0,0,1]},{"pt":[0,0]}]}`,
+		"null in pt":      `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"pt":[10,null]},{"pt":[0,0]}]}`,
+		"null in at":      `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"el":"e_bbbbbbbbbb","at":[null,0.5]},{"pt":[0,0]}]}`,
+		"null in pts":     `{"id":"e_aaaaaaaaaa","type":"pen","x":0,"y":0,"w":10,"h":10,"pts":[0,0,1,null]}`,
+		"null in natural": `{"id":"e_aaaaaaaaaa","type":"image","natural":[null,3]}`,
 	} {
 		if _, _, err := DecodeElement([]byte(raw)); !errors.Is(err, ErrFormat) {
 			t.Errorf("element %s: err = %v", name, err)
 		}
+	}
+	// a null "at" is a missing one: the center of the target
+	if v, err := DecodeBundle(TypeConnector, BundleEnd0, json.RawMessage(`{"el":"e_aaaaaaaaaa","at":null}`)); err != nil || v != (End{El: "e_aaaaaaaaaa", At: [2]float64{0.5, 0.5}}) {
+		t.Fatalf("null at = %v, %v", v, err)
 	}
 	// membership bundles keep null as "none"
 	if v, err := DecodeBundle(TypeSticky, BundleFrame, json.RawMessage(`null`)); err != nil || v != "" {

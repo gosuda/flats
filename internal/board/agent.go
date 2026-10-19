@@ -42,16 +42,18 @@ const (
 // snapshot through the next cursor.
 func (in *Instance) GetBoard(ctx context.Context, q Query) (Page, error) {
 	if q.Cursor != "" {
-		s, page, ok := in.snaps.next(q.Cursor, in.now())
+		// Everything about the snapshot comes from the cache under its
+		// lock: concurrent reads of one cursor may advance it meanwhile.
+		got, ok := in.snaps.next(q.Cursor, in.now())
 		if !ok {
 			return Page{}, errorf(CategoryConflict, "cursor expired; read again")
 		}
 		var p Page
-		if err := json.Unmarshal(page, &p); err != nil {
+		if err := json.Unmarshal(got.page, &p); err != nil {
 			return Page{}, err
 		}
-		p.Seq, p.Pending = s.seq, s.pending
-		if len(s.pages) > 0 {
+		p.Seq, p.Pending = got.seq, got.pending
+		if got.more {
 			p.Next = q.Cursor
 		}
 		return p, nil
@@ -96,34 +98,40 @@ func (in *Instance) GetBoard(ctx context.Context, q Query) (Page, error) {
 }
 
 // ReadContent reads a revision's content with the same filters and pages as
-// GetBoard. Revisions never change, so the cursor is the last id read.
+// GetBoard. Revisions never change, so the cursor is the last id read and
+// no paging snapshot is taken (8.1): each call encodes only its own page,
+// so a revision of any size can be read page by page.
 func ReadContent(c engine.Content, q Query) (Page, error) {
 	els := slices.Clone(c.Elements)
 	slices.SortFunc(els, func(a, b model.Element) int { return strings.Compare(a.ID, b.ID) })
 	// Connector bounds resolve against the whole revision, not only the
 	// elements after the cursor.
 	byID := elementsByID(els)
-	after := strings.TrimPrefix(q.Cursor, "after:")
 	if q.Cursor != "" {
+		after := strings.TrimPrefix(q.Cursor, "after:")
 		i, _ := slices.BinarySearchFunc(els, after, func(e model.Element, id string) int { return strings.Compare(e.ID, id) })
 		for i < len(els) && els[i].ID <= after {
 			i++
 		}
 		els = els[i:]
 	}
-	all, err := selectElements(els, byID, q, nil)
-	if err != nil {
-		return Page{}, err
-	}
 	meta, _ := json.Marshal(model.PublicElement(model.Element{ID: model.BoardID, Type: model.TypeBoard, Text: c.Title, Grid: c.Grid}))
-	pages := paginate(all, q.Limit)
-	p := Page{Meta: meta, Elements: pages[0]}
-	if len(pages) > 1 {
-		var last struct {
-			ID string `json:"id"`
+	p := Page{Meta: meta, Elements: []json.RawMessage{}}
+	limit := pageLimit(q.Limit)
+	f := newElementFilter(q)
+	size, last := 0, ""
+	for _, e := range els {
+		if !f.match(e, byID) {
+			continue
 		}
-		_ = json.Unmarshal(pages[0][len(pages[0])-1], &last)
-		p.Next = "after:" + last.ID
+		b := encodeElement(e, q, nil)
+		if pageFull(len(p.Elements), size, len(b), limit) {
+			p.Next = "after:" + last
+			break
+		}
+		p.Elements = append(p.Elements, b)
+		size += len(b) + 1
+		last = e.ID
 	}
 	return p, nil
 }
@@ -136,51 +144,74 @@ func elementsByID(els []model.Element) map[string]model.Element {
 	return byID
 }
 
-// selectElements filters elements (sorted by id) and encodes them, full or
-// as an outline; byID resolves connector ends for area filters and holds
-// at least els. vers adds each element's guard version (ver) when set.
-func selectElements(els []model.Element, byID map[string]model.Element, q Query, vers map[string]int64) ([]json.RawMessage, error) {
-	var ids map[string]bool
+// elementFilter is the frame, area and ids narrowing of a read.
+type elementFilter struct {
+	q   Query
+	ids map[string]bool
+}
+
+func newElementFilter(q Query) elementFilter {
+	f := elementFilter{q: q}
 	if len(q.IDs) > 0 {
-		ids = map[string]bool{}
+		f.ids = map[string]bool{}
 		for _, id := range q.IDs {
-			ids[id] = true
+			f.ids[id] = true
 		}
 	}
+	return f
+}
+
+// match reports whether e passes the filter; byID resolves connector ends.
+func (f elementFilter) match(e model.Element, byID map[string]model.Element) bool {
+	if f.ids != nil && !f.ids[e.ID] {
+		return false
+	}
+	if f.q.Frame != "" && e.Frame != f.q.Frame && e.ID != f.q.Frame {
+		return false
+	}
+	return f.q.Rect == nil || intersects(bounds(e, byID), *f.q.Rect)
+}
+
+// encodeElement encodes e, full or as an outline. vers adds its guard
+// version (ver) when set.
+func encodeElement(e model.Element, q Query, vers map[string]int64) []byte {
+	var m map[string]any
+	if q.Outline {
+		m = map[string]any{"id": e.ID, "type": e.Type}
+		if e.Text != "" {
+			m["text"] = e.Text
+		}
+		if e.Frame != "" {
+			m["frame"] = e.Frame
+		}
+		if e.Type == model.TypeImage && e.Alt != "" {
+			m["alt"] = e.Alt
+		}
+		if e.Type == model.TypeConnector {
+			m["conn"] = endName(e.Ends[0]) + " → " + endName(e.Ends[1])
+		}
+	} else {
+		m = e.Content()
+		if v, ok := vers[e.ID]; ok {
+			m["ver"] = v
+		}
+	}
+	return model.Canonical(m)
+}
+
+// selectElements filters elements (sorted by id) and encodes them for a
+// paged read of the current state, refusing a result larger than one
+// paging snapshot (pageSnapMax); byID resolves connector ends for area
+// filters and holds at least els. vers adds each element's guard version.
+func selectElements(els []model.Element, byID map[string]model.Element, q Query, vers map[string]int64) ([]json.RawMessage, error) {
+	f := newElementFilter(q)
 	var out []json.RawMessage
 	var total int64
 	for _, e := range els {
-		if ids != nil && !ids[e.ID] {
+		if !f.match(e, byID) {
 			continue
 		}
-		if q.Frame != "" && e.Frame != q.Frame && e.ID != q.Frame {
-			continue
-		}
-		if q.Rect != nil && !intersects(bounds(e, byID), *q.Rect) {
-			continue
-		}
-		var m map[string]any
-		if q.Outline {
-			m = map[string]any{"id": e.ID, "type": e.Type}
-			if e.Text != "" {
-				m["text"] = e.Text
-			}
-			if e.Frame != "" {
-				m["frame"] = e.Frame
-			}
-			if e.Type == model.TypeImage && e.Alt != "" {
-				m["alt"] = e.Alt
-			}
-			if e.Type == model.TypeConnector {
-				m["conn"] = endName(e.Ends[0]) + " → " + endName(e.Ends[1])
-			}
-		} else {
-			m = e.Content()
-			if v, ok := vers[e.ID]; ok {
-				m["ver"] = v
-			}
-		}
-		b := model.Canonical(m)
+		b := encodeElement(e, q, vers)
 		total += int64(len(b))
 		if total > pageSnapMax {
 			return nil, errorf(CategoryInvalid, "the read is larger than 32 MiB; narrow it by frame, area or ids, or read a revision")
@@ -197,17 +228,27 @@ func endName(e model.End) string {
 	return "(free)"
 }
 
-// paginate cuts elements into pages of at most limit elements or 1 MiB.
-func paginate(all []json.RawMessage, limit int) [][]json.RawMessage {
+// pageLimit is the element count of a page for a requested limit.
+func pageLimit(limit int) int {
 	if limit <= 0 {
 		limit = pageDefault
 	}
-	limit = min(limit, pageMax)
+	return min(limit, pageMax)
+}
+
+// pageFull reports whether a page holding n elements of size bytes has no
+// room for one more of next bytes: limit elements or 1 MiB.
+func pageFull(n, size, next, limit int) bool {
+	return n > 0 && (n >= limit || size+next > pageBytes)
+}
+
+// paginate cuts elements into pages of at most limit elements or 1 MiB.
+func paginate(all []json.RawMessage, limit int) [][]json.RawMessage {
+	limit = pageLimit(limit)
 	pages := [][]json.RawMessage{{}}
 	size := 0
 	for _, e := range all {
-		cur := pages[len(pages)-1]
-		if len(cur) > 0 && (len(cur) >= limit || size+len(e) > pageBytes) {
+		if pageFull(len(pages[len(pages)-1]), size, len(e), limit) {
 			pages = append(pages, []json.RawMessage{})
 			size = 0
 		}

@@ -52,7 +52,8 @@ const boardTickTimeout = 30 * time.Second
 
 // After a failed background import the ticker waits boardRetryMin before it
 // tries that board again, doubling up to boardRetryMax while it keeps
-// failing. Writes, reads and rollbacks still import at once.
+// failing. Writes, reads and rollbacks still import at once, and any
+// successful import ends the backoff.
 const (
 	boardRetryMin = 5 * time.Second
 	boardRetryMax = 5 * time.Minute
@@ -770,6 +771,9 @@ func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *bo
 		_ = s.st.Touch(ctx, slugName, s.now())
 	}
 	s.settleBoardHoldsLocked(ctx, slugName, in)
+	// Any successful import, a foreground write, read or rollback as much
+	// as the ticker's, ends the ticker's backoff after an earlier failure.
+	s.boardRetry.Delete(slugName)
 	return res, nil
 }
 
@@ -1059,7 +1063,6 @@ func (s *Service) TickBoards(ctx context.Context) {
 			s.logf("board revisions of %s (next try in %s): %v", slugName, backoff.delay, err)
 			return true
 		}
-		s.boardRetry.Delete(slugName)
 		return true
 	})
 }
@@ -1154,9 +1157,19 @@ func boardFiles(files []store.RevisionFile) []board.File {
 // and leased under the flat lock, so the sweep cannot remove them while
 // they are read.
 func (s *Service) boardRevisionContent(ctx context.Context, slugName string, n int) (store.Revision, engine.Content, error) {
+	r, c, release, err := s.heldBoardRevisionContent(ctx, slugName, n)
+	release()
+	return r, c, err
+}
+
+// heldBoardRevisionContent is boardRevisionContent keeping the read lease
+// on the revision's files until the caller calls release, so work that
+// goes on using them (an element recovery until its commit) stays
+// protected from the sweep (board-TECH 5.5). release is never nil.
+func (s *Service) heldBoardRevisionContent(ctx context.Context, slugName string, n int) (store.Revision, engine.Content, func(), error) {
 	unlock, err := s.lockCtx(ctx, slugName)
 	if err != nil {
-		return store.Revision{}, engine.Content{}, err
+		return store.Revision{}, engine.Content{}, func() {}, err
 	}
 	r, err := s.st.Revision(ctx, slugName, n)
 	var files []store.RevisionFile
@@ -1169,13 +1182,17 @@ func (s *Service) boardRevisionContent(ctx context.Context, slugName string, n i
 	}
 	release := s.lease(slugName, hashes)
 	unlock()
-	defer release()
 	if err != nil {
-		return r, engine.Content{}, err
+		release()
+		return r, engine.Content{}, func() {}, err
 	}
 	root := s.docsStoreDir(slugName)
 	c, err := board.ContentFromFiles(boardFiles(files), func(h string) ([]byte, error) { return readBlob(root, h) })
-	return r, c, err
+	if err != nil {
+		release()
+		return r, c, func() {}, err
+	}
+	return r, c, release, nil
 }
 
 // boardRevisionStats sets the element counts of board revisions, computing
@@ -1294,6 +1311,18 @@ func (b boardBackend) RevisionContent(ctx context.Context, n int) (board.Revisio
 	b.s.boardRevisionStats(ctx, b.slug, revs)
 	return boardRevisionInfo(revs[0]), c, nil
 }
+
+func (b boardBackend) HeldRevisionContent(ctx context.Context, n int) (engine.Content, func(), error) {
+	if err := b.s.catchUpBoard(ctx, b.slug); err != nil {
+		return engine.Content{}, func() {}, toBoardError(err)
+	}
+	_, c, release, err := b.s.heldBoardRevisionContent(ctx, b.slug, n)
+	return c, release, toBoardError(err)
+}
+
+// Lease takes read leases on blobs the board chose in its apply loop. It
+// only registers them, so it never waits for the flat lock.
+func (b boardBackend) Lease(hashes []string) func() { return b.s.lease(b.slug, hashes) }
 
 func (b boardBackend) Pin(ctx context.Context, n int, pinned bool) error {
 	return toBoardError(b.s.PinRevision(ctx, b.slug, n, pinned))

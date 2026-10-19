@@ -247,6 +247,17 @@ func (in *Instance) currentSnap() *snapData {
 	return d
 }
 
+// dropStaleSnap forgets the snapshot state once the seq moved (a commit or
+// a rolled-back transaction). A commit that leaves the seq unchanged (most
+// ticks) keeps it, so viewers admitted across such commits share one copy
+// of the board instead of each holding their own. Every change to the
+// elements or the metadata takes a new seq. Only the apply loop calls it.
+func (in *Instance) dropStaleSnap() {
+	if d := in.snapCur; d != nil && d.seq != in.st.Seq() {
+		in.snapCur = nil
+	}
+}
+
 // acquirePublic charges the state to the host's Public budget when no
 // Public job held it yet; false means it does not fit.
 func (d *snapData) acquirePublic() bool {
@@ -492,6 +503,10 @@ func (c *conn) pump() {
 		have := len(c.q) > 0
 		if have {
 			m = c.q[0]
+			// Clear the consumed slot: once a snapshot job is released its
+			// state is no longer charged, so the backing array must not keep
+			// it (or a sent frame) reachable.
+			c.q[0] = outMsg{}
 			c.q = c.q[1:]
 			if m.snap != nil {
 				c.snaps--

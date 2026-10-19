@@ -135,6 +135,7 @@ func (in *Instance) begin() (*txn, error) {
 func (t *txn) rollback() {
 	_ = t.tx.Rollback()
 	t.in.st.RollbackTo(t.mark)
+	t.in.dropStaleSnap()
 	for _, f := range t.onFail {
 		f()
 	}
@@ -156,7 +157,7 @@ func (t *txn) commit() error {
 		in.hook("committed")
 	}
 	in.st.Release(t.mark)
-	in.snapCur = nil
+	in.dropStaleSnap()
 	sd := in.sd
 	sd.walPersisted = sd.walPending
 	sd.groups, sd.dirty, sd.bucketBytes = t.groups, t.dirty, t.bucketBytes

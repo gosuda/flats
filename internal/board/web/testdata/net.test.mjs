@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { batchFrames, batchFits, utf8Length, FRAME_MAX, PART_DATA_MAX, TooLargeError, Net } from '../net.js';
+import { batchFrames, batchFits, queueBatch, utf8Length, FRAME_MAX, PART_DATA_MAX, TooLargeError, Net } from '../net.js';
 import { BoardState } from '../state.js';
 
 const sticky = (i, text) => ({ op: 'add', el: { id: 'e_' + String(i).padStart(10, '0'), type: 'sticky', x: i, y: 0, w: 200, h: 200, rot: 0, z: 'V', text } });
@@ -221,4 +221,62 @@ test('a reconnect drops the old transient retry delay', (t) => {
   again.onopen();
   again.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
   assert.deepEqual(again.sent.filter((m) => m.t === 'ops').map((m) => m.n), [1], 'resent on welcome, not after the old delay');
+});
+
+// queueBatch is the precheck app.commit runs before a batch takes a number.
+test('queueBatch refuses an oversized batch without consuming a number', (t) => {
+  const { state, net, ws } = harness(t);
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  queueBatch(state, ops1(false));
+  net.flush();
+  ws.recv({ t: 'ack', n: 1, seq: 1, results: [] });
+  const before = { nextN: state.nextN, created: state.created.size };
+  assert.equal(queueBatch(state, huge()), null, 'refused');
+  assert.equal(state.nextN, before.nextN, 'no number taken');
+  assert.equal(state.pending.length, 0, 'nothing queued');
+  assert.equal(state.created.size, before.created, 'no optimistic elements recorded');
+  assert.equal(state.get('e_' + '0'.repeat(10)), null, 'nothing drawn');
+  const { batch } = queueBatch(state, ops1(true));
+  assert.equal(batch.n, 2, 'the next action takes the next number');
+  net.flush();
+  const sent = ws.sent.filter((m) => m.t === 'ops' || m.t === 'ops_part');
+  assert.deepEqual(sent.map((m) => m.n), [1, 2], 'no gap');
+});
+
+const encodes = (spy) => spy.mock.calls.filter((c) => Array.isArray(c.arguments[0]) || ['ops', 'ops_part'].includes(c.arguments[0]?.t)).length;
+
+test('a queued batch is serialized once for the check and the send', (t) => {
+  const { state, net, ws } = harness(t);
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  const spy = t.mock.method(JSON, 'stringify');
+  queueBatch(state, ops1(false));
+  assert.equal(encodes(spy), 1, 'the check encodes the ops frame');
+  net.flush();
+  assert.equal(encodes(spy), 1, 'flush sends it without encoding again');
+  assert.deepEqual(ws.sent.filter((m) => m.t === 'ops').map((m) => m.n), [1]);
+
+  // A split batch, too, is encoded by the check only.
+  ws.recv({ t: 'ack', n: 1, seq: 1, results: [] });
+  const big = Array.from({ length: 400 }, (_, i) => sticky(i, 'x'.repeat(3000)));
+  spy.mock.resetCalls();
+  queueBatch(state, big);
+  const checked = encodes(spy);
+  assert.ok(checked >= 3, `the check splits the batch (${checked} encodings)`);
+  net.flush();
+  assert.equal(encodes(spy), checked, 'flush adds no encoding');
+  const parts = ws.sent.filter((m) => m.t === 'ops_part');
+  assert.ok(parts.length >= 2 && parts.every((m) => m.n === 2));
+});
+
+test('a renumbered batch is encoded again under its new number', (t) => {
+  const { state, net, ws } = harness(t);
+  ws.recv({ t: 'welcome', session: 'S1', access: 'private', me: {} });
+  const first = queueBatch(state, ops1(false)).batch;
+  const second = queueBatch(state, ops1(true)).batch;
+  assert.equal(second.encoded.n, 2);
+  state.discard(first.n); // the fallback renumbering path
+  assert.equal(second.n, 1);
+  net.flush();
+  const sent = ws.sent.filter((m) => m.t === 'ops');
+  assert.deepEqual(sent.map((m) => [m.n, m.ops[0].val]), [[1, true]], 'the frame carries the new number');
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installDOM } from './dom.mjs';
-import { toast, popover, closePopover, h } from '../ui.js';
+import { toast, popover, closePopover, h, TOAST_KEEP_MAX } from '../ui.js';
 
 test('toast eviction keeps toasts with actions and persistent toasts', (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -15,6 +15,38 @@ test('toast eviction keeps toasts with actions and persistent toasts', (t) => {
   assert.deepEqual(host.children.filter((c) => c !== keep && c !== sticky), plain.slice(2), 'the oldest plain toasts go');
   t.mock.timers.tick(60000);
   assert.deepEqual(host.children, [keep, sticky], 'plain toasts time out; the others wait for the person');
+});
+
+test('kept toasts are capped, and the newest recovery toast always stays', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const doc = installDOM([{ cls: 'toasts' }]);
+  const host = doc.querySelector('.toasts');
+  let kept = [];
+  for (let i = 0; i < 20; i++) kept.push(toast(`Ann changed "note ${i}", so the text you wrote was overwritten.`, { actions: [['Keep my text', () => {}]], timeout: 0 }));
+  assert.equal(host.children.length, TOAST_KEEP_MAX, 'bounded');
+  assert.deepEqual(host.children, kept.slice(-TOAST_KEEP_MAX), 'the oldest kept toasts go first');
+  // Identical recovery toasts are not merged: each may hold different text.
+  const a = toast('The element you were editing was deleted or rolled back.', { actions: [['Keep my text', () => {}]], timeout: 0 });
+  const b = toast('The element you were editing was deleted or rolled back.', { actions: [['Keep my text', () => {}]], timeout: 0 });
+  assert.ok(host.children.includes(a) && host.children.includes(b));
+  assert.equal(host.children.at(-1), b, 'the newest Keep my text toast is there');
+  // Plain toasts never push out kept ones.
+  for (let i = 0; i < 10; i++) toast(`notice ${i}`);
+  assert.equal(host.children.filter((c) => 'keep' in c.dataset).length, TOAST_KEEP_MAX);
+  assert.ok(host.children.includes(b));
+});
+
+test('an identical notice without actions replaces its older copy', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const doc = installDOM([{ cls: 'toasts' }]);
+  const host = doc.querySelector('.toasts');
+  const fail = Array.from({ length: 12 }, () => toast('Could not import: bad file. The board did not change.', { error: true, timeout: 0 }));
+  assert.deepEqual(host.children, [fail.at(-1)], 'one persistent copy');
+  const info = toast('Could not import: bad file. The board did not change.');
+  assert.deepEqual(host.children, [fail.at(-1), info], 'an error and a plain notice are different notices');
+  const again = toast('Nothing to undo.');
+  toast('Nothing to undo.');
+  assert.ok(!again.isConnected, 'the older plain copy is gone');
 });
 
 test('a popover closed in the tick it opened leaves no outside-press listener', (t) => {

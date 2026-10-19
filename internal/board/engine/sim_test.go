@@ -861,6 +861,118 @@ func runUndoRedo(seed uint64) error {
 	return nil
 }
 
+// TestRandomUndoTwoEditors interleaves two editors' edits, undos and redos.
+// The board may end anywhere, but an undo or redo never deletes an element
+// another session changed since its creation (4.10 step 2 and the guards
+// judging the start of the undo): a stale record must not pass because a
+// side effect of the same undo, such as a frame deletion releasing its
+// members, already wrote the record's previous value. Batches sometimes
+// create a frame and move elements into it at once, so one undo both
+// deletes the frame and finds its members' membership records.
+// BOARD_SEEDS sets the number of seeds (default 500).
+func TestRandomUndoTwoEditors(t *testing.T) {
+	forSeeds(t, 500, runUndoTwoEditors)
+}
+
+func runUndoTwoEditors(seed uint64) error {
+	rng := rand.New(rand.NewPCG(seed, 0x2ed))
+	s := New("Board")
+	sessions := []string{
+		s.Hello(Hello{NewID: "s-a", Key: "browser:a", Label: "a", Now: 1}).Session,
+		s.Hello(Hello{NewID: "s-b", Key: "browser:b", Label: "b", Now: 1}).Session,
+	}
+	ns := map[string]int64{}
+	// writers holds, by element id, the sessions that changed it (a bundle
+	// version change or a deletion) since it last came alive. A creation
+	// record holds the versions from that moment: an undo or redo deleting
+	// the element again (undoing a revive) compares with those.
+	writers := map[string]map[string]bool{}
+	type snap struct {
+		alive bool
+		inc   int64
+		v     map[string]int64
+	}
+	next := 0
+	for step := range 120 {
+		se := sessions[rng.IntN(2)]
+		var ops []Op
+		kind := ""
+		switch k := rng.IntN(10); {
+		case k < 3:
+			ops, kind = []Op{undoOp}, "undo"
+		case k < 4:
+			ops, kind = []Op{redoOp}, "redo"
+		default:
+			ops = soloOps(rng, s, &next)
+			if rng.IntN(3) == 0 {
+				ops = append(ops, frameAndReparent(rng, s, &next)...)
+			}
+			if len(ops) == 0 {
+				continue
+			}
+		}
+		before := map[string]snap{}
+		for id, r := range s.rows {
+			before[id] = snap{r.alive(), r.Inc, maps.Clone(r.V)}
+		}
+		ns[se]++
+		out := s.ApplyBatch(Batch{Session: se, N: ns[se], Ops: ops, Now: 1})
+		if out.Reject != nil || out.Fatal != "" {
+			return fmt.Errorf("step %d: batch %s refused: %+v %s", step, raw(ops), out.Reject, out.Fatal)
+		}
+		if err := checkInvariants(s); err != nil {
+			return fmt.Errorf("step %d: %w", step, err)
+		}
+		for id, r := range s.rows {
+			if id == model.BoardID {
+				continue
+			}
+			b, existed := before[id]
+			switch {
+			case (!existed || !b.alive) && r.alive():
+				writers[id] = map[string]bool{}
+				continue
+			case !r.alive() && (!existed || !b.alive):
+				continue
+			case b.alive && !r.alive() && kind != "":
+				for w := range writers[id] {
+					if w != se {
+						return fmt.Errorf("step %d: %s of %s deleted %s, which %s changed after its creation", step, kind, se, id, w)
+					}
+				}
+			case b.alive && r.alive() && b.inc == r.Inc && maps.Equal(b.v, r.V):
+				continue
+			}
+			if writers[id] == nil {
+				writers[id] = map[string]bool{}
+			}
+			writers[id][se] = true
+		}
+	}
+	return nil
+}
+
+// frameAndReparent creates a frame and moves one or two elements into it in
+// the same batch.
+func frameAndReparent(rng *rand.Rand, s *State, next *int) []Op {
+	var ids []string
+	incOf := map[string]int64{}
+	for _, e := range s.Alive() {
+		if e.Type != model.TypeFrame && rng.IntN(3) == 0 && len(ids) < 2 {
+			ids = append(ids, e.ID)
+			incOf[e.ID] = s.rows[e.ID].Inc
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	*next++
+	f := fmt.Sprintf("e_u%09d", *next)
+	add := Op{Op: OpAdd, El: raw(map[string]any{"id": f, "type": "frame", "x": rng.IntN(1000), "y": rng.IntN(1000), "w": 600, "h": 600})}
+	// An element created in this batch has the batch's seq as incarnation.
+	return []Op{add, {Op: OpReparent, IDs: ids, IncOf: incOf, Frame: raw(f), FrameInc: s.Seq() + 1}}
+}
+
 // soloOps is a batch of one to three operations on the current board,
 // groups and ungroups included: undo checks the group invariant of revived
 // elements only after it restores relations (4.10 step 4), so a revived

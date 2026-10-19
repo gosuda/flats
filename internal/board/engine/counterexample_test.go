@@ -774,3 +774,156 @@ func TestReviewCounterexamples(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewRound2Counterexamples holds the counterexamples of the second
+// engine code review: each failed before its fix.
+func TestReviewRound2Counterexamples(t *testing.T) {
+	t.Run("undo cleanup does not pass a stale membership guard", func(t *testing.T) {
+		setup := func(t *testing.T) (*harness, string, string) {
+			h := newHarness(t)
+			a, b := h.session("a"), h.session("b")
+			h.ok(a, addSticky("x", 900, 0))
+			// One batch creates frame f and reparents x into it.
+			_, m := incOf(h, "x")
+			h.ok(a, addFrame("f", 0, 0, 500, 500), Op{Op: OpReparent, IDs: []string{eid("x")}, IncOf: m, Frame: raw(eid("f")), FrameInc: h.s.Seq() + 1})
+			if h.row(eid("x")).El.Frame != eid("f") {
+				t.Fatal("x is not in f")
+			}
+			// b takes x out and puts it back.
+			h.ok(b, reparentOp(h, "", "x"))
+			h.ok(b, reparentOp(h, "f", "x"))
+			return h, a, b
+		}
+		undoFrame := func(t *testing.T, h *harness, a string) {
+			t.Helper()
+			// Deleting f releases x as a side effect; the membership
+			// record is stale because b changed it after a's batch.
+			if u := undoResult(t, h.ok(a, undoOp)); u.Undone != 1 || u.Skipped[VoidStale] != 1 {
+				t.Fatalf("undo of the frame batch %+v", u)
+			}
+			if h.alive(eid("f")) || h.row(eid("x")).El.Frame != "" {
+				t.Fatal("undo kept f")
+			}
+		}
+		t.Run("creation undo keeps x", func(t *testing.T) {
+			h, a, _ := setup(t)
+			undoFrame(t, h, a)
+			if u := undoResult(t, h.ok(a, undoOp)); u.Undone != 0 || u.Skipped[VoidStale] != 1 {
+				t.Fatalf("undo of x's creation %+v", u)
+			}
+			if !h.alive(eid("x")) {
+				t.Fatal("undo deleted x, which b changed after its creation")
+			}
+		})
+		t.Run("after redo and undo again", func(t *testing.T) {
+			h, a, _ := setup(t)
+			undoFrame(t, h, a)
+			// Redo revives f and restores what the undo changed: x is
+			// back in f, as it was before the undo.
+			if u := undoResult(t, h.ok(a, redoOp)); u.Undone == 0 {
+				t.Fatalf("redo %+v", u)
+			}
+			if !h.alive(eid("f")) || h.row(eid("x")).El.Frame != eid("f") {
+				t.Fatalf("after redo f alive %v, x in %q", h.alive(eid("f")), h.row(eid("x")).El.Frame)
+			}
+			// Undoing the redo deletes f again and releases x again; this
+			// time the membership record is the redo's own, so it is not
+			// stale.
+			if u := undoResult(t, h.ok(a, undoOp)); u.Undone == 0 || u.Skipped[VoidStale] != 0 {
+				t.Fatalf("undo after redo %+v", u)
+			}
+			if h.alive(eid("f")) || h.row(eid("x")).El.Frame != "" {
+				t.Fatal("undo after redo kept f")
+			}
+			if u := undoResult(t, h.ok(a, undoOp)); u.Undone != 0 || u.Skipped[VoidStale] != 1 || !h.alive(eid("x")) {
+				t.Fatalf("undo of x's creation after redo %+v, x alive %v", u, h.alive(eid("x")))
+			}
+		})
+	})
+
+	t.Run("null coordinates are refused with the whole batch or call", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("s", 0, 0))
+		h.ok(a, addConnector("c", attach("s", 1, 0.5), free(500, 0), map[string]int64{eid("s"): h.inc(eid("s"))}))
+		want := h.row(eid("c")).El.Ends
+		unchanged := func(what string) {
+			t.Helper()
+			if h.row(eid("s")).El.Text != "" || h.row(eid("c")).El.Ends != want {
+				t.Fatalf("%s changed the board: text %q, ends %+v", what, h.row(eid("s")).El.Text, h.row(eid("c")).El.Ends)
+			}
+		}
+		for name, end := range map[string]string{
+			"null in pt": `{"pt":[10,null]}`,
+			"null in at": `{"el":"` + eid("s") + `","at":[null,0.5]}`,
+		} {
+			out := h.do(a, setText("s", h.inc(eid("s")), "earlier op", 0),
+				Op{Op: OpSet, ID: eid("c"), Inc: h.inc(eid("c")), G: model.BundleEnd1, Val: json.RawMessage(end)})
+			if out.Reject == nil || out.Reject.Code != CodeInvalid {
+				t.Fatalf("person %s = %+v", name, out)
+			}
+			unchanged("person " + name)
+			if _, err := h.agent(AgentCall{Ops: []AgentOp{
+				{Op: "set", ID: eid("s"), Fields: raw(map[string]any{"text": "earlier op"})},
+				{Op: "set", ID: eid("c"), Fields: json.RawMessage(`{"ends":[null,` + end + `]}`)},
+			}}); err == nil {
+				t.Fatalf("agent set %s applied", name)
+			}
+			unchanged("agent set " + name)
+			if _, err := h.agent(AgentCall{Ops: []AgentOp{
+				{Op: "set", ID: eid("s"), Fields: raw(map[string]any{"text": "earlier op"})},
+				{Op: "add", El: json.RawMessage(`{"type":"connector","ends":[{"pt":[0,0]},` + end + `]}`)},
+			}}); err == nil {
+				t.Fatalf("agent add %s applied", name)
+			}
+			unchanged("agent add " + name)
+			if len(h.s.Alive()) != 2 {
+				t.Fatalf("agent add %s left %d elements", name, len(h.s.Alive()))
+			}
+		}
+	})
+
+	t.Run("agent connectors need their ends", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("s", 0, 0))
+		before := sortedIDs(h.s)
+		for name, el := range map[string]string{
+			"no ends":   `{"type":"connector"}`,
+			"null ends": `{"type":"connector","ends":null}`,
+		} {
+			var ae *AgentError
+			_, err := h.agent(AgentCall{Ops: []AgentOp{
+				{Op: "add", El: raw(map[string]any{"type": "sticky"})},
+				{Op: "add", El: json.RawMessage(el)},
+			}})
+			if !errors.As(err, &ae) || ae.Category != CategoryInvalid {
+				t.Fatalf("add %s = %v", name, err)
+			}
+			if got := sortedIDs(h.s); !slices.Equal(got, before) {
+				t.Fatalf("add %s changed the board: %v", name, got)
+			}
+			_, err = h.agent(AgentCall{Replace: true, Ops: []AgentOp{
+				{Op: "add", El: raw(map[string]any{"type": "sticky"})},
+				{Op: "add", El: json.RawMessage(el)},
+			}})
+			if !errors.As(err, &ae) || ae.Category != CategoryInvalid {
+				t.Fatalf("replacing add %s = %v", name, err)
+			}
+			if got := sortedIDs(h.s); !slices.Equal(got, before) {
+				t.Fatalf("replacing add %s changed the board: %v", name, got)
+			}
+		}
+		// an attached end may still omit "at" (8.1); null reads as omitted
+		out, err := h.agent(AgentCall{Ops: []AgentOp{
+			{Op: "add", El: json.RawMessage(`{"type":"connector","ends":[{"el":"` + eid("s") + `","at":null},{"pt":[900,50]}]}`)},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := out.Results[0].(string)
+		if at := h.row(id).El.Ends[0].At; at != model.DefaultAt(h.geom(eid("s")), [2]float64{900, 50}) {
+			t.Fatalf("omitted at placed at %v", at)
+		}
+	})
+}

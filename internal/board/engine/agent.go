@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -347,9 +348,14 @@ func (c *agentCall) add(op AgentOp) (any, error) {
 }
 
 // fillGeom gives a new element default sizes and, without coordinates, a
-// place in a row to the right of the board's bounding box.
+// place in a row to the right of the board's bounding box. A connector has
+// no geometry but needs its two ends: only an attached end's "at" has a
+// default (8.1).
 func (c *agentCall) fillGeom(el *model.Element, present model.Present) error {
 	if el.Type == model.TypeConnector {
+		if !present["ends"] {
+			return invalid("a connector needs ends")
+		}
 		return nil
 	}
 	if el.Type == model.TypePen && !present.HasGeom() {
@@ -578,8 +584,8 @@ func omittedAt(raw json.RawMessage) [2]bool {
 		var f map[string]json.RawMessage
 		if json.Unmarshal(er, &f) == nil {
 			_, attached := f["el"]
-			_, at := f["at"]
-			out[k] = attached && !at
+			at, ok := f["at"]
+			out[k] = attached && (!ok || string(bytes.TrimSpace(at)) == "null")
 		}
 	}
 	return out

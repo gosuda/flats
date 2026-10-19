@@ -64,16 +64,39 @@ export function batchFrames(n, ops) {
   return slices.map((s, i) => JSON.stringify({ t: 'ops_part', n, part: i + 1, parts: slices.length, data: s }));
 }
 
-// batchFits reports whether ops can be sent as batch n. The app checks it
-// before a batch takes a number, so an oversized action never consumes one.
-export function batchFits(n, ops) {
+// tryBatchFrames is batchFrames, or null when ops cannot be sent at all.
+function tryBatchFrames(n, ops) {
   try {
-    batchFrames(n, ops);
-    return true;
+    return batchFrames(n, ops);
   } catch (err) {
-    if (err instanceof TooLargeError) return false;
+    if (err instanceof TooLargeError) return null;
     throw err;
   }
+}
+
+// batchFits reports whether ops can be sent as batch n.
+export const batchFits = (n, ops) => tryBatchFrames(n, ops) != null;
+
+// queueBatch gives ops the next batch number and queues it, or returns null
+// without touching state when the batch cannot be sent at all: the check
+// comes before the batch takes a number, so an oversized action never
+// consumes one (TECH 4.8, n == max_n + 1). The batch is serialized once;
+// the frames are kept on it with the number they encode, and flush encodes
+// again only if the batch was renumbered since.
+export function queueBatch(state, ops) {
+  const n = state.nextN;
+  const frames = tryBatchFrames(n, ops);
+  if (!frames) return null;
+  const r = state.push(ops);
+  if (r.batch.n === n) r.batch.encoded = { n, frames };
+  return r;
+}
+
+// framesOf returns the frames for batch b under its current number.
+function framesOf(b) {
+  if (b.encoded && b.encoded.n === b.n) return b.encoded.frames;
+  b.encoded = null;
+  return batchFrames(b.n, b.ops);
 }
 
 // Parts collects numbered parts (part/parts) of one message.
@@ -185,7 +208,7 @@ export class Net {
     if (!b) return;
     let frames;
     try {
-      frames = batchFrames(b.n, b.ops);
+      frames = framesOf(b);
     } catch (err) {
       if (!(err instanceof TooLargeError)) throw err;
       // Never sent, so its number is not consumed: drop it and renumber the

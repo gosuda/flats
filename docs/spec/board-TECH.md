@@ -562,7 +562,14 @@ relation). Every guard compares `my_v` with the version the bundle had when
 the undo started, not with that side effect, so what others did before is
 judged and the undo's own steps do not skip each other. When such a side
 effect already set the bundle to the record's previous value, the record
-counts as undone and its lineage carries on.
+counts as undone and its lineage carries on, but only when its guard passes
+at the start: if someone else changed the bundle before the undo, the record
+is stale and its lineage stays, even though the side effect wrote the
+previous value (A creates X, then creates frame F and moves X into it; B moves
+X out and back; undoing A's second batch deletes F and so releases X, but the
+membership record is stale, and undoing X's creation keeps X). An element the
+undo revives was deleted when the undo started, and nobody changes a deleted
+element, so its versions at deletion are its start versions.
 
 **Lineage.** When an undo succeeds on `(id, g)` and creates a new version `s'`,
 the server looks at the nearest entry below it in the same session stack
@@ -926,12 +933,24 @@ files_bytes = size of the current file list JSON (≤ 257 buckets + ≤ 512 asse
 **Serialization order.** Take the flat lock, then stop the instance's apply
 loop (a barrier), then read board.db. The apply loop itself never waits for the flat lock. Work
 that needs the flat lock (agent writes that create a boundary, rollback,
-import, sweep, reads of current state, revisions and exports) first takes the
-flat lock, then puts its work into the apply loop and waits for it to finish.
+import, sweep, reads of current state and revisions) first takes the flat
+lock, then puts its work into the apply loop and waits for it to finish. An
+export takes no flat lock: it chooses and leases its assets inside the apply
+loop, as described below.
 So no write such as `revive` comes in while the sweep reads references, and
 there is no deadlock. Reads choose state and hashes in this order, take the
 existing read lease, and then release the lock and the stop (revision-store
 "Reading").
+
+The lease lasts until the work that uses the hashes is done. An export
+chooses the assets alive elements reference inside the apply loop and leases
+them there, before any later edit can drop their rows (the sweep reads those
+rows through the apply loop, so it either keeps them or sees the lease); the
+lease ends when the archive is written. An export that cannot read a chosen
+blob fails: with an error before its response starts, by aborting the
+transfer after, never as a complete-looking file. Element recovery keeps the
+lease of the revision it reads until its copy commits, when the copied
+images' `assets` rows (`held_until`, then `refs`) protect the blobs.
 
 ## 6. Live protocol
 
@@ -1111,7 +1130,7 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   refused with `invalid` ("narrow the read by frame, area or ids, or read a
   revision"), and a full host returns `unavailable`. The cursor is a 128-bit
   random token bound to the slug. An expired or evicted cursor returns
-  `conflict` ("cursor expired; read again"). Revision reads are immutable and need no snapshot.
+  `conflict` ("cursor expired; read again"). Revision reads are immutable and need no snapshot: each page is encoded on its own after the cursor, so a revision of any size is read page by page and the 32 MiB limit does not apply.
 - With the content fields, each element gets `ver` = max(`inc`, every value
   of `v`) (for element guards). A revive raises `inc` to the seq of that
   batch, so `ver` always grows.
@@ -1172,8 +1191,9 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   request returns `conflict`.
 - New elements without coordinates: without `layout`, they go in a row to the
   right of the current bounding box. Default sizes: sticky 200×200, shape
-  160×100, text fitted to its content. Connector ends without `at` attach at
-  the side facing the other end once layout is done (4.4).
+  160×100, text fitted to its content. A connector always needs `ends`
+  (`invalid` without them); an attached end without `at` (or with `at: null`)
+  attaches at the side facing the other end once layout is done (4.4).
 - A slug that does not exist: the server creates a board (like design's adopt
   rule, it also adopts an empty untyped flat) and applies the call.
 
@@ -1501,7 +1521,7 @@ the tests of the JS client and the Go server read the same file.
 | `Inc`, `Seq`, `V` | A positive integer (at most 53 bits) |
 | `Num` | A finite number, stored rounded to 1 decimal place |
 | `IfV` | `{Id: {bundle key: V}}` |
-| `End` | `{"el": Id, "at": [Num, Num]}` or `{"pt": [Num, Num]}`; `at` and `pt` have exactly 2 items |
+| `End` | `{"el": Id, "at": [Num, Num]}` or `{"pt": [Num, Num]}`; `at` and `pt` have exactly 2 numbers (null is refused) |
 
 **Elements**
 

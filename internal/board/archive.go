@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gosuda/flats/internal/board/engine"
@@ -669,22 +670,49 @@ func ContentFromFiles(files []File, read func(hash string) ([]byte, error)) (eng
 
 // exportData is the current content for a data file: board.json, the
 // elements (private: content fields; public: the 7.3 projection) and the
-// assets alive elements reference.
-func (in *Instance) exportData(ctx context.Context, public bool) (boardJSON []byte, elements []json.RawMessage, assets []engine.Asset, err error) {
+// assets alive elements reference. The assets are leased in the apply loop
+// where they are chosen, before any later edit can drop their rows, and
+// stay leased until the caller calls release (5.5).
+func (in *Instance) exportData(ctx context.Context, public bool) (boardJSON []byte, elements []json.RawMessage, assets []engine.Asset, release func(), err error) {
+	// The loop can still run fn after do gave up on a stopping instance, so
+	// fn publishes its results under mu and releases a late lease itself.
+	var mu sync.Mutex
+	abandoned := false
+	release = func() {}
 	err = in.do(ctx, func() error {
 		board := in.st.Board().Element
-		boardJSON = model.Canonical(boardFile{Format: formatVersion, Title: board.Text, Grid: board.Grid})
+		bj := model.Canonical(boardFile{Format: formatVersion, Title: board.Text, Grid: board.Grid})
+		var els []json.RawMessage
 		for _, e := range in.st.Alive() {
 			if public {
-				elements = append(elements, model.Canonical(model.PublicElement(e.Element)))
+				els = append(els, model.Canonical(model.PublicElement(e.Element)))
 			} else {
-				elements = append(elements, e.CanonicalJSON())
+				els = append(els, e.CanonicalJSON())
 			}
 		}
-		assets = in.assets.live(nil)
+		as := in.assets.live(nil)
+		hashes := make([]string, len(as))
+		for i, a := range as {
+			hashes[i] = a.Hash
+		}
+		rel := in.b.Lease(hashes)
+		mu.Lock()
+		defer mu.Unlock()
+		if abandoned {
+			rel()
+			return nil
+		}
+		boardJSON, elements, assets, release = bj, els, as, rel
 		return nil
 	})
-	return
+	mu.Lock()
+	defer mu.Unlock()
+	if err != nil {
+		abandoned = true
+		release()
+		return nil, nil, nil, func() {}, err
+	}
+	return boardJSON, elements, assets, release, nil
 }
 
 // writeArchive writes a data file (9.1).

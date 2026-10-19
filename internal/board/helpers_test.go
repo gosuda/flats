@@ -63,6 +63,7 @@ type fakeCore struct {
 	failMeas bool
 	ready    chan struct{}
 	putHook  func(hash string) // runs before PutBlob stores, outside the locks
+	leases   map[string]int    // read leases per hash (5.5)
 }
 
 func newFakeCore(dir string) *fakeCore {
@@ -184,6 +185,65 @@ func (f *fakeCore) RevisionContent(ctx context.Context, n int) (RevisionInfo, en
 	}
 	c, err := ContentFromFiles(r.files, func(h string) ([]byte, error) { return f.ReadBlob(ctx, h) })
 	return r.info, c, err
+}
+
+func (f *fakeCore) HeldRevisionContent(ctx context.Context, n int) (engine.Content, func(), error) {
+	r, ok := f.rev(n)
+	if !ok {
+		return engine.Content{}, func() {}, errorf(CategoryNotFound, "no revision %d", n)
+	}
+	var hashes []string
+	for _, file := range r.files {
+		hashes = append(hashes, file.Hash)
+	}
+	release := f.Lease(hashes)
+	c, err := ContentFromFiles(r.files, func(h string) ([]byte, error) { return f.ReadBlob(ctx, h) })
+	if err != nil {
+		release()
+		return c, func() {}, err
+	}
+	return c, release, nil
+}
+
+func (f *fakeCore) Lease(hashes []string) func() {
+	f.data.Lock()
+	if f.leases == nil {
+		f.leases = map[string]int{}
+	}
+	for _, h := range hashes {
+		f.leases[h]++
+	}
+	f.data.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.data.Lock()
+			defer f.data.Unlock()
+			for _, h := range hashes {
+				if f.leases[h]--; f.leases[h] <= 0 {
+					delete(f.leases, h)
+				}
+			}
+		})
+	}
+}
+
+// sweep removes the blobs of hashes that hold no read lease, as a blob
+// sweep does once retention dropped every other reference to them.
+func (f *fakeCore) sweep(hashes ...string) {
+	f.data.Lock()
+	defer f.data.Unlock()
+	for _, h := range hashes {
+		if f.leases[h] == 0 {
+			delete(f.blobs, h)
+		}
+	}
+}
+
+func (f *fakeCore) leased(h string) bool {
+	f.data.Lock()
+	defer f.data.Unlock()
+	return f.leases[h] > 0
 }
 
 func (f *fakeCore) Pin(ctx context.Context, n int, pinned bool) error {

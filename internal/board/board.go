@@ -128,6 +128,17 @@ type Backend interface {
 	Revisions(ctx context.Context, before, limit int) (RevisionPage, error)
 	// RevisionContent reads retained revision n (ContentFromFiles helps).
 	RevisionContent(ctx context.Context, n int) (RevisionInfo, engine.Content, error)
+	// HeldRevisionContent reads retained revision n like RevisionContent,
+	// keeping the read lease on its files (chosen under the flat lock)
+	// until release is called, so the blob sweep cannot remove a blob the
+	// caller still uses (5.5). release may be called more than once.
+	HeldRevisionContent(ctx context.Context, n int) (c engine.Content, release func(), err error)
+	// Lease takes read leases on stored blobs until release is called
+	// (5.5). The caller chooses hashes the board protects at that moment
+	// (in the apply loop), so the sweep, which reads those references
+	// through the apply loop, either keeps them or sees the lease. It must
+	// not block. release may be called more than once.
+	Lease(hashes []string) (release func())
 	// Pin pins or unpins revision n.
 	Pin(ctx context.Context, n int, pinned bool) error
 	// Rollback rolls the board back to revision n (4.11): core takes the

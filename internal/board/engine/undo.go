@@ -372,32 +372,43 @@ func (u *undoRun) ready(rec BundleRec) bool {
 // effect of the same undo (a creation undo releasing a frame's members, a
 // revive restoring relations) gives a bundle this seq, and the guards
 // judge what others did before, not that.
+//
+// An element this undo revived was deleted when it started, and nobody can
+// change a deleted element, so its deleted row holds the start versions.
 func (u *undoRun) startV(r *Row, g string) int64 {
 	if r.V[g] == u.a.seq {
-		if b := u.a.batchRow(r.El.ID); b.alive() && b.Inc == r.Inc {
+		b := u.a.batchRow(r.El.ID)
+		switch {
+		case b.alive() && b.Inc == r.Inc:
+			return b.V[g]
+		case b != nil && b.Deleted && u.linked(r.El.ID, b.Inc) == r.Inc && b.Inc != r.Inc:
 			return b.V[g]
 		}
 	}
 	return r.V[g]
 }
 
-// guard checks the version of bundle g of r against my_v. A bundle this
-// same undo already set back to prev (a revive restoring a relation the
-// deletion released) counts as undone, and its lineage carries on as if
-// this record had set it.
+// guard checks the version of bundle g of r against my_v. The guard
+// judges the start of the undo: when the bundle had another version then,
+// somebody else changed it and the record is stale, even if a side effect
+// of this same undo (a frame deletion releasing its members) has since set
+// it to prev. A bundle that passed and this same undo already set back to
+// prev (a revive restoring a relation the deletion released) counts as
+// undone, and its lineage carries on as if this record had set it.
 func (u *undoRun) guard(r *Row, g string, myV int64, prev any, prevV int64) bool {
 	if r.V[g] == myV {
 		return true
 	}
+	if u.startV(r, g) != myV {
+		u.res.skip(VoidStale)
+		return false
+	}
 	if r.V[g] == u.a.seq && model.BundleEqual(g, r.El.Bundle(g), prev) {
 		u.res.Undone++
 		u.lineage(r.El.ID, r.Inc, g, prevV)
-	} else if u.startV(r, g) == myV {
-		return true
-	} else {
-		u.res.skip(VoidStale)
+		return false
 	}
-	return false
+	return true
 }
 
 func (u *undoRun) bundle(rec BundleRec) {
@@ -674,7 +685,9 @@ func (u *undoRun) order(rec OrderRec) {
 		return
 	}
 	if r.V[model.BundleZ] != rec.MyV {
-		if r.V[model.BundleZ] == a.seq {
+		// As in guard: a side effect of this undo counts only when the
+		// start version passed.
+		if r.V[model.BundleZ] == a.seq && u.startV(r, model.BundleZ) == rec.MyV {
 			u.res.Undone++
 			u.lineage(rec.ID, r.Inc, model.BundleZ, rec.PrevV)
 		} else {
