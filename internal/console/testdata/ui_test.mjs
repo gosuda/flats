@@ -519,6 +519,53 @@ for (const id of ['env', 'secrets', 'network']) {
 assert.equal(all(pageSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
 assert.equal(calls.some((c) => /\/flats\/report\/(env|secrets|network)$/.test(c.key)), false, 'a page loads no server settings');
 stopPageSettings();
+// A board runs once saved like a document or design: its own label and
+// icon, an open link to the canvas, and no versions, previews, Database or
+// server settings. Its settings hold the revision quotas.
+const sketch = { ...notes, type: 'board', slug: 'sketch', name: 'Sketch', private_url: 'https://sketch.tail.ts.net' };
+routes['GET /console/api/flats/sketch'] = sketch;
+routes['GET /console/api/flats/sketch/revision-quota'] = { revision_quota: null, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 0 };
+const listedFlats = routes['GET /console/api/flats'];
+routes['GET /console/api/flats'] = { flats: [sketch] };
+const boardList = new Element('main');
+const stopBoardList = list.mount(boardList, [], ctx);
+await tick();
+const boardRow = all(boardList, (e) => e.tagName === 'LI' && e.className === 'flat')[0];
+assert.deepEqual(typeLabel(boardRow), [['img', 'Board', 'Board', '0']]);
+const boardIcon = all(boardRow, (e) => e.className.startsWith('type-icon'))[0];
+assert.ok(boardIcon.className.includes('type-board'), boardIcon.className);
+assert.equal(all(boardIcon, (e) => e.tagName === 'PATH')[0]?.getAttribute('d'), 'M3 4h18v16H3zM6 7h5v5H6zM13 16l5-5M15 11h3v3');
+assert.ok(boardRow.textContent.includes('Running') && !boardRow.textContent.includes('Live v'), 'a board row shows no version: ' + boardRow.textContent);
+assert.equal(startsWith(boardRow, 'Save as').length + startsWith(boardRow, 'Publish').length, 0);
+assert.equal(all(boardRow, (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1, 'a running board links to its canvas');
+assert.equal(byText(boardRow, 'Overview').length, 1);
+stopBoardList();
+routes['GET /console/api/flats'] = listedFlats;
+const boardMain = new Element('main');
+const stopBoard = flat.mount(boardMain, ['sketch'], ctx);
+await tick();
+assert.deepEqual(typeLabel(boardMain), [['img', 'Board', 'Board', '0']]);
+assert.deepEqual(tabLinks(boardMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Settings']);
+for (const id of ['versions', 'previews']) {
+  assert.equal(all(boardMain, (e) => e.getAttribute('id') === id).length, 0, `board page shows ${id}`);
+}
+assert.ok(all(boardMain, (e) => e.tagName === 'DT' && e.textContent === 'Board').length === 1, 'board status names the type');
+assert.ok(boardMain.textContent.includes('Running') && !boardMain.textContent.includes('Not published'));
+for (const prefix of ['Save as', 'Publish', 'Roll back']) {
+  assert.equal(startsWith(boardMain, prefix).length, 0, `board page offers ${prefix}`);
+}
+assert.equal(calls.some((c) => /\/flats\/sketch\/(versions|previews)/.test(c.key)), false, 'a board loads no versions or previews');
+stopBoard();
+const boardSettings = new Element('main');
+const stopBoardSettings = flat.mountSettings(boardSettings, ['sketch'], ctx);
+await tick();
+for (const id of ['env', 'secrets', 'network', 'version-history']) {
+  assert.equal(all(boardSettings, (e) => e.getAttribute('id') === id).length, 0, `board settings show ${id}`);
+}
+assert.equal(all(boardSettings, (e) => e.getAttribute('id') === 'revisions').length, 1, 'board settings lack revision quotas');
+assert.ok(boardSettings.textContent.includes('People and agents manage revisions on the board itself'));
+assert.equal(calls.some((c) => /\/flats\/sketch\/(env|secrets|network)$/.test(c.key)), false, 'a board loads no server settings');
+stopBoardSettings();
 // The Settings tab holds every setting once, and still offers the redeploy
 // that applies environment changes.
 const management = new Element('main');
@@ -2062,7 +2109,7 @@ localShare.close();
 globalThis.location = shareLocation;
 assert.ok(shareRoute({ ...shareFixture, private_url: '', private_state: '' }).message.includes('No link'));
 assert.ok(shareRoute({ ...shareFixture, live_version: 0 }).message.includes('not been published'));
-for (const type of ['docs', 'design']) {
+for (const type of ['docs', 'design', 'board']) {
   const message = shareRoute({ ...shareFixture, type, running: false }).message;
   assert.ok(message.includes('not running') && !message.includes('publish'));
 }

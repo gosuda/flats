@@ -194,8 +194,8 @@ export function mount(main, _params, ctx) {
 
   function row(f) {
     const href = `/flats/${encodeURIComponent(f.slug)}`;
-    // A document or design has no versions or publishing: it runs once it
-    // is saved.
+    // A document, design or board has no versions or publishing: it runs
+    // once it is saved.
     const docs = isLive(f);
     const draft = !docs && f.draft && f.draft.dirty;
     const latest = f.latest_version || 0;
@@ -296,8 +296,9 @@ function emptyState() {
     h('p', null, h('strong', { text: 'Website: ' }), '“Build a portfolio website.”', h('br'),
       h('strong', { text: 'Document: ' }), '“Create a Markdown project brief.”', h('br'),
       h('strong', { text: 'Page: ' }), '“Make a single HTML event page.”', h('br'),
-      h('strong', { text: 'Design: ' }), '“Create a design canvas with two screens.”'),
-    h('p', { text: 'Agents wait for your approval to save or publish a website or page version. Document and design changes take effect as soon as they are saved; who can open them is set separately in Share.' }),
+      h('strong', { text: 'Design: ' }), '“Create a design canvas with two screens.”', h('br'),
+      h('strong', { text: 'Board: ' }), '“Put this discussion on a board as sticky notes.”'),
+    h('p', { text: 'Agents wait for your approval to save or publish a website or page version. Document, design and board changes take effect as soon as they are saved; who can open them is set separately in Share.' }),
     h('p', null, h('a', { class: 'btn btn-primary', href: '/settings/agents', 'data-nav': true, text: 'Connect an agent' })));
 }
 
@@ -307,18 +308,23 @@ const TYPES = {
   docs: { key: 'docs', label: 'Document', icon: 'doc' },
   page: { key: 'page', label: 'Page', icon: 'code' },
   design: { key: 'design', label: 'Design', icon: 'layout' },
+  board: { key: 'board', label: 'Board', icon: 'board' },
 };
 
-// isLive reports a Revision-model flat (document or design): no versions or
-// publishing; it runs once it is saved.
-export const isLive = (flat) => flat.type === 'docs' || flat.type === 'design';
+// isLive reports a Revision-model flat (document, design or board): no
+// versions or publishing; it runs once it is saved.
+export const isLive = (flat) => flat.type === 'docs' || flat.type === 'design' || flat.type === 'board';
 
 export const typeOf = (flat) => (Object.hasOwn(TYPES, flat.type) ? TYPES[flat.type] : TYPES.flat);
 
+// typeNoun names a flat's type in running text: "document", "design", "board".
+export const typeNoun = (flat) => typeOf(flat).label.toLowerCase();
+
 // hasServer reports whether a flat can run server code, so its database,
 // environment, secrets and server HTTP(S) permissions apply: documents run
-// the built-in editor and pages are always static.
-export const hasServer = (flat) => flat.type !== 'docs' && flat.type !== 'page' && flat.type !== 'design';
+// the built-in editor, designs and boards run inside the host, and pages are
+// always static.
+export const hasServer = (flat) => !isLive(flat) && flat.type !== 'page';
 
 // typeIcon is the tile left of a flat's name. Its label shows on hover, and on
 // focus for keyboard users and touch (a tap focuses it); screen readers

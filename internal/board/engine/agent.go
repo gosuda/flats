@@ -68,7 +68,13 @@ type AgentCall struct {
 	IfSeq   *int64
 	Replace bool
 	Label   string
-	Now     int64
+	// By is the creator key new elements record; empty means "agent:"
+	// plus Label.
+	By string
+	// Unlimited lifts the operation limit for data file imports and element
+	// recovery, whose size the archive checks bound instead.
+	Unlimited bool
+	Now       int64
 	// NewID returns a fresh random id with the prefix "e_" or "g_".
 	NewID func(prefix string) string
 }
@@ -96,7 +102,7 @@ const (
 // mismatch, a missing or locked target gives a conflict; a malformed call or
 // a limit gives invalid.
 func (s *State) ApplyAgent(call AgentCall) (AgentOutcome, error) {
-	if len(call.Ops) > model.MaxAgentOps {
+	if len(call.Ops) > model.MaxAgentOps && !call.Unlimited {
 		return AgentOutcome{}, invalid("a call holds at most %d operations", model.MaxAgentOps)
 	}
 	targets := 0
@@ -109,7 +115,11 @@ func (s *State) ApplyAgent(call AgentCall) (AgentOutcome, error) {
 	if call.IfSeq != nil && *call.IfSeq != s.seq {
 		return AgentOutcome{}, conflict("the board changed since seq %d (now %d); read it again", *call.IfSeq, s.seq)
 	}
-	a, m := s.newApplier("", "agent:"+call.Label, call.Now)
+	by := call.By
+	if by == "" {
+		by = "agent:" + call.Label
+	}
+	a, m := s.newApplier("", by, call.Now)
 	c := &agentCall{a: a, call: call, refs: map[string]string{}, out: AgentOutcome{IDs: map[string]string{}, Layout: map[string][2]float64{}}}
 	err := c.run()
 	if err == nil {

@@ -48,6 +48,10 @@ func (s *State) Hello(h Hello) HelloResult {
 	return HelloResult{Session: h.NewID, New: true, Changed: s.changedSince(sp)}
 }
 
+// Sessions is the number of sessions, live or not yet expired by
+// ExpireSessions.
+func (s *State) Sessions() int { return len(s.sessions) }
+
 // ExpireSessions deletes sessions idle for SessionTTL, with their created
 // rows, receipts and undo stacks.
 func (s *State) ExpireSessions(now int64) Changed {

@@ -16,10 +16,12 @@ schema and call again.
 The request or upload is malformed: a bad slug, manifest field, path,
 encoding, negative number, unknown visibility, or a docs rule. A version,
 Draft, preview, publish or rollback call on a document is also `invalid`:
-documents have none of them; use `save_document` or `update_document`. Upload
+documents have none of them; use `save_document` or `update_document`. The same
+call on a board is `invalid` too: use `update_board` and the revision tools.
+A board write over a board limit or with a bad element is `invalid`. Upload
 validation lists every problem with its `path` and `fix` at once. Nothing was
 saved. Fix every listed problem and send the complete request again. Rules:
-`topic.static`, `topic.manifest`, `topic.docs`, `topic.env-secrets`.
+`topic.static`, `topic.manifest`, `topic.docs`, `topic.board`, `topic.env-secrets`.
 
 ## not_found
 
@@ -66,10 +68,26 @@ The tool needs a design (`type: "design"`), and this flat is another type.
 Check `get_flat`. Create a design with `create_flat {type: "design"}` or
 `save_design` on a new slug; designs keep their own revision history.
 
+## not_board
+
+The tool (`get_board`, `update_board`, `import_board` or `get_board_share`)
+needs a board (`type: "board"`), and this flat is another type. Check
+`get_flat`. Create a board with `create_flat {type: "board"}` or
+`update_board` on a new slug. A flat never changes its type.
+
+## board_capacity
+
+The board write or import, together with the revision that records it, would
+put the flat over its per-flat disk quota. Nothing changed, and Flats never
+deletes history to make room. While a board is over its quota, every edit is
+refused, deletions included. Tell the user: the operator can raise the disk
+quota, or free space by lowering the revision quota or unpinning revisions.
+A `rollback_revision` is never refused for the disk quota.
+
 ## no_revisions
 
-The revision tools work on documents and designs, and this flat is a website
-or a page: those keep numbered versions instead (`list_versions`, `rollback`).
+The revision tools work on documents, designs and boards, and this flat is a
+website or a page: those keep numbered versions instead (`list_versions`, `rollback`).
 A document that never ran has no revisions yet; save it with `save_document`
 first.
 
@@ -90,6 +108,13 @@ both types. For a page, add `flats.json` `{"type":"page"}` or use
 `save_page`; otherwise use another slug. Nothing was
 overwritten. Read `get_draft`, `get_flat` or `list_versions`, reconcile, and
 retry with current values. Never discard someone else's content to win.
+
+On a board, `update_board` and `import_board` are refused with `conflict` when
+`if_seq` or `if_ver` no longer matches, a target element was deleted, a target
+is locked and the call did not unlock it, or the same `op_id` came with a
+different request. An expired `get_board` cursor is `conflict` too. Nothing in
+the call applied. Read `get_board` again (from the first page for a cursor),
+rebuild the call against what people wrote, and retry with a new `op_id`.
 
 ## stale_approval
 

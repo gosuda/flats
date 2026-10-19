@@ -128,6 +128,7 @@ export class Net {
 
   #reset() {
     this.open = false;
+    this.gen = 0; // generations count per socket; a new socket starts at 0
     this.snap = null;
     this.held = [];
     this.deltaParts = null;

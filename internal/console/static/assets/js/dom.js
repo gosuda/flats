@@ -52,6 +52,7 @@ const ICONS = {
   doc: 'M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7zM14 3v4h4M9 12h6M9 16h4',
   code: 'M8 7l-5 5l5 5M16 7l5 5l-5 5M14 4l-4 16',
   layout: 'M4 4h9v7H4zM15 4h5v16h-5zM4 13h9v7H4z',
+  board: 'M3 4h18v16H3zM6 7h5v5H6zM13 16l5-5M15 11h3v3',
 };
 
 export function icon(name, label) {

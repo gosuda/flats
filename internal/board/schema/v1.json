@@ -1,0 +1,1176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "flats-board-v1",
+  "title": "Flats board, format 1",
+  "description": "Board elements, board.json and person operations (docs/spec/board-TECH.md Appendix A). The Go server and the JS client check the same rules.",
+  "$defs": {
+    "Id": {
+      "description": "An element id.",
+      "type": "string",
+      "pattern": "^e_[0-9A-Za-z]{10}$"
+    },
+    "GroupId": {
+      "type": "string",
+      "pattern": "^g_[0-9A-Za-z]{10}$"
+    },
+    "Inc": {
+      "description": "An expected incarnation; 0 means the one this session's own add or revive produced (4.1).",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "Seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Coord": {
+      "description": "A finite number, stored rounded to 1 decimal place.",
+      "type": "number",
+      "minimum": -10000000,
+      "maximum": 10000000
+    },
+    "Size": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "Rot": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 360
+    },
+    "Z": {
+      "description": "A stacking key: base62 digits, not ending in 0. Stored keys hold at most 32 characters.",
+      "type": "string",
+      "pattern": "^[0-9A-Za-z]{0,31}[1-9A-Za-z]$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "End": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "el": {
+              "$ref": "#/$defs/Id"
+            },
+            "at": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "el"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "pt": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Coord"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "required": [
+            "pt"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "IfV": {
+      "description": "{Id: {bundle key: V}}",
+      "type": "object"
+    },
+    "Board": {
+      "description": "board.json",
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": 1
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "grid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "format",
+        "title",
+        "grid"
+      ],
+      "additionalProperties": false
+    },
+    "Element_sticky": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "sticky"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": {
+          "$ref": "#/$defs/Id"
+        },
+        "group": {
+          "$ref": "#/$defs/GroupId"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "x": {
+          "$ref": "#/$defs/Coord"
+        },
+        "y": {
+          "$ref": "#/$defs/Coord"
+        },
+        "w": {
+          "$ref": "#/$defs/Size"
+        },
+        "h": {
+          "$ref": "#/$defs/Size"
+        },
+        "rot": {
+          "$ref": "#/$defs/Rot"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "style": {
+          "description": "Missing keys take their defaults.",
+          "type": "object",
+          "properties": {
+            "color": {
+              "enum": [
+                "yellow",
+                "orange",
+                "pink",
+                "blue",
+                "green",
+                "gray"
+              ]
+            },
+            "fontSize": {
+              "anyOf": [
+                {
+                  "const": "auto"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 10,
+                  "maximum": 72
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "color": "yellow",
+            "fontSize": "auto"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "x",
+        "y",
+        "w",
+        "h",
+        "rot"
+      ],
+      "additionalProperties": false
+    },
+    "Element_text": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "text"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": {
+          "$ref": "#/$defs/Id"
+        },
+        "group": {
+          "$ref": "#/$defs/GroupId"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "x": {
+          "$ref": "#/$defs/Coord"
+        },
+        "y": {
+          "$ref": "#/$defs/Coord"
+        },
+        "w": {
+          "$ref": "#/$defs/Size"
+        },
+        "h": {
+          "$ref": "#/$defs/Size"
+        },
+        "rot": {
+          "$ref": "#/$defs/Rot"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "style": {
+          "description": "Missing keys take their defaults.",
+          "type": "object",
+          "properties": {
+            "color": {
+              "enum": [
+                "ink",
+                "gray",
+                "red",
+                "orange",
+                "green",
+                "blue",
+                "purple"
+              ]
+            },
+            "fontSize": {
+              "type": "integer",
+              "minimum": 12,
+              "maximum": 144
+            },
+            "align": {
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "color": "ink",
+            "fontSize": 20,
+            "align": "left"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "x",
+        "y",
+        "w",
+        "h",
+        "rot"
+      ],
+      "additionalProperties": false
+    },
+    "Element_shape": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "shape"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": {
+          "$ref": "#/$defs/Id"
+        },
+        "group": {
+          "$ref": "#/$defs/GroupId"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "x": {
+          "$ref": "#/$defs/Coord"
+        },
+        "y": {
+          "$ref": "#/$defs/Coord"
+        },
+        "w": {
+          "$ref": "#/$defs/Size"
+        },
+        "h": {
+          "$ref": "#/$defs/Size"
+        },
+        "rot": {
+          "$ref": "#/$defs/Rot"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "style": {
+          "description": "Missing keys take their defaults.",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "enum": [
+                "rect",
+                "round",
+                "ellipse",
+                "diamond"
+              ]
+            },
+            "fill": {
+              "enum": [
+                "yellow",
+                "orange",
+                "pink",
+                "blue",
+                "green",
+                "gray",
+                "none",
+                "white"
+              ]
+            },
+            "stroke": {
+              "enum": [
+                "ink",
+                "gray",
+                "red",
+                "orange",
+                "green",
+                "blue",
+                "purple"
+              ]
+            },
+            "strokeWidth": {
+              "enum": [
+                1,
+                2,
+                4
+              ]
+            },
+            "dash": {
+              "enum": [
+                "solid",
+                "dashed",
+                "dotted"
+              ]
+            },
+            "fontSize": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 72
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "shape": "rect",
+            "fill": "white",
+            "stroke": "ink",
+            "strokeWidth": 2,
+            "dash": "solid",
+            "fontSize": 14
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "x",
+        "y",
+        "w",
+        "h",
+        "rot"
+      ],
+      "additionalProperties": false
+    },
+    "Element_connector": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "connector"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": {
+          "$ref": "#/$defs/Id"
+        },
+        "group": {
+          "$ref": "#/$defs/GroupId"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "ends": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/End"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "style": {
+          "description": "Missing keys take their defaults.",
+          "type": "object",
+          "properties": {
+            "stroke": {
+              "enum": [
+                "ink",
+                "gray",
+                "red",
+                "orange",
+                "green",
+                "blue",
+                "purple"
+              ]
+            },
+            "strokeWidth": {
+              "enum": [
+                1,
+                2,
+                4
+              ]
+            },
+            "dash": {
+              "enum": [
+                "solid",
+                "dashed",
+                "dotted"
+              ]
+            },
+            "route": {
+              "enum": [
+                "straight",
+                "elbow"
+              ]
+            },
+            "head0": {
+              "enum": [
+                "none",
+                "arrow"
+              ]
+            },
+            "head1": {
+              "enum": [
+                "arrow",
+                "none"
+              ]
+            },
+            "fontSize": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 32
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "stroke": "ink",
+            "strokeWidth": 2,
+            "dash": "solid",
+            "route": "straight",
+            "head0": "none",
+            "head1": "arrow",
+            "fontSize": 12
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "ends"
+      ],
+      "additionalProperties": false
+    },
+    "Element_pen": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "pen"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": {
+          "$ref": "#/$defs/Id"
+        },
+        "group": {
+          "$ref": "#/$defs/GroupId"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "x": {
+          "$ref": "#/$defs/Coord"
+        },
+        "y": {
+          "$ref": "#/$defs/Coord"
+        },
+        "w": {
+          "$ref": "#/$defs/Size"
+        },
+        "h": {
+          "$ref": "#/$defs/Size"
+        },
+        "rot": {
+          "$ref": "#/$defs/Rot"
+        },
+        "pts": {
+          "description": "Points normalized to 0..10,000 inside the box, at most 2,000 points.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          },
+          "minItems": 2,
+          "maxItems": 4000
+        },
+        "style": {
+          "description": "Missing keys take their defaults.",
+          "type": "object",
+          "properties": {
+            "stroke": {
+              "enum": [
+                "ink",
+                "gray",
+                "red",
+                "orange",
+                "green",
+                "blue",
+                "purple",
+                "highlight"
+              ]
+            },
+            "width": {
+              "enum": [
+                "pen",
+                "marker"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "stroke": "ink",
+            "width": "pen"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "x",
+        "y",
+        "w",
+        "h",
+        "rot",
+        "pts"
+      ],
+      "additionalProperties": false
+    },
+    "Element_image": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "image"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": {
+          "$ref": "#/$defs/Id"
+        },
+        "group": {
+          "$ref": "#/$defs/GroupId"
+        },
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "x": {
+          "$ref": "#/$defs/Coord"
+        },
+        "y": {
+          "$ref": "#/$defs/Coord"
+        },
+        "w": {
+          "$ref": "#/$defs/Size"
+        },
+        "h": {
+          "$ref": "#/$defs/Size"
+        },
+        "rot": {
+          "$ref": "#/$defs/Rot"
+        },
+        "asset": {
+          "$ref": "#/$defs/Hash"
+        },
+        "alt": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "natural": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1048576
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "x",
+        "y",
+        "w",
+        "h",
+        "rot",
+        "asset",
+        "natural"
+      ],
+      "additionalProperties": false
+    },
+    "Element_frame": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "frame"
+        },
+        "z": {
+          "$ref": "#/$defs/Z"
+        },
+        "frame": false,
+        "group": false,
+        "locked": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "x": {
+          "$ref": "#/$defs/Coord"
+        },
+        "y": {
+          "$ref": "#/$defs/Coord"
+        },
+        "w": {
+          "$ref": "#/$defs/Size"
+        },
+        "h": {
+          "$ref": "#/$defs/Size"
+        },
+        "rot": {
+          "$ref": "#/$defs/Rot"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "style": {
+          "description": "Missing keys take their defaults.",
+          "type": "object",
+          "properties": {
+            "fill": {
+              "enum": [
+                "white",
+                "none",
+                "gray"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "default": {
+            "fill": "white"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "z",
+        "x",
+        "y",
+        "w",
+        "h",
+        "rot"
+      ],
+      "additionalProperties": false
+    },
+    "Element": {
+      "description": "The content fields of an element (3.1): bucket files, data files and the agent's view. Text lengths, pen points and asset counts are also per-item limits (section 12). Two rules are checked by the server but not expressible here: pts has an even length, and a connector end never names the connector itself.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Element_sticky"
+        },
+        {
+          "$ref": "#/$defs/Element_text"
+        },
+        {
+          "$ref": "#/$defs/Element_shape"
+        },
+        {
+          "$ref": "#/$defs/Element_connector"
+        },
+        {
+          "$ref": "#/$defs/Element_pen"
+        },
+        {
+          "$ref": "#/$defs/Element_image"
+        },
+        {
+          "$ref": "#/$defs/Element_frame"
+        }
+      ]
+    },
+    "Op": {
+      "description": "A client operation of a person batch (Appendix A).",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "add"
+            },
+            "el": {
+              "type": "object"
+            },
+            "refs": {
+              "type": "object",
+              "description": "Expected incarnations of referenced elements; an asset hash maps to 0.",
+              "additionalProperties": {
+                "$ref": "#/$defs/Inc"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "el"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "set"
+            },
+            "id": {
+              "$ref": "#/$defs/Id"
+            },
+            "inc": {
+              "$ref": "#/$defs/Inc"
+            },
+            "g": {
+              "type": "string"
+            },
+            "val": {},
+            "if_v": {
+              "$ref": "#/$defs/Seq"
+            },
+            "base_v": {
+              "$ref": "#/$defs/Seq"
+            },
+            "carry": {
+              "enum": [
+                "group",
+                "members"
+              ]
+            },
+            "refs": {
+              "type": "object",
+              "description": "Expected incarnations of referenced elements; an asset hash maps to 0.",
+              "additionalProperties": {
+                "$ref": "#/$defs/Inc"
+              }
+            }
+          },
+          "required": [
+            "op",
+            "id",
+            "inc",
+            "g",
+            "val"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "revive"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Id"
+              },
+              "minItems": 1
+            },
+            "if_del": {
+              "$ref": "#/$defs/Seq"
+            }
+          },
+          "required": [
+            "op",
+            "ids",
+            "if_del"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "reparent"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Id"
+              },
+              "minItems": 1
+            },
+            "inc_of": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Inc"
+              }
+            },
+            "frame": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Id"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "frame_inc": {
+              "$ref": "#/$defs/Inc"
+            }
+          },
+          "required": [
+            "op",
+            "ids",
+            "inc_of",
+            "frame"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "group"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Id"
+              },
+              "minItems": 1
+            },
+            "inc_of": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Inc"
+              }
+            },
+            "group": {
+              "$ref": "#/$defs/GroupId"
+            }
+          },
+          "required": [
+            "op",
+            "ids",
+            "inc_of",
+            "group"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "ungroup"
+            },
+            "group": {
+              "$ref": "#/$defs/GroupId"
+            }
+          },
+          "required": [
+            "op",
+            "group"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "delete"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Id"
+              },
+              "minItems": 1
+            },
+            "inc_of": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Inc"
+              }
+            },
+            "if_v": {
+              "$ref": "#/$defs/IfV"
+            }
+          },
+          "required": [
+            "op",
+            "ids",
+            "inc_of"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "delete_frame_contents"
+            },
+            "frame": {
+              "$ref": "#/$defs/Id"
+            },
+            "inc": {
+              "$ref": "#/$defs/Inc"
+            }
+          },
+          "required": [
+            "op",
+            "frame",
+            "inc"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "zorder"
+            },
+            "ids": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Id"
+              },
+              "minItems": 1
+            },
+            "inc_of": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/Inc"
+              }
+            },
+            "to": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "front",
+                    "back"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "after": {
+                      "$ref": "#/$defs/Id"
+                    },
+                    "inc": {
+                      "$ref": "#/$defs/Inc"
+                    }
+                  },
+                  "required": [
+                    "after",
+                    "inc"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "before": {
+                      "$ref": "#/$defs/Id"
+                    },
+                    "inc": {
+                      "$ref": "#/$defs/Inc"
+                    }
+                  },
+                  "required": [
+                    "before",
+                    "inc"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "if_v": {
+              "$ref": "#/$defs/IfV"
+            }
+          },
+          "required": [
+            "op",
+            "ids",
+            "inc_of",
+            "to"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "meta"
+            },
+            "g": {
+              "enum": [
+                "title",
+                "grid"
+              ]
+            },
+            "val": {},
+            "if_v": {
+              "$ref": "#/$defs/Seq"
+            }
+          },
+          "required": [
+            "op",
+            "g",
+            "val"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "undo"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "op": {
+              "const": "redo"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Batch": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Op"
+      },
+      "minItems": 1,
+      "maxItems": 500
+    }
+  }
+}

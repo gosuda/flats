@@ -140,8 +140,8 @@ func (a *applier) resetContent(c Content) error {
 }
 
 // resetElement makes element el.ID equal to el. An alive element of the same
-// type and identity keeps its incarnation and its author fields; otherwise
-// the element starts a new incarnation.
+// type and identity keeps its incarnation; otherwise the element starts a
+// new incarnation.
 func (a *applier) resetElement(el model.Element) {
 	cur := a.s.rows[el.ID]
 	el.Normalize()
@@ -152,7 +152,10 @@ func (a *applier) resetElement(el model.Element) {
 				a.setBundle(r, g, v)
 			}
 		}
-		if !maps.Equal(r.V, cur.V) {
+		// The author fields follow the content too, so a rollback's buckets
+		// equal the revision's files (rule 45: no new stored content).
+		r.El.By, r.El.At = el.By, el.At
+		if !maps.Equal(r.V, cur.V) || r.El.By != cur.El.By || r.El.At != cur.El.At {
 			a.put(r)
 		}
 		return
@@ -170,9 +173,11 @@ func sameIdentity(x, y model.Element) bool {
 	return x.Type == y.Type && slices.Equal(x.Pts, y.Pts) && x.Asset == y.Asset && x.Natural == y.Natural
 }
 
-// checkContent checks a whole content set (9.2 element schema): element
+// CheckContent checks a whole content set (9.2 element schema): element
 // forms, unique ids, references to elements of the right type and the
 // membership invariants.
+func CheckContent(els []model.Element) error { return checkContent(els) }
+
 func checkContent(els []model.Element) error {
 	byID := make(map[string]model.Element, len(els))
 	for _, el := range els {

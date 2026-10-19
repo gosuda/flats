@@ -102,6 +102,9 @@ mounted under both prefixes; **console** routes exist only under
 | GET | `/flats/{slug}/draft` | both | Current Private Draft metadata, or 404 |
 | POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}`; never a version or approval. Documents are refused here |
 | POST | `/flats/{slug}/document` | both | Complete docs archive; replaces the whole live bundle without approval. 201 `{flat}` |
+| GET | `/flats/{slug}/board` | api | `get_board` read of a board: `?revision=&frame=&rect=&ids=&format=&cursor=&limit=` |
+| POST | `/flats/{slug}/board` | api | An `update_board` body; applies at once without approval and creates a missing board |
+| POST | `/flats/{slug}/board/import` | api | A board data file (`.zip`, up to `upload_max_bytes × 4`), `mode` `add` or `replace`; applies at once without approval |
 | POST | `/flats/{slug}/versions` | both | `{revision, hash?}` (revision 0 selects current): 202 `create_version` request. Creates the version without deploying it |
 | GET | `/flats/{slug}/versions` | both | Retained versions, `[]` when none |
 | GET | `/flats/{slug}/versions/{n}` | both | One version |
@@ -132,7 +135,7 @@ mounted under both prefixes; **console** routes exist only under
 | POST | `/flats/{slug}/name` | console | `{name}`: display name |
 | PUT | `/flats/{slug}/listing` | console | `{listing}`: `default`, `hidden` or `listed` relay listing of the Portal route |
 | GET, PUT | `/flats/{slug}/version-quota` | console | GET is the flat view; PUT `{version_quota: n\|null}` (null follows the host) |
-| GET, PUT | `/flats/{slug}/revision-quota` | console | Documents and designs: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
+| GET, PUT | `/flats/{slug}/revision-quota` | console | Documents, designs and boards: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
 | GET | `/providers` | console | Host providers: grant, backend status, hosts and provider settings |
 | PUT | `/providers/{id}` | console | `{enabled}` with the settings ETag in `If-Match` |
 | PUT, DELETE | `/providers/zrok/account` | console | `{token}` connects or replaces the zrok account; DELETE disconnects (`?force=1` removes a stale environment locally) |
@@ -191,7 +194,7 @@ permissions and the Portal listing take effect immediately.
     `totals`, `cpu_seconds` and `memory_peak_bytes` are omitted where that
     figure is not measured, never reported as zero.
   - `now`: `cpu` and `memory` are `measured`, `not_separate` (websites,
-    pages and designs, which run inside the host process; the other `now`
+    pages, designs and boards, which run inside the host process; the other `now`
     fields are then omitted) or `unsupported` (memory on hosts other than
     Linux). With a worker: `state` (`running`, `starting`, `quiescing`,
     `sleeping`, `backoff` or `stopped`; diagnostic only, `running` in the
@@ -227,6 +230,9 @@ for server flats); `flats config` and
 | `draft <slug> [<dir\|archive>] …` | Read Draft metadata, or save like `save-draft` |
 | `get-draft <slug>` | Read Draft metadata |
 | `save-document <slug> <dir\|archive> [--message m]` | Replace a whole live docs bundle |
+| `board get <slug> [--outline]` | Read a board's elements |
+| `board apply <slug> <ops.json>` | Send an `update_board` body to a board, creating it when missing |
+| `board import <slug> <file.zip> [--replace]` | Import a board data file; adds with new ids unless `--replace` |
 | `create-version <slug> [--revision n] [--hash h]` | Request a new version from the Draft |
 | `deploy --flat <slug> --version <n>` | Request activation of a saved version; a directory argument is refused with guidance to save and create a version first |
 | `rollback <slug> [--to n] [--restore-data]` | Request activation of an earlier version |
@@ -258,7 +264,8 @@ Tools (names are the registered `Name` values):
 | Websites and pages | `create_flat`, `save_draft`, `save_draft_from_dir` (callers on the host's loopback only), `save_page`, `create_version`, `deploy`, `rollback`, `delete_version`, `open_preview` |
 | Documents | `save_document`, `get_document`, `update_document` |
 | Designs | `save_design`, `get_design` |
-| Revisions (documents and designs) | `list_revisions`, `get_revision`, `pin_revision`, `rollback_revision` |
+| Boards | `get_board`, `update_board`, `get_board_share`, `import_board` |
+| Revisions (documents, designs and boards) | `list_revisions`, `get_revision`, `pin_revision`, `rollback_revision` |
 | Flat settings | `set_visibility`, `delete_flat`, `set_env`, `delete_env` |
 | References | `get_runtime_reference`, `get_content_types` (also resources `flats://docs/runtime-api/v1` and `flats://docs/content-types/v1`) |
 
@@ -272,8 +279,52 @@ Local loopback or explicitly permitted Tailscale routes, and pending visibility
 notices use the future tense. Removed tools (`save_version`,
 `save_version_from_dir`, `publish`) have no aliases.
 
-Revision management of documents and designs also happens inside the flat's
-own Private route; see [Revision store](revision-store.md).
+Revision management of documents, designs and boards also happens inside the
+flat's own Private route; see [Revision store](revision-store.md).
+
+### Board tools
+
+| Tool | Input | Result |
+| --- | --- | --- |
+| `create_flat {type: "board"}` | `slug`, `name` | An empty Private board (revision 1, `created`) |
+| `get_board` | `slug`, `revision?`, `frame?`, `rect?`, `ids?`, `format?` (`full` or `outline`), `cursor?`, `limit?` | `{seq, revision, pending, elements, next?}`; each element carries `ver` for guards |
+| `update_board` | `slug`, `op_id`, `ops`, `assets?`, `layout?`, `if_seq?`, `message?`, `replace?` | `{revision, seq, ids, layout, results}`; all operations apply or none, as one revision |
+| `get_board_share` | `slug`, `n?` | One selection a person sent to the agent, or the recent list; deleted elements are `missing` |
+| `import_board` | `slug`, `op_id`, `archive` (base64, at most `upload_max_bytes`), `mode` (`add` or `replace`) | `{revision, ids}` |
+
+Board writes and imports apply at once without approval. Board tools refuse
+other types (`not_board`); version tools refuse a board (`invalid`). A guard
+mismatch, a missing or locked target, an expired read cursor or a reused
+`op_id` with a different request is `conflict`; the per-flat disk quota is
+`board_capacity`. `get_revision` on a board returns its file list; read an
+earlier board's elements with `get_board {revision}`. The agent guide is
+`topic.board`.
+
+### Board routes inside the flat
+
+A board serves its canvas on its own routes. The board trusts only the
+access level core decides for the route; a missing or unknown one counts as
+Public. Every POST and WebSocket upgrade needs `Sec-Fetch-Site: same-origin`
+(or, without it, an `Origin` equal to the request's scheme and host), and
+POST also needs `X-Flats-Board: 1`.
+
+| Route | Access | Use |
+| --- | --- | --- |
+| `GET /` | everyone | Canvas app |
+| `GET /_board/app/<file>` | everyone | Built-in app files |
+| `GET /_board/ws` | everyone; writes, presence and sharing are Private | Live updates |
+| `GET /_board/a/<hash>` | Private: any asset of the board or a retained revision; Public: only assets a current element uses | Images |
+| `POST /_board/api/assets` | Private | Image upload, answers `{hash, w, h}` |
+| `GET /_board/api/revisions[/{n}]`, `POST …/{n}/pin`, `POST …/{n}/rollback` | Private | History |
+| `GET /_board/api/revisions/{n}/elements` | Private | Elements of an earlier revision, for element recovery |
+| `POST /_board/api/recover` | Private | Copy elements of an earlier revision into the board with new ids |
+| `GET /_board/export.zip` | everyone | Data file of the current board; Public gets the public projection |
+| `POST /_board/api/import` | Private | Import a data or recovery file |
+
+A Public route receives only the current board: no cursors, names,
+selections, shares, history or past-only assets. Open Public connections
+close when the board becomes Private, its route stops, or it is renamed or
+deleted.
 
 ## Console
 
@@ -284,29 +335,32 @@ The console uses two words for the two approved steps of websites and pages.
 (`Save as vN`, approval action `create_version`). **Publish** puts one saved
 version live (`Publish vN`, approval action `activate`); publishing an earlier
 version again is `Roll back to vN`. Save buttons are drawn quieter than Publish
-buttons. Documents and designs have no Draft, versions or publishing: they run
-once saved.
+buttons. Documents, designs and boards have no Draft, versions or publishing:
+they run once saved.
 
 ### Screens
 
 - **List.** Rows show `Live vN`, `Not published`, `vN saved, not published`
   (the newest saved version was never live, `latest_deployed` false) and
-  `unsaved draft changes`; documents and designs show `Running` or
+  `unsaved draft changes`; documents, designs and boards show `Running` or
   `Not running`. `Save as vN` appears for flats with Draft changes, otherwise
   `Publish vN` when the newest saved version was never live. A row's menu holds
-  the open links, Share, Deployments (Overview for documents and designs),
-  Analytics and Settings. Rows do not repeat a public-access banner.
-- **Flat page.** Tabs: Deployments (Overview for documents and designs) at
+  the open links, Share, Deployments (Overview for documents, designs and
+  boards), Analytics and Settings. Each row has its type's label and icon
+  (Flat, Document, Page, Design, Board); a running board's open link goes to
+  its canvas. Rows do not repeat a public-access banner.
+- **Flat page.** Tabs: Deployments (Overview for documents, designs and boards) at
   `/flats/{slug}`, Analytics, Database (server flats only) and Settings.
   Deployments shows the addresses and live state, the Versions table, open
   previews and logs; the Versions table starts with a Draft row (Preview,
   `Save as vN`) while `draft.dirty` is true, and each version has a `Live`,
   `Previously live` or `Not published` badge with `Publish vN` above the live
-  version and `Roll back to vN` below it. The Overview of a document or design
-  has the addresses, running state and logs, and no Versions or previews.
-  Database lists data snapshots. Settings holds the name, slug, sharing,
-  networks, version history quota (websites and pages), environment variables,
-  secrets, server HTTP(S) permissions and deletion.
+  version and `Roll back to vN` below it. The Overview of a document, design
+  or board has the addresses, running state and logs, and no Versions or
+  previews. Database lists data snapshots. Settings holds the name, slug,
+  sharing, networks, version history quota (websites and pages), revision
+  quotas (documents, designs and boards), environment variables, secrets,
+  server HTTP(S) permissions and deletion.
 - **Networks** on a flat's Settings: Local (always on), Tailscale and
   NetBird under Private; Tailscale Funnel, Portal, zrok, Cloudflare Quick
   Tunnel and NetBird Expose under Public. A provider that is off for the host
@@ -353,7 +407,7 @@ that error.
 Labels match the data the server returns:
 
 - Limits uses the shared labels **Revisions to keep** and **Pinned revisions
-  allowed** for the revision and pin quotas of documents and designs, and
+  allowed** for the revision and pin quotas of documents, designs and boards, and
   **Version quota** for websites and pages.
 - Analytics shows **Page Views** (requests for pages), with the note that
   unique visitors are not tracked, and under it **Usage** (every request to
@@ -364,12 +418,12 @@ Labels match the data the server returns:
   with the sample age when the sample is stale; and daily requests stacked by
   status class (2xx, 3xx, 4xx, 5xx, Closed, and 1xx when there were
   upgrades). A missing value is shown as an em dash, never as zero.
-- For websites, pages and designs the CPU and memory tiles are replaced by the
+- For websites, pages, designs and boards the CPU and memory tiles are replaced by the
   note "CPU and memory are not measured separately for this type; it runs
   inside the Flats process." On a host that does not measure worker memory
   (not Linux), Peak memory says "Memory is not measured on this system." A
   server that returns no `usage` shows no Usage section.
-- For documents and designs, Analytics hides the Versions count and shows disk
+- For documents, designs and boards, Analytics hides the Versions count and shows disk
   usage as a plain byte value. Websites, pages and an unknown type show the
   Versions count and the disk value with its "(versions, data and previews)"
   description.

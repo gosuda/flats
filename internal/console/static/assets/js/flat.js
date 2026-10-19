@@ -11,15 +11,15 @@ import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
 import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
-import { hasServer } from './list.js';
+import { hasServer, isLive, typeOf, typeNoun } from './list.js';
 import { shareDialog } from './share.js';
 
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
 
-// revisionQuotaBlock edits a document's or design's revision and pin quotas. An empty
-// field follows the host default; 0 means unlimited.
-function revisionQuotaBlock(slug, type) {
+// revisionQuotaBlock edits the revision and pin quotas of a document, design
+// or board. An empty field follows the host default; 0 means unlimited.
+function revisionQuotaBlock(slug, noun) {
   const slot = h('div', null, loading());
   (async () => {
     let q;
@@ -38,7 +38,7 @@ function revisionQuotaBlock(slug, type) {
       try { await api.setRevisionQuota(slug, body); toast('Saved. Revisions over the new quota were deleted.', 'success'); }
       catch (err) { toast(err.message, 'error'); }
     }));
-    fill(slot, h('p', { class: 'muted small', text: `People and agents manage revisions on the ${type === 'docs' ? 'document' : 'design'} itself: open it and choose History.` }), rev.row, pin.row, h('div', { class: 'setting-row' }, h('span'), save));
+    fill(slot, h('p', { class: 'muted small', text: `People and agents manage revisions on the ${noun} itself: open it and choose History.` }), rev.row, pin.row, h('div', { class: 'setting-row' }, h('span'), save));
   })();
   return slot;
 }
@@ -66,8 +66,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   const networkSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
-  // Documents and designs have no versions or previews: they run once saved.
-  const isDocs = () => flat && (flat.type === 'docs' || flat.type === 'design');
+  // Documents, designs and boards have no versions or previews: they run
+  // once saved.
+  const isDocs = () => flat && isLive(flat);
   const serverParts = () => flat && hasServer(flat);
 
   const page = h('section', { class: 'page site-page' },
@@ -120,14 +121,14 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
             flat.private_detail || 'not answering yet') : null)
-      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ` (online once the ${flat.type === 'design' ? 'design' : 'document'} starts)` : ' (online after the first publish)'));
+      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ` (online once the ${typeNoun(flat)} starts)` : ' (online after the first publish)'));
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
         flat.live_version ? extLink(pub) : h('code', { text: pub }),
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
-    if (isDocs()) add(flat.type === 'design' ? 'Design' : 'Document', flat.running ? 'Running' : 'Not running');
+    if (isDocs()) add(typeOf(flat).label, flat.running ? 'Running' : 'Not running');
     else add('Live', flat.live ? `Version ${flat.live.number} · ${flat.live.kind}` : (flat.latest_version ? `Not published (v${flat.latest_version} saved)` : 'Not published'));
     add('Created', dateTime(flat.created_at));
     if (flat.old_slug && flat.old_slug_until) {
@@ -169,7 +170,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
       netSlot,
       isDocs() ? null : section('Version history', 'version-history', versionQuotaBlock()),
-      flat.type === 'design' || flat.type === 'docs' ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, flat.type)) : null,
+      isDocs() ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, typeNoun(flat))) : null,
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'env', 'aria-labelledby': 'env-title' }, h('h2', { id: 'env-title', text: 'Ordinary environment variables' }), envSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
