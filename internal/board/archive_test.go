@@ -175,6 +175,9 @@ func TestArchiveChecks(t *testing.T) {
 		if !errors.As(err, &be) || be.Category != CategoryInvalid {
 			t.Errorf("%s: %v", name, err)
 		}
+		if strings.HasSuffix(name, "traversal") && !strings.Contains(err.Error(), `".."`) {
+			t.Errorf("%s: refused for another reason: %v", name, err)
+		}
 	}
 	many := map[string][]byte{}
 	for i := 0; i < archiveMaxEntries; i++ {

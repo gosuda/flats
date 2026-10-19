@@ -85,6 +85,9 @@ func parseArchive(r io.ReaderAt, size, maxTotal, uploadMax int64) (*archive, err
 	var boardRaw, elementsRaw, recoveryRaw []byte
 	for _, f := range zr.File {
 		name := f.Name
+		if strings.Contains(name, "..") {
+			return nil, errorf(CategoryInvalid, "the data file holds a path containing \"..\"")
+		}
 		if seen[name] {
 			return nil, errorf(CategoryInvalid, "the data file holds %s twice", name)
 		}
