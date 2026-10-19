@@ -3,12 +3,16 @@ package board
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/board/engine"
+	"github.com/gosuda/flats/internal/board/model"
 )
 
 // TestPublicReconnectStartsFromASnapshot: a Public connection never reads
@@ -206,12 +210,14 @@ func TestPublicPastOnlyAndHeldAssets(t *testing.T) {
 
 // TestPublicReceivesNoPresenceOrAuthors: a Public socket gets no presence
 // frame (updates, joins or leaves), and no author, session or reset field
-// in any delta, a rollback's included (board-TECH 7.3).
+// in any delta, a rollback's included (board-TECH 7.3). It receives the
+// add, the edit and the rollback as three consecutive public deltas whose
+// changes, applied to its snapshot, give the board's public projection.
 func TestPublicReceivesNoPresenceOrAuthors(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)
 	p := connect(t, b.pub, nil, nil)
-	p.snapshot()
+	pseq, pels, _ := p.snapshot()
 	a := connect(t, b.priv, map[string]any{"editor": "alice", "name": "Alice"}, map[string]string{"Tailscale-User-Login": "alice@example.com", "Tailscale-User-Name": "Alice A"})
 	a.snapshot()
 	a.send(map[string]any{"t": "pres", "c": []float64{10, 10}, "sel": []string{}})
@@ -228,6 +234,11 @@ func TestPublicReceivesNoPresenceOrAuthors(t *testing.T) {
 	if _, err := b.core.Rollback(ctx, b.core.lastRev(), "Alice A"); err != nil {
 		t.Fatal(err)
 	}
+	var rollbackSeq int64
+	b.state(func(st *engine.State) { rollbackSeq = st.Seq() })
+	if rollbackSeq != pseq+3 {
+		t.Fatalf("the rollback committed seq %d, want %d", rollbackSeq, pseq+3)
+	}
 	// A second editor joins and leaves.
 	o := connect(t, b.priv, map[string]any{"editor": "olga", "name": "Olga"}, nil)
 	o.snapshot()
@@ -235,8 +246,10 @@ func TestPublicReceivesNoPresenceOrAuthors(t *testing.T) {
 	o.ws.Close(1000, "")
 	a.expect("pres")
 
-	deadline := time.After(time.Second)
-	seen := 0
+	var deltas []map[string]any
+	timeout := time.After(10 * time.Second)
+	var settle <-chan time.Time
+collect:
 	for {
 		select {
 		case m, ok := <-p.msgs:
@@ -247,21 +260,157 @@ func TestPublicReceivesNoPresenceOrAuthors(t *testing.T) {
 			if m["t"] == "pres" {
 				t.Fatalf("public received presence %s", raw)
 			}
-			for _, k := range []string{`"by"`, `"from"`, `"reset"`, `"session"`, "alice@example.com", "Alice A", "Olga", a.session} {
-				if strings.Contains(raw, k) {
-					t.Fatalf("public %s holds %s: %s", m["t"], k, raw)
-				}
+			if err := publicLeak(raw, "alice@example.com", "Alice A", "Olga", a.session); err != nil {
+				t.Fatalf("public %s: %v", m["t"], err)
 			}
 			if m["t"] == "delta" {
-				seen++
+				deltas = append(deltas, m)
+				if len(deltas) == 3 {
+					// Wait a little longer for a late presence frame.
+					settle = time.After(time.Second)
+				}
 			}
-		case <-deadline:
-			if seen < 2 {
-				t.Fatalf("public saw %d deltas, want the edits and the rollback", seen)
-			}
-			return
+		case <-settle:
+			break collect
+		case <-timeout:
+			break collect
 		}
 	}
+	if len(deltas) != 3 {
+		t.Fatalf("public saw %d deltas, want the add, the edit and the rollback", len(deltas))
+	}
+	view := newBoardView(true, pseq, pels)
+	for _, d := range deltas {
+		if err := view.apply(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The add, then the edit, as their public projections.
+	if c := deltas[0]["changes"].([]any); len(c) != 1 || c[0].(map[string]any)["id"] != id ||
+		c[0].(map[string]any)["add"] == nil || c[0].(map[string]any)["add"].(map[string]any)["text"] != "first" {
+		t.Fatalf("public add delta %s", deltas[0]["_raw"])
+	}
+	if got, want := canonicalAny(deltas[1]["changes"]), canonicalAny([]any{map[string]any{"id": id, "set": map[string]any{"text": "second"}}}); got != want {
+		t.Fatalf("public edit delta changes:\n got %s\nwant %s", got, want)
+	}
+	// The rollback: the next seq, one change restoring the text, as a set
+	// of the text alone or the element's whole public form.
+	rb := deltas[2]
+	t.Logf("public rollback delta %s", rb["_raw"])
+	if int64(rb["seq"].(float64)) != rollbackSeq {
+		t.Fatalf("public rollback delta seq %v, want %d", rb["seq"], rollbackSeq)
+	}
+	rc := rb["changes"].([]any)
+	if len(rc) != 1 {
+		t.Fatalf("public rollback delta %s", rb["_raw"])
+	}
+	change := rc[0].(map[string]any)
+	switch {
+	case change["set"] != nil:
+		if got, want := canonicalAny(change), canonicalAny(map[string]any{"id": id, "set": map[string]any{"text": "first"}}); got != want {
+			t.Fatalf("public rollback change:\n got %s\nwant %s", got, want)
+		}
+	case change["revive"] != nil:
+		var el model.PrivateElement
+		b.state(func(st *engine.State) { el, _ = st.Get(id) })
+		if got, want := canonicalAny(change), canonicalAny(map[string]any{"id": id, "revive": model.PublicElement(el.Element)}); got != want {
+			t.Fatalf("public rollback change:\n got %s\nwant %s", got, want)
+		}
+	default:
+		t.Fatalf("public rollback change %v", change)
+	}
+	// The public copy equals the board's public projection: the rolled
+	// back text.
+	want := map[string]map[string]any{}
+	b.state(func(st *engine.State) {
+		for _, e := range st.Alive() {
+			var m map[string]any
+			_ = json.Unmarshal([]byte(canonicalAny(model.PublicElement(e.Element))), &m)
+			want[e.ID] = m
+		}
+	})
+	if diff := boardDiff(want, view.els); diff != "" {
+		t.Fatalf("the public copy differs from the public projection:\n%s", diff)
+	}
+	if view.els[id]["text"] != "first" {
+		t.Fatalf("the public copy shows %v after the rollback", view.els[id]["text"])
+	}
+	// Every public delta has only the public fields; the check rejects a
+	// rollback delta that kept its reset, author or versions.
+	for _, d := range deltas {
+		if err := publicDeltaFields(d); err != nil {
+			t.Fatalf("public delta %s: %v", d["_raw"], err)
+		}
+	}
+	for _, bad := range []func(m map[string]any){
+		func(m map[string]any) { m["reset"] = map[string]any{"kind": "rollback"} },
+		func(m map[string]any) { m["by"] = map[string]any{"kind": "system", "label": "rollback"} },
+		func(m map[string]any) {
+			m["changes"] = []any{map[string]any{"id": id, "inc": 1, "set": map[string]any{"text": []any{"first", 3}}}}
+		},
+		func(m map[string]any) {
+			m["changes"] = []any{map[string]any{"id": id, "revive": map[string]any{"id": id, "text": "first", "by": "ts:alice@example.com"}}}
+		},
+	} {
+		m := jsonClone(rb)
+		bad(m)
+		if publicDeltaFields(m) == nil {
+			t.Fatalf("publicDeltaFields accepted %v", m)
+		}
+	}
+}
+
+// publicLeak reports a private field or value in a raw public frame.
+func publicLeak(raw string, values ...string) error {
+	for _, k := range append([]string{`"by"`, `"from"`, `"reset"`, `"session"`}, values...) {
+		if k != "" && strings.Contains(raw, k) {
+			return fmt.Errorf("holds %s: %s", k, raw)
+		}
+	}
+	return nil
+}
+
+// publicDeltaFields checks a public delta message field by field: the frame
+// has only t, gen, seq and changes; a change only id and one of add, revive,
+// del (true) or set (bundle to bare value); an element only the public
+// allow-list of model.PublicElement.
+func publicDeltaFields(d map[string]any) error {
+	for k := range d {
+		if !slices.Contains([]string{"t", "gen", "seq", "changes", "_raw"}, k) {
+			return fmt.Errorf("delta field %q", k)
+		}
+	}
+	allowed := []string{"id", "type", "x", "y", "w", "h", "rot", "z", "frame", "group", "locked",
+		"text", "style", "ends", "pts", "asset", "alt", "natural", "format", "title", "grid"}
+	for _, raw := range d["changes"].([]any) {
+		c := raw.(map[string]any)
+		for k, v := range c {
+			switch k {
+			case "id":
+			case "add", "revive":
+				for f := range v.(map[string]any) {
+					if !slices.Contains(allowed, f) {
+						return fmt.Errorf("element field %q", f)
+					}
+				}
+			case "del":
+				if v != true {
+					return fmt.Errorf("del %v", v)
+				}
+			case "set":
+				// No public bundle value is an array: an array is the
+				// private [val, v] form.
+				for g, val := range v.(map[string]any) {
+					if _, ok := val.([]any); ok {
+						return fmt.Errorf("set %s carries a version: %v", g, val)
+					}
+				}
+			default:
+				return fmt.Errorf("change field %q", k)
+			}
+		}
+	}
+	return nil
 }
 
 // TestOriginMismatchOnEveryRoute: the canvas socket on both routes and

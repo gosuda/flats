@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math/rand/v2"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,16 +23,20 @@ import (
 // over real sockets: 5 editors each send 2 batches per second, all on the
 // same few elements and pipelined without waiting for acks (board.md
 // Success criteria, Concurrent editing). Every batch is acknowledged, every
-// editor receives the same deltas for the same contiguous seqs, and each
-// element ends with the value of the last batch (by seq) that set it.
+// editor receives, for each contiguous seq, the one change its batch made,
+// and each element ends with the value of the last batch (by seq) that set
+// it: on the server, on every editor's copy (its snapshot with the deltas
+// applied) and in a fresh snapshot.
 func TestFiveEditorsEditingTwicePerSecond(t *testing.T) {
 	const editors, batches = 5, 10
 	b := newTB(t)
 	var cs []*client
+	var views []*boardView
 	for i := 0; i < editors; i++ {
 		c := connect(t, b.priv, map[string]any{"editor": fmt.Sprintf("ed%d", i)}, nil)
-		c.snapshot()
+		seq, els, _ := c.snapshot()
 		cs = append(cs, c)
+		views = append(views, newBoardView(false, seq, els))
 	}
 	shared := []string{eid(), eid(), eid()}
 	var ops []map[string]any
@@ -44,8 +50,10 @@ func TestFiveEditorsEditingTwicePerSecond(t *testing.T) {
 	// The setup batch's seq is the shared elements' incarnation; the
 	// other editors name it, as their copies learned it from the delta.
 	start := int64(ack["seq"].(float64))
-	for _, c := range cs {
-		c.expect("delta")
+	for i, c := range cs {
+		if err := views[i].apply(c.expect("delta")); err != nil {
+			t.Fatalf("editor %d setup delta: %v", i, err)
+		}
 	}
 
 	type sent struct {
@@ -86,11 +94,12 @@ func TestFiveEditorsEditingTwicePerSecond(t *testing.T) {
 	type got struct {
 		acks   map[int]int64
 		deltas map[int64]string
+		full   map[int64]map[string]any
 	}
 	results := make([]got, editors)
 	last := start
 	for i, c := range cs {
-		r := got{acks: map[int]int64{}, deltas: map[int64]string{}}
+		r := got{acks: map[int]int64{}, deltas: map[int64]string{}, full: map[int64]map[string]any{}}
 		for n := range plans[i] {
 			m, ok := c.next(func(m map[string]any) bool {
 				return (m["t"] == "ack" || m["t"] == "reject") && int(m["n"].(float64)) == n
@@ -125,6 +134,31 @@ func TestFiveEditorsEditingTwicePerSecond(t *testing.T) {
 			}
 			ch, _ := json.Marshal(d["changes"])
 			results[i].deltas[seq] = string(ch)
+			results[i].full[seq] = d
+		}
+	}
+	// Each seq carries exactly the change of the batch acknowledged with
+	// it: that batch's element, at the setup incarnation, with its text
+	// at version seq.
+	bySeq := map[int64]sent{}
+	for i := range cs {
+		for n, p := range plans[i] {
+			s := results[i].acks[n]
+			if _, dup := bySeq[s]; dup {
+				t.Fatalf("seq %d acknowledged twice", s)
+			}
+			bySeq[s] = p
+		}
+	}
+	expectedChanges := func(seq int64) string {
+		p := bySeq[seq]
+		return canonicalAny([]any{map[string]any{"id": p.id, "inc": start, "set": map[string]any{"text": []any{p.val, seq}}}})
+	}
+	for i := range cs {
+		for seq := start + 1; seq <= last; seq++ {
+			if got, want := canonicalAny(results[i].full[seq]["changes"]), expectedChanges(seq); got != want {
+				t.Fatalf("editor %d seq %d changes:\n got %s\nwant %s", i, seq, got, want)
+			}
 		}
 	}
 	for seq := start + 1; seq <= last; seq++ {
@@ -149,18 +183,54 @@ func TestFiveEditorsEditingTwicePerSecond(t *testing.T) {
 		}
 	}
 	alive := b.alive()
+	if len(alive) != len(shared) {
+		t.Fatalf("%d elements alive, want %d", len(alive), len(shared))
+	}
 	for _, id := range shared {
 		if alive[id] != wantText[id] {
 			t.Fatalf("element %s = %q, want %q (seq %d)", id, alive[id], wantText[id], best[id])
 		}
 	}
-	// A fresh screen shows the same.
-	f := connect(t, b.priv, map[string]any{"editor": "late"}, nil)
-	_, els, _ := f.snapshot()
-	for _, e := range els {
-		if id := e["id"].(string); wantText[id] != "" && e["text"] != wantText[id] {
-			t.Fatalf("a fresh snapshot shows %s = %v", id, e["text"])
+	server := serverBoard(b)
+	// Every editor's copy, its snapshot with the received deltas applied in
+	// seq order, equals the server's board.
+	for i := range cs {
+		for seq := start + 1; seq <= last; seq++ {
+			if err := views[i].apply(results[i].full[seq]); err != nil {
+				t.Fatalf("editor %d: %v", i, err)
+			}
 		}
+		if diff := boardDiff(server, views[i].els); diff != "" {
+			t.Fatalf("editor %d's copy differs from the server:\n%s", i, diff)
+		}
+		for _, id := range shared {
+			if views[i].els[id]["text"] != wantText[id] {
+				t.Fatalf("editor %d shows %s = %v, want %q", i, id, views[i].els[id]["text"], wantText[id])
+			}
+		}
+	}
+	// A fresh screen shows the same board: every element, none missing.
+	f := connect(t, b.priv, map[string]any{"editor": "late"}, nil)
+	fseq, els, _ := f.snapshot()
+	if fseq != last {
+		t.Fatalf("a fresh snapshot at seq %d, want %d", fseq, last)
+	}
+	fresh := viewOf(els)
+	if diff := boardDiff(server, fresh); diff != "" {
+		t.Fatalf("a fresh snapshot differs from the server:\n%s", diff)
+	}
+	// The comparison rejects a snapshot that lacks an element or shows an
+	// older text.
+	short := maps.Clone(fresh)
+	delete(short, shared[0])
+	if boardDiff(server, short) == "" {
+		t.Fatal("boardDiff accepted a snapshot without an element")
+	}
+	stale := maps.Clone(fresh)
+	stale[shared[1]] = jsonClone(fresh[shared[1]])
+	stale[shared[1]]["text"] = "an older text"
+	if boardDiff(server, stale) == "" {
+		t.Fatal("boardDiff accepted a stale text")
 	}
 }
 
@@ -239,7 +309,12 @@ func TestLargeFrameMoveDeltaArrivesInParts(t *testing.T) {
 	a := connect(t, b.priv, map[string]any{"editor": "alice"}, nil)
 	a.snapshot()
 	o := connect(t, b.priv, map[string]any{"editor": "olga"}, nil)
-	o.snapshot()
+	oseq, oels, _ := o.snapshot()
+	if len(oels) != members+1 {
+		t.Fatalf("olga's snapshot holds %d elements, want %d", len(oels), members+1)
+	}
+	olga := newBoardView(false, oseq, oels)
+	before := viewOf(oels)
 	// A 6,001-change batch can take longer than the usual 5 seconds on a
 	// loaded host or under the race detector.
 	m := batchWithin(a, time.Minute, 1, map[string]any{"op": "set", "id": frame, "inc": inc, "g": "geom", "carry": "members",
@@ -273,6 +348,82 @@ func TestLargeFrameMoveDeltaArrivesInParts(t *testing.T) {
 	if parts < 2 {
 		t.Fatalf("the delta came in %d part", parts)
 	}
+	// The changes are exactly one geometry set per element, the frame and
+	// every member moved 500 to the right, at their incarnations with
+	// version seq: no element twice, none missing, no stale geometry.
+	seq := int64(d.Seq)
+	wantChanges := map[string]string{}
+	for _, e := range els {
+		g := e.Geom
+		if e.ID != frame {
+			g.X += 500
+		} else {
+			g = model.Geom{X: 500, W: 100000, H: 100000}
+		}
+		wantChanges[e.ID] = canonicalAny(map[string]any{"id": e.ID, "inc": before[e.ID]["inc"], "set": map[string]any{"geom": []any{g, seq}}})
+	}
+	checkChanges := func(changes []map[string]any) error {
+		seen := map[string]bool{}
+		for _, c := range changes {
+			id, _ := c["id"].(string)
+			if seen[id] {
+				return fmt.Errorf("%s changes twice", id)
+			}
+			seen[id] = true
+			w, ok := wantChanges[id]
+			if !ok {
+				return fmt.Errorf("unexpected change %v", c)
+			}
+			if got := canonicalAny(c); got != w {
+				return fmt.Errorf("change of %s:\n got %s\nwant %s", id, got, w)
+			}
+		}
+		if len(seen) != len(wantChanges) {
+			return fmt.Errorf("%d of %d elements changed", len(seen), len(wantChanges))
+		}
+		return nil
+	}
+	if err := checkChanges(d.Changes); err != nil {
+		t.Fatal(err)
+	}
+	// The check rejects a duplicated member change and one with stale
+	// geometry.
+	dup := append(slices.Clone(d.Changes), d.Changes[1])
+	if checkChanges(dup) == nil {
+		t.Fatal("checkChanges accepted a duplicate member change")
+	}
+	stale := slices.Clone(d.Changes)
+	stale[1] = jsonClone(stale[1])
+	old := before[stale[1]["id"].(string)]
+	stale[1]["set"] = map[string]any{"geom": []any{map[string]any{"x": old["x"], "y": old["y"], "w": old["w"], "h": old["h"], "rot": old["rot"]}, seq}}
+	if checkChanges(stale) == nil {
+		t.Fatal("checkChanges accepted stale member geometry")
+	}
+	// Olga's copy, her snapshot with the reassembled delta applied, equals
+	// the server's board.
+	var dm map[string]any
+	if err := json.Unmarshal([]byte(text.String()), &dm); err != nil {
+		t.Fatal(err)
+	}
+	if err := olga.apply(dm); err != nil {
+		t.Fatal(err)
+	}
+	server := serverBoard(b)
+	if diff := boardDiff(server, olga.els); diff != "" {
+		t.Fatalf("olga's copy differs from the server:\n%s", diff)
+	}
+	for _, e := range els[1:] {
+		if x := olga.els[e.ID]["x"]; x != e.Geom.X+500 {
+			t.Fatalf("olga shows member %s at x %v, want %v", e.ID, x, e.Geom.X+500)
+		}
+	}
+	// A copy that kept one member's old geometry is not the server's.
+	kept := maps.Clone(olga.els)
+	kept[els[1].ID] = jsonClone(olga.els[els[1].ID])
+	kept[els[1].ID]["x"] = before[els[1].ID]["x"]
+	if boardDiff(server, kept) == "" {
+		t.Fatal("boardDiff accepted a member's stale geometry")
+	}
 	want := map[string]float64{}
 	for _, e := range els[1:] {
 		want[e.ID] = e.Geom.X + 500
@@ -289,4 +440,188 @@ func TestLargeFrameMoveDeltaArrivesInParts(t *testing.T) {
 		t.Fatalf("%d of %d members moved with the frame", moved, members)
 	}
 	t.Logf("%d changes in %d parts", len(d.Changes), parts)
+}
+
+// boardView is a test-side copy of the board as a client keeps it: the
+// elements of a snapshot, changed by each later delta in seq order. apply
+// follows the client's rules (web/state.js applyDelta, withBundle) on the
+// engine's wire forms (model.Change, model.PublicDelta): add and revive
+// install the element, del removes it, and set writes each bundle and, for
+// a private copy, its version and the change's incarnation.
+type boardView struct {
+	public bool
+	seq    int64
+	els    map[string]map[string]any
+	meta   map[string]any
+}
+
+func newBoardView(public bool, seq int64, els []map[string]any) *boardView {
+	v := &boardView{public: public, seq: seq, els: map[string]map[string]any{}, meta: map[string]any{}}
+	for _, e := range els {
+		v.els[e["id"].(string)] = jsonClone(e)
+	}
+	return v
+}
+
+// jsonClone deep-copies a decoded JSON object.
+func jsonClone(m map[string]any) map[string]any {
+	var out map[string]any
+	data, _ := json.Marshal(m)
+	_ = json.Unmarshal(data, &out)
+	return out
+}
+
+// apply applies one delta message (or a reassembled delta), which must be
+// the next seq.
+func (v *boardView) apply(d map[string]any) error {
+	seq := int64(d["seq"].(float64))
+	if seq != v.seq+1 {
+		return fmt.Errorf("delta seq %d after watermark %d", seq, v.seq)
+	}
+	changes, _ := d["changes"].([]any)
+	for _, raw := range changes {
+		c := raw.(map[string]any)
+		id := c["id"].(string)
+		if id == model.BoardID {
+			set, _ := c["set"].(map[string]any)
+			for g, e := range set {
+				if g == model.BundleTitle || g == model.BundleGrid {
+					v.meta[g] = v.value(e)
+				}
+			}
+			continue
+		}
+		switch {
+		case c["add"] != nil:
+			v.els[id] = jsonClone(c["add"].(map[string]any))
+		case c["revive"] != nil:
+			v.els[id] = jsonClone(c["revive"].(map[string]any))
+		case c["del"] != nil:
+			delete(v.els, id)
+		case c["set"] != nil:
+			prev, ok := v.els[id]
+			if !ok {
+				continue // the client ignores a set of an element it lacks
+			}
+			el := jsonClone(prev)
+			if inc, ok := c["inc"]; ok && !v.public {
+				el["inc"] = inc
+			}
+			for g, e := range c["set"].(map[string]any) {
+				withBundleTest(el, g, v.value(e))
+				if !v.public {
+					vs, _ := el["v"].(map[string]any)
+					if vs == nil {
+						vs = map[string]any{}
+					}
+					vs[g] = e.([]any)[1]
+					el["v"] = vs
+				}
+			}
+			v.els[id] = el
+		default:
+			return fmt.Errorf("change %v has no add, revive, del or set", c)
+		}
+	}
+	v.seq = seq
+	return nil
+}
+
+// value is a set entry's value: [val, v] on a private socket, val on Public.
+func (v *boardView) value(e any) any {
+	if v.public {
+		return e
+	}
+	return e.([]any)[0]
+}
+
+// withBundleTest sets bundle g of el to val as web/schema.js withBundle
+// does. An empty membership (null) is dropped, as the content form omits it.
+func withBundleTest(el map[string]any, g string, val any) {
+	switch {
+	case g == model.BundleGeom:
+		geom := val.(map[string]any)
+		for _, k := range []string{"x", "y", "w", "h", "rot"} {
+			el[k] = geom[k]
+		}
+	case g == model.BundleEnd0 || g == model.BundleEnd1:
+		ends := slices.Clone(el["ends"].([]any))
+		ends[model.EndIndex(g)] = val
+		el["ends"] = ends
+	case strings.HasPrefix(g, model.StylePrefix):
+		style, _ := el["style"].(map[string]any)
+		style = maps.Clone(style)
+		if style == nil {
+			style = map[string]any{}
+		}
+		style[strings.TrimPrefix(g, model.StylePrefix)] = val
+		el["style"] = style
+	case val == nil:
+		delete(el, g)
+	default:
+		el[g] = val
+	}
+}
+
+// serverBoard is the authoritative board as a private client receives it:
+// every alive element's private wire form, by id.
+func serverBoard(b *tb) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	b.state(func(st *engine.State) {
+		for _, e := range st.Alive() {
+			data, err := json.Marshal(e)
+			if err != nil {
+				b.t.Fatal(err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				b.t.Fatal(err)
+			}
+			out[e.ID] = m
+		}
+	})
+	return out
+}
+
+// boardDiff describes how got differs from want, or is empty when every
+// element is present in both with equal canonical JSON.
+func boardDiff(want, got map[string]map[string]any) string {
+	var out []string
+	for _, id := range sortedKeys(want) {
+		g, ok := got[id]
+		if !ok {
+			out = append(out, "missing "+id)
+			continue
+		}
+		if w, gs := string(model.Canonical(want[id])), string(model.Canonical(g)); w != gs {
+			out = append(out, fmt.Sprintf("%s:\n got %s\nwant %s", id, gs, w))
+		}
+	}
+	for _, id := range sortedKeys(got) {
+		if _, ok := want[id]; !ok {
+			out = append(out, "unexpected "+id)
+		}
+	}
+	if len(out) > 6 {
+		out = append(out[:6], fmt.Sprintf("… %d differences in all", len(out)))
+	}
+	return strings.Join(out, "\n")
+}
+
+// viewOf is a board of decoded snapshot elements by id.
+func viewOf(els []map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, e := range els {
+		out[e["id"].(string)] = e
+	}
+	return out
+}
+
+// canonicalAny is the canonical JSON of v after a JSON round trip, so Go
+// values and decoded messages compare alike.
+func canonicalAny(v any) string {
+	data, _ := json.Marshal(v)
+	var x any
+	_ = json.Unmarshal(data, &x)
+	return string(model.Canonical(x))
 }

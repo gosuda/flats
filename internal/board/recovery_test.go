@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -212,15 +214,73 @@ func TestEveryValueOfARevisionIsRecoverable(t *testing.T) {
 				want.Ends[k].El = newIDs[want.Ends[k].El]
 			}
 		}
-		// A recovered copy is a new group and a fresh stacking key.
+		// A recovered copy is a new group and a fresh stacking key, which
+		// checkRecoveredRelations checks below.
 		want.Group, want.Z = c.Group, c.Z
-		if (e.Group == "") != (c.Group == "") {
-			t.Fatalf("%s group %q -> %q", e.ID, e.Group, c.Group)
-		}
 		w, g := contentOf([]model.Element{want}, false), contentOf([]model.Element{c}, false)
 		if w[c.ID] != g[c.ID] {
 			t.Errorf("recovered %s (%s):\n got %s\nwant %s", e.ID, e.Type, g[c.ID], w[c.ID])
 		}
+	}
+	// The copies have fresh ids, the same grouping under fresh group ids
+	// and the same relative stacking, members above their frame.
+	if err := checkRecoveredRelations(ref, newIDs, copied); err != nil {
+		t.Fatal(err)
+	}
+	// The check rejects a split group, a reversed stacking order and
+	// reused ids.
+	var grouped []string
+	for _, e := range ref {
+		if e.Group != "" {
+			grouped = append(grouped, e.ID)
+		}
+	}
+	if len(grouped) != 2 {
+		t.Fatalf("the rich content has %d grouped elements, want 2", len(grouped))
+	}
+	split := maps.Clone(copied)
+	c := split[newIDs[grouped[1]]]
+	c.Group = "g_SplitOff00"
+	split[c.ID] = c
+	if checkRecoveredRelations(ref, newIDs, split) == nil {
+		t.Fatal("checkRecoveredRelations accepted a split group")
+	}
+	reversed := maps.Clone(copied)
+	var zs []string
+	for _, c := range copied {
+		zs = append(zs, c.Z)
+	}
+	slices.Sort(zs)
+	slices.Reverse(zs)
+	order := slices.Clone(ref)
+	slices.SortFunc(order, func(x, y model.Element) int { return strings.Compare(x.Z, y.Z) })
+	for i, e := range order {
+		c := reversed[newIDs[e.ID]]
+		c.Z = zs[i]
+		reversed[c.ID] = c
+	}
+	if checkRecoveredRelations(ref, newIDs, reversed) == nil {
+		t.Fatal("checkRecoveredRelations accepted a reversed stacking order")
+	}
+	reused, sameIDs := map[string]model.Element{}, map[string]string{}
+	for _, e := range ref {
+		c := copied[newIDs[e.ID]]
+		c.ID = e.ID
+		reused[e.ID], sameIDs[e.ID] = c, e.ID
+	}
+	if checkRecoveredRelations(ref, sameIDs, reused) == nil {
+		t.Fatal("checkRecoveredRelations accepted reused ids")
+	}
+	sameGroup := maps.Clone(copied)
+	for _, e := range ref {
+		if e.Group != "" {
+			c := sameGroup[newIDs[e.ID]]
+			c.Group = e.Group
+			sameGroup[c.ID] = c
+		}
+	}
+	if checkRecoveredRelations(ref, newIDs, sameGroup) == nil {
+		t.Fatal("checkRecoveredRelations accepted a reused group id")
 	}
 
 	// Rollback: the board equals the revision again, every value with its
@@ -236,6 +296,59 @@ func TestEveryValueOfARevisionIsRecoverable(t *testing.T) {
 	if meta.Text != "Rich" || meta.Grid {
 		t.Fatalf("rolled back board meta %+v", meta.Element)
 	}
+}
+
+// checkRecoveredRelations checks the copies recovered from ref (newIDs maps
+// an original id to its copy's): every copy has a fresh id, two copies share
+// a group exactly when their originals did, under a group id that is not an
+// original one, and the copies stack in the order of their originals, so
+// every member stays above its frame.
+func checkRecoveredRelations(ref []model.Element, newIDs map[string]string, copies map[string]model.Element) error {
+	orig, origGroups, fresh := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, e := range ref {
+		orig[e.ID] = true
+		if e.Group != "" {
+			origGroups[e.Group] = true
+		}
+	}
+	for _, e := range ref {
+		id := newIDs[e.ID]
+		if orig[id] || fresh[id] {
+			return fmt.Errorf("the copy of %s has id %q, not a fresh one", e.ID, id)
+		}
+		fresh[id] = true
+		c, ok := copies[id]
+		if !ok || c.ID != id {
+			return fmt.Errorf("no copy %q of %s", id, e.ID)
+		}
+		if origGroups[c.Group] {
+			return fmt.Errorf("the copy of %s reuses group %q", e.ID, c.Group)
+		}
+		if (e.Group == "") != (c.Group == "") {
+			return fmt.Errorf("%s group %q -> %q", e.ID, e.Group, c.Group)
+		}
+	}
+	for _, x := range ref {
+		cx := copies[newIDs[x.ID]]
+		for _, y := range ref {
+			if x.ID == y.ID {
+				continue
+			}
+			cy := copies[newIDs[y.ID]]
+			if same, csame := x.Group != "" && x.Group == y.Group, cx.Group != "" && cx.Group == cy.Group; same != csame {
+				return fmt.Errorf("%s and %s share a group %v, their copies %v", x.ID, y.ID, same, csame)
+			}
+			if (x.Z < y.Z) != (cx.Z < cy.Z) {
+				return fmt.Errorf("%s (z %s) and %s (z %s) stack as copies %s and %s", x.ID, x.Z, y.ID, y.Z, cx.Z, cy.Z)
+			}
+		}
+		if x.Frame != "" {
+			if f := copies[newIDs[x.Frame]]; cx.Z <= f.Z {
+				return fmt.Errorf("the copy of member %s (z %s) is not above its frame's copy (z %s)", x.ID, cx.Z, f.Z)
+			}
+		}
+	}
+	return nil
 }
 
 func mapsEqualStr(a, b map[string]string) bool {
