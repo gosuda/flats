@@ -737,7 +737,8 @@ replace?}` applies all operations or none, and is one revision.
   data file and import it with the CLI or HTTP API. A call or import whose
   images do not fit the disk quota is refused before any image is stored.
 - `replace: true` replaces the whole board with the call's `add` operations.
-  Use it only when the user asked for a fresh board.
+  `layout` can place those new elements. Use it only when the user asked for
+  a fresh board.
 - On a new slug the board exists only if the call applies: a refused call
   leaves no flat behind.
 - `op_id` (8 to 120 characters) is required. Resending the same request with

@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -420,4 +421,85 @@ func TestExportRoundTripAndPublicProjection(t *testing.T) {
 type httpServer struct {
 	url    string
 	public bool
+}
+
+// A legal board of highly repetitive content compresses far past the image
+// ratio; Flats must still import its own export, while a bomb stays refused.
+func TestRepetitiveExportRoundTrip(t *testing.T) {
+	var els []model.Element
+	n := 0
+	zkey := func() string { // fixed-length keys that never end with "0"
+		n++
+		return "V" + fmt.Sprintf("%04d", n) + "1"
+	}
+	for i := 0; i < 1000; i++ {
+		z := zkey()
+		els = append(els, model.Element{ID: eid(), Type: model.TypeSticky, Geom: model.Geom{X: float64(i), Y: 0, W: 100, H: 100}, Z: z,
+			Text: strings.Repeat("a", model.MaxText), Style: model.DefaultStyle(model.TypeSticky)})
+	}
+	pts := make([]int, 2*model.MaxPenPoints)
+	for i := range pts {
+		pts[i] = 7
+	}
+	for i := 0; i < 50; i++ {
+		z := zkey()
+		els = append(els, model.Element{ID: eid(), Type: model.TypePen, Geom: model.Geom{X: 0, Y: float64(i), W: 10, H: 10}, Z: z,
+			Pts: pts, Style: model.DefaultStyle(model.TypePen)})
+	}
+	// The source file stores elements.json, as the client writes it.
+	var src bytes.Buffer
+	zw := zip.NewWriter(&src)
+	w, _ := zw.CreateHeader(&zip.FileHeader{Name: "board.json", Method: zip.Store})
+	w.Write(model.Canonical(boardFile{Format: 1, Title: "big", Grid: true}))
+	w, _ = zw.CreateHeader(&zip.FileHeader{Name: "elements.json", Method: zip.Store})
+	raw, _ := json.Marshal(els)
+	w.Write(raw)
+	zw.Close()
+
+	b := newTB(t)
+	if resp, m := b.post(b.priv, "/_board/api/import?mode=replace", "application/zip", bytes.NewReader(src.Bytes())); resp.StatusCode != http.StatusOK {
+		t.Fatalf("import %d %v", resp.StatusCode, m)
+	}
+	r, err := http.Get(b.priv.URL + "/_board/export.zip")
+	if err != nil || r.StatusCode != 200 {
+		t.Fatal(r.StatusCode, err)
+	}
+	var exp bytes.Buffer
+	exp.ReadFrom(r.Body)
+	r.Body.Close()
+	zr, err := zip.NewReader(bytes.NewReader(exp.Bytes()), int64(exp.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range zr.File {
+		if f.Name == "elements.json" && f.UncompressedSize64 < archiveMaxRatio*f.CompressedSize64 {
+			t.Fatalf("the probe does not exceed the ratio: %d of %d", f.CompressedSize64, f.UncompressedSize64)
+		}
+	}
+	resp, m := b.post(b.priv, "/_board/api/import?mode=replace", "application/zip", bytes.NewReader(exp.Bytes()))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Flats refuses its own export: %d %v", resp.StatusCode, m)
+	}
+	if n := len(m["ids"].([]any)); n != len(els) {
+		t.Fatalf("round trip kept %d of %d elements", n, len(els))
+	}
+
+	// Bombs: a JSON entry past the decompressed total, and an image entry
+	// past the ratio although within the total.
+	if _, err := parseArchive(bytes.NewReader(exp.Bytes()), int64(exp.Len()), 1<<20, 1<<20); err == nil {
+		t.Fatal("an elements.json past the decompressed total was accepted")
+	}
+	var c bytes.Buffer
+	zw = zip.NewWriter(&c)
+	w, _ = zw.Create("board.json")
+	w.Write([]byte(`{"format":1,"title":"","grid":true}`))
+	w, _ = zw.Create("elements.json")
+	w.Write([]byte("[]"))
+	w, _ = zw.Create("assets/" + strings.Repeat("a", 64) + ".png")
+	w.Write(make([]byte, 4<<20))
+	zw.Close()
+	_, err = parseArchive(bytes.NewReader(c.Bytes()), int64(c.Len()), 64<<20, 64<<20)
+	if err == nil || !strings.Contains(err.Error(), "too highly compressed") {
+		t.Fatalf("an image bomb within the total: %v", err)
+	}
 }

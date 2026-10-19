@@ -294,13 +294,8 @@ func (c *agentCall) add(op AgentOp) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if op.Ref != "" {
-		if !strings.HasPrefix(op.Ref, "$") || len(op.Ref) < 2 {
-			return nil, invalid("ref %q must start with $", op.Ref)
-		}
-		if _, dup := c.refs[op.Ref]; dup {
-			return nil, invalid("ref %s is declared twice", op.Ref)
-		}
+	if err := c.checkRef(op.Ref); err != nil {
+		return nil, err
 	}
 	if el.ID == "" {
 		el.ID = c.call.NewID("e_")
@@ -345,6 +340,20 @@ func (c *agentCall) add(op AgentOp) (any, error) {
 		c.out.IDs[op.Ref] = el.ID
 	}
 	return el.ID, nil
+}
+
+// checkRef checks a ref an add declares: "$" plus a name, once per call.
+func (c *agentCall) checkRef(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if !strings.HasPrefix(ref, "$") || len(ref) < 2 {
+		return invalid("ref %q must start with $", ref)
+	}
+	if _, dup := c.refs[ref]; dup {
+		return invalid("ref %s is declared twice", ref)
+	}
+	return nil
 }
 
 // fillGeom gives a new element default sizes and, without coordinates, a
@@ -425,6 +434,33 @@ func (a *applier) bounds() (model.Geom, bool) {
 			continue
 		}
 		g := r.El.Geom
+		minX, minY = math.Min(minX, g.X), math.Min(minY, g.Y)
+		maxX, maxY = math.Max(maxX, g.X+g.W), math.Max(maxY, g.Y+g.H)
+	}
+	if math.IsInf(minX, 1) {
+		return model.Geom{}, false
+	}
+	return model.Geom{X: minX, Y: minY, W: maxX - minX, H: maxY - minY}, true
+}
+
+// placedBounds is the bounding box of the elements that give both x and y,
+// with default sizes where w or h is missing; connectors have no box.
+func placedBounds(els []model.Element, presents []model.Present) (model.Geom, bool) {
+	minX, minY := math.Inf(1), math.Inf(1)
+	maxX, maxY := math.Inf(-1), math.Inf(-1)
+	for i, el := range els {
+		p := presents[i]
+		if el.Type == model.TypeConnector || !p["x"] || !p["y"] {
+			continue
+		}
+		g := el.Geom
+		w, h := defaultSize(el)
+		if !p["w"] {
+			g.W = w
+		}
+		if !p["h"] {
+			g.H = h
+		}
 		minX, minY = math.Min(minX, g.X), math.Min(minY, g.Y)
 		maxX, maxY = math.Max(maxX, g.X+g.W), math.Max(maxY, g.Y+g.H)
 	}
@@ -945,14 +981,13 @@ func (c *agentCall) layoutOne(l Layout) error {
 }
 
 // replace applies update_board {replace: true}: the call's add operations
-// become the whole board (4.12).
+// become the whole board (4.12). The call's layout then places those
+// elements as in an ordinary call, and the ends attached without "at" take
+// their sides from the committed places; a failure rolls back the
+// replacement with the call.
 func (c *agentCall) replace() error {
-	if len(c.call.Layout) > 0 {
-		return invalid("a replacing call cannot use layout")
-	}
 	var els []model.Element
-	byRef := map[string]string{}
-	auto := map[string][2]bool{}
+	var presents []model.Present
 	for i, op := range c.call.Ops {
 		if op.Op != OpAdd {
 			return invalid("%v (operation %d is %s)", errEmptyReplace, i, op.Op)
@@ -961,21 +996,34 @@ func (c *agentCall) replace() error {
 		if err != nil {
 			return err
 		}
+		if err := c.checkRef(op.Ref); err != nil {
+			return err
+		}
 		if el.ID == "" {
 			el.ID = c.call.NewID("e_")
 		}
 		if el.Type == model.TypeConnector {
-			auto[el.ID] = omittedAt(op.El)
+			c.auto[el.ID] = omittedAt(op.El)
 		}
 		if op.Ref != "" {
-			byRef[op.Ref] = el.ID
+			c.refs[op.Ref] = el.ID
 			c.out.IDs[op.Ref] = el.ID
 		}
-		if err := c.fillGeom(&el, present); err != nil {
+		els = append(els, el)
+		presents = append(presents, present)
+	}
+	// Elements without coordinates go to the right of the board as it is
+	// after the reset: the call's own elements that have coordinates, not
+	// the board being replaced (8.1).
+	c.placed = true
+	if box, ok := placedBounds(els, presents); ok {
+		c.nextX, c.nextY = box.X+box.W+placeGap, box.Y
+	}
+	for i := range els {
+		if err := c.fillGeom(&els[i], presents[i]); err != nil {
 			return err
 		}
-		el.By, el.At = c.a.by, c.a.now
-		els = append(els, el)
+		els[i].By, els[i].At = c.a.by, c.a.now
 	}
 	if len(els) == 0 {
 		return invalid("%v", errEmptyReplace)
@@ -984,7 +1032,7 @@ func (c *agentCall) replace() error {
 		if !strings.HasPrefix(id, "$") {
 			return id, nil
 		}
-		if v, ok := byRef[id]; ok {
+		if v, ok := c.refs[id]; ok {
 			return v, nil
 		}
 		return "", invalid("%s names no element of this call", id)
@@ -1021,7 +1069,7 @@ func (c *agentCall) replace() error {
 	geom := func(id string) (model.Geom, bool) { g, ok := geoms[id]; return g, ok }
 	for i := range els {
 		if el := &els[i]; el.Type == model.TypeConnector {
-			el.Ends = placeAuto(el.Ends, auto[el.ID], geom)
+			el.Ends = placeAuto(el.Ends, c.auto[el.ID], geom)
 		}
 	}
 	for _, el := range els {
@@ -1033,5 +1081,12 @@ func (c *agentCall) replace() error {
 		return err
 	}
 	board := c.a.s.rows[model.BoardID].El
-	return c.a.resetContent(Content{Title: board.Text, Grid: board.Grid, Elements: els})
+	if err := c.a.resetContent(Content{Title: board.Text, Grid: board.Grid, Elements: els}); err != nil {
+		return err
+	}
+	if err := c.layout(); err != nil {
+		return err
+	}
+	c.placeEnds()
+	return nil
 }

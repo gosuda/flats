@@ -205,6 +205,26 @@ func (s *Service) lease(slugName string, hashes []string) func() {
 	}
 }
 
+// removeUnleasedBlob removes an unreferenced blob unless it is leased or
+// was touched after cutoff. It holds the lease lock across the check and
+// the removal: a board upload that reuses the blob without the flat lock
+// (boardBackend.PutBlob) leases it before it looks for the file and
+// refreshes its modification time, so either the sweep sees the lease or
+// the fresh time, or the upload finds no file and stores it again.
+func (s *Service) removeUnleasedBlob(slugName, hash, p string, cutoff time.Time) {
+	d := s.designs()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.leases[slugName+"\x00"+hash] > 0 {
+		return
+	}
+	if info, err := os.Stat(p); err != nil || info.ModTime().After(cutoff) {
+		return
+	}
+	_ = os.Chmod(p, 0o644)
+	_ = os.Remove(p)
+}
+
 func (s *Service) leased(slugName, hash string) bool {
 	d := s.designs()
 	d.mu.Lock()
@@ -1805,20 +1825,13 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 			return nil
 		}
 		h := d.Name()
-		if refs[h] || s.leased(slugName, h) {
+		if refs[h] {
 			return nil
 		}
 		if info, err := d.Info(); err == nil && info.ModTime().After(cutoff) {
 			return nil
 		}
-		_ = os.Chmod(p, 0o644)
-		// A board upload that reuses this blob refreshes its modification
-		// time without the flat lock (boardBackend.PutBlob): look again
-		// just before removing it.
-		if info, err := os.Stat(p); err != nil || info.ModTime().After(cutoff) {
-			return nil
-		}
-		_ = os.Remove(p)
+		s.removeUnleasedBlob(slugName, h, p, cutoff)
 		return nil
 	})
 	entries, _ := os.ReadDir(filepath.Join(root, "tmp"))

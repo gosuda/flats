@@ -465,8 +465,11 @@ func (in *Instance) serveExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The response already started: abort it, so the client sees a failed
-	// transfer instead of a complete-looking, truncated file.
-	in.log.Warn("board export failed", "err", err)
+	// transfer instead of a complete-looking, truncated file. A client
+	// that left is an ordinary disconnect, not a failure worth a warning.
+	if r.Context().Err() == nil {
+		in.log.Warn("board export failed", "err", err)
+	}
 	panic(http.ErrAbortHandler)
 }
 

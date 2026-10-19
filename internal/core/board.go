@@ -586,7 +586,7 @@ func BoardQuery(frame string, rect []float64, ids []string, format, cursor strin
 		q.Rect = &[4]float64{rect[0], rect[1], rect[2], rect[3]}
 	}
 	if limit < 0 || limit > 2000 {
-		return q, invalidf("limit is 1 to 2000")
+		return q, invalidf("limit is 1 to 2000, or 0 for the default")
 	}
 	return q, nil
 }
@@ -1247,11 +1247,15 @@ func (b boardBackend) MeasureOther(context.Context) (int64, error) { return b.s.
 
 // PutBlob stores a blob in the board's blob root. A blob that already
 // exists gets a fresh modification time, so a sweep that read the board's
-// references before this write keeps it for its grace period.
+// references before this write keeps it for its grace period, until the
+// caller's asset row protects it. The lease taken before the file is
+// looked up orders this against the sweep's removal (removeUnleasedBlob).
 func (b boardBackend) PutBlob(_ context.Context, hash string, data []byte) (bool, error) {
 	if hashBytes(data) != hash {
 		return false, fmt.Errorf("blob content does not match its hash %.12s", hash)
 	}
+	release := b.s.lease(b.slug, []string{hash})
+	defer release()
 	root := b.s.docsStoreDir(b.slug)
 	p := blobPath(root, hash)
 	if _, err := os.Stat(p); err == nil {

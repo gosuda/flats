@@ -351,24 +351,26 @@ func TestRound1(t *testing.T) {
 // where a value is required.
 func TestSchemaInvalidValues(t *testing.T) {
 	for name, c := range map[string]struct{ typ, g, raw string }{
-		"short pt":    {TypeConnector, BundleEnd0, `{"pt":[10]}`},
-		"long pt":     {TypeConnector, BundleEnd1, `{"pt":[10,20,30]}`},
-		"short at":    {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[0.5]}`},
-		"long at":     {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[0.5,0.5,0.5]}`},
-		"null end":    {TypeConnector, BundleEnd0, `null`},
-		"null text":   {TypeSticky, BundleText, `null`},
-		"null alt":    {TypeImage, BundleAlt, `null`},
-		"null locked": {TypeSticky, BundleLocked, `null`},
-		"null z":      {TypeSticky, BundleZ, `null`},
-		"null geom":   {TypeSticky, BundleGeom, `null`},
-		"null style":  {TypeSticky, "style.color", `null`},
-		"null title":  {TypeBoard, BundleTitle, `null`},
-		"null grid":   {TypeBoard, BundleGrid, `null`},
-		"null pt":     {TypeConnector, BundleEnd0, `{"pt":null}`},
-		"null in pt":  {TypeConnector, BundleEnd0, `{"pt":[10,null]}`},
-		"nulls in pt": {TypeConnector, BundleEnd1, `{"pt":[null,null]}`},
-		"null in at":  {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[null,0.5]}`},
-		"text in at":  {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":["0.5",0.5]}`},
+		"short pt":      {TypeConnector, BundleEnd0, `{"pt":[10]}`},
+		"long pt":       {TypeConnector, BundleEnd1, `{"pt":[10,20,30]}`},
+		"short at":      {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[0.5]}`},
+		"long at":       {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[0.5,0.5,0.5]}`},
+		"null end":      {TypeConnector, BundleEnd0, `null`},
+		"null text":     {TypeSticky, BundleText, `null`},
+		"null alt":      {TypeImage, BundleAlt, `null`},
+		"null locked":   {TypeSticky, BundleLocked, `null`},
+		"null z":        {TypeSticky, BundleZ, `null`},
+		"null geom":     {TypeSticky, BundleGeom, `null`},
+		"null style":    {TypeSticky, "style.color", `null`},
+		"null title":    {TypeBoard, BundleTitle, `null`},
+		"null grid":     {TypeBoard, BundleGrid, `null`},
+		"null pt":       {TypeConnector, BundleEnd0, `{"pt":null}`},
+		"null in pt":    {TypeConnector, BundleEnd0, `{"pt":[10,null]}`},
+		"nulls in pt":   {TypeConnector, BundleEnd1, `{"pt":[null,null]}`},
+		"null in at":    {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":[null,0.5]}`},
+		"text in at":    {TypeConnector, BundleEnd0, `{"el":"e_aaaaaaaaaa","at":["0.5",0.5]}`},
+		"empty el":      {TypeConnector, BundleEnd0, `{"el":"","at":[1,0.5]}`},
+		"empty el only": {TypeConnector, BundleEnd1, `{"el":""}`},
 	} {
 		if v, err := DecodeBundle(c.typ, c.g, json.RawMessage(c.raw)); !errors.Is(err, ErrFormat) {
 			t.Errorf("%s: %v, err = %v", name, v, err)
@@ -381,6 +383,7 @@ func TestSchemaInvalidValues(t *testing.T) {
 		"null in at":      `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"el":"e_bbbbbbbbbb","at":[null,0.5]},{"pt":[0,0]}]}`,
 		"null in pts":     `{"id":"e_aaaaaaaaaa","type":"pen","x":0,"y":0,"w":10,"h":10,"pts":[0,0,1,null]}`,
 		"null in natural": `{"id":"e_aaaaaaaaaa","type":"image","natural":[null,3]}`,
+		"empty el":        `{"id":"e_aaaaaaaaaa","type":"connector","ends":[{"el":"","at":[1,0.5]},{"pt":[0,0]}]}`,
 	} {
 		if _, _, err := DecodeElement([]byte(raw)); !errors.Is(err, ErrFormat) {
 			t.Errorf("element %s: err = %v", name, err)

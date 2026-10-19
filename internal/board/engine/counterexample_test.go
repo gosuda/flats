@@ -927,3 +927,210 @@ func TestReviewRound2Counterexamples(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewRound3Counterexamples holds the counterexamples of the third
+// engine code review: each failed before its fix.
+func TestReviewRound3Counterexamples(t *testing.T) {
+	t.Run("replacement measures text against each state's own type", func(t *testing.T) {
+		long := strings.Repeat("é", 1000)
+		next := func(typ, text string) map[string]any {
+			el := map[string]any{"id": eid("x"), "type": typ, "text": text, "z": "V"}
+			if typ == model.TypeConnector {
+				el["ends"] = []any{free(0, 0), free(100, 0)}
+			} else {
+				el["x"], el["y"], el["w"], el["h"] = 0, 0, 100, 100
+			}
+			return el
+		}
+		replaceWith := func(h *harness, el map[string]any) (error, error) {
+			dec, _, err := model.DecodeElement(raw(el))
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := content(h.s)
+			for i := range c.Elements {
+				if c.Elements[i].ID == dec.ID {
+					c.Elements[i] = dec
+				}
+			}
+			_, errReplace := h.s.Replace(c, "agent:import", h.now)
+			_, errAgent := h.agent(AgentCall{Replace: true, Ops: []AgentOp{{Op: "add", El: raw(el)}}})
+			return errReplace, errAgent
+		}
+		for _, from := range []string{model.TypeSticky, model.TypeText, model.TypeShape} {
+			for _, to := range []string{model.TypeFrame, model.TypeConnector} {
+				h := newHarness(t)
+				a := h.session("a")
+				h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("x"), "type": from, "x": 0, "y": 0, "w": 100, "h": 100, "text": long})})
+				errReplace, errAgent := replaceWith(h, next(to, long))
+				var ae *AgentError
+				if !errors.Is(errReplace, ErrLimit) {
+					t.Errorf("%s -> %s: replace = %v", from, to, errReplace)
+				}
+				if !errors.As(errAgent, &ae) || ae.Category != CategoryInvalid {
+					t.Errorf("%s -> %s: replacing agent call = %v", from, to, errAgent)
+				}
+				if r := h.row(eid("x")); r.El.Type != from || r.El.Text != long {
+					t.Errorf("%s -> %s: a refused replacement changed the board: %s", from, to, r.El.Type)
+				}
+				// a name within the frame and connector limit is fine
+				if errReplace, _ := replaceWith(h, next(to, strings.Repeat("é", model.MaxLabel))); errReplace != nil {
+					t.Errorf("%s -> %s within the limit: %v", from, to, errReplace)
+				}
+			}
+		}
+		// The other way, a frame already over a lowered name limit may
+		// become a sticky whose text is less over the text limit.
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("x"), "type": "frame", "x": 0, "y": 0, "w": 100, "h": 100, "text": "12345678"})})
+		h.s.SetLimits(model.Limits{Elements: 10, Text: 10, Label: 5, Alt: 10, PenPoints: 10, Assets: 1})
+		if errReplace, errAgent := replaceWith(h, next(model.TypeSticky, "123456789012")); errReplace != nil || errAgent != nil {
+			t.Fatalf("frame over its limit -> sticky less over its limit: %v, %v", errReplace, errAgent)
+		}
+	})
+
+	t.Run("a replacing call places its new elements with layout", func(t *testing.T) {
+		ops := []AgentOp{
+			{Op: "add", Ref: "$f", El: elOf(map[string]any{"type": "frame", "text": "F", "x": 0, "y": 0, "w": 100, "h": 100})},
+			{Op: "add", Ref: "$a", El: elOf(map[string]any{"type": "sticky", "x": 5000, "y": 5000})},
+			{Op: "add", Ref: "$b", El: elOf(map[string]any{"type": "sticky", "x": -5000, "y": 0})},
+			{Op: "add", Ref: "$c", El: elOf(map[string]any{"type": "connector", "ends": []any{map[string]any{"el": "$a"}, map[string]any{"el": "$b"}}})},
+		}
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("old", 0, 0))
+		before := sortedIDs(h.s)
+		wide := float64(model.MaxSize)
+		for name, l := range map[string]Layout{
+			"unknown ref":       {Kind: "row", IDs: []string{"$a", "$zz"}},
+			"old board element": {Kind: "row", IDs: []string{"$a", eid("old")}},
+			"connector":         {Kind: "row", IDs: []string{"$a", "$c"}},
+			"frame in a frame":  {Kind: "row", IDs: []string{"$f"}, In: "$f"},
+			// fails after placing: the frame would grow past the maximum
+			"frame too large": {Kind: "row", IDs: []string{"$a", "$b"}, In: "$f", Gap: &wide},
+		} {
+			if _, err := h.agent(AgentCall{Replace: true, Ops: ops, Layout: []Layout{l}}); err == nil {
+				t.Fatalf("%s: a failing layout applied", name)
+			}
+			if got := sortedIDs(h.s); !slices.Equal(got, before) || h.geom(eid("old")).X != 0 {
+				t.Fatalf("%s: a failed replacing call changed the board: %v", name, got)
+			}
+		}
+		// layout names refs, so a replacing call declares each ref once
+		dup := append(slices.Clone(ops), AgentOp{Op: "add", Ref: "$a", El: elOf(map[string]any{"type": "sticky"})})
+		if _, err := h.agent(AgentCall{Replace: true, Ops: dup, Layout: []Layout{{Kind: "row", IDs: []string{"$a"}}}}); err == nil {
+			t.Fatal("a replacing call declared $a twice")
+		}
+		if got := sortedIDs(h.s); !slices.Equal(got, before) {
+			t.Fatalf("a refused replacing call changed the board: %v", got)
+		}
+		out, err := h.agent(AgentCall{Replace: true, Ops: ops, Layout: []Layout{{Kind: "row", IDs: []string{"$a", "$b"}, In: "$f"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Delta.Reset == nil || out.Delta.Reset.Kind != ResetReplace || h.alive(eid("old")) {
+			t.Fatalf("replace outcome %+v", out.Delta.Reset)
+		}
+		f, sa, sb, c := out.IDs["$f"], out.IDs["$a"], out.IDs["$b"], out.IDs["$c"]
+		for id, want := range map[string][2]float64{sa: {32, 32}, sb: {32 + 200 + layoutGap, 32}} {
+			g := h.geom(id)
+			if got := [2]float64{g.X, g.Y}; got != want || out.Layout[id] != want {
+				t.Fatalf("%s at %v, reported %v, want %v", id, got, out.Layout[id], want)
+			}
+			if h.row(id).El.Frame != f {
+				t.Fatalf("%s is in %q, not the layout's frame", id, h.row(id).El.Frame)
+			}
+		}
+		if g := h.geom(f); g.W != 32+200+layoutGap+200+32 || g.H != 32+200+32 {
+			t.Fatalf("frame did not grow to fit: %+v", g)
+		}
+		// default sides follow the committed places: $a is left of $b
+		if e := h.row(c).El.Ends; e[0].At != [2]float64{1, 0.5} || e[1].At != [2]float64{0, 0.5} {
+			t.Fatalf("connector ends %+v", e)
+		}
+	})
+
+	t.Run("an empty attachment target is refused with the whole batch or call", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("s", 0, 0))
+		h.ok(a, addConnector("c", attach("s", 1, 0.5), free(500, 0), map[string]int64{eid("s"): h.inc(eid("s"))}))
+		want := h.row(eid("c")).El.Ends
+		before := sortedIDs(h.s)
+		unchanged := func(what string) {
+			t.Helper()
+			if h.row(eid("s")).El.Text != "" || h.row(eid("c")).El.Ends != want || !slices.Equal(sortedIDs(h.s), before) {
+				t.Fatalf("%s changed the board: text %q, ends %+v", what, h.row(eid("s")).El.Text, h.row(eid("c")).El.Ends)
+			}
+		}
+		end := `{"el":"","at":[1,0.5]}`
+		out := h.do(a, setText("s", h.inc(eid("s")), "earlier op", 0),
+			Op{Op: OpSet, ID: eid("c"), Inc: h.inc(eid("c")), G: model.BundleEnd1, Val: json.RawMessage(end)})
+		if out.Reject == nil || out.Reject.Code != CodeInvalid {
+			t.Fatalf("person set = %+v", out)
+		}
+		unchanged("person set")
+		out = h.do(a, setText("s", h.inc(eid("s")), "earlier op", 0),
+			Op{Op: OpAdd, El: json.RawMessage(`{"id":"` + eid("d") + `","type":"connector","ends":[{"pt":[0,0]},` + end + `]}`)})
+		if out.Reject == nil || out.Reject.Code != CodeInvalid {
+			t.Fatalf("person add = %+v", out)
+		}
+		unchanged("person add")
+		for name, call := range map[string]AgentCall{
+			"agent set": {Ops: []AgentOp{
+				{Op: "set", ID: eid("s"), Fields: raw(map[string]any{"text": "earlier op"})},
+				{Op: "set", ID: eid("c"), Fields: json.RawMessage(`{"ends":[null,` + end + `]}`)},
+			}},
+			"agent add": {Ops: []AgentOp{
+				{Op: "set", ID: eid("s"), Fields: raw(map[string]any{"text": "earlier op"})},
+				{Op: "add", El: json.RawMessage(`{"type":"connector","ends":[{"pt":[0,0]},` + end + `]}`)},
+			}},
+			"replacing add": {Replace: true, Ops: []AgentOp{
+				{Op: "add", El: raw(map[string]any{"type": "sticky"})},
+				{Op: "add", El: json.RawMessage(`{"type":"connector","ends":[{"pt":[0,0]},` + end + `]}`)},
+			}},
+		} {
+			var ae *AgentError
+			if _, err := h.agent(call); !errors.As(err, &ae) || ae.Category != CategoryInvalid {
+				t.Fatalf("%s = %v", name, err)
+			}
+			unchanged(name)
+		}
+	})
+
+	t.Run("a replacing call places unplaced elements by its own content", func(t *testing.T) {
+		at := func(h *harness, id string) [2]float64 { g := h.geom(id); return [2]float64{g.X, g.Y} }
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("far", 50000, 50000))
+		out, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{
+			{Op: "add", Ref: "$u1", El: elOf(map[string]any{"type": "sticky"})},
+			{Op: "add", Ref: "$p", El: elOf(map[string]any{"type": "sticky", "x": 100, "y": 200})},
+			{Op: "add", Ref: "$u2", El: elOf(map[string]any{"type": "shape"})},
+			{Op: "add", El: elOf(map[string]any{"type": "connector", "ends": []any{map[string]any{"el": "$u1"}, map[string]any{"el": "$u2"}}})},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// a row to the right of the call's placed sticky (100..300), not of
+		// the replaced board at 50000
+		first := 100 + 200 + float64(placeGap)
+		for ref, want := range map[string][2]float64{"$p": {100, 200}, "$u1": {first, 200}, "$u2": {first + 200 + layoutGap, 200}} {
+			if got := at(h, out.IDs[ref]); got != want {
+				t.Fatalf("%s at %v, want %v", ref, got, want)
+			}
+		}
+		// nothing placed: the empty-board default
+		out, err = h.agent(AgentCall{Replace: true, Ops: []AgentOp{
+			{Op: "add", Ref: "$a", El: elOf(map[string]any{"type": "sticky"})},
+			{Op: "add", Ref: "$b", El: elOf(map[string]any{"type": "sticky"})},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a, b := at(h, out.IDs["$a"]), at(h, out.IDs["$b"]); a != [2]float64{0, 0} || b != [2]float64{200 + layoutGap, 0} {
+			t.Fatalf("empty-board default placed %v and %v", a, b)
+		}
+	})
+}

@@ -88,13 +88,15 @@ export function queueBatch(state, ops) {
   const frames = tryBatchFrames(n, ops);
   if (!frames) return null;
   const r = state.push(ops);
-  if (r.batch.n === n) r.batch.encoded = { n, frames };
+  if (r.batch.n === n) r.batch.encoded = { n, ops: r.batch.ops, frames };
   return r;
 }
 
-// framesOf returns the frames for batch b under its current number.
+// framesOf returns the frames for batch b under its current number. The
+// cache also checks the ops array, so a batch whose ops are ever replaced is
+// encoded again.
 function framesOf(b) {
-  if (b.encoded && b.encoded.n === b.n) return b.encoded.frames;
+  if (b.encoded && b.encoded.n === b.n && b.encoded.ops === b.ops) return b.encoded.frames;
   b.encoded = null;
   return batchFrames(b.n, b.ops);
 }

@@ -633,3 +633,82 @@ func TestContentFromFilesReadsKnownAssetsOnce(t *testing.T) {
 		t.Fatalf("asset reads %v", reads)
 	}
 }
+
+// Admission to the host's combined Public budget is atomic across boards:
+// two snapshot states (or a state and queued frames) racing for the last
+// room never both get it.
+func TestPublicHostBudgetAdmissionIsAtomic(t *testing.T) {
+	waitFor(t, func() bool { return publicQueued.Load() == 0 && publicSnaps.Load() == 0 && publicBudget.Used() == 0 })
+	const cost = 4 << 20
+	old := hostPublicCap
+	hostPublicCap = cost + cost/2 // room for one charge, not two
+	defer func() { hostPublicCap = old }()
+	for round := 0; round < 2000; round++ {
+		d1, d2 := &snapData{cost: cost}, &snapData{cost: cost} // the states of two boards
+		var won [2]bool
+		var start, wg sync.WaitGroup
+		start.Add(1)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			start.Wait()
+			won[0] = d1.acquirePublic()
+		}()
+		go func() {
+			defer wg.Done()
+			start.Wait()
+			if round%2 == 0 {
+				won[1] = d2.acquirePublic()
+			} else {
+				won[1] = reservePublic(&publicQueued, cost) // a Public connection's frames
+			}
+		}()
+		start.Done()
+		wg.Wait()
+		total := publicQueued.Load() + publicSnaps.Load()
+		if won[0] {
+			d1.releasePublic()
+		}
+		if won[1] && round%2 == 0 {
+			d2.releasePublic()
+		} else if won[1] {
+			publicQueued.Add(-cost)
+		}
+		if won[0] == won[1] || total > hostPublicCap {
+			t.Fatalf("round %d: admitted %v, %d charged against room for one under %d", round, won, total, hostPublicCap)
+		}
+	}
+}
+
+// Snapshot parts count toward the host's Public budget: a viewer whose
+// state fits but whose next part does not is closed without a snapshot,
+// and nothing stays charged.
+func TestPublicSnapshotPartsCountTowardTheHostBudget(t *testing.T) {
+	b := newTB(t)
+	fillBoard(t, b, 20, 100)
+	var cost int64
+	b.state(func(st *engine.State) { cost = int64(len(st.Alive())+1) * snapElementCost })
+	waitFor(t, func() bool { return publicQueued.Load() == 0 && publicSnaps.Load() == 0 && publicBudget.Used() == 0 })
+	old := hostPublicCap
+	hostPublicCap = cost + maxServerFrame/2 // the state fits, a part does not
+	defer func() { hostPublicCap = old }()
+	v, err := dial(t, b.pub, origin(b.pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.send(map[string]any{"t": "hello", "v": 1, "pending": map[string]any{"count": 0}})
+	if !v.closed(5 * time.Second) {
+		t.Fatal("a viewer whose snapshot part exceeds the host budget stayed open")
+	}
+	for _, m := range v.backlog {
+		if m["t"] == "snapshot" {
+			t.Fatal("a snapshot part went past the host budget")
+		}
+	}
+	waitFor(t, func() bool { return publicQueued.Load() == 0 && publicSnaps.Load() == 0 && publicBudget.Used() == 0 })
+	hostPublicCap = old
+	c := connect(t, b.pub, nil, nil)
+	if _, els, _ := c.snapshot(); len(els) != len(b.alive()) {
+		t.Fatalf("snapshot of %d elements", len(els))
+	}
+}

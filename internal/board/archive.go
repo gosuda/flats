@@ -27,7 +27,10 @@ import (
 	_ "golang.org/x/image/webp" // DecodeConfig of revision assets
 )
 
-// Data file limits (9.2).
+// Data file limits (9.2). The ratio applies to image entries only: a
+// legal elements.json of repetitive text or pen points compresses far past
+// any fixed ratio, so the JSON entries are bounded by the decompressed
+// total alone.
 const (
 	archiveMaxEntries = 1024
 	archiveMaxRatio   = 100
@@ -65,7 +68,7 @@ type archive struct {
 
 // parseArchive reads and checks a data file (9.2): at most 1,024 entries,
 // the actual decompressed total at most maxTotal and a ratio of at most 100
-// per entry, only the known paths once each, asset names equal to their
+// per image entry, only the known paths once each, asset names equal to their
 // sha256, every image checked (10), the element schema and invariants, and
 // every referenced asset present unless a recovery file lists it missing.
 func parseArchive(r io.ReaderAt, size, maxTotal, uploadMax int64) (*archive, error) {
@@ -90,9 +93,9 @@ func parseArchive(r io.ReaderAt, size, maxTotal, uploadMax int64) (*archive, err
 		if name != "board.json" && name != "elements.json" && name != "recovery.json" && m == nil {
 			return nil, errorf(CategoryInvalid, "the data file holds an unexpected path %q", name)
 		}
-		limit := min(maxTotal-total, int64(f.CompressedSize64)*archiveMaxRatio+archiveRatioFloor)
-		if f.CompressedSize64 > math.MaxInt64/archiveMaxRatio {
-			limit = maxTotal - total
+		limit := maxTotal - total
+		if m != nil && f.CompressedSize64 <= (math.MaxInt64-archiveRatioFloor)/archiveMaxRatio {
+			limit = min(limit, int64(f.CompressedSize64)*archiveMaxRatio+archiveRatioFloor)
 		}
 		data, err := readEntry(f, limit)
 		if err != nil {

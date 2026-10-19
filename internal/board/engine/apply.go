@@ -508,21 +508,25 @@ func (a *applier) checkLimits() error {
 		}
 		// grew compares an item with the same id before the change, alive
 		// or not; a replacement may reuse a live id with new content or a
-		// new type, so even a stroke's immutable points are compared.
-		grew := func(n func(*Row) int, limit int) bool {
+		// new type, so even a stroke's immutable points are compared. Each
+		// state is measured against the limit of its own type: a sticky's
+		// text that becomes a frame's name is judged by the name limit.
+		grew := func(n func(*Row) int, limit func(*Row) int) bool {
 			before := 0
 			if old.alive() {
-				before = excess(n(old), limit)
+				before = excess(n(old), limit(old))
 			}
-			return excess(n(cur), limit) > before
+			return excess(n(cur), limit(cur)) > before
 		}
-		if limit := l.TextLimit(cur.El.Type); grew(func(r *Row) int { return model.TextLen(r.El.Text) }, limit) {
-			return fmt.Errorf("%w: text of %s is over %d characters", ErrLimit, id, limit)
+		fixed := func(limit int) func(*Row) int { return func(*Row) int { return limit } }
+		textLimit := func(r *Row) int { return l.TextLimit(r.El.Type) }
+		if grew(func(r *Row) int { return model.TextLen(r.El.Text) }, textLimit) {
+			return fmt.Errorf("%w: text of %s is over %d characters", ErrLimit, id, textLimit(cur))
 		}
-		if grew(func(r *Row) int { return model.TextLen(r.El.Alt) }, l.Alt) {
+		if grew(func(r *Row) int { return model.TextLen(r.El.Alt) }, fixed(l.Alt)) {
 			return fmt.Errorf("%w: alternative text of %s is over %d characters", ErrLimit, id, l.Alt)
 		}
-		if grew(func(r *Row) int { return r.El.PenPoints() }, l.PenPoints) {
+		if grew(func(r *Row) int { return r.El.PenPoints() }, fixed(l.PenPoints)) {
 			return fmt.Errorf("%w: a pen stroke holds at most %d points", ErrLimit, l.PenPoints)
 		}
 	}

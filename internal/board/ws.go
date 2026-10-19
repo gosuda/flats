@@ -41,6 +41,9 @@ var (
 	hostAssembly atomic.Int64
 	publicQueued atomic.Int64 // bytes waiting in Public connections' queues and snapshot parts, host-wide
 	publicSnaps  atomic.Int64 // retained snapshot states Public connections send from, host-wide
+	// publicMu makes admission to the host's combined Public budget atomic
+	// (reservePublic).
+	publicMu sync.Mutex
 	// Limits tests lower.
 	assemblyTimeout = 30 * time.Second
 	hostPublicCap   = int64(hostPublicMax)
@@ -258,16 +261,32 @@ func (in *Instance) dropStaleSnap() {
 	}
 }
 
+// reservePublic charges n bytes to counter (publicQueued or publicSnaps)
+// when the host's combined Public total (6) still fits: queued frames and
+// waiting snapshot parts, shared snapshot states, and the bytes in Public
+// sockets (publicBudget). Every increase of the first two goes through
+// here, under publicMu, so admissions across boards cannot both take the
+// last room. publicBudget grows outside the lock only by frames that move
+// out of publicQueued, which keep their charge there until the socket has
+// taken them: a move counts twice for a moment, never zero times. Releases
+// only lower the total and need no lock.
+func reservePublic(counter *atomic.Int64, n int64) bool {
+	publicMu.Lock()
+	defer publicMu.Unlock()
+	if publicQueued.Load()+publicSnaps.Load()+publicBudget.Used()+n > hostPublicCap {
+		return false
+	}
+	counter.Add(n)
+	return true
+}
+
 // acquirePublic charges the state to the host's Public budget when no
 // Public job held it yet; false means it does not fit.
 func (d *snapData) acquirePublic() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.pubRefs == 0 {
-		if publicQueued.Load()+publicSnaps.Load()+publicBudget.Used()+d.cost > hostPublicCap {
-			return false
-		}
-		publicSnaps.Add(d.cost)
+	if d.pubRefs == 0 && !reservePublic(&publicSnaps, d.cost) {
+		return false
 	}
 	d.pubRefs++
 	return true
@@ -353,7 +372,7 @@ func (c *conn) enqueue(frames ...[]byte) bool {
 		c.mu.Unlock()
 		return false
 	}
-	if c.overCap(size) {
+	if c.overCap(size) || c.public && !reservePublic(&publicQueued, size) {
 		c.overflowed = true
 		c.mu.Unlock()
 		c.close(1008, "too far behind; reconnect")
@@ -363,20 +382,16 @@ func (c *conn) enqueue(frames ...[]byte) bool {
 		c.q = append(c.q, outMsg{frame: f})
 	}
 	c.qBytes += size
-	if c.public {
-		publicQueued.Add(size)
-	}
 	c.mu.Unlock()
 	c.poke()
 	return true
 }
 
-// overCap reports whether size more bytes exceed the queue caps. c.mu is
-// held.
+// overCap reports whether size more bytes exceed the connection's queue
+// cap; enqueue reserves the host's Public budget separately. c.mu is held.
 func (c *conn) overCap(size int64) bool {
 	if c.public {
-		return c.qBytes+size > publicQueueMax ||
-			publicQueued.Load()+publicSnaps.Load()+publicBudget.Used()+size > hostPublicCap
+		return c.qBytes+size > publicQueueMax
 	}
 	return c.qBytes+size+c.ws.Budget().Used() > c.in.privateQueue
 }
@@ -500,6 +515,7 @@ func (c *conn) pump() {
 	for {
 		c.mu.Lock()
 		var m outMsg
+		var held int64 // host Public bytes this frame keeps until the socket takes it
 		have := len(c.q) > 0
 		if have {
 			m = c.q[0]
@@ -513,7 +529,7 @@ func (c *conn) pump() {
 			} else {
 				c.qBytes -= int64(len(m.frame))
 				if c.public {
-					publicQueued.Add(-int64(len(m.frame)))
+					held = int64(len(m.frame))
 				}
 			}
 		}
@@ -541,7 +557,9 @@ func (c *conn) pump() {
 			}
 			continue
 		}
-		if !c.feed(m.frame) {
+		ok := c.feed(m.frame)
+		publicQueued.Add(-held)
+		if !ok {
 			c.dropQueue()
 			return
 		}
@@ -581,8 +599,9 @@ func (c *conn) feed(f []byte) bool {
 
 // sendSnapshot sends a snapshot in parts of at most 512 KiB, encoding each
 // part only when it is its turn. A newer generation (a resync) abandons
-// it. A Public part waiting for room counts toward the host's Public queue
-// bytes.
+// it. A Public part waiting for room counts toward the host's Public
+// budget; a part that does not fit closes the connection (1008), as a
+// queue over its cap does.
 func (c *conn) sendSnapshot(j *snapJob) bool {
 	d := j.data
 	ends := d.partEnds(j.public)
@@ -594,6 +613,12 @@ func (c *conn) sendSnapshot(j *snapJob) bool {
 	for i, end := range ends {
 		if c.currentGen() != j.gen {
 			return true
+		}
+		// Reserve a whole frame before encoding, so the part's bytes never
+		// exist uncharged, then give back what it did not use.
+		if c.public && !reservePublic(&publicQueued, maxServerFrame) {
+			c.close(1008, "too far behind; reconnect")
+			return false
 		}
 		var b bytes.Buffer
 		fmt.Fprintf(&b, `{"t":"snapshot","gen":%d,"seq":%d,"part":%d,"parts":%d`, j.gen, j.seq, i+1, len(ends))
@@ -616,7 +641,13 @@ func (c *conn) sendSnapshot(j *snapJob) bool {
 		start = end
 		n := int64(b.Len())
 		if c.public {
-			publicQueued.Add(n)
+			if n <= maxServerFrame {
+				publicQueued.Add(n - maxServerFrame)
+			} else if !reservePublic(&publicQueued, n-maxServerFrame) {
+				publicQueued.Add(-maxServerFrame)
+				c.close(1008, "too far behind; reconnect")
+				return false
+			}
 		}
 		ok := c.feed(b.Bytes())
 		if c.public {

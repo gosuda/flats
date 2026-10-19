@@ -348,9 +348,12 @@ at the moment of applying**. Explicit targets carry expected incarnations.
   explicitly. Only these explicit fields and operations change membership.
 - Per-item limits (section 12): after applying a batch, the server refuses it
   when some item is over its limit and that item's excess **grew compared
-  with before the batch** ([rule 7](board.md#content)). Element recovery (a copy
-  from an earlier revision) is an ordinary edit and goes through this check.
-  Only a whole-board rollback skips it.
+  with before the batch** ([rule 7](board.md#content)). Each state's excess
+  is measured against the limit of that state's element type, so an id that
+  a replacement (4.12) reuses for another type is judged by the new type's
+  limit: a sticky's 1,000 characters refuse it as a frame name. Element
+  recovery (a copy from an earlier revision) is an ordinary edit and goes
+  through this check. Only a whole-board rollback skips it.
 - There are two kinds of refusal.
 
 | Kind | Examples | Server | Client |
@@ -496,6 +499,9 @@ does not drift.
   text) carries a matching `base_v`, has no `overwrote`, and shows nothing.
   "Keep my text" `add`s a new `text` element with that text, 24px to the right
   of the original element. Tests cover the concurrent and the sequential case.
+  At most 8 notices that carry an action stay on screen; a ninth removes the
+  oldest, so with more than 8 unanswered "Keep my text" notices the oldest
+  text is no longer offered.
 
 ### 4.10 Personal undo (server-side stack)
 
@@ -946,7 +952,12 @@ The lease lasts until the work that uses the hashes is done. An export
 chooses the assets alive elements reference inside the apply loop and leases
 them there, before any later edit can drop their rows (the sweep reads those
 rows through the apply loop, so it either keeps them or sees the lease); the
-lease ends when the archive is written. An export that cannot read a chosen
+lease ends when the archive is written. A board upload that reuses an
+existing blob takes the lease before it looks for the file and refreshes
+its modification time; the sweep checks the lease, checks the time again
+and removes the blob under the lease lock, so either the sweep keeps the
+blob or the upload finds no file and stores it again. The fresh time then
+protects the blob until its `assets` row commits. An export that cannot read a chosen
 blob fails: with an error before its response starts, by aborting the
 transfer after, never as a complete-looking file. Element recovery keeps the
 lease of the revision it reads until its copy commits, when the copied
@@ -1001,7 +1012,11 @@ images' `assets` rows (`held_until`, then `refs`) protect the blobs.
   queue is capped at 1 MiB (Private: 4 MiB, counting the bytes in flight),
   and Public traffic of the whole host at 256 MiB: the Public send queues,
   Public snapshot parts waiting to be sent, and the snapshot states Public
-  connections send from. A shared snapshot state is charged once, with an
+  connections send from. Admission to this total is atomic across boards (one
+  host-wide reservation for queued frames, snapshot parts and states), and a
+  frame keeps its charge until the socket has taken it. A snapshot part
+  reserves a whole frame before it is encoded; a part that does not fit
+  closes the connection with 1008. A shared snapshot state is charged once, with an
   estimate per element, while any Public connection sends from it; when it
   does not fit, the connection is closed (1013) and its client retries. A
   Public connection over either queue cap is closed with 1008 and its client
@@ -1180,7 +1195,9 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   `carry: "members"`. `carry: false` keeps members in place, and
   `carry: "group"` moves the group members along.
 - `replace: true` replaces the whole board with the call's `add` operations
-  (4.12).
+  (4.12). The call's `layout` then places those elements as in an ordinary
+  call, and ends attached without `at` take their sides from the placed
+  elements; a layout that fails refuses the call with the board unchanged.
 - Locked elements: `conflict` unless an earlier operation in the same call
   unlocked them with `locked: false`. Layout help also checks locks at the
   time it applies.
@@ -1190,7 +1207,9 @@ never go out to Public ([rule 52](board.md#lifecycle-and-access)).
   returns that result without applying again; the same id with a different
   request returns `conflict`.
 - New elements without coordinates: without `layout`, they go in a row to the
-  right of the current bounding box. Default sizes: sticky 200×200, shape
+  right of the current bounding box. For `replace: true` that is the box of
+  the call's own elements that give `x` and `y`, not the board being
+  replaced; with none, the row starts at (0, 0) as on an empty board. Default sizes: sticky 200×200, shape
   160×100, text fitted to its content. A connector always needs `ends`
   (`invalid` without them); an attached end without `at` (or with `at: null`)
   attaches at the side facing the other end once layout is done (4.4).
@@ -1248,8 +1267,12 @@ fields sorted by id), `assets/<sha256>.<ext>`, and optionally `recovery.json`.
 These checks implement [rule 70](board.md#export-import-and-safety).
 
 - At most 1,024 entries; the actual streamed decompressed total at most
-  `upload_max_bytes × 4` (declared sizes are not trusted); a compression
-  ratio of at most 100 per entry.
+  `upload_max_bytes × 4` (declared sizes are not trusted), read through a
+  limiting reader for every entry; a compression ratio of at most 100 per
+  image entry. The JSON entries have no ratio limit: a legal
+  `elements.json` of repetitive text or pen points compresses far beyond
+  any fixed ratio, and Flats must import its own export. The decompressed
+  total bounds them.
 - Every image in the archive goes through the section 10 checks.
 - Paths only in the forms above; duplicate paths refused; the sha256 of an
   asset file's content must equal its name; every referenced asset must be
@@ -1521,7 +1544,7 @@ the tests of the JS client and the Go server read the same file.
 | `Inc`, `Seq`, `V` | A positive integer (at most 53 bits) |
 | `Num` | A finite number, stored rounded to 1 decimal place |
 | `IfV` | `{Id: {bundle key: V}}` |
-| `End` | `{"el": Id, "at": [Num, Num]}` or `{"pt": [Num, Num]}`; `at` and `pt` have exactly 2 numbers (null is refused) |
+| `End` | `{"el": Id, "at": [Num, Num]}` or `{"pt": [Num, Num]}`; `at` and `pt` have exactly 2 numbers (null is refused); an empty `el` is refused, never read as a free end |
 
 **Elements**
 

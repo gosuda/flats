@@ -130,7 +130,7 @@ func (e End) MarshalJSON() ([]byte, error) { return Canonical(e.content()), nil 
 // UnmarshalJSON reads an end. A missing (or null) "at" reads as the center
 // of the target; agent calls replace it with DefaultAt (4.4). A null field
 // reads as missing, and a null coordinate is refused: encoding/json would
-// read it as 0.
+// read it as 0. An empty "el" is refused too, since it names no element.
 func (e *End) UnmarshalJSON(raw []byte) error {
 	var f struct {
 		El *string         `json:"el"`
@@ -147,6 +147,9 @@ func (e *End) UnmarshalJSON(raw []byte) error {
 	}
 	switch {
 	case f.El != nil && f.Pt == nil:
+		if *f.El == "" {
+			return formatErr("connector end el must name an element")
+		}
 		*e = End{El: *f.El, At: [2]float64{0.5, 0.5}}
 		if f.At != nil {
 			at, err := pair("at", f.At)
