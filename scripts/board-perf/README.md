@@ -32,6 +32,8 @@ export FLATS_URL=http://127.0.0.1:17920
 The import creates each board. Its Private local URL is
 `http://<slug>.localhost:17921`. The latency run edits its board, so give it
 a board of its own (`lat5k`) and keep `bench5k` unchanged for the other runs.
+Import `lat5k` again before every latency run: the cross-bundle moves make
+stickies drift, and the run stops when too few remain in the observer's view.
 
 ## Run
 
