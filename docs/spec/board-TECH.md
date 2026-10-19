@@ -1461,6 +1461,7 @@ it in the banner. It is the same zip format with `recovery.json` added.
 | Connecting | Before the first `welcome`, and during an intentional reconnect (a name change, a gap) until its `welcome` | "Connecting…" |
 | Disconnected | Socket closed, reconnecting | "Disconnected · Reconnecting" (pending count) |
 | Editing stopped | `fatal` | A red banner and "Download unsent edits" |
+| No longer public | A Public board whose reconnect failed twice gets a non-OK answer to a `HEAD` of the board page, with no `welcome` since that request began (an answer that arrives after a reconnect is stale and ignored) | A banner, removed by the next `welcome` |
 | Over quota | The latest batch got `reject disk_quota` | A yellow banner; the next edits may be refused too |
 
 ### 11.4 Color tokens

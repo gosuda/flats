@@ -163,6 +163,101 @@ func TestAgentFramesGoBehind(t *testing.T) {
 	})
 }
 
+// TestAgentFramesGoBehindOnEmptyBoard checks the same rule when the call
+// starts on a board with no elements, so the first frame has nothing to go
+// below: every later unkeyed frame of the call must still go strictly below
+// every non-frame element the call added before it, with or without z, and
+// the call's frames keep their order (8.1).
+func TestAgentFramesGoBehindOnEmptyBoard(t *testing.T) {
+	frame := func(ref string) AgentOp {
+		return AgentOp{Op: "add", Ref: ref, El: elOf(map[string]any{"type": "frame", "text": ref, "x": 0, "y": 0, "w": 400, "h": 400})}
+	}
+	sticky := func(ref, z string) AgentOp {
+		el := map[string]any{"type": "sticky", "text": ref, "x": 50, "y": 50}
+		if z != "" {
+			el["z"] = z
+		}
+		return AgentOp{Op: "add", Ref: ref, El: elOf(el)}
+	}
+	// check verifies the strict key order of want (lowest first) and that
+	// every key is valid.
+	check := func(t *testing.T, h *harness, out AgentOutcome, want []string) {
+		t.Helper()
+		var ids, zs []string
+		for _, ref := range want {
+			id := out.IDs[ref]
+			ids = append(ids, id)
+			zs = append(zs, h.row(id).El.Z)
+			if !model.ValidKey(h.row(id).El.Z) {
+				t.Fatalf("%s key %q", ref, h.row(id).El.Z)
+			}
+		}
+		if got := h.s.order(); !slices.Equal(got, ids) {
+			t.Fatalf("order %v, want %v (%v)", got, ids, want)
+		}
+		for i := 1; i < len(zs); i++ {
+			if zs[i-1] >= zs[i] {
+				t.Fatalf("keys %v of %v are not strictly increasing", zs, want)
+			}
+		}
+	}
+
+	t.Run("a sticky between frames", func(t *testing.T) {
+		h := newHarness(t)
+		out, err := h.agent(AgentCall{Ops: []AgentOp{frame("$f1"), sticky("$s", ""), frame("$f2"), frame("$f3")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, h, out, []string{"$f1", "$f2", "$f3", "$s"})
+		// The sticky moved into the last frame stays above its fill.
+		s, f3 := out.IDs["$s"], out.IDs["$f3"]
+		if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "reparent", IDs: []string{s}, Frame: raw(f3)}}}); err != nil {
+			t.Fatal(err)
+		}
+		if h.row(s).El.Frame != f3 || h.row(s).El.Z <= h.row(f3).El.Z {
+			t.Fatalf("sticky %q (frame %q) not above frame %q", h.row(s).El.Z, h.row(s).El.Frame, h.row(f3).El.Z)
+		}
+	})
+
+	t.Run("an explicit z above the earlier frames", func(t *testing.T) {
+		h := newHarness(t)
+		out, err := h.agent(AgentCall{Ops: []AgentOp{frame("$f1"), sticky("$e", "b"), frame("$f2"), sticky("$s", ""), frame("$f3")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if z := h.row(out.IDs["$e"]).El.Z; z != "b" {
+			t.Fatalf("explicit z changed to %q", z)
+		}
+		check(t, h, out, []string{"$f1", "$f2", "$f3", "$e", "$s"})
+	})
+
+	t.Run("an explicit z below the earlier frames", func(t *testing.T) {
+		h := newHarness(t)
+		out, err := h.agent(AgentCall{Ops: []AgentOp{frame("$f1"), sticky("$e", "0001"), frame("$f2"), frame("$f3")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The explicit key is below the first frame, so later frames go
+		// below it and keep their order among themselves.
+		check(t, h, out, []string{"$f2", "$f3", "$e", "$f1"})
+	})
+
+	t.Run("a replacement", func(t *testing.T) {
+		for _, z := range []string{"", "b", "0001"} {
+			h := newHarness(t)
+			out, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{frame("$f1"), sticky("$s", ""), frame("$f2"), sticky("$e", z), frame("$f3")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"$f1", "$f2", "$f3", "$e", "$s"}
+			if z == "" {
+				want = []string{"$f1", "$f2", "$f3", "$s", "$e"}
+			}
+			check(t, h, out, want)
+		}
+	})
+}
+
 // TestAgentReattachRecomputesSides checks what the agent guide tells agents
 // to do after moving connected elements: an attached end keeps the side it
 // was given, and setting the ends again without "at" recomputes the sides

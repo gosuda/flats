@@ -67,8 +67,10 @@ type applier struct {
 	startList []string
 
 	// backZ is the lowest stacking key of the alive elements other than
-	// the frames backKey placed; backLast is the highest key backKey gave
-	// below it. Valid while backKnown.
+	// the frames backKey placed, or "" when there is no such element (no
+	// bound); backLast is the highest key backKey gave below it. Valid
+	// while backKnown; put invalidates it when an element lands below
+	// the bound, or anywhere while there is none.
 	backZ, backLast string
 	backKnown       bool
 	backFrames      map[string]bool
@@ -226,7 +228,16 @@ func (a *applier) resolve(id string, inc int64) (*Row, string) {
 }
 
 // put stores a changed copy of a row.
-func (a *applier) put(r *Row) { a.s.putRow(r.El.ID, r) }
+func (a *applier) put(r *Row) {
+	if a.backKnown && r.alive() && r.El.ID != model.BoardID && !a.backFrames[r.El.ID] &&
+		(a.backZ == "" || r.El.Z < a.backZ) {
+		// The element now lies below the bound backKey keeps, or there was
+		// no bound yet (no other alive element when it was computed): the
+		// next frame must go below this element too (8.1).
+		a.backKnown = false
+	}
+	a.s.putRow(r.El.ID, r)
+}
 
 // setBundle writes bundle g of r (a private copy) and stamps its version.
 func (a *applier) setBundle(r *Row, g string, val any) {
@@ -408,9 +419,6 @@ func (a *applier) insert(el model.Element) {
 		}
 	}
 	a.noteZ(el.Z)
-	if a.backKnown && !a.backFrames[el.ID] && el.Z < a.backZ {
-		a.backKnown = false
-	}
 	a.put(r)
 	if a.session != "" {
 		a.s.setCreated(createdKey{a.session, el.ID}, a.seq)

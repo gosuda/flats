@@ -223,6 +223,59 @@ test('a reconnect drops the old transient retry delay', (t) => {
   assert.deepEqual(again.sent.filter((m) => m.t === 'ops').map((m) => m.n), [1], 'resent on welcome, not after the old delay');
 });
 
+// withdrawn is the check app.checkPublic runs while a Public board's
+// connection is down (TECH 11.3). The request is deferred so the test
+// controls when its answer arrives relative to a reconnect.
+test('a withdrawal check answered after a reconnect is stale', async (t) => {
+  const { net, ws } = harness(t);
+  const welcome = { t: 'welcome', session: 'S1', access: 'public', me: {} };
+  ws.recv(welcome);
+  const deferred = () => {
+    let settle;
+    const p = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+    return { head: () => p, ...settle };
+  };
+  // Down, then reconnected while the request runs: a non-OK answer is ignored.
+  ws.onclose();
+  let d = deferred();
+  let check = net.withdrawn(d.head);
+  t.mock.timers.tick(1200);
+  let sock = FakeSocket.last;
+  sock.onopen();
+  sock.recv(welcome);
+  assert.equal(net.connected, true);
+  d.resolve({ ok: false, status: 404 });
+  assert.equal(await check, false, 'a stale answer does not report a withdrawal for the recovered connection');
+
+  // Reconnected and down again before the answer: still stale.
+  sock.onclose();
+  d = deferred();
+  check = net.withdrawn(d.head);
+  t.mock.timers.tick(2400);
+  const between = FakeSocket.last;
+  between.onopen();
+  between.recv(welcome);
+  between.onclose();
+  assert.equal(net.connected, false);
+  d.resolve({ ok: false, status: 404 });
+  assert.equal(await check, false, 'a welcome during the request makes its answer stale');
+
+  // Still down when the answer arrives: a non-OK answer is a withdrawal,
+  // an OK answer or a network error is not.
+  d = deferred();
+  check = net.withdrawn(d.head);
+  d.resolve({ ok: false, status: 404 });
+  assert.equal(await check, true);
+  d = deferred();
+  check = net.withdrawn(d.head);
+  d.resolve({ ok: true, status: 200 });
+  assert.equal(await check, false);
+  d = deferred();
+  check = net.withdrawn(d.head);
+  d.reject(new TypeError('network down'));
+  assert.equal(await check, false);
+});
+
 // queueBatch is the precheck app.commit runs before a batch takes a number.
 test('queueBatch refuses an oversized batch without consuming a number', (t) => {
   const { state, net, ws } = harness(t);

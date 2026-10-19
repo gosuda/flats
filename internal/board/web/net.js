@@ -132,6 +132,7 @@ export class Net {
     this.reconnectDelay = RETRY_MIN;
     this.reconnectTimer = null;
     this.failures = 0;
+    this.opens = 0;         // welcomes received, over all sockets
     this.lastPres = 0;
     this.presTimer = null;
     this.presNext = null;
@@ -194,6 +195,23 @@ export class Net {
     const d = this.reconnectDelay * (0.8 + Math.random() * 0.4);
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, RETRY_MAX);
     this.reconnectTimer = setTimeout(() => this.start(), d);
+  }
+
+  // withdrawn runs head, a request for the board page, while the
+  // connection is down, and reports whether the board stopped being public
+  // (TECH 11.3). A reconnect while the request runs proves the board is
+  // still reachable, so a result that arrives after it is stale and never
+  // reports a withdrawal for the recovered connection. A network error is
+  // not a withdrawal: the status already says the connection is down.
+  async withdrawn(head) {
+    const opens = this.opens;
+    let r;
+    try {
+      r = await head();
+    } catch {
+      return false;
+    }
+    return !r.ok && this.opens === opens && !this.open;
   }
 
   send(obj) {
@@ -278,6 +296,7 @@ export class Net {
     st.public = m.access !== 'private';
     this.open = true;
     this.welcomed = true;
+    this.opens++;
     this.restarting = false;
     this.failures = 0;
     this.reconnectDelay = RETRY_MIN;

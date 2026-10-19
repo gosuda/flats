@@ -854,10 +854,7 @@ class App {
     if (this.publicChecking || this.bannerKind === 'withdrawn') return;
     this.publicChecking = true;
     try {
-      const r = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' });
-      if (!r.ok) this.banner('withdrawn');
-    } catch {
-      // The network is down: the status already says so.
+      if (await this.net.withdrawn(() => fetch(location.pathname, { method: 'HEAD', cache: 'no-store' }))) this.banner('withdrawn');
     } finally {
       this.publicChecking = false;
     }
