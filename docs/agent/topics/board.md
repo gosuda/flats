@@ -69,7 +69,8 @@ replace?}` applies all operations or none, and is one revision.
 - `reparent {ids, frame}` moves elements into a frame, or out with `null`.
   Grouped elements move together. Frames do not nest.
 - `delete {ids}` deletes elements. Deleting a frame keeps its members;
-  connectors attached to a deleted element keep a free end.
+  connectors attached to a deleted element keep a free end where they were
+  attached, kept within the canvas range (±10,000,000).
 - `group`, `ungroup`, `zorder` and `delete_frame_contents` group elements,
   change stacking order and delete a frame with its members. `group` makes
   a new group id unless you pass one; group ids are never reused, so an id

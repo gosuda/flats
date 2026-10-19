@@ -14,6 +14,15 @@ func EndpointWorld(g Geom, at [2]float64) [2]float64 {
 	return [2]float64{Round1(cx + dx*cos - dy*sin), Round1(cy + dx*sin + dy*cos)}
 }
 
+// ClampPoint limits a canvas point to the coordinate range (±MaxCoord). An
+// end attached near the edge of the range can lie outside it, since an
+// element's box and rotation reach past its origin; the server clamps the
+// point when such an end becomes free (4.3), so the stored end stays valid.
+func ClampPoint(p [2]float64) [2]float64 {
+	c := func(v float64) float64 { return math.Max(-MaxCoord, math.Min(MaxCoord, v)) }
+	return [2]float64{c(p[0]), c(p[1])}
+}
+
 // DefaultAt is the attachment point of an end attached to an element with
 // geometry g that gives no position (4.4): the middle of the side, in the
 // element's rotated frame, through which the ray from its center toward the

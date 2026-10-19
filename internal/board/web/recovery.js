@@ -1,7 +1,7 @@
 // Recovery files (TECH 9.3): the result of applying this tab's unconfirmed
 // batches on top of the server copy, with the image bytes they reference.
 
-import { contentOf } from './schema.js';
+import { clampPoint, contentOf } from './schema.js';
 import { endWorld } from './geom.js';
 import { writeZip } from './zip.js';
 
@@ -36,7 +36,7 @@ export function buildRecovery(state) {
       e.ends = e.ends.map((end) => {
         if (!end.el || ids.has(end.el)) return end;
         const p = endWorld(end, get);
-        return p ? { pt: p } : { pt: [0, 0] };
+        return { pt: p ? clampPoint(p) : [0, 0] };
       });
     }
   }

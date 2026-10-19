@@ -95,6 +95,7 @@ type Conn struct {
 	c               net.Conn
 	br              *bufio.Reader
 	client          bool          // client frames are masked
+	readBroken      bool          // a read failed other than by an idle timeout; only the reader touches it
 	readIdleTimeout time.Duration // 0: no read deadline
 	pingInterval    time.Duration // 0: the writer sends no pings
 
@@ -220,19 +221,30 @@ func (e *CloseError) Error() string {
 	return fmt.Sprintf("websocket closed: %d %s", e.Code, e.Reason)
 }
 
-func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, err error) {
+// errReadBroken is returned by every read after a read error other than a
+// timeout between messages: the reader's position in the stream is lost.
+var errReadBroken = errors.New("websocket: an earlier read failed; the connection cannot continue")
+
+// readFrame reads one frame. started reports whether any byte of it was
+// consumed, so the caller can tell a timeout between frames (nothing lost)
+// from one inside a frame.
+func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, started bool, err error) {
 	var h [2]byte
-	if _, err = io.ReadFull(ws.br, h[:]); err != nil {
+	if h[0], err = ws.br.ReadByte(); err != nil {
+		return
+	}
+	started = true
+	if h[1], err = ws.br.ReadByte(); err != nil {
 		return
 	}
 	fin = h[0]&0x80 != 0
 	if h[0]&0x70 != 0 {
-		return false, 0, nil, &CloseError{1002, "reserved bits set"}
+		return false, 0, nil, true, &CloseError{1002, "reserved bits set"}
 	}
 	op = h[0] & 0x0F
 	masked := h[1]&0x80 != 0
 	if masked == ws.client {
-		return false, 0, nil, &CloseError{1002, "bad masking"}
+		return false, 0, nil, true, &CloseError{1002, "bad masking"}
 	}
 	l := uint64(h[1] & 0x7F)
 	switch l {
@@ -250,10 +262,10 @@ func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, err error
 		l = binary.BigEndian.Uint64(b[:])
 	}
 	if op >= OpClose && (l > 125 || !fin) {
-		return false, 0, nil, &CloseError{1002, "bad control frame"}
+		return false, 0, nil, true, &CloseError{1002, "bad control frame"}
 	}
 	if l > uint64(max) {
-		return false, 0, nil, &CloseError{1009, "message too big"}
+		return false, 0, nil, true, &CloseError{1009, "message too big"}
 	}
 	var key [4]byte
 	if masked {
@@ -277,23 +289,39 @@ func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, err error
 // be positive), answering pings. A close frame, or a message or frame over
 // max (code 1009), is returned as *CloseError. Only one goroutine may read.
 //
+// A read deadline that expires between messages loses nothing: no byte of a
+// data frame has been read, and any control frames before it were handled
+// completely. The timeout error is returned and a later ReadMessage
+// continues normally. A deadline that expires inside a frame, or between the
+// frames of a fragmented message, loses the part already read, so the
+// message can never be completed. The error still wraps the timeout (the
+// peer did go quiet), but the connection cannot continue: every later
+// ReadMessage fails at once with a non-timeout error. Any other read error
+// leaves the connection unusable too.
+//
 // A server's owner closes the connection with a code chosen from the error.
-// A client (Dial) has no such owner, so any read error other than a timeout
-// ends its connection here (Close with 1006): the socket failed, the peer
-// closed or sent a close frame, or the frames were invalid. A timeout leaves
-// the connection open for the caller to retry or Close.
+// A client (Dial) has no such owner, so it closes its connection here (Close
+// with 1006) on every read error except a timeout between messages: the
+// socket failed, the peer closed or sent a close frame, the frames were
+// invalid, or a timeout cut a frame or message short. A timeout between
+// messages leaves the connection open for the caller to retry or Close.
 func (ws *Conn) ReadMessage(max int) (string, error) {
-	msg, err := ws.readMessage(max)
-	if err != nil && ws.client {
-		var ne net.Error
-		if !errors.As(err, &ne) || !ne.Timeout() {
+	if ws.readBroken {
+		return "", errReadBroken
+	}
+	msg, idle, err := ws.readMessage(max)
+	if err != nil && !idle {
+		ws.readBroken = true
+		if ws.client {
 			ws.Close(1006, "")
 		}
 	}
 	return msg, err
 }
 
-func (ws *Conn) readMessage(max int) (string, error) {
+// readMessage reports idle for a timeout that arrived between messages, the
+// only read error after which reading can continue.
+func (ws *Conn) readMessage(max int) (string, bool, error) {
 	var msg []byte
 	inMsg := false
 	for {
@@ -301,12 +329,19 @@ func (ws *Conn) readMessage(max int) (string, error) {
 		// A stalled or partial frame still has one finite read deadline.
 		if ws.readIdleTimeout > 0 {
 			if err := ws.c.SetReadDeadline(time.Now().Add(ws.readIdleTimeout)); err != nil {
-				return "", err
+				return "", false, err
 			}
 		}
-		fin, op, p, err := ws.readFrame(max)
+		fin, op, p, started, err := ws.readFrame(max)
 		if err != nil {
-			return "", err
+			var ne net.Error
+			if !errors.As(err, &ne) || !ne.Timeout() {
+				return "", false, err
+			}
+			if started || inMsg {
+				return "", false, fmt.Errorf("websocket: read timed out inside a message, which is lost: %w", err)
+			}
+			return "", true, err
 		}
 		switch op {
 		case OpPing:
@@ -320,25 +355,25 @@ func (ws *Conn) readMessage(max int) (string, error) {
 				code = int(binary.BigEndian.Uint16(p))
 				reason = string(p[2:])
 			}
-			return "", &CloseError{code, reason}
+			return "", false, &CloseError{code, reason}
 		case OpText, OpBinary:
 			if inMsg {
-				return "", &CloseError{1002, "unexpected data frame"}
+				return "", false, &CloseError{1002, "unexpected data frame"}
 			}
 			msg, inMsg = p, true
 		case OpCont:
 			if !inMsg {
-				return "", &CloseError{1002, "unexpected continuation"}
+				return "", false, &CloseError{1002, "unexpected continuation"}
 			}
 			msg = append(msg, p...)
 		default:
-			return "", &CloseError{1002, "unknown opcode"}
+			return "", false, &CloseError{1002, "unknown opcode"}
 		}
 		if len(msg) > max {
-			return "", &CloseError{1009, "message too big"}
+			return "", false, &CloseError{1009, "message too big"}
 		}
 		if fin {
-			return string(msg), nil
+			return string(msg), false, nil
 		}
 	}
 }
@@ -516,7 +551,8 @@ func (ws *Conn) Done() <-chan struct{} { return ws.gone }
 
 // Dial is a minimal client for tests and probes. dial opens the transport;
 // the client has no read deadline and sends no pings. Its writer goroutine
-// runs until Close, or until ReadMessage returns a non-timeout error.
+// runs until Close, or until ReadMessage returns any error other than a
+// timeout between messages.
 func Dial(ctx context.Context, dial func(ctx context.Context) (net.Conn, error), host, path string) (*Conn, error) {
 	c, err := dial(ctx)
 	if err != nil {

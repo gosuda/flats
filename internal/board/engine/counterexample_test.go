@@ -1289,3 +1289,234 @@ func TestReviewRound4Counterexamples(t *testing.T) {
 		check(t, h, before, board, ro.Delta, ro.Changed, eid("x"))
 	})
 }
+
+func TestReviewRound5Counterexamples(t *testing.T) {
+	// checkWhole applies a delta to a copy of the board before it, as a
+	// connected Private editor does, compares it with a fresh read and
+	// checks that id's row and bucket count as changed.
+	checkWhole := func(t *testing.T, h *harness, before []model.PrivateElement, board model.PrivateElement, d *model.Delta, changed Changed, id string) {
+		t.Helper()
+		c := &simClient{name: "editor", copy: map[string]model.PrivateElement{}, deleted: map[string]int64{}, board: board}
+		for _, e := range before {
+			c.copy[e.ID] = e
+		}
+		if err := c.applyDelta(d); err != nil {
+			t.Fatal(err)
+		}
+		c.watermark = d.Seq
+		if err := c.matches(h.s); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(changed.Buckets, model.BucketOf(id)) || !slices.Contains(changed.Elements, id) {
+			t.Fatalf("changed %+v misses %s", changed, id)
+		}
+		if err := CheckContent(content(h.s).Elements); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// pendingMove applies a move of id prepared against incarnation inc
+	// before a reset; it must apply on top of the reset.
+	pendingMove := func(t *testing.T, h *harness, session, name string, inc int64, x float64) {
+		t.Helper()
+		g := h.geom(eid(name))
+		g.X = x
+		out := h.ok(session, setGeom(name, inc, g, ""))
+		if rs := results(t, out); rs[0] != ResultOK || h.geom(eid(name)).X != x {
+			t.Fatalf("pending move gave %v, x %v", rs, h.geom(eid(name)).X)
+		}
+	}
+	penOf := func(name string, pts []int) model.Element {
+		el, _, err := model.DecodeElement(elOf(map[string]any{"id": eid(name), "type": "pen", "x": 0, "y": 0, "w": 100, "h": 100, "z": "V", "pts": pts}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return el
+	}
+
+	t.Run("same-type pen replacement and rollback keep the incarnation", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("p"), "type": "pen", "x": 0, "y": 0, "w": 100, "h": 100, "z": "V", "pts": []int{0, 0, 10000, 10000}})})
+		rev := content(h.s)
+		inc := h.inc(eid("p"))
+
+		// State.Replace with other points under the same id and type
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		c := content(h.s)
+		for i := range c.Elements {
+			c.Elements[i].Pts = []int{5000, 0, 0, 10000, 10000, 5000}
+		}
+		out, err := h.s.Replace(c, "import", h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("p")); r.Inc != inc || !slices.Equal(r.El.Pts, []int{5000, 0, 0, 10000, 10000, 5000}) {
+			t.Fatalf("replacement gave inc %d (was %d), pts %v", r.Inc, inc, r.El.Pts)
+		}
+		checkWhole(t, h, before, board, out.Delta, out.Changed, eid("p"))
+		pendingMove(t, h, a, "p", inc, 40)
+
+		// rollback to the revision with the first points
+		h.now += 100
+		before, board = h.s.Alive(), h.s.Board()
+		ro, err := h.s.Rollback(1, rev, h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("p")); r.Inc != inc || !slices.Equal(r.El.Pts, []int{0, 0, 10000, 10000}) {
+			t.Fatalf("rollback gave inc %d (was %d), pts %v", r.Inc, inc, r.El.Pts)
+		}
+		checkWhole(t, h, before, board, ro.Delta, ro.Changed, eid("p"))
+		pendingMove(t, h, a, "p", inc, 80)
+	})
+
+	t.Run("same-type image replacement by an agent and rollback keep the incarnation", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h1, h2 := strings.Repeat("1", 64), strings.Repeat("2", 64)
+		h.s.HoldAsset(Asset{Hash: h1, Mime: "image/png", W: 4, H: 3, Bytes: 99}, h.now+3600)
+		h.s.HoldAsset(Asset{Hash: h2, Mime: "image/png", W: 8, H: 6, Bytes: 199}, h.now+3600)
+		h.ok(a, Op{Op: OpAdd, El: elOf(map[string]any{"id": eid("i"), "type": "image", "x": 0, "y": 0, "w": 40, "h": 30, "z": "V", "asset": h1, "natural": []int{4, 3}})})
+		rev := content(h.s)
+		inc := h.inc(eid("i"))
+
+		h.now += 100
+		before, board := h.s.Alive(), h.s.Board()
+		img := elOf(map[string]any{"id": eid("i"), "type": "image", "x": 0, "y": 0, "w": 40, "h": 30, "z": "V", "asset": h2, "natural": []int{8, 6}})
+		out, err := h.agent(AgentCall{Replace: true, Ops: []AgentOp{{Op: "add", El: img}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("i")); r.Inc != inc || r.El.Asset != h2 || r.El.Natural != [2]int{8, 6} {
+			t.Fatalf("replacement gave inc %d (was %d), asset %s %v", r.Inc, inc, r.El.Asset, r.El.Natural)
+		}
+		if as := h.s.assets; as[h1].Refs != 0 || as[h2].Refs != 1 {
+			t.Fatalf("asset refs %d/%d", as[h1].Refs, as[h2].Refs)
+		}
+		checkWhole(t, h, before, board, out.Delta, out.Changed, eid("i"))
+		pendingMove(t, h, a, "i", inc, 40)
+
+		h.now += 100
+		before, board = h.s.Alive(), h.s.Board()
+		ro, err := h.s.Rollback(1, rev, h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("i")); r.Inc != inc || r.El.Asset != h1 || r.El.Natural != [2]int{4, 3} {
+			t.Fatalf("rollback gave inc %d (was %d), asset %s %v", r.Inc, inc, r.El.Asset, r.El.Natural)
+		}
+		checkWhole(t, h, before, board, ro.Delta, ro.Changed, eid("i"))
+		pendingMove(t, h, a, "i", inc, 80)
+	})
+
+	t.Run("a different type still starts a new incarnation", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("p", 0, 0))
+		inc := h.inc(eid("p"))
+		h.now += 100
+		if _, err := h.s.Replace(Content{Title: "Board", Elements: []model.Element{penOf("p", []int{0, 0, 1, 1})}}, "import", h.now); err != nil {
+			t.Fatal(err)
+		}
+		if r := h.row(eid("p")); r.Inc == inc || r.El.Type != model.TypePen {
+			t.Fatalf("type change kept inc %d", r.Inc)
+		}
+		g := h.geom(eid("p"))
+		out := h.ok(a, setGeom("p", inc, g, ""))
+		if rs := results(t, out); rs[0] != void(VoidGone) {
+			t.Fatalf("move of the old sticky gave %v", rs)
+		}
+	})
+
+	t.Run("deleting a target at the edge of the range leaves a valid free end", func(t *testing.T) {
+		max := float64(model.MaxCoord)
+		cases := []struct {
+			name   string
+			target Op
+			at     [2]float64
+			want   [2]float64
+		}{
+			// sticky at (MaxCoord, 0), 100×100: its right side is past the range
+			{"positive", addSticky("s", max, 0), [2]float64{1, 0.5}, [2]float64{max, 50}},
+			// control: a shape at (-MaxCoord, -MaxCoord) rotated 180 puts
+			// [1, 1] on its origin, in range, so nothing is clamped
+			{"negative edge in range", addShape("s", -max, -max, 100, 100, 180), [2]float64{1, 1}, [2]float64{-max, -max}},
+			// 1000×100 shape rotated 90 at y = -MaxCoord: its left side reaches y = -MaxCoord-450
+			{"negative rotated 90", addShape("s", 0, -max, 1000, 100, 90), [2]float64{0, 0.5}, [2]float64{500, -max}},
+			// rotated 45 near both positive limits
+			{"rotated 45", addShape("s", max, max, 1000, 1000, 45), [2]float64{1, 1}, [2]float64{max, max}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				// delete: an ordinary delete of the target
+				h := newHarness(t)
+				a := h.session("a")
+				h.ok(a, tc.target)
+				h.ok(a, addConnector("c", attach("s", tc.at[0], tc.at[1]), free(0, 0), map[string]int64{eid("s"): h.inc(eid("s"))}))
+				h.ok(a, deleteOp(h, "s"))
+				if got := h.row(eid("c")).El.Ends[0]; got.El != "" || got.Pt != tc.want {
+					t.Fatalf("free end %+v, want %v", got, tc.want)
+				}
+				if err := CheckContent(content(h.s).Elements); err != nil {
+					t.Fatal(err)
+				}
+
+				// connector deleted first, then its target; the connector
+				// alone comes back with a free end at its last coordinate
+				h = newHarness(t)
+				a = h.session("a")
+				h.ok(a, tc.target)
+				h.ok(a, addConnector("c", attach("s", tc.at[0], tc.at[1]), free(0, 0), map[string]int64{eid("s"): h.inc(eid("s"))}))
+				h.ok(a, deleteOp(h, "c"))
+				h.ok(a, deleteOp(h, "s"))
+				h.ok(a, Op{Op: OpRevive, IDs: []string{eid("c")}, IfDel: h.row(eid("c")).DelSeq})
+				if got := h.row(eid("c")).El.Ends[0]; got.El != "" || got.Pt != tc.want {
+					t.Fatalf("revived free end %+v, want %v", got, tc.want)
+				}
+				if err := CheckContent(content(h.s).Elements); err != nil {
+					t.Fatal(err)
+				}
+
+				// a rollback drops both; reviving the connector alone frees
+				// its end at the clamped coordinate
+				h = newHarness(t)
+				a = h.session("a")
+				empty := content(h.s)
+				h.ok(a, tc.target)
+				h.ok(a, addConnector("c", attach("s", tc.at[0], tc.at[1]), free(0, 0), map[string]int64{eid("s"): h.inc(eid("s"))}))
+				h.now += 100
+				ro, err := h.s.Rollback(1, empty, h.now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := checkInvariants(h.s); err != nil {
+					t.Fatal(err)
+				}
+				h.ok(a, Op{Op: OpRevive, IDs: []string{eid("c")}, IfDel: ro.Seq})
+				if got := h.row(eid("c")).El.Ends[0]; got.El != "" || got.Pt != tc.want {
+					t.Fatalf("free end after rollback %+v, want %v", got, tc.want)
+				}
+				if err := CheckContent(content(h.s).Elements); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
+
+	t.Run("deleting frame contents at the edge of the range leaves a valid free end", func(t *testing.T) {
+		max := float64(model.MaxCoord)
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addFrame("f", max-1000, max-1000, 1000, 1000))
+		h.ok(a, addIn("s", "f", h.inc(eid("f")), max, max))
+		h.ok(a, addConnector("c", attach("s", 1, 1), free(0, 0), map[string]int64{eid("s"): h.inc(eid("s"))}))
+		h.ok(a, Op{Op: OpDeleteFrameContents, Frame: raw(eid("f")), Inc: h.inc(eid("f"))})
+		if got := h.row(eid("c")).El.Ends[0]; got.El != "" || got.Pt != [2]float64{max, max} {
+			t.Fatalf("free end %+v", got)
+		}
+		if err := CheckContent(content(h.s).Elements); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

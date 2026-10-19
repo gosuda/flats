@@ -54,6 +54,15 @@ export function clampGeom(g) {
   return { x: round1(c(g.x)), y: round1(c(g.y)), w: round1(s(g.w)), h: round1(s(g.h)), rot: round1(rot) };
 }
 
+// clampPoint limits a free connector end to the coordinate range and rounds
+// it as the server stores it (model.ClampPoint). An end derived from an
+// element near the edge of the range, or moved past it, would otherwise be
+// refused as invalid.
+export function clampPoint(p) {
+  const c = (v) => Math.max(-LIMITS.coord, Math.min(LIMITS.coord, v));
+  return [round1(c(p[0])), round1(c(p[1]))];
+}
+
 export const geomOf = (el) => ({ x: el.x, y: el.y, w: el.w, h: el.h, rot: el.rot || 0 });
 
 // withBundle returns a copy of el with bundle g set to val.

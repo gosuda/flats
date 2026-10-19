@@ -248,13 +248,15 @@ func sortedEnds(m map[connEnd]struct{}) []connEnd {
 	return out
 }
 
-// endWorld is the canvas coordinate of a connector end now. The target row
-// keeps its geometry even when it is deleted.
+// endWorld is the canvas coordinate of a connector end now, as a valid free
+// end: an attached end's point is clamped to the coordinate range, which
+// a target at the edge of the range can reach past. The target row keeps its
+// geometry even when it is deleted.
 func (a *applier) endWorld(end model.End) [2]float64 {
 	if end.El == "" {
 		return end.Pt
 	}
-	return model.EndpointWorld(a.s.rows[end.El].El.Geom, end.At)
+	return model.ClampPoint(model.EndpointWorld(a.s.rows[end.El].El.Geom, end.At))
 }
 
 // preRel captures the relations of id from the start of this change (4.1).
@@ -348,7 +350,7 @@ func (a *applier) revivePhases(ids []string, ifDel int64) (*MultiResult, groupFi
 		r.Deleted, r.DelSeq, r.PreRel, r.Inc = false, 0, nil, a.seq
 		r.El.Frame, r.El.Group = "", ""
 		if r.El.Type == model.TypeConnector {
-			r.El.Ends = [2]model.End{{Pt: old.EndLast[0]}, {Pt: old.EndLast[1]}}
+			r.El.Ends = [2]model.End{{Pt: model.ClampPoint(old.EndLast[0])}, {Pt: model.ClampPoint(old.EndLast[1])}}
 			r.EndInc = [2]int64{}
 		}
 		a.put(r)
@@ -390,7 +392,7 @@ func (a *applier) restoreOwnRelations(id string, old *Row, inS map[string]bool) 
 	set(model.BundleGroup, pr.Group)
 	if r.El.Type == model.TypeConnector {
 		for k := range 2 {
-			end := model.End{Pt: old.EndLast[k]}
+			end := model.End{Pt: model.ClampPoint(old.EndLast[k])}
 			if k < len(pr.Ends) {
 				er := pr.Ends[k]
 				t := a.s.rows[er.End.El]

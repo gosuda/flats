@@ -663,7 +663,7 @@ func contentMayDiffer(old, cur *Row) bool {
 	if !cur.alive() {
 		return false
 	}
-	return old.Inc != cur.Inc || old.El.Z != cur.El.Z || !maps.Equal(old.V, cur.V) || !sameAuthor(old.El, cur.El)
+	return old.Inc != cur.Inc || old.El.Z != cur.El.Z || !maps.Equal(old.V, cur.V) || !sameUnversioned(old.El, cur.El)
 }
 
 func diffStacks(session string, old, cur *stacks) []UndoKey {

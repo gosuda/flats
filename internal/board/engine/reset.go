@@ -140,23 +140,26 @@ func (a *applier) resetContent(c Content) error {
 }
 
 // resetElement makes element el.ID equal to el. An alive element of the same
-// type and identity keeps its incarnation; otherwise the element starts a
-// new incarnation.
+// type keeps its incarnation (4.11, 4.12); only a different type starts a new
+// one. The fields outside every bundle (the author fields and the immutable
+// pen points, image asset and natural size) follow the content too, and the
+// element then goes out whole with its incarnation (diffRow).
 func (a *applier) resetElement(el model.Element) {
 	cur := a.s.rows[el.ID]
 	el.Normalize()
 	a.useGroup(el.Group)
-	if cur.alive() && sameIdentity(cur.El, el) {
+	if cur.alive() && cur.El.Type == el.Type {
 		r := cur.clone()
 		for _, g := range model.Bundles(el.Type) {
 			if v := el.Bundle(g); !model.BundleEqual(g, r.El.Bundle(g), v) {
 				a.setBundle(r, g, v)
 			}
 		}
-		// The author fields follow the content too, so a rollback's buckets
-		// equal the revision's files (rule 45: no new stored content).
+		// A rollback's buckets equal the revision's files (rule 45: no new
+		// stored content), so the unversioned fields follow it as well.
 		r.El.By, r.El.At = el.By, el.At
-		if !maps.Equal(r.V, cur.V) || r.El.By != cur.El.By || r.El.At != cur.El.At {
+		r.El.Pts, r.El.Asset, r.El.Natural = el.Pts, el.Asset, el.Natural
+		if !maps.Equal(r.V, cur.V) || !sameUnversioned(r.El, cur.El) {
 			a.put(r)
 		}
 		return
@@ -166,12 +169,6 @@ func (a *applier) resetElement(el model.Element) {
 		r.V[g] = a.seq
 	}
 	a.put(r)
-}
-
-// sameIdentity reports whether two elements with one id are the same
-// element: same type and the same fields that never change.
-func sameIdentity(x, y model.Element) bool {
-	return x.Type == y.Type && slices.Equal(x.Pts, y.Pts) && x.Asset == y.Asset && x.Natural == y.Natural
 }
 
 // CheckContent checks a whole content set (9.2 element schema): element

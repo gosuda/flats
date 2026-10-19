@@ -315,3 +315,76 @@ func TestDialClientSurvivesReadTimeout(t *testing.T) {
 	client.Close(1006, "")
 	waitEnded(t, client)
 }
+
+// A timeout inside a frame or a fragmented message loses the part already
+// read, so a client cannot retry: it ends its connection and every later read
+// fails without waiting.
+func TestDialClientEndsOnTimeoutInsideMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  []byte // unmasked server-to-client bytes
+	}{
+		{"between fragments", []byte{0x01, 0x03, 'a', 'b', 'c'}}, // non-final text frame
+		{"inside a frame header", []byte{0x81}},
+		{"inside a frame payload", []byte{0x81, 0x05, 'a', 'b'}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := dialPair(t)
+			if _, err := server.NetConn().Write(tc.raw); err != nil {
+				t.Fatal(err)
+			}
+			client.NetConn().SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+			_, err := client.ReadMessage(1 << 20)
+			var ne net.Error
+			if !errors.As(err, &ne) || !ne.Timeout() || !strings.Contains(err.Error(), "inside a message") {
+				t.Fatalf("read error = %v, want a timeout inside a message", err)
+			}
+			waitEnded(t, client)
+			if code, _ := client.CloseStatus(); code != 1006 {
+				t.Fatalf("client close code %d, want 1006", code)
+			}
+			_, err = client.ReadMessage(1 << 20)
+			if !errors.Is(err, errReadBroken) || errors.As(err, &ne) {
+				t.Fatalf("retry error = %v, want errReadBroken and no timeout", err)
+			}
+		})
+	}
+}
+
+// On a server connection an idle timeout between messages can be retried,
+// while one between the fragments of a message leaves the reader unusable;
+// the owner closes the connection.
+func TestServerReadTimeoutBetweenAndInsideMessages(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	server := newConn(a, bufio.NewReader(a), false)
+	server.readIdleTimeout = 200 * time.Millisecond
+	var ne net.Error
+	_, err := server.ReadMessage(1 << 20)
+	if !errors.As(err, &ne) || !ne.Timeout() || strings.Contains(err.Error(), "inside a message") {
+		t.Fatalf("idle read error = %v, want a plain timeout", err)
+	}
+	// Masked client frames with a zero key carry their payload unchanged.
+	write := func(raw ...byte) {
+		go b.Write(raw)
+	}
+	write(0x81, 0x82, 0, 0, 0, 0, 'o', 'k')
+	if got, err := server.ReadMessage(1 << 20); err != nil || got != "ok" {
+		t.Fatalf("read after an idle timeout = %q, %v", got, err)
+	}
+	write(0x01, 0x83, 0, 0, 0, 0, 'a', 'b', 'c') // non-final text frame
+	_, err = server.ReadMessage(1 << 20)
+	if !errors.As(err, &ne) || !ne.Timeout() || !strings.Contains(err.Error(), "inside a message") {
+		t.Fatalf("read error = %v, want a timeout inside a message", err)
+	}
+	write(0x80, 0x81, 0, 0, 0, 0, 'd') // the final continuation arrives late
+	_, err = server.ReadMessage(1 << 20)
+	if !errors.Is(err, errReadBroken) || errors.As(err, &ne) {
+		t.Fatalf("retry error = %v, want errReadBroken and no timeout", err)
+	}
+	if code, _ := server.CloseStatus(); code != 0 {
+		t.Fatalf("the reader closed a server connection (code %d); its owner closes it", code)
+	}
+}

@@ -130,16 +130,36 @@ func (m *sim) step() error {
 		if m.rng.IntN(2) == 0 {
 			out, err = m.s.Rollback(1, m.revisions[m.rng.IntN(len(m.revisions))], m.now)
 		} else {
-			// A replacement that keeps every element and rewrites only some
-			// author fields: those reach editors and buckets too.
+			// A replacement that keeps every element and its type and
+			// rewrites only fields outside every bundle: some author fields,
+			// pen points and image assets. Each element keeps its
+			// incarnation, and those fields reach editors and buckets too.
 			c := content(m.s)
 			m.imports++
 			for i := range c.Elements {
+				el := &c.Elements[i]
 				if m.rng.IntN(2) == 0 {
-					c.Elements[i].By, c.Elements[i].At = "import:sim", m.imports
+					el.By, el.At = "import:sim", m.imports
+				}
+				switch {
+				case el.Type == model.TypePen && m.rng.IntN(2) == 0:
+					el.Pts = []int{m.rng.IntN(10001), m.rng.IntN(10001), m.rng.IntN(10001), m.rng.IntN(10001)}
+				case el.Type == model.TypeImage && m.rng.IntN(2) == 0:
+					el.Asset = m.assets[m.rng.IntN(len(m.assets))]
+					el.Natural = [2]int{1 + m.rng.IntN(20), 1 + m.rng.IntN(20)}
+					c.Assets[el.Asset] = *m.s.assets[el.Asset]
 				}
 			}
+			incs := map[string]int64{}
+			for _, el := range c.Elements {
+				incs[el.ID] = m.s.rows[el.ID].Inc
+			}
 			out, err = m.s.Replace(c, "import", m.now)
+			for id, inc := range incs {
+				if err == nil && m.s.rows[id].Inc != inc {
+					return fmt.Errorf("replacement gave %s a new incarnation", id)
+				}
+			}
 		}
 		if err != nil {
 			return err

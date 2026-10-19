@@ -3,7 +3,7 @@
 // The screen is the server copy with the pending batches applied again on top
 // (the overlay), plus a transient preview while a drag is in progress.
 
-import { withBundle } from './schema.js';
+import { clampPoint, withBundle } from './schema.js';
 import { endpointWorld } from './geom.js';
 import { keyBetween } from './ids.js';
 
@@ -11,6 +11,20 @@ import { keyBetween } from './ids.js';
 // keys in a delta or op are ignored, so they can never reach object
 // internals such as __proto__.
 const META_KEYS = new Set(['title', 'grid']);
+
+// activityCounts counts a delta's element changes for a notice. A revive
+// that replaced an element the client already had at the same incarnation
+// (r.replaced from applyDelta) is a change, not an addition.
+export function activityCounts(d, r) {
+  let added = 0, changed = 0, removed = 0;
+  for (const c of d.changes || []) {
+    if (c.id === '_board') continue;
+    if (c.add || (c.revive && !(r && r.replaced && r.replaced.has(c.id)))) added++;
+    else if (c.del !== undefined) removed++;
+    else changed++;
+  }
+  return { added, changed, removed };
+}
 
 export class BoardState {
   constructor() {
@@ -108,6 +122,7 @@ export class BoardState {
     const n = this.#ownBatch(d.from);
     const mine = n != null;
     const changed = new Set();
+    const replaced = new Set();
     const overwritten = [];
     for (const c of d.changes || []) {
       changed.add(c.id);
@@ -121,7 +136,15 @@ export class BoardState {
         continue;
       }
       if (c.add) this.server.set(c.id, c.add);
-      else if (c.revive) this.server.set(c.id, c.revive);
+      else if (c.revive) {
+        // A reset that changes only author fields or immutable content of a
+        // surviving element revives it at the same incarnation: the element
+        // is replaced, not new. Public clients see no incarnations, so for
+        // them any revive of an element they already have is a replacement.
+        const prev = this.server.get(c.id);
+        if (prev && prev.inc === c.revive.inc) replaced.add(c.id);
+        this.server.set(c.id, c.revive);
+      }
       else if (c.del !== undefined) this.server.delete(c.id);
       else if (c.set) {
         const prev = this.server.get(c.id);
@@ -155,7 +178,7 @@ export class BoardState {
     }
     if (d.reset) this.myText.clear();
     for (const id of this.#rebuild()) changed.add(id);
-    return { status: 'applied', changed, mine, overwritten, reset: d.reset || null };
+    return { status: 'applied', changed, replaced, mine, overwritten, reset: d.reset || null };
   }
 
   #ownBatch(from) {
@@ -273,9 +296,12 @@ export function applyOp(op, c) {
 
 function shiftElement(m, dx, dy, c) {
   if (m.type === 'connector') {
-    const ends = m.ends.map((e) => (e.pt ? { pt: [e.pt[0] + dx, e.pt[1] + dy] } : e));
+    const ends = m.ends.map((e) => (e.pt ? { pt: clampPoint([e.pt[0] + dx, e.pt[1] + dy]) } : e));
     c.put({ ...m, ends });
-  } else c.put({ ...m, x: m.x + dx, y: m.y + dy });
+  } else {
+    const [x, y] = clampPoint([m.x + dx, m.y + dy]);
+    c.put({ ...m, x, y });
+  }
 }
 
 function targetsWithGroups(ids, c) {
@@ -302,7 +328,7 @@ function deleteLocal(ids, c) {
     if (m.type === 'connector' && m.ends.some((e) => e.el && gone.has(e.el))) {
       n = {
         ...n,
-        ends: m.ends.map((e) => (e.el && gone.has(e.el) ? { pt: endpointWorld(victims.get(e.el), e.at) } : e)),
+        ends: m.ends.map((e) => (e.el && gone.has(e.el) ? { pt: clampPoint(endpointWorld(victims.get(e.el), e.at)) } : e)),
       };
     }
     if (n !== m) c.put(n);

@@ -2,7 +2,7 @@
 // code. It renders the board on Canvas 2D and edits it through the live
 // WebSocket protocol of board-TECH.md.
 
-import { BoardState } from './state.js';
+import { BoardState, activityCounts } from './state.js';
 import { Net, queueBatch } from './net.js';
 import { SpatialIndex } from './index.js';
 import { Renderer } from './render.js';
@@ -212,7 +212,7 @@ class App {
     this.changed(r.changed);
     for (const o of r.overwritten) this.overwritten(o, d.by);
     if (r.reset) this.undo.cleared(r.reset, d.by);
-    if (d.by && d.by.kind === 'agent') this.agentActivity(d);
+    if (d.by && d.by.kind === 'agent') this.agentActivity(d, r);
     if (this.editor) this.editor.remote();
     this.history.deltaArrived();
   }
@@ -766,15 +766,11 @@ class App {
     if (this.commit([ops.addOp(this.state, n)])) this.select([n.id]);
   }
 
-  agentActivity(d) {
-    let added = 0, changed = 0, removed = 0;
+  agentActivity(d, r) {
+    const { added, changed, removed } = activityCounts(d, r);
     const until = performance.now() + 2000;
     for (const c of d.changes) {
-      if (c.id === '_board') continue;
-      if (c.add || c.revive) added++;
-      else if (c.del !== undefined) removed++;
-      else changed++;
-      if (c.del === undefined) this.highlights.set(c.id, until);
+      if (c.id !== '_board' && c.del === undefined) this.highlights.set(c.id, until);
     }
     const parts = [];
     if (added) parts.push(`added ${plural(added, 'element')}`);

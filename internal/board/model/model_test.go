@@ -398,3 +398,20 @@ func TestSchemaInvalidValues(t *testing.T) {
 		t.Fatalf("null frame = %v, %v", v, err)
 	}
 }
+
+func TestClampPoint(t *testing.T) {
+	for _, c := range []struct{ in, want [2]float64 }{
+		{[2]float64{0, 0}, [2]float64{0, 0}},
+		{[2]float64{MaxCoord, -MaxCoord}, [2]float64{MaxCoord, -MaxCoord}},
+		{[2]float64{MaxCoord + 100, 50}, [2]float64{MaxCoord, 50}},
+		{[2]float64{-3, -MaxCoord - 0.1}, [2]float64{-3, -MaxCoord}},
+	} {
+		got := ClampPoint(c.in)
+		if got != c.want {
+			t.Errorf("ClampPoint(%v) = %v, want %v", c.in, got, c.want)
+		}
+		if err := (End{Pt: got}).validate(); err != nil {
+			t.Errorf("ClampPoint(%v) gives an invalid end: %v", c.in, err)
+		}
+	}
+}

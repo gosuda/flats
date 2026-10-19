@@ -101,3 +101,44 @@ test('bring forward goes just above the next overlapping element', () => {
   const [op] = zorderOps(s, ['e_a000000001'], 'forward');
   assert.deepEqual(op.to, { after: 'e_c000000001', inc: 2 });
 });
+
+// Free connector ends stay inside the coordinate range (±LIMITS.coord), as the
+// server clamps them (model.ClampPoint); an unclamped end is refused.
+const MAX = 10_000_000;
+const conn = (id, ends, extra) => ({ id, type: 'connector', z: 'W', locked: false, ends, inc: 2, v: {}, ...extra });
+
+test('clampPoint limits a point to the coordinate range and rounds it', async () => {
+  const { clampPoint } = await import('../schema.js');
+  assert.deepEqual(clampPoint([MAX + 50.04, -MAX - 1]), [MAX, -MAX]);
+  assert.deepEqual(clampPoint([12.34, -5.66]), [12.3, -5.7]);
+});
+
+test('pasting a connector near the edge clamps its free ends', () => {
+  const s = board(conn('e_conn000001', [{ pt: [0, 0] }, { pt: [100, 0] }]));
+  const payload = copyPayload(s, ['e_conn000001']);
+  const { ops } = pasteOps(s, payload, [MAX - 10, 0]);
+  assert.equal(ops.length, 1);
+  assert.deepEqual(ops[0].el.ends, [{ pt: [MAX - 60, 0] }, { pt: [MAX, 0] }]);
+});
+
+test('copying a connector whose target stays behind at the edge clamps the freed end', () => {
+  const s = board(
+    base('e_edge000001', { x: MAX - 50, y: 0, w: 100, h: 100 }),
+    conn('e_conn000001', [{ el: 'e_edge000001', at: [1, 0.5] }, { pt: [0, 0] }]),
+  );
+  const payload = copyPayload(s, ['e_conn000001']);
+  assert.deepEqual(payload.elements[0].ends[0], { pt: [MAX, 50] });
+  const { ops } = pasteOps(s, payload, [MAX - 10, 0]);
+  for (const e of ops[0].el.ends) assert.ok(Math.abs(e.pt[0]) <= MAX && Math.abs(e.pt[1]) <= MAX, `pasted end ${e.pt} is in range`);
+});
+
+test('moving a connector past the edge clamps its free ends in the batch and the preview', async () => {
+  const { movePreview, moveUnits } = await import('../ops.js');
+  const s = board(conn('e_conn000001', [{ pt: [MAX - 20, 0] }, { pt: [-MAX + 5, -MAX + 5] }]));
+  const ops = moveOps(s, ['e_conn000001'], 50, -10.04);
+  assert.deepEqual(ops.map((o) => [o.g, o.val]), [['end0', { pt: [MAX, -10] }], ['end1', { pt: [-MAX + 55, -MAX] }]]);
+  const preview = movePreview(s, moveUnits(s, ['e_conn000001']), 50, -10.04);
+  assert.deepEqual(preview.get('e_conn000001').ends, [{ pt: [MAX, -10] }, { pt: [-MAX + 55, -MAX] }]);
+  s.push(ops);
+  assert.deepEqual(s.get('e_conn000001').ends, [{ pt: [MAX, -10] }, { pt: [-MAX + 55, -MAX] }]);
+});

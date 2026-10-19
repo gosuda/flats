@@ -3,7 +3,7 @@
 // BoardState (get, incOf, all).
 
 import { newId, newGroupId, keyBetween, keysBetween, zCompare } from './ids.js';
-import { clampGeom, contentOf, geomOf, round1 } from './schema.js';
+import { clampGeom, clampPoint, contentOf, geomOf } from './schema.js';
 import { elementBounds, elementCenter, endWorld, insideBox, union, center, sideAnchor, rectFromPoints } from './geom.js';
 
 const get = (view) => (id) => view.get(id);
@@ -121,7 +121,7 @@ function shiftOps(view, u, dx, dy) {
   if (u.kind === 'conn') {
     const out = [];
     u.el.ends.forEach((e, i) => {
-      if (e.pt) out.push({ op: 'set', id: u.el.id, inc: view.incOf(u.el.id), g: 'end' + i, val: { pt: [round1(e.pt[0] + dx), round1(e.pt[1] + dy)] } });
+      if (e.pt) out.push({ op: 'set', id: u.el.id, inc: view.incOf(u.el.id), g: 'end' + i, val: { pt: clampPoint([e.pt[0] + dx, e.pt[1] + dy]) } });
     });
     return out;
   }
@@ -138,7 +138,7 @@ export function movePreview(view, units, dx, dy) {
   const out = new Map();
   const shift = (m) => {
     if (m.type === 'connector') {
-      out.set(m.id, { ...m, ends: m.ends.map((e) => (e.pt ? { pt: [e.pt[0] + dx, e.pt[1] + dy] } : e)) });
+      out.set(m.id, { ...m, ends: m.ends.map((e) => (e.pt ? { pt: clampPoint([e.pt[0] + dx, e.pt[1] + dy]) } : e)) });
     } else out.set(m.id, { ...m, x: m.x + dx, y: m.y + dy });
   };
   for (const u of units) {
@@ -314,7 +314,7 @@ export function copyPayload(view, ids) {
     if (c.frame && !set.has(c.frame)) delete c.frame;
     if (c.group && groupCount.get(c.group) < 2) delete c.group;
     if (c.type === 'connector') {
-      c.ends = c.ends.map((e) => (e.el && !set.has(e.el) ? { pt: endWorld(e, get(view)).map(round1) } : e));
+      c.ends = c.ends.map((e) => (e.el && !set.has(e.el) ? { pt: clampPoint(endWorld(e, get(view))) } : e));
     }
     elements.push(c);
   }
@@ -356,7 +356,7 @@ export function pasteOps(view, payload, at) {
   others.forEach((e, i) => out.push({ ...e, id: ids.get(e.id), z: otherZ[i] }));
   for (const n of out) {
     if (n.type === 'connector') {
-      n.ends = n.ends.map((e) => (e.el ? { el: ids.get(e.el), at: e.at } : { pt: [round1(e.pt[0] + dx), round1(e.pt[1] + dy)] }));
+      n.ends = n.ends.map((e) => (e.el ? { el: ids.get(e.el), at: e.at } : { pt: clampPoint([e.pt[0] + dx, e.pt[1] + dy]) }));
     } else Object.assign(n, clampGeom({ ...geomOf(n), x: n.x + dx, y: n.y + dy }));
     if (n.frame) n.frame = ids.get(n.frame);
     if (n.group) n.group = groups.get(n.group);

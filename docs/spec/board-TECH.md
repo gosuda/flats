@@ -95,8 +95,8 @@ Content fields per type:
 |---|---|
 | `shape` | `style.shape`: `rect`, `round`, `ellipse`, `diamond` |
 | `connector` | `ends`: the two ends. Each end is `{"el": id, "at": [ax, ay]}` (the target element and a normalized position from 0 to 1 inside the target's bounding box) or `{"pt": [x, y]}` (a free coordinate). `style.route`: `straight`, `elbow`. A connector's `x,y,w,h,rot` are not stored; the server computes them from the endpoints |
-| `pen` | `pts`: `[x0,y0,x1,y1,...]`, normalized coordinates inside the element box (integers from 0 to 10,000), 2,000 points per stroke. **Set at creation and never changed** (the B1 eraser deletes whole strokes). Moving and resizing change only `geom`. `style.width`: `pen`, `marker` |
-| `image` | `asset`: the asset hash, `alt`: alternative text (at most 1,000 characters), `natural`: `[w, h]` |
+| `pen` | `pts`: `[x0,y0,x1,y1,...]`, normalized coordinates inside the element box (integers from 0 to 10,000), 2,000 points per stroke. **Set at creation and never changed** by edits (the B1 eraser deletes whole strokes); only a whole-board rollback or replacement can give a surviving pen other points, keeping its incarnation (4.11, 4.12). Moving and resizing change only `geom`. `style.width`: `pen`, `marker` |
+| `image` | `asset`: the asset hash, `alt`: alternative text (at most 1,000 characters), `natural`: `[w, h]`. `asset` and `natural` are fixed like a pen's `pts`: only a whole-board rollback or replacement changes them (4.11, 4.12) |
 | `frame` | `text` is the frame name |
 | `connector` label | `text` is the label, drawn at the middle of the path |
 
@@ -265,7 +265,7 @@ at the moment of applying**. Explicit targets carry expected incarnations.
 | `reparent` | `{op:"reparent", ids, inc_of, frame, frame_inc?}` (`frame` is an id or `null`; `frame_inc` is required with an id) | Moves all group members of a target together (group invariant). A frame cannot go inside a frame. Ignored when the target frame does not exist or its incarnation differs. A locked direct target is ignored (`locked`); locked members of its group change membership along with it |
 | `group` | `{op:"group", ids, inc_of, group: new id}` | All targets must be alive, not locked, in the same frame (or all outside frames) and in no other group. Otherwise the whole operation is ignored (`invalid_group`), as [rule 34](board.md#concurrency-rules) states |
 | `ungroup` | `{op:"ungroup", group}` | Clears `group` on every current member of that group (including locked members, because ungrouping acts on the group itself). Every `group` operation creates a new group id and ids are never reused, so no incarnation is needed: the board records every group id it has used (board.db `created`, under no session, never expiring), and a `group` naming one is ignored (`invalid_group`) even after an ungroup, after its members' rows are purged and after a restart |
-| `delete` | `{op:"delete", ids, inc_of, if_v?}` | Each element must be alive, have the same incarnation and not be locked (otherwise only that element is ignored). With `if_v` (per element `{g: v}`), every bundle must match (`stale`). The server first captures `pre_rel` for the whole set to delete, **before changing anything**. Then, for a frame, it clears the `frame` of members outside the set, and replaces the attached ends of connectors outside the set with free coordinates computed from the shape just before deletion |
+| `delete` | `{op:"delete", ids, inc_of, if_v?}` | Each element must be alive, have the same incarnation and not be locked (otherwise only that element is ignored). With `if_v` (per element `{g: v}`), every bundle must match (`stale`). The server first captures `pre_rel` for the whole set to delete, **before changing anything**. Then, for a frame, it clears the `frame` of members outside the set, and replaces the attached ends of connectors outside the set with free coordinates computed from the shape just before deletion, clamped to the coordinate range (±10,000,000): a target at the edge of the range reaches past it with its size and rotation |
 | `delete_frame_contents` | `{op:"delete_frame_contents", frame, inc}` | Deletes the frame and its current members under the rules above. **Locked members are not deleted**; only their membership is cleared. The result reports how many locked elements remain |
 | `zorder` | `{op:"zorder", ids, inc_of, to, if_v?}` (`if_v` is used by undo) | `to`: `"front"`, `"back"`, `{"after": id, "inc"}`, `{"before": id, "inc"}`. Locked targets are ignored. The server creates a new `z` from the current order |
 | `meta` | `{op:"meta", g, val, if_v?}` | A board metadata bundle (the `_board` pseudo-element, 3.3) |
@@ -296,7 +296,8 @@ at the moment of applying**. Explicit targets carry expected incarnations.
 - When a target element is deleted, the 4.3 `delete` detaches the ends in the
   same batch. The delta carries the detached coordinates and end versions.
 - When a connector itself is deleted, it keeps the world coordinate of each
-  attached end at that moment in `end_last`. When the connector is revived,
+  attached end at that moment in `end_last`, clamped to the coordinate range
+  like a detached end. When the connector is revived,
   each attached end stays attached if its target is alive with an
   incarnation equal to `end_inc`, and otherwise becomes a free end at the
   `end_last` coordinate (the case where the connector was deleted first, the
@@ -387,9 +388,10 @@ sequenceDiagram
   incarnations, new `z` values, membership cleanup).
   `{seq, from?, by?, reset?, changes: [{id, inc, set: {g: [val, v]}, overwrote?: v} | {id, inc, add: el} | {id, del: del_seq} | {id, inc, revive: el}]}`.
   `reset` is `{kind: "rollback", of: R}` or `{kind: "replace"}` (4.11, 4.12).
-  `by` and `at` belong to no bundle, so an element whose author fields a
-  reset changed goes out whole as `revive`, keeping its incarnation, and
-  its bucket counts as changed.
+  `by` and `at`, a pen's `pts` and an image's `asset` and `natural` belong
+  to no bundle, so an element whose such field a reset changed goes out
+  whole as `revive`, keeping its incarnation, and its bucket counts as
+  changed.
 - Every committed batch goes out as a delta, **including to its sender**. Only
   batches that changed something get a seq. A batch whose operations were all
   ignored leaves only a receipt and no delta, and its ack's `seq` is the
@@ -631,7 +633,11 @@ around 1 MB or less.
    2. Read R's buckets (blobs) and set the elements table to R's content.
       - An element alive now and present in R: **keeps its incarnation**.
         Only the bundles whose content differs change, and their `v` becomes
-        the rollback seq. Its `by` and `at` become R's (4.6).
+        the rollback seq. Its `by` and `at` become R's, and so do a pen's
+        `pts` and an image's `asset` and `natural` when R holds other values
+        under the same id and type; the element then goes out whole (4.6).
+        Only an id that R holds with a different element type is deleted
+        and created again with a new incarnation, as in 4.12.
       - An element absent now and present in R: revived with a new
         incarnation (the rollback seq).
       - An element alive now and absent in R: deleted (`del_seq` is the
@@ -688,7 +694,8 @@ or call as the source instead of R:
    1. When an open person group is dirty, record a `person` entry.
    2. Set the elements table to the new content. Ids that are alive now and
       present in the new content keep their incarnation and change only the
-      differing bundles and the author fields (4.6); ids absent now get a new incarnation; ids alive now
+      differing bundles, the author fields and a pen's `pts` or an image's
+      `asset` and `natural` (4.6); ids absent now get a new incarnation; ids alive now
       and absent from the new content become deleted, with `pre_rel`
       captured as for a deletion. An id that the new content reuses for a
       different element type is treated as deleted and created again.
@@ -1495,7 +1502,7 @@ step. Modules: `state.js` (server copy, pending, delta application), `net.js`
 | Category | Contents |
 |---|---|
 | Reference model | An **independent reference model** (in Go, small and slow) that transcribes the product [concurrency rules](board.md#concurrency-rules) (rules 27 to 34) directly. Tests compare the server implementation with it on the same input. It judges not only convergence but whether the result is "correct by the rules". It does not cover TECH-only mechanisms (frame following, undo lineage, incarnations, revive); deterministic tests and invariant checks (below) cover those |
-| Deterministic counterexamples | The counterexamples found in review become fixed tests: edits to elements that stayed alive after a rollback, a lost ack plus another person's overwrite, session expiry with pending batches, number retention after a transient failure, a member's membership changing while a group moves into a frame, two people moving a frame at once, a late operation on an element revived after deletion, connector detach coordinates when the target is deleted, consecutive undos with interleaved edits, undo after a frame move where someone else moved a member, undo of a group's frame move, creation undo after undoing my own edit of the created element, deletion undo of an element someone else deleted again, deletion undo after deleting a connector and its target at once (in both deletion orders), deletion undo of a group member deleted in the same batch that moved its group to another frame (the revived member keeps its group), undo of a frame move with 10,000 pens, splitting the delta of a large frame move, no author fields in public deltas, create-then-edit before the ack, create-then-connect in one batch, both resent after a reconnect, resizing a frame from its top-left corner, an idle board edited after more than 2 minutes, a delta log filled and trimmed, a full Public pool admitting an editor, concurrent and sequential text edits, rollback to a revision whose image asset row was cleaned up, whole-board replacement with pending batches, a replacement just over the quota refused with nothing changed, rollback into an over-quota state |
+| Deterministic counterexamples | The counterexamples found in review become fixed tests: edits to elements that stayed alive after a rollback, a lost ack plus another person's overwrite, session expiry with pending batches, number retention after a transient failure, a member's membership changing while a group moves into a frame, two people moving a frame at once, a late operation on an element revived after deletion, connector detach coordinates when the target is deleted, consecutive undos with interleaved edits, undo after a frame move where someone else moved a member, undo of a group's frame move, creation undo after undoing my own edit of the created element, deletion undo of an element someone else deleted again, deletion undo after deleting a connector and its target at once (in both deletion orders), deletion undo of a group member deleted in the same batch that moved its group to another frame (the revived member keeps its group), undo of a frame move with 10,000 pens, splitting the delta of a large frame move, no author fields in public deltas, create-then-edit before the ack, create-then-connect in one batch, both resent after a reconnect, resizing a frame from its top-left corner, an idle board edited after more than 2 minutes, a delta log filled and trimmed, a full Public pool admitting an editor, concurrent and sequential text edits, rollback to a revision whose image asset row was cleaned up, whole-board replacement with pending batches, a replacement just over the quota refused with nothing changed, rollback into an over-quota state, same-type pen and image replacement and rollback that keep the incarnation for pending edits, connector ends freed from targets at the edge of the coordinate range (deletion, frame contents, rollback, revival after the target is gone) |
 | Randomized tests | 3 to 5 clients, random operations, delivery order, disconnects and rollbacks. Every screen = the server = the reference model, and invariants hold after every step (group members share a frame, no attached end points at a dead element, every alive element's assets have rows). 2,000 seeds in CI; 100,000 locally before a release |
 | Crashes | Kill at each boundary: before and after a batch commit; during an outbox import after storing blobs, after the flats.db commit and before deleting the outbox; during a rollback; with a concurrent sweep; WAL busy. After restart, the revision count and content and board.db match expectations, there is no empty revision, and every edit shown as saved exists |
 | Quota | Refusing a person batch just below the quota (no delta), several batches in one group commit, groups unchanged when an agent write is refused, rollback succeeding |

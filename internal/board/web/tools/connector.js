@@ -3,7 +3,7 @@
 // free.
 
 import { outlineAt, defaultAt, endpointWorld } from '../geom.js';
-import { round1 } from '../schema.js';
+import { clampPoint } from '../schema.js';
 import * as ops from '../ops.js';
 
 export class ConnectorTool {
@@ -20,7 +20,7 @@ export class ConnectorTool {
   ends(a, b) {
     const tol = 8 / this.app.cam.z;
     const drops = [a, b].map(({ t, p }) => {
-      if (!t) return { end: { pt: [round1(p[0]), round1(p[1])] }, toward: p };
+      if (!t) return { end: { pt: clampPoint(p) }, toward: p };
       const at = outlineAt(t, p[0], p[1], tol);
       return { t, at, toward: at ? endpointWorld(t, at) : [t.x + t.w / 2, t.y + t.h / 2] };
     });

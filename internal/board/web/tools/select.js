@@ -3,7 +3,7 @@
 // rotating and dragging connector ends. Each drag sends one batch on release.
 
 import { endWorld, attachAt, rotateAround, toLocal, boxCorners, union, elementBounds, containsRect } from '../geom.js';
-import { clampGeom, geomOf, round1 } from '../schema.js';
+import { clampGeom, clampPoint, geomOf, round1 } from '../schema.js';
 import * as ops from '../ops.js';
 import { snapMove, drawGuides } from './snap.js';
 import { toast } from '../ui.js';
@@ -174,7 +174,7 @@ export class SelectTool {
     } else if (d.mode === 'end') {
       const target = e.altKey ? null : app.hitAt(p[0], p[1], { filter: (el) => el.type !== 'connector' && el.type !== 'pen' });
       const toward = endWorld(d.conn.ends[1 - d.i], (id) => app.doc.get(id)) || p;
-      d.val = target ? { el: target.id, at: attachAt(target, p[0], p[1], 8 / app.cam.z, toward) } : { pt: [round1(p[0]), round1(p[1])] };
+      d.val = target ? { el: target.id, at: attachAt(target, p[0], p[1], 8 / app.cam.z, toward) } : { pt: clampPoint(p) };
       d.target = target;
       const ends = d.conn.ends.slice();
       ends[d.i] = d.val;
@@ -202,7 +202,7 @@ export class SelectTool {
       const list = [];
       for (const [id, n] of d.map) {
         if (n.type === 'connector') {
-          n.ends.forEach((end, i) => { if (end.pt) list.push({ op: 'set', id, inc: app.state.incOf(id), g: 'end' + i, val: { pt: end.pt.map(round1) } }); });
+          n.ends.forEach((end, i) => { if (end.pt) list.push({ op: 'set', id, inc: app.state.incOf(id), g: 'end' + i, val: { pt: clampPoint(end.pt) } }); });
         } else list.push({ op: 'set', id, inc: app.state.incOf(id), g: 'geom', val: clampGeom(geomOf(n)) });
       }
       app.commit(list);
@@ -312,7 +312,7 @@ function scaleMap(d, p) {
   const out = new Map();
   for (const el of d.els) {
     if (el.type === 'connector') {
-      out.set(el.id, { ...el, ends: el.ends.map((e) => (e.pt ? { pt: [ax + (e.pt[0] - ax) * sx, ay + (e.pt[1] - ay) * sy] } : e)) });
+      out.set(el.id, { ...el, ends: el.ends.map((e) => (e.pt ? { pt: clampPoint([ax + (e.pt[0] - ax) * sx, ay + (e.pt[1] - ay) * sy]) } : e)) });
     } else {
       out.set(el.id, { ...el, x: ax + (el.x - ax) * sx, y: ay + (el.y - ay) * sy, w: el.w * sx, h: el.h * sy });
     }

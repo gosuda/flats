@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -209,6 +210,8 @@ func undoResult(t testing.TB, out Outcome) UndoResult {
 // checkInvariants verifies the indexes and the board invariants: frames do
 // not nest, members name alive frames, group members share a frame,
 // attached ends name alive non-connector targets with their incarnation,
+// alive elements pass the schema check (free ends within the coordinate
+// range), deleted connectors keep their last end coordinates within it,
 // asset counts match content, and stacking keys are valid.
 func checkInvariants(s *State) error {
 	alive := 0
@@ -232,10 +235,23 @@ func checkInvariants(s *State) error {
 				refs[r.El.Asset]++
 			}
 		}
+		if r.El.Type == model.TypeConnector {
+			// A deleted connector revives with free ends at EndLast.
+			for k, p := range r.EndLast {
+				if !(math.Abs(p[0]) <= model.MaxCoord && math.Abs(p[1]) <= model.MaxCoord) {
+					return fmt.Errorf("connector %s end %d keeps last coordinate %v outside the range", id, k, p)
+				}
+			}
+		}
 		if r.Deleted {
 			continue
 		}
 		alive++
+		// Every alive element keeps its schema form, including free
+		// connector ends derived from a deleted target (3.1).
+		if err := r.El.Validate(); err != nil {
+			return fmt.Errorf("%s: %w", id, err)
+		}
 		setIndex(buckets, model.BucketOf(id), id, 1)
 		if !model.ValidKey(r.El.Z) {
 			return fmt.Errorf("%s has stacking key %q", id, r.El.Z)
