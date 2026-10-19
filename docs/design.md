@@ -129,8 +129,9 @@ in the [lifecycle core contract](lifecycle-core-contract.md).
 ```
 
 * `type`: `flat` (website, the default), `page` (one static HTML page),
-  `docs` (Markdown documents) or `design` (canvas of HTML artboards; only core
-  writes a design manifest, see [Designs](#designs)). A bundle without `type`,
+  `docs` (Markdown documents), `design` (canvas of HTML artboards) or `board`
+  (whiteboard); only core writes a design or board manifest, see
+  [Designs](#designs) and [Boards](#boards). A bundle without `type`,
   `kind`, `index.html` or a server entry that holds a Markdown entry is a
   `docs` bundle.
 * `kind`: `static` (default) or `server`.
@@ -166,10 +167,11 @@ time and again when the approval applies, against the live (else latest
 saved) version, so content of another type that an earlier release stored
 can never go live.
 
-**Revision-model refusals.** Documents and designs refuse Deploy, Rollback,
+**Revision-model refusals.** Documents, designs and boards refuse Deploy, Rollback,
 CreateVersion, DeleteVersion, version quota overrides, previews,
 ListVersions and GetDraft (`invalid`, with a message naming the type's own
-tools). Revision tools refuse websites and pages (`no_revisions`).
+tools). Revision tools refuse websites and pages (`no_revisions`), and board
+tools refuse every other type (`not_board`).
 
 ### Pages
 
@@ -324,6 +326,39 @@ cleared and gets `resync`. Event-stream and export writes run under a 15 s
 write deadline. Stopping the instance (rename, delete, replacement, shutdown)
 refuses new requests with 503, cancels every request and interrupts blocked
 writes, and waits up to 5 s for handlers to return.
+
+### Boards
+
+A board is an infinite-canvas whiteboard of stickies, shapes, connectors, text,
+pen strokes, images and frames that people and agents edit live
+([product spec](spec/board.md), [technical design](spec/board-TECH.md)). Like
+a design it runs in the host process behind a shell `flats.json` that core
+writes once at creation, and every public bundle path refuses a board
+manifest. `internal/board` runs one `board.Instance` per board: a single apply
+loop that changes `flats/<slug>/board/board.db`, the board's only source of
+truth, the canvas app embedded from `internal/board/web` (plain JavaScript,
+no build step, no third-party code), one same-origin WebSocket
+(`/_board/ws`) and the board's HTTP routes ([Surfaces](surfaces.md)).
+
+- **Editing.** People's batches merge per property bundle (the last write
+  wins); agent calls (`update_board`, `import_board`) apply whole or not at
+  all, with guards. Edits are durable before they are acknowledged.
+- **History.** The instance records revision boundaries in an outbox in the
+  same `board.db` transaction as the change; core imports them into the
+  [revision store](revision-store.md#boards) under the flat lock, every 5
+  seconds when entries are waiting and at once after agent writes and
+  rollbacks.
+- **Core's part.** Core builds the instance with the live shell version and
+  gives it a backend: limits, the flat directory measurement for the disk
+  quota, blob storage in `flats/<slug>/revisions/blobs`, history, pins and
+  rollbacks, and an exclusive section under the flat lock for imports from the
+  canvas. Health checks and trial runs of the shell get a plain handler and
+  never open `board.db`.
+- **Access.** The board trusts only the `X-Flats-Access` core sets; a Public
+  route gets only the current board, read-only. Withdrawing Public access
+  cancels the route epoch, which closes every open Public socket. Rename and
+  delete stop the instance and tell open canvases why (`renamed`,
+  `deleted`); host shutdown stops it silently.
 
 ## Exposure
 
@@ -678,6 +713,9 @@ carry `flat` (the slug) and `type`.
 | `flats_pending_approvals` | gauge (host) | |
 | `flats_snapshot_timestamp_seconds` | gauge (host) | |
 | `flats_management_requests_total` | counter (host) | `surface` (`api`, `console`, `mcp`, `metrics`, `other`), `code` |
+| `flats_board_batches_total` | counter (host) | `result` (`applied`, `rejected`, `retry`) |
+| `flats_board_connections` | gauge (host) | |
+| `flats_board_import_seconds` | histogram (host) | |
 
 `running` in `flats_flats` keeps its console meaning: a live document is
 running even while its worker sleeps. `flats_worker_state` is the diagnostic
@@ -689,6 +727,10 @@ The histogram buckets are 5 ms to 30 s, with an 11 s bound just above the
 endpoint state other than the known ones is reported as `other`, and so is a
 flat type or visibility that is not a known word. Management requests are
 counted by `1xx` … `5xx` only.
+`flats_board_batches_total` counts people's edit batches on every board:
+acknowledged, refused for good, or refused as transient for the canvas to
+resend. `flats_board_import_seconds` times the outbox imports that recorded
+revisions, with buckets from 5 ms to 10 s.
 
 Worker CPU is user plus system time from the worker itself and, after it
 exits, from its process state, so it includes workers that later stopped,

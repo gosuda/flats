@@ -489,7 +489,14 @@ func (in *Instance) tick() error {
 		return err
 	}
 	st := in.st
+	var open []string
+	for _, c := range in.hub.list() {
+		if !c.public && c.session != "" {
+			open = append(open, c.session)
+		}
+	}
 	changes := []engine.Changed{
+		st.TouchSessions(open, now),
 		st.ExpireSessions(now),
 		st.TrimReceipts(16<<20, now),
 		st.TrimDeleted(16 << 20),
@@ -521,6 +528,14 @@ func (in *Instance) tick() error {
 		return err
 	}
 	freed = freed || t.trimDeltas > 0
+	// A reset is kept for the session lifetime, the longest a live session
+	// can hold a watermark before it (4.8), and at most resetsMax of them.
+	if c := st.TrimResets(now-engine.SessionTTL, in.resetsMax); !c.Empty() {
+		if err := t.persist(c, st.Seq()); err != nil {
+			t.rollback()
+			return err
+		}
+	}
 	for id, op := range in.sd.ops {
 		if op.importedAt > 0 && op.importedAt <= now-24*3600 {
 			t.dropOps = append(t.dropOps, id)

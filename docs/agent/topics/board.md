@@ -81,16 +81,26 @@ replace?}` applies all operations or none, and is one revision.
   frame, and the frame grows to fit. The same input gives the same
   coordinates; the result's `layout` returns them as `{id: [x, y]}`. Layout
   runs after the operations, so it sees their result.
-- `assets` adds images for image elements in the same call. PNG, JPEG, GIF
-  and still WebP only; no SVG.
+- `assets` adds images for image elements in the same call:
+  `[{"ref": "$logo", "content": "<base64>"}]`. An image element gives the
+  ref as its `asset`, for example
+  `{"op": "add", "el": {"type": "image", "asset": "$logo", "alt": "Logo"}}`;
+  the host replaces it with the image's hash and fills `natural` (its pixel
+  size) when you leave it out. The result's `assets` maps each ref to its
+  hash, which later calls can use as `asset`. PNG, JPEG, GIF and still WebP
+  only, each at most the upload limit; no SVG.
 - `replace: true` replaces the whole board with the call's `add` operations.
   Use it only when the user asked for a fresh board.
+- On a new slug the board exists only if the call applies: a refused call
+  leaves no flat behind.
 - `op_id` (8 to 120 characters) is required. Resending the same request with
   the same `op_id` within 24 hours returns the first result and applies
   nothing again, so retry with it after a timeout. The same `op_id` with a
   different request is refused with `conflict`.
 
-The result is `{revision, seq, ids, layout, results}`.
+The result is `{revision, seq, ids, layout, results, assets?}`. `revision` is
+null, with a `warning`, while the call's revision is still being recorded;
+the call itself applied, so do not resend it with a new `op_id`.
 
 ### Import and shared selections
 

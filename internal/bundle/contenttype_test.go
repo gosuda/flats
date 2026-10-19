@@ -57,6 +57,10 @@ func TestContentTypeManifest(t *testing.T) {
 		{"page not found", `{"type":"page","not_found":"index.html"}`, []string{"index.html"}, "", "", "not_found is not allowed"},
 		{"page health", `{"type":"page","health":"/"}`, []string{"index.html"}, "", "", "health is not allowed"},
 		{"page screenshot missing", `{"type":"page","screenshot":"shot.png"}`, []string{"index.html"}, "", "", "screenshot file is missing"},
+		{"board shell", `{"type":"board","name":"Plan"}`, nil, "board", "", ""},
+		{"board with files", `{"type":"board"}`, []string{"index.html"}, "", "", "a board keeps its content in its revision history"},
+		{"board with kind", `{"type":"board","kind":"static"}`, nil, "", "", "kind is not allowed for a board"},
+		{"design shell", `{"type":"design"}`, nil, "design", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

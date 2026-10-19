@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Revision-model content (designs and documents): the current files
+// Revision-model content (designs, documents and boards): the current files
 // ("head"), open groups of a person's edits, and revisions with their files.
 // File bytes live in a content-addressed blob store owned by core; these
 // tables hold references. A document's revisions are recorded by its docs
@@ -56,7 +56,7 @@ type Revision struct {
 	Flat       string    `json:"-"`
 	Number     int       `json:"number"`
 	CreatedAt  time.Time `json:"created_at"`
-	Kind       string    `json:"kind"` // created | agent | person | rollback
+	Kind       string    `json:"kind"` // created | agent | person | rollback | import
 	Authors    []string  `json:"authors"`
 	Message    string    `json:"message"`
 	RollbackOf int       `json:"rollback_of,omitempty"`
@@ -69,6 +69,9 @@ type Revision struct {
 	Source string `json:"-"`
 	// Held is true while a rollback in progress protects the revision.
 	Held bool `json:"held,omitempty"`
+	// Elements counts a board revision's element changes; a board reports
+	// them instead of its bucket paths in Changes.
+	Elements *ElementCounts `json:"elements,omitempty"`
 }
 
 // RevisionFile is one file of a revision.

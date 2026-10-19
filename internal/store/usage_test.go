@@ -263,7 +263,7 @@ func TestMigrationAddsUsageDays(t *testing.T) {
 	ctx := context.Background()
 	full := migrations
 	path := filepath.Join(t.TempDir(), "flats.db")
-	withMigrations(t, full[:len(full)-1])
+	withMigrations(t, full[:slices.IndexFunc(full, func(m migration) bool { return m.version == 17 })])
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestMigrationAddsUsageDays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, _ := Inspect(path); info.Version != 17 {
+	if info, _ := Inspect(path); info.Version != latestVersion() {
 		t.Fatalf("version %d", info.Version)
 	}
 	after, _ := s.GetFlat(ctx, "blog")

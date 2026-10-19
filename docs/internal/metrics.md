@@ -382,10 +382,16 @@ Metric names (per-flat series carry `flat` = slug and `type`):
 | `flats_pending_approvals` | gauge (host) | |
 | `flats_snapshot_timestamp_seconds` | gauge (host) | |
 | `flats_management_requests_total` | counter (host) | `surface`, `code` |
+| `flats_board_batches_total` | counter (host) | `result` |
+| `flats_board_connections` | gauge (host) | |
+| `flats_board_import_seconds` | histogram (host) | |
 
-plus `go_*` and `process_*` of the host process. Label values are slugs and
-the fixed type, route, code, role, state, provider and surface enums, and the
-build strings; nothing else reaches a label (spec rule 6). A host with 100
+plus `go_*` and `process_*` of the host process. The board figures come from
+package-level atomics in `internal/board` (`board.HostStats`: batches by
+result, admitted sockets) and from core, which times every outbox import that
+recorded revisions. Label values are slugs and
+the fixed type, route, code, role, state, provider, surface and board result
+enums, and the build strings; nothing else reaches a label (spec rule 6). A host with 100
 flats exposes roughly 2500 series.
 
 ## Storage

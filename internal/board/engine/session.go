@@ -52,6 +52,24 @@ func (s *State) Hello(h Hello) HelloResult {
 // ExpireSessions.
 func (s *State) Sessions() int { return len(s.sessions) }
 
+// TouchSessions marks the sessions open sockets use as active at now, so a
+// session does not expire while its socket stays connected. A session is
+// written only when its last activity is at least an hour old.
+func (s *State) TouchSessions(ids []string, now int64) Changed {
+	m := s.Savepoint()
+	sp := s.sps[m]
+	for _, id := range ids {
+		if se := s.sessions[id]; se != nil && now-se.LastAt >= 3600 {
+			c := *se
+			c.LastAt = now
+			s.putSession(&c)
+		}
+	}
+	c := s.changedSince(sp)
+	s.Release(m)
+	return c
+}
+
 // ExpireSessions deletes sessions idle for SessionTTL, with their created
 // rows, receipts and undo stacks.
 func (s *State) ExpireSessions(now int64) Changed {

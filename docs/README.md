@@ -36,6 +36,7 @@ the full list.
 | --- | --- |
 | [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, design); implemented |
 | [Design content type](spec/design-type.md) | Canvas of HTML artboards with live editing and revisions; background in [research](research/claude-artifacts-design.md) |
+| [Board content type](spec/board.md) | Infinite-canvas whiteboard people and agents edit together, with revisions; [technical design](spec/board-TECH.md) |
 
 ## Design and contracts
 
@@ -44,7 +45,7 @@ the full list.
 | [Design](design.md) | Architecture and trust model: process layout, manifest, content types, exposure, approvals, secrets, handler ABI |
 | [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, versions, deploys, approvals, data and store migrations in the core |
 | [Surfaces](surfaces.md) | HTTP API routes, CLI, MCP tools and the web console |
-| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents and designs |
+| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents, designs and boards |
 | [Network provider lifecycle](network-provider-lifecycle.md) | Provider manager states and teardown |
 | [Docs app internals](internal/docs-app.md) | Host integration of the collaborative Markdown editor |
 | [WebSocket handshake](internal/websocket-handshake.md) | Why the RFC 6455 accept hash uses SHA-1 |

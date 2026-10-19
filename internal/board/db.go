@@ -258,7 +258,17 @@ func persist(ctx context.Context, tx *sql.Tx, st *engine.State, c engine.Changed
 		if resets == nil {
 			resets = []int64{}
 		}
+		at := st.ResetTimes()
+		if at == nil {
+			at = []int64{}
+		}
 		if err := setMeta(ctx, tx, "resets", resets); err != nil {
+			return err
+		}
+		if err := setMeta(ctx, tx, "reset_at", at); err != nil {
+			return err
+		}
+		if err := setMeta(ctx, tx, "reset_floor", st.ResetFloor()); err != nil {
 			return err
 		}
 	}
@@ -304,6 +314,12 @@ func (s *store) loadRows(ctx context.Context) (engine.Rows, map[string]string, e
 			return rows, nil, fmt.Errorf("meta.resets: %w", err)
 		}
 	}
+	if v := meta["reset_at"]; v != "" {
+		if err := json.Unmarshal([]byte(v), &rows.ResetAt); err != nil {
+			return rows, nil, fmt.Errorf("meta.reset_at: %w", err)
+		}
+	}
+	rows.ResetFloor, _ = strconv.ParseInt(meta["reset_floor"], 10, 64)
 	err = q(`SELECT id, inc, data, v, deleted, del_seq, pre_rel, end_inc, end_last, bucket FROM elements`, func(r *sql.Rows) error {
 		var er engine.ElementRow
 		var data, v string

@@ -1,6 +1,7 @@
 # Board content type
 
-Status: planned. None of the board type is implemented yet; see
+Status: partly implemented. The board type runs end to end on an unreleased
+branch, but the success criteria are not measured yet; see
 [Current state](#current-state). The technical design is in
 [board-TECH.md](board-TECH.md).
 
@@ -565,8 +566,16 @@ These are the release criteria for B1, with fixed measurement conditions.
 
 ## Current state
 
-Nothing is implemented. Flats has no `board` type, board tools, canvas app or
-`topic.board`.
+The `board` type, its canvas app, the board tools (`get_board`,
+`update_board`, `get_board_share`, `import_board`), the HTTP routes and CLI
+commands, revisions, the disk quota and `topic.board` are implemented but not
+released. Not done yet:
+
+- No measurement against the [success criteria](#success-criteria): pan and
+  zoom frame times, first screen, remote display latency, and the agent task.
+  The limits of [Open question 2](#open-questions) are the planned values.
+- The canvas has not run on Safari or an iPad: touch and pen, Korean IME
+  composition during remote changes and VoiceOver are unchecked.
 
 ## Open questions
 

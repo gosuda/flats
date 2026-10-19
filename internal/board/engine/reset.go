@@ -71,7 +71,7 @@ func (a *applier) commitReset(kind string, of int64, m Mark) Outcome {
 	d.Reset = &model.Reset{Kind: kind, Of: of}
 	d.By = &model.By{Kind: "system", Label: kind}
 	s.seq = a.seq
-	s.resets = append(s.resets, a.seq)
+	s.resets, s.resetAt = append(s.resets, a.seq), append(s.resetAt, a.now)
 	out := Outcome{Seq: a.seq, AckSeq: a.seq, Delta: d, Changed: s.changedSince(a.sp)}
 	s.Release(m)
 	return out

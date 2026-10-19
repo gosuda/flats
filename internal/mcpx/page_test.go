@@ -109,7 +109,7 @@ func TestSavePageRefusals(t *testing.T) {
 	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "pg1", "files": []any{file("index.html", "<title>Page</title>", ""), file("flats.json", `{"type":"page"}`, "")}}, nil); failed {
 		t.Fatalf("page manifest save: %s", text)
 	}
-	if text, failed := call(t, e.local, "create_flat", map[string]any{"slug": "q", "type": "slides"}, nil); !failed || !strings.Contains(text, "flat, docs, page or design") {
+	if text, failed := call(t, e.local, "create_flat", map[string]any{"slug": "q", "type": "slides"}, nil); !failed || !strings.Contains(text, "flat, docs, page, design or board") {
 		t.Fatalf("unknown type: %s", text)
 	}
 }

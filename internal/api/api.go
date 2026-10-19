@@ -174,6 +174,9 @@ func (s *Server) Handler() http.Handler {
 			h("POST /settings/impact", s.settingsImpact)
 		} else {
 			h("POST /flats", s.createFlat)
+			h("GET /flats/{slug}/board", s.getBoard)
+			h("POST /flats/{slug}/board", s.updateBoard)
+			h("POST /flats/{slug}/board/import", s.importBoard)
 		}
 	}
 	return mux
@@ -248,7 +251,7 @@ func statusOf(err error) int {
 		errors.Is(err, core.ErrProviderNotReady), errors.Is(err, core.ErrPublicStopUnconfirmed),
 		errors.Is(err, core.ErrUnchangedContent), errors.Is(err, core.ErrProviderInUse):
 		return http.StatusConflict
-	case errors.As(err, &de):
+	case errors.As(err, &de), errors.Is(err, core.ErrBoardCapacity):
 		return http.StatusUnprocessableEntity
 	}
 	if _, ok := bundle.IsValidation(err); ok {

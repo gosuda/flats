@@ -1,6 +1,6 @@
 # Board content type technical design
 
-Status: design for the unshipped board type (2026-10-19), in design-stage review. Not implemented.
+Status: design for the unshipped board type (2026-10-19). Implemented on an unreleased branch; the measurements of section 14 are not done.
 Base: `d9a1381` (origin/main, 2026-10-19). Product contract: [board.md](board.md).
 
 This page designs the B1 scope of the [board product spec](board.md). Rule

@@ -78,7 +78,7 @@ Errors are JSON: `{"error", "category", "problems": [{"path","message","fix"}], 
 | 409 | Conflict: stale Draft revision, unpublished flat made Public, not deployed, unavailable, stale approval, provider not permitted or not ready, unconfirmed public stop, unchanged content, provider in use |
 | 412 | `config_changed`: `config.json` changed since the host read it, or the console page is stale |
 | 415 | A mutating `/api` request without a JSON or archive type or `X-Flats-Client` |
-| 422 | Bundle validation, or a failed health check or runtime start |
+| 422 | Bundle validation, a failed health check or runtime start, or a board write or import over the disk quota (`board_capacity`) |
 | 500 | Server fault |
 
 A failed decision (`POST approvals/{id}/approve`) answers with the error body
@@ -102,9 +102,9 @@ mounted under both prefixes; **console** routes exist only under
 | GET | `/flats/{slug}/draft` | both | Current Private Draft metadata, or 404 |
 | POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}`; never a version or approval. Documents are refused here |
 | POST | `/flats/{slug}/document` | both | Complete docs archive; replaces the whole live bundle without approval. 201 `{flat}` |
-| GET | `/flats/{slug}/board` | api | `get_board` read of a board: `?revision=&frame=&rect=&ids=&format=&cursor=&limit=` |
-| POST | `/flats/{slug}/board` | api | An `update_board` body; applies at once without approval and creates a missing board |
-| POST | `/flats/{slug}/board/import` | api | A board data file (`.zip`, up to `upload_max_bytes × 4`), `mode` `add` or `replace`; applies at once without approval |
+| GET | `/flats/{slug}/board` | api | `get_board` read of a board: `?revision=&frame=&rect=x,y,w,h&ids=a,b&format=full\|outline&cursor=&limit=`; answers `{seq, revision, pending, meta, elements, next?}` |
+| POST | `/flats/{slug}/board` | api | An `update_board` body `{op_id, ops, layout?, assets?, if_seq?, message?, replace?}` (assets' `content` in base64; the body at most `upload_max_bytes × 4/3` plus 16 MiB); applies at once without approval and creates a missing board. Answers `{revision, seq, ids, layout, results, assets?, created?, warning?}` |
+| POST | `/flats/{slug}/board/import` | api | A board data file as the raw body (`.zip`, up to `upload_max_bytes × 4`, streamed to a temporary file); query `mode` (`add`, the default, or `replace`) and `op_id` (random when absent); applies at once without approval and creates a missing board |
 | POST | `/flats/{slug}/versions` | both | `{revision, hash?}` (revision 0 selects current): 202 `create_version` request. Creates the version without deploying it |
 | GET | `/flats/{slug}/versions` | both | Retained versions, `[]` when none |
 | GET | `/flats/{slug}/versions/{n}` | both | One version |
@@ -230,8 +230,8 @@ for server flats); `flats config` and
 | `draft <slug> [<dir\|archive>] …` | Read Draft metadata, or save like `save-draft` |
 | `get-draft <slug>` | Read Draft metadata |
 | `save-document <slug> <dir\|archive> [--message m]` | Replace a whole live docs bundle |
-| `board get <slug> [--outline]` | Read a board's elements |
-| `board apply <slug> <ops.json>` | Send an `update_board` body to a board, creating it when missing |
+| `board get <slug> [--outline] [--revision n]` | Read every page of a board's elements, or of an earlier revision |
+| `board apply <slug> <ops.json> [--message m]` | Send an `update_board` body to a board, creating it when missing; a body without `op_id` gets a random one |
 | `board import <slug> <file.zip> [--replace]` | Import a board data file; adds with new ids unless `--replace` |
 | `create-version <slug> [--revision n] [--hash h]` | Request a new version from the Draft |
 | `deploy --flat <slug> --version <n>` | Request activation of a saved version; a directory argument is refused with guidance to save and create a version first |
@@ -288,9 +288,9 @@ flat's own Private route; see [Revision store](revision-store.md).
 | --- | --- | --- |
 | `create_flat {type: "board"}` | `slug`, `name` | An empty Private board (revision 1, `created`) |
 | `get_board` | `slug`, `revision?`, `frame?`, `rect?`, `ids?`, `format?` (`full` or `outline`), `cursor?`, `limit?` | `{seq, revision, pending, elements, next?}`; each element carries `ver` for guards |
-| `update_board` | `slug`, `op_id`, `ops`, `assets?`, `layout?`, `if_seq?`, `message?`, `replace?` | `{revision, seq, ids, layout, results}`; all operations apply or none, as one revision |
+| `update_board` | `slug`, `op_id`, `ops`, `assets?` (`[{ref, content}]`, `content` in base64; image elements give the ref as `asset`), `layout?`, `if_seq?`, `message?`, `replace?` | `{revision, seq, ids, layout, results, assets}`; all operations apply or none, as one revision. `revision` is null with a `warning` while its import is pending |
 | `get_board_share` | `slug`, `n?` | One selection a person sent to the agent, or the recent list; deleted elements are `missing` |
-| `import_board` | `slug`, `op_id`, `archive` (base64, at most `upload_max_bytes`), `mode` (`add` or `replace`) | `{revision, ids}` |
+| `import_board` | `slug`, `op_id`, `archive` (base64, at most `upload_max_bytes`), `mode` (`add` or `replace`) | `{revision, seq, ids}`; creates a missing board |
 
 Board writes and imports apply at once without approval. Board tools refuse
 other types (`not_board`); version tools refuse a board (`invalid`). A guard

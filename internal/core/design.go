@@ -86,9 +86,10 @@ func (s *Service) docsStoreDir(slugName string) string {
 	return filepath.Join(s.flatDir(slugName), "revisions")
 }
 
-// storeDir is the blob store of a Revision-model flat of type typ.
+// storeDir is the blob store of a Revision-model flat of type typ. A board
+// shares the documents' blob root.
 func (s *Service) storeDir(slugName, typ string) string {
-	if typ == contenttype.Docs {
+	if typ == contenttype.Docs || typ == contenttype.Board {
 		return s.docsStoreDir(slugName)
 	}
 	return s.designDir(slugName)
@@ -253,8 +254,8 @@ func (s *Service) isDesign(ctx context.Context, f store.Flat) (bool, error) {
 	return t == contenttype.Design, err
 }
 
-// refuseUnversioned refuses Version-model operations on documents and
-// designs.
+// refuseUnversioned refuses Version-model operations on documents, designs
+// and boards.
 func (s *Service) refuseUnversioned(ctx context.Context, f store.Flat) error {
 	t, err := s.flatType(ctx, f)
 	if err != nil {
@@ -265,6 +266,8 @@ func (s *Service) refuseUnversioned(ctx context.Context, f store.Flat) error {
 		return ErrDocsUnversioned
 	case contenttype.Design:
 		return ErrDesignUnversioned
+	case contenttype.Board:
+		return ErrBoardUnversioned
 	}
 	return nil
 }
@@ -533,7 +536,8 @@ func (s *Service) finishDesignLocked(ctx context.Context, slugName, title string
 	return s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error { return tx.SetPhase(ctx, "ready") })
 }
 
-// startPendingDesigns finishes designs whose creation was interrupted.
+// startPendingDesigns finishes designs and boards whose creation was
+// interrupted.
 func (s *Service) startPendingDesigns(ctx context.Context) {
 	states, err := s.st.ContentStates(ctx)
 	if err != nil {
@@ -541,7 +545,16 @@ func (s *Service) startPendingDesigns(ctx context.Context) {
 		return
 	}
 	for _, st := range states {
-		if st.Type != contenttype.Design || st.Phase != "init" {
+		if st.Phase != "init" {
+			continue
+		}
+		if st.Type == contenttype.Board {
+			if err := s.startPendingBoard(ctx, st.Flat); err != nil {
+				s.Event(ctx, st.Flat, "error", "board", "could not finish creating the board: "+err.Error(), nil)
+			}
+			continue
+		}
+		if st.Type != contenttype.Design {
 			continue
 		}
 		unlock, err := s.lockStorage(st.Flat)
@@ -1111,9 +1124,16 @@ func (s *Service) retainDesign(ctx context.Context, slugName string) {
 }
 
 // retainRevisions applies retention to one flat under its lock and sweeps
-// its blobs when it deleted revisions.
+// its blobs when it deleted revisions. A board imports its outbox first, and
+// measures its disk usage again afterwards.
 func (s *Service) retainRevisions(ctx context.Context, slugName, typ string) {
 	unlock := s.lock(slugName)
+	in := s.liveBoard(slugName)
+	if typ == contenttype.Board && in != nil && s.checkStorageJournal(slugName) == nil {
+		if _, err := s.importBoardLocked(ctx, slugName, in); err != nil {
+			s.logf("board revisions of %s: %v", slugName, err)
+		}
+	}
 	deleted, err := s.retainLocked(ctx, slugName)
 	unlock()
 	if err != nil {
@@ -1121,6 +1141,9 @@ func (s *Service) retainRevisions(ctx context.Context, slugName, typ string) {
 	}
 	if deleted > 0 {
 		s.sweepBlobs(ctx, slugName, typ)
+	}
+	if typ == contenttype.Board && in != nil {
+		in.Remeasure()
 	}
 }
 
@@ -1291,13 +1314,19 @@ func (s *Service) closeDue(ctx context.Context, slugName string, now time.Time) 
 
 // RollbackRevision restores revision n as a new revision.
 func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, label string, via Via) (int, error) {
-	// A document holds its target before it imports anything (rollbackDocs).
-	if f, err := s.st.GetFlat(ctx, slugName); err != nil {
+	// A document holds its target before it imports anything (rollbackDocs);
+	// a board takes its hold under the flat lock (rollbackBoard).
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
 		return 0, err
-	} else if docs, err := s.isDocs(ctx, f); err != nil {
+	}
+	switch t, err := s.flatType(ctx, f); {
+	case err != nil:
 		return 0, err
-	} else if docs {
+	case t == contenttype.Docs:
 		return s.rollbackDocs(ctx, slugName, n, label, via)
+	case t == contenttype.Board:
+		return s.rollbackBoard(ctx, slugName, n, label, via)
 	}
 	if _, _, err := s.revisionFlat(ctx, slugName); err != nil {
 		return 0, err
@@ -1314,7 +1343,7 @@ func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, 
 	var seq int64
 	var paths []string
 	deleted := 0
-	err := s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
+	err = s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
 		if _, err := tx.Revision(ctx, n); err != nil {
 			return err
 		}
@@ -1376,7 +1405,7 @@ func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, 
 
 // PinRevision pins or unpins revision n.
 func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinned bool) error {
-	if err := s.catchUpDocs(ctx, slugName); err != nil {
+	if err := s.catchUpRevisions(ctx, slugName); err != nil {
 		return err
 	}
 	unlock, lerr := s.lockCtx(ctx, slugName)
@@ -1436,7 +1465,7 @@ func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinne
 
 // ListRevisions returns a page of a flat's history, newest first.
 func (s *Service) ListRevisions(ctx context.Context, slugName string, before, limit int) (design.RevisionPage, error) {
-	if err := s.catchUpDocs(ctx, slugName); err != nil {
+	if err := s.catchUpRevisions(ctx, slugName); err != nil {
 		return design.RevisionPage{}, err
 	}
 	_, st, err := s.revisionFlat(ctx, slugName)
@@ -1455,6 +1484,9 @@ func (s *Service) ListRevisions(ctx context.Context, slugName string, before, li
 		page.Revisions = revs[:limit]
 		page.Next = revs[limit-1].Number
 	}
+	if st.Type == contenttype.Board {
+		s.boardRevisionStats(ctx, slugName, page.Revisions)
+	}
 	if page.Revisions == nil {
 		page.Revisions = []store.Revision{}
 	}
@@ -1465,15 +1497,21 @@ func (s *Service) ListRevisions(ctx context.Context, slugName string, before, li
 
 // GetRevision returns revision n with every file it holds.
 func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (store.Revision, []store.RevisionFile, error) {
-	if err := s.catchUpDocs(ctx, slugName); err != nil {
+	if err := s.catchUpRevisions(ctx, slugName); err != nil {
 		return store.Revision{}, nil, err
 	}
-	if _, _, err := s.revisionFlat(ctx, slugName); err != nil {
+	_, st, err := s.revisionFlat(ctx, slugName)
+	if err != nil {
 		return store.Revision{}, nil, err
 	}
 	r, err := s.st.Revision(ctx, slugName, n)
 	if err != nil {
 		return r, nil, err
+	}
+	if st.Type == contenttype.Board {
+		revs := []store.Revision{r}
+		s.boardRevisionStats(ctx, slugName, revs)
+		r = revs[0]
 	}
 	files, err := s.revisionFiles(ctx, slugName, r)
 	return r, files, err
@@ -1526,7 +1564,7 @@ func (s *Service) SetRevisionQuotas(ctx context.Context, slugName string, revisi
 			return invalidf("quotas are whole numbers ≥ 0 (0 = unlimited)")
 		}
 	}
-	if err := s.catchUpDocs(ctx, slugName); err != nil {
+	if err := s.catchUpRevisions(ctx, slugName); err != nil {
 		return err
 	}
 	unlock, lerr := s.lockCtx(ctx, slugName)
@@ -1558,7 +1596,7 @@ type RevisionQuotaView struct {
 
 // RevisionQuotas returns a design's quota overrides and the host defaults.
 func (s *Service) RevisionQuotas(ctx context.Context, slugName string) (RevisionQuotaView, error) {
-	if err := s.catchUpDocs(ctx, slugName); err != nil {
+	if err := s.catchUpRevisions(ctx, slugName); err != nil {
 		return RevisionQuotaView{}, err
 	}
 	_, st, err := s.revisionFlat(ctx, slugName)
@@ -1714,6 +1752,15 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 	if typ == contenttype.Docs && !s.prepareDocsSweepLocked(ctx, slugName) {
 		return
 	}
+	var boardRefs []string
+	if typ == contenttype.Board {
+		in, refs, ok := s.prepareBoardSweepLocked(ctx, slugName)
+		if !ok {
+			return
+		}
+		defer in.Remeasure()
+		boardRefs = refs
+	}
 	if err := s.st.Checkpoint(ctx, "FULL"); err != nil {
 		s.logf("sweep blobs of %s: checkpoint: %v", slugName, err)
 		return
@@ -1721,6 +1768,9 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 	refs, err := s.st.ReferencedHashes(ctx, slugName)
 	if err != nil {
 		return
+	}
+	for _, h := range boardRefs {
+		refs[h] = true
 	}
 	cutoff := time.Now().Add(-blobGrace)
 	root := s.storeDir(slugName, typ)
@@ -1747,8 +1797,8 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 	}
 }
 
-// designLoop closes due edit groups, records document revisions and sweeps
-// blobs in the background. It first migrates and imports every running
+// designLoop closes due edit groups, records document and board revisions
+// and sweeps blobs in the background. It first migrates and imports every running
 // document, then applies their retention.
 func (s *Service) designLoop() {
 	defer s.wg.Done()
@@ -1763,6 +1813,7 @@ func (s *Service) designLoop() {
 		case <-t.C:
 			ctx := context.Background()
 			s.CloseDueGroups(ctx)
+			s.TickBoards(ctx)
 			if time.Since(lastDocs) >= docsTick {
 				lastDocs = time.Now()
 				s.TickDocs(ctx)

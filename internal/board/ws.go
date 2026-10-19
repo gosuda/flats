@@ -82,18 +82,21 @@ func (h *hub) admit(public bool, privMax, pubMax int) bool {
 			return false
 		}
 		h.pub++
+		hostStats.conns.Add(1)
 		return true
 	}
 	if h.priv >= privMax {
 		return false
 	}
 	h.priv++
+	hostStats.conns.Add(1)
 	return true
 }
 
 func (h *hub) leave(c *conn) (lastOfKey bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	hostStats.conns.Add(-1)
 	if c.public {
 		h.pub--
 	} else {
@@ -774,7 +777,8 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 				}
 			}
 		default:
-			reset := false
+			// A dropped reset after the watermark is reported too.
+			reset := *h.Watermark < st.ResetFloor()
 			for _, s := range st.Resets() {
 				if s > *h.Watermark && s <= seq {
 					reset = true
@@ -811,6 +815,7 @@ type batchReq struct {
 }
 
 func (b *batchReq) transient(code string) {
+	hostStats.retried.Add(1)
 	b.c.send(map[string]any{"t": "reject", "n": b.n, "code": code, "retry": true})
 }
 
@@ -1020,12 +1025,14 @@ func (in *Instance) answer(b *batchReq, out engine.Outcome) {
 	case out.Fatal != "":
 		b.c.fatal(out.Fatal)
 	case out.Reject != nil:
+		hostStats.rejected.Add(1)
 		b.c.send(map[string]any{"t": "reject", "n": b.n, "code": out.Reject.Code, "retry": false, "detail": out.Reject.Detail})
 	default:
 		results := out.Results
 		if results == nil {
 			results = json.RawMessage("[]")
 		}
+		hostStats.applied.Add(1)
 		b.c.send(map[string]any{"t": "ack", "n": b.n, "seq": out.AckSeq, "results": results})
 	}
 }

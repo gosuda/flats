@@ -151,9 +151,13 @@ type Service struct {
 	// docsRollbacks holds the ids of document rollbacks in progress, whose
 	// holds are not settled yet.
 	docsRollbacks sync.Map
-	settings      *SettingsSource
-	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits     sync.Map // slug -> *logLimit
+	// boardPending holds the boards whose outbox recorded entries the
+	// ticker has not imported yet.
+	boardPending sync.Map
+	boardStats   boardStats
+	settings     *SettingsSource
+	eventCount   sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits    sync.Map // slug -> *logLimit
 	// snapshot holds the host-wide figures of the last Sweep for Metrics.
 	snapshot atomic.Pointer[hostSnapshot]
 	diskMu   sync.Mutex
@@ -474,6 +478,9 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 	if contenttype.FromManifest(v.Manifest) == contenttype.Design {
 		inst := s.designInstance(slugName)
 		return &deployed{version: v, handler: inst, inst: inst, redact: func(s string) string { return s }, environment: snapshot}, nil
+	}
+	if contenttype.FromManifest(v.Manifest) == contenttype.Board {
+		return s.buildBoard(slugName, v, m.Name, dataDir, snapshot)
 	}
 	dir := s.contentDir(slugName, v)
 	switch v.Kind {
@@ -1089,8 +1096,11 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 	if m.Kind == "server" && s.cfg.Runtime == nil {
 		return store.Version{}, &bundle.ValidationError{Problems: []bundle.Problem{{Path: bundle.ManifestName, Message: "server flats are not enabled on this host", Fix: `deploy a static build ("kind": "static")`}}}
 	}
-	if m.Type == contenttype.Design {
+	switch m.Type {
+	case contenttype.Design:
 		return store.Version{}, ErrDesignUnversioned
+	case contenttype.Board:
+		return store.Version{}, ErrBoardUnversioned
 	}
 	docs := m.Type == contenttype.Docs
 	if f, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
@@ -1512,8 +1522,9 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 		s.Event(ctx, slugName, "error", "exposure", err.Error(), nil)
 	}
 	_ = s.dropPreviews(ctx, slugName)
-	if kind == "save" && contenttype.FromManifest(d.version.Manifest) == contenttype.Design {
-		// The design shell goes live once, at creation; that is logged as a design event.
+	if t := contenttype.FromManifest(d.version.Manifest); kind == "save" && (t == contenttype.Design || t == contenttype.Board) {
+		// The design or board shell goes live once, at creation; that is
+		// logged as a design or board event.
 	} else if kind == "save" {
 		message := fmt.Sprintf("document saved and running via %s", via)
 		if preparationErr != nil {
@@ -1862,6 +1873,11 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 	}
 	unlock := s.lock(slugName)
 	defer unlock()
+	return s.deleteLocked(ctx, slugName, via, exceptApproval)
+}
+
+// deleteLocked deletes a flat; the caller holds its lock.
+func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
 	flat, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return ActionResult{}, err
@@ -1945,7 +1961,7 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 	}
 	if lf != nil {
 		if d := lf.cur.Load(); d != nil && d.inst != nil {
-			d.inst.Stop()
+			stopInstance(d.inst, "deleted")
 		}
 	}
 	s.eventCount.Delete(slugName)

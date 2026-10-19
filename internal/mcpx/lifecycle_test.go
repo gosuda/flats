@@ -69,6 +69,9 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"save_page":   {"slug": "separate-page", "html": "<title>Page</title>", "deploy": true},
 				"save_design": {"slug": "separate-design", "message": "census"},
 				"get_design":  {"slug": "census"}, "list_revisions": {"slug": "census"}, "get_revision": {"slug": "census", "revision": 1},
+				"get_board": {"slug": "census"}, "get_board_share": {"slug": "census"},
+				"update_board": {"slug": "census", "op_id": "census-write", "ops": []any{}},
+				"import_board": {"slug": "census", "op_id": "census-import", "archive": "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "mode": "add"},
 				"pin_revision": {"slug": "census", "revision": 1, "pinned": true}, "rollback_revision": {"slug": "census", "revision": 1},
 				"update_document": {"slug": "census", "ops": []any{map[string]any{"op": "insert", "at": "end", "text": "x"}}},
 				"get_network":     {"slug": "census"}, "guide": {"items": []string{"topic.index", "refusal.conflict"}},
@@ -84,11 +87,11 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				t.Fatalf("new tool lacks authority behavior census: %s", tool.Name)
 			}
 			text, failed := call(t, e.local, tool.Name, input, nil)
-			// Document and design tools refuse the census website; the refusal
-			// must still leave the pending approval untouched.
+			// Document, design and board tools refuse the census website; the
+			// refusal must still leave the pending approval untouched.
 			docTool := tool.Name == "get_document" || tool.Name == "update_document" ||
 				tool.Name == "get_design" || tool.Name == "list_revisions" || tool.Name == "get_revision" ||
-				tool.Name == "pin_revision" || tool.Name == "rollback_revision"
+				tool.Name == "pin_revision" || tool.Name == "rollback_revision" || strings.Contains(tool.Name, "board")
 			if failed && !docTool {
 				t.Fatalf("valid census operation failed: %s", text)
 			}
@@ -98,6 +101,9 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 			}
 			if strings.Contains(tool.Name, "revision") {
 				want = `"category":"no_revisions"`
+			}
+			if strings.Contains(tool.Name, "board") {
+				want = `"category":"not_board"`
 			}
 			if docTool && (!failed || !strings.Contains(text, want)) {
 				t.Fatal("website must reject document reads and edits with a typed error", text)

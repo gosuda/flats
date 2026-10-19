@@ -183,10 +183,10 @@ func (s *Service) walkDisks(flats []snapshotFlat) {
 }
 
 // hasWorker reports whether a flat of this type and kind runs in its own
-// worker process: server flats and documents. Websites, pages and designs run
-// inside the host process.
+// worker process: server flats and documents. Websites, pages, designs and
+// boards run inside the host process.
 func hasWorker(typ, kind string) bool {
-	return kind == "server" && typ != contenttype.Design
+	return kind == "server" && typ != contenttype.Design && typ != contenttype.Board
 }
 
 func workerStateOf(d *deployed) WorkerState {
@@ -215,6 +215,7 @@ func (s *Service) Metrics() MetricsSnapshot {
 		snap = &hostSnapshot{}
 	}
 	out.SnapshotAt, out.DBBytes, out.PendingApprovals = snap.at, snap.dbBytes, snap.pending
+	out.Board = s.boardMetrics()
 	live := s.liveFlats()
 	bySlug := make(map[string]snapshotFlat, len(snap.flats))
 	for _, f := range snap.flats {

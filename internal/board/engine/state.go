@@ -134,15 +134,19 @@ func (st *stacks) clone() *stacks {
 
 // State is the current state of one board.
 type State struct {
-	seq      int64
-	resets   []int64
-	rows     map[string]*Row
-	sessions map[string]*Session
-	created  map[createdKey]int64
-	receipts map[ReceiptKey]*Receipt
-	undo     map[string]*stacks
-	assets   map[string]*Asset
-	limits   model.Limits
+	seq    int64
+	resets []int64
+	// resetAt holds when each reset happened (unix seconds), and
+	// resetFloor the newest reset TrimResets dropped.
+	resetAt    []int64
+	resetFloor int64
+	rows       map[string]*Row
+	sessions   map[string]*Session
+	created    map[createdKey]int64
+	receipts   map[ReceiptKey]*Receipt
+	undo       map[string]*stacks
+	assets     map[string]*Asset
+	limits     model.Limits
 
 	// Indexes over alive rows.
 	members  map[string]map[string]struct{}
@@ -192,6 +196,31 @@ func (s *State) Seq() int64 { return s.seq }
 
 // Resets are the seqs of recent rollbacks and replacements (meta.resets).
 func (s *State) Resets() []int64 { return slices.Clone(s.resets) }
+
+// ResetTimes are when each of Resets happened, in unix seconds.
+func (s *State) ResetTimes() []int64 { return slices.Clone(s.resetAt) }
+
+// ResetFloor is the newest reset TrimResets dropped, 0 when none was: a
+// client whose watermark is below it missed a rollback or replacement.
+func (s *State) ResetFloor() int64 { return s.resetFloor }
+
+// TrimResets drops the resets that happened before the unix time before,
+// and then the oldest beyond keep, raising ResetFloor to the newest dropped.
+func (s *State) TrimResets(before int64, keep int) Changed {
+	m := s.Savepoint()
+	sp := s.sps[m]
+	drop := 0
+	for drop < len(s.resets) && (s.resetAt[drop] < before || len(s.resets)-drop > keep) {
+		drop++
+	}
+	if drop > 0 {
+		s.resetFloor = max(s.resetFloor, s.resets[drop-1])
+		s.resets, s.resetAt = slices.Clone(s.resets[drop:]), slices.Clone(s.resetAt[drop:])
+	}
+	c := s.changedSince(sp)
+	s.Release(m)
+	return c
+}
 
 // Alive returns the alive elements, without the metadata, sorted by id.
 func (s *State) Alive() []model.PrivateElement {
@@ -278,15 +307,17 @@ type prior[V any] struct {
 }
 
 type savepoint struct {
-	rows     map[string]prior[*Row]
-	created  map[createdKey]prior[int64]
-	sessions map[string]prior[*Session]
-	receipts map[ReceiptKey]prior[*Receipt]
-	undo     map[string]prior[*stacks]
-	assets   map[string]prior[*Asset]
-	seq      int64
-	resets   []int64
-	live     int
+	rows       map[string]prior[*Row]
+	created    map[createdKey]prior[int64]
+	sessions   map[string]prior[*Session]
+	receipts   map[ReceiptKey]prior[*Receipt]
+	undo       map[string]prior[*stacks]
+	assets     map[string]prior[*Asset]
+	seq        int64
+	resets     []int64
+	resetAt    []int64
+	resetFloor int64
+	live       int
 	// aliveCount is the number of alive elements at savepoint start.
 	aliveCount int
 
@@ -306,6 +337,8 @@ func newSavepoint(s *State) *savepoint {
 		assets:       map[string]prior[*Asset]{},
 		seq:          s.seq,
 		resets:       slices.Clone(s.resets),
+		resetAt:      slices.Clone(s.resetAt),
+		resetFloor:   s.resetFloor,
 		live:         s.live,
 		aliveCount:   s.alive,
 		startAttach:  map[string][]connEnd{},
@@ -364,7 +397,7 @@ func (s *State) RollbackTo(m Mark) {
 		restore(sp.receipts, s.receipts)
 		restore(sp.undo, s.undo)
 		restore(sp.assets, s.assets)
-		s.seq, s.resets, s.live = sp.seq, sp.resets, sp.live
+		s.seq, s.resets, s.resetAt, s.resetFloor, s.live = sp.seq, sp.resets, sp.resetAt, sp.resetFloor, sp.live
 	}
 }
 
@@ -619,7 +652,7 @@ func (s *State) changedSince(sp *savepoint) Changed {
 			c.Assets = append(c.Assets, h)
 		}
 	}
-	c.Meta = sp.seq != s.seq || !slices.Equal(sp.resets, s.resets)
+	c.Meta = sp.seq != s.seq || !slices.Equal(sp.resets, s.resets) || !slices.Equal(sp.resetAt, s.resetAt) || sp.resetFloor != s.resetFloor
 	return c
 }
 
@@ -669,14 +702,16 @@ func (st *stacks) stack(name string) []*UndoEntry {
 
 // Rows is the persistent form of a State, one slice per board.db table.
 type Rows struct {
-	Seq      int64
-	Resets   []int64
-	Elements []ElementRow
-	Sessions []Session
-	Created  []CreatedRow
-	Receipts []Receipt
-	Undo     []UndoRow
-	Assets   []Asset
+	Seq        int64
+	Resets     []int64
+	ResetAt    []int64 // when each reset happened, unix seconds
+	ResetFloor int64
+	Elements   []ElementRow
+	Sessions   []Session
+	Created    []CreatedRow
+	Receipts   []Receipt
+	Undo       []UndoRow
+	Assets     []Asset
 }
 
 // ElementRow is an elements row. Data is the canonical content JSON.
@@ -784,7 +819,7 @@ func (s *State) BucketFile(b int) ([]byte, bool) {
 
 // Export returns every row of the state.
 func (s *State) Export() Rows {
-	out := Rows{Seq: s.seq, Resets: slices.Clone(s.resets)}
+	out := Rows{Seq: s.seq, Resets: slices.Clone(s.resets), ResetAt: slices.Clone(s.resetAt), ResetFloor: s.resetFloor}
 	for _, id := range slices.Sorted(maps.Keys(s.rows)) {
 		r, _ := s.Element(id)
 		out.Elements = append(out.Elements, r)
@@ -822,7 +857,12 @@ func (s *State) Export() Rows {
 // each stack.
 func Load(rows Rows) (*State, error) {
 	s := newState()
-	s.seq, s.resets = rows.Seq, slices.Clone(rows.Resets)
+	s.seq, s.resets, s.resetFloor = rows.Seq, slices.Clone(rows.Resets), rows.ResetFloor
+	if len(s.resets) > 0 {
+		// A reset stored without its time counts as long ago.
+		s.resetAt = make([]int64, len(s.resets))
+		copy(s.resetAt, rows.ResetAt)
+	}
 	for _, a := range rows.Assets {
 		a.Refs, a.DeletedRefs = 0, 0
 		s.assets[a.Hash] = &a

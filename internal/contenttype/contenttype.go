@@ -8,6 +8,7 @@ const (
 	Docs   = "docs"
 	Page   = "page"
 	Design = "design"
+	Board  = "board"
 )
 
 type Description struct {
@@ -19,12 +20,13 @@ type Description struct {
 func Types() []Description {
 	return []Description{{Flat, "Website", "Static or server website"}, {Docs, "Document", "Markdown documents and assets in the embedded collaborative editor"},
 		{Page, "Page", "Static HTML page: a document with charts, graphs and visualizations"},
-		{Design, "Design", "Canvas of HTML artboards that people and agents edit live"}}
+		{Design, "Design", "Canvas of HTML artboards that people and agents edit live"},
+		{Board, "Board", "Infinite-canvas whiteboard of stickies, shapes and connectors that people and agents edit live"}}
 }
 
 // RevisionModel reports whether content of type t follows the Revision
 // model: no Draft, versions or publish; changes are live at once.
-func RevisionModel(t string) bool { return t == Docs || t == Design }
+func RevisionModel(t string) bool { return t == Docs || t == Design || t == Board }
 
 // FromManifest derives the type without changing the metadata schema.
 func FromManifest(raw json.RawMessage) string {

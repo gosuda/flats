@@ -191,6 +191,7 @@ type Instance struct {
 	deltaMaxEntries       int
 	deltaMaxBytes         int64
 	deltaMaxAge           int64
+	resetsMax             int
 	tickEvery             time.Duration
 	ticks                 int
 	// hook, for crash tests, runs in the apply loop just before and just
@@ -216,7 +217,7 @@ func Open(dir string, b Backend, opts Options) (in *Instance, created bool, err 
 		ctx: ctx, cancel: cancel, items: make(chan *item, 256),
 		hub: newHub(), assets: newAssetView(), snaps: newPageCache(), shares: &shareList{},
 		privateMax: 64, publicMax: 256, privateQueue: privateQueueMax, publicStarts: newStartLimiter(8),
-		deltaMaxEntries: 20000, deltaMaxBytes: 16 << 20, deltaMaxAge: 3600,
+		deltaMaxEntries: 20000, deltaMaxBytes: 16 << 20, deltaMaxAge: 3600, resetsMax: 1000,
 		tickEvery: cmp.Or(opts.tickEvery, 5*time.Second),
 	}
 	in.meas = newMeasurer(in)

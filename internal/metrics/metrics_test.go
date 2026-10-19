@@ -61,6 +61,8 @@ var (
 func testSnapshot() core.MetricsSnapshot {
 	return core.MetricsSnapshot{
 		SnapshotAt: snapAt, DBBytes: 4096, PendingApprovals: 2,
+		Board: core.BoardMetrics{Batches: map[string]int64{"applied": 7, "rejected": 1, "retry": 3}, Connections: 4,
+			ImportCount: 3, ImportSum: 0.75, ImportCounts: []uint64{0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0}},
 		Counts: []core.FlatCount{
 			{Type: "server", Visibility: "public", Running: true, N: 1},
 			{Type: "docs", Visibility: "private", Running: true, N: 1},
@@ -266,6 +268,13 @@ func TestExpositionValues(t *testing.T) {
 		t.Errorf("flats_route_endpoints has %d series, want 3", n)
 	}
 	want("flats_management_requests_total", map[string]string{"surface": "api", "code": "2xx"}, 0)
+	want("flats_board_batches_total", map[string]string{"result": "applied"}, 7)
+	want("flats_board_batches_total", map[string]string{"result": "retry"}, 3)
+	want("flats_board_connections", nil, 4)
+	want("flats_board_import_seconds_bucket", map[string]string{"le": "0.01"}, 1)
+	want("flats_board_import_seconds_bucket", map[string]string{"le": "0.25"}, 2)
+	want("flats_board_import_seconds_bucket", map[string]string{"le": "+Inf"}, 3)
+	want("flats_board_import_seconds_sum", nil, 0.75)
 
 	if series(vec, "go_goroutines") != 1 {
 		t.Error("missing the Go runtime collector")

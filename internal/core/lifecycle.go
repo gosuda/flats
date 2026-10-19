@@ -1242,13 +1242,14 @@ func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Versi
 	if d.inst != nil {
 		d.inst.Stop()
 	}
-	if h.OK && contenttype.FromManifest(v.Manifest) == contenttype.Design {
-		return h, nil // the design shell is internal; its creation is logged as a design event
+	t := contenttype.FromManifest(v.Manifest)
+	if h.OK && (t == contenttype.Design || t == contenttype.Board) {
+		return h, nil // the shell is internal; its creation is logged as a design or board event
 	}
 	what := fmt.Sprintf("version %d", v.Number)
-	if contenttype.FromManifest(v.Manifest) == contenttype.Design {
-		what = "the design"
-	} else if contenttype.FromManifest(v.Manifest) == contenttype.Docs {
+	if t == contenttype.Design || t == contenttype.Board {
+		what = "the " + typeNoun(t)
+	} else if t == contenttype.Docs {
 		what = "the saved document" // a document has no versions or Draft
 	} else if !v.Published && v.Revision > 0 {
 		what = fmt.Sprintf("draft revision %d", v.Revision)
@@ -1606,7 +1607,7 @@ var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
 	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed", "snapshot_failed",
-	"health_check_failed", "edit_conflict", "document_capacity", "conflict", "forbidden", "not_docs", "not_design", "no_revisions", "document_not_found", "not_found", "invalid",
+	"health_check_failed", "edit_conflict", "document_capacity", "board_capacity", "conflict", "forbidden", "not_docs", "not_design", "not_board", "no_revisions", "document_not_found", "not_found", "invalid",
 }
 
 // ErrorCategory defines cause precedence for persisted failures and transports.
@@ -1654,6 +1655,8 @@ func ErrorCategory(err error) string {
 		return "edit_conflict"
 	case errors.Is(err, ErrDocumentCapacity):
 		return "document_capacity"
+	case errors.Is(err, ErrBoardCapacity):
+		return "board_capacity"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
 	case errors.Is(err, ErrForbidden):
@@ -1664,6 +1667,8 @@ func ErrorCategory(err error) string {
 		return "no_revisions"
 	case errors.Is(err, ErrNotDesign):
 		return "not_design"
+	case errors.Is(err, ErrNotBoard):
+		return "not_board"
 	case errors.Is(err, ErrDocumentNotFound):
 		return "document_not_found"
 	case errors.Is(err, store.ErrNotFound):

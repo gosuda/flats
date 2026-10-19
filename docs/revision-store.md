@@ -1,11 +1,12 @@
 # Revision store
 
-Documents (`docs`) and designs (`design`) follow the Revision model of
-[content-models.md](spec/content-models.md): no Draft or user versions, every
-edit unit becomes a whole-flat revision, with revision and pin quotas and
-rollback. This page describes the store that holds those revisions for both
-types. It is owned by `internal/core` (`design.go`, `docsrev.go`) with tables
-in `internal/store/content.go`.
+Documents (`docs`), designs (`design`) and boards (`board`) follow the
+Revision model of [content-models.md](spec/content-models.md): no Draft or
+user versions, every edit unit becomes a whole-flat revision, with revision
+and pin quotas and rollback. This page describes the store that holds those
+revisions for all three types. It is owned by `internal/core` (`design.go`,
+`docsrev.go`, `board.go`) with tables in `internal/store/content.go` and
+`internal/store/board.go`.
 
 - A **design** writes the store directly: its current files ("head") and its
   open edit groups live here, and every write commits a revision here.
@@ -14,8 +15,11 @@ in `internal/store/content.go`.
   change, and the host imports the outbox into this store. The worker side
   (outbox, intents, text restore, host operations) is in
   [the docs app internals](internal/docs-app.md).
+- A **board** keeps its current state in its own `board.db`, which the board
+  instance in the host process owns. Like a document, it records each
+  revision boundary in an outbox and the host imports it ([Boards](#boards)).
 
-Both types also keep internal backing versions under `versions/<n>` (a
+All three types also keep internal backing versions under `versions/<n>` (a
 design's one-file shell, each docs bundle that ran) so the running instance
 has a version to serve. They are not user versions: version tools refuse
 these types, and pruning removes their files (the row stays, marked pruned)
@@ -25,19 +29,22 @@ preview or a pending activation or rollback approval names.
 ## Schema
 
 Migration 11 adds the first five tables; migration 12 adds the document
-columns and the last two tables. Every table references `flats(slug)` (or
+columns and `content_sources` and `content_holds`; migration 18 adds the two
+board tables. Every table references `flats(slug)` (or
 `revisions`) with `ON DELETE CASCADE ON UPDATE CASCADE`, so rename and delete
 carry the whole history and nothing in memory needs moving.
 
 | Table | Holds |
 | --- | --- |
-| `content_state` | One row per Revision-model flat: `type` (`design` or `docs`), `phase` (`init` or `ready`), `seq` (bumped on every head change), `gen` (flat-wide file generation counter, never reused), `revision_quota` and `pin_quota` (per-flat overrides, NULL = host default), and the document import cursor `import_store`, `import_seq`. |
-| `content_head` | A design's current files: `path`, `hash`, `size`, `gen`. |
+| `content_state` | One row per Revision-model flat: `type` (`design`, `docs` or `board`), `phase` (`init` or `ready`), `seq` (bumped on every head change), `gen` (flat-wide file generation counter, never reused), `revision_quota` and `pin_quota` (per-flat overrides, NULL = host default), and the document and board import cursor `import_store`, `import_seq`. |
+| `content_head` | A design's current files: `path`, `hash`, `size`, `gen`. For a board, the file list of the last imported revision. |
 | `content_groups` | A design's open edit groups, one per editor: `label`, `started_at`, `last_at`. |
 | `revisions` | `(flat, number)` with `created_at`, `kind`, `authors` (JSON), `message`, `rollback_of`, `pinned`, `changes` (JSON `{added, changed, removed}` against the previous revision), `files`, `size` and, for documents, `source`. |
 | `revision_files` | The files of a revision. For a document only its Markdown documents; its other files are named by `revisions.source`. |
 | `content_sources` | `(flat, source, path, hash, size)`: the non-document files of each docs bundle the host started, keyed by its content hash. A bundle without such files has one row with an empty path. |
-| `content_holds` | `(flat, op, number)`: the target revision of each document rollback in progress. |
+| `content_holds` | `(flat, op, number)`: the target revision of each document or board rollback in progress. |
+| `board_imports` | `(flat, store, outbox_seq, op_id, revision)`: the revision each imported board outbox entry became, so a repeated operation id finds its revision. |
+| `board_rev_stats` | `(flat, number, added, changed, removed)`: the elements a board revision added, changed and removed. |
 
 `content_state.type` is the durable type marker of a Revision-model flat. A
 design has it from the first step of its creation, before its shell is live,
@@ -47,6 +54,7 @@ so a racing first save of another type is refused. A document's row (phase
 and edit groups live in the worker.
 
 Revision kinds are `created`, `agent`, `person` and `rollback`, plus
+`import` for a board data file import or whole-board replacement, and
 `recovered` for document text migrated from the retired
 `flats_docs_conflicts` records. A revision's `files` and `size` count all of
 its files, a document's source included.
@@ -62,8 +70,8 @@ File bytes are content-addressed by SHA-256 under the flat's directory:
 ```text
 flats/<slug>/design/blobs/<hh>/<sha256>      design blobs, mode 0444
 flats/<slug>/design/tmp/                     design staging
-flats/<slug>/revisions/blobs/<hh>/<sha256>   document blobs, mode 0444
-flats/<slug>/revisions/tmp/                  document staging
+flats/<slug>/revisions/blobs/<hh>/<sha256>   document and board blobs, mode 0444
+flats/<slug>/revisions/tmp/                  document and board staging
 ```
 
 Because they live under the flat directory, rename, delete, backups and the
@@ -158,12 +166,15 @@ quota. It never deletes the newest revision, so a quota of 1 keeps exactly
 one. Retention runs:
 
 - in the transaction of every committed design write, group closing and
-  rollback, and after every document import that added revisions;
+  rollback, and after every document import that added revisions; in the
+  transaction of every board import that added revisions;
 - after an unpin;
 - after a per-flat override changes, for that flat;
-- after `system.revision_quota` changes, for every document and design, each
-  under its flat lock, before the settings call returns;
-- at startup: designs right away, documents after their first import.
+- after `system.revision_quota` changes, for every document, design and
+  board, each under its flat lock, before the settings call returns (a board
+  imports its outbox first);
+- at startup: designs right away, boards after an import, documents after
+  their first import.
 
 Pinning while the pin count has reached the pin quota is refused with
 `conflict`; Flats never unpins by itself. A lowered pin quota keeps every pin.
@@ -181,7 +192,8 @@ revision and `seq` in one transaction. A document revision's file list
 expands its source. Lists are newest first, at most 100 per page, with `next`.
 
 A document's history read, pin, quota read or quota change first imports its
-outbox (at most every 2 seconds per flat), so it sees recent revisions.
+outbox (at most every 2 seconds per flat), so it sees recent revisions. A
+board's does the same on every call.
 
 ## Documents
 
@@ -273,7 +285,7 @@ worker receipt until its entry is imported, so that answer is definitive.
 ## Blob sweep
 
 Blobs are never deleted inline. A sweep runs every 10 minutes for every
-document and design, and for one flat after a retention pass deleted
+document, design and board, and for one flat after a retention pass deleted
 revisions. For each flat it:
 
 1. takes the flat lock, refusing (skipping the flat) while a rename or delete
@@ -285,13 +297,20 @@ revisions. For each flat it:
    pending entry may name blobs no revision references yet. It then drops
    sources that no revision names and that are not the running version, an
    unpruned stored version or the Draft;
+   for a board: imports its outbox, and skips the flat when the board is not
+   running or the import failed. It then reads the hashes `board.db`
+   references, every asset row (referenced, kept for deletion undo or
+   protected after upload) and every snapshot an unimported entry holds, in
+   the board's apply loop;
 3. runs `PRAGMA wal_checkpoint(FULL)` and skips the flat unless the
    checkpoint completed, so the committed metadata that dropped a reference
    is durable before a blob it referenced is deleted;
 4. deletes every blob that is not referenced by `content_head`,
-   `revision_files` or `content_sources`, not leased, and older than 10
-   minutes, so a blob stored for a transaction still in flight is never
-   taken;
+   `revision_files`, `content_sources` or a board's `board.db`, not leased,
+   and older than 10 minutes, so a blob stored for a transaction still in
+   flight is never taken. A board upload that reuses an existing blob
+   refreshes its modification time, so a sweep that read the references
+   before it keeps that blob;
 5. deletes `tmp/` entries older than 10 minutes.
 
 The sweep also reclaims blobs left by failed writes and crashes.
@@ -392,3 +411,82 @@ so recording a revision or an update rewrites no large text.
 
 The host's metadata in `flats.db` is outside the flat directory and not
 counted, as for every other disk quota check.
+
+## Boards
+
+A board's current state, its sessions, undo stacks and edit groups live in
+`flats/<slug>/board/board.db`, owned by one `board.Instance` in the host
+process ([board technical design](spec/board-TECH.md)). The host never writes
+that database: it reaches it through the instance's apply loop.
+
+**Creating a board** (`CreateBoard`, under the flat lock):
+
+1. Write `content_state` (type `board`, phase `init`). A failure removes a
+   new flat row.
+2. Save a Draft holding only `flats.json` `{"type":"board","name":...}` and
+   make it live as the internal shell version. Building the live shell opens
+   `board.db`, which a new board initializes with a forced `created` outbox
+   entry. Health checks and trial runs of the shell never open `board.db`.
+3. Import the outbox (revision 1, `created`) and set phase `ready`.
+
+At startup every board row still in `init` finishes steps 2 and 3.
+
+`update_board` and `import_board` on a missing slug or an untyped flat first
+run the call on a `board.db` opened in place, before step 1. A refused call
+removes that database, the blobs it stored and a flat row the call created,
+so the slug stays free or the flat stays untyped (rule 33); an applied call
+then continues with step 1, and the board's first revisions are `created`
+and the call's own.
+
+**Importing** (`importBoardLocked`, under the flat lock). The cursor is
+`content_state.import_store` (the board.db outbox id) and `import_seq`:
+
+1. When the board's oldest outbox entry is at or before the cursor, a stop
+   came between the `flats.db` commit and the acknowledgement: acknowledge
+   through the cursor again.
+2. Read entries after the cursor, 100 at a time. Store the bucket snapshots
+   each entry added as blobs, checking each against its hash; image assets
+   are already blobs, stored by the upload. A file without a blob stops the
+   import.
+3. One transaction inserts each entry as the next revision (kind, authors,
+   message, `rollback_of`, time and file list), its element counts in
+   `board_rev_stats` (computed by comparing the changed buckets with the
+   previous revision), its `board_imports` row, deletes the hold named by a
+   `rollback` entry's operation id, sets `content_head` to the last entry's
+   file list, advances the cursor and runs retention. Entries the cursor
+   already passed are skipped.
+4. Acknowledge: the instance deletes the entries and lowers the snapshot
+   reference counts in one apply-loop item.
+5. Settle holds (below).
+
+The host imports when an agent write, import or rollback returns
+(synchronously, so the result holds its revision), before history reads, pins
+and quota changes, before retention and the sweep, and every 5 seconds for a
+board whose outbox reported new entries. `content_head` can lag `board.db`,
+which stays the source of truth; only revision reads and the sweep use it.
+A board's `revisions.changes` hold bucket paths like any revision, but
+`list_revisions` and the History panel report the `board_rev_stats` element
+counts instead (`elements`), computing a missing row on read.
+
+**Rollback to R** (`RollbackRevision`), under the flat lock:
+
+1. Import, then insert a hold `(op, R)` in `content_holds`.
+2. Read R's content from its blobs and set the board to it in one apply-loop
+   transaction, which records a forced `rollback` entry and the operation id
+   in `board.db` `ops`. It adds no blob and is never refused for disk quota.
+3. Import; the rollback revision's import deletes the hold. The result is
+   that revision, or `unavailable` when it is recorded but not imported yet.
+
+**Settling holds.** After every board import each hold is checked against
+`board.db` `ops`: an operation that is there committed, and its import
+releases the hold; an operation that is not there never committed, and its
+hold is deleted. Every rollback holds the flat lock from its hold to its
+import, so settlement never meets one in progress.
+
+**Disk quota.** The instance checks people's edits, agent writes and imports
+itself, after their writes inside the `board.db` transaction (board-TECH 5.4).
+The host supplies `other`, the flat directory without `board.db` and its
+`-wal` and `-shm` files: a fresh measurement for agent writes and imports,
+which hold the flat lock, and a cached one, measured again after a sweep, a
+quota change or a retention pass, for people's edits. A refusal is
+`board_capacity` for agents and `disk_quota` on the canvas.

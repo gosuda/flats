@@ -33,7 +33,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_flat", Annotations: ro,
 		Description: "Show one flat: visibility, live version, private/public URLs and open previews."}, t.getFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "create_flat", Annotations: write,
-		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; or with type docs a Private document that runs at once (no publish or approval). Optional: save_draft, save_page and save_document create the flat on first save."}, t.createFlat)
+		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; with type docs a Private document, with type design a canvas of HTML artboards, or with type board an empty whiteboard (topic.board), each running at once (no publish or approval). Optional: save_draft, save_page, save_document, save_design and update_board create the flat on first save."}, t.createFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft", Annotations: write,
 		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). This replaces the complete Draft; omitted files are deleted. Saving never creates a version or deployment; call create_version separately to request approval. For one Markdown document use save_document. Documents must use save_document (including bundles)."}, t.saveDraft)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_draft_from_dir", Annotations: write,
@@ -49,6 +49,7 @@ func register(s *mcp.Server, t *tools) {
 		Description: "Freeze current Draft revision/hash and request explicit operator approval to save it as a new numbered version (v1, v2, ...) without deploying it. Call deploy with that version number to make it live. Websites only: documents have no publishing."}, t.createVersion)
 	mcp.AddTool(s, &mcp.Tool{Name: "delete_version", Annotations: write, Description: "Request explicit operator approval to delete a retained version. The live version cannot be deleted. Versions are never deleted automatically."}, t.deleteVersion)
 	registerDesign(s, t)
+	registerBoard(s, t)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_page", Annotations: write,
 		Description: "Save a page (one static HTML document with charts, graphs or visualizations, plus its assets) as a Private Draft, creating the flat when absent. " +
 			"Saving never creates a version or deployment; call create_version separately to request approval. Replaces the whole Draft: send the html and every asset each time. " +
@@ -93,7 +94,7 @@ func register(s *mcp.Server, t *tools) {
 
 // FlatInfo describes a flat.
 type FlatInfo struct {
-	Type                  string                  `json:"type" jsonschema:"flat (website), page (one static HTML page; website lifecycle) or docs (document)"`
+	Type                  string                  `json:"type" jsonschema:"flat (website), page (one static HTML page; website lifecycle), docs (document), design (canvas of HTML artboards) or board (whiteboard)"`
 	Publication           string                  `json:"publication,omitempty" jsonschema:"websites: published or unpublished; absent for documents, which have no publishing"`
 	Running               bool                    `json:"running,omitempty" jsonschema:"documents: true when the document runs and its private URL serves it"`
 	Draft                 *DraftInfo              `json:"draft" jsonschema:"websites: the current Private Draft; null for documents"`
@@ -320,8 +321,8 @@ func stateText(fi FlatInfo) string {
 		return liveText(fi.LiveVersion)
 	}
 	what := "document"
-	if fi.Type == contenttype.Design {
-		what = "design"
+	if fi.Type == contenttype.Design || fi.Type == contenttype.Board {
+		what = fi.Type
 	}
 	if fi.Running {
 		return what + ", running"
@@ -369,6 +370,8 @@ func flatText(fi FlatInfo) string {
 		fmt.Fprintf(&b, "%s (%s): %s, %s. Private URL: %s", fi.Slug, fi.Name, fi.Visibility, stateText(fi), fi.PrivateURL)
 		if !fi.Running && fi.Type == contenttype.Design {
 			b.WriteString(" (save it with save_design to start it)")
+		} else if !fi.Running && fi.Type == contenttype.Board {
+			b.WriteString(" (get_logs has details; update_board starts it)")
 		} else if !fi.Running {
 			b.WriteString(" (save it with save_document to start it)")
 		}
@@ -413,12 +416,12 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 type CreateIn struct {
 	Slug string `json:"slug" jsonschema:"3-54 lowercase letters, digits and single hyphens, starting with a letter; becomes the private host name"`
 	Name string `json:"name,omitempty" jsonschema:"display name (default: the slug)"`
-	Type string `json:"type,omitempty" jsonschema:"flat (website, default), page (one static HTML page with a starter Draft; website lifecycle), docs (a document that runs Private at once) or design (a canvas of HTML artboards that runs Private at once)"`
+	Type string `json:"type,omitempty" jsonschema:"flat (website, default), page (one static HTML page with a starter Draft; website lifecycle), docs (a document that runs Private at once), design (a canvas of HTML artboards that runs Private at once) or board (a whiteboard of stickies, shapes and connectors that runs Private at once)"`
 }
 
 func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in CreateIn) (*mcp.CallToolResult, FlatInfo, error) {
-	if in.Type != "" && in.Type != contenttype.Flat && in.Type != contenttype.Docs && in.Type != contenttype.Page && in.Type != contenttype.Design {
-		return nil, FlatInfo{}, toolErr(refuse(core.ErrInvalid, "type must be flat, docs, page or design"), "omit type for a website")
+	if in.Type != "" && in.Type != contenttype.Flat && in.Type != contenttype.Docs && in.Type != contenttype.Page && in.Type != contenttype.Design && in.Type != contenttype.Board {
+		return nil, FlatInfo{}, toolErr(refuse(core.ErrInvalid, "type must be flat, docs, page, design or board"), "omit type for a website")
 	}
 	var f core.FlatView
 	var err error
@@ -429,6 +432,8 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 		f, err = t.svc.CreatePage(ctx, in.Slug, in.Name, core.ViaMCP)
 	case contenttype.Design:
 		f, _, err = t.svc.CreateDesign(ctx, in.Slug, in.Name, nil, "", core.ViaMCP)
+	case contenttype.Board:
+		f, err = t.svc.CreateBoard(ctx, in.Slug, in.Name, core.ViaMCP)
 	default:
 		f, err = t.svc.CreateFlat(ctx, in.Slug, in.Name, core.ViaMCP)
 	}
@@ -443,6 +448,8 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 		return result(pageCreatedText(fi), fi), fi, nil
 	case contenttype.Design:
 		return result(fmt.Sprintf("Created design %s with a starter canvas (revision 1). It is live, %s, at %s; there is no publish step. Read guide topic.canvas, then write artboards with save_design.", fi.Slug, fi.Visibility, fi.PrivateURL), fi), fi, nil
+	case contenttype.Board:
+		return result(fmt.Sprintf("Created empty board %s (revision 1). It is live, %s, at %s; there is no publish step. Read guide topic.board, then write it with update_board.", fi.Slug, fi.Visibility, fi.PrivateURL), fi), fi, nil
 	}
 	return result("Created unpublished Private flat "+fi.Slug+". Next: save_draft, create_version to save a version (with approval), then deploy that version.", fi), fi, nil
 }

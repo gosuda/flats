@@ -83,6 +83,8 @@ type MetricsSnapshot struct {
 	Flats            []FlatMetrics
 	// RoleCPU is preview and check worker CPU, per flat and role.
 	RoleCPU []RoleCPU
+	// Board holds the host-wide board counters.
+	Board BoardMetrics
 }
 
 // FlatCount is the number of flats with one type, visibility and logical

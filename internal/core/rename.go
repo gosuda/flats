@@ -80,7 +80,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	if lf != nil {
 		current = lf.cur.Swap(nil)
 		if current != nil && current.inst != nil {
-			current.inst.Stop()
+			stopInstance(current.inst, "renamed")
 		}
 	}
 	restoreCurrent := func() {

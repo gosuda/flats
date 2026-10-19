@@ -39,10 +39,14 @@ var (
 	descApprovals     = desc("flats_pending_approvals", "Approvals waiting for the operator, at the last host sweep.")
 	descSnapshotAt    = desc("flats_snapshot_timestamp_seconds", "When the last host sweep refreshed the host-wide figures, in Unix seconds.")
 	descManagementReq = desc("flats_management_requests_total", "Requests to the management server by surface and status class.", "surface", "code")
+	descBoardBatches  = desc("flats_board_batches_total", "People's edit batches on boards by result: applied, rejected or retry (a transient refusal the canvas resends).", "result")
+	descBoardConns    = desc("flats_board_connections", "Open board WebSocket connections, Private and Public.")
+	descBoardImport   = desc("flats_board_import_seconds", "Time to import board revisions from a board's outbox into the revision store.")
 
 	allDescs = []*prometheus.Desc{descBuildInfo, descDBBytes, descFlats, descRequests, descRateLimited, descRespBytes,
 		descOpenStreams, descDuration, descWorkerCPU, descWorkerMem, descWorkerMemAt, descWorkerState, descWorkerExits,
-		descDiskBytes, descDiskAt, descEndpoints, descApprovals, descSnapshotAt, descManagementReq}
+		descDiskBytes, descDiskAt, descEndpoints, descApprovals, descSnapshotAt, descManagementReq,
+		descBoardBatches, descBoardConns, descBoardImport}
 )
 
 // Label values reach the exposition only from fixed enums, slugs, provider
@@ -133,6 +137,21 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		gauge(descDBBytes, float64(snap.DBBytes))
 		gauge(descApprovals, float64(snap.PendingApprovals))
 	}
+	b := snap.Board
+	for _, result := range []string{"applied", "rejected", "retry"} {
+		counter(descBoardBatches, float64(b.Batches[result]), result)
+	}
+	gauge(descBoardConns, float64(b.Connections))
+	buckets := make(map[float64]uint64, len(core.BoardImportBuckets))
+	var cum uint64
+	for i, bound := range core.BoardImportBuckets {
+		if i < len(b.ImportCounts) {
+			cum += b.ImportCounts[i]
+		}
+		buckets[bound] = cum
+	}
+	ch <- prometheus.MustNewConstHistogram(descBoardImport, b.ImportCount, b.ImportSum, buckets)
+
 	type countKey struct{ typ, vis, running string }
 	counts := map[countKey]int{}
 	for _, fc := range snap.Counts {

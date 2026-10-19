@@ -27,7 +27,7 @@ list.
 | [Idle document workers](docs-worker-idle.md) | implemented | Automatic idle sleep and demand-driven recovery of built-in document workers |
 | [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
-| [Board content type](board.md) | planned | `type: "board"`: an infinite-canvas whiteboard of native elements people and agents edit together live, with revisions |
+| [Board content type](board.md) | partly implemented | `type: "board"`: an infinite-canvas whiteboard of native elements people and agents edit together live, with revisions |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Operator keys and console domains](console-settings.md) | implemented | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |
 | [NetBird peers](netbird-peers.md) | implemented | One NetBird peer per flat and console domain, the stored setup key, NetBird console domains over HTTP |

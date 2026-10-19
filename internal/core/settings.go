@@ -741,6 +741,7 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 	}
 	if slices.Contains(changed, SetDiskQuotaBytes) {
 		s.pushAllDocsBudgets(ctx)
+		s.remeasureBoards()
 	}
 	all, _ := s.Settings(ctx)
 	return SettingsUpdate{Settings: all, Changed: changed, ETag: etag}, nil
