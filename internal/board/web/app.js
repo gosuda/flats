@@ -831,7 +831,11 @@ class App {
     el.replaceChildren();
     const pend = this.state.pending.length;
     let text, cls;
-    if (this.isPublic && this.welcomed) { el.hidden = true; return; }
+    if (this.isPublic && this.welcomed && this.net.connected) {
+      if (this.bannerKind === 'withdrawn') this.banner(null);
+      el.hidden = true;
+      return;
+    }
     el.hidden = false;
     if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = 'Editing stopped'; }
     else if (!this.net.connected) {
@@ -853,7 +857,7 @@ class App {
       const r = await fetch(location.pathname, { method: 'HEAD', cache: 'no-store' });
       if (!r.ok) this.banner('withdrawn');
     } catch {
-      this.banner('withdrawn');
+      // The network is down: the status already says so.
     } finally {
       this.publicChecking = false;
     }
