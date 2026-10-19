@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -696,10 +697,8 @@ func deltaFrames(gen, seq int64, body []byte, from string) [][]byte {
 func (in *Instance) broadcast(rec deltaRec, d *model.Delta) {
 	var publicBody []byte
 	for _, c := range in.hub.list() {
-		if c.public {
-			if publicBody == nil {
-				publicBody, _ = json.Marshal(model.PublicDelta(*d))
-			}
+		if c.public && publicBody == nil {
+			publicBody, _ = json.Marshal(model.PublicDelta(*d))
 		}
 		c.deliver(rec, publicBody)
 	}
@@ -1281,16 +1280,8 @@ type sideCopy struct {
 	after       int
 }
 
-func cloneMap[K comparable, V any](m map[K]V) map[K]V {
-	out := make(map[K]V, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
 func (t *txn) saveSide() sideCopy {
-	return sideCopy{cloneMap(t.groups), cloneMap(t.dirty), cloneMap(t.bucketBytes), len(t.newDeltas), t.trimDeltas, cloneMap(t.assets), len(t.after)}
+	return sideCopy{maps.Clone(t.groups), maps.Clone(t.dirty), maps.Clone(t.bucketBytes), len(t.newDeltas), t.trimDeltas, maps.Clone(t.assets), len(t.after)}
 }
 
 func (t *txn) restoreSide(s sideCopy) {

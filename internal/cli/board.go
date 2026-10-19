@@ -66,12 +66,10 @@ func (a *app) boardGet(slug string, outline bool, revision int) error {
 	}
 	var elements []json.RawMessage
 	var first struct {
-		Seq      int64             `json:"seq"`
-		Revision int               `json:"revision"`
-		Pending  bool              `json:"pending"`
-		Meta     json.RawMessage   `json:"meta"`
-		Elements []json.RawMessage `json:"elements"`
-		Next     string            `json:"next"`
+		Seq      int64           `json:"seq"`
+		Revision int             `json:"revision"`
+		Pending  bool            `json:"pending"`
+		Meta     json.RawMessage `json:"meta"`
 	}
 	for page := 0; ; page++ {
 		var p struct {

@@ -424,11 +424,10 @@ func strictDecode(raw []byte, dst any) error {
 
 // Normalize rounds the element's numbers.
 func (e *Element) Normalize() {
-	if e.Type != TypeConnector {
-		e.Geom = e.Geom.Round()
-	}
 	if e.Type == TypeConnector {
 		e.Ends = [2]End{e.Ends[0].Round(), e.Ends[1].Round()}
+	} else {
+		e.Geom = e.Geom.Round()
 	}
 }
 

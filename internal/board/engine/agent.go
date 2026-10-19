@@ -531,13 +531,9 @@ func (c *agentCall) set(op AgentOp) error {
 	if err != nil {
 		return err
 	}
+	// write uses carry only for geom.
 	for _, g := range slices.Sorted(maps.Keys(vals)) {
-		cur := c.a.s.rows[id]
-		if g == model.BundleGeom {
-			c.a.write(cur, g, vals[g], carry, 0)
-		} else {
-			c.a.write(cur, g, vals[g], "", 0)
-		}
+		c.a.write(c.a.s.rows[id], g, vals[g], carry, 0)
 	}
 	return nil
 }

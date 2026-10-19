@@ -230,7 +230,7 @@ export class SelectTool {
     if (!app.canEdit) return;
     const el = app.hitAt(p[0], p[1]);
     if (el) { if (el.type !== 'pen' && el.type !== 'image') { app.select([el.id]); app.editText(el.id); } return; }
-    app.tools.text.createAt(p, true);
+    app.tools.text.createAt(p);
   }
 
   draw(ctx, r) {

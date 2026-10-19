@@ -90,7 +90,6 @@ function clipToOutline(el, from, to) {
 
 // ---- rectangles: {x, y, w, h} ----
 
-export const rect = (x, y, w, h) => ({ x, y, w, h });
 export function rectFromPoints(pts) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [x, y] of pts) {
@@ -105,7 +104,6 @@ export function union(a, b) {
   const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
   return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y };
 }
-export const intersects = (a, b) => a.x <= b.x + b.w && b.x <= a.x + a.w && a.y <= b.y + b.h && b.y <= a.y + a.h;
 export const contains = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 export const containsRect = (a, b) => b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
 export const inflate = (r, d) => ({ x: r.x - d, y: r.y - d, w: r.w + 2 * d, h: r.h + 2 * d });

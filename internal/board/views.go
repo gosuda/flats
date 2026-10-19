@@ -405,9 +405,9 @@ func newStartLimiter(perSecond float64) *startLimiter {
 	return &startLimiter{rate: perSecond, tokens: perSecond, last: time.Now()}
 }
 
-// wait takes a token, waiting at most max.
-func (l *startLimiter) wait(ctx context.Context, max time.Duration) bool {
-	deadline := time.Now().Add(max)
+// wait takes a token, waiting at most maxWait.
+func (l *startLimiter) wait(ctx context.Context, maxWait time.Duration) bool {
+	deadline := time.Now().Add(maxWait)
 	for {
 		l.mu.Lock()
 		now := time.Now()

@@ -180,10 +180,8 @@ func checkOp(op Op) error {
 		if err := need(len(op.IDs) > 0 && len(op.Frame) > 0, "ids and frame"); err != nil {
 			return err
 		}
-		if _, err := decodeFrame(op.Frame); err != nil {
-			return err
-		}
-		return nil
+		_, err := decodeFrame(op.Frame)
+		return err
 	case OpGroup:
 		if err := need(len(op.IDs) > 0, "ids"); err != nil {
 			return err

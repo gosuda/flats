@@ -45,7 +45,7 @@ function revChanges(rv) {
   return parts.join(' · ');
 }
 
-const authors = (rv) => (Array.isArray(rv.authors) ? rv.authors.join(', ') : rv.authors || '');
+const authors = (rv) => (rv.authors || []).join(', ');
 
 export class History {
   constructor(app) {
@@ -108,13 +108,13 @@ export class History {
     let text = summary.join(' · ');
     if (d.revision_quota) text += `${text ? '. ' : ''}Unpinned revisions beyond ${d.revision_quota} are deleted automatically, oldest first.`;
     const rows = this.revs.map((rv) => this.row(rv));
-    replace(this.panel, 
+    replace(this.panel,
       h('h2', {}, h('span', { text: 'History' }), h('button', { type: 'button', class: 'btn icon', 'aria-label': 'Close History', onclick: () => this.close() }, icon('close'))),
       h('p', { class: 'ph', text: loading ? 'Loading revisions…' : text }),
       error ? h('p', { class: 'refusal', role: 'alert', text: error }) : null,
       h('ul', { class: 'plain revs' }, rows),
       h('div', { class: 'hist-foot' },
-        d.more || d.next ? h('button', { type: 'button', class: 'btn ghost wide', text: 'Show earlier revisions', onclick: () => this.load(true) }) : null,
+        d.more ? h('button', { type: 'button', class: 'btn ghost wide', text: 'Show earlier revisions', onclick: () => this.load(true) }) : null,
         d.pin_quota ? h('p', { class: 'note warnline' }, icon('warn'), h('span', { text: `When ${d.pin_quota} revisions are pinned, a new pin is refused. Unpin another revision first.` })) : null));
   }
 
@@ -137,7 +137,7 @@ export class History {
   async pin(rv) {
     try {
       const r = await boardAPI(`/_board/api/revisions/${rv.number}/pin`, { method: 'POST', body: { pinned: !rv.pinned } });
-      rv.pinned = r && r.pinned != null ? r.pinned : !rv.pinned;
+      rv.pinned = r.pinned;
       this.load();
     } catch (err) {
       toast(err.message, { error: true });
@@ -205,10 +205,10 @@ export class History {
     if (!ids.length) return;
     try {
       const r = await boardAPI('/_board/api/recover', { method: 'POST', body: { revision: this.viewing, ids } });
-      const n = (r && r.ids && r.ids.length) || ids.length;
+      const n = (r.ids && r.ids.length) || ids.length;
       this.backToLive();
       toast(`Copied ${plural(n, 'element')} from r${this.rev.number} into the current board.`);
-      if (r && Array.isArray(r.ids)) setTimeout(() => app.select(r.ids), 300);
+      if (Array.isArray(r.ids)) setTimeout(() => app.select(r.ids), 300);
     } catch (err) {
       toast(`Could not copy: ${err.message}`, { error: true });
     }
@@ -234,7 +234,7 @@ export class History {
     try {
       const r = await boardAPI(`/_board/api/revisions/${rv.number}/rollback`, { method: 'POST', body: {} });
       if (this.viewing != null) this.backToLive();
-      toast(`Rolled the board back to r${rv.number}${r && r.revision ? ` (r${r.revision})` : ''}. Everyone's undo history was cleared.`);
+      toast(`Rolled the board back to r${rv.number}${r.revision ? ` (r${r.revision})` : ''}. Everyone's undo history was cleared.`);
       this.load();
     } catch (err) {
       toast(`Rollback failed: ${err.message}`, { error: true });

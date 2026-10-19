@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/term"
+
+	"github.com/gosuda/flats/internal/contenttype"
 )
 
 // --- deploy ---
@@ -292,7 +294,7 @@ func (a *app) list(args []string) error {
 			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
 		}
 		live, versions := liveLabel(f.LiveVersion), strconv.Itoa(f.Versions)
-		if revisionModel(f.Type) {
+		if contenttype.RevisionModel(f.Type) {
 			// A document, design or board has no versions: it runs once saved.
 			live, versions = documentState(f.Running), "-"
 		}
@@ -326,7 +328,7 @@ func (a *app) info(args []string) error {
 		return nil
 	}
 	w := a.out
-	docs := revisionModel(f.Type)
+	docs := contenttype.RevisionModel(f.Type)
 	fmt.Fprintf(w, "%s (%s)\n", f.Slug, f.Name)
 	fmt.Fprintf(w, "  type:       %s\n", displayType(f.Type))
 	if docs {
@@ -364,10 +366,6 @@ func (a *app) info(args []string) error {
 	printURLs(w, f)
 	return nil
 }
-
-// revisionModel reports a document, design or board, which runs without
-// versions.
-func revisionModel(t string) bool { return t == "docs" || t == "design" || t == "board" }
 
 // documentState is "running" or "not running" for a document, design or
 // board.

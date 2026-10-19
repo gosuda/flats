@@ -200,7 +200,7 @@ type geomVector struct {
 	Want [2]float64 `json:"want"`
 }
 
-// vectorInputs are the shared endpointWorld cases. The JS client reads the
+// vectorInputs are the shared EndpointWorld cases. The JS client reads the
 // same file.
 var vectorInputs = []struct {
 	el Geom

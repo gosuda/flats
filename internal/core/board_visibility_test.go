@@ -15,14 +15,14 @@ import (
 	"github.com/gosuda/flats/internal/wsconn"
 )
 
-// hostOrigin adds an Origin header to the handshake written through it.
-type hostOrigin struct {
+// originConn adds an Origin header to the handshake written through it.
+type originConn struct {
 	net.Conn
 	origin string
 	done   bool
 }
 
-func (c *hostOrigin) Write(p []byte) (int, error) {
+func (c *originConn) Write(p []byte) (int, error) {
 	if !c.done && bytes.HasSuffix(p, []byte("\r\n\r\n")) {
 		c.done = true
 		q := append(slices.Clone(p[:len(p)-2]), []byte("Origin: "+c.origin+"\r\n\r\n")...)
@@ -63,7 +63,7 @@ func TestBoardPrivateSwitchClosesPublicSockets(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return &hostOrigin{Conn: c, origin: e.pub.URL("plan")}, nil
+		return &originConn{Conn: c, origin: e.pub.URL("plan")}, nil
 	}, u.Host, "/_board/ws")
 	if err != nil {
 		t.Fatal(err)

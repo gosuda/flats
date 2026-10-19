@@ -290,8 +290,8 @@ export class Exporter {
     try {
       const r = await boardAPI(`/_board/api/import?mode=${mode}`, { method: 'POST', body: file, raw: true });
       t.remove();
-      const ids = (r && r.ids) || [];
-      const imgs = r && r.assets != null ? r.assets : null;
+      const ids = r.ids;
+      const imgs = r.assets ? r.assets.length : 0;
       const what = `${plural(ids.length, 'element')}${imgs ? ` and ${plural(imgs, 'image')}` : ''}`;
       toast(mode === 'replace' ? `Replaced the board with ${what}.` : `Added ${what}.`, {
         actions: ids.length ? [['Show', () => { app.select(ids); app.fitSelection(); }]] : [],

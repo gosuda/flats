@@ -65,7 +65,7 @@ func vp8x(flags byte, w, h int) []byte {
 }
 
 // A WebP whose first VP8X declares 46,340² pixels with alpha and whose
-// second declares 1×1 made the decoder allocate 2 GB for alpha after the
+// second declares 1×1 would make the decoder allocate 2 GB for alpha if the
 // walk accepted the last header.
 func TestWebPConflictingHeadersAreRefusedBeforeDecoding(t *testing.T) {
 	bomb := riff(vp8x(0x10, 46340, 46340), riffChunk("ALPH", []byte{0}), vp8x(0, 1, 1))

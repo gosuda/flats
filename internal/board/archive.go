@@ -328,12 +328,7 @@ func copyOps(els []model.Element, outside func(id string) (model.Element, bool),
 	for i, el := range order {
 		c := el.Clone()
 		c.ID, c.Z, c.Locked, c.By, c.At = newIDs[el.ID], top+keys[i], false, "", 0
-		if _, in := set[el.Frame]; !in {
-			c.Frame = ""
-		} else {
-			c.Frame = newIDs[el.Frame]
-		}
-		c.Group = ""
+		c.Frame, c.Group = newIDs[el.Frame], ""
 		if c.Type == model.TypeConnector {
 			for k, end := range c.Ends {
 				switch {

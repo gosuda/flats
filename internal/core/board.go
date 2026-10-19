@@ -1061,7 +1061,6 @@ func (s *Service) TickBoards(ctx context.Context) {
 			backoff.next = time.Now().Add(backoff.delay)
 			s.boardRetry.Store(slugName, backoff)
 			s.logf("board revisions of %s (next try in %s): %v", slugName, backoff.delay, err)
-			return true
 		}
 		return true
 	})

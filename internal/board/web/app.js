@@ -834,9 +834,9 @@ class App {
     if (this.isPublic && this.welcomed) { el.hidden = true; return; }
     el.hidden = false;
     if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = 'Editing stopped'; }
-    else if (!this.net || !this.net.connected) {
+    else if (!this.net.connected) {
       cls = 'offline'; el.appendChild(icon('wifi-off'));
-      text = !this.net || this.net.connecting ? 'Connecting…' : `Disconnected · Reconnecting${pend ? ` (${plural(pend, 'unsent edit')})` : ''}`;
+      text = this.net.connecting ? 'Connecting…' : `Disconnected · Reconnecting${pend ? ` (${plural(pend, 'unsent edit')})` : ''}`;
     } else if (pend) { cls = 'saving'; el.appendChild(h('span', { class: 'dot' })); text = 'Saving…'; }
     else { cls = 'saved'; el.appendChild(h('span', { class: 'dot' })); text = 'Saved'; }
     el.className = 'save ' + cls;

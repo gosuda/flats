@@ -268,26 +268,26 @@ func walkWebP(data []byte) (*imageHeader, error) {
 }
 
 func decodeImage(data []byte, h *imageHeader) error {
-	var cfg image.Rectangle
+	var got image.Rectangle
 	switch h.mime {
 	case "image/png":
 		img, err := png.Decode(bytes.NewReader(data))
 		if err != nil {
 			return badImage("the PNG cannot be decoded: %v", err)
 		}
-		cfg = img.Bounds()
+		got = img.Bounds()
 	case "image/jpeg":
 		img, err := jpeg.Decode(bytes.NewReader(data))
 		if err != nil {
 			return badImage("the JPEG cannot be decoded: %v", err)
 		}
-		cfg = img.Bounds()
+		got = img.Bounds()
 	case "image/webp":
 		img, err := webp.Decode(bytes.NewReader(data))
 		if err != nil {
 			return badImage("the WebP cannot be decoded: %v", err)
 		}
-		cfg = img.Bounds()
+		got = img.Bounds()
 	case "image/gif":
 		// One frame at a time: each frame becomes a GIF of its own with
 		// the original screen descriptor and color table.
@@ -299,7 +299,7 @@ func decodeImage(data []byte, h *imageHeader) error {
 		}
 		return nil
 	}
-	if cfg.Dx() != h.w || cfg.Dy() != h.h {
+	if got.Dx() != h.w || got.Dy() != h.h {
 		return badImage("the image size does not match its header")
 	}
 	return nil

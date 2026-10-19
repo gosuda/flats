@@ -17,10 +17,11 @@ import (
 // operations from its screen (the server copy with pending batches applied
 // again on top), and loses its connection now and then: in-flight batches
 // may be lost, deltas missed, and pending batches are resent with the same
-// numbers after a reconnect. Rollbacks, replacements and agent calls interleave. After every
-// step the board invariants hold and a mirror built only from the reported
-// changed rows equals the state; at the end every editor's copy equals the
-// server. BOARD_SEEDS sets the number of seeds (default 2000).
+// numbers after a reconnect. Rollbacks, replacements and agent calls
+// interleave. After every step the board invariants hold and a mirror built
+// only from the reported changed rows equals the state; at the end every
+// editor's copy equals the server. BOARD_SEEDS sets the number of seeds
+// (default 2000).
 func TestRandomClients(t *testing.T) {
 	forSeeds(t, 2000, runSim)
 }
@@ -894,8 +895,8 @@ func sameRows[K comparable, R any](m map[K]R, rows []R, key func(R) K) bool {
 // exactly how it was before the edit, stacking order included, and redo to
 // exactly how it was after (4.10). Edits mix additions, moves with carry,
 // text, multi-element stacking changes, deletions, revives, membership,
-// groups and metadata; undo and redo come in runs. BOARD_SEEDS sets the number of
-// seeds (default 500).
+// groups and metadata; undo and redo come in runs. BOARD_SEEDS sets the
+// number of seeds (default 500).
 func TestRandomUndoRedo(t *testing.T) {
 	forSeeds(t, 500, runUndoRedo)
 }

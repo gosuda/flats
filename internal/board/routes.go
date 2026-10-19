@@ -336,7 +336,7 @@ func (in *Instance) serveRecover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key, label := personLabel(r)
-	ids, err := in.recover(r.Context(), body.Revision, body.IDs, key, label)
+	ids, err := in.recoverElements(r.Context(), body.Revision, body.IDs, key, label)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -344,7 +344,7 @@ func (in *Instance) serveRecover(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ids": ids})
 }
 
-func (in *Instance) recover(ctx context.Context, rev int, ids []string, key, label string) ([]string, error) {
+func (in *Instance) recoverElements(ctx context.Context, rev int, ids []string, key, label string) ([]string, error) {
 	// The revision's files stay leased from their selection under the flat
 	// lock until the copy commits, when the assets' board.db rows (held
 	// for an hour, then referenced) protect them (5.5): retention and a

@@ -151,7 +151,6 @@ export class Net {
     ws.onopen = () => ws.send(JSON.stringify(this.h.hello()));
     ws.onmessage = (ev) => this.#message(ev.data);
     ws.onclose = () => this.#closed(ws);
-    ws.onerror = () => {};
   }
 
   // restart reconnects at once, for example after a gap or a name change.

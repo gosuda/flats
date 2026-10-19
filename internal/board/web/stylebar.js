@@ -299,8 +299,6 @@ export function contextMenu(app, x, y, el, opener) {
       '-',
       { label: 'Fit all', icon: 'fit', kbd: '⇧1', run: () => app.fitAll() });
   }
-  if (!items.length) return;
   closePopover();
   popover(menu(items, el ? `${kind} menu` : 'Board menu'), x, y, { opener, menu: true });
 }
-

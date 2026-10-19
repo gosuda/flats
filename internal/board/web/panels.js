@@ -86,7 +86,7 @@ export class FrameList {
       type: 'button', class: 'frame-row', 'aria-current': cur && cur.id === f.id ? 'true' : null,
       onclick: () => app.fitRect({ x: f.x, y: f.y, w: f.w, h: f.h }, { max: 2 }),
     }, icon('frame'), h('span', { class: 'grow', text: f.text || 'Frame' }), h('span', { class: 'note', text: plural(counts.get(f.id) || 0, 'element') }))));
-    replace(this.el, 
+    replace(this.el,
       h('h2', {}, h('span', { text: plural(frames.length, 'frame') }),
         h('button', { type: 'button', class: 'btn icon', 'aria-label': 'Close the frame list', onclick: () => this.toggle() }, icon('close'))),
       h('p', { class: 'ph', text: frames.length ? 'Select a frame to zoom to it.' : 'This board has no frames yet.' }),
@@ -119,7 +119,7 @@ export class LockedList {
         h('button', { type: 'button', class: 'btn ghost', 'aria-label': `Unlock ${label}`, disabled: !app.canEdit, onclick: () => app.commit(ops.lockOps(app.state, [el.id], false)) },
           icon('unlock'), h('span', { text: 'Unlock' })));
     });
-    replace(this.box, 
+    replace(this.box,
       h('h2', { id: 'locked-t', text: `${plural(locked.length, 'locked element')}` }),
       h('ul', { class: 'plain' }, rows),
       h('p', { class: 'note foot', text: 'A lock only prevents accidental moves. Anyone can unlock it, and moving its frame or group still moves it. An "is editing" mark is a notice, not a lock.' }));

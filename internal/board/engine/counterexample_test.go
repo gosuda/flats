@@ -452,8 +452,9 @@ func zorderOp(h *harness, to any, names ...string) Op {
 	return Op{Op: OpZorder, IDs: ids, IncOf: m, To: raw(to)}
 }
 
-// TestReviewCounterexamples holds the counterexamples of the engine code
-// review: each failed before its fix.
+// TestReviewCounterexamples covers redo of stacking changes, one editor's
+// own undo and redo, group id reuse, delete_frame_contents guards, layout of
+// frames and members, replacement limits and summarized results.
 func TestReviewCounterexamples(t *testing.T) {
 	t.Run("redo keeps the relative order of a multi-element stacking change", func(t *testing.T) {
 		for _, c := range []struct {
@@ -509,8 +510,7 @@ func TestReviewCounterexamples(t *testing.T) {
 		}
 	})
 
-	// Found by TestRandomUndoRedo: one editor alone undoes and redoes back
-	// to exactly the boards it had.
+	// One editor alone undoes and redoes back to exactly the boards it had.
 	t.Run("undo and redo of one editor's own deletions and relations", func(t *testing.T) {
 		undoAll := func(t *testing.T, h *harness, a string, n int) {
 			t.Helper()
@@ -776,8 +776,8 @@ func TestReviewCounterexamples(t *testing.T) {
 	})
 }
 
-// TestReviewRound2Counterexamples holds the counterexamples of the second
-// engine code review: each failed before its fix.
+// TestReviewRound2Counterexamples covers undo cleanup against a stale
+// membership guard, null coordinates and agent connector ends.
 func TestReviewRound2Counterexamples(t *testing.T) {
 	t.Run("undo cleanup does not pass a stale membership guard", func(t *testing.T) {
 		setup := func(t *testing.T) (*harness, string, string) {
@@ -929,8 +929,9 @@ func TestReviewRound2Counterexamples(t *testing.T) {
 	})
 }
 
-// TestReviewRound3Counterexamples holds the counterexamples of the third
-// engine code review: each failed before its fix.
+// TestReviewRound3Counterexamples covers replacements: text limits by each
+// state's type, layout and placement of new elements, and empty attachment
+// targets.
 func TestReviewRound3Counterexamples(t *testing.T) {
 	t.Run("replacement measures text against each state's own type", func(t *testing.T) {
 		long := strings.Repeat("é", 1000)
@@ -1136,8 +1137,8 @@ func TestReviewRound3Counterexamples(t *testing.T) {
 	})
 }
 
-// TestReviewRound4Counterexamples holds the counterexamples of the fourth
-// engine code review: each failed before its fix.
+// TestReviewRound4Counterexamples covers layout of new elements near the
+// edge of the canvas and resets that change only author fields.
 func TestReviewRound4Counterexamples(t *testing.T) {
 	t.Run("layout places new elements the row would put off the canvas", func(t *testing.T) {
 		far := float64(model.MaxCoord - 100)
