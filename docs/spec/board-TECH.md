@@ -105,7 +105,7 @@ Runtime fields (a row of the board.db `elements` table):
 | Runtime field | Meaning |
 |---|---|
 | `inc` | Incarnation. An element receives the seq of the batch when it first appears, and again when a deleted id reappears (`revive`, rollback). Seqs are never reused, so incarnations are never reused either |
-| `v` | The seq of the last change per bundle. Guards and undo use it. One more key, `fixed`, is no bundle: it is the seq of the last rollback or replacement that changed a field outside every bundle (`by`, `at`, a pen's `pts`, an image's `asset` or `natural`) of an element that kept its incarnation (4.11, 4.12). Nothing else sets it, so such a change still raises the element's `ver` (8.1) |
+| `v` | The seq of the last change per bundle. Guards and undo use it. One more key, `fixed`, is no bundle: it is the seq of the last rollback or replacement that changed a field outside every bundle (`by`, `at`, a pen's `pts`, an image's `asset` or `natural`) of an element that kept its incarnation (4.11, 4.12). Nothing else sets it, so such a change still raises the element's `ver` (8.1). Only bundle names and `fixed` are written today; readers treat any other key in `v` as opaque |
 | `deleted`, `del_seq` | The deleted state and the seq of the batch that deleted the element |
 | `pre_rel` | The relations from **before the batch that deleted this element started** (4.1): this element's `frame` and `frame_inc`, `group`, (for a connector) each end's target and incarnation, (for a target) the connector ends attached to it `[{conn, conn_inc, end, at}]`, (for a frame) its members `[{id, inc}]` |
 | `end_inc`, `end_last` | Connectors only: for each attached end, the target's incarnation, and the end's world coordinate computed when the connector was deleted (4.4) |
@@ -169,6 +169,17 @@ new incarnation (the same rule as "Linking incarnations" in 4.10).
 | `set` | `{op:"set", id, inc, g, val, if_v?, base_v?, carry?, refs?}` | Alive with a matching incarnation. `g` is a bundle allowed in an ordinary `set` (3.2). With `if_v`, `v[g] == if_v` (`stale`). When locked, only `g == "locked"` (`locked`). When `val` references another element (a connector end), the incarnation in `refs` must match |
 | `revive` | `{op:"revive", ids, if_del}` | Revives each element when all `ids` are in the deleted state from the same batch (`del_seq == if_del`) (otherwise only that element is `stale`). Counts as one, like a semantic operation |
 
+- The incarnation is checked **before** the value is checked against the
+  element's type. A rollback or replacement (4.11, 4.12) that reuses an id
+  for another type gives it a new incarnation, so a pending `set` of `text`,
+  `geom`, an end or a style key against the old incarnation is `void:gone`
+  like any other operation against an old incarnation, and the rest of its
+  batch applies ([rules 30 and 31](board.md#concurrency-rules)). The form of
+  a `set` is still checked whatever the board holds: a `g` that no element
+  type can set, or a `val` that no type with bundle `g` accepts, is a format
+  error. A `val` that the matching incarnation's own type does not accept is
+  a format error too, since the client named that incarnation and so knew
+  its type.
 - `val` is the **absolute value** of the whole bundle (`{x,y,w,h,rot}` for
   `geom`). A partial value is a format error. When two people move the same
   element at once, the later value therefore stays as it is
@@ -307,7 +318,12 @@ at the moment of applying**. Explicit targets carry expected incarnations.
   `end_last` coordinate (the case where the connector was deleted first, the
   target later, and then only the connector was revived).
 - When an end attaches (`add`, `set end`, revive), the server records the
-  target's current incarnation in `end_inc`.
+  target's current incarnation in `end_inc`. An attached end's target is
+  always alive with that incarnation, so a delta's `set` of an end carries
+  no `end_inc`: a Private client that keeps `end_inc` takes it from its copy
+  of the target after applying the whole delta (0 for a free end); the board
+  page does not use it. Elements sent whole (`add`,
+  `revive`, snapshots) carry `end_inc`.
 - **Default attachment point.** An agent end attached without `at` (8.1)
   gets the middle of one side of its target (`[1, 0.5]`, `[0, 0.5]`,
   `[0.5, 1]` or `[0.5, 0]`), so the line starts on the outline instead of
@@ -395,7 +411,13 @@ sequenceDiagram
   `by` and `at`, a pen's `pts` and an image's `asset` and `natural` belong
   to no bundle, so an element whose such field a reset changed goes out
   whole as `revive`, keeping its incarnation, with `v.fixed` set to the
-  reset's seq (3.1), and its bucket counts as changed.
+  reset's seq (3.1), and its bucket counts as changed. A surviving
+  connector whose end a reset kept while giving the end's target id a new
+  incarnation (the content reused the id for another type) changes only its
+  `end_inc`, which no `set` carries, so it goes out whole as `revive` too,
+  keeping its incarnation. A Private copy that applies the delta then equals
+  a fresh snapshot. Its bucket does not change, since `end_inc` is a runtime
+  field and stays out of revision snapshots (5.1).
 - Every committed batch goes out as a delta, **including to its sender**. Only
   batches that changed something get a seq. A batch whose operations were all
   ignored leaves only a receipt and no delta, and its ack's `seq` is the

@@ -378,22 +378,26 @@ func (a *applier) insert(el model.Element) {
 }
 
 // set applies {op:"set", id, inc, g, val, if_v, base_v, carry, refs}.
+//
+// The expected incarnation is resolved before the value is checked against
+// the element's type: a reset may have reused the id for another type under
+// a new incarnation, and an operation against the old incarnation is then
+// void:gone like any other, so the rest of its batch still applies (4.1,
+// rule 31). checkOp already refused values no element type accepts; a value
+// the resolved incarnation's own type does not accept is a format error,
+// since the client named that incarnation and so knew its type.
 func (a *applier) set(op Op) (any, error) {
-	row := a.s.rows[op.ID]
-	if row == nil {
-		return void(VoidGone), nil
-	}
-	if !model.Settable(row.El.Type, op.G) {
-		return nil, formatErr("a %s has no settable %q", row.El.Type, op.G)
-	}
-	val, err := model.DecodeBundle(row.El.Type, op.G, op.Val)
-	if err != nil {
-		return nil, err
-	}
 	ifv, hasIfV, _ := decodeV(op.IfV)
 	cur, reason := a.resolve(op.ID, op.Inc)
 	if cur == nil {
 		return void(reason), nil
+	}
+	if !model.Settable(cur.El.Type, op.G) {
+		return nil, formatErr("a %s has no settable %q", cur.El.Type, op.G)
+	}
+	val, err := model.DecodeBundle(cur.El.Type, op.G, op.Val)
+	if err != nil {
+		return nil, err
 	}
 	if hasIfV && cur.V[op.G] != ifv {
 		return void(VoidStale), nil
@@ -598,10 +602,12 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 			return model.Change{ID: id, Del: cur.DelSeq}, true
 		}
 		return model.Change{}, false
-	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameUnversioned(old.El, cur.El):
+	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameUnversioned(old.El, cur.El) || endIncMoved(old, cur):
 		// The author fields and the immutable pen points, image asset and
 		// natural size belong to no bundle, so an element whose such field
-		// a reset rewrote goes out whole, like a new incarnation (4.6).
+		// a reset rewrote goes out whole, like a new incarnation (4.6). So
+		// does a connector whose end target a reset gave a new incarnation
+		// while the end itself stayed: no set would carry its end_inc.
 		p := private(cur)
 		return model.Change{ID: id, Inc: cur.Inc, Revive: &p}, true
 	}
@@ -617,6 +623,20 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 		return model.Change{}, false
 	}
 	return model.Change{ID: id, Inc: cur.Inc, Set: set}, true
+}
+
+// endIncMoved reports whether a connector end's target incarnation changed
+// without a change of the end itself. A set of an end carries the end, and
+// the client takes end_inc from the target it names, which is alive with
+// that incarnation (4.4); only a reset that keeps the end while giving its
+// target id a new incarnation changes end_inc alone (4.11, 4.12).
+func endIncMoved(old, cur *Row) bool {
+	for k := range 2 {
+		if old.EndInc[k] != cur.EndInc[k] && old.V[model.EndBundle(k)] == cur.V[model.EndBundle(k)] {
+			return true
+		}
+	}
+	return false
 }
 
 // sameUnversioned reports whether two states of an element have the same

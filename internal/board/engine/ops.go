@@ -169,6 +169,9 @@ func checkOp(op Op) error {
 		if op.Carry != "" && op.G != model.BundleGeom {
 			return formatErr("carry applies to geom")
 		}
+		if err := checkSetValue(op.G, op.Val); err != nil {
+			return err
+		}
 		_, _, err := decodeV(op.IfV)
 		return err
 	case OpRevive:
@@ -228,6 +231,32 @@ func checkOp(op Op) error {
 		return nil
 	}
 	return formatErr("unknown operation %q", op.Op)
+}
+
+// checkSetValue checks the form of a set's bundle and value without the
+// target: g must be settable on some element type and val a valid value of
+// g for at least one of them. The target's own type is checked only after
+// its incarnation resolves (set), so a malformed operation is refused
+// whatever the board holds, while a well-formed one against an incarnation a
+// reset replaced with another type is void:gone (4.1).
+func checkSetValue(g string, val json.RawMessage) error {
+	var first error
+	for _, t := range model.Types {
+		if !model.Settable(t, g) {
+			continue
+		}
+		_, err := model.DecodeBundle(t, g, val)
+		if err == nil {
+			return nil
+		}
+		if first == nil {
+			first = err
+		}
+	}
+	if first == nil {
+		return formatErr("no element has a settable %q", g)
+	}
+	return first
 }
 
 func decodeFrame(raw json.RawMessage) (string, error) {

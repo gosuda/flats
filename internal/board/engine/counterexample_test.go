@@ -1773,3 +1773,174 @@ func TestReviewRound6Counterexamples(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewRound7Counterexamples(t *testing.T) {
+	decode := func(t *testing.T, fields map[string]any) model.Element {
+		t.Helper()
+		el, _, err := model.DecodeElement(elOf(fields))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return el
+	}
+	// reset installs the board's content with element el in place of the
+	// alive element of the same id.
+	type resetFunc func(t *testing.T, h *harness, el model.Element) Outcome
+	swap := func(h *harness, el model.Element) Content {
+		c := content(h.s)
+		for i := range c.Elements {
+			if c.Elements[i].ID == el.ID {
+				el.Z = c.Elements[i].Z
+				c.Elements[i] = el
+			}
+		}
+		return c
+	}
+	resets := []struct {
+		name string
+		run  resetFunc
+	}{
+		{"replacement", func(t *testing.T, h *harness, el model.Element) Outcome {
+			out, err := h.s.Replace(swap(h, el), "import", h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out
+		}},
+		{"rollback", func(t *testing.T, h *harness, el model.Element) Outcome {
+			out, err := h.s.Rollback(1, swap(h, el), h.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out
+		}},
+	}
+	pen := func(name string) map[string]any {
+		return map[string]any{"id": eid(name), "type": "pen", "x": 0, "y": 0, "w": 50, "h": 50, "pts": []int{0, 0, 10000, 10000}}
+	}
+	sticky := func(name string) map[string]any {
+		return map[string]any{"id": eid(name), "type": "sticky", "x": 0, "y": 0, "w": 100, "h": 100}
+	}
+	connector := func(name string) map[string]any {
+		return map[string]any{"id": eid(name), "type": "connector", "ends": []any{free(0, 0), free(10, 10)}}
+	}
+	// A pending operation against an element whose id a reset gave another
+	// type, under a new incarnation, is void:gone, and the rest of its batch
+	// applies (4.1, rules 30 and 31).
+	cases := []struct {
+		name  string
+		add   Op
+		after map[string]any
+		op    func(inc int64) Op
+	}{
+		{"text of a sticky that became a pen", addSticky("s", 0, 0), pen("s"), func(inc int64) Op {
+			return setText("s", inc, "pending", 0)
+		}},
+		{"geom of a sticky that became a connector", addSticky("s", 0, 0), connector("s"), func(inc int64) Op {
+			return setGeom("s", inc, model.Geom{X: 7, Y: 7, W: 100, H: 100}, "")
+		}},
+		{"end0 of a connector that became a sticky", addConnector("s", free(0, 0), free(10, 10), nil), sticky("s"), func(inc int64) Op {
+			return Op{Op: OpSet, ID: eid("s"), Inc: inc, G: model.BundleEnd0, Val: raw(free(5, 5))}
+		}},
+		{"a sticky's color of a sticky that became a pen", addSticky("s", 0, 0), pen("s"), func(inc int64) Op {
+			return Op{Op: OpSet, ID: eid("s"), Inc: inc, G: "style.color", Val: raw("blue")}
+		}},
+		{"a shape's kind of a shape that became a sticky", addShape("s", 0, 0, 100, 100, 0), sticky("s"), func(inc int64) Op {
+			return Op{Op: OpSet, ID: eid("s"), Inc: inc, G: "style.shape", Val: raw("ellipse")}
+		}},
+	}
+	for _, rs := range resets {
+		for _, tc := range cases {
+			t.Run(rs.name+": pending "+tc.name, func(t *testing.T) {
+				h := newHarness(t)
+				a := h.session("a")
+				h.ok(a, tc.add, addSticky("x", 300, 0))
+				old, oldType := h.inc(eid("s")), h.row(eid("s")).El.Type
+				pending := []Op{tc.op(old), move(h, "x", 40, 40, ""), setText("x", h.inc(eid("x")), "kept", 0)}
+				rs.run(t, h, decode(t, tc.after))
+				if s := h.row(eid("s")); s.Inc == old || s.El.Type == oldType {
+					t.Fatalf("reset kept incarnation %d of %s", s.Inc, s.El.Type)
+				}
+				out := h.do(a, pending...)
+				if out.Reject != nil || out.Fatal != "" {
+					t.Fatalf("pending batch refused: %+v %s", out.Reject, out.Fatal)
+				}
+				got := results(t, out)
+				if got[0] != void(VoidGone) || got[1] != ResultOK || got[2] != ResultOK {
+					t.Fatalf("results %v", got)
+				}
+				if x := h.row(eid("x")); x.El.Geom.X != 40 || x.El.Text != "kept" {
+					t.Fatalf("unrelated element %+v", x.El)
+				}
+			})
+		}
+	}
+
+	// Form errors stay permanent refusals whatever the board holds, and a
+	// value that the resolved incarnation's own type does not accept is a
+	// format error too.
+	t.Run("malformed sets are refused before the incarnation resolves", func(t *testing.T) {
+		h := newHarness(t)
+		a := h.session("a")
+		h.ok(a, addSticky("s", 0, 0), Op{Op: OpAdd, El: elOf(pen("p"))})
+		stale := h.inc(eid("s")) + 1000
+		for _, op := range []Op{
+			{Op: OpSet, ID: eid("s"), Inc: stale, G: model.BundleText, Val: raw(5)},
+			{Op: OpSet, ID: eid("s"), Inc: stale, G: "style.color", Val: raw("no-such-color")},
+			{Op: OpSet, ID: eid("s"), Inc: stale, G: "style.nope", Val: raw("x")},
+			{Op: OpSet, ID: model.BoardID, Inc: stale, G: model.BundleTitle, Val: raw("t")},
+			{Op: OpSet, ID: eid("s"), Inc: stale, G: model.BundleFrame, Val: raw(nil)},
+			{Op: OpSet, ID: eid("q"), Inc: stale, G: model.BundleGeom, Val: raw(map[string]any{"x": 1})},
+		} {
+			out := h.do(a, op, move(h, "s", 9, 9, ""))
+			if out.Reject == nil || out.Reject.Code != CodeInvalid {
+				t.Fatalf("%s %s: %+v %s", op.G, op.Val, out.Reject, out.Results)
+			}
+		}
+		out := h.do(a, setText("p", h.inc(eid("p")), "x", 0), move(h, "s", 9, 9, ""))
+		if out.Reject == nil || out.Reject.Code != CodeInvalid {
+			t.Fatalf("text on a pen's own incarnation: %+v %s", out.Reject, out.Results)
+		}
+		if h.geom(eid("s")).X != 0 {
+			t.Fatalf("a refused batch moved s")
+		}
+	})
+
+	// A reset that keeps connector C exactly while its target id gets a new
+	// incarnation (another type) changes only C's end_inc. The delta carries
+	// it, so a Private copy that applies the delta equals a fresh snapshot.
+	for _, rs := range resets {
+		t.Run(rs.name+": a kept connector's end_inc reaches the delta", func(t *testing.T) {
+			h := newHarness(t)
+			a := h.session("a")
+			h.ok(a, addShape("s", 100, 100, 100, 100, 0))
+			h.ok(a, addConnector("c", attach("s", 1, 0.5), free(400, 400), map[string]int64{eid("s"): h.inc(eid("s"))}))
+			before := map[string]model.PrivateElement{}
+			for _, e := range h.s.Alive() {
+				before[e.ID] = e
+			}
+			board := h.s.Board()
+			cInc, sInc := h.inc(eid("c")), h.inc(eid("s"))
+			out := rs.run(t, h, decode(t, map[string]any{"id": eid("s"), "type": "sticky", "x": 100, "y": 100, "w": 100, "h": 100}))
+			c := h.row(eid("c"))
+			if c.Inc != cInc || c.El.Ends[0].El != eid("s") || h.inc(eid("s")) == sInc || c.EndInc[0] != h.inc(eid("s")) {
+				t.Fatalf("connector inc %d (was %d), ends %+v, end_inc %v, target inc %d", c.Inc, cInc, c.El.Ends, c.EndInc, h.inc(eid("s")))
+			}
+			if !slices.Contains(out.Changed.Elements, eid("c")) {
+				t.Fatalf("changed rows %v", out.Changed.Elements)
+			}
+			if err := applyChanges("private", before, map[string]int64{}, &board, out.Delta); err != nil {
+				t.Fatal(err)
+			}
+			want := h.s.Alive()
+			if len(want) != len(before) {
+				t.Fatalf("%d elements after the delta, snapshot has %d", len(before), len(want))
+			}
+			for _, w := range want {
+				if got := before[w.ID]; !samePrivate(got, w) {
+					t.Fatalf("%s after the delta: inc %d end_inc %v, snapshot: inc %d end_inc %v", w.ID, got.Inc, got.EndInc, w.Inc, w.EndInc)
+				}
+			}
+		})
+	}
+}

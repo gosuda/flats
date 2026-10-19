@@ -156,16 +156,30 @@ func (m *sim) step() error {
 		if m.rng.IntN(2) == 0 {
 			out, err = m.s.Rollback(1, m.revisions[m.rng.IntN(len(m.revisions))], m.now)
 		} else {
-			// A replacement that keeps every element and its type and
-			// rewrites only fields outside every bundle: some author fields,
-			// pen points and image assets. Each element keeps its
+			// A replacement that keeps every element and rewrites fields
+			// outside every bundle: some author fields, pen points and image
+			// assets. Each element that keeps its type keeps its
 			// incarnation, and those fields reach editors and buckets too.
+			// Now and then a sticky, shape or pen becomes another of those
+			// types under the same id: it gets a new incarnation, editors'
+			// pending operations against the old one are void:gone without
+			// refusing their batches (4.1), and connectors attached to it
+			// stay attached with the new end_inc.
 			c := content(m.s)
 			m.imports++
+			retyped := map[string]bool{}
 			for i := range c.Elements {
 				el := &c.Elements[i]
 				if m.rng.IntN(2) == 0 {
 					el.By, el.At = "import:sim", m.imports
+				}
+				if to := retype(el.Type, m.rng); to != "" && m.rng.IntN(6) == 0 {
+					el.Type, el.Text, el.Style, el.Pts = to, "", model.DefaultStyle(to), nil
+					if to == model.TypePen {
+						el.Pts = []int{0, 0, m.rng.IntN(10001), m.rng.IntN(10001)}
+					}
+					retyped[el.ID] = true
+					continue
 				}
 				switch {
 				case el.Type == model.TypePen && m.rng.IntN(2) == 0:
@@ -182,8 +196,8 @@ func (m *sim) step() error {
 			}
 			out, err = m.s.Replace(c, "import", m.now)
 			for id, inc := range incs {
-				if err == nil && m.s.rows[id].Inc != inc {
-					return fmt.Errorf("replacement gave %s a new incarnation", id)
+				if err == nil && (m.s.rows[id].Inc != inc) != retyped[id] {
+					return fmt.Errorf("replacement gave %s incarnation %d, had %d, type changed %v", id, m.s.rows[id].Inc, inc, retyped[id])
 				}
 			}
 		}
@@ -198,6 +212,20 @@ func (m *sim) step() error {
 		m.trimmed = m.s.Seq() - int64(m.rng.IntN(5))
 	}
 	return nil
+}
+
+// retype is another type a replacement may give an element of type typ
+// under the same id, or "" for types the simulator keeps.
+func retype(typ string, rng *rand.Rand) string {
+	others := map[string][]string{
+		model.TypeSticky: {model.TypeShape, model.TypePen},
+		model.TypeShape:  {model.TypeSticky, model.TypePen},
+		model.TypePen:    {model.TypeSticky, model.TypeShape},
+	}[typ]
+	if len(others) == 0 {
+		return ""
+	}
+	return others[rng.IntN(len(others))]
 }
 
 // settle reconnects everyone and runs every queue empty.
@@ -361,35 +389,67 @@ func (c *simClient) drop(from string) {
 }
 
 func (c *simClient) applyDelta(d *model.Delta) error {
+	return applyChanges(c.name, c.copy, c.deleted, &c.board, d)
+}
+
+// applyChanges applies a delta to a Private copy. A set of a connector end
+// carries no end_inc: the end's target is alive in the copy once the whole
+// delta applied, and end_inc is its incarnation (4.4, 4.6).
+func applyChanges(name string, els map[string]model.PrivateElement, deleted map[string]int64, board *model.PrivateElement, d *model.Delta) error {
+	var ends []string
 	for _, ch := range d.Changes {
 		switch {
 		case ch.Add != nil:
-			c.copy[ch.ID] = *ch.Add
-			delete(c.deleted, ch.ID)
+			els[ch.ID] = *ch.Add
+			delete(deleted, ch.ID)
 		case ch.Revive != nil:
-			c.copy[ch.ID] = *ch.Revive
-			delete(c.deleted, ch.ID)
+			els[ch.ID] = *ch.Revive
+			delete(deleted, ch.ID)
 		case ch.Del != 0:
-			delete(c.copy, ch.ID)
-			c.deleted[ch.ID] = ch.Del
+			delete(els, ch.ID)
+			deleted[ch.ID] = ch.Del
 		case ch.ID == model.BoardID:
-			if err := setBundles(&c.board, ch.Set); err != nil {
+			if err := setBundles(board, ch.Set); err != nil {
 				return err
 			}
 		default:
-			e, ok := c.copy[ch.ID]
+			e, ok := els[ch.ID]
 			if !ok {
-				return fmt.Errorf("%s: set on unknown element %s", c.name, ch.ID)
+				return fmt.Errorf("%s: set on unknown element %s", name, ch.ID)
 			}
 			e.Element = e.Element.Clone()
 			e.V = maps.Clone(e.V)
 			if err := setBundles(&e, ch.Set); err != nil {
 				return err
 			}
-			c.copy[ch.ID] = e
+			els[ch.ID] = e
+			if _, ok := ch.Set[model.BundleEnd0]; ok {
+				ends = append(ends, ch.ID)
+			} else if _, ok := ch.Set[model.BundleEnd1]; ok {
+				ends = append(ends, ch.ID)
+			}
 		}
 	}
+	for _, id := range ends {
+		e := els[id]
+		for k, end := range e.Ends {
+			e.EndInc[k] = 0
+			if end.El != "" {
+				t, ok := els[end.El]
+				if !ok {
+					return fmt.Errorf("%s: connector %s ends at unknown element %s", name, id, end.El)
+				}
+				e.EndInc[k] = t.Inc
+			}
+		}
+		els[id] = e
+	}
 	return nil
+}
+
+// samePrivate compares two Private copies of an element, end_inc included.
+func samePrivate(x, y model.PrivateElement) bool {
+	return model.Equal(x.Element, y.Element) && x.Inc == y.Inc && maps.Equal(x.V, y.V) && x.EndInc == y.EndInc
 }
 
 func setBundles(e *model.PrivateElement, set map[string]model.SetVal) error {
@@ -418,8 +478,8 @@ func (c *simClient) matches(s *State) error {
 	}
 	for id, w := range want {
 		got, ok := c.copy[id]
-		if !ok || !model.Equal(got.Element, w.Element) || got.Inc != w.Inc || !maps.Equal(got.V, w.V) {
-			return fmt.Errorf("element %s differs:\n%s %d %v\n%s %d %v", id, got.CanonicalJSON(), got.Inc, got.V, w.CanonicalJSON(), w.Inc, w.V)
+		if !ok || !samePrivate(got, w) {
+			return fmt.Errorf("element %s differs:\n%s %d %v %v\n%s %d %v %v", id, got.CanonicalJSON(), got.Inc, got.V, got.EndInc, w.CanonicalJSON(), w.Inc, w.V, w.EndInc)
 		}
 	}
 	b := s.Board()
