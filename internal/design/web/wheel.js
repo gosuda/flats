@@ -1,11 +1,20 @@
-// wheelPan returns how far a wheel event pans the canvas, to subtract from the
-// view offset. Windows Chrome reports Shift+wheel as a vertical delta with
-// shiftKey set, and the canvas cancels the browser's own sideways scroll, so
-// Shift swaps the axes when the gesture is mostly vertical. An event that is
-// already mostly horizontal, which is the shape macOS is expected to send for
-// Shift+wheel, is used as it is.
-export function wheelPan(e) {
-  const dx = e.deltaX, dy = e.deltaY;
-  if (e.shiftKey && Math.abs(dy) > Math.abs(dx)) return { x: dy, y: dx };
-  return { x: dx, y: dy };
+// Keep the first nonzero Shift sample's mapping until a 200 ms idle gap.
+// Choosing the dominant axis on every sample reverses diagonal trackpad pans
+// when quantization changes which axis is larger. Event creation times keep
+// delayed handling from splitting a gesture; coalesced samples keep its mapping.
+export function createWheelPan() {
+  let swapped = null, last = null;
+  const reset = () => { swapped = null; last = null; };
+  const pan = (e) => {
+    const dx = e.deltaX, dy = e.deltaY;
+    if (!e.shiftKey) { reset(); return { x: dx, y: dy }; }
+    if (dx === 0 && dy === 0) return { x: dx, y: dy };
+    const time = e.timeStamp;
+    if (Number.isFinite(time) && last !== null && time - last > 200) reset();
+    if (swapped === null) swapped = Math.abs(dy) > Math.abs(dx);
+    // Missing or backwards timestamps must not force a new mapping.
+    if (Number.isFinite(time) && (last === null || time >= last)) last = time;
+    return swapped ? { x: dy, y: dx } : { x: dx, y: dy };
+  };
+  return { pan, reset };
 }

@@ -9,7 +9,7 @@ import (
 )
 
 // TestWheelPan runs testdata/wheel_test.mjs under Node against the canvas's
-// wheel.js: Shift+wheel pans sideways, and every other event pans as reported.
+// wheel.js and the viewport handler, including gesture boundaries and zoom.
 func TestWheelPan(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -21,6 +21,13 @@ func TestWheelPan(t *testing.T) {
 	}
 	wheel, err := webFS.ReadFile("web/wheel.js")
 	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webFS.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.js"), app, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	script, err := os.ReadFile(filepath.Join("testdata", "wheel_test.mjs"))
