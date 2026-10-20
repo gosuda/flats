@@ -437,7 +437,7 @@ func TestDocsBudgetReportsBlobsOfPartialImports(t *testing.T) {
 	}
 	root := s.docsStoreDir("notes")
 	for i, d := range docs {
-		if _, err := os.Stat(blobPath(root, d.Hash)); (err == nil) != (i < 2) {
+		if _, err := os.Stat(testBlobPath(t, root, d.Hash)); (err == nil) != (i < 2) {
 			t.Fatal("blob", d.Path, err)
 		}
 	}
