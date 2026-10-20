@@ -147,7 +147,7 @@ cross-site browser guards. Admitted requests through an unselected access
 point, or with `metrics.enabled: false`, return 404.
 
 Per-flat request, worker and storage series are off by default. Set
-`metrics.per_flat: true` to export them, including Private and unpublished
+`metrics.flat_metrics: true` to export them, including Private and unpublished
 flat slugs. Host and aggregate metrics remain available without them.
 Analytics and the stats API keep collecting and returning usage with either
 setting. These defaults apply to upgrades too; the

@@ -552,7 +552,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 
 	// The scrape reads core's in-memory snapshot and the endpoint states the
 	// metrics refresh loop keeps; it never calls a provider backend.
-	h.metrics = metrics.New(metrics.Options{Source: svc, Endpoints: mgr, PerFlat: cfg.Metrics.PerFlat})
+	h.metrics = metrics.New(metrics.Options{Source: svc, Endpoints: mgr, FlatMetrics: cfg.Metrics.FlatMetrics})
 	h.metrics.Start()
 
 	apiSrv := &api.Server{Svc: svc, System: h}

@@ -41,8 +41,8 @@ const EndpointInterval = 30 * time.Second
 
 // Options configure New.
 type Options struct {
-	// PerFlat opts into series labelled with a flat slug.
-	PerFlat bool
+	// FlatMetrics opts into Prometheus series labelled with a flat slug.
+	FlatMetrics bool
 	// Source is core's in-memory snapshot; nil exposes no per-flat or
 	// host-snapshot series.
 	Source Source
@@ -75,7 +75,7 @@ type Metrics struct {
 func New(o Options) *Metrics {
 	m := &Metrics{
 		reg: prometheus.NewRegistry(), src: o.Source, eps: o.Endpoints,
-		interval: o.EndpointInterval, perFlat: o.PerFlat,
+		interval: o.EndpointInterval, perFlat: o.FlatMetrics,
 	}
 	if m.interval <= 0 {
 		m.interval = EndpointInterval

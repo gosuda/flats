@@ -24,10 +24,10 @@ func TestMetricsDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !cfg.Metrics.Enabled || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) || cfg.Metrics.PerFlat {
+			if !cfg.Metrics.Enabled || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) || cfg.Metrics.FlatMetrics {
 				t.Fatalf("Metrics = %+v, want enabled, localhost only and no per-flat series", cfg.Metrics)
 			}
-			for _, key := range []string{"metrics.enabled", "metrics.expose_on", "metrics.per_flat"} {
+			for _, key := range []string{"metrics.enabled", "metrics.expose_on", "metrics.flat_metrics"} {
 				if _, present := loaded.Doc.Stored(key); present {
 					t.Errorf("missing %s was persisted", key)
 				}
@@ -55,7 +55,7 @@ func TestMetricsDefaultsPreserveMigratedConsoleAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Host.ConsoleAddr != "100.64.0.7:9000" || !cfg.Metrics.Enabled || cfg.Metrics.PerFlat ||
+	if cfg.Host.ConsoleAddr != "100.64.0.7:9000" || !cfg.Metrics.Enabled || cfg.Metrics.FlatMetrics ||
 		!slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
 		t.Fatalf("migrated host = %+v, metrics = %+v", cfg.Host, cfg.Metrics)
 	}
@@ -73,17 +73,17 @@ func TestMetricsParse(t *testing.T) {
 		want                    MetricsConfig
 	}{
 		{name: "empty section", want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost"}}},
-		{name: "previous behavior", members: `"enabled": true, "expose_on": ["external", "localhost", "console"], "per_flat": true`,
-			want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost", "console", "external"}, PerFlat: true}},
-		{name: "disabled independently", members: `"enabled": false, "per_flat": true`,
-			want: MetricsConfig{ExposeOn: []string{"localhost"}, PerFlat: true}},
+		{name: "previous behavior", members: `"enabled": true, "expose_on": ["external", "localhost", "console"], "flat_metrics": true`,
+			want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost", "console", "external"}, FlatMetrics: true}},
+		{name: "disabled independently", members: `"enabled": false, "flat_metrics": true`,
+			want: MetricsConfig{ExposeOn: []string{"localhost"}, FlatMetrics: true}},
 		{name: "empty exposure", members: `"expose_on": []`, want: MetricsConfig{Enabled: true, ExposeOn: []string{}}},
 		{name: "enabled string", members: `"enabled": "true"`, wantPath: "metrics.enabled"},
 		{name: "enabled number", members: `"enabled": 1`, wantPath: "metrics.enabled"},
 		{name: "enabled null", members: `"enabled": null`, wantPath: "metrics.enabled"},
-		{name: "per-flat string", members: `"per_flat": "false"`, wantPath: "metrics.per_flat"},
-		{name: "per-flat number", members: `"per_flat": 0`, wantPath: "metrics.per_flat"},
-		{name: "per-flat null", members: `"per_flat": null`, wantPath: "metrics.per_flat"},
+		{name: "per-flat string", members: `"flat_metrics": "false"`, wantPath: "metrics.flat_metrics"},
+		{name: "per-flat number", members: `"flat_metrics": 0`, wantPath: "metrics.flat_metrics"},
+		{name: "per-flat null", members: `"flat_metrics": null`, wantPath: "metrics.flat_metrics"},
 		{name: "exposure string", members: `"expose_on": "localhost"`, wantPath: "metrics.expose_on"},
 		{name: "exposure object", members: `"expose_on": {}`, wantPath: "metrics.expose_on"},
 		{name: "exposure null", members: `"expose_on": null`, wantPath: "metrics.expose_on"},
@@ -110,7 +110,7 @@ func TestMetricsParse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cfg.Metrics.Enabled != tt.want.Enabled || cfg.Metrics.PerFlat != tt.want.PerFlat ||
+			if cfg.Metrics.Enabled != tt.want.Enabled || cfg.Metrics.FlatMetrics != tt.want.FlatMetrics ||
 				!slices.Equal(cfg.Metrics.ExposeOn, tt.want.ExposeOn) {
 				t.Fatalf("Metrics = %+v, want %+v", cfg.Metrics, tt.want)
 			}
@@ -129,14 +129,14 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 	for _, setting := range []struct{ key, value string }{
 		{"metrics.enabled", "true"},
 		{"metrics.expose_on", "external, localhost, console"},
-		{"metrics.per_flat", "false"},
+		{"metrics.flat_metrics", "false"},
 	} {
 		if err := doc.Set(setting.key, setting.value); err != nil {
 			t.Fatal(err)
 		}
 	}
 	encoded := doc.Encode()
-	for _, member := range []string{`"enabled": true`, `"expose_on": ["localhost", "console", "external"]`, `"per_flat": false`} {
+	for _, member := range []string{`"enabled": true`, `"expose_on": ["localhost", "console", "external"]`, `"flat_metrics": false`} {
 		if !bytes.Contains(encoded, []byte(member)) {
 			t.Fatalf("encoded config omits %s:\n%s", member, encoded)
 		}
@@ -148,7 +148,7 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 	if !bytes.Equal(loaded.Doc.Encode(), encoded) {
 		t.Fatal("round trip changed document")
 	}
-	for _, key := range []string{"metrics.enabled", "metrics.expose_on", "metrics.per_flat"} {
+	for _, key := range []string{"metrics.enabled", "metrics.expose_on", "metrics.flat_metrics"} {
 		cfg, err := loaded.Doc.Effective(nil)
 		if err != nil {
 			t.Fatal(err)
@@ -167,7 +167,7 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Metrics.Enabled || cfg.Metrics.PerFlat || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
+	if !cfg.Metrics.Enabled || cfg.Metrics.FlatMetrics || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
 		t.Fatalf("Unset defaults = %+v", cfg.Metrics)
 	}
 	for _, value := range []string{"[]", ""} {
@@ -192,8 +192,8 @@ func TestMetricsSetRejectsInvalidValues(t *testing.T) {
 	tests := []struct{ key, value, wantPath string }{
 		{"metrics.enabled", "1", "metrics.enabled"},
 		{"metrics.enabled", "null", "metrics.enabled"},
-		{"metrics.per_flat", "False", "metrics.per_flat"},
-		{"metrics.per_flat", "null", "metrics.per_flat"},
+		{"metrics.flat_metrics", "False", "metrics.flat_metrics"},
+		{"metrics.flat_metrics", "null", "metrics.flat_metrics"},
 		{"metrics.expose_on", "null", "metrics.expose_on[0]"},
 		{"metrics.expose_on", "loopback", "metrics.expose_on[0]"},
 		{"metrics.expose_on", "public", "metrics.expose_on[0]"},
@@ -247,5 +247,61 @@ func TestMetricsExposureSlicesAreIndependent(t *testing.T) {
 	clone.values["metrics.expose_on"].([]string)[0] = "external"
 	if v, _ := doc.Stored("metrics.expose_on"); !slices.Equal(v.([]string), []string{"console"}) {
 		t.Fatal("clone shares exposure list")
+	}
+}
+
+func TestMetricsRejectsOldPerFlatKey(t *testing.T) {
+	for _, version := range []int{4, CurrentSchemaVersion} {
+		for _, members := range []string{`"per_flat":true`, `"per_flat":false,"flat_metrics":true`} {
+			t.Run(fmt.Sprintf("schema_%d/%s", version, members), func(t *testing.T) {
+				raw := strings.Replace(fileWith("metrics", members),
+					fmt.Sprintf(`"schema_version": %d`, CurrentSchemaVersion),
+					fmt.Sprintf(`"schema_version": %d`, version), 1)
+				before := []byte(raw)
+				input := bytes.Clone(before)
+				if _, err := Parse(input); errPath(err) != "metrics.per_flat" || !strings.Contains(err.Error(), "unknown key") {
+					t.Fatalf("Parse error = %v, want unknown metrics.per_flat", err)
+				}
+				if !bytes.Equal(input, before) {
+					t.Fatal("rejected config input was modified")
+				}
+			})
+		}
+	}
+	doc, err := New(testID, "/var/lib/flats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Set("metrics.flat_metrics", "true"); err != nil {
+		t.Fatal(err)
+	}
+	before := doc.Encode()
+	if err := doc.Set("metrics.per_flat", "false"); errPath(err) != "metrics.per_flat" {
+		t.Fatalf("old-key Set = %v", err)
+	}
+	if !bytes.Equal(doc.Encode(), before) {
+		t.Fatal("rejected Set changed canonical metrics value")
+	}
+	if err := doc.Unset("metrics.per_flat"); errPath(err) != "metrics.per_flat" {
+		t.Fatalf("old-key Unset = %v", err)
+	}
+	if !bytes.Equal(doc.Encode(), before) {
+		t.Fatal("rejected Unset changed canonical metrics value")
+	}
+	cfg, err := doc.Effective(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Metrics.FlatMetrics {
+		t.Fatal("old-key operations disabled canonical flat_metrics")
+	}
+	if _, _, ok := cfg.Lookup("metrics.per_flat"); ok {
+		t.Fatal("old-key Lookup succeeded")
+	}
+	if _, ok := Default("metrics.per_flat"); ok {
+		t.Fatal("old key has a default")
+	}
+	if !slices.Contains(Keys(), "metrics.flat_metrics") || slices.Contains(Keys(), "metrics.per_flat") {
+		t.Fatal("key discovery exposes wrong metrics key")
 	}
 }

@@ -61,7 +61,7 @@ sends the same headers to the loopback listener can act as the console,
 including deciding approvals. A separate operator credential is an open design
 item. Whoever can reach an enabled metrics endpoint can read its host and
 aggregate figures. Per-flat series, including Private and unpublished slugs,
-require `metrics.per_flat: true`. Allow only trusted scrapers. Selecting
+require `metrics.flat_metrics: true`. Allow only trusted scrapers. Selecting
 `localhost` means the `host.console_addr` management listener, not caller
 authentication, a DNS-name restriction or a source-address filter. A
 non-loopback console bind remains reachable there.

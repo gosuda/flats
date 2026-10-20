@@ -150,7 +150,7 @@ var specs = []spec{
 		hint: "use true or false"},
 	{key: "metrics.expose_on", kind: kindList, def: []string{"localhost"}, check: checkMetricsExposeOn,
 		hint: `list "localhost", "console" and "external" once each, or [] to expose metrics nowhere`},
-	{key: "metrics.per_flat", kind: kindBool, def: false,
+	{key: "metrics.flat_metrics", kind: kindBool, def: false,
 		hint: "use true or false"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
@@ -777,9 +777,9 @@ type ConsoleConfig struct {
 
 // MetricsConfig controls Prometheus exposure, independently of usage collection.
 type MetricsConfig struct {
-	Enabled  bool
-	ExposeOn []string
-	PerFlat  bool
+	Enabled     bool
+	ExposeOn    []string
+	FlatMetrics bool
 }
 
 // Preferred returns the console address links prefer when they cannot
@@ -919,7 +919,7 @@ func (c *Config) fill() error {
 	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
 	c.Console = ConsoleConfig{PreferredHost: str(PreferredHostKey), ExternalOrigins: list(ExternalOriginsKey)}
 	c.Metrics = MetricsConfig{
-		Enabled: flag("metrics.enabled"), ExposeOn: list("metrics.expose_on"), PerFlat: flag("metrics.per_flat"),
+		Enabled: flag("metrics.enabled"), ExposeOn: list("metrics.expose_on"), FlatMetrics: flag("metrics.flat_metrics"),
 	}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
