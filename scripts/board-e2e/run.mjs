@@ -15,7 +15,8 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
 import { launchChrome, Tab, sleep } from './lib/cdp.mjs';
-import { makePNG, readPNG, readZip } from './lib/files.mjs';
+import { makePNG, readPNG, readZip, decodePNG } from './lib/files.mjs';
+import { PIXEL_BOARD, pixelErrors } from './lib/pixels.mjs';
 
 const { values: opt } = parseArgs({
   options: {
@@ -65,10 +66,16 @@ async function section(name, fn) {
   }
 }
 
+// In these sections every check edits the main board through the open
+// editors, so each one ends with a server cross-check: what the editors show
+// as saved must be what the server holds (agreesWithServer).
+const SERVER_CHECKED = new Set(['tools', 'select', 'keys', 'text', 'collab', 'a11y', 'history']);
+
 async function check(name, fn) {
   const t0 = Date.now();
   try {
-    const detail = await fn();
+    let detail = await fn();
+    if (SERVER_CHECKED.has(currentSection)) detail = [detail, await agreesWithServer()].filter((d) => d != null && d !== '').join('; ');
     results.push({ section: currentSection, name, status: 'pass', detail: detail == null ? '' : String(detail), ms: Date.now() - t0 });
     console.log(`PASS  ${name}${detail ? ` — ${detail}` : ''}`);
     return true;
@@ -293,6 +300,30 @@ function diffStates(a, b) {
 }
 
 const texts = (list) => list.map((e) => `${e.type}:${e.text || e.alt || ''}`).sort();
+
+// agreesWithServer waits until every editor tab on the main board has no
+// unsent edits and shows as saved exactly the elements that the server
+// returns to `flats board get`: ids, types, geometry, stacking keys, frames,
+// groups, locks, text and styles. The editors' state only says what they
+// believe the server holds; the CLI reads the server itself.
+async function agreesWithServer({ timeout = 10000 } = {}) {
+  const tabs = [];
+  for (const t of [A, B]) if (t && (await t.ev('location.href')).startsWith(ctx.url)) tabs.push(t);
+  if (!tabs.length) throw new Error('server cross-check: no editor tab is on the main board');
+  const end = Date.now() + timeout;
+  for (;;) {
+    for (const t of tabs) await settle(t);
+    const server = normalized(boardGet(ctx.slug).elements);
+    const diffs = [];
+    for (const t of tabs) {
+      const d = diffStates(normalized(await t.ev('__e2e.server()')), server);
+      if (d.length) diffs.push(`${t.name}: ${d.slice(0, 3).join('; ')}${d.length > 3 ? ` (+${d.length - 3})` : ''}`);
+    }
+    if (!diffs.length) return `server agrees with ${tabs.map((t) => t.name).join(', ')} (${server.length} elements)`;
+    if (Date.now() > end) throw new Error(`server cross-check: the saved screen and flats board get differ: ${diffs.join(' | ')}`);
+    await sleep(300);
+  }
+}
 
 // ---- downloads ----
 
@@ -1183,6 +1214,49 @@ async function pngExport() {
     await A.key('Escape');
     return `${r.png.w}x${r.png.h} for a ${Math.round(f.w)}x${Math.round(f.h)} frame`;
   });
+  await pixelCheck();
+}
+
+async function pixelCheck() {
+  await check('png: a known board exports its colors, sizes and frame name at the expected pixels, at 1x and 2x (rule 67, TECH 11.6)', async () => {
+    const slug = slugOf('pixels');
+    agentApply(slug, { ops: PIXEL_BOARD.map((el) => ({ op: 'add', el })) }, 'pixel board');
+    // Precondition from the server: the board holds exactly these elements.
+    const got = boardGet(slug).elements.map((e) => `${e.type}@${e.x},${e.y},${e.w},${e.h}`).sort();
+    const want = PIXEL_BOARD.map((e) => `${e.type}@${e.x},${e.y},${e.w},${e.h}`).sort();
+    assert(JSON.stringify(got) === JSON.stringify(want), `the server holds ${got}, want ${want}`);
+    const url = cliJSON(['info', slug]).private_url.replace(/\/$/, '') + '/';
+    const X = await Tab.open(browser.cdp, { browserContextId: ctxA, name: 'X' });
+    try {
+      await openBoard(X, url, 'Tester A');
+      await X.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
+      await X.call(() => board.renderer.invalidateAll());
+      const out = [];
+      const names = {};
+      for (const s of [1, 2]) {
+        const r = await exportPNG(X, s);
+        const img = decodePNG(readFileSync(r.file.path));
+        writeFileSync(join(OUT, `pixels-${s}x.png`), readFileSync(r.file.path));
+        const res = pixelErrors(img, s);
+        assert(!res.errs.length, `${s}x: ${res.errs.slice(0, 6).join('; ')}`);
+        names[s] = res.name;
+        out.push(`${s}x ${img.w}x${img.h}, stickies ${Object.values(res.extents).join('/')}px wide, name ${res.name.width}x${res.name.height}px ${res.name.gap}px above the frame`);
+      }
+      ctx.pixelNames = names;
+      return out.join('; ');
+    } finally {
+      await X.close();
+    }
+  });
+  // A 2x export is the board drawn twice as large, so the frame's name is
+  // too: its band above the frame doubles with it. The screen keeps frame
+  // names at a fixed size whatever the zoom; the export reuses that drawing.
+  await check('png: the frame name doubles in height in a 2x export, like the rest of the image (rule 67)', async () => {
+    const n = need(ctx.pixelNames, 'frame name measurements');
+    const ratio = n[2].height / n[1].height;
+    assert(ratio > 1.6 && ratio < 2.4, `the frame name is ${n[1].height}px tall at 1x and ${n[2].height}px at 2x, while its 28px band and every element doubled`);
+    return `${n[1].height}px at 1x, ${n[2].height}px at 2x`;
+  });
 }
 
 // ---- data file export and import (rules 64, 67, 68) ----
@@ -1655,7 +1729,21 @@ async function publicBoundary() {
 // ---- report ----
 
 async function finish(code) {
-  try { if (browser) await browser.close(); } catch { /* ignore */ }
+  if (browser) {
+    // The browser and every helper it started end with the run.
+    const name = 'harness: no browser process keeps the temporary profile after the run';
+    try {
+      const killed = await browser.close();
+      const left = browser.leftovers();
+      if (!killed || !left) results.push({ section: 'harness', name, status: 'fail', detail: 'the process list could not be read, so leftover processes are unknown' });
+      else {
+        results.push({ section: 'harness', name, status: left.length ? 'fail' : 'pass',
+          detail: left.length ? left.map((p) => `${p.pid} ${p.command}`).join('; ') : `${killed.length} process(es) still ran after the browser quit and were ended` });
+      }
+    } catch (err) {
+      results.push({ section: 'harness', name, status: 'fail', detail: err.message });
+    }
+  }
   try { rmSync(WORK, { recursive: true, force: true }); } catch { /* ignore */ }
   const counts = { pass: 0, fail: 0, skip: 0 };
   for (const r of results) counts[r.status]++;

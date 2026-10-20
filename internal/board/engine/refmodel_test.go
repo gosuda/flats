@@ -68,12 +68,21 @@ type refOp struct {
 // rule 3: a lock blocks direct changes but not the lock itself; rule 34:
 // grouping is one operation.
 func (b *refBoard) person(ops []refOp) []bool {
+	return b.personEach(len(ops), func(i int) refOp { return ops[i] }, nil)
+}
+
+// personEach is person for n operations that op gives one at a time, just
+// before each applies; after, when set, learns each operation's outcome.
+func (b *refBoard) personEach(n int, op func(i int) refOp, after func(i int, applied bool)) []bool {
 	b.arrival++
-	applied := make([]bool, len(ops))
+	applied := make([]bool, n)
 	changed := false
-	for i, op := range ops {
-		applied[i] = b.apply(op)
+	for i := range n {
+		applied[i] = b.apply(op(i))
 		changed = changed || applied[i]
+		if after != nil {
+			after(i, applied[i])
+		}
 	}
 	if changed {
 		b.changes++
@@ -357,7 +366,7 @@ func runReference(seed uint64) error {
 			}
 			ref.rollback(r.ref)
 		case k < 7:
-			if err := agentStep(h, ref, v, rng, pick); err != nil {
+			if _, err := agentStep(h, ref, v, rng, pick); err != nil {
 				return fmt.Errorf("step %d: %w", step, err)
 			}
 		default:
@@ -472,8 +481,9 @@ func randomProp(rng *rand.Rand) (string, string) {
 	return model.BundleLocked, strconv.FormatBool(rng.IntN(3) == 0)
 }
 
-// agentStep prepares an agent call from a view, with or without guards.
-func agentStep(h *harness, ref *refBoard, v *view, rng *rand.Rand, pick func(map[string]int64) string) error {
+// agentStep prepares an agent call from a view, with or without guards. It
+// returns the engine's outcome, which is empty when the call was refused.
+func agentStep(h *harness, ref *refBoard, v *view, rng *rand.Rand, pick func(map[string]int64) string) (AgentOutcome, error) {
 	var ops []AgentOp
 	var rops []refOp
 	var ifSeq *int64
@@ -482,7 +492,7 @@ func agentStep(h *harness, ref *refBoard, v *view, rng *rand.Rand, pick func(map
 	for range 1 + rng.IntN(3) {
 		id := pick(v.inc)
 		if id == "" {
-			return nil
+			return AgentOutcome{}, nil
 		}
 		if rng.IntN(5) == 0 {
 			ops = append(ops, AgentOp{Op: "delete", IDs: []string{id}})
@@ -515,10 +525,10 @@ func agentStep(h *harness, ref *refBoard, v *view, rng *rand.Rand, pick func(map
 		seq, changes := v.seq, v.changes
 		ifSeq, ifChanges = &seq, &changes
 	}
-	_, err := h.s.ApplyAgent(AgentCall{Ops: ops, IfSeq: ifSeq, Label: "agent", Now: h.now, NewID: func(string) string { return "" }})
+	out, err := h.s.ApplyAgent(AgentCall{Ops: ops, IfSeq: ifSeq, Label: "agent", Now: h.now, NewID: func(string) string { return "" }})
 	want := ref.agent(rops, ifChanges, ifVer)
 	if (err == nil) != want {
-		return fmt.Errorf("agent call %v: engine err %v, reference applied %v", ops, err, want)
+		return AgentOutcome{}, fmt.Errorf("agent call %v: engine err %v, reference applied %v", ops, err, want)
 	}
-	return nil
+	return out, nil
 }
