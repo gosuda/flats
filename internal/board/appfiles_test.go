@@ -126,7 +126,9 @@ func TestAppFilesAreVersioned(t *testing.T) {
 	}
 
 	// A version this binary does not have is not served, and not stored.
-	for _, q := range []string{"?v=0000000000000000", "?v=", strings.TrimPrefix(im.Imports[appPrefix+"app.js"], appPrefix+"app.js") + "&v=x"} {
+	// A query that does not parse cleanly counts as another version.
+	cur := strings.TrimPrefix(im.Imports[appPrefix+"app.js"], appPrefix+"app.js") // "?v=<version>"
+	for _, q := range []string{"?v=0000000000000000", "?v=", cur + "&v=x", cur + ";x", cur + "&v=x;y", "?v=0000;x", cur + "&x=%zz"} {
 		r, _ := get(b.pub.URL+appPrefix+"app.js"+q, nil)
 		if r.StatusCode != http.StatusNotFound || r.Header.Get("Cache-Control") != "no-store" {
 			t.Fatalf("app.js%s: %d %v", q, r.StatusCode, r.Header)

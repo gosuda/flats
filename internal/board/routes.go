@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -128,10 +129,13 @@ func (in *Instance) serveApp(w http.ResponseWriter, r *http.Request, name string
 	h := w.Header()
 	h.Set("Content-Type", f.ctype)
 	h.Set("X-Content-Type-Options", "nosniff")
-	switch v, versioned := r.URL.Query()["v"]; {
-	case !versioned:
+	// A query that does not parse cleanly counts as another version:
+	// URL.Query would drop the pairs it cannot read.
+	q, qerr := url.ParseQuery(r.URL.RawQuery)
+	switch v, versioned := q["v"]; {
+	case qerr == nil && !versioned:
 		h.Set("Cache-Control", "no-cache")
-	case len(v) == 1 && v[0] == f.version:
+	case qerr == nil && len(v) == 1 && v[0] == f.version:
 		h.Set("Cache-Control", "public, max-age=31536000, immutable")
 	case name == "boot.js":
 		h.Set("Cache-Control", "no-store")

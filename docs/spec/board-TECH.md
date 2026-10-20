@@ -1520,8 +1520,8 @@ script by its `sha256-` hash.
 | The shell | `Cache-Control: no-cache`, ETag |
 | An app file with its current `v` | `Cache-Control: public, max-age=31536000, immutable`, ETag |
 | An app file without `v` | `Cache-Control: no-cache`, ETag |
-| An app file with another `v` (a shell of another binary), an empty or a repeated `v` | 404, `Cache-Control: no-store` |
-| `boot.js` with another `v` | The current file, `Cache-Control: no-store` |
+| An app file with another `v` (a shell of another binary), an empty or a repeated `v`, or a query that does not parse | 404, `Cache-Control: no-store` |
+| `boot.js` with any of those | The current file, `Cache-Control: no-store` |
 
 Conditional requests (`If-None-Match`) get a 304, for GET and HEAD. A page
 whose shell came from an earlier binary loads the files that did not change
