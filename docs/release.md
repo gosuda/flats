@@ -275,7 +275,7 @@ It:
    network, every other provider off, and the default data directory. On
    Linux the installer also enables lingering when polkit allows it.
 4. Waits up to 30 seconds until the service runs and its console answers, at
-   the `--listen` address when one is given, else `host.management_addr` in
+   the `--listen` address when one is given, else `host.console_addr` in
    `config.json` (default `http://127.0.0.1:7878`).
 
 Service registration is the default because a host is meant to stay up.

@@ -733,7 +733,11 @@ func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *bo
 		var stored int64
 		for _, e := range entries {
 			for _, h := range e.Snapshots {
-				if _, err := os.Stat(blobPath(root, h)); err == nil {
+				p, ok := blobPath(root, h)
+				if !ok {
+					return res, fmt.Errorf("%w: invalid board snapshot hash", ErrUnavailable)
+				}
+				if _, err := os.Stat(p); err == nil {
 					continue
 				}
 				data, err := in.SnapshotData(ctx, h)
@@ -749,10 +753,11 @@ func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *bo
 				stored += int64(len(data))
 			}
 			for _, f := range e.Files {
-				if len(f.Hash) != 64 {
+				p, ok := blobPath(root, f.Hash)
+				if !ok {
 					return res, fmt.Errorf("%w: invalid board revision entry", ErrUnavailable)
 				}
-				if _, err := os.Stat(blobPath(root, f.Hash)); err != nil {
+				if _, err := os.Stat(p); err != nil {
 					return res, fmt.Errorf("%w: board file %s has no stored blob %.12s", ErrUnavailable, f.Path, f.Hash)
 				}
 			}
@@ -1256,7 +1261,10 @@ func (b boardBackend) PutBlob(_ context.Context, hash string, data []byte) (bool
 	release := b.s.lease(b.slug, []string{hash})
 	defer release()
 	root := b.s.docsStoreDir(b.slug)
-	p := blobPath(root, hash)
+	p, ok := blobPath(root, hash)
+	if !ok {
+		return false, fmt.Errorf("blob hash %q is not a SHA-256", hash)
+	}
 	if _, err := os.Stat(p); err == nil {
 		now := time.Now()
 		_ = os.Chtimes(p, now, now)

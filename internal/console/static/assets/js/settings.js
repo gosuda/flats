@@ -56,7 +56,7 @@ const SOURCE_TAGS = { default: 'default', file: 'config.json', flag: 'flag for t
 
 // Read-only config.json values: [key, label, value(config), description].
 const CONFIG_ROWS = [
-  ['host.management_addr', 'Management address', (c) => c.host.management_addr, ''],
+  ['host.console_addr', 'Console address', (c) => c.host.console_addr, ''],
   ['host.local_addr', 'Local network address', (c) => c.host.local_addr, ''],
   ['host.server_runtime', 'Server flats', (c) => (c.host.server_runtime ? 'on' : 'off'), 'Run JavaScript server apps.'],
   ['network.private_backend', 'Private routes', (c) => c.network.private_backend, 'The network new flats use when no private default is chosen.'],
@@ -915,7 +915,7 @@ function parseOrigins(text) {
 function addressList(view, cfg, reload) {
   const rows = [];
   if (cfg && cfg.host) {
-    rows.push(row({ title: [h('code', { text: cfg.host.management_addr }), tag('Local', 'solid'), view.preferred === 'local' ? tag('Preferred') : null],
+    rows.push(row({ title: [h('code', { text: cfg.host.console_addr }), tag('Local', 'solid'), view.preferred === 'local' ? tag('Preferred') : null],
       meta: ['This device only', 'always available', view.loopback ? 'you are here' : null], ctl: pill('Ready', 'on') }));
   }
   for (const prov of Object.keys(NETWORKS)) {

@@ -274,7 +274,7 @@ func TestBoardImportFailures(t *testing.T) {
 
 	unlock := s.lock("plan")
 	directBoardWrite(t, in, "missing-blob-1", `[{"op":"add","el":{"type":"image","asset":"`+hash+`","natural":[5,3],"alt":"a"}}]`, img)
-	if err := os.Remove(blobPath(root, hash)); err != nil {
+	if err := os.Remove(storedBlobPath(root, hash)); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -353,7 +353,7 @@ func TestBoardImportFailures(t *testing.T) {
 		t.Fatalf("outbox = %+v %v", entries, err)
 	}
 	snap := entries[0].Snapshots[0]
-	if _, err := os.Stat(blobPath(root, snap)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(storedBlobPath(root, snap)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("snapshot already a blob: %v", err)
 	}
 	good, err := in.SnapshotData(ctx, snap)
@@ -365,7 +365,7 @@ func TestBoardImportFailures(t *testing.T) {
 		if _, err := s.importBoardLocked(ctx, "plan", in); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "does not match its hash") {
 			t.Fatalf("import with a corrupt snapshot: %v", err)
 		}
-		if _, err := os.Stat(blobPath(root, snap)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(storedBlobPath(root, snap)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("a corrupt snapshot was stored: %v", err)
 		}
 		if got := storedRevisions(t, s, "plan"); !slices.Equal(got, []int{3, 2, 1}) {

@@ -32,6 +32,17 @@ The script prints one line per check and a check list, writes
 `results.json`, screenshots and the exported PNG and data file to `--out`,
 and exits 1 when any check fails.
 
+Chrome runs in a process group of its own with a new temporary profile.
+When the run ends, the script ends that group and any process of the Chrome
+executable (on macOS, its application bundle) whose `--user-data-dir` is
+exactly that profile, removes the profile, and
+records a final `harness` check that no browser process is left. When the
+process list cannot be read, that check fails instead of passing.
+
+`node --test scripts/board-e2e/lib/lib.test.mjs` tests the helpers that need
+no browser or host: which processes belong to the run's browser, and PNG
+decoding with every filter type.
+
 | Option | Meaning |
 |---|---|
 | `--console URL` | Management address of the host (default `http://127.0.0.1:7878`) |
@@ -72,6 +83,20 @@ contexts, the accessible element list, find, Send to agent, PNG export,
 data file export and import, History (list, view, pin, element recovery,
 rollback), theme, and the Public boundary.
 
+Each check in the `tools`, `select`, `keys`, `text`, `collab`, `a11y` and
+`history` sections ends with a server cross-check: once the open editors
+have no unsent edits, every element they show as saved must equal what
+`flats board get` returns (ids, types, geometry, stacking keys, frames,
+groups, locks, text and styles).
+
+The `png` section also exports a small board with known content
+(`lib/pixels.mjs`) at 1x and 2x in the light theme and checks pixels
+against an expectation computed from the board, the 32px margin, the
+frame's name band and the theme palette: the image size, solid colors at
+each element and in the frame, sticky widths and left edges, and the frame
+name's position above the frame. A separate check expects the frame name to
+double in height in a 2x export, like the rest of the image.
+
 Limits:
 
 - Copy and paste use synthetic `ClipboardEvent`s with a script-made
@@ -81,7 +106,13 @@ Limits:
 - IME input uses `Input.imeSetComposition`; a real Korean IME, Safari, iPad
   touch and pen, and VoiceOver remain manual checks (board-TECH.md section
   14, "Real devices").
-- Some checks read the app's state (`window.board`) as their oracle and use
-  it to find on-screen targets; results are cross-checked with the CLI where
-  the server holds the answer.
+- Checks use the app's state (`window.board`) to find on-screen targets
+  and to wait for results. The server cross-check confirms the saved
+  elements, not presence, selection, the camera or other screen-only state.
+  The `find`, `share`, `png`, `data` and `converge` sections have no
+  cross-check after each check; `data` and `converge` compare with the CLI
+  themselves.
+- The pixel check covers one small board in the light theme: stickies, a
+  rectangle and a frame. Text inside elements, connectors, pens, images,
+  rotation and the dark theme are not checked pixel by pixel.
 - Disk quota, limits and performance are not covered here.

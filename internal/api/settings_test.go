@@ -62,7 +62,7 @@ func setupConfig(t *testing.T, pin bool) *configHost {
 		t.Fatal(err)
 	}
 	h.src, err = core.NewSettingsSource(doc, &core.SettingsFile{Mode: "config", Hash: hash,
-		Overrides: map[string]string{"host.management_addr": "127.0.0.1:9999"},
+		Overrides: map[string]string{"host.console_addr": "127.0.0.1:9999"},
 		Save:      config.NewWriter(h.path).Save,
 		DiskHash: func() (string, error) {
 			b, err := os.ReadFile(h.path)
@@ -139,13 +139,16 @@ func TestSettingsDescribeConfig(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("get settings: %d %s", code, raw)
 	}
+	if !bytes.Contains(raw, []byte(`"console_addr"`)) || bytes.Contains(raw, []byte(`"management_addr"`)) || bytes.Contains(raw, []byte(`"host.management_addr"`)) {
+		t.Fatalf("settings must expose only the canonical console address: %s", raw)
+	}
 	b := decodeSettings(t, raw)
 	c := b.Config
 	hash := fileHash(t, h.path)
 	if c == nil || c.Mode != "config" || c.SchemaVersion != config.CurrentSchemaVersion || c.ETag != hash || etag != strconv.Quote(hash) || c.ChangedOnDisk {
 		t.Fatalf("config = %+v, ETag header %q, file hash %s", c, etag, hash)
 	}
-	if c.Host.ManagementAddr != "127.0.0.1:9999" || c.Host.LocalAddr != "127.0.0.1:7879" || len(c.Tailscale.ConsoleHosts) != 0 || !c.Host.ServerRuntime {
+	if c.Host.ConsoleAddr != "127.0.0.1:9999" || c.Host.LocalAddr != "127.0.0.1:7879" || len(c.Tailscale.ConsoleHosts) != 0 || !c.Host.ServerRuntime {
 		t.Fatalf("host = %+v", c.Host)
 	}
 	if !slices.Equal(c.Network.Permitted, []string{"portal"}) || c.Network.PrivateBackend != "local" {
@@ -154,7 +157,7 @@ func TestSettingsDescribeConfig(t *testing.T) {
 	if !c.Credentials.OperatorFile || c.Credentials.TailscaleAuthKeyFile {
 		t.Fatalf("credentials = %+v", c.Credentials)
 	}
-	for k, want := range map[string]config.Source{"host.management_addr": config.SourceFlag, "host.local_addr": config.SourceDefault,
+	for k, want := range map[string]config.Source{"host.console_addr": config.SourceFlag, "host.local_addr": config.SourceDefault,
 		"network.permitted": config.SourceFile, "system.version_quota": config.SourceFile, "system.events_keep": config.SourceDefault,
 		"credentials.operator_file": config.SourceFile, "credentials.tailscale_authkey_file": config.SourceDefault} {
 		if c.Sources[k] != want {

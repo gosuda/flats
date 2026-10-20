@@ -240,7 +240,7 @@ func TestDesignSweepAndAdoption(t *testing.T) {
 	if err := s.SetRevisionQuotas(ctx, "studio", &zero, nil); err != nil {
 		t.Fatal(err)
 	}
-	blob := blobPath(s.designDir("studio"), hashBytes([]byte(strings.Repeat("x", 1000))))
+	blob := testBlobPath(t, s.designDir("studio"), hashBytes([]byte(strings.Repeat("x", 1000))))
 	old := time.Now().Add(-time.Hour)
 	_ = os.Chtimes(blob, old, old)
 	s.sweepDesignBlobs(ctx, "studio")
@@ -420,7 +420,7 @@ func TestKeptRenameJournalRefusesDesignStorageWrites(t *testing.T) {
 	if err := s.SetRevisionQuotas(ctx, "studio", &one, nil); err != nil {
 		t.Fatal(err)
 	}
-	blob := blobPath(s.designDir("studio"), hashBytes([]byte(strings.Repeat("y", 1000))))
+	blob := testBlobPath(t, s.designDir("studio"), hashBytes([]byte(strings.Repeat("y", 1000))))
 	old := time.Now().Add(-time.Hour)
 	_ = os.Chtimes(blob, old, old)
 	op := storageOperation{Kind: "rename", From: "old-studio", To: "studio"}

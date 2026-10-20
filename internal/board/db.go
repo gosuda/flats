@@ -17,6 +17,9 @@ import (
 
 const dbName = "board.db"
 
+// busyTimeoutMS is how long a board.db statement waits for a lock.
+const busyTimeoutMS = 5000
+
 // schema is board.db (5.1). Only the apply loop writes it.
 var schema = []string{
 	`CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
@@ -67,7 +70,7 @@ func openStore(path string) (s *store, fresh bool, err error) {
 		return nil, false, err
 	}
 	u := url.URL{Scheme: "file", Path: path}
-	dsn := u.String() + "?_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate"
+	dsn := u.String() + fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)&_txlock=immediate", busyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, false, err

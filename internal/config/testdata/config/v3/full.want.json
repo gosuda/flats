@@ -1,9 +1,9 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "host": {
     "instance_id": "0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b",
     "data_dir": "/srv/flats & data",
-    "management_addr": "127.0.0.1:7878",
+    "console_addr": "127.0.0.1:7878",
     "local_addr": "[::1]:7879",
     "server_runtime": false
   },

@@ -88,3 +88,47 @@ export function readZip(buf) {
   }
   return out;
 }
+
+// decodePNG returns the RGBA pixels of a non-interlaced 8-bit RGB or RGBA
+// PNG (what canvas.toBlob writes): { w, h, px } with 4 bytes per pixel.
+export function decodePNG(buf) {
+  const info = readPNG(buf);
+  if (info.depth !== 8 || info.interlace || (info.color !== 6 && info.color !== 2)) {
+    throw new Error(`decodePNG reads 8-bit RGB or RGBA without interlace, not color type ${info.color} depth ${info.depth}`);
+  }
+  const idat = [];
+  for (let off = 8; off + 12 <= buf.length;) {
+    const len = buf.readUInt32BE(off);
+    if (buf.toString('ascii', off + 4, off + 8) === 'IDAT') idat.push(buf.subarray(off + 8, off + 8 + len));
+    off += 12 + len;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const bpp = info.color === 6 ? 4 : 3;
+  const stride = info.w * bpp;
+  const cur = Buffer.alloc(stride), prev = Buffer.alloc(stride);
+  const px = new Uint8Array(info.w * info.h * 4);
+  for (let y = 0; y < info.h; y++) {
+    const f = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? cur[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+      let p;
+      if (f === 0) p = 0;
+      else if (f === 1) p = a;
+      else if (f === 2) p = b;
+      else if (f === 3) p = (a + b) >> 1;
+      else if (f === 4) {
+        const q = a + b - c, pa = Math.abs(q - a), pb = Math.abs(q - b), pc = Math.abs(q - c);
+        p = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      } else throw new Error(`bad PNG filter ${f} on row ${y}`);
+      cur[i] = (line[i] + p) & 255;
+    }
+    for (let x = 0; x < info.w; x++) {
+      const o = (y * info.w + x) * 4;
+      px[o] = cur[x * bpp]; px[o + 1] = cur[x * bpp + 1]; px[o + 2] = cur[x * bpp + 2];
+      px[o + 3] = bpp === 4 ? cur[x * bpp + 3] : 255;
+    }
+    cur.copy(prev);
+  }
+  return { w: info.w, h: info.h, px };
+}

@@ -2,6 +2,8 @@
 // It shows a design's artboards on a pan/zoom canvas and, on a Private
 // route, edits layout, notes, text and tweaks through /_design/api/ops.
 
+import { createWheelPan } from './wheel.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 
 function h(tag, attrs = {}, ...children) {
@@ -233,12 +235,13 @@ function fit() {
 
 function setupViewport() {
   const vp = $('.viewport');
+  const wheel = createWheelPan();
   let pan = null, space = false;
   vp.addEventListener('wheel', (e) => {
     e.preventDefault();
     const r = vp.getBoundingClientRect();
-    if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
-    else { S.view.x -= e.deltaX; S.view.y -= e.deltaY; applyView(); }
+    if (e.ctrlKey || e.metaKey) { wheel.reset(); zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top); }
+    else { const p = wheel.pan(e); S.view.x -= p.x; S.view.y -= p.y; applyView(); }
   }, { passive: false });
   vp.addEventListener('pointerdown', (e) => {
     const onBackground = e.target === vp || e.target.classList.contains('world');
@@ -261,7 +264,9 @@ function setupViewport() {
     else if (e.key === '+' || e.key === '=') zoomBy(1.25);
     else if (e.key === '-') zoomBy(1 / 1.25);
   });
-  window.addEventListener('keyup', (e) => { if (e.code === 'Space') { space = false; vp.classList.remove('space'); } });
+  // These resets are best-effort when focus is inside an artboard iframe.
+  window.addEventListener('blur', wheel.reset);
+  window.addEventListener('keyup', (e) => { if (e.key === 'Shift') wheel.reset(); if (e.code === 'Space') { space = false; vp.classList.remove('space'); } });
   window.addEventListener('resize', loadVisible);
 }
 

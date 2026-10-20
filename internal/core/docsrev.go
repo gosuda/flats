@@ -303,10 +303,11 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 		stop := false
 		for _, e := range page.Entries {
 			for _, d := range e.Documents {
-				if len(d.Hash) != 64 {
+				p, ok := blobPath(root, d.Hash)
+				if !ok {
 					return res, fmt.Errorf("%w: invalid revision entry", ErrUnavailable)
 				}
-				if _, err := os.Stat(blobPath(root, d.Hash)); err == nil {
+				if _, err := os.Stat(p); err == nil {
 					res.stored[d.Hash] = true
 					continue
 				}

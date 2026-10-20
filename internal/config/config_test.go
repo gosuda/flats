@@ -25,7 +25,7 @@ func fileWith(pairs ...string) string {
 		sections[pairs[i]] = append(sections[pairs[i]], pairs[i+1])
 	}
 	var b strings.Builder
-	b.WriteString(`{"schema_version": 4`)
+	b.WriteString(`{"schema_version": 5`)
 	for _, s := range order {
 		fmt.Fprintf(&b, `, %q: {%s}`, s, strings.Join(sections[s], ", "))
 	}
@@ -48,29 +48,29 @@ func TestValidation(t *testing.T) {
 	}{
 		{"host", `"instance_id": "0f1e2d3c-4b5a-4978-8a6b-5c4d3e2f1a0b"`, "host.instance_id"}, // duplicate key
 		// Every address `flats serve --listen` accepted stays valid, as written.
-		{"host", `"management_addr": "127.0.0.1:7878"`, ""},
-		{"host", `"management_addr": "127.1.2.3:80"`, ""},
-		{"host", `"management_addr": "[::1]:9000"`, ""},
-		{"host", `"management_addr": "localhost:7878"`, ""},
-		{"host", `"management_addr": "0.0.0.0:7878"`, ""},
-		{"host", `"management_addr": "10.0.0.1:7878"`, ""},
-		{"host", `"management_addr": ":7878"`, ""},
-		{"host", `"management_addr": "flats.example:7878"`, ""},
-		{"host", `"management_addr": "127.0.0.1:0"`, ""},
-		{"host", `"management_addr": "127.0.0.1:"`, ""},
-		{"host", `"management_addr": "127.0.0.1:07878"`, ""},
-		{"host", `"management_addr": "[::ffff:127.0.0.1]:7878"`, ""},
-		{"host", `"management_addr": "[fe80::1%lo0]:7878"`, ""},
-		{"host", `"management_addr": "127.0.0.1:65535"`, ""},
-		{"host", `"management_addr": "127.0.0.1:65536"`, "host.management_addr"},
-		{"host", `"management_addr": "127.0.0.1:-1"`, "host.management_addr"},
-		{"host", `"management_addr": "127.0.0.1:http"`, "host.management_addr"},
-		{"host", `"management_addr": "127.0.0.1"`, "host.management_addr"},
-		{"host", `"management_addr": "::1:7878"`, "host.management_addr"},
-		{"host", `"management_addr": 7878`, "host.management_addr"},
+		{"host", `"console_addr": "127.0.0.1:7878"`, ""},
+		{"host", `"console_addr": "127.1.2.3:80"`, ""},
+		{"host", `"console_addr": "[::1]:9000"`, ""},
+		{"host", `"console_addr": "localhost:7878"`, ""},
+		{"host", `"console_addr": "0.0.0.0:7878"`, ""},
+		{"host", `"console_addr": "10.0.0.1:7878"`, ""},
+		{"host", `"console_addr": ":7878"`, ""},
+		{"host", `"console_addr": "flats.example:7878"`, ""},
+		{"host", `"console_addr": "127.0.0.1:0"`, ""},
+		{"host", `"console_addr": "127.0.0.1:"`, ""},
+		{"host", `"console_addr": "127.0.0.1:07878"`, ""},
+		{"host", `"console_addr": "[::ffff:127.0.0.1]:7878"`, ""},
+		{"host", `"console_addr": "[fe80::1%lo0]:7878"`, ""},
+		{"host", `"console_addr": "127.0.0.1:65535"`, ""},
+		{"host", `"console_addr": "127.0.0.1:65536"`, "host.console_addr"},
+		{"host", `"console_addr": "127.0.0.1:-1"`, "host.console_addr"},
+		{"host", `"console_addr": "127.0.0.1:http"`, "host.console_addr"},
+		{"host", `"console_addr": "127.0.0.1"`, "host.console_addr"},
+		{"host", `"console_addr": "::1:7878"`, "host.console_addr"},
+		{"host", `"console_addr": 7878`, "host.console_addr"},
 		{"host", `"local_addr": "127.0.0.2:7879"`, ""},
 		{"host", `"local_addr": "192.168.0.1:7879"`, ""},
-		{"host", `"local_addr": "127.0.0.1:7878"`, "host.local_addr"}, // equals default management_addr
+		{"host", `"local_addr": "127.0.0.1:7878"`, "host.local_addr"}, // equals default console_addr
 		{"host", `"console_host": "flats"`, "host.console_host"},      // schema 1 only
 		{"tailscale", `"console_hosts": []`, ""},
 		{"tailscale", `"console_hosts": "flats"`, "tailscale.console_hosts"},
@@ -162,14 +162,14 @@ func TestCrossKeyRules(t *testing.T) {
 	valid := []string{
 		fileWith("network", `"permitted": ["tailscale"]`, "network", `"private_backend": "tailscale"`),
 		fileWith("portal", `"relays": ["https://relay.example.com"]`, "portal", `"discovery": false`),
-		fileWith("host", `"management_addr": "127.0.0.1:9000"`, "host", `"local_addr": "127.0.0.1:7878"`),
+		fileWith("host", `"console_addr": "127.0.0.1:9000"`, "host", `"local_addr": "127.0.0.1:7878"`),
 	}
 	for _, f := range valid {
 		if _, err := Parse([]byte(f)); err != nil {
 			t.Errorf("Parse(%s) = %v", f, err)
 		}
 	}
-	f := fileWith("host", `"management_addr": "127.0.0.1:9000"`, "host", `"local_addr": "127.0.0.1:9000"`)
+	f := fileWith("host", `"console_addr": "127.0.0.1:9000"`, "host", `"local_addr": "127.0.0.1:9000"`)
 	if _, err := Parse([]byte(f)); errPath(err) != "host.local_addr" {
 		t.Errorf("same addresses: err = %v", err)
 	}
@@ -318,7 +318,7 @@ func TestOverrides(t *testing.T) {
 	}
 	before := doc.Encode()
 	c, err := doc.Effective(map[string]string{
-		"host.management_addr":    "127.0.0.1:18000",
+		"host.console_addr":       "127.0.0.1:18000",
 		"host.local_addr":         "[::1]:18001",
 		"tailscale.console_hosts": "gate-console",
 		"host.server_runtime":     "false",
@@ -333,7 +333,7 @@ func TestOverrides(t *testing.T) {
 	if !slices.Equal(c.Tailscale.ConsoleHosts, []string{"gate-console"}) {
 		t.Errorf("Tailscale = %+v", c.Tailscale)
 	}
-	for _, key := range []string{"host.management_addr", "host.local_addr", "tailscale.console_hosts", "host.server_runtime"} {
+	for _, key := range []string{"host.console_addr", "host.local_addr", "tailscale.console_hosts", "host.server_runtime"} {
 		if _, src, _ := c.Lookup(key); src != SourceFlag {
 			t.Errorf("%s source = %q, want flag", key, src)
 		}
@@ -352,8 +352,8 @@ func TestOverrides(t *testing.T) {
 		{"portal.relays", "https://relay.example.com", "portal.relays"},
 		{"credentials.operator_file", "/x", "credentials.operator_file"},
 		{"host.nope", "x", "host.nope"},
-		{"host.management_addr", "127.0.0.1", "host.management_addr"},
-		{"host.local_addr", "127.0.0.1:7878", "host.local_addr"}, // same as management_addr
+		{"host.console_addr", "127.0.0.1", "host.console_addr"},
+		{"host.local_addr", "127.0.0.1:7878", "host.local_addr"}, // same as console_addr
 		{"host.server_runtime", "yes", "host.server_runtime"},
 	}
 	for _, r := range rejected {
@@ -382,7 +382,7 @@ func TestSetUnset(t *testing.T) {
 		}
 	}
 	want := `{
-  "schema_version": 4,
+  "schema_version": 5,
   "host": {
     "instance_id": "` + testID + `",
     "data_dir": "/var/lib/flats",
@@ -543,21 +543,21 @@ func TestFreePortAddresses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := doc.Effective(map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"})
+	c, err := doc.Effective(map[string]string{"host.console_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Host.ManagementAddr != "127.0.0.1:0" || c.Host.LocalAddr != "127.0.0.1:0" {
+	if c.Host.ConsoleAddr != "127.0.0.1:0" || c.Host.LocalAddr != "127.0.0.1:0" {
 		t.Fatalf("Host = %+v", c.Host)
 	}
-	if _, err := doc.Effective(map[string]string{"host.management_addr": "localhost:9000", "host.local_addr": "localhost:9000"}); err == nil {
+	if _, err := doc.Effective(map[string]string{"host.console_addr": "localhost:9000", "host.local_addr": "localhost:9000"}); err == nil {
 		t.Error("equal fixed addresses accepted")
 	}
 	// Values are stored exactly as written, so flag comparison is exact.
-	if err := doc.Set("host.management_addr", "localhost:07878"); err != nil {
+	if err := doc.Set("host.console_addr", "localhost:07878"); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(doc.Encode(), []byte(`"management_addr": "localhost:07878"`)) {
+	if !bytes.Contains(doc.Encode(), []byte(`"console_addr": "localhost:07878"`)) {
 		t.Errorf("address rewritten:\n%s", doc.Encode())
 	}
 }

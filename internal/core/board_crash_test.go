@@ -249,7 +249,7 @@ func TestBoardKillDuringImportAndRollback(t *testing.T) {
 			ageBlobs(t, r, "plan")
 			r.sweepBlobs(ctx, "plan", "board")
 			// The sweep ran (it skips a board it could not import).
-			if _, err := os.Stat(blobPath(r.docsStoreDir("plan"), stray)); !os.IsNotExist(err) {
+			if _, err := os.Stat(storedBlobPath(r.docsStoreDir("plan"), stray)); !os.IsNotExist(err) {
 				t.Fatalf("the sweep did not run: stray blob %v", err)
 			}
 			checkBoardHistory(t, r, "plan", tc.want, tc.now)

@@ -945,8 +945,13 @@ files_bytes = size of the current file list JSON (≤ 257 buckets + ≤ 512 asse
   can leave its blobs in the flat directory until the blob sweep (5.5); they
   were counted against the quota.
 - WAL: after a commit, `wal_checkpoint(NOOP)` reads the frame count, and above
-  64 the server runs `TRUNCATE`. A busy result or failure is recorded in
-  `meta.wal_truncate` and retried on every following commit.
+  64 the server runs `TRUNCATE` with a busy timeout of 0, so a reader outside
+  the instance (a backup, an operator's `sqlite3` shell) never makes the apply
+  loop wait. Every other statement keeps the 5-second busy timeout. A busy
+  result or failure is recorded in `meta.wal_truncate` and retried after every
+  following commit, the 5-second tick included. The truncation only bounds the
+  log's size: every commit is already durable in the log
+  (`synchronous=FULL`) before it runs.
 - Only rollback is not checked: it stores no new content (it reuses R's
   files), and writes only element rows and a delta row. A whole-board
   replacement brings new content, so it measures inside its transaction like
@@ -1502,6 +1507,32 @@ step. Modules: `state.js` (server copy, pending, delta application), `net.js`
 (sessions, reconnects), `render.js`, `index.js` (spatial index),
 `tools/*.js`, `undo.js`, `a11y.js`, `history.js`, `export.js`, `geom.js`
 (`endpointWorld` and others, with test vectors shared with Go).
+
+Caching. Every app file has a version, the first 16 hex digits of the
+sha256 of its content. The shell links `boot.js`, `app.css` and `app.js` as
+`/_board/app/<file>?v=<version>` and carries an inline import map that maps
+every module path to its versioned URL, so the modules' own relative
+imports load versioned URLs too. The shell's CSP allows that one inline
+script by its `sha256-` hash.
+
+| Request | Answer |
+|---|---|
+| The shell | `Cache-Control: no-cache`, ETag |
+| An app file with its current `v` | `Cache-Control: public, max-age=31536000, immutable`, ETag |
+| An app file without `v` | `Cache-Control: no-cache`, ETag |
+| An app file with another `v` (a shell of another binary), an empty or a repeated `v`, or a query that does not parse | 404, `Cache-Control: no-store` |
+| `boot.js` with any of those | The current file, `Cache-Control: no-store` |
+
+Conditional requests (`If-None-Match`) get a 304, for GET and HEAD. A page
+whose shell came from an earlier binary loads the files that did not change
+from its cache or the host, and gets a 404 for each one that changed.
+`boot.js`, a classic script the shell runs first, then reloads the page
+once, which brings a shell and files of one version; it does not reload
+again within 10 seconds, nor without session storage, so a host that keeps
+failing shows the failure. `boot.js` imports nothing and does the same in
+every version, so it is served in any version: an old shell always gets a
+`boot.js` that can reload it. A browser without import maps loads the
+unversioned module URLs, which it revalidates.
 
 ## 12. Limits
 

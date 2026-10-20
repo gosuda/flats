@@ -7,9 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -89,49 +88,64 @@ func (in *Instance) serveShell(w http.ResponseWriter, r *http.Request) {
 	if !readOnlyMethod(w, r) {
 		return
 	}
-	b, err := fs.ReadFile(webFS, "web/index.html")
+	a, err := app()
 	if err != nil {
 		http.Error(w, "the board app is missing", http.StatusInternalServerError)
 		return
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Content-Security-Policy", shellCSP)
+	h.Set("Content-Security-Policy", a.shellCSP)
 	h.Set("X-Frame-Options", "SAMEORIGIN")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cache-Control", "no-cache")
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = w.Write(b)
+	h.Set("ETag", a.shellETag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(a.shell))
 }
 
+// serveApp serves an app file. A request for the file's current version
+// (?v=, the URLs the shell names) may be kept forever. A request for
+// another version comes from a shell of another binary; it gets a 404, so
+// that page reloads (boot.js) instead of mixing files of two versions. The
+// exception is boot.js itself, which imports nothing and must run for that
+// reload: any version of it gets the current file, never stored. A request
+// without a version is revalidated every time, because another binary can
+// serve other content under the same name.
 func (in *Instance) serveApp(w http.ResponseWriter, r *http.Request, name string) {
 	if !readOnlyMethod(w, r) {
 		return
 	}
-	if name == "" || strings.Contains(name, "..") || strings.HasPrefix(name, "/") || strings.Contains(name, "testdata") || path.Clean(name) != name {
-		http.NotFound(w, r)
-		return
-	}
-	b, err := fs.ReadFile(webFS, "web/"+name)
+	a, err := app()
 	if err != nil {
-		http.NotFound(w, r)
+		http.Error(w, "the board app is missing", http.StatusInternalServerError)
 		return
 	}
-	ct := mime.TypeByExtension(path.Ext(name))
-	if strings.HasSuffix(name, ".js") {
-		ct = "text/javascript; charset=utf-8"
+	f, ok := a.files[name]
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
 	h := w.Header()
-	h.Set("Content-Type", ct)
+	h.Set("Content-Type", f.ctype)
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Cache-Control", "no-cache")
-	if r.Method == http.MethodHead {
+	// A query that does not parse cleanly counts as another version:
+	// URL.Query would drop the pairs it cannot read.
+	q, qerr := url.ParseQuery(r.URL.RawQuery)
+	switch v, versioned := q["v"]; {
+	case qerr == nil && !versioned:
+		h.Set("Cache-Control", "no-cache")
+	case qerr == nil && len(v) == 1 && v[0] == f.version:
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+	case name == "boot.js":
+		h.Set("Cache-Control", "no-store")
+	default:
+		h.Set("Cache-Control", "no-store")
+		http.NotFound(w, r)
 		return
 	}
-	_, _ = w.Write(b)
+	h.Set("ETag", f.etag)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(f.data))
 }
 
 // serveAsset serves an image under the 7.2 access rules.

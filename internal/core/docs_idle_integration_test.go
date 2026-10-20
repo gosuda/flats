@@ -175,6 +175,12 @@ func TestDocsIdlePreparationRevokesBeforeRecoveryAndBudget(t *testing.T) {
 			})
 			m := &idleTestInstance{Handler: h}
 			d := &deployed{inst: m, version: v, redact: noRedact}
+			// Hold the flat lock, as prepareDocsLocked requires, from before
+			// the fake becomes the running document until the assertions are
+			// done: the service's own startup and periodic maintenance take
+			// it too, and would otherwise acquire this worker.
+			unlock := s.lock("notes")
+			defer unlock()
 			s.state("notes").cur.Store(d)
 			err := s.prepareDocsLocked(withDocsDispatch(t.Context(), d, h), "notes", d)
 			if name == "revoke fails" {

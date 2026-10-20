@@ -813,15 +813,15 @@ const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
 const SETTINGS = { upload_max_bytes: '20971520', version_quota: '20', disk_quota_bytes: '32212254720', preview_ttl_seconds: '86400',
   rate_limit_rps: '50', redirect_days: '7', events_keep: '5000', portal_relays: 'https://relay.example.com', portal_discovery: 'true', portal_max_relays: '3', portal_hide: 'false' };
 const CONFIG = {
-  mode: 'config', schema_version: 2, etag: 'etag-1', changed_on_disk: false,
-  host: { management_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', server_runtime: true },
+  mode: 'config', schema_version: 5, etag: 'etag-1', changed_on_disk: false,
+  host: { console_addr: '127.0.0.1:7878', local_addr: '127.0.0.1:7879', server_runtime: true },
   network: { permitted: ['portal'], private_backend: 'local' },
   tailscale: { console_hosts: [] },
   credentials: { operator_file: true, tailscale_authkey_file: false },
   keys: { upload_max_bytes: 'system.upload_max_bytes', version_quota: 'system.version_quota', disk_quota_bytes: 'system.disk_quota_bytes',
     preview_ttl_seconds: 'system.preview_ttl_seconds', rate_limit_rps: 'system.rate_limit_rps', redirect_days: 'system.redirect_days',
     events_keep: 'system.events_keep', portal_relays: 'portal.relays', portal_discovery: 'portal.discovery', portal_max_relays: 'portal.max_active_relays', portal_hide: 'portal.hide' },
-  sources: { 'host.management_addr': 'flag', 'host.local_addr': 'default', 'tailscale.console_hosts': 'default', 'host.server_runtime': 'default',
+  sources: { 'host.console_addr': 'flag', 'host.local_addr': 'default', 'tailscale.console_hosts': 'default', 'host.server_runtime': 'default',
     'network.permitted': 'file', 'network.private_backend': 'default', 'credentials.operator_file': 'file', 'credentials.tailscale_authkey_file': 'default',
     'system.version_quota': 'file', 'system.events_keep': 'default', 'portal.relays': 'file' },
   pinned: { portal_relays: "the service's --relays flag" },
@@ -896,7 +896,7 @@ assert.equal(agentTabs[0].getAttribute('tabindex'), '-1');
 // Host values are read only, with their sources, on the Console page.
 page = await mountSettings(['console']);
 const configCard = byId(page, 'configuration');
-for (const text of ['Management address', '127.0.0.1:7878', 'flag for this run', 'Private routes',
+for (const text of ['Console address', '127.0.0.1:7878', 'flag for this run', 'Private routes',
   'flats config set', 'apply after Flats restarts']) {
   assert.ok(configCard.textContent.includes(text), `configuration lacks ${text}: ${configCard.textContent}`);
 }

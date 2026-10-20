@@ -25,7 +25,7 @@ func TestConfigShowValidateSetUnset(t *testing.T) {
 	dir := t.TempDir()
 	path := initConfig(t, dir)
 	out, err := runConfig(t, "show", "--config", path)
-	if err != nil || !strings.Contains(out, `"schema_version": 4`) || !strings.Contains(out, `system.version_quota               20 (default)`) ||
+	if err != nil || !strings.Contains(out, `"schema_version": 5`) || !strings.Contains(out, `system.version_quota               20 (default)`) ||
 		!strings.Contains(out, `host.data_dir                      "`+dir+`" (file)`) {
 		t.Fatalf("show: %v\n%s", err, out)
 	}
@@ -257,5 +257,64 @@ func TestEnsureConfigForInstall(t *testing.T) {
 	}
 	if _, _, err := EnsureConfig(ctx, "", dir, []string{"--config", path}, &out); exitCode(err) != 2 {
 		t.Fatalf("--config as a serve flag: %v", err)
+	}
+}
+
+func TestConsoleAddressConfigCLI(t *testing.T) {
+	path := initConfig(t, t.TempDir())
+	if _, err := runConfig(t, "set", "host.console_addr", "127.0.0.1:0", "--config", path); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runConfig(t, "show", "--config", path)
+	if err != nil || !strings.Contains(out, "host.console_addr") || strings.Contains(out, "host.management_addr") {
+		t.Fatalf("show: %v\n%s", err, out)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"set", "host.management_addr", "127.0.0.1:9999"}, {"unset", "host.management_addr"}} {
+		if _, err := runConfig(t, append(args, "--config", path)...); exitCode(err) != ExitConfig {
+			t.Fatalf("old key accepted: %q %v", args, err)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("old key changed config: %v", err)
+		}
+	}
+	opts := configModeOptions(path)
+	delete(opts.Overrides, "host.console_addr")
+	h, err := Start(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	if h.Config.Host.ConsoleAddr != "127.0.0.1:0" {
+		t.Errorf("console address = %q", h.Config.Host.ConsoleAddr)
+	}
+	if _, src, _ := h.Config.Lookup("host.console_addr"); src != config.SourceFile {
+		t.Errorf("source = %s", src)
+	}
+	for _, route := range []string{"/api/status", "/llms.txt", "/"} {
+		if code, _ := fetch(t, "http://"+h.Addr()+route); code != 200 {
+			t.Errorf("%s = %d", route, code)
+		}
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runConfig(t, "unset", "host.console_addr", "--config", path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loaded.Doc.Effective(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Host.ConsoleAddr != "127.0.0.1:7878" {
+		t.Fatalf("unset default: %+v", cfg.Host)
 	}
 }

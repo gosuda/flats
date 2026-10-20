@@ -54,7 +54,24 @@ var migrations = registry{current: CurrentSchemaVersion, steps: []Migration{
 	{From: 1, To: 2, Apply: consoleHostsV2},
 	{From: 2, To: 3, Apply: netbirdPeersV3},
 	{From: 3, To: 4, Apply: versionQuotaV4},
+	{From: 4, To: 5, Apply: consoleAddrV5},
 }}
+
+// consoleAddrV5 renames the listener address without changing its value or default.
+func consoleAddrV5(doc map[string]any) error {
+	host, ok := doc["host"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if old, ok := host["management_addr"]; ok {
+		if _, exists := host["console_addr"]; exists {
+			return fmt.Errorf("config: host.management_addr and host.console_addr cannot both be set")
+		}
+		host["console_addr"] = old
+		delete(host, "management_addr")
+	}
+	return nil
+}
 
 // versionQuotaV4 preserves only explicitly configured retention values.
 // An absent old setting adopts the new quota default of 20.

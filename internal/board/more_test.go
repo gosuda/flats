@@ -71,8 +71,6 @@ func TestBatchPartsAndLargeDeltas(t *testing.T) {
 
 func TestSlowEditorSwitchesToSnapshot(t *testing.T) {
 	b := newTB(t)
-	a := connect(t, b.priv, map[string]any{"editor": "alice"}, nil)
-	a.snapshot()
 	slow, err := dial(t, b.priv, origin(b.priv))
 	if err != nil {
 		t.Fatal(err)
@@ -90,15 +88,23 @@ func TestSlowEditorSwitchesToSnapshot(t *testing.T) {
 		return sc != nil
 	})
 	slow.gate.Lock() // the client stops reading
-	b.in.privateQueue = 1 << 20
+	// Once the socket buffers are full, the server's writer stalls on one
+	// frame and drops the socket after its 10-second write deadline. With a
+	// cap below two deltas (about 180 KB each), the delta after the stalled
+	// one switches the socket to the snapshot long before that. The writes
+	// come from the agent, so no other socket is under this cap.
+	b.in.privateQueue = 256 << 10
 	n := 1
 	for sc.currentGen() == 0 && n < 80 {
-		var ops []map[string]any
+		var ops []engine.AgentOp
 		for i := 0; i < 60; i++ {
-			ops = append(ops, sticky(eid(), noise(3000, n*100+i), float64(n*100+i)))
+			el, _ := json.Marshal(map[string]any{"type": "sticky", "text": noise(3000, n*100+i), "x": n*100 + i, "y": 0})
+			ops = append(ops, engine.AgentOp{Op: "add", El: el})
 		}
-		if m := a.settle(n, ops...); m["t"] != "ack" {
-			t.Fatal(m)
+		// UpdateBoard returns after the delta was delivered to the slow
+		// socket, so the generation read next is final.
+		if _, err := b.in.UpdateBoard(context.Background(), UpdateRequest{OpID: "slow-fill-" + strconv.Itoa(n), Label: "Agent", Ops: ops}, 0); err != nil {
+			t.Fatal(err)
 		}
 		n++
 	}

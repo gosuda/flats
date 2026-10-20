@@ -2,10 +2,10 @@
 // temporary profile, speaks CDP over the global WebSocket of Node 22+ and
 // drives pages through real input events (Input.dispatch*). No dependencies.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,7 +21,16 @@ export async function launchChrome({ chrome, headless = true, size = [1440, 900]
   ];
   if (headless) args.push('--headless=new');
   args.push('about:blank');
-  const proc = spawn(chrome, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  // Chrome starts in a process group of its own (detached), so close() can
+  // end it with every helper it started, and an interrupt of this script
+  // does not reach it directly; the handlers below end it instead.
+  const proc = spawn(chrome, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
+  const owned = () => profileProcesses(chrome, profile, proc.pid);
+  const stopNow = () => { signalGroup(proc.pid, 'SIGKILL'); killAll(owned()); };
+  const onSignal = (sig) => { stopNow(); process.exit(sig === 'SIGINT' ? 130 : 143); };
+  process.once('exit', stopNow);
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   const wsURL = await new Promise((resolve, reject) => {
     let buf = '';
     const t = setTimeout(() => reject(new Error('Chrome did not report a DevTools endpoint in 30s')), 30000);
@@ -36,14 +45,82 @@ export async function launchChrome({ chrome, headless = true, size = [1440, 900]
   const version = await cdp.send('Browser.getVersion');
   return {
     cdp, proc, profile, version,
+    // leftovers lists this browser's processes that still run, or returns
+    // null when the process list cannot be read.
+    leftovers: owned,
+    // close asks Chrome to quit, then ends its process group and any of its
+    // processes still running (helpers such as the network service can
+    // outlive the browser process), and removes the profile. It returns the
+    // processes that had to be ended, or null when the process list cannot
+    // be read.
     async close() {
-      try { await cdp.send('Browser.close'); } catch { /* already gone */ }
-      await Promise.race([new Promise((r) => proc.once('exit', r)), sleep(5000)]);
-      if (proc.exitCode === null) proc.kill('SIGKILL');
+      await Promise.race([cdp.send('Browser.close').catch(() => { /* already gone */ }), sleep(5000)]);
+      await Promise.race([new Promise((r) => (proc.exitCode !== null || proc.signalCode !== null ? r() : proc.once('exit', r))), sleep(5000)]);
       cdp.close();
+      const killed = owned();
+      signalGroup(proc.pid, 'SIGTERM');
+      for (const p of killed || []) signal(p.pid, 'SIGTERM');
+      const end = Date.now() + 5000;
+      while (owned()?.length && Date.now() < end) await sleep(100);
+      signalGroup(proc.pid, 'SIGKILL');
+      killAll(owned());
+      process.removeListener('exit', stopNow);
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
       try { rmSync(profile, { recursive: true, force: true }); } catch { /* best effort */ }
+      return killed;
     },
   };
+}
+
+function signal(pid, sig) {
+  try { process.kill(pid, sig); } catch { /* gone */ }
+}
+
+// signalGroup signals Chrome's process group; the group exists only while
+// one of its processes runs.
+function signalGroup(pid, sig) {
+  if (pid > 0) signal(-pid, sig);
+}
+
+// profileProcesses lists this browser's running processes (see
+// ownedProcesses), or returns null when the process list cannot be read.
+export function profileProcesses(chrome, profile, group) {
+  const r = spawnSync('ps', ['-axww', '-o', 'pid=,pgid=,command='], { encoding: 'utf8' });
+  if (r.status !== 0 || r.error) return null;
+  return ownedProcesses(r.stdout, chrome, profile, group).filter((p) => p.pid !== process.pid);
+}
+
+// ownedProcesses picks from a `ps -o pid=,pgid=,command=` listing this
+// browser's processes: those in its process group, and those of the Chrome
+// executable itself (on macOS, of its .app bundle, where the helpers live)
+// that have exactly this profile as a whole --user-data-dir argument. The
+// profile directory is new for each launch. Another profile, even one whose
+// path starts with this one, another program, and an argument that only
+// contains the flag are never picked.
+export function ownedProcesses(listing, chrome, profile, group) {
+  const app = chrome.indexOf('.app/');
+  const isChrome = (cmd) => (app >= 0 ? cmd.startsWith(chrome.slice(0, app + 5)) : cmd === chrome || cmd.startsWith(chrome + ' '));
+  const flag = `--user-data-dir=${profile}`;
+  const hasFlag = (cmd) => {
+    for (let i = cmd.indexOf(flag); i >= 0; i = cmd.indexOf(flag, i + 1)) {
+      const before = i === 0 ? ' ' : cmd[i - 1], after = cmd[i + flag.length];
+      if (/\s/.test(before) && (after === undefined || /\s/.test(after))) return true;
+    }
+    return false;
+  };
+  const out = [];
+  for (const line of listing.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const [pid, pgid, cmd] = [Number(m[1]), Number(m[2]), m[3]];
+    if ((group > 0 && pgid === group) || (isChrome(cmd) && hasFlag(cmd))) out.push({ pid, command: cmd.slice(0, 120) });
+  }
+  return out;
+}
+
+function killAll(list) {
+  for (const p of list || []) signal(p.pid, 'SIGKILL');
 }
 
 export class CDP {
@@ -80,6 +157,9 @@ export class CDP {
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
     return new Promise((resolve, reject) => {
+      // A closed socket drops sends without an error, so the call would
+      // never settle.
+      if (this.ws.readyState !== WebSocket.OPEN) { reject(new Error(`${method}: CDP socket closed`)); return; }
       this.calls.set(id, { resolve, reject, method });
       this.ws.send(JSON.stringify(msg));
     });

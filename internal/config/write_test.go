@@ -310,11 +310,11 @@ func TestMigration(t *testing.T) {
 func TestTooNew(t *testing.T) {
 	// A newer file may use keys, nulls or duplicates this binary rejects;
 	// the version check comes first.
-	newer := `{"schema_version": 5, "host": {"x": null, "x": 1}, "future": {}}`
+	newer := fmt.Sprintf(`{"schema_version": %d, "host": {"x": null, "x": 1}, "future": {}}`, CurrentSchemaVersion+1)
 	for _, r := range []registry{migrations, fakeRegistry} {
 		_, err := r.parse([]byte(newer))
 		var tn *TooNewError
-		if !errors.Is(err, ErrTooNew) || !errors.As(err, &tn) || tn.Version != 5 || tn.Supported != r.current {
+		if !errors.Is(err, ErrTooNew) || !errors.As(err, &tn) || tn.Version != CurrentSchemaVersion+1 || tn.Supported != r.current {
 			t.Fatalf("registry v%d: err = %v", r.current, err)
 		}
 	}

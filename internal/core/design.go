@@ -95,8 +95,29 @@ func (s *Service) storeDir(slugName, typ string) string {
 	return s.designDir(slugName)
 }
 
-func blobPath(root, hash string) string {
-	return filepath.Join(root, "blobs", hash[:2], hash)
+// validBlobHash reports whether hash is a SHA-256 in the lowercase hex form
+// hashBytes produces. Only such a hash may name a blob: hashes also arrive
+// from database rows and from the docs worker, and anything else could name
+// a path outside the blob directory.
+func validBlobHash(hash string) bool {
+	if len(hash) != sha256.Size*2 {
+		return false
+	}
+	for i := 0; i < len(hash); i++ {
+		if c := hash[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// blobPath is the path of the blob with the given hash under root. ok is
+// false, and no path is built, when hash fails validBlobHash.
+func blobPath(root, hash string) (path string, ok bool) {
+	if !validBlobHash(hash) {
+		return "", false
+	}
+	return filepath.Join(root, "blobs", hash[:2], hash), true
 }
 
 func hashBytes(b []byte) string {
@@ -108,7 +129,10 @@ func hashBytes(b []byte) string {
 // the same hash is reused.
 func putBlob(root string, data []byte) (string, error) {
 	h := hashBytes(data)
-	dst := blobPath(root, h)
+	dst, ok := blobPath(root, h)
+	if !ok {
+		return "", fmt.Errorf("blob hash %q is not a SHA-256", h)
+	}
 	if _, err := os.Stat(dst); err == nil {
 		return h, nil
 	}
@@ -173,10 +197,11 @@ func mkdirDurable(dir string) error {
 }
 
 func readBlob(root, hash string) ([]byte, error) {
-	if len(hash) != 64 {
+	p, ok := blobPath(root, hash)
+	if !ok {
 		return nil, fmt.Errorf("blob %q: %w", hash, store.ErrNotFound)
 	}
-	b, err := os.ReadFile(blobPath(root, hash))
+	b, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("blob %s: %w", hash[:12], store.ErrNotFound)
 	}
@@ -756,7 +781,11 @@ func (s *Service) checkDesignQuota(slugName string, data map[string][]byte) erro
 			continue
 		}
 		seen[h] = true
-		if _, err := os.Stat(blobPath(s.designDir(slugName), h)); err == nil {
+		p, ok := blobPath(s.designDir(slugName), h)
+		if !ok {
+			return fmt.Errorf("blob hash %q is not a SHA-256", h)
+		}
+		if _, err := os.Stat(p); err == nil {
 			continue
 		}
 		add += int64(len(d))

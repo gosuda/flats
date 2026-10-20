@@ -30,6 +30,7 @@ list.
 | [Board content type](board.md) | partly implemented | `type: "board"`: an infinite-canvas whiteboard of native elements people and agents edit together live, with revisions |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Operator keys and console domains](console-settings.md) | implemented | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |
+| [Console listener address](console-address.md) | implemented | Rename the listener configuration key to `host.console_addr` with a behavior-preserving schema 5 migration |
 | [NetBird peers](netbird-peers.md) | implemented | One NetBird peer per flat and console domain, the stored setup key, NetBird console domains over HTTP |
 | [Agent self-update](agent-self-update.md) | implemented | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
 | [Fast worker cold start](worker-cold-start.md) | implemented | Pre-started worker process and saved document images so workers and sleeping documents answer within 50 ms |

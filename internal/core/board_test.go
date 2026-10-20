@@ -551,7 +551,7 @@ func TestBoardRetentionPinsAndSweep(t *testing.T) {
 		t.Fatalf("asset upload = %+v %v", res, err)
 	}
 	root := s.storeDir("plan", "board")
-	held := blobPath(root, hashBytes(img))
+	held := storedBlobPath(root, hashBytes(img))
 	stray, err := putBlob(root, []byte("nobody references this"))
 	if err != nil {
 		t.Fatal(err)
@@ -561,7 +561,7 @@ func TestBoardRetentionPinsAndSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)
-	for _, p := range []string{held, blobPath(root, stray)} {
+	for _, p := range []string{held, storedBlobPath(root, stray)} {
 		if err := os.Chtimes(p, old, old); err != nil {
 			t.Fatal(err)
 		}
@@ -570,10 +570,10 @@ func TestBoardRetentionPinsAndSweep(t *testing.T) {
 	if _, err := os.Stat(held); err != nil {
 		t.Fatalf("sweep deleted an asset board.db protects: %v", err)
 	}
-	if _, err := os.Stat(blobPath(root, stray)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(storedBlobPath(root, stray)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unreferenced old blob kept: %v", err)
 	}
-	if _, err := os.Stat(blobPath(root, fresh)); err != nil {
+	if _, err := os.Stat(storedBlobPath(root, fresh)); err != nil {
 		t.Fatalf("sweep ignored the grace period: %v", err)
 	}
 	// Every revision still reads.
@@ -700,4 +700,13 @@ func TestBoardImportAndPaging(t *testing.T) {
 	if r := page.Revisions[0]; r.Kind != "import" || r.Elements.Added != 31 {
 		t.Fatalf("import revision = %+v", r)
 	}
+}
+
+// storedBlobPath is blobPath for hashes the test knows are valid.
+func storedBlobPath(root, hash string) string {
+	p, ok := blobPath(root, hash)
+	if !ok {
+		panic("invalid blob hash " + hash)
+	}
+	return p
 }

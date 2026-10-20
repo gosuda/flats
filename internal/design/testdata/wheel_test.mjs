@@ -1,0 +1,112 @@
+// Runs under Node from TestWheelPan, which puts web/wheel.js beside this file.
+import { createWheelPan } from './wheel.js';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+// [shiftKey, deltaX, deltaY, expected x, expected y]. Numbers compare with ===,
+// so -0 equals 0.
+const cases = [
+  // Shift with a vertical wheel, as Windows Chrome sends it, pans sideways only.
+  [true, 0, 100, 100, 0],
+  [true, 0, -100, -100, 0],
+  [true, -0, 100, 100, 0],
+  // Shift with a horizontal event, the shape macOS is expected to send, is used as it is.
+  [true, -30, 0, -30, 0],
+  [true, 100, 5, 100, 5],
+  [true, 10, 10, 10, 10],
+  [true, 0, 0, 0, 0],
+  // A mostly vertical gesture with stray horizontal movement swaps the axes.
+  [true, 5, 100, 100, 5],
+  [true, -5, 100, 100, -5],
+  [true, -5, -100, -100, -5],
+  // Both sides of the boundary, with opposite signs and with equal sizes.
+  [true, 10, -11, -11, 10],
+  [true, 11, -10, 11, -10],
+  [true, 10, -10, 10, -10],
+  [true, -10, 10, -10, 10],
+  [true, 10, 11, 11, 10],
+  // Without Shift nothing changes.
+  [false, 0, 100, 0, 100],
+  [false, 7, 0, 7, 0],
+  [false, 7, 100, 7, 100],
+  [false, 0, -100, 0, -100],
+  [false, -7, 0, -7, 0],
+  [false, -7, -100, -7, -100],
+  [false, 33.333, -12.5, 33.333, -12.5],
+];
+
+let failed = 0;
+cases.forEach(([shiftKey, deltaX, deltaY, x, y], i) => {
+  const got = createWheelPan().pan({ shiftKey, deltaX, deltaY, timeStamp: 0 });
+  if (got.x !== x || got.y !== y) {
+    failed++;
+    console.error(`row ${i}: shift=${shiftKey} (${deltaX}, ${deltaY}): got (${got.x}, ${got.y}), want (${x}, ${y})`);
+  }
+});
+if (failed) process.exit(1);
+const event = (deltaX, deltaY, timeStamp, shiftKey = true) => ({ deltaX, deltaY, timeStamp, shiftKey });
+const pairs = [ [[-1, 2], [-1, 1]], [[1, -2], [1, -1]], [[10, -11], [11, -10]] ];
+for (const [first, next] of pairs) {
+  const wheel = createWheelPan();
+  wheel.pan(event(...first, 0));
+  for (let i = 1; i <= 20; i++) {
+    const [dx, dy] = i % 2 ? next : first;
+    assert.deepEqual(wheel.pan(event(dx, dy, i * 16)), { x: dy, y: dx });
+  }
+}
+{
+  const wheel = createWheelPan();
+  assert.deepEqual(wheel.pan(event(0, 0, 0)), { x: 0, y: 0 });
+  assert.deepEqual(wheel.pan(event(5, 1, 1)), { x: 5, y: 1 });
+  assert.deepEqual(wheel.pan(event(1, 5, 201)), { x: 1, y: 5 }); // exactly 200 ms
+  wheel.pan(event(0, 0, 400)); // cannot prolong the gesture
+  assert.deepEqual(wheel.pan(event(1, 5, 402)), { x: 5, y: 1 });
+  wheel.pan(event(0, 0, 403, false));
+  assert.deepEqual(wheel.pan(event(5, 1, 404)), { x: 5, y: 1 });
+  wheel.reset();
+  assert.deepEqual(wheel.pan(event(1, 5, 405)), { x: 5, y: 1 });
+  for (const time of [undefined, NaN, Infinity, -1, 406]) {
+    assert.deepEqual(wheel.pan(event(5, 1, time)), { x: 1, y: 5 });
+  }
+  assert.deepEqual(createWheelPan().pan(event(5, 1, 406)), { x: 5, y: 1 });
+}
+// Exercise the real viewport handler and its reset listeners, with DOM output
+// stubbed. This catches wiring omissions that mapper-only tests cannot see.
+const app = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+assert.match(app, /import \{ createWheelPan \} from '\.\/wheel\.js';/);
+const mapperSource = fs.readFileSync(new URL('./wheel.js', import.meta.url), 'utf8').replace('export function', 'function');
+const setup = app.slice(app.indexOf('function setupViewport()'), app.indexOf('// ---- boards ----'));
+const zoom = app.slice(app.indexOf('function zoomAt('), app.indexOf('function zoomBy('));
+const listeners = {}, keys = {}, S = { view: { x: 0, y: 0, z: 1 } };
+const vp = { addEventListener: (k, f, opts) => { listeners[k] = f; if (k === 'wheel') assert.equal(opts.passive, false); }, getBoundingClientRect: () => ({ left: 20, top: 30 }) };
+let handlerClock = 0, applies = 0;
+vm.runInNewContext(mapperSource + '\n' + setup + '\n' + zoom + '\nsetupViewport();', {
+  S, $: () => vp, window: { addEventListener: (k, f) => { keys[k] = f; } },
+  document: { activeElement: null }, performance: { now: () => handlerClock },
+  loadVisible: () => {}, applyView: () => { applies++; },
+});
+const send = (e) => { let prevented = false; listeners.wheel({ ...e, clientX: 120, clientY: 230, preventDefault: () => { prevented = true; } }); assert.ok(prevented); };
+const reset = () => { keys.blur(); S.view = { x: 0, y: 0, z: 1 }; };
+reset(); send(event(-1, 2, 0));
+handlerClock = 1000; // delayed handling, but the input events are 15 ms apart
+keys.keydown({ key: 'Shift', code: 'ShiftLeft', shiftKey: true, repeat: true });
+send(event(-1, 1, 15));
+assert.deepEqual([S.view.x, S.view.y], [-3, 2]);
+for (const clear of [() => keys.keyup({ key: 'Shift', code: 'ShiftRight', shiftKey: false }), () => keys.blur()]) {
+  reset(); send(event(0, 10, 0)); clear(); send(event(10, 0, 10));
+  assert.deepEqual([S.view.x, S.view.y], [-20, 0]);
+}
+reset(); send(event(7, 12, 0, false));
+assert.deepEqual([S.view.x, S.view.y], [-7, -12]);
+reset(); send(event(0, 10, 0)); send(event(0, 0, 1, false)); send(event(10, 0, 2));
+assert.deepEqual([S.view.x, S.view.y], [-20, 0]);
+for (const key of ['ctrlKey', 'metaKey']) for (const shiftKey of [false, true]) {
+  reset(); send(event(0, 10, 0));
+  send({ ...event(0, 20, 10, shiftKey), [key]: true });
+  const z = Math.exp(-0.2);
+  assert.equal(S.view.z, z); assert.equal(S.view.x, 100 - 110 * z); assert.equal(S.view.y, 200 - 200 * z);
+  const before = S.view.x; send(event(10, 0, 20)); assert.equal(S.view.x, before - 10);
+}
+assert.ok(applies > 0);
+console.log('ok');

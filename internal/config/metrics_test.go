@@ -9,9 +9,9 @@ import (
 )
 
 func TestMetricsDefaults(t *testing.T) {
-	for _, version := range []int{1, 2, 3, 4} {
+	for _, version := range []int{1, 2, 3, 4, 5} {
 		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
-			raw := strings.Replace(fileWith(), `"schema_version": 4`, fmt.Sprintf(`"schema_version": %d`, version), 1)
+			raw := strings.Replace(fileWith(), `"schema_version": 5`, fmt.Sprintf(`"schema_version": %d`, version), 1)
 			loaded, err := Parse([]byte(raw))
 			if err != nil {
 				t.Fatal(err)

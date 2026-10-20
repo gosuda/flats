@@ -136,7 +136,7 @@ func metricsHost(t *testing.T, settings map[string]string) (*Host, *http.Client)
 		t.Fatal(err)
 	}
 	h, err := Start(context.Background(), Options{ConfigPath: path, Overrides: map[string]string{
-		"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0",
+		"host.console_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0",
 	}})
 	if err != nil {
 		t.Fatal(err)

@@ -254,7 +254,7 @@ func TestLegacyPlanSettings(t *testing.T) {
 		return o
 	}
 	c, notes, err = plan(nil, flags("--listen", "localhost:http", "--local-addr", ":7999", "--console-host", "My_Console"))
-	if err != nil || c.Host.ManagementAddr != "localhost:80" || c.Host.LocalAddr != ":7999" || len(c.Tailscale.ConsoleHosts) != 0 || len(notes) != 1 {
+	if err != nil || c.Host.ConsoleAddr != "localhost:80" || c.Host.LocalAddr != ":7999" || len(c.Tailscale.ConsoleHosts) != 0 || len(notes) != 1 {
 		t.Fatalf("host flags: %+v notes=%q %v", c.Host, notes, err)
 	}
 	// --console-host named a tailnet console only with --network tailscale,
@@ -277,14 +277,14 @@ func TestLegacyPlanSettings(t *testing.T) {
 		}
 	}
 	c, notes, err = plan(nil, flags("--listen", "nonsense", "--relays", "ftp://bad host"))
-	if err != nil || c.Host.ManagementAddr != "127.0.0.1:7878" || len(c.Portal.Relays) != 0 || len(notes) != 2 {
+	if err != nil || c.Host.ConsoleAddr != "127.0.0.1:7878" || len(c.Portal.Relays) != 0 || len(notes) != 2 {
 		t.Fatalf("unusable flags: %+v %+v notes=%q %v", c.Host, c.Portal, notes, err)
 	}
 	if conflicts := flagConflicts(c, flags("--listen", "nonsense", "--relays", "ftp://bad host")); len(conflicts) != 0 {
 		t.Fatalf("ignored flags compared: %q", conflicts)
 	}
 	c, notes, err = plan(nil, flags("--listen", "127.0.0.1:7879"))
-	if err != nil || c.Host.ManagementAddr != "127.0.0.1:7878" || len(notes) != 1 {
+	if err != nil || c.Host.ConsoleAddr != "127.0.0.1:7878" || len(notes) != 1 {
 		t.Fatalf("--listen on the local address: %+v notes=%q %v", c.Host, notes, err)
 	}
 }

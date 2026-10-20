@@ -33,9 +33,10 @@ type contentRuntime struct {
 
 // fakeOutbox is a docs worker's unacknowledged revision entries.
 type fakeOutbox struct {
-	entries []docsEntry
-	texts   map[string]string
-	acks    []map[string]any
+	entries   []docsEntry
+	texts     map[string]string
+	acks      []map[string]any
+	textReads int
 }
 
 func (o *fakeOutbox) serve(w http.ResponseWriter, r *http.Request) bool {
@@ -45,6 +46,7 @@ func (o *fakeOutbox) serve(w http.ResponseWriter, r *http.Request) bool {
 	case "/_docs/host/revisions/outbox":
 		_ = json.NewEncoder(w).Encode(map[string]any{"store": "fake-store", "entries": o.entries, "more": false})
 	case "/_docs/host/revisions/text":
+		o.textReads++
 		text, ok := o.texts[r.URL.Query().Get("hash")]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
