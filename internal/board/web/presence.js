@@ -13,6 +13,15 @@ const KEEPALIVE = 10000;
 // The server sets keys; a client value never earns the mark (rule 23).
 export const verifiedKey = (key) => typeof key === 'string' && key.startsWith('ts:');
 
+// avatarSlots is how many avatars the header shows before "+N"; narrow
+// windows keep the header to one row.
+const NARROW = '(max-width: 960px)', PHONE = '(max-width: 640px)';
+function avatarSlots() {
+  if (typeof matchMedia !== 'function') return 5;
+  if (matchMedia(PHONE).matches) return 1;
+  return matchMedia(NARROW).matches ? 2 : 5;
+}
+
 export class Presence {
   constructor(app) {
     this.app = app;
@@ -20,6 +29,7 @@ export class Presence {
     this.mine = { c: null, vp: null, sel: [], drag: null, edit: null };
     this.btn = $('.people');
     this.btn.addEventListener('click', () => this.openList());
+    if (typeof matchMedia === 'function') for (const q of [NARROW, PHONE]) matchMedia(q).addEventListener('change', () => this.avatars());
     setInterval(() => this.tick(), KEEPALIVE);
   }
 
@@ -79,7 +89,7 @@ export class Presence {
     if (this.app.isPublic) { this.btn.hidden = true; return; }
     const ppl = this.people();
     this.btn.hidden = !ppl.length;
-    const shown = ppl.slice(-5);
+    const shown = ppl.slice(-avatarSlots());
     const names = ppl.map((p) => `${p.name}${p.me ? ' (you)' : ''} (${(p.me ? p.verified : verifiedKey(p.key)) ? 'verified' : 'unverified'})`).join(', ');
     this.btn.setAttribute('aria-label', `${ppl.length} ${ppl.length === 1 ? 'person' : 'people'} on the board: ${names}`);
     replace(this.btn, ...shown.map((p) => this.avatar(p)), ppl.length > shown.length ? h('span', { class: 'more-count', text: `+${ppl.length - shown.length}` }) : null);

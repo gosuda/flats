@@ -268,11 +268,13 @@ body.history-open .banners { right: 380px; }
 /* ---- phones ---- */
 @media (max-width: 640px) {
   .top { gap: 6px; padding: 0 8px; }
-  /* Send to agent stays in the selection's menu; the name button floats below the bar. */
-  .top #share-btn { display: none; }
-  .top #name-btn { position: fixed; top: calc(var(--top) + 8px); left: 50%; transform: translateX(-50%); z-index: 21;
-    background: var(--paper); box-shadow: var(--shadow); }
-  .top .lbl, .top .kbd, .save span:not(.dot) { display: none; }
+  /* Phones drop Send to agent (it stays in the selection's menu) and the
+     editor's Private chip from the bar; Public viewers keep their read-only
+     chip. The title clips rather than letting items overlap. */
+  .top #share-btn, body:not(.public) .title .chip { display: none; }
+  .title { overflow: hidden; }
+  .top .lbl, .top .kbd { display: none; }
+  .save span:not(.dot) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .title h1 { max-width: 45vw; }
   body.public .top #find-btn, body.public .top #export-btn { display: none; }
   body.public .mobile-nav { display: flex; position: fixed; left: 12px; right: 12px; bottom: 16px; z-index: 15; justify-content: space-between;
