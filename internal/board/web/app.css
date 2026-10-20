@@ -272,8 +272,7 @@ body.history-open .banners { right: 380px; }
      editor's Private chip from the bar; Public viewers keep their read-only
      chip. The title clips rather than letting items overlap. */
   .top #share-btn, body:not(.public) .title .chip { display: none; }
-  .title { overflow: hidden; }
-  .top .lbl, .top .kbd { display: none; }
+  .title { overflow: hidden; padding: 4px; margin: -4px; } /* room for focus rings */
   .save span:not(.dot) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .title h1 { max-width: 45vw; }
   body.public .top #find-btn, body.public .top #export-btn { display: none; }
