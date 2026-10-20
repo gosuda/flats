@@ -482,7 +482,7 @@ var hostFlags = []struct {
 	flag, key string
 	value     func(Options) string
 }{
-	{"listen", "host.management_addr", func(o Options) string { return o.Listen }},
+	{"listen", "host.console_addr", func(o Options) string { return o.Listen }},
 	{"local-addr", "host.local_addr", func(o Options) string { return o.LocalAddr }},
 	{"console-host", "tailscale.console_hosts", func(o Options) string { return o.ConsoleHost }},
 	{"runtime", "host.server_runtime", func(o Options) string { return strconv.FormatBool(o.Runtime) }},
@@ -519,7 +519,7 @@ func legacyHostValues(o Options) (map[string]string, []string) {
 	// Equal fixed addresses could never both listen. Ignore the explicit
 	// local address, else the explicit management address.
 	if err := scratch.Validate(); err != nil {
-		for _, f := range []struct{ flag, key string }{{"local-addr", "host.local_addr"}, {"listen", "host.management_addr"}} {
+		for _, f := range []struct{ flag, key string }{{"local-addr", "host.local_addr"}, {"listen", "host.console_addr"}} {
 			if v, ok := values[f.key]; ok {
 				notes = append(notes, fmt.Sprintf("--%s %s was ignored: flats serve could not listen on both addresses", f.flag, v))
 				delete(values, f.key)

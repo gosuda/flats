@@ -244,11 +244,17 @@ service_arg() {
 }
 
 # config_url prints the console URL from a config.json; a missing or
-# unreadable file, or one without host.management_addr, means the default.
+# unreadable file, or one without a console address, means the default.
+# The canonical key wins; old configs keep their address during upgrade.
 # Newlines are removed first so a hand-edited compact file also matches.
 config_url() {
-	listen=$(tr -d '\r\n' 2>/dev/null <"$1" |
-		sed -n 's/.*"management_addr"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p')
+	flat_config=$(tr -d '\r\n' 2>/dev/null <"$1") || flat_config=
+	listen=$(printf '%s' "$flat_config" |
+		sed -n 's/.*"console_addr"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p')
+	if ! printf '%s' "$flat_config" | grep -q '"console_addr"[[:space:]]*:'; then
+		listen=$(printf '%s' "$flat_config" |
+			sed -n 's/.*"management_addr"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p')
+	fi
 	printf 'http://%s\n' "${listen:-$DEFAULT_LISTEN}"
 }
 

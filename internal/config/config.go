@@ -30,7 +30,7 @@ import (
 )
 
 // CurrentSchemaVersion is the config.json format this binary reads and writes.
-const CurrentSchemaVersion = 4
+const CurrentSchemaVersion = 5
 
 // Source tells where an effective value came from.
 type Source string
@@ -79,7 +79,7 @@ var specs = []spec{
 		hint: "use the lowercase UUID written by config init"},
 	{key: "host.data_dir", kind: kindString, required: true, check: checkAbsPath,
 		hint: "use an absolute path"},
-	{key: "host.management_addr", kind: kindString, def: "127.0.0.1:7878", check: checkAddr, override: true,
+	{key: "host.console_addr", kind: kindString, def: "127.0.0.1:7878", check: checkAddr, override: true,
 		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7878"},
 	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkAddr, override: true,
 		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7879"},
@@ -674,11 +674,11 @@ type Config struct {
 }
 
 type HostConfig struct {
-	InstanceID     string
-	DataDir        string
-	ManagementAddr string
-	LocalAddr      string
-	ServerRuntime  bool
+	InstanceID    string
+	DataDir       string
+	ConsoleAddr   string
+	LocalAddr     string
+	ServerRuntime bool
 }
 
 type TailscaleConfig struct {
@@ -817,7 +817,7 @@ func (c *Config) Lookup(key string) (value any, src Source, ok bool) {
 }
 
 // Effective resolves the document with defaults and per-run overrides.
-// Only host.management_addr, host.local_addr, host.server_runtime and
+// Only host.console_addr, host.local_addr, host.server_runtime and
 // tailscale.console_hosts may be overridden; the values are parsed like Set.
 func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 	c := &Config{SchemaVersion: d.version, values: map[string]any{}, sources: map[string]Source{}}
@@ -870,7 +870,7 @@ func (c *Config) fill() error {
 	flag := func(k string) bool { return c.values[k].(bool) }
 	list := func(k string) []string { return slices.Clone(c.values[k].([]string)) }
 
-	c.Host = HostConfig{str("host.instance_id"), cleanDataDir(str("host.data_dir")), str("host.management_addr"),
+	c.Host = HostConfig{str("host.instance_id"), cleanDataDir(str("host.data_dir")), str("host.console_addr"),
 		str("host.local_addr"), flag("host.server_runtime")}
 	c.Tailscale = TailscaleConfig{list("tailscale.console_hosts")}
 	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
@@ -886,9 +886,9 @@ func (c *Config) fill() error {
 
 	var errs []error
 	// Two free ports never collide.
-	if c.Host.ManagementAddr == c.Host.LocalAddr && !ephemeralPort(c.Host.LocalAddr) {
-		errs = append(errs, fieldErr("host.local_addr", "use a port different from host.management_addr",
-			"%s is also host.management_addr", c.Host.LocalAddr))
+	if c.Host.ConsoleAddr == c.Host.LocalAddr && !ephemeralPort(c.Host.LocalAddr) {
+		errs = append(errs, fieldErr("host.local_addr", "use a port different from host.console_addr",
+			"%s is also host.console_addr", c.Host.LocalAddr))
 	}
 	if c.Network.PrivateBackend == "tailscale" && !slices.Contains(c.Network.Permitted, "tailscale") {
 		errs = append(errs, fieldErr("network.private_backend", `add "tailscale" to network.permitted or use "local"`,

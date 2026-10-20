@@ -58,7 +58,7 @@ func TestVersionQuotaMigrationPreservesNetbirdSettings(t *testing.T) {
 					!slices.Equal(cfg.Netbird.ConsoleHosts, wantDomains) || !slices.Equal(cfg.Tailscale.ConsoleHosts, []string{"ts-console"}) {
 					t.Fatalf("migration changed quota or domain policy: %+v %+v %+v", cfg.System, cfg.Netbird, cfg.Tailscale)
 				}
-				if loaded.Doc.SchemaVersion() != 4 || strings.Contains(string(loaded.Doc.Encode()), "device_name") {
+				if loaded.Doc.SchemaVersion() != CurrentSchemaVersion || strings.Contains(string(loaded.Doc.Encode()), "device_name") {
 					t.Fatalf("migration did not complete: %s", loaded.Doc.Encode())
 				}
 			})

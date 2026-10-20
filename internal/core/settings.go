@@ -579,9 +579,9 @@ type ConfigView struct {
 	// read); a restart loads it.
 	ChangedOnDisk bool `json:"changed_on_disk"`
 	Host          struct {
-		ManagementAddr string `json:"management_addr"`
-		LocalAddr      string `json:"local_addr"`
-		ServerRuntime  bool   `json:"server_runtime"`
+		ConsoleAddr   string `json:"console_addr"`
+		LocalAddr     string `json:"local_addr"`
+		ServerRuntime bool   `json:"server_runtime"`
 	} `json:"host"`
 	Tailscale struct {
 		ConsoleHosts []string `json:"console_hosts"`
@@ -619,7 +619,7 @@ func (s *SettingsSource) view() (*ConfigView, error) {
 	if v.Pinned == nil {
 		v.Pinned = map[string]string{}
 	}
-	v.Host.ManagementAddr, v.Host.LocalAddr = c.Host.ManagementAddr, c.Host.LocalAddr
+	v.Host.ConsoleAddr, v.Host.LocalAddr = c.Host.ConsoleAddr, c.Host.LocalAddr
 	v.Host.ServerRuntime = c.Host.ServerRuntime
 	v.Tailscale.ConsoleHosts = slices.Clone(c.Tailscale.ConsoleHosts)
 	v.Network.Permitted, v.Network.PrivateBackend = c.Network.Permitted, c.Network.PrivateBackend

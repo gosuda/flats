@@ -91,7 +91,7 @@ origin. Tailnet ACLs decide which devices can reach those origins. Code and
 data stay on your machine.
 
 Local loopback also binds in Tailscale mode: concurrent hosts need distinct
-`host.management_addr`, `host.local_addr` and data directories.
+`host.console_addr`, `host.local_addr` and data directories.
 
 ## Serving the console behind a reverse proxy
 
@@ -120,7 +120,7 @@ The host serves [`/metrics`](design.md#metrics) in the Prometheus text format
 on the loopback listener, every console domain and declared external origins.
 Protect external scrapes with the same proxy authentication or private network
 as the console. A scraper on the host
-itself uses `http://127.0.0.1:7878/metrics` (`host.management_addr`); one on
+itself uses `http://127.0.0.1:7878/metrics` (`host.console_addr`); one on
 another machine uses a console domain, such as
 `https://NAME.<tailnet>.ts.net/metrics` or `http://NAME.<NetBird domain>/metrics`:
 

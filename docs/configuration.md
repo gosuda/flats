@@ -121,7 +121,7 @@ written; `flats config unset KEY` removes it.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "host": {
     "instance_id": "63b57046-582f-48d9-a64f-877ae28d12aa",
     "data_dir": "/path/to/flats-data"
@@ -145,7 +145,7 @@ written; `flats config unset KEY` removes it.
 | --- | --- | --- |
 | `host.instance_id` | written by init | never edited; `flats config rebind` replaces it |
 | `host.data_dir` | written by init | offline: `flats config set host.data_dir` |
-| `host.management_addr` | `127.0.0.1:7878` | restart |
+| `host.console_addr` | `127.0.0.1:7878`; console, HTTP API and MCP listener | restart |
 | `host.local_addr` | `127.0.0.1:7879` | restart |
 | `host.server_runtime` | `true` | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
@@ -174,6 +174,13 @@ written; `flats config unset KEY` removes it.
 | `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console); otherwise restart |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
+
+`host.console_addr` names the shared management listener, not a console-only
+listener. The rename leaves the actual bind address, routes and embedded
+Tailscale/NetBird console behavior unchanged. `host.local_addr` still names the
+separate flat listener. `--listen` still overrides `host.console_addr` for one
+run; existing CLI and installer flag names are unchanged. The Settings view
+reports `host.console_addr` and labels it "Console address".
 
 Addresses take any `host:port` that the old `--listen` and `--local-addr`
 flags took, and the host logs a warning when the management address is not
@@ -492,11 +499,20 @@ automatically; `flats config migrate` shows it and asks for `--yes`.
 
 Every released schema version keeps example files under
 `internal/config/testdata/config/v<N>/`; tests migrate each to the current
-version.
+version. Historical schema 1–4 inputs remain unchanged; expected migration
+outputs track schema 5 and the canonical new key.
 
 An older `config.json` is converted at start. The conversions that change
 what an operator sees:
 
+- Schema 5 renames `host.management_addr` to `host.console_addr`, preserving
+  every explicitly configured address. An absent key stays absent, with the
+  same loopback default `127.0.0.1:7878`. A new-key-only file also keeps its
+  value. Both keys together are rejected, even when equal. Migration errors
+  for schema 1–4 name both keys; schema 5 reports the old key as unknown,
+  whether alone or alongside the new key. Rejection leaves the file and
+  history untouched. Offline commands and runtime overrides use only the
+  new name. The migration requires no confirmation because exposure is unchanged.
 - `host.console_host` becomes `tailscale.console_hosts`, listing the old name
   only when `network.private_backend` was `tailscale` and the name was a
   lowercase DNS label, the only case in which a console ran on the tailnet.
@@ -510,6 +526,13 @@ what an operator sees:
   deployed flat. A flat over its quota keeps all its versions and refuses new
   ones until the operator raises the quota or deletes older versions.
   Versions pruned before the upgrade stay unavailable and do not count.
+
+After successful migration, `config-history/` holds the previous file. A
+binary that supports only schema 4 refuses a schema 5 file without changing
+it. Before running an older release, restore its compatible configuration and
+corresponding data backup. The installer's informational URL discovery reads
+`host.console_addr` first and falls back to `host.management_addr` for files
+not yet migrated; this does not accept configurations the host rejects.
 
 A newer `schema_version` than the binary supports is refused without touching
 the file. So is a key this binary does not know: it may come from a newer

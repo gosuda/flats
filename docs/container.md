@@ -120,7 +120,7 @@ recipe, recreates the service to check persistence, and removes its synthetic da
 
 ## Choose a network mode
 
-The management listener (`host.management_addr`, `127.0.0.1:7878`) is a
+The management listener (`host.console_addr`, `127.0.0.1:7878`) is a
 privileged control surface: approval decisions need only the console's
 same-origin headers, not a credential, so anything that can reach it can
 approve. A container must keep it reachable only from the host, and the

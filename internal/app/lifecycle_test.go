@@ -23,7 +23,7 @@ import (
 // localOptions starts a legacy-mode host in dir on free loopback ports,
 // without legacy flags.
 func localOptions(dir string) Options {
-	return Options{DataDir: dir, Overrides: map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"}}
+	return Options{DataDir: dir, Overrides: map[string]string{"host.console_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"}}
 }
 
 func TestDataDirectoryLockSubprocess(t *testing.T) {
@@ -102,12 +102,12 @@ func TestStartupFailureReleasesLock(t *testing.T) {
 	}
 	defer ln.Close()
 	o := localOptions(dir)
-	o.Overrides["host.management_addr"] = ln.Addr().String()
+	o.Overrides["host.console_addr"] = ln.Addr().String()
 	if h, err := Start(context.Background(), o); err == nil {
 		h.Close()
 		t.Fatal("occupied listen succeeded")
 	}
-	o.Overrides["host.management_addr"] = "127.0.0.1:0"
+	o.Overrides["host.console_addr"] = "127.0.0.1:0"
 	h, err := Start(context.Background(), o)
 	if err != nil {
 		t.Fatal(err)

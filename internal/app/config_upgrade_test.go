@@ -80,7 +80,7 @@ func legacyFlags(t *testing.T, dir string, args ...string) Options {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.Overrides = map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0", "host.server_runtime": "false"}
+	o.Overrides = map[string]string{"host.console_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0", "host.server_runtime": "false"}
 	return o
 }
 
@@ -151,7 +151,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
 	instance := h.Config.Host.InstanceID
 	// --console-host named a tailnet console only with --network tailscale.
 	want := `{
-  "schema_version": 4,
+  "schema_version": 5,
   "host": {
     "instance_id": "` + instance + `",
     "data_dir": "` + dir + `"
@@ -405,7 +405,7 @@ func initConfig(t *testing.T, dir string, args ...string) string {
 }
 
 func configModeOptions(path string) Options {
-	return Options{ConfigPath: path, Overrides: map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0", "host.server_runtime": "false"}}
+	return Options{ConfigPath: path, Overrides: map[string]string{"host.console_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0", "host.server_runtime": "false"}}
 }
 
 func TestConfigModeRefusals(t *testing.T) {
@@ -501,7 +501,7 @@ func TestConfigModeRefusals(t *testing.T) {
 		dir := t.TempDir()
 		path := initConfig(t, dir)
 		raw, _ := os.ReadFile(path)
-		raw = bytes.Replace(raw, []byte(`"schema_version": 4`), []byte(`"schema_version": 5`), 1)
+		raw = bytes.Replace(raw, []byte(`"schema_version": 5`), []byte(`"schema_version": 6`), 1)
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -713,7 +713,7 @@ func TestLegacyFreshStartInitializes(t *testing.T) {
 	dir := t.TempDir()
 	key := writeKey(t, keyA)
 	o := legacyFlags(t, dir, "--listen", "127.0.0.1:27999", "--console-host", "gate-x", "--portal=false", "--authkey-file", key, "--permit", "portal")
-	o.Overrides = map[string]string{"host.management_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"}
+	o.Overrides = map[string]string{"host.console_addr": "127.0.0.1:0", "host.local_addr": "127.0.0.1:0"}
 	// Stop before networking: only the config is under test here.
 	interrupt = func(step string) error {
 		if step == "bind" {
@@ -730,7 +730,7 @@ func TestLegacyFreshStartInitializes(t *testing.T) {
 		t.Fatal(err)
 	}
 	c, _ := l.Doc.Effective(nil)
-	if c.Host.ManagementAddr != "127.0.0.1:27999" || len(c.Tailscale.ConsoleHosts) != 0 || len(c.Network.Permitted) != 0 ||
+	if c.Host.ConsoleAddr != "127.0.0.1:27999" || len(c.Tailscale.ConsoleHosts) != 0 || len(c.Network.Permitted) != 0 ||
 		c.Credentials.TailscaleAuthKeyFile != "" || c.Host.DataDir != dir {
 		t.Fatalf("config = %+v %+v %+v", c.Host, c.Network, c.Credentials)
 	}
@@ -753,7 +753,7 @@ func TestSettingsSaveToConfigAndDetectEdits(t *testing.T) {
 	if !bytes.Contains(raw, []byte(`"version_quota": 3`)) || !bytes.Contains(raw, []byte(`"relays": ["https://relay.example.com"]`)) {
 		t.Fatalf("config.json =\n%s", raw)
 	}
-	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v4.*.json")); len(hist) != 1 {
+	if hist, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "config-history", "config.v5.*.json")); len(hist) != 1 {
 		t.Fatalf("history = %q", hist)
 	}
 	if h.Svc.UploadLimit() != 20<<20 {
@@ -798,7 +798,7 @@ func TestConsoleCannotChangeFlagPinnedRelays(t *testing.T) {
 	before := hashFile(t, path)
 	var view struct{ Config core.ConfigView }
 	if code := consoleCall(t, h, client, "GET", "/console/api/settings", nil, &view); code != 200 || view.Config.Mode != "legacy" ||
-		view.Config.ETag != before || view.Config.Pinned[core.SetPortalRelays] != "the service's --relays flag" || view.Config.Sources["host.management_addr"] != config.SourceFlag {
+		view.Config.ETag != before || view.Config.Pinned[core.SetPortalRelays] != "the service's --relays flag" || view.Config.Sources["host.console_addr"] != config.SourceFlag {
 		t.Fatalf("legacy settings view = %d %+v", code, view.Config)
 	}
 	code, out := put(`{"portal_relays":"https://other.example"}`)

@@ -293,7 +293,7 @@ func (h *Host) Addr() string { return h.ln.Addr().String() }
 // override config.json for this run only.
 var configModeFlags = map[string]string{
 	"config": "", "operator-credential-stdin": "",
-	"listen": "host.management_addr", "local-addr": "host.local_addr",
+	"listen": "host.console_addr", "local-addr": "host.local_addr",
 	"console-host": "tailscale.console_hosts", "runtime": "host.server_runtime",
 	"tailscale-authkey-file": "", "zrok-token-file": "", "netbird-setup-key-file": "",
 }
@@ -527,9 +527,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	// The management listener comes first: core may need the console address
 	// while it starts, and that address is the one actually bound.
-	h.ln, err = net.Listen("tcp", cfg.Host.ManagementAddr)
+	h.ln, err = net.Listen("tcp", cfg.Host.ConsoleAddr)
 	if err != nil {
-		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ManagementAddr, err)
+		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ConsoleAddr, err)
 	}
 	h.console = managementConsoleURL(h.ln.Addr())
 	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
