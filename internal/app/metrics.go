@@ -15,7 +15,7 @@ func metricsHandler(next http.Handler, cfg config.MetricsConfig) http.Handler {
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && api.RefuseCrossSite(w, r) {
 			return
 		}
-		access := "loopback"
+		access := "localhost"
 		if api.ExternalOrigin(r.Context()) != "" {
 			access = "external"
 		} else if _, ok := consoleDomainOf(r.Context()); ok {

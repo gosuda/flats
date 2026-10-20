@@ -148,8 +148,8 @@ var specs = []spec{
 		hint: preferredHostHint},
 	{key: "metrics.enabled", kind: kindBool, def: true,
 		hint: "use true or false"},
-	{key: "metrics.expose_on", kind: kindList, def: []string{"loopback"}, check: checkMetricsExposeOn,
-		hint: `list "loopback", "console" and "external" once each, or [] to expose metrics nowhere`},
+	{key: "metrics.expose_on", kind: kindList, def: []string{"localhost"}, check: checkMetricsExposeOn,
+		hint: `list "localhost", "console" and "external" once each, or [] to expose metrics nowhere`},
 	{key: "metrics.per_flat", kind: kindBool, def: false,
 		hint: "use true or false"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
@@ -513,12 +513,12 @@ func checkPermitted(v any) (any, error) {
 
 // checkMetricsExposeOn returns the selected access points in canonical order.
 func checkMetricsExposeOn(v any) (any, error) {
-	choices := []string{"loopback", "console", "external"}
+	choices := []string{"localhost", "console", "external"}
 	list := v.([]string)
 	for i, name := range list {
 		path := fmt.Sprintf("metrics.expose_on[%d]", i)
 		if !slices.Contains(choices, name) {
-			return nil, fieldErr(path, `use "loopback", "console" or "external"`, "unknown access point %q", name)
+			return nil, fieldErr(path, `use "localhost", "console" or "external"`, "unknown access point %q", name)
 		}
 		if slices.Contains(list[:i], name) {
 			return nil, fieldErr(path, "list each access point once", "duplicate access point %q", name)

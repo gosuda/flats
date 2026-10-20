@@ -33,27 +33,29 @@ Page views stay as they are. Usage adds to them; it does not replace them.
 3. The configuration has three independent controls:
    - `metrics.enabled` is a boolean, default `true`. When `false`, otherwise
      valid requests to `/metrics` return 404 on every access point.
-   - `metrics.expose_on` is a list of unique values chosen from `loopback`,
-     `console` and `external`, default `["loopback"]`. Unknown values,
+   - `metrics.expose_on` is a list of unique values chosen from `localhost`,
+     `console` and `external`, default `["localhost"]`. Unknown values,
      duplicates and non-list values are configuration errors. An empty list
-     is valid and exposes the endpoint nowhere. Otherwise valid requests
-     through an access point absent from the list return 404.
+     is valid and exposes the endpoint nowhere. The unreleased `loopback`
+     spelling is rejected rather than accepted as an alias. Otherwise valid
+     requests through an access point absent from the list return 404.
    - `metrics.per_flat` is a boolean, default `false`. When `false`, the
      endpoint omits every per-flat Prometheus series described in rule 5,
      including traffic, live/preview/validation workers and storage. It does
      not remove only their labels or substitute identifiers. Host-wide
      metrics, aggregate flat counts, network counts, management request
-     counts and host-wide board metrics remain available. When `true`, the per-flat series include the
-     existing slug and type labels.
+     counts and host-wide board metrics remain available. When `true`, the
+     per-flat series include the existing slug and type labels.
 
-   `loopback` means the management listener, whose default bind address is
-   loopback; it does not filter by a caller's source address or override a
-   deliberately configured non-loopback management bind. `console` means
+   `localhost` means the management listener selected by `host.console_addr`,
+   whose default bind address is `127.0.0.1:7878`. It does not select only the
+   DNS name localhost, filter by a caller's source address or override a
+   deliberately configured non-loopback console bind. `console` means
    managed console domains, including Tailscale and NetBird. `external`
    means requests admitted through `console.external_origins`, including a
    reverse proxy connected to the management listener over loopback. A
    declared external-origin request is classified as `external` before
-   `loopback`; its proxy connection does not grant loopback exposure.
+   `localhost`; its proxy connection does not grant localhost exposure.
 
    Requests follow this response order:
    1. The management server's outer Host and Origin checks reject invalid
@@ -73,15 +75,16 @@ Page views stay as they are. Usage adds to them; it does not replace them.
    online configuration API. Missing keys use these defaults on both new
    and existing installations, deliberately reducing previous exposure and
    omitting per-flat series. An upgrade does not preserve the old behavior
-   automatically. These are new configuration keys; they require no schema
-   version change or migration. To retain the previous behavior, an operator
-   explicitly configures:
+   automatically. The current configuration schema is 5 after the
+   `host.console_addr` rename. These new metrics keys and the unreleased
+   exposure-name correction require no further schema change or migration.
+   To retain the previous behavior, an operator explicitly configures:
 
    ```json
    {
      "metrics": {
        "enabled": true,
-       "expose_on": ["loopback", "console", "external"],
+       "expose_on": ["localhost", "console", "external"],
        "per_flat": true
      }
    }
@@ -205,7 +208,9 @@ entries. Routing tests cover Host and Origin rejection for every method,
 cross-site GET and HEAD rejection even when metrics are disabled or excluded,
 and admitted POST requests returning 404 without `Allow` when disabled or
 excluded, or 405 with `Allow: GET, HEAD` when enabled and selected. They also
-verify that an external-origin proxy request cannot obtain loopback exposure.
+verify that an external-origin proxy request cannot obtain localhost exposure.
+Configuration tests reject the old `loopback` spelling and retain schema 5;
+listener tests cover explicit non-loopback binds without adding a source-IP rule.
 Scrape tests distinguish host and aggregate metrics from every per-flat family,
 including preview and validation workers. Analytics and stats tests verify that
 requests and worker usage still reach the stats API with metrics disabled and

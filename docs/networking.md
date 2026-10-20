@@ -119,9 +119,9 @@ existing loopback and provider-domain behavior.
 
 The host serves [`/metrics`](design.md#metrics) in the Prometheus text format
 on the management listener by default. A scraper on the host uses
-`http://127.0.0.1:7878/metrics` (`host.console_addr`). `loopback` in
-`metrics.expose_on` names that listener; it does not restrict a management
-address deliberately bound beyond loopback.
+`http://127.0.0.1:7878/metrics` (`host.console_addr`). `localhost` in
+`metrics.expose_on` names that listener; it does not restrict a console
+address deliberately bound beyond loopback or filter the client's source IP.
 
 For a scraper on another machine, add `console` to `metrics.expose_on` and use
 a managed console domain, such as `https://NAME.<tailnet>.ts.net/metrics` or

@@ -662,13 +662,15 @@ console's Usage section read the same days as page views
 `GET /metrics` answers in the Prometheus text exposition format (OpenMetrics
 when the scraper asks for it). By default it is enabled only on the management
 listener and omits per-flat series. Operators can disable it, select
-`loopback`, `console` or `external` access points, and opt into per-flat series
+`localhost`, `console` or `external` access points, and opt into per-flat series
 through [metrics configuration](configuration.md#prometheus-metrics), followed
 by a restart. Missing settings use these defaults on existing installations too.
 It is never served on a flat's route, a preview or a public provider.
 
-`loopback` names the management listener, whose bind address defaults to
-loopback; it does not restrict a deliberately configured non-loopback bind.
+`localhost` names the `host.console_addr` management listener, whose bind
+address defaults to loopback. It does not restrict a deliberately configured
+non-loopback bind, select only the DNS name localhost, or filter client source
+addresses.
 Managed console domains use `console`. Declared external-origin requests use
 `external`, even when a reverse proxy connects to the management listener over
 loopback. Exposure selection adds no authentication. Existing Host, Origin and

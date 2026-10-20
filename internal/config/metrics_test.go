@@ -9,19 +9,23 @@ import (
 )
 
 func TestMetricsDefaults(t *testing.T) {
-	for _, version := range []int{1, 2, 3, 4, 5} {
+	for version := 1; version <= CurrentSchemaVersion; version++ {
 		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
-			raw := strings.Replace(fileWith(), `"schema_version": 5`, fmt.Sprintf(`"schema_version": %d`, version), 1)
+			raw := strings.Replace(fileWith(), fmt.Sprintf(`"schema_version": %d`, CurrentSchemaVersion),
+				fmt.Sprintf(`"schema_version": %d`, version), 1)
 			loaded, err := Parse([]byte(raw))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if loaded.FileVersion != version {
+				t.Fatalf("FileVersion = %d, want %d", loaded.FileVersion, version)
 			}
 			cfg, err := loaded.Doc.Effective(nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !cfg.Metrics.Enabled || !slices.Equal(cfg.Metrics.ExposeOn, []string{"loopback"}) || cfg.Metrics.PerFlat {
-				t.Fatalf("Metrics = %+v, want enabled, loopback only and no per-flat series", cfg.Metrics)
+			if !cfg.Metrics.Enabled || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) || cfg.Metrics.PerFlat {
+				t.Fatalf("Metrics = %+v, want enabled, localhost only and no per-flat series", cfg.Metrics)
 			}
 			for _, key := range []string{"metrics.enabled", "metrics.expose_on", "metrics.per_flat"} {
 				if _, present := loaded.Doc.Stored(key); present {
@@ -38,16 +42,41 @@ func TestMetricsDefaults(t *testing.T) {
 	}
 }
 
+func TestMetricsDefaultsPreserveMigratedConsoleAddress(t *testing.T) {
+	raw := fmt.Sprintf(`{"schema_version":4,"host":{"instance_id":%q,"data_dir":"/var/lib/flats","management_addr":"100.64.0.7:9000"}}`, testID)
+	loaded, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.FileVersion != 4 || loaded.Doc.SchemaVersion() != CurrentSchemaVersion || !loaded.Migrated || loaded.NeedsConfirm {
+		t.Fatalf("migration metadata = %+v", loaded)
+	}
+	cfg, err := loaded.Doc.Effective(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Host.ConsoleAddr != "100.64.0.7:9000" || !cfg.Metrics.Enabled || cfg.Metrics.PerFlat ||
+		!slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
+		t.Fatalf("migrated host = %+v, metrics = %+v", cfg.Host, cfg.Metrics)
+	}
+	if value, present := loaded.Doc.Stored("host.console_addr"); !present || value != "100.64.0.7:9000" {
+		t.Fatalf("stored canonical address = %v, %t", value, present)
+	}
+	if bytes.Contains(loaded.Doc.Encode(), []byte("management_addr")) || bytes.Contains(loaded.Doc.Encode(), []byte(`"metrics"`)) {
+		t.Fatalf("migrated config retained old key or stored metrics defaults:\n%s", loaded.Doc.Encode())
+	}
+}
+
 func TestMetricsParse(t *testing.T) {
 	tests := []struct {
 		name, members, wantPath string
 		want                    MetricsConfig
 	}{
-		{name: "empty section", want: MetricsConfig{Enabled: true, ExposeOn: []string{"loopback"}}},
-		{name: "previous behavior", members: `"enabled": true, "expose_on": ["external", "loopback", "console"], "per_flat": true`,
-			want: MetricsConfig{Enabled: true, ExposeOn: []string{"loopback", "console", "external"}, PerFlat: true}},
+		{name: "empty section", want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost"}}},
+		{name: "previous behavior", members: `"enabled": true, "expose_on": ["external", "localhost", "console"], "per_flat": true`,
+			want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost", "console", "external"}, PerFlat: true}},
 		{name: "disabled independently", members: `"enabled": false, "per_flat": true`,
-			want: MetricsConfig{ExposeOn: []string{"loopback"}, PerFlat: true}},
+			want: MetricsConfig{ExposeOn: []string{"localhost"}, PerFlat: true}},
 		{name: "empty exposure", members: `"expose_on": []`, want: MetricsConfig{Enabled: true, ExposeOn: []string{}}},
 		{name: "enabled string", members: `"enabled": "true"`, wantPath: "metrics.enabled"},
 		{name: "enabled number", members: `"enabled": 1`, wantPath: "metrics.enabled"},
@@ -55,13 +84,14 @@ func TestMetricsParse(t *testing.T) {
 		{name: "per-flat string", members: `"per_flat": "false"`, wantPath: "metrics.per_flat"},
 		{name: "per-flat number", members: `"per_flat": 0`, wantPath: "metrics.per_flat"},
 		{name: "per-flat null", members: `"per_flat": null`, wantPath: "metrics.per_flat"},
-		{name: "exposure string", members: `"expose_on": "loopback"`, wantPath: "metrics.expose_on"},
+		{name: "exposure string", members: `"expose_on": "localhost"`, wantPath: "metrics.expose_on"},
 		{name: "exposure object", members: `"expose_on": {}`, wantPath: "metrics.expose_on"},
 		{name: "exposure null", members: `"expose_on": null`, wantPath: "metrics.expose_on"},
 		{name: "exposure member number", members: `"expose_on": [1]`, wantPath: "metrics.expose_on[0]"},
 		{name: "exposure member null", members: `"expose_on": [null]`, wantPath: "metrics.expose_on[0]"},
+		{name: "legacy loopback exposure", members: `"expose_on": ["loopback"]`, wantPath: "metrics.expose_on[0]"},
 		{name: "unknown exposure", members: `"expose_on": ["public"]`, wantPath: "metrics.expose_on[0]"},
-		{name: "case-sensitive exposure", members: `"expose_on": ["Loopback"]`, wantPath: "metrics.expose_on[0]"},
+		{name: "case-sensitive exposure", members: `"expose_on": ["Localhost"]`, wantPath: "metrics.expose_on[0]"},
 		{name: "duplicate exposure", members: `"expose_on": ["console", "console"]`, wantPath: "metrics.expose_on[1]"},
 	}
 	for _, tt := range tests {
@@ -98,7 +128,7 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 	}
 	for _, setting := range []struct{ key, value string }{
 		{"metrics.enabled", "true"},
-		{"metrics.expose_on", "external, loopback, console"},
+		{"metrics.expose_on", "external, localhost, console"},
 		{"metrics.per_flat", "false"},
 	} {
 		if err := doc.Set(setting.key, setting.value); err != nil {
@@ -106,7 +136,7 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 		}
 	}
 	encoded := doc.Encode()
-	for _, member := range []string{`"enabled": true`, `"expose_on": ["loopback", "console", "external"]`, `"per_flat": false`} {
+	for _, member := range []string{`"enabled": true`, `"expose_on": ["localhost", "console", "external"]`, `"per_flat": false`} {
 		if !bytes.Contains(encoded, []byte(member)) {
 			t.Fatalf("encoded config omits %s:\n%s", member, encoded)
 		}
@@ -137,7 +167,7 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Metrics.Enabled || cfg.Metrics.PerFlat || !slices.Equal(cfg.Metrics.ExposeOn, []string{"loopback"}) {
+	if !cfg.Metrics.Enabled || cfg.Metrics.PerFlat || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
 		t.Fatalf("Unset defaults = %+v", cfg.Metrics)
 	}
 	for _, value := range []string{"[]", ""} {
@@ -165,8 +195,9 @@ func TestMetricsSetRejectsInvalidValues(t *testing.T) {
 		{"metrics.per_flat", "False", "metrics.per_flat"},
 		{"metrics.per_flat", "null", "metrics.per_flat"},
 		{"metrics.expose_on", "null", "metrics.expose_on[0]"},
+		{"metrics.expose_on", "loopback", "metrics.expose_on[0]"},
 		{"metrics.expose_on", "public", "metrics.expose_on[0]"},
-		{"metrics.expose_on", "loopback,loopback", "metrics.expose_on[1]"},
+		{"metrics.expose_on", "localhost,localhost", "metrics.expose_on[1]"},
 		{"metrics.expose_on", `["external", "external"]`, "metrics.expose_on[1]"},
 		{"metrics.expose_on", `[1]`, "metrics.expose_on[0]"},
 		{"metrics.expose_on", `[null]`, "metrics.expose_on[0]"},
@@ -206,7 +237,7 @@ func TestMetricsExposureSlicesAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(cfg.Metrics.ExposeOn, []string{"loopback"}) {
+	if !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
 		t.Fatalf("default exposure mutated: %v", cfg.Metrics.ExposeOn)
 	}
 	if err := doc.Set("metrics.expose_on", "console"); err != nil {

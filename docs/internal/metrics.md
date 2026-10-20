@@ -362,7 +362,8 @@ After those guards, `metrics.enabled: false` or an access point excluded by
 GET/HEAD serve metrics and other methods return 405 with `Allow: GET, HEAD`.
 External-origin classification takes precedence over the management listener
 category even when a proxy connects over loopback. The console page does not
-answer `/metrics`. Defaults enable metrics on the management listener alone;
+answer `/metrics`. Defaults select `localhost`, meaning the `host.console_addr`
+management listener, without a source-IP filter or a new bind restriction;
 see [configuration](../configuration.md#prometheus-metrics).
 
 `metrics.per_flat` defaults to false. It omits the per-flat families below,

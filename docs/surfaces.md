@@ -62,8 +62,9 @@ including deciding approvals. A separate operator credential is an open design
 item. Whoever can reach an enabled metrics endpoint can read its host and
 aggregate figures. Per-flat series, including Private and unpublished slugs,
 require `metrics.per_flat: true`. Allow only trusted scrapers. Selecting
-`loopback` means the management listener, not caller authentication or a source
-address filter; a non-loopback management bind remains reachable there.
+`localhost` means the `host.console_addr` management listener, not caller
+authentication, a DNS-name restriction or a source-address filter. A
+non-loopback console bind remains reachable there.
 
 The approver recorded with a decision is the tailnet login on a Tailscale
 console domain, `netbird:<peer FQDN>` on a NetBird console domain, and none on

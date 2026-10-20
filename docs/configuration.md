@@ -149,7 +149,7 @@ written; `flats config unset KEY` removes it.
 | `host.local_addr` | `127.0.0.1:7879` | restart |
 | `host.server_runtime` | `true` | restart |
 | `metrics.enabled` | `true` | restart |
-| `metrics.expose_on` | `["loopback"]`; unique entries from `loopback`, `console`, `external`; `[]` exposes nowhere | restart |
+| `metrics.expose_on` | `["localhost"]`; unique entries from `localhost`, `console`, `external`; `[]` exposes nowhere | restart |
 | `metrics.per_flat` | `false`; opt in to per-flat Prometheus series | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
@@ -378,25 +378,30 @@ served, such as one being deleted) names the preferred console,
 
 Metrics are enabled by default on the management listener, with per-flat
 Prometheus series omitted. The defaults apply to existing installations when
-these new keys are absent, without a schema version change or migration:
+these new keys are absent. Configuration schema 5 already includes the
+`host.console_addr` rename; metrics controls need no further schema change or
+migration:
 
 ```json
 {
   "metrics": {
     "enabled": true,
-    "expose_on": ["loopback"],
+    "expose_on": ["localhost"],
     "per_flat": false
   }
 }
 ```
 
-`expose_on` accepts a unique list of `loopback` (the management listener),
-`console` (managed Tailscale and NetBird console domains), and `external`
+`expose_on` accepts a unique list of `localhost` (the `host.console_addr`
+management listener), `console` (managed Tailscale and NetBird console domains),
+and `external`
 (requests through `console.external_origins`). An external-origin request
 remains external when its reverse proxy connects over loopback. Unknown names,
 duplicates and values that are not lists are invalid. `[]` exposes nowhere.
-`loopback` names the listener category; changing `host.console_addr` to a
-non-loopback address also changes where that listener can be reached.
+The unreleased `loopback` spelling is invalid; it is not an alias.
+`localhost` names the listener category, not a DNS-name or client-source-IP
+filter. Changing `host.console_addr` to a non-loopback address also changes
+where that listener can be reached.
 
 With `enabled: false`, or on an excluded access point, admitted requests
 return 404 without `Allow`. Existing Host and Origin guards still reject
@@ -417,7 +422,7 @@ For example, these offline commands enable console-domain scraping and per-flat
 series:
 
 ```sh
-flats config set metrics.expose_on loopback,console
+flats config set metrics.expose_on localhost,console
 flats config set metrics.per_flat true
 ```
 
@@ -428,7 +433,7 @@ introduced, explicitly set:
 {
   "metrics": {
     "enabled": true,
-    "expose_on": ["loopback", "console", "external"],
+    "expose_on": ["localhost", "console", "external"],
     "per_flat": true
   }
 }

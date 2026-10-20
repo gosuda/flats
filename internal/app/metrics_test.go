@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -20,6 +21,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/metrics"
 )
 
 // /metrics answers on the loopback management server with the guards of
@@ -152,7 +154,7 @@ func metricsHost(t *testing.T, settings map[string]string) (*Host, *http.Client)
 }
 
 func TestMetricsExposureSelection(t *testing.T) {
-	accessPoints := []string{"loopback", "console", "external"}
+	accessPoints := []string{"localhost", "console", "external"}
 	for mask := 0; mask < 8; mask++ {
 		selected := []string{}
 		for i, access := range accessPoints {
@@ -352,5 +354,34 @@ func TestMetricsControlsKeepAnalyticsUsage(t *testing.T) {
 				t.Errorf("default per-flat scrape: %d %.200s", code, body)
 			}
 		})
+	}
+}
+
+// localhost names the listener category, not a bind or caller-IP restriction.
+func TestMetricsLocalhostSelectionPreservesNonLoopbackBind(t *testing.T) {
+	m := metrics.New(metrics.Options{})
+	defer m.Close()
+	handler := loopbackGuard(&net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 7878},
+		metricsHandler(m.Handler(), config.MetricsConfig{Enabled: true, ExposeOn: []string{"localhost"}}))
+	for _, tc := range []struct {
+		host, origin string
+		want         int
+	}{
+		{"192.0.2.10:7878", "", http.StatusOK},
+		{"192.0.2.10:7878", "http://192.0.2.10:7878", http.StatusOK},
+		{"attacker.example:7878", "", http.StatusForbidden},
+		{"192.0.2.10:7878", "http://attacker.example:7878", http.StatusForbidden},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "http://"+tc.host+"/metrics", nil)
+		req.RemoteAddr = "198.51.100.20:54321"
+		req.Header.Set("Origin", tc.origin)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("host %s origin %s: %d, want%d", tc.host, tc.origin, rec.Code, tc.want)
+		}
+		if tc.want == http.StatusOK && !strings.Contains(rec.Body.String(), "flats_build_info") {
+			t.Error("admitted non-loopback listener has no metrics")
+		}
 	}
 }
