@@ -189,7 +189,11 @@ class App {
     chip.hidden = false;
     chip.textContent = this.isPublic ? 'Public · read only' : 'Private';
     chip.classList.toggle('priv', !this.isPublic);
-    if (this.isPublic) $('#export-btn .lbl').textContent = 'Download PNG';
+    if (this.isPublic) {
+      $('#export-btn .lbl').textContent = 'Download PNG';
+      $('#export-btn').setAttribute('aria-label', 'Download PNG');
+      $('#export-btn').title = 'Download PNG';
+    }
     this.presence.avatars();
     this.renderer.painter.showAuthors = !this.isPublic;
     this.renderer.invalidateAll();

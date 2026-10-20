@@ -41,7 +41,9 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
 .top { position: fixed; inset: 0 0 auto 0; height: var(--top); z-index: 20; display: flex; align-items: center; gap: 12px; padding: 0 14px;
   background: var(--paper); border-bottom: 1px solid var(--line); }
 .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.title h1 { font-size: 15px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32vw; }
+.title h1 { font-size: 15px; font-weight: 600; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32vw; min-width: 0; }
+/* Only the board name gives up width; the controls around it keep theirs. */
+.title > :not(h1), .top > :not(.title):not(.spacer) { flex: none; }
 .chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .chip.priv { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 .save { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
@@ -258,10 +260,19 @@ body.history-open .banners { right: 380px; }
   .toasts { bottom: 86px; }
 }
 
+/* Narrow windows: header buttons show their icons only. */
+@media (max-width: 960px) {
+  .top .lbl, .top .kbd { display: none; }
+}
+
 /* ---- phones ---- */
 @media (max-width: 640px) {
   .top { gap: 6px; padding: 0 8px; }
-  .top .lbl, .top .kbd, .save span { display: none; }
+  /* Send to agent stays in the selection's menu; the name button floats below the bar. */
+  .top #share-btn { display: none; }
+  .top #name-btn { position: fixed; top: calc(var(--top) + 8px); left: 50%; transform: translateX(-50%); z-index: 21;
+    background: var(--paper); box-shadow: var(--shadow); }
+  .top .lbl, .top .kbd, .save span:not(.dot) { display: none; }
   .title h1 { max-width: 45vw; }
   body.public .top #find-btn, body.public .top #export-btn { display: none; }
   body.public .mobile-nav { display: flex; position: fixed; left: 12px; right: 12px; bottom: 16px; z-index: 15; justify-content: space-between;
