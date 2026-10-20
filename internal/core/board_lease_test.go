@@ -59,17 +59,17 @@ func TestBoardHeldRevisionContentAndLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(blobPath(root, stray), old, old); err != nil {
+	if err := os.Chtimes(storedBlobPath(root, stray), old, old); err != nil {
 		t.Fatal(err)
 	}
 	unlease := be.Lease([]string{stray})
 	s.sweepBlobs(ctx, "plan", "board")
-	if _, err := os.Stat(blobPath(root, stray)); err != nil {
+	if _, err := os.Stat(storedBlobPath(root, stray)); err != nil {
 		t.Fatalf("the sweep removed a leased blob: %v", err)
 	}
 	unlease()
 	s.sweepBlobs(ctx, "plan", "board")
-	if _, err := os.Stat(blobPath(root, stray)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(storedBlobPath(root, stray)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("an unleased, unreferenced old blob was kept: %v", err)
 	}
 }
@@ -117,7 +117,7 @@ func TestBoardPutBlobReuseAgainstSweep(t *testing.T) {
 	data := []byte("an image reused after its rows were cleaned up")
 	h := hashBytes(data)
 	root := s.docsStoreDir("plan")
-	p := blobPath(root, h)
+	p := storedBlobPath(root, h)
 	old := time.Now().Add(-time.Hour)
 	age := func() {
 		t.Helper()
