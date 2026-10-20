@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -370,16 +371,42 @@ func (t *txn) overQuota(quota int64) (over, ok bool, err error) {
 }
 
 // walCheck truncates the log once it holds more than 64 frames, and keeps
-// retrying after a busy or failed truncation (5.4 "WAL").
+// retrying after a busy or failed truncation (5.4 "WAL"). The truncation
+// does not wait for readers: a reader outside the instance (a backup, an
+// operator's sqlite3 shell) can keep the log in use for as long as it
+// likes, and the loop answers no batch while it waits. A busy truncation is
+// retried after the next commit, the 5-second tick included.
 func (in *Instance) walCheck() {
-	db := in.db.db
+	ctx := context.Background()
+	conn, err := in.db.db.Conn(ctx)
+	if err != nil {
+		in.sd.walPending = true
+		return
+	}
+	defer conn.Close()
 	var busy, frames, done int64
-	err := db.QueryRowContext(context.Background(), `PRAGMA wal_checkpoint(NOOP)`).Scan(&busy, &frames, &done)
+	err = conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(NOOP)`).Scan(&busy, &frames, &done)
 	if err == nil && frames <= 64 && !in.sd.walPending {
 		return
 	}
-	err = db.QueryRowContext(context.Background(), `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &frames, &done)
+	if err := setBusyTimeout(ctx, conn, 0); err != nil {
+		in.sd.walPending = true
+		return
+	}
+	err = conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &frames, &done)
 	in.sd.walPending = err != nil || busy != 0
+	if err := setBusyTimeout(ctx, conn, busyTimeoutMS); err != nil {
+		// Without its busy timeout the connection would fail commits at
+		// once; database/sql replaces a connection reported bad.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+}
+
+// setBusyTimeout sets the busy timeout of one connection. Tests replace it
+// to fail the restore after a truncation.
+var setBusyTimeout = func(ctx context.Context, conn *sql.Conn, ms int) error {
+	_, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, ms))
+	return err
 }
 
 // loop is the board's single apply loop (4.6).

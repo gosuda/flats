@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/url"
 	"os"
@@ -343,9 +344,10 @@ func TestCrashPointsOfRollback(t *testing.T) {
 
 // TestWALBusyIsRetriedAndSurvivesACrash holds a reader on board.db so
 // the WAL truncation after a commit is busy (board-TECH 5.4, 14 Crashes):
-// the busy result is recorded in meta.wal_truncate and retried on every
-// later commit, a crash in that state loses nothing, and once the reader is
-// gone the next commit truncates the log.
+// the commit answers without waiting for the reader, the busy result is
+// recorded in meta.wal_truncate and retried on every later commit, a crash
+// in that state loses nothing, and once the reader is gone the next commit
+// truncates the log.
 func TestWALBusyIsRetriedAndSurvivesACrash(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)
@@ -383,7 +385,20 @@ func TestWALBusyIsRetriedAndSurvivesACrash(t *testing.T) {
 	if m := batchWithin(a, 30*time.Second, 2, ops...); m["t"] != "ack" {
 		t.Fatal(m)
 	}
-	t.Logf("a commit with a busy log answered after %v", time.Since(start))
+	// The truncation does not wait for the reader: an answer as late as the
+	// busy timeout means the commit waited for it.
+	answered := func(what string, d time.Duration) {
+		t.Helper()
+		t.Logf("%s answered after %v", what, d)
+		if d >= busyTimeoutMS*time.Millisecond*3/5 {
+			t.Fatalf("%s waited %v for the reader (busy timeout %d ms)", what, d, busyTimeoutMS)
+		}
+	}
+	answered("a commit with a busy log", time.Since(start))
+	// The truncation's busy timeout of 0 does not stay on the connection.
+	if ms := busyTimeoutOf(t, b.in); ms != busyTimeoutMS {
+		t.Fatalf("busy timeout %d ms after a busy truncation", ms)
+	}
 	pending := func(in *Instance) (bool, string) {
 		var p bool
 		var v string
@@ -411,7 +426,7 @@ func TestWALBusyIsRetriedAndSurvivesACrash(t *testing.T) {
 	if m := batchWithin(a, 30*time.Second, 3, sticky(eid(), "while busy", 0)); m["t"] != "ack" {
 		t.Fatal(m)
 	}
-	t.Logf("the next commit with a busy log answered after %v", time.Since(start))
+	answered("the next commit with a busy log", time.Since(start))
 	if p, v := pending(b.in); !p || v != "1" {
 		t.Fatalf("pending %v, meta.wal_truncate %q", p, v)
 	}
@@ -454,6 +469,75 @@ func TestWALBusyIsRetriedAndSurvivesACrash(t *testing.T) {
 	if _, v := pending(b.in); v != "" {
 		t.Fatalf("meta.wal_truncate %q after the truncation", v)
 	}
+}
+
+// TestWALTimeoutRestoreFailure: when restoring the busy timeout after a
+// truncation fails, the connection is not kept with a timeout of 0; the
+// next statement runs on a fresh connection with the 5-second timeout, and
+// commits keep working.
+func TestWALTimeoutRestoreFailure(t *testing.T) {
+	ctx := context.Background()
+	b := newTB(t)
+	a := connect(t, b.priv, map[string]any{"editor": "alice"}, nil)
+	a.snapshot()
+	path := filepath.Join(b.dir, "board", dbName)
+	u := url.URL{Scheme: "file", Path: path}
+	reader, err := sql.Open("sqlite", u.String()+"?_pragma=busy_timeout(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	rtx, err := reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rtx.Rollback()
+	var n int
+	if err := rtx.QueryRowContext(ctx, `SELECT count(*) FROM meta`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	failed := 0
+	orig := setBusyTimeout
+	setBusyTimeout = func(ctx context.Context, conn *sql.Conn, ms int) error {
+		if ms == busyTimeoutMS {
+			// Leave the connection at 0, as a failed restore would.
+			failed++
+			return errors.New("injected restore failure")
+		}
+		return orig(ctx, conn, ms)
+	}
+	defer func() { setBusyTimeout = orig }()
+	var ops []map[string]any
+	for i := 0; i < 120; i++ {
+		ops = append(ops, sticky(eid(), noise(2000, i), float64(i*210)))
+	}
+	if m := batchWithin(a, 30*time.Second, 1, ops...); m["t"] != "ack" {
+		t.Fatal(m)
+	}
+	if failed == 0 {
+		t.Fatal("the truncation did not run")
+	}
+	setBusyTimeout = orig
+	if ms := busyTimeoutOf(t, b.in); ms != busyTimeoutMS {
+		t.Fatalf("busy timeout %d ms after a failed restore", ms)
+	}
+	if m := batchWithin(a, 30*time.Second, 2, sticky(eid(), "after", 0)); m["t"] != "ack" {
+		t.Fatal(m)
+	}
+}
+
+// busyTimeoutOf reads the busy timeout of the connection the apply loop
+// uses next.
+func busyTimeoutOf(t *testing.T, in *Instance) int {
+	t.Helper()
+	var ms int
+	if err := in.do(context.Background(), func() error {
+		return in.db.db.QueryRowContext(context.Background(), `PRAGMA busy_timeout`).Scan(&ms)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return ms
 }
 
 // batchWithin is client.batch with a longer wait for the answer.
