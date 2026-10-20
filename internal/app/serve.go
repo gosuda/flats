@@ -552,7 +552,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 
 	// The scrape reads core's in-memory snapshot and the endpoint states the
 	// metrics refresh loop keeps; it never calls a provider backend.
-	h.metrics = metrics.New(metrics.Options{Source: svc, Endpoints: mgr})
+	h.metrics = metrics.New(metrics.Options{Source: svc, Endpoints: mgr, PerFlat: cfg.Metrics.PerFlat})
 	h.metrics.Start()
 
 	apiSrv := &api.Server{Svc: svc, System: h}
@@ -565,9 +565,9 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	for _, p := range mcpx.LLMsPaths {
 		mux.Handle(p, llms)
 	}
-	// Without a method in the pattern, so other methods get 405 here
-	// instead of reaching the console page.
-	mux.Handle("/metrics", h.metrics.Handler())
+	// Match every method so a hidden endpoint returns 404, and an exposed
+	// endpoint rejects unsupported methods instead of reaching the console page.
+	mux.Handle("/metrics", metricsHandler(h.metrics.Handler(), cfg.Metrics))
 	mux.Handle("/", console.Handler())
 	h.Mux = mux
 

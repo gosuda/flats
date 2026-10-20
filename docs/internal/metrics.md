@@ -350,14 +350,26 @@ histogram.
 ## `/metrics`
 
 Registered on the management mux as `/metrics` (not `GET /metrics`, which
-would send other methods to the console's `/` handler) with
-`promhttp.HandlerFor` over the private registry (`EnableOpenMetrics: true`;
-promhttp negotiates the format and gzip). The handler serves `GET` and `HEAD`
-and answers other methods 405 with `Allow: GET, HEAD`. It is reached
-through the same host guards as the rest of the mux and applies the `/api`
-browser rule from `agentRequest` (`internal/api/guard.go`): `Sec-Fetch-Site: cross-site` or `same-site`, or an
-`Origin` other than the requested host, is 403. The console page does not
-answer `/metrics`.
+would send other methods to the console's `/` handler), using the private
+registry with `promhttp.HandlerFor` (`EnableOpenMetrics: true`; promhttp
+negotiates the format and gzip). The management server's outer Host and Origin
+guards apply to every method. GET/HEAD also apply the `/api` browser rule from
+`agentRequest` (`internal/api/guard.go`), rejecting cross-site or same-site
+Fetch Metadata and an Origin other than the requested host with 403.
+
+After those guards, `metrics.enabled: false` or an access point excluded by
+`metrics.expose_on` returns 404 for every method without `Allow`. Otherwise
+GET/HEAD serve metrics and other methods return 405 with `Allow: GET, HEAD`.
+External-origin classification takes precedence over the management listener
+category even when a proxy connects over loopback. The console page does not
+answer `/metrics`. Defaults enable metrics on the management listener alone;
+see [configuration](../configuration.md#prometheus-metrics).
+
+`metrics.per_flat` defaults to false. It omits the per-flat families below,
+including live/preview/check workers and disk, without removing their labels
+or replacing identifiers. Host, aggregate and board metrics remain. Usage
+collection and persistence for Analytics and the stats API continue regardless
+of either exposure or per-flat export settings.
 
 Metric names (per-flat series carry `flat` = slug and `type`):
 
@@ -392,7 +404,7 @@ result, admitted sockets) and from core, which times every outbox import that
 recorded revisions. Label values are slugs and
 the fixed type, route, code, role, state, provider, surface and board result
 enums, and the build strings; nothing else reaches a label (spec rule 6). A host with 100
-flats exposes roughly 2500 series.
+flats exposes roughly 2500 series when per-flat metrics are enabled.
 
 ## Storage
 

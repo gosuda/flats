@@ -41,6 +41,8 @@ const EndpointInterval = 30 * time.Second
 
 // Options configure New.
 type Options struct {
+	// PerFlat opts into series labelled with a flat slug.
+	PerFlat bool
 	// Source is core's in-memory snapshot; nil exposes no per-flat or
 	// host-snapshot series.
 	Source Source
@@ -56,6 +58,7 @@ type Metrics struct {
 	src      Source
 	eps      EndpointSource
 	interval time.Duration
+	perFlat  bool
 	mgmt     managementCounts
 
 	emu       sync.Mutex
@@ -70,7 +73,10 @@ type Metrics struct {
 // New builds the registry. Call Start to begin refreshing endpoint states
 // and Close to stop.
 func New(o Options) *Metrics {
-	m := &Metrics{reg: prometheus.NewRegistry(), src: o.Source, eps: o.Endpoints, interval: o.EndpointInterval}
+	m := &Metrics{
+		reg: prometheus.NewRegistry(), src: o.Source, eps: o.Endpoints,
+		interval: o.EndpointInterval, perFlat: o.PerFlat,
+	}
 	if m.interval <= 0 {
 		m.interval = EndpointInterval
 	}

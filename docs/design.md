@@ -660,17 +660,26 @@ console's Usage section read the same days as page views
 ### Metrics
 
 `GET /metrics` answers in the Prometheus text exposition format (OpenMetrics
-when the scraper asks for it) on the loopback listener, every console domain
-and declared external console origins, never on a flat's route, a preview or
-a public provider. It is always
-on: there is no setting to turn it off, move it or change its path. It follows
-the management server's `Host` and `Origin` checks and refuses cross-site
-browser requests like `/api` ([Request guards](surfaces.md#request-guards)),
-and needs no credential. It is not access control: whoever can reach the
-console can read the metrics, including CPU, memory, response times and the
-slugs of Private and unpublished flats, so a scraper must be trusted like
-someone with console access. Scraping through a console domain is described
-in [Private and public access](networking.md#scraping-metrics).
+when the scraper asks for it). By default it is enabled only on the management
+listener and omits per-flat series. Operators can disable it, select
+`loopback`, `console` or `external` access points, and opt into per-flat series
+through [metrics configuration](configuration.md#prometheus-metrics), followed
+by a restart. Missing settings use these defaults on existing installations too.
+It is never served on a flat's route, a preview or a public provider.
+
+`loopback` names the management listener, whose bind address defaults to
+loopback; it does not restrict a deliberately configured non-loopback bind.
+Managed console domains use `console`. Declared external-origin requests use
+`external`, even when a reverse proxy connects to the management listener over
+loopback. Exposure selection adds no authentication. Existing Host, Origin and
+browser guards remain; admitted requests to a disabled or excluded endpoint
+return 404. See [Request guards](surfaces.md#request-guards).
+
+Metrics need no credential, so allow only trusted scrapers. Per-flat metrics
+include the slugs of Private and unpublished flats when enabled. Host and
+aggregate metrics remain available with per-flat metrics off. None of these
+controls change Analytics, the stats API or usage collection. See
+[Scraping metrics](networking.md#scraping-metrics).
 
 A scrape reads only values the host keeps in memory: it never wakes a sleeping
 document, starts a worker, reads SQLite, walks files or calls a network
@@ -690,7 +699,9 @@ never metrics that bundled libraries register. Labels carry only slugs, flat
 types, provider IDs and fixed enums (plus the build strings of
 `flats_build_info`), never paths, query strings, client addresses, user
 agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
-carry `flat` (the slug) and `type`.
+carry `flat` (the slug) and `type` and are omitted unless `metrics.per_flat`
+is true. This includes traffic, workers, preview/check CPU and storage; the
+host-wide board metrics remain available.
 
 | Metric | Type | Extra labels |
 | --- | --- | --- |

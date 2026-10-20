@@ -37,12 +37,16 @@ On top of that:
   `X-Flats-Client` header (the CLI and the MCP relay send one), and needs a
   same-origin `Origin` when one is present. Mutations also need
   `Sec-Fetch-Site: same-origin` and an `Origin` header.
-- **`/metrics`** answers `GET` and `HEAD`; other methods are 405 with
-  `Allow: GET, HEAD`. It
-  applies the `/api` browser rule: `Sec-Fetch-Site: cross-site` or
-  `same-site`, or an `Origin` other than the requested host, is 403. A
-  scraper sends neither header and needs no credential. It is never served on
-  a flat's route, a preview or a public provider.
+- **`/metrics`** is enabled on the management listener by default; configure
+  [`metrics.expose_on`](configuration.md#prometheus-metrics) to expose it on
+  console domains or declared external origins. Outer Host/Origin guards apply
+  to every method. GET and HEAD also apply the `/api` browser rule:
+  `Sec-Fetch-Site: cross-site` or `same-site`, or an `Origin` other than the
+  requested host, is 403. A scraper sends neither header and needs no credential. After those guards,
+  a disabled or excluded endpoint returns 404 for every method, without
+  `Allow`. Otherwise GET and HEAD serve metrics; other methods are 405 with
+  `Allow: GET, HEAD`. It is never served on a flat's route, a preview or a
+  public provider.
 - **NetBird console domains and declared HTTP external origins** are plain HTTP, where browsers send no Fetch
   Metadata. Only their handlers mark requests as plain-HTTP console requests;
   on those, a mutation without `Sec-Fetch-Site` is accepted when `Origin` is
@@ -55,10 +59,11 @@ On top of that:
 These checks are CSRF protection, not authentication: a local process that
 sends the same headers to the loopback listener can act as the console,
 including deciding approvals. A separate operator credential is an open design
-item. Likewise whoever can reach the console can read `/metrics`, which shows
-what no other route does (CPU, memory and response times, and the slugs of
-Private and unpublished flats): trust a system that scrapes it like someone
-with console access.
+item. Whoever can reach an enabled metrics endpoint can read its host and
+aggregate figures. Per-flat series, including Private and unpublished slugs,
+require `metrics.per_flat: true`. Allow only trusted scrapers. Selecting
+`loopback` means the management listener, not caller authentication or a source
+address filter; a non-loopback management bind remains reachable there.
 
 The approver recorded with a decision is the tailnet login on a Tailscale
 console domain, `netbird:<peer FQDN>` on a NetBird console domain, and none on

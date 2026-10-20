@@ -148,6 +148,9 @@ written; `flats config unset KEY` removes it.
 | `host.management_addr` | `127.0.0.1:7878` | restart |
 | `host.local_addr` | `127.0.0.1:7879` | restart |
 | `host.server_runtime` | `true` | restart |
+| `metrics.enabled` | `true` | restart |
+| `metrics.expose_on` | `["loopback"]`; unique entries from `loopback`, `console`, `external`; `[]` exposes nowhere | restart |
+| `metrics.per_flat` | `false`; opt in to per-flat Prometheus series | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
 | `network.default_private` | `""` (follow `private_backend`) | immediately, for flats created afterwards |
@@ -363,6 +366,68 @@ served, such as one being deleted) names the preferred console,
 - When the console is deleted through the domain it is open on, the page
   moves to the preferred domain if it is ready, else to the first ready one
   in the same order.
+
+### Prometheus metrics
+
+Metrics are enabled by default on the management listener, with per-flat
+Prometheus series omitted. The defaults apply to existing installations when
+these new keys are absent, without a schema version change or migration:
+
+```json
+{
+  "metrics": {
+    "enabled": true,
+    "expose_on": ["loopback"],
+    "per_flat": false
+  }
+}
+```
+
+`expose_on` accepts a unique list of `loopback` (the management listener),
+`console` (managed Tailscale and NetBird console domains), and `external`
+(requests through `console.external_origins`). An external-origin request
+remains external when its reverse proxy connects over loopback. Unknown names,
+duplicates and values that are not lists are invalid. `[]` exposes nowhere.
+`loopback` names the listener category; changing `host.management_addr` to a
+non-loopback address also changes where that listener can be reached.
+
+With `enabled: false`, or on an excluded access point, admitted requests
+return 404 without `Allow`. Existing Host and Origin guards still reject
+invalid requests with 403, and GET/HEAD still reject cross-site browser
+requests with 403. An enabled, selected endpoint serves GET/HEAD and returns
+405 with `Allow: GET, HEAD` for other methods. These settings add no
+authentication and do not change the endpoint path or port.
+
+`per_flat: false` omits every per-flat Prometheus series, including request,
+worker, preview/check CPU and storage series. Host process figures, aggregate
+flat and network counts, management requests and host-wide board metrics
+remain. `per_flat: true` exports the existing series with flat slugs, including
+Private and unpublished flats. Analytics, its stats API and usage collection
+continue with either setting, even when Prometheus metrics are disabled.
+
+Stop the host, use `flats config set` or edit `config.json`, then restart it.
+For example, these offline commands enable console-domain scraping and per-flat
+series:
+
+```sh
+flats config set metrics.expose_on loopback,console
+flats config set metrics.per_flat true
+```
+
+To retain the exposure and per-flat series from before these controls were
+introduced, explicitly set:
+
+```json
+{
+  "metrics": {
+    "enabled": true,
+    "expose_on": ["loopback", "console", "external"],
+    "per_flat": true
+  }
+}
+```
+
+See [Scraping metrics](networking.md#scraping-metrics) for scraper setup.
 
 ### Operator keys
 

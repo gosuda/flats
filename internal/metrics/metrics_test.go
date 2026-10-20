@@ -114,7 +114,7 @@ func newTest(t *testing.T) (*Metrics, *fakeSource, *fakeEndpoints) {
 		{Provider: provider.Portal, State: "other", N: 1},
 		{Provider: "https://not-a-provider", State: "ready", N: 7},
 	}}
-	m := New(Options{Source: src, Endpoints: eps})
+	m := New(Options{Source: src, Endpoints: eps, PerFlat: true})
 	t.Cleanup(m.Close)
 	return m, src, eps
 }
@@ -536,5 +536,51 @@ func TestFlatWithoutTrafficShowsDiskOnly(t *testing.T) {
 		if string(s.Metric["flat"]) == "moving" && !strings.HasPrefix(name, "flats_disk_") {
 			t.Errorf("unexpected series %s for a flat without live state", s.Metric)
 		}
+	}
+}
+
+func TestPerFlatMetricsOptIn(t *testing.T) {
+	perFlatFamilies := []string{
+		"flats_requests_total", "flats_rate_limited_total", "flats_response_bytes_total",
+		"flats_open_streams", "flats_request_duration_seconds", "flats_worker_cpu_seconds_total",
+		"flats_worker_memory_bytes", "flats_worker_memory_sampled_timestamp_seconds",
+		"flats_worker_state", "flats_worker_unexpected_exits_total", "flats_disk_bytes",
+		"flats_disk_measured_timestamp_seconds",
+	}
+	for _, enabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			src := &fakeSource{snap: testSnapshot()}
+			eps := &fakeEndpoints{counts: []provider.EndpointCount{{Provider: provider.Local, State: "ready", N: 2}}}
+			m := New(Options{Source: src, Endpoints: eps, PerFlat: enabled})
+			defer m.Close()
+			m.RefreshEndpoints()
+			families, err := m.Registry().Gather()
+			if err != nil {
+				t.Fatal(err)
+			}
+			present := map[string]bool{}
+			for _, family := range families {
+				present[family.GetName()] = true
+				if !enabled {
+					for _, metric := range family.Metric {
+						for _, label := range metric.Label {
+							if label.GetName() == "flat" {
+								t.Errorf("flat label in %s", family.GetName())
+							}
+						}
+					}
+				}
+			}
+			for _, name := range perFlatFamilies {
+				if present[name] != enabled {
+					t.Errorf("%s present=%v, per_flat=%v", name, present[name], enabled)
+				}
+			}
+			for _, name := range []string{"flats_build_info", "go_goroutines", "process_cpu_seconds_total", "flats_db_bytes", "flats_flats", "flats_pending_approvals", "flats_snapshot_timestamp_seconds", "flats_route_endpoints", "flats_management_requests_total", "flats_board_batches_total", "flats_board_connections", "flats_board_import_seconds"} {
+				if !present[name] {
+					t.Errorf("host or aggregate family %s omitted", name)
+				}
+			}
+		})
 	}
 }

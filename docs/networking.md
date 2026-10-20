@@ -109,20 +109,26 @@ and can make forwarded callers look like local clients; do not use that setup.
 The origin setting does not provide TLS, DNS, tunneling or authentication.
 Configure those at the proxy, require authentication (or restrict access to
 a trusted network), and prevent direct untrusted access to the upstream.
-All management routes are exposed, including approval, settings and `/metrics` routes;
-there is no agent-only mode. See [external-origin configuration](configuration.md#external-origins-behind-a-reverse-proxy)
+All management routes are exposed, including approvals and settings; `/metrics`
+requires `external` in `metrics.expose_on`.
+There is no agent-only mode. See [external-origin configuration](configuration.md#external-origins-behind-a-reverse-proxy)
 for validation and live-update behavior. The default empty list preserves
 existing loopback and provider-domain behavior.
 
 ## Scraping metrics
 
 The host serves [`/metrics`](design.md#metrics) in the Prometheus text format
-on the loopback listener, every console domain and declared external origins.
-Protect external scrapes with the same proxy authentication or private network
-as the console. A scraper on the host
-itself uses `http://127.0.0.1:7878/metrics` (`host.management_addr`); one on
-another machine uses a console domain, such as
-`https://NAME.<tailnet>.ts.net/metrics` or `http://NAME.<NetBird domain>/metrics`:
+on the management listener by default. A scraper on the host uses
+`http://127.0.0.1:7878/metrics` (`host.management_addr`). `loopback` in
+`metrics.expose_on` names that listener; it does not restrict a management
+address deliberately bound beyond loopback.
+
+For a scraper on another machine, add `console` to `metrics.expose_on` and use
+a managed console domain, such as `https://NAME.<tailnet>.ts.net/metrics` or
+`http://NAME.<NetBird domain>/metrics`. For a reverse proxy's declared external
+origin, add `external` instead. A proxy connection over loopback still counts
+as external. Change these [configuration keys](configuration.md#prometheus-metrics)
+offline and restart the host. For example, after selecting `console`:
 
 ```yaml
 scrape_configs:
@@ -134,11 +140,19 @@ scrape_configs:
 
 The request's `Host` must be that console domain (scrapers send the target's
 name by default); a flat's address, a preview or a public route does not serve
-`/metrics`. Access is the same as access to the console there: tailnet ACLs or
-NetBird access policies decide which devices reach it, and Flats asks for no
-credential. The metrics include CPU, memory, response times and the slugs of
-Private and unpublished flats, so allow only scrapers you trust like someone
-with console access.
+`/metrics`. Exposure selection adds no authentication. Tailnet ACLs, NetBird
+access policies or proxy authentication must restrict access to trusted
+scrapers. Flats asks for no credential and retains its Host, Origin and
+cross-site browser guards. Admitted requests through an unselected access
+point, or with `metrics.enabled: false`, return 404.
+
+Per-flat request, worker and storage series are off by default. Set
+`metrics.per_flat: true` to export them, including Private and unpublished
+flat slugs. Host and aggregate metrics remain available without them.
+Analytics and the stats API keep collecting and returning usage with either
+setting. These defaults apply to upgrades too; the
+[configuration reference](configuration.md#prometheus-metrics) shows how to
+retain the previous exposure and per-flat series.
 
 An example Grafana dashboard for these metrics, with import steps, is in
 [examples/grafana](../examples/grafana/README.md).

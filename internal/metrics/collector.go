@@ -161,6 +161,10 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		gauge(descFlats, float64(n), k.typ, k.vis, k.running)
 	}
 
+	if !c.m.perFlat {
+		return
+	}
+
 	seen := map[string]bool{}
 	for _, f := range snap.Flats {
 		if slug.Validate(f.Slug) != nil || seen[f.Slug] {

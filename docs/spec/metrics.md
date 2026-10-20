@@ -20,19 +20,76 @@ Page views stay as they are. Usage adds to them; it does not replace them.
 ## Host metrics
 
 1. `GET /metrics` answers in the Prometheus text exposition format on the
-   management server: the loopback listener, every console domain and declared
-   external console origins. It is
-   never served on a flat's route, a preview or a public provider.
+   management server where `metrics.enabled` and `metrics.expose_on` allow it.
+   It is never served on a flat's route, a preview or a public provider.
 2. It is read-only and needs no new credential. It follows the existing
    request guards of the management server (the `Host` and `Origin` checks,
-   and the refusal of cross-site browser requests that `/api` applies). Like
-   the rest of the management server it is not access control: whoever can
-   reach the console can read the metrics. They include what no other route
-   shows, such as CPU, memory and response times, and the slugs of Private
-   and unpublished flats; a system that scrapes them must be trusted like
-   someone with console access.
-3. It is always on. There is no setting to turn it on, change its path or
-   move it to another port.
+   and the refusal of cross-site browser requests that `/api` applies).
+   Selecting where metrics are exposed does not add authentication. Whoever
+   can reach an enabled endpoint and pass those guards can read it. Host
+   figures include CPU, memory and response times; opting into per-flat
+   metrics also exposes the slugs of Private and unpublished flats. A system
+   that scrapes them must be trusted like someone with console access.
+3. The configuration has three independent controls:
+   - `metrics.enabled` is a boolean, default `true`. When `false`, otherwise
+     valid requests to `/metrics` return 404 on every access point.
+   - `metrics.expose_on` is a list of unique values chosen from `loopback`,
+     `console` and `external`, default `["loopback"]`. Unknown values,
+     duplicates and non-list values are configuration errors. An empty list
+     is valid and exposes the endpoint nowhere. Otherwise valid requests
+     through an access point absent from the list return 404.
+   - `metrics.per_flat` is a boolean, default `false`. When `false`, the
+     endpoint omits every per-flat Prometheus series described in rule 5,
+     including traffic, live/preview/validation workers and storage. It does
+     not remove only their labels or substitute identifiers. Host-wide
+     metrics, aggregate flat counts, network counts, management request
+     counts and host-wide board metrics remain available. When `true`, the per-flat series include the
+     existing slug and type labels.
+
+   `loopback` means the management listener, whose default bind address is
+   loopback; it does not filter by a caller's source address or override a
+   deliberately configured non-loopback management bind. `console` means
+   managed console domains, including Tailscale and NetBird. `external`
+   means requests admitted through `console.external_origins`, including a
+   reverse proxy connected to the management listener over loopback. A
+   declared external-origin request is classified as `external` before
+   `loopback`; its proxy connection does not grant loopback exposure.
+
+   Requests follow this response order:
+   1. The management server's outer Host and Origin checks reject invalid
+      requests with 403, for every method and exposure setting.
+   2. GET and HEAD apply the existing `/api` browser rule. Cross-site or
+      same-site Fetch Metadata, or an Origin other than the requested host,
+      returns 403 even when metrics are disabled or excluded.
+   3. If metrics are disabled or this access point is excluded, every
+      remaining method returns 404 without an `Allow` header, including POST.
+   4. Otherwise GET and HEAD serve metrics normally. Other methods return
+      405 with `Allow: GET, HEAD`.
+
+   The endpoint's path and port are unchanged.
+
+   Operators set these keys through the existing offline configuration CLI
+   or `config.json` and restart the host. There is no new console setting or
+   online configuration API. Missing keys use these defaults on both new
+   and existing installations, deliberately reducing previous exposure and
+   omitting per-flat series. An upgrade does not preserve the old behavior
+   automatically. These are new configuration keys; they require no schema
+   version change or migration. To retain the previous behavior, an operator
+   explicitly configures:
+
+   ```json
+   {
+     "metrics": {
+       "enabled": true,
+       "expose_on": ["loopback", "console", "external"],
+       "per_flat": true
+     }
+   }
+   ```
+
+   These settings govern only Prometheus exposure. Analytics, the stats API,
+   and usage collection, sampling, persistence and retention continue
+   unchanged, even when the endpoint is disabled or per-flat series are off.
 4. A scrape never wakes a sleeping document, starts a worker, reads SQLite,
    walks a flat's files, or calls a network provider. It reads values the host
    already keeps in memory; its cost grows with the number of flats, not with
@@ -47,13 +104,15 @@ Page views stay as they are. Usage adds to them; it does not replace them.
    - flats: how many exist by type, visibility and whether they are running
      (running keeps its console meaning: a live document is running even
      while its worker sleeps);
-   - traffic per flat: requests by status class and by route kind (private,
-     public), requests refused by the rate limit, response bytes, open
-     WebSocket and event-stream connections, and a response-time histogram;
-   - workers per flat: CPU time, current memory, worker state and unexpected
-     exits; and CPU of the flat's preview and validation workers, separately
-     from its live usage;
-   - storage per flat: disk bytes and when they were measured, for every flat;
+   - when `metrics.per_flat` is true, traffic per flat: requests by status
+     class and by route kind (private, public), requests refused by the rate
+     limit, response bytes, open WebSocket and event-stream connections,
+     and a response-time histogram;
+   - when `metrics.per_flat` is true, workers per flat: CPU time, current
+     memory, worker state and unexpected exits; and CPU of the flat's
+     preview and validation workers, separately from its live usage;
+   - when `metrics.per_flat` is true, storage per flat: disk bytes and when
+     they were measured, for every flat;
    - networks: route endpoints per provider and state (ready, starting,
      error and so on);
    - the management server: requests by surface (`api`, `console`, `mcp`,
@@ -61,8 +120,9 @@ Page views stay as they are. Usage adds to them; it does not replace them.
    - pending approvals.
 6. Labels never carry request paths, query strings, client addresses, user
    agents, tailnet or NetBird identities, URLs or domain names. A flat is
-   labelled by its slug and type, a network by its provider ID. Every label
-   has a bounded set of values.
+   labelled by its slug and type only when per-flat metrics are enabled; a
+   network is labelled by its provider ID. Every label has a bounded set of
+   values.
 7. Counters start at zero when the host starts, as Prometheus expects. After a
    rename, a flat's series continue under its new slug; a deleted flat's
    series disappear.
@@ -92,8 +152,8 @@ Page views stay as they are. Usage adds to them; it does not replace them.
     memory are not measured separately, rather than showing zero.
     - A flat's usage covers the workers that serve its live route, including
       an older version still finishing its requests after a switch. Preview
-      and validation workers are not part of it; host metrics count their CPU
-      separately.
+      and validation workers are not part of it; when `metrics.per_flat` is
+      true, Prometheus metrics count their CPU separately.
     - CPU is the total processor time (user and system) that those workers
       used, including workers that later stopped, restarted or went to sleep.
     - Memory is the private resident memory those workers hold now,
@@ -135,6 +195,21 @@ Page views stay as they are. Usage adds to them; it does not replace them.
 - An MCP tool for usage. Agents and the CLI read it through
   `GET /api/flats/{slug}/stats`; the console through the same route under
   `/console/api`.
+
+## Verification
+
+Tests cover omitted defaults, explicit opt-in to previous behavior, disabled
+metrics and each selected or excluded access point, including an empty list.
+Configuration tests reject invalid types, unknown exposure names and duplicate
+entries. Routing tests cover Host and Origin rejection for every method,
+cross-site GET and HEAD rejection even when metrics are disabled or excluded,
+and admitted POST requests returning 404 without `Allow` when disabled or
+excluded, or 405 with `Allow: GET, HEAD` when enabled and selected. They also
+verify that an external-origin proxy request cannot obtain loopback exposure.
+Scrape tests distinguish host and aggregate metrics from every per-flat family,
+including preview and validation workers. Analytics and stats tests verify that
+requests and worker usage still reach the stats API with metrics disabled and
+with per-flat metrics off. Scrapes continue to read cached memory only.
 
 ## Open questions
 

@@ -71,7 +71,7 @@ type spec struct {
 }
 
 // sections lists the top-level objects in file order.
-var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "console", "credentials"}
+var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "console", "metrics", "credentials"}
 
 // specs lists every key in file order. The defaults are frozen.
 var specs = []spec{
@@ -146,6 +146,12 @@ var specs = []spec{
 	// with a warning (PreferredHostProblem), not refused.
 	{key: "console.preferred_host", kind: kindString, def: "", check: checkPreferredHost,
 		hint: preferredHostHint},
+	{key: "metrics.enabled", kind: kindBool, def: true,
+		hint: "use true or false"},
+	{key: "metrics.expose_on", kind: kindList, def: []string{"loopback"}, check: checkMetricsExposeOn,
+		hint: `list "loopback", "console" and "external" once each, or [] to expose metrics nowhere`},
+	{key: "metrics.per_flat", kind: kindBool, def: false,
+		hint: "use true or false"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
 	// Read once at start into flats.db, then removed from the file.
@@ -505,6 +511,28 @@ func checkPermitted(v any) (any, error) {
 	return out, nil
 }
 
+// checkMetricsExposeOn returns the selected access points in canonical order.
+func checkMetricsExposeOn(v any) (any, error) {
+	choices := []string{"loopback", "console", "external"}
+	list := v.([]string)
+	for i, name := range list {
+		path := fmt.Sprintf("metrics.expose_on[%d]", i)
+		if !slices.Contains(choices, name) {
+			return nil, fieldErr(path, `use "loopback", "console" or "external"`, "unknown access point %q", name)
+		}
+		if slices.Contains(list[:i], name) {
+			return nil, fieldErr(path, "list each access point once", "duplicate access point %q", name)
+		}
+	}
+	out := []string{}
+	for _, name := range choices {
+		if slices.Contains(list, name) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
 // ConsoleHostRE is a lowercase DNS label, the tailnet host names tsnet
 // accepts.
 var ConsoleHostRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -667,6 +695,7 @@ type Config struct {
 	Zrok          ZrokConfig
 	Netbird       NetbirdConfig
 	Console       ConsoleConfig
+	Metrics       MetricsConfig
 	Credentials   CredentialsConfig
 
 	values  map[string]any
@@ -744,6 +773,13 @@ type ConsoleConfig struct {
 	// "tailscale:NAME" or "netbird:NAME". Use Preferred for the value in
 	// effect, which ignores a NAME not in its list.
 	PreferredHost string
+}
+
+// MetricsConfig controls Prometheus exposure, independently of usage collection.
+type MetricsConfig struct {
+	Enabled  bool
+	ExposeOn []string
+	PerFlat  bool
 }
 
 // Preferred returns the console address links prefer when they cannot
@@ -882,6 +918,9 @@ func (c *Config) fill() error {
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
 	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
 	c.Console = ConsoleConfig{PreferredHost: str(PreferredHostKey), ExternalOrigins: list(ExternalOriginsKey)}
+	c.Metrics = MetricsConfig{
+		Enabled: flag("metrics.enabled"), ExposeOn: list("metrics.expose_on"), PerFlat: flag("metrics.per_flat"),
+	}
 	c.Credentials = CredentialsConfig{str("credentials.operator_file"), str("credentials.tailscale_authkey_file")}
 
 	var errs []error

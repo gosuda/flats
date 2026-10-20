@@ -172,7 +172,7 @@ func TestExternalOriginsOnlyConsoleSettings(t *testing.T) {
 
 // Metrics wrapping must retain external-origin admission and count refusals.
 func TestExternalOriginMetrics(t *testing.T) {
-	h, client := consoleHost(t)
+	h, client := metricsHost(t, map[string]string{"metrics.expose_on": "external"})
 	if _, err := h.Svc.UpdateSettings(context.Background(), map[string]string{core.SetExternalOrigins: "https://metrics.example.org"}); err != nil {
 		t.Fatal(err)
 	}
