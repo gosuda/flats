@@ -114,6 +114,12 @@ func (s *Service) lifecycleNet() (LifecycleNet, bool) {
 	return nil, false
 }
 
+// providerKeyWhat names what a changed providerKey means in a stale
+// approval: the flat's provider permissions, or the host's network
+// configuration that ExposurePolicy covers (such as the reverse proxy
+// template and kind, or the zrok and NetBird accounts).
+const providerKeyWhat = "provider permissions or network configuration"
+
 func (s *Service) providerKey(ctx context.Context, slugName string) (string, error) {
 	ps, err := s.st.PermittedProviders(ctx, slugName)
 	if err != nil {
@@ -740,7 +746,7 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 		return ActionResult{}, err
 	}
 	if providers != p.Providers {
-		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
+		return ActionResult{}, mismatch(p.Providers, providers, providerKeyWhat)
 	}
 	draft, err := s.st.GetDraft(ctx, a.Flat)
 	if err != nil {
@@ -941,7 +947,7 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 		return ActionResult{}, err
 	}
 	if providers != p.Providers {
-		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
+		return ActionResult{}, mismatch(p.Providers, providers, providerKeyWhat)
 	}
 	v, err := s.st.GetVersion(ctx, a.Flat, p.Version)
 	if err != nil {
@@ -992,7 +998,7 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 		return ActionResult{}, err
 	}
 	if providers != p.Providers {
-		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
+		return ActionResult{}, mismatch(p.Providers, providers, providerKeyWhat)
 	}
 	v, err := s.st.GetVersion(ctx, a.Flat, p.Version)
 	if err != nil {
@@ -1096,7 +1102,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{}, err
 	}
 	if providers != p.Providers {
-		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
+		return ActionResult{}, mismatch(p.Providers, providers, providerKeyWhat)
 	}
 	if f.Visibility.Canonical() == target && f.PublicAccess == access {
 		res := ActionResult{Status: "done", Message: "visibility unchanged"}

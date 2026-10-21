@@ -151,7 +151,7 @@ func (s *Service) applyDeleteVersionApproval(ctx context.Context, a store.Approv
 		return ActionResult{}, err
 	}
 	if providers != p.Providers {
-		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
+		return ActionResult{}, mismatch(p.Providers, providers, providerKeyWhat)
 	}
 	v, err := s.st.GetVersion(ctx, a.Flat, p.Version)
 	if err != nil {

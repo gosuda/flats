@@ -354,7 +354,8 @@ func TestProxyApprovalPolicy(t *testing.T) {
 	if _, err := h.Svc.UpdateSettings(ctx, map[string]string{core.SetProxyTemplate: "https://{host}.other.example.org"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Svc.Decide(ctx, stale, true); !errors.Is(err, core.ErrStaleApproval) {
+	if _, err := h.Svc.Decide(ctx, stale, true); !errors.Is(err, core.ErrStaleApproval) ||
+		!strings.Contains(err.Error(), "provider permissions or network configuration changed after the request") {
 		t.Fatalf("approval after a template change: %v", err)
 	}
 	kept := request(h.Svc, "addr")
