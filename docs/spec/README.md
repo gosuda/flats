@@ -34,7 +34,7 @@ list.
 | [NetBird peers](netbird-peers.md) | implemented | One NetBird peer per flat and console domain, the stored setup key, NetBird console domains over HTTP |
 | [Agent self-update](agent-self-update.md) | implemented | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
 | [Fast worker cold start](worker-cold-start.md) | implemented | Pre-started worker process and saved document images so workers and sleeping documents answer within 50 ms |
-| [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, opt-in per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
+| [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, optional per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
 
 ## Where the technical designs live
 

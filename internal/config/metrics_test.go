@@ -9,6 +9,9 @@ import (
 )
 
 func TestMetricsDefaults(t *testing.T) {
+	if value, ok := Default("metrics.per_flat"); !ok || value != true {
+		t.Fatalf("Default(metrics.per_flat) = %v, %t; want true", value, ok)
+	}
 	for version := 1; version <= CurrentSchemaVersion; version++ {
 		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
 			raw := strings.Replace(fileWith(), fmt.Sprintf(`"schema_version": %d`, CurrentSchemaVersion),
@@ -24,8 +27,8 @@ func TestMetricsDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !cfg.Metrics.Enabled || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) || cfg.Metrics.PerFlat {
-				t.Fatalf("Metrics = %+v, want enabled, localhost only and no per-flat series", cfg.Metrics)
+			if !cfg.Metrics.Enabled || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) || !cfg.Metrics.PerFlat {
+				t.Fatalf("Metrics = %+v, want enabled, localhost only and per-flat series", cfg.Metrics)
 			}
 			for _, key := range []string{"metrics.enabled", "metrics.expose_on", "metrics.per_flat"} {
 				if _, present := loaded.Doc.Stored(key); present {
@@ -37,6 +40,56 @@ func TestMetricsDefaults(t *testing.T) {
 			}
 			if bytes.Contains(loaded.Doc.Encode(), []byte(`"metrics"`)) {
 				t.Fatal("defaults added metrics to sparse document")
+			}
+		})
+	}
+}
+
+func TestMetricsExplicitPerFlatFalseAcrossSchemas(t *testing.T) {
+	for version := 1; version <= CurrentSchemaVersion; version++ {
+		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
+			raw := strings.Replace(fileWith("metrics", `"per_flat":false`),
+				fmt.Sprintf(`"schema_version": %d`, CurrentSchemaVersion),
+				fmt.Sprintf(`"schema_version": %d`, version), 1)
+			loaded, err := Parse([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.FileVersion != version {
+				t.Fatalf("FileVersion = %d, want %d", loaded.FileVersion, version)
+			}
+			cfg, err := loaded.Doc.Effective(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, source, ok := cfg.Lookup("metrics.per_flat")
+			if cfg.Metrics.PerFlat || !ok || value != false || source != SourceFile {
+				t.Fatalf("explicit false = %v, %v, %s, %t", cfg.Metrics.PerFlat, value, source, ok)
+			}
+			encoded := loaded.Doc.Encode()
+			if !bytes.Contains(encoded, []byte(`"per_flat": false`)) {
+				t.Fatalf("explicit false dropped from encoding:\n%s", encoded)
+			}
+			again, err := Parse(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(again.Doc.Encode(), encoded) {
+				t.Fatal("explicit false changed after round trip")
+			}
+			if err := again.Doc.Unset("metrics.per_flat"); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = again.Doc.Effective(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			value, source, ok = cfg.Lookup("metrics.per_flat")
+			if !cfg.Metrics.PerFlat || !ok || value != true || source != SourceDefault {
+				t.Fatalf("unset default = %v, %v, %s, %t", cfg.Metrics.PerFlat, value, source, ok)
+			}
+			if bytes.Contains(again.Doc.Encode(), []byte(`"metrics"`)) {
+				t.Fatal("Unset retained metrics section")
 			}
 		})
 	}
@@ -55,7 +108,7 @@ func TestMetricsDefaultsPreserveMigratedConsoleAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Host.ConsoleAddr != "100.64.0.7:9000" || !cfg.Metrics.Enabled || cfg.Metrics.PerFlat ||
+	if cfg.Host.ConsoleAddr != "100.64.0.7:9000" || !cfg.Metrics.Enabled || !cfg.Metrics.PerFlat ||
 		!slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
 		t.Fatalf("migrated host = %+v, metrics = %+v", cfg.Host, cfg.Metrics)
 	}
@@ -72,15 +125,16 @@ func TestMetricsParse(t *testing.T) {
 		name, members, wantPath string
 		want                    MetricsConfig
 	}{
-		{name: "empty section", want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost"}}},
+		{name: "empty section", want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost"}, PerFlat: true}},
 		{name: "previous behavior", members: `"enabled": true, "expose_on": ["external", "localhost", "console"], "per_flat": true`,
 			want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost", "console", "external"}, PerFlat: true}},
 		{name: "disabled independently", members: `"enabled": false, "per_flat": true`,
 			want: MetricsConfig{ExposeOn: []string{"localhost"}, PerFlat: true}},
-		{name: "empty exposure", members: `"expose_on": []`, want: MetricsConfig{Enabled: true, ExposeOn: []string{}}},
+		{name: "empty exposure", members: `"expose_on": []`, want: MetricsConfig{Enabled: true, ExposeOn: []string{}, PerFlat: true}},
 		{name: "enabled string", members: `"enabled": "true"`, wantPath: "metrics.enabled"},
 		{name: "enabled number", members: `"enabled": 1`, wantPath: "metrics.enabled"},
 		{name: "enabled null", members: `"enabled": null`, wantPath: "metrics.enabled"},
+		{name: "per-flat disabled explicitly", members: `"per_flat": false`, want: MetricsConfig{Enabled: true, ExposeOn: []string{"localhost"}}},
 		{name: "per-flat string", members: `"per_flat": "false"`, wantPath: "metrics.per_flat"},
 		{name: "per-flat number", members: `"per_flat": 0`, wantPath: "metrics.per_flat"},
 		{name: "per-flat null", members: `"per_flat": null`, wantPath: "metrics.per_flat"},
@@ -167,7 +221,7 @@ func TestMetricsSetRoundTripAndUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Metrics.Enabled || cfg.Metrics.PerFlat || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
+	if !cfg.Metrics.Enabled || !cfg.Metrics.PerFlat || !slices.Equal(cfg.Metrics.ExposeOn, []string{"localhost"}) {
 		t.Fatalf("Unset defaults = %+v", cfg.Metrics)
 	}
 	for _, value := range []string{"[]", ""} {

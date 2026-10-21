@@ -146,13 +146,13 @@ scrapers. Flats asks for no credential and retains its Host, Origin and
 cross-site browser guards. Admitted requests through an unselected access
 point, or with `metrics.enabled: false`, return 404.
 
-Per-flat request, worker and storage series are off by default. Set
-`metrics.per_flat: true` to export them, including Private and unpublished
-flat slugs. Host and aggregate metrics remain available without them.
+Per-flat request, worker and storage series are on by default, including
+Private and unpublished flat slugs. Set `metrics.per_flat: false` to omit
+them; host and aggregate metrics remain available.
 Analytics and the stats API keep collecting and returning usage with either
 setting. These defaults apply to upgrades too; the
 [configuration reference](configuration.md#prometheus-metrics) shows how to
-retain the previous exposure and per-flat series.
+retain the previous exposure or opt out of per-flat series.
 
 An example Grafana dashboard for these metrics, with import steps, is in
 [examples/grafana](../examples/grafana/README.md).

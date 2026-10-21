@@ -27,9 +27,10 @@ Page views stay as they are. Usage adds to them; it does not replace them.
    and the refusal of cross-site browser requests that `/api` applies).
    Selecting where metrics are exposed does not add authentication. Whoever
    can reach an enabled endpoint and pass those guards can read it. Host
-   figures include CPU, memory and response times; opting into per-flat
-   metrics also exposes the slugs of Private and unpublished flats. A system
-   that scrapes them must be trusted like someone with console access.
+   figures include CPU, memory and response times. Per-flat metrics are on
+   by default and expose the slugs of Private and unpublished flats unless
+   `metrics.per_flat` is false. A system that scrapes them must be trusted
+   like someone with console access.
 3. The configuration has three independent controls:
    - `metrics.enabled` is a boolean, default `true`. When `false`, otherwise
      valid requests to `/metrics` return 404 on every access point.
@@ -39,7 +40,7 @@ Page views stay as they are. Usage adds to them; it does not replace them.
      is valid and exposes the endpoint nowhere. The unreleased `loopback`
      spelling is rejected rather than accepted as an alias. Otherwise valid
      requests through an access point absent from the list return 404.
-   - `metrics.per_flat` is a boolean, default `false`. When `false`, the
+   - `metrics.per_flat` is a boolean, default `true`. When `false`, the
      endpoint omits every per-flat Prometheus series described in rule 5,
      including traffic, live/preview/validation workers and storage. It does
      not remove only their labels or substitute identifiers. Host-wide
@@ -47,7 +48,8 @@ Page views stay as they are. Usage adds to them; it does not replace them.
      counts and host-wide board metrics remain available. When `true`, the
      per-flat series include the existing slug and type labels. The
      unreleased `metrics.flat_metrics` key is rejected, with no alias or
-     migration. Configuration schema 5 is unchanged.
+     migration. An explicit true and an absent key export the same series.
+     Configuration schema 5 is unchanged.
 
    `localhost` means the management listener selected by `host.console_addr`,
    whose default bind address is `127.0.0.1:7878`. It does not select only the
@@ -75,22 +77,30 @@ Page views stay as they are. Usage adds to them; it does not replace them.
    Operators set these keys through the existing offline configuration CLI
    or `config.json` and restart the host. There is no new console setting or
    online configuration API. Missing keys use these defaults on both new
-   and existing installations, deliberately reducing previous exposure and
-   omitting per-flat series. An upgrade does not preserve the old behavior
-   automatically. The current configuration schema is 5 after the
-   `host.console_addr` rename. These new metrics keys and the unreleased
-   exposure-name correction require no further schema change or migration.
-   To retain the previous behavior, an operator explicitly configures:
+   and existing installations. An omitted `metrics.per_flat` exports per-flat
+   series on both new and existing sparse configurations; an explicit
+   `false` omits all those series. The default exposure remains restricted
+   to the `localhost` listener category. An upgrade does not preserve the
+   previous `expose_on` reachability automatically. The current configuration
+   schema is 5 after the `host.console_addr` rename. The metrics controls
+   are unreleased; the earlier false default for `metrics.per_flat` never
+   became a released configuration default. Released metrics include
+   per-flat series unconditionally, so the true default preserves that
+   behavior. It does not change a frozen released default or require a new
+   schema version or migration. To retain the previous exposure, an operator
+   explicitly configures:
 
    ```json
    {
      "metrics": {
        "enabled": true,
-       "expose_on": ["localhost", "console", "external"],
-       "per_flat": true
+       "expose_on": ["localhost", "console", "external"]
      }
    }
    ```
+
+   To omit per-flat series on any selected listener, explicitly set
+   `metrics.per_flat: false`.
 
    These settings govern only Prometheus exposure. Analytics, the stats API,
    and usage collection, sampling, persistence and retention continue
@@ -203,8 +213,11 @@ Page views stay as they are. Usage adds to them; it does not replace them.
 
 ## Verification
 
-Tests cover omitted defaults, explicit opt-in to previous behavior, disabled
-metrics and each selected or excluded access point, including an empty list.
+Tests cover omitted defaults in new and existing sparse schema 5
+configurations with per-flat series present, explicit `metrics.per_flat: false`
+with all per-flat families absent, explicit opt-in to previous exposure,
+disabled metrics and each selected or excluded access point, including an
+empty list.
 Configuration tests reject invalid types, unknown exposure names and duplicate
 entries. Routing tests cover Host and Origin rejection for every method,
 cross-site GET and HEAD rejection even when metrics are disabled or excluded,

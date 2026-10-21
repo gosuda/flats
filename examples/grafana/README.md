@@ -4,12 +4,11 @@
 Flats serves at `/metrics` ([Metrics](../../docs/design.md#metrics)). It was
 checked with Grafana 11.6 and Prometheus 3.5.
 
-Per-flat series are off by default. Enable `metrics.per_flat` in
+Per-flat series are on by default. If you set `metrics.per_flat: false` in
 [`config.json`](../../docs/configuration.md#prometheus-metrics) and restart the
-host for per-flat panels and Overview totals derived from those series, such
-as traffic, worker CPU/memory and crashes. Without that opt-in those panels
-have no data; host process, aggregate flat/network counts, management and
-other host metrics remain available. Scraping from another machine also needs
+host, per-flat panels and Overview totals derived from those series, such as
+traffic, worker CPU/memory and crashes, have no data. Host process, aggregate
+flat/network counts, management and other host metrics remain available. Scraping from another machine also needs
 `console` or `external` in `metrics.expose_on`, as appropriate for the route.
 
 ## Import

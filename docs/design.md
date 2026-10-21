@@ -661,9 +661,10 @@ console's Usage section read the same days as page views
 
 `GET /metrics` answers in the Prometheus text exposition format (OpenMetrics
 when the scraper asks for it). By default it is enabled only on the management
-listener and omits per-flat series. Operators can disable it, select
-`localhost`, `console` or `external` access points, and opt into per-flat series
-through [metrics configuration](configuration.md#prometheus-metrics), followed
+listener and includes per-flat series. Operators can disable it, select
+`localhost`, `console` or `external` access points, and omit per-flat series
+with `metrics.per_flat: false` through
+[metrics configuration](configuration.md#prometheus-metrics), followed
 by a restart. Missing settings use these defaults on existing installations too.
 It is never served on a flat's route, a preview or a public provider.
 
@@ -678,7 +679,7 @@ browser guards remain; admitted requests to a disabled or excluded endpoint
 return 404. See [Request guards](surfaces.md#request-guards).
 
 Metrics need no credential, so allow only trusted scrapers. Per-flat metrics
-include the slugs of Private and unpublished flats when enabled. Host and
+include the slugs of Private and unpublished flats by default. Host and
 aggregate metrics remain available with per-flat metrics off. None of these
 controls change Analytics, the stats API or usage collection. See
 [Scraping metrics](networking.md#scraping-metrics).
@@ -701,9 +702,9 @@ never metrics that bundled libraries register. Labels carry only slugs, flat
 types, provider IDs and fixed enums (plus the build strings of
 `flats_build_info`), never paths, query strings, client addresses, user
 agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
-carry `flat` (the slug) and `type` and are omitted unless `metrics.per_flat`
-is true. This includes traffic, workers, preview/check CPU and storage; the
-host-wide board metrics remain available.
+carry `flat` (the slug) and `type` and are included by default. Explicit
+`metrics.per_flat: false` omits them. This includes traffic, workers,
+preview/check CPU and storage; host-wide board metrics remain available.
 
 | Metric | Type | Extra labels |
 | --- | --- | --- |

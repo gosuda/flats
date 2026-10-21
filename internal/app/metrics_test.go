@@ -273,9 +273,25 @@ func TestMetricsHiddenGuards(t *testing.T) {
 }
 
 func TestMetricsControlsKeepAnalyticsUsage(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
-			h, client := metricsHost(t, map[string]string{"host.server_runtime": "true", "metrics.enabled": strconv.FormatBool(enabled)})
+	for _, tc := range []struct {
+		name        string
+		enabled     bool
+		explicitOff bool
+	}{
+		{name: "enabled default per-flat", enabled: true},
+		{name: "disabled default per-flat"},
+		{name: "enabled per-flat off", enabled: true, explicitOff: true},
+		{name: "disabled per-flat off", explicitOff: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := map[string]string{"host.server_runtime": "true", "metrics.enabled": strconv.FormatBool(tc.enabled)}
+			if tc.explicitOff {
+				settings["metrics.per_flat"] = "false"
+			}
+			h, client := metricsHost(t, settings)
+			if h.Config.Metrics.PerFlat != !tc.explicitOff {
+				t.Fatalf("loaded per_flat = %v, want %v", h.Config.Metrics.PerFlat, !tc.explicitOff)
+			}
 			h.workers.Env = append([]string{"FLATS_CONTENT_TEST_WORKER=1"}, testImageEnv()...)
 			h.workers.NoSpare = true
 			h.workers.UsageInterval = 10 * time.Millisecond
@@ -347,11 +363,17 @@ func TestMetricsControlsKeepAnalyticsUsage(t *testing.T) {
 				}
 			}
 			code, body := fetch(t, "http://"+h.Addr()+"/metrics")
-			if !enabled && code != 404 {
+			if !tc.enabled && code != http.StatusNotFound {
 				t.Errorf("disabled metrics=%d", code)
 			}
-			if enabled && (code != 200 || strings.Contains(body, `flat="analytics"`)) {
-				t.Errorf("default per-flat scrape: %d %.200s", code, body)
+			if tc.enabled {
+				if code != http.StatusOK {
+					t.Fatalf("metrics=%d %.200s", code, body)
+				}
+				present := strings.Contains(body, `flat="analytics"`)
+				if present != !tc.explicitOff {
+					t.Errorf("per-flat series present=%v, want %v", present, !tc.explicitOff)
+				}
 			}
 		})
 	}

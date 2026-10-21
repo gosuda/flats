@@ -150,7 +150,7 @@ var specs = []spec{
 		hint: "use true or false"},
 	{key: "metrics.expose_on", kind: kindList, def: []string{"localhost"}, check: checkMetricsExposeOn,
 		hint: `list "localhost", "console" and "external" once each, or [] to expose metrics nowhere`},
-	{key: "metrics.per_flat", kind: kindBool, def: false,
+	{key: "metrics.per_flat", kind: kindBool, def: true,
 		hint: "use true or false"},
 	{key: "credentials.operator_file", kind: kindString, check: checkAbsPath,
 		hint: "use an absolute path, or unset the key to turn console approval off"},
