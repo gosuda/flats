@@ -80,7 +80,10 @@ func colorOf(key string) string {
 // labels of the editors on the board and the viewers' numbers (TECH public
 // edit 3.3, 3.4).
 type hub struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	// all holds every accepted socket, welcomed or not, so closeAll reaches
+	// it; conns holds the welcomed ones (register).
+	all    map[*conn]struct{}
 	conns  map[*conn]struct{}
 	keys   map[string]int // joined sockets per editor key, members and guests
 	labels map[string]int // editor key -> N of its label p:N, while it has a socket
@@ -97,6 +100,9 @@ type hub struct {
 	departing map[int]bool
 	// counts for PublicPresence, which must not wait for mu
 	guestsNow, viewersNow atomic.Int64
+	// stopped is set by closeAll with its fatal code.
+	stopped  bool
+	stopCode string
 }
 
 type viewerToken struct {
@@ -109,8 +115,11 @@ type viewerToken struct {
 // after its socket closed (spec rule 9). Tests shorten it.
 var viewerHold = time.Minute
 
+// registerHook, when a test sets it, runs at the start of each register.
+var registerHook atomic.Pointer[func()]
+
 func newHub() *hub {
-	return &hub{conns: map[*conn]struct{}{}, keys: map[string]int{}, labels: map[string]int{},
+	return &hub{all: map[*conn]struct{}{}, conns: map[*conn]struct{}{}, keys: map[string]int{}, labels: map[string]int{},
 		viewers: map[*conn]int{}, tokens: map[string]*viewerToken{}, departing: map[int]bool{}}
 }
 
@@ -184,6 +193,7 @@ func (h *hub) leave(c *conn) (lastOfKey bool) {
 	if c.guestSlot {
 		h.guests--
 	}
+	delete(h.all, c)
 	if _, ok := h.conns[c]; ok {
 		delete(h.conns, c)
 		if c.guest {
@@ -256,7 +266,23 @@ func (h *hub) viewerNumber(c *conn, token string) {
 	c.viewerToken, c.viewerN = token, t.n
 }
 
+// accept adds a new socket before its hello. On a stopped board it is
+// stopped at once instead, as closeAll would have.
+func (h *hub) accept(c *conn) {
+	h.mu.Lock()
+	h.all[c] = struct{}{}
+	stopped, code := h.stopped, h.stopCode
+	h.mu.Unlock()
+	if stopped {
+		stopConn(c, code)
+	}
+}
+
+// register adds a welcomed socket.
 func (h *hub) register(c *conn) {
+	if f := registerHook.Load(); f != nil {
+		(*f)()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.conns[c] = struct{}{}
@@ -297,20 +323,30 @@ func (h *hub) privateCount() int {
 	return h.priv
 }
 
+// closeAll stops every accepted socket, welcomed or still in its welcome,
+// with the fatal code. It runs before Shutdown cancels the requests, whose
+// sockets then close without one.
 func (h *hub) closeAll(code string) {
 	h.mu.Lock()
-	all := make([]*conn, 0, len(h.conns))
-	for c := range h.conns {
+	h.stopped, h.stopCode = true, code
+	all := make([]*conn, 0, len(h.all))
+	for c := range h.all {
 		all = append(all, c)
 	}
 	h.mu.Unlock()
 	for _, c := range all {
-		if code != "" {
-			b, _ := json.Marshal(map[string]string{"t": "fatal", "code": code})
-			_ = c.ws.Send(string(b))
-		}
-		c.ws.Close(1000, "board stopped")
+		stopConn(c, code)
 	}
+}
+
+// stopConn sends a stopping board's fatal code, if any, and closes the
+// socket.
+func stopConn(c *conn, code string) {
+	if code != "" {
+		b, _ := json.Marshal(map[string]string{"t": "fatal", "code": code})
+		_ = c.ws.Send(string(b))
+	}
+	c.ws.Close(1000, "board stopped")
 }
 
 // conn is one WebSocket of the board. A Public socket (public) is a
@@ -1151,6 +1187,7 @@ func (in *Instance) serveWS(w http.ResponseWriter, r *http.Request) {
 		in: in, ws: ws, public: public, wake: make(chan struct{}, 1),
 		batches: rate{perSec: 30, burst: 60}, pres: rate{perSec: 20, burst: 20},
 	}
+	in.hub.accept(c)
 	stop := context.AfterFunc(r.Context(), func() { ws.Close(1001, "going away") })
 	defer stop()
 	pumped := make(chan struct{})
