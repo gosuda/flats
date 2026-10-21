@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
@@ -265,5 +266,100 @@ func TestProxyDefaultsForNewFlats(t *testing.T) {
 				t.Fatalf("DefaultProviders = %q, %q", private, public)
 			}
 		})
+	}
+}
+
+// The proxy listener reads the template on every request, URL and policy
+// call; none of them waits for a settings save in progress.
+func TestProxyTemplateReadsDoNotWaitForSaves(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	doc, err := config.New(config.NewInstanceID(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Set(config.ProxyTemplateKey, proxyTemplate); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	src, err := core.NewSettingsSource(doc, &core.SettingsFile{Mode: "config", Hash: "h0", Save: func(_ string, apply func(*config.Document) error) (string, error) {
+		close(entered)
+		<-release
+		return "h1", apply(doc.Clone())
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Settings: src, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	template := func() config.Template { return src.Proxy().Template }
+	n, err := proxy.Listen("127.0.0.1:0", template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	if _, err := n.Serve(ctx, "blog", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("blog")) })); err != nil {
+		t.Fatal(err)
+	}
+	loop, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loop.Close()
+	mgr, err := provider.New(filepath.Join(dir, "providers"), provider.Options{Local: loop, Proxy: n,
+		ProxyTemplate: func() string { return template().String() }, Grants: &provider.File{Permitted: []provider.ID{provider.Proxy}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved := make(chan error, 1)
+	go func() {
+		_, err := svc.UpdateSettings(ctx, map[string]string{core.SetUploadMaxBytes: "4096"})
+		saved <- err
+	}()
+	<-entered
+	done := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+n.Addr()+"/", nil)
+		req.Host = "blog.site.example.org"
+		res, err := http.DefaultClient.Do(req)
+		if err == nil {
+			res.Body.Close()
+			if res.StatusCode != 200 {
+				err = errors.New(res.Status)
+			}
+		}
+		if err == nil && n.URL("blog") != "https://blog.site.example.org" {
+			err = errors.New("URL " + n.URL("blog"))
+		}
+		if err == nil {
+			_, err = mgr.ExposurePolicy(ctx)
+		}
+		done <- err
+	}()
+	waited := false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(10 * time.Second):
+		waited = true
+		t.Error("reading the template waited for the settings save")
+	}
+	close(release)
+	if err := <-saved; err != nil {
+		t.Fatal(err)
+	}
+	if waited {
+		<-done
 	}
 }

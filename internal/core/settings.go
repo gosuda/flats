@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gosuda/portal-tunnel/v2/utils"
@@ -108,8 +109,10 @@ type SettingsSource struct {
 	mu     sync.Mutex
 	doc    *config.Document
 	values map[string]string
-	proxy  config.ProxyConfig // the proxy section in effect
-	pinned map[string]string  // setting -> who sets it
+	// proxy is the proxy section in effect, published after each commit so
+	// readers never wait for a save that holds mu.
+	proxy  atomic.Pointer[config.ProxyConfig]
+	pinned map[string]string // setting -> who sets it
 	file   *SettingsFile
 }
 
@@ -189,7 +192,7 @@ func (s *SettingsSource) refresh() error {
 		values[k] = settingString(v)
 	}
 	s.values = values
-	s.proxy = c.Proxy
+	s.proxy.Store(&c.Proxy)
 	return nil
 }
 
@@ -310,12 +313,9 @@ func (s *SettingsSource) network() config.NetworkConfig {
 }
 
 // Proxy returns the proxy section in effect. The proxy listener reads its
-// template on every request, so this does not parse the document.
-func (s *SettingsSource) Proxy() config.ProxyConfig {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.proxy
-}
+// template on every request, so this neither parses the document nor waits
+// for a settings save in progress.
+func (s *SettingsSource) Proxy() config.ProxyConfig { return *s.proxy.Load() }
 
 // permitted returns network.permitted in effect.
 func (s *SettingsSource) permitted() []string {
