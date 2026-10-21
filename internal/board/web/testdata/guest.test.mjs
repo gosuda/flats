@@ -356,7 +356,10 @@ test('a member sees a guest author line with a separately drawn guest badge', as
   const { authorOf } = await import('../schema.js');
   const names = new Map([['guest:0123456789abcdef', 'Pat']]);
   assert.deepEqual(authorOf({ by: 'guest:0123456789abcdef' }, names), { name: 'Pat', guest: true });
-  assert.deepEqual(authorOf({ by: 'guest:ffff', ta: { text: { k: 'guest', n: 'Kai' } } }, names), { name: 'Kai', guest: true }, 'a guest who left is named from the text authorship');
+  // The line names the creator: a later text writer never lends its name.
+  assert.deepEqual(authorOf({ by: 'guest:ffff', ta: { text: { k: 'guest', n: 'Kai' } } }, names), { name: 'Guest', guest: true }, 'a creator who left is just Guest');
+  assert.deepEqual(authorOf({ by: 'guest:0123456789abcdef', ta: { text: { k: 'guest', n: 'Kai' } } }, names), { name: 'Pat', guest: true }, 'creator Pat, text rewritten by guest Kai');
+  assert.deepEqual(authorOf({ by: 'guest:0123456789abcdef', ta: { text: { k: 'member' } }, lk: 'member' }, names), { name: 'Pat', guest: true }, 'a later member edit does not change the creator');
   assert.deepEqual(authorOf({ by: 'guest:ffff' }, names), { name: 'Guest', guest: true });
   assert.deepEqual(authorOf({ by: 'ts:pat@example.com' }, names), { name: 'pat', guest: false });
   const sticky = (by) => ({ id: 'e_s', type: 'sticky', x: 0, y: 0, w: 200, h: 160, rot: 0, z: 'V', text: '', by });
@@ -375,13 +378,14 @@ test('a member sees a guest author line with a separately drawn guest badge', as
   assert.deepEqual(texts('guest:0123456789abcdef'), ['Pat guest', 'guest']);
 });
 
-test('the element list tells members a guest made the last change', async () => {
+test('the element list tells members a guest created the element', async () => {
   installDOM();
   const { A11yTree } = await import('../a11y.js');
   const el = { id: 'e_s', type: 'sticky', x: 0, y: 0, w: 200, h: 160, rot: 0, z: 'V', text: 'Hi', by: 'guest:0123456789abcdef' };
   const app = { isMember: true, names: new Map([['guest:0123456789abcdef', 'Pat']]), doc: { get: () => null, index: { connectorsOf: () => [] } } };
   const label = (a) => A11yTree.prototype.label.call({ app: a }, el);
-  assert.match(label(app), /Last changed by Pat \(guest\)$/);
+  assert.match(label(app), /Created by Pat \(guest\)$/);
+  assert.match(label({ ...app, names: new Map() }), /Created by Guest \(guest\)$/, 'a creator who left is not named after a later writer');
   assert.doesNotMatch(label({ ...app, isMember: false }), /guest/, 'guests and viewers get no author names');
-  assert.doesNotMatch(A11yTree.prototype.label.call({ app }, { ...el, by: 'browser:pat' }), /Last changed/);
+  assert.doesNotMatch(A11yTree.prototype.label.call({ app }, { ...el, by: 'browser:pat' }), /Created by/);
 });

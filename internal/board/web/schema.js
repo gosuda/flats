@@ -95,15 +95,16 @@ export function authorName(by, names) {
   return '';
 }
 
-// authorOf is the author line members see on an element: the name, and
-// whether it is a guest's (key "guest:…"), which is drawn with the guest
-// badge outside the name (board-public-edit.md rule 13). A guest's name
-// comes from its presence or, once it has left, from the text authorship.
+// authorOf is the creator line members see on an element: the name of the
+// editor in `by`, and whether it is a guest (key "guest:…"), which is drawn
+// with the guest badge outside the name (board-public-edit.md rule 13). It
+// always describes the creator: a guest's name comes only from that guest's
+// own presence, and a creator who left is just "Guest", never the name of a
+// later text writer.
 export function authorOf(el, names) {
   const by = el.by;
   if (typeof by === 'string' && by.startsWith('guest:')) {
-    const ta = el.ta && el.ta.text;
-    return { name: (names && names.get(by)) || (ta && ta.k === 'guest' && ta.n) || 'Guest', guest: true };
+    return { name: (names && names.get(by)) || 'Guest', guest: true };
   }
   return { name: authorName(by, names), guest: false };
 }

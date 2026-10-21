@@ -77,7 +77,7 @@ export class A11yTree {
     if (f) parts.push(`Frame ${f.text || 'untitled'}`);
     // Screen readers hear the guest mark the canvas draws next to the name.
     const author = this.app.isMember ? authorOf(el, this.app.names) : null;
-    if (author && author.guest) parts.push(`Last changed by ${author.name} (guest)`);
+    if (author && author.guest) parts.push(`Created by ${author.name} (guest)`);
     if (el.type !== 'connector') {
       const to = [];
       for (const cid of doc.index.connectorsOf(el.id)) {

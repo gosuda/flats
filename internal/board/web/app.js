@@ -1131,7 +1131,10 @@ class App {
   // guestEditingEnded shows the banner after finishGuestEditing; a viewer
   // cannot send the dropped edits, and a later guest session must not.
   guestEditingEnded(unsent) {
-    // Nothing of the guest's editing state stays drawn in the viewer view.
+    // Nothing of the guest's editing state stays drawn in the viewer view:
+    // an active gesture and its preview end with the editing.
+    if (this.tool.cancel) this.tool.cancel();
+    this.setPreview(null);
     this.select([]);
     this.focusId = null;
     this.presence.send({ sel: [], drag: null, edit: null, c: null });
