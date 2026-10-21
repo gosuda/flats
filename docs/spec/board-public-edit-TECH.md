@@ -73,18 +73,28 @@ nothing that a guest could use:
    one free pin. Each problem has a code (`disk_quota_off`,
    `revision_quota_unlimited`, `pin_quota_full`) and the approval fails with
    the new refusal category `public_edit_blocked`, listing them.
-2. **Safe point.** Call `inst.SafePoint(ctx)` on the running board instance
-   (opening it if needed). The instance, in its apply loop, closes every open
-   group (a `person` entry when dirty) and records a **forced** entry of kind
-   `safe_point` (5.3 below). Core imports the outbox synchronously and gets the
-   revision number R.
-   - **Reuse:** when `content_state.safe_point_rev` names a revision that
-     still exists and its file list equals R's, core deletes nothing extra and
-     uses that revision instead of R for the pin (R stays as an ordinary
-     revision).
-3. **Pin.** Pin the chosen revision through the existing pin path; a full pin
-   quota fails here with `pin_quota_full`. Store its number in
-   `content_state.safe_point_rev`.
+2. **Safe point.** Core looks up the file list F of
+   `content_state.safe_point_rev` when that revision still exists, and calls
+   `inst.SafePoint(ctx, F)` on the board instance (opening it if needed). In
+   its apply loop the instance closes every open group (a `person` entry only
+   when the content changed, as a non-forced record does) and then compares
+   the current file list with F. When they are equal it records nothing and
+   answers `reuse`; otherwise it records a **forced** `safe_point` entry and
+   answers its outbox seq (6.2). Core then imports the outbox with the
+   lock-held import function (below) and, for a new entry, maps the seq to its
+   revision number R through `board_imports`. An unchanged re-enable therefore
+   adds no revision.
+3. **Pin.** Pin the earlier safe point (on `reuse`) or R with the lock-held
+   pin function; a full pin quota fails here with `pin_quota_full`. Store the
+   pinned number in `content_state.safe_point_rev`.
+
+**Locking.** The flat mutex is not reentrant, and today `PinRevision` and the
+revision catch-up each take it. They are split into a locked part and a
+wrapper: `pinLocked(ctx, f, rev, pinned)` and `importBoardLocked(ctx, f)`
+assume the caller holds the flat lock; `PinRevision` and the existing import
+entry points become "take the lock, call the locked part". Step 2 and 3 call
+the locked parts. A test applies a complete `edit` approval end to end without
+a lock timeout.
 4. **Commit.** If the flat was Private, run today's Public exposure steps.
    Then `CommitVisibility(public, edit)`.
 5. **Notify.** `inst.SetPublicAccess("edit")`.
@@ -208,18 +218,28 @@ A guest socket uses the private wire form (it needs `inc`, `v`, `end_inc` and
 the private delta to merge and undo) with one rewrite, `guestLabels`, applied
 to every serialized author:
 
-| Real key | Guest sees | Name sent |
-|---|---|---|
-| `ts:*`, `browser:*` | `member:N` | `Member N` |
-| `guest:*` | `guest:N` | the guest's name |
-| `agent:*` | `agent` | `Agent` |
-| `system` | `system` | none |
+Stored authorship (element `by`, delta `by`) is rewritten to its kind only:
 
-- N is assigned per instance in first-seen order and kept for the instance's
-  life; it is never derived from the key.
-- Rewritten: element `by`; delta `by`; presence `key`, `name`, `verified`
-  (always false for members as seen by guests: a guest is never told a member
-  is verified); gone `key`; agent activity labels.
+| Real key | Guest sees |
+|---|---|
+| the guest's own key | unchanged (it is the guest's own) |
+| `ts:*`, `browser:*` | `member` |
+| other `guest:*` | `guest` |
+| `agent:*` | `agent` |
+| `system` | `system` |
+
+Live identity (presence `key`, `name`, `verified`, gone `key`) needs to tell
+people apart, so it uses connection labels:
+
+- Each editor key that has at least one live socket gets a label `p:N`, with
+  N the lowest number free at the moment the key's first socket welcomes. The
+  label is released when the key's last socket closes (the gone frame is sent
+  then). The map therefore holds at most the live members and guests
+  (64 + 50); it does not grow with guest churn.
+- Members appear to guests as `Member N` with `verified: false` (a guest is
+  never told a member is verified); guests appear with their name. A member
+  who reconnects after closing every tab may get a different N.
+- Rewritten in agent activity notices: the label becomes `Agent`.
 - Not sent to guests: shares, `welcome.me` of others, session labels, the
   History and recovery routes.
 - The rewrite runs once per delta per audience (like the lazy public body,
@@ -227,6 +247,8 @@ to every serialized author:
 - Exports for a guest use the public projection (TECH 7.3).
 - A test serializes every frame type to a guest socket and fails if it finds
   a `ts:` or `browser:` key, a member's name or an agent label.
+- A test churns 1,000 guest sessions (join, send presence, leave) and checks
+  that the label map returns to the number of live editors.
 
 ### 3.4 Presence
 
@@ -286,8 +308,12 @@ back to the savepoint:
 - **Disk.** Refuse with `guest_room` when usage after the batch is above 90%
   of the disk quota.
 - **Guest byte budget.** `meta.guest_charge` grows by the positive usage
-  change of every committed guest batch. On each tick it is lowered to
-  `min(guest_charge, current usage)`, so it falls when retention frees space.
+  change of every committed guest batch. On each tick, when the board's
+  measured usage is lower than at the previous tick by d, the charge is
+  lowered by d (not below 0). Any freeing of space, by retention or deletion,
+  therefore returns budget to guests. A test starts with 2 GiB of member
+  content, fills the guest budget, frees 400 MiB by retention and checks that
+  guests can write 400 MiB again.
   A guest batch that would take it over 512 MiB is refused with `guest_room`.
   This is the accounting rule 24 asks for; spec rule 24 is updated to describe
   it.
@@ -353,17 +379,23 @@ cannot evict members' undo history, receipts or sessions.
 
 1. Let Q be the revision quota (0 means unlimited: nothing to do) and
    G = floor(Q / 2).
-2. While the guest-only unpinned revisions, excluding the newest revision,
-   number more than G, delete the oldest of them.
+2. While the unpinned guest-only revisions, **counting** the newest revision
+   when it is guest-only, number more than max(G, 1 if the newest is
+   guest-only else 0), delete the oldest guest-only revision other than the
+   newest.
 3. Then today's rule: while unpinned revisions exceed Q, delete the oldest,
    never the newest.
 
 The newest revision and pinned revisions are never deleted. The "revision
 before an agent write" is an ordinary entry and follows these rules.
 
-The guarantee is the one spec rule 25 states: guest-only revisions never hold
-more than half of the quota, so among unpinned revisions other than the
-newest, member and agent revisions keep at least Q − G places. Guests do
+The guarantee is the one spec rule 25 states: unpinned guest-only revisions
+hold at most half of the quota, with one exception: the newest revision is
+always kept, so with Q = 1 the single kept revision may be guest-only. Member
+and agent revisions therefore keep at least Q − G places among the unpinned
+revisions (Q − 1 when Q = 1 and the newest is guest-only). Tested with Q = 1,
+2, 4 and 100, including the case of two older guest-only revisions plus a
+guest-only newest. Guests do
 **not** get first eviction below their half: recent guest history stays
 recoverable. The spec's Revisions criterion is reworded to this.
 
@@ -390,10 +422,12 @@ recoverable. The spec's Revisions criterion is reworded to this.
 
 ### 6.2 Safe point
 
-`Instance.SafePoint(ctx) (seq int64, err error)` runs in the apply loop: record
-a `person` entry for dirty groups, delete all groups, record a forced
-`safe_point` entry, return its outbox seq. Core then imports and maps it to a
-revision through `board_imports` (by outbox seq).
+`Instance.SafePoint(ctx, prev []File) (seq int64, reuse bool, err error)` runs
+in the apply loop: a non-forced record for dirty groups (no entry when the
+content equals `meta.newest`), delete all groups, then compare the current
+file list with `prev`. Equal: return `reuse`. Otherwise record a forced
+`safe_point` entry and return its outbox seq. Core imports and maps the seq to
+a revision through `board_imports`.
 
 ## 7. Authorship (board, model)
 
