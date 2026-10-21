@@ -156,9 +156,10 @@ an approval.
     acknowledgements, refusals, undo notices and presence. Exports use the
     public view projection.
 15. **Identity in it.** Every author or editor key in the guest projection is
-    replaced by an opaque label: `member:N` for Private editors, `guest:N`
-    for guests, `agent` for agents. A verified Tailscale login, a typed name
-    of a Private editor and an agent label never appear in it. Private editors
+    replaced: who made an element or change is reduced to its kind (member,
+    guest or agent), and people on the board now get short labels that last
+    while they are connected. A verified Tailscale login, a typed name of a
+    Private editor and an agent label never appear in it. Private editors
     appear to guests only as **Member 1, 2, …** with their cursor and
     selection.
 16. **Guest keys are issued by the server.** A guest's editor key is a random
