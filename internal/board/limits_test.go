@@ -201,8 +201,28 @@ func TestSlowPublicViewersShareTheSnapshot(t *testing.T) {
 		return n == viewers
 	})
 	time.Sleep(time.Second) // the pumps fill the sockets and wait
+	// A pump still sending or encoding a part holds buffers that are garbage
+	// a moment later, so one reading can catch them. What the viewers retain
+	// is live in every reading, so one reading within the limit shows they
+	// retain no more: read again, every 250 ms and at most 12 times, only
+	// while the readings are over it. Check that the viewers were all still
+	// connected at that reading.
 	grew := int64(heapInUse()) - int64(base)
+	for i := 0; i < 12 && grew > 64<<20; i++ {
+		t.Logf("reading %d: %d bytes", i, grew)
+		time.Sleep(250 * time.Millisecond)
+		grew = int64(heapInUse()) - int64(base)
+	}
 	t.Logf("%d slow viewers retain %d bytes", viewers, grew)
+	n := 0
+	for _, c := range b.in.hub.list() {
+		if c.public {
+			n++
+		}
+	}
+	if n != viewers {
+		t.Fatalf("%d of %d slow viewers still connected at the reading", n, viewers)
+	}
 	if grew > 64<<20 {
 		t.Fatalf("%d slow Public viewers retain %d bytes", viewers, grew)
 	}
