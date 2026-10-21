@@ -358,9 +358,11 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     // A reverse proxy row shows its address: Flats cannot see whether the
     // proxy reaches it, and says so next to it (rule 6).
     const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public') ? proxyRoute(flat, p.id) : null;
-    if (!route) return h('li', null, box, label);
+    if (!route || (!route.url && route.state !== 'error')) return h('li', null, box, label);
+    const state = route.state === 'error' ? [h('span', { class: 'badge badge-error', text: 'error' }), ' '] : null;
     return h('li', null, box, h('div', { class: 'network-main' }, label,
-      h('div', { class: 'network-route small' }, extLink(route.url), route.detail ? h('span', { class: 'muted', text: ' ' + route.detail }) : null)));
+      h('div', { class: 'network-route small' }, state, route.url ? [extLink(route.url), ' '] : null,
+        route.detail ? h('span', { class: 'muted', text: route.detail }) : null)));
   }
 
   async function loadHostProviders() {

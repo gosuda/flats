@@ -520,7 +520,9 @@ function statusGroup(p) {
       ? h('div', { class: 's-list s-table-wrap' }, h('table', { class: 's-table' },
         h('thead', null, h('tr', null, ['Name', 'Status', expiry ? 'Key expires' : null, 'Address'].filter(Boolean).map((t) => h('th', { scope: 'col', class: t === 'Key expires' ? 'r' : null, text: t })))),
         h('tbody', null, rows)))
-      : list(row({ title: 'Nothing served yet', desc: 'Routes appear here once a flat that allows this network is running.' })));
+      : list(p.bind_error
+        ? row({ title: 'Nothing is served', desc: 'The listener did not start, so every flat that allows this network reports the listener error until Flats binds the address at a restart.' })
+        : row({ title: 'Nothing served yet', desc: 'Routes appear here once a flat that allows this network is running.' })));
 }
 
 // allowedGroup lists the flats that allow a provider.
@@ -831,8 +833,16 @@ function proxySection(providers, data, saved, reload, page) {
     const next = select.value;
     const target = kinds.find((x) => x.id === (next || current));
     select.disabled = true;
+    // The other kind cannot be turned on while one is on: explain the
+    // switch instead of sending a change the server refuses.
+    if (on && next) {
+      await infoDialog(`Turn off ${infoOf(current).label} first`, h('p', { text:
+        `${infoOf(current).label} and ${infoOf(next).label} share one listener, so only one of them can be on. To switch, stop allowing ${infoOf(current).label} on every flat, choose Off here, then choose ${next === 'proxy' ? 'Private' : 'Public'}.` }));
+      select.value = current;
+      select.disabled = false;
+      return;
+    }
     const notes = [next === 'proxy' ? h('p', { class: 'alert alert-warn', text: PROXY_PRIVATE_ACCESS }) : null, h('p', { text: PROXY_STALE })];
-    // Switching kinds is refused while the other one is on; the server says why.
     if (target && await setHostProvider(target, infoOf(target.id), !!next, etag, notes)) {
       await reload();
       return;
@@ -852,7 +862,8 @@ function proxySection(providers, data, saved, reload, page) {
     group('proxy-listener', 'Listener and kind', 'Both kinds share one listener and one address template, so one of them is on at a time.', rows),
     on && on.bind_error ? callout('err', h('strong', { text: 'The listener did not start: ' }), on.bind_error,
       '. Every reverse proxy route reports this error until Flats binds the address at a restart. Free the address, or change proxy.addr while Flats is stopped.') : null,
-    callout('warn', h('strong', { text: 'Private kind. ' }), PROXY_PRIVATE_ACCESS),
+    // The Private kind's warning, while it is on or can be chosen.
+    current === 'proxy-public' ? null : callout('warn', h('strong', { text: 'Private kind. ' }), PROXY_PRIVATE_ACCESS),
   ];
 }
 

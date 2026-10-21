@@ -172,15 +172,16 @@ export function publicURL(f) {
 }
 
 // proxyRoute is the flat's current route on a reverse proxy provider (proxy
-// or proxy-public), or null. Its detail says that Flats cannot check the proxy.
+// or proxy-public), or null. A served route's detail says that Flats cannot
+// check the proxy; a route in error has no address and its detail says why.
 export function proxyRoute(f, provider) {
-  return ((f && f.endpoints) || []).find((e) => e.provider === provider && e.audience === 'current' && e.url &&
+  return ((f && f.endpoints) || []).find((e) => e.provider === provider && e.audience === 'current' &&
     (!e.host || e.host === f.slug) && e.state !== 'stopped') || null;
 }
 
 // proxyDetail is the detail of the reverse proxy route serving url, or ''.
 export function proxyDetail(f, url) {
-  const ep = ['proxy', 'proxy-public'].map((p) => proxyRoute(f, p)).find((e) => e && e.url === url);
+  const ep = ['proxy', 'proxy-public'].map((p) => proxyRoute(f, p)).find((e) => e && e.url && e.url === url);
   return ep ? ep.detail || '' : '';
 }
 

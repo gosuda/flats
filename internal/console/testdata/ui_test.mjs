@@ -2500,30 +2500,46 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   await tick();
   assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/providers/proxy').at(-1).body), { enabled: false });
 
-  // Picking the other kind while one is on sends the request, shows the
-  // server's refusal and keeps the current kind selected.
+  // Picking the other kind while one is on sends nothing and asks for no
+  // confirmation: it explains the switch and keeps the current kind.
   px = await mountSettings(['networks', 'proxy']);
-  routes['PUT /console/api/providers/proxy-public'] = { __status: 422, category: 'invalid', error: 'network.permitted: proxy and proxy-public cannot both be permitted' };
+  const switchCalls = calls.filter((c) => c.key.startsWith('PUT /console/api/providers/')).length;
   byId(px, 'proxy-kind').value = 'proxy-public';
   byId(px, 'proxy-kind').dispatch('change');
   await tick();
   const switchKind = openDialogs().pop();
-  assert.ok(switchKind.textContent.includes('Turn on Reverse proxy (public)?'), switchKind.textContent);
-  assert.ok(switchKind.textContent.includes('Every pending approval becomes stale'));
-  assert.ok(!switchKind.textContent.includes('Flats does not check who they are'), 'the Public kind has the public warning instead');
+  assert.ok(switchKind.textContent.includes('Turn off Reverse proxy first'), switchKind.textContent);
+  assert.ok(switchKind.textContent.includes('stop allowing Reverse proxy on every flat, choose Off here, then choose Public'), switchKind.textContent);
+  assert.ok(!switchKind.textContent.includes('Saved to config.json'), 'no change is offered');
+  assert.equal(byText(switchKind, 'Cancel').length, 0, 'it is an explanation, not a confirmation');
   switchKind.close('ok');
   await tick();
-  const refused = openDialogs().pop();
-  assert.ok(refused.textContent.includes('Cannot turn on Reverse proxy (public)') && refused.textContent.includes('cannot both be permitted'), refused.textContent);
-  refused.close();
-  await tick();
-  assert.equal(byId(px, 'proxy-kind').value, 'proxy', 'the refused kind is not shown as chosen');
-  delete routes['PUT /console/api/providers/proxy-public'];
+  assert.equal(calls.filter((c) => c.key.startsWith('PUT /console/api/providers/')).length, switchCalls, 'no request is sent');
+  assert.equal(byId(px, 'proxy-kind').value, 'proxy', 'the current kind stays chosen');
+  assert.ok(!byId(px, 'proxy-kind').disabled);
+
+  // While the Public kind is on, the Private kind's warning is not shown.
+  routes['GET /console/api/providers'] = withProxy(proxyOff('proxy', 'private'), { ...proxyOff('proxy-public', 'public'), enabled: true, configured: true });
+  px = await mountSettings(['networks', 'proxy-public']);
+  assert.equal(byId(px, 'proxy-kind').value, 'proxy-public');
+  assert.ok(!px.textContent.includes('Flats does not check who they are'), 'no Private kind warning while Public is on');
 
   // Off with a template: choosing Private warns about Private access and the
   // stale approvals before turning proxy on.
   routes['GET /console/api/providers'] = withProxy(proxyOff('proxy', 'private'), proxyOff('proxy-public', 'public'));
   px = await mountSettings(['networks', 'proxy-public']);
+  assert.equal(byId(px, 'proxy-kind').value, '');
+  assert.ok(px.textContent.includes('Flats does not check who they are'), 'the Private kind warning is shown while it can be chosen');
+  // Choosing Public asks first, with the public warning and not the Private one.
+  byId(px, 'proxy-kind').value = 'proxy-public';
+  byId(px, 'proxy-kind').dispatch('change');
+  await tick();
+  const turnOnPublic = openDialogs().pop();
+  assert.ok(turnOnPublic.textContent.includes('Turn on Reverse proxy (public)?'), turnOnPublic.textContent);
+  assert.ok(turnOnPublic.textContent.includes('Every pending approval becomes stale'));
+  assert.ok(!turnOnPublic.textContent.includes('Flats does not check who they are'));
+  turnOnPublic.close('cancel');
+  await tick();
   assert.equal(byId(px, 'proxy-kind').value, '');
   byId(px, 'proxy-kind').value = 'proxy';
   byId(px, 'proxy-kind').dispatch('change');
@@ -2559,6 +2575,25 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   px = await mountSettings(['networks', 'proxy']);
   assert.ok(px.textContent.includes('The listener did not start: the reverse proxy listener cannot bind proxy.addr 127.0.0.1:7880: address already in use'), px.textContent);
   assert.ok(px.textContent.includes('Error'));
+  // The Status does not claim that nothing is served yet for want of flats.
+  routes['GET /console/api/providers'] = withProxy({ ...proxyOn, bind_error: 'the reverse proxy listener cannot bind proxy.addr 127.0.0.1:7880: address already in use',
+    status: { kind: 'proxy', enabled: true, detail: 'the reverse proxy listener cannot bind proxy.addr 127.0.0.1:7880: address already in use', hosts: [] } }, proxyOff('proxy-public', 'public'));
+  px = await mountSettings(['networks', 'proxy']);
+  assert.ok(!byId(px, 'status').textContent.includes('Nothing served yet'), byId(px, 'status').textContent);
+  assert.ok(byId(px, 'status').textContent.includes('The listener did not start'));
+  // A flat's Networks row shows its proxy route in error with the reason.
+  const failing = { ...blog, visibility: 'private', providers: ['proxy'],
+    endpoints: [ep('local', 'http://blog.localhost:7879/'), { provider: 'proxy', audience: 'current', host: 'blog', permitted: true, configured: true, state: 'error',
+      detail: 'the reverse proxy listener cannot bind proxy.addr 127.0.0.1:7880: address already in use' }] };
+  routes['GET /console/api/flats/blog'] = failing;
+  const failingFlat = new Element('main');
+  const stopFailingFlat = flat.mountSettings(failingFlat, ['blog'], ctx);
+  await tick();
+  const failingRow = byId(failingFlat, 'net-proxy').parentNode;
+  assert.ok(failingRow.textContent.includes('error') && failingRow.textContent.includes('cannot bind proxy.addr'), failingRow.textContent);
+  assert.equal(all(failingRow, (e) => (e.getAttribute('class') || '').includes('badge-error')).length, 1);
+  stopFailingFlat();
+  routes['GET /console/api/flats/blog'] = blog;
 
   // A flat's Networks list names both kinds and shows the proxy address with
   // the note that Flats cannot check the proxy.
