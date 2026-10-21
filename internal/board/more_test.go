@@ -389,6 +389,21 @@ func TestShutdownTellsSocketsBeforeHelloWhy(t *testing.T) {
 	}
 }
 
+// TestShutdownTellsSocketsAcceptedAfterItWhy accepts a socket after closeAll
+// took its snapshot, as a request that entered before Shutdown can: it gets
+// the stored fatal code (4.8).
+func TestShutdownTellsSocketsAcceptedAfterItWhy(t *testing.T) {
+	b := newTB(t)
+	b.in.hub.closeAll(FatalTypeChanged)
+	c, err := dial(t, b.priv, origin(b.priv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := c.expect("fatal"); f["code"] != FatalTypeChanged || !c.closed(3*time.Second) {
+		t.Fatalf("fatal %v", f)
+	}
+}
+
 // TestShutdownTellsLateRegisteredSocketsWhy stops the board while a welcomed
 // socket has not registered yet: it still gets the fatal code (4.8).
 func TestShutdownTellsLateRegisteredSocketsWhy(t *testing.T) {
