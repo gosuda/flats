@@ -975,8 +975,8 @@ func (c *Config) fill() error {
 }
 
 // checkProxy checks the rules that span the proxy keys: one proxy kind at a
-// time, a template while either kind is permitted, a listener address of its
-// own, and no console origin the template can produce.
+// time, a template and a listener address of its own while either kind is
+// permitted, and no console origin the template can produce.
 func (c *Config) checkProxy() []error {
 	var errs []error
 	private, public := slices.Contains(c.Network.Permitted, "proxy"), slices.Contains(c.Network.Permitted, "proxy-public")
@@ -988,9 +988,11 @@ func (c *Config) checkProxy() []error {
 		errs = append(errs, fieldErr(ProxyTemplateKey, `set an address pattern such as https://{host}.site.example.org, or remove "proxy" and "proxy-public" from network.permitted`,
 			"is required while a proxy provider is permitted"))
 	}
-	// Two free ports never collide.
+	// Without a proxy provider the address is never bound, so a host that
+	// already uses it for another listener keeps starting. Two free ports
+	// never collide.
 	for _, other := range []struct{ key, addr string }{{"host.console_addr", c.Host.ConsoleAddr}, {"host.local_addr", c.Host.LocalAddr}} {
-		if other.addr == c.Proxy.Addr && !ephemeralPort(other.addr) {
+		if (private || public) && other.addr == c.Proxy.Addr && !ephemeralPort(other.addr) {
 			errs = append(errs, fieldErr("proxy.addr", "use a port different from "+other.key, "%s is also %s", other.addr, other.key))
 		}
 	}

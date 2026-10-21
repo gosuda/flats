@@ -246,14 +246,25 @@ func TestProxyCrossKeyChecks(t *testing.T) {
 			sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy", "network.default_private", "proxy"),
 			sets("network.permitted", ""),
 		}, "network.default_private"},
-		{"address of the console", []func(*Document) error{sets("proxy.addr", "127.0.0.1:7878")}, "proxy.addr"},
-		{"address of local", []func(*Document) error{sets("proxy.addr", "127.0.0.1:7879")}, "proxy.addr"},
-		{"local moved onto the address", []func(*Document) error{sets("host.local_addr", "127.0.0.1:7880")}, "proxy.addr"},
-		{"console moved onto the address", []func(*Document) error{sets("host.console_addr", "127.0.0.1:7880")}, "proxy.addr"},
+		{"address of the console", []func(*Document) error{sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy", "proxy.addr", "127.0.0.1:7878")}, "proxy.addr"},
+		{"address of local", []func(*Document) error{sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy-public", "proxy.addr", "127.0.0.1:7879")}, "proxy.addr"},
+		{"local moved onto the address", []func(*Document) error{
+			sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy"), sets("host.local_addr", "127.0.0.1:7880"),
+		}, "proxy.addr"},
+		{"console moved onto the address", []func(*Document) error{
+			sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy"), sets("host.console_addr", "127.0.0.1:7880"),
+		}, "proxy.addr"},
+		{"turned on over a taken address", []func(*Document) error{
+			sets("host.local_addr", "127.0.0.1:7880", ProxyTemplateKey, tmpl), sets("network.permitted", "proxy"),
+		}, "proxy.addr"},
+		// Rule 11: without a proxy provider the address is never bound.
+		{"local on the address without a proxy", []func(*Document) error{sets("host.local_addr", "127.0.0.1:7880")}, ""},
+		{"console on the address without a proxy", []func(*Document) error{sets("host.console_addr", "127.0.0.1:7880", ProxyTemplateKey, tmpl)}, ""},
 		{"ephemeral ports", []func(*Document) error{
-			sets("host.console_addr", "127.0.0.1:0", "host.local_addr", "127.0.0.1:0", "proxy.addr", "127.0.0.1:0"),
+			sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy",
+				"host.console_addr", "127.0.0.1:0", "host.local_addr", "127.0.0.1:0", "proxy.addr", "127.0.0.1:0"),
 		}, ""},
-		{"other host same port", []func(*Document) error{sets("proxy.addr", "0.0.0.0:7879")}, ""},
+		{"other host same port", []func(*Document) error{sets(ProxyTemplateKey, tmpl, "network.permitted", "proxy", "proxy.addr", "0.0.0.0:7879")}, ""},
 		{"origin then overlapping template", []func(*Document) error{
 			sets(ExternalOriginsKey, "https://flats.site.example.org"), sets(ProxyTemplateKey, tmpl),
 		}, ExternalOriginsKey + "[0]"},
