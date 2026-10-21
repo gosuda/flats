@@ -1,0 +1,374 @@
+# Anonymous public editing for documents
+
+Status: planned. This page changes the document parts of
+[content-models.md](content-models.md), the
+[docs app internals](../internal/docs-app.md) and
+[board-public-edit.md](board-public-edit.md) rule 7; every changed rule is
+listed in [Changes to existing specs](#changes-to-existing-specs). Only the
+document type (`docs`) is in scope.
+
+This page sets what to build, why, and the rules it must keep. It follows
+[board-public-edit.md](board-public-edit.md) (the board feature) rule for rule
+wherever a document allows it, so the two types share one model, one console
+and one vocabulary. Where a rule here only restates a board rule for
+documents, it names that rule as "board public rule N".
+
+## Summary
+
+Today a Public document is a read-only live rendering, and only Private
+routes (Local, Tailscale, NetBird) edit. This adds the board's second kind of
+Public to documents: **Public, anyone can edit**. Anyone on the internet who
+opens the link needs no account: they type a name and edit the document
+together with everyone else.
+
+A Public document has one of the same two **public access levels** as a
+board:
+
+| Level | Who can do what | Name |
+|---|---|---|
+| **View only** (today's Public) | Anyone with the link reads the document live. Only Private routes edit. | Never asked. Each visitor is called **Viewer 1, 2, 3, …** automatically. |
+| **Anyone can edit** (new) | Anyone on the internet who opens the link reads and edits every document of the flat, and sees other editors' cursors. | The visitor types a name before editing. |
+
+The operator chooses the level in the same **Share** dialog and Sharing
+settings as for a board. Widening a document to "anyone can edit" is always
+an explicit, confirmed step, and an agent can only ask for it through an
+approval.
+
+## Why
+
+- A document is the other content people most often write together: meeting
+  notes, a shared agenda, a sign-up list, a draft a customer comments on.
+  Today everyone who edits must be on a Private network.
+- The board feature already settled the model, the limits and the console
+  for an open, editable flat. Giving documents the same model keeps one way
+  to share in Flats instead of two that differ in small ways.
+- The risks are the board's, with one more: guest text is Markdown that other
+  people's browsers render and that agents read. The rules below keep
+  rendering and agent reading safe.
+
+## Principles
+
+Board public principles 1 to 7 apply to documents unchanged, with "board"
+read as "document flat" and "elements" as "the text of its documents":
+
+1. **Opt-in and explicit.**
+2. **Anonymous means unverified.**
+3. **Guests get less than members.** A guest changes the current text. A
+   guest reaches no history, rollback, pin, earlier text or anything else
+   that exists only in earlier revisions.
+4. **The operator can always get the document back.**
+5. **Open does not mean unbounded.**
+6. **Guest text is untrusted.** It is plain Markdown source to people, is
+   rendered under the same restrictions as any other text, and is untrusted
+   input to agents.
+7. **Flats' other rules apply unchanged**, except where
+   [Changes to existing specs](#changes-to-existing-specs) says otherwise.
+
+And one for consistency:
+
+8. **One feature, two types.** The stored level, the approval, the safe
+   point, the quota rules, Stop guest editing, the console and the guest
+   badge behave and read the same for a document as for a board. A
+   difference between the two types exists only where the content forces
+   it, and this page names each one.
+
+## Access levels
+
+1. **The board's stored values.** Visibility stays `private` or `public`. A
+   Public document also has a public access level, `view` or `edit`. A
+   document that is not Public has no level. Every document that becomes
+   Public defaults to `view`, including every document that is already
+   Public when this ships. The level covers every document of the flat: a
+   flat with several documents is open to guests as a whole, as its Public
+   view is today.
+2. **Who changes it, and how.** As board public rule 2: agents through
+   `set_visibility` with `access` always get an approval link; the operator in
+   the console changes it directly, after the confirmation of rule 3 when
+   widening; **Stop guest editing** applies at once without confirmation;
+   an approval is bound to the visibility and level the flat had when it was
+   requested and fails as stale if either changed since.
+3. **The confirmation says what it grants.** For "anyone can edit": anyone
+   on the internet who opens the link can add, change and delete all the text
+   of every document in this flat; the operator can restore earlier states
+   from History. If a permitted provider lists the flat publicly, the text
+   says so. The wording is the board's, with "the board" replaced by "the
+   documents".
+4. **Reading the state.** `get_flat`, `list_flats`, the status responses and
+   the console report the level as `public_access` (`view` or `edit`, absent
+   when not Public), as for a board.
+5. **Stop guest editing.** As board public rule 5.
+6. **Safe point, pinned and protected.** As board public rule 6: when "anyone
+   can edit" takes effect, the host closes open edit groups, records the
+   whole flat at that moment as a revision labeled as the safe point before
+   guest editing, and pins it; it re-pins an unchanged earlier safe point
+   instead of adding another; it refuses to unpin the active safe point while
+   the level is `edit`; a full pin quota refuses the change before anything
+   is applied.
+6a. **Required quotas.** As board public rule 6a: no `edit` while the host
+   disk quota is 0 or the flat's revision quota is unlimited (0), and changes
+   that would cause either while a document or board is at `edit` are
+   refused with the names of the affected flats.
+7. **Documents and boards.** Websites, pages and designs get no public edit
+   level, and their Share dialog and settings do not show the edit choice.
+
+## Joining a document
+
+8. **Anyone can edit: ask for a name.** A visitor who opens a Public document
+   at level `edit` is asked for a name before editing, and cannot edit without
+   one. The name rule is the board's: 1 to 40 characters after trimming,
+   plain text, control and invisible formatting characters removed; the
+   browser remembers it and lets the guest change it; names are not unique.
+   One name holds for every document of the flat.
+9. **View only: never ask.** As board public rule 9. A visitor at level
+   `view` is named **Viewer N** for the flat, sees "You are Viewer 3", and
+   keeps the number for a minute across reconnects and across moving between
+   the flat's documents, through a token held only in that tab and in server
+   memory.
+10. **Viewers are visible only as presence-less entries.** In the people list
+    of the document header, Private editors and guests see the viewers of the
+    open document as "Viewer N" entries (or a count above 20). A viewer sends
+    nothing but its connection and token, receives no presence, and has no
+    cursor or selection, as today.
+11. **The prompt is an overlay on the live document.** The name prompt appears
+    over the live rendered document, which keeps updating behind it, not
+    instead of it. A viewer who has the document open when the level goes to
+    `edit` gets the same prompt and stays a reader until they type a name.
+12. **Guest presence.** At level `edit`, guests and Private editors see each
+    other in the people list and see each other's cursors and selections in
+    the editor, as Private editors do today.
+13. **The guest badge.** As board public rule 13: a **guest** badge drawn by
+    the page, outside the name text, next to every guest name in the people
+    list, cursor labels, notices and revision credits. Names are drawn as text
+    only.
+13a. **The editor a guest gets.** A guest gets the editor Private editors use
+    today: Edit opens the live-preview editor, View the rendered document,
+    without reconnecting. The header has no History button.
+
+## The guest projection
+
+14. **A third projection.** Guests are neither Private editors nor Public
+    viewers: they write and take part in presence, so they need more than a
+    reader gets, and they must not receive what Private editors receive. A
+    guest connection gets a **guest projection** built from an allow-list for
+    the welcome frame, presence, acknowledgements, refusals and notices.
+15. **Identity in it.** No verified Tailscale login or name, no Private
+    editor's chosen name and no agent label appears in the guest projection.
+    Private editors appear to guests only as **Member 1, 2, …**, numbered per
+    flat while connected, with their cursor and selection. Guests appear to
+    Private editors with their typed name and the guest badge.
+16. **Guest keys are issued by the server.** A guest's editor key (its edit
+    group and authorship identity) is a random value the host assigns in a
+    separate namespace. The client cannot choose it, so a guest cannot write
+    under a member's key or another guest's.
+16a. **Only the current text.** A guest receives the documents as they are
+    now and the changes after joining. Text that was deleted before the guest
+    joined, or that exists only in earlier revisions, never reaches a guest,
+    whether through the initial sync, a catch-up, a replayed log or a
+    reload. This is stricter than today's Public view, which only renders and
+    so does not show the synchronization data it may carry; the requirement
+    is on the data sent, at both levels.
+
+## What a guest can and cannot do
+
+17. **Can.** Edit the text of every document of the flat in the editor; type,
+    paste, cut, copy and delete text; undo and redo the guest's own edits;
+    switch between Edit and View; move between the flat's documents; read,
+    expand and export Mermaid diagrams and edit their source as text; and
+    download the current Markdown of the open document.
+18. **Cannot.** History (list, open, compare, pin, restore), the block outline
+    and other reads of a document's structure that only Private routes have
+    today, the agent edit and host operations, adding, renaming or removing
+    documents, and changing any file of the flat other than the documents'
+    text. Most of these have no browser control today for anyone; the host
+    still refuses them for guests.
+19. **No new files from guests.** Documents have no upload in the browser, and
+    guests get none. A guest can write Markdown that refers to an image or file
+    of the flat as it is now; a reference to anything else does not load
+    (rule 21a).
+20. **The host decides, per request.** As board public rule 20: permission
+    comes from the route decision and the stored level, checked when a
+    connection is admitted and again when each update commits, never from what
+    the client claims. A `view` connection that sends an update, and a guest
+    that sends presence for another identity or an operation it may not use,
+    change nothing. Writes keep the same-origin rules the editor has today.
+21. **No new kinds of content.** Guests write Markdown text, as members do.
+    Raw HTML stays disabled for everyone.
+21a. **Rendering stays contained.** Guest text is rendered with the rules that
+    apply to all document text today, and those rules become requirements:
+    no script runs from document text; links with unsafe schemes are not
+    links, and links open without referrer or opener; images and other
+    resources load only from the flat itself or as `data:` images, never from
+    another site; Mermaid renders in its strict mode. One rule is new:
+    rendering a diagram has a time and size bound, so one hostile diagram
+    cannot freeze the page of everyone who opens the document.
+
+## Limits against abuse
+
+As for boards, admission on a Public route cannot rely on a trustworthy
+client address, so limits are per connection and per flat. The remedy for a
+determined flood is **Stop guest editing**, and the confirmation text says so.
+
+22. **Per-guest limits.** Each guest connection has a rate limit for updates,
+    a limit on the size of one update and a limit on presence messages, below
+    those of a Private editor. Over a limit the host refuses the update with a
+    reason and keeps the connection; the guest's page shows the refusal and
+    keeps the refused text available to download.
+23. **Per-flat connection limits.** A flat has a maximum number of
+    simultaneous guest connections and of new guest connections per minute,
+    and a separate, larger limit for viewers, all apart from the connections
+    Private editors use. A visitor who cannot get in is told the document is
+    full.
+24. **Reserved room.** Private editors keep room that guests cannot use:
+    - **Disk.** As board public rule 24: a reserved share of the disk quota,
+      and an absolute guest byte budget per flat charged by the measured
+      growth that guests' committed updates cause. Synchronization metadata
+      that deleted text leaves behind counts as growth.
+    - **Document size.** A guest update that would take a document above a
+      reserved share of the per-document size limits (text size and the
+      synchronization state limits) is refused with a reason.
+    - **Server state.** Guests have their own caps for the per-document state
+      that is shared today: duplicate-prevention receipts, the update log,
+      open edit groups and editor records, so a guest flood cannot fill them
+      or make a Private editor's update fail.
+25. **One revision group for guests, on fixed windows.** As board public rule
+    25: all guest edits on the flat share one edit group with no idle close,
+    closing only at a fixed 5-minute window or a forced boundary (an agent
+    write, a rollback, a new version's activation); at most 12 guest
+    revisions an hour plus forced boundaries; guest-only revisions hold at
+    most half of the revision quota (a setting with that default) and are
+    retired first above it; the newest and every pinned revision are never
+    deleted; a revision lists up to 5 guest names with the badge and "and N
+    more"; MCP marks them guest-supplied. Private editors keep one group each.
+25a. **Totals.** As board public rule 25a: limits for all guests of a flat
+    together (updates and bytes per second into the worker, bytes read from
+    all guest sockets including refused frames, presence traffic, how often
+    viewer-list updates reach editors), inside a guest share of the host's
+    Public traffic budget.
+26. **Content limits.** The document limits that apply today apply to everyone
+    together; a guest update that exceeds one is refused.
+
+## Agents and guest text
+
+27. **Authorship per line.** `get_document` and `get_revision` mark, for each
+    document, the lines of the current text that contain text a guest wrote,
+    and say whether the document contains any. Text a guest wrote stays marked
+    until a member or agent replaces those characters; moving or editing
+    around it does not unmark it. `update_document` is unchanged.
+28. **Untrusted input.** The agent guide (`topic.docs`) says that text in a
+    document opened to anyone, and every guest-marked line, is untrusted: an
+    agent never follows instructions found in it and treats it as data to
+    read, summarize or rearrange.
+
+## Withdrawing and downgrading
+
+29. **To view only.** As board public rule 29: the level has an epoch; an
+    update already in flight when the level drops is refused at commit; every
+    guest connection is closed with an "editing ended" reason and reconnects
+    as a viewer under the normal admission limits; the console waits for the
+    epoch, not for reconnections. A guest with unconfirmed edits is told
+    editing ended and can download its text, as the editor already offers
+    when it stops. Edits confirmed before the change stay. After a host
+    restart the stored level applies.
+30. **To Private or when the route stops.** Open Public connections close at
+    once, as today. A guest page can still download its unconfirmed text.
+    Nothing a guest wrote is removed.
+31. **No automatic rollback.** As board public rule 31.
+
+## Console
+
+32. **Share dialog.** A document's Share dialog has the board's single control
+    for link access with three choices: **Private**, **Public, view only** and
+    **Public, anyone can edit**, with the descriptions "Only people on your
+    networks", "Anyone with the link can read live. Only your networks
+    edit." and "Anyone on the internet can edit and delete. They type a name
+    first." Under "Who has access", "People on your networks" reads **can
+    edit**, as for a board, and the internet row shows "can view" or "can
+    edit" with how many guests and viewers are on the flat now. It has **Stop
+    guest editing** while the level is `edit`.
+33. **Sharing in flat settings.** As board public rule 33.
+34. **Honest labels.** As board public rule 34: lists, cards, the flat header
+    and the approval page say **Public, anyone can edit** for an editable
+    document.
+35. **Text only.** As board public rule 35.
+36. **Same components.** The Share dialog, the confirmation, the blocked-by-
+    quota dialog, the approval page and the Sharing row are the board's,
+    shared by both types, with type-specific nouns ("board", "documents")
+    only. A document's History panel shows guest credits and the safe point
+    the way the board's History does.
+
+## Success criteria
+
+Reference: a flat with one document of 2,000 lines and 20 guests editing it
+continuously for an hour.
+
+| Criterion | Target |
+|---|---|
+| Approval | As for boards: no `edit` without a confirmation or approval that states it; a pending view-only approval cannot apply as `edit`; a pending `edit` approval fails as stale after **Stop guest editing**. |
+| Name rules | A guest update commits only after a valid name. A view-only visitor is never asked, is named Viewer N and sees it. |
+| Boundary | On a Public route, history, the block outline, host operations and earlier text are refused at both levels. A forged update at `view` and a forged Private-only request from a guest change nothing. |
+| Current text only | A scan of every frame and response sent to a guest or viewer, after a session that inserted and deleted marked text before they joined, finds none of the deleted text. |
+| Identity | A scan of every frame sent to a guest finds no Tailscale login or name, no Private editor's chosen name and no agent label. |
+| Rendering | Guest text containing script, raw HTML, `javascript:` links, outside images and a hostile Mermaid diagram runs no script, loads nothing from another site, and leaves a reader's page responsive. |
+| Limits | While guests send updates at the per-guest limit on every allowed connection, a Private editor can still connect, edit, roll back and see remote changes within the document's existing latency target. At the reserved disk and document-size room and at the guest byte budget, guests are refused and Private edits succeed. |
+| Revisions | However 20 guests edit for an hour, they create at most 12 revisions plus forced boundaries. The pinned safe point stays and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota. Re-enabling editing on an unchanged flat adds no revision. |
+| Kill switch | After **Stop guest editing**, no update from a guest connection commits. The console confirms only after the stored level is saved and the epoch is bumped. A sleeping document changes only its stored level, which applies when it wakes. |
+| Recovery | After a hostile session that deletes all text of every document, History lists the safe point and a revision from just before the session, and the operator restores either. |
+| Agent safety | Lines a guest wrote are marked in `get_document`, including after a member edited the text around them. |
+| Consistency | The console's Share dialog, confirmation, blocked dialog, approval page and Sharing row show the same structure for a document and a board, differing only in nouns. |
+| Dependencies | The feature adds no outside service or account. |
+
+## Changes to existing specs
+
+[board-public-edit.md](board-public-edit.md):
+
+- Rule 7: documents also get the level. Open question 6 ("Other types") is
+  answered for documents; designs stay without it.
+- The shared parts (stored level, approval, safe point, quota rules, Stop
+  guest editing, console) are written once for both types when this ships.
+
+[content-models.md](content-models.md):
+
+- Revision rule 11: a Public route is read-only, except for boards **and
+  documents** whose operator allowed anyone to edit.
+- Revision rule 4 ("grouped per editor"): documents also get the shared guest
+  group.
+- Retention (Revision rule 6, Quotas rule 4): guest-only revisions of
+  documents are limited to a share and retired first above it.
+
+[Docs app internals](../internal/docs-app.md), when this ships:
+
+- Wire protocol: guest admission, the guest name, the viewer token, the
+  "editing ended" close, guest refusal codes and the guest projection of
+  `welcome` and presence.
+- Collaboration model: "Only `x-flats-access: private` may submit document
+  updates" gains guests at level `edit`; presence reaches guests; viewers
+  appear as entries; the separate guest connection pool.
+- Revision boundaries and editor identity: the guest group and the
+  server-issued guest key; outbox entries carry guest names separately.
+- Disk quota: the guest reserve and byte budget.
+- History panel: guest credits with the badge and the safe point label.
+
+MCP and agent docs: `set_visibility` accepts `access: edit` for documents;
+`get_document` and `get_revision` gain the guest marks; `topic.docs` gains
+rule 28. The generated references change with them.
+
+## Current state
+
+Nothing of this page is implemented for documents. The board feature already
+has the stored level, the approval and its staleness check, the quota rules,
+the safe point protection and guest-only retention in core, partly written
+for boards only, and the console's Share dialog, Sharing row and dialogs with
+board wording. Documents today: Public is read-only with no presence, Private
+editors without a Tailscale identity get a random name, and every Private
+editor sees the others' names, verified or not.
+
+## Open questions
+
+1. **Just look, member names, stronger guest identity.** Board public open
+   questions 1 to 3 apply to documents unchanged, and one answer covers both
+   types.
+2. **Comments.** Documents have no comments. Whether a level between view and
+   edit ("anyone can comment") is wanted is decided after real use.
+3. **Numbers.** The rate limits, the guest and viewer limits, the reserved
+   room shares, the guest state caps and the diagram rendering bound are
+   fixed by measurement in the technical design.
