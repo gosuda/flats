@@ -84,9 +84,15 @@ nothing that a guest could use:
    lock-held import function (below) and, for a new entry, maps the seq to its
    revision number R through `board_imports`. An unchanged re-enable therefore
    adds no revision.
-3. **Pin.** Pin the earlier safe point (on `reuse`) or R with the lock-held
-   pin function; a full pin quota fails here with `pin_quota_full`. Store the
-   pinned number in `content_state.safe_point_rev`.
+3. **Pin.** On `reuse`, pin the earlier safe point S with the lock-held pin
+   function **before** importing the outbox (an import runs retention, which
+   could otherwise delete an unpinned S while recording entries that changed
+   in between). For a new entry, import first and then pin R; retention never
+   deletes the newest revision, and the flat lock keeps other imports out
+   until the pin is done. A full pin quota fails with `pin_quota_full`. Store
+   the pinned number in `content_state.safe_point_rev`. Tested with a revision
+   quota of 2 and member edits that restore S's content after another
+   revision.
 
 **Locking.** The flat mutex is not reentrant, and today `PinRevision` and the
 revision catch-up each take it. They are split into a locked part and a
@@ -324,13 +330,27 @@ back to the savepoint:
 
 | State | Guest cap | How |
 |---|---|---|
-| Receipts | 4 MiB of the 16 MiB | `TrimReceipts` trims guest sessions' receipts first while their total is over 4 MiB |
-| Undo stacks | 8 MiB of the 32 MiB | `TrimUndo` trims guest stacks first while their total is over 8 MiB |
-| Deleted rows | 4 MiB of the 16 MiB | `elements.del_key` (3.2); `TrimDeleted` trims rows deleted by guest keys first while their total is over 4 MiB |
+| Receipts | 4 MiB | guest sessions' receipts |
+| Undo stacks | 8 MiB | guest sessions' stacks |
+| Deleted rows | 4 MiB | rows whose `elements.del_key` is a guest key (3.2) |
 | Sessions | 200 rows, 1 hour TTL | 3.2 |
 | Created-id rows | 5,000 per guest session, 50,000 for all guest sessions | counted in memory from `created`; a guest batch that would add rows over a cap is reject `guest_room`, so id-reuse protection is never dropped to make room |
 | Group-id records | 2,000 group ids first used by guests | `meta.guest_groups` counts new `usedGroups` rows added by guest batches; a guest group op over the cap is reject `guest_room`. These rows stay permanent, as today, so no group id is ever reused |
 | Delta log | shared | see below |
+
+**Trim order** for receipts, undo stacks and deleted rows, each in two steps
+so that guest traffic can never cause a member item to be trimmed:
+
+1. While the guest items exceed their cap, trim guest items (oldest first,
+   in today's order within guests).
+2. While the total exceeds today's global cap (16, 32 and 16 MiB), trim
+   guest items first; only when no guest item is left, trim member items in
+   today's order.
+
+A member item is therefore trimmed only when member items alone exceed the
+global cap, exactly as today without guests. Tested with member state already
+at the global cap before guest traffic starts: no member receipt, undo entry
+or deleted row is trimmed.
 
 The delta log stays shared. Sustained guest traffic, within the per-board
 limit of 4.2, can push older entries out of it, so a member who reconnects
@@ -431,15 +451,25 @@ a revision through `board_imports`.
 
 ## 7. Authorship (board, model)
 
-- Element content gains `lk` (`member`, `guest`, `agent` or `system`: the kind
-  of the last change of any bundle) and `gt` (list of text bundles last written
-  by a guest: any of `text`, `label`, `title`, `alt`).
-- A guest write of a text bundle adds it to `gt`; a member or agent write of
-  that bundle removes it. Any write sets `lk`.
+- Element content gains two fields:
+  - `ta`, text authorship: a map from each text bundle the element has
+    (`text`, `label`, `title`, `alt`) to `{k, n}`, where `k` is the kind of
+    the editor that last wrote that bundle (`member`, `guest`, `agent`,
+    `system`) and `n` is the guest name when `k` is `guest`.
+  - `lk`, the kind of the last change of any bundle.
+- Every write of a text bundle replaces that bundle's `ta` entry; writes of
+  other bundles leave `ta` alone. So a member moving an agent-written sticky
+  keeps `ta.text.k = agent`, and a guest retyping a member's sticky sets
+  `ta.text = {k: guest, n: <name>}`. Any write sets `lk`.
 - Both fields are part of `Content()`, so revision snapshots and `get_revision`
-  carry them. The public projection leaves them out. `get_board` returns them
-  as `last_change` and `guest_text`.
-- Old elements without the fields read as `lk` unknown and `gt` empty.
+  carry them. The public projection leaves them out; the guest projection
+  keeps kinds and guest names (no member names exist in them). `get_board`
+  returns them as `text_authors` and `last_change`.
+- Old elements without the fields read as unknown.
+- Tested: agent writes text, member moves it, guest restyles it, then
+  `get_board`, a revision capture and `get_revision` all report
+  `text_authors.text.kind = agent`; a guest retype reports `guest` with the
+  name.
 
 ## 8. Clients
 
@@ -510,7 +540,7 @@ a revision through `board_imports`.
 | State caps | board test: one guest session creating and deleting elements and groups past the caps gets `guest_room`, and created/group rows stop growing |
 | Kill switch | board test: a batch in flight when the epoch changes is refused; guest sockets get `editing_ended` |
 | Recovery | integration test: guests delete everything, rollback to the revision before the session and to the safe point |
-| Agent safety | `get_board` shows `guest_text` after a member moves a guest-written sticky |
+| Agent safety | `get_board` and `get_revision` show the text authorship of section 7 after later moves and restyles |
 | Console | console UI tests for the dialogs and labels; a real browser check on a disposable development host (console-ui playbook) |
 
 ## 11. Implementation units
