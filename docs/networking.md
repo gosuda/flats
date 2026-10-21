@@ -1,8 +1,8 @@
 # Private and public access
 
 This page is for operators: which networks a Flats host serves on, how to turn
-on Tailscale, Tailscale Funnel, Portal, zrok, Cloudflare quick tunnels and
-NetBird, and how visibility works. The
+on Tailscale, Tailscale Funnel, Portal, zrok, Cloudflare quick tunnels,
+NetBird and your own reverse proxy, and how visibility works. The
 provider state machine is in [Network provider lifecycle](network-provider-lifecycle.md).
 
 ## Providers
@@ -12,11 +12,13 @@ provider state machine is in [Network provider lifecycle](network-provider-lifec
 | Local | Private | `*.localhost` origins on the Flats machine. Always on. |
 | Tailscale | Private | Devices your tailnet ACLs allow |
 | NetBird | Private | Peers your NetBird access policies allow |
+| Reverse proxy (`proxy`) | Private | Whoever your own reverse proxy lets through, at the addresses of `proxy.url_template` |
 | Tailscale Funnel | Public | Anyone on the internet |
 | Portal | Public | Anyone on the internet, through a Portal relay |
 | zrok | Public | Anyone on the internet, through a zrok public share on your zrok account |
 | Cloudflare quick tunnel | Public | Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random `trycloudflare.com` address |
 | NetBird Expose | Public | Anyone on the internet, through NetBird's reverse proxy |
+| Reverse proxy (public) (`proxy-public`) | Public | Anyone on the internet who reaches your own reverse proxy |
 
 The default network is Local; every other provider is off. A provider serves a
 flat only when both of these are on:
@@ -29,7 +31,8 @@ flat only when both of these are on:
    Settings tab.
 
 Permitting Tailscale does not permit Funnel, and permitting NetBird does not
-permit NetBird Expose. Neither permission publishes a
+permit NetBird Expose. The two reverse proxy kinds share one listener, so the
+host turns on at most one of them. Neither permission publishes a
 version or changes visibility.
 
 On a running Public flat, allowing another public provider starts its route
@@ -46,6 +49,24 @@ Private. Allow more providers on a flat to serve it on several networks. The con
 shows a private open button (lock icon) and, while the flat is public, a
 public one (globe icon); a button lists every address when its kind has
 several.
+
+**Which address a flat reports.** A flat's `endpoints` list every route it
+has, Local included. `private_url` is the route on the host's private
+default (`network.default_private`, or Tailscale when that is empty and
+`network.private_backend` is `tailscale`) if the flat allows it and the route
+has an address. Otherwise it is the first of Tailscale, NetBird, reverse proxy
+and Local. A private default of Local means no preference. Readiness does not
+matter for this choice. `public_url` is the ready route on the host's public
+default if the flat has one, otherwise the first ready public route. Previews
+follow the same rule over the routes that serve previews: Local, Tailscale and
+the Private reverse proxy.
+
+**Rename redirects.** After a rename, a request to the old address is
+redirected to the new flat's address on the network the request arrived on.
+Only when the new flat has no route there does it go to `private_url` (for a
+Private route) or `public_url` (for a Public route). A visitor on the Flats
+host who follows an old `*.localhost` link stays on Local, and one who comes
+through the reverse proxy stays on the proxy.
 
 ## Running the console on Tailscale
 
@@ -115,6 +136,127 @@ There is no agent-only mode. See [external-origin configuration](configuration.m
 for validation and live-update behavior. The default empty list preserves
 existing loopback and provider-domain behavior.
 
+## Serving flats behind a reverse proxy
+
+The reverse proxy providers serve flats through a reverse proxy you run, under
+a domain of yours. `proxy` is a Private provider for a proxy that controls who
+gets in; `proxy-public` is a Public provider for a proxy open to the internet.
+Both use one listener, `proxy.addr` (default `127.0.0.1:7880`), and one
+address template, `proxy.url_template`, so the host turns on one of them at a
+time. The console, the management API, MCP and `/metrics` are never served on
+that listener.
+
+To set it up:
+
+1. Point a wildcard DNS name, such as `*.site.example.org`, at your proxy, and
+   give the proxy a certificate for it. Each flat is one DNS label under it,
+   so a single-label wildcard certificate covers every flat, preview and
+   rename redirect.
+2. Have the proxy forward requests to `proxy.addr` with the original `Host`.
+3. Under **Settings → Networks → Reverse proxy**, save the address template,
+   for example `https://{host}.site.example.org`, and choose the kind:
+   Private or Public.
+4. Allow **Reverse proxy** (or **Reverse proxy (public)**) on each flat that
+   should use it, under Networks on the flat's Settings tab. A flat created
+   while `network.default_private` is `proxy` (or `network.default_public` is
+   `proxy-public`) starts allowed on it; existing flats do not gain it.
+
+Caddy keeps the original `Host` by default:
+
+```caddy
+*.site.example.org {
+	tls /etc/ssl/site.example.org/fullchain.pem /etc/ssl/site.example.org/privkey.pem
+	reverse_proxy 127.0.0.1:7880
+}
+```
+
+nginx needs the `Host` set explicitly, and the upgrade headers so that live
+editing of documents, designs and boards works over WebSockets:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 443 ssl;
+    server_name *.site.example.org;
+    ssl_certificate     /etc/ssl/site.example.org/fullchain.pem;
+    ssl_certificate_key /etc/ssl/site.example.org/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:7880;
+        proxy_set_header Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+}
+```
+
+**Who gets in.** With the Private kind, whoever the proxy lets through has
+Private access: they can open Drafts through previews and edit documents,
+designs and boards, as on Local or Tailscale. Flats does not check who the
+visitor is. Your proxy's authentication or network restrictions are the only
+access control, so set one up before you turn on `proxy`. With the
+Public kind, the listener serves only Public flats that allow `proxy-public`,
+with their public access level and notice, and never a Draft, a preview or a
+Private flat. Keep `proxy.addr` on loopback: a client that reaches the
+listener directly skips your proxy, and Flats logs a warning at start when the
+address is not loopback.
+
+**Routing.** The listener accepts a request only when its `Host`, compared
+without case and without a port or trailing dot, is one label followed by the
+template's domain, and that label is a route the listener serves: a flat's
+slug, a preview's name or an old slug that redirects. Any other request gets
+404 with a fixed body that does not repeat the `Host`. Flats then replaces the
+request's `Host` with the address from the template, including the template's
+port, and `X-Forwarded-Proto` with the template's scheme, whatever the proxy
+or client sent. So editing works through a proxy that terminates TLS or drops
+the port, and a server flat sees the address the browser used. The listener
+also strips `Tailscale-User-*` headers. Flats does not use forwarded headers to pick a
+route or build an address.
+
+**Reported addresses.** Each route on the proxy appears in the flat's
+`endpoints` next to its Local route, and `private_url` or `public_url` may
+name it (see [Which address a flat reports](#providers)). Flats cannot see
+whether the proxy, its DNS or its certificate work, so a registered proxy
+route reports `ready` with the detail "Served through your reverse proxy.
+Flats cannot check that the proxy reaches it." Check the address yourself.
+
+**Changes.**
+
+- A template change applies at once to routing and to every reported address;
+  the old addresses get 404 from then on, and Flats does not redirect them.
+  While a kind is on, changing the template or the kind makes every pending
+  approval stale, including version deployments and visibility changes,
+  because an approval shows the addresses it was granted for. The console
+  asks before either change.
+- `proxy.addr` changes only with `flats config set proxy.addr` while Flats is
+  stopped. It applies the next time the listener binds: at start, or when a
+  kind is turned on. It does not affect pending approvals.
+- Turning a kind on checks the template and the other kind, binds the
+  listener and then saves. A taken address refuses the change and saves
+  nothing. Flats refuses to turn a kind off while a flat allows it; once no
+  flat does, Flats saves the change and closes the listener.
+- At start, a permitted kind binds its listener before flats are served. If
+  the address is taken, the host still starts, every proxy route reports
+  `error` with the bind error, and Settings shows it. A restart retries.
+- To switch kinds, remove the current kind from every flat, turn it off, turn
+  the other kind on and allow it per flat. A Public flat that allows
+  `proxy-public` needs an approved change to Private before you can remove it.
+
+**Cookies.** Flats under one parent domain, such as `*.site.example.org`,
+share a registrable domain unless that domain is on the Public Suffix List. A
+flat can then set cookies that its sibling flats receive. Use a dedicated
+domain for flats, apart from the console and other sites.
+
+**Moving from a shim in front of the Local listener.** If your proxy rewrote
+`Host` to `<slug>.localhost` and rewrote the responses, point it at
+`proxy.addr` instead, forward the original `Host`, allow the reverse proxy on
+the flats it should serve and remove the rewriting.
+
 ## Scraping metrics
 
 The host serves [`/metrics`](design.md#metrics) in the Prometheus text format
@@ -159,8 +301,9 @@ An example Grafana dashboard for these metrics, with import steps, is in
 
 ## Removing a permission
 
-Removing a flat's Tailscale permission stops its Private Tailscale current,
-preview and redirect routes before saving the revocation. Local stays
+Removing a flat's Tailscale, NetBird or Private reverse proxy permission stops
+its current, preview and redirect routes on that network before saving the
+revocation. Local stays
 available, and a separately permitted Public Tailscale Funnel route stays up.
 An unconfirmed stop keeps the permission allowed so the operator can retry.
 
@@ -172,7 +315,9 @@ Public provider can be revoked.
 A Local link (`*.localhost`) opens on the machine where you click it. When you
 open the console from another device, such as over the tailnet, it shows Local
 links as "server only" text instead of links, because they would open that
-device rather than the Flats host.
+device rather than the Flats host. While a reverse proxy kind is on, that note
+names the proxy as another way to open a flat from other devices. Reverse
+proxy addresses are ordinary links.
 
 ## Publishing through zrok
 
@@ -350,9 +495,10 @@ Visibility is Private or Public, independently of publication and connection
 state.
 
 - **Private** routes use Local, or permitted Tailscale or NetBird with the
-  existing tailnet ACLs or NetBird access policies.
+  existing tailnet ACLs or NetBird access policies, or a permitted Private
+  reverse proxy with the proxy's own access control.
 - **Public** routes use explicitly permitted Portal, zrok, Tailscale Funnel,
-  Cloudflare quick tunnels or NetBird Expose.
+  Cloudflare quick tunnels, NetBird Expose or a Public reverse proxy.
   Public is not access control: anyone with the URL can open the flat.
 
 Configuration alone never publishes a version or changes visibility. Public

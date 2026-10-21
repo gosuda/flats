@@ -278,7 +278,7 @@ Tailscale choice are described in
 Core never imports expose. Legacy `PrivateNet` and `PublicNet` remain;
 `Config.Lifecycle LifecycleNet` is the provider manager. Canonical IDs:
 `local`, `tailscale`, `tailscale-funnel`, `portal`, `zrok`,
-`cloudflare-quick`, `netbird`, `netbird-expose`.
+`cloudflare-quick`, `netbird`, `netbird-expose`, `proxy`, `proxy-public`.
 
 ```go
 type LifecycleNet interface {
@@ -322,8 +322,8 @@ persisted host gates and backend readiness; per-flat permissions alone are
 insufficient. There is no automatic provider fallback.
 
 Revoking a per-flat grant writes the denied permission only after its routes
-are gone, including preview and rename-redirect routes. For Tailscale and
-NetBird core first confirms `StopProviderRoutes`; for every provider it then
+are gone, including preview and rename-redirect routes. For Tailscale,
+NetBird and `proxy` core first confirms `StopProviderRoutes`; for every provider it then
 checks `HasProviderRoute` (or the observed status). A route still in use
 returns `provider_in_use` and changes nothing, so a public provider is revoked
 only after an approved change to Private. Delete, rename and redirect expiry retire routes through `StopSlug`,

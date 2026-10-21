@@ -1022,8 +1022,9 @@ flats get an isolated copy of the live DB/FILES: preview writes never reach
 live. New previews capture current environment variables, secrets and network
 grants. At most **5 open previews per flat**; a preview closes on the next
 activation of that flat, or after the operator setting `preview_ttl_seconds`
-(default **24 hours**) without visits. Previews are Private (loopback or the
-existing tailnet ACL) and never use Public providers.
+(default **24 hours**) without visits. Previews are Private (loopback, the
+existing tailnet ACL or the operator's reverse proxy) and never use Public
+providers.
 
 ### Readiness
 
@@ -1041,6 +1042,10 @@ one from a pattern. A Local link (`*.localhost`) opens on the machine where it
 is clicked, so it reaches the flat only from the Flats host itself. On a host
 whose private backend is Tailscale, new flats and Draft previews use the
 tailnet address, which other allowed devices can open.
+
+A reverse proxy route (`proxy` or `proxy-public`) reports `ready` as soon as
+Flats serves it, with a detail saying that Flats cannot check the proxy.
+Fetch its URL before you report it as reachable.
 
 For a page, check the Draft preview once in your own browser at desktop
 and phone width, in light and dark, with the check script
@@ -1148,15 +1153,17 @@ Rules:
   Private.
 * **Private** means Local loopback on the host (plain HTTP at
   `<slug>.localhost:<port>`), Tailscale for people and devices the existing
-  tailnet ACL allows, or NetBird for peers the NetBird access policies allow.
+  tailnet ACL allows, NetBird for peers the NetBird access policies allow, or
+  the operator's reverse proxy (`proxy`) for whoever that proxy lets through.
   It is not owner-only access.
 * **Public** means anyone on the internet, through a provider the operator
   permitted for this flat: Portal relay, zrok public share, NetBird Expose,
   Tailscale Funnel (Funnel visitors do not need Tailscale; Tailscale Serve is
   tailnet-only and is not Public) or a Cloudflare quick tunnel (a random
   trycloudflare.com address that can change when Cloudflare drops the
-  tunnel; read the current `public_url` from `get_flat`). A NetBird Expose
-  address also changes each time the flat is exposed again.
+  tunnel; read the current `public_url` from `get_flat`), or the operator's
+  reverse proxy (`proxy-public`). A NetBird Expose address also changes each
+  time the flat is exposed again.
   Public is NOT access control: anyone can open a ready Public route.
 * An Unpublished flat cannot become Public. Requesting the current
   visibility changes nothing.
@@ -1170,7 +1177,7 @@ Rules:
   the public route stays reachable.
 * Local is always permitted. Nonlocal providers (`tailscale`,
   `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird`,
-  `netbird-expose`) need host
+  `netbird-expose`, `proxy`, `proxy-public`) need host
   configuration and per-flat
   operator permission; agents cannot grant either. One standing exception:
   the operator can set one default provider per mode for new flats. A new
@@ -1185,6 +1192,10 @@ Rules:
   `get_flat` reports `publication`, `live_version`, `visibility`, `providers`,
   `connection_state` and `endpoints` as separate fields. Repeat
   `public_notice` whenever you report a public URL.
+* `endpoints` lists every route of a flat, Local included. `private_url` and
+  `public_url` name the route on the host's default network when the flat has
+  one there, otherwise the first by a fixed order. Give the user those URLs,
+  and the Local one only for use on the Flats host itself.
 * `portal_hidden` reports whether Flats asks the Portal relays to keep a
   public flat out of their listings (`portal_listing` is the flat's own
   choice: `default`, `hidden` or `listed`). It is the requested state, not

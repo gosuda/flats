@@ -36,7 +36,7 @@ list.
 | [Agent self-update](agent-self-update.md) | implemented | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
 | [Fast worker cold start](worker-cold-start.md) | implemented | Pre-started worker process and saved document images so workers and sleeping documents answer within 50 ms |
 | [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, optional per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
-| [Flats behind a reverse proxy](reverse-proxy-sites.md) | planned | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
+| [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 
 ## Where the technical designs live
 
@@ -52,4 +52,5 @@ docs:
 | Operator keys, console domains, configuration schema and migrations | [configuration.md](../configuration.md) |
 | Host metrics and flat usage: request and worker accounting, attribution, storage, `/metrics` | [internal/metrics.md](../internal/metrics.md) |
 | NetBird peers and the other network providers | [networking.md](../networking.md), [network-provider-lifecycle.md](../network-provider-lifecycle.md) |
+| Reverse proxy providers: template and listener, Manager and app paths, address selection by host default, rename redirects on the arrival network | [networking.md](../networking.md#serving-flats-behind-a-reverse-proxy), [network-provider-lifecycle.md](../network-provider-lifecycle.md#reverse-proxy), [configuration.md](../configuration.md#reverse-proxy-keys) |
 | Client checks, CLI updates and skill sync | [release.md](../release.md#updating-a-client), [agents.md](../agents.md#keeping-clients-current) |

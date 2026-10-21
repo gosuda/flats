@@ -153,8 +153,8 @@ written; `flats config unset KEY` removes it.
 | `metrics.per_flat` | `true`; set `false` to omit per-flat Prometheus series | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
-| `network.default_private` | `""` (follow `private_backend`) | immediately, for flats created afterwards |
-| `network.default_public` | `""` (no public provider) | immediately, for flats created afterwards |
+| `network.default_private` | `""` (follow `private_backend`); `local`, `tailscale`, `netbird` or `proxy` | immediately, for flats created afterwards |
+| `network.default_public` | `""` (no public provider); `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird-expose` or `proxy-public` | immediately, for flats created afterwards |
 | `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; otherwise restart |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.version_quota` | `20` per flat, `0` = unlimited | immediately; existing versions are kept |
@@ -173,6 +173,8 @@ written; `flats config unset KEY` removes it.
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
 | `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console); otherwise restart |
+| `proxy.url_template` | `""` (none); the reverse proxy's address pattern, such as `https://{host}.site.example.org` | immediately from Settings → Networks → Reverse proxy; otherwise restart |
+| `proxy.addr` | `127.0.0.1:7880`; the listener the reverse proxy forwards to | offline `flats config set` only; when the listener next binds (at start, or when a reverse proxy kind is turned on) |
 | `console.external_origins` | `[]`; explicit HTTP/HTTPS origins with lowercase DNS names and optional ports | immediately from Settings → Console; otherwise restart |
 | `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console); otherwise restart |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
@@ -197,8 +199,9 @@ empty, it also makes every new flat allowed on Tailscale when it is created
 (the operator can turn that off per flat); a non-empty `default_private`
 decides instead. Flats that already exist keep their providers.
 
-`default_private` (`local`, `tailscale` or `netbird`) and `default_public`
-(`tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick` or `netbird-expose`) choose the one provider per mode that
+`default_private` (`local`, `tailscale`, `netbird` or `proxy`) and `default_public`
+(`tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird-expose` or
+`proxy-public`) choose the one provider per mode that
 a new flat is allowed on when it is created, besides Local. Each must be in
 `permitted`; other permitted providers are not granted to new flats. An empty
 `default_private` follows `private_backend`, and an empty `default_public`
@@ -232,6 +235,48 @@ credentials to enter; its per-flat tunnel credentials in `cloudflare-quick/`
 are deleted with the flat. How both providers serve flats is in
 [Publishing through zrok](networking.md#publishing-through-zrok) and
 [Publishing through a Cloudflare quick tunnel](networking.md#publishing-through-a-cloudflare-quick-tunnel).
+
+### Reverse proxy keys
+
+`proxy.url_template` and `proxy.addr` belong to the reverse proxy providers
+`proxy` and `proxy-public`; how they serve flats is in
+[Serving flats behind a reverse proxy](networking.md#serving-flats-behind-a-reverse-proxy).
+The operator sets them in Settings → Networks → Reverse proxy (the template
+only) or with offline `flats config`. MCP, agents and API routes outside the
+console cannot change either key or turn a reverse proxy kind on.
+
+The template is an `http` or `https` URL whose host is `{host}`, a dot and a
+lowercase DNS name, with an optional port:
+
+- `{host}` appears once and makes up the whole leftmost label. Flats puts a
+  flat's slug, a preview's name or an old slug there.
+- The domain after `{host}.` is at most 189 characters, so the address of the
+  longest route (a 63-character preview label) is still a valid DNS name.
+- A port equal to the scheme's default (`:443` for `https`, `:80` for `http`)
+  is refused with a hint to omit it, because browsers leave it out of
+  `Origin`.
+- The same checks as `console.external_origins` refuse a path, query,
+  fragment, user information, IP literal, `localhost` or a `.localhost` name.
+
+Checks across keys, applied to the whole document whenever it is saved or
+loaded:
+
+- `network.permitted` lists at most one of `proxy` and `proxy-public`.
+- Either one needs a template, and the template cannot be cleared while one is
+  permitted.
+- While either one is permitted, `proxy.addr` differs from `host.console_addr`
+  and `host.local_addr` (two ephemeral `:0` ports never collide). While
+  neither is, the address is never bound, so a configuration that already uses
+  `127.0.0.1:7880` for another listener keeps starting.
+- `network.default_private` can be `proxy` and `network.default_public` can be
+  `proxy-public` only while the host permits that kind.
+- No `console.external_origins` entry may be an address the template can
+  produce, that is one DNS label followed by the template's domain. The check
+  runs on the whole document, so whichever of the two is saved second is
+  refused.
+
+Adding both keys with defaults and widening the defaults' allowed values kept
+`schema_version` at 5.
 
 Parsing is strict: UTF-8, at most 1 MiB, no duplicate or unknown keys, no
 `null`, integers written as plain integers. One invalid value rejects the whole
@@ -527,12 +572,13 @@ approvals.
 ### Editing
 
 - **Console**: the system and Portal keys, `network.permitted`,
-  `network.default_private` and `network.default_public` through Networks,
-  and `tailscale.console_hosts` and `netbird.console_hosts` through Console.
+  `network.default_private`, `network.default_public` and
+  `proxy.url_template` through Networks, and `tailscale.console_hosts` and
+  `netbird.console_hosts` through Console.
   A save
   rereads the file under a lock and fails if it changed on disk since the
-  host read it; restart to pick up an outside edit. Host and
-  `network.private_backend` keys are read-only there. A service that still
+  host read it; restart to pick up an outside edit. Host,
+  `network.private_backend` and `proxy.addr` keys are read-only there. A service that still
   passes `--relays` pins the relays, one that passes `--portal`, `--permit` or
   `--network tailscale` pins those providers, and one that passes
   `--console-host` pins the console domains: the console refuses to change

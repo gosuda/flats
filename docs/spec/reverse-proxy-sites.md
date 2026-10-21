@@ -1,8 +1,11 @@
 # Flats behind a reverse proxy
 
-Status: planned. Requested in
-[gosuda/flats#146](https://github.com/gosuda/flats/issues/146). The
-technical design is in [reverse-proxy-sites-TECH.md](reverse-proxy-sites-TECH.md).
+Status: implemented. Requested in
+[gosuda/flats#146](https://github.com/gosuda/flats/issues/146). The design is
+in the architecture docs:
+[serving flats behind a reverse proxy](../networking.md#serving-flats-behind-a-reverse-proxy),
+[network provider lifecycle](../network-provider-lifecycle.md#reverse-proxy)
+and [configuration](../configuration.md#reverse-proxy-keys).
 
 ## Summary
 
@@ -365,14 +368,6 @@ The feature is complete when tests or recorded runs show each of these:
 - **No proxy.** With neither proxy provider on, the flat views, preview
   responses, endpoint lists and redirects of a fixture host match the
   current output except for the cases listed in rule 30.
-
-## Current state
-
-Nothing of this spec is implemented. Flats serves flat sites only on Local
-(`*.localhost`), Tailscale, NetBird and the public providers. `private_url`
-uses the fixed order Tailscale, NetBird, Local; the preview address prefers
-Tailscale over Local; and a rename redirect always goes to the new flat's
-`private_url` or `public_url`.
 
 ## Open questions
 

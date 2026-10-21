@@ -12,7 +12,8 @@ Draft preview with it once before you publish.
   build the URL yourself.
 * Your browser must reach it. A Local preview (`*.localhost`) opens only on
   the Flats host itself; a Tailscale preview opens on devices the tailnet ACL
-  allows. If your browser cannot reach the preview, say so; do not report a
+  allows, and a reverse proxy preview for whoever the operator's proxy lets
+  through. If your browser cannot reach the preview, say so; do not report a
   visual check you did not make.
 
 ### The check: four views, one pass

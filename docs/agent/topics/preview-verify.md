@@ -12,8 +12,9 @@ flats get an isolated copy of the live DB/FILES: preview writes never reach
 live. New previews capture current environment variables, secrets and network
 grants. At most **5 open previews per flat**; a preview closes on the next
 activation of that flat, or after the operator setting `preview_ttl_seconds`
-(default **24 hours**) without visits. Previews are Private (loopback or the
-existing tailnet ACL) and never use Public providers.
+(default **24 hours**) without visits. Previews are Private (loopback, the
+existing tailnet ACL or the operator's reverse proxy) and never use Public
+providers.
 
 ### Readiness
 
@@ -31,6 +32,10 @@ one from a pattern. A Local link (`*.localhost`) opens on the machine where it
 is clicked, so it reaches the flat only from the Flats host itself. On a host
 whose private backend is Tailscale, new flats and Draft previews use the
 tailnet address, which other allowed devices can open.
+
+A reverse proxy route (`proxy` or `proxy-public`) reports `ready` as soon as
+Flats serves it, with a detail saying that Flats cannot check the proxy.
+Fetch its URL before you report it as reachable.
 
 For a page, check the Draft preview once in your own browser at desktop
 and phone width, in light and dark, with the check script

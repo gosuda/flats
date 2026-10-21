@@ -12,8 +12,9 @@ into core through `Config.Lifecycle`, which carries the exported
 
 Provider choice stays separate from visibility and version. Local loopback is
 available with no grant. Tailscale, NetBird, Tailscale Funnel, Portal, zrok,
-Cloudflare quick tunnels (`cloudflare-quick`) and NetBird Expose start
-only when both of these are true:
+Cloudflare quick tunnels (`cloudflare-quick`), NetBird Expose and the two
+reverse proxy kinds (`proxy`, `proxy-public`) start only when both of these
+are true:
 
 1. The host grants that provider (`network.permitted`).
 2. The exposure request lists it in `Permitted`.
@@ -35,16 +36,16 @@ and later become `ready` or `error` through ordinary status polling.
 
 | Request | Providers that may open |
 | --- | --- |
-| Draft, or visibility private | `local` always. `tailscale` and `netbird` only when both gates allow them (`netbird` never for an ephemeral preview). |
-| Audience current and visibility public | `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick` and/or `netbird-expose`, each only when both gates allow it. |
+| Draft, or visibility private | `local` always. `tailscale`, `netbird` and `proxy` only when both gates allow them (`netbird` never for an ephemeral preview). |
+| Audience current and visibility public | `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird-expose` and/or `proxy-public`, each only when both gates allow it. The Private routes it retains include `proxy`. |
 | Ephemeral preview | Private paths only. Public providers return `provider not permitted`. |
 
 If a public request lists no permitted public provider, or none of the
 requested public routes open, `ServeExposure` returns an error. If some open
 and some fail, the result and the joined error are both returned.
 
-`StopPublicRoutes` closes Funnel, Portal, zrok, quick tunnels and NetBird Expose for that slug. Local and tailscale
-routes stay up. A stop error, or a Funnel state that is still `ready` or
+`StopPublicRoutes` closes Funnel, Portal, zrok, quick tunnels, NetBird Expose
+and `proxy-public` for that slug. Local and private routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later
 call can retry. Unconfirmed means the caller must not treat the flat as
 private. This does not remove an allowed private tailnet ACL, and it does not
@@ -80,8 +81,9 @@ The console turns a provider on or off for the host with
 `If-Match` ([HTTP routes](surfaces.md#http-routes)). Turning one on saves
 `network.permitted`, updates the running Manager (`SetGrant`) and attaches the
 provider's backend (`AttachTailnet`, `AttachPortal`, `AttachZrok`,
-`AttachCFQuick`, `AttachNetbird`; nil to set only). Constructing a backend does
-not contact a tailnet, relay or controller. Portal started this way uses the
+`AttachCFQuick`, `AttachNetbird`, `AttachProxy`; nil to set only). Constructing
+a backend does not contact a tailnet, relay or controller; the reverse proxy
+binds its listener, as described in [Reverse proxy](#reverse-proxy). Portal started this way uses the
 Portal settings saved at that moment. Turning one off is refused with
 `provider_in_use` while any flat still allows it; Tailscale and NetBird are
 also refused while that network carries console domains, and Tailscale while
@@ -129,8 +131,8 @@ serve a flat.
 - `Options.Tailscale` is the `Tailnet` interface. `provider.TSNet` adapts
   `*tsnet.Net` and adds `FunnelState`.
 - `Options.Portal` is `PortalNet` (`*portal.Net` satisfies it),
-  `Options.Zrok` is `ZrokNet`, `Options.CFQuick` is `QuickNet` and
-  `Options.Netbird` is `NetbirdNet`. The app assigns an interface only when its
+  `Options.Zrok` is `ZrokNet`, `Options.CFQuick` is `QuickNet`,
+  `Options.Netbird` is `NetbirdNet` and `Options.Proxy` is `ProxyNet`. The app assigns an interface only when its
   concrete backend is non-nil, so a skipped backend is unconfigured rather than
   a typed nil.
 - `TailscaleStateDir`, `ZrokStateDir`, `CFQuickStateDir` and `NetbirdStateDir`
@@ -138,7 +140,8 @@ serve a flat.
   backend is not configured (defaults under the data directory).
 - `Configuration` is the canonical, non-secret desired backend configuration
   hashed into approval policy; `Permission` reads per-flat opt-ins for status;
-  `Grants` are the host grants above.
+  `Grants` are the host grants above. `ProxyTemplate` returns
+  `proxy.url_template` as it is in effect, for the policy token.
 
 A non-nil backend is not permission. Tests inject fakes through these
 interfaces; there is no permit-skipping constructor.
@@ -149,7 +152,10 @@ backends are configured and `Configuration`, excluding transient readiness, so
 a pending approval does not carry over to changed provider configuration. A
 backend skipped by an explicit `--portal=false` is absent from it. Canonical
 nonsecret relay origins and settings bind provider configuration changes
-without binding secrets.
+without binding secrets. While a reverse proxy kind is granted, the token also
+names `proxy:<kind>:<template>`, so a kind or template change makes pending
+approvals stale. `proxy.addr` is left out because it changes no address an
+approval shows, and a host without a reverse proxy keeps its earlier token.
 
 Routes and observed endpoints are keyed by exact host, audience and provider.
 Per-flat permissions are read freshly for status. Confirmed stops prune the
@@ -375,12 +381,106 @@ rebinding, and `Stop` drains every server that may still hold connections
 before deleting the share. Process shutdown deletes every share and keeps
 the names.
 
+## Reverse proxy
+
+`internal/expose/proxy` is the listener an operator's reverse proxy forwards
+to. `proxy.Listen(addr, template)` binds `proxy.addr`; one `Net` serves the
+`proxy` or the `proxy-public` provider, whichever the host grants, from one
+map of route host labels to handlers. It imports no console, API or MCP
+package, and only the Manager registers handlers on it, so the console, the
+management API, MCP and `/metrics` are never served there.
+
+`template` returns the `config.Template` in effect. The listener reads it on
+every request and every `URL` call, so a template saved in Settings applies to
+the next request. `ServeHTTP` resolves `Template.Label(r.Host)`, which
+lowercases, drops a port and a trailing dot, requires the template's domain
+and accepts one label in the slug character set. An unknown or unregistered
+label gets 404 with a fixed body that does not repeat the `Host`. A matched
+request has its `Host` replaced by `Template.Authority(label)` (label, domain
+and the template's port), `X-Forwarded-Proto` replaced by the template's
+scheme and every `Tailscale-User-*` header removed, underscore spellings
+included, before it reaches the handler. Core's origin checks for document,
+design and board edits and the server flat runtime then see the browser's
+address. `Status` reports every registered route `ready` with the detail
+"Served through your reverse proxy. Flats cannot check that the proxy reaches
+it."
+
+Manager paths:
+
+- `servePrivate` opens a `proxy` route when the request lists `proxy`,
+  previews included. `servePublic` retains it among the Private routes of a
+  Public flat, as it retains Tailscale and NetBird.
+- `proxy-public` is in `publicIDs`; `servePublic` opens it like the other
+  public providers, and the ephemeral refusal keeps previews off it.
+- `StopProviderRoutes`, `StopPublicRoutes`, `StopExposure` and `StopSlug`
+  remove matching routes. A proxy route has no remote side and no state on
+  disk, so its stop is confirmed once it leaves the route map.
+- `AttachProxy` keeps a backend already attached. `DetachProxy` refuses while
+  any proxy route is registered and waits for opens in flight.
+
+Core treats `proxy` like Tailscale and NetBird wherever it means "a Private
+route besides Local" (`core.PrivateRouteProvider`): a grant on a live flat
+reconciles its Private route at once, private and preview requests list it,
+and a revocation stops its current, preview and redirect routes before the
+denial is saved. `core.PrivateMeshProvider` still means only the overlay
+networks. `proxy-public` is a `core.PublicProvider`, so its revocation from a
+Public flat waits for an approved change to Private. A new flat gets `proxy`
+when `network.default_private` is `proxy`, and `proxy-public` through the
+existing `network.default_public` grant.
+
+The app (`internal/app`) owns the listener:
+
+- **Start.** When a reverse proxy kind is permitted, the listener binds before
+  `provider.New`, so it exists before core restores flat routes. A bind error
+  is logged and a stand-in backend is attached whose `Serve` returns that
+  error: every proxy route reports `error`, the providers response carries
+  `bind_error`, and the host keeps starting. A non-loopback `proxy.addr` logs
+  a warning.
+- **Turning on.** The candidate `network.permitted` is validated first, which
+  refuses the other kind and a missing template. Then the listener binds at
+  the `proxy.addr` saved at that moment and is attached, and
+  `SetPermittedNetworks` saves. If the bind or the save fails, the change is
+  refused and a listener this call bound is detached and closed.
+- **Turning off.** The usual refusal while a flat allows the provider runs
+  first. Revoking each flat's grant already stopped its proxy routes, so the
+  app saves, detaches and closes the listener. If `DetachProxy` still finds a
+  route, the app reports an error and keeps the listener until restart rather
+  than close a live route.
+
+## Request provider tagging, addresses and redirects
+
+The Manager wraps every handler it registers (Local, Tailscale, NetBird, the
+public providers and the reverse proxy) so that each request carries the
+provider it arrived on: `core.WithRouteProvider` sets it and
+`core.RouteProvider` reads it. The legacy core path without a Manager leaves
+requests untagged.
+
+Core picks the addresses it reports with one function, `preferredRoute`:
+
+- **Private.** Candidates are the flat's allowed current routes with an
+  address, whatever their state. The pick is the route on the effective
+  private default (`network.default_private`, or Tailscale when that is empty
+  and `network.private_backend` is `tailscale`; Local means no preference),
+  otherwise the first of Tailscale, NetBird, `proxy`, Local.
+- **Previews.** The same over Local, Tailscale and `proxy`; NetBird never
+  serves previews. The preview list, `open_preview` and the preview event use
+  it. A Tailscale address that still holds the `<tailnet>` placeholder is
+  reported as pending.
+- **Public.** Candidates are the flat's allowed, ready public routes. The pick
+  is the route on `network.default_public`; without it the earlier selection
+  stays.
+
+A rename redirect asks for a target with the provider the request arrived on:
+the new flat's current address on that provider, otherwise its `private_url`
+for a Private route or its `public_url` for a Public one. While neither exists
+it answers 503 with `Retry-After`. An untagged request uses the fallback.
+
 ## Shutdown
 
 `Host.Close` drains the management HTTP server before it closes networks. It
 then closes core, forgets Manager registrations, closes the legacy public
-backend or the portal backend, the private backend, and any tailnet or local
-backend that was not that private pointer. `Manager.Close` does not call
+backend or the portal backend, the private backend, the reverse proxy
+listener, and any tailnet or local backend that was not that private pointer. `Manager.Close` does not call
 destructive per-route stop methods. The backend owner performs process
 shutdown: `tsnet.Close` preserves persistent node state and identity, while
 explicit delete, revocation, and preview close continue to use logout. Portal
@@ -407,7 +507,7 @@ closes every remaining backend, and reports any retained failure.
 
 ## Private Tailscale revocation
 
-An operator-validated revocation confirms Manager teardown of that flat’s Tailscale current, preview and redirect registrations before writing the denied permission. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route or race a second teardown. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure closes the consumed backend and preserves its persistent state; the next `StopPrivate` call starts a fresh backend over that state and performs a real logout retry in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.
+An operator-validated revocation of Tailscale, NetBird or `proxy` confirms Manager teardown of that flat’s current, preview and redirect registrations on that provider before writing the denied permission. The rest of this section describes Tailscale. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route or race a second teardown. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure closes the consumed backend and preserves its persistent state; the next `StopPrivate` call starts a fresh backend over that state and performs a real logout retry in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.
 
 ## NetBird
 

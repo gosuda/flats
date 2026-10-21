@@ -363,16 +363,23 @@ no build step, no third-party code), one same-origin WebSocket
 ## Exposure
 
 Each flat and each preview is its own host and origin (`<slug>` and
-`<slug>-<8 random>`), so cookies and storage never mix. Local always serves
-the Private route on loopback. Tailscale and NetBird add Private routes only
-for flats that hold their grant. A Public flat is also served by its permitted
-public providers (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or
-NetBird Expose); Public is never access control, and every response that
-returns a public URL carries that notice. Draft and version previews
-(`open_preview`; version 0 is the Draft) are Private only, on Local and, when
-the flat holds the grant, Tailscale; they get an isolated copy of server data,
-close on the flat's next activation and expire after `preview_ttl_seconds`
-(24 h) without a visit. Identity headers are stripped on public routes. The
+`<slug>-<8 random>`), so cookies and storage never mix. Under one parent
+domain, such as the reverse proxy's, sibling flats share a registrable domain
+and can set each other's cookies unless that domain is on the Public Suffix
+List. Local always serves the Private route on loopback. Tailscale, NetBird
+and the Private reverse proxy (`proxy`) add Private routes only for flats that
+hold their grant. A Public flat is also served by its permitted public
+providers (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel, NetBird
+Expose or the public reverse proxy); Public is never access control, and every
+response that returns a public URL carries that notice. Draft and version
+previews (`open_preview`; version 0 is the Draft) are Private only, on Local
+and, when the flat holds the grant, Tailscale and the Private reverse proxy;
+they get an isolated copy of server data, close on the flat's next activation
+and expire after `preview_ttl_seconds` (24 h) without a visit. Identity
+headers are stripped on public routes and on the reverse proxy listener. A
+flat reports the address on the host's default network when it has one there,
+and a rename redirect keeps a visitor on the network they arrived on
+([Providers](networking.md#providers)). The
 operator guide is [Private and public access](networking.md); the provider
 manager's contract is [Network provider lifecycle](network-provider-lifecycle.md).
 
@@ -407,6 +414,13 @@ Implementation notes that the provider docs do not repeat:
   Flats gives tsnet fixed in-process LocalAPI credentials so it never forks
   `lsof`, and `internal/forkwatch` kills a child that stays between fork and
   exec for over 10 s. Worker starts are the only forks left.
+* **Reverse proxy.** The `proxy` and `proxy-public` providers register routes
+  on one listener (`proxy.addr`) that an operator's reverse proxy forwards
+  to. It routes by `proxy.url_template`: `<label>.<domain>` reaches the route
+  of that label, and Flats sets `Host` and `X-Forwarded-Proto` from the
+  template before a handler runs. Flats cannot observe the proxy, so a
+  registered route is `ready` with a detail that says so
+  ([Serving flats behind a reverse proxy](networking.md#serving-flats-behind-a-reverse-proxy)).
 * **Portal listing.** Whether a Public flat appears in relay listings is the
   `portal.hide` host default (off) and a per-flat override (`default`,
   `hidden` or `listed`); a change updates a served route's metadata at once.

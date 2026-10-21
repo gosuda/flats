@@ -250,8 +250,8 @@ under **Networks** on its Settings tab.
 
 | Access | Providers |
 | --- | --- |
-| **Private** | Local (always on), Tailscale (tailnet ACLs), NetBird¹ (access policies) |
-| **Public** | Portal, Tailscale Funnel, zrok, Cloudflare quick tunnel, NetBird Expose¹ |
+| **Private** | Local (always on), Tailscale (tailnet ACLs), NetBird¹ (access policies), your reverse proxy (its own access control) |
+| **Public** | Portal, Tailscale Funnel, zrok, Cloudflare quick tunnel, NetBird Expose¹, your reverse proxy |
 
 ¹ NetBird and NetBird Expose are in the release binary (`install.sh` and the
 container image) but not in `go install`; see
@@ -270,7 +270,8 @@ its endpoint before sharing it: relay availability and network connectivity
 are external dependencies.
 
 See [Private and public access](docs/networking.md) for provider setup,
-tailnet consoles and upgrades from older hosts.
+tailnet consoles, [serving flats behind your own reverse proxy](docs/networking.md#serving-flats-behind-a-reverse-proxy)
+and upgrades from older hosts.
 
 ## Security
 

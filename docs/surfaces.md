@@ -143,7 +143,7 @@ mounted under both prefixes; **console** routes exist only under
 | GET, PUT | `/flats/{slug}/version-quota` | console | GET is the flat view; PUT `{version_quota: n\|null}` (null follows the host) |
 | GET, PUT | `/flats/{slug}/revision-quota` | console | Documents, designs and boards: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
 | GET | `/flats/{slug}/public-edit` | console | Boards: whether anyone-can-edit can take effect now: `{problems, disk_quota, revision_quota, pin_quota, pins, safe_point, safe_point_pinned, listed}` |
-| GET | `/providers` | console | Host providers: grant, backend status, hosts and provider settings |
+| GET | `/providers` | console | Host providers: grant, backend status, hosts and provider settings. Both reverse proxy kinds also carry `address` (the bound listener, or `proxy.addr` while none is bound), `template` and, after a failed bind at start, `bind_error` |
 | PUT | `/providers/{id}` | console | `{enabled}` with the settings ETag in `If-Match` |
 | PUT, DELETE | `/providers/zrok/account` | console | `{token}` connects or replaces the zrok account; DELETE disconnects (`?force=1` removes a stale environment locally) |
 | GET | `/keys` | console | Operator keys: state, source, time and identity, never values |
@@ -217,8 +217,9 @@ permissions and the Portal listing take effect immediately.
   returns page views.
 - **Settings.** `GET settings` returns the settings, defaults,
   `apply_on_restart` and `config` (mode, ETag, `changed_on_disk`, read-only
-  host, network and credential values without paths, per-key sources and flag
-  pins). `PUT settings` saves to `config.json` and returns `applied` and
+  host, network, `proxy.addr` and credential values without paths, per-key
+  sources and flag pins). `proxy_url_template` is one of the settings, so only
+  the console can change it. `PUT settings` saves to `config.json` and returns `applied` and
   `restart_required`. Changes send `If-Match`; 412 means `config.json` changed
   or the page is stale, and 409 means a flag of a service started without
   `--config` pins the key.
@@ -282,8 +283,8 @@ Document saves return `flat` without a Draft or version. Version operations use
 positive numbers and return the pending approval, its status and link. There is
 no decision, provider-permission, settings or key tool, and the MCP handler
 never gains console authority. The server instructions describe Private URLs as
-Local loopback or explicitly permitted Tailscale routes, and pending visibility
-notices use the future tense. Removed tools (`save_version`,
+Local loopback or explicitly permitted Tailscale, NetBird or reverse proxy
+routes, and pending visibility notices use the future tense. Removed tools (`save_version`,
 `save_version_from_dir`, `publish`) have no aliases.
 
 Revision management of documents, designs and boards also happens inside the
@@ -375,22 +376,30 @@ they run once saved.
   sharing, networks, version history quota (websites and pages), revision
   quotas (documents, designs and boards), environment variables, secrets,
   server HTTP(S) permissions and deletion.
-- **Networks** on a flat's Settings: Local (always on), Tailscale and
-  NetBird under Private; Tailscale Funnel, Portal, zrok, Cloudflare Quick
-  Tunnel and NetBird Expose under Public. A provider that is off for the host
+- **Networks** on a flat's Settings: Local (always on), Tailscale, NetBird
+  and Reverse proxy under Private; Tailscale Funnel, Portal, zrok, Cloudflare
+  Quick Tunnel, NetBird Expose and Reverse proxy (public) under Public. An
+  allowed reverse proxy row shows the flat's address on the proxy with the
+  note that Flats cannot check the proxy; the Deployments addresses show the
+  same note next to a proxy address. A provider that is off for the host
   cannot be newly allowed. A flat that allows Portal also has its relay
   listing choice (follow the host setting, hidden or listed), described as the
   listing requested from the relays, which follow at their next lease renewal,
   and not as access control.
 - **Share.** Private or Public, with Visit and Copy link. Making a flat Public
   is refused in the console until it has a live version and allows a public
-  network. The public URL is `public_url`, or the URL of a current Funnel,
-  Portal, zrok, Cloudflare quick tunnel or NetBird Expose endpoint.
+  network. The public URL is `public_url`, or the URL of a current public
+  endpoint.
 - **Settings.** Four pages behind a left nav. Networks: the defaults for new
   flats, then Private and Public providers, each opening its own page with
   Turn on / Turn off, its key (Tailscale auth key, NetBird setup key, zrok
   account token: state and source, never the value), its hosts, its own
-  settings and the flats that allow it. Console: the console's addresses on
+  settings and the flats that allow it. Both reverse proxy pages hold the same
+  section instead of Turn on / Turn off: the address template, the read-only
+  listener address, the kind (Off, Private or Public, which turns `proxy` or
+  `proxy-public` on or off), the Private kind's access warning and a listener
+  error from start. A template change while a kind is on, and every kind
+  change, asks for confirmation and says that pending approvals become stale. Console: the console's addresses on
   every network, the address for links, external reverse-proxy origins and the
   read-only host values. Limits:
   storage, history and traffic. Agents: MCP setup and what the agent tools
