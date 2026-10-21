@@ -694,9 +694,7 @@ func TestPublicEditRealBoard(t *testing.T) {
 	setAccess(t, s, store.Public, store.AccessView)
 	revs := storedRevisions(t, s, "plan")
 	a = requestAccess(t, s, store.Public, store.AccessEdit, ViaConsole)
-	if got, err := s.Decide(ctx, a.ID, true); err != nil && strings.Contains(err.Error(), "ContentEquals not implemented") {
-		t.Skip("re-enabling needs the board server's ContentEquals (unit B)")
-	} else if err != nil || got.Status != "approved" {
+	if got, err := s.Decide(ctx, a.ID, true); err != nil || got.Status != "approved" {
 		t.Fatalf("re-enable = %+v %v", got, err)
 	}
 	if safePointRev(t, s) != sp || !slices.Equal(storedRevisions(t, s, "plan"), revs) {
