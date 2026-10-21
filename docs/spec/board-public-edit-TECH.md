@@ -18,7 +18,7 @@ numbers such as (3.2) refer to this page.
 | Guest projection | Private wire form with every author key and name rewritten by a per-instance label map (`member:N`, `guest:N`, `agent`) |
 | Limits | Guests have their own rate, size, connection, server-state and room limits, checked in the reader and again in the apply loop |
 | Revisions | One shared `guests` group on fixed 5-minute windows. Outbox entries carry guest names separately; core marks guest-only revisions and retires them first above half the quota |
-| Authorship | Two new element content fields: `lk` (last changer kind) and `gt` (text bundles last written by a guest) |
+| Authorship | Two new element content fields: `ta` (per text bundle: kind of the last writer, and the guest name) and `lk` (kind of the last change) |
 
 ## 2. Stored level and approvals (core, store)
 
@@ -517,7 +517,7 @@ a revision through `board_imports`.
 ## 9. Docs
 
 - `docs/agent/topics/board.md`: public access levels, guests, guest-written
-  text is untrusted, `last_change` and `guest_text`.
+  text is untrusted, `text_authors` and `last_change`.
 - `docs/agent/topics/approvals.md`: `access`, `public_edit_blocked`.
 - MCP instructions stay under the 2,300-byte cap; no change there.
 - Regenerate references with `make docs-generate`.
