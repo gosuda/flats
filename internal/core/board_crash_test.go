@@ -192,7 +192,7 @@ func TestBoardKillDuringImportAndRollback(t *testing.T) {
 	}
 	images["blobs stored"] = crashImage(t, dir)
 	res := boardImport{bySeq: map[int64]int{}}
-	if err := s.commitBoardEntries(ctx, "plan", in.StoreID(), entries, &res); err != nil {
+	if err := s.commitBoardEntries(ctx, "plan", in.StoreID(), entries, 0, &res); err != nil {
 		t.Fatal(err)
 	}
 	images["flats.db committed"] = crashImage(t, dir)

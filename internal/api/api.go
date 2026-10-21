@@ -155,6 +155,7 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /flats/{slug}/version-quota", s.putVersionQuota)
 			h("GET /flats/{slug}/revision-quota", s.revisionQuota)
 			h("PUT /flats/{slug}/revision-quota", s.putRevisionQuota)
+			h("GET /flats/{slug}/public-edit", s.publicEdit)
 			h("GET /providers", s.hostProviders)
 			h("PUT /providers/{id}", s.setHostProvider)
 			h("PUT /providers/zrok/account", s.connectZrok)
@@ -188,8 +189,17 @@ func (s *Server) Handler() http.Handler {
 type ErrorBody struct {
 	Error    string             `json:"error"`
 	Category string             `json:"category,omitempty"`
-	Problems []bundle.Problem   `json:"problems,omitempty"`
+	Problems []Problem          `json:"problems,omitempty"`
 	Health   *core.HealthResult `json:"health,omitempty"`
+}
+
+// Problem is one problem of a refused request: an upload's invalid file
+// (Path, Fix) or a reason a board cannot be edited by anyone (Code).
+type Problem struct {
+	Code    string `json:"code,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Message string `json:"message"`
+	Fix     string `json:"fix,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -212,7 +222,15 @@ func errorBody(err error) ErrorBody {
 	body.Category = core.ErrorCategory(err)
 
 	if v, ok := bundle.IsValidation(err); ok {
-		body.Problems = v.Problems
+		for _, p := range v.Problems {
+			body.Problems = append(body.Problems, Problem{Path: p.Path, Message: p.Message, Fix: p.Fix})
+		}
+	}
+	var pe *core.PublicEditBlockedError
+	if errors.As(err, &pe) {
+		for _, p := range pe.Problems {
+			body.Problems = append(body.Problems, Problem{Code: p.Code, Message: p.Message})
+		}
 	}
 	var de *core.DeployError
 	if errors.As(err, &de) && body.Category == "" {
@@ -694,13 +712,14 @@ func (s *Server) closePreview(w http.ResponseWriter, r *http.Request, _ core.Via
 func (s *Server) visibility(w http.ResponseWriter, r *http.Request, via core.Via) {
 	var in struct {
 		Visibility string `json:"visibility"`
+		Access     string `json:"access"`
 		Reason     string `json:"reason"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	res, err := s.Svc.SetVisibility(r.Context(), r.PathValue("slug"), store.Visibility(in.Visibility), via, in.Reason)
+	res, err := s.Svc.SetVisibilityAccess(r.Context(), r.PathValue("slug"), store.Visibility(in.Visibility), in.Access, via, in.Reason)
 	if err != nil {
 		fail(w, err)
 		return
@@ -710,6 +729,16 @@ func (s *Server) visibility(w http.ResponseWriter, r *http.Request, via core.Via
 		code = 202
 	}
 	writeJSON(w, code, res)
+}
+
+// publicEdit reports whether a board can become editable by anyone now.
+func (s *Server) publicEdit(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	st, err := s.Svc.PublicEditPreflight(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, st)
 }
 
 func (s *Server) rename(w http.ResponseWriter, r *http.Request, via core.Via) {

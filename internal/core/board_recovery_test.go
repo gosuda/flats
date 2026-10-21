@@ -108,7 +108,7 @@ func TestBoardImportAcknowledgeCrashWindow(t *testing.T) {
 		}
 	}
 	res := boardImport{bySeq: map[int64]int{}}
-	if err := s.commitBoardEntries(ctx, "plan", in.StoreID(), entries, &res); err != nil {
+	if err := s.commitBoardEntries(ctx, "plan", in.StoreID(), entries, 0, &res); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(res.revisions, []int{2, 3}) {
