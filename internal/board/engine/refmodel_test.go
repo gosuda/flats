@@ -104,7 +104,9 @@ func (b *refBoard) apply(op refOp) bool {
 		if b.els[op.ids[0]] != nil {
 			return false
 		}
-		b.els[op.ids[0]] = &refEl{alive: true, appeared: b.arrival, changed: b.arrival, props: maps.Clone(op.props)}
+		e := &refEl{alive: true, appeared: b.arrival, changed: b.arrival, props: maps.Clone(op.props)}
+		e.wrote(model.BundleText, model.KindMember)
+		b.els[op.ids[0]] = e
 		return true
 	case "set":
 		e := b.target(op.ids[0], op.seen)
@@ -112,6 +114,7 @@ func (b *refBoard) apply(op refOp) bool {
 			return false
 		}
 		e.props[op.prop], e.changed = op.value, b.arrival
+		e.wrote(op.prop, model.KindMember)
 		return true
 	case "delete":
 		any := false
@@ -140,6 +143,7 @@ func (b *refBoard) apply(op refOp) bool {
 		}
 		for _, id := range op.ids {
 			b.els[id].props["group"], b.els[id].changed = strconv.Quote(op.group), b.arrival
+			b.els[id].wrote("group", model.KindMember)
 		}
 		return true
 	case "ungroup":
@@ -147,6 +151,7 @@ func (b *refBoard) apply(op refOp) bool {
 		for _, e := range b.els {
 			if e.alive && e.props["group"] == strconv.Quote(op.group) {
 				e.props["group"], e.changed, any = "null", b.arrival, true
+				e.wrote("group", model.KindMember)
 			}
 		}
 		return any
@@ -200,6 +205,7 @@ func (b *refBoard) agent(ops []refOp, ifChanges *int, ifChanged map[string]int) 
 		switch op.kind {
 		case "set":
 			e.props[op.prop], e.changed = op.value, trial.arrival
+			e.wrote(op.prop, model.KindAgent)
 		case "delete":
 			e.alive, e.deleted, e.changed = false, trial.arrival, trial.arrival
 		}
@@ -209,13 +215,24 @@ func (b *refBoard) agent(ops []refOp, ifChanges *int, ifChanged map[string]int) 
 	return true
 }
 
-// refProps reads an engine element as reference property groups.
+// refProps reads an engine element as reference property groups, with
+// its authorship as two more: who last wrote the text and the kind of the
+// last change (rule 27).
 func refProps(el model.Element) map[string]string {
 	p := map[string]string{}
 	for _, g := range []string{model.BundleGeom, model.BundleText, "style.color", model.BundleLocked, model.BundleGroup} {
 		p[g] = string(model.BundleJSON(g, el.Bundle(g)))
 	}
+	p["ta.text"], p["lk"] = el.TA[model.BundleText].K, el.LK
 	return p
+}
+
+// wrote records a write of property prop by an editor of kind k.
+func (e *refEl) wrote(prop, k string) {
+	e.props["lk"] = k
+	if prop == model.BundleText {
+		e.props["ta.text"] = k
+	}
 }
 
 // compareRef checks that the engine's alive elements equal the model's.

@@ -151,3 +151,39 @@ func TestGuestReviveRules(t *testing.T) {
 		t.Fatalf("authorship %+v %q", el.TA, el.LK)
 	}
 }
+
+// TestAuthorshipOnlyRollback: a rollback that restores the same visible
+// content with other authorship raises the element's ver, so a guard read
+// before fails, and sends the element whole; an ordinary set that changes
+// authorship carries it (TECH public edit 7, board-TECH 8.1).
+func TestAuthorshipOnlyRollback(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "add", El: elOf(map[string]any{"id": eid("a"), "type": "sticky",
+		"x": 0, "y": 0, "w": 100, "h": 100, "text": "plan"})}}, Label: "bot"}); err != nil {
+		t.Fatal(err)
+	}
+	rev := content(h.s)
+	g := h.guest("gus")
+	// The guest retypes the same text: visible content unchanged, text now
+	// guest-written. The set carries the new authorship.
+	out := h.ok(g, Op{Op: OpSet, ID: eid("a"), Inc: h.inc(eid("a")), G: model.BundleText, Val: raw("plan")})
+	c := out.Delta.Changes[0]
+	if c.Author == nil || c.Author.TA[model.BundleText].K != model.KindGuest || c.Author.LK != model.KindGuest {
+		t.Fatalf("set change %+v", c)
+	}
+	ver, _ := h.s.Ver(eid("a"))
+	r, err := h.s.Rollback(1, rev, h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := h.s.Ver(eid("a"))
+	if after <= ver {
+		t.Fatalf("ver %d after the rollback, %d before", after, ver)
+	}
+	if len(r.Delta.Changes) != 1 || r.Delta.Changes[0].Revive == nil || r.Delta.Changes[0].Revive.TA[model.BundleText].K != model.KindAgent {
+		t.Fatalf("rollback delta %+v", r.Delta.Changes)
+	}
+	if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "set", ID: eid("a"), Fields: raw(map[string]any{"text": "x"}), IfVer: raw(ver)}}, Label: "bot"}); err == nil {
+		t.Fatal("a guard read before the authorship change still matched")
+	}
+}

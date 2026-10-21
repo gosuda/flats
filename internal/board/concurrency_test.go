@@ -1,6 +1,7 @@
 package board
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -360,7 +361,13 @@ func TestLargeFrameMoveDeltaArrivesInParts(t *testing.T) {
 		} else {
 			g = model.Geom{X: 500, W: 100000, H: 100000}
 		}
-		wantChanges[e.ID] = canonicalAny(map[string]any{"id": e.ID, "inc": before[e.ID]["inc"], "set": map[string]any{"geom": []any{g, seq}}})
+		want := map[string]any{"id": e.ID, "inc": before[e.ID]["inc"], "set": map[string]any{"geom": []any{g, seq}}}
+		// The member's move makes it the last changer: the set carries the
+		// new authorship, the agent's text authorship unchanged.
+		if before[e.ID]["lk"] != model.KindMember {
+			want["ta"], want["lk"] = cmp.Or(before[e.ID]["ta"], any(map[string]any{})), model.KindMember
+		}
+		wantChanges[e.ID] = canonicalAny(want)
 	}
 	checkChanges := func(changes []map[string]any) error {
 		seen := map[string]bool{}
@@ -518,6 +525,18 @@ func (v *boardView) apply(d map[string]any) error {
 					el["v"] = vs
 				}
 			}
+			// A set that changed the authorship carries it whole (TECH
+			// public edit 7); an empty value is absent in the content form.
+			if ta, ok := c["ta"].(map[string]any); ok {
+				el["ta"] = ta
+				if len(ta) == 0 {
+					delete(el, "ta")
+				}
+				el["lk"] = c["lk"]
+				if c["lk"] == "" {
+					delete(el, "lk")
+				}
+			}
 			v.els[id] = el
 		default:
 			return fmt.Errorf("change %v has no add, revive, del or set", c)
@@ -585,24 +604,15 @@ func serverBoard(b *tb) map[string]map[string]any {
 
 // boardDiff describes how got differs from want, or is empty when every
 // element is present in both with equal canonical JSON.
-//
-// Authorship (ta, lk) is left out: deltas do not carry it, so a canvas
-// learns it only from snapshots.
 func boardDiff(want, got map[string]map[string]any) string {
 	var out []string
-	unauthored := func(m map[string]any) []byte {
-		c := maps.Clone(m)
-		delete(c, "ta")
-		delete(c, "lk")
-		return model.Canonical(c)
-	}
 	for _, id := range sortedKeys(want) {
 		g, ok := got[id]
 		if !ok {
 			out = append(out, "missing "+id)
 			continue
 		}
-		if w, gs := string(unauthored(want[id])), string(unauthored(g)); w != gs {
+		if w, gs := string(model.Canonical(want[id])), string(model.Canonical(g)); w != gs {
 			out = append(out, fmt.Sprintf("%s:\n got %s\nwant %s", id, gs, w))
 		}
 	}

@@ -696,7 +696,8 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 			return model.Change{ID: id, Del: cur.DelSeq}, true
 		}
 		return model.Change{}, false
-	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameUnversioned(old.El, cur.El) || endIncMoved(old, cur):
+	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameUnversioned(old.El, cur.El) || endIncMoved(old, cur) ||
+		old.V[model.VFixed] != cur.V[model.VFixed]:
 		// The author fields and the immutable pen points, image asset and
 		// natural size belong to no bundle, so an element whose such field
 		// a reset rewrote goes out whole, like a new incarnation (4.6). So
@@ -716,7 +717,11 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 	if len(set) == 0 {
 		return model.Change{}, false
 	}
-	return model.Change{ID: id, Inc: cur.Inc, Set: set}, true
+	c := model.Change{ID: id, Inc: cur.Inc, Set: set}
+	if !model.SameAuthorship(old.El, cur.El) {
+		c.Author = &model.Authorship{TA: cur.El.TA, LK: cur.El.LK}
+	}
+	return c, true
 }
 
 // endIncMoved reports whether a connector end's target incarnation changed

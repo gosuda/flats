@@ -181,13 +181,13 @@ func (a *applier) resetElement(el model.Element) {
 		r.El.By, r.El.At = el.By, el.At
 		r.El.Pts, r.El.Asset, r.El.Natural = el.Pts, el.Asset, el.Natural
 		r.El.TA, r.El.LK = el.TA, el.LK
-		if !sameUnversioned(r.El, cur.El) {
+		// Authorship is outside every bundle too: a change of it alone
+		// raises v.fixed, so guards read before it fail and the element
+		// goes out whole (8.1).
+		if !sameUnversioned(r.El, cur.El) || !model.SameAuthorship(r.El, cur.El) {
 			r.V[model.VFixed] = a.seq
 		}
-		// Authorship alone is no bundle and versions nothing: clients keep
-		// the old value until their next snapshot, while the row and the
-		// revision's buckets follow the content.
-		if !maps.Equal(r.V, cur.V) || !model.SameAuthorship(r.El, cur.El) {
+		if !maps.Equal(r.V, cur.V) {
 			a.put(r)
 		}
 		return
