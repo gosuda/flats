@@ -2043,7 +2043,9 @@ func (s *Service) providerNotInUse(ctx context.Context, slug string, id Provider
 	}
 	// An adapter without route inspection cannot prove a running provider idle.
 	lf := s.state(slug)
-	if (PublicProvider(id) && lf.publicServed) || (PrivateRouteProvider(id) && lf.privateServed) || s.cfg.Lifecycle != nil {
+	// Funnel is left out here, as it always was.
+	publicIDs := []ProviderID{ProviderPortal, ProviderZrok, ProviderCloudflareQuick, ProviderNetbirdExpose, ProviderProxyPublic}
+	if (slices.Contains(publicIDs, id) && lf.publicServed) || (PrivateRouteProvider(id) && lf.privateServed) || s.cfg.Lifecycle != nil {
 		return fmt.Errorf("%w: cannot confirm %s routes are stopped", ErrProviderInUse, id)
 	}
 	return nil
