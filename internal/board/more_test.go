@@ -369,3 +369,95 @@ func TestShutdownTellsCanvasesWhy(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+// TestShutdownTellsSocketsBeforeHelloWhy stops the board while a socket has
+// not said hello: it still gets the fatal code (4.8).
+func TestShutdownTellsSocketsBeforeHelloWhy(t *testing.T) {
+	b := newTB(t)
+	c, err := dial(t, b.priv, origin(b.priv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		b.in.hub.mu.Lock()
+		defer b.in.hub.mu.Unlock()
+		return len(b.in.hub.all) == 1
+	})
+	b.in.Shutdown(FatalDeleted)
+	if f := c.expect("fatal"); f["code"] != FatalDeleted || !c.closed(3*time.Second) {
+		t.Fatalf("fatal %v", f)
+	}
+}
+
+// TestShutdownTellsSocketsAcceptedAfterItWhy accepts a socket after closeAll
+// took its snapshot, as a request that entered before Shutdown can: it gets
+// the stored fatal code (4.8).
+func TestShutdownTellsSocketsAcceptedAfterItWhy(t *testing.T) {
+	b := newTB(t)
+	b.in.hub.closeAll(FatalTypeChanged)
+	c, err := dial(t, b.priv, origin(b.priv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := c.expect("fatal"); f["code"] != FatalTypeChanged || !c.closed(3*time.Second) {
+		t.Fatalf("fatal %v", f)
+	}
+}
+
+// TestShutdownTellsLateRegisteredSocketsWhy stops the board while a welcomed
+// socket has not registered yet: it still gets the fatal code (4.8).
+func TestShutdownTellsLateRegisteredSocketsWhy(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		level string
+		pub   bool
+		hello map[string]any
+	}{
+		{"member", "", false, map[string]any{"editor": "alice"}},
+		{"viewer", "", true, nil},
+		{"guest", AccessEdit, true, map[string]any{"guest": map[string]any{"name": "Ana"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newTB(t)
+			if tc.level != "" {
+				b.setLevel(tc.level)
+			}
+			reached := make(chan struct{})
+			hook := func() {
+				close(reached)
+				for {
+					b.in.hub.mu.Lock()
+					stopped := b.in.hub.stopped
+					b.in.hub.mu.Unlock()
+					if stopped {
+						return
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+			registerHook.Store(&hook)
+			defer registerHook.Store(nil)
+			srv := b.priv
+			if tc.pub {
+				srv = b.pub
+			}
+			c, err := dial(t, srv, origin(srv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := map[string]any{"t": "hello", "v": 1, "pending": map[string]any{"count": 0}}
+			for k, v := range tc.hello {
+				m[k] = v
+			}
+			c.send(m)
+			c.expect("welcome")
+			<-reached
+			done := make(chan struct{})
+			go func() { b.in.Shutdown(FatalRenamed); close(done) }()
+			if f := c.expect("fatal"); f["code"] != FatalRenamed || !c.closed(3*time.Second) {
+				t.Fatalf("fatal %v", f)
+			}
+			<-done
+		})
+	}
+}

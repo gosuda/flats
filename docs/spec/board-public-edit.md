@@ -405,11 +405,10 @@ or not measured:
 - Remote display under load is measured as delivery to the other
   connections (50 guests at their limit: p95 23 ms), not as the time until
   the browser has drawn the change.
-- The asset room refusal has no reachable guest path, because guests can only
-  reuse assets live elements already use.
-- Known follow-ups: a replacing import whose change exceeds the public queue
-  closes guest sockets; a narrow race in member-facing departure notices when
-  the same editor reconnects at once.
+- No guest edit can reach the asset room refusal today, because guests can
+  only reuse assets live elements already use. The check stays as a second
+  line of defense, for example if guests may add images later (open
+  question 4), and a unit test calls it directly.
 
 ## Open questions
 
