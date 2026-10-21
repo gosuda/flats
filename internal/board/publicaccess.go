@@ -274,38 +274,45 @@ func (in *Instance) openSessions(extra ...string) map[string]bool {
 }
 
 // onGuestOps reads a guest's batch under the guest limits of the reader
-// (TECH public edit 4.1, 4.2): bytes, frame size and operation count.
-// Over a limit the batch is refused and the socket stays open.
-func (in *Instance) onGuestOps(ctx context.Context, c *conn, raw string) bool {
-	var m struct {
-		N   int64           `json:"n"`
-		Ops json.RawMessage `json:"ops"`
+// (TECH public edit 4.1, 4.2): within tells whether its bytes fitted the
+// board's guest byte budget, which readLoop charged for every frame. A
+// frame over the budget or over the size limit is refused from its batch
+// number alone, without decoding its operations; the socket stays open.
+func (in *Instance) onGuestOps(ctx context.Context, c *conn, raw string, within bool) bool {
+	var head struct {
+		N int64 `json:"n"`
 	}
-	if json.Unmarshal([]byte(raw), &m) != nil || m.N <= 0 {
+	if json.Unmarshal([]byte(raw), &head) != nil || head.N <= 0 {
 		return false
 	}
-	b := &batchReq{c: c, n: m.N, raw: m.Ops}
-	if !in.pub.guestBytes.count(float64(len(raw))) {
+	b := &batchReq{c: c, n: head.N}
+	switch {
+	case !within:
 		b.transient(CodeGuestRate)
 		return true
-	}
-	var ops []json.RawMessage
-	switch {
 	case len(raw) > in.pub.frameMax:
 		b.refuse = &engine.Reject{Code: CodeGuestSize, Detail: "a guest's change is at most " + strconv.Itoa(in.pub.frameMax>>10) + " KiB"}
-	case json.Unmarshal(m.Ops, &ops) == nil && len(ops) > in.pub.opsMax:
-		b.refuse = &engine.Reject{Code: CodeGuestSize, Detail: "a guest's change holds at most " + strconv.Itoa(in.pub.opsMax) + " operations"}
+		return in.submit(ctx, b)
 	}
-	if b.refuse != nil {
-		b.raw = nil
+	var m struct {
+		Ops json.RawMessage `json:"ops"`
+	}
+	var ops []json.RawMessage
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return false
+	}
+	if json.Unmarshal(m.Ops, &ops) == nil && len(ops) > in.pub.opsMax {
+		b.refuse = &engine.Reject{Code: CodeGuestSize, Detail: "a guest's change holds at most " + strconv.Itoa(in.pub.opsMax) + " operations"}
+	} else {
+		b.raw = m.Ops
 	}
 	return in.submit(ctx, b)
 }
 
-// guestPres relays a guest's presence within the reader's byte budget and
-// the board's presence budget for guests.
-func (in *Instance) guestPres(c *conn, raw string) bool {
-	if !in.pub.guestBytes.count(float64(len(raw))) || len(raw) > in.pub.frameMax || !in.pub.guestPres.take(1) {
+// guestPres relays a guest's presence within the board's guest byte and
+// presence budgets.
+func (in *Instance) guestPres(c *conn, raw string, within bool) bool {
+	if !within || len(raw) > in.pub.frameMax || !in.pub.guestPres.take(1) {
 		return true
 	}
 	return in.onPres(c, raw)

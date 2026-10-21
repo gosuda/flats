@@ -1114,6 +1114,9 @@ func (in *Instance) readLoop(r *http.Request, c *conn) error {
 		if err != nil {
 			return err
 		}
+		// Every frame of a guest counts toward the board's guest byte
+		// budget, refused and ignored ones included (TECH public edit 4.2).
+		within := !c.guest || in.pub.guestBytes.count(float64(len(raw)))
 		var head struct {
 			T string `json:"t"`
 		}
@@ -1136,9 +1139,9 @@ func (in *Instance) readLoop(r *http.Request, c *conn) error {
 		var ok bool
 		switch {
 		case c.guest && head.T == "ops":
-			ok = in.onGuestOps(r.Context(), c, raw)
+			ok = in.onGuestOps(r.Context(), c, raw, within)
 		case c.guest && head.T == "pres":
-			ok = in.guestPres(c, raw)
+			ok = in.guestPres(c, raw, within)
 		case head.T == "ops":
 			ok = in.onOps(r.Context(), c, raw)
 		case head.T == "ops_part":

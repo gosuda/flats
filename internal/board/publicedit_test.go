@@ -964,3 +964,26 @@ func TestGuestTokenMustBeIssued(t *testing.T) {
 		t.Fatalf("an expired session's token selected its identity: %v", w4)
 	}
 }
+
+// TestGuestUnknownFrameFlood: frames a board ignores still count toward the
+// guests' byte budget, so a flood of them leaves guests' operations refused
+// until the budget recovers, and the sockets stay open.
+func TestGuestUnknownFrameFlood(t *testing.T) {
+	b := editTB(t)
+	b.in.pub.guestBytes = newBucket(1<<20, 200<<10)
+	flooder, _ := joinGuest(t, b, "Flo", "")
+	other, _ := joinGuest(t, b, "Ana", "")
+	pad := strings.Repeat("p", 100<<10) // larger than a guest frame, too
+	for range 30 {
+		flooder.send(map[string]any{"t": "unknown", "padding": pad})
+	}
+	if m := other.batch(1, sticky(eid(), "", 0)); m["code"] != CodeGuestRate || m["retry"] != true {
+		t.Fatalf("an operation during the flood: %v", m)
+	}
+	if !flooder.quiet(100*time.Millisecond, func(m map[string]any) bool { return m["t"] == "fatal" }) {
+		t.Fatal("the flood closed the socket")
+	}
+	if m := other.settle(1, sticky(eid(), "", 0)); m["t"] != "ack" {
+		t.Fatalf("after the budget recovered: %v", m)
+	}
+}
