@@ -382,9 +382,9 @@ func TestGuestAdmissionCaps(t *testing.T) {
 		if len(admitted) != 50 {
 			t.Fatalf("%d guest sockets admitted, want 50", len(admitted))
 		}
-		if g, _ := b.in.PublicPresence(); g != 50 {
-			t.Fatalf("guests on the board %d", g)
-		}
+		// A guest is counted when its socket registers, which happens just
+		// after its welcome is queued, so the last welcome can arrive first.
+		waitFor(t, func() bool { g, _ := b.in.PublicPresence(); return g == 50 })
 		if _, w := joinViewer(t, b, "", nil); w["access"] != "public" {
 			t.Fatalf("a viewer with 50 guests: %v", w)
 		}

@@ -63,9 +63,8 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 	for i := range gs {
 		gs[i] = dialRaw(t, b.pub.URL, map[string]any{"guest": map[string]any{"name": fmt.Sprintf("Guest %d", i)}}, `"access":"guest"`, "welcome")
 	}
-	if g, _ := b.in.PublicPresence(); g != guests {
-		t.Fatalf("%d guests connected, want %d", g, guests)
-	}
+	// The last guest is counted just after its welcome is queued.
+	waitFor(t, func() bool { g, _ := b.in.PublicPresence(); return g == guests })
 
 	start := time.Now()
 	until := start.Add(d)
