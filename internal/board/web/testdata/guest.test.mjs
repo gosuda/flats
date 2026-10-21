@@ -72,7 +72,7 @@ test('names and tokens live in browser storage, and blocked storage is harmless'
 
 test('authors: a guest socket gets kinds, a member socket objects', () => {
   assert.equal(byKind('guest'), 'guest');
-  assert.equal(byKind({ kind: 'agent', label: 'Claude' }), 'agent');
+  assert.equal(byKind({ kind: 'agent', label: 'Helper' }), 'agent');
   assert.equal(byKind(null), '');
   assert.deepEqual(who('member'), { text: 'A member', guest: false });
   assert.deepEqual(who('guest'), { text: 'A guest', guest: false }, 'no name, so no badge after a generic word');
@@ -294,7 +294,7 @@ test('notices mark a guest author from a member socket with the guest badge', ()
   const member = overwriteNotice({ kind: 'person', label: 'Mina guest' }, '');
   assert.ok(!member.children.some((c) => c.className === 'badge guest'));
   assert.equal(textOf(member), 'Mina guest just changed this element, so the text you wrote was overwritten.');
-  assert.equal(textOf(activityNotice({ kind: 'agent', label: 'Claude' }, 'added 1 element')), 'Claude added 1 element.');
+  assert.equal(textOf(activityNotice({ kind: 'agent', label: 'Helper' }, 'added 1 element')), 'Helper added 1 element.');
   assert.equal(textOf(activityNotice(null, 'added 1 element')), 'The agent added 1 element.');
 });
 
