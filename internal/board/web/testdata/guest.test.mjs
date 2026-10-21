@@ -385,7 +385,12 @@ test('the element list tells members a guest created the element', async () => {
   const app = { isMember: true, names: new Map([['guest:0123456789abcdef', 'Pat']]), doc: { get: () => null, index: { connectorsOf: () => [] } } };
   const label = (a) => A11yTree.prototype.label.call({ app: a }, el);
   assert.match(label(app), /Created by Pat \(guest\)$/);
-  assert.match(label({ ...app, names: new Map() }), /Created by Guest \(guest\)$/, 'a creator who left is not named after a later writer');
+  assert.match(label({ ...app, names: new Map() }), /Created by Guest \(guest\)$/, 'a creator who left is just Guest');
+  // A later guest text writer (Kai) never lends its name to the creator line.
+  const rewritten = { ...el, ta: { text: { k: 'guest', n: 'Kai' } }, lk: 'guest' };
+  assert.match(A11yTree.prototype.label.call({ app: { ...app, names: new Map() } }, rewritten), /Created by Guest \(guest\)$/, 'a creator who left is not named after a later writer');
+  assert.match(A11yTree.prototype.label.call({ app }, rewritten), /Created by Pat \(guest\)$/, 'creator Pat stays named after Kai rewrote the text');
+  assert.doesNotMatch(A11yTree.prototype.label.call({ app: { ...app, names: new Map() } }, rewritten), /Kai/);
   assert.doesNotMatch(label({ ...app, isMember: false }), /guest/, 'guests and viewers get no author names');
   assert.doesNotMatch(A11yTree.prototype.label.call({ app }, { ...el, by: 'browser:pat' }), /Created by/);
 });
