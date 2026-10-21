@@ -129,10 +129,14 @@ And one for consistency:
     open document as "Viewer N" entries (or a count above 20). A viewer sends
     nothing but its connection and token, receives no presence, and has no
     cursor or selection, as today.
-11. **The prompt is an overlay on the live document.** The name prompt appears
-    over the live rendered document, which keeps updating behind it, not
-    instead of it. A viewer who has the document open when the level goes to
-    `edit` gets the same prompt and stays a reader until they type a name.
+11. **The prompt never hides the live document.** As on a board: a visitor
+    who arrives at level `edit` without a remembered name gets the name dialog
+    over the live document; a visitor who closes it, has a remembered name, or
+    already has the document open when the level goes to `edit` gets the
+    board's join panel at the bottom of the page instead. Until they join they
+    can only read. The header shows a guest "You are Mina" with the guest
+    badge and **Change name**, and a viewer "You are Viewer 3", as a board's
+    top bar does.
 12. **Guest presence.** At level `edit`, guests and Private editors see each
     other in the people list and see each other's cursors and selections in
     the editor, as Private editors do today.
@@ -173,8 +177,10 @@ And one for consistency:
 17. **Can.** Edit the text of every document of the flat in the editor; type,
     paste, cut, copy and delete text; undo and redo the guest's own edits;
     switch between Edit and View; move between the flat's documents; read,
-    expand and export Mermaid diagrams and edit their source as text; and
-    download the current Markdown of the open document.
+    expand and export Mermaid diagrams with their existing controls and edit
+    their source as text. Downloading unconfirmed text is offered when editing
+    stops (rules 22 and 29); there is no other download control, for guests or
+    for anyone else, as today.
 18. **Cannot.** History (list, open, compare, pin, restore), the block outline
     and other reads of a document's structure that only Private routes have
     today, the agent edit and host operations, adding, renaming or removing
@@ -229,8 +235,10 @@ determined flood is **Stop guest editing**, and the confirmation text says so.
 23. **Per-flat connection limits.** A flat has a maximum number of
     simultaneous guest connections and of new guest connections per minute,
     and a separate, larger limit for viewers, all apart from the connections
-    Private editors use. A visitor who cannot get in is told the document is
-    full.
+    Private editors use. A visitor who cannot join as a guest is told the
+    document is full and keeps reading as a viewer, as on a board; a visitor
+    refused by the viewer limit is told the document has too many readers and
+    to try again later.
 24. **Reserved room.** Private editors keep room that guests cannot use:
     - **Disk.** As board public rule 24: a reserved share of the disk quota,
       and an absolute guest byte budget per flat charged by the measured
