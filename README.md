@@ -11,7 +11,7 @@
 <h1 align="center">Flats</h1>
 
 <p align="center">
-  Sites, apps, documents and designs — built by agents, hosted on your machine.
+  Sites, apps, documents, designs and boards — built by agents, hosted on your machine.
 </p>
 
 <p align="center">
@@ -31,7 +31,8 @@
 
 Flats turns your own machine into a home for the things you build with AI.
 Deploy a website, run a small server app, share an HTML page, collaborate
-on a Markdown document or lay out a design canvas. Start Private on local
+on a Markdown document, lay out a design canvas or brainstorm on a whiteboard.
+Start Private on local
 loopback, then choose who can reach it through explicitly permitted network
 providers.
 
@@ -50,6 +51,7 @@ endpoint. **No hosted Flats control plane.**
 | **Page** | A single HTML document with bundled assets: charts, reports and visualizations | The same Draft, version and deployment flow as websites. No server code or data storage. |
 | **Document** | Live, collaborative Markdown | Create or save to run immediately, initially Private. No Draft, versions or publish step. |
 | **Design** | A canvas of HTML artboards: screens, landing pages, posters and click-through prototypes | Changes are live at once, initially Private. Every change is kept as a revision you can pin or roll back. |
+| **Board** | An infinite-canvas whiteboard with sticky notes, shapes, connectors, text, pen strokes, images and frames | Create or edit to run immediately, initially Private. No Draft, versions or publish step. Revisions support pins and rollback. |
 
 Websites and pages follow the **version model**: you work on a Private Draft
 while the live version keeps serving, and previews use isolated data. Saving a
@@ -57,14 +59,18 @@ version (v1, v2, ...) and deploying it are separate approved steps, so a
 version can exist without ever going live. Publication and rollback require
 console approval.
 
-Documents and designs are edited live by people and agents together: private
+Documents, designs and boards are edited live by people and agents together: private
 visitors can edit while public visitors read, and changes to an already Public
 flat are visible immediately. Documents merge agent saves into people's edits;
-designs keep every change as a whole-canvas revision. **Changing visibility in
+designs keep every change as a whole-canvas revision. Boards record each agent
+write as one revision and group each person's edits into revisions. **Changing visibility in
 either direction requires approval for every type.**
 
 Explore [content types](docs/content-types.md) for the full lifecycle and
-agent tools, including `save_page`, `update_document` and `save_design`.
+agent tools, including `save_page`, `update_document` and `save_design`. The
+[Boards guide](docs/content-types.md#boards) covers `get_board`, `update_board`,
+live collaboration, imports and history. Choose a board for ideas people will
+move and connect; choose a design for HTML screens and prototypes.
 
 ## Quick start
 
@@ -258,7 +264,7 @@ Funnel permission.
 
 Making a flat Public requires an approved transition and a configured,
 permitted public route. Websites and pages also need a published version;
-documents and designs run without publication. Configuration alone never
+documents, designs and boards run without publication. Configuration alone never
 publishes or changes visibility. Wait for a route to report ready and verify
 its endpoint before sharing it: relay availability and network connectivity
 are external dependencies.
