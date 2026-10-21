@@ -88,11 +88,12 @@ body.history-open .board { right: 380px; }
 .board:focus { outline: none; }
 .board canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .layer-dynamic { cursor: default; outline: none; }
-.layer-dynamic[data-tool=hand], .layer-dynamic.space { cursor: grab; }
-.layer-dynamic.panning { cursor: grabbing; }
 .layer-dynamic[data-tool=sticky], .layer-dynamic[data-tool=text], .layer-dynamic[data-tool=shape], .layer-dynamic[data-tool=frame],
 .layer-dynamic[data-tool=connector], .layer-dynamic[data-tool=pen] { cursor: crosshair; }
 .layer-dynamic[data-tool=eraser] { cursor: cell; }
+/* After the tool cursors: same specificity, so Space and panning show the hand with any tool. */
+.layer-dynamic[data-tool=hand], .layer-dynamic.space { cursor: grab; }
+.layer-dynamic.panning { cursor: grabbing; }
 .board-ui { position: absolute; inset: 0; pointer-events: none; }
 .board-ui > * { pointer-events: auto; }
 

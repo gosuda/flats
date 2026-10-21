@@ -709,7 +709,7 @@ class App {
     const k = e.key;
     if (mod && k.toLowerCase() === 'f') { e.preventDefault(); this.find.open(); return; }
     if (this.typing(e) || document.querySelector('dialog[open]')) return;
-    if (k === ' ' && !mod) { this.space = true; $('.layer-dynamic').classList.add('space'); e.preventDefault(); return; }
+    if (k === ' ' && !mod) { this.space = true; const d = $('.layer-dynamic'); d.classList.add('space'); d.style.cursor = ''; e.preventDefault(); return; }
     if (mod && (k === '=' || k === '+')) { e.preventDefault(); this.zoomBy(1.25); return; }
     if (mod && k === '-') { e.preventDefault(); this.zoomBy(0.8); return; }
     if (mod && k === '0') { e.preventDefault(); this.zoomAt(this.renderer.w / 2, this.renderer.h / 2, 1); return; }

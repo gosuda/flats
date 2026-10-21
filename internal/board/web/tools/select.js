@@ -65,7 +65,7 @@ export class SelectTool {
 
   hover(e, p, s) {
     const hd = this.handleAt(s);
-    this.app.renderer.dyn.style.cursor = hd ? CURSORS[hd.kind] : '';
+    this.app.renderer.dyn.style.cursor = hd && !this.app.space ? CURSORS[hd.kind] : '';
   }
 
   down(e, p, s) {
