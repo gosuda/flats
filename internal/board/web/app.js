@@ -35,6 +35,8 @@ import { EraserTool } from './tools/eraser.js';
 import { ImageTool, uploadImages } from './tools/image.js';
 
 const MIN_Z = 0.1, MAX_Z = 4;
+// Status text for the fatal codes a visitor can act on (the dialog explains).
+const STOPPED = { full: 'Board full', name_invalid: 'Name needed', editing_ended: 'Editing ended' };
 const TOO_LARGE = 'This change is too large to send at once. Try a smaller selection.';
 
 const TOOLBAR = [
@@ -905,7 +907,7 @@ class App {
       return;
     }
     el.hidden = false;
-    if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = 'Editing stopped'; }
+    if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = STOPPED[this.stopped] || 'Editing stopped'; }
     else if (!this.net.connected) {
       cls = 'offline'; el.appendChild(icon('wifi-off'));
       text = this.net.connecting ? 'Connecting…' : `Disconnected · Reconnecting${pend ? ` (${plural(pend, 'unsent edit')})` : ''}`;
@@ -1129,6 +1131,10 @@ class App {
   // guestEditingEnded shows the banner after finishGuestEditing; a viewer
   // cannot send the dropped edits, and a later guest session must not.
   guestEditingEnded(unsent) {
+    // Nothing of the guest's editing state stays drawn in the viewer view.
+    this.select([]);
+    this.focusId = null;
+    this.presence.send({ sel: [], drag: null, edit: null, c: null });
     this.join = false;
     this.guestEnded = true;
     this.banner('ended', unsent);

@@ -337,3 +337,51 @@ test('ending guest editing keeps the text of an open editor for recovery', (t) =
   assert.equal(finishGuestEditing(app), 0);
   assert.equal(recovery, null);
 });
+
+// A recording 2D context: enough for Painter.sticky.
+function recorder() {
+  const calls = [];
+  const ctx = new Proxy({ calls, font: '', measureText: (s) => ({ width: String(s).length * 6 }) }, {
+    get(target, k) {
+      if (k in target) return target[k];
+      return (...args) => { calls.push([k, ...args]); };
+    },
+    set(target, k, v) { target[k] = v; return true; },
+  });
+  return ctx;
+}
+
+test('a member sees a guest author line with a separately drawn guest badge', async () => {
+  const { Painter } = await import('../render.js');
+  const { authorOf } = await import('../schema.js');
+  const names = new Map([['guest:0123456789abcdef', 'Pat']]);
+  assert.deepEqual(authorOf({ by: 'guest:0123456789abcdef' }, names), { name: 'Pat', guest: true });
+  assert.deepEqual(authorOf({ by: 'guest:ffff', ta: { text: { k: 'guest', n: 'Kai' } } }, names), { name: 'Kai', guest: true }, 'a guest who left is named from the text authorship');
+  assert.deepEqual(authorOf({ by: 'guest:ffff' }, names), { name: 'Guest', guest: true });
+  assert.deepEqual(authorOf({ by: 'ts:pat@example.com' }, names), { name: 'pat', guest: false });
+  const sticky = (by) => ({ id: 'e_s', type: 'sticky', x: 0, y: 0, w: 200, h: 160, rot: 0, z: 'V', text: '', by });
+  const painter = new Painter({ theme: THEMES.light, names, showAuthors: true, get: () => null });
+  const texts = (by) => {
+    const ctx = recorder();
+    painter.sticky(ctx, sticky(by), 1, 0);
+    return ctx.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]);
+  };
+  assert.deepEqual(texts('guest:0123456789abcdef'), ['Pat', 'guest'], 'the badge is its own drawn text after the name');
+  // A member typing the same name gets no badge.
+  names.set('browser:pat', 'Pat');
+  assert.deepEqual(texts('browser:pat'), ['Pat']);
+  // A guest named "Pat guest" still gets the real badge after the name.
+  names.set('guest:0123456789abcdef', 'Pat guest');
+  assert.deepEqual(texts('guest:0123456789abcdef'), ['Pat guest', 'guest']);
+});
+
+test('the element list tells members a guest made the last change', async () => {
+  installDOM();
+  const { A11yTree } = await import('../a11y.js');
+  const el = { id: 'e_s', type: 'sticky', x: 0, y: 0, w: 200, h: 160, rot: 0, z: 'V', text: 'Hi', by: 'guest:0123456789abcdef' };
+  const app = { isMember: true, names: new Map([['guest:0123456789abcdef', 'Pat']]), doc: { get: () => null, index: { connectorsOf: () => [] } } };
+  const label = (a) => A11yTree.prototype.label.call({ app: a }, el);
+  assert.match(label(app), /Last changed by Pat \(guest\)$/);
+  assert.doesNotMatch(label({ ...app, isMember: false }), /guest/, 'guests and viewers get no author names');
+  assert.doesNotMatch(A11yTree.prototype.label.call({ app }, { ...el, by: 'browser:pat' }), /Last changed/);
+});
