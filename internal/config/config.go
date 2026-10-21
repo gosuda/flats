@@ -43,7 +43,7 @@ const (
 
 // Network providers that network.permitted may name, in canonical order.
 // Local is always available and is not listed.
-var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose"}
+var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose", "proxy", "proxy-public"}
 
 type kind int
 
@@ -71,7 +71,7 @@ type spec struct {
 }
 
 // sections lists the top-level objects in file order.
-var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "console", "metrics", "credentials"}
+var sections = []string{"host", "network", "tailscale", "system", "portal", "zrok", "netbird", "proxy", "console", "metrics", "credentials"}
 
 // specs lists every key in file order. The defaults are frozen.
 var specs = []spec{
@@ -86,7 +86,7 @@ var specs = []spec{
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
-		hint: `list any of "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird" and "netbird-expose" once each; local is always available`},
+		hint: `list any of "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose", "proxy" and "proxy-public" once each; local is always available`},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
 	// The providers a new flat is allowed on from the start, one per mode.
@@ -94,9 +94,9 @@ var specs = []spec{
 	// flats get no public provider. A new flat is always Private: a public
 	// default is only a permission, never exposure.
 	{key: "network.default_private", kind: kindString, def: "", check: checkDefaultPrivate,
-		hint: `use "local", "tailscale" or "netbird", or "" to follow network.private_backend`},
+		hint: `use "local", "tailscale", "netbird" or "proxy", or "" to follow network.private_backend`},
 	{key: "network.default_public", kind: kindString, def: "", check: checkDefaultPublic,
-		hint: `use "tailscale-funnel", "portal", "zrok", "cloudflare-quick" or "netbird-expose", or "" for none`},
+		hint: `use "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird-expose" or "proxy-public", or "" for none`},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
 	// numbers everywhere), as the settings table did.
 	// The console's tailnet names, in the order they were added. Each one is
@@ -136,6 +136,12 @@ var specs = []spec{
 	// its own NetBird peer.
 	{key: "netbird.console_hosts", kind: kindList, def: []string{}, check: checkConsoleHosts,
 		hint: "list lowercase DNS labels such as flats once each, or [] to keep the console off NetBird"},
+	// The address pattern of the reverse proxy that serves flats for the
+	// proxy and proxy-public providers, and the listener it forwards to.
+	{key: ProxyTemplateKey, kind: kindString, def: "", check: checkURLTemplate,
+		hint: `use http:// or https:// followed by {host}. and a lowercase DNS name, such as https://{host}.site.example.org, or "" for none`},
+	{key: "proxy.addr", kind: kindString, def: "127.0.0.1:7880", check: checkAddr,
+		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7880"},
 	// Origins declared by the operator for reverse proxy access.
 	{key: ExternalOriginsKey, kind: kindList, def: []string{}, check: checkExternalOrigins,
 		hint: "list exact http:// or https:// DNS origins, without a path, once each"},
@@ -461,7 +467,7 @@ func ephemeralPort(addr string) bool {
 
 func checkDefaultPrivate(v any) (any, error) {
 	switch s := v.(string); s {
-	case "", "local", "tailscale", "netbird":
+	case "", "local", "tailscale", "netbird", "proxy":
 		return s, nil
 	default:
 		return nil, fmt.Errorf("%q is not a private provider", s)
@@ -470,7 +476,7 @@ func checkDefaultPrivate(v any) (any, error) {
 
 func checkDefaultPublic(v any) (any, error) {
 	switch s := v.(string); s {
-	case "", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird-expose":
+	case "", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird-expose", "proxy-public":
 		return s, nil
 	default:
 		return nil, fmt.Errorf("%q is not a public provider", s)
@@ -496,7 +502,7 @@ func checkPermitted(v any) (any, error) {
 			return nil, fieldErr(path, "remove it; local is always available", "local is not a grant")
 		}
 		if !slices.Contains(providers, p) {
-			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird" or "netbird-expose"`, "unknown provider %q", p)
+			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose", "proxy" or "proxy-public"`, "unknown provider %q", p)
 		}
 		if slices.Contains(list[:i], p) {
 			return nil, fieldErr(path, "list each provider once", "duplicate provider %q", p)
@@ -694,6 +700,7 @@ type Config struct {
 	Portal        PortalConfig
 	Zrok          ZrokConfig
 	Netbird       NetbirdConfig
+	Proxy         ProxyConfig
 	Console       ConsoleConfig
 	Metrics       MetricsConfig
 	Credentials   CredentialsConfig
@@ -717,7 +724,7 @@ type TailscaleConfig struct {
 type NetworkConfig struct {
 	Permitted      []string // canonical order; never contains "local"
 	PrivateBackend string   // "local" or "tailscale"
-	DefaultPrivate string   // "", "local" or "tailscale"; "" follows PrivateBackend
+	DefaultPrivate string   // "", "local", "tailscale", "netbird" or "proxy"; "" follows PrivateBackend
 	DefaultPublic  string   // "" or a public provider in Permitted
 }
 
@@ -763,6 +770,12 @@ type PortalConfig struct {
 type NetbirdConfig struct {
 	ManagementURL string
 	ConsoleHosts  []string // the console's NetBird names, in order
+}
+
+// ProxyConfig is the proxy section.
+type ProxyConfig struct {
+	Template Template // the zero Template while proxy.url_template is ""
+	Addr     string
 }
 
 // ConsoleConfig is the console section.
@@ -917,6 +930,10 @@ func (c *Config) fill() error {
 	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
 	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
+	c.Proxy = ProxyConfig{Addr: str("proxy.addr")}
+	if s := str(ProxyTemplateKey); s != "" {
+		c.Proxy.Template, _ = ParseTemplate(s) // checked by checkURLTemplate
+	}
 	c.Console = ConsoleConfig{PreferredHost: str(PreferredHostKey), ExternalOrigins: list(ExternalOriginsKey)}
 	c.Metrics = MetricsConfig{
 		Enabled: flag("metrics.enabled"), ExposeOn: list("metrics.expose_on"), PerFlat: flag("metrics.per_flat"),
@@ -941,7 +958,7 @@ func (c *Config) fill() error {
 		errs = append(errs, fieldErr("netbird.console_hosts", `add "netbird" to network.permitted or remove the console hosts`,
 			"netbird is not permitted"))
 	}
-	if p := c.Network.DefaultPrivate; (p == "tailscale" || p == "netbird") && !slices.Contains(c.Network.Permitted, p) {
+	if p := c.Network.DefaultPrivate; (p == "tailscale" || p == "netbird" || p == "proxy") && !slices.Contains(c.Network.Permitted, p) {
 		errs = append(errs, fieldErr("network.default_private", fmt.Sprintf(`add %q to network.permitted or use "local"`, p),
 			"%s is not permitted", p))
 	}
@@ -949,11 +966,42 @@ func (c *Config) fill() error {
 		errs = append(errs, fieldErr("network.default_public", fmt.Sprintf(`add %q to network.permitted or clear the default`, p),
 			"%s is not permitted", p))
 	}
+	errs = append(errs, c.checkProxy()...)
 	if !c.Portal.Discovery && len(c.Portal.Relays) == 0 {
 		errs = append(errs, fieldErr("portal.discovery", "list portal.relays or set discovery to true",
 			"false needs at least one relay"))
 	}
 	return errors.Join(errs...)
+}
+
+// checkProxy checks the rules that span the proxy keys: one proxy kind at a
+// time, a template while either kind is permitted, a listener address of its
+// own, and no console origin the template can produce.
+func (c *Config) checkProxy() []error {
+	var errs []error
+	private, public := slices.Contains(c.Network.Permitted, "proxy"), slices.Contains(c.Network.Permitted, "proxy-public")
+	if private && public {
+		errs = append(errs, fieldErr("network.permitted", `remove "proxy" or "proxy-public"; they share one listener and template`,
+			"proxy and proxy-public cannot both be permitted"))
+	}
+	if (private || public) && c.Proxy.Template == (Template{}) {
+		errs = append(errs, fieldErr(ProxyTemplateKey, `set an address pattern such as https://{host}.site.example.org, or remove "proxy" and "proxy-public" from network.permitted`,
+			"is required while a proxy provider is permitted"))
+	}
+	// Two free ports never collide.
+	for _, other := range []struct{ key, addr string }{{"host.console_addr", c.Host.ConsoleAddr}, {"host.local_addr", c.Host.LocalAddr}} {
+		if other.addr == c.Proxy.Addr && !ephemeralPort(other.addr) {
+			errs = append(errs, fieldErr("proxy.addr", "use a port different from "+other.key, "%s is also %s", other.addr, other.key))
+		}
+	}
+	for i, origin := range c.Console.ExternalOrigins {
+		if u, err := url.Parse(origin); err == nil && c.Proxy.Template.produces(u.Hostname()) {
+			errs = append(errs, fieldErr(fmt.Sprintf("%s[%d]", ExternalOriginsKey, i),
+				"remove the origin or change "+ProxyTemplateKey,
+				"%q is an address %s can produce", origin, ProxyTemplateKey))
+		}
+	}
+	return errs
 }
 
 func sortedKeys[V any](m map[string]V) []string {
