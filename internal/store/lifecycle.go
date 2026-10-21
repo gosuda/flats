@@ -534,14 +534,29 @@ func (s *Store) RejectApprovalAuthorized(ctx context.Context, id, actor, result 
 	return nil
 }
 
-// CommitVisibility records policy and an execution receipt in one transaction.
-func (s *Store) CommitVisibility(ctx context.Context, f Flat, from Visibility, approval string, data json.RawMessage) error {
+// CommitVisibility records policy and an execution receipt in one
+// transaction. It writes f's visibility and public access level and counts
+// the change in access_seq, only while the flat still has from's
+// visibility, level, access_seq and live version. Private has no level,
+// Public has view or edit, and only a board can be edit.
+func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval string, data json.RawMessage) error {
+	if !validAccess(f.Visibility, f.PublicAccess) {
+		return fmt.Errorf("public access %q is not valid for visibility %s", f.PublicAccess, f.Visibility)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE flats SET visibility=?,updated_at=? WHERE slug=? AND visibility=? AND live_version=?`, string(f.Visibility), unix(f.UpdatedAt), f.Slug, string(from), f.LiveVersion)
+	if f.PublicAccess == AccessEdit {
+		if ok, err := isBoardTx(ctx, tx, f.Slug); err != nil {
+			return err
+		} else if !ok {
+			return errors.New("only a board can be edited by anyone")
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE flats SET visibility=?,public_access=?,access_seq=access_seq+1,updated_at=? WHERE slug=? AND visibility=? AND public_access=? AND access_seq=? AND live_version=?`,
+		string(f.Visibility), f.PublicAccess, unix(f.UpdatedAt), f.Slug, string(from.Visibility), from.PublicAccess, from.AccessSeq, from.LiveVersion)
 	if err != nil {
 		return err
 	}
