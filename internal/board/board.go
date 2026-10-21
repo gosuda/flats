@@ -86,6 +86,12 @@ type RevisionInfo struct {
 	Changed    int      `json:"changed"`
 	Removed    int      `json:"removed"`
 	RollbackOf int      `json:"rollback_of,omitempty"`
+	// GuestAuthors are up to five guest names this revision credits, and
+	// GuestsMore counts the rest (spec rule 25).
+	GuestAuthors []string `json:"guest_authors,omitempty"`
+	GuestsMore   int      `json:"guests_more,omitempty"`
+	// SafePoint marks the protected safe point while anyone can edit.
+	SafePoint bool `json:"safe_point,omitempty"`
 }
 
 // RevisionPage is one page of history, newest first.
