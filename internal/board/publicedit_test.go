@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1063,4 +1064,37 @@ func TestStalledGuestsStayInTheirShare(t *testing.T) {
 		g.ws.Close(1000, "")
 	}
 	waitFor(t, func() bool { return guestShare.Load() == 0 })
+}
+
+// TestContentEquals: the live board, unrecorded edits included, is
+// compared with a file list without recording anything.
+func TestContentEquals(t *testing.T) {
+	ctx := context.Background()
+	b := newTB(t)
+	m := connect(t, b.priv, map[string]any{"editor": "mia"}, nil)
+	m.snapshot()
+	m.settle(1, sticky(eid(), "a", 0))
+	if _, _, err := b.in.SafePoint(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.core.importOutbox(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files := b.core.revs[len(b.core.revs)-1].files
+	reversed := slices.Clone(files)
+	slices.Reverse(reversed)
+	if eq, err := b.in.ContentEquals(ctx, reversed); err != nil || !eq {
+		t.Fatalf("unchanged board: %v %v", eq, err)
+	}
+	outbox := len(mustOutbox(t, b.in))
+	m.settle(2, sticky(eid(), "b", 0)) // not recorded yet: its group is open
+	if eq, err := b.in.ContentEquals(ctx, files); err != nil || eq {
+		t.Fatalf("after an unrecorded edit: %v %v", eq, err)
+	}
+	if n := len(mustOutbox(t, b.in)); n != outbox {
+		t.Fatalf("ContentEquals recorded %d entries", n-outbox)
+	}
+	if _, ok := groupsOf(t, b)["browser:mia"]; !ok {
+		t.Fatal("ContentEquals closed the open group")
+	}
 }

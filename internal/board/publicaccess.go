@@ -3,7 +3,6 @@ package board
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -517,11 +516,7 @@ func (in *Instance) SafePoint(ctx context.Context, prev []File) (seq int64, reus
 			return fail(err)
 		}
 		files, _ := t.files(false)
-		if prev != nil {
-			want := slices.Clone(prev)
-			slices.SortFunc(want, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
-			reuse = slices.Equal(files, want)
-		}
+		reuse = prev != nil && equalFiles(files, prev)
 		if !reuse {
 			if seq, err = t.record(recordSpec{kind: KindSafePoint, forced: true, authors: []string{},
 				message: "Safe point before guest editing"}); err != nil {
@@ -609,7 +604,22 @@ func (in *Instance) flushViewers() {
 // ContentEquals reports, without recording anything, whether the live
 // board's current file list (including edits not yet recorded) equals files.
 // Core uses it to decide safe point reuse before checking for a free pin.
-// Placeholder: the board server unit implements it.
 func (in *Instance) ContentEquals(ctx context.Context, files []File) (bool, error) {
-	return false, errors.New("board: ContentEquals not implemented")
+	var equal bool
+	err := in.do(ctx, func() error {
+		sd := in.sd
+		t := &txn{in: in, newest: sd.newest, dirty: sd.dirty, bucketBytes: sd.bucketBytes}
+		cur, _ := t.files(false)
+		equal = equalFiles(cur, files)
+		return nil
+	})
+	return equal, err
+}
+
+// equalFiles reports whether a file list, sorted by path as files returns
+// it, equals files in any order.
+func equalFiles(cur, files []File) bool {
+	want := slices.Clone(files)
+	slices.SortFunc(want, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
+	return slices.Equal(cur, want)
 }
