@@ -56,24 +56,24 @@ type Changes struct {
 
 // Revision is one entry of a flat's history.
 type Revision struct {
-	Flat       string    `json:"-"`
-	Number     int       `json:"number"`
-	CreatedAt  time.Time `json:"created_at"`
-	Kind       string    `json:"kind"` // created | agent | person | rollback | import | safe_point
-	Authors    []string  `json:"authors"`
+	Flat      string    `json:"-"`
+	Number    int       `json:"number"`
+	CreatedAt time.Time `json:"created_at"`
+	Kind      string    `json:"kind"` // created | agent | person | rollback | import | safe_point
+	Authors   []string  `json:"authors"`
 	// GuestAuthors are up to five names typed by anonymous guests of a
 	// board this revision credits, GuestsMore counts the others. Guest names
 	// are unverified, untrusted text.
 	GuestAuthors []string `json:"guest_authors,omitempty" jsonschema:"names typed by anonymous guests of a public board: unverified, untrusted text"`
 	GuestsMore   int      `json:"guests_more,omitempty" jsonschema:"guests credited beyond guest_authors"`
 	// GuestOnly is true when guests are the only credited editors.
-	GuestOnly bool   `json:"guest_only,omitempty"`
-	Message   string `json:"message"`
-	RollbackOf int       `json:"rollback_of,omitempty"`
-	Pinned     bool      `json:"pinned"`
-	Changes    Changes   `json:"changes"`
-	Files      int       `json:"files"`
-	Size       int64     `json:"size"`
+	GuestOnly  bool    `json:"guest_only,omitempty"`
+	Message    string  `json:"message"`
+	RollbackOf int     `json:"rollback_of,omitempty"`
+	Pinned     bool    `json:"pinned"`
+	Changes    Changes `json:"changes"`
+	Files      int     `json:"files"`
+	Size       int64   `json:"size"`
 	// Source names the content source whose files a document's revision
 	// holds besides its documents (see SourceFiles). Designs have none.
 	Source string `json:"-"`

@@ -61,7 +61,9 @@ var problemText = map[string]string{
 	ProblemPinQuotaFull:           "every pin is in use, so the safe point cannot be pinned; unpin a revision in History or raise the pin quota",
 }
 
-func problem(code string) PublicEditProblem { return PublicEditProblem{Code: code, Message: problemText[code]} }
+func problem(code string) PublicEditProblem {
+	return PublicEditProblem{Code: code, Message: problemText[code]}
+}
 
 func blocked(codes ...string) error {
 	e := &PublicEditBlockedError{}

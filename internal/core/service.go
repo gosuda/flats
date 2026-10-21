@@ -25,8 +25,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/board"
+	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/site"
 	"github.com/gosuda/flats/internal/slug"

@@ -335,9 +335,6 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	seq := f.AccessSeq
 	p := legacy
 	p.Access, p.FromAccess, p.AccessSeq = access, f.PublicAccess, &seq
-	if vis == store.Private {
-		p.Access = ""
-	}
 	if contenttype.RevisionModel(t) && f.ID != "" {
 		p.ExpectedLive, p.FlatID = nil, f.ID
 	}
