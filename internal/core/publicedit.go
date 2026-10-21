@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/contenttype"
@@ -77,6 +77,7 @@ func blocked(codes ...string) error {
 type publicBoard interface {
 	SetPublicAccess(ctx context.Context, level string) error
 	SafePoint(ctx context.Context, prev []board.File) (seq int64, reuse bool, err error)
+	ContentEquals(ctx context.Context, files []board.File) (bool, error)
 	PublicPresence() (guests, viewers int)
 }
 
@@ -112,8 +113,10 @@ type PublicEditStatus struct {
 	RevisionQuota int                 `json:"revision_quota"`
 	PinQuota      int                 `json:"pin_quota"`
 	Pins          int                 `json:"pins"`
-	// SafePoint is the board's last safe point while that revision exists.
-	SafePoint *int `json:"safe_point"`
+	// SafePoint is the board's last safe point while that revision exists;
+	// SafePointPinned reports whether it is still pinned.
+	SafePoint       *int `json:"safe_point"`
+	SafePointPinned bool `json:"safe_point_pinned"`
 	// Listed reports that a permitted provider lists the flat publicly.
 	Listed bool `json:"listed"`
 }
@@ -130,7 +133,8 @@ func (s *Service) PublicEditPreflight(ctx context.Context, slugName string) (Pub
 
 // publicEditStatus checks the quotas anyone-can-edit needs (TECH 2.3 step
 // 1): a disk quota, a revision quota, and a pin for the safe point unless
-// the pinned earlier safe point still matches the board.
+// the pinned earlier safe point still matches the live board, edits not
+// yet recorded included.
 func (s *Service) publicEditStatus(ctx context.Context, slugName string) (PublicEditStatus, store.ContentState, error) {
 	st, err := s.boardState(ctx, slugName)
 	if err != nil {
@@ -147,9 +151,9 @@ func (s *Service) publicEditStatus(ctx context.Context, slugName string) (Public
 		r, err := s.st.Revision(ctx, slugName, st.SafePointRev)
 		switch {
 		case err == nil:
-			out.SafePoint = &r.Number
-			if r.Pinned {
-				if reusable, err = s.matchesHead(ctx, slugName, r.Number); err != nil {
+			out.SafePoint, out.SafePointPinned = &r.Number, r.Pinned
+			if in := s.liveBoard(slugName); in != nil && r.Pinned {
+				if reusable, err = s.liveContentEquals(ctx, slugName, in, r.Number); err != nil {
 					return out, st, err
 				}
 			}
@@ -170,20 +174,15 @@ func (s *Service) publicEditStatus(ctx context.Context, slugName string) (Public
 	return out, st, nil
 }
 
-// matchesHead reports whether revision n holds the board's imported
+// liveContentEquals reports whether revision n holds the running board's
 // current files.
-func (s *Service) matchesHead(ctx context.Context, slugName string, n int) (bool, error) {
+func (s *Service) liveContentEquals(ctx context.Context, slugName string, in *board.Instance, n int) (bool, error) {
 	files, err := s.st.RevisionFiles(ctx, slugName, n)
 	if err != nil {
 		return false, err
 	}
-	head, err := s.st.Head(ctx, slugName)
-	if err != nil {
-		return false, err
-	}
-	return slices.EqualFunc(files, head, func(a store.RevisionFile, b store.HeadFile) bool {
-		return a.Path == b.Path && a.Hash == b.Hash
-	}), nil
+	ok, err := s.publicBoardOf(in).ContentEquals(ctx, boardFiles(files))
+	return ok, boardErr(err)
 }
 
 // publiclyListed reports whether a permitted provider lists the flat in a
@@ -263,18 +262,60 @@ func (s *Service) prepareSafePointLocked(ctx context.Context, slugName string) (
 	return imp.safePoint, nil
 }
 
-// notifyPublicAccess tells a running board its new public access level. A
-// board that is not running reads the stored level when it starts.
-func (s *Service) notifyPublicAccess(ctx context.Context, slugName, level string) error {
+// levelTimeout bounds telling a running board its public access level.
+const levelTimeout = 10 * time.Second
+
+// applyLevelLocked makes a running board apply the public access level,
+// independent of the caller's context. A board that does not take a level
+// other than edit is restarted: that closes every guest connection, and
+// the board opens again with the stored level. Stopping always succeeds,
+// so a level other than edit is in effect when it returns; the note says
+// what else happened. The caller holds the flat lock, after the level
+// committed.
+func (s *Service) applyLevelLocked(ctx context.Context, slugName, level string) (note string) {
 	in := s.liveBoard(slugName)
 	if in == nil {
-		return nil
+		return ""
 	}
-	if err := s.publicBoardOf(in).SetPublicAccess(ctx, level); err != nil {
-		s.Event(ctx, slugName, "error", "visibility", fmt.Sprintf("the running board did not apply public access %q: %v", accessName(level), err), nil)
-		return err
+	ctx = context.WithoutCancel(ctx)
+	lctx, cancel := context.WithTimeout(ctx, levelTimeout)
+	defer cancel()
+	err := s.publicBoardOf(in).SetPublicAccess(lctx, level)
+	if err == nil {
+		return ""
 	}
-	return nil
+	s.Event(ctx, slugName, "error", "visibility", fmt.Sprintf("the running board did not apply public access %q: %v", accessName(level), err), nil)
+	if level == store.AccessEdit {
+		// The board keeps refusing guests until it runs at edit.
+		return "the running board did not take the new level yet, so guests cannot join until it restarts (get_logs has details)"
+	}
+	lf := s.state(slugName)
+	old := lf.cur.Swap(nil)
+	if old == nil || old.inst != in {
+		// The board was replaced meanwhile; the new one opened with the
+		// stored level.
+		if old != nil {
+			lf.cur.Store(old)
+		}
+		return ""
+	}
+	stopInstance(old.inst, "")
+	if rerr := s.restart(lctx, slugName, old); rerr != nil {
+		return "guest editing ended: the board was stopped, and it could not start again (" + rerr.Error() + ")"
+	}
+	s.Event(ctx, slugName, "warn", "visibility", "the board restarted to end guest editing", nil)
+	return "the board restarted to end guest editing"
+}
+
+// repairLevelLocked applies the stored level to a running board again
+// when that level is not edit, so repeating Stop guest editing finishes a
+// change whose notification did not complete. The caller holds the flat
+// lock.
+func (s *Service) repairLevelLocked(ctx context.Context, f store.Flat) string {
+	if f.PublicAccess == store.AccessEdit {
+		return ""
+	}
+	return s.applyLevelLocked(ctx, f.Slug, f.PublicAccess)
 }
 
 func accessName(level string) string {

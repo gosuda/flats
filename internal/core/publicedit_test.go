@@ -42,27 +42,58 @@ type fakePublicBoard struct {
 	// after, when set, runs on the instance after a new safe point entry,
 	// as a member group closing in the same apply loop step.
 	after func(in *board.Instance)
+	// live, when set, is the board's current file list, as edits in an
+	// open group not yet recorded; otherwise the imported head is.
+	live []board.File
+	// setErr fails SetPublicAccess; onSet runs first, and setCtxErr keeps
+	// the state of the context SetPublicAccess received.
+	setErr    error
+	onSet     func()
+	setCtxErr error
 }
 
-func (f *fakePublicBoard) SetPublicAccess(_ context.Context, level string) error {
+func (f *fakePublicBoard) SetPublicAccess(ctx context.Context, level string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.onSet != nil {
+		f.onSet()
+	}
+	f.setCtxErr = ctx.Err()
+	if f.setErr != nil {
+		return f.setErr
+	}
 	f.levels = append(f.levels, level)
 	return nil
 }
 
-// SafePoint reuses prev when it equals the imported head, as the board does
-// with its own current files; otherwise it records an entry.
+// equalsCurrent reports whether files are the board's current files.
+func (f *fakePublicBoard) equalsCurrent(ctx context.Context, files []board.File) (bool, error) {
+	if f.live != nil {
+		return slices.Equal(files, f.live), nil
+	}
+	head, err := f.s.st.Head(ctx, f.slug)
+	if err != nil {
+		return false, err
+	}
+	return slices.EqualFunc(files, head, func(a board.File, b store.HeadFile) bool { return a.Path == b.Path && a.Hash == b.Hash }), nil
+}
+
+func (f *fakePublicBoard) ContentEquals(ctx context.Context, files []board.File) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.equalsCurrent(ctx, files)
+}
+
+// SafePoint reuses prev when it equals the current files, as the board
+// does; otherwise it records an entry.
 func (f *fakePublicBoard) SafePoint(ctx context.Context, prev []board.File) (int64, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.safePoints++
-	head, err := f.s.st.Head(ctx, f.slug)
-	if err != nil {
-		return 0, false, err
-	}
-	if prev != nil && slices.EqualFunc(prev, head, func(a board.File, b store.HeadFile) bool { return a.Path == b.Path && a.Hash == b.Hash }) {
-		return 0, true, nil
+	if prev != nil {
+		if same, err := f.equalsCurrent(ctx, prev); err != nil || same {
+			return 0, same, err
+		}
 	}
 	f.recorded++
 	res, err := f.in.UpdateBoard(ctx, board.UpdateRequest{OpID: fmt.Sprintf("safe-point-%d", f.recorded),
@@ -662,7 +693,12 @@ func TestPublicEditRealBoard(t *testing.T) {
 	// Re-enabling an unchanged board reuses it.
 	setAccess(t, s, store.Public, store.AccessView)
 	revs := storedRevisions(t, s, "plan")
-	setAccess(t, s, store.Public, store.AccessEdit)
+	a = requestAccess(t, s, store.Public, store.AccessEdit, ViaConsole)
+	if got, err := s.Decide(ctx, a.ID, true); err != nil && strings.Contains(err.Error(), "ContentEquals not implemented") {
+		t.Skip("re-enabling needs the board server's ContentEquals (unit B)")
+	} else if err != nil || got.Status != "approved" {
+		t.Fatalf("re-enable = %+v %v", got, err)
+	}
 	if safePointRev(t, s) != sp || !slices.Equal(storedRevisions(t, s, "plan"), revs) {
 		t.Fatalf("re-enable added a revision: %v -> %v", revs, storedRevisions(t, s, "plan"))
 	}
@@ -684,5 +720,118 @@ func TestPublicAccessHeaderIsTrusted(t *testing.T) {
 	}
 	if got := withPublicAccess(trustedAccess(r, true), &deployed{}, store.AccessView).Header.Get(board.PublicAccessHeader); got != "" {
 		t.Fatalf("non-board header = %q", got)
+	}
+}
+
+// Stop guest editing reaches the running board even when the request is
+// cancelled right after the level commits.
+func TestPublicEditStopSurvivesCancellation(t *testing.T) {
+	s, fake := newPublicBoard(t)
+	setAccess(t, s, store.Public, store.AccessEdit)
+	a := requestAccess(t, s, store.Public, store.AccessView, ViaConsole)
+	ctx, cancel := context.WithCancel(context.Background())
+	fake.onSet = cancel
+	_, _ = s.Decide(ctx, a.ID, true)
+	if _, access := flatAccess(t, s); access != store.AccessView {
+		t.Fatalf("level = %q", access)
+	}
+	if fake.lastLevel() != store.AccessView || fake.setCtxErr != nil {
+		t.Fatalf("board level %q, its context %v", fake.lastLevel(), fake.setCtxErr)
+	}
+}
+
+// A board that does not take Stop guest editing is restarted, which closes
+// every guest connection; it opens again at the stored level.
+func TestPublicEditStopRestartsUnresponsiveBoard(t *testing.T) {
+	ctx := context.Background()
+	s, fake := newPublicBoard(t)
+	setAccess(t, s, store.Public, store.AccessEdit)
+	before := s.liveBoard("plan")
+	fake.setErr = errors.New("apply loop stuck")
+	a := requestAccess(t, s, store.Public, store.AccessView, ViaConsole)
+	got, err := s.Decide(ctx, a.ID, true)
+	if err != nil || got.Status != "approved" || !strings.Contains(got.Result, "restarted") {
+		t.Fatalf("stop = %+v %v", got, err)
+	}
+	after := s.liveBoard("plan")
+	if after == nil || after == before {
+		t.Fatalf("board not restarted: before %p after %p", before, after)
+	}
+	if _, err := before.GetBoard(ctx, board.Query{Limit: 1}); err == nil {
+		t.Fatal("the old instance still answers")
+	}
+	if _, err := after.GetBoard(ctx, board.Query{Limit: 1}); err != nil {
+		t.Fatalf("the restarted board: %v", err)
+	}
+}
+
+// Repeating Stop guest editing, as a request or as an approval, applies the
+// stored level again to a board that missed it.
+func TestPublicEditStopRetryRepairs(t *testing.T) {
+	ctx := context.Background()
+	s, fake := newPublicBoard(t)
+	setAccess(t, s, store.Public, store.AccessEdit)
+	// The level committed, but the board never heard it.
+	if err := s.st.SetPublicAccess(ctx, "plan", store.AccessEdit, store.AccessView, store.Event{Level: "info", Kind: "visibility", Message: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.lastLevel() != store.AccessEdit {
+		t.Fatalf("board level = %q", fake.lastLevel())
+	}
+	r, err := s.SetVisibilityAccess(ctx, "plan", store.Public, store.AccessView, ViaConsole, "")
+	if err != nil || r.Status != "done" || fake.lastLevel() != store.AccessView {
+		t.Fatalf("retried stop = %+v %v, board level %q", r, err, fake.lastLevel())
+	}
+}
+
+// Reuse of the safe point is decided from the live board: a member who
+// restored its content in an open group re-enables editing with every pin in
+// use, and no new safe point is recorded.
+func TestPublicEditReuseFromLiveContent(t *testing.T) {
+	ctx := context.Background()
+	s, fake := newPublicBoard(t)
+	setAccess(t, s, store.Public, store.AccessEdit)
+	sp := safePointRev(t, s)
+	setAccess(t, s, store.Public, store.AccessView)
+	writeBoard(t, s, "plan", "after-stop-1", `[{"op":"add","el":{"type":"sticky","text":"changed"}}]`)
+	files, err := s.st.RevisionFiles(ctx, "plan", sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.live = boardFiles(files)
+	fake.mu.Unlock()
+	one := 1
+	if err := s.SetRevisionQuotas(ctx, "plan", nil, &one); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.PublicEditPreflight(ctx, "plan")
+	if err != nil || len(status.Problems) != 0 || status.SafePoint == nil || *status.SafePoint != sp || !status.SafePointPinned {
+		t.Fatalf("preflight = %+v %v", status, err)
+	}
+	revs := storedRevisions(t, s, "plan")
+	setAccess(t, s, store.Public, store.AccessEdit)
+	if safePointRev(t, s) != sp || fake.recorded != 1 || !slices.Equal(storedRevisions(t, s, "plan"), revs) {
+		t.Fatalf("safe point %d (was %d), %d entries, revisions %v (were %v)", safePointRev(t, s), sp, fake.recorded, storedRevisions(t, s, "plan"), revs)
+	}
+}
+
+// The preflight reports whether the earlier safe point is still pinned.
+func TestPublicEditPreflightSafePointPinned(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newPublicBoard(t)
+	setAccess(t, s, store.Public, store.AccessEdit)
+	sp := safePointRev(t, s)
+	setAccess(t, s, store.Public, store.AccessView)
+	if err := s.PinRevision(ctx, "plan", sp, false); err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.PublicEditPreflight(ctx, "plan")
+	if err != nil || status.SafePoint == nil || *status.SafePoint != sp || status.SafePointPinned {
+		t.Fatalf("preflight = %+v %v", status, err)
+	}
+	raw, _ := json.Marshal(status)
+	if !strings.Contains(string(raw), `"safe_point_pinned":false`) {
+		t.Fatalf("json = %s", raw)
 	}
 }

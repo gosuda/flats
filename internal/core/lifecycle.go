@@ -318,8 +318,13 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		return ActionResult{}, invalidf("only a board can be edited by anyone; use access view")
 	}
 	if f.Visibility.Canonical() == vis && f.PublicAccess == access {
+		res := ActionResult{Status: "done", Message: "visibility unchanged"}
+		if note := s.repairLevelLocked(ctx, f); note != "" {
+			res.Message += "; " + note
+		}
 		fv := s.view(ctx, f)
-		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility unchanged"}, nil
+		res.Flat, res.Notice = &fv, fv.PublicNotice
+		return res, nil
 	}
 	if vis.Public() {
 		if f.LiveVersion == 0 {
@@ -1097,8 +1102,13 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
 	}
 	if f.Visibility.Canonical() == target && f.PublicAccess == access {
+		res := ActionResult{Status: "done", Message: "visibility unchanged"}
+		if note := s.repairLevelLocked(ctx, f); note != "" {
+			res.Message += "; " + note
+		}
 		fv := s.view(ctx, f)
-		return ActionResult{Status: "done", Flat: &fv, Message: "visibility unchanged"}, nil
+		res.Flat = &fv
+		return res, nil
 	}
 	from := visibilityLabel(store.Visibility(p.From), f.PublicAccess)
 	to := visibilityLabel(target, access)
@@ -1136,6 +1146,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 			}
 		}
 		next.AccessSeq++
+		note := s.applyLevelLocked(ctx, a.Flat, access)
 		msg := fmt.Sprintf("visibility %s -> %s", from, to)
 		if safePoint > 0 {
 			msg += fmt.Sprintf("; safe point revision %d is pinned", safePoint)
@@ -1146,8 +1157,8 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		if safePoint > 0 {
 			res.Message += fmt.Sprintf("; safe point revision %d is pinned", safePoint)
 		}
-		if err := s.notifyPublicAccess(ctx, a.Flat, access); err != nil {
-			res.Message += "; the running board did not confirm the new level (get_logs has details)"
+		if note != "" {
+			res.Message += "; " + note
 		}
 		fv := s.view(ctx, next)
 		res.Flat, res.Notice = &fv, fv.PublicNotice
@@ -1162,8 +1173,8 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{}, err
 	}
 	next.AccessSeq++
+	note := s.applyLevelLocked(ctx, a.Flat, "")
 	s.stopPublicRedirects(a.Flat)
-	notifyErr := s.notifyPublicAccess(ctx, a.Flat, "")
 	if err := s.ensureExposure(ctx, next); err != nil {
 		s.Event(ctx, a.Flat, "error", "exposure", err.Error(), nil)
 		fv := s.view(ctx, next)
@@ -1173,8 +1184,8 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	s.notifyDesign(a.Flat, 0, 0, nil)
 	fv := s.view(ctx, next)
 	res := ActionResult{Status: "done", Flat: &fv, Message: "visibility changed to private"}
-	if notifyErr != nil {
-		res.Message += "; the running board did not confirm the new level (get_logs has details)"
+	if note != "" {
+		res.Message += "; " + note
 	}
 	return res, nil
 }

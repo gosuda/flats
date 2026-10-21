@@ -136,7 +136,7 @@ mounted under both prefixes; **console** routes exist only under
 | PUT | `/flats/{slug}/listing` | console | `{listing}`: `default`, `hidden` or `listed` relay listing of the Portal route |
 | GET, PUT | `/flats/{slug}/version-quota` | console | GET is the flat view; PUT `{version_quota: n\|null}` (null follows the host) |
 | GET, PUT | `/flats/{slug}/revision-quota` | console | Documents, designs and boards: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
-| GET | `/flats/{slug}/public-edit` | console | Boards: whether anyone-can-edit can take effect now: `{problems, disk_quota, revision_quota, pin_quota, pins, safe_point, listed}` |
+| GET | `/flats/{slug}/public-edit` | console | Boards: whether anyone-can-edit can take effect now: `{problems, disk_quota, revision_quota, pin_quota, pins, safe_point, safe_point_pinned, listed}` |
 | GET | `/providers` | console | Host providers: grant, backend status, hosts and provider settings |
 | PUT | `/providers/{id}` | console | `{enabled}` with the settings ETag in `If-Match` |
 | PUT, DELETE | `/providers/zrok/account` | console | `{token}` connects or replaces the zrok account; DELETE disconnects (`?force=1` removes a stale environment locally) |

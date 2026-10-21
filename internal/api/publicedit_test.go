@@ -29,7 +29,7 @@ func TestPublicEditAPI(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("preflight = %d %v", code, out)
 	}
-	for _, k := range []string{"problems", "disk_quota", "revision_quota", "pin_quota", "pins", "safe_point", "listed"} {
+	for _, k := range []string{"problems", "disk_quota", "revision_quota", "pin_quota", "pins", "safe_point", "safe_point_pinned", "listed"} {
 		if _, ok := out[k]; !ok {
 			t.Fatalf("preflight lacks %s: %v", k, out)
 		}
