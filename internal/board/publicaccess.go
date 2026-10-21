@@ -172,16 +172,10 @@ func (in *Instance) guestWelcome(r *http.Request, c *conn, h helloMsg) error {
 		c.fatal(FatalFull)
 		return nil
 	}
-	token, issued := h.Guest.Token, ""
-	if !validToken(token) {
-		token = randomToken()
-		issued = token
-	}
 	c.mu.Lock()
 	c.guest, c.chargeGuest = true, true
 	c.mu.Unlock()
-	c.key, c.name, c.label = guestKey(token), name, name
-	c.color = colorOf(c.key)
+	c.name, c.label = name, name
 	c.batches = rate{perSec: 10, burst: 20}
 	c.pres = rate{perSec: in.pub.presRate, burst: in.pub.presRate}
 	if !in.publicStarts.wait(r.Context(), publicWait) {
@@ -194,12 +188,22 @@ func (in *Instance) guestWelcome(r *http.Request, c *conn, h helloMsg) error {
 			return nil
 		}
 		st := in.st
+		now := in.now().Unix()
+		// A token selects an identity only while a live guest session of
+		// its key exists, so it was issued here and has not expired; any
+		// other token gets a fresh one (TECH public edit 3.1).
+		token, issued := h.Guest.Token, ""
+		if !validToken(token) || !st.LiveSession(guestKey(token), now) {
+			token = randomToken()
+			issued = token
+		}
+		c.key = guestKey(token)
+		c.color = colorOf(c.key)
 		t, err := in.begin()
 		if err != nil {
 			c.close(1011, "unavailable")
 			return nil
 		}
-		now := in.now().Unix()
 		res := st.Hello(engine.Hello{Session: h.Session, Pending: h.Pending.Count, NewID: randomToken(),
 			Key: c.key, Label: c.label, Now: now})
 		changes := []engine.Changed{res.Changed}

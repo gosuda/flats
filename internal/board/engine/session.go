@@ -146,6 +146,16 @@ func (s *State) CapGuestSessions(limit int, open map[string]bool) Changed {
 	return c
 }
 
+// LiveSession reports whether an unexpired session of editor key exists.
+func (s *State) LiveSession(key string, now int64) bool {
+	for _, se := range s.sessions {
+		if se.Key == key && !se.expired(now) {
+			return true
+		}
+	}
+	return false
+}
+
 // GuestSession reports whether session id belongs to a guest.
 func (s *State) GuestSession(id string) bool {
 	se := s.sessions[id]

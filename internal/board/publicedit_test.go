@@ -924,3 +924,43 @@ func TestBoardDBAddsColumns(t *testing.T) {
 		t.Fatalf("outbox columns %v", g)
 	}
 }
+
+// TestGuestTokenMustBeIssued: a token the server did not issue (or whose
+// session ended) selects no identity; an issued one resumes it.
+func TestGuestTokenMustBeIssued(t *testing.T) {
+	b := editTB(t)
+	chosen := strings.Repeat("0", 32)
+	c1, w1 := joinGuest(t, b, "Ana", chosen)
+	_, w2 := joinGuest(t, b, "Ben", chosen)
+	t1, _ := w1["guest_token"].(string)
+	t2, _ := w2["guest_token"].(string)
+	if t1 == "" || t2 == "" || t1 == chosen || t1 == t2 {
+		t.Fatalf("tokens %q %q for a chosen token", t1, t2)
+	}
+	keys := func() map[string]int {
+		out := map[string]int{}
+		b.state(func(st *engine.State) {
+			for _, se := range st.Export().Sessions {
+				out[se.Key]++
+			}
+		})
+		return out
+	}
+	if k := keys(); k[guestKey(chosen)] != 0 || k[guestKey(t1)] != 1 || k[guestKey(t2)] != 1 {
+		t.Fatalf("sessions %v", k)
+	}
+	// The issued token resumes its identity on a new socket.
+	again, w3 := joinGuest(t, b, "Ana", t1)
+	if k := keys(); w3["guest_token"] != nil || k[guestKey(t1)] != 2 {
+		t.Fatalf("resume with the issued token %v, sessions %v", w3, k)
+	}
+	// Once its session expired, the token is a stranger's again.
+	again.ws.Close(1000, "")
+	c1.ws.Close(1000, "")
+	waitFor(t, func() bool { g, _ := b.in.PublicPresence(); return g == 1 })
+	b.clock.Add(2 * time.Hour)
+	_, w4 := joinGuest(t, b, "Ana", t1)
+	if w4["guest_token"] == nil {
+		t.Fatalf("an expired session's token selected its identity: %v", w4)
+	}
+}
