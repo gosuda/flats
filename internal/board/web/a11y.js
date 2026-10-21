@@ -129,6 +129,15 @@ export class A11yTree {
     if (focus && cur) this.focus(cur.dataset.id || '', true);
   }
 
+  // relabel refreshes the labels of the elements editor key created, after
+  // the name presence gives for it changed. Frame labels name no creator.
+  relabel(key) {
+    for (const li of this.visible()) {
+      const el = this.app.doc.get(li.dataset.id);
+      if (el && el.by === key && el.type !== 'frame') li.setAttribute('aria-label', this.label(el));
+    }
+  }
+
   visible() { return [...this.tree.querySelectorAll('[role=treeitem]')].filter((li) => li.dataset.id); }
 
   focus(id, move = true) {

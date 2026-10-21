@@ -145,7 +145,11 @@ an approval.
     name, outside the name text, in cursors, the participant list, "is
     editing" marks, notices and revision credits. Because the badge is not part
     of the name, no name can imitate the verified mark, an agent or a member.
-    Names are always drawn as text only.
+    Names are always drawn as text only. The creator line members see on a
+    guest's element names that guest only while the tab shows it as present.
+    Once it leaves, or its presence goes stale (30 to 40 seconds without an
+    update), the line reads "Guest" with the badge, as in a tab opened after
+    it left.
 
 ## The guest projection
 
@@ -403,12 +407,9 @@ or not measured:
   the browser has drawn the change.
 - The asset room refusal has no reachable guest path, because guests can only
   reuse assets live elements already use.
-- Known follow-ups: a departed guest creator keeps its name in a member's tab
-  until reload; the "editing ended" banner stays after rejoining; a visitor
-  refused as full at the first hello sees member defaults in the header; the
-  join panel copy with a remembered name; a replacing import whose change
-  exceeds the public queue closes guest sockets; a narrow race in member-facing
-  departure notices when the same editor reconnects at once.
+- Known follow-ups: a replacing import whose change exceeds the public queue
+  closes guest sockets; a narrow race in member-facing departure notices when
+  the same editor reconnects at once.
 
 ## Open questions
 

@@ -502,7 +502,10 @@ a revision through `board_imports`.
 - Rejects `guest_rate`, `guest_size`, `guest_room`, `guest_asset` and
   `permission` map to error toasts. Fatal `editing_ended` shows the banner
   "The owner turned off guest editing" with "Save my changes to a file", then
-  reconnects as a viewer. Fatal `full` shows the Watch / Try again dialog.
+  reconnects as a viewer. A later guest welcome removes the banner; changes
+  that were not saved stay downloadable from a kept notice. Fatal `full`
+  shows the Watch / Try again dialog, with a viewer's header when it refuses
+  the first hello.
   Fatal `name_invalid` reopens the name prompt with the reason.
 
 ### 8.2 Console (`internal/console/static`)

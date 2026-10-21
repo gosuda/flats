@@ -62,7 +62,7 @@ function storedName() {
   try { return localStorage.getItem('flats-board-name') || ''; } catch { return ''; }
 }
 
-class App {
+export class App {
   constructor() {
     this.state = new BoardState();
     this.index = new SpatialIndex();
@@ -100,6 +100,7 @@ class App {
     this.joinDialog = null;
     this.joinOffered = false;
     this.guestEnded = false;     // the end of this tab's guest editing was handled
+    this.endedFile = null;       // recovery file of the guest editing that ended
     this.dom();
     this.renderer = new Renderer(this, $('.board'));
     this.presence = new Presence(this);
@@ -224,6 +225,34 @@ class App {
       stored.setName(this.guestName);
     }
     if (this.me && this.me.key) this.names.set(this.me.key, this.me.name || this.me.label);
+    this.header();
+    this.presence.avatars();
+    this.renderer.painter.showAuthors = this.isMember;
+    this.renderer.invalidateAll();
+    if (this.isMember && this.me && !this.me.verified && !this.name && !this.readOnlyChoice) this.namePrompt();
+    this.applyMode();
+    this.presence.sendAll();
+    if (this.isGuest) {
+      this.guestEnded = false;
+      // Joining again starts a new guest session; the end of the last one is
+      // no longer news. Changes that were not saved then stay downloadable.
+      if (this.bannerKind === 'ended') {
+        const file = this.endedFile;
+        this.banner(null);
+        if (file) {
+          toast("Some of your changes from before you joined again weren't saved.", {
+            actions: [['Save them to a file', () => this.exporter.saveRecovery(file)]], timeout: 0,
+          });
+        }
+      }
+    } else if (leaving) this.guestEditingEnded(unsent);
+    if (this.isPublic) this.offerJoin(!this.joinOffered);
+    else this.closeJoin();
+  }
+
+  // header shows what this kind of connection can do: before any welcome
+  // (access null) it is a viewer's header.
+  header() {
     document.body.classList.toggle('public', this.isPublic);
     document.body.classList.toggle('guest', this.isGuest);
     const chip = $('#access-chip');
@@ -234,16 +263,6 @@ class App {
     $('#export-btn .lbl').textContent = exportLabel;
     $('#export-btn').setAttribute('aria-label', exportLabel);
     $('#export-btn').title = exportLabel;
-    this.presence.avatars();
-    this.renderer.painter.showAuthors = this.isMember;
-    this.renderer.invalidateAll();
-    if (this.isMember && this.me && !this.me.verified && !this.name && !this.readOnlyChoice) this.namePrompt();
-    this.applyMode();
-    this.presence.sendAll();
-    if (this.isGuest) this.guestEnded = false;
-    else if (leaving) this.guestEditingEnded(unsent);
-    if (this.isPublic) this.offerJoin(!this.joinOffered);
-    else this.closeJoin();
   }
 
   applyMode() {
@@ -300,7 +319,13 @@ class App {
     if (this.editor) this.editor.commit();
     this.stopped = code;
     this.applyMode();
-    if (code === 'full') { this.boardFull(); return; }
+    if (code === 'full') {
+      // Refused at the first hello: the visitor is no member, so the header
+      // must not offer History, Export or Send to agent while it waits.
+      if (!this.welcomed) this.header();
+      this.boardFull();
+      return;
+    }
     if (code === 'name_invalid') {
       // A name the server refused is not offered again on the next visit.
       stored.setName('');
@@ -376,7 +401,13 @@ class App {
   title() {
     const t = this.doc.meta().title || document.title || 'Board';
     this.titleEl.textContent = t;
-    if (this.joinDialog && this.joinDialog.join) this.joinDialog.el.querySelector('h2').textContent = `Join ${t}`;
+    if (this.joinDialog && this.joinDialog.join) this.joinDialog.el.querySelector('h2').textContent = `Join ${this.boardName()}`;
+  }
+
+  // boardName names the board in sentences. Before the first snapshot the
+  // title bar's "Board" is only a placeholder, not the board's name.
+  boardName() {
+    return this.doc.meta().title || 'this board';
   }
 
   pruneSelection() {
@@ -965,11 +996,13 @@ class App {
       b = h('div', { class: 'banner err', role: 'alert' }, icon('warn'), h('span', { text: 'This board is no longer public. The view is not updating.' }));
     } else if (kind === 'ended') {
       const n = message;
+      // The file of this guest session; a later one prepares its own.
+      const file = this.endedFile = n ? this.exporter.prepared : null;
       b = h('div', { class: 'banner warn', role: 'alert' }, icon('warn'),
         h('span', {}, h('strong', { text: 'The owner turned off guest editing.' }), ' ',
           n ? `${n} of your latest ${n === 1 ? "changes wasn't" : "changes weren't"} saved. You can keep watching live.` : 'You can keep watching live.'),
         h('span', { class: 'spacer' }),
-        n ? h('button', { type: 'button', class: 'btn ghost', onclick: () => this.exporter.downloadRecovery(true) }, icon('download'), h('span', { text: 'Save my changes to a file' })) : null);
+        n ? h('button', { type: 'button', class: 'btn ghost', onclick: () => this.exporter.saveRecovery(file) }, icon('download'), h('span', { text: 'Save my changes to a file' })) : null);
     } else if (kind === 'revision') {
       b = message;
     }
@@ -1088,7 +1121,7 @@ class App {
     h('p', { class: 'callout', text: "You can add, move and delete notes. You can't see history or send selections to an agent." }),
     h('div', { class: 'acts' }, h('span', { class: 'spacer' }), submit));
     const dlg = dialog({
-      title: change ? 'Change your name' : `Join ${this.titleEl.textContent || 'this board'}`,
+      title: change ? 'Change your name' : `Join ${this.boardName()}`,
       describe: change ? 'Others see this name next to your cursor.' : 'Anyone with this link can edit this board. Pick the name others will see next to your cursor.',
       body: form,
       className: 'narrow',
@@ -1117,7 +1150,9 @@ class App {
       if (err) { error.textContent = err; input.focus(); return; }
       this.joinAs(cleanGuestName(input.value));
     } },
-    h('p', {}, h('strong', { text: 'This board is now editable.' }), ' ', h('span', { class: 'note', text: 'Until you join, you can only watch. No name has been asked of you so far.' })),
+    h('p', {}, h('strong', { text: 'This board is now editable.' }), ' ', h('span', { class: 'note', text: this.guestName ?
+      'Until you join, you can only watch. This browser remembered your name below; nobody sees it until you join.' :
+      'Until you join, you can only watch. No name has been asked of you so far.' })),
     h('div', { class: 'join-row' }, h('div', { class: 'field grow' }, h('label', { for: 'join-name', text: 'Your name' }), input), submit),
     error,
     h('p', { class: 'note' }, 'Shown with a ', badge('guest'), " badge. Nobody checks it. It stays in the board's history. You can add, move and delete anything on the board."));
@@ -1158,7 +1193,7 @@ class App {
     const dlg = dialog({
       title: 'This board is full',
       alert: true,
-      body: h('p', { text: `The most people ${this.titleEl.textContent || 'this board'} allows are editing it right now. You can watch the board live while you wait.` }),
+      body: h('p', { text: `The most people ${this.boardName()} allows are editing it right now. You can watch the board live while you wait.` }),
       actions: acts,
       className: 'narrow',
       onClose: () => {
@@ -1203,4 +1238,6 @@ function askPasteMode(count) {
   });
 }
 
-window.board = new App();
+// Node tests (testdata/page.mjs) set boardTest to import App and start it
+// on their own page stand-in.
+if (!globalThis.boardTest) window.board = new App();

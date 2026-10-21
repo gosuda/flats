@@ -49,27 +49,54 @@ export class Presence {
   tick() {
     const now = Date.now();
     let gone = false;
-    for (const [k, p] of this.peers) if (now - p.at > STALE) { this.peers.delete(k); gone = true; }
+    for (const k of [...this.peers.keys()]) if (now - this.peers.get(k).at > STALE) { this.forget(k); gone = true; }
     if (gone) { this.avatars(); this.app.renderer.dynamic(); }
     if (this.live()) this.app.net.presence({ ...this.mine });
   }
 
   receive(m) {
     if (!m.key || (this.app.me && m.key === this.app.me.key)) return;
-    if (m.gone) { this.peers.delete(m.key); this.avatars(); this.app.renderer.dynamic(); return; }
+    if (m.gone) {
+      this.forget(m.key);
+      this.avatars();
+      this.app.renderer.dynamic();
+      return;
+    }
     const p = this.peers.get(m.key) || { key: m.key, sel: [] };
     for (const k of ['name', 'color', 'c', 'vp', 'sel', 'drag', 'edit']) if (m[k] !== undefined) p[k] = m[k];
     if (m.guest !== undefined) p.guest = m.guest === true;
     const isNew = !this.peers.has(m.key);
     p.at = Date.now();
     this.peers.set(m.key, p);
-    if (p.name) this.app.names.set(m.key, p.name);
+    if (p.name) {
+      if (m.key.startsWith('guest:')) this.nameGuest(m.key, p.name);
+      else this.app.names.set(m.key, p.name);
+    }
     if (isNew) this.avatars();
     this.app.renderer.dynamic();
   }
 
+  // forget removes a peer that left or went silent. A guest's name goes with
+  // it, so its creator lines read "Guest" as in a tab opened after it left
+  // (board-public-edit.md rule 13); its next presence names it again.
+  forget(key) {
+    this.peers.delete(key);
+    if (key.startsWith('guest:')) this.nameGuest(key, '');
+  }
+
+  // nameGuest sets or (with '') forgets a guest's name. Creator lines are on
+  // the static layer and in the element list, so both follow the name.
+  nameGuest(key, name) {
+    const names = this.app.names;
+    if ((names.get(key) || '') === name) return;
+    if (name) names.set(key, name);
+    else names.delete(key);
+    this.app.renderer.invalidateAll();
+    this.app.a11y.relabel(key);
+  }
+
   reset() {
-    this.peers.clear();
+    for (const k of [...this.peers.keys()]) this.forget(k);
     this.viewers = { count: 0, labels: [] };
     this.app.renderer.dynamic();
   }

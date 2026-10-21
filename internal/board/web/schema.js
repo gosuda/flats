@@ -99,8 +99,9 @@ export function authorName(by, names) {
 // editor in `by`, and whether it is a guest (key "guest:…"), which is drawn
 // with the guest badge outside the name (board-public-edit.md rule 13). It
 // always describes the creator: a guest's name comes only from presence this
-// tab received from that same guest key (kept until reload), otherwise it is
-// just "Guest", never the name of a later text writer.
+// tab received from that same guest key while the tab shows that guest as
+// present, otherwise it is just "Guest", never the name of a later text
+// writer.
 export function authorOf(el, names) {
   const by = el.by;
   if (typeof by === 'string' && by.startsWith('guest:')) {

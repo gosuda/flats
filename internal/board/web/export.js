@@ -204,8 +204,13 @@ export class Exporter {
 
   // prepared selects the file prepareRecovery built when editing stopped
   // or guest editing ended.
-  async downloadRecovery(prepared = !!this.app.stopped) {
-    const file = await (prepared && this.prepared ? this.prepared : this.buildRecovery());
+  downloadRecovery(prepared = !!this.app.stopped) {
+    return this.saveRecovery(prepared && this.prepared ? this.prepared : this.buildRecovery());
+  }
+
+  // saveRecovery downloads a recovery file built earlier (a promise).
+  async saveRecovery(built) {
+    const file = await built;
     if (!file) { toast('There are no unsent edits.'); return; }
     download(file.blob, file.name);
   }
