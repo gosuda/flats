@@ -69,18 +69,30 @@ const (
 	// NetBird's public reverse proxy. Both use the host's one NetBird peer.
 	ProviderNetbird       ProviderID = "netbird"
 	ProviderNetbirdExpose ProviderID = "netbird-expose"
+	// ProviderProxy and ProviderProxyPublic are the operator's reverse proxy,
+	// as a Private and a Public provider. They share one listener, so the
+	// host permits at most one of them.
+	ProviderProxy       ProviderID = "proxy"
+	ProviderProxyPublic ProviderID = "proxy-public"
 )
 
 // PublicProvider reports whether id serves visitors on the internet
-// (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose).
+// (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel, NetBird Expose
+// or a public reverse proxy).
 func PublicProvider(id ProviderID) bool {
-	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick || id == ProviderNetbirdExpose
+	return id == ProviderFunnel || id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick || id == ProviderNetbirdExpose || id == ProviderProxyPublic
 }
 
 // PrivateMeshProvider reports whether id is a private overlay network that
 // serves a flat's Private route besides loopback (Tailscale or NetBird).
 func PrivateMeshProvider(id ProviderID) bool {
 	return id == ProviderTailscale || id == ProviderNetbird
+}
+
+// PrivateRouteProvider reports whether id carries a flat's Private route
+// besides loopback: a private mesh or the Private reverse proxy.
+func PrivateRouteProvider(id ProviderID) bool {
+	return PrivateMeshProvider(id) || id == ProviderProxy
 }
 
 type routeProviderKey struct{}

@@ -19,6 +19,8 @@ const (
 	ProviderCFQuick       = "cloudflare-quick"
 	ProviderNetbird       = "netbird"
 	ProviderNetbirdExpose = "netbird-expose"
+	ProviderProxy         = "proxy"
+	ProviderProxyPublic   = "proxy-public"
 )
 
 // Draft is the single mutable working copy of a flat.

@@ -36,6 +36,9 @@ func TestParseTemplate(t *testing.T) {
 			if got := tmpl.Scheme(); got != tc.scheme {
 				t.Errorf("Scheme = %q, want %q", got, tc.scheme)
 			}
+			if got := tmpl.String(); got != tc.in {
+				t.Errorf("String = %q, want %q", got, tc.in)
+			}
 		})
 	}
 	for _, in := range []string{
@@ -105,7 +108,7 @@ func TestTemplateLabel(t *testing.T) {
 	if label, ok := zero.Label("blog.site.example.org"); ok || label != "" {
 		t.Errorf("zero Template matched %q", label)
 	}
-	if zero.URL("blog") != "" || zero.Authority("blog") != "" || zero.Scheme() != "" {
+	if zero.URL("blog") != "" || zero.Authority("blog") != "" || zero.Scheme() != "" || zero.String() != "" {
 		t.Error("zero Template built an address")
 	}
 }

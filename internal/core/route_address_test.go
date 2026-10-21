@@ -70,6 +70,11 @@ func newAddressHost(t *testing.T, backend string, permitted []string, grants ...
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close(); st.Close() })
+	if slices.Contains(permitted, "proxy") || slices.Contains(permitted, "proxy-public") {
+		if _, err := s.UpdateSettings(t.Context(), map[string]string{SetProxyTemplate: "https://{host}.site.example.org"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := s.SetPermittedNetworks(permitted, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +216,73 @@ func TestPublicURLFollowsReadyHostDefault(t *testing.T) {
 				t.Fatalf("public_url %q (%s), want %q (%s)", v.PublicURL, v.ConnectionState, c.want.URL, c.want.State)
 			}
 		})
+	}
+}
+
+// Rules 25 and 26 with the reverse proxy: it ranks after the meshes and
+// before Local, a proxy default wins, and it serves previews.
+func TestProxyAddressSelection(t *testing.T) {
+	local := routeEndpoint(ProviderLocal, "site", AudienceCurrent, "ready")
+	tail := routeEndpoint(ProviderTailscale, "site", AudienceCurrent, "ready")
+	mesh := routeEndpoint(ProviderNetbird, "site", AudienceCurrent, "ready")
+	px := routeEndpoint(ProviderProxy, "site", AudienceCurrent, "ready")
+	for _, c := range []struct {
+		name   string
+		def    string
+		grants []string
+		eps    []ExposureEndpoint
+		want   ExposureEndpoint
+	}{
+		{"proxy before local", "", []string{"proxy"}, []ExposureEndpoint{local, px}, px},
+		{"meshes before proxy", "", []string{"tailscale", "netbird", "proxy"}, []ExposureEndpoint{local, px, mesh, tail}, tail},
+		{"netbird before proxy", "", []string{"netbird", "proxy"}, []ExposureEndpoint{local, px, mesh}, mesh},
+		{"proxy default", "proxy", []string{"tailscale", "proxy"}, []ExposureEndpoint{local, tail, px}, px},
+		{"proxy default not allowed", "proxy", []string{"tailscale"}, []ExposureEndpoint{local, tail, px}, tail},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAddressHost(t, "local", []string{"tailscale", "netbird", "proxy"}, c.grants...)
+			h.defaults(t, c.def, "")
+			h.net.set("site", c.eps...)
+			if v := h.view(t); v.PrivateURL != c.want.URL {
+				t.Fatalf("private_url %q, want %q", v.PrivateURL, c.want.URL)
+			}
+		})
+	}
+
+	const host = "site-abcdefgh"
+	plocal := routeEndpoint(ProviderLocal, host, AudienceDraft, "ready")
+	ptail := routeEndpoint(ProviderTailscale, host, AudienceDraft, "ready")
+	pmesh := routeEndpoint(ProviderNetbird, host, AudienceDraft, "ready")
+	pproxy := routeEndpoint(ProviderProxy, host, AudienceDraft, "ready")
+	for _, c := range []struct {
+		name   string
+		def    string
+		grants []string
+		eps    []ExposureEndpoint
+		want   ExposureEndpoint
+	}{
+		{"preview on proxy", "", []string{"proxy"}, []ExposureEndpoint{plocal, pproxy}, pproxy},
+		{"preview tailscale before proxy", "", []string{"tailscale", "proxy"}, []ExposureEndpoint{plocal, pproxy, ptail}, ptail},
+		{"preview proxy default", "proxy", []string{"tailscale", "proxy"}, []ExposureEndpoint{plocal, ptail, pproxy}, pproxy},
+		{"preview netbird default", "netbird", []string{"netbird", "proxy"}, []ExposureEndpoint{plocal, pmesh, pproxy}, pproxy},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newAddressHost(t, "local", []string{"tailscale", "netbird", "proxy"}, c.grants...)
+			h.defaults(t, c.def, "")
+			h.net.set("site", c.eps...)
+			if pv := h.s.previewView(t.Context(), store.Preview{Flat: "site", Host: host}); pv.URL != c.want.URL {
+				t.Fatalf("preview %q, want %q", pv.URL, c.want.URL)
+			}
+		})
+	}
+
+	// A Public flat whose only public route is proxy-public reports it.
+	h := newAddressHost(t, "local", []string{"proxy-public"}, "proxy-public")
+	h.makePublic(t)
+	pub := routeEndpoint(ProviderProxyPublic, "site", AudienceCurrent, "ready")
+	h.net.set("site", local, pub)
+	if v := h.view(t); v.PublicURL != pub.URL || v.ConnectionState != "ready" {
+		t.Fatalf("public_url %q (%s)", v.PublicURL, v.ConnectionState)
 	}
 }
 

@@ -98,6 +98,10 @@ func (t Template) Authority(label string) string {
 	return a
 }
 
+// String returns the template as proxy.url_template spells it, or "" for
+// the zero Template.
+func (t Template) String() string { return t.URL(templateHost) }
+
 // Scheme is "http" or "https", or "" for the zero Template.
 func (t Template) Scheme() string { return t.scheme }
 

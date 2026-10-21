@@ -389,19 +389,15 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if err != nil {
 		return err
 	}
-	zrok, err := s.st.ProviderPermitted(ctx, slugName, store.ProviderZrok)
-	if err != nil {
-		return err
+	other := false
+	for _, id := range []string{store.ProviderZrok, store.ProviderCFQuick, store.ProviderNetbirdExpose, store.ProviderProxyPublic} {
+		permitted, err := s.st.ProviderPermitted(ctx, slugName, id)
+		if err != nil {
+			return err
+		}
+		other = other || permitted
 	}
-	quick, err := s.st.ProviderPermitted(ctx, slugName, store.ProviderCFQuick)
-	if err != nil {
-		return err
-	}
-	expose, err := s.st.ProviderPermitted(ctx, slugName, store.ProviderNetbirdExpose)
-	if err != nil {
-		return err
-	}
-	if _, ok := s.lifecycleNet(); ok && (portal || funnel || zrok || quick || expose) {
+	if _, ok := s.lifecycleNet(); ok && (portal || funnel || other) {
 		return nil
 	}
 	if portal && s.cfg.Public != nil {
@@ -410,7 +406,7 @@ func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
 	if portal && s.cfg.Public == nil {
 		return errPublicDisabled()
 	}
-	return fmt.Errorf("%w: %w: permit tailscale-funnel, portal, zrok, cloudflare-quick or netbird-expose before making this flat public", ErrConflict, ErrProviderNotPermitted)
+	return fmt.Errorf("%w: %w: permit tailscale-funnel, portal, zrok, cloudflare-quick, netbird-expose or proxy-public before making this flat public", ErrConflict, ErrProviderNotPermitted)
 }
 
 // SetProviderPermission records an explicit non-local provider permission.
@@ -430,7 +426,8 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return forbiddenf("only the operator can permit a network provider")
 	}
 	switch provider {
-	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal, store.ProviderZrok, store.ProviderCFQuick, store.ProviderNetbird, store.ProviderNetbirdExpose:
+	case store.ProviderTailscale, store.ProviderFunnel, store.ProviderPortal, store.ProviderZrok, store.ProviderCFQuick, store.ProviderNetbird, store.ProviderNetbirdExpose,
+		store.ProviderProxy, store.ProviderProxyPublic:
 	case store.ProviderLocal:
 		return invalidf("local is always permitted")
 	default:
@@ -460,13 +457,13 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 }
 
 // applyProviderGrant opens the explicitly granted current route on a live flat:
-// private mesh providers may serve either visibility; public providers may
+// private route providers may serve either visibility; public providers may
 // serve only an already Public flat. The legacy backend needs no re-run.
 // Only the granted endpoint decides success; a sibling route's error is logged,
 // not returned. Rename aliases keep their routes until the next restart.
 func (s *Service) applyProviderGrant(ctx context.Context, f store.Flat, provider ProviderID) error {
 	publicGrant := PublicProvider(provider) && f.Visibility.Public()
-	if !PrivateMeshProvider(provider) && !publicGrant {
+	if !PrivateRouteProvider(provider) && !publicGrant {
 		return nil
 	}
 	return s.reapplyExposure(ctx, f, provider, publicGrant)
@@ -1317,7 +1314,7 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 // error when a sibling provider failed.
 func privateRegistrationOpened(res ExposureResult, host string, audience ExposureAudience) bool {
 	for _, ep := range res.Endpoints {
-		if (ep.Provider == ProviderLocal || PrivateMeshProvider(ep.Provider)) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted && privateRouteOpen(ep.State) {
+		if (ep.Provider == ProviderLocal || PrivateRouteProvider(ep.Provider)) && ep.Host == host && ep.Audience == audience && ep.Configured && ep.Permitted && privateRouteOpen(ep.State) {
 			return true
 		}
 	}
@@ -1676,7 +1673,7 @@ func (s *Service) migrateLegacyDrafts(ctx context.Context) error {
 func privateProviders(ids []ProviderID) []ProviderID {
 	out := []ProviderID{ProviderLocal}
 	for _, id := range ids {
-		if PrivateMeshProvider(id) {
+		if PrivateRouteProvider(id) {
 			out = append(out, id)
 		}
 	}
@@ -1980,10 +1977,11 @@ func (s *Service) restorePreviews(ctx context.Context) {
 	}
 }
 
-// revokeProviderRoutes narrows only Private Tailscale access. Public routes
-// still require the approved Public-to-Private transition before revocation.
+// revokeProviderRoutes narrows only Private Tailscale, NetBird and reverse
+// proxy access. Public routes still require the approved Public-to-Private
+// transition before revocation.
 func (s *Service) revokeProviderRoutes(ctx context.Context, slug string, id ProviderID) error {
-	if !PrivateMeshProvider(id) {
+	if !PrivateRouteProvider(id) {
 		return s.providerNotInUse(ctx, slug, id)
 	}
 	stopper, ok := s.cfg.Lifecycle.(LifecycleProviderStopper)
@@ -2045,7 +2043,7 @@ func (s *Service) providerNotInUse(ctx context.Context, slug string, id Provider
 	}
 	// An adapter without route inspection cannot prove a running provider idle.
 	lf := s.state(slug)
-	if ((id == ProviderPortal || id == ProviderZrok || id == ProviderCloudflareQuick || id == ProviderNetbirdExpose) && lf.publicServed) || (PrivateMeshProvider(id) && lf.privateServed) || s.cfg.Lifecycle != nil {
+	if (PublicProvider(id) && lf.publicServed) || (PrivateRouteProvider(id) && lf.privateServed) || s.cfg.Lifecycle != nil {
 		return fmt.Errorf("%w: cannot confirm %s routes are stopped", ErrProviderInUse, id)
 	}
 	return nil

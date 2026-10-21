@@ -41,6 +41,9 @@ const (
 	// network.private_backend; "" for public grants none.
 	SetDefaultPrivate = "default_private_provider"
 	SetDefaultPublic  = "default_public_provider"
+	// SetProxyTemplate is the address pattern of the reverse proxy that
+	// serves flats, such as https://{host}.site.example.org; "" for none.
+	SetProxyTemplate = "proxy_url_template"
 )
 
 // settingKeys maps each setting to its config.json key.
@@ -61,6 +64,7 @@ var settingKeys = map[string]string{
 	SetPortalHide:      "portal.hide",
 	SetDefaultPrivate:  "network.default_private",
 	SetDefaultPublic:   "network.default_public",
+	SetProxyTemplate:   config.ProxyTemplateKey,
 }
 
 // SettingConfigKey returns the config.json key of a setting.
@@ -104,7 +108,8 @@ type SettingsSource struct {
 	mu     sync.Mutex
 	doc    *config.Document
 	values map[string]string
-	pinned map[string]string // setting -> who sets it
+	proxy  config.ProxyConfig // the proxy section in effect
+	pinned map[string]string  // setting -> who sets it
 	file   *SettingsFile
 }
 
@@ -184,6 +189,7 @@ func (s *SettingsSource) refresh() error {
 		values[k] = settingString(v)
 	}
 	s.values = values
+	s.proxy = c.Proxy
 	return nil
 }
 
@@ -303,6 +309,14 @@ func (s *SettingsSource) network() config.NetworkConfig {
 	return c.Network
 }
 
+// Proxy returns the proxy section in effect. The proxy listener reads its
+// template on every request, so this does not parse the document.
+func (s *SettingsSource) Proxy() config.ProxyConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.proxy
+}
+
 // permitted returns network.permitted in effect.
 func (s *SettingsSource) permitted() []string {
 	s.mu.Lock()
@@ -321,7 +335,26 @@ func (s *SettingsSource) setPermitted(ids []string, ifMatch string) (string, err
 	if err := s.checkMatch(ifMatch); err != nil {
 		return "", err
 	}
-	apply := func(d *config.Document) error {
+	if err := s.commit(ifMatch, permittedChange(ids)); err != nil {
+		return "", err
+	}
+	return s.etag(), nil
+}
+
+// checkPermitted reports whether saving network.permitted as ids would be
+// accepted now, without saving it.
+func (s *SettingsSource) checkPermitted(ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := permittedChange(ids)(s.doc.Clone()); err != nil {
+		return invalid(err)
+	}
+	return nil
+}
+
+// permittedChange sets network.permitted to ids and validates the document.
+func permittedChange(ids []string) func(*config.Document) error {
+	return func(d *config.Document) error {
 		if err := d.Set("network.permitted", strings.Join(ids, ",")); err != nil {
 			return err
 		}
@@ -336,10 +369,6 @@ func (s *SettingsSource) setPermitted(ids []string, ifMatch string) (string, err
 		}
 		return d.Validate()
 	}
-	if err := s.commit(ifMatch, apply); err != nil {
-		return "", err
-	}
-	return s.etag(), nil
 }
 
 // consoleHosts returns tailscale.console_hosts in effect, including this
@@ -590,6 +619,11 @@ type ConfigView struct {
 		Permitted      []string `json:"permitted"`
 		PrivateBackend string   `json:"private_backend"`
 	} `json:"network"`
+	// Proxy.Addr is the listener the reverse proxy forwards to. Only
+	// offline `flats config` changes it; it applies when the listener binds.
+	Proxy struct {
+		Addr string `json:"addr"`
+	} `json:"proxy"`
 	// Credentials reports only whether each file is configured.
 	Credentials struct {
 		OperatorFile         bool `json:"operator_file"`
@@ -623,6 +657,7 @@ func (s *SettingsSource) view() (*ConfigView, error) {
 	v.Host.ServerRuntime = c.Host.ServerRuntime
 	v.Tailscale.ConsoleHosts = slices.Clone(c.Tailscale.ConsoleHosts)
 	v.Network.Permitted, v.Network.PrivateBackend = c.Network.Permitted, c.Network.PrivateBackend
+	v.Proxy.Addr = c.Proxy.Addr
 	v.Credentials.OperatorFile = c.Credentials.OperatorFile != ""
 	v.Credentials.TailscaleAuthKeyFile = c.Credentials.TailscaleAuthKeyFile != ""
 	for _, k := range config.Keys() {
@@ -643,6 +678,15 @@ func (s *Service) PermittedNetworks() []string { return s.settings.permitted() }
 func (s *Service) SetPermittedNetworks(ids []string, ifMatch string) (string, error) {
 	return s.settings.setPermitted(ids, ifMatch)
 }
+
+// CheckPermittedNetworks refuses, as SetPermittedNetworks would, a
+// network.permitted that the current settings do not allow, such as a
+// proxy provider without a template. It saves nothing.
+func (s *Service) CheckPermittedNetworks(ids []string) error { return s.settings.checkPermitted(ids) }
+
+// ProxyConfig returns the proxy section in effect. A template change saved
+// through the settings applies at once.
+func (s *Service) ProxyConfig() config.ProxyConfig { return s.settings.Proxy() }
 
 // clampInt converts a setting to int, saturating where int is narrower.
 func clampInt(n int64) int {
@@ -778,15 +822,15 @@ func cleanSettings(in map[string]string) (map[string]string, error) {
 // normalizeSetting validates one setting value and returns the form to store.
 func normalizeSetting(k, v string) (string, error) {
 	switch k {
-	case SetExternalOrigins:
+	case SetExternalOrigins, SetProxyTemplate:
 		d, err := config.New(config.NewInstanceID(), string(filepath.Separator))
 		if err != nil {
 			return "", err
 		}
-		if err := d.Set(config.ExternalOriginsKey, v); err != nil {
+		if err := d.Set(settingKeys[k], v); err != nil {
 			return "", err
 		}
-		value, _ := d.Stored(config.ExternalOriginsKey)
+		value, _ := d.Stored(settingKeys[k])
 		return settingString(value), nil
 	case SetPortalRelays:
 		var relays []string
@@ -805,18 +849,18 @@ func normalizeSetting(k, v string) (string, error) {
 		return strings.Join(relays, ","), nil
 	case SetDefaultPrivate:
 		switch v {
-		case "", "local", string(ProviderTailscale), string(ProviderNetbird):
+		case "", "local", string(ProviderTailscale), string(ProviderNetbird), string(ProviderProxy):
 			return v, nil
 		}
-		return "", fmt.Errorf("setting %s must be local, tailscale or netbird, or empty to follow network.private_backend", k)
+		return "", fmt.Errorf("setting %s must be local, tailscale, netbird or proxy, or empty to follow network.private_backend", k)
 	case SetDefaultPublic:
 		switch v {
 		case "", "none":
 			return "", nil
-		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok), string(ProviderCloudflareQuick), string(ProviderNetbirdExpose):
+		case string(ProviderFunnel), string(ProviderPortal), string(ProviderZrok), string(ProviderCloudflareQuick), string(ProviderNetbirdExpose), string(ProviderProxyPublic):
 			return v, nil
 		}
-		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal, zrok, cloudflare-quick or netbird-expose, or empty for none", k)
+		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal, zrok, cloudflare-quick, netbird-expose or proxy-public, or empty for none", k)
 	case SetPortalDiscover, SetPortalHide:
 		b, err := strconv.ParseBool(v)
 		if err != nil {

@@ -1057,6 +1057,8 @@ func (s *Service) newFlatProviders() []defaultGrant {
 		out = append(out, defaultGrant{store.ProviderTailscale, "network.default_private is tailscale"})
 	case n.DefaultPrivate == store.ProviderNetbird && slices.Contains(permitted, store.ProviderNetbird):
 		out = append(out, defaultGrant{store.ProviderNetbird, "network.default_private is netbird"})
+	case n.DefaultPrivate == store.ProviderProxy && slices.Contains(permitted, store.ProviderProxy):
+		out = append(out, defaultGrant{store.ProviderProxy, "network.default_private is proxy"})
 	case n.DefaultPrivate == "" && s.cfg.PrivateBackend == "tailscale":
 		out = append(out, defaultGrant{store.ProviderTailscale, "network.private_backend is tailscale"})
 	}
@@ -2546,7 +2548,7 @@ func startsWithDotDot(rel string) bool {
 
 // privateOrder ranks a flat's Private routes for its reported address when
 // the host's private default is not among them.
-var privateOrder = []ProviderID{ProviderTailscale, ProviderNetbird, ProviderLocal}
+var privateOrder = []ProviderID{ProviderTailscale, ProviderNetbird, ProviderProxy, ProviderLocal}
 
 // previewOrder ranks preview routes: privateOrder without NetBird, which
 // never serves previews.
