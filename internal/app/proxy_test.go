@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -575,6 +576,42 @@ func TestProxyAddrSharedWithoutProxy(t *testing.T) {
 				if len(configPermitted(t, h)) != 0 || h.proxyBackend() != nil || h.Providers.HostAllows(provider.ID(id)) {
 					t.Fatalf("a refused %s changed the host", id)
 				}
+			}
+		})
+	}
+}
+
+// Rules 10 and 11 through offline `flats config set`: each refused change
+// exits with the configuration error, names the key and leaves config.json
+// as it was.
+func TestProxyOfflineConfigChecks(t *testing.T) {
+	addr := freeAddr(t)
+	for _, c := range []struct {
+		name  string
+		setup []string // applied first; each must succeed
+		set   [2]string
+		want  string
+	}{
+		{"kind without a template", nil, [2]string{"network.permitted", "proxy"}, "proxy.url_template"},
+		{"both kinds", []string{"proxy.url_template", testProxyTemplate, "network.permitted", "proxy"}, [2]string{"network.permitted", "proxy,proxy-public"}, "network.permitted"},
+		{"template cleared while on", []string{"proxy.url_template", testProxyTemplate, "network.permitted", "proxy-public"}, [2]string{"proxy.url_template", ""}, "proxy.url_template"},
+		{"local moved onto the address", []string{"proxy.url_template", testProxyTemplate, "proxy.addr", addr, "network.permitted", "proxy"}, [2]string{"host.local_addr", addr}, "proxy.addr"},
+		{"console moved onto the address", []string{"proxy.url_template", testProxyTemplate, "proxy.addr", addr, "network.permitted", "proxy"}, [2]string{"host.console_addr", addr}, "proxy.addr"},
+		{"turned on over the Local address", []string{"proxy.url_template", testProxyTemplate, "host.local_addr", addr, "proxy.addr", addr}, [2]string{"network.permitted", "proxy"}, "proxy.addr"},
+		{"template over a console origin", []string{"console.external_origins", "https://flats.site.example.org"}, [2]string{"proxy.url_template", testProxyTemplate}, "console.external_origins"},
+		{"console origin over the template", []string{"proxy.url_template", testProxyTemplate}, [2]string{"console.external_origins", "https://flats.site.example.org"}, "console.external_origins"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := proxyConfig(t, c.setup...)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runConfig(t, "set", c.set[0], c.set[1], "--config", path); exitCode(err) != ExitConfig || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("set %s %q: %v", c.set[0], c.set[1], err)
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+				t.Fatalf("a refused set changed config.json:\n%s", after)
 			}
 		})
 	}
