@@ -38,6 +38,14 @@ func (s *State) Rollback(of int64, c Content, now int64) (Outcome, error) {
 // a whole: element forms, references, membership invariants and the
 // per-item limits.
 func (s *State) Replace(c Content, by string, now int64) (Outcome, error) {
+	// The replacing content is written by its importer now, whatever
+	// authorship its file claims.
+	els := make([]model.Element, len(c.Elements))
+	for i, el := range c.Elements {
+		el.SetAuthor(model.EditorKind(by), "")
+		els[i] = el
+	}
+	c.Elements = els
 	if err := checkContent(c.Elements); err != nil {
 		return Outcome{}, err
 	}
@@ -172,10 +180,14 @@ func (a *applier) resetElement(el model.Element) {
 		// stored content), so the unversioned fields follow it as well.
 		r.El.By, r.El.At = el.By, el.At
 		r.El.Pts, r.El.Asset, r.El.Natural = el.Pts, el.Asset, el.Natural
+		r.El.TA, r.El.LK = el.TA, el.LK
 		if !sameUnversioned(r.El, cur.El) {
 			r.V[model.VFixed] = a.seq
 		}
-		if !maps.Equal(r.V, cur.V) {
+		// Authorship alone is no bundle and versions nothing: clients keep
+		// the old value until their next snapshot, while the row and the
+		// revision's buckets follow the content.
+		if !maps.Equal(r.V, cur.V) || !model.SameAuthorship(r.El, cur.El) {
 			a.put(r)
 		}
 		return

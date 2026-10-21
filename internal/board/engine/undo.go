@@ -731,17 +731,34 @@ func (s *State) UndoBytes() int64 {
 }
 
 // TrimUndo drops undo entries until the board's undo storage is at most
-// limit bytes: the oldest entries of the least recently active session go
-// first (4.10 "Retention").
-func (s *State) TrimUndo(limit int64) Changed {
+// limit bytes: guests' entries first, then the oldest entries of the least
+// recently active session (4.10 "Retention").
+func (s *State) TrimUndo(limit int64) Changed { return s.TrimUndoCapped(limit, -1) }
+
+// TrimUndoCapped is TrimUndo that also keeps guests' entries at most
+// guestLimit bytes (negative: no guest limit), in two steps (TECH public
+// edit 4.4): guest entries over their limit first; then, over limit, guest
+// entries and only when none is left other entries.
+func (s *State) TrimUndoCapped(limit, guestLimit int64) Changed {
 	m := s.Savepoint()
 	sp := s.sps[m]
-	total := s.UndoBytes()
-	for total > limit {
+	var total, guestTotal int64
+	for id, st := range s.undo {
+		for _, e := range append(slices.Clone(st.undo), st.redo...) {
+			n := entryBytes(e)
+			total += n
+			if s.GuestSession(id) {
+				guestTotal += n
+			}
+		}
+	}
+	// trim drops the oldest entry of the least recently active session
+	// whose kind guests selects; false when there is none.
+	trim := func(guests bool) bool {
 		victim := ""
 		for _, id := range slices.Sorted(maps.Keys(s.undo)) {
 			st := s.undo[id]
-			if len(st.undo)+len(st.redo) == 0 {
+			if len(st.undo)+len(st.redo) == 0 || s.GuestSession(id) != guests {
 				continue
 			}
 			if victim == "" || s.lastAt(id) < s.lastAt(victim) {
@@ -749,15 +766,24 @@ func (s *State) TrimUndo(limit int64) Changed {
 			}
 		}
 		if victim == "" {
-			break
+			return false
 		}
 		st := s.editStacks(victim)
 		stack := &st.undo
 		if len(st.undo) == 0 || (len(st.redo) > 0 && st.redo[0].Idx < st.undo[0].Idx) {
 			stack = &st.redo
 		}
-		total -= entryBytes((*stack)[0])
+		n := entryBytes((*stack)[0])
+		total -= n
+		if guests {
+			guestTotal -= n
+		}
 		*stack = slices.Clone((*stack)[1:])
+		return true
+	}
+	for guestLimit >= 0 && guestTotal > guestLimit && trim(true) {
+	}
+	for total > limit && (trim(true) || trim(false)) {
 	}
 	c := s.changedSince(sp)
 	s.Release(m)

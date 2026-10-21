@@ -78,6 +78,7 @@ type sim struct {
 
 // agentRead is an element as the agent's last read saw it: its incarnation,
 // its ver and its content without the stacking key, which a rekey rewrites
+// without a version, and without authorship, which a rollback restores
 // without a version.
 type agentRead struct {
 	inc, ver int64
@@ -85,7 +86,7 @@ type agentRead struct {
 }
 
 func readOf(e model.PrivateElement, ver int64) agentRead {
-	el := e.Element.Clone()
+	el := noAuthorship(e.Element.Clone())
 	el.Z = ""
 	return agentRead{e.Inc, ver, string(el.CanonicalJSON())}
 }
@@ -449,8 +450,15 @@ func applyChanges(name string, els map[string]model.PrivateElement, deleted map[
 }
 
 // samePrivate compares two Private copies of an element, end_inc included.
+// samePrivate compares two private elements. Authorship (ta, lk) is left
+// out: deltas do not carry it, so clients learn it only from snapshots.
 func samePrivate(x, y model.PrivateElement) bool {
-	return model.Equal(x.Element, y.Element) && x.Inc == y.Inc && maps.Equal(x.V, y.V) && x.EndInc == y.EndInc
+	return model.Equal(noAuthorship(x.Element), noAuthorship(y.Element)) && x.Inc == y.Inc && maps.Equal(x.V, y.V) && x.EndInc == y.EndInc
+}
+
+func noAuthorship(e model.Element) model.Element {
+	e.TA, e.LK = nil, ""
+	return e
 }
 
 func setBundles(e *model.PrivateElement, set map[string]model.SetVal) error {

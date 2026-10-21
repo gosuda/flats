@@ -299,7 +299,7 @@ func (c *agentCall) ifVer(raw json.RawMessage, ids ...string) error {
 // add applies an agent add: a new id unless the element names one, "$ref"
 // references, default sizes and a place for elements without coordinates.
 func (c *agentCall) add(op AgentOp) (any, error) {
-	el, present, err := model.DecodeElement(op.El)
+	el, present, err := model.DecodeNewElement(op.El)
 	if err != nil {
 		return nil, err
 	}
@@ -1025,7 +1025,7 @@ func (c *agentCall) replace() error {
 		if op.Op != OpAdd {
 			return invalid("%v (operation %d is %s)", errEmptyReplace, i, op.Op)
 		}
-		el, present, err := model.DecodeElement(op.El)
+		el, present, err := model.DecodeNewElement(op.El)
 		if err != nil {
 			return err
 		}
@@ -1057,6 +1057,7 @@ func (c *agentCall) replace() error {
 			return err
 		}
 		els[i].By, els[i].At = c.a.by, c.a.now
+		els[i].SetAuthor(c.a.kind, "")
 	}
 	if len(els) == 0 {
 		return invalid("%v", errEmptyReplace)

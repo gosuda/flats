@@ -132,6 +132,9 @@ func (c Change) MarshalJSON() ([]byte, error) {
 type By struct {
 	Kind  string `json:"kind"` // person, agent or system
 	Label string `json:"label"`
+	// Who is the editor kind of a person (KindMember or KindGuest); it
+	// stays on the server and lets the guest projection name the kind.
+	Who string `json:"-"`
 }
 
 // Reset marks a delta of a whole-board rollback or replacement.

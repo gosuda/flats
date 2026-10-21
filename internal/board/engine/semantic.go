@@ -231,7 +231,7 @@ func (a *applier) deleteSetAt(ids []string, last map[string][2][2]float64) {
 				r.EndLast[k] = a.endWorld(end)
 			}
 		}
-		r.Deleted, r.DelSeq, r.PreRel = true, a.seq, pre[id]
+		r.Deleted, r.DelSeq, r.DelKey, r.PreRel = true, a.seq, a.by, pre[id]
 		a.put(r)
 	}
 	for _, id := range ids {
@@ -349,12 +349,26 @@ func (a *applier) revivePhases(ids []string, ifDel int64) (*MultiResult, groupFi
 		}
 	}
 	slices.Sort(set)
+	if a.guest {
+		for _, id := range set {
+			r := a.s.rows[id]
+			switch {
+			case r.DelKey != a.by || r.DelSeq <= a.startSeq:
+				a.refusal = ErrGuestRevive
+			case r.El.Type == model.TypeImage && !a.assetLive(r.El.Asset):
+				a.refusal = ErrGuestAsset
+			}
+			if a.refusal != nil {
+				return res, groupFix{}
+			}
+		}
+	}
 	atDel := make(map[string]*Row, len(set))
 	for _, id := range set {
 		old := a.s.rows[id]
 		atDel[id] = old
 		r := old.clone()
-		r.Deleted, r.DelSeq, r.PreRel, r.Inc = false, 0, nil, a.seq
+		r.Deleted, r.DelSeq, r.DelKey, r.PreRel, r.Inc = false, 0, "", nil, a.seq
 		r.El.Frame, r.El.Group = "", ""
 		if r.El.Type == model.TypeConnector {
 			r.El.Ends = [2]model.End{{Pt: model.ClampPoint(old.EndLast[0])}, {Pt: model.ClampPoint(old.EndLast[1])}}
