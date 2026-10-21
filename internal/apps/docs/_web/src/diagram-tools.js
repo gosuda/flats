@@ -1,4 +1,5 @@
 import { pngBlob, saveBlob } from "./diagram-export.js";
+import { createWheelPan } from "../../../../design/web/wheel.js";
 let cloneID = 0;
 // Marker, title and description IDs must also be unique across cached copies.
 export function uniqueSVG(container) {
@@ -173,24 +174,39 @@ function expand(el, trigger) {
     } else return;
     event.preventDefault();
   });
+  const wheel = createWheelPan();
   viewport.addEventListener(
     "wheel",
     (event) => {
       event.preventDefault();
-      if (event.ctrlKey || event.metaKey)
+      if (event.ctrlKey || event.metaKey) {
+        wheel.reset();
         zoom(event.deltaY < 0 ? 1.1 : 1 / 1.1);
-      else {
-        x -= event.deltaX;
-        y -= event.deltaY;
+      } else {
+        const pan = wheel.pan(event);
+        x -= pan.x;
+        y -= pan.y;
         paint();
       }
     },
     { passive: false },
   );
+  // Releasing Shift or leaving the window ends a Shift gesture, as in the
+  // design canvas. Closing the dialog removes both listeners.
+  const gesture = new AbortController();
+  window.addEventListener(
+    "keyup",
+    (event) => {
+      if (event.key === "Shift") wheel.reset();
+    },
+    { signal: gesture.signal },
+  );
+  window.addEventListener("blur", wheel.reset, { signal: gesture.signal });
   viewport.append(canvas);
   dialog.append(bar, viewport);
   document.body.append(dialog);
   dialog.addEventListener("close", () => {
+    gesture.abort();
     dialog.remove();
     if (priorEditor?.isConnected) priorEditor.focus({ preventScroll: true });
     else if (trigger.isConnected) trigger.focus();

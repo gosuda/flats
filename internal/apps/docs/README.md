@@ -15,6 +15,13 @@ npm run build --prefix internal/apps/docs/_web
 go test ./internal/apps/docs/... ./internal/runtime/...
 ```
 
+Use Node 22.22.1 or newer (CI runs the latest Node 22). On earlier 22.x
+releases `npm test` fails in the revisions tests: 22.12 has no `node:sqlite`,
+and every release from 22.13 to 22.22.0 that was tried fails one test. The
+diagram viewer tests also import `internal/design/web/wheel.js`, which has no
+`package.json` of its own, so Node has to detect its ES module syntax, which it
+does by default from 22.7.
+
 Dependencies are pinned in `_web/package.json` and its lockfile. The build
 produces one minified server ESM bundle, embedding the client JavaScript and
 CSS as strings, plus `mermaid-asset.js`, a module exporting the minified
@@ -24,11 +31,17 @@ is needed at deployment time. Third-party license texts cover the 90 packages
 actually bundled, as determined by esbuild's input graph (a package whose
 license is only a README section, such as fastdom, contributes that section).
 
-`dist/BUILD-INPUTS.sha256` covers sorted `_web/src/**`, package metadata and
-the build script and every other dist output (server and licenses). `TestBuildInputs` recomputes it without Node. Changing a
-source or unit test requires rebuilding the committed output. `fixtures.mjs`
-creates real Yjs bytes for Go integration tests, which re-execute the test
-binary as the actual Flats worker and materialize a temporary app directory.
+`dist/BUILD-INPUTS.sha256` covers sorted `_web/src/**` (including the unit
+tests), package metadata, the build script, `internal/design/web/wheel.js` and
+every other dist output (server and licenses). The expanded diagram view shares
+its wheel rule with the design app through that `wheel.js`, so a change to the
+design file also changes `Hash()`. The build fails when a bundle includes
+another file from outside `src/` and `node_modules/` that this list does not
+name. `TestBuildInputs` recomputes the hash without Node. Changing a source, a
+unit test or `wheel.js` requires rebuilding the committed output.
+`fixtures.mjs` creates real Yjs bytes for Go integration tests, which
+re-execute the test binary as the actual Flats worker and materialize a
+temporary app directory.
 
 ## Implementation
 
@@ -63,9 +76,13 @@ first, and work for removed placeholders is discarded.
 
 Diagram controls provide an expanded view with zoom, pan and fit, source
 viewing/copying, and SVG or PNG download. The expanded view supports keyboard use,
-Escape to close, and restoring focus to its opener. In Edit mode, Edit source
-opens the editable fence and Done returns to the rendered diagram; there is
-no duplicate read-only Source toggle. View mode keeps that Source toggle. Loading and syntax errors are distinguished, source is
+Escape to close, and restoring focus to its opener. In the expanded view the
+mouse wheel pans, Shift plus the wheel pans sideways, and Ctrl or ⌘ plus the
+wheel zooms. The wheel mapping is the design canvas's `createWheelPan`
+(`internal/design/web/wheel.js`), so both screens treat Shift plus the wheel the
+same way. In Edit mode, Edit source opens the editable fence and Done returns to
+the rendered diagram; there is no duplicate read-only Source toggle. View mode
+keeps that Source toggle. Loading and syntax errors are distinguished, source is
 preserved on failure, and failed loads can be retried. The live-preview editor
 also handles diagrams inside quotes and lists. While source is being edited,
 an optional preview refreshes after typing pauses. PNG export snapshots the

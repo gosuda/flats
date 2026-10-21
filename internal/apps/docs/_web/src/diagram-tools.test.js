@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { uniqueSVG, diagramTools } from "./diagram-tools.js";
 
 class Node {
@@ -9,6 +10,7 @@ class Node {
     this.children = [];
     this.dataset = {};
     this.events = {};
+    this.listenerOptions = {};
     this.style = {};
     this.textContent = "";
     this.className = "";
@@ -39,8 +41,9 @@ class Node {
     if (this.parent)
       this.parent.children = this.parent.children.filter((n) => n !== this);
   }
-  addEventListener(type, handler) {
+  addEventListener(type, handler, options) {
     this.events[type] = handler;
+    this.listenerOptions[type] = options;
   }
   click() {
     return this.events.click?.({});
@@ -75,6 +78,29 @@ class Node {
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;
   }
+}
+// A window that keeps its listeners, skips those whose abort signal fired and
+// can fire an event at the rest.
+function fakeWindow() {
+  const listeners = [];
+  const live = (type) =>
+    listeners.filter((l) => l.type === type && !l.signal?.aborted && !l.spent);
+  return {
+    addEventListener(type, handler, options = {}) {
+      listeners.push({ type, handler, options, signal: options.signal });
+    },
+    fire(type, event = {}) {
+      for (const l of live(type)) {
+        l.handler(event);
+        if (l.options.once) l.spent = true;
+      }
+    },
+    count: (type) => live(type).length,
+    // Element blur events pass through window in the capture phase, so a
+    // capture listener would also hear focus moves inside the dialog.
+    captures: (type) =>
+      live(type).filter((l) => l.options === true || l.options?.capture).length,
+  };
 }
 test("SVG copies rewrite markers, use links, styles and accessible labels without changing label text", () => {
   const container = new Node();
@@ -259,6 +285,8 @@ test("HTTP copy fallback reports real success/failure and SVG save uses serializ
 
 test("closing an expanded editing preview returns focus to the editor, with opener fallback", () => {
   const priorDocument = globalThis.document;
+  const priorWindow = globalThis.window;
+  globalThis.window = fakeWindow();
   const body = new Node("body");
   const create = (tag) => {
     const node = new Node(tag);
@@ -267,6 +295,7 @@ test("closing an expanded editing preview returns focus to the editor, with open
     node.getBoundingClientRect = () => ({ width: 400, height: 300 });
     node.cloneNode = () => create(tag);
     node.showModal = () => {};
+    node.setPointerCapture = () => {};
     node.close = () => node.events.close();
     Object.defineProperty(node, "isConnected", {
       get: () => {
@@ -332,5 +361,294 @@ test("closing an expanded editing preview returns focus to the editor, with open
     );
   } finally {
     globalThis.document = priorDocument;
+    globalThis.window = priorWindow;
   }
+});
+
+// A fake document holding one diagram, for opening the expanded viewer.
+function viewerFixture() {
+  const body = new Node("body");
+  const create = (tag) => {
+    const node = new Node(tag);
+    node.clientWidth = 800;
+    node.clientHeight = 600;
+    node.getBoundingClientRect = () => ({ width: 400, height: 300 });
+    node.cloneNode = () => create(tag);
+    node.showModal = () => {};
+    node.setPointerCapture = () => {};
+    node.close = () => node.events.close();
+    Object.defineProperty(node, "isConnected", {
+      get: () => {
+        let n = node;
+        while (n.parent) n = n.parent;
+        return n === body;
+      },
+    });
+    return node;
+  };
+  const doc = {
+    body,
+    createElement: create,
+    querySelectorAll: (s) => body.querySelectorAll(s),
+    querySelector: (s) => body.querySelector(s),
+  };
+  const diagram = create("div");
+  diagram.className = "mermaid-diagram";
+  const source = create("pre");
+  source.className = "mermaid-source";
+  source.textContent = "graph TD; A-->B";
+  const figure = create("div");
+  figure.className = "mermaid-svg";
+  figure.append(create("svg"));
+  diagram.append(source, figure);
+  body.append(diagram);
+  return { doc, body, diagram };
+}
+
+// Opens the expanded viewer of a fresh fake page. The fit view of the fake
+// 400 by 300 diagram in the fake 800 by 600 viewport is
+// translate(200px, 150px) scale(1).
+function openViewer(tools) {
+  const { doc, body, diagram } = viewerFixture();
+  const win = fakeWindow();
+  globalThis.document = doc;
+  globalThis.window = win;
+  tools(diagram, () => {});
+  diagram
+    .querySelectorAll("button")
+    .find((n) => n.textContent === "Expand")
+    .click();
+  const dialog = body.querySelector("dialog");
+  return {
+    win,
+    dialog,
+    viewport: dialog.querySelector(".mermaid-viewport"),
+    canvas: dialog.querySelector(".mermaid-canvas"),
+  };
+}
+
+async function withViewerGlobals(run) {
+  const prior = { document: globalThis.document, window: globalThis.window };
+  try {
+    await run();
+  } finally {
+    Object.assign(globalThis, prior);
+  }
+}
+
+function wheel(viewport, init) {
+  let prevented = false;
+  viewport.events.wheel({
+    deltaX: 0,
+    deltaY: 0,
+    shiftKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    timeStamp: 0,
+    ...init,
+    preventDefault: () => {
+      prevented = true;
+    },
+  });
+  assert.equal(prevented, true, "the viewer cancels the wheel event");
+}
+
+const transform = (canvas) => {
+  const m =
+    /^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\((-?[\d.]+)\)$/.exec(
+      canvas.style.transform,
+    );
+  assert.ok(m, "unexpected transform " + canvas.style.transform);
+  return { x: +m[1], y: +m[2], scale: +m[3] };
+};
+
+test("in the expanded diagram, Shift + vertical wheel pans sideways and other wheel input pans as reported", () =>
+  withViewerGlobals(() => {
+    const { viewport, canvas } = openViewer(diagramTools);
+    assert.equal(canvas.style.transform, "translate(200px, 150px) scale(1)");
+    assert.equal(
+      viewport.listenerOptions.wheel?.passive,
+      false,
+      "a passive wheel listener cannot cancel the event",
+    );
+    wheel(viewport, { deltaY: 100 });
+    assert.equal(canvas.style.transform, "translate(200px, 50px) scale(1)");
+    wheel(viewport, { deltaX: 30 });
+    assert.equal(canvas.style.transform, "translate(170px, 50px) scale(1)");
+    wheel(viewport, { deltaX: -10, deltaY: 5 });
+    assert.equal(canvas.style.transform, "translate(180px, 45px) scale(1)");
+    // Trackpads report fractions; they are applied as reported, not rounded.
+    wheel(viewport, { deltaX: 0.5, deltaY: 2.25 });
+    assert.equal(
+      canvas.style.transform,
+      "translate(179.5px, 42.75px) scale(1)",
+    );
+    wheel(viewport, { deltaY: 100, shiftKey: true, timeStamp: 1000 });
+    assert.equal(canvas.style.transform, "translate(79.5px, 42.75px) scale(1)");
+    // A Shift event that is already horizontal pans as reported, in a new gesture.
+    wheel(viewport, { deltaX: -30, shiftKey: true, timeStamp: 2000 });
+    assert.equal(
+      canvas.style.transform,
+      "translate(109.5px, 42.75px) scale(1)",
+    );
+    wheel(viewport, { deltaY: 2.5, shiftKey: true, timeStamp: 3000 });
+    assert.equal(canvas.style.transform, "translate(107px, 42.75px) scale(1)");
+  }));
+
+test("in the expanded diagram, a Shift gesture keeps its mapping until a pause, a plain wheel, Shift release or blur", () =>
+  withViewerGlobals(() => {
+    const { viewport, canvas, win } = openViewer(diagramTools);
+    const at = () => canvas.style.transform;
+    // A vertical start pans sideways, and a horizontal event 60 ms later still follows that mapping,
+    // also after the auto-repeat of a held Shift key in between.
+    wheel(viewport, { deltaY: 100, shiftKey: true, timeStamp: 1000 });
+    win.fire("keydown", { key: "Shift", repeat: true });
+    wheel(viewport, { deltaX: 100, shiftKey: true, timeStamp: 1060 });
+    assert.equal(at(), "translate(100px, 50px) scale(1)");
+    // More than 200 ms later a horizontal event starts a new gesture and pans as reported.
+    wheel(viewport, { deltaX: 100, shiftKey: true, timeStamp: 1400 });
+    assert.equal(at(), "translate(0px, 50px) scale(1)");
+    // Releasing Shift ends the gesture.
+    wheel(viewport, { deltaY: 100, shiftKey: true, timeStamp: 2000 });
+    win.fire("keyup", { key: "Shift" });
+    wheel(viewport, { deltaX: 100, shiftKey: true, timeStamp: 2060 });
+    assert.equal(at(), "translate(-200px, 50px) scale(1)");
+    // The window losing focus ends it too.
+    wheel(viewport, { deltaY: 100, shiftKey: true, timeStamp: 3000 });
+    win.fire("blur");
+    wheel(viewport, { deltaX: 100, shiftKey: true, timeStamp: 3060 });
+    assert.equal(at(), "translate(-400px, 50px) scale(1)");
+    // So does a wheel event without Shift.
+    wheel(viewport, { deltaY: 100, shiftKey: true, timeStamp: 4000 });
+    wheel(viewport, { deltaY: 10, timeStamp: 4030 });
+    wheel(viewport, { deltaX: 100, shiftKey: true, timeStamp: 4060 });
+    assert.equal(at(), "translate(-600px, 40px) scale(1)");
+  }));
+
+test("in the expanded diagram, Ctrl or Cmd wheel zooms about the center, with or without Shift, and ends a Shift gesture", () =>
+  withViewerGlobals(() => {
+    const zoomed = [
+      { deltaY: 100, ctrlKey: true },
+      { deltaY: 100, ctrlKey: true, shiftKey: true },
+      { deltaY: 100, metaKey: true },
+    ].map((init) => {
+      const { viewport, canvas } = openViewer(diagramTools);
+      wheel(viewport, init);
+      return transform(canvas);
+    });
+    assert.deepEqual(zoomed[1], zoomed[0]);
+    assert.deepEqual(zoomed[2], zoomed[0]);
+    assert.ok(Math.abs(zoomed[0].scale - 1 / 1.1) < 1e-9);
+    assert.ok(Math.abs(zoomed[0].x - (400 - 200 / 1.1)) < 1e-9);
+    assert.ok(Math.abs(zoomed[0].y - (300 - 150 / 1.1)) < 1e-9);
+    const { viewport, canvas } = openViewer(diagramTools);
+    wheel(viewport, { deltaY: -100, ctrlKey: true });
+    assert.ok(Math.abs(transform(canvas).scale - 1.1) < 1e-9);
+    // Shift + vertical starts a sideways gesture, Ctrl zooms, and the next Shift event
+    // inside 200 ms starts a new gesture: a horizontal event pans horizontally.
+    const fresh = openViewer(diagramTools);
+    wheel(fresh.viewport, { deltaY: 100, shiftKey: true, timeStamp: 1000 });
+    wheel(fresh.viewport, {
+      deltaY: 100,
+      ctrlKey: true,
+      shiftKey: true,
+      timeStamp: 1030,
+    });
+    const before = transform(fresh.canvas);
+    wheel(fresh.viewport, { deltaX: 100, shiftKey: true, timeStamp: 1060 });
+    const after = transform(fresh.canvas);
+    assert.equal(after.x, before.x - 100);
+    assert.equal(after.y, before.y);
+  }));
+
+test("the expanded diagram pans through one shared mapper per viewer and resets it on Ctrl/Cmd, Shift release and blur", async () => {
+  const shared =
+    'import { createWheelPan } from "../../../../design/web/wheel.js";';
+  const exporter = 'import { pngBlob, saveBlob } from "./diagram-export.js";';
+  let code = await readFile(
+    new URL("./diagram-tools.js", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    code.includes(shared),
+    "diagram-tools.js must import createWheelPan from the design app's wheel.js",
+  );
+  assert.ok(code.includes(exporter), "diagram-export import not found");
+  // A module loaded from a data URL cannot resolve relative imports, so both
+  // are replaced. The shared mapper becomes a stand-in that logs its calls and
+  // returns a distinctive pan; a viewer with a rule of its own ignores it.
+  code = code
+    .replace(
+      shared,
+      `const createWheelPan = () => {
+        const log = globalThis.mapperLog, id = log.made++;
+        return {
+          pan: (e) => (log.calls.push(["pan", id, e.deltaY, e.shiftKey]), { x: 7, y: 9 }),
+          reset: () => log.calls.push(["reset", id]),
+        };
+      };`,
+    )
+    .replace(exporter, "const pngBlob = () => {}, saveBlob = () => {};");
+  const { diagramTools: tools } = await import(
+    "data:text/javascript;base64," + Buffer.from(code).toString("base64")
+  );
+  await withViewerGlobals(() => {
+    const log = (globalThis.mapperLog = { made: 0, calls: [] });
+    const first = openViewer(tools);
+    assert.equal(log.made, 1, "one mapper for the opened viewer");
+    // Plain and Shift events both go through the mapper, and its result is used.
+    wheel(first.viewport, { deltaY: 100 });
+    wheel(first.viewport, { deltaY: 100, shiftKey: true });
+    assert.equal(
+      first.canvas.style.transform,
+      "translate(186px, 132px) scale(1)",
+    );
+    // Zoom resets the mapper and does not pan through it.
+    wheel(first.viewport, { deltaY: 100, ctrlKey: true });
+    wheel(first.viewport, { deltaY: -100, metaKey: true });
+    // Other keys, a Shift keydown, pointer drags and arrow keys leave the mapper alone.
+    for (const key of ["a", "Control", "Meta", "Alt", "Escape"])
+      first.win.fire("keyup", { key });
+    first.win.fire("keydown", { key: "Shift" });
+    first.viewport.events.pointerdown({ pointerId: 1, clientX: 5, clientY: 5 });
+    first.viewport.events.keydown({ key: "ArrowRight", preventDefault() {} });
+    // A Shift release and a blur reset it, and again the second time: the
+    // listeners are not one-shot.
+    for (let i = 0; i < 2; i++) {
+      first.win.fire("keyup", { key: "Shift" });
+      first.win.fire("blur");
+    }
+    assert.equal(first.win.captures("keyup"), 0);
+    assert.equal(
+      first.win.captures("blur"),
+      0,
+      "blur must not be a capture listener",
+    );
+    assert.deepEqual(log.calls, [
+      ["pan", 0, 100, false],
+      ["pan", 0, 100, true],
+      ["reset", 0], // Ctrl wheel
+      ["reset", 0], // Cmd wheel
+      ["reset", 0], // Shift release
+      ["reset", 0], // blur
+      ["reset", 0], // second Shift release
+      ["reset", 0], // second blur
+    ]);
+    // A second viewer gets a mapper of its own.
+    const second = openViewer(tools);
+    assert.equal(log.made, 2);
+    wheel(second.viewport, { deltaY: 100 });
+    assert.deepEqual(log.calls.at(-1), ["pan", 1, 100, false]);
+    // Closing a viewer removes its window listeners and only those.
+    assert.equal(first.win.count("keyup"), 1);
+    assert.equal(first.win.count("blur"), 1);
+    first.dialog.close();
+    assert.equal(first.win.count("keyup"), 0);
+    assert.equal(first.win.count("blur"), 0);
+    first.win.fire("keyup", { key: "Shift" });
+    first.win.fire("blur");
+    assert.equal(log.calls.filter((c) => c[0] === "reset").length, 6);
+    assert.equal(second.win.count("keyup"), 1);
+    assert.equal(second.win.count("blur"), 1);
+  });
 });

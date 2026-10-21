@@ -100,14 +100,14 @@ const server = await build({
     },
   ],
 });
-await build({
+const spike = await build({
   ...options,
   entryPoints: ["src/spike.js"],
   outfile: "../testdata/spike.js",
   platform: "neutral",
   conditions: ["browser"],
 });
-await build({
+const clientEdits = await build({
   ...options,
   entryPoints: ["src/client-edits.js"],
   outfile: "../testdata/client-edits.js",
@@ -115,6 +115,27 @@ await build({
   platform: "neutral",
   conditions: ["browser"],
 });
+// The diagram viewer imports the design app's wheel.js. Files outside src/ and
+// node_modules/ that a bundle includes must be hashed build inputs, or editing
+// one without a rebuild would pass TestBuildInputs. The stdin input and the
+// embedded: namespace of the assets plugin are not files.
+const sharedInputs = ["../../../design/web/wheel.js"];
+for (const [name, result] of Object.entries({
+  mermaid,
+  client,
+  server,
+  spike,
+  clientEdits,
+})) {
+  for (const input of Object.keys(result.metafile.inputs)) {
+    if (/^(src|node_modules)\//.test(input)) continue;
+    if (input === "<stdin>" || input.startsWith("embedded:")) continue;
+    if (!sharedInputs.includes(input))
+      throw new Error(
+        `The ${name} bundle includes ${input}, which is not a hashed build input. Add it to sharedInputs here and to TestBuildInputs.`,
+      );
+  }
+}
 const packages = new Set();
 for (const input of [
   ...Object.keys(mermaid.metafile.inputs),
@@ -161,6 +182,7 @@ const inputs = [
     "build.mjs",
     "../testdata/spike.js",
     "../testdata/client-edits.js",
+    ...sharedInputs,
     ...(await walk(out)).filter((p) => !p.endsWith("/BUILD-INPUTS.sha256")),
   ].sort(),
   hash = createHash("sha256");

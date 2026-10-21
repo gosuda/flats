@@ -61,10 +61,11 @@ binaries and temporary data created by your own test run when finished.
 ## Reproducible build inputs
 
 `dist/BUILD-INPUTS.sha256` hashes sorted `_web/src/**` (including unit tests),
-package metadata, the build script and all other dist outputs. `TestBuildInputs`
-recomputes it without Node, so source or test changes require rebuilding dist.
+package metadata, the build script, `internal/design/web/wheel.js` (shared with
+the design app) and all other dist outputs. `TestBuildInputs` recomputes it
+without Node, so source, test or `wheel.js` changes require rebuilding dist.
 The generated fixture bytes are real Yjs updates consumed by Go tests.
-Verify a byte-identical rebuild:
+Verify a byte-identical rebuild on macOS, where the committed files were built:
 
 ```sh
 mkdir -p "$EVIDENCE_DIR"
@@ -73,6 +74,12 @@ npm run build --prefix internal/apps/docs/_web
 shasum -a 256 -c "$EVIDENCE_DIR/build.sha256"
 go test ./internal/apps/docs -run TestBuildInputs -count=1
 ```
+
+The committed `mermaid-asset.js` carries zlib's macOS operating-system code (19)
+in the tenth byte of its gzip header. A build on Linux writes 3 there and one
+on Windows writes 10, so on those systems only `mermaid-asset.js` and
+`BUILD-INPUTS.sha256` differ from the committed files. The Mermaid module text
+and the decompressed payload are identical.
 
 ## Reference measurements
 

@@ -108,7 +108,7 @@ import is the host-generated `./content.js`. `dist/mermaid-asset.js` exports
 the Mermaid browser bundle as a string and is dynamically imported only to
 serve the Mermaid route. No Node, CDN or outbound network is used
 at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
-`dist/BUILD-INPUTS.sha256` binds the source inputs and every other dist file; a Go test verifies both.
+`dist/BUILD-INPUTS.sha256` binds the source inputs and every other dist file; a Go test verifies both. One source input lies outside the app: the diagram viewer pans with the design app's `internal/design/web/wheel.js`.
 
 | Route | Purpose |
 |---|---|
