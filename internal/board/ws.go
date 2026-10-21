@@ -331,8 +331,10 @@ type conn struct {
 	// lastPresGuest is lastPres as guests see it (TECH public edit 3.3).
 	lastPresGuest []byte
 	// chargeGuest: frames queued from now on count toward the guests'
-	// share of the host's Public budget.
+	// share of the host's Public budget. flight is the part of that share
+	// for bytes the socket holds but has not written (pump-owned).
 	chargeGuest bool
+	flight      int64
 	// overflowed: the queue went over its cap and the socket is closing.
 	overflowed bool
 
@@ -728,7 +730,9 @@ func (c *conn) resync() {
 // pump feeds queued frames to the socket while fewer than 1 MiB are in
 // flight, building snapshot parts as it goes.
 func (c *conn) pump() {
+	defer c.landFlight(true)
 	for {
+		c.landFlight(false)
 		c.mu.Lock()
 		var m outMsg
 		var held int64 // host Public bytes this frame keeps until the socket takes it
@@ -756,8 +760,14 @@ func (c *conn) pump() {
 				c.ws.Close(1000, "")
 				return
 			}
+			var land <-chan time.Time
+			if c.flight > 0 {
+				land = time.After(flightPoll)
+			}
 			select {
 			case <-c.wake:
+				continue
+			case <-land:
 				continue
 			case <-c.ws.Done():
 				c.dropQueue()
@@ -775,12 +785,45 @@ func (c *conn) pump() {
 		}
 		ok := c.feed(m.frame)
 		if held > 0 {
-			unqueue(held, m.guest)
+			c.handed(held, m.guest)
 		}
 		if !ok {
 			c.dropQueue()
 			return
 		}
+	}
+}
+
+// flightPoll is how often an idle pump returns the guests' share of bytes
+// its socket has written meanwhile.
+const flightPoll = 20 * time.Millisecond
+
+// handed moves the charge of n bytes of a Public socket's frame, which the
+// socket now holds, from its queue: the host's Public budget counts them
+// in publicBudget from here, but a guest's share keeps them, as flight,
+// until the socket has written them (landFlight), so the guests' share
+// bounds their sockets' unwritten bytes too (TECH public edit 4.2). Only
+// the pump calls it.
+func (c *conn) handed(n int64, guest bool) {
+	publicQueued.Add(-n)
+	if guest {
+		c.flight += n
+	}
+}
+
+// landFlight returns the guests' share of the bytes the socket has written
+// since, or of all of them when the socket is done. Only the pump calls it.
+func (c *conn) landFlight(all bool) {
+	if c.flight == 0 {
+		return
+	}
+	held := c.ws.Budget().Used()
+	if all {
+		held = 0
+	}
+	if c.flight > held {
+		guestShare.Add(held - c.flight)
+		c.flight = held
 	}
 }
 
@@ -808,14 +851,15 @@ func releaseJobs(q []outMsg) {
 }
 
 // feed sends one frame once less than feedBelow bytes are in flight; a
-// guest's socket keeps less in flight, guestFeedBelow, so the guests' share
-// of the host's Public budget bounds their sockets' bytes too.
+// guest's socket keeps less in flight, guestFeedBelow, so one stalled guest
+// holds little of the guests' share.
 func (c *conn) feed(f []byte) bool {
 	below := int64(feedBelow)
 	if c.guest {
 		below = guestFeedBelow
 	}
 	for c.ws.Budget().Used() >= below {
+		c.landFlight(false)
 		select {
 		case <-c.ws.Done():
 			return false
@@ -889,7 +933,7 @@ func (c *conn) sendSnapshot(j *snapJob) bool {
 		}
 		ok := c.feed(b.Bytes())
 		if j.public() {
-			unqueue(n, guest)
+			c.handed(n, guest)
 		}
 		if !ok {
 			return false

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -986,4 +987,80 @@ func TestGuestUnknownFrameFlood(t *testing.T) {
 	if m := other.settle(1, sticky(eid(), "", 0)); m["t"] != "ack" {
 		t.Fatalf("after the budget recovered: %v", m)
 	}
+}
+
+// TestStalledGuestsStayInTheirShare: guests that stop reading, on several
+// boards, never hold more queued and unwritten bytes than the guests'
+// share of the host's Public budget; viewers still get in, and the share
+// returns to zero once the guests are gone (TECH public edit 4.2).
+func TestStalledGuestsStayInTheirShare(t *testing.T) {
+	defer func(c int64) { guestShareCap = c }(guestShareCap)
+	guestShareCap = 2 << 20
+	boards := []*tb{editTB(t), editTB(t)}
+	var guests []*client
+	var members []*client
+	for _, b := range boards {
+		for i := range 3 {
+			g, _ := joinGuest(t, b, "G"+strconv.Itoa(i), "")
+			g.gate.Lock() // stops reading
+			guests = append(guests, g)
+		}
+		m := connect(t, b.priv, map[string]any{"editor": "mia"}, nil)
+		m.snapshot()
+		members = append(members, m)
+	}
+	held := func() (n int64) {
+		for _, b := range boards {
+			for _, c := range b.in.hub.list() {
+				if c.guest {
+					c.mu.Lock()
+					q := c.qBytes
+					c.mu.Unlock()
+					n += q + c.ws.Budget().Used()
+				}
+			}
+		}
+		return n
+	}
+	stop := make(chan struct{})
+	worst := make(chan int64, 1)
+	go func() {
+		var w int64
+		for {
+			select {
+			case <-stop:
+				worst <- w
+				return
+			case <-time.After(2 * time.Millisecond):
+				if n := held(); n > w {
+					w = n
+				}
+				if s := guestShare.Load(); s > guestShareCap {
+					w = max(w, s)
+				}
+			}
+		}
+	}()
+	for n := 1; n <= 20; n++ {
+		for i, m := range members {
+			var ops []map[string]any
+			for range 40 {
+				ops = append(ops, sticky(eid(), noise(3900, n*100+i), 0))
+			}
+			if a := m.settle(n, ops...); a["t"] != "ack" {
+				t.Fatalf("member batch %v", a)
+			}
+		}
+	}
+	close(stop)
+	if w := <-worst; w > guestShareCap {
+		t.Fatalf("stalled guests held %d bytes, over the guests' share of %d", w, guestShareCap)
+	}
+	// Viewers are admitted while the guests are stalled.
+	joinViewer(t, boards[0], "", nil)
+	for _, g := range guests {
+		g.gate.Unlock()
+		g.ws.Close(1000, "")
+	}
+	waitFor(t, func() bool { return guestShare.Load() == 0 })
 }
