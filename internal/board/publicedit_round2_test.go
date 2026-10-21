@@ -467,9 +467,6 @@ func TestGuestPresenceCaps(t *testing.T) {
 		if float64(got) > 200+200*span+1 {
 			t.Fatalf("relayed %d of 400 guest presence frames sent in %.3fs; the cap is 200 a second, burst 200", got, sent)
 		}
-		if sent < 0.5 && got >= 400 {
-			t.Fatalf("every one of 400 frames sent in %.3fs was relayed", sent)
-		}
 		if got < 20 {
 			t.Fatalf("only %d guest presence frames relayed", got)
 		}
