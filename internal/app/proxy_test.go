@@ -284,17 +284,38 @@ func TestProxyStartWithTakenAddress(t *testing.T) {
 	if err := h.Svc.SetProviderPermission(ctx, "site", "proxy", true, core.ViaConsole); !errors.Is(err, core.ErrProviderNotReady) {
 		t.Fatalf("grant: %v", err)
 	}
-	f, err := h.Svc.GetFlat(ctx, "site")
-	if err != nil {
-		t.Fatal(err)
+	// failedRoute checks the flat view the console draws the error row from:
+	// the flat allows proxy, its one proxy endpoint is the current route of
+	// its slug in error with the bind error and no address, and private_url
+	// falls back to Local.
+	failedRoute := func(h *Host) {
+		t.Helper()
+		f, err := h.Svc.GetFlat(ctx, "site")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(f.Providers, string(core.ProviderProxy)) {
+			t.Fatalf("the flat does not allow proxy: %v", f.Providers)
+		}
+		var proxied []core.ExposureEndpoint
+		for _, ep := range f.Endpoints {
+			if ep.Provider == core.ProviderProxy {
+				proxied = append(proxied, ep)
+			}
+		}
+		if len(proxied) != 1 {
+			t.Fatalf("proxy endpoints: %+v", f.Endpoints)
+		}
+		ep := proxied[0]
+		if ep.Audience != core.AudienceCurrent || ep.Host != "site" || ep.State != "error" || ep.Ready || ep.URL != "" ||
+			!strings.Contains(ep.Detail, "cannot bind proxy.addr "+addr) {
+			t.Fatalf("failed proxy endpoint: %+v", ep)
+		}
+		if !strings.Contains(f.PrivateURL, "site.localhost") || f.PrivateState != "ready" {
+			t.Fatalf("private_url %q (%s)", f.PrivateURL, f.PrivateState)
+		}
 	}
-	i := slices.IndexFunc(f.Endpoints, func(ep core.ExposureEndpoint) bool { return ep.Provider == core.ProviderProxy })
-	if i < 0 || f.Endpoints[i].State != "error" || !strings.Contains(f.Endpoints[i].Detail, addr) {
-		t.Fatalf("endpoints: %+v", f.Endpoints)
-	}
-	if !strings.Contains(f.PrivateURL, ".localhost") {
-		t.Fatalf("private_url %q", f.PrivateURL)
-	}
+	failedRoute(h)
 	// A restart with the address free serves the granted flat.
 	if err := h.Close(); err != nil {
 		t.Fatal(err)
@@ -314,6 +335,20 @@ func TestProxyStartWithTakenAddress(t *testing.T) {
 	if res.StatusCode != 200 {
 		t.Fatalf("restarted proxy route: %d", res.StatusCode)
 	}
+	// A restart with the address taken again: the granted flat's route
+	// reports the bind error the same way.
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if taken, err = net.Listen("tcp", addr); err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+	h, client = startConfigHost(t, path)
+	if p := providerByID(t, h, client, "proxy"); !strings.Contains(p.BindError, addr) {
+		t.Fatalf("after the second restart: %+v", p)
+	}
+	failedRoute(h)
 }
 
 // Rule 12: a non-loopback proxy.addr logs a warning at start, here on an
