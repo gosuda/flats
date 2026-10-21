@@ -7,8 +7,7 @@ every changed rule is listed in
 is in scope.
 
 This page sets what to build, why, and the rules it must keep. The technical
-design (protocol, storage, the numbers of the limits) comes after the scope
-here is reviewed.
+design is in [board-public-edit-TECH.md](board-public-edit-TECH.md).
 
 ## Summary
 
@@ -106,11 +105,12 @@ an approval.
    creates a new one. If the pin quota
    is full, the change is refused and the confirmation and approval say so
    before anything is applied.
-6a. **Required quotas.** The level cannot be `edit` while the disk quota is
-   off (0) or the revision quota is unlimited (0), and while the level is
-   `edit` a per-flat change to either value of 0 is refused. A change to a
-   host default that would put an `edit` board in that state is refused with
-   the names of the affected boards. The confirmation says all this and names
+6a. **Required quotas.** The level cannot be `edit` while the host disk
+   quota is off (0) or the board's revision quota is unlimited (0). While the
+   level is `edit`, a per-flat revision quota of 0 is refused, and a host
+   setting change that would put an `edit` board in that state (disk quota 0,
+   or a default revision quota of 0 for a board without its own value) is
+   refused with the names of the affected boards. The confirmation says all this and names
    the setting to change.
 7. **Boards only.** Websites, pages, documents and designs get no public edit
    level, and their Share dialog and settings do not show the edit choice.
@@ -214,9 +214,9 @@ says so.
       the disk quota free is refused with a reason. Guests also have an
       absolute byte budget per board, so the share of a large quota does not
       decide how much a guest flood can store. It is accounting, not an
-      ownership claim: guests are charged the new revision-store blob bytes of
-      buckets their operations dirtied, plus pending estimates, and the charge
-      is released when retention frees those blobs.
+      ownership claim: guests are charged the growth of the board's measured
+      disk use caused by their committed edits, and the charge falls when the
+      board's disk use falls, for example when retention frees space.
     - **Elements and assets.** A guest edit that would take the board above a
       reserved share of the element limit is refused with a reason.
     - **Server state.** Guests have their own caps for the per-board state
