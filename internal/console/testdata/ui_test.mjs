@@ -2616,4 +2616,61 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   delete routes['PUT /console/api/providers/proxy'];
 }
 
+// --- first paint does not wait for the host's providers ---
+// app.js draws the page at once and reads /console/api/providers in the
+// background: a request that never answers leaves the console working with
+// the note without the proxy, and one that answers later updates the note
+// on links already drawn.
+{
+  const main = new Element('main');
+  document.body.appendChild(main);
+  const savedGet = document.getElementById;
+  const savedLocation = globalThis.location;
+  document.getElementById = (id) => (id === 'main' ? main : null);
+  document.querySelectorAll = () => [];
+  globalThis.window = { addEventListener() {}, scrollTo() {} };
+  globalThis.history = { pushState(_s, _t, path) { globalThis.location = { ...globalThis.location, pathname: path }; }, replaceState() {} };
+  globalThis.location = { origin: 'https://flats.example.org', hostname: 'flats.example.org', pathname: '/', search: '', hash: '', href: 'https://flats.example.org/' };
+  const savedFlats = routes['GET /console/api/flats'];
+  routes['GET /console/api/flats'] = { flats: [{ ...blog, visibility: 'private', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/')] }] };
+  const DETAIL = 'Served through your reverse proxy. Flats cannot check that the proxy reaches it.';
+  const proxyOnList = [{ id: 'proxy', scope: 'private', enabled: true, configured: true, flats: ['blog'], status: { kind: 'proxy', enabled: true, hosts: [{ host: 'blog', state: 'ready', detail: DETAIL }] } }];
+  ui.setHostProviders([]);
+  const noProxyNote = ui.SERVER_ONLY;
+  const serverOnlyButtons = () => all(main, (e) => e.tagName === 'BUTTON' && (e.getAttribute('class') || '').includes('server-only'));
+
+  // A providers request that never answers.
+  routes['GET /console/api/providers'] = () => new Promise(() => {});
+  const hung = await import('./app.js?hung');
+  await tick();
+  assert.equal(all(main, (e) => e.tagName === 'LI' && e.className === 'flat').length, 1, 'the list draws while providers hang');
+  assert.ok(serverOnlyButtons().length > 0, 'the Local link is server only');
+  assert.equal(serverOnlyButtons()[0].getAttribute('title'), noProxyNote);
+  assert.equal(ui.SERVER_ONLY, noProxyNote);
+  hung.navigate('/nowhere'); // stops the list page's timers
+
+  // A providers request that answers after the first page.
+  let answer;
+  routes['GET /console/api/providers'] = () => new Promise((resolve) => { answer = resolve; });
+  globalThis.location = { ...globalThis.location, pathname: '/' };
+  const late = await import('./app.js?late');
+  await tick();
+  assert.equal(all(main, (e) => e.tagName === 'LI' && e.className === 'flat').length, 1, 'the list draws before providers answer');
+  assert.equal(serverOnlyButtons()[0].getAttribute('title'), noProxyNote);
+  answer({ providers: proxyOnList });
+  await tick();
+  assert.ok(ui.SERVER_ONLY.includes('Reverse proxy'), ui.SERVER_ONLY);
+  const button = serverOnlyButtons()[0];
+  assert.equal(button.getAttribute('title'), ui.SERVER_ONLY, 'a link drawn before the answer gets the proxy note');
+  assert.ok(button.childNodes[0].getAttribute('aria-label').includes(ui.SERVER_ONLY));
+  late.navigate('/nowhere');
+
+  ui.setHostProviders([]);
+  main.remove();
+  routes['GET /console/api/flats'] = savedFlats;
+  routes['GET /console/api/providers'] = PROVIDERS;
+  document.getElementById = savedGet;
+  globalThis.location = savedLocation;
+}
+
 console.log('ok');

@@ -251,10 +251,27 @@ const SERVER_ONLY_TEXT = {
 export let SERVER_ONLY = SERVER_ONLY_TEXT[''];
 
 // setHostProviders records which providers are on for the host, from
-// GET /console/api/providers, for the server-only explanation.
+// GET /console/api/providers, for the server-only explanation. Links drawn
+// before it changed get the new explanation.
 export function setHostProviders(providers) {
   const proxy = (providers || []).find((p) => (p.id === 'proxy' || p.id === 'proxy-public') && p.enabled);
-  SERVER_ONLY = SERVER_ONLY_TEXT[proxy ? proxy.id : ''];
+  const next = SERVER_ONLY_TEXT[proxy ? proxy.id : ''];
+  if (next === SERVER_ONLY) return;
+  const prev = SERVER_ONLY;
+  SERVER_ONLY = next;
+  replaceNote(globalThis.document && document.body, prev, next);
+}
+
+// replaceNote swaps the server-only explanation in the titles and
+// accessible names under node.
+function replaceNote(node, prev, next) {
+  if (!node) return;
+  if (node.getAttribute) {
+    if (node.getAttribute('title') === prev) node.setAttribute('title', next);
+    const label = node.getAttribute('aria-label');
+    if (label && label.includes(prev)) node.setAttribute('aria-label', label.replace(prev, next));
+  }
+  for (const c of node.childNodes || []) replaceNote(c, prev, next);
 }
 
 // extLink is an external link that opens in a new tab without an opener. A

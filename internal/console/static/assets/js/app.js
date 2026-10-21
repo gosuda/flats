@@ -115,9 +115,12 @@ function updateApprovalCount() {
 }
 window.addEventListener('flats:approvals', updateApprovalCount);
 
+render();
+
 // The note on links that open only on the Flats host names the reverse proxy
-// while one is on, so the first page waits for the host's providers.
-api.providers().then((r) => setHostProviders(r.providers)).catch(() => {}).finally(render);
+// while one is on. The host's providers arrive after the first page, which
+// keeps the note without the proxy until then, or if the request fails.
+api.providers().then((r) => setHostProviders(r.providers)).catch(() => {});
 
 // The running build is read once per page load; without it the slot stays empty.
 api.status().then((s) => {
