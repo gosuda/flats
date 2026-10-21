@@ -60,17 +60,17 @@ type publicLimits struct {
 	guestBytes    *bucket // bytes read from guest sockets, 2 MiB a second
 	guestPres     *bucket // presence frames relayed from guests, 200 a second
 
-	frameMax       int   // bytes of one guest frame
-	opsMax         int   // operations of one guest batch
-	chargeMax      int64 // the guests' byte budget (meta.guest_charge)
-	createdMax     int   // created rows of one guest session
-	createdTotal   int   // created rows of every guest session
-	groupsMax      int64 // group ids first used by guests (meta.guest_groups)
-	receiptsMax    int64 // guests' receipts
-	undoMax        int64 // guests' undo stacks
-	deletedMax     int64 // rows guests deleted
-	roomShare      int   // percent of the disk quota, elements and assets guests may fill
-	guestPresEvery float64
+	frameMax     int   // bytes of one guest frame
+	opsMax       int   // operations of one guest batch
+	chargeMax    int64 // the guests' byte budget (meta.guest_charge)
+	createdMax   int   // created rows of one guest session
+	createdTotal int   // created rows of every guest session
+	groupsMax    int64 // group ids first used by guests (meta.guest_groups)
+	receiptsMax  int64 // guests' receipts
+	undoMax      int64 // guests' undo stacks
+	deletedMax   int64 // rows guests deleted
+	roomShare    int   // percent of the disk quota, elements and assets guests may fill
+	presRate     float64
 }
 
 func newPublicLimits() publicLimits {
@@ -81,7 +81,7 @@ func newPublicLimits() publicLimits {
 		frameMax: 64 << 10, opsMax: 100, chargeMax: 512 << 20,
 		createdMax: 5000, createdTotal: 50000, groupsMax: 2000,
 		receiptsMax: 4 << 20, undoMax: 8 << 20, deletedMax: 4 << 20,
-		roomShare: 90, guestPresEvery: 10,
+		roomShare: 90, presRate: 10,
 	}
 }
 
@@ -182,7 +182,7 @@ func (in *Instance) guestWelcome(r *http.Request, c *conn, h helloMsg) error {
 	c.key, c.name, c.label = guestKey(token), name, name
 	c.color = colorOf(c.key)
 	c.batches = rate{perSec: 10, burst: 20}
-	c.pres = rate{perSec: in.pub.guestPresEvery, burst: in.pub.guestPresEvery}
+	c.pres = rate{perSec: in.pub.presRate, burst: in.pub.presRate}
 	if !in.publicStarts.wait(r.Context(), publicWait) {
 		c.close(1013, "busy; try again")
 		return nil

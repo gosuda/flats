@@ -263,10 +263,9 @@ func TestGuestRevive(t *testing.T) {
 	m.snapshot()
 	theirs := eid()
 	m.settle(1, sticky(theirs, "member's", 0))
-	ack := m.settle(2, map[string]any{"op": "delete", "ids": []string{theirs}})
+	m.settle(2, map[string]any{"op": "delete", "ids": []string{theirs}})
 	var delSeq float64
 	b.state(func(st *engine.State) { r, _ := st.Element(theirs); delSeq = float64(r.DelSeq) })
-	_ = ack
 
 	g, w := joinGuest(t, b, "Ana", "")
 	token := w["guest_token"].(string)
@@ -319,8 +318,7 @@ func TestGuestFrameScan(t *testing.T) {
 
 	g1, _ := joinGuest(t, b, "Gus", "")
 	g2, _ := joinGuest(t, b, "Gia", "")
-	viewer, _ := joinViewer(t, b, "", nil)
-	_ = viewer
+	joinViewer(t, b, "", nil)
 	bob.send(map[string]any{"t": "pres", "c": []float64{3, 4}})
 	alice.settle(2, map[string]any{"op": "set", "id": el, "inc": 0, "g": "text", "val": "again"})
 	err := b.core.Exclusive(ctx, func(ctx context.Context, other int64) error {
@@ -671,17 +669,14 @@ func TestLabelChurn(t *testing.T) {
 		defer b.in.hub.mu.Unlock()
 		return len(b.in.hub.labels) == 1 && len(b.in.hub.keys) == 1 && b.in.hub.guests == 0
 	})
-	b.state(func(st *engine.State) {})
 	if err := b.in.do(context.Background(), b.in.tick); err != nil {
 		t.Fatal(err)
 	}
 	n := 0
 	b.state(func(st *engine.State) {
-		for range 1 {
-			for _, c := range st.Export().Sessions {
-				if model.IsGuestKey(c.Key) {
-					n++
-				}
+		for _, c := range st.Export().Sessions {
+			if model.IsGuestKey(c.Key) {
+				n++
 			}
 		}
 	})
