@@ -94,3 +94,17 @@ export function authorName(by, names) {
   if (by.startsWith('ts:')) return by.slice(3).split('@')[0];
   return '';
 }
+
+// authorOf is the creator line members see on an element: the name of the
+// editor in `by`, and whether it is a guest (key "guest:…"), which is drawn
+// with the guest badge outside the name (board-public-edit.md rule 13). It
+// always describes the creator: a guest's name comes only from presence this
+// tab received from that same guest key (kept until reload), otherwise it is
+// just "Guest", never the name of a later text writer.
+export function authorOf(el, names) {
+  const by = el.by;
+  if (typeof by === 'string' && by.startsWith('guest:')) {
+    return { name: (names && names.get(by)) || 'Guest', guest: true };
+  }
+  return { name: authorName(by, names), guest: false };
+}

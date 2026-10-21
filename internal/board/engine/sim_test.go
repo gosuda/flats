@@ -423,6 +423,9 @@ func applyChanges(name string, els map[string]model.PrivateElement, deleted map[
 			if err := setBundles(&e, ch.Set); err != nil {
 				return err
 			}
+			if ch.Author != nil {
+				e.TA, e.LK = ch.Author.TA, ch.Author.LK
+			}
 			els[ch.ID] = e
 			if _, ok := ch.Set[model.BundleEnd0]; ok {
 				ends = append(ends, ch.ID)

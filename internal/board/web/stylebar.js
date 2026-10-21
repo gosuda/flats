@@ -285,8 +285,7 @@ export function contextMenu(app, x, y, el, opener) {
       grouped ? { label: 'Ungroup', icon: 'group', kbd: '⇧⌘G', run: () => app.commit(ops.ungroupOps(app.state, ids)) }
         : { label: 'Group', icon: 'group', kbd: '⌘G', disabled: els.length < 2, run: () => app.commit(ops.groupOps(app.state, ids)) },
       '-',
-      { label: 'Send to agent', icon: 'send', run: () => app.share.send() },
-      '-');
+      ...(app.isMember ? [{ label: 'Send to agent', icon: 'send', run: () => app.share.send() }, '-'] : []));
     const frames = els.filter((m) => m.type === 'frame');
     if (frames.length) items.push({ label: frames.length > 1 ? 'Delete frames and contents' : 'Delete frame and contents', icon: 'trash', danger: true, run: () => app.commit(ops.deleteFrameContentsOps(app.state, frames.map((f) => f.id))) });
     items.push({ label: 'Delete', icon: 'trash', kbd: '⌫', danger: true, run: () => app.commit(ops.deleteOps(app.state, ids)) });

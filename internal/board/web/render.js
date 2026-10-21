@@ -4,7 +4,7 @@
 // panning and shows a scaled bitmap while a zoom gesture runs.
 
 import { currentTheme, stickyColor, inkColor, shapeFill, frameFill } from './theme.js';
-import { style, authorName } from './schema.js';
+import { style, authorOf } from './schema.js';
 import { connectorPoints, pointAlong, penWorldPoints, penWidth, labelBox, boxCorners } from './geom.js';
 import { zCompare } from './ids.js';
 
@@ -241,8 +241,8 @@ export class Painter {
     rounded(ctx, el.x, el.y, el.w, el.h, 4);
     ctx.fill();
     if (lod === 2) return;
-    const author = this.showAuthors ? authorName(el.by, this.names) : '';
-    const pad = 12, foot = author ? 26 : 12;
+    const author = this.showAuthors ? authorOf(el, this.names) : { name: '' };
+    const pad = 12, foot = author.name ? 26 : 12;
     if (this.hidden !== el.id && el.text) {
       const fs = style(el, 'fontSize');
       const auto = fs === 'auto';
@@ -250,12 +250,31 @@ export class Painter {
         fitText(ctx, el.text, el.w - pad * 2, el.h - pad - foot, auto ? 16 : fs, auto));
       this.lines(ctx, lay, el.x + pad, el.y + pad, el.w - pad * 2, 'left', t.ink, lod);
     }
-    if (author && lod === 0 && z >= 0.45) {
-      ctx.font = `11px ${FONT}`;
-      ctx.fillStyle = t.by;
-      ctx.textBaseline = 'alphabetic';
-      ctx.fillText(author, el.x + pad, el.y + el.h - 10, el.w - pad * 2);
+    if (author.name && lod === 0 && z >= 0.45) this.author(ctx, author, el.x + pad, el.y + el.h - 10, el.w - pad * 2);
+  }
+
+  // author draws an author line; a guest's name is followed by the guest
+  // badge as a separate mark, never part of the name text.
+  author(ctx, { name, guest }, x, y, max) {
+    const t = this.theme;
+    ctx.textBaseline = 'alphabetic';
+    let bw = 0;
+    if (guest) {
+      ctx.font = `600 9px ${FONT}`;
+      bw = ctx.measureText('guest').width + 8;
     }
+    ctx.font = `11px ${FONT}`;
+    ctx.fillStyle = t.by;
+    const room = Math.max(0, max - (bw ? bw + 4 : 0));
+    ctx.fillText(name, x, y, room);
+    if (!guest) return;
+    const bx = x + Math.min(ctx.measureText(name).width, room) + 4;
+    ctx.strokeStyle = t.by;
+    ctx.lineWidth = 1;
+    rounded(ctx, bx, y - 10, bw, 13, 6.5);
+    ctx.stroke();
+    ctx.font = `600 9px ${FONT}`;
+    ctx.fillText('guest', bx + 4, y);
   }
 
   shapePath(ctx, el) {
@@ -423,7 +442,7 @@ export class Renderer {
     const old = this.painter;
     this.painter = new Painter({
       theme: currentTheme(), images: this.images, get: (id) => this.app.doc.get(id),
-      names: this.app.names, showAuthors: !this.app.isPublic, dpr: this.dpr,
+      names: this.app.names, showAuthors: this.app.isMember, dpr: this.dpr,
     });
     if (old) this.painter.hidden = old.hidden;
   }

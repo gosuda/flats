@@ -129,7 +129,7 @@ export class BoardState {
       if (c.id === '_board') {
         for (const [g, e] of Object.entries(c.set || {})) {
           if (!META_KEYS.has(g)) continue;
-          const [val, v] = this.public ? [e, null] : e;
+          const [val, v] = this.public || !Array.isArray(e) ? [e, null] : e;
           this.meta[g] = val;
           if (v != null) this.metaV[g] = v;
         }
@@ -146,18 +146,25 @@ export class BoardState {
         this.server.set(c.id, c.revive);
       }
       else if (c.del !== undefined) this.server.delete(c.id);
-      else if (c.set) {
+      else if (c.set || c.ta !== undefined || c.lk !== undefined) {
         const prev = this.server.get(c.id);
         if (!prev) continue;
         let el = { ...prev, v: { ...prev.v } };
         if (c.inc != null) el.inc = c.inc;
-        for (const [g, e] of Object.entries(c.set)) {
-          const [val, v] = this.public ? [e, null] : e;
+        for (const [g, e] of Object.entries(c.set || {})) {
+          const [val, v] = this.public || !Array.isArray(e) ? [e, null] : e;
           el = withBundle(el, g, val);
           if (v != null) el.v[g] = v;
         }
+        // Authorship travels beside set; an empty value means the field is gone.
+        if (c.ta !== undefined) {
+          if (c.ta && Object.keys(c.ta).length) el.ta = c.ta; else delete el.ta;
+        }
+        if (c.lk !== undefined) {
+          if (c.lk) el.lk = c.lk; else delete el.lk;
+        }
         this.server.set(c.id, el);
-        const t = c.set.text;
+        const t = c.set && c.set.text;
         if (t && !this.public) {
           if (mine) this.myText.set(c.id, { v: t[1], text: t[0] });
           else if (c.overwrote != null) {

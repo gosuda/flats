@@ -3,10 +3,15 @@
 // elements of an earlier revision into the current board.
 
 import { $, h, icon, toast, confirmDialog, relTime, plural, replace } from './ui.js';
+import { badge } from './guest.js';
 import { SpatialIndex } from './index.js';
 import { elementBounds } from './geom.js';
 
-const KINDS = { agent: 'Agent', person: 'People', rollback: 'Rollback', created: 'Created', import: 'Import' };
+const KINDS = { agent: 'Agent', person: 'People', rollback: 'Rollback', created: 'Created', import: 'Import', safe_point: 'Safe point' };
+
+// PROTECTED is shown for the safe point while anyone can edit; unpinning it
+// is refused with 409 conflict (board-public-edit.md rule 6).
+const PROTECTED = "Can't be unpinned while guests can edit.";
 
 export async function boardAPI(path, { method = 'GET', body, raw } = {}) {
   const init = { method, headers: {} };
@@ -33,6 +38,7 @@ function revTitle(rv) {
   if (rv.kind === 'rollback') return rv.rollback_of ? `Rolled back to r${rv.rollback_of}` : 'Rollback';
   if (rv.kind === 'created') return 'Board created';
   if (rv.kind === 'import') return 'Imported a data file';
+  if (rv.kind === 'safe_point') return 'Safe point before guest editing';
   return 'Agent edit';
 }
 
@@ -46,6 +52,23 @@ function revChanges(rv) {
 }
 
 const authors = (rv) => (rv.authors || []).join(', ');
+
+// guestCredit lists the guests a revision credits, with the guest badge and
+// "and N more guests" (rule 25). Guest names are drawn as text only.
+export function guestCredit(rv) {
+  const names = rv.guest_authors || [];
+  if (!names.length) return null;
+  const more = rv.guests_more || 0;
+  return h('span', { class: 'guests' }, names.join(', '), ' ', badge('guest'), more ? ` and ${plural(more, 'more guest')}` : null);
+}
+
+// creditText is the same credit as plain text, for one-line summaries.
+export function creditText(rv) {
+  const names = rv.guest_authors || [];
+  if (!names.length) return '';
+  const more = rv.guests_more || 0;
+  return `${names.join(', ')} (guest${names.length + more === 1 ? '' : 's'})${more ? ` and ${plural(more, 'more guest')}` : ''}`;
+}
 
 export class History {
   constructor(app) {
@@ -61,7 +84,7 @@ export class History {
   }
 
   async open() {
-    if (this.app.isPublic) return;
+    if (!this.app.isMember) return;
     this.panel.hidden = false;
     this.btn.setAttribute('aria-expanded', 'true');
     document.body.classList.add('history-open');
@@ -121,7 +144,9 @@ export class History {
   row(rv) {
     const cur = this.viewing === rv.number;
     const ch = revChanges(rv);
-    const meta = [KINDS[rv.kind] || rv.kind, authors(rv), ch].filter(Boolean).join(' · ');
+    const credit = guestCredit(rv);
+    const meta = [KINDS[rv.kind] || rv.kind, authors(rv)].filter(Boolean).join(' · ');
+    const notes = [rv.safe_point ? `${rv.pinned ? 'Pinned. ' : ''}${PROTECTED}` : '', credit ? 'Names were typed by guests.' : ''].filter(Boolean).join(' ');
     const pin = h('button', {
       type: 'button', class: 'btn icon pin' + (rv.pinned ? ' on' : ''), 'aria-pressed': String(!!rv.pinned),
       'aria-label': `Pin r${rv.number}`, title: rv.pinned ? `Unpin r${rv.number}` : `Pin r${rv.number}`,
@@ -130,7 +155,9 @@ export class History {
     return h('li', { class: cur ? 'current' : '' },
       h('button', { type: 'button', class: 'rev', 'aria-current': cur ? 'true' : null, onclick: () => this.view(rv) },
         h('span', { class: 'num', text: `r${rv.number}` }), h('span', { class: 'msg', text: revTitle(rv) }),
-        h('span', { class: 'note', text: rv.at ? relTime(rv.at) : '' }), h('span', {}), h('span', { class: 'note meta', text: meta })),
+        h('span', { class: 'note', text: rv.at ? relTime(rv.at) : '' }), h('span', {}),
+        h('span', { class: 'note meta' }, meta, credit ? [meta ? ' · ' : '', credit] : null, ch ? ` · ${ch}` : null,
+          notes ? h('span', { class: 'protected', text: notes }) : null)),
       pin);
   }
 
@@ -140,7 +167,9 @@ export class History {
       rv.pinned = r.pinned;
       this.load();
     } catch (err) {
-      toast(err.message, { error: true });
+      toast(err.status === 409 && rv.safe_point
+        ? 'The safe point stays pinned while anyone can edit. Stop guest editing in the console first, then unpin it.'
+        : err.message, { error: true });
     }
   }
 
@@ -221,7 +250,7 @@ export class History {
       danger: true,
       ok: 'Roll back the whole board',
       body: [
-        h('p', { class: 'note', text: `r${rv.number}: ${[KINDS[rv.kind] || rv.kind, authors(rv), when].filter(Boolean).join(' · ')}` }),
+        h('p', { class: 'note', text: `r${rv.number}: ${[KINDS[rv.kind] || rv.kind, authors(rv), creditText(rv), when].filter(Boolean).join(' · ')}` }),
         h('ul', { class: 'impact' },
           h('li', {}, `Every element becomes as it was in r${rv.number}. `, h('strong', { text: 'Edits made after it are rolled back too, including other people\'s edits that are not part of a revision yet.' })),
           h('li', { text: 'Those edits are first kept as a new revision, and the rollback is recorded as a revision too, so it can be rolled back.' }),

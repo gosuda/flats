@@ -137,7 +137,7 @@ export class Exporter {
       }
     });
     const acts = h('div', { class: 'acts split' },
-      app.canEdit ? h('button', { type: 'button', class: 'btn', onclick: () => { dlg.close(); this.importDialog(); } }, icon('upload'), h('span', { text: 'Import…' })) : null,
+      app.canEdit && app.isMember ? h('button', { type: 'button', class: 'btn', onclick: () => { dlg.close(); this.importDialog(); } }, icon('upload'), h('span', { text: 'Import…' })) : null,
       h('span', { class: 'spacer' }),
       h('button', { type: 'button', class: 'btn ghost', text: 'Cancel', onclick: () => dlg.close() }), go);
     const dlg = dialog({ title: 'Export', body: fmtForm, actions: acts });
@@ -202,8 +202,10 @@ export class Exporter {
     return { blob: new Blob([bytes], { type: 'application/zip' }), name: `board-unsent-${slug(app.state.viewMeta().title)}-${hm}.zip` };
   }
 
-  async downloadRecovery() {
-    const file = await (this.app.stopped && this.prepared ? this.prepared : this.buildRecovery());
+  // prepared selects the file prepareRecovery built when editing stopped
+  // or guest editing ended.
+  async downloadRecovery(prepared = !!this.app.stopped) {
+    const file = await (prepared && this.prepared ? this.prepared : this.buildRecovery());
     if (!file) { toast('There are no unsent edits.'); return; }
     download(file.blob, file.name);
   }

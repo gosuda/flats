@@ -10,7 +10,11 @@ import { elementBounds, hit, union, center, connectorPoints } from './geom.js';
 import { zCompare } from './ids.js';
 import { LIMITS } from './schema.js';
 import * as ops from './ops.js';
-import { $, h, icon, toast, dialog, plural, closePopover } from './ui.js';
+import { $, h, icon, toast, dialog, plural, closePopover, replace } from './ui.js';
+import {
+  stored, helloFields, viewersOf, viewerLabel, byKind, badge, rejectMessage, guestBatchFits,
+  cleanGuestName, guestNameError, runeCount, finishGuestEditing, overwriteNotice, activityNotice, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS, NAME_INVALID,
+} from './guest.js';
 import { Presence } from './presence.js';
 import { StyleBar, contextMenu } from './stylebar.js';
 import { TextEditor } from './textedit.js';
@@ -31,6 +35,8 @@ import { EraserTool } from './tools/eraser.js';
 import { ImageTool, uploadImages } from './tools/image.js';
 
 const MIN_Z = 0.1, MAX_Z = 4;
+// Status text for the fatal codes a visitor can act on (the dialog explains).
+const STOPPED = { full: 'Board full', name_invalid: 'Name needed', editing_ended: 'Editing ended' };
 const TOO_LARGE = 'This change is too large to send at once. Try a smaller selection.';
 
 const TOOLBAR = [
@@ -87,6 +93,13 @@ class App {
     this.doc = this.live;
     this.editorKey = editorId();
     this.name = storedName();
+    this.level = '';             // the board's public access level: '', 'view' or 'edit'
+    this.guestName = stored.name();
+    this.join = !!this.guestName; // hello asks to join as a guest
+    this.joinPanel = null;
+    this.joinDialog = null;
+    this.joinOffered = false;
+    this.guestEnded = false;     // the end of this tab's guest editing was handled
     this.dom();
     this.renderer = new Renderer(this, $('.board'));
     this.presence = new Presence(this);
@@ -119,8 +132,14 @@ class App {
     });
   }
 
-  get isPublic() { return this.access !== 'private'; }
-  get canEdit() { return this.welcomed && !this.isPublic && !this.stopped && !this.readOnlyChoice && this.doc.live && !!this.me && (this.me.verified || !!this.name); }
+  // access is 'private' (a member), 'guest' or 'public' (a viewer).
+  get isPublic() { return this.access !== 'private' && this.access !== 'guest'; }
+  get isGuest() { return this.access === 'guest'; }
+  get isMember() { return this.access === 'private'; }
+  get canEdit() {
+    return this.welcomed && !this.isPublic && !this.stopped && !this.readOnlyChoice && this.doc.live && !!this.me &&
+      (this.isGuest || this.me.verified || !!this.name);
+  }
 
   // ---- layout ----
 
@@ -136,8 +155,9 @@ class App {
     for (const t of TOOLBAR) {
       if (t === '-') { this.toolsEl.appendChild(h('span', { class: 'sep', 'aria-hidden': 'true' })); continue; }
       const [name, label, key, ic] = t;
+      // Guests cannot add images (spec rule 19), so the image tool is for members.
       this.toolsEl.appendChild(h('button', {
-        type: 'button', class: 't', 'data-tool': name, 'aria-label': `${label} (${key})`, title: `${label} (${key})`,
+        type: 'button', class: name === 'image' ? 't priv-only' : 't', 'data-tool': name, 'aria-label': `${label} (${key})`, title: `${label} (${key})`,
         'aria-pressed': name === 'select' ? 'true' : 'false', onclick: () => this.setTool(name),
       }, icon(ic)));
     }
@@ -157,7 +177,9 @@ class App {
         if (st.session) { m.session = st.session; m.watermark = st.watermark; }
         if (st.pending.length) m.pending.first_n = st.pending[0].n;
         if (this.name) m.name = this.name;
-        return m;
+        return Object.assign(m, helloFields({
+          join: this.join, name: this.guestName, guestToken: stored.guestToken(), viewerToken: stored.viewerToken(),
+        }));
       },
       welcome: (m) => this.welcome(m),
       snapshot: (changed, snap) => {
@@ -168,9 +190,11 @@ class App {
       delta: (r, d) => this.onDelta(r, d),
       ack: (m, batch, changed) => { this.changed(changed); this.onAck(m, batch); },
       reject: (m, batch, changed) => { this.changed(changed); this.onReject(m, batch); },
-      fatal: (code) => this.onFatal(code),
+      fatal: (code, m) => this.onFatal(code, m),
       pres: (m) => this.presence.receive(m),
       shared: (m) => this.share.shared(m),
+      viewers: (m) => this.presence.setViewers(viewersOf(m)),
+      level: (m) => this.onLevel(m.access),
       status: () => this.status(),
       tooLarge: (b, changed) => {
         this.changed(changed);
@@ -180,31 +204,52 @@ class App {
   }
 
   welcome(m) {
-    this.access = m.access === 'private' ? 'private' : 'public';
+    const access = m.access === 'private' || m.access === 'guest' ? m.access : 'public';
+    // Presence from another kind of connection does not carry over.
+    if (this.access && access !== this.access) { closePopover(); this.presence.reset(); }
+    // A guest who reconnects after the owner stopped guest editing is
+    // admitted as a viewer without editing_ended. Its open text and
+    // unconfirmed edits are saved for recovery while it can still edit.
+    const leaving = this.access === 'guest' && access === 'public' && !this.guestEnded;
+    const unsent = leaving ? finishGuestEditing(this) : 0;
+    this.access = access;
+    this.level = m.level || '';
     this.me = m.me || null;
     this.welcomed = true;
-    if (this.me && this.me.key) this.names.set(this.me.key, this.me.name);
-    document.body.classList.toggle('public', this.isPublic);
-    const chip = $('#access-chip');
-    chip.hidden = false;
-    chip.textContent = this.isPublic ? 'Public · read only' : 'Private';
-    chip.classList.toggle('priv', !this.isPublic);
-    if (this.isPublic) {
-      $('#export-btn .lbl').textContent = 'Download PNG';
-      $('#export-btn').setAttribute('aria-label', 'Download PNG');
-      $('#export-btn').title = 'Download PNG';
+    if (GUEST_FATALS.has(this.stopped)) this.stopped = null;
+    if (m.guest_token) stored.setGuestToken(m.guest_token);
+    if (m.viewer_token) stored.setViewerToken(m.viewer_token);
+    if (this.isGuest && this.me.label) {
+      this.guestName = this.me.label;
+      stored.setName(this.guestName);
     }
+    if (this.me && this.me.key) this.names.set(this.me.key, this.me.name || this.me.label);
+    document.body.classList.toggle('public', this.isPublic);
+    document.body.classList.toggle('guest', this.isGuest);
+    const chip = $('#access-chip');
+    chip.hidden = this.isGuest;
+    chip.textContent = this.isPublic ? 'View only' : 'Private';
+    chip.classList.toggle('priv', this.isMember);
+    const exportLabel = this.isPublic ? 'Download PNG' : 'Export';
+    $('#export-btn .lbl').textContent = exportLabel;
+    $('#export-btn').setAttribute('aria-label', exportLabel);
+    $('#export-btn').title = exportLabel;
     this.presence.avatars();
-    this.renderer.painter.showAuthors = !this.isPublic;
+    this.renderer.painter.showAuthors = this.isMember;
     this.renderer.invalidateAll();
-    if (!this.isPublic && this.me && !this.me.verified && !this.name && !this.readOnlyChoice) this.namePrompt();
+    if (this.isMember && this.me && !this.me.verified && !this.name && !this.readOnlyChoice) this.namePrompt();
     this.applyMode();
     this.presence.sendAll();
+    if (this.isGuest) this.guestEnded = false;
+    else if (leaving) this.guestEditingEnded(unsent);
+    if (this.isPublic) this.offerJoin(!this.joinOffered);
+    else this.closeJoin();
   }
 
   applyMode() {
     document.body.classList.toggle('readonly', !this.canEdit);
-    $('#name-btn').hidden = !(this.welcomed && !this.isPublic && this.readOnlyChoice);
+    $('#name-btn').hidden = !(this.welcomed && this.isMember && this.readOnlyChoice);
+    this.meLabel();
     if (!this.canEdit && this.tool !== this.tools.select && this.tool !== this.tools.hand) this.setTool('select');
     this.styleBar.update();
     this.share.update();
@@ -216,7 +261,7 @@ class App {
     this.changed(r.changed);
     for (const o of r.overwritten) this.overwritten(o, d.by);
     if (r.reset) this.undo.cleared(r.reset, d.by);
-    if (d.by && d.by.kind === 'agent') this.agentActivity(d, r);
+    if (byKind(d.by) === 'agent') this.agentActivity(d, r);
     if (this.editor) this.editor.remote();
     this.history.deltaArrived();
   }
@@ -240,17 +285,28 @@ class App {
     if (m.retry) return;
     if (batch) this.releaseUploads(batch);
     if (m.code === 'disk_quota') { this.quota = true; this.banner('quota'); return; }
+    const guest = rejectMessage(m.code);
+    if (guest) { toast(`Your change wasn't saved. ${guest}`, { error: true }); return; }
     const reasons = {
       limit: 'This edit would go over a board limit, so it was not saved.',
       format: 'This edit could not be saved because it was malformed.',
-      permission: 'This connection can no longer edit the board.',
     };
     toast(m.detail || reasons[m.code] || `The edit was refused (${m.code}).`, { error: true });
   }
 
-  onFatal(code) {
+  onFatal(code, m = {}) {
+    if (code === 'editing_ended') { this.editingEnded(); return; }
+    // Open text joins the unsent edits that the fatal banner can save.
+    if (this.editor) this.editor.commit();
     this.stopped = code;
     this.applyMode();
+    if (code === 'full') { this.boardFull(); return; }
+    if (code === 'name_invalid') {
+      // A name the server refused is not offered again on the next visit.
+      stored.setName('');
+      this.guestPrompt({ reason: m.detail || NAME_INVALID });
+      return;
+    }
     const msgs = {
       session_expired: 'Editing cannot continue. More than 24 hours passed since the connection dropped, so your unsent edits cannot be applied to the board.',
       receipt_expired: 'Editing cannot continue. The board no longer remembers part of your unsent edits, so they cannot be applied safely.',
@@ -320,6 +376,7 @@ class App {
   title() {
     const t = this.doc.meta().title || document.title || 'Board';
     this.titleEl.textContent = t;
+    if (this.joinDialog && this.joinDialog.join) this.joinDialog.el.querySelector('h2').textContent = `Join ${t}`;
   }
 
   pruneSelection() {
@@ -331,8 +388,13 @@ class App {
   // commit sends one person action as one batch (TECH 4.5).
   commit(list) {
     if (!list.length || !this.canEdit) return null;
-    if (list.length > LIMITS.batchOps) {
-      toast(`One action can change at most ${LIMITS.batchOps} elements. Try a smaller selection.`, { error: true });
+    const max = this.isGuest ? GUEST_BATCH_OPS : LIMITS.batchOps;
+    if (list.length > max) {
+      toast(`One action can change at most ${max} elements. Try a smaller selection.`, { error: true });
+      return null;
+    }
+    if (this.isGuest && !guestBatchFits(this.state.nextN, list)) {
+      toast(rejectMessage('guest_size'), { error: true });
       return null;
     }
     // queueBatch refuses an unsendable batch before it takes a number
@@ -484,6 +546,7 @@ class App {
 
   setTool(name, opts) {
     if (!this.canEdit && name !== 'select' && name !== 'hand') return;
+    if (name === 'image' && !this.isMember) return;
     if (this.tool.cancel) this.tool.cancel();
     this.tool = this.tools[name];
     if (this.tool.activate) this.tool.activate(opts);
@@ -507,6 +570,13 @@ class App {
     const c = $('.layer-dynamic');
     const pointers = new Map();
     let pan = null, pinch = null, active = null;
+    // cancelGesture ends whatever pointer gesture is in progress, including
+    // a stylus stroke whose tool differs from this.tool.
+    this.cancelGesture = () => {
+      if (active && active.cancel) active.cancel();
+      if (active !== this.tool && this.tool.cancel) this.tool.cancel();
+      active = null;
+    };
     const toolFor = (e) => {
       if (e.pointerType === 'pen' && (this.tool === this.tools.select || this.tool === this.tools.hand) && this.canEdit) return this.tools.pen;
       return this.tool;
@@ -617,7 +687,7 @@ class App {
       if (!this.canEdit) return;
       e.preventDefault();
       const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name));
-      if (files.length) uploadImages(this, files, this.toWorld(...this.local(e)));
+      if (files.length) this.addImages(files, this.toWorld(...this.local(e)));
     });
   }
 
@@ -716,7 +786,7 @@ class App {
     const data = e.clipboardData;
     e.preventDefault();
     const files = [...data.files].filter((f) => f.type.startsWith('image/'));
-    if (files.length) { uploadImages(this, files, this.pasteAt()); return; }
+    if (files.length) { this.addImages(files, this.pasteAt()); return; }
     const raw = data.getData('application/x-flats-board+json');
     let payload = null;
     if (raw) { try { payload = JSON.parse(raw); } catch { payload = null; } }
@@ -724,6 +794,11 @@ class App {
     if (!payload && this.clip && text === this.clip.elements.map((el) => el.text || el.alt || '').filter(Boolean).join('\n')) payload = this.clip;
     if (payload && Array.isArray(payload.elements)) { this.pasteElements(payload, this.pasteAt()); return; }
     if (text && text.trim()) this.pasteText(text);
+  }
+
+  addImages(files, at) {
+    if (this.isMember) uploadImages(this, files, at);
+    else toast("Guests can't upload images. Copy an image that is already on the board instead.", { error: true });
   }
 
   pasteElements(payload, at) {
@@ -755,9 +830,8 @@ class App {
   overwritten(o, by) {
     const el = this.state.get(o.id);
     if (!el) return;
-    const who = (by && by.label) || 'Someone';
     const what = (el.text || '').split('\n')[0].slice(0, 30);
-    toast(`${who} just changed ${what ? `"${what}"` : 'this element'}, so the text you wrote was overwritten.`, {
+    toast(overwriteNotice(by, what), {
       actions: [['Keep my text', () => this.keepText(el, o.text)]],
       timeout: 0,
     });
@@ -781,9 +855,8 @@ class App {
     if (changed) parts.push(`changed ${plural(changed, 'element')}`);
     if (removed) parts.push(`removed ${plural(removed, 'element')}`);
     if (!parts.length) return;
-    const who = (d.by && d.by.label) || 'The agent';
     const said = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
-    toast(`${who} ${said}.`, { actions: [['Roll back to before this…', () => this.history.open()]] });
+    toast(activityNotice(d.by, said), { actions: this.isMember ? [['Roll back to before this…', () => this.history.open()]] : [] });
     this.renderer.dynamic();
     setTimeout(() => this.renderer.dynamic(), 2050);
   }
@@ -841,7 +914,7 @@ class App {
       return;
     }
     el.hidden = false;
-    if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = 'Editing stopped'; }
+    if (this.stopped) { cls = 'stopped'; el.appendChild(icon('warn')); text = STOPPED[this.stopped] || 'Editing stopped'; }
     else if (!this.net.connected) {
       cls = 'offline'; el.appendChild(icon('wifi-off'));
       text = this.net.connecting ? 'Connecting…' : `Disconnected · Reconnecting${pend ? ` (${plural(pend, 'unsent edit')})` : ''}`;
@@ -851,7 +924,7 @@ class App {
     el.appendChild(h('span', { text }));
     if (this.welcomed && !this.net.connected && !this.net.connecting && pend && !this.stopped && !this.bannerKind) this.banner('offline');
     if (this.bannerKind === 'offline' && (this.net.connected || !pend)) this.banner(null);
-    if (this.welcomed && this.isPublic && !this.net.connected && this.net.failures >= 2) this.checkPublic();
+    if (this.welcomed && !this.isMember && !this.net.connected && this.net.failures >= 2) this.checkPublic();
   }
 
   async checkPublic() {
@@ -890,6 +963,13 @@ class App {
         h('span', { class: 'spacer' }), h('button', { type: 'button', class: 'btn', 'aria-label': 'Dismiss', onclick: () => this.banner(null) }, icon('close')));
     } else if (kind === 'withdrawn') {
       b = h('div', { class: 'banner err', role: 'alert' }, icon('warn'), h('span', { text: 'This board is no longer public. The view is not updating.' }));
+    } else if (kind === 'ended') {
+      const n = message;
+      b = h('div', { class: 'banner warn', role: 'alert' }, icon('warn'),
+        h('span', {}, h('strong', { text: 'The owner turned off guest editing.' }), ' ',
+          n ? `${n} of your latest ${n === 1 ? "changes wasn't" : "changes weren't"} saved. You can keep watching live.` : 'You can keep watching live.'),
+        h('span', { class: 'spacer' }),
+        n ? h('button', { type: 'button', class: 'btn ghost', onclick: () => this.exporter.downloadRecovery(true) }, icon('download'), h('span', { text: 'Save my changes to a file' })) : null);
     } else if (kind === 'revision') {
       b = message;
     }
@@ -928,6 +1008,164 @@ class App {
       },
     });
     input.focus();
+  }
+
+  // ---- guests and viewers (board-public-edit.md rules 8 to 13, 29) ----
+
+  // meLabel shows a viewer's number or a guest's name in the top bar.
+  meLabel() {
+    const el = $('#me-label');
+    el.hidden = !(this.welcomed && (this.isPublic || this.isGuest));
+    if (el.hidden) return;
+    const name = this.isGuest ? this.guestName : viewerLabel(this.me);
+    replace(el, h('span', { class: 'you', text: 'You are ' }), h('strong', { text: name }),
+      this.isGuest ? [' ', badge('guest'), ' ', h('button', { type: 'button', class: 'link', text: 'Change name', onclick: () => this.guestPrompt({ change: true }) })] : null);
+  }
+
+  onLevel(level) {
+    this.level = level || '';
+    if (this.isPublic) this.offerJoin(false);
+  }
+
+  // offerJoin asks a viewer of an editable board for a name: a dialog on the
+  // first visit without a stored name, otherwise the panel at the bottom
+  // (TECH 8.1). Until then the visitor only watches.
+  offerJoin(first) {
+    this.joinOffered = true;
+    if (this.level !== 'edit') { this.closeJoin(); return; }
+    if (this.joinPanel || this.joinDialog || this.stopped) return;
+    if (first && !this.guestName) this.guestPrompt();
+    else this.showJoinPanel();
+  }
+
+  closeJoin() {
+    if (this.joinPanel) { this.joinPanel.remove(); this.joinPanel = null; }
+    if (this.joinDialog) this.joinDialog.close();
+  }
+
+  // joinAs reconnects as a guest with a name already checked by guestNameError.
+  joinAs(name) {
+    this.guestName = name;
+    this.join = true;
+    stored.setName(name);
+    if (this.joinPanel) { this.joinPanel.remove(); this.joinPanel = null; }
+    this.net.resume();
+  }
+
+  // nameField is the name input with its character count and badge preview.
+  nameField(id, value, onChange) {
+    const input = h('input', { id, autocomplete: 'nickname', value, 'aria-describedby': `${id}-count ${id}-preview` });
+    const count = h('span', { id: `${id}-count`, class: 'note num' });
+    const preview = h('p', { id: `${id}-preview`, class: 'note' });
+    const update = () => {
+      const clean = cleanGuestName(input.value);
+      count.textContent = `${runeCount(clean)}/${GUEST_NAME_MAX}`;
+      count.classList.toggle('refusal', runeCount(clean) > GUEST_NAME_MAX);
+      preview.replaceChildren('Shown as ', h('strong', { text: clean || 'your name' }), ' ', badge('guest'), ' to everyone. Nobody checks it.');
+      onChange(guestNameError(input.value));
+    };
+    input.addEventListener('input', update);
+    return { input, count, preview, update };
+  }
+
+  guestPrompt({ reason = '', change = false } = {}) {
+    if (this.joinDialog) return;
+    if (this.joinPanel) { this.joinPanel.remove(); this.joinPanel = null; }
+    const error = h('p', { class: 'refusal', role: 'alert', text: reason });
+    const submit = h('button', { type: 'submit', class: 'btn primary', text: change ? 'Save name' : 'Join and edit' });
+    const f = this.nameField('guest-name', this.guestName || '', (err) => { submit.disabled = !!err; });
+    f.input.addEventListener('input', () => { error.textContent = ''; });
+    let chosen = '';
+    const form = h('form', { onsubmit: (e) => {
+      e.preventDefault();
+      const err = guestNameError(f.input.value);
+      if (err) { error.textContent = err; f.input.focus(); return; }
+      chosen = cleanGuestName(f.input.value);
+      dlg.close();
+    } },
+    h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'guest-name', text: 'Your name' }), f.count), f.input, f.preview),
+    error,
+    h('p', { class: 'callout', text: "You can add, move and delete notes. You can't see history or send selections to an agent." }),
+    h('div', { class: 'acts' }, h('span', { class: 'spacer' }), submit));
+    const dlg = dialog({
+      title: change ? 'Change your name' : `Join ${this.titleEl.textContent || 'this board'}`,
+      describe: change ? 'Others see this name next to your cursor.' : 'Anyone with this link can edit this board. Pick the name others will see next to your cursor.',
+      body: form,
+      className: 'narrow',
+      onClose: () => {
+        this.joinDialog = null;
+        if (chosen) { if (chosen !== this.guestName || !this.isGuest) this.joinAs(chosen); return; }
+        // Closed without a name: keep watching, and keep the panel to join later.
+        if (this.stopped === 'name_invalid') { this.join = false; this.net.resume(); return; }
+        if (this.isPublic && this.level === 'edit') this.showJoinPanel();
+      },
+    });
+    this.joinDialog = Object.assign(dlg, { join: !change });
+    f.update();
+    if (reason) error.textContent = reason;
+    f.input.focus();
+  }
+
+  showJoinPanel() {
+    if (this.joinPanel) return;
+    const error = h('p', { class: 'refusal', role: 'alert' });
+    const submit = h('button', { type: 'submit', class: 'btn primary', text: 'Join and edit' });
+    const input = h('input', { id: 'join-name', autocomplete: 'nickname', placeholder: 'Pick a name', value: this.guestName || '' });
+    const form = h('form', { class: 'join pop', role: 'region', 'aria-label': 'Join to edit', onsubmit: (e) => {
+      e.preventDefault();
+      const err = guestNameError(input.value);
+      if (err) { error.textContent = err; input.focus(); return; }
+      this.joinAs(cleanGuestName(input.value));
+    } },
+    h('p', {}, h('strong', { text: 'This board is now editable.' }), ' ', h('span', { class: 'note', text: 'Until you join, you can only watch. No name has been asked of you so far.' })),
+    h('div', { class: 'join-row' }, h('div', { class: 'field grow' }, h('label', { for: 'join-name', text: 'Your name' }), input), submit),
+    error,
+    h('p', { class: 'note' }, 'Shown with a ', badge('guest'), " badge. Nobody checks it. It stays in the board's history. You can add, move and delete anything on the board."));
+    document.body.appendChild(form);
+    this.joinPanel = form;
+  }
+
+  // editingEnded: the owner stopped guest editing. Unconfirmed edits can be
+  // saved to a file, then the tab reconnects as a viewer (rule 29).
+  editingEnded() {
+    const unsent = finishGuestEditing(this);
+    this.stopped = 'editing_ended';
+    this.guestEditingEnded(unsent);
+    this.applyMode();
+    this.net.resume();
+  }
+
+  // guestEditingEnded shows the banner after finishGuestEditing; a viewer
+  // cannot send the dropped edits, and a later guest session must not.
+  guestEditingEnded(unsent) {
+    // Nothing of the guest's editing state stays drawn in the viewer view:
+    // an active gesture and its preview end with the editing.
+    this.cancelGesture();
+    this.setPreview(null);
+    this.select([]);
+    this.focusId = null;
+    this.presence.send({ sel: [], drag: null, edit: null, c: null });
+    this.join = false;
+    this.guestEnded = true;
+    this.banner('ended', unsent);
+  }
+
+  boardFull() {
+    let retry = false;
+    const acts = h('div', { class: 'acts' }, h('span', { class: 'spacer' }),
+      h('button', { type: 'button', class: 'btn ghost', text: 'Watch', onclick: () => dlg.close() }),
+      h('button', { type: 'button', class: 'btn primary', text: 'Try again', onclick: () => { retry = true; dlg.close(); } }));
+    const dlg = dialog({
+      title: 'This board is full',
+      alert: true,
+      body: h('p', { text: `The most people ${this.titleEl.textContent || 'this board'} allows are editing it right now. You can watch the board live while you wait.` }),
+      actions: acts,
+      className: 'narrow',
+      onClose: () => {
+        this.join = retry;
+        this.net.resume();
+      },
+    });
   }
 }
 

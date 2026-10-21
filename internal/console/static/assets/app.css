@@ -646,6 +646,27 @@ td > .badge:first-child { margin-left: 0; }
 .share-footer { margin-top: 24px; }
 .share-link { overflow-wrap: anywhere; margin-bottom: 16px; user-select: all; }
 .share-footer-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+/* Link access radio cards and guest editing (board-public-edit.md rule 32). */
+.share-label { font-size: 14px; font-weight: 500; }
+.share-choices { display: grid; gap: 8px; width: 100%; }
+.share-choice { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px; cursor: pointer; }
+.share-choice input { width: auto; margin-top: 3px; }
+.share-choice > span { display: grid; gap: 2px; }
+.share-choice:has(input:checked) { border-color: var(--focus); background: var(--surface); }
+.share-choice:has(input:disabled) { cursor: default; opacity: 0.7; }
+.share-people .share-person + .share-person { margin-top: 10px; }
+.share-stop { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-strong); }
+.share-stop[hidden], .share-person[hidden] { display: none; }
+.checks { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 8px; }
+.check { display: flex; gap: 10px; align-items: flex-start; }
+.check .tick { flex: none; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.check.ok .tick { background: var(--ok-bg); color: var(--ok); }
+.check.no .tick { background: var(--danger-bg); color: var(--danger); }
+.vis-edit { color: var(--warn); }
+.setting-title { font-size: 14px; }
+.setting-sharing { display: grid; gap: 6px; justify-items: end; min-width: 0; }
+.setting-sharing p { margin: 0; text-align: right; }
+.setting-pending { background: var(--warn-bg); padding-left: 12px; padding-right: 12px; }
 input, select, textarea { caret-color: var(--focus); }
 input::placeholder { color: var(--muted); opacity: 1; }
 ::selection { background: var(--focus); color: var(--bg); }
@@ -668,6 +689,8 @@ input::placeholder { color: var(--muted); opacity: 1; }
   .traffic-label { font-size: 20px; }
   .share-content { padding: 18px; }
   .share-footer-actions { flex-wrap: wrap; }
+  .setting-sharing { justify-items: start; }
+  .setting-sharing p { text-align: left; }
 }
 .site-page #env form[hidden], .site-page #secrets form[hidden] { display: none; }
 .site-page #secrets > div > .btn:first-child { float: right; margin-top: -40px; }

@@ -717,7 +717,7 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 	if err != nil {
 		return SettingsUpdate{}, err
 	}
-	changed, etag, err := s.settings.update(ctx, clean, ifMatch)
+	changed, etag, err := s.updateSettingsChecked(ctx, clean, ifMatch)
 	if err != nil {
 		if ErrorCategory(err) == "" {
 			// A failed write names config.json's path; keep it in the log.
@@ -745,6 +745,18 @@ func (s *Service) UpdateSettingsMatch(ctx context.Context, in map[string]string,
 	}
 	all, _ := s.Settings(ctx)
 	return SettingsUpdate{Settings: all, Changed: changed, ETag: etag}, nil
+}
+
+// updateSettingsChecked saves clean unless it would leave a board anyone
+// can edit without a disk or revision quota. The check and the save hold
+// publicEditMu, so applying edit cannot pass its own check in between.
+func (s *Service) updateSettingsChecked(ctx context.Context, clean map[string]string, ifMatch string) ([]string, string, error) {
+	s.publicEditMu.Lock()
+	defer s.publicEditMu.Unlock()
+	if err := s.editQuotaProblems(ctx, clean); err != nil {
+		return nil, "", err
+	}
+	return s.settings.update(ctx, clean, ifMatch)
 }
 
 // cleanSettings validates and normalizes setting values.

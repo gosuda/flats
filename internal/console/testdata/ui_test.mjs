@@ -94,6 +94,13 @@ function all(root, pred, out = []) {
   return out;
 }
 const byText = (root, text) => all(root, (e) => e.tagName === 'BUTTON' && e.textContent === text);
+const radios = (root) => all(root, (e) => e.tagName === 'INPUT' && e.getAttribute('type') === 'radio');
+// pick chooses a link access radio, as a click on it would.
+const pick = (root, value) => {
+  const r = radios(root).find((e) => e.value === value);
+  for (const o of radios(root)) o.checked = o === r;
+  r.dispatch('change');
+};
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
 // --- stubbed API ---
@@ -717,9 +724,10 @@ shareDialog(blog);
 const share = all(document.body, (e) => e.tagName === 'DIALOG')[0];
 assert.ok(share.textContent.includes('Share Blog'));
 assert.ok(share.textContent.includes(PUBLIC));
-const access = all(share, (e) => e.tagName === 'SELECT')[0];
-access.value = 'private';
-access.dispatch('change');
+assert.deepEqual(radios(share).map((r) => r.value), ['private', 'public'], 'a website has two choices');
+assert.equal(radios(share).find((r) => r.checked).value, 'public');
+assert.equal(byText(share, 'Stop guest editing')[0].parentNode.hidden, true, 'no Stop guest editing for a website');
+pick(share, 'private');
 await tick();
 const refreshDuringVisibility = byText(share, 'Refresh')[0];
 assert.equal(refreshDuringVisibility.getAttribute('aria-disabled'), 'true');
@@ -741,9 +749,7 @@ share.close();
 const quiet = { ...blog, slug: 'quiet', name: 'Quiet', visibility: 'private', public_url: undefined, public_notice: undefined };
 shareDialog(quiet);
 const quietShare = all(document.body, (e) => e.tagName === 'DIALOG' && e.open !== false && e.textContent.includes('Share Quiet'))[0];
-const widen = all(quietShare, (e) => e.tagName === 'SELECT')[0];
-widen.value = 'public';
-widen.dispatch('change');
+pick(quietShare, 'public');
 await tick();
 const publicConfirm = all(document.body, (e) => e.tagName === 'DIALOG' && e.textContent.includes('Make Quiet public?'))[0];
 assert.ok(publicConfirm, 'making a private flat public asks first');
@@ -2143,7 +2149,7 @@ routes['GET /console/api/flats/blog'] = () => new Promise(resolve => { finishRef
 refreshButton.focus = () => { document.activeElement = refreshButton; };
 refreshButton.focus();
 refreshButton.dispatch('click');
-assert.equal(all(refreshDialog, e => e.tagName === 'SELECT')[0].disabled, true);
+assert.ok(radios(refreshDialog).every((r) => r.disabled === true));
 assert.notEqual(refreshButton.disabled, true, 'refresh remains focusable while pending');
 assert.equal(refreshButton.getAttribute('aria-disabled'), 'true');
 const requestsBeforeDuplicate = calls.length;
@@ -2173,4 +2179,253 @@ finishRefresh({ ...shareFixture, private_url: 'https://changed.example.com' });
 await tick();
 assert.equal(refreshDialog.textContent, closedText, 'late response does not redraw a closed dialog');
 assert.equal(observedChanges, 1, 'parent refreshes after an observed change');
+// --- anonymous public editing of boards (board-public-edit.md) ---
+// Labels: an editable board is never plain "Public" (rule 34).
+{
+  const dom = await import('./dom.js');
+  const label = (vis, access) => dom.visibilityBadge(vis, access).textContent;
+  assert.equal(label('private'), 'Private');
+  assert.equal(label('public'), 'Public', 'a website stays Public');
+  assert.equal(label('public', 'view'), 'Public, view only');
+  assert.equal(label('public', 'edit'), 'Public, anyone can edit');
+  assert.equal(label('private', 'edit'), 'Private', 'a Private flat has no level');
+  assert.equal(dom.accessOf({ type: 'board', visibility: 'public' }), 'view', 'a Public board without a level is view only');
+  assert.equal(dom.accessOf({ type: 'flat', visibility: 'public' }), 'public');
+  assert.equal(dom.accessOf({ type: 'board', visibility: 'public', public_access: 'edit' }), 'edit');
+}
+const retro = { ...notes, type: 'board', slug: 'retro', name: 'Retro', visibility: 'public', public_access: 'view', running: true, live_version: 0,
+  providers: ['portal'], private_url: 'https://retro.tail.ts.net', public_url: 'https://retro.portal.example', public_notice: PUBLIC,
+  public_presence: { guests: 0, viewers: 9 } };
+const retroEdit = { ...retro, public_access: 'edit', public_presence: { guests: 4, viewers: 9 } };
+{
+  // List rows use the new labels.
+  routes['GET /console/api/flats'] = { flats: [retroEdit, retro] };
+  const main = new Element('main');
+  const stop = list.mount(main, [], ctx);
+  await tick();
+  const rowsNow = all(main, (e) => e.tagName === 'LI' && e.className === 'flat');
+  assert.ok(rowsNow[0].textContent.includes('Public, anyone can edit'));
+  assert.ok(rowsNow[1].textContent.includes('Public, view only'));
+  stop();
+  routes['GET /console/api/flats'] = listedFlats;
+}
+const visCalls = () => calls.filter((c) => c.key === 'POST /console/api/flats/retro/visibility').map((c) => JSON.parse(c.body));
+const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open);
+{
+  // A board at view only: three choices, viewer count, no Stop guest editing.
+  routes['GET /console/api/flats/retro'] = retro;
+  shareDialog(retro);
+  const dlg = openDialogs().pop();
+  assert.deepEqual(radios(dlg).map((r) => r.value), ['private', 'view', 'edit']);
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'view');
+  assert.ok(dlg.textContent.includes('Public, anyone can edit') && dlg.textContent.includes('Anyone on the internet can edit and delete'));
+  assert.ok(dlg.textContent.includes('People on your networks'));
+  assert.ok(dlg.textContent.includes('Anyone on the internet') && dlg.textContent.includes('Can view. 9 viewers on the board now.'));
+  assert.equal(byText(dlg, 'Stop guest editing')[0].parentNode.hidden, true);
+
+  // Choosing "anyone can edit" with problems shows the blocked dialog with
+  // one action per problem and changes nothing.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [{ code: 'disk_quota_off', message: 'disk quota is off' }, { code: 'pin_quota_full', message: 'pin quota is full' }],
+    disk_quota: 0, revision_quota: 100, pin_quota: 20, pins: 20, safe_point: null, listed: false };
+  pick(dlg, 'edit');
+  await tick();
+  const blocked = openDialogs().pop();
+  assert.ok(blocked.textContent.includes('Set these limits before anyone can edit'));
+  assert.ok(blocked.textContent.includes('Disk quota is off.') && blocked.textContent.includes('Pin quota is full (20 of 20).'));
+  assert.ok(blocked.textContent.includes('Revision quota is 100.'), 'a satisfied requirement is listed as met');
+  const limits = all(blocked, (e) => e.tagName === 'A' && e.textContent === 'Open Limits')[0];
+  assert.equal(limits.getAttribute('href'), '/settings/limits');
+  assert.equal(all(blocked, (e) => e.tagName === 'A' && e.textContent === 'Open History')[0].getAttribute('href'), new URL(retro.private_url).href);
+  const allow = byText(blocked, 'Allow anyone to edit')[0];
+  assert.ok(allow.getAttribute('disabled') !== null && allow.getAttribute('aria-disabled') === 'true');
+  byText(blocked, 'Cancel')[0].dispatch('click');
+  await tick();
+  assert.equal(visCalls().length, 0, 'a blocked change sends nothing');
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'view', 'the radios show the stored level again');
+
+  // Without problems the confirmation states what it grants, then the
+  // console self-approves an edit request.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: null, disk_quota: 2 * 1024 * 1024 * 1024, revision_quota: 100, pin_quota: 20, pins: 3, safe_point: null, listed: true };
+  routes['POST /console/api/flats/retro/visibility'] = pending('apr-retro-edit');
+  routes['POST /console/api/approvals/apr-retro-edit/approve'] = { id: 'apr-retro-edit', status: 'approved', result: 'retro is now public, anyone can edit' };
+  pick(dlg, 'edit');
+  await tick();
+  const confirm = openDialogs().pop();
+  assert.ok(confirm.textContent.includes('Let anyone on the internet edit Retro?'));
+  assert.ok(confirm.textContent.includes('safe point') && confirm.textContent.includes("can't be unpinned while guests can edit"));
+  assert.ok(confirm.textContent.includes('disk quota (2.0 GB)') && confirm.textContent.includes('revision quota (100)'), confirm.textContent);
+  assert.ok(confirm.textContent.includes('listed publicly by a relay'), 'a listed flat says so');
+  routes['GET /console/api/flats/retro'] = retroEdit;
+  confirm.close('ok');
+  await tick();
+  assert.deepEqual(visCalls().at(-1), { visibility: 'public', access: 'edit', reason: '' });
+  assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-retro-edit/approve'), 'the console approves its own request');
+
+  // At edit: counts, the guest note and Stop guest editing, which applies at
+  // once without a confirmation.
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'edit');
+  assert.ok(dlg.textContent.includes('Can edit. 4 guests and 9 viewers on the board now.'));
+  assert.equal(byText(dlg, 'Stop guest editing')[0].parentNode.hidden, false);
+  assert.ok(dlg.textContent.includes("Guests can't see history."));
+  routes['POST /console/api/flats/retro/visibility'] = pending('apr-retro-stop');
+  routes['POST /console/api/approvals/apr-retro-stop/approve'] = { id: 'apr-retro-stop', status: 'approved', result: 'retro is now public, view only' };
+  routes['GET /console/api/flats/retro'] = retro;
+  const before = openDialogs().length;
+  byText(dlg, 'Stop guest editing')[0].dispatch('click');
+  await tick();
+  assert.equal(openDialogs().length, before, 'Stop guest editing asks nothing');
+  assert.deepEqual(visCalls().at(-1), { visibility: 'public', access: 'view', reason: '' });
+  assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-retro-stop/approve'));
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'view');
+  dlg.close();
+}
+{
+  // Choosing view only from edit is the same Stop, with no confirmation;
+  // going Private keeps the existing confirmation.
+  routes['GET /console/api/flats/retro'] = retroEdit;
+  shareDialog(retroEdit);
+  const dlg = openDialogs().pop();
+  const n = visCalls().length;
+  routes['GET /console/api/flats/retro'] = retro;
+  pick(dlg, 'view');
+  await tick();
+  assert.equal(openDialogs().pop(), dlg, 'no confirmation for view only');
+  assert.equal(visCalls().length, n + 1);
+  assert.deepEqual(visCalls().at(-1), { visibility: 'public', access: 'view', reason: '' });
+  pick(dlg, 'private');
+  await tick();
+  const priv = openDialogs().pop();
+  assert.ok(priv.textContent.includes('Make Retro private?'), 'Public to Private keeps its confirmation');
+  assert.ok(priv.textContent.includes('Visibility changes from Public, view only to Private.'));
+  priv.close('cancel');
+  await tick();
+  assert.equal(visCalls().length, n + 1);
+  dlg.close();
+}
+{
+  // A private board asked for "anyone can edit" still checks its public
+  // network first.
+  const privRetro = { ...retro, visibility: 'private', public_access: undefined, providers: [] };
+  const r = versionActions.setVisibility(privRetro, 'public', 'edit');
+  await tick();
+  const need = openDialogs().pop();
+  assert.ok(need.textContent.includes('Allow a public network first'));
+  need.close('ok');
+  assert.equal(await r, null);
+}
+{
+  // A refusal from the server shows the blocked dialog with its problems.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 10, pin_quota: 20, pins: 3, safe_point: 7, safe_point_pinned: true, listed: false };
+  routes['POST /console/api/flats/retro/visibility'] = { __status: 409, category: 'public_edit_blocked', error: 'blocked', problems: [{ code: 'revision_quota_unlimited', message: 'unlimited' }] };
+  const r = versionActions.allowGuestEditing(retro);
+  await tick();
+  openDialogs().pop().close('ok');
+  await tick();
+  const blocked = openDialogs().pop();
+  assert.ok(blocked.textContent.includes('Revision quota is unlimited.'), blocked.textContent);
+  assert.equal(all(blocked, (e) => e.tagName === 'A' && e.textContent === 'Open revision settings')[0].getAttribute('href'), '/flats/retro/settings#revisions');
+  assert.ok(blocked.textContent.includes('The safe point r7 is kept pinned.'));
+  byText(blocked, 'Cancel')[0].dispatch('click');
+  assert.equal(await r, null);
+}
+{
+  // The flat page's Sharing row: level, counts, Stop guest editing, the
+  // pinned safe point and a pending visibility change.
+  routes['GET /console/api/flats/retro'] = retroEdit;
+  routes['GET /console/api/flats/retro/revision-quota'] = { revision_quota: 50, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 1 };
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 1, safe_point: 12, safe_point_pinned: true, listed: false };
+  routes['GET /console/api/approvals?status=pending'] = { approvals: [{ id: 'apr-wait', action: 'set_visibility', flat: 'retro', status: 'pending', params: { visibility: 'private', from: 'public', from_access: 'edit' } }] };
+  const main = new Element('main');
+  const stop = flat.mountSettings(main, ['retro'], ctx);
+  await tick();
+  assert.ok(main.textContent.includes('Public, anyone can edit'));
+  assert.ok(main.textContent.includes('Right now: 4 guests editing, 9 viewers watching.'));
+  assert.ok(main.textContent.includes("Guests can't see history, import, upload images or send selections to an agent."));
+  assert.ok(main.textContent.includes('Revision r12, before guest editing') && main.textContent.includes("It can't be unpinned until guest editing stops."));
+  assert.ok(main.textContent.includes('Waiting for approval') && main.textContent.includes('Make retro private'));
+  assert.equal(all(main, (e) => e.tagName === 'A' && e.textContent === 'View request')[0].getAttribute('href'), '/approvals/apr-wait');
+  assert.ok(all(main, (e) => e.getAttribute('class') === 'badge badge-live').some((e) => e.textContent === 'Pinned'));
+  // Stop is announced only when the host confirmed it: a refused or an
+  // unconfirmed decision is reported as a failure and changes nothing shown.
+  const stopToasts = new Element('div');
+  const savedGet = document.getElementById;
+  document.getElementById = (id) => (id === 'toasts' ? stopToasts : savedGet?.(id));
+  for (const [i, answer] of [
+    { __status: 500, error: 'guest editing could not be confirmed as stopped', category: 'unavailable', approval: { id: 'x', status: 'failed' } },
+    { id: 'apr-retro-fail', status: 'failed', result: 'guest editing could not be confirmed as stopped' },
+    { id: 'apr-retro-fail', status: 'pending' },
+  ].entries()) {
+    routes['POST /console/api/flats/retro/visibility'] = pending('apr-retro-fail');
+    routes['POST /console/api/approvals/apr-retro-fail/approve'] = answer;
+    const res = versionActions.stopGuestEditing(retroEdit);
+    await tick();
+    const failed = openDialogs().pop();
+    assert.ok(failed && failed.textContent.includes('Stop guest editing failed'), `case ${i}: the failure is reported`);
+    if (answer.result || answer.error) assert.ok(failed.textContent.includes('could not be confirmed as stopped'), `case ${i}: ${failed.textContent}`);
+    failed.close('ok');
+    assert.equal(await res, null, `case ${i}`);
+    assert.ok(!stopToasts.textContent.includes('Guest editing stopped'), `case ${i}: no success toast`);
+  }
+  routes['POST /console/api/flats/retro/visibility'] = pending('apr-retro-stop2');
+  routes['POST /console/api/approvals/apr-retro-stop2/approve'] = { id: 'apr-retro-stop2', status: 'approved' };
+  routes['GET /console/api/flats/retro'] = retro;
+  byText(main, 'Stop guest editing')[0].dispatch('click');
+  await tick();
+  assert.deepEqual(visCalls().at(-1), { visibility: 'public', access: 'view', reason: '' });
+  assert.equal(openDialogs().length, 0, 'no confirmation from the flat page either');
+  assert.ok(main.textContent.includes('Public, view only'));
+  assert.equal(byText(main, 'Stop guest editing').length, 0);
+  assert.ok(stopToasts.textContent.includes('Guest editing stopped'), 'a confirmed Stop is announced');
+  document.getElementById = savedGet;
+  stop();
+  // After Stop the safe point can be unpinned in History; reloading the
+  // settings shows its real state.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 0, safe_point: 12, safe_point_pinned: false, listed: false };
+  const again = new Element('main');
+  const stopAgain = flat.mountSettings(again, ['retro'], ctx);
+  await tick();
+  const badgeTexts = (root) => all(root, (e) => (e.getAttribute('class') || '').split(' ').includes('badge')).map((e) => e.textContent);
+  assert.ok(badgeTexts(again).includes('Not pinned') && !badgeTexts(again).includes('Pinned'), badgeTexts(again).join('|'));
+  assert.ok(again.textContent.includes('Retention can delete it like any unpinned revision.'));
+  stopAgain();
+  // A safe point that no longer exists is not shown.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 0, safe_point: null, safe_point_pinned: false, listed: false };
+  const gone = new Element('main');
+  const stopGone = flat.mountSettings(gone, ['retro'], ctx);
+  await tick();
+  assert.ok(!gone.textContent.includes('Safe point'));
+  stopGone();
+  routes['GET /console/api/approvals?status=pending'] = { approvals: [] };
+}
+{
+  // The approval page shows the requested and the earlier level and the
+  // safe point note; a request that no longer matches has expired.
+  assert.equal(approvalsPage.describeApproval({ action: 'set_visibility', flat: 'retro', params: { visibility: 'public', access: 'edit' } }), 'Make retro public, anyone can edit');
+  assert.equal(approvalsPage.describeApproval({ action: 'set_visibility', flat: 'blog', params: { visibility: 'public' } }), 'Make blog public');
+  routes['GET /console/api/flats/retro'] = retro;
+  routes['GET /console/api/approvals/apr-edit'] = { id: 'apr-edit', flat: 'retro', action: 'set_visibility', status: 'pending', via: 'mcp', requested_at: '2026-10-03T00:00:00Z',
+    params: { visibility: 'public', access: 'edit', from: 'public', from_access: 'view', access_seq: 3 } };
+  let main = new Element('main');
+  approvalsPage.mount(main, ['apr-edit'], ctx); await tick();
+  const dd = all(main, (e) => e.tagName === 'DD').map((e) => e.textContent);
+  assert.ok(dd.includes('Public, view only') && dd.includes('Public, anyone can edit'), dd.join(' | '));
+  assert.ok(main.textContent.includes('A safe point of the board will be pinned first.'));
+  assert.ok(main.textContent.includes('If the visibility changes before you approve, it expires.'));
+  assert.equal(byText(main, 'Approve…').length, 1);
+  routes['GET /console/api/flats/retro'] = { ...retro, visibility: 'private', public_access: undefined };
+  main = new Element('main');
+  approvalsPage.mount(main, ['apr-edit'], ctx); await tick();
+  assert.ok(main.textContent.includes("This request can't be approved."));
+  assert.equal(byText(main, 'Approve…').length, 0, 'an expired request cannot be approved');
+  assert.equal(byText(main, 'Dismiss…').length, 1);
+  assert.ok(all(main, (e) => e.tagName === 'DD').some((e) => e.textContent === 'Private'), 'the current state is shown');
+  // A legacy request without from_access still matches a view-only board.
+  routes['GET /console/api/flats/retro'] = retro;
+  routes['GET /console/api/approvals/apr-legacy'] = { id: 'apr-legacy', flat: 'retro', action: 'set_visibility', status: 'pending', via: 'mcp', requested_at: '2026-10-03T00:00:00Z',
+    params: { visibility: 'private', from: 'public' } };
+  main = new Element('main');
+  approvalsPage.mount(main, ['apr-legacy'], ctx); await tick();
+  assert.equal(byText(main, 'Approve…').length, 1);
+}
+
 console.log('ok');

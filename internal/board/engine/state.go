@@ -22,6 +22,8 @@ type Row struct {
 	V       map[string]int64
 	Deleted bool
 	DelSeq  int64
+	// DelKey is the editor key that deleted the row (TECH public edit 3.2).
+	DelKey  string
 	PreRel  *PreRel
 	EndInc  [2]int64      // connectors: the target incarnation of each attached end
 	EndLast [2][2]float64 // deleted connectors: each end's world coordinate at deletion
@@ -84,6 +86,9 @@ type Session struct {
 	Verified bool   `json:"verified"`
 	MaxN     int64  `json:"max_n"`
 	LastAt   int64  `json:"last_at"`
+	// StartSeq is the board's seq when the session started; a guest may
+	// revive only rows it deleted after it.
+	StartSeq int64 `json:"start_seq"`
 }
 
 // Receipt is the recorded outcome of one session batch (4.8).
@@ -143,6 +148,7 @@ type State struct {
 	rows       map[string]*Row
 	sessions   map[string]*Session
 	created    map[createdKey]int64
+	createdN   map[string]int // created rows per session
 	receipts   map[ReceiptKey]*Receipt
 	undo       map[string]*stacks
 	assets     map[string]*Asset
@@ -177,6 +183,7 @@ func newState() *State {
 		rows:     map[string]*Row{},
 		sessions: map[string]*Session{},
 		created:  map[createdKey]int64{},
+		createdN: map[string]int{},
 		receipts: map[ReceiptKey]*Receipt{},
 		undo:     map[string]*stacks{},
 		assets:   map[string]*Asset{},
@@ -190,6 +197,13 @@ func newState() *State {
 
 // SetLimits replaces the per-item limits.
 func (s *State) SetLimits(l model.Limits) { s.limits = l }
+
+// Limits returns the per-item limits.
+func (s *State) Limits() model.Limits { return s.limits }
+
+// Counts returns the number of alive elements and of the assets they
+// reference.
+func (s *State) Counts() (alive, assets int) { return s.alive, s.live }
 
 // Seq is the seq of the last change.
 func (s *State) Seq() int64 { return s.seq }
@@ -392,6 +406,11 @@ func (s *State) RollbackTo(m Mark) {
 			s.setRow(id, p.v)
 		}
 		s.quiet = false
+		for k, p := range sp.created {
+			if _, ok := s.created[k]; ok != p.ok {
+				s.countCreated(k.session, ok)
+			}
+		}
 		restore(sp.created, s.created)
 		restore(sp.sessions, s.sessions)
 		restore(sp.receipts, s.receipts)
@@ -548,12 +567,34 @@ func (s *State) setCreated(k createdKey, inc int64) {
 	if sp := s.top(); sp != nil {
 		remember(sp.created, s.created, k)
 	}
+	_, had := s.created[k]
 	if inc == 0 {
+		if had {
+			s.countCreated(k.session, true)
+		}
 		delete(s.created, k)
 		return
 	}
+	if !had {
+		s.countCreated(k.session, false)
+	}
 	s.created[k] = inc
 }
+
+// countCreated adjusts the created rows of session for a row that existed
+// (and is removed) or did not (and is added).
+func (s *State) countCreated(session string, existed bool) {
+	if existed {
+		if s.createdN[session]--; s.createdN[session] <= 0 {
+			delete(s.createdN, session)
+		}
+		return
+	}
+	s.createdN[session]++
+}
+
+// CreatedCount is the number of created rows of session.
+func (s *State) CreatedCount(session string) int { return s.createdN[session] }
 
 func (s *State) putSession(se *Session) {
 	if sp := s.top(); sp != nil {
@@ -663,7 +704,8 @@ func contentMayDiffer(old, cur *Row) bool {
 	if !cur.alive() {
 		return false
 	}
-	return old.Inc != cur.Inc || old.El.Z != cur.El.Z || !maps.Equal(old.V, cur.V) || !sameUnversioned(old.El, cur.El)
+	return old.Inc != cur.Inc || old.El.Z != cur.El.Z || !maps.Equal(old.V, cur.V) || !sameUnversioned(old.El, cur.El) ||
+		!model.SameAuthorship(old.El, cur.El)
 }
 
 func diffStacks(session string, old, cur *stacks) []UndoKey {
@@ -722,6 +764,7 @@ type ElementRow struct {
 	V       map[string]int64
 	Deleted bool
 	DelSeq  int64
+	DelKey  string
 	PreRel  *PreRel
 	EndInc  [2]int64
 	EndLast [2][2]float64
@@ -751,7 +794,7 @@ func (s *State) Element(id string) (ElementRow, bool) {
 	}
 	return ElementRow{
 		ID: id, Inc: r.Inc, Data: r.El.CanonicalJSON(), V: maps.Clone(r.V),
-		Deleted: r.Deleted, DelSeq: r.DelSeq, PreRel: r.PreRel,
+		Deleted: r.Deleted, DelSeq: r.DelSeq, DelKey: r.DelKey, PreRel: r.PreRel,
 		EndInc: r.EndInc, EndLast: r.EndLast, Bucket: model.BucketOf(id),
 	}, true
 }
@@ -885,7 +928,7 @@ func Load(rows Rows) (*State, error) {
 			return nil, fmt.Errorf("element row %s holds element %s", er.ID, el.ID)
 		}
 		s.setRow(er.ID, &Row{
-			El: el, Inc: er.Inc, V: maps.Clone(er.V), Deleted: er.Deleted, DelSeq: er.DelSeq,
+			El: el, Inc: er.Inc, V: maps.Clone(er.V), Deleted: er.Deleted, DelSeq: er.DelSeq, DelKey: er.DelKey,
 			PreRel: er.PreRel, EndInc: er.EndInc, EndLast: er.EndLast,
 		})
 	}
@@ -896,7 +939,11 @@ func Load(rows Rows) (*State, error) {
 		s.sessions[se.ID] = &se
 	}
 	for _, c := range rows.Created {
-		s.created[createdKey{c.Session, c.ID}] = c.Inc
+		k := createdKey{c.Session, c.ID}
+		if _, dup := s.created[k]; !dup {
+			s.createdN[c.Session]++
+		}
+		s.created[k] = c.Inc
 	}
 	for _, r := range rows.Receipts {
 		s.receipts[ReceiptKey{r.Session, r.N}] = &r

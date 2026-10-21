@@ -76,6 +76,12 @@ type Flat struct {
 	// again under the same slug has another ID. Requests that must not apply
 	// to such a replacement freeze it. It is not shown to clients.
 	ID string `json:"-"`
+	// PublicAccess is the public access level of a Public flat: view or
+	// edit (boards only); empty while the flat is Private.
+	PublicAccess string `json:"public_access,omitempty"`
+	// AccessSeq counts the commits that changed visibility or the public
+	// access level. A visibility approval freezes it.
+	AccessSeq int64 `json:"-"`
 }
 
 // Version is an immutable uploaded build.
@@ -160,7 +166,9 @@ CREATE TABLE IF NOT EXISTS flats (
   old_slug TEXT,
   old_slug_until INTEGER,
   version_quota INTEGER CHECK(version_quota IS NULL OR version_quota >= 0),
-  uid TEXT
+  uid TEXT,
+  public_access TEXT NOT NULL DEFAULT '',
+  access_seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS versions (
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -370,8 +378,11 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	if f.ID == "" {
 		f.ID = newFlatID()
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at,uid) VALUES(?,?,?,?,?,?,?)`,
-		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt), f.ID)
+	if f.Visibility.Public() && f.PublicAccess == AccessNone {
+		f.PublicAccess = AccessView
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at,uid,public_access) VALUES(?,?,?,?,?,?,?,?)`,
+		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt), f.ID, f.PublicAccess)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return fmt.Errorf("flat %q %w", f.Slug, ErrExists)
 	}
@@ -400,7 +411,7 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	return tx.Commit()
 }
 
-const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid`
+const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid,public_access,access_seq`
 
 // newFlatID returns a random flat ID.
 func newFlatID() string {
@@ -415,7 +426,7 @@ func scanFlat(sc interface{ Scan(...any) error }) (Flat, error) {
 	var created, updated int64
 	var old, id sql.NullString
 	var till, quota sql.NullInt64
-	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id); err != nil {
+	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id, &f.PublicAccess, &f.AccessSeq); err != nil {
 		return f, err
 	}
 	f.ID = id.String
@@ -470,9 +481,10 @@ func (s *Store) ListFlats(ctx context.Context) ([]Flat, error) {
 	return out, rows.Err()
 }
 
-// UpdateFlat writes name, visibility and live version.
+// UpdateFlat writes name, visibility and live version. A visibility it
+// changes resets the public access level to its default (none or view).
 func (s *Store) UpdateFlat(ctx context.Context, f Flat) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE flats SET name=?,visibility=?,live_version=?,updated_at=? WHERE slug=?`,
+	res, err := s.db.ExecContext(ctx, `UPDATE flats SET public_access=CASE WHEN ?='private' THEN '' WHEN visibility='private' THEN 'view' ELSE public_access END,name=?,visibility=?,live_version=?,updated_at=? WHERE slug=?`, string(f.Visibility.Canonical()),
 		f.Name, string(f.Visibility), f.LiveVersion, unix(f.UpdatedAt), f.Slug)
 	if err != nil {
 		return err

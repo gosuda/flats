@@ -118,7 +118,7 @@ func init() {
 		{"versions", "list retained versions", "versions <slug>", (*app).versions},
 		{"rollback", "request approval to activate an earlier version", "rollback <slug> [--to n] [--restore-data]", (*app).rollback},
 		{"preview", "open a private preview of a version", "preview <slug> [--version n]", (*app).preview},
-		{"visibility", "change who can open a flat", "visibility <slug> private|public [--reason r]", (*app).visibility},
+		{"visibility", "change who can open a flat", "visibility <slug> private|public [--access view|edit] [--reason r]", (*app).visibility},
 		{"rename", "change a flat's slug", "rename <slug> <new-slug>", (*app).rename},
 		{"delete", "request deletion of a flat", "delete <slug> [--reason r]", (*app).delete},
 		{"logs", "show a flat's events", "logs <slug> [--follow] [--kind k] [--limit n]", (*app).logs},

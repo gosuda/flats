@@ -173,7 +173,7 @@ func TestMigrationRegistryIsOrdered(t *testing.T) {
 			t.Fatalf("step %d after %d", m.version, migrations[i-1].version)
 		}
 	}
-	if latestVersion() != 18 {
+	if latestVersion() != 19 {
 		t.Fatalf("latest %d", latestVersion())
 	}
 }

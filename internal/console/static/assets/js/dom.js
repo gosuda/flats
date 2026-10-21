@@ -124,6 +124,29 @@ export const VISIBILITY = {
 
 export const visibilityOf = (vis) => (!vis || vis === 'private' ? 'private' : 'public');
 
+// A Public board also has a public access level, view or edit
+// (docs/spec/board-public-edit.md). accessKey combines both into one of
+// 'private', 'public' (any Public flat that is not a board), 'view' or
+// 'edit'. Only a board reports public_access.
+export function accessKey(vis, access) {
+  if (visibilityOf(vis) === 'private') return 'private';
+  if (access === 'edit') return 'edit';
+  return access === 'view' ? 'view' : 'public';
+}
+// accessOf reads a flat; a Public board without a reported level is view only.
+export function accessOf(f) {
+  const key = accessKey(f.visibility, f.public_access);
+  return key === 'public' && f.type === 'board' ? 'view' : key;
+}
+
+export const ACCESS = {
+  private: { label: 'Private', icon: 'lock', desc: 'Only people on your networks' },
+  public: { label: 'Public', icon: 'globe', desc: 'Anyone on the internet can open it' },
+  view: { label: 'Public, view only', icon: 'globe', desc: 'Anyone with the link can watch live. Only your networks edit.' },
+  edit: { label: 'Public, anyone can edit', icon: 'globe', desc: 'Anyone on the internet can edit and delete. They type a name first.' },
+};
+export const accessLabel = (vis, access) => ACCESS[accessKey(vis, access)].label;
+
 // Notice shown before making a flat public; the API returns the same text
 // afterwards. console_test.go checks it matches internal/core.
 export const PUBLIC_ACCESS_NOTICE = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
@@ -177,10 +200,11 @@ export function publicNoticeOf(f) {
   return f.public_notice || PUBLIC_ACCESS_NOTICE;
 }
 
-export function visibilityBadge(vis) {
-  const key = visibilityOf(vis);
-  const v = VISIBILITY[key];
-  return h('span', { class: 'vis vis-' + key }, icon(v.icon), h('span', { text: v.label }));
+// visibilityBadge never shows an editable board as plain Public (rule 34).
+export function visibilityBadge(vis, access) {
+  const key = accessKey(vis, access);
+  const v = ACCESS[key];
+  return h('span', { class: 'vis vis-' + visibilityOf(vis) + (key === 'edit' ? ' vis-edit' : '') }, icon(v.icon), h('span', { text: v.label }));
 }
 
 

@@ -228,7 +228,7 @@ export class ShareBox {
   send() {
     const app = this.app;
     const els = app.selected();
-    if (!els.length || !app.canEdit) return;
+    if (!els.length || !app.canEdit || !app.isMember) return;
     this.queue.push({ ids: els.map((el) => el.id), types: new Set(els.map((el) => el.type)), at: new Date() });
     app.net.share(els.map((el) => el.id));
   }

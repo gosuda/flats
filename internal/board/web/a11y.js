@@ -3,7 +3,7 @@
 // branches, elements leaves, in reading order per frame.
 
 import { $, h, announce } from './ui.js';
-import { KIND_NAMES, SHAPE_NAMES, style } from './schema.js';
+import { KIND_NAMES, SHAPE_NAMES, style, authorOf } from './schema.js';
 import * as ops from './ops.js';
 
 const byReading = (a, b) => Math.round(a.y / 16) - Math.round(b.y / 16) || a.x - b.x;
@@ -75,6 +75,9 @@ export class A11yTree {
     }
     const f = el.frame && doc.get(el.frame);
     if (f) parts.push(`Frame ${f.text || 'untitled'}`);
+    // Screen readers hear the guest mark the canvas draws next to the name.
+    const author = this.app.isMember ? authorOf(el, this.app.names) : null;
+    if (author && author.guest) parts.push(`Created by ${author.name} (guest)`);
     if (el.type !== 'connector') {
       const to = [];
       for (const cid of doc.index.connectorsOf(el.id)) {

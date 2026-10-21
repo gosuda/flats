@@ -1,6 +1,7 @@
 package board
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -360,7 +361,13 @@ func TestLargeFrameMoveDeltaArrivesInParts(t *testing.T) {
 		} else {
 			g = model.Geom{X: 500, W: 100000, H: 100000}
 		}
-		wantChanges[e.ID] = canonicalAny(map[string]any{"id": e.ID, "inc": before[e.ID]["inc"], "set": map[string]any{"geom": []any{g, seq}}})
+		want := map[string]any{"id": e.ID, "inc": before[e.ID]["inc"], "set": map[string]any{"geom": []any{g, seq}}}
+		// The member's move makes it the last changer: the set carries the
+		// new authorship, the agent's text authorship unchanged.
+		if before[e.ID]["lk"] != model.KindMember {
+			want["ta"], want["lk"] = cmp.Or(before[e.ID]["ta"], any(map[string]any{})), model.KindMember
+		}
+		wantChanges[e.ID] = canonicalAny(want)
 	}
 	checkChanges := func(changes []map[string]any) error {
 		seen := map[string]bool{}
@@ -516,6 +523,18 @@ func (v *boardView) apply(d map[string]any) error {
 					}
 					vs[g] = e.([]any)[1]
 					el["v"] = vs
+				}
+			}
+			// A set that changed the authorship carries it whole (TECH
+			// public edit 7); an empty value is absent in the content form.
+			if ta, ok := c["ta"].(map[string]any); ok {
+				el["ta"] = ta
+				if len(ta) == 0 {
+					delete(el, "ta")
+				}
+				el["lk"] = c["lk"]
+				if c["lk"] == "" {
+					delete(el, "lk")
 				}
 			}
 			v.els[id] = el

@@ -196,7 +196,31 @@ func encodeElement(e model.Element, q Query, vers map[string]int64) []byte {
 			m["ver"] = v
 		}
 	}
+	agentAuthorship(m, e)
 	return model.Canonical(m)
+}
+
+// agentAuthorship gives an agent the authorship of e (TECH public edit 7):
+// text_authors, who last wrote each text, and last_change, the kind of the
+// last change, in place of the stored ta and lk. An element written before
+// authorship was recorded has neither.
+func agentAuthorship(m map[string]any, e model.Element) {
+	delete(m, "ta")
+	delete(m, "lk")
+	if len(e.TA) > 0 {
+		ta := make(map[string]any, len(e.TA))
+		for g, a := range e.TA {
+			w := map[string]any{"kind": a.K}
+			if a.N != "" {
+				w["name"] = a.N
+			}
+			ta[g] = w
+		}
+		m["text_authors"] = ta
+	}
+	if e.LK != "" {
+		m["last_change"] = e.LK
+	}
 }
 
 // selectElements filters elements (sorted by id) and encodes them for a
@@ -594,6 +618,7 @@ func (in *Instance) GetShare(ctx context.Context, n int64) (ShareView, error) {
 			}
 			m := e.Content()
 			m["ver"], _ = in.st.Ver(id)
+			agentAuthorship(m, e.Element)
 			v.Elements = append(v.Elements, model.Canonical(m))
 		}
 		return nil

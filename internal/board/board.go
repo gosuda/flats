@@ -86,6 +86,12 @@ type RevisionInfo struct {
 	Changed    int      `json:"changed"`
 	Removed    int      `json:"removed"`
 	RollbackOf int      `json:"rollback_of,omitempty"`
+	// GuestAuthors are up to five guest names this revision credits, and
+	// GuestsMore counts the rest (spec rule 25).
+	GuestAuthors []string `json:"guest_authors,omitempty"`
+	GuestsMore   int      `json:"guests_more,omitempty"`
+	// SafePoint marks the protected safe point while anyone can edit.
+	SafePoint bool `json:"safe_point,omitempty"`
 }
 
 // RevisionPage is one page of history, newest first.
@@ -162,6 +168,9 @@ type Options struct {
 	Now func() time.Time
 	// Log receives background failures; nil means slog.Default().
 	Log *slog.Logger
+	// PublicAccess is the stored public access level of the flat: "" when
+	// it is not Public, "view" or "edit". SetPublicAccess changes it later.
+	PublicAccess string
 
 	tickEvery time.Duration // tests stop the ticker this way
 }
@@ -211,6 +220,15 @@ type Instance struct {
 	// hook, for crash tests, runs in the apply loop just before and just
 	// after each COMMIT ("commit", "committed").
 	hook func(stage string)
+
+	// Public access (TECH public edit 6.1): the level and the access epoch
+	// are owned by the apply loop; levelNow mirrors the level for readers
+	// outside it.
+	level    string
+	epoch    int64
+	levelNow atomic.Value // string
+	pub      publicLimits
+	viewers  viewerFrames
 }
 
 // Open opens the board in dir (flats/<slug>/board), creating board.db with
@@ -236,6 +254,11 @@ func Open(dir string, b Backend, opts Options) (in *Instance, created bool, err 
 		tickEvery: cmp.Or(opts.tickEvery, 5*time.Second),
 	}
 	in.meas = newMeasurer(in)
+	in.pub = newPublicLimits()
+	if validLevel(opts.PublicAccess) {
+		in.level = opts.PublicAccess
+	}
+	in.levelNow.Store(in.level)
 	db, created, err := openStore(filepath.Join(dir, dbName))
 	if err != nil {
 		cancel()

@@ -229,6 +229,12 @@ type Element struct {
 	By      string
 	At      int64
 	Grid    bool // board metadata only
+	// TA records who last wrote each text bundle and LK the kind of the
+	// last write of any bundle (board-public-edit-TECH.md 7). Neither is a
+	// bundle; old elements have neither. TA is replaced, never changed in
+	// place, so clones share it.
+	TA map[string]TextAuthor
+	LK string
 }
 
 // Clone copies e. Pts is shared because it never changes.
@@ -273,6 +279,12 @@ func (e Element) Content() map[string]any {
 		m["pts"] = e.Pts
 	case TypeImage:
 		m["asset"], m["alt"], m["natural"] = e.Asset, e.Alt, []int{e.Natural[0], e.Natural[1]}
+	}
+	if len(e.TA) > 0 {
+		m["ta"] = e.TA
+	}
+	if e.LK != "" {
+		m["lk"] = e.LK
 	}
 	return m
 }
@@ -323,7 +335,7 @@ var fieldsByType = map[string][]string{
 	TypeFrame:     {"text", "x", "y", "w", "h", "rot"},
 }
 
-var commonFields = []string{"id", "type", "z", "frame", "group", "locked", "style", "by", "at"}
+var commonFields = []string{"id", "type", "z", "frame", "group", "locked", "style", "by", "at", "ta", "lk"}
 
 // Present records which fields a decoded element carried.
 type Present map[string]bool
@@ -365,7 +377,7 @@ func DecodeElement(raw []byte) (Element, Present, error) {
 		dst any
 	}{
 		{"id", &e.ID}, {"z", &e.Z}, {"frame", &e.Frame}, {"group", &e.Group},
-		{"locked", &e.Locked}, {"text", &e.Text}, {"by", &e.By}, {"at", &e.At},
+		{"locked", &e.Locked}, {"text", &e.Text}, {"by", &e.By}, {"at", &e.At}, {"ta", &e.TA}, {"lk", &e.LK},
 		{"x", &e.Geom.X}, {"y", &e.Geom.Y}, {"w", &e.Geom.W}, {"h", &e.Geom.H}, {"rot", &e.Geom.Rot},
 		{"pts", &pts}, {"asset", &e.Asset}, {"alt", &e.Alt}, {"natural", &natural}, {"ends", &ends},
 	} {
@@ -467,6 +479,9 @@ func (e Element) Validate() error {
 		return formatErr("text must be valid UTF-8")
 	}
 	if err := ValidateStyle(e.Type, e.Style); err != nil {
+		return err
+	}
+	if err := e.validAuthorship(); err != nil {
 		return err
 	}
 	switch e.Type {

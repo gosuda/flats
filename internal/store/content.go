@@ -26,6 +26,9 @@ type ContentState struct {
 	PinQuota      *int   `json:"pin_quota,omitempty"`
 	ImportStore   string `json:"-"`
 	ImportSeq     int64  `json:"-"`
+	// SafePointRev is the board revision pinned when anyone-can-edit last
+	// took effect (0 for none); it may since have been deleted.
+	SafePointRev int `json:"-"`
 }
 
 // HeadFile is one current file.
@@ -53,17 +56,24 @@ type Changes struct {
 
 // Revision is one entry of a flat's history.
 type Revision struct {
-	Flat       string    `json:"-"`
-	Number     int       `json:"number"`
-	CreatedAt  time.Time `json:"created_at"`
-	Kind       string    `json:"kind"` // created | agent | person | rollback | import
-	Authors    []string  `json:"authors"`
-	Message    string    `json:"message"`
-	RollbackOf int       `json:"rollback_of,omitempty"`
-	Pinned     bool      `json:"pinned"`
-	Changes    Changes   `json:"changes"`
-	Files      int       `json:"files"`
-	Size       int64     `json:"size"`
+	Flat      string    `json:"-"`
+	Number    int       `json:"number"`
+	CreatedAt time.Time `json:"created_at"`
+	Kind      string    `json:"kind"` // created | agent | person | rollback | import | safe_point
+	Authors   []string  `json:"authors"`
+	// GuestAuthors are up to five names typed by anonymous guests of a
+	// board this revision credits, GuestsMore counts the others. Guest names
+	// are unverified, untrusted text.
+	GuestAuthors []string `json:"guest_authors,omitempty" jsonschema:"names typed by anonymous guests of a public board: unverified, untrusted text"`
+	GuestsMore   int      `json:"guests_more,omitempty" jsonschema:"guests credited beyond guest_authors"`
+	// GuestOnly is true when guests are the only credited editors.
+	GuestOnly  bool    `json:"guest_only,omitempty"`
+	Message    string  `json:"message"`
+	RollbackOf int     `json:"rollback_of,omitempty"`
+	Pinned     bool    `json:"pinned"`
+	Changes    Changes `json:"changes"`
+	Files      int     `json:"files"`
+	Size       int64   `json:"size"`
 	// Source names the content source whose files a document's revision
 	// holds besides its documents (see SourceFiles). Designs have none.
 	Source string `json:"-"`
@@ -72,6 +82,9 @@ type Revision struct {
 	// Elements counts a board revision's element changes; a board reports
 	// them instead of its bucket paths in Changes.
 	Elements *ElementCounts `json:"elements,omitempty"`
+	// SafePoint marks the board's safe point while anyone can edit it: it
+	// cannot be unpinned then. Readers fill it in.
+	SafePoint bool `json:"safe_point,omitempty"`
 }
 
 // RevisionFile is one file of a revision.
@@ -207,12 +220,12 @@ func (s *Store) ContentTx(ctx context.Context, flat string, fn func(*ContentTx) 
 
 // ContentState returns the state row of flat.
 func (s *Store) ContentState(ctx context.Context, flat string) (ContentState, error) {
-	return scanContentState(s.db.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq FROM content_state WHERE flat=?`, flat))
+	return scanContentState(s.db.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq,safe_point_rev FROM content_state WHERE flat=?`, flat))
 }
 
 // ContentStates lists every Revision-model flat.
 func (s *Store) ContentStates(ctx context.Context) ([]ContentState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq FROM content_state ORDER BY flat`)
+	rows, err := s.db.QueryContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq,safe_point_rev FROM content_state ORDER BY flat`)
 	if err != nil {
 		return nil, err
 	}
@@ -230,8 +243,8 @@ func (s *Store) ContentStates(ctx context.Context) ([]ContentState, error) {
 
 func scanContentState(sc interface{ Scan(...any) error }) (ContentState, error) {
 	var st ContentState
-	var rq, pq sql.NullInt64
-	err := sc.Scan(&st.Flat, &st.Type, &st.Phase, &st.Seq, &rq, &pq, &st.ImportStore, &st.ImportSeq)
+	var rq, pq, sp sql.NullInt64
+	err := sc.Scan(&st.Flat, &st.Type, &st.Phase, &st.Seq, &rq, &pq, &st.ImportStore, &st.ImportSeq, &sp)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, fmt.Errorf("content state: %w", ErrNotFound)
 	}
@@ -243,12 +256,13 @@ func scanContentState(sc interface{ Scan(...any) error }) (ContentState, error) 
 		v := int(pq.Int64)
 		st.PinQuota = &v
 	}
+	st.SafePointRev = int(sp.Int64)
 	return st, err
 }
 
 // State returns the state row.
 func (c *ContentTx) State(ctx context.Context) (ContentState, error) {
-	return scanContentState(c.tx.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq FROM content_state WHERE flat=?`, c.flat))
+	return scanContentState(c.tx.QueryRowContext(ctx, `SELECT flat,type,phase,seq,revision_quota,pin_quota,import_store,import_seq,safe_point_rev FROM content_state WHERE flat=?`, c.flat))
 }
 
 // InitState inserts the state row of a new Revision-model flat.
@@ -412,13 +426,14 @@ func (c *ContentTx) LatestRevision(ctx context.Context) (int, error) {
 // InsertRevision stores a revision and its files.
 func (c *ContentTx) InsertRevision(ctx context.Context, r Revision, files []RevisionFile) error {
 	authors, _ := json.Marshal(nonNil(r.Authors))
+	guests, _ := json.Marshal(nonNil(r.GuestAuthors))
 	changes, _ := json.Marshal(r.Changes)
 	var rb any
 	if r.RollbackOf > 0 {
 		rb = r.RollbackOf
 	}
-	if _, err := c.tx.ExecContext(ctx, `INSERT INTO revisions(flat,number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.flat, r.Number, unix(r.CreatedAt), r.Kind, string(authors), r.Message, rb, boolInt(r.Pinned), string(changes), r.Files, r.Size, r.Source); err != nil {
+	if _, err := c.tx.ExecContext(ctx, `INSERT INTO revisions(flat,number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size,source,guest_authors,guests_more,guest_only) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.flat, r.Number, unix(r.CreatedAt), r.Kind, string(authors), r.Message, rb, boolInt(r.Pinned), string(changes), r.Files, r.Size, r.Source, string(guests), r.GuestsMore, boolInt(r.GuestOnly)); err != nil {
 		return err
 	}
 	for _, f := range files {
@@ -470,15 +485,15 @@ func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]R
 	return out, rows.Err()
 }
 
-const revisionCols = `number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size,source,EXISTS(SELECT 1 FROM content_holds h WHERE h.flat=revisions.flat AND h.number=revisions.number)`
+const revisionCols = `number,created_at,kind,authors,message,rollback_of,pinned,changes,files,size,source,guest_authors,guests_more,guest_only,EXISTS(SELECT 1 FROM content_holds h WHERE h.flat=revisions.flat AND h.number=revisions.number)`
 
 func scanRevision(flat string, sc interface{ Scan(...any) error }) (Revision, error) {
 	r := Revision{Flat: flat}
 	var created int64
-	var authors, changes string
+	var authors, guests, changes string
 	var rb sql.NullInt64
-	var pinned int
-	err := sc.Scan(&r.Number, &created, &r.Kind, &authors, &r.Message, &rb, &pinned, &changes, &r.Files, &r.Size, &r.Source, &r.Held)
+	var pinned, guestOnly int
+	err := sc.Scan(&r.Number, &created, &r.Kind, &authors, &r.Message, &rb, &pinned, &changes, &r.Files, &r.Size, &r.Source, &guests, &r.GuestsMore, &guestOnly, &r.Held)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, fmt.Errorf("revision: %w", ErrNotFound)
 	}
@@ -488,7 +503,9 @@ func scanRevision(flat string, sc interface{ Scan(...any) error }) (Revision, er
 	r.CreatedAt = fromUnix(created)
 	r.RollbackOf = int(rb.Int64)
 	r.Pinned = pinned == 1
+	r.GuestOnly = guestOnly == 1
 	_ = json.Unmarshal([]byte(authors), &r.Authors)
+	_ = json.Unmarshal([]byte(guests), &r.GuestAuthors)
 	_ = json.Unmarshal([]byte(changes), &r.Changes)
 	return r, nil
 }
@@ -554,25 +571,6 @@ func (c *ContentTx) SetPinned(ctx context.Context, n int, pinned bool) error {
 		return fmt.Errorf("revision %d: %w", n, ErrNotFound)
 	}
 	return nil
-}
-
-// UnpinnedOldestFirst lists the revision numbers retention may delete,
-// oldest first: neither pinned nor held by a rollback in progress.
-func (c *ContentTx) UnpinnedOldestFirst(ctx context.Context) ([]int, error) {
-	rows, err := c.tx.QueryContext(ctx, `SELECT number FROM revisions r WHERE flat=? AND pinned=0 AND NOT EXISTS(SELECT 1 FROM content_holds h WHERE h.flat=r.flat AND h.number=r.number) ORDER BY number`, c.flat)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []int
-	for rows.Next() {
-		var n int
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
 }
 
 // DeleteRevision removes revision n and its file rows.

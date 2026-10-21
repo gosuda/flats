@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/site"
 	"github.com/gosuda/flats/internal/store"
@@ -39,11 +40,13 @@ type docsDocument struct {
 	Text string `json:"text"`
 }
 
-// trustedAccess clones the request and replaces access and strips all spellings of the host-only health signal.
+// trustedAccess clones the request and replaces access and strips all
+// spellings of the host-only health signal and public access level.
 func trustedAccess(r *http.Request, public bool) *http.Request {
 	r = r.Clone(r.Context())
 	for key := range r.Header {
-		if strings.EqualFold(key, "X-Flats-Access") || strings.EqualFold(key, "X-Flats-Health") || strings.EqualFold(key, "X-Flats-Host-Op") {
+		if strings.EqualFold(key, "X-Flats-Access") || strings.EqualFold(key, "X-Flats-Health") || strings.EqualFold(key, "X-Flats-Host-Op") ||
+			strings.EqualFold(key, board.PublicAccessHeader) {
 			delete(r.Header, key)
 		}
 	}

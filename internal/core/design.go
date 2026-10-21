@@ -1117,8 +1117,12 @@ func (s *Service) quotas(st store.ContentState) (revisions, pins int) {
 	return revisions, pins
 }
 
-// retainTx deletes the oldest unpinned revisions over the revision quota,
-// never the newest revision. It returns how many it deleted.
+// retainTx applies retention (board-public-edit-TECH 5.3) and returns how
+// many revisions it deleted. With a revision quota Q, unpinned guest-only
+// revisions keep at most floor(Q/2) places (at least one when the newest
+// revision is guest-only), the oldest going first; then the oldest unpinned
+// revisions over Q go. The newest revision and pinned or held revisions are
+// never deleted.
 func (s *Service) retainTx(ctx context.Context, tx *store.ContentTx) (int, error) {
 	st, err := tx.State(ctx)
 	if err != nil {
@@ -1132,22 +1136,48 @@ func (s *Service) retainTx(ctx context.Context, tx *store.ContentTx) (int, error
 	if err != nil {
 		return 0, err
 	}
-	unpinned, err := tx.UnpinnedOldestFirst(ctx)
+	candidates, err := tx.RetainCandidates(ctx)
 	if err != nil {
 		return 0, err
 	}
 	deleted := 0
-	for _, n := range unpinned {
-		if len(unpinned)-deleted <= quota {
-			break
+	drop := func(i int) error {
+		if err := tx.DeleteRevision(ctx, candidates[i].Number); err != nil {
+			return err
 		}
-		if n == latest {
+		candidates = slices.Delete(candidates, i, i+1)
+		deleted++
+		return nil
+	}
+	guestOnly, newestGuest := 0, false
+	for _, c := range candidates {
+		if c.GuestOnly {
+			guestOnly++
+			newestGuest = newestGuest || c.Number == latest
+		}
+	}
+	limit := quota / 2
+	if newestGuest {
+		limit = max(limit, 1)
+	}
+	for i := 0; guestOnly > limit && i < len(candidates); {
+		if !candidates[i].GuestOnly || candidates[i].Number == latest {
+			i++
 			continue
 		}
-		if err := tx.DeleteRevision(ctx, n); err != nil {
+		if err := drop(i); err != nil {
 			return deleted, err
 		}
-		deleted++
+		guestOnly--
+	}
+	for i := 0; len(candidates) > quota && i < len(candidates); {
+		if candidates[i].Number == latest {
+			i++
+			continue
+		}
+		if err := drop(i); err != nil {
+			return deleted, err
+		}
 	}
 	return deleted, nil
 }
@@ -1492,9 +1522,33 @@ func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinne
 	if err != nil {
 		return err
 	}
-	typ := st.Type
+	deleted, err := s.pinLocked(ctx, slugName, n, pinned)
+	if err != nil {
+		return err
+	}
+	if st.Type == contenttype.Design {
+		s.notifyDesign(slugName, 0, 0, nil)
+	}
+	if deleted > 0 {
+		go s.sweepBlobs(context.WithoutCancel(ctx), slugName, st.Type)
+	}
+	return nil
+}
+
+// pinLocked pins or unpins revision n and returns how many revisions the
+// retention after an unpin deleted. The safe point of a board anyone can
+// edit stays pinned. The caller holds the flat lock.
+func (s *Service) pinLocked(ctx context.Context, slugName string, n int, pinned bool) (int, error) {
+	// Read before the transaction: the store has one connection.
+	var f store.Flat
+	if !pinned {
+		var err error
+		if f, err = s.st.GetFlat(ctx, slugName); err != nil {
+			return 0, err
+		}
+	}
 	deleted := 0
-	err = s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
+	err := s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
 		r, err := tx.Revision(ctx, n)
 		if err != nil {
 			return err
@@ -1502,11 +1556,14 @@ func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinne
 		if r.Pinned == pinned {
 			return nil
 		}
+		st, err := tx.State(ctx)
+		if err != nil {
+			return err
+		}
+		if !pinned && f.PublicAccess == store.AccessEdit && st.SafePointRev == n {
+			return fmt.Errorf("%w: revision %d is the safe point and stays pinned while anyone can edit this board; stop guest editing first", ErrConflict, n)
+		}
 		if pinned {
-			st, err := tx.State(ctx)
-			if err != nil {
-				return err
-			}
 			_, quota := s.quotas(st)
 			if quota > 0 {
 				count, err := tx.CountPins(ctx)
@@ -1514,7 +1571,7 @@ func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinne
 					return err
 				}
 				if count >= quota {
-					return fmt.Errorf("%w: all %d pins are in use; unpin a revision first", ErrConflict, quota)
+					return fmt.Errorf("%w: %w: all %d pins are in use; unpin a revision first", ErrConflict, errPinsFull, quota)
 				}
 			}
 		}
@@ -1526,16 +1583,7 @@ func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinne
 		}
 		return err
 	})
-	if err != nil {
-		return err
-	}
-	if typ == contenttype.Design {
-		s.notifyDesign(slugName, 0, 0, nil)
-	}
-	if deleted > 0 {
-		go s.sweepBlobs(context.WithoutCancel(ctx), slugName, typ)
-	}
-	return nil
+	return deleted, err
 }
 
 // ListRevisions returns a page of a flat's history, newest first.
@@ -1565,6 +1613,7 @@ func (s *Service) ListRevisions(ctx context.Context, slugName string, before, li
 	if page.Revisions == nil {
 		page.Revisions = []store.Revision{}
 	}
+	s.markSafePoint(ctx, slugName, st, page.Revisions)
 	page.Pins, _ = s.st.CountPins(ctx, slugName)
 	page.RevisionQuota, page.PinQuota = s.quotas(st)
 	return page, nil
@@ -1586,6 +1635,7 @@ func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (stor
 	if st.Type == contenttype.Board {
 		revs := []store.Revision{r}
 		s.boardRevisionStats(ctx, slugName, revs)
+		s.markSafePoint(ctx, slugName, st, revs)
 		r = revs[0]
 	}
 	files, err := s.revisionFiles(ctx, slugName, r)
@@ -1632,13 +1682,16 @@ func (s *Service) RevisionFileContent(ctx context.Context, slugName string, n in
 }
 
 // SetRevisionQuotas stores per-design quota overrides (nil = host default)
-// and applies retention at once.
+// and applies retention at once. While anyone can edit a board, its
+// effective revision quota cannot become unlimited.
 func (s *Service) SetRevisionQuotas(ctx context.Context, slugName string, revisions, pins *int) error {
 	for _, v := range []*int{revisions, pins} {
 		if v != nil && *v < 0 {
 			return invalidf("quotas are whole numbers ≥ 0 (0 = unlimited)")
 		}
 	}
+	s.publicEditMu.Lock()
+	defer s.publicEditMu.Unlock()
 	if err := s.catchUpRevisions(ctx, slugName); err != nil {
 		return err
 	}
@@ -1646,10 +1699,18 @@ func (s *Service) SetRevisionQuotas(ctx context.Context, slugName string, revisi
 	if lerr != nil {
 		return lerr
 	}
-	_, st, err := s.revisionFlat(ctx, slugName)
+	f, st, err := s.revisionFlat(ctx, slugName)
 	if err != nil {
 		unlock()
 		return err
+	}
+	effective := clampInt(s.intSetting(SetRevisionQuota))
+	if revisions != nil {
+		effective = *revisions
+	}
+	if f.PublicAccess == store.AccessEdit && effective <= 0 {
+		unlock()
+		return fmt.Errorf("%w: anyone can edit this board, so its revision quota cannot be unlimited (0); set a number, or stop guest editing first", ErrConflict)
 	}
 	err = s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error { return tx.SetQuotas(ctx, revisions, pins) })
 	unlock()

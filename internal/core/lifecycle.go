@@ -79,12 +79,21 @@ type rollbackParams struct {
 // never applies to another flat created later under the same slug.
 // Requests stored before flat IDs froze the live version of every flat and
 // keep that rule.
+//
+// Access is the requested public access level (view or edit, empty for
+// Private) and FromAccess the level when requested. AccessSeq freezes the
+// flat's access_seq: any visibility or level change since then makes the
+// request stale, even a round trip back to the same pair. A request stored
+// before public access levels has no AccessSeq and applies only as view.
 type visibilityParams struct {
 	Visibility   string `json:"visibility"`
 	From         string `json:"from"`
 	ExpectedLive *int   `json:"expected_live,omitempty"`
 	Providers    string `json:"providers"`
 	FlatID       string `json:"flat_id,omitempty"`
+	Access       string `json:"access,omitempty"`
+	FromAccess   string `json:"from_access,omitempty"`
+	AccessSeq    *int64 `json:"access_seq,omitempty"`
 }
 
 func (s *Service) contentDir(slugName string, v store.Version) string {
@@ -277,11 +286,19 @@ func (s *Service) requestRollback(ctx context.Context, slugName string, to int, 
 	return pending(res)
 }
 
-func (s *Service) requestVisibility(ctx context.Context, slugName string, vis store.Visibility, via Via, reason string) (ActionResult, error) {
+func (s *Service) requestVisibility(ctx context.Context, slugName string, vis store.Visibility, access string, via Via, reason string) (ActionResult, error) {
 	if !vis.Valid() {
 		return ActionResult{}, invalidf("unknown visibility %q (use private or public)", vis)
 	}
 	vis = vis.Canonical()
+	switch {
+	case vis == store.Private && access != "":
+		return ActionResult{}, invalidf("a private flat has no public access level; omit access")
+	case vis.Public() && access == "":
+		access = store.AccessView
+	case vis.Public() && access != store.AccessView && access != store.AccessEdit:
+		return ActionResult{}, invalidf("unknown public access %q (use view or edit)", access)
+	}
 	// The state read here and the recorded request belong to one flat: a
 	// delete, rename or save cannot finish in between.
 	unlock, err := s.lockCtx(ctx, slugName)
@@ -293,9 +310,21 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if f.Visibility.Canonical() == vis {
+	t, err := s.flatType(ctx, f)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if access == store.AccessEdit && t != contenttype.Board {
+		return ActionResult{}, invalidf("only a board can be edited by anyone; use access view")
+	}
+	if f.Visibility.Canonical() == vis && f.PublicAccess == access {
+		res := ActionResult{Status: "done", Message: "visibility unchanged"}
+		if note := s.repairLevelLocked(ctx, f); note != "" {
+			res.Message += "; " + note
+		}
 		fv := s.view(ctx, f)
-		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility unchanged"}, nil
+		res.Flat, res.Notice = &fv, fv.PublicNotice
+		return res, nil
 	}
 	if vis.Public() {
 		if f.LiveVersion == 0 {
@@ -306,28 +335,27 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	t, err := s.flatType(ctx, f)
-	if err != nil {
-		return ActionResult{}, err
-	}
 	live := f.LiveVersion
 	legacy := visibilityParams{Visibility: string(vis), From: string(f.Visibility.Canonical()), ExpectedLive: &live, Providers: providers}
+	seq := f.AccessSeq
 	p := legacy
+	p.Access, p.FromAccess, p.AccessSeq = access, f.PublicAccess, &seq
 	if contenttype.RevisionModel(t) && f.ID != "" {
 		p.ExpectedLive, p.FlatID = nil, f.ID
+	}
+	if contenttype.RevisionModel(t) && f.ID != "" && access != store.AccessEdit {
 		// A request stored before flat IDs is the same request while the
 		// live version it froze still runs; reuse it rather than adding a
 		// second pending approval for one change. A rename moves approvals
 		// to the new slug but keeps their keys, so a key of this slug can
 		// belong to a renamed flat's approval: reuse only one of this slug.
+		// It applies only as view, so a request for edit never reuses it.
 		if key, _, err := frozenKey(slugName, "set_visibility", legacy); err != nil {
 			return ActionResult{}, err
 		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil && existing.Flat == slugName {
 			res := ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: s.ApprovalURL(ctx, existing.ID),
 				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}
-			if vis.Public() {
-				res.Notice = PendingPublicAccessNotice
-			}
+			res.Notice = pendingVisibilityNotice(vis, access)
 			return res, nil
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return ActionResult{}, err
@@ -337,10 +365,19 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if vis.Public() {
-		res.Notice = PendingPublicAccessNotice
-	}
+	res.Notice = pendingVisibilityNotice(vis, access)
 	return res, nil
+}
+
+// pendingVisibilityNotice is the notice of a pending visibility request.
+func pendingVisibilityNotice(vis store.Visibility, access string) string {
+	switch {
+	case access == store.AccessEdit:
+		return PendingPublicEditNotice
+	case vis.Public():
+		return PendingPublicAccessNotice
+	}
+	return ""
 }
 
 func (s *Service) publicAvailable(ctx context.Context, slugName string) error {
@@ -1012,6 +1049,21 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	if !target.Valid() || (target != store.Private && target != store.Public) {
 		return ActionResult{}, invalidf("unknown visibility %q", p.Visibility)
 	}
+	access := ""
+	if target.Public() {
+		// A request stored before access levels never grants edit.
+		access = store.AccessView
+		if p.AccessSeq != nil && p.Access != "" {
+			access = p.Access
+		}
+		if access != store.AccessView && access != store.AccessEdit {
+			return ActionResult{}, invalidf("unknown public access %q", p.Access)
+		}
+	}
+	if access == store.AccessEdit {
+		s.publicEditMu.Lock()
+		defer s.publicEditMu.Unlock()
+	}
 	unlock := s.lock(a.Flat)
 	defer unlock()
 	f, err := s.st.GetFlat(ctx, a.Flat)
@@ -1026,6 +1078,12 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	}
 	if string(f.Visibility.Canonical()) != p.From {
 		return ActionResult{}, mismatch(p.From, string(f.Visibility.Canonical()), "visibility")
+	}
+	// Any change of visibility or level since the request, even one that
+	// came back to the same pair, makes it stale.
+	if p.AccessSeq != nil && *p.AccessSeq != f.AccessSeq {
+		return ActionResult{}, fmt.Errorf("%w: %w: the visibility or public access level changed after the request (it was %s, now %s); request a new visibility change",
+			ErrConflict, ErrStaleApproval, visibilityLabel(store.Visibility(p.From), p.FromAccess), visibilityLabel(f.Visibility.Canonical(), f.PublicAccess))
 	}
 	if p.FlatID == "" {
 		expected := 0
@@ -1043,52 +1101,93 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	if providers != p.Providers {
 		return ActionResult{}, mismatch(p.Providers, providers, "provider permissions")
 	}
-	if f.Visibility.Canonical() == target {
+	if f.Visibility.Canonical() == target && f.PublicAccess == access {
+		res := ActionResult{Status: "done", Message: "visibility unchanged"}
+		if note := s.repairLevelLocked(ctx, f); note != "" {
+			res.Message += "; " + note
+		}
 		fv := s.view(ctx, f)
-		return ActionResult{Status: "done", Flat: &fv, Message: "visibility unchanged"}, nil
+		res.Flat = &fv
+		return res, nil
 	}
+	from := visibilityLabel(store.Visibility(p.From), f.PublicAccess)
+	to := visibilityLabel(target, access)
+	raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
 	if target.Public() {
 		if f.LiveVersion == 0 {
 			return ActionResult{}, fmt.Errorf("%w: publish and deploy a version before making this flat public", ErrConflict)
 		}
-		if err := s.publicAvailable(ctx, a.Flat); err != nil {
-			return ActionResult{}, err
+		safePoint := 0
+		if access == store.AccessEdit {
+			if t, err := s.flatType(ctx, f); err != nil {
+				return ActionResult{}, err
+			} else if t != contenttype.Board {
+				return ActionResult{}, invalidf("only a board can be edited by anyone")
+			}
+			if safePoint, err = s.prepareSafePointLocked(ctx, a.Flat); err != nil {
+				return ActionResult{}, err
+			}
 		}
 		next := f
-		next.Visibility = target
-		if err := s.ensureExposure(ctx, next); err != nil {
-			return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
+		next.Visibility, next.PublicAccess, next.UpdatedAt = target, access, s.now()
+		if f.Visibility.Public() {
+			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+				return ActionResult{}, err
+			}
+		} else {
+			if err := s.publicAvailable(ctx, a.Flat); err != nil {
+				return ActionResult{}, err
+			}
+			if err := s.ensureExposure(ctx, next); err != nil {
+				return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
+			}
+			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+				return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
+			}
 		}
-		next.UpdatedAt = s.now()
-		raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
-		if err := s.st.CommitVisibility(ctx, next, f.Visibility, a.ID, raw); err != nil {
-			return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
+		next.AccessSeq++
+		note := s.applyLevelLocked(ctx, a.Flat, access)
+		msg := fmt.Sprintf("visibility %s -> %s", from, to)
+		if safePoint > 0 {
+			msg += fmt.Sprintf("; safe point revision %d is pinned", safePoint)
 		}
-		s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> %s", p.From, target), nil)
+		s.Event(ctx, a.Flat, "info", "visibility", msg, nil)
 		s.notifyDesign(a.Flat, 0, 0, nil) // an open canvas shows the new visibility
+		res := ActionResult{Status: "done", Message: "visibility changed to " + to}
+		if safePoint > 0 {
+			res.Message += fmt.Sprintf("; safe point revision %d is pinned", safePoint)
+		}
+		if note != "" {
+			res.Message += "; " + note
+		}
 		fv := s.view(ctx, next)
-		return ActionResult{Status: "done", Flat: &fv, Notice: fv.PublicNotice, Message: "visibility changed to " + string(target)}, nil
+		res.Flat, res.Notice = &fv, fv.PublicNotice
+		return res, nil
 	}
 	if err := s.stopPublicConfirmed(ctx, a.Flat); err != nil {
 		return ActionResult{}, err
 	}
-	from := f.Visibility
-	f.Visibility = store.Private
-	f.UpdatedAt = s.now()
-	raw, _ := json.Marshal(ApprovalExecution{Status: "applied", DataImpact: "none", HealthData: "not_run", LiveData: "untouched"})
-	if err := s.st.CommitVisibility(ctx, f, from, a.ID, raw); err != nil {
+	next := f
+	next.Visibility, next.PublicAccess, next.UpdatedAt = store.Private, "", s.now()
+	if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
 		return ActionResult{}, err
 	}
+	next.AccessSeq++
+	note := s.applyLevelLocked(ctx, a.Flat, "")
 	s.stopPublicRedirects(a.Flat)
-	if err := s.ensureExposure(ctx, f); err != nil {
+	if err := s.ensureExposure(ctx, next); err != nil {
 		s.Event(ctx, a.Flat, "error", "exposure", err.Error(), nil)
-		fv := s.view(ctx, f)
+		fv := s.view(ctx, next)
 		return ActionResult{Status: "done", Flat: &fv, Notice: "Visibility is Private, but its private route needs attention: " + err.Error(), Message: "visibility changed to private; private exposure needs attention"}, nil
 	}
-	s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> private", p.From), nil)
+	s.Event(ctx, a.Flat, "info", "visibility", fmt.Sprintf("visibility %s -> private", from), nil)
 	s.notifyDesign(a.Flat, 0, 0, nil)
-	fv := s.view(ctx, f)
-	return ActionResult{Status: "done", Flat: &fv, Message: "visibility changed to private"}, nil
+	fv := s.view(ctx, next)
+	res := ActionResult{Status: "done", Flat: &fv, Message: "visibility changed to private"}
+	if note != "" {
+		res.Message += "; " + note
+	}
+	return res, nil
 }
 
 // rollbackPublicExposure restores the previous private policy after a failed
@@ -1607,7 +1706,7 @@ var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
 	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed", "snapshot_failed",
-	"health_check_failed", "edit_conflict", "document_capacity", "board_capacity", "conflict", "forbidden", "not_docs", "not_design", "not_board", "no_revisions", "document_not_found", "not_found", "invalid",
+	"health_check_failed", "edit_conflict", "document_capacity", "board_capacity", "public_edit_blocked", "conflict", "forbidden", "not_docs", "not_design", "not_board", "no_revisions", "document_not_found", "not_found", "invalid",
 }
 
 // ErrorCategory defines cause precedence for persisted failures and transports.
@@ -1657,6 +1756,8 @@ func ErrorCategory(err error) string {
 		return "document_capacity"
 	case errors.Is(err, ErrBoardCapacity):
 		return "board_capacity"
+	case errors.Is(err, ErrPublicEditBlocked):
+		return "public_edit_blocked"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
 	case errors.Is(err, ErrForbidden):

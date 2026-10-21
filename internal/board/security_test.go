@@ -46,7 +46,7 @@ func TestPublicReconnectStartsFromASnapshot(t *testing.T) {
 			}
 			p.send(m)
 			w := p.expect("welcome")
-			if w["access"] != "public" || w["session"] != "" || w["me"] != nil {
+			if me, _ := w["me"].(map[string]any); w["access"] != "public" || w["session"] != "" || me["key"] != nil || me["viewer"] == nil {
 				t.Fatalf("public welcome %v", w)
 			}
 			// The first message after the welcome is a snapshot, never a

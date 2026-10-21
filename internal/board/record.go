@@ -101,16 +101,17 @@ func (t *txn) files(all bool) (files []File, fresh map[string][]byte) {
 // It returns the entry's seq, or 0 when it recorded none.
 func (t *txn) record(rs recordSpec) (int64, error) {
 	files, fresh := t.files(rs.all)
+	guests := t.guestNames()
 	clear := func() error {
 		t.dirty = map[int]int64{}
 		for k, g := range t.groups {
-			g.Dirty = false
+			g.Dirty, g.Names = false, nil
 			t.groups[k] = g
 		}
 		if _, err := t.tx.ExecContext(t.ctx, `UPDATE buckets SET dirty_seq = NULL WHERE dirty_seq IS NOT NULL`); err != nil {
 			return err
 		}
-		_, err := t.tx.ExecContext(t.ctx, `UPDATE groups SET dirty = 0 WHERE dirty <> 0`)
+		_, err := t.tx.ExecContext(t.ctx, `UPDATE groups SET dirty = 0, names = '[]' WHERE dirty <> 0 OR names <> '[]'`)
 		return err
 	}
 	if !rs.forced && slices.Equal(files, t.newest) {
@@ -148,6 +149,8 @@ func (t *txn) record(rs recordSpec) (int64, error) {
 	if model.TextLen(msg) > 500 {
 		msg = string([]rune(msg)[:500])
 	}
+	more := max(0, len(guests)-maxCreditedGuests)
+	guestsJSON, _ := json.Marshal(nonNil(guests[:len(guests)-more]))
 	authorsJSON, _ := json.Marshal(authors)
 	filesJSON, _ := json.Marshal(files)
 	snapsJSON, _ := json.Marshal(snaps)
@@ -159,8 +162,8 @@ func (t *txn) record(rs recordSpec) (int64, error) {
 	if rs.op != "" {
 		op = rs.op
 	}
-	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO outbox(created_at, kind, authors, message, rollback_of, op, files, snaps)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, now, rs.kind, string(authorsJSON), msg, rollbackOf, op, string(filesJSON), string(snapsJSON))
+	res, err := t.tx.ExecContext(t.ctx, `INSERT INTO outbox(created_at, kind, authors, message, rollback_of, op, files, snaps, guests, guests_more)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, now, rs.kind, string(authorsJSON), msg, rollbackOf, op, string(filesJSON), string(snapsJSON), string(guestsJSON), more)
 	if err != nil {
 		return 0, err
 	}
@@ -189,6 +192,9 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// maxCreditedGuests is how many guest names an entry lists (spec rule 25).
+const maxCreditedGuests = 5
+
 // OutboxEntry is one unimported outbox entry (5.3 Import).
 type OutboxEntry struct {
 	Seq        int64
@@ -203,6 +209,10 @@ type OutboxEntry struct {
 	// from SnapshotData until the entry is acknowledged; every other file
 	// of Files is already a blob, except assets, which uploads stored.
 	Snapshots []string
+	// Guests are up to five guest names credited by this entry, and
+	// GuestsMore counts the rest. Guest names never go into Authors.
+	Guests     []string
+	GuestsMore int
 }
 
 // Outbox returns up to limit entries after seq after, oldest first.
@@ -212,7 +222,7 @@ func (in *Instance) Outbox(ctx context.Context, after int64, limit int) ([]Outbo
 	}
 	var out []OutboxEntry
 	err := in.do(ctx, func() error {
-		rows, err := in.db.db.QueryContext(context.Background(), `SELECT seq, created_at, kind, authors, message, rollback_of, op, files, snaps
+		rows, err := in.db.db.QueryContext(context.Background(), `SELECT seq, created_at, kind, authors, message, rollback_of, op, files, snaps, guests, guests_more
 			FROM outbox WHERE seq > ? ORDER BY seq LIMIT ?`, after, limit)
 		if err != nil {
 			return err
@@ -220,17 +230,17 @@ func (in *Instance) Outbox(ctx context.Context, after int64, limit int) ([]Outbo
 		defer rows.Close()
 		for rows.Next() {
 			var e OutboxEntry
-			var authors, files, snaps string
+			var authors, files, snaps, guests string
 			var rollbackOf sql.NullInt64
 			var op sql.NullString
-			if err := rows.Scan(&e.Seq, &e.CreatedAt, &e.Kind, &authors, &e.Message, &rollbackOf, &op, &files, &snaps); err != nil {
+			if err := rows.Scan(&e.Seq, &e.CreatedAt, &e.Kind, &authors, &e.Message, &rollbackOf, &op, &files, &snaps, &guests, &e.GuestsMore); err != nil {
 				return err
 			}
 			e.RollbackOf, e.Op = int(rollbackOf.Int64), op.String
 			for _, x := range []struct {
 				s   string
 				dst any
-			}{{authors, &e.Authors}, {files, &e.Files}, {snaps, &e.Snapshots}} {
+			}{{authors, &e.Authors}, {files, &e.Files}, {snaps, &e.Snapshots}, {guests, &e.Guests}} {
 				if err := json.Unmarshal([]byte(x.s), x.dst); err != nil {
 					return fmt.Errorf("outbox %d: %w", e.Seq, err)
 				}

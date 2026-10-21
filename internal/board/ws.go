@@ -36,6 +36,8 @@ const (
 	feedBelow       = 1 << 20 // queue the next frame only below this many bytes in flight
 	wsQueuedBytes   = 2 << 20
 	publicWait      = 10 * time.Second
+	guestShareMax   = 64 << 20  // guests' share of hostPublicMax
+	guestFeedBelow  = 256 << 10 // feedBelow for a guest's socket
 )
 
 var (
@@ -53,6 +55,10 @@ var (
 		b.Lower(hostPublicMax)
 		return b
 	}()
+	// guestShare counts the part of publicQueued and publicSnaps that
+	// guests' sockets use, at most guestShareCap (TECH public edit 4.2).
+	guestShare    atomic.Int64
+	guestShareCap = int64(guestShareMax)
 )
 
 // Fatal codes the instance sends besides the engine's (4.8).
@@ -70,16 +76,43 @@ func colorOf(key string) string {
 	return peerColors[h.Sum32()%uint32(len(peerColors))]
 }
 
-// hub holds the board's open sockets and their pools (6).
+// hub holds the board's open sockets and their pools (6), the connection
+// labels of the editors on the board and the viewers' numbers (TECH public
+// edit 3.3, 3.4).
 type hub struct {
-	mu    sync.Mutex
-	conns map[*conn]struct{}
-	keys  map[string]int // registered Private sockets per editor key
-	priv  int            // admitted Private sockets
-	pub   int            // admitted Public sockets
+	mu     sync.Mutex
+	conns  map[*conn]struct{}
+	keys   map[string]int // joined sockets per editor key, members and guests
+	labels map[string]int // editor key -> N of its label p:N, while it has a socket
+	priv   int            // admitted Private sockets
+	pub    int            // admitted Public sockets, guests and viewers
+	guests int            // admitted guest sockets
+	// viewers maps each registered viewer socket to its number; tokens
+	// keeps each viewer token's number while a socket uses it and for a
+	// minute after the last one closed.
+	viewers map[*conn]int
+	tokens  map[string]*viewerToken
+	// departing holds the labels whose key left until its gone frame is
+	// queued, so no other key takes one before (relayGone).
+	departing map[int]bool
+	// counts for PublicPresence, which must not wait for mu
+	guestsNow, viewersNow atomic.Int64
 }
 
-func newHub() *hub { return &hub{conns: map[*conn]struct{}{}, keys: map[string]int{}} }
+type viewerToken struct {
+	n     int
+	refs  int
+	until time.Time // held until then once refs is 0
+}
+
+// viewerHold is how long a viewer's number stays reserved for its token
+// after its socket closed (spec rule 9). Tests shorten it.
+var viewerHold = time.Minute
+
+func newHub() *hub {
+	return &hub{conns: map[*conn]struct{}{}, keys: map[string]int{}, labels: map[string]int{},
+		viewers: map[*conn]int{}, tokens: map[string]*viewerToken{}, departing: map[int]bool{}}
+}
 
 func (h *hub) admit(public bool, privMax, pubMax int) bool {
 	h.mu.Lock()
@@ -100,6 +133,45 @@ func (h *hub) admit(public bool, privMax, pubMax int) bool {
 	return true
 }
 
+// admitGuest counts an admitted Public socket as a guest unless max guest
+// sockets are on the board.
+func (h *hub) admitGuest(c *conn, max int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.guests >= max {
+		return false
+	}
+	h.guests++
+	c.guestSlot = true
+	return true
+}
+
+// join counts a member's or guest's socket for its editor key, giving the
+// key a connection label when it is the key's first socket: the lowest N
+// no other key holds and no departing key still reserves.
+func (h *hub) join(c *conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.keys[c.key] == 0 {
+		used := maps.Clone(h.departing)
+		for _, n := range h.labels {
+			used[n] = true
+		}
+		n := 1
+		for used[n] {
+			n++
+		}
+		h.labels[c.key] = n
+	}
+	h.keys[c.key]++
+	c.joined = true
+	c.plabel = "p:" + strconv.Itoa(h.labels[c.key])
+	c.plabelN = h.labels[c.key]
+}
+
+// leave ends a socket's admission. lastOfKey reports that it was the last
+// socket of its editor key; its label stays reserved until relayGone has
+// queued the gone frame.
 func (h *hub) leave(c *conn) (lastOfKey bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -109,28 +181,104 @@ func (h *hub) leave(c *conn) (lastOfKey bool) {
 	} else {
 		h.priv--
 	}
-	if _, ok := h.conns[c]; !ok {
-		return false
+	if c.guestSlot {
+		h.guests--
 	}
-	delete(h.conns, c)
-	if c.public {
+	if _, ok := h.conns[c]; ok {
+		delete(h.conns, c)
+		if c.guest {
+			h.guestsNow.Add(-1)
+		}
+	}
+	if n, ok := h.viewers[c]; ok {
+		delete(h.viewers, c)
+		h.viewersNow.Add(-1)
+		if t := h.tokens[c.viewerToken]; t != nil && t.n == n {
+			if t.refs--; t.refs <= 0 {
+				t.until = time.Now().Add(viewerHold)
+			}
+		}
+	}
+	if !c.joined {
 		return false
 	}
 	h.keys[c.key]--
 	if h.keys[c.key] <= 0 {
 		delete(h.keys, c.key)
+		delete(h.labels, c.key)
+		h.departing[c.plabelN] = true
 		return true
 	}
 	return false
+}
+
+// gone frees a departed key's label once its gone frame is queued.
+func (h *hub) gone(c *conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.departing, c.plabelN)
+}
+
+// rejoined reports whether the key has a socket again.
+func (h *hub) rejoined(key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.keys[key] > 0
+}
+
+// viewerNumber gives a viewer socket its number: the one its token holds,
+// or for an unknown token a new token and the lowest number no connected
+// viewer or held token has (spec rule 9).
+func (h *hub) viewerNumber(c *conn, token string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	for tok, t := range h.tokens {
+		if t.refs <= 0 && now.After(t.until) {
+			delete(h.tokens, tok)
+		}
+	}
+	t := h.tokens[token]
+	if t == nil || !validToken(token) {
+		used := map[int]bool{}
+		for _, t := range h.tokens {
+			used[t.n] = true
+		}
+		n := 1
+		for used[n] {
+			n++
+		}
+		token = randomToken()
+		t = &viewerToken{n: n}
+		h.tokens[token] = t
+	}
+	t.refs++
+	c.viewerToken, c.viewerN = token, t.n
 }
 
 func (h *hub) register(c *conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.conns[c] = struct{}{}
-	if !c.public {
-		h.keys[c.key]++
+	switch {
+	case c.guest:
+		h.guestsNow.Add(1)
+	case c.public:
+		h.viewers[c] = c.viewerN
+		h.viewersNow.Add(1)
 	}
+}
+
+// viewerList is the numbers of the registered viewers, sorted.
+func (h *hub) viewerList() []int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]int, 0, len(h.viewers))
+	for _, n := range h.viewers {
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func (h *hub) list() []*conn {
@@ -165,17 +313,31 @@ func (h *hub) closeAll(code string) {
 	}
 }
 
-// conn is one WebSocket of the board.
+// conn is one WebSocket of the board. A Public socket (public) is a
+// viewer, or a guest once its welcome made it one (TECH public edit 3.1).
 type conn struct {
 	in       *Instance
 	ws       *wsconn.Conn
 	public   bool
+	guest    bool
 	key      string
 	name     string
 	label    string
 	color    string
 	verified bool
 	session  string // set by the apply loop at welcome
+	// epoch is the access epoch at a guest's welcome; a guest batch from
+	// another epoch is refused (TECH public edit 6.1).
+	epoch int64
+	// joined: hub.join counted the socket for its key, whose connection
+	// label is plabel (p:N); guestSlot: it holds one of the guest sockets.
+	joined    bool
+	plabel    string
+	plabelN   int
+	guestSlot bool
+	// viewerToken and viewerN: a viewer's reconnect token and number.
+	viewerToken string
+	viewerN     int
 
 	mu       sync.Mutex
 	q        []outMsg
@@ -185,7 +347,15 @@ type conn struct {
 	closing  bool
 	wake     chan struct{}
 	lastPres []byte
-	// overflowed: the queue went over its cap and the socket is closing.
+	// lastPresGuest is lastPres as guests see it (TECH public edit 3.3).
+	lastPresGuest []byte
+	// chargeGuest: frames queued from now on count toward the guests'
+	// share of the host's Public budget. flight is the part of that share
+	// for bytes the socket holds but has not written (pump-owned).
+	chargeGuest bool
+	flight      int64
+	// overflowed: the queue went over its cap and the socket is closing,
+	// or the pump stopped; no frame is queued any more.
 	overflowed bool
 
 	asm       *assembly
@@ -194,24 +364,38 @@ type conn struct {
 	pres      rate
 }
 
+// outMsg is a queued frame or snapshot. guest marks a frame charged to the
+// guests' share of the host's Public budget as well.
 type outMsg struct {
 	frame []byte
 	snap  *snapJob
+	guest bool
 }
+
+// Snapshot audiences: what form a snapshot's elements take.
+const (
+	audPrivate = iota
+	audPublic
+	audGuest
+)
 
 type snapJob struct {
 	gen, seq int64
 	reset    bool
-	public   bool
+	aud      int
 	data     *snapData
 	done     sync.Once
 }
 
+// public reports whether the job sends to a Public socket, charged to the
+// host's Public budget.
+func (j *snapJob) public() bool { return j.aud != audPrivate }
+
 // release gives up the job's hold on its snapshot state.
 func (j *snapJob) release() {
 	j.done.Do(func() {
-		if j.public {
-			j.data.releasePublic()
+		if j.public() {
+			j.data.releasePublic(j.aud == audGuest)
 		}
 	})
 }
@@ -227,11 +411,12 @@ type snapData struct {
 	els  []model.PrivateElement
 	cost int64 // estimated bytes this copy retains
 
-	mu      sync.Mutex
-	pubRefs int // Public jobs holding it; they charge cost once host-wide
-	ends    [2]struct {
+	mu        sync.Mutex
+	pubRefs   int // Public jobs holding it; they charge cost once host-wide
+	guestRefs int // guest jobs holding it; they charge cost once to the guests' share
+	ends      [3]struct {
 		once sync.Once
-		v    []int // end index of each part; 0 private, 1 public
+		v    []int // end index of each part, per audience
 	}
 }
 
@@ -271,42 +456,70 @@ func (in *Instance) dropStaleSnap() {
 // out of publicQueued, which keep their charge there until the socket has
 // taken them: a move counts twice for a moment, never zero times. Releases
 // only lower the total and need no lock.
-func reservePublic(counter *atomic.Int64, n int64) bool {
+func reservePublic(counter *atomic.Int64, n int64) bool { return reserveShare(counter, n, 0) }
+
+// reserveShare is reservePublic that also charges guestN bytes to the
+// guests' share of the host's Public budget (guestShare), when that share
+// stays within guestShareCap (TECH public edit 4.2).
+func reserveShare(counter *atomic.Int64, n, guestN int64) bool {
 	publicMu.Lock()
 	defer publicMu.Unlock()
 	if publicQueued.Load()+publicSnaps.Load()+publicBudget.Used()+n > hostPublicCap {
 		return false
 	}
+	if guestN > 0 && guestShare.Load()+guestN > guestShareCap {
+		return false
+	}
 	counter.Add(n)
+	guestShare.Add(guestN)
 	return true
 }
 
 // acquirePublic charges the state to the host's Public budget when no
-// Public job held it yet; false means it does not fit.
-func (d *snapData) acquirePublic() bool {
+// Public job held it yet, and for a guest job to the guests' share when no
+// guest job held it yet; false means it does not fit.
+func (d *snapData) acquirePublic(guest bool) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.pubRefs == 0 && !reservePublic(&publicSnaps, d.cost) {
+	var n, guestN int64
+	if d.pubRefs == 0 {
+		n = d.cost
+	}
+	if guest && d.guestRefs == 0 {
+		guestN = d.cost
+	}
+	if (n > 0 || guestN > 0) && !reserveShare(&publicSnaps, n, guestN) {
 		return false
 	}
 	d.pubRefs++
+	if guest {
+		d.guestRefs++
+	}
 	return true
 }
 
-func (d *snapData) releasePublic() {
+func (d *snapData) releasePublic(guest bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.pubRefs--
 	if d.pubRefs == 0 {
 		publicSnaps.Add(-d.cost)
 	}
+	if guest {
+		if d.guestRefs--; d.guestRefs == 0 {
+			guestShare.Add(-d.cost)
+		}
+	}
 }
 
-func (d *snapData) element(i int, public bool) []byte {
+func (d *snapData) element(i int, aud int) []byte {
 	var b []byte
-	if public {
+	switch aud {
+	case audPublic:
 		b, _ = json.Marshal(model.PublicElement(d.els[i].Element))
-	} else {
+	case audGuest:
+		b, _ = json.Marshal(model.GuestView(d.els[i]))
+	default:
 		b, _ = json.Marshal(d.els[i])
 	}
 	return b
@@ -314,17 +527,13 @@ func (d *snapData) element(i int, public bool) []byte {
 
 // partEnds cuts the elements into parts of at most 512 KiB, once per
 // audience; each element is encoded only to measure it.
-func (d *snapData) partEnds(public bool) []int {
-	k := 0
-	if public {
-		k = 1
-	}
-	e := &d.ends[k]
+func (d *snapData) partEnds(aud int) []int {
+	e := &d.ends[aud]
 	e.once.Do(func() {
 		const budget = maxServerFrame - 4096
 		size := 0
 		for i := range d.els {
-			n := len(d.element(i, public)) + 1
+			n := len(d.element(i, aud)) + 1
 			if size+n > budget && size > 0 {
 				e.v = append(e.v, i)
 				size = 0
@@ -373,14 +582,14 @@ func (c *conn) enqueue(frames ...[]byte) bool {
 		c.mu.Unlock()
 		return false
 	}
-	if c.overCap(size) || c.public && !reservePublic(&publicQueued, size) {
+	if c.overCap(size) || c.public && !c.reserveQueued(size) {
 		c.overflowed = true
 		c.mu.Unlock()
 		c.close(1008, "too far behind; reconnect")
 		return false
 	}
 	for _, f := range frames {
-		c.q = append(c.q, outMsg{frame: f})
+		c.q = append(c.q, outMsg{frame: f, guest: c.chargeGuest})
 	}
 	c.qBytes += size
 	c.mu.Unlock()
@@ -395,6 +604,25 @@ func (c *conn) overCap(size int64) bool {
 		return c.qBytes+size > publicQueueMax
 	}
 	return c.qBytes+size+c.ws.Budget().Used() > c.in.privateQueue
+}
+
+// reserveQueued charges n bytes of a Public socket's frames to the host's
+// Public budget, and a guest's also to the guests' share. c.mu is held, or
+// the caller is the pump.
+func (c *conn) reserveQueued(n int64) bool {
+	var guestN int64
+	if c.chargeGuest {
+		guestN = n
+	}
+	return reserveShare(&publicQueued, n, guestN)
+}
+
+// unqueue returns the charge of n bytes of a Public socket's frames.
+func unqueue(n int64, guest bool) {
+	publicQueued.Add(-n)
+	if guest {
+		guestShare.Add(-n)
+	}
 }
 
 func (c *conn) poke() {
@@ -422,8 +650,14 @@ func (c *conn) currentGen() int64 {
 // budget is closed, and its client retries. Only the apply loop calls it.
 func (c *conn) queueSnapshot(reset bool) {
 	d := c.in.currentSnap()
-	job := &snapJob{seq: d.seq, reset: reset, public: c.public, data: d}
-	if c.public && !d.acquirePublic() {
+	job := &snapJob{seq: d.seq, reset: reset, data: d}
+	switch {
+	case c.guest:
+		job.aud = audGuest
+	case c.public:
+		job.aud = audPublic
+	}
+	if job.public() && !d.acquirePublic(c.guest) {
 		c.close(1013, "busy; try again")
 		return
 	}
@@ -460,19 +694,22 @@ func (c *conn) close(code int, reason string) { c.ws.Close(code, reason) }
 // or closes when a snapshot is already pending; a Public socket over 1 MiB,
 // or Public sockets over 256 MiB host-wide, close. Only the apply loop
 // calls it.
-func (c *conn) deliver(rec deltaRec, publicBody []byte) {
+func (c *conn) deliver(rec deltaRec, publicBody, guestBody []byte) {
 	c.mu.Lock()
 	gen := c.gen
 	pendingSnap := c.snaps > 0
 	c.mu.Unlock()
+	from := ""
+	if rec.session != "" && rec.session == c.session {
+		from = rec.session + ":" + strconv.FormatInt(rec.n, 10)
+	}
 	var frames [][]byte
-	if c.public {
+	switch {
+	case c.guest:
+		frames = deltaFrames(gen, rec.seq, guestBody, from)
+	case c.public:
 		frames = deltaFrames(gen, rec.seq, publicBody, "")
-	} else {
-		from := ""
-		if rec.session != "" && rec.session == c.session {
-			from = rec.session + ":" + strconv.FormatInt(rec.n, 10)
-		}
+	default:
 		frames = deltaFrames(gen, rec.seq, rec.body, from)
 	}
 	size := int64(0)
@@ -513,7 +750,17 @@ func (c *conn) resync() {
 // pump feeds queued frames to the socket while fewer than 1 MiB are in
 // flight, building snapshot parts as it goes.
 func (c *conn) pump() {
+	defer func() {
+		// Nothing is sent from here on: refuse later frames, so none keeps
+		// a charge, and return what is queued or unwritten.
+		c.mu.Lock()
+		c.overflowed = true
+		c.mu.Unlock()
+		c.dropQueue()
+		c.landAfterClose()
+	}()
 	for {
+		c.landFlight()
 		c.mu.Lock()
 		var m outMsg
 		var held int64 // host Public bytes this frame keeps until the socket takes it
@@ -541,8 +788,14 @@ func (c *conn) pump() {
 				c.ws.Close(1000, "")
 				return
 			}
+			var land <-chan time.Time
+			if c.flight > 0 {
+				land = time.After(flightPoll)
+			}
 			select {
 			case <-c.wake:
+				continue
+			case <-land:
 				continue
 			case <-c.ws.Done():
 				c.dropQueue()
@@ -559,7 +812,9 @@ func (c *conn) pump() {
 			continue
 		}
 		ok := c.feed(m.frame)
-		publicQueued.Add(-held)
+		if held > 0 {
+			c.handed(held, m.guest)
+		}
 		if !ok {
 			c.dropQueue()
 			return
@@ -567,10 +822,60 @@ func (c *conn) pump() {
 	}
 }
 
+// flightPoll is how often an idle pump returns the guests' share of bytes
+// its socket has written meanwhile.
+const flightPoll = 20 * time.Millisecond
+
+// handed moves the charge of n bytes of a Public socket's frame, which the
+// socket now holds, from its queue: the host's Public budget counts them
+// in publicBudget from here, but a guest's share keeps them, as flight,
+// until the socket has written them (landFlight), so the guests' share
+// bounds their sockets' unwritten bytes too (TECH public edit 4.2). Only
+// the pump calls it.
+func (c *conn) handed(n int64, guest bool) {
+	publicQueued.Add(-n)
+	if guest {
+		c.flight += n
+	}
+}
+
+// landFlight returns the guests' share of the bytes the socket has written
+// since. Only the pump calls it.
+func (c *conn) landFlight() {
+	if c.flight == 0 {
+		return
+	}
+	if held := c.ws.Budget().Used(); c.flight > held {
+		guestShare.Add(held - c.flight)
+		c.flight = held
+	}
+}
+
+// landAfterClose returns the rest of the guests' share once the socket is
+// closed: its writer keeps queued and unwritten bytes until it has written
+// or discarded them, for up to the close grace (wsconn). The pump calls it
+// as it stops.
+func (c *conn) landAfterClose() {
+	c.landFlight()
+	if c.flight == 0 {
+		return
+	}
+	n := c.flight
+	c.flight = 0
+	go func() {
+		<-c.ws.Done()
+		guestShare.Add(-n)
+	}()
+}
+
 func (c *conn) dropQueue() {
 	c.mu.Lock()
 	if c.public {
-		publicQueued.Add(-c.qBytes)
+		for _, m := range c.q {
+			if m.snap == nil {
+				unqueue(int64(len(m.frame)), m.guest)
+			}
+		}
 	}
 	dropped := c.q
 	c.q, c.qBytes, c.snaps = nil, 0, 0
@@ -586,9 +891,16 @@ func releaseJobs(q []outMsg) {
 	}
 }
 
-// feed sends one frame once less than feedBelow bytes are in flight.
+// feed sends one frame once less than feedBelow bytes are in flight; a
+// guest's socket keeps less in flight, guestFeedBelow, so one stalled guest
+// holds little of the guests' share.
 func (c *conn) feed(f []byte) bool {
-	for c.ws.Budget().Used() >= feedBelow {
+	below := int64(feedBelow)
+	if c.guest {
+		below = guestFeedBelow
+	}
+	for c.ws.Budget().Used() >= below {
+		c.landFlight()
 		select {
 		case <-c.ws.Done():
 			return false
@@ -605,10 +917,15 @@ func (c *conn) feed(f []byte) bool {
 // queue over its cap does.
 func (c *conn) sendSnapshot(j *snapJob) bool {
 	d := j.data
-	ends := d.partEnds(j.public)
+	ends := d.partEnds(j.aud)
 	var meta any = d.meta
-	if j.public {
+	if j.aud == audPublic {
 		meta = model.PublicElement(d.meta.Element)
+	}
+	guest := j.aud == audGuest
+	var guestN int64
+	if guest {
+		guestN = maxServerFrame
 	}
 	start := 0
 	for i, end := range ends {
@@ -617,7 +934,7 @@ func (c *conn) sendSnapshot(j *snapJob) bool {
 		}
 		// Reserve a whole frame before encoding, so the part's bytes never
 		// exist uncharged, then give back what it did not use.
-		if c.public && !reservePublic(&publicQueued, maxServerFrame) {
+		if j.public() && !reserveShare(&publicQueued, maxServerFrame, guestN) {
 			c.close(1008, "too far behind; reconnect")
 			return false
 		}
@@ -636,23 +953,28 @@ func (c *conn) sendSnapshot(j *snapJob) bool {
 			if k > start {
 				b.WriteByte(',')
 			}
-			b.Write(d.element(k, j.public))
+			b.Write(d.element(k, j.aud))
 		}
 		b.WriteString("]}")
 		start = end
 		n := int64(b.Len())
-		if c.public {
-			if n <= maxServerFrame {
-				publicQueued.Add(n - maxServerFrame)
-			} else if !reservePublic(&publicQueued, n-maxServerFrame) {
-				publicQueued.Add(-maxServerFrame)
+		if j.public() {
+			extra := n - maxServerFrame
+			var guestExtra int64
+			if guest {
+				guestExtra = extra
+			}
+			if extra <= 0 {
+				unqueue(-extra, guest)
+			} else if !reserveShare(&publicQueued, extra, guestExtra) {
+				unqueue(maxServerFrame, guest)
 				c.close(1008, "too far behind; reconnect")
 				return false
 			}
 		}
 		ok := c.feed(b.Bytes())
-		if c.public {
-			publicQueued.Add(-n)
+		if j.public() {
+			c.handed(n, guest)
 		}
 		if !ok {
 			return false
@@ -694,13 +1016,20 @@ func deltaFrames(gen, seq int64, body []byte, from string) [][]byte {
 
 // broadcast sends a committed delta to every registered socket. Only the
 // sender's socket gets from (a session id is a resume credential).
+// Viewers get the public projection and guests the guest projection, each
+// encoded once per delta.
 func (in *Instance) broadcast(rec deltaRec, d *model.Delta) {
-	var publicBody []byte
+	var publicBody, guestBody []byte
 	for _, c := range in.hub.list() {
-		if c.public && publicBody == nil {
+		switch {
+		case c.guest && guestBody == nil:
+			g := model.GuestDelta(*d)
+			g.From = ""
+			guestBody, _ = json.Marshal(g)
+		case c.public && !c.guest && publicBody == nil:
 			publicBody, _ = json.Marshal(model.PublicDelta(*d))
 		}
-		c.deliver(rec, publicBody)
+		c.deliver(rec, publicBody, guestBody)
 	}
 }
 
@@ -716,6 +1045,14 @@ type helloMsg struct {
 	} `json:"pending"`
 	Editor string `json:"editor"`
 	Name   string `json:"name"`
+	// Guest asks to join a Public board at level edit as a guest; token is
+	// the guest token the server issued earlier (TECH public edit 3.1).
+	Guest *struct {
+		Name  string `json:"name"`
+		Token string `json:"token"`
+	} `json:"guest"`
+	// ViewerToken is a viewer's reconnect token (spec rule 9).
+	ViewerToken string `json:"viewer_token"`
 }
 
 func validEditor(s string) bool {
@@ -819,7 +1156,11 @@ func (in *Instance) serveWS(w http.ResponseWriter, r *http.Request) {
 	pumped := make(chan struct{})
 	go func() { c.pump(); close(pumped) }()
 	defer func() {
-		last := in.hub.leave(c)
+		// The others learn at once that the editor left, before this
+		// socket's own queue drains.
+		if in.hub.leave(c) {
+			in.relayGone(c)
+		}
 		// Let the pump send what is queued, such as a fatal message.
 		c.closeAfterQueue()
 		select {
@@ -828,8 +1169,8 @@ func (in *Instance) serveWS(w http.ResponseWriter, r *http.Request) {
 		}
 		ws.Close(1000, "")
 		c.dropAssembly()
-		if last {
-			in.relayGone(c)
+		if c.viewerN > 0 {
+			in.notifyViewers()
 		}
 	}()
 	if err := in.readLoop(r, c); err != nil {
@@ -859,6 +1200,9 @@ func (in *Instance) readLoop(r *http.Request, c *conn) error {
 		if err != nil {
 			return err
 		}
+		// Every frame of a guest counts toward the board's guest byte
+		// budget, refused and ignored ones included (TECH public edit 4.2).
+		within := !c.guest || in.pub.guestBytes.count(float64(len(raw)))
 		var head struct {
 			T string `json:"t"`
 		}
@@ -867,23 +1211,32 @@ func (in *Instance) readLoop(r *http.Request, c *conn) error {
 			return nil
 		}
 		switch head.T {
-		case "ops", "ops_part", "pres", "share":
+		case "ops", "pres":
+			if c.public && !c.guest || c.session == "" {
+				c.fatal(engine.FatalProtocol)
+				return nil
+			}
+		case "ops_part", "share":
 			if c.public || c.session == "" {
 				c.fatal(engine.FatalProtocol)
 				return nil
 			}
 		}
 		var ok bool
-		switch head.T {
-		case "ops":
+		switch {
+		case c.guest && head.T == "ops":
+			ok = in.onGuestOps(r.Context(), c, raw, within)
+		case c.guest && head.T == "pres":
+			ok = in.guestPres(c, raw, within)
+		case head.T == "ops":
 			ok = in.onOps(r.Context(), c, raw)
-		case "ops_part":
+		case head.T == "ops_part":
 			ok = in.onPart(r.Context(), c, raw)
-		case "pres":
+		case head.T == "pres":
 			ok = in.onPres(c, raw)
-		case "share":
+		case head.T == "share":
 			ok = in.onShare(r.Context(), c, raw)
-		case "hello":
+		case head.T == "hello":
 			ok = false
 		default:
 			ok = true // unknown message kinds are ignored
@@ -898,16 +1251,10 @@ func (in *Instance) readLoop(r *http.Request, c *conn) error {
 // welcome starts or resumes the socket's session and sends the state.
 func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 	if c.public {
-		if !in.publicStarts.wait(r.Context(), publicWait) {
-			c.close(1013, "busy; try again")
-			return nil
+		if h.Guest != nil && guestCapable(r, in) {
+			return in.guestWelcome(r, c, h)
 		}
-		return in.do(r.Context(), func() error {
-			c.send(map[string]any{"t": "welcome", "session": "", "expires": 0, "access": "public", "me": nil})
-			c.queueSnapshot(false)
-			in.hub.register(c)
-			return nil
-		})
+		return in.viewerWelcome(r, c, h)
 	}
 	if login := tailscaleLogin(r); login != "" {
 		c.key, c.verified, c.label = "ts:"+login, true, login
@@ -951,8 +1298,9 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 			return nil
 		}
 		c.session = res.Session
+		in.hub.join(c)
 		c.send(map[string]any{"t": "welcome", "session": res.Session, "expires": now + engine.SessionTTL, "access": "private",
-			"me": map[string]any{"key": c.key, "name": c.name, "verified": c.verified, "color": c.color}})
+			"level": in.level, "me": map[string]any{"key": c.key, "name": c.name, "verified": c.verified, "color": c.color}})
 		seq := st.Seq()
 		// Catching up through the delta log is limited to half the queue
 		// cap; a longer gap gets a snapshot instead of a closed socket.
@@ -992,19 +1340,33 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 			}
 			c.queueSnapshot(reset)
 		}
-		for _, o := range in.hub.list() {
-			if o != c && !o.public {
-				o.mu.Lock()
-				p := o.lastPres
-				o.mu.Unlock()
-				if p != nil {
-					c.enqueue(p)
-				}
-			}
-		}
+		in.sendPresence(c)
 		in.hub.register(c)
 		return nil
 	})
+}
+
+// sendPresence sends a new member's or guest's socket the last presence of
+// the other members and guests, in its audience's form, and the viewers.
+// Only the apply loop calls it, before it registers c.
+func (in *Instance) sendPresence(c *conn) {
+	for _, o := range in.hub.list() {
+		if o == c || o.public && !o.guest {
+			continue
+		}
+		o.mu.Lock()
+		p := o.lastPres
+		if c.guest {
+			p = o.lastPresGuest
+		}
+		o.mu.Unlock()
+		if p != nil {
+			c.enqueue(p)
+		}
+	}
+	if f := in.viewers.frame(in.hub.viewerList()); f != nil {
+		c.enqueue(f)
+	}
 }
 
 // logCovers reports whether the delta log holds every entry from seq on.
@@ -1013,11 +1375,14 @@ func (in *Instance) logCovers(from int64) bool {
 	return len(d) > 0 && d[0].seq <= from && d[len(d)-1].seq == in.st.Seq()
 }
 
-// batchReq is a person batch on its way to the apply loop.
+// batchReq is a person batch on its way to the apply loop. refuse is set
+// when the reader already refused a guest's batch (TECH public edit 4.1):
+// the apply loop records the refusal.
 type batchReq struct {
-	c   *conn
-	n   int64
-	raw []byte // the JSON ops array
+	c      *conn
+	n      int64
+	raw    []byte // the JSON ops array
+	refuse *engine.Reject
 }
 
 func (b *batchReq) transient(code string) {
@@ -1027,7 +1392,11 @@ func (b *batchReq) transient(code string) {
 
 func (in *Instance) submit(ctx context.Context, b *batchReq) bool {
 	if !b.c.batches.allow() {
-		b.transient("rate_limited")
+		code := "rate_limited"
+		if b.c.guest {
+			code = CodeGuestRate
+		}
+		b.transient(code)
 		return true
 	}
 	select {
@@ -1170,14 +1539,33 @@ func (in *Instance) stageBatch(t *txn, b *batchReq) {
 	st := in.st
 	c := b.c
 	now := in.now().Unix()
+	if c.guest && (c.epoch != in.epoch || in.level != AccessEdit) {
+		// The level changed since this guest's welcome: its socket is
+		// closing with editing_ended (TECH public edit 6.1).
+		c.send(map[string]any{"t": "reject", "n": b.n, "code": CodePermission, "retry": false,
+			"detail": "the owner turned off guest editing"})
+		return
+	}
 	ops, derr := engine.DecodeOps(b.raw)
 	se, live := st.SessionRow(c.session)
 	fresh := live && b.n == se.MaxN+1
+	if c.guest && fresh && b.refuse == nil && derr == nil && !in.pub.guestOps.take(float64(len(ops))) {
+		b.transient(CodeGuestRate)
+		return
+	}
 	quota := in.b.Limits().DiskQuota
 	if fresh && quota > 0 {
 		if _, ok := in.meas.get(); !ok {
 			in.meas.start()
 			b.transient("no_budget")
+			return
+		}
+	}
+	var room *guestRoom
+	if c.guest && fresh && b.refuse == nil && derr == nil {
+		var err error
+		if room, err = in.measureRoom(t, c, quota); err != nil {
+			b.transient("unavailable")
 			return
 		}
 	}
@@ -1195,9 +1583,11 @@ func (in *Instance) stageBatch(t *txn, b *batchReq) {
 	}
 	var out engine.Outcome
 	switch {
+	case b.refuse != nil && fresh:
+		out = st.RecordReject(c.session, b.n, now, *b.refuse)
 	case derr != nil && fresh:
 		out = st.RecordReject(c.session, b.n, now, engine.Reject{Code: engine.CodeInvalid, Detail: derr.Error()})
-	case derr != nil:
+	case derr != nil || b.refuse != nil:
 		out = st.ApplyBatch(engine.Batch{Session: c.session, N: b.n, Now: now})
 	default:
 		out = st.ApplyBatch(engine.Batch{Session: c.session, N: b.n, Ops: ops, Now: now})
@@ -1205,6 +1595,14 @@ func (in *Instance) stageBatch(t *txn, b *batchReq) {
 	if !out.Replayed && out.Fatal == "" {
 		err := in.writeBatch(t, b, &out)
 		if err == nil && out.Reject == nil {
+			refuse := func(code, detail string) {
+				undo()
+				saved = t.saveSide()
+				_, _ = t.tx.ExecContext(t.ctx, `SAVEPOINT batch`)
+				mark = st.Savepoint()
+				out = st.RecordReject(c.session, b.n, now, engine.Reject{Code: code, Detail: detail})
+				err = in.writeBatch(t, b, &out)
+			}
 			var over, ok bool
 			over, ok, err = t.overQuota(quota)
 			switch {
@@ -1214,12 +1612,12 @@ func (in *Instance) stageBatch(t *txn, b *batchReq) {
 				b.transient("no_budget")
 				return
 			case over:
-				undo()
-				saved = t.saveSide()
-				_, _ = t.tx.ExecContext(t.ctx, `SAVEPOINT batch`)
-				mark = st.Savepoint()
-				out = st.RecordReject(c.session, b.n, now, engine.Reject{Code: "disk_quota", Detail: "the board is over its disk quota"})
-				err = in.writeBatch(t, b, &out)
+				refuse("disk_quota", "the board is over its disk quota")
+			case room != nil:
+				var detail string
+				if detail, err = in.checkRoom(t, room, out.Changed); err == nil && detail != "" {
+					refuse(CodeGuestRoom, detail)
+				}
 			}
 		}
 		if err != nil {
@@ -1271,22 +1669,25 @@ func (in *Instance) answer(b *batchReq, out engine.Outcome) {
 }
 
 type sideCopy struct {
-	groups      map[string]editGroup
-	dirty       map[int]int64
-	bucketBytes map[int]int64
-	newDeltas   int
-	trimDeltas  int
-	assets      map[string]*engine.Asset
-	after       int
+	groups                   map[string]editGroup
+	dirty                    map[int]int64
+	bucketBytes              map[int]int64
+	newDeltas                int
+	trimDeltas               int
+	assets                   map[string]*engine.Asset
+	after                    int
+	guestCharge, guestGroups int64
 }
 
 func (t *txn) saveSide() sideCopy {
-	return sideCopy{maps.Clone(t.groups), maps.Clone(t.dirty), maps.Clone(t.bucketBytes), len(t.newDeltas), t.trimDeltas, maps.Clone(t.assets), len(t.after)}
+	return sideCopy{maps.Clone(t.groups), maps.Clone(t.dirty), maps.Clone(t.bucketBytes), len(t.newDeltas), t.trimDeltas,
+		maps.Clone(t.assets), len(t.after), t.guestCharge, t.guestGroups}
 }
 
 func (t *txn) restoreSide(s sideCopy) {
 	t.groups, t.dirty, t.bucketBytes, t.assets = s.groups, s.dirty, s.bucketBytes, s.assets
 	t.newDeltas, t.trimDeltas, t.after = t.newDeltas[:s.newDeltas], s.trimDeltas, t.after[:s.after]
+	t.guestCharge, t.guestGroups = s.guestCharge, s.guestGroups
 }
 
 // presFields are the presence fields a client may send (6.1), with the
@@ -1325,7 +1726,7 @@ func (in *Instance) onPres(c *conn, raw string) bool {
 	if json.Unmarshal([]byte(raw), &m) != nil {
 		return false
 	}
-	out := map[string]any{"t": "pres", "key": c.key, "name": c.name, "color": c.color, "verified": c.verified}
+	fields := map[string]json.RawMessage{}
 	for k, valid := range presFields {
 		v, ok := m[k]
 		if !ok {
@@ -1334,39 +1735,73 @@ func (in *Instance) onPres(c *conn, raw string) bool {
 		if string(v) != "null" && !valid(v) {
 			return true
 		}
-		out[k] = v
+		fields[k] = v
 	}
-	frame, _ := json.Marshal(out)
+	forMembers, forGuests := c.presFrames(fields)
 	c.mu.Lock()
-	c.lastPres = frame
+	c.lastPres, c.lastPresGuest = forMembers, forGuests
 	c.mu.Unlock()
-	in.relayPres(c, frame)
+	in.relayPres(c, forMembers, forGuests)
 	return true
 }
 
-// relayPres sends a presence frame to the other Private sockets, dropping
-// it for sockets that are behind.
-func (in *Instance) relayPres(from *conn, frame []byte) {
+// presFrames builds a presence frame of c as members and as guests see it
+// (TECH public edit 3.3): members see a guest's key and name with guest
+// set; guests see connection labels, a member as "Member N", unverified.
+func (c *conn) presFrames(fields map[string]json.RawMessage) (forMembers, forGuests []byte) {
+	m := map[string]any{"t": "pres", "key": c.key, "name": c.name, "color": c.color, "verified": c.verified}
+	g := map[string]any{"t": "pres", "key": c.plabel, "name": c.name, "color": c.color, "verified": false}
+	if c.guest {
+		m["guest"], g["guest"] = true, true
+	} else {
+		g["name"] = "Member " + strconv.Itoa(c.plabelN)
+	}
+	for k, v := range fields {
+		m[k], g[k] = v, v
+	}
+	forMembers, _ = json.Marshal(m)
+	forGuests, _ = json.Marshal(g)
+	return forMembers, forGuests
+}
+
+// relayPres sends a presence frame to the other members and guests, each
+// in its audience's form (nil: none), dropping it for sockets that are
+// behind. Viewers receive no presence.
+func (in *Instance) relayPres(from *conn, forMembers, forGuests []byte) {
 	for _, o := range in.hub.list() {
-		if o == from || o.public {
+		if o == from || o.public && !o.guest {
 			continue
 		}
 		o.mu.Lock()
 		behind := o.qBytes > 256<<10 || o.snaps > 0
 		o.mu.Unlock()
-		if !behind {
-			o.enqueue(frame)
+		if behind {
+			continue
+		}
+		f := forMembers
+		if o.guest {
+			f = forGuests
+		}
+		if f != nil {
+			o.enqueue(f)
 		}
 	}
 }
 
 // relayGone tells the others that the editor's last socket closed.
+// Guests get the departed label, which no other key takes before this
+// (hub.departing); members get the key, unless it came back meanwhile.
 func (in *Instance) relayGone(c *conn) {
-	if c.public || c.session == "" {
+	if !c.joined {
 		return
 	}
-	frame, _ := json.Marshal(map[string]any{"t": "pres", "key": c.key, "gone": true})
-	in.relayPres(c, frame)
+	var forMembers []byte
+	if !in.hub.rejoined(c.key) {
+		forMembers, _ = json.Marshal(map[string]any{"t": "pres", "key": c.key, "gone": true})
+	}
+	forGuests, _ := json.Marshal(map[string]any{"t": "pres", "key": c.plabel, "gone": true})
+	in.relayPres(c, forMembers, forGuests)
+	in.hub.gone(c)
 }
 
 func (in *Instance) onShare(ctx context.Context, c *conn, raw string) bool {

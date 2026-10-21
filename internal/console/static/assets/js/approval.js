@@ -1,6 +1,6 @@
 // Approval page: what an agent asked for and the operator's decision.
 
-import { h, clear, dateTime, timeEl, VISIBILITY, visibilityOf, visibilityBadge, becomingNoticeFor } from './dom.js';
+import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, visibilityBadge, becomingNoticeFor } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, busy } from './ui.js';
 
@@ -20,12 +20,20 @@ export function cleanupPending(a) {
   return !!result?.cleanup_pending;
 }
 
-const visLabel = (v) => VISIBILITY[visibilityOf(v)].label;
+// requested and fromState are the access a visibility approval asks for and
+// the access the flat had when it was requested. An empty requested level
+// means view only when Public (wire contract).
+const requested = (p) => ({ vis: p.visibility, access: visibilityOf(p.visibility) === 'public' ? p.access || 'view' : '' });
+const fromState = (p) => ({ vis: p.from, access: visibilityOf(p.from) === 'public' ? p.from_access || '' : '' });
+const badgeOf = (s) => visibilityBadge(s.vis, s.access);
 
 // describeApproval is a one-line summary for lists.
 export function describeApproval(a) {
   const p = params(a);
-  if (a.action === 'set_visibility') return `Make ${a.flat} ${visLabel(p.visibility).toLowerCase()}`;
+  if (a.action === 'set_visibility') {
+    const r = requested(p);
+    return `Make ${a.flat} ${(p.access ? accessLabel(r.vis, r.access) : accessLabel(r.vis)).toLowerCase()}`;
+  }
   if (a.action === 'delete') return `Delete ${a.flat}`;
   // Version creation and deployment remain separate approvals.
   if (a.action === 'create_version' || a.action === 'publish') return `Save the draft of ${a.flat} as a new version (does not go live)`;
@@ -75,14 +83,12 @@ export function mount(main, [id], ctx) {
       ['Reason', a.reason || h('span', { class: 'muted', text: 'none given' })],
       ['Requested', h('span', null, timeEl(a.requested_at), ` · ${dateTime(a.requested_at)}`)],
     ];
+    const stale = expired(a, p, flat);
     if (a.action === 'set_visibility') {
-      if (a.status === 'pending') {
-        rows.push(['Current visibility', flat ? visibilityBadge(flat.visibility) : h('span', { text: p.from ? visLabel(p.from) : 'unknown' })]);
-      } else {
-        if (p.from) rows.push(['Visibility when requested', visibilityBadge(p.from)]);
-        if (flat) rows.push(['Visibility now', visibilityBadge(flat.visibility)]);
-      }
-      rows.push(['Requested visibility', visibilityBadge(p.visibility)]);
+      if (p.from) rows.push(['Visibility when requested', badgeOf(fromState(p))]);
+      if (flat) rows.push([a.status === 'pending' && !stale ? 'Current visibility' : 'Visibility now', visibilityBadge(flat.visibility, flat.public_access)]);
+      else if (!p.from) rows.push(['Current visibility', h('span', { text: 'unknown' })]);
+      rows.push(['Requested visibility', p.access ? badgeOf(requested(p)) : visibilityBadge(p.visibility)]);
     }
     rows.push(['Status', statusBadge(a.status)]);
     if (a.decided_at) rows.push(['Decided', dateTime(a.decided_at)]);
@@ -92,8 +98,16 @@ export function mount(main, [id], ctx) {
     if (cleanupPending(a)) {
       body.appendChild(h('p', { class: 'alert alert-warn', role: 'alert', text: a.result || 'Version metadata was deleted, but storage cleanup is pending. Restart Flats before saving, creating, deploying, or previewing this flat.' }));
     }
-    const notice = a.action === 'set_visibility' ? becomingNoticeFor(p.visibility) : '';
+    if (stale) {
+      body.appendChild(h('p', { class: 'alert alert-error', role: 'alert' }, h('strong', { text: "This request can't be approved." }),
+        ' The visibility changed after it was requested, so the approval no longer matches the flat. Nothing was changed.'));
+      body.appendChild(h('div', { class: 'actions' }, dismissButton(a)));
+      return;
+    }
+    const grantsEdit = a.action === 'set_visibility' && p.access === 'edit';
+    const notice = a.action === 'set_visibility' && !grantsEdit ? becomingNoticeFor(p.visibility) : '';
     if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
+    if (grantsEdit && a.status === 'pending') body.appendChild(guestEditNotes());
     if (a.action === 'delete_version' && a.status === 'pending') {
       body.appendChild(h('p', { class: 'alert alert-warn', text: `Approving permanently deletes version ${p.version} and closes its open previews. Server data and data snapshots are kept. The live version cannot be deleted.` }));
     }
@@ -115,9 +129,16 @@ export function mount(main, [id], ctx) {
     body.appendChild(h('div', { class: 'actions' }, reject, approve));
   }
 
+  function dismissButton(a) {
+    const b = h('button', { type: 'button', class: 'btn', text: 'Dismiss…' });
+    b.addEventListener('click', () => busy(b, () => decide(a, false)));
+    return b;
+  }
+
   async function decide(a, yes) {
     const p = params(a);
-    const notice = yes && a.action === 'set_visibility' ? becomingNoticeFor(p.visibility) : '';
+    const notice = !yes || a.action !== 'set_visibility' ? ''
+      : p.access === 'edit' ? 'Anyone on the internet who has the link will be able to add, change and delete everything on this board.' : becomingNoticeFor(p.visibility);
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [
@@ -143,6 +164,28 @@ export function mount(main, [id], ctx) {
   }
 
   load();
+}
+
+// expired reports a pending visibility request that no longer matches the
+// flat: its visibility or access level changed since it was requested
+// (rule 2). The server also refuses a round trip back to the same state.
+export function expired(a, p, flat) {
+  if (a.action !== 'set_visibility' || a.status !== 'pending' || !flat || !p.from) return false;
+  const from = fromState(p);
+  const now = accessOf(flat);
+  const then = accessKey(from.vis, from.access);
+  return now !== then && !(then === 'public' && now === 'view');
+}
+
+// guestEditNotes says what approving "anyone can edit" grants and keeps.
+function guestEditNotes() {
+  const li = (...text) => h('li', { class: 'check ok' }, h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }), h('span', null, ...text));
+  return h('div', null,
+    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), ' anyone on the internet who has the link can add, change and delete everything on this board. Nobody checks who they are.'),
+    h('ul', { class: 'checks' },
+      li("A safe point of the board will be pinned first. It can't be unpinned while guests can edit."),
+      li('You can end guest editing at any time with ', h('strong', { text: 'Stop guest editing' }), '.'),
+      li('This approval is only for the state above. If the visibility changes before you approve, it expires.')));
 }
 
 // mountList is the approvals queue: every request, newest first, each

@@ -104,9 +104,18 @@ type Change struct {
 	Inc       int64
 	Set       map[string]SetVal
 	Overwrote int64
-	Add       *PrivateElement
-	Revive    *PrivateElement
-	Del       int64
+	// Author is the element's new authorship when a set changed it (TECH
+	// public edit 7), written as "ta" and "lk" beside "set".
+	Author *Authorship
+	Add    *PrivateElement
+	Revive *PrivateElement
+	Del    int64
+}
+
+// Authorship is an element's ta and lk.
+type Authorship struct {
+	TA map[string]TextAuthor
+	LK string
 }
 
 // MarshalJSON writes the 4.6 form of the change.
@@ -124,6 +133,13 @@ func (c Change) MarshalJSON() ([]byte, error) {
 		if c.Overwrote != 0 {
 			m["overwrote"] = c.Overwrote
 		}
+		if c.Author != nil {
+			ta := c.Author.TA
+			if ta == nil {
+				ta = map[string]TextAuthor{}
+			}
+			m["ta"], m["lk"] = ta, c.Author.LK
+		}
 	}
 	return json.Marshal(m)
 }
@@ -132,6 +148,12 @@ func (c Change) MarshalJSON() ([]byte, error) {
 type By struct {
 	Kind  string `json:"kind"` // person, agent or system
 	Label string `json:"label"`
+	// Guest marks a guest's change for members, whose canvases draw the
+	// guest badge next to Label (spec rule 13).
+	Guest bool `json:"guest,omitempty"`
+	// Who is the editor kind of a person (KindMember or KindGuest); it
+	// stays on the server and lets the guest projection name the kind.
+	Who string `json:"-"`
 }
 
 // Reset marks a delta of a whole-board rollback or replacement.

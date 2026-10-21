@@ -109,11 +109,14 @@ export class Parts {
 }
 
 const RETRY_MIN = 1000, RETRY_MAX = 30000;
+// Presence is sent at most 20 times a second, 10 for a guest (TECH 3.4).
+const PRES_GAP = 50, GUEST_PRES_GAP = 100;
 
 export class Net {
   // h: {hello(), welcome(msg), snapshot(changed, snap), delta(result, d),
-  //     ack(msg, batch, changed), reject(msg, batch, changed), fatal(code),
-  //     pres(msg), shared(msg), status(), tooLarge(batch, changed)}
+  //     ack(msg, batch, changed), reject(msg, batch, changed), fatal(code, msg),
+  //     pres(msg), shared(msg), viewers(msg), level(msg), status(),
+  //     tooLarge(batch, changed)}
   constructor(state, h) {
     this.state = state;
     this.h = h;
@@ -136,6 +139,7 @@ export class Net {
     this.lastPres = 0;
     this.presTimer = null;
     this.presNext = null;
+    this.presGap = PRES_GAP;
   }
 
   get connected() { return this.open; }
@@ -156,10 +160,20 @@ export class Net {
 
   // restart reconnects at once, for example after a gap or a name change.
   restart() {
-    if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.close(); this.#reset(); }
+    if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.close(); }
+    // Generation, assembly and in-flight state belong to the old socket,
+    // also when a fatal code already closed it.
+    this.#reset();
     this.restarting = true;
     this.start();
     this.h.status();
+  }
+
+  // resume reconnects after a fatal code the visitor can act on: joining
+  // again with another name, watching, or trying a full board again.
+  resume() {
+    this.stopped = false;
+    this.restart();
   }
 
   stop() {
@@ -241,13 +255,13 @@ export class Net {
     for (const f of frames) this.ws.send(f);
   }
 
-  // presence sends at most 20 presence messages per second; the latest
-  // value wins while throttled.
+  // presence sends at most 20 presence messages per second (10 for a
+  // guest); the latest value wins while throttled.
   presence(p) {
     if (this.state.public) return;
     this.presNext = p;
     if (this.presTimer) return;
-    const wait = Math.max(0, 50 - (Date.now() - this.lastPres));
+    const wait = Math.max(0, this.presGap - (Date.now() - this.lastPres));
     this.presTimer = setTimeout(() => {
       this.presTimer = null;
       this.lastPres = Date.now();
@@ -276,9 +290,11 @@ export class Net {
       case 'reject': return this.#reject(m);
       case 'pres': return this.h.pres(m);
       case 'shared': return this.h.shared(m);
+      case 'viewers': return this.h.viewers(m);
+      case 'level': return this.h.level(m);
       case 'fatal':
         this.stop();
-        return this.h.fatal(m.code);
+        return this.h.fatal(m.code, m);
       default:
     }
   }
@@ -293,7 +309,9 @@ export class Net {
       st.created.clear();
       st.unacked.clear();
     }
-    st.public = m.access !== 'private';
+    // Guests use the private wire form; only viewers get the public one.
+    st.public = m.access === 'public';
+    this.presGap = m.access === 'guest' ? GUEST_PRES_GAP : PRES_GAP;
     this.open = true;
     this.welcomed = true;
     this.opens++;

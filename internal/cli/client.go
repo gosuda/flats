@@ -158,6 +158,7 @@ type flatView struct {
 	Slug            string         `json:"slug"`
 	Name            string         `json:"name"`
 	Visibility      string         `json:"visibility"`
+	PublicAccess    string         `json:"public_access,omitempty"`
 	LiveVersion     int            `json:"live_version"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`

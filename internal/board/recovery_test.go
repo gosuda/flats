@@ -64,6 +64,8 @@ func contentOf(els []model.Element, keepAuthor bool) map[string]string {
 		if !keepAuthor {
 			delete(c, "by")
 			delete(c, "at")
+			delete(c, "ta")
+			delete(c, "lk")
 		}
 		out[e.ID] = string(model.Canonical(c))
 	}

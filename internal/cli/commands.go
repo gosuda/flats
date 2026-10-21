@@ -340,7 +340,11 @@ func (a *app) info(args []string) error {
 	} else {
 		fmt.Fprintf(w, "  publication: %s\n", f.Publication)
 	}
-	fmt.Fprintf(w, "  visibility: %s\n", f.Visibility)
+	if f.PublicAccess != "" {
+		fmt.Fprintf(w, "  visibility: %s, %s\n", f.Visibility, accessText(f.PublicAccess))
+	} else {
+		fmt.Fprintf(w, "  visibility: %s\n", f.Visibility)
+	}
 	if f.Draft != nil && !docs {
 		fmt.Fprintf(w, "  Draft:      revision %d (base v%d), dirty=%t, type=%s\n", f.Draft.Revision, f.Draft.BaseVersion, f.Draft.Dirty, displayType(f.Draft.Type))
 	}
@@ -484,6 +488,7 @@ func (a *app) preview(args []string) error {
 func (a *app) visibility(args []string) error {
 	fs := a.flags("visibility")
 	reason := fs.String("reason", "", "why (shown to the operator when approval is needed)")
+	access := fs.String("access", "", "public only: view (default) or edit (boards: anyone on the internet can edit)")
 	pos, err := a.parse(fs, args, 2, 2)
 	if err != nil {
 		return err
@@ -493,9 +498,18 @@ func (a *app) visibility(args []string) error {
 	default:
 		return usagef("visibility must be private or public (legacy listed/unlisted values are accepted)")
 	}
+	switch {
+	case *access != "" && pos[1] == "private":
+		return usagef("--access applies only to public")
+	case *access != "" && *access != "view" && *access != "edit":
+		return usagef("--access must be view or edit")
+	}
+	body := map[string]string{"visibility": pos[1], "reason": *reason}
+	if *access != "" {
+		body["access"] = *access
+	}
 	var res actionResult
-	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/visibility", nil,
-		map[string]string{"visibility": pos[1], "reason": *reason}, &res)
+	resp, err := a.client().call(a.ctx, http.MethodPost, "/api/flats/"+pathEscape(pos[0])+"/visibility", nil, body, &res)
 	if err != nil {
 		return err
 	}
@@ -1038,4 +1052,12 @@ func (a *app) saveDocument(args []string) error {
 		return err
 	}
 	return a.upload(pos[1], pos[0], *message, -1, true)
+}
+
+// accessText describes a Public board's public access level.
+func accessText(access string) string {
+	if access == "edit" {
+		return "anyone can edit"
+	}
+	return "view only"
 }

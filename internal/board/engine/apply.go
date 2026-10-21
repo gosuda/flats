@@ -28,6 +28,20 @@ const (
 // ErrLimit marks a change that grows an item's excess over a limit (4.5).
 var ErrLimit = errors.New("over a board limit")
 
+// Guest refusals (board-public-edit-TECH.md 3.2, 3.5): a guest batch that
+// names an asset no live element references, or revives a row the guest
+// did not delete in its session, is refused whole.
+var (
+	ErrGuestAsset  = errors.New("guests can only reuse images that are on the board now")
+	ErrGuestRevive = errors.New("guests can only bring back what they deleted themselves")
+)
+
+// Reject codes of guest refusals.
+const (
+	CodeGuestAsset  = "guest_asset"
+	CodeGuestRevive = "guest_revive"
+)
+
 // Batch is one person batch.
 type Batch struct {
 	Session string
@@ -54,12 +68,21 @@ type Outcome struct {
 // writes is stamped with seq, which the state adopts only if something
 // changed.
 type applier struct {
-	s         *State
-	sp        *savepoint
-	seq       int64
-	session   string
-	by        string
-	now       int64
+	s       *State
+	sp      *savepoint
+	seq     int64
+	session string
+	by      string
+	now     int64
+	// kind and name are the editor kind of by and, for a guest, its name
+	// (ta and lk, TECH public edit 7). guest restricts the change to what
+	// a guest may do; startSeq is the guest session's start and refusal
+	// the guest refusal that ends the change.
+	kind      string
+	name      string
+	guest     bool
+	startSeq  int64
+	refusal   error
 	overwrote map[string]int64
 	topZ      string
 	topZKnown bool
@@ -80,7 +103,7 @@ func (s *State) newApplier(session, by string, now int64) (*applier, Mark) {
 	m := s.Savepoint()
 	return &applier{
 		s: s, sp: s.sps[m], seq: s.seq + 1, session: session, by: by, now: now,
-		overwrote: map[string]int64{},
+		kind: model.EditorKind(by), overwrote: map[string]int64{},
 	}, m
 }
 
@@ -104,12 +127,20 @@ func (s *State) ApplyBatch(b Batch) Outcome {
 		return Outcome{Fatal: FatalProtocol}
 	}
 	a, m := s.newApplier(b.Session, se.Key, b.Now)
+	if a.kind == model.KindGuest {
+		a.name, a.guest, a.startSeq = se.Label, true, se.StartSeq
+	}
 	results, err := a.applyOps(b.Ops)
 	if err != nil {
 		s.RollbackTo(m)
 		code := CodeInvalid
-		if errors.Is(err, ErrLimit) {
+		switch {
+		case errors.Is(err, ErrLimit):
 			code = CodeLimit
+		case errors.Is(err, ErrGuestAsset):
+			code = CodeGuestAsset
+		case errors.Is(err, ErrGuestRevive):
+			code = CodeGuestRevive
 		}
 		return s.RecordReject(b.Session, b.N, b.Now, Reject{Code: code, Detail: err.Error()})
 	}
@@ -121,7 +152,7 @@ func (s *State) ApplyBatch(b Batch) Outcome {
 	out := Outcome{AckSeq: s.seq, Results: EncodeResults(results)}
 	if delta != nil {
 		delta.From = fmt.Sprintf("%s:%d", b.Session, b.N)
-		delta.By = &model.By{Kind: "person", Label: se.Label}
+		delta.By = &model.By{Kind: "person", Label: se.Label, Who: a.kind, Guest: a.guest}
 		s.seq = a.seq
 		out.Seq, out.AckSeq, out.Delta = a.seq, a.seq, delta
 	}
@@ -163,6 +194,9 @@ func (a *applier) applyOps(ops []Op) ([]any, error) {
 	results := make([]any, 0, len(ops))
 	for _, op := range ops {
 		r, err := a.apply(op)
+		if err == nil {
+			err = a.refusal
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -242,6 +276,7 @@ func (a *applier) put(r *Row) {
 // setBundle writes bundle g of r (a private copy) and stamps its version.
 func (a *applier) setBundle(r *Row, g string, val any) {
 	r.El.SetBundle(g, val)
+	r.El.NoteWrite(g, a.kind, a.name)
 	r.V[g] = a.seq
 	if k := model.EndIndex(g); k >= 0 {
 		r.EndInc[k] = 0
@@ -305,6 +340,12 @@ func (a *applier) backKey(id string) string {
 	return k
 }
 
+// assetLive reports whether an alive element references the asset now.
+func (a *applier) assetLive(hash string) bool {
+	as := a.s.assets[hash]
+	return as != nil && as.Refs > 0
+}
+
 func (a *applier) assetKnown(hash string) bool {
 	as := a.s.assets[hash]
 	return as != nil && (as.Refs > 0 || as.DeletedRefs > 0 || as.HeldUntil > a.now)
@@ -312,7 +353,7 @@ func (a *applier) assetKnown(hash string) bool {
 
 // add applies {op:"add", el, refs}.
 func (a *applier) add(op Op) (any, error) {
-	el, present, err := model.DecodeElement(op.El)
+	el, present, err := model.DecodeNewElement(op.El)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +380,9 @@ func (a *applier) add(op Op) (any, error) {
 	}
 	if reason := a.checkRefs(el, resolveRef); reason != "" {
 		return void(reason), nil
+	}
+	if a.guest && el.Type == model.TypeImage && !a.assetLive(el.Asset) {
+		return nil, ErrGuestAsset
 	}
 	a.insert(el)
 	return ResultOK, nil
@@ -404,6 +448,7 @@ func (a *applier) checkRefs(el model.Element, ref func(id string) (*Row, bool)) 
 // insert creates the row of a new element whose references are checked.
 func (a *applier) insert(el model.Element) {
 	el.By, el.At = a.by, a.now
+	el.SetAuthor(a.kind, a.name)
 	if el.Z == "" {
 		el.Z = a.topKey()
 	}
@@ -651,7 +696,8 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 			return model.Change{ID: id, Del: cur.DelSeq}, true
 		}
 		return model.Change{}, false
-	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameUnversioned(old.El, cur.El) || endIncMoved(old, cur):
+	case old.Inc != cur.Inc || old.El.Type != cur.El.Type || !sameUnversioned(old.El, cur.El) || endIncMoved(old, cur) ||
+		old.V[model.VFixed] != cur.V[model.VFixed]:
 		// The author fields and the immutable pen points, image asset and
 		// natural size belong to no bundle, so an element whose such field
 		// a reset rewrote goes out whole, like a new incarnation (4.6). So
@@ -671,7 +717,11 @@ func diffRow(id string, old, cur *Row) (model.Change, bool) {
 	if len(set) == 0 {
 		return model.Change{}, false
 	}
-	return model.Change{ID: id, Inc: cur.Inc, Set: set}, true
+	c := model.Change{ID: id, Inc: cur.Inc, Set: set}
+	if !model.SameAuthorship(old.El, cur.El) {
+		c.Author = &model.Authorship{TA: cur.El.TA, LK: cur.El.LK}
+	}
+	return c, true
 }
 
 // endIncMoved reports whether a connector end's target incarnation changed

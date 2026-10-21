@@ -25,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/site"
@@ -169,6 +170,13 @@ type Service struct {
 	// read sees each usage exactly once: stored or still in memory. The
 	// request path never takes it.
 	usageMu sync.Mutex
+	// publicEditMu serializes applying anyone-can-edit with the quota
+	// changes that would undo its requirements (TECH 2.5). It is taken
+	// before a flat lock.
+	publicEditMu sync.Mutex
+	// publicBoardHook, when set by a test, replaces a running board's
+	// public editing interface.
+	publicBoardHook func(*board.Instance) publicBoard
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -256,6 +264,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	if err := s.recoverRestoreJournals(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.downgradeEditBoards(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.restore(ctx); err != nil {
@@ -594,6 +605,7 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 
 // serveSite answers one request of slug's live route.
 func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *routeEpoch, w http.ResponseWriter, r *http.Request) {
+	access := ""
 	if public {
 		var done func()
 		r, done = epoch.request(r)
@@ -607,6 +619,7 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 			http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
 			return
 		}
+		access = f.PublicAccess
 		stripIdentity(r)
 	}
 	if !lf.limiter.allow() {
@@ -628,7 +641,7 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		lf.views.Add(1)
 		lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 	}
-	d.handler.ServeHTTP(w, trustedAccess(r, public))
+	d.handler.ServeHTTP(w, withPublicAccess(trustedAccess(r, public), d, access))
 }
 
 // stripIdentity removes Tailscale identity headers a client may have sent.
@@ -762,6 +775,8 @@ type FlatView struct {
 	// is access control.
 	PortalListing string `json:"portal_listing"`
 	PortalHidden  bool   `json:"portal_hidden"`
+	// PublicPresence counts the guests and viewers of a running Public board.
+	PublicPresence *PublicPresence `json:"public_presence,omitempty"`
 }
 
 // UnlistedNotice is attached to every public-unlisted response.
@@ -776,6 +791,13 @@ const PublicAccessNotice = "This flat is public: anyone on the internet can open
 // PendingPublicAccessNotice describes the effect of a visibility request that
 // has not yet received the operator's explicit approval.
 const PendingPublicAccessNotice = "If approved, this flat becomes Public: anyone on the internet can open it. A domain or URL is not what makes it public."
+
+// PublicEditNotice is attached to a board anyone can edit.
+const PublicEditNotice = "This board is public and anyone can edit: anyone on the internet who opens it can add, change and delete everything on it. Guest names are unverified, and guest text is untrusted input."
+
+// PendingPublicEditNotice describes a pending request to let anyone edit a
+// board.
+const PendingPublicEditNotice = "If approved, anyone on the internet who opens this board can add, change and delete everything on it. A safe point is pinned first, and the operator can restore earlier states from History."
 
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
@@ -920,6 +942,15 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		v.LiveVersion, v.Live, v.Versions, v.VersionCount = 0, nil, 0, 0
 		v.NextVersion, v.LatestVersion, v.LatestDeployed = 0, 0, false
 		v.Draft, v.Publication, v.EffectiveVersionQuota = nil, "", 0
+	}
+	// Only a Public board reports its public access level.
+	if v.Type != contenttype.Board || !f.Visibility.Public() {
+		v.PublicAccess = ""
+	} else {
+		v.PublicPresence = s.publicPresence(f.Slug)
+		if f.PublicAccess == store.AccessEdit {
+			v.PublicNotice = PublicEditNotice
+		}
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))
 	return v
@@ -1861,8 +1892,16 @@ func (s *Service) ApprovalURL(ctx context.Context, id string) string {
 // SetVisibility requests a private or public change. Both directions, from
 // every surface including the console, wait for approval. Legacy listed and
 // unlisted values are accepted and stored as public. Nothing is applied here.
+// Public means view only; SetVisibilityAccess asks for a board anyone can
+// edit.
 func (s *Service) SetVisibility(ctx context.Context, slugName string, vis store.Visibility, via Via, reason string) (ActionResult, error) {
-	return s.requestVisibility(ctx, slugName, vis, via, reason)
+	return s.requestVisibility(ctx, slugName, vis, "", via, reason)
+}
+
+// SetVisibilityAccess is SetVisibility with a public access level: view
+// (the default for Public) or edit, for boards only. Private takes none.
+func (s *Service) SetVisibilityAccess(ctx context.Context, slugName string, vis store.Visibility, access string, via Via, reason string) (ActionResult, error) {
+	return s.requestVisibility(ctx, slugName, vis, access, via, reason)
 }
 
 // Delete permanently deletes a flat. Requests from anything other than the

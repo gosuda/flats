@@ -6,13 +6,14 @@
 // no environment or server permissions.
 // Analytics and Database are their own modules under the same tabs.
 
-import { h, icon, timeEl, dateTime, bytes, plural, shortHash, VISIBILITY, visibilityOf, publicURL, publicNoticeOf } from './dom.js';
+import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, ACCESS, visibilityBadge, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
-import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, PROVIDERS } from './actions.js';
+import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, stopGuestEditing, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
 import { hasServer, isLive, typeOf, typeNoun } from './list.js';
 import { shareDialog } from './share.js';
+import { describeApproval } from './approval.js';
 
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
@@ -170,7 +171,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Name', 'Name for your site', nameForm),
         row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
-        row('Sharing', 'Who can view your site', h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: VISIBILITY[visibilityOf(flat.visibility)].label }), manage))),
+        row('Sharing', flat.type === 'board' ? 'Who can open this board' : 'Who can view your site', sharingControl(manage)),
+        flat.type === 'board' ? boardSharingSlot() : null),
       netSlot,
       isDocs() ? null : section('Version history', 'version-history', versionQuotaBlock()),
       isDocs() ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, typeNoun(flat))) : null,
@@ -178,6 +180,55 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'secrets', 'aria-labelledby': 'secrets-title' }, h('h2', { id: 'secrets-title', text: 'Secrets' }), secretsSlot),
       !serverParts() ? null : h('section', { class: 'settings-section', id: 'network', 'aria-labelledby': 'network-title' }, h('h2', { id: 'network-title', text: 'Server HTTP(S) permissions' }), networkSlot),
       h('section', { class: 'settings-section', id: 'delete' }, h('h2', { text: 'Danger zone' }), deleteBlock()));
+  }
+
+  // sharingControl is the level with Manage and, while guests can edit, the
+  // live counts and Stop guest editing (rule 33).
+  function sharingControl(manage) {
+    const key = accessOf(flat);
+    if (key !== 'edit') return h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: ACCESS[key].label }), manage);
+    const stop = h('button', { class: 'btn btn-small btn-danger', type: 'button', text: 'Stop guest editing' });
+    stop.addEventListener('click', () => busy(stop, async () => { if (await stopGuestEditing(flat)) await refresh(); }));
+    const p = flat.public_presence;
+    return h('div', { class: 'setting-sharing' },
+      h('div', { class: 'setting-control' }, visibilityBadge(flat.visibility, flat.public_access), manage, stop),
+      h('p', { class: 'muted small' }, p ? `Right now: ${plural(p.guests, 'guest')} editing, ${plural(p.viewers, 'viewer')} watching. ` : '',
+        "Guests can't see history, import, upload images or send selections to an agent."));
+  }
+
+  // boardSharingSlot shows the pinned safe point and a visibility change
+  // that waits for approval; both are read separately from the flat.
+  function boardSharingSlot() {
+    const slot = h('div');
+    (async () => {
+      const [pre, pend] = await Promise.all([
+        api.publicEdit(slug).catch(() => null),
+        api.approvals('pending').catch(() => null),
+      ]);
+      if (!ctx.alive()) return;
+      const rows = [];
+      const edit = accessOf(flat) === 'edit';
+      if (pre && pre.safe_point) {
+        const pinned = pre.safe_point_pinned === true;
+        const open = flat.private_url ? extLink(flat.private_url, 'Open History', 'btn btn-small') : null;
+        rows.push(h('div', { class: 'setting-row' },
+          h('div', null, h('span', { class: 'setting-title', text: 'Safe point' }), h('div', { class: 'muted small', text: edit ? 'Kept while guests can edit' : 'From the last time guests could edit' })),
+          h('div', { class: 'setting-sharing' },
+            h('div', { class: 'setting-control' }, h('span', { class: pinned ? 'badge badge-live' : 'badge', text: pinned ? 'Pinned' : 'Not pinned' }),
+              h('span', { text: `Revision r${pre.safe_point}, before guest editing` }), open),
+            h('p', { class: 'muted small', text: !pinned ? 'Retention can delete it like any unpinned revision.'
+              : edit ? "Restore it from History. It can't be unpinned until guest editing stops." : 'It is now an ordinary pinned revision; you can unpin it in History.' }))));
+      }
+      const waiting = ((pend && pend.approvals) || []).filter((a) => a.status === 'pending' && a.action === 'set_visibility' && a.flat === slug);
+      for (const a of waiting) {
+        rows.push(h('div', { class: 'setting-row setting-pending' },
+          h('div', null, h('span', { class: 'setting-title', text: 'Waiting for approval' }), h('div', { class: 'muted small', text: 'Nothing changes until you approve' })),
+          h('div', { class: 'setting-control' }, h('span', { text: describeApproval(a) }),
+            h('a', { class: 'btn btn-small', href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: 'View request' }))));
+      }
+      fill(slot, rows);
+    })();
+    return slot;
   }
 
   function versionQuotaBlock() {

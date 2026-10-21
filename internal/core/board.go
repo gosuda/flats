@@ -115,7 +115,11 @@ func (s *Service) buildBoard(slugName string, v store.Version, title, dataDir st
 		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 		return &deployed{version: v, handler: h, redact: identity, environment: env}, nil
 	}
-	in, _, err := board.Open(s.boardDir(slugName), boardBackend{s: s, slug: slugName}, board.Options{Slug: slugName, Title: title, Now: s.now})
+	f, err := s.st.GetFlat(context.Background(), slugName)
+	if err != nil {
+		return nil, err
+	}
+	in, _, err := board.Open(s.boardDir(slugName), boardBackend{s: s, slug: slugName}, board.Options{Slug: slugName, Title: title, Now: s.now, PublicAccess: f.PublicAccess})
 	if err != nil {
 		return nil, fmt.Errorf("open the board: %w", err)
 	}
@@ -323,7 +327,7 @@ func (s *Service) writeBoardLocked(ctx context.Context, slugName string, via Via
 			}
 		}
 	}
-	first, _, err := board.Open(s.boardDir(slugName), boardBackend{s: s, slug: slugName}, board.Options{Slug: slugName, Title: f.Name, Now: s.now})
+	first, _, err := board.Open(s.boardDir(slugName), boardBackend{s: s, slug: slugName}, board.Options{Slug: slugName, Title: f.Name, Now: s.now, PublicAccess: f.PublicAccess})
 	if err != nil {
 		undo()
 		return nil, false, fmt.Errorf("open the board: %w", err)
@@ -688,12 +692,25 @@ func (s *Service) BoardShares(ctx context.Context, slugName string, n int64) ([]
 type boardImport struct {
 	revisions []int
 	bySeq     map[int64]int // outbox seq -> revision
+	// safePoint is the revision pinned as the safe point, pinsFull reports
+	// that the pin quota left it unpinned (importBoardSafePointLocked).
+	safePoint int
+	pinsFull  bool
 }
 
 // importBoardLocked imports a board's outbox into the revision store and
 // acknowledges it (board-TECH 5.3), then settles the holds of rollbacks
 // that never committed. The caller holds the flat lock.
 func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *board.Instance) (boardImport, error) {
+	return s.importBoardSafePointLocked(ctx, slugName, in, 0)
+}
+
+// importBoardSafePointLocked is importBoardLocked that also pins the
+// revision of outbox entry safePointSeq as the board's safe point, in the
+// transaction that inserts it and before its retention runs, so retention
+// cannot delete it however many entries the same import drains after it
+// (board-public-edit-TECH 2.3). A full pin quota leaves it unpinned.
+func (s *Service) importBoardSafePointLocked(ctx context.Context, slugName string, in *board.Instance, safePointSeq int64) (boardImport, error) {
 	res := boardImport{bySeq: map[int64]int{}}
 	start := time.Now()
 	st, err := s.st.ContentState(ctx, slugName)
@@ -762,7 +779,7 @@ func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *bo
 				}
 			}
 		}
-		if err := s.commitBoardEntries(ctx, slugName, outbox, entries, &res); err != nil {
+		if err := s.commitBoardEntries(ctx, slugName, outbox, entries, safePointSeq, &res); err != nil {
 			return res, err
 		}
 		cursor = entries[len(entries)-1].Seq
@@ -785,8 +802,9 @@ func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *bo
 // commitBoardEntries inserts imported outbox entries as revisions in one
 // transaction, with their element counts and import mappings, moves the
 // head to the last entry's files, advances the cursor and runs retention.
-// Entries the cursor already passed are skipped.
-func (s *Service) commitBoardEntries(ctx context.Context, slugName, outbox string, entries []board.OutboxEntry, res *boardImport) error {
+// Entries the cursor already passed are skipped. The entry safePointSeq,
+// when present, is pinned as the safe point if a pin is free.
+func (s *Service) commitBoardEntries(ctx context.Context, slugName, outbox string, entries []board.OutboxEntry, safePointSeq int64, res *boardImport) error {
 	// The previous revision, read before the transaction: the store has
 	// one connection, and the flat lock keeps it current.
 	var prev []store.RevisionFile
@@ -821,7 +839,7 @@ func (s *Service) commitBoardEntries(ctx context.Context, slugName, outbox strin
 	}
 	var imported []int
 	bySeq := map[int64]int{}
-	deleted := 0
+	deleted, safePoint, pinsFull := 0, 0, false
 	err := s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
 		st, err := tx.State(ctx)
 		if err != nil {
@@ -842,12 +860,27 @@ func (s *Service) commitBoardEntries(ctx context.Context, slugName, outbox strin
 			if kind == "" {
 				kind = "person"
 			}
+			authors, guests := dedupe(e.Authors), dedupe(e.Guests)
 			r := store.Revision{
-				Number: latest, CreatedAt: time.Unix(e.CreatedAt, 0), Kind: kind, Authors: dedupe(e.Authors),
+				Number: latest, CreatedAt: time.Unix(e.CreatedAt, 0), Kind: kind, Authors: authors,
+				GuestAuthors: guests, GuestsMore: max(e.GuestsMore, 0), GuestOnly: len(authors) == 0 && (len(guests) > 0 || e.GuestsMore > 0),
 				Message: truncate(e.Message, 500), RollbackOf: e.RollbackOf, Changes: p.change, Files: len(p.files), Size: p.size,
+			}
+			if safePointSeq > 0 && e.Seq == safePointSeq {
+				free, err := pinFree(ctx, tx, s.quotas)
+				if err != nil {
+					return err
+				}
+				r.Pinned, pinsFull = free, !free
 			}
 			if err := tx.InsertRevision(ctx, r, p.files); err != nil {
 				return err
+			}
+			if r.Pinned {
+				if err := tx.SetSafePoint(ctx, latest); err != nil {
+					return err
+				}
+				safePoint = latest
 			}
 			if err := tx.PutBoardRevStats(ctx, latest, p.counts); err != nil {
 				return err
@@ -884,10 +917,28 @@ func (s *Service) commitBoardEntries(ctx context.Context, slugName, outbox strin
 	for k, v := range bySeq {
 		res.bySeq[k] = v
 	}
+	if safePoint > 0 {
+		res.safePoint = safePoint
+	}
+	res.pinsFull = res.pinsFull || pinsFull
 	if deleted > 0 {
 		go s.sweepBlobs(context.WithoutCancel(ctx), slugName, contenttype.Board)
 	}
 	return nil
+}
+
+// pinFree reports whether the flat has a free pin.
+func pinFree(ctx context.Context, tx *store.ContentTx, quotas func(store.ContentState) (int, int)) (bool, error) {
+	st, err := tx.State(ctx)
+	if err != nil {
+		return false, err
+	}
+	_, quota := quotas(st)
+	if quota <= 0 {
+		return true, nil
+	}
+	count, err := tx.CountPins(ctx)
+	return count < quota, err
 }
 
 // boardElementCounts compares the element buckets of two revisions' file
@@ -1300,7 +1351,7 @@ func (b boardBackend) Revisions(ctx context.Context, before, limit int) (board.R
 
 func boardRevisionInfo(r store.Revision) board.RevisionInfo {
 	info := board.RevisionInfo{Number: r.Number, Kind: r.Kind, Authors: r.Authors, Message: r.Message, At: r.CreatedAt.Unix(),
-		Pinned: r.Pinned, RollbackOf: r.RollbackOf}
+		Pinned: r.Pinned, RollbackOf: r.RollbackOf, GuestAuthors: r.GuestAuthors, GuestsMore: r.GuestsMore, SafePoint: r.SafePoint}
 	if info.Authors == nil {
 		info.Authors = []string{}
 	}
@@ -1320,6 +1371,9 @@ func (b boardBackend) RevisionContent(ctx context.Context, n int) (board.Revisio
 	}
 	revs := []store.Revision{r}
 	b.s.boardRevisionStats(ctx, b.slug, revs)
+	if st, err := b.s.st.ContentState(ctx, b.slug); err == nil {
+		b.s.markSafePoint(ctx, b.slug, st, revs)
+	}
 	return boardRevisionInfo(revs[0]), c, nil
 }
 

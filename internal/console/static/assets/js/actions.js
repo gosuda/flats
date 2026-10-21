@@ -2,7 +2,7 @@
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
 
-import { h, dateTime, VISIBILITY, visibilityOf, becomingNoticeFor, publicURL, publicNoticeOf } from './dom.js';
+import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, infoDialog, errorPanel, toast, extLink } from './ui.js';
 import { isLive } from './list.js';
@@ -202,26 +202,21 @@ export async function deleteFlat(flat) {
 }
 
 // setVisibility changes visibility after a confirm; widening shows the notice.
-export async function setVisibility(flat, vis) {
+// access ('view' or 'edit') is the public access level of a board. Stopping
+// guest editing and allowing it have their own steps.
+export async function setVisibility(flat, vis, access) {
+  const fromKey = accessOf(flat);
+  if (vis === 'public' && access === 'edit') return allowGuestEditing(flat);
+  if (vis === 'public' && fromKey === 'edit') return stopGuestEditing(flat);
   const from = VISIBILITY[visibilityOf(flat.visibility)];
   const to = VISIBILITY[vis];
   const widening = to.rank > from.rank;
-  // Documents, designs and boards run without published versions
-  // (live_version is 0 for designs and boards), so only versioned types
-  // need a live version first.
-  if (widening && !isLive(flat) && !flat.live_version) {
-    await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);
-    return null;
-  }
-  if (widening && !PUBLIC_PROVIDERS.some((p) => (flat.providers || []).includes(p))) {
-    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose for ${label(flat)} under Networks, then make it public.`);
-    return null;
-  }
+  if (widening && !(await canGoPublic(flat))) return null;
   const notice = becomingNoticeFor(vis);
   const ok = await confirmDialog({
     title: `Make ${label(flat)} ${to.label.toLowerCase()}?`,
     body: [
-      h('p', { text: `Visibility changes from ${from.label} to ${to.label}.` }),
+      h('p', { text: `Visibility changes from ${accessLabel(flat.visibility, flat.public_access)} to ${vis === 'private' ? to.label : ACCESS[access === 'view' ? 'view' : 'public'].label}.` }),
       widening && notice ? h('p', { class: 'alert alert-warn', text: notice }) : null,
       vis === 'private' ? h('p', { class: 'muted', text: 'The public address goes offline. The private address keeps working.' }) : null,
     ],
@@ -230,13 +225,137 @@ export async function setVisibility(flat, vis) {
   });
   if (!ok) return null;
   try {
-    const res = await approve(await api.setVisibility(flat.slug, vis));
+    const res = await approve(await api.setVisibility(flat.slug, vis, vis === 'public' ? access : undefined));
     toast(res.result ? res.result[0].toUpperCase() + res.result.slice(1) + '.' : 'Visibility changed.', 'success');
     return res;
   } catch (err) {
     await report('Visibility change failed', err);
     return null;
   }
+}
+
+// canGoPublic checks what a Private flat needs before it can be Public.
+// Documents, designs and boards run without published versions
+// (live_version is 0 for designs and boards), so only versioned types need
+// a live version first.
+async function canGoPublic(flat) {
+  if (!isLive(flat) && !flat.live_version) {
+    await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);
+    return false;
+  }
+  if (!PUBLIC_PROVIDERS.some((p) => (flat.providers || []).includes(p))) {
+    await infoDialog('Allow a public network first', `Allow Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose for ${label(flat)} under Networks, then make it public.`);
+    return false;
+  }
+  return true;
+}
+
+// confirmed returns a visibility result that the host confirmed as applied:
+// an approved request, or a change that was already in place. Anything else
+// is reported as a failure rather than announced as done.
+function confirmed(res) {
+  if (res?.status === 'approved' || res?.status === 'done') return res;
+  throw Object.assign(new Error(res?.result || res?.error || 'Flats did not confirm the change.'), { body: {} });
+}
+
+// stopGuestEditing sets a board to Public, view only at once, with no
+// confirmation (rule 5). The console's request is its own approval.
+export async function stopGuestEditing(flat) {
+  try {
+    const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'view')));
+    toast('Guest editing stopped. Viewers can still watch.', 'success');
+    return res;
+  } catch (err) {
+    await report('Stop guest editing failed', err);
+    return null;
+  }
+}
+
+// allowGuestEditing widens a board to Public, anyone can edit: it reads the
+// preflight first and shows either what must change or the confirmation of
+// what the change grants (rules 3, 6, 6a).
+export async function allowGuestEditing(flat) {
+  if (visibilityOf(flat.visibility) === 'private' && !(await canGoPublic(flat))) return null;
+  let pre;
+  try {
+    pre = await api.publicEdit(flat.slug);
+  } catch (err) {
+    await report('Cannot check the limits for guest editing', err);
+    return null;
+  }
+  const problems = pre.problems || [];
+  if (problems.length) { await blockedDialog(flat, pre, problems); return null; }
+  const ok = await confirmDialog({
+    title: `Let anyone on the internet edit ${label(flat)}?`,
+    body: [
+      h('p', { text: 'Anyone who opens the link can add, change and delete everything on this board. They type a name first, but nobody checks who they are.' }),
+      h('ul', { class: 'checks' },
+        check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), " of the board as it is now, and it can't be unpinned while guests can edit."),
+        check(true, "Guests can't see history, import, upload images or send selections to an agent."),
+        check(true, `Guest activity is limited, and the disk quota (${bytes(pre.disk_quota)}) and the revision quota (${pre.revision_quota}) stay in force.`)),
+      h('p', { class: 'alert alert-warn' },
+        pre.listed ? 'This flat is also listed publicly by a relay, so strangers can find it. ' : '',
+        h('strong', { text: 'Stop guest editing' }), ' turns editing off at once.'),
+    ],
+    confirmLabel: 'Allow anyone to edit',
+  });
+  if (!ok) return null;
+  try {
+    const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'edit')));
+    toast('Anyone with the link can now edit this board.', 'success');
+    return res;
+  } catch (err) {
+    if (err?.body?.category === 'public_edit_blocked') { await blockedDialog(flat, pre, err.problems); return null; }
+    await report('Allowing guest editing failed', err);
+    return null;
+  }
+}
+
+const check = (ok, ...text) => h('li', { class: 'check' + (ok ? ' ok' : ' no') }, h('span', { class: 'tick', 'aria-hidden': 'true', text: ok ? '✓' : '!' }), h('span', null, ...text));
+
+// PROBLEMS gives the text and the one action for each preflight problem.
+const PROBLEMS = {
+  disk_quota_off: { text: () => [h('strong', { text: 'Disk quota is off.' }), ' Set a disk quota in Settings, Limits.'], action: 'limits' },
+  revision_quota_unlimited: { text: (f) => [h('strong', { text: 'Revision quota is unlimited.' }), ` Set a revision quota for ${label(f)} in Settings, Limits, or in this flat's settings.`], action: 'revisions' },
+  pin_quota_full: { text: (f, pre) => [h('strong', { text: `Pin quota is full (${pre.pins} of ${pre.pin_quota}).` }), ' Flats needs one free pin for the safe point. Unpin a revision in History.'], action: 'history' },
+};
+
+// blockedDialog lists what must change before guests can edit, with one
+// action per problem; the confirm button stays disabled.
+function blockedDialog(flat, pre, problems) {
+  return new Promise((resolve) => {
+    const codes = new Set(problems.map((p) => p.code));
+    const titleId = 'dlg-title-' + Math.random().toString(36).slice(2);
+    const rows = problems.map((p) => {
+      const known = PROBLEMS[p.code];
+      return check(false, ...(known ? known.text(flat, pre) : [p.message || p.code]));
+    });
+    if (!codes.has('disk_quota_off')) rows.push(check(true, `Disk quota is ${bytes(pre.disk_quota)}.`));
+    if (!codes.has('revision_quota_unlimited')) rows.push(check(true, `Revision quota is ${pre.revision_quota}.`));
+    if (!codes.has('pin_quota_full')) rows.push(check(true, pre.safe_point && pre.safe_point_pinned ? `The safe point r${pre.safe_point} is kept pinned.` : 'A pin is free for the safe point.'));
+    const base = `/flats/${encodeURIComponent(flat.slug)}`;
+    const targets = {
+      limits: h('a', { class: 'btn', href: '/settings/limits', 'data-nav': true, text: 'Open Limits' }),
+      revisions: h('a', { class: 'btn', href: base + '/settings#revisions', 'data-nav': true, text: 'Open revision settings' }),
+      history: flat.private_url ? extLink(flat.private_url, 'Open History', 'btn') : null,
+    };
+    const actions = [...new Set(problems.map((p) => PROBLEMS[p.code]?.action).filter(Boolean))].map((a) => targets[a]).filter(Boolean);
+    const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });
+    const allow = h('button', { type: 'button', class: 'btn btn-primary', disabled: true, 'aria-disabled': 'true', text: 'Allow anyone to edit' });
+    const dlg = h('dialog', { class: 'dialog', role: 'alertdialog', 'aria-labelledby': titleId },
+      h('form', { method: 'dialog' },
+        h('h2', { id: titleId, text: 'Set these limits before anyone can edit' }),
+        h('div', { class: 'dialog-body' },
+          h('p', { text: "Open editing needs limits so a flood of changes can't fill the disk or push out your history." }),
+          h('ul', { class: 'checks' }, rows)),
+        h('div', { class: 'dialog-actions' }, cancel, actions, allow)));
+    cancel.addEventListener('click', () => dlg.close());
+    for (const a of actions) a.addEventListener('click', () => dlg.close());
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(); });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+    cancel.focus();
+  });
 }
 
 // Networks a flat can be served on besides this device (Local, always on).

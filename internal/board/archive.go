@@ -158,7 +158,7 @@ func parseArchive(r io.ReaderAt, size, maxTotal, uploadMax int64) (*archive, err
 		if a.recovery != nil {
 			raw = withoutField(raw, "recovered_from")
 		}
-		el, _, err := model.DecodeElement(raw)
+		el, _, err := model.DecodeNewElement(raw)
 		if err != nil {
 			return nil, errorf(CategoryInvalid, "element %d: %v", i, err)
 		}
@@ -688,7 +688,11 @@ func (in *Instance) exportData(ctx context.Context, public bool) (boardJSON []by
 			if public {
 				els = append(els, model.Canonical(model.PublicElement(e.Element)))
 			} else {
-				els = append(els, e.CanonicalJSON())
+				// A data file keeps its format (9.1): authorship stays on
+				// the board, and an import records its importer anyway.
+				el := e.Element
+				el.TA, el.LK = nil, ""
+				els = append(els, el.CanonicalJSON())
 			}
 		}
 		as := in.assets.live(nil)

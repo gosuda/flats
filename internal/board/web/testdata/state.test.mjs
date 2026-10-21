@@ -221,3 +221,16 @@ test('a group move clamps a member connector free end in the optimistic copy', (
   s.push(moveOps(s, ['e_aaaaaaaaaa'], 30, 0));
   assert.deepEqual(s.get('e_conn000001').ends, [{ pt: [MAX, 0] }, { pt: [30, 0] }]);
 });
+
+test('authorship beside set is applied, and an empty value removes it', () => {
+  const s = seeded();
+  s.applyDelta({ seq: 11, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { text: ['hi', 11] }, ta: { text: { k: 'guest', n: 'Mina' } }, lk: 'guest' }] });
+  const el = s.server.get('e_aaaaaaaaaa');
+  assert.deepEqual(el.ta, { text: { k: 'guest', n: 'Mina' } });
+  assert.equal(el.lk, 'guest');
+  assert.equal(el.text, 'hi');
+  s.applyDelta({ seq: 12, changes: [{ id: 'e_aaaaaaaaaa', inc: 3, set: { geom: [{ x: 5, y: 0, w: 200, h: 200, rot: 0 }, 12] }, ta: {}, lk: '' }] });
+  const after = s.server.get('e_aaaaaaaaaa');
+  assert.equal(after.ta, undefined);
+  assert.equal(after.lk, undefined);
+});
