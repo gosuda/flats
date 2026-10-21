@@ -52,7 +52,9 @@ export const api = {
   openPreview: (slug, version) => post(`/flats/${enc(slug)}/previews`, version ? { version } : { target: 'draft', version: 0 }),
   previews: (slug) => get(`/flats/${enc(slug)}/previews`),
   closePreview: (host) => request('DELETE', `/previews/${enc(host)}`),
-  setVisibility: (slug, visibility) => post(`/flats/${enc(slug)}/visibility`, { visibility, reason: '' }),
+  // access is 'view' or 'edit' for a Public board; omitted means view.
+  setVisibility: (slug, visibility, access) => post(`/flats/${enc(slug)}/visibility`, access ? { visibility, access, reason: '' } : { visibility, reason: '' }),
+  publicEdit: (slug) => get(`/flats/${enc(slug)}/public-edit`),
   setName: (slug, name) => post(`/flats/${enc(slug)}/name`, { name }),
   rename: (slug, to) => post(`/flats/${enc(slug)}/rename`, { slug: to }),
   remove: (slug) => request('DELETE', `/flats/${enc(slug)}?reason=${enc('deleted in the console')}`),

@@ -255,8 +255,8 @@ export function mount(main, _params, ctx) {
       typeIcon(f),
       h('div', { class: 'flat-main' },
         h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
-        h('div', { class: 'flat-sub' }, h('span', { class: 'flat-sub-vis' }, visibilityBadge(f.visibility)), h('span', null, timeEl(f.updated_at), ` · ${status}`))),
-      h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility)),
+        h('div', { class: 'flat-sub' }, h('span', { class: 'flat-sub-vis' }, visibilityBadge(f.visibility, f.public_access)), h('span', null, timeEl(f.updated_at), ` · ${status}`))),
+      h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility, f.public_access)),
       actions);
   }
 
