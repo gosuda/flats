@@ -267,7 +267,9 @@ loaded:
 - While either one is permitted, `proxy.addr` differs from `host.console_addr`
   and `host.local_addr` (two ephemeral `:0` ports never collide). While
   neither is, the address is never bound, so a configuration that already uses
-  `127.0.0.1:7880` for another listener keeps starting.
+  `127.0.0.1:7880` for another listener keeps starting. The check compares
+  the addresses as written: `localhost:7880` and `127.0.0.1:7880` pass it, and
+  the clash then shows up as a bind error when the listener starts.
 - `network.default_private` can be `proxy` and `network.default_public` can be
   `proxy-public` only while the host permits that kind.
 - No `console.external_origins` entry may be an address the template can
