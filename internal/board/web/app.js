@@ -12,8 +12,8 @@ import { LIMITS } from './schema.js';
 import * as ops from './ops.js';
 import { $, h, icon, toast, dialog, plural, closePopover, replace } from './ui.js';
 import {
-  stored, helloFields, viewersOf, viewerLabel, byKind, who, badge, nameWithBadge, rejectMessage, guestBatchFits,
-  cleanGuestName, guestNameError, runeCount, dropPending, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS, NAME_INVALID,
+  stored, helloFields, viewersOf, viewerLabel, byKind, badge, rejectMessage, guestBatchFits,
+  cleanGuestName, guestNameError, runeCount, finishGuestEditing, overwriteNotice, activityNotice, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS, NAME_INVALID,
 } from './guest.js';
 import { Presence } from './presence.js';
 import { StyleBar, contextMenu } from './stylebar.js';
@@ -205,7 +205,11 @@ class App {
     const access = m.access === 'private' || m.access === 'guest' ? m.access : 'public';
     // Presence from another kind of connection does not carry over.
     if (this.access && access !== this.access) { closePopover(); this.presence.reset(); }
-    const wasGuest = this.access === 'guest';
+    // A guest who reconnects after the owner stopped guest editing is
+    // admitted as a viewer without editing_ended. Its open text and
+    // unconfirmed edits are saved for recovery while it can still edit.
+    const leaving = this.access === 'guest' && access === 'public' && !this.guestEnded;
+    const unsent = leaving ? finishGuestEditing(this) : 0;
     this.access = access;
     this.level = m.level || '';
     this.me = m.me || null;
@@ -234,11 +238,8 @@ class App {
     if (this.isMember && this.me && !this.me.verified && !this.name && !this.readOnlyChoice) this.namePrompt();
     this.applyMode();
     this.presence.sendAll();
-    // A guest who reconnects after the owner stopped guest editing is
-    // admitted as a viewer without editing_ended: its unconfirmed edits are
-    // handled the same way.
     if (this.isGuest) this.guestEnded = false;
-    else if (wasGuest && this.isPublic && !this.guestEnded) this.endGuestEdits();
+    else if (leaving) this.guestEditingEnded(unsent);
     if (this.isPublic) this.offerJoin(!this.joinOffered);
     else this.closeJoin();
   }
@@ -293,6 +294,8 @@ class App {
 
   onFatal(code, m = {}) {
     if (code === 'editing_ended') { this.editingEnded(); return; }
+    // Open text joins the unsent edits that the fatal banner can save.
+    if (this.editor) this.editor.commit();
     this.stopped = code;
     this.applyMode();
     if (code === 'full') { this.boardFull(); return; }
@@ -818,9 +821,8 @@ class App {
   overwritten(o, by) {
     const el = this.state.get(o.id);
     if (!el) return;
-    const w = who(by);
     const what = (el.text || '').split('\n')[0].slice(0, 30);
-    toast(h('span', {}, nameWithBadge(w.text, w.guest), ` just changed ${what ? `"${what}"` : 'this element'}, so the text you wrote was overwritten.`), {
+    toast(overwriteNotice(by, what), {
       actions: [['Keep my text', () => this.keepText(el, o.text)]],
       timeout: 0,
     });
@@ -844,9 +846,8 @@ class App {
     if (changed) parts.push(`changed ${plural(changed, 'element')}`);
     if (removed) parts.push(`removed ${plural(removed, 'element')}`);
     if (!parts.length) return;
-    const name = (d.by && d.by.label) || 'The agent';
     const said = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
-    toast(`${name} ${said}.`, { actions: this.isMember ? [['Roll back to before this…', () => this.history.open()]] : [] });
+    toast(activityNotice(d.by, said), { actions: this.isMember ? [['Roll back to before this…', () => this.history.open()]] : [] });
     this.renderer.dynamic();
     setTimeout(() => this.renderer.dynamic(), 2050);
   }
@@ -1118,20 +1119,16 @@ class App {
   // editingEnded: the owner stopped guest editing. Unconfirmed edits can be
   // saved to a file, then the tab reconnects as a viewer (rule 29).
   editingEnded() {
-    if (this.editor) this.editor.commit();
+    const unsent = finishGuestEditing(this);
     this.stopped = 'editing_ended';
-    this.endGuestEdits();
+    this.guestEditingEnded(unsent);
     this.applyMode();
     this.net.resume();
   }
 
-  // endGuestEdits keeps the unconfirmed edits of a guest connection in a
-  // recovery file and drops them from the board: a viewer cannot send them,
-  // and a later guest session must not resend them.
-  endGuestEdits() {
-    const unsent = this.state.pending.length;
-    if (unsent) this.exporter.prepareRecovery();
-    this.changed(dropPending(this.state));
+  // guestEditingEnded shows the banner after finishGuestEditing; a viewer
+  // cannot send the dropped edits, and a later guest session must not.
+  guestEditingEnded(unsent) {
     this.join = false;
     this.guestEnded = true;
     this.banner('ended', unsent);

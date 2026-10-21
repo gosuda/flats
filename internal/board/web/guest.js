@@ -92,10 +92,36 @@ export function byKind(by) {
 const KIND_WHO = { member: 'A member', guest: 'A guest', agent: 'The agent', system: 'Flats' };
 
 // who is the text and guest flag naming the author of a change in a notice.
+// A member socket gets a guest author as {kind: "person", label, guest: true}.
 export function who(by) {
   const label = by && typeof by === 'object' ? by.label : '';
   const kind = byKind(by);
-  return { text: label || KIND_WHO[kind] || 'Someone', guest: kind === 'guest' && !!label };
+  const guest = !!label && (kind === 'guest' || by.guest === true);
+  return { text: label || KIND_WHO[kind] || 'Someone', guest };
+}
+
+// overwriteNotice tells the writer that someone replaced the text they typed.
+export function overwriteNotice(by, what) {
+  const w = who(by);
+  return h('span', {}, nameWithBadge(w.text, w.guest), ` just changed ${what ? `"${what}"` : 'this element'}, so the text you wrote was overwritten.`);
+}
+
+// activityNotice reports what an author did to the board.
+export function activityNotice(by, said) {
+  const w = who(by);
+  return h('span', {}, nameWithBadge(by && by.label ? w.text : 'The agent', w.guest), ` ${said}.`);
+}
+
+// finishGuestEditing ends the editing of a guest tab while it can still
+// commit: the open text editor's text becomes a pending batch, every pending
+// batch goes into the recovery file, then they are dropped from the board.
+// It returns how many batches were unconfirmed.
+export function finishGuestEditing(app) {
+  if (app.editor) app.editor.commit();
+  const unsent = app.state.pending.length;
+  if (unsent) app.exporter.prepareRecovery();
+  app.changed(dropPending(app.state));
+  return unsent;
 }
 
 // badge is the mark drawn next to a name, outside the name text, so no name

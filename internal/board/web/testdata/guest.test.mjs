@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import { installDOM } from './dom.mjs';
 import {
   cleanGuestName, guestNameError, runeCount, viewerLabel, viewersOf, helloFields, byKind, who, badge, nameWithBadge,
-  rejectMessage, guestBatchFits, dropPending, stored, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS,
+  rejectMessage, guestBatchFits, dropPending, finishGuestEditing, overwriteNotice, activityNotice, stored, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS,
 } from '../guest.js';
 import { guestCredit, creditText } from '../history.js';
-import { Net } from '../net.js';
+import { Net, queueBatch } from '../net.js';
 import { BoardState } from '../state.js';
+import { TextEditor } from '../textedit.js';
+import { THEMES } from '../theme.js';
+import { buildRecovery } from '../recovery.js';
 
 test('guest names lose control and format characters and are 1 to 40 characters', () => {
   assert.equal(cleanGuestName('  Mina  '), 'Mina');
@@ -272,4 +275,65 @@ test('authorship fields in element sets are accepted plain or versioned', () => 
   assert.equal(state.applyDelta({ seq: 3, changes: [{ id: EL.id, inc: 1, set: { lk: ['member', 4], text: ['c', 4] } }] }).status, 'applied');
   assert.equal(state.get(EL.id).lk, 'member');
   assert.equal(state.get(EL.id).text, 'c');
+});
+
+const textOf = (n) => (n.tagName ? n.children.map(textOf).join('') || n.textContent : n.textContent);
+
+test('notices mark a guest author from a member socket with the guest badge', () => {
+  installDOM();
+  // The exact member-facing author of a guest edit.
+  const by = { kind: 'person', label: 'Operator', guest: true };
+  assert.deepEqual(who(by), { text: 'Operator', guest: true });
+  const n = overwriteNotice(by, 'Plan');
+  assert.equal(textOf(n), 'Operator guest just changed "Plan", so the text you wrote was overwritten.');
+  assert.ok(n.children.some((c) => c.className === 'badge guest'), 'the badge is its own element');
+  const a = activityNotice(by, 'changed 2 elements');
+  assert.equal(textOf(a), 'Operator guest changed 2 elements.');
+  assert.ok(a.children.some((c) => c.className === 'badge guest'));
+  // A member named like a guest gets no badge; an agent keeps its label.
+  const member = overwriteNotice({ kind: 'person', label: 'Mina guest' }, '');
+  assert.ok(!member.children.some((c) => c.className === 'badge guest'));
+  assert.equal(textOf(member), 'Mina guest just changed this element, so the text you wrote was overwritten.');
+  assert.equal(textOf(activityNotice({ kind: 'agent', label: 'Claude' }, 'added 1 element')), 'Claude added 1 element.');
+  assert.equal(textOf(activityNotice(null, 'added 1 element')), 'The agent added 1 element.');
+});
+
+// The transition App.welcome (a guest reconnected as a viewer) and
+// App.editingEnded run, with the real TextEditor and board state: the text
+// in an open editor reaches the recovery file before editing is disabled.
+test('ending guest editing keeps the text of an open editor for recovery', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  installDOM([{ cls: 'board-ui' }, { cls: 'toasts' }]);
+  const ID = 'e_shape00001';
+  const state = new BoardState();
+  state.session = 'S';
+  state.loadSnapshot({ seq: 10, elements: [{ id: ID, type: 'shape', x: 0, y: 0, w: 200, h: 100, rot: 0, z: 'V', text: 'start', inc: 1, v: { geom: 1, text: 10 } }] });
+  let recovery = null;
+  const app = {
+    state, cam: { z: 1 }, editor: null, canEdit: true, changedIds: [],
+    renderer: { theme: THEMES.light, setHidden() {} },
+    presence: { send() {} },
+    styleBar: { hide() {}, update() {} },
+    toScreen: (x, y) => [x, y],
+    commit(list) { return this.canEdit && list.length ? queueBatch(state, list).batch : null; },
+    changed(ids) { this.changedIds.push(...ids); },
+    focusBoard() {},
+    exporter: { prepareRecovery() { recovery = buildRecovery(state); } },
+  };
+  const ed = new TextEditor(app, state.get(ID));
+  app.editor = ed;
+  ed.ta.value = 'typed while connected';
+  const unsent = finishGuestEditing(app);
+  app.canEdit = false; // the tab is a viewer now
+  assert.equal(unsent, 1, 'the open text became an unconfirmed batch');
+  assert.equal(app.editor, null, 'the editor closed');
+  assert.ok(recovery && recovery.elements.some((e) => e.text === 'typed while connected'), 'the text is in the recovery file');
+  assert.equal(state.pending.length, 0, 'nothing is left to resend');
+  assert.equal(state.get(ID).text, 'start', 'the board shows the server text again');
+  ed.ta.dispatch('blur');
+  assert.equal(state.pending.length, 0, 'a later blur changes nothing');
+  // Without an editor or pending edits there is nothing to recover.
+  recovery = null;
+  assert.equal(finishGuestEditing(app), 0);
+  assert.equal(recovery, null);
 });
