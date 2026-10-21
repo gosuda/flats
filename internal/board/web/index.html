@@ -17,6 +17,7 @@
     <span class="chip" id="access-chip" hidden></span>
   </div>
   <div class="save" role="status"></div>
+  <span id="me-label" class="me" hidden></span>
   <button id="name-btn" type="button" class="btn ghost" aria-label="Choose a name to edit" title="Choose a name to edit" hidden><span data-icon="pen"></span><span class="lbl">Choose a name to edit</span></button>
   <div class="spacer"></div>
   <button class="people" type="button" aria-haspopup="dialog" aria-expanded="false" hidden></button>
@@ -26,7 +27,7 @@
   <button id="share-btn" type="button" class="btn ghost priv-only" aria-label="Send to agent" title="Send to agent" disabled><span data-icon="send"></span><span class="lbl">Send to agent</span></button>
 </header>
 <div class="banners"></div>
-<nav class="tools priv-only" aria-label="Tools"></nav>
+<nav class="tools" aria-label="Tools"></nav>
 <aside id="frame-list" class="panel left" aria-label="Frame list" hidden></aside>
 <main class="board" aria-label="Board canvas" tabindex="-1">
   <canvas class="layer-static" aria-hidden="true"></canvas>
@@ -44,7 +45,7 @@
   <button type="button" class="b" data-act="in" aria-label="Zoom in (⌘+)" title="Zoom in (⌘+)"><span data-icon="plus"></span></button>
   <button type="button" class="b" data-act="fit" aria-label="Fit all (⇧1)" title="Fit all (⇧1)"><span data-icon="fit"></span></button>
 </div>
-<div class="undo priv-only">
+<div class="undo">
   <button type="button" class="b" data-act="undo" aria-label="Undo (⌘Z)" title="Undo (⌘Z)"><span data-icon="undo"></span></button>
   <button type="button" class="b" data-act="redo" aria-label="Redo (⇧⌘Z)" title="Redo (⇧⌘Z)"><span data-icon="redo"></span></button>
 </div>

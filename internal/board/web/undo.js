@@ -3,6 +3,7 @@
 // the server skipped.
 
 import { toast, plural } from './ui.js';
+import { who } from './guest.js';
 
 export class Undo {
   constructor(app) { this.app = app; }
@@ -40,8 +41,8 @@ export class Undo {
   // cleared reports a whole-board rollback or replacement, which clears
   // every tab's undo history.
   cleared(reset, by) {
-    const who = by && by.label ? by.label : 'Someone';
+    const name = who(by).text;
     const what = reset.kind === 'rollback' ? `rolled the board back${reset.of ? ` to r${reset.of}` : ''}` : 'replaced the whole board';
-    toast(`${who} ${what}. Everyone's undo history was cleared.`);
+    toast(`${name} ${what}. Everyone's undo history was cleared.`);
   }
 }

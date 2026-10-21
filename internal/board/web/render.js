@@ -423,7 +423,7 @@ export class Renderer {
     const old = this.painter;
     this.painter = new Painter({
       theme: currentTheme(), images: this.images, get: (id) => this.app.doc.get(id),
-      names: this.app.names, showAuthors: !this.app.isPublic, dpr: this.dpr,
+      names: this.app.names, showAuthors: this.app.isMember, dpr: this.dpr,
     });
     if (old) this.painter.hidden = old.hidden;
   }

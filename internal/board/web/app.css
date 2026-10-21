@@ -60,6 +60,10 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
   display: grid; place-items: center; color: var(--muted); font-size: 9px; font-weight: 700; line-height: 1; }
 .av .ver svg.i { width: 10px; height: 10px; stroke: var(--ok); stroke-width: 3; }
 .more-count { font-size: 12px; color: var(--muted); margin-left: 6px; }
+.av.viewer { background: var(--muted); }
+.me { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.me strong { color: var(--ink); font-weight: 600; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; }
+.link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
 
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 5px; color: var(--ink);
   white-space: nowrap; text-decoration: none; }
@@ -110,7 +114,7 @@ body.history-open .zoom { right: 394px; }
 .zoom .b:hover, .undo .b:hover, .zoom .z:hover { background: var(--active); }
 .mobile-nav { display: none; }
 
-body.public .priv-only, body.readonly .tools, body.readonly .undo { display: none; }
+body.public .priv-only, body.guest .priv-only, body.readonly .tools, body.readonly .undo { display: none; }
 
 /* ---- popovers, menus, dialogs ---- */
 .pop { position: fixed; z-index: 40; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
@@ -125,6 +129,10 @@ body.public .priv-only, body.readonly .tools, body.readonly .undo { display: non
   color: var(--muted); white-space: nowrap; }
 .badge svg.i { width: 12px; height: 12px; }
 .badge.ok { color: var(--ok); }
+/* The guest badge is drawn by the board next to every guest name, never
+   inside it (board-public-edit.md rule 13). */
+.badge.guest { background: var(--warn-bg); color: var(--warn-ink); font-weight: 600; }
+.badge.member, .badge.viewer { border: 1px solid var(--line); background: none; }
 .quick .qh { position: absolute; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; color: var(--accent);
   background: var(--paper); border: 1px solid var(--line); box-shadow: var(--shadow); }
 .quick .qh svg.i { width: 14px; height: 14px; }
@@ -146,6 +154,9 @@ dialog h2 { margin: 0 0 6px; font-size: 17px; }
 dialog > .note { margin: 0 0 14px; }
 .acts { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 form .acts { margin-top: 16px; }
+.label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.callout { margin: 14px 0 0; padding: 9px 12px; border-radius: 6px; background: var(--active); font-size: 13px; }
+form .refusal:empty { display: none; }
 fieldset { border: 0; margin: 0 0 14px; padding: 0; }
 legend { font-weight: 600; margin-bottom: 8px; padding: 0; }
 .opt { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 5px; }
@@ -198,6 +209,7 @@ body.history-open .banners { right: 380px; }
 .rev .num { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
 .rev .msg { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rev .meta { grid-column: 2 / 4; }
+.rev .protected { display: block; }
 .pin { margin-right: 6px; color: var(--muted); width: 40px; height: 40px; }
 .pin.on { color: var(--accent); }
 .pin[aria-pressed=true] { background: none; }
@@ -222,6 +234,10 @@ body.history-open .banners { right: 380px; }
 .facts dd { margin: 0; }
 .alt-pop { width: 380px; padding: 12px; }
 .alt-pop .acts { border: 0; padding: 0; margin-top: 10px; }
+/* Join panel for a viewer when the board becomes editable (rule 11). */
+.join { left: 50%; bottom: 72px; transform: translateX(-50%); width: min(560px, calc(100vw - 32px)); padding: 14px 16px; display: grid; gap: 10px; }
+.join p { margin: 0; }
+.join-row { display: flex; align-items: flex-end; gap: 8px; }
 .findbar { left: 50%; top: calc(var(--top) + 12px); transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px;
   width: min(480px, calc(100vw - 32px)); }
 .findbar input { border: 0; flex: 1; min-width: 0; background: none; font-size: 14px; outline: none; }
@@ -283,6 +299,8 @@ body.history-open .banners { right: 380px; }
   .panel.right, .panel.left { width: 100%; }
   body.history-open .board, body.frames-open .board { left: 0; right: 0; }
   .people-pop, .share-pop, .locked-pop { left: 8px !important; right: 8px; width: auto; }
+  .me .you { display: none; }
+  .join { bottom: 80px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
