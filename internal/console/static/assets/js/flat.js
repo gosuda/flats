@@ -209,12 +209,15 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       const rows = [];
       const edit = accessOf(flat) === 'edit';
       if (pre && pre.safe_point) {
+        const pinned = pre.safe_point_pinned === true;
         const open = flat.private_url ? extLink(flat.private_url, 'Open History', 'btn btn-small') : null;
         rows.push(h('div', { class: 'setting-row' },
           h('div', null, h('span', { class: 'setting-title', text: 'Safe point' }), h('div', { class: 'muted small', text: edit ? 'Kept while guests can edit' : 'From the last time guests could edit' })),
           h('div', { class: 'setting-sharing' },
-            h('div', { class: 'setting-control' }, h('span', { class: 'badge badge-live', text: 'Pinned' }), h('span', { text: `Revision r${pre.safe_point}, before guest editing` }), open),
-            h('p', { class: 'muted small', text: edit ? "Restore it from History. It can't be unpinned until guest editing stops." : 'It is now an ordinary pinned revision; you can unpin it in History.' }))));
+            h('div', { class: 'setting-control' }, h('span', { class: pinned ? 'badge badge-live' : 'badge', text: pinned ? 'Pinned' : 'Not pinned' }),
+              h('span', { text: `Revision r${pre.safe_point}, before guest editing` }), open),
+            h('p', { class: 'muted small', text: !pinned ? 'Retention can delete it like any unpinned revision.'
+              : edit ? "Restore it from History. It can't be unpinned until guest editing stops." : 'It is now an ordinary pinned revision; you can unpin it in History.' }))));
       }
       const waiting = ((pend && pend.approvals) || []).filter((a) => a.status === 'pending' && a.action === 'set_visibility' && a.flat === slug);
       for (const a of waiting) {

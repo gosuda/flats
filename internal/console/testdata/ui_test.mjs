@@ -2315,7 +2315,7 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
 }
 {
   // A refusal from the server shows the blocked dialog with its problems.
-  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 10, pin_quota: 20, pins: 3, safe_point: 7, listed: false };
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 10, pin_quota: 20, pins: 3, safe_point: 7, safe_point_pinned: true, listed: false };
   routes['POST /console/api/flats/retro/visibility'] = { __status: 409, category: 'public_edit_blocked', error: 'blocked', problems: [{ code: 'revision_quota_unlimited', message: 'unlimited' }] };
   const r = versionActions.allowGuestEditing(retro);
   await tick();
@@ -2333,7 +2333,7 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   // pinned safe point and a pending visibility change.
   routes['GET /console/api/flats/retro'] = retroEdit;
   routes['GET /console/api/flats/retro/revision-quota'] = { revision_quota: 50, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 1 };
-  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 1, safe_point: 12, listed: false };
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 1, safe_point: 12, safe_point_pinned: true, listed: false };
   routes['GET /console/api/approvals?status=pending'] = { approvals: [{ id: 'apr-wait', action: 'set_visibility', flat: 'retro', status: 'pending', params: { visibility: 'private', from: 'public', from_access: 'edit' } }] };
   const main = new Element('main');
   const stop = flat.mountSettings(main, ['retro'], ctx);
@@ -2344,6 +2344,28 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   assert.ok(main.textContent.includes('Revision r12, before guest editing') && main.textContent.includes("It can't be unpinned until guest editing stops."));
   assert.ok(main.textContent.includes('Waiting for approval') && main.textContent.includes('Make retro private'));
   assert.equal(all(main, (e) => e.tagName === 'A' && e.textContent === 'View request')[0].getAttribute('href'), '/approvals/apr-wait');
+  assert.ok(all(main, (e) => e.getAttribute('class') === 'badge badge-live').some((e) => e.textContent === 'Pinned'));
+  // Stop is announced only when the host confirmed it: a refused or an
+  // unconfirmed decision is reported as a failure and changes nothing shown.
+  const stopToasts = new Element('div');
+  const savedGet = document.getElementById;
+  document.getElementById = (id) => (id === 'toasts' ? stopToasts : savedGet?.(id));
+  for (const [i, answer] of [
+    { __status: 500, error: 'guest editing could not be confirmed as stopped', category: 'unavailable', approval: { id: 'x', status: 'failed' } },
+    { id: 'apr-retro-fail', status: 'failed', result: 'guest editing could not be confirmed as stopped' },
+    { id: 'apr-retro-fail', status: 'pending' },
+  ].entries()) {
+    routes['POST /console/api/flats/retro/visibility'] = pending('apr-retro-fail');
+    routes['POST /console/api/approvals/apr-retro-fail/approve'] = answer;
+    const res = versionActions.stopGuestEditing(retroEdit);
+    await tick();
+    const failed = openDialogs().pop();
+    assert.ok(failed && failed.textContent.includes('Stop guest editing failed'), `case ${i}: the failure is reported`);
+    if (answer.result || answer.error) assert.ok(failed.textContent.includes('could not be confirmed as stopped'), `case ${i}: ${failed.textContent}`);
+    failed.close('ok');
+    assert.equal(await res, null, `case ${i}`);
+    assert.ok(!stopToasts.textContent.includes('Guest editing stopped'), `case ${i}: no success toast`);
+  }
   routes['POST /console/api/flats/retro/visibility'] = pending('apr-retro-stop2');
   routes['POST /console/api/approvals/apr-retro-stop2/approve'] = { id: 'apr-retro-stop2', status: 'approved' };
   routes['GET /console/api/flats/retro'] = retro;
@@ -2353,7 +2375,26 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   assert.equal(openDialogs().length, 0, 'no confirmation from the flat page either');
   assert.ok(main.textContent.includes('Public, view only'));
   assert.equal(byText(main, 'Stop guest editing').length, 0);
+  assert.ok(stopToasts.textContent.includes('Guest editing stopped'), 'a confirmed Stop is announced');
+  document.getElementById = savedGet;
   stop();
+  // After Stop the safe point can be unpinned in History; reloading the
+  // settings shows its real state.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 0, safe_point: 12, safe_point_pinned: false, listed: false };
+  const again = new Element('main');
+  const stopAgain = flat.mountSettings(again, ['retro'], ctx);
+  await tick();
+  const badgeTexts = (root) => all(root, (e) => (e.getAttribute('class') || '').split(' ').includes('badge')).map((e) => e.textContent);
+  assert.ok(badgeTexts(again).includes('Not pinned') && !badgeTexts(again).includes('Pinned'), badgeTexts(again).join('|'));
+  assert.ok(again.textContent.includes('Retention can delete it like any unpinned revision.'));
+  stopAgain();
+  // A safe point that no longer exists is not shown.
+  routes['GET /console/api/flats/retro/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 0, safe_point: null, safe_point_pinned: false, listed: false };
+  const gone = new Element('main');
+  const stopGone = flat.mountSettings(gone, ['retro'], ctx);
+  await tick();
+  assert.ok(!gone.textContent.includes('Safe point'));
+  stopGone();
   routes['GET /console/api/approvals?status=pending'] = { approvals: [] };
 }
 {

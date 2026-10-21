@@ -250,12 +250,19 @@ async function canGoPublic(flat) {
   return true;
 }
 
+// confirmed returns a visibility result that the host confirmed as applied:
+// an approved request, or a change that was already in place. Anything else
+// is reported as a failure rather than announced as done.
+function confirmed(res) {
+  if (res?.status === 'approved' || res?.status === 'done') return res;
+  throw Object.assign(new Error(res?.result || res?.error || 'Flats did not confirm the change.'), { body: {} });
+}
+
 // stopGuestEditing sets a board to Public, view only at once, with no
 // confirmation (rule 5). The console's request is its own approval.
 export async function stopGuestEditing(flat) {
   try {
-    const res = await approve(await api.setVisibility(flat.slug, 'public', 'view'));
-    if (res?.status === 'failed') throw Object.assign(new Error(res.result || 'The change failed.'), { body: {} });
+    const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'view')));
     toast('Guest editing stopped. Viewers can still watch.', 'success');
     return res;
   } catch (err) {
@@ -294,8 +301,7 @@ export async function allowGuestEditing(flat) {
   });
   if (!ok) return null;
   try {
-    const res = await approve(await api.setVisibility(flat.slug, 'public', 'edit'));
-    if (res?.status === 'failed') throw Object.assign(new Error(res.result || 'The change failed.'), { body: {} });
+    const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'edit')));
     toast('Anyone with the link can now edit this board.', 'success');
     return res;
   } catch (err) {
@@ -326,7 +332,7 @@ function blockedDialog(flat, pre, problems) {
     });
     if (!codes.has('disk_quota_off')) rows.push(check(true, `Disk quota is ${bytes(pre.disk_quota)}.`));
     if (!codes.has('revision_quota_unlimited')) rows.push(check(true, `Revision quota is ${pre.revision_quota}.`));
-    if (!codes.has('pin_quota_full')) rows.push(check(true, pre.safe_point ? `The safe point r${pre.safe_point} is kept pinned.` : 'A pin is free for the safe point.'));
+    if (!codes.has('pin_quota_full')) rows.push(check(true, pre.safe_point && pre.safe_point_pinned ? `The safe point r${pre.safe_point} is kept pinned.` : 'A pin is free for the safe point.'));
     const base = `/flats/${encodeURIComponent(flat.slug)}`;
     const targets = {
       limits: h('a', { class: 'btn', href: '/settings/limits', 'data-nav': true, text: 'Open Limits' }),
