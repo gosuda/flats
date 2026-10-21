@@ -219,11 +219,23 @@ func (h *hub) gone(c *conn) {
 	delete(h.departing, c.plabelN)
 }
 
-// rejoined reports whether the key has a socket again.
-func (h *hub) rejoined(key string) bool {
+// goneToMembers queues frame, c's departure, to the member sockets unless
+// c's key has a socket again. It holds mu while it checks and queues, so
+// join cannot add a socket of the key in between. Lock order: mu, then a
+// socket's conn.mu; member sockets are Private and take no publicMu.
+func (h *hub) goneToMembers(c *conn, frame []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.keys[key] > 0
+	if h.keys[c.key] > 0 {
+		return
+	}
+	to := make([]*conn, 0, len(h.conns))
+	for o := range h.conns {
+		if !o.public {
+			to = append(to, o)
+		}
+	}
+	relayTo(to, c, frame, nil)
 }
 
 // viewerNumber gives a viewer socket its number: the one its token holds,
@@ -357,6 +369,9 @@ type conn struct {
 	// overflowed: the queue went over its cap and the socket is closing,
 	// or the pump stopped; no frame is queued any more.
 	overflowed bool
+	// handed is the seq the client's board reaches with the deltas and
+	// snapshots the pump has handed to the socket (resync).
+	handed int64
 
 	asm       *assembly
 	discarded int64 // the batch whose assembly was dropped as transient
@@ -370,7 +385,18 @@ type outMsg struct {
 	frame []byte
 	snap  *snapJob
 	guest bool
+	kind  frameKind
+	seq   int64 // on the last frame of a delta: its seq
 }
+
+// frameKind tells resync what to do with a queued frame.
+type frameKind uint8
+
+const (
+	frameOther frameKind = iota // kept in place
+	frameDelta                  // a delta or delta part: the snapshot replaces it
+	frameReply                  // an ack or reject: sent after the snapshot
+)
 
 // Snapshot audiences: what form a snapshot's elements take.
 const (
@@ -572,12 +598,40 @@ func (r *rate) allow() bool {
 // frames are dropped. Every outgoing frame goes through it, so replies to a
 // client that sends faster than it reads cannot grow the queue. deliver
 // switches a Private socket to a snapshot before reaching the cap.
-func (c *conn) enqueue(frames ...[]byte) bool {
+func (c *conn) enqueue(frames ...[]byte) bool { return c.enqueueAs(frameOther, frames...) }
+
+// enqueueAs is enqueue for frames of one kind.
+func (c *conn) enqueueAs(kind frameKind, frames ...[]byte) bool {
+	msgs := make([]outMsg, len(frames))
+	for i, f := range frames {
+		msgs[i] = outMsg{frame: f, kind: kind}
+	}
+	return c.enqueueMsgs(msgs, false)
+}
+
+// enqueueDelta queues the frames of the delta at seq.
+func (c *conn) enqueueDelta(seq int64, frames [][]byte) bool {
+	msgs := make([]outMsg, len(frames))
+	for i, f := range frames {
+		msgs[i] = outMsg{frame: f, kind: frameDelta}
+	}
+	msgs[len(msgs)-1].seq = seq
+	return c.enqueueMsgs(msgs, false)
+}
+
+// enqueueMsgs is enqueue for frames with their kind and seq. final also
+// closes the socket after the queue, in the same step, so resync never
+// finds a final frame queued on a socket that is not closing.
+func (c *conn) enqueueMsgs(msgs []outMsg, final bool) bool {
 	size := int64(0)
-	for _, f := range frames {
-		size += int64(len(f))
+	for _, m := range msgs {
+		size += int64(len(m.frame))
 	}
 	c.mu.Lock()
+	if final {
+		c.closing = true
+		defer c.poke()
+	}
 	if c.overflowed {
 		c.mu.Unlock()
 		return false
@@ -588,8 +642,9 @@ func (c *conn) enqueue(frames ...[]byte) bool {
 		c.close(1008, "too far behind; reconnect")
 		return false
 	}
-	for _, f := range frames {
-		c.q = append(c.q, outMsg{frame: f, guest: c.chargeGuest})
+	for _, m := range msgs {
+		m.guest = c.chargeGuest
+		c.q = append(c.q, m)
 	}
 	c.qBytes += size
 	c.mu.Unlock()
@@ -639,6 +694,14 @@ func (c *conn) send(v any) {
 	}
 }
 
+// reply sends a batch's ack or reject.
+func (c *conn) reply(v any) {
+	b, err := json.Marshal(v)
+	if err == nil {
+		c.enqueueAs(frameReply, b)
+	}
+}
+
 func (c *conn) currentGen() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -649,15 +712,8 @@ func (c *conn) currentGen() int64 {
 // A Public socket whose snapshot state does not fit the host's Public
 // budget is closed, and its client retries. Only the apply loop calls it.
 func (c *conn) queueSnapshot(reset bool) {
-	d := c.in.currentSnap()
-	job := &snapJob{seq: d.seq, reset: reset, data: d}
-	switch {
-	case c.guest:
-		job.aud = audGuest
-	case c.public:
-		job.aud = audPublic
-	}
-	if job.public() && !d.acquirePublic(c.guest) {
+	job := c.snapJob(reset)
+	if job == nil {
 		c.close(1013, "busy; try again")
 		return
 	}
@@ -674,10 +730,31 @@ func (c *conn) queueSnapshot(reset bool) {
 	c.poke()
 }
 
+// snapJob takes a snapshot job of the current seq in the socket's
+// audience, or nil for a Public socket whose snapshot state does not fit
+// the host's Public budget. Only the apply loop calls it.
+func (c *conn) snapJob(reset bool) *snapJob {
+	d := c.in.currentSnap()
+	job := &snapJob{seq: d.seq, reset: reset, data: d}
+	switch {
+	case c.guest:
+		job.aud = audGuest
+	case c.public:
+		job.aud = audPublic
+	}
+	if job.public() && !d.acquirePublic(c.guest) {
+		return nil
+	}
+	return job
+}
+
 // fatal tells the client to stop and closes the socket after the queue.
-func (c *conn) fatal(code string) {
-	c.send(map[string]string{"t": "fatal", "code": code})
-	c.closeAfterQueue()
+func (c *conn) fatal(code string) { c.final(map[string]string{"t": "fatal", "code": code}) }
+
+// final sends the socket's last message and closes it after the queue.
+func (c *conn) final(v any) {
+	b, _ := json.Marshal(v)
+	c.enqueueMsgs([]outMsg{{frame: b}}, true)
 }
 
 func (c *conn) closeAfterQueue() {
@@ -690,10 +767,10 @@ func (c *conn) closeAfterQueue() {
 func (c *conn) close(code int, reason string) { c.ws.Close(code, reason) }
 
 // deliver queues the frames of a committed delta, applying the queue caps
-// (4.6, 6): a Private socket over 4 MiB switches to a snapshot with resync,
-// or closes when a snapshot is already pending; a Public socket over 1 MiB,
-// or Public sockets over 256 MiB host-wide, close. Only the apply loop
-// calls it.
+// (4.6, 6): a socket over its cap (Private 4 MiB, Public 1 MiB) switches to
+// a snapshot with resync, or closes when a snapshot is already pending;
+// Public sockets over 256 MiB host-wide, or guests over their share, close.
+// Only the apply loop calls it.
 func (c *conn) deliver(rec deltaRec, publicBody, guestBody []byte) {
 	c.mu.Lock()
 	gen := c.gen
@@ -719,8 +796,8 @@ func (c *conn) deliver(rec deltaRec, publicBody, guestBody []byte) {
 	c.mu.Lock()
 	over := c.overCap(size)
 	c.mu.Unlock()
-	if !over || c.public {
-		c.enqueue(frames...) // closes a Public socket over a cap
+	if !over {
+		c.enqueueDelta(rec.seq, frames) // closes a Public socket over the host's budget
 		return
 	}
 	if pendingSnap {
@@ -730,21 +807,68 @@ func (c *conn) deliver(rec deltaRec, publicBody, guestBody []byte) {
 	c.resync()
 }
 
-// resync drops the queue and switches the client to a snapshot of the
-// current seq with a new generation (4.6). Only the apply loop calls it.
+// resync switches the client to a snapshot of the current seq with a new
+// generation (4.6): it drops the queued deltas and snapshots, which the
+// snapshot replaces, and returns their charges. The snapshot is marked
+// reset when a reset happened after what the socket was handed, as the
+// dropped deltas or snapshots would have said. Acks and rejects move
+// behind the snapshot, which holds their batches' changes, so a pending
+// batch still settles; other frames stay where they are. A closing socket
+// is left as it is. Only the apply loop calls it.
 func (c *conn) resync() {
 	c.mu.Lock()
+	// A closing socket ends with its queue, which may hold a fatal frame
+	// that its replies must not pass; its client gets the board when it
+	// connects again. It takes no snapshot state either, whose refusal
+	// would close it before its queue drained. c.mu stays held until the
+	// queue is rebuilt, so the socket cannot start closing meanwhile.
+	if c.overflowed || c.closing {
+		c.mu.Unlock()
+		return
+	}
+	job := c.snapJob(false)
+	if job == nil {
+		c.mu.Unlock()
+		c.close(1013, "busy; try again")
+		return
+	}
 	c.gen++
-	dropped := c.q
-	c.q = nil
-	c.qBytes = 0
-	c.snaps = 0
-	gen := c.gen
+	job.gen = c.gen
+	job.reset = c.in.resetAfter(c.handed)
+	var keep, replies, dropped []outMsg
+	for _, m := range c.q {
+		switch {
+		case m.snap != nil:
+			job.reset = job.reset || m.snap.reset
+			dropped = append(dropped, m)
+		case m.kind == frameDelta:
+			c.qBytes -= int64(len(m.frame))
+			if c.public {
+				unqueue(int64(len(m.frame)), m.guest)
+			}
+		case m.kind == frameReply:
+			replies = append(replies, m)
+		default:
+			keep = append(keep, m)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"t": "resync", "gen": c.gen, "seq": job.seq})
+	size := int64(len(b))
+	if c.overCap(size) || c.public && !c.reserveQueued(size) {
+		c.overflowed = true
+		c.q = append(keep, replies...)
+		c.snaps = 0
+		c.mu.Unlock()
+		releaseJobs(append(dropped, outMsg{snap: job}))
+		c.close(1008, "too far behind; reconnect")
+		return
+	}
+	c.q = slices.Concat(keep, []outMsg{{frame: b, guest: c.chargeGuest}, {snap: job}}, replies)
+	c.qBytes += size
+	c.snaps = 1
 	c.mu.Unlock()
 	releaseJobs(dropped)
-	b, _ := json.Marshal(map[string]any{"t": "resync", "gen": gen, "seq": c.in.st.Seq()})
-	c.enqueue(b)
-	c.queueSnapshot(false)
+	c.poke()
 }
 
 // pump feeds queued frames to the socket while fewer than 1 MiB are in
@@ -813,26 +937,53 @@ func (c *conn) pump() {
 		}
 		ok := c.feed(m.frame)
 		if held > 0 {
-			c.handed(held, m.guest)
+			c.handOver(held, m.guest)
 		}
 		if !ok {
 			c.dropQueue()
 			return
 		}
+		if m.seq > 0 {
+			c.setHanded(m.seq)
+		}
 	}
+}
+
+// setHanded records that the client's board reaches seq with what the
+// socket was handed.
+func (c *conn) setHanded(seq int64) {
+	c.mu.Lock()
+	c.handed = max(c.handed, seq)
+	c.mu.Unlock()
+}
+
+// resetAfter reports whether a reset may have happened after seq: a
+// recorded reset in (seq, now], or seq below the recorded resets. Only the
+// apply loop calls it.
+func (in *Instance) resetAfter(seq int64) bool {
+	st := in.st
+	if seq < st.ResetFloor() {
+		return true
+	}
+	for _, s := range st.Resets() {
+		if s > seq && s <= st.Seq() {
+			return true
+		}
+	}
+	return false
 }
 
 // flightPoll is how often an idle pump returns the guests' share of bytes
 // its socket has written meanwhile.
 const flightPoll = 20 * time.Millisecond
 
-// handed moves the charge of n bytes of a Public socket's frame, which the
+// handOver moves the charge of n bytes of a Public socket's frame, which the
 // socket now holds, from its queue: the host's Public budget counts them
 // in publicBudget from here, but a guest's share keeps them, as flight,
 // until the socket has written them (landFlight), so the guests' share
 // bounds their sockets' unwritten bytes too (TECH public edit 4.2). Only
 // the pump calls it.
-func (c *conn) handed(n int64, guest bool) {
+func (c *conn) handOver(n int64, guest bool) {
 	publicQueued.Add(-n)
 	if guest {
 		c.flight += n
@@ -974,12 +1125,13 @@ func (c *conn) sendSnapshot(j *snapJob) bool {
 		}
 		ok := c.feed(b.Bytes())
 		if j.public() {
-			c.handed(n, guest)
+			c.handOver(n, guest)
 		}
 		if !ok {
 			return false
 		}
 	}
+	c.setHanded(j.seq)
 	return true
 }
 
@@ -1304,7 +1456,7 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 		seq := st.Seq()
 		// Catching up through the delta log is limited to half the queue
 		// cap; a longer gap gets a snapshot instead of a closed socket.
-		var catchUp [][]byte
+		var catchUp []outMsg
 		if h.Watermark != nil && *h.Watermark < seq && !res.New && in.logCovers(*h.Watermark+1) {
 			gen := c.currentGen()
 			size := int64(0)
@@ -1315,30 +1467,28 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 						from = d.session + ":" + strconv.FormatInt(d.n, 10)
 					}
 					for _, f := range deltaFrames(gen, d.seq, d.body, from) {
-						catchUp = append(catchUp, f)
+						catchUp = append(catchUp, outMsg{frame: f, kind: frameDelta})
 						size += int64(len(f))
 					}
+					catchUp[len(catchUp)-1].seq = d.seq
 				}
 			}
 			if size > in.privateQueue/2 {
 				catchUp = nil
 			}
 		}
+		if h.Watermark != nil && *h.Watermark <= seq && !res.New {
+			c.setHanded(*h.Watermark)
+		}
 		switch {
 		case res.New || h.Watermark == nil || *h.Watermark > seq:
 			c.queueSnapshot(false)
 		case *h.Watermark == seq:
 		case catchUp != nil:
-			c.enqueue(catchUp...)
+			c.enqueueMsgs(catchUp, false)
 		default:
 			// A dropped reset after the watermark is reported too.
-			reset := *h.Watermark < st.ResetFloor()
-			for _, s := range st.Resets() {
-				if s > *h.Watermark && s <= seq {
-					reset = true
-				}
-			}
-			c.queueSnapshot(reset)
+			c.queueSnapshot(in.resetAfter(*h.Watermark))
 		}
 		in.sendPresence(c)
 		in.hub.register(c)
@@ -1387,7 +1537,7 @@ type batchReq struct {
 
 func (b *batchReq) transient(code string) {
 	hostStats.retried.Add(1)
-	b.c.send(map[string]any{"t": "reject", "n": b.n, "code": code, "retry": true})
+	b.c.reply(map[string]any{"t": "reject", "n": b.n, "code": code, "retry": true})
 }
 
 func (in *Instance) submit(ctx context.Context, b *batchReq) bool {
@@ -1542,7 +1692,7 @@ func (in *Instance) stageBatch(t *txn, b *batchReq) {
 	if c.guest && (c.epoch != in.epoch || in.level != AccessEdit) {
 		// The level changed since this guest's welcome: its socket is
 		// closing with editing_ended (TECH public edit 6.1).
-		c.send(map[string]any{"t": "reject", "n": b.n, "code": CodePermission, "retry": false,
+		c.reply(map[string]any{"t": "reject", "n": b.n, "code": CodePermission, "retry": false,
 			"detail": "the owner turned off guest editing"})
 		return
 	}
@@ -1657,14 +1807,14 @@ func (in *Instance) answer(b *batchReq, out engine.Outcome) {
 		b.c.fatal(out.Fatal)
 	case out.Reject != nil:
 		hostStats.rejected.Add(1)
-		b.c.send(map[string]any{"t": "reject", "n": b.n, "code": out.Reject.Code, "retry": false, "detail": out.Reject.Detail})
+		b.c.reply(map[string]any{"t": "reject", "n": b.n, "code": out.Reject.Code, "retry": false, "detail": out.Reject.Detail})
 	default:
 		results := out.Results
 		if results == nil {
 			results = json.RawMessage("[]")
 		}
 		hostStats.applied.Add(1)
-		b.c.send(map[string]any{"t": "ack", "n": b.n, "seq": out.AckSeq, "results": results})
+		b.c.reply(map[string]any{"t": "ack", "n": b.n, "seq": out.AckSeq, "results": results})
 	}
 }
 
@@ -1768,7 +1918,12 @@ func (c *conn) presFrames(fields map[string]json.RawMessage) (forMembers, forGue
 // in its audience's form (nil: none), dropping it for sockets that are
 // behind. Viewers receive no presence.
 func (in *Instance) relayPres(from *conn, forMembers, forGuests []byte) {
-	for _, o := range in.hub.list() {
+	relayTo(in.hub.list(), from, forMembers, forGuests)
+}
+
+// relayTo is relayPres to the sockets of to.
+func relayTo(to []*conn, from *conn, forMembers, forGuests []byte) {
+	for _, o := range to {
 		if o == from || o.public && !o.guest {
 			continue
 		}
@@ -1790,19 +1945,26 @@ func (in *Instance) relayPres(from *conn, forMembers, forGuests []byte) {
 
 // relayGone tells the others that the editor's last socket closed.
 // Guests get the departed label, which no other key takes before this
-// (hub.departing); members get the key, unless it came back meanwhile.
+// (hub.departing). Members get the key unless it came back meanwhile: the
+// hub decides and queues that frame under its lock, which hub.join needs
+// too, so a socket of the key that joins later has its presence queued
+// after the gone frame in every member's queue.
 func (in *Instance) relayGone(c *conn) {
 	if !c.joined {
 		return
 	}
-	var forMembers []byte
-	if !in.hub.rejoined(c.key) {
-		forMembers, _ = json.Marshal(map[string]any{"t": "pres", "key": c.key, "gone": true})
+	forMembers, _ := json.Marshal(map[string]any{"t": "pres", "key": c.key, "gone": true})
+	in.hub.goneToMembers(c, forMembers)
+	if hook := goneHook.Load(); hook != nil {
+		(*hook)(c.key)
 	}
 	forGuests, _ := json.Marshal(map[string]any{"t": "pres", "key": c.plabel, "gone": true})
-	in.relayPres(c, forMembers, forGuests)
+	in.relayPres(c, nil, forGuests)
 	in.hub.gone(c)
 }
+
+// goneHook runs after relayGone has dealt with the members. Tests set it.
+var goneHook atomic.Pointer[func(key string)]
 
 func (in *Instance) onShare(ctx context.Context, c *conn, raw string) bool {
 	var m struct {

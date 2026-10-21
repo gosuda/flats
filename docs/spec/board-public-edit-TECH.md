@@ -251,7 +251,9 @@ people apart, so it uses connection labels:
 - Each editor key that has at least one live socket gets a label `p:N`, with
   N the lowest number free at the moment the key's first socket welcomes. The
   label is released when the key's last socket closes (the gone frame is sent
-  then). The map therefore holds at most the live members and guests
+  then). Members get the gone frame with the key only while the key has no
+  socket: the hub checks and queues it under the lock a new socket's join
+  takes, so a reconnected editor's presence always follows it. The map therefore holds at most the live members and guests
   (64 + 50); it does not grow with guest churn.
 - Members appear to guests as `Member N` with `verified: false` (a guest is
   never told a member is verified); guests appear with their name. A member

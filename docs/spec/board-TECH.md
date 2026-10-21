@@ -424,10 +424,12 @@ sequenceDiagram
   current seq at that time.
 - **Large deltas.** When a serialized delta frame would exceed 512 KiB, the
   server sends it as `delta_part {gen, seq, part, parts, data}`. The client applies it at once
-  after receiving every part. When a delta would take a Private connection's
-  send queue over its 4 MiB cap, the server drops that connection's queue
-  and switches to the snapshot of that seq with `resync {seq}` (4.8); when a
-  snapshot is already pending there, it closes the connection instead (6). The client's `pending` and the server's
+  after receiving every part. When a delta would take a connection's send
+  queue over its cap (Private 4 MiB, Public 1 MiB), the server drops that
+  connection's queued deltas and switches to the snapshot of that seq with
+  `resync {seq}` (4.8), keeping its other queued frames and sending queued
+  acks and rejects after the snapshot; when a snapshot is already pending
+  there, or the connection is closing, it does not switch (6). The client's `pending` and the server's
   receipts stay as they are. Each switch increments a per-connection
   generation number (`gen`); the client discards any `delta_part` it was
   assembling and ignores parts of earlier generations.
@@ -1039,9 +1041,12 @@ images' `assets` rows (`held_until`, then `refs`) protect the blobs.
   presence, `resync`, snapshot parts) counts toward the connection's queue
   cap, so a client that sends faster than it reads cannot grow its queue.
   A connection whose queue would exceed its cap is closed with 1008 and its
-  client reconnects. A Private connection that falls behind on deltas gets
-  a `resync` to a snapshot first (4.6), and is closed only when a snapshot
-  is already pending there. A reconnect whose catch-up from the delta log
+  client reconnects. A connection, Private or Public, that falls behind on
+  deltas gets a `resync` to a snapshot first (4.6), and is closed only when
+  a snapshot is already pending there. The resync drops the queued deltas,
+  which the snapshot replaces, and moves queued acks and rejects behind the
+  snapshot, so a batch in flight still gets its answer; other queued frames
+  keep their place. A reconnect whose catch-up from the delta log
   would take more than half the cap gets a snapshot (4.8).
 - Limits: client-to-server frames 256 KiB, server-to-client frames 512 KiB
   (snapshot parts and `delta_part`s are cut to fit; `internal/wsconn` takes
@@ -1066,8 +1071,11 @@ images' `assets` rows (`held_until`, then `refs`) protect the blobs.
   closes the connection with 1008. A shared snapshot state is charged once, with an
   estimate per element, while any Public connection sends from it; when it
   does not fit, the connection is closed (1013) and its client retries. A
-  Public connection over either queue cap is closed with 1008 and its client
-  reconnects with a fresh snapshot. A full Public pool never
+  Public connection whose delta would exceed its 1 MiB queue cap gets a
+  `resync` like a Private one, so a large delta such as a replacing import
+  does not disconnect guests and viewers; its snapshot is sent within the
+  budgets above. A Public connection over the host's Public budget is
+  closed with 1008 and its client reconnects with a fresh snapshot. A full Public pool never
   refuses an editor. A test fills the Public pool through a proxying provider with more than 8 viewers and then admits an editor.
 
 ### 6.1 Presence
