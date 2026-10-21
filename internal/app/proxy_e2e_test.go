@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -98,10 +100,48 @@ func (f *front) do(t *testing.T, method, u, body string, hdr ...string) (int, st
 	return res.StatusCode, string(b), res.Header
 }
 
+// yjsInsert is a Yjs (v1) update from a new client that inserts text at the
+// start of the editor's "markdown" text, with no origins, so it applies to
+// any document state. TestYjsInsertMatchesFixture checks it against an update
+// the yjs library produced.
+func yjsInsert(client uint64, text string) string {
+	varUint := func(b []byte, n uint64) []byte {
+		for n >= 0x80 {
+			b = append(b, byte(n)|0x80)
+			n >>= 7
+		}
+		return append(b, byte(n))
+	}
+	varString := func(b []byte, s string) []byte { return append(varUint(b, uint64(len(s))), s...) }
+	// One client with one struct at clock 0: a ContentString item (info 4)
+	// whose parent is the root type "markdown"; then an empty delete set.
+	u := varUint([]byte{1, 1}, client)
+	u = append(u, 0, 4, 1)
+	u = varString(u, "markdown")
+	u = varString(u, text)
+	return base64.StdEncoding.EncodeToString(append(u, 0))
+}
+
+func TestYjsInsertMatchesFixture(t *testing.T) {
+	b, err := os.ReadFile("../apps/docs/testdata/updates.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct{ Independent string }
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	// internal/apps/docs/_web/fixtures.mjs: client 104 inserts this text.
+	if got := yjsInsert(104, "Person 한국어 🙂\n"); got != f.Independent {
+		t.Fatalf("yjsInsert = %s, want %s", got, f.Independent)
+	}
+}
+
 // docsSession opens the document editor's WebSocket on label through the
 // front with origin, sends hello and returns the first message or the close
-// the server answered with.
-func (f *front) docsSession(t *testing.T, label, origin string, tlsFront bool) (map[string]any, string) {
+// the server answered with. With update set it then sends that Yjs update
+// after the welcome and returns the server's ack or error instead.
+func (f *front) docsSession(t *testing.T, label, origin string, tlsFront bool, update string) (map[string]any, string) {
 	t.Helper()
 	var c net.Conn
 	var err error
@@ -127,14 +167,18 @@ func (f *front) docsSession(t *testing.T, label, origin string, tlsFront bool) (
 	if res.StatusCode != http.StatusSwitchingProtocols {
 		return nil, fmt.Sprintf("upgrade %d", res.StatusCode)
 	}
-	hello, _ := json.Marshal(map[string]any{"t": "hello", "v": 1, "doc": "index.md", "sv": "AA==", "name": "Proxy test", "known": nil})
-	frame := []byte{0x81, 0x80 | 126, byte(len(hello) >> 8), byte(len(hello)), 0, 0, 0, 0}
-	if len(hello) < 126 {
-		frame = []byte{0x81, 0x80 | byte(len(hello)), 0, 0, 0, 0}
+	send := func(m map[string]any) {
+		msg, _ := json.Marshal(m)
+		// A masked text frame with a zero mask key.
+		frame := []byte{0x81, 0x80 | 126, byte(len(msg) >> 8), byte(len(msg)), 0, 0, 0, 0}
+		if len(msg) < 126 {
+			frame = []byte{0x81, 0x80 | byte(len(msg)), 0, 0, 0, 0}
+		}
+		if _, err := c.Write(append(frame, msg...)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := c.Write(append(frame, hello...)); err != nil {
-		t.Fatal(err)
-	}
+	send(map[string]any{"t": "hello", "v": 1, "doc": "index.md", "sv": "AA==", "name": "Proxy test", "known": nil})
 	for {
 		var h [2]byte
 		if _, err := io.ReadFull(r, h[:]); err != nil {
@@ -166,7 +210,12 @@ func (f *front) docsSession(t *testing.T, label, origin string, tlsFront bool) (
 			if err := json.Unmarshal(payload, &m); err != nil {
 				t.Fatal(err)
 			}
-			if m["t"] == "welcome" || m["t"] == "error" {
+			switch {
+			case m["t"] == "welcome" && update != "":
+				// The docs app refuses an update id reused with other bytes.
+				id := sha256.Sum256([]byte(update))
+				send(map[string]any{"t": "update", "id": fmt.Sprintf("proxy-edit-%x", id[:8]), "u": update})
+			case m["t"] == "welcome" && update == "", m["t"] == "error", m["t"] == "ack":
 				return m, ""
 			}
 		}
@@ -343,11 +392,29 @@ func TestProxyEndToEnd(t *testing.T) {
 		t.Fatalf("revisions: %+v %v", revisions, err)
 	}
 	rev := revisions.Revisions[0].Number
-	edits := func(t *testing.T, f *front, tlsFront bool, origin string) {
+	// Each call inserts its own text from a new Yjs client.
+	yjsClient := uint64(300)
+	markdown := func(t *testing.T) string {
 		t.Helper()
-		m, closed := f.docsSession(t, "notes.site.example.org", origin, tlsFront)
+		d, err := h.Svc.GetDocument(ctx, "notes", "index.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d.Markdown
+	}
+	edits := func(t *testing.T, f *front, tlsFront bool, origin, text string) {
+		t.Helper()
+		m, closed := f.docsSession(t, "notes.site.example.org", origin, tlsFront, "")
 		if m["t"] != "welcome" || m["readonly"] != false {
 			t.Errorf("editor session with Origin %s: %v %s", origin, m, closed)
+		}
+		// A text edit through the proxy is acknowledged and saved.
+		yjsClient++
+		if m, closed := f.docsSession(t, "notes.site.example.org", origin, tlsFront, yjsInsert(yjsClient, text+"\n")); m["t"] != "ack" {
+			t.Errorf("edit with Origin %s: %v %s", origin, m, closed)
+		}
+		if got := markdown(t); !strings.Contains(got, text) {
+			t.Errorf("edit with Origin %s not saved: %q", origin, got)
 		}
 		base := "https://notes.site.example.org"
 		if !tlsFront {
@@ -360,8 +427,12 @@ func TestProxyEndToEnd(t *testing.T) {
 		}
 		// The check stays: a different origin is refused.
 		wrong := strings.Replace(origin, "https://", "http://", 1)
-		if _, closed := f.docsSession(t, "notes.site.example.org", wrong, tlsFront); !strings.Contains(closed, "cross-origin") {
+		yjsClient++
+		if _, closed := f.docsSession(t, "notes.site.example.org", wrong, tlsFront, yjsInsert(yjsClient, "refused "+text+"\n")); !strings.Contains(closed, "cross-origin") {
 			t.Errorf("editor session with Origin %s: %s", wrong, closed)
+		}
+		if got := markdown(t); strings.Contains(got, "refused "+text) {
+			t.Errorf("edit with Origin %s saved: %q", wrong, got)
 		}
 		if code := f.pin(t, base, wrong, rev, true); code != 403 {
 			t.Errorf("pin with Origin %s: %d", wrong, code)
@@ -378,10 +449,10 @@ func TestProxyEndToEnd(t *testing.T) {
 	}
 
 	t.Run("TLS proxy with X-Forwarded-Proto", func(t *testing.T) {
-		edits(t, tlsFront, true, "https://notes.site.example.org")
+		edits(t, tlsFront, true, "https://notes.site.example.org", "Edited through a TLS proxy that sets X-Forwarded-Proto")
 	})
 	t.Run("TLS proxy without X-Forwarded-Proto", func(t *testing.T) {
-		edits(t, newFront(t, listener, "none", true, false), true, "https://notes.site.example.org")
+		edits(t, newFront(t, listener, "none", true, false), true, "https://notes.site.example.org", "Edited through a TLS proxy without X-Forwarded-Proto")
 	})
 	t.Run("server flat", func(t *testing.T) {
 		out := echo(t, newFront(t, listener, "client", true, false), "https://app.site.example.org")
@@ -395,7 +466,7 @@ func TestProxyEndToEnd(t *testing.T) {
 		}
 		defer h.Svc.UpdateSettings(ctx, map[string]string{core.SetProxyTemplate: testProxyTemplate})
 		portFront := newFront(t, listener, "none", true, true)
-		edits(t, portFront, true, "https://notes.site.example.org:8443")
+		edits(t, portFront, true, "https://notes.site.example.org:8443", "Edited through a proxy that drops port 8443")
 		if out := echo(t, portFront, "https://app.site.example.org"); out["url"] != "https://app.site.example.org:8443/hello" || out["proto"] != "https" {
 			t.Errorf("server flat saw %v", out)
 		}
