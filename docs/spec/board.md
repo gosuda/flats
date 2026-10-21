@@ -373,7 +373,12 @@ through ordinary disconnections.
 ## Revisions
 
 A board follows the Revision model of [content-models.md](content-models.md)
-unchanged.
+unchanged, except for the anonymous public editing rules of
+[board-public-edit.md](board-public-edit.md): opening a board to anyone pins
+a safe point that cannot be unpinned while anyone can edit, an `edit` board
+needs a disk quota and a limited revision quota, and guest-only revisions are
+limited to half of the revision quota and deleted first above that, which
+keeps applying after guest editing stops.
 
 41. **Revision unit.**
     - One agent write call is one revision.
@@ -433,13 +438,20 @@ unchanged.
     connections close at once.
 
     Anonymous public editing ([board-public-edit.md](board-public-edit.md))
-    changes rules 22 to 25, 41 and 51 to 53 for a board at the public access
-    level `edit`: guests on the Public route may edit elements and take part
-    in presence through a guest projection that never carries Private
-    identities; viewers appear as Viewer N; guest edits share one revision
-    group on fixed 5-minute windows; and lowering the level ends guest
-    editing at once. A board at the default level `view` follows the rules
-    above unchanged.
+    changes these rules:
+    - At both public access levels, each visitor on the Public route is
+      named Viewer N and sees that name. Editors see viewers in the
+      participant list as entries without a cursor, selection or viewport
+      (so selecting one does not move the view, unlike rule 24); viewers
+      still receive no presence.
+    - At level `edit`, guests on the Public route edit elements and take part
+      in presence through a guest projection that never carries Private
+      identities (rules 22, 23, 51 and 52); guest edits share one revision
+      group on fixed 5-minute windows (rule 41); opening the level pins a
+      safe point (rules 43, 44, 46, 48 and 50); and lowering the level ends
+      guest editing at once (rule 53).
+    - Guest-only revision retention (see [Revisions](#revisions)) applies at
+      either level once guests have edited.
 54. **No versions.** Draft, version, deployment preview, deployment and
     version rollback tools refuse a board and point to the revision tools.
     Version-model tools cannot write board content.
