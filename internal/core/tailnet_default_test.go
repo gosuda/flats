@@ -164,16 +164,20 @@ func TestPreviewLocation(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		eps  []ExposureEndpoint
+		def  ProviderID
 		want string
 	}{
-		{"tailnet first", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}}, "https://p-1.tail1234.ts.net"},
-		{"tailnet listed first", []ExposureEndpoint{{Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}, local}, "https://p-1.tail1234.ts.net"},
-		{"placeholder", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.<tailnet>.ts.net"}}, "tailnet host p-1 (address pending)"},
-		{"loopback only", []ExposureEndpoint{local}, "http://p-1.localhost:7879"},
-		{"tailnet without URL", []ExposureEndpoint{local, {Provider: ProviderTailscale}}, "http://p-1.localhost:7879"},
-		{"none", nil, ""},
+		{"tailnet first", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}}, "", "https://p-1.tail1234.ts.net"},
+		{"tailnet listed first", []ExposureEndpoint{{Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}, local}, "", "https://p-1.tail1234.ts.net"},
+		{"placeholder", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.<tailnet>.ts.net"}}, "", "tailnet host p-1 (address pending)"},
+		{"loopback only", []ExposureEndpoint{local}, "", "http://p-1.localhost:7879"},
+		{"tailnet without URL", []ExposureEndpoint{local, {Provider: ProviderTailscale}}, "", "http://p-1.localhost:7879"},
+		{"none", nil, "", ""},
+		// A NetBird default cannot serve a preview, so the tailnet is kept.
+		{"netbird default", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}}, ProviderNetbird, "https://p-1.tail1234.ts.net"},
+		{"tailscale default", []ExposureEndpoint{local, {Provider: ProviderTailscale, URL: "https://p-1.tail1234.ts.net"}}, ProviderTailscale, "https://p-1.tail1234.ts.net"},
 	} {
-		if got := previewLocation(c.eps, "p-1"); got != c.want {
+		if got := previewLocation(c.eps, "p-1", c.def); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}

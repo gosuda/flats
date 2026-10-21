@@ -851,25 +851,31 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 			v.ConnectionState = "unavailable"
 		}
 		if res, err := observer.ExposureStatus(ctx, f.Slug); err == nil {
-			privateFrom := ProviderID("")
 			v.Endpoints = res.Endpoints
+			var private, public []ExposureEndpoint
 			for i := range v.Endpoints {
 				ep := &v.Endpoints[i]
 				ep.Permitted = ep.Permitted && slices.Contains(v.Providers, string(ep.Provider))
 				if ep.Audience != AudienceCurrent || ep.Host != f.Slug {
 					continue
 				}
-				if (ep.Provider == ProviderLocal || PrivateMeshProvider(ep.Provider)) && ep.Permitted && ep.URL != "" {
-					if v.PrivateURL == "" || privateRank(ep.Provider) >= privateRank(privateFrom) {
-						v.PrivateURL, v.PrivateState, v.PrivateDetail = ep.URL, ep.State, ep.Detail
-						privateFrom = ep.Provider
-					}
+				if privateCandidate(*ep, privateOrder) {
+					private = append(private, *ep)
 				}
 				if PublicProvider(ep.Provider) && f.Visibility.Public() && ep.Permitted {
 					if v.ConnectionState == "unavailable" || ep.Ready {
 						v.PublicURL, v.ConnectionState = ep.URL, ep.State
 					}
+					if publicCandidate(*ep) {
+						public = append(public, *ep)
+					}
 				}
+			}
+			if ep, ok := preferredRoute(private, s.privateDefault(), privateOrder); ok {
+				v.PrivateURL, v.PrivateState, v.PrivateDetail = ep.URL, ep.State, ep.Detail
+			}
+			if ep, ok := preferredRoute(public, ProviderID(s.settings.network().DefaultPublic), nil); ok {
+				v.PublicURL, v.ConnectionState = ep.URL, ep.State
 			}
 		}
 	}
@@ -2143,16 +2149,14 @@ func (s *Service) previewView(ctx context.Context, p store.Preview) PreviewView 
 		if err != nil {
 			return pv
 		}
+		var eps []ExposureEndpoint
 		for _, ep := range res.Endpoints {
-			if ep.Host != p.Host || ep.Audience != AudienceDraft || !ep.Configured || !ep.Permitted || ep.URL == "" || !slices.Contains(providers, string(ep.Provider)) {
-				continue
+			if ep.Host == p.Host && ep.Audience == AudienceDraft && ep.Configured && slices.Contains(providers, string(ep.Provider)) && privateCandidate(ep, previewOrder) {
+				eps = append(eps, ep)
 			}
-			if ep.Provider != ProviderLocal && ep.Provider != ProviderTailscale {
-				continue
-			}
-			if pv.URL == "" || ep.Provider == ProviderTailscale {
-				pv.URL, pv.State, pv.Detail = ep.URL, ep.State, ep.Detail
-			}
+		}
+		if ep, ok := preferredRoute(eps, s.privateDefault(), previewOrder); ok {
+			pv.URL, pv.State, pv.Detail = ep.URL, ep.State, ep.Detail
 		}
 	}
 	return pv
@@ -2540,16 +2544,54 @@ func startsWithDotDot(rel string) bool {
 	return len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)
 }
 
-// privateRank orders the Private URL a flat shows when several private routes
-// are open: Tailscale, then NetBird, then loopback.
-func privateRank(id ProviderID) int {
-	switch id {
-	case ProviderTailscale:
-		return 3
-	case ProviderNetbird:
-		return 2
-	case ProviderLocal:
-		return 1
+// privateOrder ranks a flat's Private routes for its reported address when
+// the host's private default is not among them.
+var privateOrder = []ProviderID{ProviderTailscale, ProviderNetbird, ProviderLocal}
+
+// previewOrder ranks preview routes: privateOrder without NetBird, which
+// never serves previews.
+var previewOrder = slices.DeleteFunc(slices.Clone(privateOrder), func(id ProviderID) bool { return id == ProviderNetbird })
+
+// privateCandidate reports whether ep can be a reported Private address:
+// a provider in order that the flat allows, with an address, whatever its
+// readiness.
+func privateCandidate(ep ExposureEndpoint, order []ProviderID) bool {
+	return slices.Contains(order, ep.Provider) && ep.Permitted && ep.URL != ""
+}
+
+// publicCandidate reports whether ep can be a Public flat's reported public
+// address chosen by the host's public default: allowed and ready.
+func publicCandidate(ep ExposureEndpoint) bool {
+	return PublicProvider(ep.Provider) && ep.Permitted && ep.Ready && ep.URL != ""
+}
+
+// preferredRoute picks the reported endpoint among candidates of one kind:
+// the one on def if there is one, otherwise the first by order. Without
+// order, only def is picked.
+func preferredRoute(eps []ExposureEndpoint, def ProviderID, order []ProviderID) (ExposureEndpoint, bool) {
+	if def != "" {
+		if i := slices.IndexFunc(eps, func(ep ExposureEndpoint) bool { return ep.Provider == def }); i >= 0 {
+			return eps[i], true
+		}
 	}
-	return 0
+	for _, id := range order {
+		if i := slices.IndexFunc(eps, func(ep ExposureEndpoint) bool { return ep.Provider == id }); i >= 0 {
+			return eps[i], true
+		}
+	}
+	return ExposureEndpoint{}, false
+}
+
+// privateDefault is the host's private default for reported addresses:
+// network.default_private, or Tailscale when that is empty and the private
+// backend is tailscale. Local means no preference.
+func (s *Service) privateDefault() ProviderID {
+	switch d := s.settings.network().DefaultPrivate; {
+	case d == "" && s.cfg.PrivateBackend == "tailscale":
+		return ProviderTailscale
+	case d == store.ProviderLocal:
+		return ""
+	default:
+		return ProviderID(d)
+	}
 }

@@ -897,7 +897,7 @@ func (m *Manager) retainPrivate(ctx context.Context, req ExposureRequest, id ID)
 
 func (m *Manager) openLocal(ctx context.Context, req ExposureRequest) (ExposureEndpoint, error) {
 	host := requestHost(req)
-	url, err := m.local.Serve(ctx, host, req.Handler, req.Ephemeral)
+	url, err := m.local.Serve(ctx, host, tagged(Local, req.Handler), req.Ephemeral)
 	if err != nil {
 		return ExposureEndpoint{Provider: Local, State: stateError, Detail: err.Error()}, err
 	}
@@ -913,7 +913,7 @@ func (m *Manager) openTailscale(ctx context.Context, req ExposureRequest) (Expos
 		return refused(Tailscale, "tailscale is permitted but not configured"), fmt.Errorf("%w: tailscale", ErrNotConfigured)
 	}
 	host := requestHost(req)
-	url, err := m.tailnet().Serve(ctx, host, req.Handler, req.Ephemeral)
+	url, err := m.tailnet().Serve(ctx, host, tagged(Tailscale, req.Handler), req.Ephemeral)
 	if err != nil {
 		return ExposureEndpoint{Provider: Tailscale, State: stateError, Detail: err.Error()}, err
 	}
@@ -934,7 +934,7 @@ func (m *Manager) openNetbird(ctx context.Context, req ExposureRequest) (Exposur
 		return refused(Netbird, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird", ErrNotConfigured)
 	}
 	host := requestHost(req)
-	url, err := n.ServePrivate(ctx, host, req.Handler)
+	url, err := n.ServePrivate(ctx, host, tagged(Netbird, req.Handler))
 	if err != nil {
 		return ExposureEndpoint{Provider: Netbird, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: netbird: %w", core.ErrProviderNotReady, err)
 	}
@@ -971,7 +971,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 				return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel cleanup record: %w", core.ErrProviderNotReady, err)
 			}
 		}
-		url, err := m.tailnet().ServeFunnel(ctx, host, req.Handler)
+		url, err := m.tailnet().ServeFunnel(ctx, host, tagged(Funnel, req.Handler))
 		if err != nil {
 			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel: %w", core.ErrProviderNotReady, err)
 		}
@@ -989,7 +989,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if m.portalNet() == nil {
 			return refused(Portal, "portal is permitted but not configured"), fmt.Errorf("%w: portal", ErrNotConfigured)
 		}
-		url, err := m.portalNet().Serve(ctx, req.Slug, req.Handler, req.Hidden)
+		url, err := m.portalNet().Serve(ctx, req.Slug, tagged(Portal, req.Handler), req.Hidden)
 		if err != nil {
 			return ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: portal: %w", core.ErrProviderNotReady, err)
 		}
@@ -1011,7 +1011,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if z == nil {
 			return refused(Zrok, "zrok is permitted but not configured"), fmt.Errorf("%w: zrok", ErrNotConfigured)
 		}
-		url, err := z.Serve(ctx, req.Slug, req.Handler)
+		url, err := z.Serve(ctx, req.Slug, tagged(Zrok, req.Handler))
 		if err != nil {
 			return ExposureEndpoint{Provider: Zrok, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: zrok: %w", core.ErrProviderNotReady, err)
 		}
@@ -1029,7 +1029,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if q == nil {
 			return refused(CFQuick, "cloudflare-quick is permitted but not configured"), fmt.Errorf("%w: cloudflare-quick", ErrNotConfigured)
 		}
-		url, err := q.Serve(ctx, req.Slug, req.Handler)
+		url, err := q.Serve(ctx, req.Slug, tagged(CFQuick, req.Handler))
 		if err != nil {
 			return ExposureEndpoint{Provider: CFQuick, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: cloudflare-quick: %w", core.ErrProviderNotReady, err)
 		}
@@ -1047,7 +1047,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if n == nil {
 			return refused(NetbirdExpose, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird-expose", ErrNotConfigured)
 		}
-		url, err := n.ServePublic(ctx, req.Slug, req.Handler)
+		url, err := n.ServePublic(ctx, req.Slug, tagged(NetbirdExpose, req.Handler))
 		if err != nil {
 			return ExposureEndpoint{Provider: NetbirdExpose, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: netbird-expose: %w", core.ErrProviderNotReady, err)
 		}
@@ -1063,6 +1063,13 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 	default:
 		return refused(id, "not a public provider"), fmt.Errorf("%w: %s", ErrProviderNotPermitted, id)
 	}
+}
+
+// tagged marks every request h serves with the provider id it arrived on.
+func tagged(id ID, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(core.WithRouteProvider(r.Context(), id)))
+	})
 }
 
 // publicIDs are the public providers, in the order requests open them.

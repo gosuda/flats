@@ -83,6 +83,20 @@ func PrivateMeshProvider(id ProviderID) bool {
 	return id == ProviderTailscale || id == ProviderNetbird
 }
 
+type routeProviderKey struct{}
+
+// WithRouteProvider marks a route request with the provider it arrived on.
+func WithRouteProvider(ctx context.Context, id ProviderID) context.Context {
+	return context.WithValue(ctx, routeProviderKey{}, id)
+}
+
+// RouteProvider returns the provider a route request arrived on. Requests
+// served without the provider manager are not marked.
+func RouteProvider(ctx context.Context) (ProviderID, bool) {
+	id, ok := ctx.Value(routeProviderKey{}).(ProviderID)
+	return id, ok
+}
+
 // ExposureAudience selects the content a provider serves.
 type ExposureAudience string
 

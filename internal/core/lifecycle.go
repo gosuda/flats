@@ -1552,7 +1552,7 @@ func (s *Service) servePreview(ctx context.Context, slugName, host string, h htt
 		if err != nil {
 			return "", err
 		}
-		if where := previewLocation(res.Endpoints, host); where != "" {
+		if where := previewLocation(res.Endpoints, host, s.privateDefault()); where != "" {
 			return where, nil
 		}
 		return s.cfg.Private.URL(host), nil
@@ -1560,22 +1560,27 @@ func (s *Service) servePreview(ctx context.Context, slugName, host string, h htt
 	return s.cfg.Private.Serve(ctx, host, h, true)
 }
 
-// previewLocation describes where a preview opened, for its event. It
-// prefers the tailnet address, as the flat's own private URL does, because a
-// loopback URL opens only on the host machine. A tailnet node that has not
-// yet learned its MagicDNS name reports a placeholder URL; the event then
-// names the host instead of keeping that placeholder.
-func previewLocation(endpoints []ExposureEndpoint, host string) string {
-	best, tailnet := "", false
+// previewLocation describes where a preview opened, for its event. It picks
+// the address as the preview list does: the host's private default, else
+// the tailnet before loopback, because a loopback URL opens only on the host
+// machine. A tailnet node that has not yet learned its MagicDNS name reports
+// a placeholder URL; the event then names the host instead of keeping that
+// placeholder.
+func previewLocation(endpoints []ExposureEndpoint, host string, def ProviderID) string {
+	var eps []ExposureEndpoint
 	for _, ep := range endpoints {
-		if ep.URL != "" && (best == "" || ep.Provider == ProviderTailscale) {
-			best, tailnet = ep.URL, ep.Provider == ProviderTailscale
+		if ep.URL != "" && slices.Contains(previewOrder, ep.Provider) {
+			eps = append(eps, ep)
 		}
 	}
-	if tailnet && strings.Contains(best, "<tailnet>") {
+	ep, ok := preferredRoute(eps, def, previewOrder)
+	if !ok {
+		return ""
+	}
+	if ep.Provider == ProviderTailscale && strings.Contains(ep.URL, "<tailnet>") {
 		return "tailnet host " + host + " (address pending)"
 	}
-	return best
+	return ep.URL
 }
 
 func copyTree(src, dst string) error {

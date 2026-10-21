@@ -73,12 +73,12 @@ func TestRedactorAndHealthBody(t *testing.T) {
 func TestRedirectHandler(t *testing.T) {
 	s := &Service{}
 	rec := httptest.NewRecorder()
-	s.redirectHandler(func() string { return "" }).ServeHTTP(rec, httptest.NewRequest("GET", "/cart?id=1", nil))
+	s.redirectHandler(func(ProviderID, bool) string { return "" }).ServeHTTP(rec, httptest.NewRequest("GET", "/cart?id=1", nil))
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Location") != "" || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("empty target: %d loc=%q", rec.Code, rec.Header().Get("Location"))
 	}
 	rec = httptest.NewRecorder()
-	s.redirectHandler(func() string { return "https://new.example/" }).ServeHTTP(rec, httptest.NewRequest("GET", "/cart?id=1", nil))
+	s.redirectHandler(func(ProviderID, bool) string { return "https://new.example/" }).ServeHTTP(rec, httptest.NewRequest("GET", "/cart?id=1", nil))
 	if rec.Code != http.StatusTemporaryRedirect || rec.Header().Get("Location") != "https://new.example/cart?id=1" {
 		t.Fatalf("redirect: %d loc=%q", rec.Code, rec.Header().Get("Location"))
 	}
