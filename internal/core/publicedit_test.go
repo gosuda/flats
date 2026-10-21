@@ -641,8 +641,7 @@ func TestPublicEditStartupDowngrade(t *testing.T) {
 }
 
 // With the real board instance, a complete edit approval applies without a
-// lock timeout and the safe point is a safe_point revision. It needs the
-// board server unit's SetPublicAccess and SafePoint (unit B).
+// lock timeout and the safe point is a safe_point revision.
 func TestPublicEditRealBoard(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newPublicBoard(t)
@@ -652,9 +651,6 @@ func TestPublicEditRealBoard(t *testing.T) {
 	dctx, cancel := context.WithTimeout(ctx, boardTickTimeout)
 	defer cancel()
 	got, err := s.Decide(dctx, a.ID, true)
-	if err != nil && strings.Contains(err.Error(), "not implemented") {
-		t.Skip("needs the board server's SafePoint and SetPublicAccess (unit B)")
-	}
 	if err != nil || got.Status != "approved" {
 		t.Fatalf("decide = %+v %v", got, err)
 	}
