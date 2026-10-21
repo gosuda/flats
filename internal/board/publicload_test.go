@@ -28,13 +28,17 @@ import (
 // operations per second) refuses most guest batches as guest_rate; the
 // accepted ones still keep the board's apply loop busy.
 //
-// For each member edit it measures the time from sending it to another
-// member and to one of the guests receiving the change (server receipt
-// to display, with the loopback write and the observer's read included),
-// and requires a p95 of 200 ms or less for both. Midway a member
-// connects, edits (the ack is the board's Saved), the edit is recorded as
-// a revision and the board is rolled back, all while the guests keep
-// sending.
+// For each acknowledged member edit it measures the time from the edit's
+// first send to another member and to one of the guests receiving the
+// change on its connection, and requires a p95 of 200 ms or less for both.
+// Receipt on the client connection stands in for display on screen (a
+// decision of the owner; client apply and paint are not measured). Every
+// acknowledged member edit must reach both observers, the member must keep
+// its schedule, guests must keep offering their limit, and no batch may be
+// refused for good. Midway, while the guests keep sending, a member
+// connects (timed to its first complete snapshot), adds a sticky, the
+// sticky is recorded in a revision crediting that member, the member
+// deletes it, and a rollback to that revision brings it back.
 //
 // Only admission speed differs from the product limits: the 50 guests join
 // at once instead of 30 a minute, so the measurement starts with all of
@@ -73,9 +77,10 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 	}
 
 	// The member: one sticky every 500 ms, one batch in flight.
-	sent := sync.Map{} // id → time.Time of the accepted send
+	sent := sync.Map{}  // id → time.Time of the batch's first send
+	acked := sync.Map{} // ids of acknowledged member edits
 	var memberErr atomic.Value
-	var memberBatches, memberSkipped atomic.Int64
+	var memberBatches, memberSkipped, memberRetries atomic.Int64
 	wg.Go(func() {
 		tick := time.NewTicker(500 * time.Millisecond)
 		defer tick.Stop()
@@ -85,12 +90,14 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 		for {
 			select {
 			case <-tick.C:
+				if inflight {
+					if time.Now().Before(until) {
+						memberSkipped.Add(1)
+					}
+					continue
+				}
 				if !time.Now().Before(until) {
 					return
-				}
-				if inflight {
-					memberSkipped.Add(1)
-					continue
 				}
 				n++
 				id = fmt.Sprintf("e_lm%08d", n)
@@ -103,10 +110,9 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 					continue
 				}
 				if a.retry {
-					// Send the same batch again at once; the send time is the
-					// resend's.
-					at = time.Now()
-					sent.Store(id, at)
+					// Send the same batch again at once; latency still counts
+					// from the first send.
+					memberRetries.Add(1)
 					member.sendJSON(map[string]any{"t": "ops", "n": n, "ops": []any{sticky(id, "member "+id, float64(n%40)*220)}})
 					continue
 				}
@@ -115,6 +121,7 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 					return
 				}
 				inflight = false
+				acked.Store(id, true)
 				memberBatches.Add(1)
 			case <-stop:
 				return
@@ -153,17 +160,31 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 		}
 		total.add(s)
 	}
-	memberLat := latencies(&sent, observer.seenAt())
-	guestLat := latencies(&sent, gs[0].seenAt())
+	memberLat := latencies(&sent, &acked, observer.seenAt())
+	guestLat := latencies(&sent, &acked, gs[0].seenAt())
 	secs := d.Seconds()
-	t.Logf("%s, %d guests: guests sent %d batches (%.0f/s; %d ops offered), %d acked (%.0f ops/s accepted), %d guest_rate, %d other transient, %d permanent refusals, %d presence frames; member %d batches acked, %d ticks skipped while one was in flight; observer resyncs %d, guest-0 resyncs %d",
+	t.Logf("%s, %d guests: guests sent %d batches (%.0f/s; %d ops offered), %d acked (%.0f ops/s accepted), %d guest_rate, %d other transient, %d permanent refusals, %d presence frames; member %d batches acked, %d retries, %d ticks skipped while one was in flight; observer resyncs %d, guest-0 resyncs %d",
 		d, guests, total.sent, float64(total.sent)/secs, total.sent*guestOpsPerBatch, total.acked, float64(total.acked*guestOpsPerBatch)/secs,
-		total.guestRate, total.otherTransient, total.permanent, total.pres, memberBatches.Load(), memberSkipped.Load(), observer.resyncs.Load(), gs[0].resyncs.Load())
+		total.guestRate, total.otherTransient, total.permanent, total.pres, memberBatches.Load(), memberRetries.Load(), memberSkipped.Load(), observer.resyncs.Load(), gs[0].resyncs.Load())
 	t.Logf("member edit to another member: %s", memberLat)
 	t.Logf("member edit to a guest: %s", guestLat)
 	t.Logf("private editor midway: %s", midway)
-	if memberLat.n < int(secs) || guestLat.n < int(secs) {
-		t.Fatalf("too few member edits observed: member %d, guest %d", memberLat.n, guestLat.n)
+	// The member kept its schedule of two edits a second, every
+	// acknowledged edit reached both observers, and nothing was refused for
+	// good.
+	if want := int64(2*secs) - 2; memberBatches.Load() < want {
+		t.Fatalf("the member had %d edits acknowledged, want at least %d", memberBatches.Load(), want)
+	}
+	if memberLat.missing > 0 || guestLat.missing > 0 || memberLat.n != int(memberBatches.Load()) {
+		t.Fatalf("acknowledged member edits not delivered: %d to the member, %d to the guest (of %d)", memberLat.missing, guestLat.missing, memberBatches.Load())
+	}
+	if total.permanent > 0 {
+		t.Fatalf("%d guest batches were refused for good", total.permanent)
+	}
+	// The guests kept offering close to their limit of 10 batches a second
+	// (one batch in flight, so a slow answer delays the next).
+	if want := 0.8 * guests * 10 * secs; float64(total.sent) < want {
+		t.Fatalf("guests offered %d batches, want at least %.0f", total.sent, want)
 	}
 	// The guests were at the board's limit: at least half of 200 operations
 	// a second were accepted.
@@ -177,43 +198,52 @@ func TestFiftyGuestsAtTheirLimit(t *testing.T) {
 
 const guestOpsPerBatch = 4
 
-// privateEditorDuringLoad connects a new member, edits, records the edit
-// as a revision and rolls back, returning the times each step took.
+// privateEditorDuringLoad connects a new member and waits for its first
+// complete snapshot, adds a sticky (its ack is the board's Saved), records
+// and imports a revision that must hold that sticky and credit the member,
+// deletes the sticky, rolls the board back to that revision and checks the
+// sticky is back with its text. It returns the time each step took.
 func privateEditorDuringLoad(t *testing.T, b *tb) (string, error) {
 	ctx := context.Background()
 	t0 := time.Now()
-	c, err := dialRawE(b.priv.URL, map[string]any{"editor": "late-member"}, "", "welcome")
+	c, err := dialRawE(b.priv.URL, map[string]any{"editor": "late-member", "name": "Late Member"}, "", "welcome")
 	if err != nil {
 		return "", fmt.Errorf("connect: %w", err)
 	}
 	defer c.ws.Close(1000, "")
+	select {
+	case <-c.snapped:
+	case <-time.After(10 * time.Second):
+		return "", fmt.Errorf("no complete snapshot within 10 s")
+	}
 	connected := time.Since(t0)
-	t1 := time.Now()
-	id := "e_latemem01"
-	acked := false
-	for range 50 {
-		c.sendJSON(map[string]any{"t": "ops", "n": 1, "ops": []any{sticky(id, "late member", 0)}})
-		select {
-		case a := <-c.answers:
-			if a.retry {
-				time.Sleep(20 * time.Millisecond)
-				continue
+	send := func(n int, op map[string]any) (time.Duration, error) {
+		start := time.Now()
+		for range 50 {
+			c.sendJSON(map[string]any{"t": "ops", "n": n, "ops": []any{op}})
+			select {
+			case a := <-c.answers:
+				if a.retry {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
+				var res struct{ Results []any }
+				_ = json.Unmarshal([]byte(a.raw), &res)
+				if !a.ack || len(res.Results) != 1 || !applied(res.Results[0]) {
+					return 0, fmt.Errorf("batch %d not applied: %s", n, a.raw)
+				}
+				return time.Since(start), nil
+			case <-time.After(5 * time.Second):
+				return 0, fmt.Errorf("no answer to batch %d", n)
 			}
-			if !a.ack {
-				return "", fmt.Errorf("edit refused: %s", a.raw)
-			}
-			acked = true
-		case <-time.After(5 * time.Second):
-			return "", fmt.Errorf("no answer to the edit")
 		}
-		if acked {
-			break
-		}
+		return 0, fmt.Errorf("batch %d kept being refused", n)
 	}
-	if !acked {
-		return "", fmt.Errorf("the edit kept being refused")
+	const id, text = "e_latemem001", "late member note"
+	edited, err := send(1, sticky(id, text, 0))
+	if err != nil {
+		return "", err
 	}
-	edited := time.Since(t1)
 	// Saved as a revision: the member's group closes and core imports it.
 	t2 := time.Now()
 	revs := b.core.lastRev()
@@ -224,20 +254,54 @@ func privateEditorDuringLoad(t *testing.T, b *tb) (string, error) {
 	if err := b.core.importOutbox(ctx); err != nil {
 		return "", fmt.Errorf("import: %w", err)
 	}
-	last := b.core.lastRev()
-	r, _ := b.core.rev(last)
-	if last <= revs || len(r.info.Authors) == 0 {
-		return "", fmt.Errorf("no member revision recorded: revisions %d -> %d, last %+v", revs, last, r.info)
-	}
 	saved := time.Since(t2)
+	var rev int
+	var info RevisionInfo
+	for n := b.core.lastRev(); n > revs; n-- {
+		ri, content, err := b.core.RevisionContent(ctx, n)
+		if err != nil {
+			return "", err
+		}
+		page, err := ReadContent(content, Query{IDs: []string{id}})
+		if err == nil && len(page.Elements) == 1 && slices.Contains(ri.Authors, "Late Member") {
+			rev, info = n, ri
+			break
+		}
+	}
+	if rev == 0 {
+		return "", fmt.Errorf("no revision after %d holds the member's sticky and credits it", revs)
+	}
+	if _, err := send(2, map[string]any{"op": "delete", "ids": []string{id}}); err != nil {
+		return "", err
+	}
+	present := func() (bool, error) {
+		page, err := b.in.GetBoard(ctx, Query{IDs: []string{id}})
+		if err != nil {
+			return false, err
+		}
+		if len(page.Elements) == 0 {
+			return false, nil
+		}
+		var el map[string]any
+		if err := json.Unmarshal(page.Elements[0], &el); err != nil {
+			return false, err
+		}
+		return el["text"] == text, nil
+	}
+	if ok, err := present(); err != nil || ok {
+		return "", fmt.Errorf("the sticky is still there after its delete (%v)", err)
+	}
 	t3 := time.Now()
-	n, err := b.core.Rollback(ctx, last, "Late member")
+	n, err := b.core.Rollback(ctx, rev, "Late member")
 	if err != nil {
 		return "", fmt.Errorf("rollback: %w", err)
 	}
 	rolled := time.Since(t3)
-	return fmt.Sprintf("connect+snapshot %s, edit acked %s, revision %d recorded and imported %s (authors %v), rollback to %d as revision %d %s",
-		connected.Round(time.Millisecond), edited.Round(time.Millisecond), last, saved.Round(time.Millisecond), r.info.Authors, last, n, rolled.Round(time.Millisecond)), nil
+	if ok, err := present(); err != nil || !ok {
+		return "", fmt.Errorf("rollback to revision %d did not bring the sticky back (%v)", rev, err)
+	}
+	return fmt.Sprintf("connect to first complete snapshot %s, edit acked %s, revision %d recorded and imported %s (authors %v), rollback to %d as revision %d %s, sticky restored",
+		connected.Round(time.Millisecond), edited.Round(time.Millisecond), rev, saved.Round(time.Millisecond), info.Authors, rev, n, rolled.Round(time.Millisecond)), nil
 }
 
 // rawSocket is a light WebSocket client for the load: it decodes only
@@ -251,6 +315,9 @@ type rawSocket struct {
 	resyncs atomic.Int64
 	fatal   atomic.Value
 	welcome chan string
+	// snapped is closed when the first complete snapshot has arrived.
+	snapped  chan struct{}
+	snapOnce sync.Once
 }
 
 type answer struct {
@@ -283,7 +350,7 @@ func dialRawE(base string, hello map[string]any, want, wantT string) (*rawSocket
 	if err != nil {
 		return nil, err
 	}
-	c := &rawSocket{ws: ws, answers: make(chan answer, 64), seen: map[string]time.Time{}, welcome: make(chan string, 1)}
+	c := &rawSocket{ws: ws, answers: make(chan answer, 64), seen: map[string]time.Time{}, welcome: make(chan string, 1), snapped: make(chan struct{})}
 	go c.read()
 	h := map[string]any{"t": "hello", "v": 1, "pending": map[string]any{"count": 0}}
 	for k, v := range hello {
@@ -324,6 +391,12 @@ func (c *rawSocket) read() {
 		}
 		switch {
 		case strings.Contains(raw, `"t":"delta`) || strings.Contains(raw, `"t":"snapshot"`):
+			if strings.Contains(raw, `"t":"snapshot"`) {
+				var p struct{ Part, Parts int }
+				if json.Unmarshal([]byte(raw), &p) == nil && p.Part == p.Parts {
+					c.snapOnce.Do(func() { close(c.snapped) })
+				}
+			}
 			if ids := memberID.FindAllString(raw, -1); len(ids) > 0 {
 				c.mu.Lock()
 				for _, id := range ids {
@@ -469,10 +542,13 @@ func (l latencySummary) String() string {
 	return fmt.Sprintf("%d edits, p50 %s, p95 %s, max %s, %d never seen", l.n, l.p50.Round(time.Millisecond), l.p95.Round(time.Millisecond), l.max.Round(time.Millisecond), l.missing)
 }
 
-func latencies(sent *sync.Map, seen map[string]time.Time) latencySummary {
+func latencies(sent, acked *sync.Map, seen map[string]time.Time) latencySummary {
 	var out latencySummary
 	var ds []time.Duration
 	sent.Range(func(k, v any) bool {
+		if _, ok := acked.Load(k); !ok {
+			return true
+		}
 		at, ok := seen[k.(string)]
 		if !ok {
 			out.missing++
