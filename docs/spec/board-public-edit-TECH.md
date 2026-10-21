@@ -234,11 +234,16 @@ Stored authorship (element `by`, delta `by`) is rewritten to its kind only:
 
 | Real key | Guest sees |
 |---|---|
-| the guest's own key | unchanged (it is the guest's own) |
 | `ts:*`, `browser:*` | `member` |
 | other `guest:*` | `guest` |
 | `agent:*` | `agent` |
 | `system` | `system` |
+
+Every guest sees the same rewrite, including for its own edits, so one
+serialized body per delta serves every guest socket. A guest recognizes its
+own changes the way members do today, through the per-socket `from` field and
+its pending batches, not through `by`. Tested with two guests connected at
+once.
 
 Live identity (presence `key`, `name`, `verified`, gone `key`) needs to tell
 people apart, so it uses connection labels:
