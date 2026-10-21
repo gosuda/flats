@@ -25,24 +25,26 @@ var schema = []string{
 	`CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS elements(id TEXT PRIMARY KEY, inc INTEGER NOT NULL, data TEXT NOT NULL,
 		v TEXT NOT NULL, deleted INTEGER NOT NULL, del_seq INTEGER NOT NULL, pre_rel TEXT, end_inc TEXT,
-		end_last TEXT, bucket INTEGER NOT NULL, bytes INTEGER NOT NULL)`,
+		end_last TEXT, bucket INTEGER NOT NULL, bytes INTEGER NOT NULL, del_key TEXT)`,
 	`CREATE TABLE IF NOT EXISTS buckets(bucket INTEGER PRIMARY KEY, dirty_seq INTEGER, bytes INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS deltas(seq INTEGER PRIMARY KEY, from_session TEXT NOT NULL, n INTEGER NOT NULL,
 		by TEXT NOT NULL, changes TEXT NOT NULL, at INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, key TEXT NOT NULL, label TEXT NOT NULL,
-		verified INTEGER NOT NULL, max_n INTEGER NOT NULL, last_at INTEGER NOT NULL)`,
+		verified INTEGER NOT NULL, max_n INTEGER NOT NULL, last_at INTEGER NOT NULL, start_seq INTEGER NOT NULL DEFAULT 0)`,
 	`CREATE TABLE IF NOT EXISTS created(session TEXT NOT NULL, id TEXT NOT NULL, inc INTEGER NOT NULL,
 		PRIMARY KEY(session, id))`,
 	`CREATE TABLE IF NOT EXISTS receipts(session TEXT NOT NULL, n INTEGER NOT NULL, seq INTEGER NOT NULL,
 		results TEXT NOT NULL, PRIMARY KEY(session, n))`,
+	// fixed marks the guests' group, which closes only on fixed windows;
+	// names lists the guests who edited since the last entry.
 	`CREATE TABLE IF NOT EXISTS groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL,
-		last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)`,
+		last_at INTEGER NOT NULL, dirty INTEGER NOT NULL, fixed INTEGER NOT NULL DEFAULT 0, names TEXT NOT NULL DEFAULT '[]')`,
 	`CREATE TABLE IF NOT EXISTS undo(session TEXT NOT NULL, stack TEXT NOT NULL, idx INTEGER NOT NULL,
 		data TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(session, stack, idx))`,
 	// snaps lists the snapshot hashes the entry added (one reference each).
 	`CREATE TABLE IF NOT EXISTS outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
 		kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT,
-		files TEXT NOT NULL, snaps TEXT NOT NULL)`,
+		files TEXT NOT NULL, snaps TEXT NOT NULL, guests TEXT NOT NULL DEFAULT '[]', guests_more INTEGER NOT NULL DEFAULT 0)`,
 	`CREATE TABLE IF NOT EXISTS snapshots(hash TEXT PRIMARY KEY, data BLOB NOT NULL, refs INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS assets(hash TEXT PRIMARY KEY, mime TEXT NOT NULL, w INTEGER NOT NULL,
 		h INTEGER NOT NULL, bytes INTEGER NOT NULL, refs INTEGER NOT NULL, deleted_refs INTEGER NOT NULL,
@@ -51,6 +53,34 @@ var schema = []string{
 	// recorded none); the row is kept 24 hours after it.
 	`CREATE TABLE IF NOT EXISTS ops(id TEXT PRIMARY KEY, kind TEXT NOT NULL, request_hash TEXT NOT NULL,
 		outbox_seq INTEGER NOT NULL, result TEXT NOT NULL, at INTEGER NOT NULL, imported_at INTEGER)`,
+}
+
+// addedColumns are the columns later versions added to existing tables
+// (anonymous public editing). openStore adds the ones an older board.db
+// lacks; the defaults describe a board without guests.
+var addedColumns = []struct{ table, column, def string }{
+	{"elements", "del_key", "TEXT"},
+	{"sessions", "start_seq", "INTEGER NOT NULL DEFAULT 0"},
+	{"groups", "fixed", "INTEGER NOT NULL DEFAULT 0"},
+	{"groups", "names", "TEXT NOT NULL DEFAULT '[]'"},
+	{"outbox", "guests", "TEXT NOT NULL DEFAULT '[]'"},
+	{"outbox", "guests_more", "INTEGER NOT NULL DEFAULT 0"},
+}
+
+// addColumns adds the addedColumns an older board.db lacks.
+func addColumns(ctx context.Context, db *sql.DB) error {
+	for _, c := range addedColumns {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, c.table, c.column, c.def)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 type store struct {
@@ -110,6 +140,9 @@ func openStore(path string) (s *store, fresh bool, err error) {
 		if _, err := db.ExecContext(ctx, q); err != nil {
 			return fail(fmt.Errorf("board.db schema: %w", err))
 		}
+	}
+	if err := addColumns(ctx, db); err != nil {
+		return fail(fmt.Errorf("board.db schema: %w", err))
 	}
 	if err := db.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&s.pageSize); err != nil {
 		return fail(err)
@@ -188,9 +221,14 @@ func persist(ctx context.Context, tx *sql.Tx, st *engine.State, c engine.Changed
 				bytes += int64(len(s))
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO elements(id, inc, data, v, deleted, del_seq, pre_rel, end_inc, end_last, bucket, bytes)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, r.Inc, string(r.Data), string(v), r.Deleted, r.DelSeq, preRel, endInc, endLast, r.Bucket, bytes); err != nil {
+		var delKey any
+		if r.DelKey != "" {
+			delKey = r.DelKey
+			bytes += int64(len(r.DelKey))
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO elements(id, inc, data, v, deleted, del_seq, pre_rel, end_inc, end_last, bucket, bytes, del_key)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, r.Inc, string(r.Data), string(v), r.Deleted, r.DelSeq, preRel, endInc, endLast, r.Bucket, bytes, delKey); err != nil {
 			return err
 		}
 	}
@@ -224,8 +262,8 @@ func persist(ctx context.Context, tx *sql.Tx, st *engine.State, c engine.Changed
 		se, ok := st.SessionRow(id)
 		var err error
 		if ok {
-			_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO sessions(id, key, label, verified, max_n, last_at) VALUES(?, ?, ?, ?, ?, ?)`,
-				se.ID, se.Key, se.Label, se.Verified, se.MaxN, se.LastAt)
+			_, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO sessions(id, key, label, verified, max_n, last_at, start_seq) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+				se.ID, se.Key, se.Label, se.Verified, se.MaxN, se.LastAt, se.StartSeq)
 		} else {
 			_, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 		}
@@ -330,13 +368,14 @@ func (s *store) loadRows(ctx context.Context) (engine.Rows, map[string]string, e
 		}
 	}
 	rows.ResetFloor, _ = strconv.ParseInt(meta["reset_floor"], 10, 64)
-	err = q(`SELECT id, inc, data, v, deleted, del_seq, pre_rel, end_inc, end_last, bucket FROM elements`, func(r *sql.Rows) error {
+	err = q(`SELECT id, inc, data, v, deleted, del_seq, pre_rel, end_inc, end_last, bucket, del_key FROM elements`, func(r *sql.Rows) error {
 		var er engine.ElementRow
 		var data, v string
-		var preRel, endInc, endLast sql.NullString
-		if err := r.Scan(&er.ID, &er.Inc, &data, &v, &er.Deleted, &er.DelSeq, &preRel, &endInc, &endLast, &er.Bucket); err != nil {
+		var preRel, endInc, endLast, delKey sql.NullString
+		if err := r.Scan(&er.ID, &er.Inc, &data, &v, &er.Deleted, &er.DelSeq, &preRel, &endInc, &endLast, &er.Bucket, &delKey); err != nil {
 			return err
 		}
+		er.DelKey = delKey.String
 		er.Data = json.RawMessage(data)
 		if err := json.Unmarshal([]byte(v), &er.V); err != nil {
 			return fmt.Errorf("element %s versions: %w", er.ID, err)
@@ -357,9 +396,9 @@ func (s *store) loadRows(ctx context.Context) (engine.Rows, map[string]string, e
 	if err != nil {
 		return rows, nil, err
 	}
-	err = q(`SELECT id, key, label, verified, max_n, last_at FROM sessions`, func(r *sql.Rows) error {
+	err = q(`SELECT id, key, label, verified, max_n, last_at, start_seq FROM sessions`, func(r *sql.Rows) error {
 		var se engine.Session
-		if err := r.Scan(&se.ID, &se.Key, &se.Label, &se.Verified, &se.MaxN, &se.LastAt); err != nil {
+		if err := r.Scan(&se.ID, &se.Key, &se.Label, &se.Verified, &se.MaxN, &se.LastAt, &se.StartSeq); err != nil {
 			return err
 		}
 		rows.Sessions = append(rows.Sessions, se)

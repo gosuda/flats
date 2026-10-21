@@ -27,12 +27,42 @@ type item struct {
 	done  chan error
 }
 
-// editGroup is a groups row: one editor's open edit group (5.3).
+// editGroup is a groups row: one editor's open edit group (5.3), or the
+// guests' shared one (Fixed, TECH public edit 5.1) with the names of the
+// guests who edited since the last entry.
 type editGroup struct {
 	Label     string
 	StartedAt int64
 	LastAt    int64
 	Dirty     bool
+	Fixed     bool
+	Names     []string
+}
+
+// guestGroup is the editor of the guests' shared edit group.
+const guestGroup = "guests"
+
+// Guest group windows and name list (TECH public edit 5.1).
+const (
+	guestWindow   = 300
+	maxGroupNames = 64
+)
+
+// nonNil returns s, or an empty slice for nil, so it encodes as [].
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+// due reports whether the group closes at now: a person's after 30 seconds
+// idle or 5 minutes, the guests' only at the end of its 5-minute window.
+func (g editGroup) due(now int64) bool {
+	if g.Fixed {
+		return now-g.StartedAt >= guestWindow
+	}
+	return now-g.LastAt >= 30 || now-g.StartedAt >= 300
 }
 
 // deltaRec is a delta log entry; body is the delta JSON without from.
@@ -73,6 +103,12 @@ type side struct {
 	deltas       []deltaRec
 	deltaBytes   int64
 	ops          map[string]*opRec
+	// guestCharge and guestGroups are meta.guest_charge and
+	// meta.guest_groups; lastUsage is the usage the previous tick measured
+	// (TECH public edit 4.3, 4.4).
+	guestCharge int64
+	guestGroups int64
+	lastUsage   int64
 }
 
 // txn is one board.db transaction of the apply loop with the matching
@@ -101,6 +137,8 @@ type txn struct {
 	assets      map[string]*engine.Asset // nil value: row deleted
 	outboxAdded bool
 	pending     int64 // blob bytes admitBlobs is about to store (5.4)
+	guestCharge int64
+	guestGroups int64
 
 	after  []func()
 	onFail []func()
@@ -119,6 +157,7 @@ func (in *Instance) begin() (*txn, error) {
 		newest: sd.newest, newestBytes: sd.newestBytes, snapAdd: map[string]snapRef{}, snapBytes: sd.snapBytes,
 		outbox: sd.outbox, shareN: sd.shareN, lastRecord: sd.lastRecord,
 		newOps: map[string]*opRec{}, assets: map[string]*engine.Asset{},
+		guestCharge: sd.guestCharge, guestGroups: sd.guestGroups,
 	}
 	if sd.walPending != sd.walPersisted {
 		v := ""
@@ -163,6 +202,7 @@ func (t *txn) commit() error {
 	sd.walPersisted = sd.walPending
 	sd.groups, sd.dirty, sd.bucketBytes = t.groups, t.dirty, t.bucketBytes
 	sd.newest, sd.newestBytes, sd.outbox, sd.shareN, sd.lastRecord = t.newest, t.newestBytes, t.outbox, t.shareN, t.lastRecord
+	sd.guestCharge, sd.guestGroups = t.guestCharge, t.guestGroups
 	for h, a := range t.snapAdd {
 		cur := sd.snaps[h]
 		cur.refs += a.refs
@@ -277,17 +317,34 @@ func (t *txn) trimDeltaLog(now int64) error {
 	return err
 }
 
-// touchGroup updates the editor's group for a person batch (5.3).
+// touchGroup updates the editor's group for a person batch (5.3); a guest
+// joins the guests' group instead (TECH public edit 5.1).
 func (t *txn) touchGroup(key, label string) error {
 	now := t.in.now().Unix()
+	if model.IsGuestKey(key) {
+		key = guestGroup
+	}
 	g, ok := t.groups[key]
 	if !ok {
 		g.StartedAt = now
 	}
-	g.Label, g.LastAt, g.Dirty = label, now, true
+	g.LastAt, g.Dirty = now, true
+	if key == guestGroup {
+		g.Fixed = true
+		if !slices.Contains(g.Names, label) && len(g.Names) < maxGroupNames {
+			g.Names = append(slices.Clone(g.Names), label)
+		}
+	} else {
+		g.Label = label
+	}
 	t.groups[key] = g
-	_, err := t.tx.ExecContext(t.ctx, `INSERT OR REPLACE INTO groups(editor, label, started_at, last_at, dirty) VALUES(?, ?, ?, ?, 1)`,
-		key, label, g.StartedAt, g.LastAt)
+	return t.putGroup(key, g)
+}
+
+func (t *txn) putGroup(key string, g editGroup) error {
+	names, _ := json.Marshal(nonNil(g.Names))
+	_, err := t.tx.ExecContext(t.ctx, `INSERT OR REPLACE INTO groups(editor, label, started_at, last_at, dirty, fixed, names) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		key, g.Label, g.StartedAt, g.LastAt, g.Dirty, g.Fixed, string(names))
 	return err
 }
 
@@ -308,11 +365,27 @@ func (t *txn) dirtyAuthors() []string {
 	})
 	var out []string
 	for _, k := range keys {
-		if g := t.groups[k]; g.Dirty && !slices.Contains(out, g.Label) {
+		if g := t.groups[k]; g.Dirty && !g.Fixed && !slices.Contains(out, g.Label) {
 			out = append(out, g.Label)
 		}
 	}
 	return out
+}
+
+// guestNames are the guests credited by the next entry: those who edited
+// since the last one.
+func (t *txn) guestNames() []string {
+	if g := t.groups[guestGroup]; g.Dirty {
+		return g.Names
+	}
+	return nil
+}
+
+// deleteGroup removes one edit group.
+func (t *txn) deleteGroup(key string) error {
+	delete(t.groups, key)
+	_, err := t.tx.ExecContext(t.ctx, `DELETE FROM groups WHERE editor = ?`, key)
+	return err
 }
 
 // deleteGroups removes every edit group (an agent write's boundary).
@@ -519,26 +592,19 @@ func (in *Instance) tick() error {
 		return err
 	}
 	st := in.st
-	var open []string
-	for _, c := range in.hub.list() {
-		if !c.public && c.session != "" {
-			open = append(open, c.session)
-		}
-	}
 	changes := []engine.Changed{
-		st.TouchSessions(open, now),
+		st.TouchSessions(slices.Collect(maps.Keys(in.openSessions())), now),
 		st.ExpireSessions(now),
-		st.TrimReceipts(16<<20, now),
-		st.TrimDeleted(16 << 20),
-		st.SweepAssets(now),
 	}
+	changes = append(changes, in.trimGuestState(now)...)
+	changes = append(changes, st.SweepAssets(now))
 	if in.ticks++; in.ticks%5 == 0 {
 		quota := in.b.Limits().DiskQuota
 		limit := int64(32 << 20)
 		if quota > 0 {
 			limit = min(limit, quota/16)
 		}
-		changes = append(changes, st.TrimUndo(limit))
+		changes = append(changes, st.TrimUndoCapped(limit, min(limit, in.pub.undoMax)))
 	}
 	if st.Sessions() == 0 && now >= t.lastRecord+engine.SessionTTL {
 		changes = append(changes, st.TrimDeleted(0))
@@ -566,6 +632,10 @@ func (in *Instance) tick() error {
 			return err
 		}
 	}
+	if err := in.refundGuestCharge(t); err != nil {
+		t.rollback()
+		return err
+	}
 	for id, op := range in.sd.ops {
 		if op.importedAt > 0 && op.importedAt <= now-24*3600 {
 			t.dropOps = append(t.dropOps, id)
@@ -584,26 +654,30 @@ func (in *Instance) tick() error {
 	return err
 }
 
-// closeGroups records a person entry when a group is due (30 seconds idle
-// or 5 minutes old) and something is dirty, then deletes the due groups.
+// closeGroups records a person entry when a due group (editGroup.due) is
+// dirty, crediting every dirty group, then deletes the due groups; a due
+// group that is clean goes without an entry (TECH public edit 5.1). So the
+// guests' group, due only at its window end, triggers at most one entry
+// per window, however people's groups close in between.
 func (in *Instance) closeGroups(t *txn, now int64) error {
 	var due []string
+	dirty := false
 	for k, g := range t.groups {
-		if now-g.LastAt >= 30 || now-g.StartedAt >= 300 {
+		if g.due(now) {
 			due = append(due, k)
+			dirty = dirty || g.Dirty
 		}
 	}
 	if len(due) == 0 {
 		return nil
 	}
-	if t.anyDirtyGroup() {
+	if dirty {
 		if _, err := t.record(recordSpec{kind: "person", authors: t.dirtyAuthors()}); err != nil {
 			return err
 		}
 	}
 	for _, k := range due {
-		delete(t.groups, k)
-		if _, err := t.tx.ExecContext(t.ctx, `DELETE FROM groups WHERE editor = ?`, k); err != nil {
+		if err := t.deleteGroup(k); err != nil {
 			return err
 		}
 	}
@@ -680,11 +754,14 @@ func (in *Instance) load() error {
 			err = rs.Err()
 		}
 	}
-	scan(`SELECT editor, label, started_at, last_at, dirty FROM groups`, func(r *sql.Rows) error {
-		var k string
+	scan(`SELECT editor, label, started_at, last_at, dirty, fixed, names FROM groups`, func(r *sql.Rows) error {
+		var k, names string
 		var g editGroup
-		if err := r.Scan(&k, &g.Label, &g.StartedAt, &g.LastAt, &g.Dirty); err != nil {
+		if err := r.Scan(&k, &g.Label, &g.StartedAt, &g.LastAt, &g.Dirty, &g.Fixed, &names); err != nil {
 			return err
+		}
+		if err := json.Unmarshal([]byte(names), &g.Names); err != nil {
+			return fmt.Errorf("group %s names: %w", k, err)
 		}
 		sd.groups[k] = g
 		return nil
@@ -753,6 +830,8 @@ func (in *Instance) load() error {
 	}
 	fmt.Sscan(meta["share_n"], &sd.shareN)
 	fmt.Sscan(meta["last_record"], &sd.lastRecord)
+	fmt.Sscan(meta["guest_charge"], &sd.guestCharge)
+	fmt.Sscan(meta["guest_groups"], &sd.guestGroups)
 	sd.walPending = meta["wal_truncate"] != ""
 	sd.walPersisted = sd.walPending
 	in.storeID = meta["store"]

@@ -64,6 +64,7 @@ type fakeCore struct {
 	ready    chan struct{}
 	putHook  func(hash string) // runs before PutBlob stores, outside the locks
 	leases   map[string]int    // read leases per hash (5.5)
+	extra    int64             // bytes MeasureOther adds, as other files would
 }
 
 func newFakeCore(dir string) *fakeCore {
@@ -89,7 +90,7 @@ func (f *fakeCore) MeasureOther(ctx context.Context) (int64, error) {
 	if f.failMeas {
 		return 0, fmt.Errorf("measurement failed")
 	}
-	var n int64
+	n := f.extra
 	for _, b := range f.blobs {
 		n += int64(len(b))
 	}
@@ -346,7 +347,7 @@ func (f *fakeCore) importLocked(ctx context.Context) error {
 		}
 		f.data.Lock()
 		f.revs = append(f.revs, fakeRev{info: RevisionInfo{Number: len(f.revs) + 1, Kind: e.Kind, Authors: e.Authors,
-			Message: e.Message, At: e.CreatedAt, RollbackOf: e.RollbackOf}, files: e.Files})
+			Message: e.Message, At: e.CreatedAt, RollbackOf: e.RollbackOf, GuestAuthors: e.Guests, GuestsMore: e.GuestsMore}, files: e.Files})
 		f.cursor = e.Seq
 		f.data.Unlock()
 	}
@@ -355,13 +356,19 @@ func (f *fakeCore) importLocked(ctx context.Context) error {
 
 // tb is a board under test with a private and a public route.
 type tb struct {
-	t      *testing.T
-	dir    string
-	core   *fakeCore
-	clock  *clock
-	in     *Instance
-	priv   *httptest.Server
-	pub    *httptest.Server
+	t     *testing.T
+	dir   string
+	core  *fakeCore
+	clock *clock
+	in    *Instance
+	priv  *httptest.Server
+	pub   *httptest.Server
+	// level is the flat's stored public access level: core sends it on
+	// Public requests (PublicAccessHeader) and opens the instance with it.
+	level struct {
+		mu sync.Mutex
+		v  string
+	}
 	cancel struct {
 		mu  sync.Mutex
 		fns []context.CancelFunc
@@ -376,9 +383,13 @@ func newTB(t *testing.T) *tb {
 	route := func(access string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.Header.Del("X-Flats-Access")
+			r.Header.Del(PublicAccessHeader)
 			if access == "public" {
 				r.Header.Del("Tailscale-User-Login")
 				r.Header.Del("Tailscale-User-Name")
+				if l := b.publicLevel(); l != "" {
+					r.Header.Set(PublicAccessHeader, l)
+				}
 			} else {
 				r.Header.Set("X-Flats-Access", access)
 			}
@@ -399,9 +410,28 @@ func newTB(t *testing.T) *tb {
 	return b
 }
 
+func (b *tb) publicLevel() string {
+	b.level.mu.Lock()
+	defer b.level.mu.Unlock()
+	return b.level.v
+}
+
+// setLevel changes the stored public access level and, when the instance
+// runs, pushes it as core does (TECH public edit 2.6).
+func (b *tb) setLevel(level string) {
+	b.t.Helper()
+	b.level.mu.Lock()
+	b.level.v = level
+	b.level.mu.Unlock()
+	if err := b.in.SetPublicAccess(context.Background(), level); err != nil {
+		b.t.Fatal(err)
+	}
+}
+
 func (b *tb) open() {
 	b.t.Helper()
-	in, _, err := Open(filepath.Join(b.dir, "board"), b.core, Options{Slug: "test", Title: "Test", Now: b.clock.Now, tickEvery: time.Hour})
+	in, _, err := Open(filepath.Join(b.dir, "board"), b.core, Options{Slug: "test", Title: "Test", Now: b.clock.Now, tickEvery: time.Hour,
+		PublicAccess: b.publicLevel()})
 	if err != nil {
 		b.t.Fatal(err)
 	}

@@ -652,13 +652,13 @@ func TestPublicHostBudgetAdmissionIsAtomic(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			start.Wait()
-			won[0] = d1.acquirePublic()
+			won[0] = d1.acquirePublic(false)
 		}()
 		go func() {
 			defer wg.Done()
 			start.Wait()
 			if round%2 == 0 {
-				won[1] = d2.acquirePublic()
+				won[1] = d2.acquirePublic(false)
 			} else {
 				won[1] = reservePublic(&publicQueued, cost) // a Public connection's frames
 			}
@@ -667,10 +667,10 @@ func TestPublicHostBudgetAdmissionIsAtomic(t *testing.T) {
 		wg.Wait()
 		total := publicQueued.Load() + publicSnaps.Load()
 		if won[0] {
-			d1.releasePublic()
+			d1.releasePublic(false)
 		}
 		if won[1] && round%2 == 0 {
-			d2.releasePublic()
+			d2.releasePublic(false)
 		} else if won[1] {
 			publicQueued.Add(-cost)
 		}

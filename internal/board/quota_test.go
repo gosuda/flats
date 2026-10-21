@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -125,7 +126,7 @@ func TestQuotaRefusalInsideOneGroupCommit(t *testing.T) {
 	// Only the applied batch touched an edit group: Olga's group is as it
 	// was before.
 	groups := groupsOf(t, b)
-	if groups["browser:olga"] != groupsBefore["browser:olga"] {
+	if !reflect.DeepEqual(groups["browser:olga"], groupsBefore["browser:olga"]) {
 		t.Fatalf("the refused batch changed its editor's group: %+v -> %+v", groupsBefore["browser:olga"], groups["browser:olga"])
 	}
 	if !groups["browser:alice"].Dirty {
@@ -165,7 +166,7 @@ func TestRefusedAgentWriteLeavesGroupsUnchanged(t *testing.T) {
 	if !errors.As(err, &be) || be.Category != CategoryCapacity {
 		t.Fatalf("agent write over the quota: %v", err)
 	}
-	if got := groupsOf(t, b); !maps.Equal(got, groupsBefore) {
+	if got := groupsOf(t, b); !reflect.DeepEqual(got, groupsBefore) {
 		t.Fatalf("a refused agent write changed the groups: %+v -> %+v", groupsBefore, got)
 	}
 	if n := len(mustOutbox(t, b.in)); n != outbox {

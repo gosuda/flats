@@ -585,15 +585,24 @@ func serverBoard(b *tb) map[string]map[string]any {
 
 // boardDiff describes how got differs from want, or is empty when every
 // element is present in both with equal canonical JSON.
+//
+// Authorship (ta, lk) is left out: deltas do not carry it, so a canvas
+// learns it only from snapshots.
 func boardDiff(want, got map[string]map[string]any) string {
 	var out []string
+	unauthored := func(m map[string]any) []byte {
+		c := maps.Clone(m)
+		delete(c, "ta")
+		delete(c, "lk")
+		return model.Canonical(c)
+	}
 	for _, id := range sortedKeys(want) {
 		g, ok := got[id]
 		if !ok {
 			out = append(out, "missing "+id)
 			continue
 		}
-		if w, gs := string(model.Canonical(want[id])), string(model.Canonical(g)); w != gs {
+		if w, gs := string(unauthored(want[id])), string(unauthored(g)); w != gs {
 			out = append(out, fmt.Sprintf("%s:\n got %s\nwant %s", id, gs, w))
 		}
 	}
