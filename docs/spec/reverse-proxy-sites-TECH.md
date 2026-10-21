@@ -48,8 +48,9 @@ commits ahead of the proxy work so each can be reviewed alone:
   - not both `proxy` and `proxy-public` in `network.permitted`;
   - either one requires a template;
   - a default naming a proxy provider requires it in `network.permitted`;
-  - `proxy.addr` differs from `host.console_addr` and `host.local_addr`
-    (ephemeral ports excepted, as for the existing pair, `config.go:889`);
+  - while either kind is permitted, `proxy.addr` differs from
+    `host.console_addr` and `host.local_addr` (ephemeral ports excepted, as
+    for the existing pair, `config.go:889`);
   - no `console.external_origins` host equals one label followed by the
     template's suffix (rule 10). Because the check runs on the whole
     document, it refuses the second of the two writes in either order.

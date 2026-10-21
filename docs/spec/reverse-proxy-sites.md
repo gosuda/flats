@@ -96,7 +96,10 @@ where a rename redirect sends a visitor.
     whichever of the two is saved first.
 11. **Cross-key checks.** Turning on `proxy` or `proxy-public` requires a
     valid template; clearing the template is refused while either is on.
-    `proxy.addr` must differ from `host.console_addr` and `host.local_addr`.
+    While a proxy provider is permitted, `proxy.addr` must differ from
+    `host.console_addr` and `host.local_addr`. Without one the address is
+    never bound, so an existing configuration that already uses the default
+    port for another listener keeps starting (rule 30).
     A host default may name a proxy provider only while the host permits it,
     as for the other defaults.
 12. **When changes apply.** A template change applies at once, to routing
