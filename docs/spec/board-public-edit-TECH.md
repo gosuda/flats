@@ -30,6 +30,8 @@ numbers such as (3.2) refer to this page.
   `FlatView` (and so `get_flat`, `list_flats`, the console list and the MCP
   `FlatInfo`) reports it. A non-board or Private flat always reports it absent.
 - `content_state` gains `safe_point_rev INTEGER` (nullable).
+- `flats` also gains `access_seq INTEGER NOT NULL DEFAULT 0`, incremented by
+  every commit that changes visibility or `public_access`.
 - Invariant, enforced in `CommitVisibility`: `public_access` is `''` when
   visibility is `private`, `view` or `edit` when `public`, and `edit` only for
   type `board`.
@@ -41,6 +43,7 @@ numbers such as (3.2) refer to this page.
 ```go
 Access     string `json:"access,omitempty"`      // requested: "view" or "edit"; empty means "view" when Public
 FromAccess string `json:"from_access,omitempty"` // level when requested; empty for Private
+AccessSeq  *int64 `json:"access_seq,omitempty"`  // flats.access_seq when requested
 ```
 
 - `SetVisibility(slug, visibility, access)` normalizes `access`: empty becomes
@@ -48,14 +51,16 @@ FromAccess string `json:"from_access,omitempty"` // level when requested; empty 
   non-board is refused as `invalid`.
 - "Unchanged" now compares the pair (visibility, access).
 - **Staleness** (`applyVisibilityApproval`): in addition to today's checks, the
-  approval is stale when the current `public_access` differs from
-  `FromAccess`. A legacy approval without `from_access` is treated as
-  `from_access: view` when `from` is Public and `''` otherwise, so an old
-  pending Public approval still applies as `view`.
+  approval is stale when the current `access_seq` differs from `AccessSeq`.
+  Any visibility or level change in between, even a round trip that restores
+  the same pair, therefore makes it stale for good. A legacy approval without
+  `access_seq` (requested before this feature) keeps today's comparison of
+  `from` and applies only as `view`; it can never grant `edit`.
 - The idempotency key includes the new fields, so a pending `view` request and
   a pending `edit` request are different approvals.
 - `CommitVisibility` becomes a compare-and-set on
-  `(visibility, public_access, live_version)` and writes both columns.
+  `(visibility, public_access, access_seq, live_version)`, writes both columns
+  and increments `access_seq`.
 
 ### 2.3 Applying `edit`
 
@@ -101,11 +106,19 @@ epoch as today, closing every public socket.
   while anyone can edit") when the flat is `edit` and the revision is
   `safe_point_rev`. This covers HTTP, the board History route and MCP, since
   all reach `PinRevision`.
-- `SetRevisionQuotas` refuses a per-flat revision quota of 0 while the flat is
-  `edit` (`invalid`, naming the reason).
+- The rule is checked on the **effective** values after the change, not on
+  the submitted value. `SetRevisionQuotas` refuses any change (a value of 0,
+  or clearing the override while the host default is 0) whose resulting
+  effective revision quota would be 0 while the flat is `edit`.
 - Host settings (`cleanSettings`/`UpdateSettingsMatch`) refuse
-  `disk_quota_bytes: 0` while any board is `edit`, and `revision_quota: 0`
-  while any `edit` board has no per-flat override, naming the affected flats.
+  `disk_quota_bytes: 0` while any board is `edit`, and a default
+  `revision_quota: 0` while any `edit` board has no per-flat override, naming
+  the affected flats.
+- **Serialization.** A service-wide `publicEditMu` is held by the whole of
+  2.3 (applying `edit`), by `SetRevisionQuotas` and by the host settings
+  update, each around both its check and its commit. It is taken before the
+  flat lock, and the settings path takes no flat lock, so the order is fixed
+  and the two checks cannot pass concurrently.
 - The disk quota is a host setting (there is no per-flat disk quota), so spec
   rule 6a's "per-flat change" applies to the revision quota only.
 - `flats config set` edits the file offline. At startup, a board at `edit`
@@ -171,8 +184,19 @@ epoch as today, closing every public socket.
 ### 3.2 Sessions
 
 - A guest gets an ordinary session row whose key is its guest key and label is
-  its name. The welcome carries a session as for members, so reconnect,
-  receipts, duplicate prevention and undo work unchanged.
+  its name. The welcome carries a session as for members, so receipts,
+  duplicate prevention, the resend of pending edits and undo work unchanged.
+- **No history for guests.** A guest socket never receives the delta log: on
+  every welcome, including a reconnect, the server ignores `watermark` and
+  sends a fresh guest snapshot. The guest snapshot contains only live
+  elements (no deleted rows, no `pre_rel` of deleted rows). Deltas sent to a
+  guest after its welcome are the current changes, rewritten (3.3).
+- **Revive.** Rows gain `del_key` (the editor key that deleted them; new
+  column `elements.del_key`, replacing the `del_guest` flag of 4.4). A guest
+  batch may `revive` only rows whose `del_key` is that guest's own key and
+  whose `del_seq` is later than the guest session's start; anything else is
+  reject `guest_revive`. A guest therefore can only bring back what it
+  deleted itself, never content removed before it joined.
 - Guest sessions expire 1 hour after their last socket closes (members keep
   24 hours), and at most 200 guest session rows are kept; above that the
   oldest guest sessions without a live socket are dropped (with their created
@@ -276,9 +300,18 @@ back to the savepoint:
 |---|---|---|
 | Receipts | 4 MiB of the 16 MiB | `TrimReceipts` trims guest sessions' receipts first while their total is over 4 MiB |
 | Undo stacks | 8 MiB of the 32 MiB | `TrimUndo` trims guest stacks first while their total is over 8 MiB |
-| Deleted rows | 4 MiB of the 16 MiB | new column `elements.del_guest`; `TrimDeleted` trims guest-deleted rows first while their total is over 4 MiB |
-| Sessions and created rows | 200 rows, 1 hour TTL | 3.2 |
-| Delta log | shared | bounded by the per-board op limit (4.2) |
+| Deleted rows | 4 MiB of the 16 MiB | `elements.del_key` (3.2); `TrimDeleted` trims rows deleted by guest keys first while their total is over 4 MiB |
+| Sessions | 200 rows, 1 hour TTL | 3.2 |
+| Created-id rows | 5,000 per guest session, 50,000 for all guest sessions | counted in memory from `created`; a guest batch that would add rows over a cap is reject `guest_room`, so id-reuse protection is never dropped to make room |
+| Group-id records | 2,000 group ids first used by guests | `meta.guest_groups` counts new `usedGroups` rows added by guest batches; a guest group op over the cap is reject `guest_room`. These rows stay permanent, as today, so no group id is ever reused |
+| Delta log | shared | see below |
+
+The delta log stays shared. Sustained guest traffic, within the per-board
+limit of 4.2, can push older entries out of it, so a member who reconnects
+after a long gap may get a snapshot instead of a catch-up. A snapshot loses
+no edits (the member's pending edits are resent as today); it costs a larger
+download. Spec rule 24 is reworded to promise only what is kept: guests
+cannot evict members' undo history, receipts or sessions.
 
 ## 5. Revisions (board, core)
 
@@ -290,6 +323,18 @@ back to the savepoint:
   rollback, import, safe point, leaving `edit`).
 - The group keeps a JSON list of contributing guest names in first-edit order
   (new column `names`, at most 64 entries).
+- **Who triggers a record.** Today `closeGroups` records one entry whenever
+  any group is due and any group is dirty, and recording clears every group's
+  `dirty`. That changes to: record only when at least one **due** group is
+  dirty; a due group that is clean is deleted without a record. The guest
+  group is due only at its window end. An entry recorded because a member
+  group closed credits that member (and the guests who contributed since the
+  last entry), so it is not guest-only. Recording clears the guest group's
+  `dirty` but keeps its `started_at`; at its window end a clean guest group is
+  deleted without a record.
+- Result: a guest-only entry is recorded only at a guest window end or a
+  forced boundary, at most 12 an hour plus forced boundaries, however members'
+  groups interleave. Tested with interleaved member idle expiries.
 
 ### 5.2 Outbox and credits
 
@@ -315,6 +360,12 @@ back to the savepoint:
 
 The newest revision and pinned revisions are never deleted. The "revision
 before an agent write" is an ordinary entry and follows these rules.
+
+The guarantee is the one spec rule 25 states: guest-only revisions never hold
+more than half of the quota, so among unpinned revisions other than the
+newest, member and agent revisions keep at least Q − G places. Guests do
+**not** get first eviction below their half: recent guest history stays
+recoverable. The spec's Revisions criterion is reworded to this.
 
 ## 6. Level changes (board)
 
@@ -418,7 +469,11 @@ revision through `board_imports` (by outbox seq).
 | Boundary | board tests: guest `ops_part`, `share`, upload, import, recover, revisions refused; `view` socket ops refused; guest asset reference to a non-live asset refused |
 | Identity | frame-scan test over every frame type to a guest socket |
 | Limits | board tests for each limit in section 4, plus a load test with 50 guests at the per-guest limit while a member edits and a measured remote-display p95 |
-| Revisions | board+core test over a simulated hour (fake clock): at most 12 guest entries plus forced boundaries; guest-only retention order; safe point never unpinned while `edit` |
+| Revisions | board+core test over a simulated hour (fake clock) with guests editing continuously and in pauses, and members' groups expiring in between: at most 12 guest-only entries plus forced boundaries; retention keeps guest-only at most half and members at least Q − G (including Q = 1, 2, 4); safe point never unpinned while `edit` |
+| Guest boundary | board tests: a guest reconnecting with an old watermark gets a snapshot without deleted content; a guest `revive` of content deleted before it joined is refused |
+| Approval round trip | core test: an `edit` approval requested at Public view stays stale after Private → Public edit → view |
+| Quota transitions | core tests: clearing an override to a host default of 0 is refused while `edit`; a host change to 0 racing an `edit` approval cannot leave an `edit` board with a 0 quota |
+| State caps | board test: one guest session creating and deleting elements and groups past the caps gets `guest_room`, and created/group rows stop growing |
 | Kill switch | board test: a batch in flight when the epoch changes is refused; guest sockets get `editing_ended` |
 | Recovery | integration test: guests delete everything, rollback to the revision before the session and to the safe point |
 | Agent safety | `get_board` shows `guest_text` after a member moves a guest-written sticky |

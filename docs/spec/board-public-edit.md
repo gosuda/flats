@@ -168,6 +168,9 @@ an approval.
 
 ## What a guest can and cannot do
 
+16a. **No earlier content.** A guest receives only the board as it is now and
+    the changes after joining. A guest never receives deleted content or
+    earlier changes, and can bring back only elements it deleted itself.
 17. **Can.** Everything in
     [Editing in the browser](board.md#editing-in-the-browser) that changes
     elements: tools, selection, move, resize, rotate, copy and paste (text and
@@ -220,11 +223,13 @@ says so.
     - **Elements and assets.** A guest edit that would take the board above a
       reserved share of the element limit is refused with a reason.
     - **Server state.** Guests have their own caps for the per-board state
-      that the technical design lists as shared today: duplicate-prevention
-      receipts, the delta log, personal undo history, deleted-element rows
-      session records and the permanent group-id records, so a guest flood cannot evict a Private editor's
-      undo history, force Private editors to resync, or fill the table of
-      sessions.
+      that is shared today: duplicate-prevention receipts, personal undo
+      history, deleted-element rows, session records, created-id records and
+      the permanent group-id records, so a guest flood cannot evict a Private
+      editor's undo history or receipts, or fill those tables. The shared
+      change log is not reserved: heavy guest traffic can make a member who
+      reconnects after a gap download a fresh copy of the board instead of the
+      missed changes, which loses nothing.
 25. **One revision group for guests, on fixed windows.** All guest edits on a
     board share one edit group. Unlike a Private editor's group it has **no
     idle close**: it closes only at a fixed 5-minute window or at a forced
@@ -320,7 +325,7 @@ Reference: a board with 20 guests editing continuously for an hour.
 | Boundary | On a Public route, history, recovery, import, upload, Send to agent and assets that exist only in earlier revisions are refused at both levels. A forged edit at `view` and a forged Private-only operation from a guest change nothing. |
 | Identity | A scan of every frame sent to a guest, including snapshots, deltas, acknowledgements, presence and exported data, finds no Tailscale login, no Private typed name and no agent label (exports are the public view projection). |
 | Limits | While guests send operations at the per-guest limit on every allowed connection, a Private editor can still connect, edit, roll back and save, and remote display keeps the board's p95 of 200 ms. At the reserved disk and element room and at the guest byte budget, guests are refused and Private edits succeed. |
-| Revisions | However 20 guests edit for an hour (continuously or in pauses of any length), they create at most 12 revisions plus forced boundaries. The pinned safe point is retained and cannot be unpinned while the level is `edit`. Private and agent revisions are not evicted while guest-only revisions remain. |
+| Revisions | However 20 guests edit for an hour (continuously or in pauses of any length), they create at most 12 revisions plus forced boundaries. The pinned safe point is retained and cannot be unpinned while the level is `edit`. Guest-only revisions never hold more than half of the revision quota, so member and agent revisions keep at least the other half. |
 | Kill switch | After **Stop guest editing**, no edit from a guest connection commits. The console confirms only after the stored level is saved and the epoch is bumped. If the board instance is not running, the stored level alone is changed and applies on the next start. |
 | Recovery | After a hostile session that deletes every element, History still lists the safe point and a revision from just before the session, and the operator restores either. |
 | Agent safety | Elements whose text a guest wrote are marked as guest-written in `get_board`, including after a member moved them. |
