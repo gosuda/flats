@@ -152,7 +152,7 @@ func (s *State) ApplyBatch(b Batch) Outcome {
 	out := Outcome{AckSeq: s.seq, Results: EncodeResults(results)}
 	if delta != nil {
 		delta.From = fmt.Sprintf("%s:%d", b.Session, b.N)
-		delta.By = &model.By{Kind: "person", Label: se.Label, Who: a.kind}
+		delta.By = &model.By{Kind: "person", Label: se.Label, Who: a.kind, Guest: a.guest}
 		s.seq = a.seq
 		out.Seq, out.AckSeq, out.Delta = a.seq, a.seq, delta
 	}

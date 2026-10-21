@@ -148,6 +148,9 @@ func (c Change) MarshalJSON() ([]byte, error) {
 type By struct {
 	Kind  string `json:"kind"` // person, agent or system
 	Label string `json:"label"`
+	// Guest marks a guest's change for members, whose canvases draw the
+	// guest badge next to Label (spec rule 13).
+	Guest bool `json:"guest,omitempty"`
 	// Who is the editor kind of a person (KindMember or KindGuest); it
 	// stays on the server and lets the guest projection name the kind.
 	Who string `json:"-"`
