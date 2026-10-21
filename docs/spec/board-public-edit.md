@@ -297,8 +297,9 @@ says so.
     level is `edit`.
 33. **Sharing in flat settings.** The flat page's existing Sharing row (its
     **Manage** action opens the Share dialog) shows the level and gains
-    **Stop guest editing**, the current guest and viewer counts, and a short
-    note on what guests cannot do. A change that waits for an approval shows as
+    **Stop guest editing**, the current guest and viewer counts, a short
+    note on what guests cannot do, and the state of the pinned safe point
+    with a link to History. A change that waits for an approval shows as
     pending. There is no second permissions section.
 34. **Honest labels.** Wherever the console shows visibility (lists, cards, the
     flat header), an editable Public board shows **Public, anyone can edit**,
