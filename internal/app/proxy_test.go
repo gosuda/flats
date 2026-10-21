@@ -14,6 +14,7 @@ import (
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/provider"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -453,4 +454,82 @@ func TestProxyKindSwitchWithPublicFlat(t *testing.T) {
 	if f, _ := h.Svc.GetFlat(ctx, "site"); f.PrivateURL != "https://site.site.example.org" {
 		t.Fatalf("private_url %q", f.PrivateURL)
 	}
+}
+
+// failGrants makes the host's provider grant changes fail while fail returns
+// an error.
+func failGrants(h *Host, fail func(id string, permitted bool) error) {
+	h.pmu.Lock()
+	defer h.pmu.Unlock()
+	h.testGrantFailure = nil
+	if fail != nil {
+		h.testGrantFailure = func(id provider.ID, permitted bool) error { return fail(string(id), permitted) }
+	}
+}
+
+// Rule 14: a change refused after the settings save, by a failed grant or a
+// proxy route left registered, saves nothing, keeps the grant as it was and
+// binds or closes nothing.
+func TestProxyRefusedChangeKeepsState(t *testing.T) {
+	ctx := context.Background()
+	addr := freeAddr(t)
+	h, client := startConfigHost(t, proxyConfig(t, "proxy.url_template", testProxyTemplate, "proxy.addr", addr))
+	refused := errors.New("grant refused")
+	state := func(name string, on bool) {
+		t.Helper()
+		if got := configPermitted(t, h); slices.Contains(got, "proxy") != on {
+			t.Errorf("%s: network.permitted %v", name, got)
+		}
+		if h.Providers.HostAllows("proxy") != on {
+			t.Errorf("%s: grant %t", name, !on)
+		}
+		if (h.proxyBackend() != nil) != on || listening(addr) != on {
+			t.Errorf("%s: listener %v, listening %t", name, h.proxyBackend(), listening(addr))
+		}
+	}
+
+	failGrants(h, func(id string, permitted bool) error { return refused })
+	if code, out := setHost(t, h, client, "proxy", true); code < 400 || !strings.Contains(out["error"].(string), "grant refused") {
+		t.Fatalf("turn on with a failing grant: %d %v", code, out)
+	}
+	state("failed grant on", false)
+
+	failGrants(h, nil)
+	if code, out := setHost(t, h, client, "proxy", true); code != 200 {
+		t.Fatalf("turn on: %d %v", code, out)
+	}
+	failGrants(h, func(id string, permitted bool) error { return refused })
+	if code, _ := setHost(t, h, client, "proxy", false); code < 400 {
+		t.Fatalf("turn off with a failing grant: %d", code)
+	}
+	state("failed grant off", true)
+
+	// A proxy route no flat allows: turning off is refused and the route
+	// keeps serving.
+	failGrants(h, nil)
+	if _, err := h.Providers.ServeExposure(ctx, core.ExposureRequest{Slug: "stray", Host: "stray", Visibility: "private", Audience: core.AudienceCurrent,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("stray")) }), Permitted: []core.ProviderID{core.ProviderProxy}}); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := setHost(t, h, client, "proxy", false); code < 400 || !strings.Contains(out["error"].(string), "route is still registered") {
+		t.Fatalf("turn off with a registered route: %d %v", code, out)
+	}
+	state("registered route", true)
+	req, _ := http.NewRequest("GET", "http://"+addr+"/", nil)
+	req.Host = "stray.site.example.org"
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("stray route after the refusal: %d", res.StatusCode)
+	}
+	if err := h.Providers.StopSlug(ctx, "stray"); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := setHost(t, h, client, "proxy", false); code != 200 {
+		t.Fatalf("turn off: %d %v", code, out)
+	}
+	state("off", false)
 }

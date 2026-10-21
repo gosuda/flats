@@ -226,6 +226,8 @@ type Host struct {
 
 	// testTailnet replaces tsNet for console nodes in tests.
 	testTailnet core.PrivateNet
+	// testGrantFailure, when set, fails provider grant changes in tests.
+	testGrantFailure func(provider.ID, bool) error
 	// testNetbirdConsole replaces netbirdNet for console peers in tests.
 	testNetbirdConsole netbirdConsoleNet
 	portalNet          *portal.Net
