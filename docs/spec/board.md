@@ -61,6 +61,7 @@ once without approval, and history is kept as revisions.
 | A planner or designer | Draws user flows and system diagrams with shapes and connectors, and asks an agent which paths are missing. |
 | An agent | Reads the stickies people added, groups them by topic, adds summary stickies and builds flowcharts. |
 | An outside viewer | Views, read-only and live, a board the operator approved as Public. |
+| A guest | Edits, after typing a name, a board the operator opened to anyone ([board-public-edit.md](board-public-edit.md)). |
 
 A typical flow:
 
@@ -206,7 +207,9 @@ A typical flow:
 
 ## Editing in the browser
 
-Editing is available on Private routes.
+Editing is available on Private routes, and to guests on the Public route of
+a board whose operator allowed anyone to edit; guests get the element editing
+of [board-public-edit.md](board-public-edit.md) rule 17 only.
 
 14. **Tools.** Select, hand (pan), sticky, text, shape, connector, pen,
     eraser, image and frame. Every tool has a keyboard shortcut.
@@ -428,6 +431,15 @@ unchanged.
 53. **Withdrawing Public access.** When a board returns from Public to
     Private, its route stops, or the board is renamed or deleted, open Public
     connections close at once.
+
+    Anonymous public editing ([board-public-edit.md](board-public-edit.md))
+    changes rules 22 to 25, 41 and 51 to 53 for a board at the public access
+    level `edit`: guests on the Public route may edit elements and take part
+    in presence through a guest projection that never carries Private
+    identities; viewers appear as Viewer N; guest edits share one revision
+    group on fixed 5-minute windows; and lowering the level ends guest
+    editing at once. A board at the default level `view` follows the rules
+    above unchanged.
 54. **No versions.** Draft, version, deployment preview, deployment and
     version rollback tools refuse a board and point to the revision tools.
     Version-model tools cannot write board content.
@@ -541,7 +553,7 @@ These are the release criteria for B1, with fixed measurement conditions.
 | Concurrent editing | Under that load, every edit that the concurrency rules say must apply stays, with the same result on every screen. |
 | Reconnection | After disconnecting and reconnecting, each unconfirmed edit applies exactly once. |
 | Recovery | Every element, value and asset of a retained revision can be viewed and recovered. Rollback succeeds even with the disk quota full. |
-| Refusal | On Public routes, writes, presence and history access are all refused. An edit over the disk quota is refused before it reaches the committed state or other participants' screens. |
+| Refusal | On Public routes of a board at level `view`, writes, presence and history access are all refused. An edit over the disk quota is refused before it reaches the committed state or other participants' screens. |
 | Agent | A task of sorting 30 stickies: every element kept, zero overlaps, text at least 12 px at 100% zoom, both ends of every connector attached to the intended elements. |
 | Dependencies | Runs from the single Flats binary, with no outside service, account or separate server. |
 
@@ -555,8 +567,9 @@ These are the release criteria for B1, with fixed measurement conditions.
 
 ## Out of scope for B1
 
-- Accounts, per-board permissions and guest links. In Flats, the network
-  decides access.
+- Accounts, per-person permissions and expiring or per-person links. In
+  Flats, the network decides access; the one exception is the board-wide
+  anonymous edit level of [board-public-edit.md](board-public-edit.md).
 - Video or voice calls, and chat.
 - Model calls inside the board (an AI button). Agents work only through MCP.
 - Plugins, a widget runtime and arbitrary HTML elements. Content that needs

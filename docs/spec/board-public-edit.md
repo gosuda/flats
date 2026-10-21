@@ -1,6 +1,7 @@
 # Anonymous public editing for boards
 
-Status: planned. None of this is implemented. This page changes the
+Status: partly implemented, on an unreleased branch; see
+[Current state](#current-state). This page changes the
 [board spec](board.md) and parts of [content-models.md](content-models.md);
 every changed rule is listed in
 [Changes to existing specs](#changes-to-existing-specs). Only the board type
@@ -392,9 +393,22 @@ Other docs:
 
 ## Current state
 
-Nothing here is implemented. The Share dialog (`share.js`) already has a link
-access control with Private and Public. Public boards are read-only and have
-no presence.
+Implemented end to end: the stored level and its approvals, the safe point,
+guests and viewers on the board, the guest projection and limits, revision
+grouping and retention, authorship, the board app and the console. Not done
+or not measured:
+
+- Remote display under load is measured as delivery to the other
+  connections (50 guests at their limit: p95 23 ms), not as the time until
+  the browser has drawn the change.
+- The asset room refusal has no reachable guest path, because guests can only
+  reuse assets live elements already use.
+- Known follow-ups: a departed guest creator keeps its name in a member's tab
+  until reload; the "editing ended" banner stays after rejoining; a visitor
+  refused as full at the first hello sees member defaults in the header; the
+  join panel copy with a remembered name; a replacing import whose change
+  exceeds the public queue closes guest sockets; a narrow race in member-facing
+  departure notices when the same editor reconnects at once.
 
 ## Open questions
 

@@ -1,6 +1,6 @@
 # Anonymous public editing for boards: technical design
 
-Status: design for the unshipped feature of
+Status: implemented on an unreleased branch; design for the feature of
 [board-public-edit.md](board-public-edit.md). Rule numbers refer to that page
 unless they say "board rule", which refers to [board.md](board.md). Section
 numbers such as (TECH 7.3) refer to [board-TECH.md](board-TECH.md); plain

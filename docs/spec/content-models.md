@@ -171,8 +171,11 @@ people and agents edit live.
     access to the content.
     - Today write access means the Private route and MCP. The Private route is
       Local loopback or a private mesh provider (Tailscale or NetBird), as that
-      network's existing access control allows. A Public route is read-only:
-      it shows no revision list and accepts no revision operation.
+      network's existing access control allows. A Public route shows no
+      revision list and accepts no revision operation. It is read-only,
+      except that a board whose operator allowed anyone to edit accepts
+      element edits from guests there
+      ([board-public-edit.md](board-public-edit.md)).
     - Agents may pin, unpin and roll back without approval.
 
 ## Quotas
