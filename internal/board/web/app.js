@@ -570,6 +570,13 @@ class App {
     const c = $('.layer-dynamic');
     const pointers = new Map();
     let pan = null, pinch = null, active = null;
+    // cancelGesture ends whatever pointer gesture is in progress, including
+    // a stylus stroke whose tool differs from this.tool.
+    this.cancelGesture = () => {
+      if (active && active.cancel) active.cancel();
+      if (active !== this.tool && this.tool.cancel) this.tool.cancel();
+      active = null;
+    };
     const toolFor = (e) => {
       if (e.pointerType === 'pen' && (this.tool === this.tools.select || this.tool === this.tools.hand) && this.canEdit) return this.tools.pen;
       return this.tool;
@@ -1133,7 +1140,7 @@ class App {
   guestEditingEnded(unsent) {
     // Nothing of the guest's editing state stays drawn in the viewer view:
     // an active gesture and its preview end with the editing.
-    if (this.tool.cancel) this.tool.cancel();
+    this.cancelGesture();
     this.setPreview(null);
     this.select([]);
     this.focusId = null;
