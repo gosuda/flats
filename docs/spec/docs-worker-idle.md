@@ -1,6 +1,6 @@
 # Idle document workers
 
-Status: implemented — implementation and test-source reviews passed; integrated verification passed; final report review is pending.
+Status: implemented. The technical design is in [Idle document worker internals](../internal/docs-worker-idle.md).
 
 ## Summary
 
@@ -26,10 +26,6 @@ Documents release their server worker memory after two minutes without active us
 
 16. A capacity-limited document remains accessible for reading and revision recovery after wake; incomplete background revision import does not by itself make it unavailable. History reads and pin/quota controls do not wake sleepers, and may show only already-imported history until demand-driven recovery.
 
-## Current state
-
-The candidate implements automatic idle sleep, wake preparation and lazy host restoration. Independent design, code and test-source reviews passed. Integrated verification passed; final report review remains pending; this document is not a production rollout receipt.
-
 ## Open questions
 
-No undecided product choices. See the test report for executed validation and explicit coverage limits.
+None.
