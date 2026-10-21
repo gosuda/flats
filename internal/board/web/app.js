@@ -23,6 +23,7 @@ import { History } from './history.js';
 import { Exporter } from './export.js';
 import { A11yTree } from './a11y.js';
 import { Undo } from './undo.js';
+import { drawToolOverlays } from './gesture.js';
 import { SelectTool } from './tools/select.js';
 import { HandTool } from './tools/hand.js';
 import { StickyTool } from './tools/sticky.js';
@@ -119,7 +120,7 @@ class App {
       pen: new PenTool(this), eraser: new EraserTool(this), image: new ImageTool(this),
     };
     this.tool = this.tools.select;
-    this.renderer.overlays.push((ctx, r) => this.drawMarks(ctx, r), (ctx, r) => this.presence.draw(ctx, r), (ctx, r) => this.tool.draw && this.tool.draw(ctx, r));
+    this.renderer.overlays.push((ctx, r) => this.drawMarks(ctx, r), (ctx, r) => this.presence.draw(ctx, r), (ctx, r) => drawToolOverlays(ctx, r, this.tool, this.gestureTool()));
     this.net = new Net(this.state, this.handlers());
     this.input();
     this.status();
@@ -577,6 +578,7 @@ class App {
       if (active !== this.tool && this.tool.cancel) this.tool.cancel();
       active = null;
     };
+    this.gestureTool = () => active;
     const toolFor = (e) => {
       if (e.pointerType === 'pen' && (this.tool === this.tools.select || this.tool === this.tools.hand) && this.canEdit) return this.tools.pen;
       return this.tool;
@@ -606,10 +608,13 @@ class App {
         }, 550);
         return;
       }
-      const handPan = e.button === 1 || this.space || this.tool === this.tools.hand;
+      // The hand tool pans unless a stylus draws (rule 20); a stylus with
+      // its barrel button still pans.
+      const t = toolFor(e);
+      const handPan = e.button === 1 || this.space || (this.tool === this.tools.hand && (t === this.tool || e.button === 2));
       if (handPan) { pan = { s, cam: { ...this.cam } }; c.classList.add('panning'); return; }
       if (e.button === 2) return;
-      active = toolFor(e);
+      active = t;
       active.down(e, this.toWorld(...s), s);
     });
     c.addEventListener('pointermove', (e) => {
