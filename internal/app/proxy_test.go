@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -532,4 +533,49 @@ func TestProxyRefusedChangeKeepsState(t *testing.T) {
 		t.Fatalf("turn off: %d %v", code, out)
 	}
 	state("off", false)
+}
+
+// Rule 11 and the address checks: a host that permits no proxy and uses
+// proxy.addr for its Local or console listener starts without a proxy
+// listener, and turning a proxy kind on there is refused, saves nothing and
+// binds nothing.
+func TestProxyAddrSharedWithoutProxy(t *testing.T) {
+	for _, key := range []string{"host.local_addr", "host.console_addr"} {
+		t.Run(key, func(t *testing.T) {
+			addr := freeAddr(t)
+			path := proxyConfig(t, "proxy.url_template", testProxyTemplate, key, addr)
+			o := configModeOptions(path)
+			delete(o.Overrides, key) // keep the stored address that equals proxy.addr
+			setConfig(t, path, "proxy.addr", addr)
+			h, err := Start(context.Background(), o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := h.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			t.Cleanup(transport.CloseIdleConnections)
+			client := &http.Client{Transport: transport}
+			if key == "host.console_addr" && h.Addr() != addr {
+				t.Fatalf("console on %s, want %s", h.Addr(), addr)
+			}
+			if !listening(addr) || h.proxyBackend() != nil {
+				t.Fatalf("listeners: %s listening %t, proxy %v", addr, listening(addr), h.proxyBackend())
+			}
+			if p := providerByID(t, h, client, "proxy"); p.Enabled || p.Configured || p.BindError != "" {
+				t.Fatalf("provider: %+v", p)
+			}
+			for _, id := range []string{"proxy", "proxy-public"} {
+				if code, out := setHost(t, h, client, id, true); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(out["error"]), "proxy.addr") {
+					t.Fatalf("turn on %s: %d %v", id, code, out)
+				}
+				if len(configPermitted(t, h)) != 0 || h.proxyBackend() != nil || h.Providers.HostAllows(provider.ID(id)) {
+					t.Fatalf("a refused %s changed the host", id)
+				}
+			}
+		})
+	}
 }
