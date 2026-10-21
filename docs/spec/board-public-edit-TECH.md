@@ -87,12 +87,18 @@ nothing that a guest could use:
 3. **Pin.** On `reuse`, pin the earlier safe point S with the lock-held pin
    function **before** importing the outbox (an import runs retention, which
    could otherwise delete an unpinned S while recording entries that changed
-   in between). For a new entry, import first and then pin R; retention never
-   deletes the newest revision, and the flat lock keeps other imports out
-   until the pin is done. A full pin quota fails with `pin_quota_full`. Store
+   in between). For a new entry, the pin happens **inside the import**:
+   `importBoardLocked(ctx, f, pinSeq)` pins the revision it creates for outbox
+   seq `pinSeq` in the same flats.db transaction that inserts it, before that
+   transaction runs `retainTx`. Retention never deletes a pinned revision, so
+   R survives even when the board's apply loop records further entries (a
+   member group closing) that the same import drains after R. If the pin
+   quota is full at that moment, the entry is imported unpinned and the
+   approval fails with `pin_quota_full`. A full pin quota fails with `pin_quota_full`. Store
    the pinned number in `content_state.safe_point_rev`. Tested with a revision
    quota of 2 and member edits that restore S's content after another
-   revision.
+   revision, and with a revision quota of 1, a delayed import and a member
+   entry recorded after R.
 
 **Locking.** The flat mutex is not reentrant, and today `PinRevision` and the
 revision catch-up each take it. They are split into a locked part and a
