@@ -92,6 +92,9 @@ type hub struct {
 	// minute after the last one closed.
 	viewers map[*conn]int
 	tokens  map[string]*viewerToken
+	// departing holds the labels whose key left until its gone frame is
+	// queued, so no other key takes one before (relayGone).
+	departing map[int]bool
 	// counts for PublicPresence, which must not wait for mu
 	guestsNow, viewersNow atomic.Int64
 }
@@ -108,7 +111,7 @@ var viewerHold = time.Minute
 
 func newHub() *hub {
 	return &hub{conns: map[*conn]struct{}{}, keys: map[string]int{}, labels: map[string]int{},
-		viewers: map[*conn]int{}, tokens: map[string]*viewerToken{}}
+		viewers: map[*conn]int{}, tokens: map[string]*viewerToken{}, departing: map[int]bool{}}
 }
 
 func (h *hub) admit(public bool, privMax, pubMax int) bool {
@@ -145,12 +148,12 @@ func (h *hub) admitGuest(c *conn, max int) bool {
 
 // join counts a member's or guest's socket for its editor key, giving the
 // key a connection label when it is the key's first socket: the lowest N
-// no other key holds.
+// no other key holds and no departing key still reserves.
 func (h *hub) join(c *conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.keys[c.key] == 0 {
-		used := map[int]bool{}
+		used := maps.Clone(h.departing)
 		for _, n := range h.labels {
 			used[n] = true
 		}
@@ -167,7 +170,8 @@ func (h *hub) join(c *conn) {
 }
 
 // leave ends a socket's admission. lastOfKey reports that it was the last
-// socket of its editor key, whose label is then free again.
+// socket of its editor key; its label stays reserved until relayGone has
+// queued the gone frame.
 func (h *hub) leave(c *conn) (lastOfKey bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -202,9 +206,24 @@ func (h *hub) leave(c *conn) (lastOfKey bool) {
 	if h.keys[c.key] <= 0 {
 		delete(h.keys, c.key)
 		delete(h.labels, c.key)
+		h.departing[c.plabelN] = true
 		return true
 	}
 	return false
+}
+
+// gone frees a departed key's label once its gone frame is queued.
+func (h *hub) gone(c *conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.departing, c.plabelN)
+}
+
+// rejoined reports whether the key has a socket again.
+func (h *hub) rejoined(key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.keys[key] > 0
 }
 
 // viewerNumber gives a viewer socket its number: the one its token holds,
@@ -738,10 +757,10 @@ func (c *conn) pump() {
 		c.overflowed = true
 		c.mu.Unlock()
 		c.dropQueue()
-		c.landFlight(true)
+		c.landAfterClose()
 	}()
 	for {
-		c.landFlight(false)
+		c.landFlight()
 		c.mu.Lock()
 		var m outMsg
 		var held int64 // host Public bytes this frame keeps until the socket takes it
@@ -821,19 +840,32 @@ func (c *conn) handed(n int64, guest bool) {
 }
 
 // landFlight returns the guests' share of the bytes the socket has written
-// since, or of all of them when the socket is done. Only the pump calls it.
-func (c *conn) landFlight(all bool) {
+// since. Only the pump calls it.
+func (c *conn) landFlight() {
 	if c.flight == 0 {
 		return
 	}
-	held := c.ws.Budget().Used()
-	if all {
-		held = 0
-	}
-	if c.flight > held {
+	if held := c.ws.Budget().Used(); c.flight > held {
 		guestShare.Add(held - c.flight)
 		c.flight = held
 	}
+}
+
+// landAfterClose returns the rest of the guests' share once the socket is
+// closed: its writer keeps queued and unwritten bytes until it has written
+// or discarded them, for up to the close grace (wsconn). The pump calls it
+// as it stops.
+func (c *conn) landAfterClose() {
+	c.landFlight()
+	if c.flight == 0 {
+		return
+	}
+	n := c.flight
+	c.flight = 0
+	go func() {
+		<-c.ws.Done()
+		guestShare.Add(-n)
+	}()
 }
 
 func (c *conn) dropQueue() {
@@ -868,7 +900,7 @@ func (c *conn) feed(f []byte) bool {
 		below = guestFeedBelow
 	}
 	for c.ws.Budget().Used() >= below {
-		c.landFlight(false)
+		c.landFlight()
 		select {
 		case <-c.ws.Done():
 			return false
@@ -1124,7 +1156,11 @@ func (in *Instance) serveWS(w http.ResponseWriter, r *http.Request) {
 	pumped := make(chan struct{})
 	go func() { c.pump(); close(pumped) }()
 	defer func() {
-		last := in.hub.leave(c)
+		// The others learn at once that the editor left, before this
+		// socket's own queue drains.
+		if in.hub.leave(c) {
+			in.relayGone(c)
+		}
 		// Let the pump send what is queued, such as a fatal message.
 		c.closeAfterQueue()
 		select {
@@ -1133,9 +1169,6 @@ func (in *Instance) serveWS(w http.ResponseWriter, r *http.Request) {
 		}
 		ws.Close(1000, "")
 		c.dropAssembly()
-		if last {
-			in.relayGone(c)
-		}
 		if c.viewerN > 0 {
 			in.notifyViewers()
 		}
@@ -1732,8 +1765,8 @@ func (c *conn) presFrames(fields map[string]json.RawMessage) (forMembers, forGue
 }
 
 // relayPres sends a presence frame to the other members and guests, each
-// in its audience's form, dropping it for sockets that are behind. Viewers
-// receive no presence.
+// in its audience's form (nil: none), dropping it for sockets that are
+// behind. Viewers receive no presence.
 func (in *Instance) relayPres(from *conn, forMembers, forGuests []byte) {
 	for _, o := range in.hub.list() {
 		if o == from || o.public && !o.guest {
@@ -1745,22 +1778,30 @@ func (in *Instance) relayPres(from *conn, forMembers, forGuests []byte) {
 		if behind {
 			continue
 		}
+		f := forMembers
 		if o.guest {
-			o.enqueue(forGuests)
-		} else {
-			o.enqueue(forMembers)
+			f = forGuests
+		}
+		if f != nil {
+			o.enqueue(f)
 		}
 	}
 }
 
 // relayGone tells the others that the editor's last socket closed.
+// Guests get the departed label, which no other key takes before this
+// (hub.departing); members get the key, unless it came back meanwhile.
 func (in *Instance) relayGone(c *conn) {
 	if !c.joined {
 		return
 	}
-	forMembers, _ := json.Marshal(map[string]any{"t": "pres", "key": c.key, "gone": true})
+	var forMembers []byte
+	if !in.hub.rejoined(c.key) {
+		forMembers, _ = json.Marshal(map[string]any{"t": "pres", "key": c.key, "gone": true})
+	}
 	forGuests, _ := json.Marshal(map[string]any{"t": "pres", "key": c.plabel, "gone": true})
 	in.relayPres(c, forMembers, forGuests)
+	in.hub.gone(c)
 }
 
 func (in *Instance) onShare(ctx context.Context, c *conn, raw string) bool {

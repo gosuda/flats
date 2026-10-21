@@ -1,9 +1,12 @@
 package board
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/gosuda/flats/internal/board/engine"
 	"github.com/gosuda/flats/internal/board/model"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 // Tests of anonymous public editing (docs/spec/board-public-edit-TECH.md
@@ -1096,5 +1100,126 @@ func TestContentEquals(t *testing.T) {
 	}
 	if _, ok := groupsOf(t, b)["browser:mia"]; !ok {
 		t.Fatal("ContentEquals closed the open group")
+	}
+}
+
+// stalledWS returns a WebSocket whose peer completes the handshake and
+// then never reads, so every frame stays unwritten in it until it closes.
+func stalledWS(t *testing.T) *wsconn.Conn {
+	t.Helper()
+	near, far := net.Pipe()
+	go func() {
+		req, err := http.ReadRequest(bufio.NewReader(far))
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(far, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+			wsconn.AcceptKey(req.Header.Get("Sec-WebSocket-Key")))
+	}()
+	ws, err := wsconn.Dial(context.Background(), func(context.Context) (net.Conn, error) { return near, nil }, "board", "/_board/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ws.Close(1006, ""); far.Close() })
+	return ws
+}
+
+// TestClosingGuestKeepsItsShare: a guest socket that closes while its
+// writer is stalled keeps its unwritten bytes charged to the guests' share
+// until the socket is gone, so a replacement guest cannot take that room
+// meanwhile (TECH public edit 4.2).
+func TestClosingGuestKeepsItsShare(t *testing.T) {
+	b := newTB(t)
+	base := guestShare.Load()
+	c := &conn{in: b.in, ws: stalledWS(t), public: true, guest: true, chargeGuest: true, wake: make(chan struct{}, 1)}
+	pumped := make(chan struct{})
+	go func() { c.pump(); close(pumped) }()
+	frame := []byte(`{"t":"x","pad":"` + strings.Repeat("p", 100<<10) + `"}`)
+	if !c.enqueue(frame) {
+		t.Fatal("the frame was refused")
+	}
+	n := int64(len(frame))
+	waitFor(t, func() bool { return c.ws.Budget().Used() == n })
+	c.closeAfterQueue()
+	<-pumped
+	if got := guestShare.Load() - base; got != n {
+		t.Fatalf("a closing guest's unwritten %d bytes charge %d to the guests' share", n, got)
+	}
+	defer func(v int64) { guestShareCap = v }(guestShareCap)
+	guestShareCap = base + n
+	if reserveShare(&publicQueued, 1, 1) {
+		publicQueued.Add(-1)
+		guestShare.Add(-1)
+		t.Fatal("a replacement guest took the room of a closing guest's unwritten bytes")
+	}
+	<-c.ws.Done()
+	waitFor(t, func() bool { return guestShare.Load() == base })
+}
+
+// TestDepartedLabelNotReusedBeforeGone: the others learn at once that an
+// editor left, even while its own socket is stalled, and a new editor
+// taking a label afterwards is never cleared by a late gone frame.
+func TestDepartedLabelNotReusedBeforeGone(t *testing.T) {
+	b := editTB(t)
+	watcher, _ := joinGuest(t, b, "Wat", "")
+	leaving, _ := joinGuest(t, b, "Lea", "")
+	leaving.send(map[string]any{"t": "pres", "c": []float64{1, 1}})
+	lp := watcher.expectPres(func(m map[string]any) bool { return m["name"] == "Lea" })
+	leaving.gate.Lock() // its socket stalls as it leaves
+	defer leaving.gate.Unlock()
+	start := time.Now()
+	leaving.ws.Close(1000, "")
+	watcher.expectPres(func(m map[string]any) bool { return m["gone"] == true && m["key"] == lp["key"] })
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("the gone frame waited %v for the leaving socket", d)
+	}
+	newcomer, _ := joinGuest(t, b, "New", "")
+	newcomer.send(map[string]any{"t": "pres", "c": []float64{2, 2}})
+	np := watcher.expectPres(func(m map[string]any) bool { return m["name"] == "New" })
+	if !watcher.quiet(2500*time.Millisecond, func(m map[string]any) bool { return m["gone"] == true && m["key"] == np["key"] }) {
+		t.Fatal("a stale gone frame removed the newcomer")
+	}
+}
+
+// TestGuestDeltaMarkedForMembers: a member-facing delta of a guest's batch
+// says it came from a guest, so a name like "Operator" never passes as a
+// member's.
+func TestGuestDeltaMarkedForMembers(t *testing.T) {
+	b := editTB(t)
+	m := connect(t, b.priv, map[string]any{"editor": "mia", "name": "Mia"}, nil)
+	m.snapshot()
+	g, _ := joinGuest(t, b, "Operator", "")
+	g.settle(1, sticky(eid(), "", 0))
+	d := m.expect("delta")
+	by, _ := d["by"].(map[string]any)
+	if by["kind"] != "person" || by["label"] != "Operator" || by["guest"] != true {
+		t.Fatalf("member-facing delta by %v", by)
+	}
+	m.settle(1, sticky(eid(), "", 0))
+	own, _ := m.next(func(x map[string]any) bool { return x["t"] == "delta" })
+	if _, ok := own["by"].(map[string]any)["guest"]; ok {
+		t.Fatalf("a member's delta is marked as a guest's: %v", own["by"])
+	}
+}
+
+// TestDepartingLabelReserved: a departed key's label stays out of reach
+// until its gone frame is queued, so a late gone frame can never name a
+// newcomer.
+func TestDepartingLabelReserved(t *testing.T) {
+	h := newHub()
+	a, b, c := &conn{key: "guest:a"}, &conn{key: "guest:b"}, &conn{key: "guest:c"}
+	h.admit(false, 1, 1)
+	h.join(a)
+	if !h.leave(a) {
+		t.Fatal("not the key's last socket")
+	}
+	h.join(b)
+	if b.plabel == a.plabel {
+		t.Fatalf("%s reused before its gone frame", a.plabel)
+	}
+	h.gone(a)
+	h.join(c)
+	if c.plabel != a.plabel {
+		t.Fatalf("the freed label %s was not reused: %s", a.plabel, c.plabel)
 	}
 }
