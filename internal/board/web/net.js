@@ -160,7 +160,10 @@ export class Net {
 
   // restart reconnects at once, for example after a gap or a name change.
   restart() {
-    if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.close(); this.#reset(); }
+    if (this.ws) { const ws = this.ws; this.ws = null; ws.onclose = null; ws.close(); }
+    // Generation, assembly and in-flight state belong to the old socket,
+    // also when a fatal code already closed it.
+    this.#reset();
     this.restarting = true;
     this.start();
     this.h.status();

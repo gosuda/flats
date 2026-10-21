@@ -127,6 +127,15 @@ export const GUEST_FATALS = new Set(['editing_ended', 'full', 'name_invalid']);
 
 export const NAME_INVALID = `This name can't be used. Use 1 to ${GUEST_NAME_MAX} characters, without control or invisible characters.`;
 
+// dropPending removes every unconfirmed batch from the live state and
+// returns the ids whose display changed. Callers build the recovery file
+// first.
+export function dropPending(state) {
+  const changed = new Set();
+  for (const b of [...state.pending]) for (const id of state.reject(b.n, false).changed) changed.add(id);
+  return changed;
+}
+
 // guestBatchFits reports whether a guest may send ops as batch n: guests
 // send one ops frame of at most 64 KiB and 100 operations (TECH 4.1).
 export function guestBatchFits(n, ops) {

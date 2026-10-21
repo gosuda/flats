@@ -129,7 +129,7 @@ export class BoardState {
       if (c.id === '_board') {
         for (const [g, e] of Object.entries(c.set || {})) {
           if (!META_KEYS.has(g)) continue;
-          const [val, v] = this.public ? [e, null] : e;
+          const [val, v] = this.public || !Array.isArray(e) ? [e, null] : e;
           this.meta[g] = val;
           if (v != null) this.metaV[g] = v;
         }
@@ -152,7 +152,7 @@ export class BoardState {
         let el = { ...prev, v: { ...prev.v } };
         if (c.inc != null) el.inc = c.inc;
         for (const [g, e] of Object.entries(c.set)) {
-          const [val, v] = this.public ? [e, null] : e;
+          const [val, v] = this.public || !Array.isArray(e) ? [e, null] : e;
           el = withBundle(el, g, val);
           if (v != null) el.v[g] = v;
         }

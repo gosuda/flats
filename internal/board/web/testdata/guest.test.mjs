@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { installDOM } from './dom.mjs';
 import {
   cleanGuestName, guestNameError, runeCount, viewerLabel, viewersOf, helloFields, byKind, who, badge, nameWithBadge,
-  rejectMessage, guestBatchFits, stored, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS,
+  rejectMessage, guestBatchFits, dropPending, stored, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS,
 } from '../guest.js';
 import { guestCredit, creditText } from '../history.js';
 import { Net } from '../net.js';
@@ -135,10 +135,10 @@ function harness(t) {
   globalThis.location = { protocol: 'http:', host: 'board.test' };
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const state = new BoardState();
-  const seen = { viewers: [], levels: [], fatal: null, welcomes: 0 };
+  const seen = { viewers: [], levels: [], fatal: null, welcomes: 0, snapshots: 0 };
   const net = new Net(state, {
-    hello: () => ({ t: 'hello', v: 1, pending: { count: 0 }, editor: 'ed' }),
-    welcome() { seen.welcomes++; }, status() {}, pres() {}, shared() {}, tooLarge() {}, snapshot() {}, delta() {}, ack() {}, reject() {},
+    hello: () => ({ t: 'hello', v: 1, session: state.session || undefined, pending: { count: state.pending.length, first_n: state.pending[0]?.n }, editor: 'ed' }),
+    welcome() { seen.welcomes++; }, status() {}, pres() {}, shared() {}, tooLarge() {}, snapshot() { seen.snapshots++; }, delta() {}, ack() {}, reject() {},
     viewers(m) { seen.viewers.push(m); },
     level(m) { seen.levels.push(m.access); },
     fatal(code, m) { seen.fatal = { code, m }; },
@@ -190,4 +190,86 @@ test('viewers and level frames reach the app; a guest fatal code keeps its messa
   assert.equal(FakeSocket.last.sent[0].t, 'hello');
   FakeSocket.last.recv({ t: 'welcome', access: 'public', level: 'edit', me: { label: 'Viewer 1', viewer: 1 } });
   assert.equal(seen.welcomes, 2);
+});
+
+const EL = { id: 'e_aaaaaaaaaa', type: 'text', x: 0, y: 0, w: 10, h: 10, rot: 0, z: 'V', text: 'a', inc: 1, v: {} };
+const guestWelcome = (session) => ({ t: 'welcome', session, access: 'guest', level: 'edit', me: { key: 'p:1', label: 'Mina', guest: true } });
+const viewerWelcome = { t: 'welcome', access: 'public', level: 'view', me: { label: 'Viewer 1', viewer: 1 } };
+const textOp = (text) => ({ op: 'set', id: EL.id, inc: 1, g: 'text', val: text });
+
+test('a resumed connection starts with fresh socket state after a resync and an in-flight batch', (t) => {
+  const { state, net, seen } = harness(t);
+  let ws = FakeSocket.last;
+  ws.recv(guestWelcome('S1'));
+  ws.recv({ t: 'snapshot', gen: 0, seq: 1, part: 1, parts: 1, elements: [EL] });
+  ws.recv({ t: 'resync', gen: 3, seq: 1 });
+  ws.recv({ t: 'snapshot', gen: 3, seq: 1, part: 1, parts: 1, elements: [EL] });
+  state.push([textOp('b')]);
+  net.flush();
+  assert.equal(net.inflight, 1);
+  // The board is full on this attempt; trying again resends the batch.
+  ws.recv({ t: 'fatal', code: 'full' });
+  net.resume();
+  ws = FakeSocket.last;
+  ws.onopen();
+  assert.equal(net.inflight, null);
+  assert.equal(net.gen, 0, 'generations count per socket');
+  ws.recv(guestWelcome('S1'));
+  assert.deepEqual(ws.sent.filter((m) => m.t === 'ops').map((m) => m.n), [1], 'the batch is sent again on the new socket');
+  const snaps = seen.snapshots;
+  ws.recv({ t: 'snapshot', gen: 0, seq: 2, part: 1, parts: 1, elements: [{ ...EL, text: 'b' }] });
+  assert.equal(seen.snapshots, snaps + 1, 'the new socket\'s generation 0 snapshot is applied');
+  // Editing ends after another resync: the viewer snapshot still applies.
+  ws.recv({ t: 'resync', gen: 2, seq: 2 });
+  ws.recv({ t: 'fatal', code: 'editing_ended' });
+  net.resume();
+  ws = FakeSocket.last;
+  ws.onopen();
+  ws.recv(viewerWelcome);
+  ws.recv({ t: 'snapshot', gen: 0, seq: 2, part: 1, parts: 1, elements: [{ id: EL.id, type: 'text', x: 0, y: 0, w: 10, h: 10, rot: 0, z: 'V', text: 'b' }] });
+  assert.equal(seen.snapshots, snaps + 2);
+  assert.equal(state.get(EL.id).text, 'b');
+});
+
+test('a guest that comes back as a viewer drops its orphaned batches and can join again cleanly', (t) => {
+  const { state, net } = harness(t);
+  let ws = FakeSocket.last;
+  ws.recv(guestWelcome('S1'));
+  ws.recv({ t: 'snapshot', gen: 0, seq: 1, part: 1, parts: 1, elements: [EL] });
+  state.push([textOp('unsent')]);
+  net.flush();
+  // Disconnected; the owner stops guest editing meanwhile, so the reconnect
+  // is admitted as a viewer without editing_ended.
+  ws.onclose();
+  t.mock.timers.tick(2000);
+  ws = FakeSocket.last;
+  ws.onopen();
+  ws.recv(viewerWelcome);
+  assert.equal(state.public, true);
+  assert.equal(state.pending.length, 1, 'the net layer keeps them for the app to handle');
+  const changed = dropPending(state);
+  assert.ok(changed.has(EL.id));
+  assert.equal(state.pending.length, 0);
+  ws.recv({ t: 'snapshot', gen: 0, seq: 1, part: 1, parts: 1, elements: [{ id: EL.id, type: 'text', x: 0, y: 0, w: 10, h: 10, rot: 0, z: 'V', text: 'a' }] });
+  assert.equal(state.get(EL.id).text, 'a', 'unconfirmed text is no longer overlaid on the public board');
+  // Joining later starts a new session and resends nothing.
+  net.restart();
+  ws = FakeSocket.last;
+  ws.onopen();
+  assert.equal(ws.sent[0].session, undefined);
+  assert.equal(ws.sent[0].pending.count, 0);
+  ws.recv(guestWelcome('S2'));
+  assert.equal(ws.sent.filter((m) => m.t === 'ops').length, 0);
+});
+
+test('authorship fields in element sets are accepted plain or versioned', () => {
+  const state = new BoardState();
+  state.loadSnapshot({ seq: 1, elements: [EL] });
+  const ta = { text: { k: 'guest', n: 'Mina' } };
+  assert.equal(state.applyDelta({ seq: 2, changes: [{ id: EL.id, inc: 1, set: { ta, lk: 'guest' } }] }).status, 'applied');
+  assert.deepEqual(state.get(EL.id).ta, ta);
+  assert.equal(state.get(EL.id).lk, 'guest');
+  assert.equal(state.applyDelta({ seq: 3, changes: [{ id: EL.id, inc: 1, set: { lk: ['member', 4], text: ['c', 4] } }] }).status, 'applied');
+  assert.equal(state.get(EL.id).lk, 'member');
+  assert.equal(state.get(EL.id).text, 'c');
 });
