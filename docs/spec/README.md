@@ -53,6 +53,7 @@ docs:
 | Routes, MCP tools, CLI commands and console screens of every type | [surfaces.md](../surfaces.md) |
 | Operator keys, console domains, configuration schema and migrations | [configuration.md](../configuration.md) |
 | Host metrics and flat usage: request and worker accounting, attribution, storage, `/metrics` | [internal/metrics.md](../internal/metrics.md) |
+| Idle document workers: ownership, lease and lock rules, wake preparation, clean sleep, error contract, verification | [internal/docs-worker-idle.md](../internal/docs-worker-idle.md) |
 | NetBird peers and the other network providers | [networking.md](../networking.md), [network-provider-lifecycle.md](../network-provider-lifecycle.md) |
 | Reverse proxy providers: template and listener, Manager and app paths, address selection by host default, rename redirects on the arrival network | [networking.md](../networking.md#serving-flats-behind-a-reverse-proxy), [network-provider-lifecycle.md](../network-provider-lifecycle.md#reverse-proxy), [configuration.md](../configuration.md#reverse-proxy-keys) |
 | Client checks, CLI updates and skill sync | [release.md](../release.md#updating-a-client), [agents.md](../agents.md#keeping-clients-current) |

@@ -1,7 +1,7 @@
 # Playbook: workers, QuickJS/wazero runtime and metrics
 
 Read [Process layout](../../../../docs/design.md#process-layout) and, for
-document workers, [Idle worker lifecycle](../../../../docs/internal/docs-app.md#idle-worker-lifecycle)
+document workers, [Idle document worker internals](../../../../docs/internal/docs-worker-idle.md)
 before changing this area.
 
 ## Worker lifecycle tests

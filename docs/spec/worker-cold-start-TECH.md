@@ -291,9 +291,8 @@ generation or data), so documents sharing a runtime directory may share it.
   the existing-directory branch; `cleanupDocs` keeps `.state` directories of
   referenced runtime directories and removes unreferenced ones; acquisition
   removes leftover temporary image files.
-- Docs: update `docs-worker-idle-TECH.md` (its physical-sleep memory
-  statement and plan item 9) for the spare; list the new spec in
-  `docs/spec/README.md`.
+- Docs: [Idle document worker internals](../internal/docs-worker-idle.md)
+  states the spare, and the new spec is listed in `docs/spec/README.md`.
 - Scratch-trial-only hosts: a trial's Start creates a spare that its Stop
   removes again; spare creation is delayed 250 ms after an instance became
   ready (a server flat's successful Start, or a registered document, lazy
