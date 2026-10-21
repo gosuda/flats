@@ -112,9 +112,9 @@ type FlatInfo struct {
 	EffectiveVersionQuota int                     `json:"effective_version_quota"`
 	VersionCount          int                     `json:"version_count"`
 	Versions              int                     `json:"versions" jsonschema:"number of numbered website version records; always 0 for documents"`
-	PrivateURL            string                  `json:"private_url" jsonschema:"private Local loopback or permitted Tailscale URL; a website serves after an approved deployment, a document as soon as it is saved"`
+	PrivateURL            string                  `json:"private_url" jsonschema:"private URL: the route on the host's private default network among the flat's allowed ones (Local loopback, Tailscale, NetBird or the operator's reverse proxy), else the first of Tailscale, NetBird, reverse proxy, Local; endpoints lists every route. A website serves after an approved deployment, a document as soon as it is saved"`
 	PrivateState          string                  `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
-	PrivateDetail         string                  `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
+	PrivateDetail         string                  `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready; on a reverse proxy route, that Flats cannot check the proxy"`
 	PublicURL             string                  `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
 	PublicNotice          string                  `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
 	PortalListing         string                  `json:"portal_listing" jsonschema:"the flat's Portal relay listing choice set by the operator: default (follow the host setting), hidden or listed"`
@@ -179,9 +179,9 @@ type DeployInfo struct {
 	Version       int               `json:"version" jsonschema:"version now live"`
 	Previous      int               `json:"previous" jsonschema:"version live before (0 = none)"`
 	Health        core.HealthResult `json:"health" jsonschema:"pre-deploy health check result"`
-	PrivateURL    string            `json:"private_url" jsonschema:"private Local loopback or permitted Tailscale URL; serves after an approved deployment"`
+	PrivateURL    string            `json:"private_url" jsonschema:"private URL: the route on the host's private default network among the flat's allowed ones (Local loopback, Tailscale, NetBird or the operator's reverse proxy), else the first of Tailscale, NetBird, reverse proxy, Local. Serves after an approved deployment"`
 	PrivateState  string            `json:"private_state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
-	PrivateDetail string            `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready"`
+	PrivateDetail string            `json:"private_detail,omitempty" jsonschema:"what the private host is waiting for, when not ready; on a reverse proxy route, that Flats cannot check the proxy"`
 	PublicURL     string            `json:"public_url,omitempty" jsonschema:"current internet URL when public; fetch only when the matching current endpoint is ready and permitted, not while connection_state is starting"`
 	PublicNotice  string            `json:"public_notice,omitempty" jsonschema:"what the public visibility means; repeat it to the user"`
 	Millis        int64             `json:"millis" jsonschema:"deploy duration"`
@@ -351,11 +351,11 @@ type PreviewInfo struct {
 	Target    string    `json:"target"`
 	Revision  int       `json:"revision,omitempty"`
 	Host      string    `json:"host" jsonschema:"preview host name"`
-	URL       string    `json:"url" jsonschema:"temporary private URL"`
+	URL       string    `json:"url" jsonschema:"temporary private URL: on the host's private default network if it serves the preview (Local, Tailscale or the operator's reverse proxy), else the first of Tailscale, reverse proxy, Local"`
 	Version   int       `json:"version" jsonschema:"version served"`
 	ExpiresAt time.Time `json:"expires_at" jsonschema:"closes at this time unless visited again (or on the next deploy)"`
 	State     string    `json:"state,omitempty" jsonschema:"ready when the private URL answers; starting while the node joins the tailnet or waits for its HTTPS certificate (a new flat or preview usually needs 1-2 minutes): check again with get_flat before fetching"`
-	Detail    string    `json:"detail,omitempty" jsonschema:"what the preview host is waiting for, when not ready"`
+	Detail    string    `json:"detail,omitempty" jsonschema:"what the preview host is waiting for, when not ready; on a reverse proxy route, that Flats cannot check the proxy"`
 }
 
 func previewInfo(p core.PreviewView) PreviewInfo {
@@ -410,7 +410,7 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 		for _, p := range ps {
 			out.Previews = append(out.Previews, previewInfo(p))
 			if p.Target == "draft" {
-				text += fmt.Sprintf("\nPrivate Draft preview of %s revision %d: %s. Current version is unchanged; access follows loopback or existing tailnet ACL. Expires %s.", in.Slug, p.Revision, p.URL, p.ExpiresAt.Format(time.RFC3339))
+				text += fmt.Sprintf("\nPrivate Draft preview of %s revision %d: %s. Current version is unchanged; access follows loopback, the existing tailnet ACL or the operator's reverse proxy. Expires %s.", in.Slug, p.Revision, p.URL, p.ExpiresAt.Format(time.RFC3339))
 			} else {
 				text += fmt.Sprintf("\nPreview of v%d: %s", p.Version, p.URL)
 			}
@@ -811,7 +811,7 @@ func (t *tools) openPreview(ctx context.Context, _ *mcp.CallToolRequest, in Prev
 		return nil, PreviewInfo{}, toolErr(err, notFoundHint(err, in.Slug))
 	}
 	out := previewInfo(p)
-	text := fmt.Sprintf("Preview of %s version %d: %s (Private via loopback or existing tailnet ACL). Live is unchanged. The preview closes on the next deploy of %s or when unused until %s.",
+	text := fmt.Sprintf("Preview of %s version %d: %s (Private via loopback, the existing tailnet ACL or the operator's reverse proxy). Live is unchanged. The preview closes on the next deploy of %s or when unused until %s.",
 		in.Slug, p.Version, p.URL, in.Slug, p.ExpiresAt.Format(time.RFC3339))
 	if p.State != "" && p.State != "ready" {
 		text += " Its host is still " + p.State

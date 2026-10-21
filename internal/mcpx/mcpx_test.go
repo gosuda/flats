@@ -199,7 +199,7 @@ func TestListTools(t *testing.T) {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}
 	ins := e.local.InitializeResult().Instructions
-	for _, s := range []string{"approval_url", "NOT access control", "topic.index", "Local loopback or explicitly permitted Tailscale"} {
+	for _, s := range []string{"approval_url", "NOT access control", "topic.index", "Local loopback or an explicitly permitted Tailscale, NetBird or reverse proxy route"} {
 		if !strings.Contains(ins, s) {
 			t.Errorf("instructions do not mention %q", s)
 		}

@@ -481,7 +481,7 @@ func (a *app) preview(args []string) error {
 		fmt.Fprintf(a.out, "Preview of %s version %d: %s\n", slug, p.Version, p.URL)
 	}
 	printPending(a.out, p.State, p.Detail)
-	fmt.Fprintf(a.out, "  Private via loopback or existing tailnet ACL; closes on the next deploy or after 24h without visits (now: %s)\n", p.ExpiresAt.Local().Format(timeFmt))
+	fmt.Fprintf(a.out, "  Private via loopback, the existing tailnet ACL or your reverse proxy; closes on the next deploy or after 24h without visits (now: %s)\n", p.ExpiresAt.Local().Format(timeFmt))
 	return nil
 }
 
