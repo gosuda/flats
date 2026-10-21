@@ -3,6 +3,7 @@ package board
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -592,4 +593,12 @@ func (in *Instance) flushViewers() {
 			c.enqueue(f)
 		}
 	}
+}
+
+// ContentEquals reports, without recording anything, whether the live
+// board's current file list (including edits not yet recorded) equals files.
+// Core uses it to decide safe point reuse before checking for a free pin.
+// Placeholder: the board server unit implements it.
+func (in *Instance) ContentEquals(ctx context.Context, files []File) (bool, error) {
+	return false, errors.New("board: ContentEquals not implemented")
 }
