@@ -1,7 +1,8 @@
 // Package provider serves flats on explicitly permitted networks.
 // Local loopback needs no grant. Tailscale, Tailscale Funnel, Portal, zrok,
-// Cloudflare quick tunnels and NetBird start only when the host file grants
-// them and a caller passes the same provider in ExposureRequest.Permitted.
+// Cloudflare quick tunnels, NetBird and the reverse proxy start only when the
+// host file grants them and a caller passes the same provider in
+// ExposureRequest.Permitted.
 package provider
 
 import (
@@ -30,6 +31,8 @@ const (
 	CFQuick       = core.ProviderCloudflareQuick
 	Netbird       = core.ProviderNetbird
 	NetbirdExpose = core.ProviderNetbirdExpose
+	Proxy         = core.ProviderProxy
+	ProxyPublic   = core.ProviderProxyPublic
 )
 
 // Audience selects draft or current content.
@@ -66,7 +69,7 @@ type Migration struct {
 // ParseID accepts only the canonical ids.
 func ParseID(s string) (ID, error) {
 	switch ID(s) {
-	case Local, Tailscale, Funnel, Portal, Zrok, CFQuick, Netbird, NetbirdExpose:
+	case Local, Tailscale, Funnel, Portal, Zrok, CFQuick, Netbird, NetbirdExpose, Proxy, ProxyPublic:
 		return ID(s), nil
 	default:
 		return "", fmt.Errorf("unknown provider %q", s)
