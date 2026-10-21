@@ -335,7 +335,8 @@ type conn struct {
 	// for bytes the socket holds but has not written (pump-owned).
 	chargeGuest bool
 	flight      int64
-	// overflowed: the queue went over its cap and the socket is closing.
+	// overflowed: the queue went over its cap and the socket is closing,
+	// or the pump stopped; no frame is queued any more.
 	overflowed bool
 
 	asm       *assembly
@@ -730,7 +731,15 @@ func (c *conn) resync() {
 // pump feeds queued frames to the socket while fewer than 1 MiB are in
 // flight, building snapshot parts as it goes.
 func (c *conn) pump() {
-	defer c.landFlight(true)
+	defer func() {
+		// Nothing is sent from here on: refuse later frames, so none keeps
+		// a charge, and return what is queued or unwritten.
+		c.mu.Lock()
+		c.overflowed = true
+		c.mu.Unlock()
+		c.dropQueue()
+		c.landFlight(true)
+	}()
 	for {
 		c.landFlight(false)
 		c.mu.Lock()
