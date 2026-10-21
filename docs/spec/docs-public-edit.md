@@ -210,9 +210,22 @@ determined flood is **Stop guest editing**, and the confirmation text says so.
 
 22. **Per-guest limits.** Each guest connection has a rate limit for updates,
     a limit on the size of one update and a limit on presence messages, below
-    those of a Private editor. Over a limit the host refuses the update with a
-    reason and keeps the connection; the guest's page shows the refusal and
-    keeps the refused text available to download.
+    those of a Private editor.
+    - **Over the rate, a guest is slowed, not refused.** The page holds its
+      unsent changes, merges them and sends them when the limit allows,
+      showing "Saving…" until they are confirmed. Ordinary typing and pasting
+      therefore never lose text to the rate limit.
+    - **A refused update stops editing on that page.** This differs from the
+      board, whose operations are independent: a document's later changes
+      build on the earlier ones, so the host cannot accept a later change
+      without the refused one. After a refusal (an update too large, the
+      reserved room of rule 24, a content limit of rule 26) the host accepts
+      no further update from that connection. The page stops editing, says
+      why, never shows the refused or later changes as saved, keeps them
+      available to download as Markdown, and offers **Rejoin**, which loads
+      the current text and lets the guest edit again under the same name.
+      This is the behavior every editor has today after a deterministic
+      refusal, plus Rejoin.
 23. **Per-flat connection limits.** A flat has a maximum number of
     simultaneous guest connections and of new guest connections per minute,
     and a separate, larger limit for viewers, all apart from the connections
@@ -226,10 +239,19 @@ determined flood is **Stop guest editing**, and the confirmation text says so.
     - **Document size.** A guest update that would take a document above a
       reserved share of the per-document size limits (text size and the
       synchronization state limits) is refused with a reason.
-    - **Server state.** Guests have their own caps for the per-document state
-      that is shared today: duplicate-prevention receipts, the update log,
-      open edit groups and editor records, so a guest flood cannot fill them
-      or make a Private editor's update fail.
+    - **Lifetime capacity.** Today each document accepts a fixed lifetime
+      number of updates and the flat a fixed number of duplicate-prevention
+      receipts, which are never discarded; at the limit the document refuses
+      every edit. Guests must not be able to use these up: guest updates
+      either have their own share, past which guests are refused and members
+      keep editing, or the technical design removes the lifetime limit for
+      everyone. Either way a Private editor can still edit after any guest
+      flood.
+    - **Server state.** Guests have their own caps for open edit groups,
+      editor and presence records and per-connection state, so a guest flood
+      cannot fill them. The update log is not reserved, as on a board: it
+      compacts by size and loses nothing, so heavy guest traffic only makes
+      compaction more frequent.
 25. **One revision group for guests, on fixed windows.** As board public rule
     25: all guest edits on the flat share one edit group with no idle close,
     closing only at a fixed 5-minute window or a forced boundary (an agent
@@ -239,6 +261,14 @@ determined flood is **Stop guest editing**, and the confirmation text says so.
     retired first above it; the newest and every pinned revision are never
     deleted; a revision lists up to 5 guest names with the badge and "and N
     more"; MCP marks them guest-supplied. Private editors keep one group each.
+    - **Mixed revisions.** A revision records the whole flat. When a Private
+      editor's group closes while guests have also edited since the last
+      revision, the revision credits that editor and those guests; it is not
+      guest-only and does not close or restart the guest window. Only a
+      guest window end or a forced boundary records a revision that no member
+      or agent caused. Members who keep editing can therefore record guest
+      text more often than 12 times an hour, but only in revisions their own
+      edits caused, as on a board.
 25a. **Totals.** As board public rule 25a: limits for all guests of a flat
     together (updates and bytes per second into the worker, bytes read from
     all guest sockets including refused frames, presence traffic, how often
@@ -310,7 +340,9 @@ continuously for an hour.
 | Identity | A scan of every frame sent to a guest finds no Tailscale login or name, no Private editor's chosen name and no agent label. |
 | Rendering | Guest text containing script, raw HTML, `javascript:` links, outside images and a hostile Mermaid diagram runs no script, loads nothing from another site, and leaves a reader's page responsive. |
 | Limits | While guests send updates at the per-guest limit on every allowed connection, a Private editor can still connect, edit, roll back and see remote changes within the document's existing latency target. At the reserved disk and document-size room and at the guest byte budget, guests are refused and Private edits succeed. |
-| Revisions | However 20 guests edit for an hour, they create at most 12 revisions plus forced boundaries. The pinned safe point stays and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota. Re-enabling editing on an unchanged flat adds no revision. |
+| Revisions | However 20 guests edit for an hour across two documents, alone or while a member edits with 31-second pauses, at most 12 guest-only revisions are recorded plus forced boundaries, and every revision recorded because a member's group closed credits that member. The pinned safe point stays and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota. Re-enabling editing on an unchanged flat adds no revision. |
+| Refusal | After a guest update A is refused, a following update B that builds on A does not commit, the page never shows A or B as saved, the downloaded Markdown contains both, and after Rejoin the page shows the server's text and can edit. A guest sending faster than its rate loses no text. |
+| Lifetime | After guests send updates at their total limit until their share of the document's lifetime capacity (or the reference hour, if the design removes the limit) is used, a Private editor's update still commits. |
 | Kill switch | After **Stop guest editing**, no update from a guest connection commits. The console confirms only after the stored level is saved and the epoch is bumped. A sleeping document changes only its stored level, which applies when it wakes. |
 | Recovery | After a hostile session that deletes all text of every document, History lists the safe point and a revision from just before the session, and the operator restores either. |
 | Agent safety | Lines a guest wrote are marked in `get_document`, including after a member edited the text around them. |
