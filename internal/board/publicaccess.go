@@ -162,9 +162,8 @@ func guestKey(token string) string { return model.GuestKeyPrefix + sha256Hex([]b
 func (in *Instance) guestWelcome(r *http.Request, c *conn, h helloMsg) error {
 	name, ok := model.CleanGuestName(h.Guest.Name)
 	if !ok {
-		c.send(map[string]string{"t": "fatal", "code": FatalNameInvalid,
+		c.final(map[string]string{"t": "fatal", "code": FatalNameInvalid,
 			"detail": "a name is 1 to " + strconv.Itoa(model.MaxGuestName) + " characters, without control or invisible characters"})
-		c.closeAfterQueue()
 		return nil
 	}
 	if !in.pub.guestWelcomes.take(1) || !in.hub.admitGuest(c, in.pub.guestSockets) {
