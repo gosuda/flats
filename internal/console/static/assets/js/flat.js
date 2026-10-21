@@ -6,9 +6,9 @@
 // no environment or server permissions.
 // Analytics and Database are their own modules under the same tabs.
 
-import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, ACCESS, visibilityBadge, publicURL, publicNoticeOf } from './dom.js';
+import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
 import { api } from './api.js';
-import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill } from './ui.js';
+import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill, setHostProviders } from './ui.js';
 import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, stopGuestEditing, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
 import { hasServer, isLive, typeOf, typeNoun } from './list.js';
@@ -120,16 +120,23 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     // A document, design or board serves once it runs; a website once a
     // version is live.
     const serving = isDocs() ? flat.running : flat.live_version;
+    // A reverse proxy route is ready once registered; its detail says that
+    // Flats cannot check the proxy (rule 6).
+    const viaProxy = (url) => {
+      const detail = proxyDetail(flat, url);
+      return detail ? h('div', { class: 'muted small', text: detail }) : null;
+    };
     add('Private URL', serving
       ? h('div', null, extLink(flat.private_url),
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
-            flat.private_detail || 'not answering yet') : null)
+            flat.private_detail || 'not answering yet') : viaProxy(flat.private_url))
       : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ` (online once the ${typeNoun(flat)} starts)` : ' (online after the first publish)'));
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
         serving ? extLink(pub) : h('code', { text: pub }),
+        serving ? viaProxy(pub) : null,
         h('p', { class: 'notice-text', text: publicNoticeOf(flat) })));
     }
     if (isDocs()) add(typeOf(flat).label, flat.running ? 'Running' : 'Not running');
@@ -283,7 +290,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // lists the networks that serve it.
   function drawNetworks() {
     fill(netSlot, section('Networks', 'networks',
-      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and, when Tailscale is allowed, on your tailnet. Public flats are served through Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel or NetBird Expose. A new flat starts allowed on the host’s default providers; allow more here to offer several addresses, listed under the flat’s open button. A network must first be turned on in ',
+      h('p', { class: 'muted small' }, 'Private flats are reachable on this device and on each private network allowed here: your tailnet, NetBird or your reverse proxy. Public flats are served through Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel, NetBird Expose or your reverse proxy. A new flat starts allowed on the host’s default providers; allow more here to offer several addresses, listed under the flat’s open button. A network must first be turned on in ',
         h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings' }), '.'),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Private' }),
         h('ul', { class: 'networks' },
@@ -346,13 +353,20 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       // from the server after a failure as well.
       if (!(await refresh()) && !ok) box.checked = allowed;
     });
-    return h('li', null, box, h('label', { for: id }, p.label,
-      h('span', { class: 'muted small', text: off ? 'Off in Settings' : p.hint })));
+    const label = h('label', { for: id }, p.label,
+      h('span', { class: 'muted small', text: off ? 'Off in Settings' : p.hint }));
+    // A reverse proxy row shows its address: Flats cannot see whether the
+    // proxy reaches it, and says so next to it (rule 6).
+    const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public') ? proxyRoute(flat, p.id) : null;
+    if (!route) return h('li', null, box, label);
+    return h('li', null, box, h('div', { class: 'network-main' }, label,
+      h('div', { class: 'network-route small' }, extLink(route.url), route.detail ? h('span', { class: 'muted', text: ' ' + route.detail }) : null)));
   }
 
   async function loadHostProviders() {
     try {
       const { providers } = await api.providers();
+      setHostProviders(providers);
       hostProviders = Object.fromEntries((providers || []).map((p) => [p.id, p.enabled]));
       if (ctx.alive() && flat) drawNetworks();
     } catch { /* keep every provider selectable; the server still enforces host grants */ }

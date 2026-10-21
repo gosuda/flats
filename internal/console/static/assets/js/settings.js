@@ -6,7 +6,7 @@
 
 import { h, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
-import { errorPanel, loading, toast, extLink, busy, fill, confirmDialog, infoDialog } from './ui.js';
+import { errorPanel, loading, toast, extLink, busy, fill, confirmDialog, infoDialog, setHostProviders } from './ui.js';
 
 export const SECTIONS = [['networks', 'Networks'], ['console', 'Console'], ['limits', 'Limits'], ['agents', 'Agents']];
 
@@ -36,7 +36,7 @@ const LIMIT_GROUPS = [
 const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
   ['portal_relays', 'Relay list'], ['portal_discovery', 'Discover more relays'], ['portal_hide', 'Hide public flats from relay listings'],
   ['default_private_provider', 'Private network for new flats'], ['default_public_provider', 'Public network for new flats'],
-  ['external_origins', 'External origins'], ['preferred', 'Address for links']]);
+  ['external_origins', 'External origins'], ['preferred', 'Address for links'], ['proxy_url_template', 'Address template']]);
 
 // Lower values of these settings remove data at the next pruning.
 const RETENTION = ['events_keep', 'preview_ttl_seconds'];
@@ -255,6 +255,8 @@ export const PROVIDER_INFO = {
   'tailscale-funnel': { label: 'Tailscale Funnel', short: 'Through the flat’s tailnet node', what: 'Anyone on the internet, through Tailscale Funnel on the flat’s tailnet node. Visitors do not need Tailscale.' },
   zrok: { label: 'zrok', short: 'Public shares on your zrok account', what: 'Anyone on the internet, through zrok public shares on your zrok account.' },
   'netbird-expose': { label: 'NetBird Expose', short: 'NetBird’s reverse proxy', what: 'Anyone on the internet, through NetBird’s reverse proxy, from the flat’s own NetBird peer.' },
+  proxy: { label: 'Reverse proxy', short: 'Whoever your proxy lets through', what: 'Flats are served through your own reverse proxy, at the addresses of its address template. Whoever your proxy lets through can open them.' },
+  'proxy-public': { label: 'Reverse proxy (public)', short: 'Your proxy, open to the internet', what: 'Public flats are served through your own reverse proxy, at the addresses of its address template. Anyone on the internet who reaches the proxy can open them.' },
 };
 const infoOf = (id) => PROVIDER_INFO[id] || { label: id, short: '', what: '' };
 
@@ -284,6 +286,7 @@ async function loadAll(page, want) {
   if (token) token.drawn = true;
   const out = {};
   names.forEach((n, i) => { out[n] = res[i].status === 'fulfilled' ? res[i].value : null; out[n + 'Error'] = res[i].reason; });
+  if (out.providers) setHostProviders(out.providers.providers);
   if (!out.settings) {
     fill(page.content, errorPanel(out.settingsError, 'Cannot load settings'));
     return null;
@@ -295,6 +298,7 @@ async function loadAll(page, want) {
 // providerState is the pill for a provider's host state.
 function providerState(p) {
   if (p.id === 'local') return pill('Always on', 'on');
+  if (p.enabled && p.bind_error) return pill('Error', 'err');
   return p.enabled ? pill('On', 'on') : pill('Off', 'off');
 }
 
@@ -307,6 +311,8 @@ function providerMeta(p, keys) {
     return meta;
   }
   const key = (keys || []).find((k) => k.id === (p.id === 'netbird-expose' ? 'netbird' : p.id));
+  if (isProxy(p.id) && p.bind_error) meta.push('Listener error');
+  else if (isProxy(p.id) && !p.template) meta.push('Needs an address template');
   if (p.unsupported) meta.push('Not in this build');
   else if (p.id === 'zrok' && !p.connected) meta.push('Needs an account token');
   else if ((p.id === 'netbird' || p.id === 'netbird-expose') && !(p.key_set || (key && key.set))) meta.push('Needs a setup key');
@@ -382,7 +388,7 @@ async function providerPage(page, id, saved, reload) {
   const isDefault = effectiveDefault(p.scope, data) === p.id;
   // NetBird without a setup key shows numbered steps; the switch is step 2.
   const setup = p.id === 'netbird' && !keysFailed && !p.unsupported && !p.enabled && !p.key_set && !(keyOf('netbird') || {}).set;
-  const action = setup ? null : providerToggle(p, info, etag, after);
+  const action = setup || isProxy(p.id) ? null : providerToggle(p, info, etag, after);
   const head = pageHead({
     title: info.label, crumb: ['Networks', '/settings/networks'],
     status: [providerState(p), isDefault ? tag(p.scope === 'public' ? 'Default public' : 'Default private') : null],
@@ -406,6 +412,7 @@ async function providerPage(page, id, saved, reload) {
   if (p.id === 'zrok') keyParts.push(group('key', 'Account', p.managed ? 'The token is kept in Flats’ zrok environment. Never shown again.' : '', keysFailed ? keyError() : zrokSection(p, keyOf('zrok'), after)));
   parts.push(...keyParts);
   if (p.id === 'portal') parts.push(portalForm(data, saved, reload, page.notice, page));
+  if (isProxy(p.id)) parts.push(...proxySection(providers, data, saved, reload, page));
   if (p.id === 'local') parts.push(group('address', 'Address', '', list(row({ title: 'Local address', desc: 'Every flat is reachable here from this device.', ctl: p.address ? h('code', { text: p.address }) : null }))));
   if (p.id === 'tailscale-funnel') parts.push(callout('info', 'Uses the Tailscale nodes. Your tailnet policy must allow Funnel and HTTPS certificates for them.'));
   if (p.id === 'cloudflare-quick') parts.push(callout('info', 'Cloudflare offers quick tunnels for testing and development: no uptime guarantee, up to 200 concurrent requests per flat and no server-sent events. Each flat gets a random address. Flats keeps it across restarts while Cloudflare keeps the tunnel; if Cloudflare removes the tunnel, the flat gets a new address.'));
@@ -440,14 +447,17 @@ function providerToggle(p, info, etag, after) {
   return { button, reason: '' };
 }
 
-async function setHostProvider(p, info, enabled, etag) {
+// setHostProvider turns a provider on or off for the host after a
+// confirmation; notes are extra paragraphs for that confirmation.
+async function setHostProvider(p, info, enabled, etag, notes = []) {
   const ok = await confirmDialog({
     title: `${enabled ? 'Turn on' : 'Turn off'} ${info.label}?`,
     body: enabled ? [
       h('p', { text: info.what }),
       p.scope === 'public' ? h('p', { class: 'alert alert-warn', text: 'A flat made public through this provider can be opened by anyone on the internet. Making a flat public still needs your approval.' }) : null,
+      ...notes,
       h('p', { class: 'muted', text: 'Saved to config.json and applied now. Nothing is served until you allow it on a flat.' }),
-    ] : [h('p', { text: `${info.label} stops being available. Flats that allow it must stop allowing it first. If it is the default for new flats, the default is cleared.` })],
+    ] : [h('p', { text: `${info.label} stops being available. Flats that allow it must stop allowing it first. If it is the default for new flats, the default is cleared.` }), ...notes],
     confirmLabel: enabled ? 'Turn on' : 'Turn off',
     danger: !enabled,
   });
@@ -769,6 +779,81 @@ function portalForm(data, saved, reload, notice, page) {
         meta: ['Applies within about 90 seconds', 'Each flat can override it'] },
     ]]],
   });
+}
+
+// --- reverse proxy ---
+
+// The two reverse proxy providers share one listener and one address
+// template, so the host turns on one of them at a time.
+const PROXY_KINDS = ['proxy', 'proxy-public'];
+const isProxy = (id) => PROXY_KINDS.includes(id);
+
+// PROXY_STALE says what a kind or template change does to approvals: the
+// approval policy covers both while a kind is on, because they decide the
+// addresses an approval shows.
+const PROXY_STALE = 'Every pending approval becomes stale and has to be requested again, including version deployments and visibility changes: an approval shows the addresses it was granted for.';
+
+// PROXY_PRIVATE_ACCESS is the warning for the Private kind.
+const PROXY_PRIVATE_ACCESS = 'Whoever your proxy lets through has Private access: they can open Drafts through previews and edit documents, designs and boards, as on this device. Flats does not check who they are. Your proxy’s authentication or network restrictions are the only access control.';
+
+// proxySection holds the reverse proxy settings, the same on the pages of
+// both kinds: the address template, the listener address and the kind. The
+// kind is Off, Private (turns on proxy) or Public (turns on proxy-public).
+function proxySection(providers, data, saved, reload, page) {
+  const kinds = providers.filter((x) => isProxy(x.id));
+  const on = kinds.find((x) => x.enabled) || null;
+  const current = on ? on.id : '';
+  const template = (data.settings || {}).proxy_url_template || '';
+  const etag = data.config ? data.config.etag : '';
+  const address = (on || kinds[0] || {}).address || '';
+
+  const form = stagedForm({
+    id: 'proxy-template', data, saved, reload, page, notice: page.notice, scopeSaved: true, inlineActions: true, barLabel: 'Address template changes',
+    confirmSave: async (out) => {
+      if (!on) return true;
+      return confirmDialog({ title: 'Change the address template?', confirmLabel: 'Save template',
+        body: [h('p', null, 'Flats serves and reports every reverse proxy address under ', h('code', { text: out.proxy_url_template || '(none)' }), ' at once. The old addresses stop working.'),
+          h('p', { text: PROXY_STALE })] });
+    },
+    groups: [['proxy-template', 'Address template', 'Where your proxy serves each flat.', [
+      { key: 'proxy_url_template', kind: 'text', label: 'Address template', placeholder: 'https://{host}.site.example.org',
+        help: 'http:// or https:// followed by {host}. and your domain, with an optional port. Flats puts a flat’s slug, or a preview’s name, in place of {host}. Point a wildcard DNS name and certificate for the domain at your proxy.' },
+    ]]],
+  });
+
+  const select = h('select', { id: 'proxy-kind', 'aria-describedby': 'proxy-kind-help' },
+    [['', 'Off'], ['proxy', 'Private'], ['proxy-public', 'Public']].map(([value, text]) => h('option', { value, text, selected: value === current })));
+  select.value = current;
+  // Turning a kind on needs a template; the server checks this too.
+  const blocked = !on && !template ? 'Save an address template first.' : '';
+  if (blocked) select.disabled = true;
+  select.addEventListener('change', async () => {
+    const next = select.value;
+    const target = kinds.find((x) => x.id === (next || current));
+    select.disabled = true;
+    const notes = [next === 'proxy' ? h('p', { class: 'alert alert-warn', text: PROXY_PRIVATE_ACCESS }) : null, h('p', { text: PROXY_STALE })];
+    // Switching kinds is refused while the other one is on; the server says why.
+    if (target && await setHostProvider(target, infoOf(target.id), !!next, etag, notes)) {
+      await reload();
+      return;
+    }
+    select.value = current;
+    select.disabled = !!blocked;
+  });
+
+  const rows = list(
+    row({ title: 'Listener address', desc: ['Point your proxy here, forwarding the original Host. Change it with ', h('code', { text: 'flats config set proxy.addr' }),
+      ' while Flats is stopped; it applies when the listener next binds.'], ctl: address ? h('code', { text: address }) : null }),
+    row({ title: 'Kind', labelFor: 'proxy-kind',
+      desc: h('span', { id: 'proxy-kind-help', text: 'Private serves every flat that allows Reverse proxy, with its previews. Public serves only Public flats that allow Reverse proxy (public). To switch, stop allowing the current kind on every flat and turn it off first.' }),
+      meta: blocked || null, ctl: select }));
+  return [
+    form,
+    group('proxy-listener', 'Listener and kind', 'Both kinds share one listener and one address template, so one of them is on at a time.', rows),
+    on && on.bind_error ? callout('err', h('strong', { text: 'The listener did not start: ' }), on.bind_error,
+      '. Every reverse proxy route reports this error until Flats binds the address at a restart. Free the address, or change proxy.addr while Flats is stopped.') : null,
+    callout('warn', h('strong', { text: 'Private kind. ' }), PROXY_PRIVATE_ACCESS),
+  ];
 }
 
 // --- console ---
@@ -1262,6 +1347,16 @@ function stagedForm(spec) {
         return { value: v.join(','), from: initial ? plural(initial.split('\n').length, 'origin') : 'none', to: v.length ? plural(v.length, 'origin') : 'none' };
       };
       reset = () => { input.value = initial; };
+    } else if (kind === 'text') {
+      const initial = settings[f.key] || '';
+      input = h('input', { id, type: 'text', class: 'mono', spellcheck: 'false', autocapitalize: 'none', autocomplete: 'off', placeholder: f.placeholder || '' });
+      input.value = initial;
+      ctl = null;
+      read = () => {
+        const v = input.value.trim();
+        return v === initial ? null : { value: v, from: initial || 'none', to: v || 'none' };
+      };
+      reset = () => { input.value = initial; };
     } else if (kind === 'relays') {
       const initial = (settings.portal_relays || '').split(',').map((s) => s.trim()).filter(Boolean).join('\n');
       input = h('textarea', { id, rows: '3', spellcheck: 'false', class: 'mono', placeholder: 'https://relay.example.com' });
@@ -1291,12 +1386,13 @@ function stagedForm(spec) {
     if (exact) w.describedBy.push(exact.getAttribute('id'));
     input.setAttribute('aria-describedby', w.describedBy.join(' '));
     const tags = [f.perFlat ? tag('per flat') : null, f.restart ? tag('Applies after restart', 'restart') : null];
-    const r = h('div', { class: 's-row' + (['relays', 'origins'].includes(kind) ? ' stack' : ''), id: 'row-' + f.key },
+    const stacked = ['relays', 'origins', 'text'].includes(kind);
+    const r = h('div', { class: 's-row' + (stacked ? ' stack' : ''), id: 'row-' + f.key },
       h('div', { class: 's-row-main' },
         h('div', { class: 's-row-title' }, h('label', { for: id, text: f.label }), tags),
         w.hint, exact, f.meta ? h('span', { class: 's-row-meta' }, f.meta.map((m, i) => [i ? h('span', { class: 'sep', 'aria-hidden': 'true', text: '·' }) : null, typeof m === 'string' ? h('span', { text: m }) : m])) : null,
         w.pin, w.error),
-      ['relays', 'origins'].includes(kind) ? input : h('div', { class: 's-row-ctl' }, ctl));
+      stacked ? input : h('div', { class: 's-row-ctl' }, ctl));
     controls[f.key] = { f, input, unit, error: w.error, describedBy: w.describedBy, row: r, read, reset,
       // raw and setRaw carry a staged value across a page reload.
       raw: () => (kind === 'toggle' ? { checked: !!input.checked } : { value: input.value, unit: kind === 'bytes' ? unit.value : undefined }),
@@ -1321,7 +1417,7 @@ function stagedForm(spec) {
   const discard = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Discard' });
   const save = h('button', { type: 'submit', id: spec.id + '-save', class: 'btn btn-primary btn-small', text: 'Save changes' });
   const barRow = h('div', { class: 'savebar-row' }, h('div', { class: 'savebar-msg', role: spec.inlineActions ? 'status' : null }, count, summary), h('div', { class: 'savebar-acts' }, discard, save));
-  const bar = h('div', { class: spec.inlineActions ? 's-inline-actions' : 'savebar', role: 'region', 'aria-label': spec.inlineActions ? spec.id === 'links' ? 'Links changes' : 'External origins changes' : 'Unsaved changes', hidden: !spec.inlineActions }, impactSlot, barRow);
+  const bar = h('div', { class: spec.inlineActions ? 's-inline-actions' : 'savebar', role: 'region', 'aria-label': spec.inlineActions ? spec.barLabel || (spec.id === 'links' ? 'Links changes' : 'External origins changes') : 'Unsaved changes', hidden: !spec.inlineActions }, impactSlot, barRow);
 
   const form = h('form', { class: 'settings-form s-form', id: spec.id + '-form', novalidate: true }, result, groups, spec.after || null, errorSlot, bar);
 

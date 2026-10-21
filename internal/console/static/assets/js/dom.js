@@ -158,18 +158,31 @@ export function becomingNoticeFor(vis) {
   return visibilityOf(vis) === 'public' ? BECOMING_PUBLIC_NOTICE : '';
 }
 
-// publicURL is the current public address: Portal's public_url, or the URL
-// of a current Tailscale Funnel, zrok, Cloudflare quick tunnel or NetBird Expose route.
+// NETWORK_LABELS names every provider ID for people.
+export const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', netbird: 'NetBird', proxy: 'Reverse proxy', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok', 'cloudflare-quick': 'Cloudflare Quick Tunnel', 'netbird-expose': 'NetBird Expose', 'proxy-public': 'Reverse proxy (public)' };
+export const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick', 'netbird-expose', 'proxy-public'];
+
+// publicURL is the current public address: the server's public_url, or the
+// URL of a current public route.
 export function publicURL(f) {
   if (!f) return '';
   if (f.public_url) return f.public_url;
-  const ep = (f.endpoints || []).find((e) => e.audience === 'current' && e.url &&
-    (e.provider === 'tailscale-funnel' || e.provider === 'portal' || e.provider === 'zrok' || e.provider === 'cloudflare-quick' || e.provider === 'netbird-expose'));
+  const ep = (f.endpoints || []).find((e) => e.audience === 'current' && e.url && PUBLIC_NETWORKS.includes(e.provider));
   return ep ? ep.url : '';
 }
 
-const NETWORK_LABELS = { local: 'Local', tailscale: 'Tailscale', netbird: 'NetBird', 'tailscale-funnel': 'Tailscale Funnel', portal: 'Portal', zrok: 'zrok', 'cloudflare-quick': 'Cloudflare Quick Tunnel', 'netbird-expose': 'NetBird Expose' };
-const PUBLIC_NETWORKS = ['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick', 'netbird-expose'];
+// proxyRoute is the flat's current route on a reverse proxy provider (proxy
+// or proxy-public), or null. Its detail says that Flats cannot check the proxy.
+export function proxyRoute(f, provider) {
+  return ((f && f.endpoints) || []).find((e) => e.provider === provider && e.audience === 'current' && e.url &&
+    (!e.host || e.host === f.slug) && e.state !== 'stopped') || null;
+}
+
+// proxyDetail is the detail of the reverse proxy route serving url, or ''.
+export function proxyDetail(f, url) {
+  const ep = ['proxy', 'proxy-public'].map((p) => proxyRoute(f, p)).find((e) => e && e.url === url);
+  return ep ? ep.detail || '' : '';
+}
 
 // linkTargets lists the addresses that open a flat, split into private and
 // public ones: one per allowed network that has a route. Without a private

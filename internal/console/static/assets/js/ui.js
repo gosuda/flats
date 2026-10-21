@@ -240,7 +240,22 @@ export function consoleOnServer() {
   return !host || loopbackHost(host);
 }
 
-export const SERVER_ONLY = 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale or NetBird in this flat’s Settings → Networks → Private (turning one on in host Settings is not enough).';
+// SERVER_ONLY explains a Local link that opens only on the Flats host. While
+// a reverse proxy provider is on for the host, it names the proxy as another
+// way to open the flat from other devices (setHostProviders).
+const SERVER_ONLY_TEXT = {
+  '': 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale or NetBird in this flat’s Settings → Networks → Private (turning one on in host Settings is not enough).',
+  proxy: 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale, NetBird or Reverse proxy in this flat’s Settings → Networks → Private (turning one on in host Settings is not enough).',
+  'proxy-public': 'Opens only on the Flats host machine. To open it from other devices, allow Tailscale or NetBird in this flat’s Settings → Networks → Private, or, while the flat is public, Reverse proxy (public) under Public (turning one on in host Settings is not enough).',
+};
+export let SERVER_ONLY = SERVER_ONLY_TEXT[''];
+
+// setHostProviders records which providers are on for the host, from
+// GET /console/api/providers, for the server-only explanation.
+export function setHostProviders(providers) {
+  const proxy = (providers || []).find((p) => (p.id === 'proxy' || p.id === 'proxy-public') && p.enabled);
+  SERVER_ONLY = SERVER_ONLY_TEXT[proxy ? proxy.id : ''];
+}
 
 // extLink is an external link that opens in a new tab without an opener. A
 // URL that is not http(s) is shown as text instead, and so is a loopback URL

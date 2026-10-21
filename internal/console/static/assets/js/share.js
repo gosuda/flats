@@ -1,4 +1,4 @@
-import { h, icon, visibilityOf, accessOf, ACCESS, PUBLIC_ACCESS_NOTICE, plural } from './dom.js';
+import { h, icon, visibilityOf, accessOf, ACCESS, PUBLIC_ACCESS_NOTICE, PUBLIC_NETWORKS, plural } from './dom.js';
 import { api } from './api.js';
 import { setVisibility, stopGuestEditing } from './actions.js';
 import { busy, fill, toast, extLink, serverOnly, loopbackHost, SERVER_ONLY } from './ui.js';
@@ -156,8 +156,8 @@ export function shareDialog(initial, onChange = () => {}) {
   (radios.find((r) => r.checked) || radios[0]).focus();
 }
 
-const publicProviders = new Set(['tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick', 'netbird-expose']);
-const privateRank = { tailscale: 3, netbird: 2, local: 1 };
+const publicProviders = new Set(PUBLIC_NETWORKS);
+const privateRank = { tailscale: 4, netbird: 3, proxy: 2, local: 1 };
 const failedStates = new Set(['error', 'needs-login', 'unavailable']);
 
 // Share requires a usable current route, rather than an address alone.
@@ -189,6 +189,7 @@ function privateAccess(route) {
   if (route.provider === 'local' || isLoopback(route.url)) return 'This private link opens only on the Flats host machine.';
   if (route.provider === 'tailscale') return 'This private link follows your Tailscale access rules.';
   if (route.provider === 'netbird') return 'This private link follows your NetBird access policies.';
+  if (route.provider === 'proxy') return 'This private link opens for whoever your reverse proxy lets through. Flats does not check who they are.';
   return 'Private access follows the access rules of the network serving this link.';
 }
 

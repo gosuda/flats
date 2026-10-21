@@ -2428,4 +2428,192 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   assert.equal(byText(main, 'Approve…').length, 1);
 }
 
+// --- reverse proxy ---
+// The reverse proxy is the proxy (Private) and proxy-public (Public)
+// providers on one listener and one address template.
+{
+  const DETAIL = 'Served through your reverse proxy. Flats cannot check that the proxy reaches it.';
+  const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open !== false);
+  const proxyOff = (id, scope) => ({ ...provider(id, scope, false), address: 'http://127.0.0.1:7880', template: 'https://{host}.site.example.org' });
+  const proxyOn = { ...proxyOff('proxy', 'private'), enabled: true, configured: true, flats: ['blog'],
+    status: { kind: 'proxy', enabled: true, hosts: [{ host: 'blog', url: 'https://blog.site.example.org', state: 'ready', detail: DETAIL }] } };
+  const withProxy = (...ps) => ({ providers: [provider('local', 'private', true), provider('tailscale', 'private', false), ...ps] });
+  const proxySettings = () => settingsRoute({ ...CONFIG, etag: 'etag-px', pinned: {},
+    keys: { ...CONFIG.keys, proxy_url_template: 'proxy.url_template' } });
+  const withTemplate = (template) => ({ ...proxySettings(), settings: { ...SETTINGS, proxy_url_template: template } });
+
+  // Networks lists both kinds under their own groups with readable names.
+  routes['GET /console/api/settings'] = withTemplate('https://{host}.site.example.org');
+  routes['GET /console/api/providers'] = withProxy(proxyOn, proxyOff('proxy-public', 'public'));
+  let net = await mountSettings();
+  assert.ok(byId(net, 'providers-private').textContent.includes('Reverse proxy'), byId(net, 'providers-private').textContent);
+  assert.ok(byId(net, 'providers-public').textContent.includes('Reverse proxy (public)'));
+  assert.equal(byId(net, 'provider-proxy').getAttribute('href'), '/settings/networks/proxy');
+  assert.ok(byId(net, 'provider-proxy').textContent.includes('On'));
+  // A kind that is on can be the default for new flats, under its name.
+  const privDefault = byId(net, 'set-default_private_provider');
+  assert.deepEqual(all(privDefault, (e) => e.tagName === 'OPTION').map((o) => [o.getAttribute('value'), o.textContent]), [['local', 'Local only'], ['proxy', 'Reverse proxy']]);
+
+  // The page of either kind holds the template, the listener address and
+  // the kind, with the warning for the Private kind and no separate switch.
+  let px = await mountSettings(['networks', 'proxy']);
+  assert.equal(byId(px, 'set-proxy_url_template').value, 'https://{host}.site.example.org');
+  assert.ok(byId(px, 'proxy-listener').textContent.includes('http://127.0.0.1:7880'));
+  assert.ok(byId(px, 'proxy-listener').textContent.includes('flats config set proxy.addr'));
+  assert.equal(byId(px, 'proxy-kind').value, 'proxy');
+  assert.equal(all(px, (e) => e.tagName === 'BUTTON' && /^Turn (on|off)$/.test(e.textContent)).length, 0, 'the kind replaces the switch');
+  assert.ok(px.textContent.includes('Flats does not check who they are') && px.textContent.includes('only access control'), 'the Private kind warning is shown');
+  assert.ok(!byId(px, 'proxy-kind').disabled, 'a kind can be chosen while a template is saved');
+
+  // Changing the template while a kind is on asks first and names the
+  // approvals it makes stale; cancelling saves nothing.
+  putCount = puts().length;
+  byId(px, 'set-proxy_url_template').value = 'https://{host}.flats.example.org';
+  byId(px, 'proxy-template-form').dispatch('input');
+  byId(px, 'proxy-template-form').dispatch('submit');
+  await tick();
+  let confirmTemplate = openDialogs().pop();
+  assert.ok(confirmTemplate.textContent.includes('Change the address template?'));
+  assert.ok(confirmTemplate.textContent.includes('Every pending approval becomes stale'), confirmTemplate.textContent);
+  assert.ok(confirmTemplate.textContent.includes('version deployments and visibility changes'));
+  confirmTemplate.close('cancel');
+  await tick();
+  assert.equal(puts().length, putCount, 'a cancelled template change saves nothing');
+  byId(px, 'proxy-template-form').dispatch('submit');
+  await tick();
+  openDialogs().pop().close('ok');
+  await tick();
+  assert.equal(puts().length, putCount + 1);
+  assert.deepEqual(JSON.parse(puts().at(-1).body), { proxy_url_template: 'https://{host}.flats.example.org' });
+  assert.equal(puts().at(-1).headers['If-Match'], '"etag-px"');
+
+  // Turning the kind off asks first and also names the stale approvals.
+  px = await mountSettings(['networks', 'proxy']);
+  routes['PUT /console/api/providers/proxy'] = { providers: [] };
+  byId(px, 'proxy-kind').value = '';
+  byId(px, 'proxy-kind').dispatch('change');
+  await tick();
+  const turnOff = openDialogs().pop();
+  assert.ok(turnOff.textContent.includes('Turn off Reverse proxy?'), turnOff.textContent);
+  assert.ok(turnOff.textContent.includes('Every pending approval becomes stale'));
+  turnOff.close('ok');
+  await tick();
+  assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/providers/proxy').at(-1).body), { enabled: false });
+
+  // Picking the other kind while one is on sends the request, shows the
+  // server's refusal and keeps the current kind selected.
+  px = await mountSettings(['networks', 'proxy']);
+  routes['PUT /console/api/providers/proxy-public'] = { __status: 422, category: 'invalid', error: 'network.permitted: proxy and proxy-public cannot both be permitted' };
+  byId(px, 'proxy-kind').value = 'proxy-public';
+  byId(px, 'proxy-kind').dispatch('change');
+  await tick();
+  const switchKind = openDialogs().pop();
+  assert.ok(switchKind.textContent.includes('Turn on Reverse proxy (public)?'), switchKind.textContent);
+  assert.ok(switchKind.textContent.includes('Every pending approval becomes stale'));
+  assert.ok(!switchKind.textContent.includes('Flats does not check who they are'), 'the Public kind has the public warning instead');
+  switchKind.close('ok');
+  await tick();
+  const refused = openDialogs().pop();
+  assert.ok(refused.textContent.includes('Cannot turn on Reverse proxy (public)') && refused.textContent.includes('cannot both be permitted'), refused.textContent);
+  refused.close();
+  await tick();
+  assert.equal(byId(px, 'proxy-kind').value, 'proxy', 'the refused kind is not shown as chosen');
+  delete routes['PUT /console/api/providers/proxy-public'];
+
+  // Off with a template: choosing Private warns about Private access and the
+  // stale approvals before turning proxy on.
+  routes['GET /console/api/providers'] = withProxy(proxyOff('proxy', 'private'), proxyOff('proxy-public', 'public'));
+  px = await mountSettings(['networks', 'proxy-public']);
+  assert.equal(byId(px, 'proxy-kind').value, '');
+  byId(px, 'proxy-kind').value = 'proxy';
+  byId(px, 'proxy-kind').dispatch('change');
+  await tick();
+  const turnOn = openDialogs().pop();
+  assert.ok(turnOn.textContent.includes('Turn on Reverse proxy?'));
+  assert.ok(turnOn.textContent.includes('Flats does not check who they are'), 'the confirmation repeats the Private kind warning');
+  assert.ok(turnOn.textContent.includes('Every pending approval becomes stale'));
+  turnOn.close('ok');
+  await tick();
+  assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/providers/proxy').at(-1).body), { enabled: true });
+  // A template changed while both kinds are off needs no confirmation.
+  px = await mountSettings(['networks', 'proxy']);
+  putCount = puts().length;
+  byId(px, 'set-proxy_url_template').value = 'https://{host}.other.example.org';
+  byId(px, 'proxy-template-form').dispatch('input');
+  byId(px, 'proxy-template-form').dispatch('submit');
+  await tick();
+  assert.equal(puts().length, putCount + 1, 'no approval depends on the template while the proxy is off');
+
+  // Without a template no kind can be turned on, and the page says why.
+  routes['GET /console/api/settings'] = withTemplate('');
+  routes['GET /console/api/providers'] = withProxy({ ...proxyOff('proxy', 'private'), template: undefined }, { ...proxyOff('proxy-public', 'public'), template: undefined });
+  px = await mountSettings(['networks', 'proxy']);
+  assert.equal(byId(px, 'proxy-kind').disabled, true);
+  assert.ok(byId(px, 'proxy-listener').textContent.includes('Save an address template first.'));
+  net = await mountSettings();
+  assert.ok(byId(net, 'provider-proxy').textContent.includes('Needs an address template'));
+
+  // A listener that did not bind at start is shown with its error.
+  routes['GET /console/api/settings'] = withTemplate('https://{host}.site.example.org');
+  routes['GET /console/api/providers'] = withProxy({ ...proxyOn, bind_error: 'the reverse proxy listener cannot bind proxy.addr 127.0.0.1:7880: address already in use' }, proxyOff('proxy-public', 'public'));
+  px = await mountSettings(['networks', 'proxy']);
+  assert.ok(px.textContent.includes('The listener did not start: the reverse proxy listener cannot bind proxy.addr 127.0.0.1:7880: address already in use'), px.textContent);
+  assert.ok(px.textContent.includes('Error'));
+
+  // A flat's Networks list names both kinds and shows the proxy address with
+  // the note that Flats cannot check the proxy.
+  const proxied = { ...blog, visibility: 'private', providers: ['proxy'], private_url: 'https://blog.site.example.org', private_state: 'ready', private_detail: DETAIL,
+    endpoints: [ep('local', 'http://blog.localhost:7879/'), { ...ep('proxy', 'https://blog.site.example.org'), host: 'blog', ready: true, detail: DETAIL }] };
+  routes['GET /console/api/flats/blog'] = proxied;
+  const proxyFlat = new Element('main');
+  const stopProxyFlat = flat.mountSettings(proxyFlat, ['blog'], ctx);
+  await tick();
+  const proxyRow = byId(proxyFlat, 'net-proxy').parentNode;
+  assert.ok(proxyRow.textContent.includes('Reverse proxy') && proxyRow.textContent.includes(DETAIL), proxyRow.textContent);
+  assert.equal(all(proxyRow, (e) => e.tagName === 'A')[0].getAttribute('href'), 'https://blog.site.example.org/');
+  assert.ok(byId(proxyFlat, 'net-proxy-public').parentNode.textContent.includes('Reverse proxy (public)'));
+  stopProxyFlat();
+  // The Status section shows the same note next to the address.
+  const proxyStatus = new Element('main');
+  const stopProxyStatus = flat.mount(proxyStatus, ['blog'], ctx);
+  await tick();
+  assert.ok(byId(proxyStatus, 'status').textContent.includes(DETAIL));
+  stopProxyStatus();
+  routes['GET /console/api/flats/blog'] = blog;
+
+  // Open menus and links name the networks; proxy-public is a public route.
+  const both = { ...blog, visibility: 'public', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/'),
+    ep('proxy', 'https://blog.site.example.org/'), ep('proxy-public', 'https://blog.public.example.org/')] };
+  assert.deepEqual(ui.openMenuItems(both).map((i) => i.label),
+    ['Open publicly · Reverse proxy (public)', 'Open privately · Local', 'Open privately · Reverse proxy']);
+
+  // Seen from another device, a proxy address is an ordinary link while a
+  // Local one stays server only. The server-only note names the reverse
+  // proxy only while a proxy kind is on for the host.
+  globalThis.location = { origin: 'https://flats.example.org', hostname: 'flats.example.org' };
+  ui.setHostProviders(withProxy(proxyOff('proxy', 'private'), proxyOff('proxy-public', 'public')).providers);
+  assert.ok(!ui.SERVER_ONLY.includes('Reverse proxy'), ui.SERVER_ONLY);
+  assert.equal(ui.extLink('https://blog.site.example.org/').tagName, 'A', 'a proxy address opens from another device');
+  const localOnly = ui.extLink('http://blog.localhost:7879/', 'Open');
+  assert.equal(localOnly.tagName, 'SPAN');
+  assert.ok(localOnly.textContent.includes('server only'));
+  ui.setHostProviders(withProxy(proxyOn, proxyOff('proxy-public', 'public')).providers);
+  assert.ok(ui.SERVER_ONLY.includes('Reverse proxy') && ui.SERVER_ONLY.includes('Settings → Networks → Private'), ui.SERVER_ONLY);
+  assert.equal(ui.extLink('http://blog.localhost:7879/', 'Open').getAttribute('title'), ui.SERVER_ONLY);
+  ui.setHostProviders(withProxy(proxyOff('proxy', 'private'), { ...proxyOff('proxy-public', 'public'), enabled: true }).providers);
+  assert.ok(ui.SERVER_ONLY.includes('Reverse proxy (public) under Public'), ui.SERVER_ONLY);
+  // The share dialog names the proxy for a private proxy link.
+  ui.setHostProviders(withProxy(proxyOn).providers);
+  shareDialog({ ...proxied, live_version: 1 });
+  const proxyShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+  assert.ok(proxyShare.textContent.includes('whoever your reverse proxy lets through'), proxyShare.textContent);
+  assert.equal(all(proxyShare, (e) => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0].getAttribute('disabled'), null);
+  proxyShare.close();
+  ui.setHostProviders([]);
+  globalThis.location = { origin: 'http://127.0.0.1:7878' };
+  routes['GET /console/api/settings'] = settingsRoute(CONFIG);
+  routes['GET /console/api/providers'] = PROVIDERS;
+  delete routes['PUT /console/api/providers/proxy'];
+}
+
 console.log('ok');

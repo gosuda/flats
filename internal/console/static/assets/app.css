@@ -212,6 +212,8 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .networks input { min-height: 0; padding: 0; margin: 4px 0 0; }
 .networks label { display: flex; flex-wrap: wrap; column-gap: 8px; }
 .networks input:disabled + label { color: var(--muted); }
+.networks .network-main { display: grid; gap: 2px; min-width: 0; }
+.networks .network-route { overflow-wrap: anywhere; }
 .networks-group + .networks-group { margin-top: 12px; }
 .networks-group h4 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 0 0 6px; }
 

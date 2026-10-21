@@ -1,7 +1,7 @@
 // Entry point: the history-API router for console and per-flat management pages.
 
 import { h, clear } from './dom.js';
-import { closeMenus } from './ui.js';
+import { closeMenus, setHostProviders } from './ui.js';
 import { api } from './api.js';
 import { buildOf, buildLabel } from './build.js';
 import * as listPage from './list.js';
@@ -115,7 +115,9 @@ function updateApprovalCount() {
 }
 window.addEventListener('flats:approvals', updateApprovalCount);
 
-render();
+// The note on links that open only on the Flats host names the reverse proxy
+// while one is on, so the first page waits for the host's providers.
+api.providers().then((r) => setHostProviders(r.providers)).catch(() => {}).finally(render);
 
 // The running build is read once per page load; without it the slot stays empty.
 api.status().then((s) => {
