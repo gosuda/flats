@@ -203,6 +203,10 @@ type OutboxEntry struct {
 	// from SnapshotData until the entry is acknowledged; every other file
 	// of Files is already a blob, except assets, which uploads stored.
 	Snapshots []string
+	// Guests are up to five guest names credited by this entry, and
+	// GuestsMore counts the rest. Guest names never go into Authors.
+	Guests     []string
+	GuestsMore int
 }
 
 // Outbox returns up to limit entries after seq after, oldest first.

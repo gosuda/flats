@@ -162,6 +162,9 @@ type Options struct {
 	Now func() time.Time
 	// Log receives background failures; nil means slog.Default().
 	Log *slog.Logger
+	// PublicAccess is the stored public access level of the flat: "" when
+	// it is not Public, "view" or "edit". SetPublicAccess changes it later.
+	PublicAccess string
 
 	tickEvery time.Duration // tests stop the ticker this way
 }
