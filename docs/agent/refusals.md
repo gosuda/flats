@@ -84,6 +84,16 @@ refused, deletions included. Tell the user: the operator can raise the disk
 quota, or free space by lowering the revision quota or unpinning revisions.
 A `rollback_revision` is never refused for the disk quota.
 
+## public_edit_blocked
+
+A board cannot become editable by anyone yet, so the `set_visibility`
+approval with `access: "edit"` failed and nothing changed: the board kept
+its visibility and level. The message and `problems` list each reason:
+`disk_quota_off` (the host disk quota is 0), `revision_quota_unlimited`
+(the board's revision quota is 0) or `pin_quota_full` (no pin is free for
+the safe point). Tell the user what the operator must change (a disk quota,
+a revision quota, or a free pin), then request the change again.
+
 ## no_revisions
 
 The revision tools work on documents, designs and boards, and this flat is a
@@ -115,6 +125,9 @@ is locked and the call did not unlock it, or the same `op_id` came with a
 different request. An expired `get_board` cursor is `conflict` too. Nothing in
 the call applied. Read `get_board` again (from the first page for a cursor),
 rebuild the call against what people wrote, and retry with a new `op_id`.
+
+While anyone can edit a board, unpinning its safe point is `conflict`; it
+stays pinned until the operator stops guest editing.
 
 ## stale_approval
 

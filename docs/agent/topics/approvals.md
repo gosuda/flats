@@ -10,7 +10,8 @@ request changes nothing until the operator approves it in the Flats console:
 * `deploy {version}` (activation or redeploy of a saved version `version > 0`);
 * `rollback`, with or without `restore_data`;
 * `set_visibility` in **both** directions, private to public and public to
-  private;
+  private, and a board's public access level (`access: "view"` or
+  `"edit"`);
 * `delete_flat`, which permanently removes the flat, its versions and data.
 
 Rules:
@@ -33,7 +34,9 @@ Rules:
   or design covers the flat, not its content: saves, live edits and
   `rollback_revision` while it is pending do not make it stale, and approving
   it exposes the content as it is then. For a website or page it freezes the
-  live version, so a deployment or rollback makes it stale.
+  live version, so a deployment or rollback makes it stale. It also freezes
+  the visibility and public access level: any change of either before the
+  decision, even one that comes back to the same state, makes it stale.
 * After a decision, `get_approval` `result_data` reports `failure_code` (a
   `refusal.<category>` name, or `apply_failed`), `data_impact` (`none`,
   `runtime_start`, `restore_data` or `unknown`), `health_data` and
@@ -57,6 +60,12 @@ Rules:
   Public is NOT access control: anyone can open a ready Public route.
 * An Unpublished flat cannot become Public. Requesting the current
   visibility changes nothing.
+* A Public board has a public access level, `public_access`: `view` (the
+  default) or `edit`, where anyone on the internet can edit it as a guest.
+  Other flats are always view only. Request it with `set_visibility {slug,
+  visibility: "public", access: "edit"}`; it waits for approval and is
+  refused with `public_edit_blocked` when the board lacks the quotas it needs
+  (`topic.board`). `access: "view"` stops guest editing.
 * Going Private also waits for approval. Until the approved change applies,
   the public route stays reachable.
 * Local is always permitted. Nonlocal providers (`tailscale`,
