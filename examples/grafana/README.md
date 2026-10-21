@@ -4,7 +4,7 @@
 Flats serves at `/metrics` ([Metrics](../../docs/design.md#metrics)). It was
 checked with Grafana 11.6 and Prometheus 3.5.
 
-Per-flat series are off by default. Enable `metrics.flat_metrics` in
+Per-flat series are off by default. Enable `metrics.per_flat` in
 [`config.json`](../../docs/configuration.md#prometheus-metrics) and restart the
 host for per-flat panels and Overview totals derived from those series, such
 as traffic, worker CPU/memory and crashes. Without that opt-in those panels

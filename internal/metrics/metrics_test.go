@@ -114,7 +114,7 @@ func newTest(t *testing.T) (*Metrics, *fakeSource, *fakeEndpoints) {
 		{Provider: provider.Portal, State: "other", N: 1},
 		{Provider: "https://not-a-provider", State: "ready", N: 7},
 	}}
-	m := New(Options{Source: src, Endpoints: eps, FlatMetrics: true})
+	m := New(Options{Source: src, Endpoints: eps, PerFlat: true})
 	t.Cleanup(m.Close)
 	return m, src, eps
 }
@@ -551,7 +551,7 @@ func TestPerFlatMetricsOptIn(t *testing.T) {
 		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
 			src := &fakeSource{snap: testSnapshot()}
 			eps := &fakeEndpoints{counts: []provider.EndpointCount{{Provider: provider.Local, State: "ready", N: 2}}}
-			m := New(Options{Source: src, Endpoints: eps, FlatMetrics: enabled})
+			m := New(Options{Source: src, Endpoints: eps, PerFlat: enabled})
 			defer m.Close()
 			m.RefreshEndpoints()
 			families, err := m.Registry().Gather()
@@ -573,7 +573,7 @@ func TestPerFlatMetricsOptIn(t *testing.T) {
 			}
 			for _, name := range perFlatFamilies {
 				if present[name] != enabled {
-					t.Errorf("%s present=%v, flat_metrics=%v", name, present[name], enabled)
+					t.Errorf("%s present=%v, per_flat=%v", name, present[name], enabled)
 				}
 			}
 			for _, name := range []string{"flats_build_info", "go_goroutines", "process_cpu_seconds_total", "flats_db_bytes", "flats_flats", "flats_pending_approvals", "flats_snapshot_timestamp_seconds", "flats_route_endpoints", "flats_management_requests_total", "flats_board_batches_total", "flats_board_connections", "flats_board_import_seconds"} {

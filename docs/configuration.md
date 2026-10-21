@@ -150,7 +150,7 @@ written; `flats config unset KEY` removes it.
 | `host.server_runtime` | `true` | restart |
 | `metrics.enabled` | `true` | restart |
 | `metrics.expose_on` | `["localhost"]`; unique entries from `localhost`, `console`, `external`; `[]` exposes nowhere | restart |
-| `metrics.flat_metrics` | `false`; opt in to per-flat Prometheus series | restart |
+| `metrics.per_flat` | `false`; opt in to per-flat Prometheus series | restart |
 | `network.permitted` | `[]` | immediately from the console; otherwise restart |
 | `network.private_backend` | `local` | restart |
 | `network.default_private` | `""` (follow `private_backend`) | immediately, for flats created afterwards |
@@ -387,7 +387,7 @@ migration:
   "metrics": {
     "enabled": true,
     "expose_on": ["localhost"],
-    "flat_metrics": false
+    "per_flat": false
   }
 }
 ```
@@ -410,13 +410,13 @@ requests with 403. An enabled, selected endpoint serves GET/HEAD and returns
 405 with `Allow: GET, HEAD` for other methods. These settings add no
 authentication and do not change the endpoint path or port.
 
-`flat_metrics: false` omits every per-flat Prometheus series, including request,
+`per_flat: false` omits every per-flat Prometheus series, including request,
 worker, preview/check CPU and storage series. Host process figures, aggregate
 flat and network counts, management requests and host-wide board metrics
-remain. `flat_metrics: true` exports the existing series with flat slugs, including
+remain. `per_flat: true` exports the existing series with flat slugs, including
 Private and unpublished flats. Analytics, its stats API and usage collection
 continue with either setting, even when Prometheus metrics are disabled.
-The unreleased `metrics.per_flat` key is invalid; use `metrics.flat_metrics`.
+The unreleased `metrics.flat_metrics` key is invalid; use `metrics.per_flat`.
 This name change adds no alias, migration or schema revision.
 
 Stop the host, use `flats config set` or edit `config.json`, then restart it.
@@ -425,7 +425,7 @@ series:
 
 ```sh
 flats config set metrics.expose_on localhost,console
-flats config set metrics.flat_metrics true
+flats config set metrics.per_flat true
 ```
 
 To retain the exposure and per-flat series from before these controls were
@@ -436,7 +436,7 @@ introduced, explicitly set:
   "metrics": {
     "enabled": true,
     "expose_on": ["localhost", "console", "external"],
-    "flat_metrics": true
+    "per_flat": true
   }
 }
 ```

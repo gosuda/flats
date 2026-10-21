@@ -701,7 +701,7 @@ never metrics that bundled libraries register. Labels carry only slugs, flat
 types, provider IDs and fixed enums (plus the build strings of
 `flats_build_info`), never paths, query strings, client addresses, user
 agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
-carry `flat` (the slug) and `type` and are omitted unless `metrics.flat_metrics`
+carry `flat` (the slug) and `type` and are omitted unless `metrics.per_flat`
 is true. This includes traffic, workers, preview/check CPU and storage; the
 host-wide board metrics remain available.
 

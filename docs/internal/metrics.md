@@ -366,7 +366,7 @@ answer `/metrics`. Defaults select `localhost`, meaning the `host.console_addr`
 management listener, without a source-IP filter or a new bind restriction;
 see [configuration](../configuration.md#prometheus-metrics).
 
-`metrics.flat_metrics` defaults to false. It omits the per-flat families below,
+`metrics.per_flat` defaults to false. It omits the per-flat families below,
 including live/preview/check workers and disk, without removing their labels
 or replacing identifiers. Host, aggregate and board metrics remain. Usage
 collection and persistence for Analytics and the stats API continue regardless

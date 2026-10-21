@@ -39,13 +39,15 @@ Page views stay as they are. Usage adds to them; it does not replace them.
      is valid and exposes the endpoint nowhere. The unreleased `loopback`
      spelling is rejected rather than accepted as an alias. Otherwise valid
      requests through an access point absent from the list return 404.
-   - `metrics.flat_metrics` is a boolean, default `false`. When `false`, the
+   - `metrics.per_flat` is a boolean, default `false`. When `false`, the
      endpoint omits every per-flat Prometheus series described in rule 5,
      including traffic, live/preview/validation workers and storage. It does
      not remove only their labels or substitute identifiers. Host-wide
      metrics, aggregate flat counts, network counts, management request
      counts and host-wide board metrics remain available. When `true`, the
-     per-flat series include the existing slug and type labels.
+     per-flat series include the existing slug and type labels. The
+     unreleased `metrics.flat_metrics` key is rejected, with no alias or
+     migration. Configuration schema 5 is unchanged.
 
    `localhost` means the management listener selected by `host.console_addr`,
    whose default bind address is `127.0.0.1:7878`. It does not select only the
@@ -85,7 +87,7 @@ Page views stay as they are. Usage adds to them; it does not replace them.
      "metrics": {
        "enabled": true,
        "expose_on": ["localhost", "console", "external"],
-       "flat_metrics": true
+       "per_flat": true
      }
    }
    ```
@@ -107,14 +109,14 @@ Page views stay as they are. Usage adds to them; it does not replace them.
    - flats: how many exist by type, visibility and whether they are running
      (running keeps its console meaning: a live document is running even
      while its worker sleeps);
-   - when `metrics.flat_metrics` is true, traffic per flat: requests by status
+   - when `metrics.per_flat` is true, traffic per flat: requests by status
      class and by route kind (private, public), requests refused by the rate
      limit, response bytes, open WebSocket and event-stream connections,
      and a response-time histogram;
-   - when `metrics.flat_metrics` is true, workers per flat: CPU time, current
+   - when `metrics.per_flat` is true, workers per flat: CPU time, current
      memory, worker state and unexpected exits; and CPU of the flat's
      preview and validation workers, separately from its live usage;
-   - when `metrics.flat_metrics` is true, storage per flat: disk bytes and when
+   - when `metrics.per_flat` is true, storage per flat: disk bytes and when
      they were measured, for every flat;
    - networks: route endpoints per provider and state (ready, starting,
      error and so on);
@@ -155,7 +157,7 @@ Page views stay as they are. Usage adds to them; it does not replace them.
     memory are not measured separately, rather than showing zero.
     - A flat's usage covers the workers that serve its live route, including
       an older version still finishing its requests after a switch. Preview
-      and validation workers are not part of it; when `metrics.flat_metrics` is
+      and validation workers are not part of it; when `metrics.per_flat` is
       true, Prometheus metrics count their CPU separately.
     - CPU is the total processor time (user and system) that those workers
       used, including workers that later stopped, restarted or went to sleep.
@@ -210,7 +212,7 @@ and admitted POST requests returning 404 without `Allow` when disabled or
 excluded, or 405 with `Allow: GET, HEAD` when enabled and selected. They also
 verify that an external-origin proxy request cannot obtain localhost exposure.
 Configuration tests reject the old `loopback` exposure spelling and the
-`metrics.per_flat` key, and retain schema 5;
+`metrics.flat_metrics` key, and retain schema 5;
 listener tests cover explicit non-loopback binds without adding a source-IP rule.
 Scrape tests distinguish host and aggregate metrics from every per-flat family,
 including preview and validation workers. Analytics and stats tests verify that
