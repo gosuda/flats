@@ -232,7 +232,12 @@ type Host struct {
 	zrokNet            *zrok.Net
 	quickNet           *cfquick.Net
 	netbirdNet         provider.NetbirdNet
-	workers            *runtime.Manager // nil without server flats
+	// proxyNet is the reverse proxy listener while a proxy provider is on:
+	// a *proxy.Net, or a failedProxy when it could not bind at start.
+	proxyNet provider.ProxyNet
+	// proxyTemplate returns proxy.url_template as it is in effect.
+	proxyTemplate func() config.Template
+	workers       *runtime.Manager // nil without server flats
 	// For providers the console turns on while the host runs.
 	logf           func(string, ...any)
 	legacy         bool
@@ -456,6 +461,31 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 			h.netbirdNet = nn
 		}
 	}
+	// Settings are saved to config.json against the hash this process last
+	// read or wrote; SettingsSource keeps that hash as the settings ETag.
+	mode := "config"
+	if s.legacy {
+		mode = "legacy"
+	}
+	settings, err := core.NewSettingsSource(p.doc, &core.SettingsFile{Mode: mode, Hash: p.hash, Overrides: s.overrides,
+		Save: config.NewWriter(p.path).Save, DiskHash: func() (string, error) { return configHash(p.path) }})
+	if err != nil {
+		return nil, err
+	}
+	// The reverse proxy listener binds before core restores flat routes. A
+	// taken address must not keep the console down: proxy routes report it.
+	h.proxyTemplate = func() config.Template { return settings.Proxy().Template }
+	if permits(provider.Proxy) || permits(provider.ProxyPublic) {
+		if !loopbackAddr(cfg.Proxy.Addr) {
+			logf("warning: the reverse proxy listener uses proxy.addr %s, which is not a loopback address; a client that reaches it directly skips your proxy", cfg.Proxy.Addr)
+		}
+		if n, err := listenProxy(cfg.Proxy.Addr, h.proxyTemplate); err != nil {
+			logf("warning: %v; proxy routes report this error until a restart binds it", err)
+			h.proxyNet = failedProxy{err}
+		} else {
+			h.proxyNet = n
+		}
+	}
 	var tail provider.Tailnet
 	if h.tsNet != nil {
 		tail = provider.TSNet{Net: h.tsNet}
@@ -466,7 +496,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	backends := provider.Options{Local: loop, Tailscale: tail, TailscaleStateDir: filepath.Join(dataDir, "tsnet"), Configuration: providerConfiguration(portalOptions, zrokConfiguration(cfg, h.zrokNet), netbirdConfiguration(cfg, h.currentNetbirdKey())), Grants: grants, Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 		return st.ProviderPermitted(ctx, slug, string(id))
-	}}
+	}, Proxy: h.proxyNet, ProxyTemplate: func() string { return h.proxyTemplate().String() }}
 	if h.portalNet != nil {
 		backends.Portal = h.portalNet
 	}
@@ -500,17 +530,6 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	if cfg.Host.ServerRuntime {
 		h.workers = &runtime.Manager{DataDir: dataDir, Logf: logf}
 		rt = h.workers
-	}
-	// Settings are saved to config.json against the hash this process last
-	// read or wrote; SettingsSource keeps that hash as the settings ETag.
-	mode := "config"
-	if s.legacy {
-		mode = "legacy"
-	}
-	settings, err := core.NewSettingsSource(p.doc, &core.SettingsFile{Mode: mode, Hash: p.hash, Overrides: s.overrides,
-		Save: config.NewWriter(p.path).Save, DiskHash: func() (string, error) { return configHash(p.path) }})
-	if err != nil {
-		return nil, err
 	}
 	// A legacy service started with --relays compares it with the config on
 	// every start, so the console must not change the relays under it.
@@ -571,7 +590,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	mux.Handle("/", console.Handler())
 	h.Mux = mux
 
-	if tcp, ok := h.ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
+	if !loopbackAddr(h.ln.Addr().String()) {
 		logf("warning: the management API listens on %s, which is not a loopback address", h.ln.Addr())
 	}
 	// Requests are counted outside the guard, so refused ones count too.
@@ -802,8 +821,11 @@ func (h *Host) Close() error {
 			collect("provider routes", h.Providers.Close())
 		}
 		h.pmu.Lock()
-		tsNet, portalNet, zrokNet, quickNet, netbirdNet := h.tsNet, h.portalNet, h.zrokNet, h.quickNet, h.netbirdNet
+		tsNet, portalNet, zrokNet, quickNet, netbirdNet, proxyNet := h.tsNet, h.portalNet, h.zrokNet, h.quickNet, h.netbirdNet, h.proxyNet
 		h.pmu.Unlock()
+		if proxyNet != nil {
+			collect("reverse proxy shutdown", proxyNet.Close())
+		}
 		if h.Public != nil {
 			collect("public network shutdown", h.Public.Close())
 		} else if portalNet != nil {
