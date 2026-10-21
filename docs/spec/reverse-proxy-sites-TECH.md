@@ -250,7 +250,7 @@ with the same provider and `AudienceCurrent`, else `private_url` or
 | Area | Test |
 | --- | --- |
 | Template | Accepted and refused templates, including the suffix length limit and `:443` with `https` and `:80` with `http`; `Label` with port, case, trailing dot, nested label, wrong suffix, empty label |
-| Config | Mutual exclusion; template required; defaults require the grant; address conflicts; template and console origin overlap refused in both save orders; offline `flats config` and Settings agree |
+| Config | Mutual exclusion; template required; defaults require the grant; address conflicts only while a proxy kind is permitted (a no-proxy config using `127.0.0.1:7880` for another listener validates; turning a kind on there is refused; changing another listener's address to `proxy.addr` while a kind is permitted is refused); template and console origin overlap refused in both save orders; offline `flats config` and Settings agree |
 | Listener | Served label; unknown label; nested label; console name; `/metrics`; 404 body without the `Host`; identity headers stripped; `Host` and `X-Forwarded-Proto` replaced, including a template port the proxy dropped; template change applies to the next request |
 | App lifecycle | Turn on binds; bind conflict, missing template and failed save each refuse, save nothing and leave the port free; turn off refused while allowed, closes the listener after; second kind refused; full kind switch with a Public flat; changed `proxy.addr` used on the next turn-on; start with a taken address keeps the host up with proxy routes in `error`; non-loopback warning |
 | Manager | Private, preview and Public paths for both IDs; preview refused on `proxy-public`; stops; policy token with and without a proxy |

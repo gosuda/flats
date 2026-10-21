@@ -301,6 +301,14 @@ The feature is complete when tests or recorded runs show each of these:
   save orders. The cross-key checks of rule 11 hold in Settings and in
   offline `flats config`. MCP and non-console API calls cannot change the
   keys or turn a proxy provider on.
+- **Address checks.** A configuration that permits no proxy and uses
+  `127.0.0.1:7880` for `host.local_addr` or `host.console_addr` validates
+  and starts with no proxy listener. Turning a proxy kind on in it is
+  refused by rule 11, saves nothing and binds nothing. Changing
+  `host.local_addr` or `host.console_addr` to equal `proxy.addr` while a
+  kind is permitted is refused. Such a collision is refused when the
+  configuration is validated, so it never reaches the bind failure of
+  rule 15.
 - **Lifecycle.** Turning `proxy` on binds the listener; turning it on with
   the address taken, or with no template, is refused, saves nothing and
   leaves the port free; turning it off is refused while a flat allows it and
