@@ -69,19 +69,49 @@ func TestGuestTrimAggregates(t *testing.T) {
 		}
 		return h, before
 	}
-	const guestCap = 700
-
 	t.Run("step 1: guests together to their cap", func(t *testing.T) {
 		h, member := setup(t)
 		mid := measureTrim(h.s)
-		if mid.guestUndo <= guestCap || mid.guestDel <= guestCap {
-			t.Fatalf("guests' state %d undo, %d deleted bytes is not over the %d cap", mid.guestUndo, mid.guestDel, guestCap)
+		// Caps of two thirds of the three guests' total: each guest alone
+		// stays under its cap and only their sum exceeds it, so a cap
+		// applied per session would trim nothing.
+		undoCap, delCap := mid.guestUndo*2/3, mid.guestDel*2/3
+		for id, st := range h.s.undo {
+			if !h.s.GuestSession(id) {
+				continue
+			}
+			var n int64
+			for _, e := range append(slices.Clone(st.undo), st.redo...) {
+				n += entryBytes(e)
+			}
+			if n > undoCap {
+				t.Fatalf("one guest alone holds %d undo bytes, over the %d cap", n, undoCap)
+			}
 		}
-		h.s.TrimUndoCapped(member.memberUndo, guestCap)
-		h.s.TrimDeletedCapped(member.memberDel, guestCap)
+		perGuestDel := map[string]int64{}
+		for _, r := range h.s.rows {
+			if r.Deleted && model.IsGuestKey(r.DelKey) {
+				b, _ := json.Marshal(r.PreRel)
+				perGuestDel[r.DelKey] += int64(len(r.El.CanonicalJSON()) + len(b))
+			}
+		}
+		if len(perGuestDel) != 3 {
+			t.Fatalf("deleted rows of %d guests", len(perGuestDel))
+		}
+		for k, n := range perGuestDel {
+			if n > delCap {
+				t.Fatalf("guest %s alone deleted %d bytes, over the %d cap", k, n, delCap)
+			}
+		}
+		// The global cap does not bind: only the guest cap can trim.
+		h.s.TrimUndoCapped(1<<40, undoCap)
+		h.s.TrimDeletedCapped(1<<40, delCap)
 		z := measureTrim(h.s)
-		if z.guestUndo > guestCap || z.guestDel > guestCap {
-			t.Fatalf("guests' aggregate after trim: %d undo, %d deleted bytes, cap %d", z.guestUndo, z.guestDel, guestCap)
+		if z.guestUndo > undoCap || z.guestDel > delCap {
+			t.Fatalf("guests' aggregate after trim: %d undo (cap %d), %d deleted bytes (cap %d)", z.guestUndo, undoCap, z.guestDel, delCap)
+		}
+		if z.guestUndo == 0 || z.guestDel == 0 {
+			t.Fatalf("the guest cap trimmed everything: %d undo, %d deleted bytes", z.guestUndo, z.guestDel)
 		}
 		if z.memberUndo != member.memberUndo || !slices.Equal(z.memberRows, member.memberRows) {
 			t.Fatalf("a member item was trimmed: undo %d -> %d, rows %d -> %d", member.memberUndo, z.memberUndo, len(member.memberRows), len(z.memberRows))

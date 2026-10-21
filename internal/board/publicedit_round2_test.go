@@ -410,17 +410,20 @@ func TestGuestPresenceCaps(t *testing.T) {
 			g.send(map[string]any{"t": "pres", "c": []float64{float64(i), 0}})
 		}
 		sent := time.Since(start).Seconds()
-		got := 0
+		got, last := 0, start
 		for {
 			if _, ok := nextWithin(m, 300*time.Millisecond, func(x map[string]any) bool { return x["t"] == "pres" && x["name"] == "Gus" }); !ok {
 				break
 			}
-			got++
+			got, last = got+1, time.Now()
 		}
-		if got < 1 || float64(got) > 10+10*sent+1 {
-			t.Fatalf("relayed %d of 60 presence frames sent in %.3fs; the cap is 10 a second, burst 10", got, sent)
+		// Tokens refill while the server still reads the frames: the bound
+		// runs to the last relayed frame's arrival.
+		span := last.Sub(start).Seconds()
+		if got < 1 || float64(got) > 10+10*span+1 {
+			t.Fatalf("relayed %d of 60 presence frames within %.3fs; the cap is 10 a second, burst 10", got, span)
 		}
-		t.Logf("one guest: %d of 60 relayed (sent in %.3fs)", got, sent)
+		t.Logf("one guest: %d of 60 relayed (sent in %.3fs, last relayed after %.3fs)", got, sent, span)
 	})
 	t.Run("all guests", func(t *testing.T) {
 		b := editTB(t)
