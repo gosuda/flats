@@ -1354,6 +1354,13 @@ export default {
     const privateAccess = request.headers.get("x-flats-access") === "private";
     if (path !== "/_docs/api/document") {
       if (privateAccess) return html(d, false, url, titleFor(d));
+      // Without the host's runtime generation (a bare runtime) the page is
+      // named without reading the document.
+      if (
+        !Number.isSafeInteger(request.runtimeGeneration) ||
+        request.runtimeGeneration < 1
+      )
+        return html(d, true, url, publicTitle(d));
       const live = current(
         env.DB,
         d,

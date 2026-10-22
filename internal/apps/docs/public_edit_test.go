@@ -960,8 +960,10 @@ func TestGuestPool(t *testing.T) {
 // Guest rooms are not counted in the members' room memory: guests fill
 // four rooms, a member still opens a fifth document, joins a guest room and
 // edits; the class stays when the guests leave (TECH 3.3).
+// It seeds six documents near 1 MiB each in the WebSocket VM; it runs
+// alone, since next to the package's parallel tests one seeding event can
+// outlast the VM's event deadline on a loaded machine.
 func TestGuestRoomsLeaveMemberRoomMemory(t *testing.T) {
-	t.Parallel()
 	texts := map[string]string{}
 	for i := 0; i < 6; i++ {
 		texts[fmt.Sprintf("d%d.md", i)] = fmt.Sprintf("# D%d\n", i) + strings.Repeat("seeded text of a large document\n", 28*1024)
