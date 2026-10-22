@@ -20,7 +20,7 @@ The document app internals are in [docs-app.md](../internal/docs-app.md).
 | Projection | Presence and welcome are built per audience. Guests see members under their page nickname (`hello.nick`), never a Tailscale identity |
 | Current text only | The initial sync is already a diff of the garbage-collected server document. Pending structs are dropped when a document loads and refused in new updates, so no hidden text can ride along |
 | Guest pacing | The client merges and paces guest updates below the per-guest limit. When all guests together reach the flat's limit, the server answers `busy` and the client resends in order later, losing nothing. A refusal stops the page (Download local text, Rejoin) |
-| Diagrams | Size bounds measured per diagram type, and after any slow render the page renders further diagrams only on request |
+| Diagrams | In a document with guest text, and in every document of a flat at `edit`, diagrams render only when the reader clicks; size caps bound a click |
 | Revisions | One fixed-window guest group per flat; outbox entries carry guest names; core marks guest-only revisions and uses the board's retention |
 | Authorship | Per document, the line ranges whose current text a guest inserted, computed from Yjs item client ids; stored with each revision entry |
 | Board changes | Popup with View only and Join to edit replaces the bottom panel; members send a nickname and guests see it instead of Member N |
@@ -172,16 +172,24 @@ sets a pending flag in the hub and tries a non-blocking send; the WebSocket
 loop checks the flag after every event it handles and when the send
 succeeds, so a set flag is always handled once the loop runs again.
 
-On `access` the WebSocket VM rereads `meta.access` and:
+The WebSocket VM keeps the last access state it applied. On `access`, and
+before admitting any guest, it rereads `meta.access` and, when it differs
+from the applied state:
 
 - closes every guest socket whose epoch differs with
   `{t: "error", code: "editing_ended"}` and close `1008 editing_ended`;
-- sends `{t: "level", access, access_epoch}` to every viewer socket.
+- sends `{t: "level", access, access_epoch}` to every socket, members
+  included, so every open page learns the level (members need it for the
+  diagram policy of 3.10).
 
 Reconciliation: every client sends `ping` every 15 seconds today (members,
 guests and viewers). On each `ping` from a Public socket the VM compares the
 socket's known level and epoch with `meta.access` and applies the same two
 actions when they differ.
+
+Ordering: because a guest is admitted only after the VM has applied the
+current access state to every open socket, every member and viewer page has
+received `level: edit` before any guest update can reach it.
 
 **Completion boundary.** Stop guest editing is complete when the commit and
 the `access` operation have returned (or, for a sleeping worker, the commit
@@ -226,8 +234,17 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
 - **Ingress.** Today every socket's reader posts its frames into one event
   queue (64 events) consumed by the WebSocket VM, and rate checks run in the
   consumer. The runtime changes so Public frames cannot delay members:
-  - Public connections post to a separate queue of 16 events; members,
-    `open`, `close`, `wake` and signals keep the existing queue.
+  - Every event of a Public connection (`open`, its frames and `close`)
+    goes to a separate queue of 16 events, so its own events stay in order;
+    member connections, `wake` and signals keep the existing queue. A
+    connection's class is fixed at `admit` from the trusted
+    `X-Flats-Access` header.
+  - New Public connections are admitted at most 20 per second per worker
+    (burst 40), checked in `admit` before the upgrade; over it the request
+    gets HTTP 503 and the client retries later. With 80 Public slots this
+    bounds connection churn, and the Public `close` post waits for space in
+    the Public queue while the slot stays held, so churn cannot outrun the
+    Public queue either.
   - The loop always takes a waiting event from the member queue first and
     takes a Public event only when the member queue is empty. A member event
     therefore waits for at most one Public event already being handled.
@@ -238,21 +255,35 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
     These are above every guest and viewer limit of 3.8, so they only bound a
     flood, including viewer pings and malformed frames, before any JavaScript
     runs.
+  - Verified by a runtime test that churns Public connections and floods
+    Public frames at the limits while a member connects and edits: the
+    member's admission succeeds and its events are handled with at most one
+    Public event ahead of them.
 - **Room memory.** `roomBudget` today sums the writable rooms (4 MiB, 30,000
-  structs, 8 rooms) and the read-only rooms (2 MiB, 20,000, 4) separately. A
-  room is charged to the member budget while at least one member is in it,
-  and otherwise to a separate guest budget (4 MiB, 30,000 structs, 4 rooms)
-  while a guest is in it, else to the reader budget as today. A member
-  joining a guest room moves its charge to the member budget, so guest-only
-  rooms never use member capacity; the room's size itself is bounded by the
-  document size reserve of 3.8.
-- Member welcome is unchanged except for `nick` (3.5) and the `viewers` frames
-  (3.4).
-
+  structs, 8 rooms) and the read-only rooms (2 MiB, 20,000, 4) and refuses a
+  join or update over a sum. It changes to three classes, decided per room at
+  each check:
+  - a **guest room** has at least one guest socket. At most 4 guest rooms are
+    open at once; a guest joining a document that would be a fifth gets fatal
+    `full`. A guest room's size is bounded by the per-document limits and the
+    guest reserve (3.8), not by a shared sum, so guest rooms are not counted
+    in either other sum;
+  - a **member room** has a member and no guest: today's writable sum;
+  - a **reader room** has only viewers: today's read-only sum.
+  So guests never use the member sum: a member joining a guest room adds
+  nothing to it, and guests growing a mixed room grow only that room, within
+  the document reserve. When the last guest leaves a room that still has a
+  member, the room joins the member sum like any document a member opens; its
+  size is the document's content, which a member opening it would load
+  anyway. Worker memory stays bounded by the member sum, 4 guest rooms of at
+  most the per-document state limit, and the reader sum. Tests: guests fill 4
+  guest rooms near the reserve, then a member opens a fifth document, joins a
+  guest room and edits it; guests grow a mixed room; the last guest leaves.
 ### 3.4 Welcome and projection
 
-- `welcome` gains `access` (the level: `view`/`edit`, absent on Private),
-  `access_epoch` and `me`:
+- `welcome` gains `access` (the flat's level, `view`/`edit`, or absent when
+  the flat is not Public; members get it too), `access_epoch`, `guest_text`
+  (3.10) and `me`:
   - member: as today (`you`), plus nothing new;
   - guest: `me: {kind: "guest", name}` and `guest_token`; `you.verified` is
     always false;
@@ -413,8 +444,9 @@ about when a render can start:
 
 - **Guest-touched documents render diagrams on request.** The welcome gains
   `guest_text`: true when the document has any row in
-  `flats_docs_guest_clients` (3.5), and every welcome of a flat at level
-  `edit` sets it too; a `level` frame to `edit` also sets it on open pages. On
+  `flats_docs_guest_clients` (3.5); every welcome of a flat at level `edit`
+  sets it too, for members and guests alike, and a `level` frame to `edit`
+  sets it on every open page (3.2). A page never clears it until reload. On
   such a page every Mermaid block shows its source with a **Show diagram**
   button and renders only when the reader clicks it, for members, guests and
   viewers alike. Other documents render diagrams as today.
@@ -524,7 +556,7 @@ Spec rule 21a is reworded to these two guarantees.
 | Current text only | the scan test of 3.7 with fresh and old state vectors, the pending-struct refusal, and the upgrade fixtures with existing pending state |
 | Identity | the frame scans of 3.4 (documents) and 5.1 (boards), with a Tailscale member present |
 | Client ownership | worker tests: a guest extending a member's, seed's or agent's client id, or another guest's, is refused; attribution of existing text never changes |
-| Rendering | browser test with script, raw HTML, `javascript:` links and an outside image; a document with guest text and a flat at `edit` render no diagram until Show diagram is clicked; diagrams above the caps stay source; documents without guest text render as today |
+| Rendering | browser test with script, raw HTML, `javascript:` links and an outside image; a document with guest text and a flat at `edit` render no diagram until Show diagram is clicked; a member page already open at `view` stops auto-rendering when the level becomes `edit`, before a guest's diagram arrives; diagrams above the caps stay source; documents without guest text render as today |
 | Limits | worker tests per limit in 3.8, including `busy` resend order with concurrent large pastes; runtime tests for the Public queue priority and ingress buckets; room-budget tests (guest rooms full, a member opens another document). Load test: 20 guests at the per-guest limit plus flood clients over the flat and ingress limits, with Public pools full, while a member connects, edits, rolls back and saves. Target: a member's change is visible in another member's editor (text present in the receiving page's CodeMirror DOM) within 200 ms p95, the board's figure, measured in two headless Chromium pages with the existing opt-in browser harness; also recorded: socket delivery p95, member admission, rollback completion |
 | Refusal | worker and client tests: refused A, dependent B never committed, download contains both, Rejoin works; pacing loses nothing at 50 keystrokes per second for 30 seconds |
 | Lifetime | worker test with lowered limits: guests stop at their share, a member update still commits |
@@ -545,8 +577,8 @@ Spec rule 21a is reworded to these two guarantees.
 | 16, 16a | guest key | client ownership, current text only (3.5, 3.7) | Client ownership, Current text only |
 | 17–21a | — | guest boundary, rendering (3.3, 3.10, 4) | Boundary, Rendering |
 | 22–26, 25a | retention (2.6) | limits, `busy`, pools, groups (3.3, 3.8, 3.9) | Limits, Refusal, Lifetime, Revisions |
-| 27–28 | — | guest lines (2.8, 3.9) | Presence | core test: unchanged guest and viewer counts stay reported beyond 30 s; they drop to 0 after the last disconnect and while asleep |
-| Agent safety |
+| 27–28 | — | guest lines (2.8, 3.9) | Agent safety |
+| 32–33 counts | — | presence counts (2.7, 3.9) | Presence |
 | 29–31 | commit order | epoch at commit, signal, reconciliation (3.1, 3.2) | Kill switch, Recovery |
 | 32–36 | console components | per-type nouns (6) | Consistency |
 | Board 8, 11, 15 | — | 5.1, 5.2 | Joining, Identity |
