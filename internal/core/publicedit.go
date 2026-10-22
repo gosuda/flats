@@ -300,9 +300,10 @@ func (s *Service) publicEditState(ctx context.Context, slugName string) (store.C
 // publicEditStatus checks the quotas anyone-can-edit needs (TECH 2.3 step
 // 1): a disk quota, a revision quota, and a pin for the safe point unless
 // the pinned earlier safe point can be reused. A board compares it with the
-// live board, edits not yet recorded included; a document with its newest
-// revision, so the document's safe_point operation may still find edits
-// since and record a new one.
+// live board, edits not yet recorded included. A document's text lives in
+// its worker, so a pinned earlier safe point counts as reusable here and the
+// worker's safe_point operation compares; when it records a new one and no
+// pin is free, the approval fails with pin_quota_full then.
 func (s *Service) publicEditStatus(ctx context.Context, slugName string) (PublicEditStatus, store.ContentState, error) {
 	st, t, err := s.publicEditState(ctx, slugName)
 	if err != nil {
@@ -342,13 +343,12 @@ func (s *Service) publicEditStatus(ctx context.Context, slugName string) (Public
 	return out, st, nil
 }
 
-// safePointReusable reports whether revision n may serve as the safe point
-// again: it holds the running board's current files, or it is the
-// document's newest revision.
+// safePointReusable reports whether pinned revision n may serve as the
+// safe point again: it holds the running board's current files, or, for a
+// document, the worker may still find it equal (see publicEditStatus).
 func (s *Service) safePointReusable(ctx context.Context, slugName, t string, n int) (bool, error) {
 	if t == contenttype.Docs {
-		revs, err := s.st.ListRevisions(ctx, slugName, 0, 1)
-		return err == nil && len(revs) == 1 && revs[0].Number == n, err
+		return true, nil
 	}
 	if in := s.liveBoard(slugName); in != nil {
 		return s.liveContentEquals(ctx, slugName, in, n)

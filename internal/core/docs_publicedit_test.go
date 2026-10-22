@@ -403,8 +403,10 @@ func TestDocsPublicEditPreflightBlocks(t *testing.T) {
 	if _, err := s.UpdateSettings(ctx, map[string]string{SetRevisionQuota: "10", SetPinQuota: "1"}); err != nil {
 		t.Fatal(err)
 	}
-	// A pinned revision that is not the newest leaves no pin and no
-	// reusable safe point.
+	// With the earlier safe point pinned and every pin in use, the preflight
+	// leaves the comparison to the worker; when the text changed, the worker
+	// records a new safe point, which is imported unpinned, and the approval
+	// fails with pin_quota_full without changing the level.
 	setAccess(t, s, store.Public, store.AccessEdit)
 	sp := safePointRev(t, s)
 	setAccess(t, s, store.Public, store.AccessView)
@@ -416,14 +418,17 @@ func TestDocsPublicEditPreflightBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, err = s.PublicEditPreflight(ctx, "plan")
-	if err != nil || len(status.Problems) != 1 || status.Problems[0].Code != ProblemPinQuotaFull || status.SafePoint == nil || *status.SafePoint != sp {
+	if err != nil || len(status.Problems) != 0 || status.SafePoint == nil || *status.SafePoint != sp {
 		t.Fatalf("preflight with full pins: %+v %v", status, err)
 	}
 	before := worker.safePoints
 	a = requestAccess(t, s, store.Public, store.AccessEdit, ViaMCP)
 	got, _ := s.Decide(ctx, a.ID, true)
-	if got.Status != "failed" || worker.safePoints != before {
+	if got.Status != "failed" || !strings.Contains(got.Result, "pin") || worker.safePoints != before+1 {
 		t.Fatalf("full pins: %+v, safe point calls %d -> %d", got, before, worker.safePoints)
+	}
+	if _, access := flatAccess(t, s); access != store.AccessView {
+		t.Fatalf("a failed approval changed the level to %q", access)
 	}
 }
 
@@ -739,5 +744,43 @@ func TestDocsGuestOnlyRetention(t *testing.T) {
 	}
 	if guests != 2 || members != 2 {
 		t.Fatalf("kept %d guest-only and %d member revisions", guests, members)
+	}
+}
+
+// Re-enabling on text that returned to the earlier safe point reuses it
+// even when that safe point is not the newest revision and every pin is
+// in use (rule 6).
+func TestDocsSafePointReusedAfterRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, worker, _ := newPublicDocs(t, false)
+	setAccess(t, s, store.Public, store.AccessEdit)
+	sp := safePointRev(t, s)
+	one := 1
+	if err := s.SetRevisionQuotas(ctx, "plan", nil, &one); err != nil {
+		t.Fatal(err)
+	}
+	setAccess(t, s, store.Public, store.AccessView)
+	worker.mu.Lock()
+	path, orig := worker.docs[0].Path, worker.texts[worker.docs[0].Hash]
+	worker.mu.Unlock()
+	worker.edit(path, "# changed", "", nil)
+	worker.mu.Lock()
+	worker.record("person", []string{"Ada"}, nil)
+	worker.mu.Unlock()
+	worker.edit(path, orig, "", nil)
+	worker.mu.Lock()
+	worker.record("person", []string{"Ada"}, nil)
+	worker.mu.Unlock()
+	if st, err := s.PublicEditPreflight(ctx, "plan"); err != nil || len(st.Problems) != 0 {
+		t.Fatalf("preflight: %+v %v", st, err)
+	}
+	setAccess(t, s, store.Public, store.AccessEdit)
+	if safePointRev(t, s) != sp || !slices.Equal(pinnedRevisions(t, s), []int{sp}) {
+		t.Fatalf("reuse after a round trip: safe point %d, pins %v, revisions %+v", safePointRev(t, s), pinnedRevisions(t, s), revisionsOf(t, s))
+	}
+	for _, r := range revisionsOf(t, s) {
+		if r.Kind == "safe_point" && r.Number != sp {
+			t.Fatalf("a second safe point was recorded: %+v", revisionsOf(t, s))
+		}
 	}
 }

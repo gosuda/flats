@@ -1835,3 +1835,45 @@ test("a database from before guest editing gains its columns and table", () => {
   assert.equal(revisions.hasGuestText(db, "a.md"), false);
   assert.equal(db.query("SELECT label FROM flats_docs_groups")[0].label, "Ada");
 });
+
+test("a member's announced presence id cannot be claimed by a guest before the member's first edit", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "seed\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  const claim = (key, client) =>
+    transaction(db, () => {
+      const s = activate(db, c.documents[0], c.hash, undefined, generation);
+      try {
+        revisions.claimClients(db, "a.md", key, new Set([client]), s.doc);
+      } finally {
+        s.doc.destroy();
+      }
+    });
+  const code = (fn) => {
+    try {
+      fn();
+      return "";
+    } catch (e) {
+      return e.code;
+    }
+  };
+  // The member's page announced presence id 91 and has not edited yet.
+  revisions.reserveMemberClient(db, "a.md", 91, "browser:ada");
+  assert.equal(
+    code(() => claim("guest:aaaa", 91)),
+    "guest_client",
+  );
+  // The reservation is not guest text and does not count toward guest caps.
+  assert.equal(revisions.ownedClients(db, "a.md").size, 0);
+  assert.equal(revisions.hasGuestText(db, "a.md"), false);
+  // The member's own first edit with that id is not refused.
+  revisions.checkMemberClients(db, "a.md", new Set([91]));
+  // A guest's own fresh id still works, and a member reserving it later
+  // leaves the guest's ownership alone.
+  assert.equal(
+    code(() => claim("guest:aaaa", 92)),
+    "",
+  );
+  revisions.reserveMemberClient(db, "a.md", 92, "browser:ada");
+  assert.deepEqual([...revisions.ownedClients(db, "a.md")], [92]);
+});

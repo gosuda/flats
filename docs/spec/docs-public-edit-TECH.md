@@ -68,11 +68,13 @@ document's safe point compares both). The board adapter wraps
 and now also sends the stored epoch to clients (5.1). The docs adapter calls
 host operations (3.6) through `docsHost`.
 
-**Preflight reuse.** The console's preflight sees only the revision store, so
-it treats the stored safe point as reusable only when it is the newest
-revision. The worker's `safe_point` operation makes the real comparison; when
-it records a new safe point and no pin is free, the approval fails with
-`pin_quota_full` (2.3).
+**Preflight reuse.** The console's preflight sees only the revision store,
+not the document's live text, so for a document it counts a pinned earlier
+safe point as reusable and reports no missing pin. The worker's `safe_point`
+operation makes the real comparison: unchanged text (including text that
+returned to the safe point's) reuses it without a new pin; otherwise it
+records a new safe point, and when no pin is free the approval fails with
+`pin_quota_full` without changing the level (2.3).
 
 ### 2.3 Applying `edit` to a document
 

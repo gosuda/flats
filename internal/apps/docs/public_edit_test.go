@@ -647,6 +647,25 @@ func TestGuestClientOwnership(t *testing.T) {
 	}
 }
 
+// A member's page announces its presence id before its first edit; a guest
+// that saw it cannot insert with it, and the member's first edit commits.
+func TestGuestCannotClaimAnnouncedMemberClient(t *testing.T) {
+	t.Parallel()
+	a := startApp(t, t.TempDir(), initialText, "v1")
+	a.setAccess(t, "edit", 1)
+	g, _ := a.guest(t, "index.md", "Mina", "", 1)
+	m, _ := a.member(t, "index.md", "", nil)
+	m.send(t, map[string]any{"t": "aw", "u": presence(1901, 1, map[string]any{})})
+	m.next(t, "aw")
+	g.next(t, "aw")
+	expectCode(t, g.update(t, "claim", yInsert(1901, "mine\n")), "guest_client")
+	acked(t, m.update(t, "first", yInsert(1901, "member first\n")))
+	// After a reconnect the member's id is still kept from guests.
+	m.Close()
+	g2, _ := a.guest(t, "index.md", "Bo", "", 1)
+	expectCode(t, g2.update(t, "claim2", yAfter(1901, 13, "x")), "guest_client")
+}
+
 // guestDocument reads the document as host reads do, with its guest marks
 // and the server's state vector of a member welcome.
 func (a *app) guestDocument(t *testing.T) map[string]any {
@@ -1240,4 +1259,30 @@ func TestGuestPresenceLimits(t *testing.T) {
 	spoof, _ := a.guest(t, "index.md", "Mina", "", 1)
 	spoof.send(t, map[string]any{"t": "aw", "u": presence(1700, 1, map[string]any{})})
 	spoof.refused(t, "guest_client")
+}
+
+// A heading the live document no longer has never names it on a Public page
+// or in the Public document list (spec rule 16a).
+func TestPublicTitlesUseLiveText(t *testing.T) {
+	t.Parallel()
+	text := "# Secret heading\n\nBody\n"
+	sum := sha256.Sum256([]byte(text))
+	b, _ := json.Marshal(map[string]any{"format": 1, "hash": "v1", "entry": "index.md", "documents": []any{
+		map[string]any{"path": "index.md", "hash": hex.EncodeToString(sum[:]), "text": text},
+		map[string]any{"path": "notes.md", "hash": "notes", "text": "# Old notes heading\n"},
+	}, "assets": []string{}})
+	a := startAppModule(t, t.TempDir(), "export default "+string(b)+";\n", "v1", map[string]string{})
+	if status, res := a.postEdit(t, http.Header{"X-Flats-Access": {"private"}, "X-Flats-Host-Op": {"edit"}},
+		`{"ops":[{"op":"replace","find":"# Secret heading","with":"# Visible"}]}`); status != 200 {
+		t.Fatal(status, res)
+	}
+	for _, path := range []string{"/", "/index.md", "/_docs/api/documents", "/notes.md"} {
+		status, body, _ := a.get(t, path)
+		if status != 200 || strings.Contains(body, "Secret heading") || (path == "/_docs/api/documents" && strings.Contains(body, "Old notes heading")) {
+			t.Fatalf("%s: %d %s", path, status, body)
+		}
+	}
+	if _, body, _ := a.get(t, "/"); !strings.Contains(body, "<h1>Visible</h1>") {
+		t.Fatal(body)
+	}
 }

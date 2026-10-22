@@ -136,19 +136,34 @@ function documentFile(db, path, known) {
 
 // --- guest text (docs-public-edit-TECH.md 3.5, 3.9) ---
 
-// ownedClients are the Yjs client ids guests own in a document. A database
-// from before guest editing may not have their table yet.
+// flats_docs_guest_clients holds the Yjs client ids guests own and, so a
+// guest cannot claim one first, the presence ids members announced (owner
+// is the editor key: guest:, ts: or browser:). ownedClients are the guests'
+// ids in a document. A database from before guest editing may not have the
+// table yet.
 export function ownedClients(db, path) {
   return new Set(
-    guestRows(db, "SELECT client FROM flats_docs_guest_clients WHERE doc=?", [
-      path,
-    ]).map((r) => r.client),
+    guestRows(
+      db,
+      "SELECT client FROM flats_docs_guest_clients WHERE doc=? AND owner LIKE 'guest:%'",
+      [path],
+    ).map((r) => r.client),
   );
+}
+// reserveMemberClient records the presence id a member's page announced, so
+// no guest can insert with it before the member's first edit commits
+// (TECH 3.5). A guest's own row is left alone.
+export function reserveMemberClient(db, path, client, key) {
+  db.exec("INSERT OR IGNORE INTO flats_docs_guest_clients VALUES(?,?,?)", [
+    path,
+    client,
+    key,
+  ]);
 }
 export const hasGuestText = (db, path) =>
   guestRows(
     db,
-    "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? LIMIT 1",
+    "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? AND owner LIKE 'guest:%' LIMIT 1",
     [path],
   ).length > 0;
 function guestRows(db, sql, params) {
@@ -183,7 +198,7 @@ export function claimClients(db, path, owner, clients, doc) {
     )[0];
     if (row) {
       if (row.owner !== owner)
-        throw coded("guest_client", "this change extends another guest's text");
+        throw coded("guest_client", "this change uses another editor's id");
       continue;
     }
     if (doc.store.clients.has(client))
@@ -194,14 +209,15 @@ export function claimClients(db, path, owner, clients, doc) {
     if (doc.store.clients.size + added >= GUEST.clients)
       throw coded("guest_room", "this document has room for no more editors");
     const owned = db.query(
-      "SELECT count(*) AS n FROM flats_docs_guest_clients WHERE doc=?",
+      "SELECT count(*) AS n FROM flats_docs_guest_clients WHERE doc=? AND owner LIKE 'guest:%'",
       [path],
     )[0].n;
     if (owned >= GUEST.guestClients)
       throw coded("guest_room", "this document has room for no more guests");
     if (
-      db.query("SELECT count(*) AS n FROM flats_docs_guest_clients")[0].n >=
-      GUEST.flatClients
+      db.query(
+        "SELECT count(*) AS n FROM flats_docs_guest_clients WHERE owner LIKE 'guest:%'",
+      )[0].n >= GUEST.flatClients
     )
       throw coded("guest_room", "these documents have room for no more guests");
     db.exec("INSERT INTO flats_docs_guest_clients VALUES(?,?,?)", [
@@ -219,7 +235,7 @@ export function checkMemberClients(db, path, clients) {
   for (const client of clients)
     if (
       db.query(
-        "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? AND client=?",
+        "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? AND client=? AND owner LIKE 'guest:%'",
         [path, client],
       ).length
     )
@@ -1135,7 +1151,7 @@ function recordingPages(db, pending, listed) {
   // An entry's document list also holds guest line ranges, at most about
   // 16 KiB a document (MAX_GUEST_RANGES in storage.js).
   const guestDocs = db.query(
-      "SELECT count(DISTINCT doc) AS n FROM flats_docs_guest_clients",
+      "SELECT count(DISTINCT doc) AS n FROM flats_docs_guest_clients WHERE owner LIKE 'guest:%'",
     )[0].n,
     list =
       3 * metaLength(db, "newest") +

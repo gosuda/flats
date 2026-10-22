@@ -230,6 +230,19 @@ export function compact(db, s, state) {
       s.row.doc,
       s.row.seq,
     ]);
+    // A member's presence reservation is redundant once its id is in the
+    // struct store, which keeps guests out by itself (TECH 3.5).
+    for (const r of hasTable(db, "flats_docs_guest_clients")
+      ? db.query(
+          "SELECT client FROM flats_docs_guest_clients WHERE doc=? AND owner NOT LIKE 'guest:%'",
+          [s.row.doc],
+        )
+      : [])
+      if (s.doc.store.clients.has(r.client))
+        db.exec(
+          "DELETE FROM flats_docs_guest_clients WHERE doc=? AND client=?",
+          [s.row.doc, r.client],
+        );
   }
 }
 export function activate(db, source, versionHash, cached, runtimeGeneration) {

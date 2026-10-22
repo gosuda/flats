@@ -45,10 +45,17 @@ const sourceFor = (path) => content.documents.find((d) => d.path === path);
 // The flat activation of this worker's version, for current().
 const ensureFlat = (generation) => (db) =>
   revisions.ensureFlat(db, content, generation);
+const headingOf = (text) => (/^#\s+(.+)$/m.exec(text) || [])[1];
 const titleFor = (d) =>
+  (d.path === content.entry && content.title) || headingOf(d.text) || d.path;
+// Public pages never name a document by text it may no longer have
+// (docs-public-edit.md rule 16a): the open document's title comes from its
+// committed text, and the document list names the others by the manifest
+// title or their path.
+const publicTitle = (d, markdown) =>
   (d.path === content.entry && content.title) ||
-  (/^#\s+(.+)$/m.exec(d.text) || [])[1] ||
-  d.path;
+  (markdown === undefined ? null : headingOf(markdown)) ||
+  d.path.replace(/\.(md|markdown)$/, "");
 const escapeHTML = (s) =>
   String(s).replace(
     /[&<>"']/g,
@@ -449,7 +456,11 @@ function presence(c, m, env) {
     throw new Error("awareness id changed");
   for (const peer of room.peers)
     if (peer !== c && peer.awID === p.id) throw new Error("awareness id owned");
-  if (guest && c.awID === undefined) guestAwareness(c, p.id, env);
+  if (c.awID === undefined) {
+    if (guest) guestAwareness(c, p.id, env);
+    // Reserved before the id is relayed, so no guest can claim it first.
+    else revisions.reserveMemberClient(env.DB, c.path, p.id, c.editor);
+  }
   c.awID = p.id;
   if (c.aw && p.clock < c.aw.clock) return;
   const cursor = safeCursor(p.state?.cursor);
@@ -855,13 +866,13 @@ function ping(c, env) {
     chain: s.row.chain,
   });
 }
-function html(d, readonly, url) {
+function html(d, readonly, url, title) {
   const host = url.host;
   if (!/^[a-zA-Z0-9.:[\]-]+$/.test(host))
     return new Response("Invalid host", { status: 400 });
   const csp = `default-src 'self'; script-src 'self'; connect-src 'self' ws://${host} wss://${host}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(titleFor(d))} · Flats</title><link rel="stylesheet" href="/_docs/assets/client.css"><script type="module" src="/_docs/assets/client.js"></script></head><body data-doc="${escapeHTML(d.path)}" data-readonly="${readonly}"><header><h1>${escapeHTML(titleFor(d))}</h1>${readonly ? "" : '<div id="modes" role="group" aria-label="Document mode"><button type="button" data-mode="edit" aria-pressed="true">Edit</button><button type="button" data-mode="view" aria-pressed="false">View</button></div><button id="history-toggle" type="button" aria-expanded="false" aria-controls="history" hidden>History</button>'}<span id="status" role="status" aria-live="polite">Connecting…</span><div id="presence" aria-label="People in this document"></div></header><div id="notice" role="alert" hidden></div><div class="workspace"><nav id="documents" aria-label="Documents" hidden></nav><main id="page"><div class="surface">${readonly ? "" : '<section id="revision-view" tabindex="-1" aria-label="Revision" hidden><div id="revision-banner"></div><div id="revision-body"></div></section>'}<section id="editor" aria-label="Document editor" hidden></section><article id="content" aria-label="Document"></article><footer class="powered">Powered by <a href="https://github.com/gosuda/flats" target="_blank" rel="noopener noreferrer">Flats</a></footer></div></main>${readonly ? "" : '<aside id="history" aria-label="Revision history" hidden><div class="history-head"><h2>History</h2><button id="history-close" type="button" aria-label="Close history">Close</button></div><p id="history-note" role="status" hidden></p><ol id="history-list"></ol><button id="history-more" type="button" hidden>Load more</button></aside>'}</div></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)} · Flats</title><link rel="stylesheet" href="/_docs/assets/client.css"><script type="module" src="/_docs/assets/client.js"></script></head><body data-doc="${escapeHTML(d.path)}" data-readonly="${readonly}"><header><h1>${escapeHTML(title)}</h1>${readonly ? "" : '<div id="modes" role="group" aria-label="Document mode"><button type="button" data-mode="edit" aria-pressed="true">Edit</button><button type="button" data-mode="view" aria-pressed="false">View</button></div><button id="history-toggle" type="button" aria-expanded="false" aria-controls="history" hidden>History</button>'}<span id="status" role="status" aria-live="polite">Connecting…</span><div id="presence" aria-label="People in this document"></div></header><div id="notice" role="alert" hidden></div><div class="workspace"><nav id="documents" aria-label="Documents" hidden></nav><main id="page"><div class="surface">${readonly ? "" : '<section id="revision-view" tabindex="-1" aria-label="Revision" hidden><div id="revision-banner"></div><div id="revision-body"></div></section>'}<section id="editor" aria-label="Document editor" hidden></section><article id="content" aria-label="Document"></article><footer class="powered">Powered by <a href="https://github.com/gosuda/flats" target="_blank" rel="noopener noreferrer">Flats</a></footer></div></main>${readonly ? "" : '<aside id="history" aria-label="Revision history" hidden><div class="history-head"><h2>History</h2><button id="history-close" type="button" aria-label="Close history">Close</button></div><p id="history-note" role="status" hidden></p><ol id="history-list"></ol><button id="history-more" type="button" hidden>Load more</button></aside>'}</div></body></html>`,
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
@@ -1316,7 +1327,10 @@ export default {
         title: content.title,
         documents: content.documents.map((d) => ({
           path: d.path,
-          title: titleFor(d),
+          title:
+            request.headers.get("x-flats-access") === "private"
+              ? titleFor(d)
+              : publicTitle(d),
         })),
       });
     let docpath;
@@ -1338,8 +1352,20 @@ export default {
     if (!d || (path.startsWith("/_docs/") && path !== "/_docs/api/document"))
       return new Response("Unknown document", { status: 404 });
     const privateAccess = request.headers.get("x-flats-access") === "private";
-    if (path !== "/_docs/api/document")
-      return html(d, request.headers.get("x-flats-access") !== "private", url);
+    if (path !== "/_docs/api/document") {
+      if (privateAccess) return html(d, false, url, titleFor(d));
+      const live = current(
+        env.DB,
+        d,
+        content.hash,
+        undefined,
+        request.runtimeGeneration,
+        ensureFlat(request.runtimeGeneration),
+      );
+      const markdown = live.doc.getText("markdown").toString();
+      live.doc.destroy();
+      return html(d, true, url, publicTitle(d, markdown));
+    }
     const s = current(
       env.DB,
       d,
