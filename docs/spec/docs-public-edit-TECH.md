@@ -244,7 +244,7 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
   worker checks its pool there; a viewer over its pool is closed after its
   hello. Public connections therefore never take a member slot or member send
   budget. A guest over its pool gets fatal `full` and the client offers Read
-  (viewer) or Try again. A viewer over its pool is closed `1008 capacity` as
+  (viewer) or Try again. A viewer over its pool is closed `1008 connection capacity` as
   today, and the client shows "Too many readers right now". A Public request
   refused by the runtime's Public slots gets HTTP 503 and the same message.
 - **Ingress.** Today every socket's reader posts its frames into one event
@@ -534,7 +534,7 @@ Spec rule 21a is reworded to these two guarantees.
   latest changes weren't saved. You can keep reading live." with Download local
   text; the page reconnects as a viewer.
 - **Full:** fatal `full` → "This document is full" with Read and Try again; a
-  viewer closed with `capacity` → "Too many readers right now" with Try again.
+  viewer closed with `connection capacity` → "Too many readers right now" with Try again.
 - **History panel:** guest credits with the badge per name and "and N more
   guests"; kind `safe_point` as "Safe point before guest editing".
 - Members send `hello.nick` = their stored collaborator name.
