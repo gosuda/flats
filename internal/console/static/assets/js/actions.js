@@ -2,7 +2,7 @@
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
 
-import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
+import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, editWords, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, infoDialog, errorPanel, toast, extLink } from './ui.js';
 import { isLive } from './list.js';
@@ -202,7 +202,8 @@ export async function deleteFlat(flat) {
 }
 
 // setVisibility changes visibility after a confirm; widening shows the notice.
-// access ('view' or 'edit') is the public access level of a board. Stopping
+// access ('view' or 'edit') is the public access level of a board or a
+// document flat. Stopping
 // guest editing and allowing it have their own steps.
 export async function setVisibility(flat, vis, access) {
   const fromKey = accessOf(flat);
@@ -258,12 +259,14 @@ function confirmed(res) {
   throw Object.assign(new Error(res?.result || res?.error || 'Flats did not confirm the change.'), { body: {} });
 }
 
-// stopGuestEditing sets a board to Public, view only at once, with no
-// confirmation (rule 5). The console's request is its own approval.
+// stopGuestEditing sets a board or document flat to Public, view only at
+// once, with no confirmation (rule 5). The console's request is its own
+// approval.
 export async function stopGuestEditing(flat) {
+  const words = editWords(flat);
   try {
     const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'view')));
-    toast('Guest editing stopped. Viewers can still watch.', 'success');
+    toast(`Guest editing stopped. Viewers can still ${words.watch}.`, 'success');
     return res;
   } catch (err) {
     await report('Stop guest editing failed', err);
@@ -271,10 +274,11 @@ export async function stopGuestEditing(flat) {
   }
 }
 
-// allowGuestEditing widens a board to Public, anyone can edit: it reads the
-// preflight first and shows either what must change or the confirmation of
-// what the change grants (rules 3, 6, 6a).
+// allowGuestEditing widens a board or document flat to Public, anyone can
+// edit: it reads the preflight first and shows either what must change or
+// the confirmation of what the change grants (rules 3, 6, 6a).
 export async function allowGuestEditing(flat) {
+  const words = editWords(flat);
   if (visibilityOf(flat.visibility) === 'private' && !(await canGoPublic(flat))) return null;
   let pre;
   try {
@@ -288,10 +292,10 @@ export async function allowGuestEditing(flat) {
   const ok = await confirmDialog({
     title: `Let anyone on the internet edit ${label(flat)}?`,
     body: [
-      h('p', { text: 'Anyone who opens the link can add, change and delete everything on this board. They type a name first, but nobody checks who they are.' }),
+      h('p', { text: `Anyone who opens the link can add, change and delete everything ${words.on}. They type a name first, but nobody checks who they are.` }),
       h('ul', { class: 'checks' },
-        check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), " of the board as it is now, and it can't be unpinned while guests can edit."),
-        check(true, "Guests can't see history, import, upload images or send selections to an agent."),
+        check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), ` of ${words.the} as it is now, and it can't be unpinned while guests can edit.`),
+        check(true, words.cannot),
         check(true, `Guest activity is limited, and the disk quota (${bytes(pre.disk_quota)}) and the revision quota (${pre.revision_quota}) stay in force.`)),
       h('p', { class: 'alert alert-warn' },
         pre.listed ? 'This flat is also listed publicly by a relay, so strangers can find it. ' : '',
@@ -302,7 +306,7 @@ export async function allowGuestEditing(flat) {
   if (!ok) return null;
   try {
     const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'edit')));
-    toast('Anyone with the link can now edit this board.', 'success');
+    toast(`Anyone with the link can now edit ${words.this}.`, 'success');
     return res;
   } catch (err) {
     if (err?.body?.category === 'public_edit_blocked') { await blockedDialog(flat, pre, err.problems); return null; }

@@ -6,7 +6,7 @@
 // no environment or server permissions.
 // Analytics and Database are their own modules under the same tabs.
 
-import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
+import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, publicEditOf, editWords, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill, setHostProviders } from './ui.js';
 import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, stopGuestEditing, PROVIDERS } from './actions.js';
@@ -178,8 +178,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('Name', 'Name for your site', nameForm),
         row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
-        row('Sharing', flat.type === 'board' ? 'Who can open this board' : 'Who can view your site', sharingControl(manage)),
-        flat.type === 'board' ? boardSharingSlot() : null),
+        row('Sharing', publicEditOf(flat) ? `Who can open ${publicEditOf(flat).this}` : 'Who can view your site', sharingControl(manage)),
+        publicEditOf(flat) ? guestEditSlot() : null),
       netSlot,
       isDocs() ? null : section('Version history', 'version-history', versionQuotaBlock()),
       isDocs() ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, typeNoun(flat))) : null,
@@ -197,15 +197,16 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const stop = h('button', { class: 'btn btn-small btn-danger', type: 'button', text: 'Stop guest editing' });
     stop.addEventListener('click', () => busy(stop, async () => { if (await stopGuestEditing(flat)) await refresh(); }));
     const p = flat.public_presence;
+    const words = editWords(flat);
     return h('div', { class: 'setting-sharing' },
       h('div', { class: 'setting-control' }, visibilityBadge(flat.visibility, flat.public_access), manage, stop),
-      h('p', { class: 'muted small' }, p ? `Right now: ${plural(p.guests, 'guest')} editing, ${plural(p.viewers, 'viewer')} watching. ` : '',
-        "Guests can't see history, import, upload images or send selections to an agent."));
+      h('p', { class: 'muted small' }, p ? `Right now: ${plural(p.guests, 'guest')} editing, ${plural(p.viewers, 'viewer')} ${words.watching}. ` : '',
+        words.cannot));
   }
 
-  // boardSharingSlot shows the pinned safe point and a visibility change
-  // that waits for approval; both are read separately from the flat.
-  function boardSharingSlot() {
+  // guestEditSlot shows the pinned safe point and a visibility change that
+  // waits for approval; both are read separately from the flat.
+  function guestEditSlot() {
     const slot = h('div');
     (async () => {
       const [pre, pend] = await Promise.all([

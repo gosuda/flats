@@ -124,19 +124,45 @@ export const VISIBILITY = {
 
 export const visibilityOf = (vis) => (!vis || vis === 'private' ? 'private' : 'public');
 
-// A Public board also has a public access level, view or edit
-// (docs/spec/board-public-edit.md). accessKey combines both into one of
-// 'private', 'public' (any Public flat that is not a board), 'view' or
-// 'edit'. Only a board reports public_access.
+// A Public board or document also has a public access level, view or edit
+// (docs/spec/board-public-edit.md, docs-public-edit.md). accessKey combines
+// both into one of 'private', 'public' (any other Public flat), 'view' or
+// 'edit'. Only boards and documents report public_access.
 export function accessKey(vis, access) {
   if (visibilityOf(vis) === 'private') return 'private';
   if (access === 'edit') return 'edit';
   return access === 'view' ? 'view' : 'public';
 }
-// accessOf reads a flat; a Public board without a reported level is view only.
+
+// PUBLIC_EDIT holds the words that differ between the types with a public
+// edit level; everything else in the Share dialog, the confirmation, the
+// blocked dialog, the approval page and the Sharing row is shared (rule 36).
+const PUBLIC_EDIT = {
+  board: {
+    the: 'the board', on: 'on the board', this: 'this board', watch: 'watch', watching: 'watching',
+    viewDesc: 'Anyone with the link can watch live. Only your networks edit.',
+    guestsCannot: "They can't roll back, import, upload images or send selections to an agent.",
+    cannot: "Guests can't see history, import, upload images or send selections to an agent.",
+  },
+  docs: {
+    the: 'the documents', on: 'on the documents', this: 'these documents', watch: 'read', watching: 'reading',
+    viewDesc: 'Anyone with the link can read live. Only your networks edit.',
+    guestsCannot: "They can't restore earlier text or add files.",
+    cannot: "Guests can't see history, restore earlier text or add files.",
+  },
+};
+// publicEditOf returns the words of a flat that can have a public edit
+// level, or null for the other types.
+export const publicEditOf = (f) => (f && PUBLIC_EDIT[f.type]) || null;
+// editWords is publicEditOf for code that only runs for those types; an
+// unknown flat (deleted since) reads as a board.
+export const editWords = (f) => publicEditOf(f) || PUBLIC_EDIT.board;
+
+// accessOf reads a flat; a Public board or document without a reported
+// level is view only.
 export function accessOf(f) {
   const key = accessKey(f.visibility, f.public_access);
-  return key === 'public' && f.type === 'board' ? 'view' : key;
+  return key === 'public' && publicEditOf(f) ? 'view' : key;
 }
 
 export const ACCESS = {
@@ -214,7 +240,8 @@ export function publicNoticeOf(f) {
   return f.public_notice || PUBLIC_ACCESS_NOTICE;
 }
 
-// visibilityBadge never shows an editable board as plain Public (rule 34).
+// visibilityBadge never shows an editable board or document as plain
+// Public (rule 34).
 export function visibilityBadge(vis, access) {
   const key = accessKey(vis, access);
   const v = ACCESS[key];
