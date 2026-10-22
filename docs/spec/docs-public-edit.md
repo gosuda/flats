@@ -3,9 +3,10 @@
 Status: planned. This page changes the document parts of
 [content-models.md](content-models.md), the
 [docs app internals](../internal/docs-app.md) and
-[board-public-edit.md](board-public-edit.md) rule 7; every changed rule is
-listed in [Changes to existing specs](#changes-to-existing-specs). Only the
-document type (`docs`) is in scope.
+[board-public-edit.md](board-public-edit.md) rules 7, 8, 11 and 15; every changed rule is
+listed in [Changes to existing specs](#changes-to-existing-specs). The
+document type (`docs`) is in scope, plus the board changes to rules 8, 11
+and 15 that keep the two types the same.
 
 This page sets what to build, why, and the rules it must keep. It follows
 [board-public-edit.md](board-public-edit.md) (the board feature) rule for rule
@@ -113,12 +114,15 @@ And one for consistency:
 
 ## Joining a document
 
-8. **Anyone can edit: ask for a name.** A visitor who opens a Public document
-   at level `edit` is asked for a name before editing, and cannot edit without
-   one. The name rule is the board's: 1 to 40 characters after trimming,
-   plain text, control and invisible formatting characters removed; the
-   browser remembers it and lets the guest change it; names are not unique.
-   One name holds for every document of the flat.
+8. **Anyone can edit: ask for a name, or read without one.** A visitor who
+   opens a Public document at level `edit` gets the name popup with two
+   choices: **Join and edit** with a name, or **View only** without one. A
+   visitor who chooses View only is named Viewer N as at level `view`
+   (rule 9) and reads; nobody edits without a name. The name rule is the
+   board's: 1 to 40 characters after trimming, plain text, control and
+   invisible formatting characters removed; the browser remembers it and lets
+   the guest change it; names are not unique. One name holds for every
+   document of the flat.
 9. **View only: never ask.** As board public rule 9. A visitor at level
    `view` is named **Viewer N** for the flat, sees "You are Viewer 3", and
    keeps the number for a minute across reconnects and across moving between
@@ -129,14 +133,21 @@ And one for consistency:
     open document as "Viewer N" entries (or a count above 20). A viewer sends
     nothing but its connection and token, receives no presence, and has no
     cursor or selection, as today.
-11. **The prompt never hides the live document.** As on a board: a visitor
-    who arrives at level `edit` without a remembered name gets the name dialog
-    over the live document; a visitor who closes it, has a remembered name, or
-    already has the document open when the level goes to `edit` gets the
-    board's join panel at the bottom of the page instead. Until they join they
-    can only read. The header shows a guest "You are Mina" with the guest
-    badge and **Change name**, and a viewer "You are Viewer 3", as a board's
-    top bar does.
+11. **One popup, shown over the live document.** The name popup is the only
+    way to start editing, and it never replaces the live document, which
+    keeps updating behind it.
+    - It opens when a visitor arrives at level `edit`, when a reader clicks
+      **Join to edit**, and for every reader without a guest session when
+      the level goes from `view` to `edit` while they have the document open.
+    - A remembered name fills the field, but the popup still opens once, so
+      nobody becomes an editor without choosing to.
+    - **View only** (or closing the popup) keeps the visitor a reader for the
+      rest of that tab's visit: the popup does not open again on its own,
+      across reconnects and moves between the flat's documents, until the
+      level changes to `edit` again. The header then shows "You are Viewer 3"
+      and **Join to edit**.
+    - The header shows a guest "You are Mina" with the guest badge and
+      **Change name**.
 12. **Guest presence.** At level `edit`, guests and Private editors see each
     other in the people list and see each other's cursors and selections in
     the editor, as Private editors do today.
@@ -155,11 +166,16 @@ And one for consistency:
     reader gets, and they must not receive what Private editors receive. A
     guest connection gets a **guest projection** built from an allow-list for
     the welcome frame, presence, acknowledgements, refusals and notices.
-15. **Identity in it.** No verified Tailscale login or name, no Private
-    editor's chosen name and no agent label appears in the guest projection.
-    Private editors appear to guests only as **Member 1, 2, …**, numbered per
-    flat while connected, with their cursor and selection. Guests appear to
-    Private editors with their typed name and the guest badge.
+15. **Identity in it: nicknames only.** A Private editor appears to guests
+    under the nickname their page uses (the name the page chose for them or
+    one they typed), with their cursor and selection, never under an
+    identity a network supplied. No verified Tailscale login or display name,
+    and no agent label, appears in the guest projection: a member on
+    Tailscale, whom other members see under their tailnet name, appears to
+    guests under their page's nickname. Guests appear to Private editors with
+    their typed name and the guest badge. Nicknames are unverified labels,
+    drawn as text only; the guest badge, not the name, tells a guest from a
+    member.
 16. **Guest keys are issued by the server.** A guest's editor key (its edit
     group and authorship identity) is a random value the host assigns in a
     separate namespace. The client cannot choose it, so a guest cannot write
@@ -345,7 +361,8 @@ continuously for an hour.
 | Name rules | A guest update commits only after a valid name. A view-only visitor is never asked, is named Viewer N and sees it. |
 | Boundary | On a Public route, history, the block outline, host operations and earlier text are refused at both levels. A forged update at `view` and a forged Private-only request from a guest change nothing. |
 | Current text only | A scan of every frame and response sent to a guest or viewer, after a session that inserted and deleted marked text before they joined, finds none of the deleted text. |
-| Identity | A scan of every frame sent to a guest finds no Tailscale login or name, no Private editor's chosen name and no agent label. |
+| Identity | A scan of every frame sent to a guest, while a member on Tailscale edits, finds no Tailscale login or display name and no agent label; that member appears under their page nickname. |
+| Joining | A visitor at level `edit` who chooses View only reads as Viewer N and is not asked again in that tab until the level changes; Join to edit opens the popup; a remembered name still shows the popup once. |
 | Rendering | Guest text containing script, raw HTML, `javascript:` links, outside images and a hostile Mermaid diagram runs no script, loads nothing from another site, and leaves a reader's page responsive. |
 | Limits | While guests send updates at the per-guest limit on every allowed connection, a Private editor can still connect, edit, roll back and see remote changes within the document's existing latency target. At the reserved disk and document-size room and at the guest byte budget, guests are refused and Private edits succeed. |
 | Revisions | However 20 guests edit for an hour across two documents, alone or while a member edits with 31-second pauses, at most 12 guest-only revisions are recorded plus forced boundaries, and every revision recorded because a member's group closed credits that member. The pinned safe point stays and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota. Re-enabling editing on an unchanged flat adds no revision. |
@@ -363,6 +380,14 @@ continuously for an hour.
 
 - Rule 7: documents also get the level. Open question 6 ("Other types") is
   answered for documents; designs stay without it.
+- Rules 8 and 11 and open question 1 (decided by the owner, 2026-10-22, for
+  both types): the name popup offers **View only**, opens once even with a
+  remembered name, replaces the board's bottom join panel, and a reader can
+  reopen it with **Join to edit**. The board's app changes with this
+  feature.
+- Rule 15 and open question 2 (decided the same day, for both types): guests
+  see members' nicknames instead of Member N; Tailscale identities still
+  never reach guests.
 - The shared parts (stored level, approval, safe point, quota rules, Stop
   guest editing, console) are written once for both types when this ships.
 
@@ -404,9 +429,8 @@ editor sees the others' names, verified or not.
 
 ## Open questions
 
-1. **Just look, member names, stronger guest identity.** Board public open
-   questions 1 to 3 apply to documents unchanged, and one answer covers both
-   types.
+1. **Stronger guest identity.** Board public open question 1 applies to
+   documents unchanged.
 2. **Comments.** Documents have no comments. Whether a level between view and
    edit ("anyone can comment") is wanted is decided after real use.
 3. **Numbers.** The rate limits, the guest and viewer limits, the reserved
