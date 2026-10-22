@@ -160,7 +160,7 @@ func TestRevisionGuestLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []RevisionFile{
-		{Path: "a.md", Hash: "ha", Size: 1, GuestLines: [][2]int{{1, 2}, {5, 5}}},
+		{Path: "a.md", Hash: "ha", Size: 1, GuestLines: &[][2]int{{1, 2}, {5, 5}}},
 		{Path: "b.md", Hash: "hb", Size: 1},
 	}
 	err = s.ContentTx(ctx, "notes", func(tx *ContentTx) error {
@@ -178,7 +178,7 @@ func TestRevisionGuestLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.RevisionFiles(ctx, "notes", 1)
-	if err != nil || len(got) != 2 || len(got[0].GuestLines) != 2 || got[0].GuestLines[1] != [2]int{5, 5} || got[1].GuestLines != nil {
+	if err != nil || len(got) != 2 || len(got[0].Lines()) != 2 || got[0].Lines()[1] != [2]int{5, 5} || got[1].GuestLines != nil {
 		t.Fatalf("files %+v %v", got, err)
 	}
 	if err := s.ContentTx(ctx, "notes", func(tx *ContentTx) error { return tx.DeleteRevision(ctx, 1) }); err != nil {

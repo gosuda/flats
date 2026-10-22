@@ -1643,7 +1643,7 @@ func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (stor
 		// Every document says whether guests wrote any of its lines.
 		for i := range files {
 			if bundle.IsMarkdown(files[i].Path) && files[i].GuestLines == nil {
-				files[i].GuestLines = [][2]int{}
+				files[i].GuestLines = &[][2]int{}
 			}
 		}
 	}

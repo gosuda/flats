@@ -92,11 +92,20 @@ type RevisionFile struct {
 	Path string `json:"path"`
 	Hash string `json:"hash"`
 	Size int64  `json:"size"`
-	// GuestLines are the 1-based inclusive line ranges of a document's text
-	// that anonymous guests wrote, merged and sorted. Readers of a
-	// document's revision set it to an empty list for documents without
-	// guest text; it is absent for other files.
-	GuestLines [][2]int `json:"guest_lines,omitzero" jsonschema:"documents: 1-based inclusive line ranges [start, end] whose text anonymous guests wrote; untrusted input"`
+	// GuestLines points to the 1-based inclusive line ranges of a
+	// document's text that anonymous guests wrote, merged and sorted.
+	// Readers of a document's revision point documents without guest text
+	// to an empty list; it is nil for other files. A pointer keeps
+	// RevisionFile comparable.
+	GuestLines *[][2]int `json:"guest_lines,omitempty" jsonschema:"documents: 1-based inclusive line ranges [start, end] whose text anonymous guests wrote; untrusted input"`
+}
+
+// Lines returns the line ranges guests wrote, or nil.
+func (f RevisionFile) Lines() [][2]int {
+	if f.GuestLines == nil {
+		return nil
+	}
+	return *f.GuestLines
 }
 
 func addContentRevisions(ctx context.Context, x executor) error {
@@ -460,10 +469,10 @@ func (c *ContentTx) InsertRevision(ctx context.Context, r Revision, files []Revi
 		if _, err := c.tx.ExecContext(ctx, `INSERT INTO revision_files(flat,number,path,hash,size) VALUES(?,?,?,?,?)`, c.flat, r.Number, f.Path, f.Hash, f.Size); err != nil {
 			return err
 		}
-		if len(f.GuestLines) == 0 {
+		if len(f.Lines()) == 0 {
 			continue
 		}
-		ranges, _ := json.Marshal(f.GuestLines)
+		ranges, _ := json.Marshal(f.Lines())
 		if _, err := c.tx.ExecContext(ctx, `INSERT INTO revision_guest_lines(flat,number,path,ranges) VALUES(?,?,?,?)`, c.flat, r.Number, f.Path, string(ranges)); err != nil {
 			return err
 		}
@@ -509,7 +518,10 @@ func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]R
 			return nil, err
 		}
 		if ranges.Valid {
-			_ = json.Unmarshal([]byte(ranges.String), &f.GuestLines)
+			var lines [][2]int
+			if json.Unmarshal([]byte(ranges.String), &lines) == nil && len(lines) > 0 {
+				f.GuestLines = &lines
+			}
 		}
 		out = append(out, f)
 	}

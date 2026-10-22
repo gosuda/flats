@@ -75,7 +75,7 @@ func (f *fakeDocsWorker) edit(path, text string, guest string, guestLines [][2]i
 	f.texts[h] = text
 	for i := range f.docs {
 		if f.docs[i].Path == path {
-			f.docs[i] = store.RevisionFile{Path: path, Hash: h, Size: int64(len(text)), GuestLines: guestLines}
+			f.docs[i] = store.RevisionFile{Path: path, Hash: h, Size: int64(len(text)), GuestLines: &guestLines}
 		}
 	}
 	f.dirty = true
@@ -478,7 +478,9 @@ func TestDocsImportGuestCreditsAndLines(t *testing.T) {
 	}
 	lines := map[string][][2]int{}
 	for _, f := range files {
-		lines[f.Path] = f.GuestLines
+		if f.GuestLines != nil {
+			lines[f.Path] = *f.GuestLines
+		}
 	}
 	if !slices.Equal(lines["index.md"], [][2]int{{1, 2}}) || lines["a.md"] == nil || len(lines["a.md"]) != 0 || lines["images/a.txt"] != nil {
 		t.Fatalf("guest lines %v", lines)
@@ -495,7 +497,7 @@ func (f *fakeDocsWorker) edit2Locked(path, text string, guestLines [][2]int) {
 	f.texts[h] = text
 	for i := range f.docs {
 		if f.docs[i].Path == path {
-			f.docs[i] = store.RevisionFile{Path: path, Hash: h, Size: int64(len(text)), GuestLines: guestLines}
+			f.docs[i] = store.RevisionFile{Path: path, Hash: h, Size: int64(len(text)), GuestLines: &guestLines}
 		}
 	}
 	f.dirty = true

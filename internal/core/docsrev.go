@@ -461,7 +461,10 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 			}
 			docs := slices.Clone(e.Documents)
 			for i := range docs {
-				docs[i].GuestLines = lineRanges(docs[i].GuestLines)
+				docs[i].GuestLines = nil
+				if lines := lineRanges(e.Documents[i].Lines()); lines != nil {
+					docs[i].GuestLines = &lines
+				}
 			}
 			sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
 			all := append(slices.Clone(docs), sources[e.Source]...)
