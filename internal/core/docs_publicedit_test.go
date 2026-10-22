@@ -71,6 +71,14 @@ func (f *fakeDocsWorker) record(kind string, authors, guests []string) {
 func (f *fakeDocsWorker) edit(path, text string, guest string, guestLines [][2]int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.editLocked(path, text, guestLines)
+	if guest != "" {
+		f.guests = append(f.guests, guest)
+	}
+}
+
+// editLocked is edit for a caller holding f.mu.
+func (f *fakeDocsWorker) editLocked(path, text string, guestLines [][2]int) {
 	h := hashBytes([]byte(text))
 	f.texts[h] = text
 	for i := range f.docs {
@@ -79,9 +87,6 @@ func (f *fakeDocsWorker) edit(path, text string, guest string, guestLines [][2]i
 		}
 	}
 	f.dirty = true
-	if guest != "" {
-		f.guests = append(f.guests, guest)
-	}
 }
 
 func (f *fakeDocsWorker) lastAccess() accessCall {
@@ -357,6 +362,25 @@ func TestDocsPublicEditApproval(t *testing.T) {
 	}
 }
 
+// A pending edit approval of a document fails as stale after visibility
+// and level went round to the same pair, and records no safe point.
+func TestDocsPublicEditApprovalRoundTripIsStale(t *testing.T) {
+	ctx := context.Background()
+	s, worker, _ := newPublicDocs(t, false)
+	a := requestAccess(t, s, store.Public, store.AccessEdit, ViaMCP)
+	setAccess(t, s, store.Private, "")
+	setAccess(t, s, store.Public, store.AccessEdit)
+	setAccess(t, s, store.Public, store.AccessView)
+	calls := worker.safePoints
+	got, err := s.Decide(ctx, a.ID, true)
+	if !errors.Is(err, ErrStaleApproval) || got.Status != "failed" {
+		t.Fatalf("round trip approval = %+v %v", got, err)
+	}
+	if _, access := flatAccess(t, s); access != store.AccessView || worker.safePoints != calls {
+		t.Fatalf("a stale approval changed the document: %q, %d safe point calls", access, worker.safePoints-calls)
+	}
+}
+
 // Missing quotas fail a document's approval before the worker records
 // anything, and a full pin quota without a reusable safe point too.
 func TestDocsPublicEditPreflightBlocks(t *testing.T) {
@@ -423,7 +447,7 @@ func TestDocsPublicEditSafePointPinnedInImport(t *testing.T) {
 	}
 	worker.edit("a.md", "# member", "", nil)
 	worker.afterSafePoint = func() {
-		worker.edit2Locked("index.md", "# after", nil)
+		worker.editLocked("index.md", "# after", nil)
 		worker.record("person", []string{"Pat"}, nil)
 	}
 	setAccess(t, s, store.Public, store.AccessEdit)
@@ -455,7 +479,7 @@ func TestDocsImportGuestCreditsAndLines(t *testing.T) {
 	worker.mu.Lock()
 	worker.record("person", []string{}, []string{"Mina", "Mina", "Jo"})
 	worker.entries[len(worker.entries)-1].GuestsMore = 4
-	worker.edit2Locked("a.md", "# member", nil)
+	worker.editLocked("a.md", "# member", nil)
 	worker.record("person", []string{"Pat"}, []string{"Mina"})
 	worker.mu.Unlock()
 	if err := s.catchUpDocsNow(ctx); err != nil {
@@ -489,18 +513,6 @@ func TestDocsImportGuestCreditsAndLines(t *testing.T) {
 	if !strings.Contains(string(b), `"path":"a.md","hash"`) || !strings.Contains(string(b), `"guest_lines":[]`) || strings.Count(string(b), "guest_lines") != 2 {
 		t.Fatalf("revision files JSON %s", b)
 	}
-}
-
-// edit2Locked is edit for a caller holding f.mu.
-func (f *fakeDocsWorker) edit2Locked(path, text string, guestLines [][2]int) {
-	h := hashBytes([]byte(text))
-	f.texts[h] = text
-	for i := range f.docs {
-		if f.docs[i].Path == path {
-			f.docs[i] = store.RevisionFile{Path: path, Hash: h, Size: int64(len(text)), GuestLines: &guestLines}
-		}
-	}
-	f.dirty = true
 }
 
 // get_document passes the worker's guest marks through; a document without
@@ -706,7 +718,7 @@ func TestDocsGuestOnlyRetention(t *testing.T) {
 	}
 	worker.mu.Lock()
 	for i := range 8 {
-		worker.edit2Locked("index.md", fmt.Sprintf("# %d", i), [][2]int{{1, 1}})
+		worker.editLocked("index.md", fmt.Sprintf("# %d", i), [][2]int{{1, 1}})
 		if i == 3 || i == 5 {
 			worker.record("person", []string{"Pat"}, nil)
 		} else {
