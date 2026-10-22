@@ -136,18 +136,29 @@ function documentFile(db, path, known) {
 
 // --- guest text (docs-public-edit-TECH.md 3.5, 3.9) ---
 
-// ownedClients are the Yjs client ids guests own in a document.
+// ownedClients are the Yjs client ids guests own in a document. A database
+// from before guest editing may not have their table yet.
 export function ownedClients(db, path) {
   return new Set(
-    db
-      .query("SELECT client FROM flats_docs_guest_clients WHERE doc=?", [path])
-      .map((r) => r.client),
+    guestRows(db, "SELECT client FROM flats_docs_guest_clients WHERE doc=?", [
+      path,
+    ]).map((r) => r.client),
   );
 }
 export const hasGuestText = (db, path) =>
-  db.query("SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? LIMIT 1", [
-    path,
-  ]).length > 0;
+  guestRows(
+    db,
+    "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? LIMIT 1",
+    [path],
+  ).length > 0;
+function guestRows(db, sql, params) {
+  try {
+    return db.query(sql, params);
+  } catch (e) {
+    if (String(e?.message).includes("no such table")) return [];
+    throw e;
+  }
+}
 // committedGuestLines are the guest line ranges of a document's committed
 // text; it is loaded only when guests own a client id in it.
 function committedGuestLines(db, path) {
@@ -772,7 +783,11 @@ export function outbox(db, after) {
       more = true;
       break;
     }
-    bytes += row.documents.length + row.authors.length + row.message.length;
+    bytes +=
+      row.documents.length +
+      row.authors.length +
+      row.message.length +
+      (row.guests?.length || 0);
     entries.push({
       seq: row.seq,
       created_at: row.created_at,

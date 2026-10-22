@@ -8,6 +8,9 @@ export const digest = (s) =>
   globalThis.__flats_docsCodec
     ? globalThis.__flats_docsCodec.digest(s)
     : bytesToHex(sha256(encodeUtf8(s)));
+// Yjs client ids guests own, per document (docs-public-edit-TECH.md 3.5).
+const GUEST_CLIENTS =
+  "CREATE TABLE IF NOT EXISTS flats_docs_guest_clients(doc TEXT NOT NULL, client INTEGER NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(doc,client))";
 export function schema(db) {
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_conflicts(doc TEXT NOT NULL, generation INTEGER NOT NULL, markdown TEXT NOT NULL, PRIMARY KEY(doc,generation))",
@@ -43,10 +46,7 @@ export function schema(db) {
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL, guests TEXT, guests_more INTEGER)",
   );
-  // Yjs client ids guests own, per document (docs-public-edit-TECH.md 3.5).
-  db.exec(
-    "CREATE TABLE IF NOT EXISTS flats_docs_guest_clients(doc TEXT NOT NULL, client INTEGER NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(doc,client))",
-  );
+  db.exec(GUEST_CLIENTS);
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)",
   );
@@ -382,6 +382,7 @@ export function migrate(db) {
     !hasTable(db, "flats_docs_text_refs") ||
     !hasTable(db, "flats_docs_seeds") ||
     !hasTable(db, "flats_docs_unimported") ||
+    !hasTable(db, "flats_docs_guest_clients") ||
     missingColumns(db).length
   ) {
     db.exec("BEGIN IMMEDIATE");
@@ -389,6 +390,7 @@ export function migrate(db) {
       // Another runtime may have added them meanwhile.
       for (const [table, column, type] of missingColumns(db))
         db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      db.exec(GUEST_CLIENTS);
       if (!hasTable(db, "flats_docs_unimported")) {
         db.exec(
           "CREATE TABLE flats_docs_unimported(hash TEXT PRIMARY KEY, size INTEGER NOT NULL)",

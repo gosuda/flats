@@ -7,6 +7,8 @@ import {
   decodePresence,
   parseFrame,
   utf8Bytes,
+  cleanGuestName,
+  Bucket,
 } from "./protocol.js";
 test("base64 binary exact and strict size validation", () => {
   const b = Uint8Array.from({ length: 1000 }, (_, i) => i % 256);
@@ -44,4 +46,34 @@ test("UTF8 size has no percent-encoding allocation and handles lone surrogates",
   ]) {
     assert.equal(utf8Bytes(s), Buffer.byteLength(s));
   }
+});
+test("guest names: plain text of 1 to 40 code points", () => {
+  assert.equal(cleanGuestName("  Mina  "), "Mina");
+  assert.equal(cleanGuestName("Mi​na\u0007"), "Mina");
+  assert.equal(cleanGuestName("한국어 🙂"), "한국어 🙂");
+  assert.equal(cleanGuestName("🙂".repeat(40)), "🙂".repeat(40));
+  for (const bad of [
+    "",
+    "   ",
+    "​‎",
+    "x".repeat(41),
+    "🙂".repeat(41),
+    "a\ud800",
+    null,
+    42,
+    { name: "x" },
+  ])
+    assert.equal(cleanGuestName(bad), null, JSON.stringify(bad));
+});
+test("buckets refill on the clock; count keeps refused traffic as debt", () => {
+  const b = new Bucket(10, 2);
+  assert.ok(b.take(1, 1000) && b.take(1, 1000));
+  assert.ok(!b.take(1, 1000));
+  assert.ok(b.take(1, 1100));
+  const c = new Bucket(10, 2);
+  assert.ok(c.count(2, 1000));
+  assert.ok(!c.count(5, 1000));
+  assert.ok(c.empty(1000));
+  assert.ok(c.empty(1100), "debt stays down to one burst");
+  assert.ok(!c.empty(1250));
 });
