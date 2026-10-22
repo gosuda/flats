@@ -376,16 +376,23 @@ func (vm *jsVM) collectCycles(c *qjs.Context, callErr *error) {
 	}
 }
 
-func (vm *jsVM) info() (fetch, ws bool, err error) {
+// moduleInfo is what a module's default export provides. PublicPools is a
+// built-in docs internal (not runtime API v1): separate Public WebSocket
+// pools (ws.go).
+type moduleInfo struct {
+	Fetch, Websocket, PublicPools bool
+}
+
+func (vm *jsVM) info() (moduleInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), vm.w.spec.timeout())
 	defer cancel()
+	var i moduleInfo
 	out, err := vm.invoke(ctx, "__flats_info", "")
 	if err != nil {
-		return false, false, err
+		return i, err
 	}
-	var i struct{ Fetch, Websocket bool }
 	err = json.Unmarshal([]byte(out), &i)
-	return i.Fetch, i.Websocket, err
+	return i, err
 }
 
 func (vm *jsVM) close() {
@@ -587,6 +594,12 @@ func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (strin
 			vm.w.js.wsHub.wake(doc)
 		}
 		return "", nil
+	case "ws.signal":
+		// Coalescing and never lost while the worker runs (ws.go signal).
+		if name := str(0); name != "" && len(name) <= 64 && vm.w.js != nil && vm.w.js.wsHub != nil {
+			vm.w.js.wsHub.signal(name)
+		}
+		return "", nil
 	case "ws.close":
 		if vm.ws == nil {
 			return "", errors.New("WebSocket close outside a websocket handler")
@@ -667,18 +680,18 @@ func newJSEngine(w *worker) (*jsEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	fetch, ws, err := vm.info()
+	info, err := vm.info()
 	if err != nil {
 		vm.close()
 		return nil, err
 	}
-	if !fetch && !ws {
+	if !info.Fetch && !info.Websocket {
 		vm.close()
 		return nil, fmt.Errorf("%s must `export default { async fetch(request, env) { ... } }` (found no fetch or websocket handler)", w.spec.Entry)
 	}
-	e := &jsEngine{w: w, pool: newJSPool(w, w.spec.poolSize(), vm), hasWS: ws}
-	if ws {
-		e.wsHub = newWSHub(w)
+	e := &jsEngine{w: w, pool: newJSPool(w, w.spec.poolSize(), vm), hasWS: info.Websocket}
+	if info.Websocket {
+		e.wsHub = newWSHub(w, info.PublicPools)
 	}
 	return e, nil
 }
