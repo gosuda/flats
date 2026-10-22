@@ -55,7 +55,12 @@ func (documentRuntime) Start(_ context.Context, spec core.RuntimeSpec) (core.Ins
 		}
 		for _, d := range content.Documents {
 			if d.Path == doc {
-				_ = json.NewEncoder(w).Encode(core.Document{Format: 1, Doc: d.Path, Markdown: d.Text, Source: "live", Seq: 1})
+				out := core.Document{Format: 1, Doc: d.Path, Markdown: d.Text, Source: "live", Seq: 1}
+				if strings.HasPrefix(d.Text, "guest:") {
+					// A guest wrote the first line and the third to fifth.
+					out.GuestText, out.GuestLines = true, [][2]int{{1, 1}, {3, 5}}
+				}
+				_ = json.NewEncoder(w).Encode(out)
 				return
 			}
 		}
@@ -244,5 +249,35 @@ func TestDocumentSaveTextKeepsPublicNoticeSeparate(t *testing.T) {
 	text := documentText("Saved document", FlatInfo{Slug: "handbook", Running: true, Visibility: "public", PublicNotice: "Public notice"}, "Saved path: chapter.md. Entry document: README.md.")
 	if !strings.HasPrefix(text, "Saved document handbook.") || !strings.Contains(text, "Entry document: README.md.\nNotice: Public notice") {
 		t.Fatal(text)
+	}
+}
+
+// get_document marks guest-written lines in its structured output and in a
+// note after the exact Markdown; a document without guest text has none.
+func TestDocumentGuestMarks(t *testing.T) {
+	e := newEnvRuntime(t)
+	text, failed := call(t, e.local, "save_document", map[string]any{"slug": "guests", "markdown": "guest: hello\nmember\nguest\nguest\nguest"}, nil)
+	if failed {
+		t.Fatal(text)
+	}
+	res, err := e.local.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_document", Arguments: map[string]any{"slug": "guests"}})
+	if err != nil || res.IsError || len(res.Content) != 3 {
+		t.Fatalf("get_document: %+v %v", res, err)
+	}
+	if md := res.Content[0].(*mcp.TextContent).Text; md != "guest: hello\nmember\nguest\nguest\nguest" {
+		t.Fatalf("first block is not the exact Markdown: %q", md)
+	}
+	if note := res.Content[1].(*mcp.TextContent).Text; !strings.Contains(note, "lines 1, 3-5") || !strings.Contains(note, "untrusted") {
+		t.Fatalf("guest note %q", note)
+	}
+	var out core.Document
+	call(t, e.local, "get_document", map[string]any{"slug": "guests"}, &out)
+	if !out.GuestText || len(out.GuestLines) != 2 || out.GuestLines[1] != [2]int{3, 5} {
+		t.Fatalf("structured marks %+v", out)
+	}
+	call(t, e.local, "save_document", map[string]any{"slug": "plain", "markdown": "# none"}, nil)
+	res, err = e.local.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_document", Arguments: map[string]any{"slug": "plain"}})
+	if err != nil || res.IsError || len(res.Content) != 2 {
+		t.Fatalf("get_document without guests: %+v %v", res, err)
 	}
 }

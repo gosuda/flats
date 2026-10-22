@@ -320,8 +320,8 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	if access == store.AccessEdit && t != contenttype.Board {
-		return ActionResult{}, invalidf("only a board can be edited by anyone; use access view")
+	if access == store.AccessEdit && !publicEditType(t) {
+		return ActionResult{}, invalidf("only a board or a document can be edited by anyone; use access view")
 	}
 	if f.Visibility.Canonical() == vis && f.PublicAccess == access {
 		res := ActionResult{Status: "done", Message: "visibility unchanged"}
@@ -361,7 +361,7 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil && existing.Flat == slugName {
 			res := ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: s.ApprovalURL(ctx, existing.ID),
 				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}
-			res.Notice = pendingVisibilityNotice(vis, access)
+			res.Notice = pendingVisibilityNotice(vis, access, t)
 			return res, nil
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return ActionResult{}, err
@@ -371,15 +371,16 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	res.Notice = pendingVisibilityNotice(vis, access)
+	res.Notice = pendingVisibilityNotice(vis, access, t)
 	return res, nil
 }
 
-// pendingVisibilityNotice is the notice of a pending visibility request.
-func pendingVisibilityNotice(vis store.Visibility, access string) string {
+// pendingVisibilityNotice is the notice of a pending visibility request
+// for a flat of type t.
+func pendingVisibilityNotice(vis store.Visibility, access, t string) string {
 	switch {
 	case access == store.AccessEdit:
-		return PendingPublicEditNotice
+		return PendingPublicEditNoticeFor(t)
 	case vis.Public():
 		return PendingPublicAccessNotice
 	}
@@ -1121,13 +1122,25 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 			return ActionResult{}, fmt.Errorf("%w: publish and deploy a version before making this flat public", ErrConflict)
 		}
 		safePoint := 0
+		// levelCtx carries the document worker's lease from its safe point,
+		// so the level reaches the same worker (TECH 2.3 step 5).
+		levelCtx := ctx
 		if access == store.AccessEdit {
-			if t, err := s.flatType(ctx, f); err != nil {
+			t, err := s.flatType(ctx, f)
+			if err != nil {
 				return ActionResult{}, err
-			} else if t != contenttype.Board {
-				return ActionResult{}, invalidf("only a board can be edited by anyone")
 			}
-			if safePoint, err = s.prepareSafePointLocked(ctx, a.Flat); err != nil {
+			switch t {
+			case contenttype.Board:
+				safePoint, err = s.prepareSafePointLocked(ctx, a.Flat)
+			case contenttype.Docs:
+				var release func()
+				levelCtx, release, safePoint, err = s.prepareDocsSafePointLocked(ctx, a.Flat)
+				defer release()
+			default:
+				err = invalidf("only a board or a document can be edited by anyone")
+			}
+			if err != nil {
 				return ActionResult{}, err
 			}
 		}
@@ -1149,7 +1162,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 			}
 		}
 		next.AccessSeq++
-		note := s.applyLevelLocked(ctx, a.Flat, access)
+		note := s.applyLevelLocked(levelCtx, a.Flat, access, next.AccessSeq)
 		msg := fmt.Sprintf("visibility %s -> %s", from, to)
 		if safePoint > 0 {
 			msg += fmt.Sprintf("; safe point revision %d is pinned", safePoint)
@@ -1176,7 +1189,7 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{}, err
 	}
 	next.AccessSeq++
-	note := s.applyLevelLocked(ctx, a.Flat, "")
+	note := s.applyLevelLocked(ctx, a.Flat, "", next.AccessSeq)
 	s.stopPublicRedirects(a.Flat)
 	if err := s.ensureExposure(ctx, next); err != nil {
 		s.Event(ctx, a.Flat, "error", "exposure", err.Error(), nil)

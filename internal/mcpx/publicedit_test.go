@@ -6,8 +6,8 @@ import (
 	"github.com/gosuda/flats/internal/core"
 )
 
-// set_visibility takes a public access level for boards; get_flat reports
-// it for Public boards only.
+// set_visibility takes a public access level for boards and documents;
+// get_flat reports it for them only.
 func TestSetVisibilityAccess(t *testing.T) {
 	e := newEnv(t)
 	var fi FlatInfo
@@ -51,4 +51,30 @@ func TestSetVisibilityAccess(t *testing.T) {
 	if text, failed := call(t, e.local, "set_visibility", map[string]any{"slug": "demo", "visibility": "public", "access": "edit"}, &out); !failed {
 		t.Fatalf("website edit: %s", text)
 	}
+}
+
+// A document can be editable by anyone too; the request carries the
+// documents' notice.
+func TestSetVisibilityAccessDocuments(t *testing.T) {
+	e := newEnvRuntime(t)
+	var out ActionOut
+	var got FlatOut
+	var saved saveFixtureOut
+	if text, failed := call(t, e.local, "save_document", map[string]any{"slug": "notes", "markdown": "# notes"}, &saved); failed {
+		t.Fatal(text)
+	}
+	if code, _ := e.operatorCall(t, "POST", "/flats/notes/providers", `{"provider":"portal","permitted":true}`); code != 200 {
+		t.Fatalf("provider grant: %d", code)
+	}
+	call(t, e.local, "set_visibility", map[string]any{"slug": "notes", "visibility": "public"}, &out)
+	e.approve(t, out.ApprovalID)
+	call(t, e.local, "get_flat", map[string]any{"slug": "notes"}, &got)
+	if got.Flat.PublicAccess != "view" {
+		t.Fatalf("public document: %+v", got.Flat)
+	}
+	text, failed := call(t, e.local, "set_visibility", map[string]any{"slug": "notes", "visibility": "public", "access": "edit"}, &out)
+	if failed || out.Status != "pending_approval" || out.Notice != core.PendingPublicEditDocsNotice {
+		t.Fatalf("document edit request: %s %+v", text, out)
+	}
+
 }

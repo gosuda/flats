@@ -106,6 +106,10 @@ people and agents edit live.
    - A person's live edits are grouped per editor. A group closes, and becomes
      one revision, when that editor has been idle for 30 seconds or 5 minutes
      have passed since the group began.
+   - On a board or document that anyone can edit, all anonymous guests share
+     one group, which closes only at a fixed 5-minute window or a forced
+     boundary ([board-public-edit.md](board-public-edit.md) rule 25,
+     [docs-public-edit.md](docs-public-edit.md) rule 25).
    - A rollback is one revision.
    - Before an agent write, a rollback or an overwrite applies, the open
      groups close: the current state is kept as one revision that credits
@@ -122,9 +126,10 @@ people and agents edit live.
 6. **Two separate quotas.**
    - A *revision quota* is the maximum number of unpinned revisions kept. When
      it is exceeded, the oldest unpinned revisions are deleted automatically.
-     On boards, revisions credited only to anonymous guests are limited to
-     half of the quota and deleted first above that, including after guest
-     editing stops ([board-public-edit.md](board-public-edit.md) rule 25).
+     On boards and documents, revisions credited only to anonymous guests are
+     limited to half of the quota and deleted first above that, including
+     after guest editing stops ([board-public-edit.md](board-public-edit.md)
+     and [docs-public-edit.md](docs-public-edit.md) rule 25).
    - A *pin quota* is the maximum number of pinned revisions. Pinned revisions
      do not count toward the revision quota and are never deleted
      automatically.
@@ -176,9 +181,10 @@ people and agents edit live.
       Local loopback or a private mesh provider (Tailscale or NetBird), as that
       network's existing access control allows. A Public route shows no
       revision list and accepts no revision operation. It is read-only,
-      except that a board whose operator allowed anyone to edit accepts
-      element edits from guests there
-      ([board-public-edit.md](board-public-edit.md)).
+      except that boards and documents whose operator allowed anyone to edit
+      accept guests' element or text edits there
+      ([board-public-edit.md](board-public-edit.md),
+      [docs-public-edit.md](docs-public-edit.md)).
     - Agents may pin, unpin and roll back without approval.
 
 ## Quotas
@@ -196,8 +202,8 @@ These rules apply to the version, revision and pin quotas alike.
    and is refused before it becomes live if that would not fit. A revision
    rollback adds only metadata and is never refused for disk quota.
 4. **Lowering a quota below what is held.** Unpinned revisions above the new
-   revision quota are deleted at once, oldest first (on boards, with the
-   guest-only share of rule 6 applied first). Versions and pins are
+   revision quota are deleted at once, oldest first (on boards and
+   documents, with the guest-only share of rule 6 applied first). Versions and pins are
    never deleted: they all stay, and new ones are refused until the count is
    below the quota.
 

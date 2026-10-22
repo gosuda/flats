@@ -122,7 +122,7 @@ mounted under both prefixes; **console** routes exist only under
 | POST | `/flats/{slug}/previews` | both | `{target: "draft", version: 0}` or `{version: n}`: 201 Private preview. There is no Public Draft route |
 | GET | `/flats/{slug}/previews` | both | Open previews |
 | DELETE | `/previews/{host}` | both | Close a preview |
-| POST | `/flats/{slug}/visibility` | both | `{visibility, access?, reason}`: 202 `set_visibility` request in either direction; `access` is `view` (default for Public) or `edit` (boards only, [anyone can edit](spec/board-public-edit.md)); the same visibility and level answers 200 `status: "done"`, `visibility unchanged`; Public for an unpublished flat is 409 |
+| POST | `/flats/{slug}/visibility` | both | `{visibility, access?, reason}`: 202 `set_visibility` request in either direction; `access` is `view` (default for Public) or `edit` (boards and documents only, anyone can edit: [boards](spec/board-public-edit.md), [documents](spec/docs-public-edit.md)); the same visibility and level answers 200 `status: "done"`, `visibility unchanged`; Public for an unpublished flat is 409 |
 | POST | `/flats/{slug}/rename` | both | `{slug}` changes the slug; the old one redirects |
 | DELETE | `/flats/{slug}` | both | `?reason=`: agents get a 202 `delete` request; the console deletes directly (200) |
 | GET | `/flats/{slug}/logs` | both | Events; `?kind=&after=&limit=` |
@@ -142,7 +142,7 @@ mounted under both prefixes; **console** routes exist only under
 | PUT | `/flats/{slug}/listing` | console | `{listing}`: `default`, `hidden` or `listed` relay listing of the Portal route |
 | GET, PUT | `/flats/{slug}/version-quota` | console | GET is the flat view; PUT `{version_quota: n\|null}` (null follows the host) |
 | GET, PUT | `/flats/{slug}/revision-quota` | console | Documents, designs and boards: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
-| GET | `/flats/{slug}/public-edit` | console | Boards: whether anyone-can-edit can take effect now: `{problems, disk_quota, revision_quota, pin_quota, pins, safe_point, safe_point_pinned, listed}` |
+| GET | `/flats/{slug}/public-edit` | console | Boards and documents: whether anyone-can-edit can take effect now: `{problems, disk_quota, revision_quota, pin_quota, pins, safe_point, safe_point_pinned, listed}` |
 | GET | `/providers` | console | Host providers: grant, backend status, hosts and provider settings. Both reverse proxy kinds also carry `address` (the bound listener, or `proxy.addr` while none is bound), `template` and, after a failed bind at start, `bind_error` |
 | PUT | `/providers/{id}` | console | `{enabled}` with the settings ETag in `If-Match` |
 | PUT, DELETE | `/providers/zrok/account` | console | `{token}` connects or replaces the zrok account; DELETE disconnects (`?force=1` removes a stale environment locally) |

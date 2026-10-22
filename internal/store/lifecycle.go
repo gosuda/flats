@@ -540,7 +540,7 @@ func (s *Store) RejectApprovalAuthorized(ctx context.Context, id, actor, result 
 // transaction. It writes f's visibility and public access level and counts
 // the change in access_seq, only while the flat still has from's
 // visibility, level, access_seq and live version. Private has no level,
-// Public has view or edit, and only a board can be edit.
+// Public has view or edit, and only a board or a document can be edit.
 func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval string, data json.RawMessage) error {
 	if !validAccess(f.Visibility, f.PublicAccess) {
 		return fmt.Errorf("public access %q is not valid for visibility %s", f.PublicAccess, f.Visibility)
@@ -551,10 +551,10 @@ func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval str
 	}
 	defer tx.Rollback()
 	if f.PublicAccess == AccessEdit {
-		if ok, err := isBoardTx(ctx, tx, f.Slug); err != nil {
+		if ok, err := publicEditableTx(ctx, tx, f.Slug); err != nil {
 			return err
 		} else if !ok {
-			return errors.New("only a board can be edited by anyone")
+			return errors.New("only a board or a document can be edited by anyone")
 		}
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE flats SET visibility=?,public_access=?,access_seq=access_seq+1,updated_at=? WHERE slug=? AND visibility=? AND public_access=? AND access_seq=? AND live_version=?`,

@@ -190,7 +190,7 @@ func TestDocsIdlePreparationRevokesBeforeRecoveryAndBudget(t *testing.T) {
 				return
 			}
 			if name == "failed sync" {
-				if err == nil || len(ops) != 2 {
+				if err == nil || len(ops) != 3 {
 					t.Fatalf("noncapacity sync became ready: %v %v", ops, err)
 				}
 				return
@@ -201,11 +201,11 @@ func TestDocsIdlePreparationRevokesBeforeRecoveryAndBudget(t *testing.T) {
 			if name == "import backlog" && !idleEventContains(t, s, "notes", "document revision import deferred") {
 				t.Fatal("import failure missing event")
 			}
-			if len(ops) < 4 || ops[0] != "budget/revoke" || ops[1] != "sync" || ops[2] != "outbox" || ops[3] != "budget" {
+			if !reflect.DeepEqual(ops[:min(len(ops), 5)], []string{"budget/revoke", "access", "sync", "outbox", "budget"}) {
 				t.Fatalf("readiness order: %v", ops)
 			}
 			if name == "budget unavailable" {
-				if len(ops) != 5 || ops[4] != "budget/revoke" {
+				if len(ops) != 6 || ops[5] != "budget/revoke" {
 					t.Fatalf("failed budget left possible stale grant: %v", ops)
 				}
 			} else if budget["ttl_ms"] != float64(docsBudgetTTL.Milliseconds()) {
@@ -445,7 +445,7 @@ func TestDocsIdleDrainRefusesUnresolvedState(t *testing.T) {
 						break
 					}
 				}
-				if start < 0 || len(ops) < start+4 || !reflect.DeepEqual(ops[start:start+4], []string{"budget/revoke", "sync", "outbox", "budget"}) {
+				if start < 0 || len(ops) < start+5 || !reflect.DeepEqual(ops[start:start+5], []string{"budget/revoke", "access", "sync", "outbox", "budget"}) {
 					t.Fatalf("resumed without full readiness: %v", ops)
 				}
 			}

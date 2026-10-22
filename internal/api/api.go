@@ -194,7 +194,7 @@ type ErrorBody struct {
 }
 
 // Problem is one problem of a refused request: an upload's invalid file
-// (Path, Fix) or a reason a board cannot be edited by anyone (Code).
+// (Path, Fix) or a reason a board or document cannot be edited by anyone (Code).
 type Problem struct {
 	Code    string `json:"code,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -731,7 +731,8 @@ func (s *Server) visibility(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, code, res)
 }
 
-// publicEdit reports whether a board can become editable by anyone now.
+// publicEdit reports whether a board or document can become editable by
+// anyone now.
 func (s *Server) publicEdit(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	st, err := s.Svc.PublicEditPreflight(r.Context(), r.PathValue("slug"))
 	if err != nil {
