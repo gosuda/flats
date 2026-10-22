@@ -329,6 +329,14 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
   keeps attribution exact).
 - The awareness id of a guest socket follows the same rule.
 - Guest-owned rows are capped at 5,000 per flat (3.8).
+- **Client count reserve.** A client's state vector lists every client id in
+  the document, and `hello` refuses a vector with more than 1,024 clients
+  (`server.js`). A guest may add a new client id to document D only while D's
+  struct store holds fewer than 768 client ids and D has fewer than 400
+  guest-owned ids; otherwise the update is refused with `guest_room`. Members
+  therefore keep 256 new client ids under the handshake limit after any guest
+  activity. Test: guests add client ids until refused, a member that received
+  them disconnects, reconnects and edits.
 - Restoring a document (`resetDocument`) deletes its rows.
 
 ### 3.6 Host operations
@@ -379,7 +387,7 @@ New operations under `/_docs/host/revisions/` (private plus
 | Guest byte budget | 256 MiB per flat, `meta.guest_charge` (below) | after the disk check |
 | Document size | refuse when the update would take the document above 90% of an enforced limit: `LIMITS.text` (1 MiB), `LIMITS.state` (1.5 MiB) or `LIMITS.structs` (20,000, checked by `validateDocument`) | after applying |
 | Lifetime capacity | guests may not take a document's `seq` above `LIMITS.receipts − 20,000`, nor the flat's receipts above `totalReceipts − 40,000` | `append` |
-| Client ownership rows | 5,000 guest-owned per flat | 3.5 |
+| Client ownership rows | 5,000 guest-owned per flat; per document, new guest ids only below 768 ids in the store and 400 guest-owned | 3.5 |
 
 - Guest updates do not use the room's shared update bucket (`rateUpdate`),
   which stays for members only, so guests cannot use up members' rate.
