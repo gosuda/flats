@@ -261,24 +261,30 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
     Public event ahead of them.
 - **Room memory.** `roomBudget` today sums the writable rooms (4 MiB, 30,000
   structs, 8 rooms) and the read-only rooms (2 MiB, 20,000, 4) and refuses a
-  join or update over a sum. It changes to three classes, decided per room at
-  each check:
-  - a **guest room** has at least one guest socket. At most 4 guest rooms are
-    open at once; a guest joining a document that would be a fifth gets fatal
+  join or update over a sum. It changes to three classes:
+  - a **guest room** is a room that has had at least one guest socket since
+    it was loaded. The class is sticky: it stays a guest room until the room
+    is destroyed (its last socket leaves), even after every guest has left,
+    for example after Stop guest editing. At most 4 guest rooms are open at
+    once; a guest joining a document that would make a fifth gets fatal
     `full`. A guest room's size is bounded by the per-document limits and the
-    guest reserve (3.8), not by a shared sum, so guest rooms are not counted
-    in either other sum;
-  - a **member room** has a member and no guest: today's writable sum;
-  - a **reader room** has only viewers: today's read-only sum.
+    guest reserve (3.8); it is not counted in either other sum, for members'
+    edits as well;
+  - a **member room** has a member and has never had a guest: today's
+    writable sum;
+  - a **reader room** has only ever had viewers: today's read-only sum. A
+    reader room becomes a member room when a member joins (as today) and a
+    guest room when a guest joins.
   So guests never use the member sum: a member joining a guest room adds
-  nothing to it, and guests growing a mixed room grow only that room, within
-  the document reserve. When the last guest leaves a room that still has a
-  member, the room joins the member sum like any document a member opens; its
-  size is the document's content, which a member opening it would load
-  anyway. Worker memory stays bounded by the member sum, 4 guest rooms of at
-  most the per-document state limit, and the reader sum. Tests: guests fill 4
-  guest rooms near the reserve, then a member opens a fifth document, joins a
-  guest room and edits it; guests grow a mixed room; the last guest leaves.
+  nothing to it, guests growing a mixed room grow only that room, and a guest
+  leaving changes nothing. A room destroyed and loaded again starts with no
+  class history, like any document a member opens. Worker memory stays
+  bounded by the member sum, 4 guest rooms of at most the per-document state
+  limit, and the reader sum. Tests: guests fill 4 guest rooms near the
+  reserve, then a member opens a fifth document, joins a guest room and edits
+  it; guests grow a mixed room; the last guest leaves, by disconnecting and
+  by Stop guest editing, and members keep editing both their rooms.
+
 ### 3.4 Welcome and projection
 
 - `welcome` gains `access` (the flat's level, `view`/`edit`, or absent when
