@@ -169,7 +169,9 @@ func TestPublicCapacityDoesNotConsumeEditors(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		connect(t, a.srv.URL, "public").hello(t, nil)
 	}
+	// A Public socket becomes a viewer at its hello, which checks the pool.
 	overflow := connect(t, a.srv.URL, "public")
+	overflow.send(t, map[string]any{"t": "hello", "v": 1, "doc": "index.md", "sv": "AA=="})
 	overflow.closed(t, 1008, "connection capacity")
 	editor := connect(t, a.srv.URL, "private")
 	editor.hello(t, nil)

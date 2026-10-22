@@ -155,7 +155,8 @@ func (s *socket) next(t *testing.T, kind string) map[string]any {
 		if err != nil {
 			t.Fatalf("waiting for %s: %v", kind, err)
 		}
-		if n, ok := m["n"]; ok {
+		// A viewers frame's n lists viewer numbers; it has no envelope number.
+		if n, ok := m["n"].(float64); ok {
 			s.send(t, map[string]any{"t": "received", "n": n})
 		}
 		if m["t"] == kind {

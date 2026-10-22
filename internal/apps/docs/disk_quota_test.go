@@ -105,7 +105,7 @@ func TestDiskQuotaReservesTheEditsRevision(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	z := connect(t, a.srv.URL, "private")
 	z.hello(t, nil)
-	z.send(t, map[string]any{"t": "update", "id": "expired", "u": fixture(t).Updates[0].U})
+	z.send(t, map[string]any{"t": "update", "id": "expired", "u": fixture(t).Updates[1].U})
 	z.closed(t, 1012, "resync")
 	if a.document(t)["markdown"] != edited {
 		t.Fatal("edit under an expired budget committed")
@@ -144,7 +144,7 @@ func TestHostDiskQuotaRefusesLiveEditsButNotRollback(t *testing.T) {
 	}
 	other := connect(t, srv.URL, "private")
 	other.hello(t, nil)
-	other.send(t, map[string]any{"t": "update", "id": "over-quota", "u": fixture(t).Updates[0].U})
+	other.send(t, map[string]any{"t": "update", "id": "over-quota", "u": fixture(t).Updates[1].U})
 	other.rejected(t, "disk_quota")
 	ops := []core.DocumentEditOp{{Op: "insert", At: "end", Text: "Agent note."}}
 	_, err = s.UpdateDocument(ctx, "host-doc", "", ops, nil, core.ViaMCP)

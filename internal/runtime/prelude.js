@@ -44,6 +44,12 @@
   Object.defineProperty(globalThis, "__flats_docsWake", {value: Object.freeze((doc) => {
     call("ws.wake", [String(doc)]);
   })});
+  // Built-in docs app internal: raise a signal for this worker's WebSocket
+  // VM, handled by websocket.signal(name, env). Signals coalesce by name and
+  // are never lost while the worker runs.
+  Object.defineProperty(globalThis, "__flats_docsSignal", {value: Object.freeze((name) => {
+    call("ws.signal", [String(name)]);
+  })});
 
   // --- console ---
   const fmt = (a) => {
@@ -498,6 +504,8 @@
   globalThis.__flats_info = () => JSON.stringify({
     fetch: !!mod && typeof mod.fetch === "function",
     websocket: !!mod && !!mod.websocket && typeof mod.websocket === "object",
+    // Built-in docs app internal: separate Public WebSocket pools.
+    publicPools: !!mod && !!mod.websocket && mod.websocket.publicPools === true,
   });
   globalThis.__flats_dispatch = async (s) => {
     try {
@@ -550,6 +558,8 @@
         if (ws && h && typeof h.message === "function") await h.message(ws, ev.data, env);
       } else if (ev.type === "wake") {
         if (h && typeof h.wake === "function") await h.wake(ev.data, env);
+      } else if (ev.type === "signal") {
+        if (h && typeof h.signal === "function") await h.signal(ev.data, env);
       } else if (ev.type === "close") {
         sockets.delete(ev.id);
         if (ws) {
