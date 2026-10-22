@@ -13,6 +13,11 @@ export const VIEWERS_LISTED = 20;
 const NAME_KEY = 'flats-board-guest-name';
 const TOKEN_KEY = 'flats-board-guest-token';
 const VIEWER_KEY = 'flats-board-viewer-token';
+const NICK_KEY = 'flats-board-nick';
+// VIEW_ONLY_KEY holds the access_epoch at which this tab chose View only;
+// JOINED_KEY marks that this tab chose to join as a guest.
+const VIEW_ONLY_KEY = 'flats-board-view-only';
+const JOINED_KEY = 'flats-board-joined';
 
 // Control (C0, DEL, C1) and Unicode format characters are removed from a
 // name, as the server does (TECH 3.1, cleanGuestName).
@@ -52,13 +57,68 @@ export const stored = {
   setGuestToken: (v) => write('sessionStorage', TOKEN_KEY, v),
   viewerToken: () => read('sessionStorage', VIEWER_KEY),
   setViewerToken: (v) => write('sessionStorage', VIEWER_KEY, v),
+  nick: () => read('localStorage', NICK_KEY),
+  setNick: (v) => write('localStorage', NICK_KEY, v),
+  viewOnly: () => read('sessionStorage', VIEW_ONLY_KEY),
+  setViewOnly: (epoch) => write('sessionStorage', VIEW_ONLY_KEY, epoch == null ? '' : String(epoch)),
+  joined: () => read('sessionStorage', JOINED_KEY) === '1',
+  setJoined: (v) => write('sessionStorage', JOINED_KEY, v ? '1' : ''),
 };
+
+// The generated nickname of a page whose person typed no name: the same
+// words as the document app's collaborator names.
+const ADJECTIVES = ['Amber', 'Brave', 'Calm', 'Clever', 'Gentle', 'Happy', 'Kind', 'Lucky', 'Merry', 'Quiet', 'Swift', 'Witty'];
+const ANIMALS = ['Badger', 'Crane', 'Dolphin', 'Falcon', 'Fox', 'Heron', 'Koala', 'Lynx', 'Otter', 'Owl', 'Panda', 'Robin'];
+
+export function randomNick(pick = (list) => list[Math.floor(Math.random() * list.length)]) {
+  return `${pick(ADJECTIVES)} ${pick(ANIMALS)}`;
+}
+
+// pageNick is the nickname guests see for this page's person (hello.nick,
+// docs-public-edit-TECH 5.2): the typed name when there is one, cut to a
+// guest name's length, else the generated name this browser keeps, made
+// once.
+export function pageNick(typed, nick = randomNick) {
+  const clean = [...cleanGuestName(typed)].slice(0, GUEST_NAME_MAX).join('').trim();
+  if (clean) return clean;
+  const saved = stored.nick();
+  if (saved && !guestNameError(saved)) return cleanGuestName(saved);
+  const made = nick();
+  stored.setNick(made);
+  return made;
+}
+
+// accessEpochOf reads access_epoch from a welcome or level frame.
+export function accessEpochOf(m) {
+  return m && Number.isSafeInteger(m.access_epoch) && m.access_epoch >= 0 ? m.access_epoch : 0;
+}
+
+// viewOnlyHolds reports whether this tab's View only choice, saved at an
+// access_epoch, still holds at epoch: until the level becomes edit again,
+// which raises the epoch (spec rule 11).
+export function viewOnlyHolds(saved, epoch) {
+  return /^\d+$/.test(saved || '') && Number(saved) >= epoch;
+}
+
+// offersJoin decides whether a viewer gets the name popup: at level edit,
+// unless editing stopped or the tab chose View only in this edit period.
+export function offersJoin({ level, epoch, viewOnly, stopped }) {
+  return level === 'edit' && !stopped && !viewOnlyHolds(viewOnly, epoch);
+}
+
+// startsJoined: a page asks to join at once only for a live guest session
+// of this tab, which chose to join and holds the token it was issued. A
+// remembered name alone only fills the popup.
+export function startsJoined({ joined, guestToken, name }) {
+  return !!(joined && guestToken && name);
+}
 
 // helloFields adds the guest and viewer parts of a hello (wire contract):
 // guest only when the visitor chose to join, the tokens whenever the tab
-// holds them.
-export function helloFields({ join, name, guestToken, viewerToken }) {
+// holds them, and the page's nickname always.
+export function helloFields({ join, name, guestToken, viewerToken, nick }) {
   const out = {};
+  if (nick) out.nick = nick;
   if (join && name) {
     out.guest = { name };
     if (guestToken) out.guest.token = guestToken;

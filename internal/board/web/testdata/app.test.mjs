@@ -8,7 +8,9 @@ const GUEST_KEY = 'guest:0123456789abcdef';
 const sticky = (id, text, by) => ({ id, type: 'sticky', x: 0, y: 0, w: 200, h: 160, rot: 0, z: 'V', inc: 1, text, ...(by ? { by } : {}) });
 const snapshot = (elements = [], title = 'Plan') => ({ t: 'snapshot', gen: 0, seq: 1, part: 1, parts: 1, meta: { title }, elements });
 const guestWelcome = (session, label = 'Ann') => ({ t: 'welcome', v: 1, session, access: 'guest', level: 'edit', me: { key: GUEST_KEY, label }, guest_token: 'gt' });
-const viewerWelcome = { t: 'welcome', v: 1, access: 'public', level: 'edit', me: { viewer: 3 }, viewer_token: 'vt' };
+const viewerWelcome = { t: 'welcome', v: 1, access: 'public', level: 'edit', access_epoch: 4, me: { viewer: 3 }, viewer_token: 'vt' };
+// liveGuest is the browser storage of a tab with a guest session.
+const liveGuest = { local: { 'flats-board-guest-name': 'Ann' }, session: { 'flats-board-joined': '1', 'flats-board-guest-token': 'gt' } };
 
 async function page(t, opts) {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1e12 });
@@ -154,9 +156,9 @@ test('ending guest editing with nothing unsent leaves no file to offer on rejoin
 });
 
 test('a visitor refused as full at the first hello sees a viewer header', async (t) => {
-  const { app, doc, socket } = await page(t, { local: { 'flats-board-guest-name': 'Ann' } });
+  const { app, doc, socket } = await page(t, liveGuest);
   let ws = socket();
-  assert.ok(ws.open().guest, 'a remembered name joins at once');
+  assert.deepEqual(ws.open().guest, { name: 'Ann', token: 'gt' }, "this tab's guest session joins at once");
   ws.recv({ t: 'fatal', code: 'full' });
   assert.ok(has(doc, 'public'), 'History and Send to agent are hidden (.priv-only)');
   assert.equal(doc.querySelector('#export-btn .lbl').textContent, 'Download PNG');
@@ -166,7 +168,8 @@ test('a visitor refused as full at the first hello sees a viewer header', async 
   assert.ok(has(doc, 'readonly'));
   const dlg = doc.querySelector('dialog');
   assert.match(textOf(dlg), /The most people this board allows are editing it right now/, 'the title placeholder is not used as the name');
-  // Watch reconnects as a viewer without asking to join.
+  // Watch reconnects as a viewer without asking to join, and is a View
+  // only choice: the name popup does not open.
   dlg.querySelector('button.ghost').click();
   ws = socket();
   assert.equal(ws.open().guest, undefined);
@@ -174,6 +177,9 @@ test('a visitor refused as full at the first hello sees a viewer header', async 
   ws.recv(snapshot([], 'Plan'));
   assert.ok(has(doc, 'public'));
   assert.equal(app.boardName(), 'Plan');
+  assert.equal(doc.querySelector('dialog'), null);
+  assert.equal(sessionStorage.getItem('flats-board-view-only'), '4');
+  assert.equal(sessionStorage.getItem('flats-board-joined'), null);
 });
 
 test('a member refused for another reason keeps the member header', async (t) => {
@@ -186,33 +192,132 @@ test('a member refused for another reason keeps the member header', async (t) =>
   assert.equal(doc.querySelector('#export-btn .lbl').textContent, 'Export');
 });
 
-test('the join panel copy matches whether a name is remembered', async (t) => {
-  for (const [local, copy] of [
-    [{}, /No name has been asked of you so far\./],
-    [{ 'flats-board-guest-name': 'Ann' }, /This browser remembered your name below; nobody sees it until you join\./],
-  ]) {
-    const { app, doc, socket } = await page(t, { local });
-    app.join = false; // watching: the visitor chose Watch or closed the prompt
-    const ws = socket();
-    ws.open();
-    ws.recv({ ...viewerWelcome, level: 'edit' });
-    if (app.joinDialog) app.joinDialog.close();
-    const panel = doc.querySelector('.join');
-    assert.ok(panel, 'the join panel is up');
-    const text = textOf(panel);
-    assert.match(text, copy);
-    if (local['flats-board-guest-name']) assert.doesNotMatch(text, /No name has been asked/);
-    assert.equal(doc.querySelector('#join-name').value, local['flats-board-guest-name'] || '');
-    if (local['flats-board-guest-name']) {
-      // Joining with the remembered name as shown.
-      panel.dispatch('submit');
-      assert.deepEqual(socket().open().guest, { name: 'Ann' });
-      socket().recv(guestWelcome('S1'));
-      assert.ok(app.isGuest);
-      assert.equal(doc.querySelector('.join'), null);
-    }
-    t.mock.timers.reset();
-  }
+const popup = (doc) => [...doc.querySelectorAll('dialog')].find((d) => d.open) || null;
+const button = (root, text) => root.querySelectorAll('button').find((b) => b.textContent === text) || null;
+const meText = (doc) => textOf(doc.querySelector('#me-label'));
+
+test('arriving at an editable board opens the popup; a remembered name only fills it', async (t) => {
+  const { app, doc, socket } = await page(t, { local: { 'flats-board-guest-name': 'Ann' } });
+  let ws = socket();
+  assert.equal(ws.open().guest, undefined, 'a remembered name does not join by itself');
+  ws.recv(viewerWelcome);
+  ws.recv(snapshot([], 'Plan'));
+  const dlg = popup(doc);
+  assert.ok(dlg, 'the popup opened');
+  assert.match(textOf(dlg), /Anyone with this link can edit this board\. Pick the name others will see next to your cursor, or just watch\./);
+  assert.equal(dlg.querySelector('#guest-name').value, 'Ann');
+  assert.equal(textOf(dlg.querySelector('#guest-name-preview')), 'Shown as Ann guest to other editors. Nobody checks it.');
+  assert.ok(button(dlg, 'View only') && button(dlg, 'Join and edit'));
+  assert.equal(doc.querySelector('.join'), null, 'no bottom join panel');
+  dlg.querySelector('form').dispatch('submit');
+  assert.equal(popup(doc), null);
+  ws = socket();
+  assert.deepEqual(ws.open().guest, { name: 'Ann' });
+  assert.equal(sessionStorage.getItem('flats-board-joined'), '1');
+  ws.recv(guestWelcome('S1'));
+  assert.ok(app.isGuest);
+  assert.match(meText(doc), /You are Ann guest Change name/);
+  // Change name has no View only.
+  button(doc.querySelector('#me-label'), 'Change name').click();
+  assert.ok(popup(doc) && !button(popup(doc), 'View only'));
+  popup(doc).close();
+  assert.ok(app.isGuest, 'closing Change name keeps the guest');
+  assert.equal(sessionStorage.getItem('flats-board-view-only'), null);
+});
+
+test('View only keeps the tab a viewer until the level becomes edit again', async (t) => {
+  const { app, doc, socket } = await page(t);
+  let ws = socket();
+  ws.open();
+  ws.recv(viewerWelcome);
+  button(popup(doc), 'View only').click();
+  assert.equal(popup(doc), null);
+  assert.equal(sessionStorage.getItem('flats-board-view-only'), '4');
+  assert.match(meText(doc), /You are Viewer 3 Join to edit/);
+  // A reconnect in the same edit period does not ask again.
+  ws.drop();
+  t.mock.timers.tick(2000);
+  ws = socket();
+  assert.equal(ws.open().guest, undefined);
+  ws.recv(viewerWelcome);
+  assert.equal(popup(doc), null);
+  // View only again, then edit again: a newer epoch opens the popup.
+  ws.recv({ t: 'level', access: 'view', access_epoch: 5 });
+  assert.doesNotMatch(meText(doc), /Join to edit/);
+  ws.recv({ t: 'level', access: 'edit', access_epoch: 6 });
+  assert.ok(popup(doc), 'the popup opens for the new edit period');
+  // Closing it (Esc) is View only too.
+  popup(doc).close();
+  assert.equal(sessionStorage.getItem('flats-board-view-only'), '6');
+  // Join to edit reopens it.
+  button(doc.querySelector('#me-label'), 'Join to edit').click();
+  const dlg = popup(doc);
+  assert.ok(dlg);
+  dlg.querySelector('#guest-name').value = 'Bo';
+  dlg.querySelector('form').dispatch('submit');
+  assert.deepEqual(socket().open().guest, { name: 'Bo' });
+  assert.ok(!app.isGuest, 'a guest only after the welcome');
+});
+
+test('a reconnect that missed a view, edit, view, edit cycle opens the popup', async (t) => {
+  const { doc, socket } = await page(t, { session: { 'flats-board-view-only': '4' } });
+  const ws = socket();
+  ws.open();
+  ws.recv(viewerWelcome);
+  assert.equal(popup(doc), null, 'the choice holds in its edit period');
+  ws.drop();
+  t.mock.timers.tick(2000);
+  socket().open();
+  socket().recv({ ...viewerWelcome, access_epoch: 7 });
+  assert.ok(popup(doc));
+});
+
+test('the level dropping to view closes the popup without a View only choice', async (t) => {
+  const { doc, socket } = await page(t);
+  const ws = socket();
+  ws.open();
+  ws.recv(viewerWelcome);
+  assert.ok(popup(doc));
+  ws.recv({ t: 'level', access: 'view', access_epoch: 5 });
+  assert.equal(popup(doc), null);
+  assert.equal(sessionStorage.getItem('flats-board-view-only'), null);
+});
+
+test("a live guest session rejoins after a reload without the popup", async (t) => {
+  const { app, doc, socket } = await page(t, liveGuest);
+  const ws = socket();
+  assert.deepEqual(ws.open().guest, { name: 'Ann', token: 'gt' });
+  ws.recv(guestWelcome('S1'));
+  assert.ok(app.isGuest);
+  assert.equal(popup(doc), null);
+});
+
+test('a guest name the server refuses: closing the popup watches and records View only at the next welcome', async (t) => {
+  const { app, doc, socket } = await page(t, liveGuest);
+  let ws = socket();
+  ws.open();
+  ws.recv({ t: 'fatal', code: 'name_invalid', detail: 'bad name' });
+  assert.ok(popup(doc));
+  button(popup(doc), 'View only').click();
+  ws = socket();
+  assert.equal(ws.open().guest, undefined);
+  ws.recv({ ...viewerWelcome, access_epoch: 9 });
+  assert.equal(popup(doc), null);
+  assert.equal(sessionStorage.getItem('flats-board-view-only'), '9');
+  assert.ok(app.isPublic);
+});
+
+test('every page sends a nickname: the typed name, else a kept generated one', async (t) => {
+  let { socket } = await page(t, { local: { 'flats-board-name': 'Kim' } });
+  assert.equal(socket().open().nick, 'Kim');
+  t.mock.timers.reset();
+  ({ socket } = await page(t));
+  const nick = socket().open().nick;
+  assert.match(nick, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(localStorage.getItem('flats-board-nick'), nick);
+  t.mock.timers.reset();
+  ({ socket } = await page(t, { local: { 'flats-board-nick': nick } }));
+  assert.equal(socket().open().nick, nick, 'kept across visits');
 });
 
 test("a departed guest's name leaves the creator line of a member's tab", async (t) => {
