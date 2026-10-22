@@ -54,7 +54,7 @@ decide in the Flats console what goes live and who can open it.
 | --- | --- | --- |
 | A report or dashboard with charts you can send around | **Page**: one HTML document with its assets | You approve saving and publishing each version |
 | Notes, a handbook or meeting minutes that people and agents edit together | **Document**: live, collaborative Markdown | Edits apply at once and are kept as revisions |
-| A small internal tool with a database, such as a poll, tracker or form | **Website**: a static site, or a server app in JavaScript (with SQLite) or WASI | You approve saving and publishing each version |
+| A small internal tool with a database, such as a poll, tracker or form | **Website**: a static site, or a small JavaScript server app with SQLite | You approve saving and publishing each version |
 | Screen mock-ups and click-through prototypes | **Design**: a canvas of HTML artboards | Edits apply at once and are kept as revisions |
 | A brainstorm, retro or flowchart that people rearrange by hand | **Board**: an infinite whiteboard with sticky notes, shapes and connectors | Edits apply at once and are kept as revisions |
 
@@ -78,7 +78,7 @@ reference.
 | Where it runs | Your own Mac or Linux machine, or your own server | The AI vendor's cloud | The hosting company's cloud |
 | Where your data lives | Files and SQLite databases on that machine | The vendor's account | The hosting company's account and the services you add |
 | Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | That vendor's assistant | Any tool that runs their CLI or pushes to Git |
-| Server code and a database | JavaScript apps with SQLite and persistent files; WASI apps with a restricted request/response interface | Depends on the product | Yes, through their functions and add-on services |
+| Server code and a database | JavaScript server apps with SQLite and persistent files ([details](#static-and-server-flats)) | Depends on the product | Yes, through their functions and add-on services |
 | People and agents editing together | Documents, designs and boards, with history | Depends on the product | Not a hosting feature |
 | Who decides what goes live | You approve every publish and visibility change in your console | You publish and share through the product's controls | Your deployment permissions and release workflow |
 
