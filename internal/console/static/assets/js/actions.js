@@ -4,7 +4,7 @@
 
 import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
 import { api } from './api.js';
-import { confirmDialog, infoDialog, errorPanel, toast, extLink } from './ui.js';
+import { confirmDialog, infoDialog, errorPanel, toast, extLink, privateURL } from './ui.js';
 import { isLive } from './list.js';
 
 const label = (f) => f.name || f.slug;
@@ -97,7 +97,7 @@ async function showLive(slug, what) {
   if (!f) { toast('Done.', 'success'); return; }
   const pub = publicURL(f);
   await infoDialog(`Version ${f.live_version} ${what}`, [
-    f.private_url ? h('p', null, 'Private URL: ', extLink(f.private_url)) : null,
+    f.private_url ? h('p', null, 'Private URL: ', extLink(privateURL(f))) : null,
     pub ? h('p', null, 'Public URL: ', extLink(pub)) : null,
     pub ? h('p', { class: 'notice-text', text: publicNoticeOf(f) }) : null,
   ]);
@@ -337,7 +337,7 @@ function blockedDialog(flat, pre, problems) {
     const targets = {
       limits: h('a', { class: 'btn', href: '/settings/limits', 'data-nav': true, text: 'Open Limits' }),
       revisions: h('a', { class: 'btn', href: base + '/settings#revisions', 'data-nav': true, text: 'Open revision settings' }),
-      history: flat.private_url ? extLink(flat.private_url, 'Open History', 'btn') : null,
+      history: flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn') : null,
     };
     const actions = [...new Set(problems.map((p) => PROBLEMS[p.code]?.action).filter(Boolean))].map((a) => targets[a]).filter(Boolean);
     const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });

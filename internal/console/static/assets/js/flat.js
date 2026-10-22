@@ -8,7 +8,7 @@
 
 import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
 import { api } from './api.js';
-import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill, setHostProviders } from './ui.js';
+import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill, setHostProviders, addressText, privateURL } from './ui.js';
 import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, stopGuestEditing, PROVIDERS } from './actions.js';
 import { siteHeader } from './site.js';
 import { hasServer, isLive, typeOf, typeNoun } from './list.js';
@@ -116,7 +116,13 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     if (settings) { drawSettings(); return; }
     const urls = h('dl', { class: 'facts' });
     const add = (k, v) => urls.append(h('dt', { text: k }), h('dd', null, v));
-    const pending = flat.private_state && !['ready', 'key-expiring'].includes(flat.private_state);
+    // Seen from another device a Local private_url gives way to an address
+    // that opens there (privateURL); its state is that route's own.
+    const shownPrivate = privateURL(flat);
+    const shownRoute = shownPrivate !== flat.private_url ? (flat.endpoints || []).find((e) => e.url === shownPrivate) : null;
+    const privateState = shownRoute ? shownRoute.state : flat.private_state;
+    const privateDetail = shownRoute ? shownRoute.detail : flat.private_detail;
+    const pending = privateState && !['ready', 'key-expiring'].includes(privateState);
     // A document, design or board serves once it runs; a website once a
     // version is live.
     const serving = isDocs() ? flat.running : flat.live_version;
@@ -127,11 +133,11 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       return detail ? h('div', { class: 'muted small', text: detail }) : null;
     };
     add('Private URL', serving
-      ? h('div', null, extLink(flat.private_url),
+      ? h('div', null, extLink(shownPrivate),
           pending ? h('div', { class: 'muted small' },
-            h('span', { class: 'badge badge-' + flat.private_state, text: flat.private_state }), ' ',
-            flat.private_detail || 'not answering yet') : viaProxy(flat.private_url))
-      : h('span', { class: 'muted' }, h('code', { text: flat.private_url }), isDocs() ? ` (online once the ${typeNoun(flat)} starts)` : ' (online after the first publish)'));
+            h('span', { class: 'badge badge-' + privateState, text: privateState }), ' ',
+            privateDetail || 'not answering yet') : viaProxy(shownPrivate))
+      : h('span', { class: 'muted' }, h('code', { text: addressText(shownPrivate) }), isDocs() ? ` (online once the ${typeNoun(flat)} starts)` : ' (online after the first publish)'));
     const pub = publicURL(flat);
     if (pub) {
       add('Public URL', h('div', null,
@@ -176,7 +182,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       h('section', { class: 'settings-section', 'aria-labelledby': 'general-title' },
         h('h2', { id: 'general-title', text: 'General' }),
         row('Name', 'Name for your site', nameForm),
-        row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || flat.private_url), change)), rename,
+        row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || privateURL(flat)), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', flat.type === 'board' ? 'Who can open this board' : 'Who can view your site', sharingControl(manage)),
         flat.type === 'board' ? boardSharingSlot() : null),
@@ -217,7 +223,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       const edit = accessOf(flat) === 'edit';
       if (pre && pre.safe_point) {
         const pinned = pre.safe_point_pinned === true;
-        const open = flat.private_url ? extLink(flat.private_url, 'Open History', 'btn btn-small') : null;
+        const open = flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn btn-small') : null;
         rows.push(h('div', { class: 'setting-row' },
           h('div', null, h('span', { class: 'setting-title', text: 'Safe point' }), h('div', { class: 'muted small', text: edit ? 'Kept while guests can edit' : 'From the last time guests could edit' })),
           h('div', { class: 'setting-sharing' },

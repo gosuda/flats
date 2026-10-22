@@ -1,5 +1,5 @@
-import { h, icon, linkTargets } from './dom.js';
-import { extLink } from './ui.js';
+import { h, icon } from './dom.js';
+import { extLink, openTargets } from './ui.js';
 import { hasServer, isLive, typeIcon } from './list.js';
 
 // The management tabs of a flat; Deployments is the flat's own address. A
@@ -23,9 +23,12 @@ export function siteHeader(flat, active) {
 }
 
 // siteLinks shows the flat's addresses, one line per kind: private (lock)
-// first, then public (globe) while the flat is public.
+// first, then public (globe) while the flat is public. Seen from another
+// device, Local addresses are left out; with no other private address the
+// private line says the flat opens only on the Flats host.
 function siteLinks(flat) {
-  const targets = linkTargets(flat);
+  const targets = openTargets(flat);
+  if (!targets.private.length && targets.local) targets.private = [targets.local];
   const line = (ts, isPublic) => (ts.length ? h('div', { class: 'site-address muted' },
     icon(isPublic ? 'globe' : 'lock', isPublic ? 'Public' : 'Private'),
     ts.map((t, i) => [i ? h('span', { 'aria-hidden': 'true', text: '·' }) : null, extLink(t.url)])) : null);

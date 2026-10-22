@@ -70,15 +70,18 @@ export function shareDialog(initial, onChange = () => {}) {
     notice.textContent = vis === 'private' ? '' : (flat.public_notice || PUBLIC_ACCESS_NOTICE);
     explanation.textContent = vis === 'private' ? 'Other permitted networks may provide additional private links.' : 'Public links can be opened by anyone.';
     status.textContent = refreshError ? 'Could not refresh. Showing the last known state: ' + route.message + ' Try Refresh again.' : route.message;
-    link.textContent = route.url || '';
+    // A Local link seen from another device is not shown: the status
+    // explains where it opens.
+    link.textContent = serverOnly(route.url) ? '' : route.url || '';
     copy.disabled = !route.usable || serverOnly(route.url) || pending;
     if (copy.disabled) copy.setAttribute('disabled', '');
     else copy.removeAttribute('disabled');
     copy.title = serverOnly(route.url) ? SERVER_ONLY : '';
-    const nextVisitKey = route.usable ? route.url : '';
+    const visible = route.usable && !serverOnly(route.url);
+    const nextVisitKey = visible ? route.url : '';
     if (nextVisitKey !== visitKey) {
       const hadFocus = visit.firstChild && document.activeElement === visit.firstChild;
-      fill(visit, route.usable ? extLink(route.url, [icon('external'), 'Visit'], 'btn btn-small') : null);
+      fill(visit, visible ? extLink(route.url, [icon('external'), 'Visit'], 'btn btn-small') : null);
       visitKey = nextVisitKey;
       if (hadFocus) {
         if (visit.firstChild?.tagName === 'A') visit.firstChild.focus();

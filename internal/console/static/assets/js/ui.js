@@ -292,10 +292,42 @@ export function extLink(href, text, cls) {
       btn.addEventListener('click', () => toast(SERVER_ONLY));
       return btn;
     }
+    // Without its own text the link names the network instead of the
+    // address: a Local address means nothing on this device.
     return h('span', { class: (cls ? cls + ' ' : '') + 'is-disabled server-only', title: SERVER_ONLY, 'aria-disabled': 'true' },
-      text || href, h('span', { class: 'badge badge-warn', text: 'server only' }));
+      text || LOCAL_ADDRESS, h('span', { class: 'badge badge-warn', text: 'server only' }));
   }
   return h('a', { href: safe, target: '_blank', rel: 'noopener noreferrer', class: cls }, text || href);
+}
+
+// LOCAL_ADDRESS stands in for a Local address the console does not show
+// because this device cannot open it.
+export const LOCAL_ADDRESS = 'Local address';
+
+// addressText is a URL to show as plain text: a Local address seen from
+// another device becomes LOCAL_ADDRESS.
+export function addressText(url) {
+  return url && serverOnly(url) ? LOCAL_ADDRESS : url;
+}
+
+// openTargets are a flat's addresses (linkTargets) that open from this
+// device: seen from another device, Local addresses are left out. local is
+// the left-out private Local target, for a disabled button that explains it.
+export function openTargets(f) {
+  const targets = linkTargets(f);
+  const local = targets.private.find((t) => serverOnly(t.url)) || null;
+  return {
+    private: targets.private.filter((t) => !serverOnly(t.url)),
+    public: targets.public.filter((t) => !serverOnly(t.url)),
+    local,
+  };
+}
+
+// privateURL is the flat's private_url, or, when that is a Local address
+// this device cannot open, the first private address that it can.
+export function privateURL(f) {
+  if (!f?.private_url || !serverOnly(f.private_url)) return f?.private_url;
+  return openTargets(f).private[0]?.url || f.private_url;
 }
 
 // busy disables a button while fn runs.
@@ -313,17 +345,23 @@ export async function busy(btn, fn) {
 // while the flat is public, a public one (globe icon) to its left. Without a
 // public button an empty slot of the same size takes its place, so the
 // private button keeps its position whatever the visibility, also in the
-// left-aligned narrow layout. Each is a plain
-// icon link with one address and a list of its networks with several.
+// left-aligned narrow layout. Each is a plain icon link with one address and
+// a list of its networks with several. Seen from another device, Local
+// addresses are not offered, so the lock opens the one other private address
+// directly; with none the private button stays, disabled, and explains how to
+// open the flat from other devices.
 export function openLinks(f) {
   const name = f.name || f.slug;
-  const targets = linkTargets(f);
+  const targets = openTargets(f);
   const button = (isPublic) => {
-    const ts = isPublic ? targets.public : targets.private;
-    if (!ts.length) return null;
+    let ts = isPublic ? targets.public : targets.private;
     const kind = isPublic ? 'public' : 'private';
     const glyph = isPublic ? 'globe' : 'lock';
     const note = isPublic ? ' (anyone with the URL can open the flat)' : '';
+    if (!ts.length) {
+      if (isPublic || !targets.local) return null;
+      ts = [targets.local];
+    }
     if (ts.length === 1) {
       return extLink(ts[0].url, icon(glyph, `Open ${name} ${kind}ly through ${ts[0].label}${note}`), 'icon-btn open-' + kind);
     }
@@ -345,18 +383,18 @@ export function openLinks(f) {
 // every address for the menu.
 export function openPrimary(f) {
   const name = f.name || f.slug;
-  const targets = linkTargets(f);
-  const all = [...targets.public, ...targets.private];
-  const t = all.find((x) => !serverOnly(x.url)) || all[0];
+  const targets = openTargets(f);
+  const t = [...targets.public, ...targets.private][0] || targets.local;
   if (!t) return null;
   const note = t.public ? ' (anyone with the URL can open the flat)' : '';
   return extLink(t.url, icon('external', `Open ${name} ${t.public ? 'public' : 'private'}ly through ${t.label}${note}`), 'icon-btn open-primary');
 }
 
-// openMenuItems are menu entries for each address of a flat, public ones
-// first, shown only where the narrow layout replaces openLinks.
+// openMenuItems are menu entries for each address of a flat that opens from
+// this device, public ones first, shown only where the narrow layout
+// replaces openLinks.
 export function openMenuItems(f) {
-  const targets = linkTargets(f);
+  const targets = openTargets(f);
   return [...targets.public, ...targets.private].map((t) => ({
     label: `Open ${t.public ? 'publicly' : 'privately'} · ${t.label}`,
     detail: t.url.replace(/^https?:\/\//, ''), href: t.url, className: 'menu-narrow',

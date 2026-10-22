@@ -313,11 +313,15 @@ Public provider can be revoked.
 ## Local links from another device
 
 A Local link (`*.localhost`) opens on the machine where you click it. When you
-open the console from another device, such as over the tailnet, it shows Local
-links as "server only" text instead of links, because they would open that
-device rather than the Flats host. While a reverse proxy kind is on, that note
-names the proxy as another way to open a flat from other devices. Reverse
-proxy addresses are ordinary links.
+open the console from another device, such as over the tailnet, it does not
+show Local addresses, because they would open that device rather than the
+Flats host: open buttons, menus, the flat's address lines and its Private URL
+offer only the other networks, and when one private address remains the lock
+opens it directly. A flat whose only private address is Local shows "Local
+address" marked "server only", with a note that says how to open it from
+other devices. While a reverse proxy kind is on, that note names the proxy as
+another way to open a flat from other devices. Reverse proxy addresses are
+ordinary links.
 
 ## Publishing through zrok
 
