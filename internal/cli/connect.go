@@ -199,6 +199,8 @@ func (a *app) reportConnection(path, note string) error {
 	}
 	if note != "" {
 		fmt.Fprintln(a.out, "The CLI and `flats mcp` use it from now on; restart or reconnect agent tools that already started `flats mcp`.")
+	} else {
+		fmt.Fprintln(a.out, "`flats connect` only chooses the host. The setup commands for an agent are in `flats mcp-config`.")
 	}
 	return nil
 }

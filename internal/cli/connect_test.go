@@ -10,6 +10,9 @@ import (
 	"testing"
 )
 
+// connectAgentHint is the line that bare `flats connect` prints last.
+const connectAgentHint = "`flats connect` only chooses the host. The setup commands for an agent are in `flats mcp-config`."
+
 // runConn runs the CLI with the given FLATS_URL (empty: unset) and saved
 // connection directory.
 func runConn(t *testing.T, configDir, flatsURL string, args ...string) result {
@@ -36,6 +39,9 @@ func TestConnectSavesAndIsUsedByLaterCommands(t *testing.T) {
 	if r.code != 0 || !strings.Contains(r.stdout, "Saved "+srv.URL+".") {
 		t.Fatalf("connect: %+v", r)
 	}
+	if strings.Contains(r.stdout, connectAgentHint) {
+		t.Errorf("saving a host printed the agent hint: %s", r.stdout)
+	}
 	b, err := os.ReadFile(filepath.Join(dir, "flats-client", "connection.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -59,19 +65,38 @@ func TestConnectSavesAndIsUsedByLaterCommands(t *testing.T) {
 		t.Fatalf("show: %+v %v", r, err)
 	}
 
+	// Only the bare text form says that connect does not register an agent.
+	r = runConn(t, dir, "", "connect")
+	if !strings.Contains(r.stdout, "Flats host: "+srv.URL+" (saved in ") || !strings.HasSuffix(r.stdout, connectAgentHint+"\n") {
+		t.Errorf("bare connect: %q", r.stdout)
+	}
+
 	// FLATS_URL and --url still win, in that order.
 	r = runConn(t, dir, "http://env.example:1", "connect")
 	if !strings.Contains(r.stdout, "http://env.example:1 (from FLATS_URL)") || !strings.Contains(r.stdout, "overrides the saved host "+srv.URL) {
 		t.Fatalf("env precedence: %+v", r)
 	}
+	if !strings.HasSuffix(r.stdout, connectAgentHint+"\n") {
+		t.Errorf("bare connect with FLATS_URL: %q", r.stdout)
+	}
 	r = runConn(t, dir, "http://env.example:1", "connect", "--url", "http://flag.example:2")
 	if !strings.Contains(r.stdout, "http://flag.example:2 (from --url)") {
 		t.Fatalf("flag precedence: %+v", r)
+	}
+	if !strings.HasSuffix(r.stdout, connectAgentHint+"\n") {
+		t.Errorf("bare connect with --url: %q", r.stdout)
 	}
 
 	r = runConn(t, dir, "", "connect", "--clear")
 	if r.code != 0 || !strings.Contains(r.stdout, DefaultURL+" (loopback default)") {
 		t.Fatalf("clear: %+v", r)
+	}
+	// With nothing saved, bare connect shows the loopback default and the hint.
+	if r := runConn(t, dir, "", "connect"); !strings.Contains(r.stdout, DefaultURL+" (loopback default)") || !strings.HasSuffix(r.stdout, connectAgentHint+"\n") {
+		t.Errorf("bare connect on the loopback default: %q", r.stdout)
+	}
+	if strings.Contains(r.stdout, connectAgentHint) {
+		t.Errorf("--clear printed the agent hint: %s", r.stdout)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "flats-client", "connection.json")); !os.IsNotExist(err) {
 		t.Fatalf("clear left the file: %v", err)

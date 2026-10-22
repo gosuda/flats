@@ -421,7 +421,11 @@ Codex (~/.codex/config.toml):
 Cursor (.cursor/mcp.json in a project, or ~/.cursor/mcp.json for all projects):
 %s
 `, endpoint, claude, indent(codexTOML, "  "), codexCmd, indent(string(cursor)+"\n", "  "))
-	fmt.Fprintln(a.out, "\nThe Flats plugin for these clients runs `flats mcp` instead; choose its host with `flats connect <url>`.")
+	fmt.Fprint(a.out, "\nThe Flats plugin for these clients runs `flats mcp` instead; choose its host with `flats connect <url>`.\n"+
+		"The plugin needs the flats CLI on the agent's PATH. The person who sets up the agent client installs it with:\n"+
+		"  claude plugin marketplace add gosuda/flats && claude plugin install flats@flats\n"+
+		"  codex plugin marketplace add gosuda/flats && codex plugin add flats@flats\n"+
+		"For Cursor, see https://github.com/gosuda/flats/blob/main/docs/agents.md#plugin\n")
 	if !isLoopbackURL(a.url) {
 		fmt.Fprintln(a.out, "\nNote: save_draft_from_dir only works for agents on the Flats host (loopback URL).")
 	}
