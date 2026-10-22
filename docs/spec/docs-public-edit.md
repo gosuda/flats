@@ -8,7 +8,8 @@ listed in [Changes to existing specs](#changes-to-existing-specs). The
 document type (`docs`) is in scope, plus the board changes to rules 8, 11
 and 15 that keep the two types the same.
 
-This page sets what to build, why, and the rules it must keep. It follows
+This page sets what to build, why, and the rules it must keep. The technical
+design is in [docs-public-edit-TECH.md](docs-public-edit-TECH.md). It follows
 [board-public-edit.md](board-public-edit.md) (the board feature) rule for rule
 wherever a document allows it, so the two types share one model, one console
 and one vocabulary. Where a rule here only restates a board rule for
