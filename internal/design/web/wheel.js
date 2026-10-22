@@ -14,7 +14,7 @@ export function createWheelPan() {
     if (swapped === null) swapped = Math.abs(dy) > Math.abs(dx);
     // Missing or backwards timestamps must not force a new mapping.
     if (Number.isFinite(time) && (last === null || time >= last)) last = time;
-    return swapped ? { x: dy, y: dx } : { x: dx, y: dy };
+    return { x: swapped ? dy : dx, y: 0 };
   };
   return { pan, reset };
 }
