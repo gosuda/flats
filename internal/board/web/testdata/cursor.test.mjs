@@ -14,6 +14,26 @@ test('select hover shows a handle cursor, but not while Space is held', () => {
   assert.equal(app.renderer.dyn.style.cursor, '', 'the inline cursor would hide the Space grab cursor');
 });
 
+test('Space keydown clears an inline handle cursor without waiting for a hover', () => {
+  // Given — app.js starts the board when imported, so the test compiles App.key from its source
+  const src = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const start = src.indexOf('\n  key(e) {');
+  const end = src.indexOf('\n  }\n', start);
+  assert.ok(start > 0 && end > start, 'App.key not found in app.js');
+  const d = { style: { cursor: 'nwse-resize' }, classList: new Set() };
+  const $ = (sel) => (sel === '.layer-dynamic' ? d : null);
+  const key = new Function('$', 'document', `return {${src.slice(start, end + 4)}}.key;`)($, { querySelector: () => null });
+  const app = { space: false, typing: () => false };
+  let prevented = false;
+
+  // When — Space goes down with the pointer still over the handle
+  key.call(app, { key: ' ', metaKey: false, ctrlKey: false, preventDefault() { prevented = true; } });
+
+  // Then — the Space class can show the grab cursor at once
+  assert.equal(d.style.cursor, '', 'the inline handle cursor would hide the Space grab cursor until the pointer moves');
+  assert.ok(app.space && d.classList.has('space') && prevented);
+});
+
 test('the Space and panning cursors are the last canvas cursor rules in app.css', () => {
   // The rules have equal specificity, so the later rule wins.
   const css = readFileSync(new URL('../app.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
