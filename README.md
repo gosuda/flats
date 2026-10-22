@@ -31,9 +31,8 @@
 ---
 
 Each thing Flats hosts is a **flat**: one web page, document, app, design or
-board with its own name and link. Your agent creates and updates flats through
-Flats' MCP tools. You decide in the Flats console what goes live and who can
-open it.
+board with its own name and link. Your agent creates and updates flats. You
+decide in the Flats console what goes live and who can open it.
 
 <!-- README IMAGE PLACEHOLDER (hero): three steps shown left to right.
      1. "Ask your agent": a chat asking for a one-page Q3 report with a chart; the agent answers with a console approval link.
@@ -79,9 +78,9 @@ reference.
 | Where it runs | Your own Mac or Linux machine, or your own server | The AI vendor's cloud | The hosting company's cloud |
 | Where your data lives | Files and SQLite databases on that machine | The vendor's account | The hosting company's account and the services you add |
 | Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | That vendor's assistant | Any tool that runs their CLI or pushes to Git |
-| Server code and a database | JavaScript or WASI apps with SQLite and file storage | Depends on the product | Yes, through their functions and add-on services |
+| Server code and a database | JavaScript apps with SQLite and persistent files; WASI apps with a restricted request/response interface | Depends on the product | Yes, through their functions and add-on services |
 | People and agents editing together | Documents, designs and boards, with history | Depends on the product | Not a hosting feature |
-| Who decides what goes live | You, in your console, for every publish and visibility change | The vendor's sharing settings | Whoever can deploy |
+| Who decides what goes live | You approve every publish and visibility change in your console | You publish and share through the product's controls | Your deployment permissions and release workflow |
 
 ## Quick start
 
@@ -226,8 +225,9 @@ version can exist without ever going live. Publication and rollback require
 console approval.
 
 Documents, designs and boards are edited live by people and agents together:
-private visitors can edit while public visitors read, and changes to an
-already Public flat are visible immediately. Documents merge agent saves into
+private visitors can edit while public visitors read, unless you approve
+guest editing for a Public board, and changes to an already Public flat are
+visible immediately. Documents merge agent saves into
 people's edits; designs keep every change as a whole-canvas revision. Boards
 record each agent write as one revision and group each person's edits into
 revisions. **Changing visibility in either direction requires approval for
